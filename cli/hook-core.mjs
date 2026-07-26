@@ -36,6 +36,21 @@ export function threatActionFor(policy, id) {
 
 const RANK = { allow: 1, ask: 2, deny: 3 };
 
+// #10 — context-aware severity. The same pattern is more critical by WHERE it was caught: a secret
+// read into an agent's context (stage "file") or shipped as an MCP tool-call argument (stage "mcp"/
+// "egress") is worse than one typed into a prompt the user can still edit before sending. Label-only:
+// this adjusts the reported riskLevel, never the allow/ask/deny decision.
+const LEVELS = ["Low", "Medium", "High", "Critical"];
+const SECRET_RE = /secret|credential|api[\s-]?key|token|password|private key/i;
+export function isSecretCategory(category) { return SECRET_RE.test(String(category || "")); }
+export function calibrateRisk(base, { stage, category } = {}) {
+  if (!isSecretCategory(category)) return base;
+  const i = LEVELS.indexOf(base);
+  if (i < 0) return base;
+  if (stage === "file" || stage === "mcp" || stage === "egress") return LEVELS[Math.min(i + 1, LEVELS.length - 1)];
+  return base;
+}
+
 // Scan text and reduce all findings to a single decision (deny > ask > allow) plus content-free
 // findings for reporting. Only "block" → deny; "justify" → ask; "notify"/"alert" → allow-but-report.
 export function decideText(engine, policy, text, stage) {
@@ -45,7 +60,7 @@ export function decideText(engine, policy, text, stage) {
   for (const f of engine.scan(text, stage)) {
     const act = threatActionFor(policy, f.threat.id);
     if (act === "disabled") continue;
-    out.findings.push({ threatId: f.threat.id, category: f.threat.category, riskLevel: f.threat.riskLevel, match: f.match });
+    out.findings.push({ threatId: f.threat.id, category: f.threat.category, riskLevel: calibrateRisk(f.threat.riskLevel, { stage, category: f.threat.category }), match: f.match });
     if (act === "block") { bump("deny"); out.reasons.push(`#${f.threat.id} ${f.threat.category}`); }
     else if (act === "justify") { bump("ask"); out.reasons.push(`#${f.threat.id} ${f.threat.category} (needs sign-off)`); }
   }

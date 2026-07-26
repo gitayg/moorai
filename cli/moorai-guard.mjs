@@ -9,6 +9,8 @@ import { DETECTORS } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
 import { loadConfig } from "./config.mjs";
+import { calibrateRisk } from "./hook-core.mjs";
+import { recordExposure, recordIntent } from "./signals.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = loadConfig();
@@ -44,10 +46,13 @@ function post(alert) {
 }
 
 function reportAlert(finding, content, blocked = false) {
-  return post({
-    threatId: finding.threat.id, category: finding.threat.category, riskLevel: blocked ? "Blocked" : finding.threat.riskLevel,
+  const alert = {
+    threatId: finding.threat.id, category: finding.threat.category,
+    riskLevel: blocked ? "Blocked" : calibrateRisk(finding.threat.riskLevel, { stage: "egress", category: finding.threat.category }), // #10
     stage: "egress", tool: "claude -p", ts: new Date().toISOString(), contentHash: djb2(content), ...IDENTITY
-  });
+  };
+  recordExposure(alert); // #5 — local content-free exposure ledger (secret classes only)
+  return post(alert);
 }
 
 function reportContent(c, enforce) {
@@ -162,6 +167,21 @@ async function main() {
     console.error(`${C.org}↻ redacted before sending:${C.off} ${final}\n`);
   } else {
     console.error(`${C.org}⚠ proceeding as-is (override logged)${C.off}\n`);
+  }
+
+  // #15 — capture the human's intent to proceed past findings. Legitimate agentic use resembles an
+  // attack; a human "proceed" is the signal that disambiguates them. Content-free: the overridden
+  // categories and a one-way hash of the prompt, never the prompt itself. Recorded locally and, as an
+  // Info-level alert, to the server (→ SIEM). "abort" already exited above, so reaching here = intent.
+  if (choice !== "abort" && (allFindings.length || allContent.length)) {
+    const intent = {
+      ts: new Date().toISOString(), event: "override", redacted: choice === "redact",
+      threatIds: allFindings.map((f) => f.threat.id),
+      categories: [...allFindings.map((f) => f.threat.category), ...allContent.map((c) => `Content: ${c.label}`)],
+      contentHash: djb2(prompt), ...IDENTITY
+    };
+    recordIntent(intent);
+    post({ threatId: 0, category: "Intent: user override", riskLevel: "Info", stage: "egress", tool: "claude -p", ts: intent.ts, contentHash: intent.contentHash, ...IDENTITY });
   }
   process.exit(await runClaude(final));
 }

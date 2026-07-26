@@ -17,6 +17,7 @@ import { join, dirname, basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
 import { buildEngine, decideText, decideMcpServer, extractReadPaths } from "./hook-core.mjs";
+import { recordExposure } from "./signals.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -61,7 +62,11 @@ function djb2(s) { let h = 5381; for (let i = 0; i < String(s).length; i++) h = 
 const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant };
 function post(alert) { return fetch(`${CONFIG.serverUrl}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(alert), signal: AbortSignal.timeout(1500) }).catch(() => {}); }
 function report(findings, stage, tool, blocked) {
-  for (const f of findings) post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool, ts: new Date().toISOString(), contentHash: djb2(f.match || ""), ...IDENTITY });
+  for (const f of findings) {
+    const alert = { threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool, ts: new Date().toISOString(), contentHash: djb2(f.match || ""), ...IDENTITY };
+    post(alert);            // → server → SIEM (address configured server-side, #1)
+    recordExposure(alert);  // → local content-free exposure ledger (#5); ignores non-secret categories
+  }
 }
 
 function readFileCapped(fp) {

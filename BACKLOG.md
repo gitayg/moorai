@@ -95,3 +95,38 @@ host-side wiring** so a pasted/dropped image is actually inspected + delivered.
 
 **Current behavior (interim):** dropped/pasted images show an "Image — content not inspected
 (needs a vision/OCR tier)" card and are logged; nothing is sent to the agent.
+
+## AI proficiency / prompt-quality score — on-device, coaching-first
+
+**Idea:** Score how skilled each person is at using AI — an "AI proficiency" / prompt-engineering
+quality metric — computed **on the device** (where the prompt is already in cleartext for detection)
+and emitted **content-free**: only the score and sub-scores leave, never the prompt. Extends the
+"AI-enabled employees / AI-accelerated team" positioning from "are they leaking?" to "are they using
+AI *well*?" No security competitor (Glow, Salt, Cycode, Zscaler) measures skill — this is open ground.
+
+**Signals (all derivable locally, no egress):**
+- **Structure** — role/context set, constraints, few-shot examples, explicit output format, task
+  decomposition (engineered prompt vs. one-liner).
+- **Iteration / rework** — retries & reformulations before a usable result; turns per task (novices
+  thrash, skilled users converge).
+- **Hygiene** — secrets/PII/policy-hit rate, block & override rate (*already collected today*).
+- **Context discipline** — targeted context vs. pasting giant blobs; sensible MCP/tool use.
+- **Outcome proxies** — refusal/error rate, output accepted vs. discarded.
+Roll into a 0–100 score + sub-scores.
+
+**Local-model tier (pairs with the Tier-2 local LLM, "Multilingual detection" above):** a small
+on-device model grades each prompt against a clarity/specificity/context/safety rubric and emits only
+the score — nuanced quality with zero prompt egress. Best use case for local inference: it needs
+cleartext, and on-device is the only place that's allowed.
+
+**Guardrails (brand-critical — do NOT skip):** this is one design choice away from employee-
+productivity surveillance, which "governance without surveillance" exists to reject. Build it as:
+1. **Coaching, not ranking** — the score drives inline tips shown *to the user* (like coach mode).
+2. **Aggregate to the org** — fleet proficiency trends and where enablement is needed, *not*
+   per-person leaderboards (per-person only with explicit opt-in).
+3. **Framed as enablement** — a board-level adoption metric, sibling to the AI-readiness score.
+A named per-person leaderboard is a brand landmine; do not ship one.
+
+**To do when picked up:** on-device signal extraction in the engine/hook; a proficiency scorer
+(heuristic first, local-LLM rubric later); coach-mode tips keyed to the weakest sub-scores; an
+aggregate "AI proficiency" panel in the console beside AI-readiness.
