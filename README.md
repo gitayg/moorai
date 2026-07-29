@@ -25,7 +25,7 @@ That's the exact trade MoorAI refuses.
 ## What it does
 
 - **Context interception** — blocks a secret or PII being *read into the agent's context* (e.g. an agent slurping a `.env`), not just typed in a prompt. Via the agent's PreToolUse hooks, on-device.
-- **MCP tool-call interception** — inspects `mcp__*` tool-call arguments for secrets/policy violations and blocks them; enforces an approved-MCP-server allow-list at call time.
+- **Agency Enforcement** — bounds what an agent is *allowed to do*: inspects `mcp__*` tool-call arguments for secrets/policy violations and blocks them, and enforces an approved-MCP-server allow-list at call time. The direct control for **OWASP LLM06: Excessive Agency**.
 - **AI output review** — reviews what the agent says *back*, not just what's typed. Masks secret spans the model echoes on the `-p` path.
 - **Battle-tested secrets engine** — ~14 provider families (GitHub, AWS, Stripe, Slack, GCP, OpenAI/Anthropic, DB connection strings, …) plus Shannon-entropy scoring with an allowlist (UUIDs, git SHAs, base64) so it doesn't false-positive on the things that aren't secrets.
 - **Coach · alert · block · justify** — per policy, per tenant, per device. Nudge, warn, hard-block, or require a signed justification.

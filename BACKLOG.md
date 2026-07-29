@@ -130,3 +130,45 @@ A named per-person leaderboard is a brand landmine; do not ship one.
 **To do when picked up:** on-device signal extraction in the engine/hook; a proficiency scorer
 (heuristic first, local-LLM rubric later); coach-mode tips keyed to the weakest sub-scores; an
 aggregate "AI proficiency" panel in the console beside AI-readiness.
+
+## OWASP LLM Top 10 posture scorecard — in the admin console
+
+**Idea (from the GuardAI competitive sweep):** an assessment/scorecard that rates the org's AI setup
+against the **OWASP LLM Top 10** (+ NIST AI RMF, ISO/IEC 42001) and outputs specific fixes — e.g.
+"MCP server X has no allow-list → LLM06 Excessive Agency." **Surfaces to the ADMIN in the console**
+(not a per-device CLI): it rolls up the content-free device signals + the AIBOM inventory the fleet
+already reports. Pairs cleanly with what exists: **AIBOM inventories, AI-readiness scores, this
+assesses against a named standard auditors know.** GuardAI's whole product is this check-up; MoorAI
+can do it content-free from data it already has.
+
+**To do:** a `/api/assessment` endpoint mapping existing signals → OWASP LLM items; a console
+"Assessment" tab with per-item pass / warn / fail + remediation text; export alongside the AIBOM and
+readiness report. We already have the positioning page (`owasp-llm-top-10-tooling.html`) with no tool
+behind it — this is the tool.
+
+## Expose the red-team suite as a customer trust test
+
+**Idea (from the GuardAI ML-testing angle):** `scripts/redteam.mjs` (57/57 internal) proves the engine
+catches its attack corpus — but only we see it. Expose it (`moorai-redteam`, or a console "Test my
+policy" action) so a customer runs the adversarial corpus against **their own ACTIVE policy on their
+own machine** and sees the coverage. Turns an internal test into a trust feature: "verify, don't
+trust." Content-free; maps results to the OWASP LLM attack classes.
+
+**To do:** a CLI that loads the tenant policy + runs the corpus + reports pass/fail per threat class;
+optionally a console button that shows the same coverage grid per tenant.
+
+## "AI-integrated development pipeline" positioning (copy)
+
+**Idea (from the dev-pipeline GuardAI):** frame MoorAI as securing the **AI-integrated development
+pipeline at the endpoint** — the pipeline starts on the developer's machine, upstream of the CI/SCA
+tools (Cycode, Salt) that only see risk once code is committed. MoorAI is the *first* control point.
+Copy-only; lands on the MoorAI hero/positioning and as a vs-page angle. Sharpens the developer story
+without overclaiming a full pipeline/CI product.
+
+## Autonomous remediation (guarded)
+
+**Idea (from GuardAI "autonomously neutralizes threats"):** beyond block — high-severity auto-actions.
+Flag exposed credential classes for rotation (ties to the **exposure ledger**), auto-disable an
+unapproved MCP server, or freeze an agent fleet-wide. **Same guardrails as the AI-proficiency item are
+mandatory:** opt-in, per-policy, reversible, fully audited, and human-in-the-loop for anything
+destructive (rotation/disable). Powerful, but the blast radius is real — keep it gated.
