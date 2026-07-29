@@ -74,6 +74,17 @@ npx moorai-ledger --format md  # Markdown report
 
 Content-free by construction: category, risk, stage, device, and a one-way hash — never a secret value.
 
+### Verify your policy catches the attacks — on your own machine
+
+```bash
+npx moorai-redteam             # run the adversarial corpus against YOUR active policy
+npx moorai-redteam --format json
+```
+
+Runs a built-in adversarial corpus (prompt injection, jailbreaks, secrets/PII, license, destructive
+commands) locally and reports, per attack class, whether your live policy actually **acts** on it —
+not just whether the engine can detect it. Verify, don't trust. Content-free; exits non-zero on any gap.
+
 ## Coverage
 
 | | |
