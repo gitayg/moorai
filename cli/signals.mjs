@@ -11,7 +11,7 @@
 //
 // Both fail open and silent: a logging error must never affect the enforcement decision.
 
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isSecretCategory } from "./hook-core.mjs";
@@ -19,6 +19,8 @@ import { isSecretCategory } from "./hook-core.mjs";
 const DIR = join(homedir(), ".curaiq");
 const LEDGER = join(DIR, "exposure-ledger.jsonl");
 const INTENT = join(DIR, "intent-log.jsonl");
+const AGENT_EVENTS = join(DIR, "agent-events.jsonl");
+const AGENT_EVENTS_CAP = 400; // rolling window; keep the file bounded
 
 function append(file, obj) {
   try { mkdirSync(DIR, { recursive: true }); appendFileSync(file, JSON.stringify(obj) + "\n"); } catch { /* never block enforcement on a log write */ }
@@ -38,7 +40,20 @@ export function recordExposure(entry) {
 // that were overridden and whether a justification was given (justificationHash, not the text).
 export function recordIntent(entry) { append(INTENT, entry); }
 
+// Autonomous-agent-behavior analyzer input: one content-free event per tool call/prompt
+// (ts, action fingerprint, allowed?, risk, and the content-tell flags). Never any text.
+// Kept as a rolling window so the on-device signature analyzer has recent context, bounded in size.
+export function recordAgentEvent(entry) {
+  append(AGENT_EVENTS, entry);
+  try {
+    const rows = readJsonl(AGENT_EVENTS);
+    if (rows.length > AGENT_EVENTS_CAP) writeFileSync(AGENT_EVENTS, rows.slice(-AGENT_EVENTS_CAP).map((r) => JSON.stringify(r)).join("\n") + "\n");
+  } catch { /* trimming is best-effort */ }
+}
+export function readAgentEvents() { return readJsonl(AGENT_EVENTS); }
+
 export function readLedger() { return readJsonl(LEDGER); }
 export function readIntent() { return readJsonl(INTENT); }
 export const LEDGER_PATH = LEDGER;
 export const INTENT_PATH = INTENT;
+export const AGENT_EVENTS_PATH = AGENT_EVENTS;

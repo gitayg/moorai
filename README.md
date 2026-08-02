@@ -85,6 +85,19 @@ Runs a built-in adversarial corpus (prompt injection, jailbreaks, secrets/PII, l
 commands) locally and reports, per attack class, whether your live policy actually **acts** on it —
 not just whether the engine can detect it. Verify, don't trust. Content-free; exits non-zero on any gap.
 
+### Is an agent behaving like an autonomous attack?
+
+```bash
+npx moorai-agentwatch             # score recent on-device agent activity vs the autonomous signature
+npx moorai-agentwatch --emit      # also send a content-free alert to your server → SIEM/SOC
+```
+
+Scores recent agent activity against the **8 behavioral tells** the CSA/SANS *Hugging Face Incident
+Post-Mortem* (§IV) used to conclude that attack was fully autonomous — repeating already-succeeded
+actions, machine-speed bursts, benchmark/decoy strings, LLM-generated obfuscation, leftover opsec
+artifacts, and more. Runs on the device; the hook also emits an alert automatically when the signature
+trips. Content-free: timestamps, action fingerprints, allow/deny, risk, and tell flags — never content.
+
 ## Coverage
 
 | | |

@@ -17,7 +17,8 @@ import { join, dirname, basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
 import { buildEngine, decideText, decideMcpServer, extractReadPaths } from "./hook-core.mjs";
-import { recordExposure } from "./signals.mjs";
+import { recordExposure, recordAgentEvent, readAgentEvents } from "./signals.mjs";
+import { contentTells, assessSession } from "../data/agent-behavior.js";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -69,6 +70,23 @@ function report(findings, stage, tool, blocked) {
   }
 }
 
+// Autonomous-agent-behavior signature (CSA HF post-mortem §IV). Records one content-free event per
+// tool call and, on a transition into the signature, emits a content-free alert (→ server → SIEM/SOC
+// + timeline). Entirely side-effectful and wrapped: a failure here must never change the hook's
+// allow/deny decision (governance, fail-open).
+const RISK_RANK = { Low: 1, Medium: 2, High: 3, Critical: 4, Blocked: 5 };
+function logBehavior(tool, identity, scannedText, d) {
+  try {
+    const risk = (d.findings || []).reduce((m, f) => (RISK_RANK[f.riskLevel] > RISK_RANK[m] ? f.riskLevel : m), "Low");
+    const before = assessSession(readAgentEvents());
+    recordAgentEvent({ ts: Date.now(), sig: `${tool}|${djb2(identity || tool)}`, ok: d.decision !== "deny", risk, flags: contentTells(scannedText || "") });
+    const after = assessSession(readAgentEvents());
+    if (after.level === "autonomous-signature" && before.level !== "autonomous-signature") {
+      post({ threatId: 0, category: "Autonomous-agent behavior", riskLevel: "Critical", stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "sig:" + after.tells.map((t) => t.id).join("."), signature: { level: after.level, score: after.score, tells: after.tells.map((t) => t.id), events: after.events }, ...IDENTITY });
+    }
+  } catch { /* behavior signal is best-effort; never affects enforcement */ }
+}
+
 function readFileCapped(fp) {
   try {
     if (!fp) return "";
@@ -100,26 +118,32 @@ async function main() {
   const engine = buildEngine(policy);
 
   if (tool === "Read") {
-    const d = decideText(engine, policy, readFileCapped(ti.file_path), "file");
+    const text = readFileCapped(ti.file_path);
+    const d = decideText(engine, policy, text, "file");
     report(d.findings, "file", "hook:Read", d.decision === "deny");
+    logBehavior("Read", ti.file_path || "file", text, d);
     return emit(d.decision, `blocked Read of ${basename(ti.file_path || "file")} — ${d.reasons.join(", ")}`);
   }
   if (tool === "Bash") {
-    let dec = "allow", reasons = [], finds = [];
+    let dec = "allow", reasons = [], finds = [], btext = "";
     for (const p of extractReadPaths(ti.command)) {
-      const d = decideText(engine, policy, readFileCapped(p), "file");
+      const t = readFileCapped(p); btext += t + "\n";
+      const d = decideText(engine, policy, t, "file");
       finds.push(...d.findings);
       if (RANK[d.decision] > RANK[dec]) { dec = d.decision; reasons = d.reasons; }
     }
     report(finds, "file", "hook:Bash", dec === "deny");
+    logBehavior("Bash", ti.command || "bash", btext, { decision: dec, findings: finds });
     return emit(dec, `blocked file read via Bash — ${reasons.join(", ")}`);
   }
   if (tool.startsWith("mcp__")) {
     const server = tool.split("__")[1] || "";
     const sd = decideMcpServer(policy, server); // #3 — allow-list first, short-circuits
     if (sd.decision === "deny") { post({ threatId: 0, category: "MCP: unapproved server", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(server), ...IDENTITY }); return emit("deny", sd.reason); }
-    const d = decideText(engine, policy, JSON.stringify(ti), "prompt"); // #2 — scan args
+    const args = JSON.stringify(ti);
+    const d = decideText(engine, policy, args, "prompt"); // #2 — scan args
     report(d.findings, "egress", `hook:${tool}`, d.decision === "deny");
+    logBehavior(tool, tool, args, d);
     return emit(d.decision, `blocked ${tool} — ${d.reasons.join(", ")}`);
   }
   process.exit(0); // unknown tool → allow
