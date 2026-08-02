@@ -73,19 +73,48 @@ function mcpServers() {
   return out;
 }
 
+// ---- editor AI extensions (the harness, + version) & agent skills/plugins ----
+// The CSA HF post-mortem calls for telemetry to include "model and harness versions… VS Code
+// extensions, skills, MCP servers, plugins." Directory listings only — names + versions, never content.
+const AI_EXT = /copilot|continue|codeium|cody|tabnine|claude|cline|roo.?code|kilocode|supermaven|codegpt|aws.?toolkit|amazon.*q|windsurf|augment|sourcegraph|pieces|blackbox|codewhisperer/i;
+function editorExtensions() {
+  const out = [], seen = new Set();
+  const dirs = [".vscode/extensions", ".vscode-insiders/extensions", ".vscode-server/extensions", ".cursor/extensions", ".windsurf/extensions", ".vscodium/extensions"];
+  for (const rel of dirs) {
+    const editor = rel.split("/")[0].replace(/^\./, "");
+    for (const e of listDir(join(HOME, rel))) {
+      if (!e.isDirectory() || !AI_EXT.test(e.name)) continue;
+      const m = e.name.match(/^(.*?)-(\d+\.\d+\.\d+.*)$/); // publisher.name-1.2.3
+      const id = m ? m[1] : e.name, version = m ? m[2] : null;
+      const k = editor + ":" + id; if (seen.has(k)) continue; seen.add(k);
+      out.push({ editor, id, version });
+    }
+  }
+  return out;
+}
+function agentSkills() {
+  const out = [];
+  for (const [dir, kind] of [[".claude/plugins", "plugin"], [".claude/skills", "skill"], [".claude/commands", "command"]])
+    for (const e of listDir(join(HOME, dir))) if (e.name && !e.name.startsWith(".")) out.push({ kind, name: e.name.replace(/\.(md|js|mjs|json)$/, "") });
+  return out;
+}
+
 function buildAibom() {
   const prov = providers(), local = localModels(), mcp = mcpServers();
+  const ext = editorExtensions(), skills = agentSkills();
   const models = [...prov.filter((p) => p.model).map((p) => ({ name: p.model, provider: p.provider, local: false })),
     ...local.map((m) => ({ name: m.name, provider: m.runtime, local: true }))];
   const components = [
     ...models.map((m) => ({ type: "model", name: m.name, provider: m.provider, local: m.local })),
     ...[...new Set(prov.map((p) => p.agent))].map((a) => ({ type: "agent", name: a })),
-    ...mcp.map((s) => ({ type: "mcp-server", name: s.name, riskLevel: s.level, capabilities: s.caps, transport: s.transport }))
+    ...mcp.map((s) => ({ type: "mcp-server", name: s.name, riskLevel: s.level, capabilities: s.caps, transport: s.transport })),
+    ...ext.map((x) => ({ type: "editor-extension", name: x.id, editor: x.editor, version: x.version })),
+    ...skills.map((s) => ({ type: "skill", name: s.name, kind: s.kind }))
   ];
   return {
     bomFormat: "MoorAI-AIBOM", specVersion: "1.0", scope: "device", device: hostname(), generatedAt: new Date().toISOString(),
-    summary: { providers: new Set(prov.map((p) => p.provider)).size, models: models.length, localModels: local.length, agents: new Set(prov.map((p) => p.agent)).size, mcpServers: mcp.length, mcpHighRisk: mcp.filter((s) => s.level === "high").length },
-    providers: prov, localModels: local, mcpServers: mcp, components
+    summary: { providers: new Set(prov.map((p) => p.provider)).size, models: models.length, localModels: local.length, agents: new Set(prov.map((p) => p.agent)).size, mcpServers: mcp.length, mcpHighRisk: mcp.filter((s) => s.level === "high").length, editorAiExtensions: ext.length, skills: skills.length },
+    providers: prov, localModels: local, mcpServers: mcp, editorExtensions: ext, skills, components
   };
 }
 
@@ -96,13 +125,15 @@ function toMarkdown(d) {
   return `# MoorAI — AI Bill of Materials\n\n`
     + `**Device:** ${d.device}  ·  **Generated:** ${d.generatedAt}  ·  **Scope:** this device only\n\n`
     + `Content-free inventory — asset names and counts only. No tokens, prompts, or file contents.\n\n`
-    + `| Providers | Models | Local models | Agent CLIs | MCP servers | High-risk MCP |\n|---|---|---|---|---|---|\n`
-    + `| ${s.providers} | ${s.models} | ${s.localModels} | ${s.agents} | ${s.mcpServers} | ${s.mcpHighRisk} |\n\n`
+    + `| Providers | Models | Local models | Agent CLIs | MCP servers | High-risk MCP | AI extensions | Skills |\n|---|---|---|---|---|---|---|---|\n`
+    + `| ${s.providers} | ${s.models} | ${s.localModels} | ${s.agents} | ${s.mcpServers} | ${s.mcpHighRisk} | ${s.editorAiExtensions} | ${s.skills} |\n\n`
     + `## AI providers & models\n\n| Provider | Agent | Model | Source |\n|---|---|---|---|\n`
     + (d.providers.map((p) => `| ${p.provider} | ${p.agent} | ${p.model || "—"} | ${p.source} |`).join("\n") || "| — | — | — | — |")
     + (d.localModels.length ? `\n\n## Local models\n\n| Runtime | Model |\n|---|---|\n` + d.localModels.map((m) => `| ${m.runtime} | ${m.name} |`).join("\n") : "")
     + `\n\n## MCP servers\n\n| Server | Scope | Transport | Capabilities | Risk |\n|---|---|---|---|---|\n`
     + (d.mcpServers.map((m) => `| ${m.name} | ${m.scope} | ${m.transport} | ${cap(m.caps)} | ${m.level} |`).join("\n") || "| — | — | — | — | — |")
+    + (d.editorExtensions.length ? `\n\n## Editor AI extensions (harness + version)\n\n| Editor | Extension | Version |\n|---|---|---|\n` + d.editorExtensions.map((x) => `| ${x.editor} | ${x.id} | ${x.version || "—"} |`).join("\n") : "")
+    + (d.skills.length ? `\n\n## Agent skills & plugins\n\n| Kind | Name |\n|---|---|\n` + d.skills.map((x) => `| ${x.kind} | ${x.name} |`).join("\n") : "")
     + `\n\n---\nGenerated on-device by MoorAI. This is a content-free inventory to support GRC and EU AI Act record-keeping — not a certification.\n`;
 }
 function toCsv(d) {
@@ -129,6 +160,8 @@ never the contents of any credential file):
   ~/.cursor/mcp.json                               configured MCP servers for Cursor
   ~/.ollama/models/manifests/.../library/          local Ollama model names (directory listing)
   ~/.lmstudio/models, ~/.cache/lm-studio/models    local LM Studio model names (directory listing)
+  ~/.vscode/extensions, ~/.cursor/extensions, …    editor AI extensions + versions (the "harness"; dir listing)
+  ~/.claude/plugins, ~/.claude/skills, ~/.claude/commands   agent skills / plugins / commands (names only)
 
 For each MCP server it infers capability scope (network / filesystem / credential)
 from the launch command, its args, and environment-variable NAMES only — it never
