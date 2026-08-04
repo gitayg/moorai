@@ -336,4 +336,54 @@ export const DETECTORS = [
       /\bgit\s+push\b.{0,20}\b(prod|production|release)\b|docker\s+push\b.{0,45}(prod|production|:latest)\b/i
     ]
   }
+,
+  {
+    // #50 (LLM08) — invisible / obfuscated text: zero-width & bidirectional (Trojan-Source) chars
+    // that hide steering text from humans but not the model. High-signal RAG/embedding-poisoning tell.
+    detectorId: "idx-invisible-text",
+    threatId: 50,
+    stage: "prompt",
+    mode: "warn",
+    hint: "Contains zero-width or direction-override characters that hide instructions from humans (RAG / embedding poisoning).",
+    patterns: [
+      /[\u200B-\u200D\u2060\uFEFF]/,
+      /[\u202A-\u202E\u2066-\u2069]/
+    ]
+  },
+  {
+    // #51 (LLM07) — system-prompt extraction probes.
+    detectorId: "sysprompt-extract",
+    threatId: 51,
+    stage: "prompt",
+    mode: "warn",
+    hint: "Looks like an attempt to extract the system prompt / hidden instructions.",
+    patterns: [
+      /\b(repeat|print|show|reveal|output|display|give me|tell me)\b[^.\n]{0,40}\b(the\s+)?(system|initial|developer|above|previous|your)\s+(prompt|instructions?|message|rules?|directives?)\b/i,
+      /\b(what|which)\s+(are|were)\s+your\s+(instructions?|rules?|system\s+prompt|directives?|guidelines?)\b/i,
+      /\brepeat (the words|everything) above\b/i
+    ]
+  },
+  {
+    // #52 (LLM07) — system-prompt / instruction leakage in the model's OUTPUT.
+    detectorId: "sysprompt-echo",
+    threatId: 52,
+    stage: "output",
+    mode: "warn",
+    hint: "The reply appears to recite the system prompt / instruction block.",
+    patterns: [
+      /\bYou are (a|an|the)\b[^.\n]{0,60}\b(assistant|model|agent|AI|LLM)\b[\s\S]{0,80}\b(rules?|instructions?|guidelines?|you must|do not|never)\b/i,
+      /\b(my (system )?instructions are|the system prompt (is|says)|i was instructed to)\b/i
+    ]
+  },
+  {
+    // #53 (LLM10) — oversized single input (token-blowup / unbounded consumption). Linear regex.
+    detectorId: "oversized-input",
+    threatId: 53,
+    stage: "prompt",
+    mode: "warn",
+    hint: "Extremely large single input — possible token-blowup / unbounded consumption.",
+    patterns: [
+      /[\s\S]{60000,}/
+    ]
+  }
 ];
