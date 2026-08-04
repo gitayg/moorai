@@ -15,6 +15,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
+import { readAgentEvents } from "./signals.mjs";
 
 const HOME = homedir();
 const read = (p) => { try { return readFileSync(p, "utf8"); } catch { return null; } };
@@ -99,9 +100,33 @@ function agentSkills() {
   return out;
 }
 
+// ---- usage / cost signal (content-free) — call volume from the on-device agent-events log, mapped
+// to OWASP LLM10 (Unbounded Consumption). Counts are exact; spend is a coarse estimate for relative
+// comparison, not billing. Never reads a prompt — only event counts, tool, and risk.
+const MODEL_PRICE = [[/opus/i, 45], [/sonnet/i, 9], [/haiku/i, 2], [/gpt-5|gpt-4o|o[34]\b/i, 8], [/gpt-4/i, 30], [/gpt-3\.5/i, 1], [/gemini/i, 5], [/llama|mistral|qwen|deepseek|phi/i, 0]];
+const AVG_TOKENS_PER_CALL = 3000;
+const priceFor = (m) => { if (!m) return null; for (const [re, p] of MODEL_PRICE) if (re.test(m)) return p; return null; };
+function usage(prov) {
+  const ev = readAgentEvents(); if (!ev.length) return null;
+  const byTool = {}, byRisk = {};
+  for (const e of ev) { const t = (e.sig || "").split("|")[0] || "unknown"; byTool[t] = (byTool[t] || 0) + 1; const r = e.risk || "Low"; byRisk[r] = (byRisk[r] || 0) + 1; }
+  const ts = ev.map((e) => e.ts).filter((x) => typeof x === "number").sort((a, b) => a - b);
+  const primaryModel = (prov.find((p) => p.agent === "claude") || prov[0] || {}).model || null;
+  const price = priceFor(primaryModel);
+  const roughSpendUsd = price != null ? +((ev.length * AVG_TOKENS_PER_CALL / 1e6) * price).toFixed(2) : null;
+  return {
+    events: ev.length,
+    window: { from: ts[0] ? new Date(ts[0]).toISOString() : null, to: ts.length ? new Date(ts[ts.length - 1]).toISOString() : null },
+    byTool, byRisk, primaryModel, roughSpendUsd,
+    basis: `≈${AVG_TOKENS_PER_CALL} tokens/call × list price for ${primaryModel || "unknown"}`,
+    note: "Call counts are exact and content-free. roughSpendUsd is a coarse estimate for relative comparison — not billing."
+  };
+}
+
 function buildAibom() {
   const prov = providers(), local = localModels(), mcp = mcpServers();
   const ext = editorExtensions(), skills = agentSkills();
+  const use = usage(prov);
   const models = [...prov.filter((p) => p.model).map((p) => ({ name: p.model, provider: p.provider, local: false })),
     ...local.map((m) => ({ name: m.name, provider: m.runtime, local: true }))];
   const components = [
@@ -113,8 +138,8 @@ function buildAibom() {
   ];
   return {
     bomFormat: "MoorAI-AIBOM", specVersion: "1.0", scope: "device", device: hostname(), generatedAt: new Date().toISOString(),
-    summary: { providers: new Set(prov.map((p) => p.provider)).size, models: models.length, localModels: local.length, agents: new Set(prov.map((p) => p.agent)).size, mcpServers: mcp.length, mcpHighRisk: mcp.filter((s) => s.level === "high").length, editorAiExtensions: ext.length, skills: skills.length },
-    providers: prov, localModels: local, mcpServers: mcp, editorExtensions: ext, skills, components
+    summary: { providers: new Set(prov.map((p) => p.provider)).size, models: models.length, localModels: local.length, agents: new Set(prov.map((p) => p.agent)).size, mcpServers: mcp.length, mcpHighRisk: mcp.filter((s) => s.level === "high").length, editorAiExtensions: ext.length, skills: skills.length, calls: use ? use.events : 0, roughSpendUsd: use ? use.roughSpendUsd : null },
+    providers: prov, localModels: local, mcpServers: mcp, editorExtensions: ext, skills, usage: use, components
   };
 }
 
@@ -134,6 +159,12 @@ function toMarkdown(d) {
     + (d.mcpServers.map((m) => `| ${m.name} | ${m.scope} | ${m.transport} | ${cap(m.caps)} | ${m.level} |`).join("\n") || "| — | — | — | — | — |")
     + (d.editorExtensions.length ? `\n\n## Editor AI extensions (harness + version)\n\n| Editor | Extension | Version |\n|---|---|---|\n` + d.editorExtensions.map((x) => `| ${x.editor} | ${x.id} | ${x.version || "—"} |`).join("\n") : "")
     + (d.skills.length ? `\n\n## Agent skills & plugins\n\n| Kind | Name |\n|---|---|\n` + d.skills.map((x) => `| ${x.kind} | ${x.name} |`).join("\n") : "")
+    + (d.usage ? `\n\n## Usage & cost signal (OWASP LLM10 — content-free)\n\n`
+        + `**${d.usage.events}** guarded agent calls`
+        + (d.usage.window.from ? `  ·  ${d.usage.window.from.slice(0, 10)} → ${d.usage.window.to.slice(0, 10)}` : "")
+        + (d.usage.roughSpendUsd != null ? `  ·  rough spend ≈ **$${d.usage.roughSpendUsd}** (${d.usage.primaryModel})` : "")
+        + `\n\n| Tool | Calls |\n|---|---|\n` + Object.entries(d.usage.byTool).sort((a, b) => b[1] - a[1]).map(([t, n]) => `| ${t} | ${n} |`).join("\n")
+        + `\n\n${d.usage.note}` : "")
     + `\n\n---\nGenerated on-device by MoorAI. This is a content-free inventory to support GRC and EU AI Act record-keeping — not a certification.\n`;
 }
 function toCsv(d) {
@@ -162,6 +193,7 @@ never the contents of any credential file):
   ~/.lmstudio/models, ~/.cache/lm-studio/models    local LM Studio model names (directory listing)
   ~/.vscode/extensions, ~/.cursor/extensions, …    editor AI extensions + versions (the "harness"; dir listing)
   ~/.claude/plugins, ~/.claude/skills, ~/.claude/commands   agent skills / plugins / commands (names only)
+  ~/.curaiq/agent-events.jsonl                     content-free call counts for the usage/cost signal (OWASP LLM10)
 
 For each MCP server it infers capability scope (network / filesystem / credential)
 from the launch command, its args, and environment-variable NAMES only — it never
