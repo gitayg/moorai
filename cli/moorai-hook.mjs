@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { join, dirname, basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideMcpServer, extractReadPaths } from "./hook-core.mjs";
+import { buildEngine, decideText, decideMcpServer, decideMcpArgs, extractReadPaths } from "./hook-core.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents } from "./signals.mjs";
 import { contentTells, assessSession, assessTrifecta, trifectaLegs } from "../data/agent-behavior.js";
 import { classifyLocal } from "../data/model-escalation.mjs";
@@ -167,6 +167,8 @@ async function main() {
     const sd = decideMcpServer(policy, server); // #3 — allow-list first, short-circuits
     if (sd.decision === "deny") { post({ threatId: 0, category: "MCP: unapproved server", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(server), ...IDENTITY }); return emit("deny", sd.reason); }
     const args = JSON.stringify(ti);
+    const ad = decideMcpArgs(policy, tool, args); // #18 — per-tool argument allow/deny rules
+    if (ad.decision === "deny") { post({ threatId: 0, category: "MCP: denied tool argument", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(args), ...IDENTITY }); return emit("deny", ad.reason); }
     const d = decideText(engine, policy, args, "prompt"); // #2 — scan args
     report(d.findings, "egress", `hook:${tool}`, d.decision === "deny");
     logBehavior(tool, tool, args, d, "egress");

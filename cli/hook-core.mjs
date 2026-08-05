@@ -85,6 +85,22 @@ export function decideMcpServer(policy, serverName) {
   return { decision: "deny", reason: `MCP server '${serverName}' is not on your organization's allow-list.` };
 }
 
+// #18 — per-tool MCP argument rules. policy.mcpToolRules[tool] = { deny:[regex], allow:[regex] }.
+// A deny pattern matched in the serialized args → deny. If an allow-list is set for the tool, at least
+// one allow pattern must match or it's denied. No rule for the tool → allow (unchanged behavior).
+export function decideMcpArgs(policy, tool, argsText) {
+  const rules = policy?.mcpToolRules?.[tool];
+  if (!rules) return { decision: "allow" };
+  const text = String(argsText || "");
+  const mk = (p) => { try { return new RegExp(p, "i"); } catch { return null; } };
+  if (Array.isArray(rules.deny)) for (const p of rules.deny) { const re = mk(p); if (re && re.test(text)) return { decision: "deny", reason: `${tool} argument matches a denied pattern` }; }
+  if (Array.isArray(rules.allow) && rules.allow.length) {
+    const ok = rules.allow.some((p) => { const re = mk(p); return re && re.test(text); });
+    if (!ok) return { decision: "deny", reason: `${tool} argument is not on the allow-list` };
+  }
+  return { decision: "allow" };
+}
+
 // Conservative file-path extraction from a Bash command — only for unambiguous leading file-readers.
 // Anything with a pipe/redirect/subshell is left alone (fail-open); the strong guarantee is on Read.
 export function extractReadPaths(command) {
