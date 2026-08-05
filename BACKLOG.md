@@ -172,3 +172,29 @@ Flag exposed credential classes for rotation (ties to the **exposure ledger**), 
 unapproved MCP server, or freeze an agent fleet-wide. **Same guardrails as the AI-proficiency item are
 mandatory:** opt-in, per-policy, reversible, fully audited, and human-in-the-loop for anything
 destructive (rotation/disable). Powerful, but the blast radius is real — keep it gated.
+
+## Deferred from the Endor / Bold competitive build (2026-08-05)
+
+Shipped in this pass: detect→prevent detectors (reverse-shell/cred-file/mcp-destructive/pkg-install),
+content-free actor hash (#10), `npm run benchmark` (#16), one-line installer (#17), console **Event
+Flow** data-lineage screen, and the Bold set — on-device model escalation (**B1**, `data/model-escalation.mjs`,
+opportunistic Ollama, off by default), UBA + agent-vs-human (**B2/B4**, `/api/actors`), alert
+correlation metric (**B3**), evidence retention (**B5**, `MOORAI_RETENTION_DAYS`). Deferred:
+
+- **Endor #4 — Custom regex policy DSL.** Admin-authored allow/block/audit rules over commands/files/
+  prompts/tools. Plugs into `engine.applyPacks()` (already exists) + a server `policyRules:<tenant>` KV.
+- **Endor #11 — Default policy packs.** Ship opinionated starter packs (à la Endor's 29 defaults),
+  compiled via the same `detectorPacks` path.
+- **Endor #18 — Per-tool MCP argument allow/deny lists.** Extend Agency Enforcement: per-tool arg
+  schemas beyond the current allow-list + arg scan.
+- **Endor #5 — Capture toggle + content-free action audit log.** Full file-level plan already produced
+  (agent: `data/capture-tiers.js` + gate `moorai-hook`/`moorai-guard`/`signals`; server: `policyCapture`
+  KV + tier-gated ingest + governance log). Off-by-default `content-free → metadata-plus → full-capture`,
+  consent-visible. Pairs with **B5**.
+- **Endor #20 — Cryptographic MCP call signing.** Sign approved tool calls, block unsigned — hardens
+  Agency Enforcement past a name allow-list. Rust host (`src-tauri/.../lib.rs` `tool_allowed`).
+- **Bold B6 — Per-actor behavioral anomaly / insider-risk.** Extend the autonomous-agent-behavior
+  signature to per-actor baselines; feed the UBA score/anomaly in the Event Flow "Actor" tab.
+- **Fix — threat #39 OWASP tag.** The secrets engine (18 detectors) maps to threat 39, tagged
+  **LLM07** ("Prompt Leakage"); secrets are **LLM02** (Sensitive Information Disclosure). One-line data
+  fix (`threat 39.owasp: LLM07 → LLM02`), corpus-safe. Surfaced by `npm run benchmark`.

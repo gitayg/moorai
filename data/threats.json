@@ -1047,6 +1047,23 @@
       "owasp": "LLM03",
       "atlas": "AML.T0010",
       "stride": "Tampering"
+    },
+    {
+      "id": 58,
+      "category": "Information Reliability",
+      "threat": "Model-escalated risk (on-device second opinion)",
+      "example": "The regex engine was ambiguous, so an opportunistic local model (loopback only, zero egress) flagged the content as a likely secret, injection, destructive command, or exfiltration attempt.",
+      "response": "A local second-opinion model flagged this content. Treat as an advisory signal — review the category and confidence. The text was evaluated on the device only; nothing left the machine.",
+      "severity": 3,
+      "likelihood": 2,
+      "riskScore": 6,
+      "riskLevel": "Medium",
+      "sources": [
+        "Agent safety"
+      ],
+      "owasp": "LLM01",
+      "atlas": "AML.T0051",
+      "stride": "Tampering"
     }
   ]
 }

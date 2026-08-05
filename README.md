@@ -32,6 +32,8 @@ That's the exact trade MoorAI refuses.
 - **Context-aware severity** — the same pattern is scored higher by *where* it was caught: a secret read into an agent's context or shipped as an MCP argument outranks one typed into a still-editable prompt.
 - **On-device exposure ledger** — a content-free local log of which credential/secret *classes* reached which agent, so an incident-response rotation is targeted, not a blanket burn. Plus a human-override *intent* log — the signal that separates legitimate agentic use from an attack. View both with `moorai-ledger`; nothing leaves the machine.
 - **On-device, content-free** — everything is checked locally. The console receives a category, a risk level, and a one-way hash — **never** the prompt, the file, or the matched span.
+- **Opportunistic on-device model escalation** — when a regex scan is ambiguous and your policy enables it, a *local* model (Ollama on the loopback interface) gives a second opinion. The text goes only to `127.0.0.1`, never off the machine; a failure never changes the decision. Off by default.
+- **You control the evidence** — nothing trains anyone's model, and on-device signal logs are pruned on your schedule (`MOORAI_RETENTION_DAYS`, default 90; `0` = keep forever). Content-free by construction, not by promise.
 
 ## Why you can trust the "nothing leaves" claim
 

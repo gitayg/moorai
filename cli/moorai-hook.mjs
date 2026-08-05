@@ -19,6 +19,7 @@ import { loadConfig } from "./config.mjs";
 import { buildEngine, decideText, decideMcpServer, extractReadPaths } from "./hook-core.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents } from "./signals.mjs";
 import { contentTells, assessSession } from "../data/agent-behavior.js";
+import { classifyLocal } from "../data/model-escalation.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -89,6 +90,21 @@ function logBehavior(tool, identity, scannedText, d) {
   } catch { /* behavior signal is best-effort; never affects enforcement */ }
 }
 
+// Bold B1 / #21 — opportunistic local-model escalation. Only when the org enables it AND the regex
+// pass was ambiguous (nothing already High+); consults a loopback model and emits a content-free
+// second-opinion alert (#58). The text never leaves the device; a failure never changes enforcement.
+async function maybeEscalate(policy, text, stage, tool, d) {
+  try {
+    if (!policy || !policy.modelEscalation || !text || !text.trim()) return;
+    const strong = (d.findings || []).some((f) => f.riskLevel === "High" || f.riskLevel === "Critical" || f.riskLevel === "Blocked");
+    if (strong) return; // regex is already confident — skip the second opinion
+    const v = await classifyLocal(text);
+    if (v && v.flagged && v.confidence >= 0.6) {
+      post({ threatId: 58, category: `Model-flagged: ${v.category}`, riskLevel: v.confidence >= 0.85 ? "High" : "Medium", stage, tool: `escalate:${tool}`, ts: new Date().toISOString(), contentHash: djb2(text), ...IDENTITY });
+    }
+  } catch { /* escalation is advisory; fail-open */ }
+}
+
 function readFileCapped(fp) {
   try {
     if (!fp) return "";
@@ -124,6 +140,7 @@ async function main() {
     const d = decideText(engine, policy, text, "file");
     report(d.findings, "file", "hook:Read", d.decision === "deny");
     logBehavior("Read", ti.file_path || "file", text, d);
+    await maybeEscalate(policy, text, "file", "hook:Read", d);
     return emit(d.decision, `blocked Read of ${basename(ti.file_path || "file")} — ${d.reasons.join(", ")}`);
   }
   if (tool === "Bash") {
@@ -136,6 +153,7 @@ async function main() {
     }
     report(finds, "file", "hook:Bash", dec === "deny");
     logBehavior("Bash", ti.command || "bash", btext, { decision: dec, findings: finds });
+    await maybeEscalate(policy, btext, "file", "hook:Bash", { findings: finds });
     return emit(dec, `blocked file read via Bash — ${reasons.join(", ")}`);
   }
   if (tool.startsWith("mcp__")) {
