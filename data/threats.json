@@ -721,18 +721,18 @@
     {
       "id": 39,
       "category": "Information & Privacy",
-      "threat": "Prompt Leakage - exposure of internal instructions",
-      "example": "Sharing an organizational prompt, internal policy, work template, or system instructions with an external tool or supplier.",
-      "response": "Treat organizational prompts and work templates as intellectual property. Do not share them outside the organization without approval.",
-      "severity": 4,
-      "likelihood": 3,
-      "riskScore": 12,
-      "riskLevel": "High",
+      "threat": "Secret / credential exposure",
+      "example": "An API key, access token, private key, JWT, or DB connection string (GitHub, AWS, Stripe, Slack, GCP, OpenAI/Anthropic, and more) is about to be sent to the AI.",
+      "response": "Never send a live secret to an AI tool. Remove or redact it before the prompt leaves; if it was already exposed, rotate it. MoorAI blocks or masks the span on the device.",
+      "severity": 5,
+      "likelihood": 4,
+      "riskScore": 20,
+      "riskLevel": "Critical",
       "sources": [
         "OWASP",
         "NIST"
       ],
-      "owasp": "LLM07",
+      "owasp": "LLM02",
       "atlas": "AML.T0057",
       "stride": "Information Disclosure"
     },

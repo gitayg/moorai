@@ -116,6 +116,18 @@ function updateStatusbar(reachable) {
   srv.innerHTML = `<span class="dot"></span> ${ok ? "server connected" : "server offline"}`;
   $("sb-posture").textContent = policy ? (policy.posture || "warn + override") : "bundled policy";
   $("bb-policy").textContent = policy ? (policy.policyName || "Default") : "—";
+  // #5 — consent-visible capture indicator. Persistent and un-dismissable while the tier is elevated,
+  // so there is no silent surveillance on the device (content-free stays the default; nothing shows then).
+  { const t = policy && policy.captureTier, c = $("sb-capture");
+    if (c) {
+      if (t && t !== "content-free") {
+        c.hidden = false;
+        c.textContent = t === "full-capture" ? "● capture: FULL — prompt text is recorded" : "● capture: metadata+";
+        c.style.color = t === "full-capture" ? "#ff4f5e" : "#f5a623";
+        c.style.fontWeight = "600";
+      } else { c.hidden = true; }
+    }
+  }
 }
 
 // Re-fetch policy and reflect real reachability. Keeps the last good policy on a transient miss

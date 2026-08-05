@@ -120,6 +120,10 @@ async function main() {
   if (!prompt) { console.error("usage: raiseme-guard [--decide proceed|redact|abort] <prompt>"); process.exit(2); }
 
   const policy = await getPolicy();
+  // #5 — consent-visible banner: never let an elevated capture tier run silently on the device.
+  if (policy && policy.captureTier && policy.captureTier !== "content-free") {
+    process.stderr.write(`\x1b[33m⚠ MoorAI capture: ${policy.captureTier} — this policy records ${policy.captureTier === "full-capture" ? "prompt / argument text" : "metadata (file paths, tool names, command shape)"}.\x1b[0m\n`);
+  }
   const tp = policy?.threatPolicy || {};
   const cp = policy?.contentPolicy || {};
   const action = (f) => tp[f.threat.id] || "notify";
