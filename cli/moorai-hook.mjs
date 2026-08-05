@@ -17,7 +17,8 @@ import { join, dirname, basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
 import { buildEngine, decideText, decideMcpServer, decideMcpArgs, extractReadPaths } from "./hook-core.mjs";
-import { recordExposure, recordAgentEvent, readAgentEvents } from "./signals.mjs";
+import { recordExposure, recordAgentEvent, readAgentEvents, recordAction } from "./signals.mjs";
+import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
 import { contentTells, assessSession, assessTrifecta, trifectaLegs } from "../data/agent-behavior.js";
 import { classifyLocal } from "../data/model-escalation.mjs";
 
@@ -65,11 +66,15 @@ function djb2(s) { let h = 5381; for (let i = 0; i < String(s).length; i++) h = 
 // user@device) so the console can tie actions to an operator without storing raw identity as the key.
 const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: djb2(`${os.userInfo().username}@${os.hostname()}`) };
 function post(alert) { return fetch(`${CONFIG.serverUrl}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(alert), signal: AbortSignal.timeout(1500) }).catch(() => {}); }
-function report(findings, stage, tool, blocked) {
+function report(findings, stage, tool, blocked, tier, extras) {
   for (const f of findings) {
-    const alert = { threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool, ts: new Date().toISOString(), contentHash: djb2(f.match || ""), ...IDENTITY };
+    const base = { threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool, ts: new Date().toISOString(), contentHash: djb2(f.match || ""), ...IDENTITY };
+    // #5 — attach only the fields the policy's capture tier permits (content-free by default). The
+    // server independently re-strips above the device's stored tier, so this is one of two backstops.
+    const alert = applyCaptureTier(base, { ...extras, matchText: f.match }, tier || "content-free");
     post(alert);            // → server → SIEM (address configured server-side, #1)
-    recordExposure(alert);  // → local content-free exposure ledger (#5); ignores non-secret categories
+    recordExposure(alert);  // → local content-free exposure ledger; ignores non-secret categories
+    recordAction(alert);    // → local searchable action-audit log (#5), already tier-gated
   }
 }
 
@@ -144,7 +149,7 @@ async function main() {
   if (tool === "Read") {
     const text = readFileCapped(ti.file_path);
     const d = decideText(engine, policy, text, "file");
-    report(d.findings, "file", "hook:Read", d.decision === "deny");
+    report(d.findings, "file", "hook:Read", d.decision === "deny", policy.captureTier, { filePath: ti.file_path, toolName: "Read" });
     logBehavior("Read", ti.file_path || "file", text, d, "file");
     await maybeEscalate(policy, text, "file", "hook:Read", d);
     return emit(d.decision, `blocked Read of ${basename(ti.file_path || "file")} — ${d.reasons.join(", ")}`);
@@ -157,7 +162,7 @@ async function main() {
       finds.push(...d.findings);
       if (RANK[d.decision] > RANK[dec]) { dec = d.decision; reasons = d.reasons; }
     }
-    report(finds, "file", "hook:Bash", dec === "deny");
+    report(finds, "file", "hook:Bash", dec === "deny", policy.captureTier, { toolName: "Bash", cmdShape: commandShape(ti.command) });
     logBehavior("Bash", ti.command || "bash", btext, { decision: dec, findings: finds }, "file");
     await maybeEscalate(policy, btext, "file", "hook:Bash", { findings: finds });
     return emit(dec, `blocked file read via Bash — ${reasons.join(", ")}`);
@@ -170,7 +175,7 @@ async function main() {
     const ad = decideMcpArgs(policy, tool, args); // #18 — per-tool argument allow/deny rules
     if (ad.decision === "deny") { post({ threatId: 0, category: "MCP: denied tool argument", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(args), ...IDENTITY }); return emit("deny", ad.reason); }
     const d = decideText(engine, policy, args, "prompt"); // #2 — scan args
-    report(d.findings, "egress", `hook:${tool}`, d.decision === "deny");
+    report(d.findings, "egress", `hook:${tool}`, d.decision === "deny", policy.captureTier, { toolName: tool, argText: args });
     logBehavior(tool, tool, args, d, "egress");
     return emit(d.decision, `blocked ${tool} — ${d.reasons.join(", ")}`);
   }

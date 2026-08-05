@@ -21,6 +21,8 @@ const LEDGER = join(DIR, "exposure-ledger.jsonl");
 const INTENT = join(DIR, "intent-log.jsonl");
 const AGENT_EVENTS = join(DIR, "agent-events.jsonl");
 const AGENT_EVENTS_CAP = 400; // rolling window; keep the file bounded
+const ACTION_AUDIT = join(DIR, "action-audit.jsonl"); // #5 — searchable per-action timeline
+const ACTION_CAP = 1000;
 const RETENTION_DAYS = Number(process.env.MOORAI_RETENTION_DAYS) || 90; // Bold B5 — you control how long on-device evidence lives (0 = keep forever)
 
 function append(file, obj) {
@@ -66,6 +68,15 @@ export function recordAgentEvent(entry) {
   } catch { /* trimming is best-effort */ }
 }
 export function readAgentEvents() { return readJsonl(AGENT_EVENTS); }
+
+// #5 — local, searchable action-audit log. Entries are already tier-gated by the caller
+// (applyCaptureTier), so a content-free device's log holds only content-free fields.
+export function recordAction(entry) {
+  append(ACTION_AUDIT, entry);
+  try { const rows = readJsonl(ACTION_AUDIT); if (rows.length > ACTION_CAP) writeFileSync(ACTION_AUDIT, rows.slice(-ACTION_CAP).map((r) => JSON.stringify(r)).join("\n") + "\n"); } catch { /* best-effort */ }
+  pruneByAge(ACTION_AUDIT);
+}
+export function readActions() { return readJsonl(ACTION_AUDIT); }
 
 export function readLedger() { return readJsonl(LEDGER); }
 export function readIntent() { return readJsonl(INTENT); }
