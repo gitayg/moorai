@@ -975,6 +975,78 @@
       "owasp": "LLM10",
       "atlas": "AML.T0034",
       "stride": "Denial of Service"
+    },
+    {
+      "id": 54,
+      "category": "Output & Code",
+      "threat": "Reverse shell / remote code execution",
+      "example": "The agent proposes or runs a reverse shell or remote-exec payload — bash -i over /dev/tcp, nc -e, socat exec, a Python/Perl socket shell, or a PowerShell TCPClient — handing an outside host a live shell.",
+      "response": "This is a reverse-shell / remote-code-execution pattern. Do not run it. Warn the operator and require explicit human review — a matching command hands control of the machine to a remote host.",
+      "severity": 5,
+      "likelihood": 3,
+      "riskScore": 15,
+      "riskLevel": "High",
+      "sources": [
+        "Agent safety",
+        "OWASP"
+      ],
+      "owasp": "LLM05",
+      "atlas": "AML.T0011",
+      "stride": "Elevation of Privilege"
+    },
+    {
+      "id": 55,
+      "category": "Identity & Access",
+      "threat": "Credential / secret-file access",
+      "example": "The agent reads a credential or secret file — .env, ~/.aws/credentials, an SSH private key, .npmrc, .git-credentials, .netrc, .pgpass, kube/gcloud config, or /etc/shadow — or dumps the keychain.",
+      "response": "This reads a credential or secret file. Warn before the agent opens .env, key material, or cloud credentials — these should never be sent to the model or copied elsewhere.",
+      "severity": 5,
+      "likelihood": 3,
+      "riskScore": 15,
+      "riskLevel": "High",
+      "sources": [
+        "Agent safety",
+        "OWASP"
+      ],
+      "owasp": "LLM02",
+      "atlas": "AML.T0057",
+      "stride": "Information Disclosure"
+    },
+    {
+      "id": 56,
+      "category": "Agents & Permissions",
+      "threat": "Destructive tool / MCP call",
+      "example": "A tool or MCP call performs a destructive, hard-to-reverse operation — dropDatabase / deleteMany, mass row delete, cloud resource teardown (aws s3 rb, terminate-instances), kubectl delete, or repo deletion — via an agent tool call rather than a shell.",
+      "response": "This is a destructive tool / MCP call (mass delete, resource teardown, drop). Warn and require human approval before the agent invokes it — the action is hard or impossible to reverse.",
+      "severity": 5,
+      "likelihood": 2,
+      "riskScore": 10,
+      "riskLevel": "Medium",
+      "sources": [
+        "Agent safety",
+        "OWASP_Agentic"
+      ],
+      "owasp": "LLM06",
+      "atlas": "AML.T0011",
+      "stride": "Tampering"
+    },
+    {
+      "id": 57,
+      "category": "Add-ons & Tools",
+      "threat": "Unsanctioned or malicious package install",
+      "example": "The agent installs software from an untrusted source — piping a remote script to a shell (curl … | bash), pip/npm/cargo/go install from a URL, git, or an alternate index, or an auto-yes npx of an unvetted package.",
+      "response": "This installs code from an untrusted source (remote install script, alternate package index, or unvetted package). Warn before it runs — a malicious or typosquatted package is a supply-chain compromise vector.",
+      "severity": 4,
+      "likelihood": 3,
+      "riskScore": 12,
+      "riskLevel": "High",
+      "sources": [
+        "Agent safety",
+        "OWASP"
+      ],
+      "owasp": "LLM03",
+      "atlas": "AML.T0010",
+      "stride": "Tampering"
     }
   ]
 }

@@ -1,0 +1,60 @@
+{
+  "name": "MoorAI Agent Security Benchmark",
+  "generatedAt": "2026-08-05T16:32:41.971Z",
+  "engine": {
+    "detectors": 53,
+    "threats": 57,
+    "corpusCases": 67
+  },
+  "corpus": {
+    "passed": 67,
+    "total": 67,
+    "passRate": 1
+  },
+  "owaspLlmTop10": {
+    "covered": 9,
+    "total": 10,
+    "byItem": {
+      "LLM01": {
+        "threats": 3,
+        "detectors": 5
+      },
+      "LLM02": {
+        "threats": 12,
+        "detectors": 10
+      },
+      "LLM03": {
+        "threats": 5,
+        "detectors": 1
+      },
+      "LLM04": {
+        "threats": 1,
+        "detectors": 0
+      },
+      "LLM05": {
+        "threats": 5,
+        "detectors": 6
+      },
+      "LLM06": {
+        "threats": 11,
+        "detectors": 5
+      },
+      "LLM07": {
+        "threats": 3,
+        "detectors": 20
+      },
+      "LLM08": {
+        "threats": 2,
+        "detectors": 1
+      },
+      "LLM09": {
+        "threats": 13,
+        "detectors": 4
+      },
+      "LLM10": {
+        "threats": 2,
+        "detectors": 1
+      }
+    }
+  }
+}

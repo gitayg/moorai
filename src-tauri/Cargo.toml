@@ -1,6 +1,6 @@
 [package]
 name = "curaiq"
-version = "0.33.0"
+version = "0.34.0"
 description = "MoorAI Managed AI Host"
 edition = "2021"
 

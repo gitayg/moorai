@@ -385,5 +385,80 @@ export const DETECTORS = [
     patterns: [
       /[\s\S]{60000,}/
     ]
+  },
+  {
+    // #54 (LLM05) — reverse shell / remote code execution the agent proposes or runs. Prompt + output:
+    // a user may ask for it, or the model may emit it. Distinct from destructive-command (#43): this
+    // hands a remote host a live shell rather than destroying local state.
+    detectorId: "exec-reverse-shell",
+    threatId: 54,
+    stages: ["prompt", "output"],
+    mode: "warn",
+    hint: "Reverse-shell / remote-exec pattern — would hand a remote host a live shell.",
+    patterns: [
+      /\/dev\/(tcp|udp)\/[^\s/]+\/\d+/i,
+      /\bbash\s+-i\b[\s\S]{0,40}(>&|>|\d>)/i,
+      /\bn(c|cat)\b[^\n]{0,40}\s-[a-z]*e[a-z]*\b[^\n]{0,20}\b(sh|bash|cmd(\.exe)?|powershell)\b/i,
+      /\bsocat\b[^\n]{0,60}\bexec:/i,
+      /\bpython[23]?\b[^\n]{0,80}\b(socket|pty\.spawn)\b[\s\S]{0,80}\b(sh|bash)\b/i,
+      /\bperl\b[^\n]{0,40}-e\b[^\n]{0,80}\b(socket|Socket)\b/i,
+      /New-Object\s+System\.Net\.Sockets\.TCPClient/i,
+      /\bmkfifo\b[^\n]{0,40}\|[^\n]{0,40}\b(sh|bash)\b/i
+    ]
+  },
+  {
+    // #55 (LLM02) — the agent reads a credential / secret file. Prompt + output (agent proposes the read).
+    // Anchored on read verbs + credential paths, plus a few bare high-signal paths.
+    detectorId: "cred-file-access",
+    threatId: 55,
+    stages: ["prompt", "output"],
+    mode: "warn",
+    hint: "Reads a credential / secret file (.env, cloud creds, SSH key, /etc/shadow).",
+    patterns: [
+      /\b(cat|less|more|head|tail|type|Get-Content|xxd|base64|strings|nano|vi|vim|open)\b[^\n]{0,50}(\.env\b|\.aws[\/\\]credentials|\.ssh[\/\\]id_[a-z0-9]+|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.pgpass\b|\.docker[\/\\]config\.json|\.kube[\/\\]config)/i,
+      /[~\/][^\s"']*\.aws[\/\\]credentials\b/i,
+      /\.ssh[\/\\]id_(rsa|ed25519|ecdsa|dsa)\b/i,
+      /(^|[\s"'=])\/etc\/shadow\b/,
+      /\.git-credentials\b/i,
+      /\bsecurity\s+find-generic-password\b/i,
+      /\bgcloud\s+auth\s+(print-access-token|application-default\s+print-access-token)\b/i,
+      /\b(printenv|env)\b[^\n]{0,20}\|\s*grep\s+-i[^\n]{0,20}\b(secret|token|key|password|aws)\b/i
+    ]
+  },
+  {
+    // #56 (LLM06) — destructive TOOL / MCP call (ORM/driver/cloud/API), as opposed to a destructive
+    // SHELL command (#43). Excessive-agency: the agent invokes an irreversible operation via a tool.
+    detectorId: "mcp-destructive-call",
+    threatId: 56,
+    stages: ["prompt", "output"],
+    mode: "warn",
+    hint: "Destructive tool / MCP call (mass delete, resource teardown, drop).",
+    patterns: [
+      /\b(dropDatabase|dropCollection|deleteMany|deleteAll|dropTable|truncateTable)\s*\(/i,
+      /\bdb\.\w+\.(drop|remove|deleteMany|deleteOne)\s*\(/i,
+      /\baws\s+(s3\s+rb\b|s3\s+rm\b[^\n]{0,40}--recursive|ec2\s+terminate-instances\b|rds\s+delete-db-\w+\b|dynamodb\s+delete-table\b)/i,
+      /\b(kubectl|helm)\s+delete\b[^\n]{0,40}(--all\b|-n\s+\w+|namespace\b)/i,
+      /\bgh\s+repo\s+delete\b/i,
+      /\bgit\s+push\b[^\n]{0,40}--delete\b/i,
+      /\bDELETE\s+FROM\s+\w+\s+WHERE\s+1\s*=\s*1\b/i
+    ]
+  },
+  {
+    // #57 (LLM03) — install of code from an untrusted source (supply-chain). Prompt + output.
+    // Overlaps out-code-exec (#32) on curl|bash but maps to a distinct supply-chain threat.
+    detectorId: "pkg-install-untrusted",
+    threatId: 57,
+    stages: ["prompt", "output"],
+    mode: "warn",
+    hint: "Installs code from an untrusted source (remote script, alt index, git/URL package).",
+    patterns: [
+      /\b(curl|wget)\b[^\n]{0,120}\|\s*(sudo\s+)?(ba)?sh\b/i,
+      /\bpip3?\s+install\b[^\n]{0,80}(git\+|https?:\/\/|--index-url|--extra-index-url|--trusted-host)/i,
+      /\b(npm|pnpm|yarn)\s+(install|add|i)\b[^\n]{0,80}(git\+|github:|https?:\/\/|file:)/i,
+      /\b(cargo|go)\s+install\b[^\n]{0,80}(git|https?:\/\/)/i,
+      /\bgem\s+install\b[^\n]{0,80}--source\b[^\n]{0,40}https?:\/\//i,
+      /\bnpx\s+(-y|--yes)\b/i,
+      /\bpowershell\b[^\n]{0,80}\b(iwr|Invoke-WebRequest|irm)\b[^\n]{0,60}\|\s*(iex|Invoke-Expression)\b/i
+    ]
   }
 ];

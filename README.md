@@ -46,6 +46,14 @@ Because you can read the code. The agent is **AGPL-3.0 and open source** — the
 
 Community edition: runs standalone, local policy control, no account required.
 
+### One-line install (CLI guard + Claude Code hooks)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gitayg/moorai/main/scripts/install.sh | sh
+```
+
+Clones to `~/.moorai`, installs dependencies, and registers the on-device PreToolUse hooks. Needs `git` and Node 18+; content-free, no account. Set `MOORAI_NOHOOK=1` to skip hook registration, or `MOORAI_HOME` to change the location.
+
 ### Try the CLI guard in 30 seconds
 
 ```bash

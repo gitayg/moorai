@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "0.33.0",
+  "version": "0.34.0",
   "description": "MoorAI agent — on-device guardrails for AI coding agents (community edition, AGPL-3.0)",
   "type": "module",
   "bin": {
@@ -20,6 +20,7 @@
     "ledger": "node cli/moorai-ledger.mjs",
     "tauri": "tauri",
     "redteam": "node scripts/redteam.mjs",
+    "benchmark": "node scripts/benchmark.mjs",
     "redteam-policy": "node cli/moorai-redteam.mjs",
     "agentwatch": "node cli/moorai-agentwatch.mjs",
     "hooktest": "node scripts/hooktest.mjs",
