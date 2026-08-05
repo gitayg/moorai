@@ -105,3 +105,35 @@ export function assessSession(events, opts = {}) {
 }
 
 export const TELL_DEFS = TELLS;
+
+// ---- Certiv-style "lethal trifecta" (Simon Willison's term). An exfiltration setup needs three legs
+// in the SAME agent session: (A) access to private data, (B) exposure to untrusted content, and (C)
+// the ability to communicate externally. Any one is fine; all three together is the exploit. Detected
+// purely from content-free per-event legs (booleans on tool/stage/finding class) — never any content.
+export function assessTrifecta(events) {
+  const evs = Array.isArray(events) ? events : [];
+  const legs = { read: false, ingest: false, callout: false };
+  for (const e of evs) {
+    const l = e.legs || {};
+    if (l.read) legs.read = true;
+    if (l.ingest) legs.ingest = true;
+    if (l.callout) legs.callout = true;
+  }
+  const present = legs.read && legs.ingest && legs.callout;
+  const count = (legs.read ? 1 : 0) + (legs.ingest ? 1 : 0) + (legs.callout ? 1 : 0);
+  return { present, count, legs };
+}
+
+// Derive the three content-free trifecta legs for a single tool call from what the hook already knows:
+// the tool name, the stage, and the finding classes (threat ids) — no prompt/file content required.
+const SENSITIVE_THREATS = new Set([1, 9, 15, 39, 44, 45, 55]); // secrets, PII, PHI, source/IP, cards
+const UNTRUSTED_THREATS = new Set([3, 40, 50]);                 // injection, indirect/RAG, invisible text
+const CALLOUT_THREATS = new Set([2, 47, 54, 56, 57]);           // exfil, external comms, reverse shell, MCP-destructive, install
+export function trifectaLegs(tool, stage, findings, flags) {
+  const ids = new Set((findings || []).map((f) => f.threatId));
+  const has = (set) => [...ids].some((id) => set.has(id));
+  const read = tool === "Read" || tool === "Bash" || has(SENSITIVE_THREATS);
+  const ingest = has(UNTRUSTED_THREATS) || !!(flags && (flags.obfuscation || flags.incoherent));
+  const callout = String(tool || "").startsWith("mcp__") || stage === "egress" || has(CALLOUT_THREATS);
+  return { read, ingest, callout };
+}

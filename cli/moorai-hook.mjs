@@ -18,7 +18,7 @@ import os from "node:os";
 import { loadConfig } from "./config.mjs";
 import { buildEngine, decideText, decideMcpServer, extractReadPaths } from "./hook-core.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents } from "./signals.mjs";
-import { contentTells, assessSession } from "../data/agent-behavior.js";
+import { contentTells, assessSession, assessTrifecta, trifectaLegs } from "../data/agent-behavior.js";
 import { classifyLocal } from "../data/model-escalation.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
@@ -78,14 +78,20 @@ function report(findings, stage, tool, blocked) {
 // + timeline). Entirely side-effectful and wrapped: a failure here must never change the hook's
 // allow/deny decision (governance, fail-open).
 const RISK_RANK = { Low: 1, Medium: 2, High: 3, Critical: 4, Blocked: 5 };
-function logBehavior(tool, identity, scannedText, d) {
+function logBehavior(tool, identity, scannedText, d, stage) {
   try {
     const risk = (d.findings || []).reduce((m, f) => (RISK_RANK[f.riskLevel] > RISK_RANK[m] ? f.riskLevel : m), "Low");
-    const before = assessSession(readAgentEvents());
-    recordAgentEvent({ ts: Date.now(), sig: `${tool}|${djb2(identity || tool)}`, ok: d.decision !== "deny", risk, flags: contentTells(scannedText || "") });
-    const after = assessSession(readAgentEvents());
-    if (after.level === "autonomous-signature" && before.level !== "autonomous-signature") {
-      post({ threatId: 0, category: "Autonomous-agent behavior", riskLevel: "Critical", stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "sig:" + after.tells.map((t) => t.id).join("."), signature: { level: after.level, score: after.score, tells: after.tells.map((t) => t.id), events: after.events }, ...IDENTITY });
+    const flags = contentTells(scannedText || "");
+    const legs = trifectaLegs(tool, stage, d.findings || [], flags); // #1 — content-free trifecta legs
+    const beforeS = assessSession(readAgentEvents()), beforeT = assessTrifecta(readAgentEvents());
+    recordAgentEvent({ ts: Date.now(), sig: `${tool}|${djb2(identity || tool)}`, ok: d.decision !== "deny", risk, flags, legs });
+    const events = readAgentEvents(), afterS = assessSession(events), afterT = assessTrifecta(events);
+    if (afterS.level === "autonomous-signature" && beforeS.level !== "autonomous-signature") {
+      post({ threatId: 0, category: "Autonomous-agent behavior", riskLevel: "Critical", stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "sig:" + afterS.tells.map((t) => t.id).join("."), signature: { level: afterS.level, score: afterS.score, tells: afterS.tells.map((t) => t.id), events: afterS.events }, ...IDENTITY });
+    }
+    // #1 — the lethal trifecta just closed in this session (all three legs now present).
+    if (afterT.present && !beforeT.present) {
+      post({ threatId: 59, category: "Lethal trifecta exposure", riskLevel: "High", stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "trifecta:read.ingest.callout", signature: { legs: afterT.legs }, ...IDENTITY });
     }
   } catch { /* behavior signal is best-effort; never affects enforcement */ }
 }
@@ -139,7 +145,7 @@ async function main() {
     const text = readFileCapped(ti.file_path);
     const d = decideText(engine, policy, text, "file");
     report(d.findings, "file", "hook:Read", d.decision === "deny");
-    logBehavior("Read", ti.file_path || "file", text, d);
+    logBehavior("Read", ti.file_path || "file", text, d, "file");
     await maybeEscalate(policy, text, "file", "hook:Read", d);
     return emit(d.decision, `blocked Read of ${basename(ti.file_path || "file")} — ${d.reasons.join(", ")}`);
   }
@@ -152,7 +158,7 @@ async function main() {
       if (RANK[d.decision] > RANK[dec]) { dec = d.decision; reasons = d.reasons; }
     }
     report(finds, "file", "hook:Bash", dec === "deny");
-    logBehavior("Bash", ti.command || "bash", btext, { decision: dec, findings: finds });
+    logBehavior("Bash", ti.command || "bash", btext, { decision: dec, findings: finds }, "file");
     await maybeEscalate(policy, btext, "file", "hook:Bash", { findings: finds });
     return emit(dec, `blocked file read via Bash — ${reasons.join(", ")}`);
   }
@@ -163,7 +169,7 @@ async function main() {
     const args = JSON.stringify(ti);
     const d = decideText(engine, policy, args, "prompt"); // #2 — scan args
     report(d.findings, "egress", `hook:${tool}`, d.decision === "deny");
-    logBehavior(tool, tool, args, d);
+    logBehavior(tool, tool, args, d, "egress");
     return emit(d.decision, `blocked ${tool} — ${d.reasons.join(", ")}`);
   }
   process.exit(0); // unknown tool → allow

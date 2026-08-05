@@ -1064,6 +1064,24 @@
       "owasp": "LLM01",
       "atlas": "AML.T0051",
       "stride": "Tampering"
+    },
+    {
+      "id": 59,
+      "category": "Agents & Permissions",
+      "threat": "Lethal trifecta exposure",
+      "example": "Within one agent session all three exfiltration legs appeared: access to private data, exposure to untrusted content, and the ability to communicate externally. Any one is safe; together they are the classic prompt-injection data-exfiltration setup.",
+      "response": "This session combines private-data access + untrusted input + an external egress path — the lethal trifecta. Review the agent's tool profile: remove one leg (least-privilege MCP allow-list, or block the external call) to break the exfiltration chain.",
+      "severity": 5,
+      "likelihood": 3,
+      "riskScore": 15,
+      "riskLevel": "High",
+      "sources": [
+        "Agent safety",
+        "OWASP_Agentic"
+      ],
+      "owasp": "LLM06",
+      "atlas": "AML.T0057",
+      "stride": "Information Disclosure"
     }
   ]
 }
