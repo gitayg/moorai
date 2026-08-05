@@ -1082,6 +1082,24 @@
       "owasp": "LLM06",
       "atlas": "AML.T0057",
       "stride": "Information Disclosure"
+    },
+    {
+      "id": 60,
+      "category": "Add-ons & Tools",
+      "threat": "AI rules/config file poisoning",
+      "example": "A coding-agent rules or config file the agent auto-loads (CLAUDE.md, .cursorrules, copilot-instructions.md, .mcp.json, skills/hooks) contains injected or hidden instructions, or has drifted from its approved baseline.",
+      "response": "Treat agent rules/config files as executable policy. Review injected/hidden directives and confirm the file matches an approved baseline before trusting it — a poisoned rules file silently steers every future prompt.",
+      "severity": 5,
+      "likelihood": 3,
+      "riskScore": 15,
+      "riskLevel": "High",
+      "sources": [
+        "Agent safety",
+        "OWASP"
+      ],
+      "owasp": "LLM08",
+      "atlas": "AML.T0051",
+      "stride": "Tampering"
     }
   ]
 }

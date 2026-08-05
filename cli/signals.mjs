@@ -23,6 +23,7 @@ const AGENT_EVENTS = join(DIR, "agent-events.jsonl");
 const AGENT_EVENTS_CAP = 400; // rolling window; keep the file bounded
 const ACTION_AUDIT = join(DIR, "action-audit.jsonl"); // #5 — searchable per-action timeline
 const ACTION_CAP = 1000;
+const RULES_BASELINE = join(DIR, "rules-baseline.json"); // rules-file drift: last fingerprint per kind
 const RETENTION_DAYS = Number(process.env.MOORAI_RETENTION_DAYS) || 90; // Bold B5 — you control how long on-device evidence lives (0 = keep forever)
 
 function append(file, obj) {
@@ -77,6 +78,10 @@ export function recordAction(entry) {
   pruneByAge(ACTION_AUDIT);
 }
 export function readActions() { return readJsonl(ACTION_AUDIT); }
+
+// Rules-file drift baseline (content-free) — last-seen one-way fingerprint per rules-file kind.
+export function rulesBaseline() { try { return JSON.parse(readFileSync(RULES_BASELINE, "utf8")); } catch { return {}; } }
+export function setRulesBaseline(kind, fp) { try { const b = rulesBaseline(); b[kind] = fp; mkdirSync(DIR, { recursive: true }); writeFileSync(RULES_BASELINE, JSON.stringify(b)); } catch { /* best-effort */ } }
 
 export function readLedger() { return readJsonl(LEDGER); }
 export function readIntent() { return readJsonl(INTENT); }

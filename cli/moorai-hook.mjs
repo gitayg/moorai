@@ -17,8 +17,9 @@ import { join, dirname, basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
 import { buildEngine, decideText, decideMcpServer, decideMcpArgs, extractReadPaths } from "./hook-core.mjs";
-import { recordExposure, recordAgentEvent, readAgentEvents, recordAction } from "./signals.mjs";
+import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline } from "./signals.mjs";
 import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
+import { isRulesFile, rulesFileKind } from "../data/rules-files.js";
 import { contentTells, assessSession, assessTrifecta, trifectaLegs } from "../data/agent-behavior.js";
 import { classifyLocal } from "../data/model-escalation.mjs";
 
@@ -116,6 +117,25 @@ async function maybeEscalate(policy, text, stage, tool, d) {
   } catch { /* escalation is advisory; fail-open */ }
 }
 
+// Rules-file hygiene (Backslash-inspired, content-free). A coding-agent rules/config file the agent
+// auto-loads is high-value to poison — one injected directive steers every future prompt. Flags two
+// things, content-free: (a) injected/hidden instructions found in the file (reuses the injection
+// detectors), and (b) drift from the last-seen fingerprint. Only the file KIND and a one-way hash leave.
+function reportRulesFile(path, text, d) {
+  try {
+    const kind = rulesFileKind(path);
+    if (!kind || !text) return;
+    const fp = djb2(text);
+    const injected = (d.findings || []).some((f) => [3, 40, 50, 51].includes(f.threatId));
+    const base = rulesBaseline();
+    const drift = base[kind] != null && base[kind] !== fp;
+    setRulesBaseline(kind, fp);
+    if (injected || drift) {
+      post({ threatId: 60, category: injected ? "Rules-file poisoning" : "Rules-file drift", riskLevel: injected ? "High" : "Medium", stage: "file", tool: `rules:${kind}`, ts: new Date().toISOString(), contentHash: fp, ...IDENTITY });
+    }
+  } catch { /* best-effort; never affects enforcement */ }
+}
+
 function readFileCapped(fp) {
   try {
     if (!fp) return "";
@@ -152,6 +172,7 @@ async function main() {
     report(d.findings, "file", "hook:Read", d.decision === "deny", policy.captureTier, { filePath: ti.file_path, toolName: "Read" });
     logBehavior("Read", ti.file_path || "file", text, d, "file");
     await maybeEscalate(policy, text, "file", "hook:Read", d);
+    if (isRulesFile(ti.file_path)) reportRulesFile(ti.file_path, text, d);
     return emit(d.decision, `blocked Read of ${basename(ti.file_path || "file")} — ${d.reasons.join(", ")}`);
   }
   if (tool === "Bash") {
@@ -161,6 +182,7 @@ async function main() {
       const d = decideText(engine, policy, t, "file");
       finds.push(...d.findings);
       if (RANK[d.decision] > RANK[dec]) { dec = d.decision; reasons = d.reasons; }
+      if (isRulesFile(p)) reportRulesFile(p, t, d);
     }
     report(finds, "file", "hook:Bash", dec === "deny", policy.captureTier, { toolName: "Bash", cmdShape: commandShape(ti.command) });
     logBehavior("Bash", ti.command || "bash", btext, { decision: dec, findings: finds }, "file");
