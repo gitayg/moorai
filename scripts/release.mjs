@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SLUG = "raiseme";
 const MCP = "https://crane.glick.run/api/mcp";
-const BASE = "https://curaiq.glick.run";
+const BASE = "https://moorai.glick.run";
 
 const KEY = process.env.APPCRANE_API_KEY
   || (existsSync(join(ROOT, ".appcrane-key.local")) ? readFileSync(join(ROOT, ".appcrane-key.local"), "utf8").trim() : "");
