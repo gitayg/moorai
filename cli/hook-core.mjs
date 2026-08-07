@@ -54,15 +54,21 @@ export function calibrateRisk(base, { stage, category } = {}) {
 // Scan text and reduce all findings to a single decision (deny > ask > allow) plus content-free
 // findings for reporting. Only "block" → deny; "justify" → ask; "notify"/"alert" → allow-but-report.
 export function decideText(engine, policy, text, stage) {
-  const out = { decision: "allow", reasons: [], findings: [] };
+  const out = { decision: "allow", reasons: [], findings: [], kill: false, killIds: [] };
   if (!text || !text.trim()) return out;
   const bump = (d) => { if (RANK[d] > RANK[out.decision]) out.decision = d; };
   for (const f of engine.scan(text, stage)) {
     const act = threatActionFor(policy, f.threat.id);
     if (act === "disabled") continue;
-    out.findings.push({ threatId: f.threat.id, category: f.threat.category, riskLevel: calibrateRisk(f.threat.riskLevel, { stage, category: f.threat.category }), match: f.match });
-    if (act === "block") { bump("deny"); out.reasons.push(`#${f.threat.id} ${f.threat.category}`); }
+    const level = calibrateRisk(f.threat.riskLevel, { stage, category: f.threat.category });
+    out.findings.push({ threatId: f.threat.id, category: f.threat.category, riskLevel: level, match: f.match });
+    // #3 — "kill" terminates the whole session, not just this call. It still denies the call (Claude
+    // Code only knows allow/ask/deny); the kill signal is carried out-of-band via out.kill for the host.
+    // killOnCritical promotes any Critical block to a kill without per-threat config.
+    const kill = act === "kill" || (policy?.killOnCritical && act === "block" && level === "Critical");
+    if (act === "block" || act === "kill") { bump("deny"); out.reasons.push(`#${f.threat.id} ${f.threat.category}`); }
     else if (act === "justify") { bump("ask"); out.reasons.push(`#${f.threat.id} ${f.threat.category} (needs sign-off)`); }
+    if (kill) { out.kill = true; out.killIds.push(f.threat.id); }
   }
   const cp = policy?.contentPolicy || {};
   const enabled = Object.keys(cp).filter((id) => cp[id] && cp[id] !== "disabled");

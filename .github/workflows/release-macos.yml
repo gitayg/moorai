@@ -1,0 +1,108 @@
+name: release-macos
+
+# Builds, signs, notarizes, and publishes the MoorAI macOS agent (Apple-silicon .dmg) on a native
+# macos-latest (arm64) runner — the same end-to-end flow as `npm run release` on a Mac, so a tag ships
+# the live installer at moorai.glick.run/download/app plus the in-app updater artifact. The Windows
+# NSIS installer builds in parallel via release-windows.yml on the same tag.
+#
+# Push a version tag (v0.41.0) to build + notarize + upload. package.json's version must match the tag
+# (bump it before tagging). Or run manually (workflow_dispatch) to build + upload the current version.
+#
+# ── Required repo secrets ────────────────────────────────────────────────────────────────────────
+#   Apple Developer ID signing (export the "Developer ID Application" cert as a .p12):
+#     APPLE_CERTIFICATE           base64 of the .p12         (base64 -i cert.p12 | pbcopy)
+#     APPLE_CERTIFICATE_PASSWORD  the .p12 export password
+#     APPLE_SIGNING_IDENTITY      "Developer ID Application: Your Name (TEAMID1234)"
+#   Notarization (App Store Connect API key, role: Developer — the AuthKey_XXXX.p8):
+#     APPLE_API_KEY               the key ID (e.g. ABCDE12345)
+#     APPLE_API_ISSUER            the issuer UUID
+#     APPLE_API_KEY_BASE64        base64 of the .p8 file      (base64 -i AuthKey_XXXX.p8 | pbcopy)
+#   Distribution:
+#     APPCRANE_API_KEY            uploads the DMG + updater artifact to AppCrane /data
+#   Updater signing (already set for release-windows — reuse the same values):
+#     TAURI_SIGNING_PRIVATE_KEY
+#     TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-latest # arm64 (Apple silicon) → builds the aarch64 DMG
+    steps:
+      # Skip cleanly (green, with a warning) until the Apple signing secrets are added — a tag build
+      # then produces no spurious red run, and starts working the moment the secrets exist.
+      - name: Check signing secrets
+        id: gate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::APPLE_CERTIFICATE not set — skipping macOS release. Add the Apple signing secrets (see the header of this workflow) to enable it."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.gate.outputs.ready == 'true'
+        uses: actions/checkout@v5
+
+      - if: steps.gate.outputs.ready == 'true'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+
+      - if: steps.gate.outputs.ready == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - if: steps.gate.outputs.ready == 'true'
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install dependencies
+        if: steps.gate.outputs.ready == 'true'
+        run: npm ci
+
+      # The App Store Connect key is a file on disk; APPLE_API_KEY_PATH must point at it.
+      - name: Write notarization API key
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+        run: |
+          echo "$APPLE_API_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - name: Build + sign + notarize + upload (npm run release)
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          # Distribution
+          APPCRANE_API_KEY: ${{ secrets.APPCRANE_API_KEY }}
+          # Updater signing — must match the pubkey in src-tauri/tauri.conf.json
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Developer ID signing — Tauri imports the cert into a temp keychain from these.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # Notarization (App Store Connect API key). APPLE_API_KEY_PATH is set in the step above.
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: npm run release
+
+      - name: Clean up notarization key
+        if: always() && steps.gate.outputs.ready == 'true'
+        run: rm -f "$RUNNER_TEMP/AuthKey.p8"
+
+      - name: Upload DMG as a build artifact
+        if: always() && steps.gate.outputs.ready == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: moorai-macos-dmg
+          path: |
+            dist/MoorAI.dmg
+            dist/MoorAI.app.tar.gz
+            dist/MoorAI.app.tar.gz.sig
+          if-no-files-found: warn

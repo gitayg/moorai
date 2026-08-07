@@ -90,6 +90,7 @@ export const DETECTORS = [
     detectorId: "dlp-email",
     threatId: 15,
     stage: "prompt",
+    stages: ["prompt", "output"], // #4 — screen PII in agent output too, content-free
     mode: "warn",
     hint: "Looks like an email address (personal data).",
     patterns: [/\b[\w.+-]+@[\w-]+\.[\w.-]{2,}\b/]
@@ -98,6 +99,7 @@ export const DETECTORS = [
     detectorId: "dlp-national-id",
     threatId: 15,
     stage: "prompt",
+    stages: ["prompt", "output"], // #4
     mode: "warn",
     hint: "Looks like a 9-digit national ID.",
     patterns: [/(?<!\d)\d{9}(?!\d)/]
@@ -106,6 +108,7 @@ export const DETECTORS = [
     detectorId: "dlp-payment-card",
     threatId: 1,
     stage: "prompt",
+    stages: ["prompt", "output"], // #4
     mode: "warn",
     hint: "Looks like a payment-card number.",
     patterns: [/\b(?:\d[ -]?){13,16}\b/]
@@ -143,6 +146,7 @@ export const DETECTORS = [
     detectorId: "dlp-phone",
     threatId: 15,
     stage: "prompt",
+    stages: ["prompt", "output"], // #4
     mode: "warn",
     hint: "Looks like a phone number (personal data).",
     patterns: [/(?<!\d)(?:\+?\d{1,3}[ .-]?)?\(?\d{2,4}\)?[ .-]?\d{3}[ .-]?\d{4}(?!\d)/]
@@ -253,6 +257,7 @@ export const DETECTORS = [
     detectorId: "phi-hipaa",
     threatId: 44,
     stage: "prompt",
+    stages: ["prompt", "output"], // #4
     mode: "warn",
     hint: "Looks like protected health information (PHI) — don't send patient data to the AI.",
     patterns: [
@@ -267,6 +272,7 @@ export const DETECTORS = [
     detectorId: "pii-passport",
     threatId: 15,
     stage: "prompt",
+    stages: ["prompt", "output"], // #4
     mode: "warn",
     hint: "Looks like a passport number (regulated personal data).",
     patterns: [/\bpassport\b.{0,20}?\b[A-Z]{0,2}\d[A-Z0-9]{4,8}\b/i]
@@ -275,6 +281,7 @@ export const DETECTORS = [
     detectorId: "pci-cvv",
     threatId: 1,
     stage: "prompt",
+    stages: ["prompt", "output"], // #4
     mode: "warn",
     hint: "Looks like a card security code (PCI data).",
     patterns: [/\b(cvv2?|cvc2?|security code|card verification)\s*(no\.?|#|:)?\s*\d{3,4}\b/i]
@@ -459,6 +466,92 @@ export const DETECTORS = [
       /\bgem\s+install\b[^\n]{0,80}--source\b[^\n]{0,40}https?:\/\//i,
       /\bnpx\s+(-y|--yes)\b/i,
       /\bpowershell\b[^\n]{0,80}\b(iwr|Invoke-WebRequest|irm)\b[^\n]{0,60}\|\s*(iex|Invoke-Expression)\b/i
+    ]
+  },
+  // #4 / #61 (LLM05) — on-device output screening for INSECURE CODE the agent generates. Distinct from
+  // executing a dangerous command (#32/#43/#54): this flags injection-prone SOURCE the agent writes into
+  // the codebase. Output-stage so it screens replies without ever inspecting the repo; the finding is
+  // content-free (rule id + severity + one-way hash of the matched span), so nothing readable egresses.
+  {
+    detectorId: "code-sql-injection",
+    threatId: 61,
+    stage: "output",
+    mode: "warn",
+    hint: "SQL query built from string concatenation / interpolation — use parameterized queries.",
+    patterns: [
+      /\b(execute|executemany|executescript|query|prepare|raw)\s*\(\s*f["'][^"']*\b(SELECT|INSERT|UPDATE|DELETE|DROP|MERGE)\b/i,
+      /["'`]\s*(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\b[^"'`]*["'`]\s*\+\s*[\w.$([]/i,
+      /`[^`]*\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\b[^`]*\$\{/i,
+      /\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\b[^"'`;\n]*["']\s*%\s*\(?\s*[\w.$]/i
+    ]
+  },
+  {
+    detectorId: "code-xss-sink",
+    threatId: 61,
+    stage: "output",
+    mode: "warn",
+    hint: "Untrusted value flows to an HTML sink (innerHTML / dangerouslySetInnerHTML / document.write).",
+    patterns: [
+      /\.innerHTML\s*=\s*(?!["'`]\s*;?\s*$)[^"'`;\n]*[\w$)\]]/,
+      /dangerouslySetInnerHTML\s*[:=]\s*\{\{?\s*__html/,
+      /\bdocument\.write(ln)?\s*\(\s*(?!["'`])[^)]*[\w$)\]]/i,
+      /\.insertAdjacentHTML\s*\(\s*[^,]+,\s*(?!["'`])/i,
+      /\bv-html\s*=/
+    ]
+  },
+  {
+    detectorId: "code-command-injection",
+    threatId: 61,
+    stage: "output",
+    mode: "warn",
+    hint: "Shell invoked with a built/interpolated string or shell=True — command-injection risk.",
+    patterns: [
+      /\bsubprocess\.(run|call|check_output|check_call|Popen)\s*\([^)]*shell\s*=\s*True/i,
+      /\bos\.system\s*\(\s*(f["']|[^)]*[+%]\s*[\w.$])/i,
+      /\bos\.popen\s*\(\s*(f["']|[^)]*[+%])/i,
+      /\bchild_process\.(exec|execSync)\s*\(\s*(`[^`]*\$\{|[^)]*\+\s*[\w.$])/i,
+      /\bexec[AS]?[a-z]*\s*\(\s*`[^`]*\$\{/i
+    ]
+  },
+  {
+    detectorId: "code-eval-dynamic",
+    threatId: 61,
+    stage: "output",
+    mode: "warn",
+    hint: "Dynamic code execution (eval / new Function / string-arg timer / exec of input).",
+    patterns: [
+      /\beval\s*\(\s*(?!["'`)\s])/,
+      /\bnew\s+Function\s*\(/,
+      /\b(setTimeout|setInterval)\s*\(\s*["'`]/,
+      /\bexec\s*\(\s*f["']/i,
+      /\b(exec|eval)\s*\([^)]*\b(input|request|argv|params|req\.(body|query|params))\b/i
+    ]
+  },
+  {
+    detectorId: "code-weak-crypto",
+    threatId: 61,
+    stage: "output",
+    mode: "warn",
+    hint: "Weak / broken cryptographic primitive (MD5, SHA-1, DES, RC4, ECB).",
+    patterns: [
+      /\bhashlib\.(md5|sha1)\s*\(/i,
+      /\bcreateHash\s*\(\s*["'](md5|sha1)["']\s*\)/i,
+      /\bMessageDigest\.getInstance\s*\(\s*["'](MD5|SHA-?1)["']/i,
+      /\b(DES|RC4)\b\s*[\/(.]/,
+      /["'](AES|DES)[\/-]ECB[\/-]/i
+    ]
+  },
+  {
+    detectorId: "code-insecure-deser",
+    threatId: 61,
+    stage: "output",
+    mode: "warn",
+    hint: "Unsafe deserialization of untrusted data (pickle / yaml.load / unserialize).",
+    patterns: [
+      /\bc?[Pp]ickle\.loads?\s*\(/,
+      /\byaml\.load\s*\((?![^)]*Safe(Loader)?)/i,
+      /\b(unserialize|Marshal\.load)\s*\(/i,
+      /\bnew\s+ObjectInputStream\s*\(/
     ]
   }
 ];

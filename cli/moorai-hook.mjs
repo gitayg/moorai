@@ -17,7 +17,7 @@ import { join, dirname, basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
 import { buildEngine, decideText, decideMcpServer, decideMcpArgs, extractReadPaths } from "./hook-core.mjs";
-import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline } from "./signals.mjs";
+import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, requestKill } from "./signals.mjs";
 import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
 import { isRulesFile, rulesFileKind } from "../data/rules-files.js";
 import { signApproval, argsHash } from "../data/agency-sign.mjs";
@@ -147,6 +147,16 @@ function readFileCapped(fp) {
   } catch { return ""; }
 }
 
+// #3 — kill enforcement for the interactive session. A "kill" verdict still denies THIS call (below),
+// but also drops a content-free sentinel the Tauri host watches for to terminate the whole agent PTY —
+// detect-and-prevent, not just deny-one-call. Emits a session-kill alert (→ server/SIEM). Only the
+// terminating rule ids leave the device, never the tool input.
+function killSession(tool, ids, stage) {
+  if (!ids || !ids.length) return;
+  requestKill({ tool, ids, stage });
+  post({ threatId: 0, category: "Session terminated (kill)", riskLevel: "Blocked", stage, tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "kill:" + ids.join("."), ...IDENTITY });
+}
+
 function emit(decision, reason) {
   if (decision === "allow") process.exit(0);
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision === "deny" ? "deny" : "ask", permissionDecisionReason: `MoorAI: ${reason}` } }));
@@ -175,21 +185,24 @@ async function main() {
     logBehavior("Read", ti.file_path || "file", text, d, "file");
     await maybeEscalate(policy, text, "file", "hook:Read", d);
     if (isRulesFile(ti.file_path)) reportRulesFile(ti.file_path, text, d);
-    return emit(d.decision, `blocked Read of ${basename(ti.file_path || "file")} — ${d.reasons.join(", ")}`);
+    if (d.kill) killSession("Read", d.killIds, "file");
+    return emit(d.decision, `${d.kill ? "killed session" : "blocked Read"} of ${basename(ti.file_path || "file")} — ${d.reasons.join(", ")}`);
   }
   if (tool === "Bash") {
-    let dec = "allow", reasons = [], finds = [], btext = "";
+    let dec = "allow", reasons = [], finds = [], btext = "", killIds = [];
     for (const p of extractReadPaths(ti.command)) {
       const t = readFileCapped(p); btext += t + "\n";
       const d = decideText(engine, policy, t, "file");
       finds.push(...d.findings);
+      if (d.kill) killIds.push(...d.killIds);
       if (RANK[d.decision] > RANK[dec]) { dec = d.decision; reasons = d.reasons; }
       if (isRulesFile(p)) reportRulesFile(p, t, d);
     }
     report(finds, "file", "hook:Bash", dec === "deny", policy.captureTier, { toolName: "Bash", cmdShape: commandShape(ti.command) });
     logBehavior("Bash", ti.command || "bash", btext, { decision: dec, findings: finds }, "file");
     await maybeEscalate(policy, btext, "file", "hook:Bash", { findings: finds });
-    return emit(dec, `blocked file read via Bash — ${reasons.join(", ")}`);
+    if (killIds.length) killSession("Bash", killIds, "file");
+    return emit(dec, `${killIds.length ? "killed session" : "blocked file read"} via Bash — ${reasons.join(", ")}`);
   }
   if (tool.startsWith("mcp__")) {
     const server = tool.split("__")[1] || "";
@@ -202,7 +215,8 @@ async function main() {
     const d = decideText(engine, policy, args, "prompt"); // #2 — scan args
     report(d.findings, "egress", `hook:${tool}`, d.decision === "deny", policy.captureTier, { toolName: tool, argText: args }, signApproval(tool, argsH, d.decision === "deny" ? "deny" : "allow"));
     logBehavior(tool, tool, args, d, "egress");
-    return emit(d.decision, `blocked ${tool} — ${d.reasons.join(", ")}`);
+    if (d.kill) killSession(tool, d.killIds, "egress");
+    return emit(d.decision, `${d.kill ? "killed session" : "blocked"} ${tool} — ${d.reasons.join(", ")}`);
   }
   process.exit(0); // unknown tool → allow
 }

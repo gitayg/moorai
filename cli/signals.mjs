@@ -83,6 +83,17 @@ export function readActions() { return readJsonl(ACTION_AUDIT); }
 export function rulesBaseline() { try { return JSON.parse(readFileSync(RULES_BASELINE, "utf8")); } catch { return {}; } }
 export function setRulesBaseline(kind, fp) { try { const b = rulesBaseline(); b[kind] = fp; mkdirSync(DIR, { recursive: true }); writeFileSync(RULES_BASELINE, JSON.stringify(b)); } catch { /* best-effort */ } }
 
+// #3 — kill sentinel. When a "kill" verdict fires in the interactive session, the hook (a separate
+// process from the Tauri host) drops a small JSON sentinel here; the host watches for it, terminates
+// the live agent PTY, then clears it. Content-free: only the terminating rule ids + timestamp, never
+// the tool input. A stale sentinel is ignored by the host via the timestamp.
+const KILL_SENTINEL = join(DIR, "kill-session");
+export function requestKill(reason) {
+  try { mkdirSync(DIR, { recursive: true }); writeFileSync(KILL_SENTINEL, JSON.stringify({ ts: Date.now(), ...reason })); } catch { /* best-effort; deny already applied */ }
+}
+export function readKill() { try { return JSON.parse(readFileSync(KILL_SENTINEL, "utf8")); } catch { return null; } }
+export const KILL_SENTINEL_PATH = KILL_SENTINEL;
+
 export function readLedger() { return readJsonl(LEDGER); }
 export function readIntent() { return readJsonl(INTENT); }
 export const LEDGER_PATH = LEDGER;

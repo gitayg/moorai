@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "0.41.0",
+  "version": "0.42.0",
   "description": "MoorAI agent — on-device guardrails for AI coding agents (community edition, AGPL-3.0)",
   "type": "module",
   "bin": {

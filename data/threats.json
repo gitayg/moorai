@@ -1100,6 +1100,23 @@
       "owasp": "LLM08",
       "atlas": "AML.T0051",
       "stride": "Tampering"
+    },
+    {
+      "id": 61,
+      "category": "Output & Code",
+      "threat": "Insecure code generation",
+      "example": "The agent writes code with an injection-prone pattern — a SQL query built by string-concatenating input, innerHTML set from a variable, eval / new Function on dynamic input, a shell run with shell=True, weak crypto (MD5/SHA-1/DES), or unsafe deserialization (pickle.loads, yaml.load) — introducing SQLi/XSS/RCE/command-injection into the codebase.",
+      "response": "Screen AI-generated code for injection-prone patterns before committing. Use parameterized queries, safe DOM APIs, avoid eval / shell=True on untrusted input, and prefer vetted crypto + safe deserializers. Screening runs on-device; only a content-free verdict (rule id + severity + one-way hash) is reported.",
+      "severity": 4,
+      "likelihood": 4,
+      "riskScore": 16,
+      "riskLevel": "High",
+      "sources": [
+        "OWASP"
+      ],
+      "owasp": "LLM05",
+      "atlas": "AML.T0011",
+      "stride": "Tampering"
     }
   ]
 }

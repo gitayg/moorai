@@ -5,7 +5,7 @@ mod winsec;
 use std::fs::{create_dir_all, OpenOptions};
 use std::io::{Read, Write};
 use std::sync::Mutex;
-use portable_pty::{native_pty_system, MasterPty, PtySize};
+use portable_pty::{native_pty_system, ChildKiller, MasterPty, PtySize};
 use tauri::{Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
@@ -20,6 +20,10 @@ struct Term {
     // Unused on non-Windows targets, where isolation goes through the Seatbelt profile instead.
     #[allow(dead_code)]
     job: Mutex<Option<isize>>,
+    // #3 — a killer for the live agent process so a "kill" verdict (from the guard's PreToolUse hook,
+    // delivered out-of-band via the kill-session sentinel) can terminate the whole session, not just
+    // deny one call. Replaced on each launch; taken when a kill fires so it can't double-kill.
+    killer: Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>,
 }
 
 #[tauri::command]
@@ -112,8 +116,22 @@ fn term_open(app: tauri::AppHandle, state: tauri::State<Term>, cols: u16, rows: 
         }
         let _ = app.emit("term-exit", ());
     });
+    // #3 — hold a killer for the new session so a "kill" verdict can terminate it out-of-band.
+    *state.killer.lock().unwrap() = Some(child.clone_killer());
     std::thread::spawn(move || { let _ = child.wait(); });
     Ok(())
+}
+
+// #3 — terminate the live agent PTY on a policy "kill" verdict. Callable directly by the frontend, and
+// invoked by the kill-session watcher (see run()). Governance: it only kills MoorAI's own child.
+#[tauri::command]
+fn term_kill(app: tauri::AppHandle, state: tauri::State<Term>) -> bool {
+    let killed = { let mut k = state.killer.lock().unwrap(); if let Some(mut kill) = k.take() { let _ = kill.kill(); true } else { false } };
+    if killed {
+        let _ = app.emit("term-data", "\r\n\x1b[31m[MoorAI] session terminated by policy (kill verdict) — nothing further was run.\x1b[0m\r\n");
+        let _ = app.emit("term-exit", ());
+    }
+    killed
 }
 
 #[tauri::command]
@@ -543,7 +561,35 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Term::default())
-        .invoke_handler(tauri::generate_handler![native_log, app_version, identity, run_agent, save_provision, set_agent_auth, open_url, open_login_terminal, restart_app, check_and_install_update, about_info, term_open, term_input, term_resize, device_ai_tools, device_ai_assets, device_mcp, os_patch_status, device_browsers, device_posture, device_accounts, dir_sensitive])
+        // #3 — kill-session watcher. The guard's PreToolUse hook runs out-of-process, so a "kill"
+        // verdict is delivered as a small content-free sentinel file (~/.curaiq/kill-session). Poll for
+        // it and terminate the live agent PTY when it appears — detect-and-prevent for the interactive
+        // session. A stale sentinel (older than 60s, e.g. left by a prior run) is consumed but ignored.
+        .setup(|app| {
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let sentinel = format!("{}/kill-session", platform::config_dir());
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+                    let txt = match std::fs::read_to_string(&sentinel) { Ok(t) => t, Err(_) => continue };
+                    let _ = std::fs::remove_file(&sentinel); // consume the sentinel either way
+                    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i128).unwrap_or(0);
+                    let fresh = serde_json::from_str::<serde_json::Value>(&txt).ok()
+                        .and_then(|j| j.get("ts").and_then(|v| v.as_i64()))
+                        .map(|ts| now_ms - ts as i128 <= 60_000).unwrap_or(false);
+                    if !fresh { continue; }
+                    if let Some(state) = handle.try_state::<Term>() {
+                        let killed = { let mut k = state.killer.lock().unwrap(); if let Some(mut kill) = k.take() { let _ = kill.kill(); true } else { false } };
+                        if killed {
+                            let _ = handle.emit("term-data", "\r\n\x1b[31m[MoorAI] session terminated by policy (kill verdict) — nothing further was run.\x1b[0m\r\n");
+                            let _ = handle.emit("term-exit", ());
+                        }
+                    }
+                }
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![native_log, app_version, identity, run_agent, save_provision, set_agent_auth, open_url, open_login_terminal, restart_app, check_and_install_update, about_info, term_open, term_input, term_resize, term_kill, device_ai_tools, device_ai_assets, device_mcp, os_patch_status, device_browsers, device_posture, device_accounts, dir_sensitive])
         .run(tauri::generate_context!())
         .expect("error while running MoorAI");
 }

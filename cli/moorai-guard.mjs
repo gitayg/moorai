@@ -46,11 +46,11 @@ function post(alert) {
   return fetch(`${SERVER}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(alert) }).catch(() => {});
 }
 
-function reportAlert(finding, content, blocked = false) {
+function reportAlert(finding, content, blocked = false, stage = "egress") {
   const alert = {
     threatId: finding.threat.id, category: finding.threat.category,
-    riskLevel: blocked ? "Blocked" : calibrateRisk(finding.threat.riskLevel, { stage: "egress", category: finding.threat.category }), // #10
-    stage: "egress", tool: "claude -p", ts: new Date().toISOString(), contentHash: djb2(content), ...IDENTITY
+    riskLevel: blocked ? "Blocked" : calibrateRisk(finding.threat.riskLevel, { stage, category: finding.threat.category }), // #10
+    stage, tool: "claude -p", ts: new Date().toISOString(), contentHash: djb2(content), ...IDENTITY
   };
   recordExposure(alert); // #5 — local content-free exposure ledger (secret classes only)
   return post(alert);
@@ -89,7 +89,16 @@ async function decide(decideFlag) {
   return ans.startsWith("p") ? "proceed" : ans.startsWith("r") ? "redact" : "abort";
 }
 
-function runClaude(prompt) {
+// #3 — content-free session-kill record: the reply (or session) was terminated by policy, never the
+// text. Only the terminating rule ids + a "kill:" marker leave the device.
+function reportSessionKill(stage, findings) {
+  return post({
+    threatId: 0, category: "Session terminated (kill)", riskLevel: "Blocked", stage, tool: "claude -p",
+    ts: new Date().toISOString(), contentHash: "kill:" + findings.map((f) => f.threat.id).join("."), ...IDENTITY
+  });
+}
+
+function runClaude(prompt, policy, action) {
   // Output review/redaction (#4). The interactive TUI can't be masked safely (cursor/ANSI redraws),
   // but `claude -p` is a one-shot reply — so here we capture stdout, scan it for anything the model
   // surfaced (a secret echoed back, licensed code, a risky `curl | bash`, an unverifiable citation)
@@ -105,8 +114,20 @@ function runClaude(prompt) {
     child.stdout.on("data", (d) => { out += d.toString(); });
     child.on("close", (code) => {
       const flagged = engine.scan(out, "output").filter((f) => action(f) !== "disabled");
+      // #4 — report every on-device output-screening verdict, content-free (rule id + risk + one-way
+      // hash of the matched span). The reply text never leaves the device; only the verdict does.
+      for (const f of flagged) reportAlert(f, f.match || "", action(f) === "block" || action(f) === "kill", "output");
       const visible = flagged.filter((f) => action(f) !== "alert");
       if (visible.length) { console.error(`\n${C.org}⚠ MoorAI output review — ${visible.length} finding(s) in the reply:${C.off}`); printFindings(visible); }
+      // #3 — kill/block enforcement. An output finding the policy marks "kill" (or any Critical block
+      // when killOnCritical is set) suppresses the whole reply rather than masking spans — prevent,
+      // not warn. The dangerous output is never printed and a content-free session-kill is emitted.
+      const killed = flagged.filter((f) => action(f) === "kill" || (policy?.killOnCritical && action(f) === "block" && f.threat.riskLevel === "Critical"));
+      if (killed.length) {
+        console.error(`\n${C.red}✗ MoorAI killed the reply — critical output finding (#${killed.map((f) => f.threat.id).join(", #")}); nothing printed.${C.off}`);
+        reportSessionKill("output", killed);
+        return resolve(3);
+      }
       const mask = policy?.outputRedaction === true || flagged.some((f) => action(f) === "block" || action(f) === "justify");
       if (mask) console.error(`${C.org}↻ masking flagged spans in the reply${C.off}`);
       process.stdout.write(mask ? engine.redact(out, "output") : out);
@@ -142,12 +163,15 @@ async function main() {
   // Visible to the user = notify/block only; silent "alert" never prompts or prints.
   const findings = allFindings.filter((f) => action(f) !== "alert");
   const content = allContent.filter((c) => cp[c.ruleId] !== "alert");
-  const blockedFindings = allFindings.filter((f) => action(f) === "block");
+  // #3 — "kill" hard-blocks the prompt like "block" (the user cannot override), and also emits a
+  // content-free session-kill so the console sees the session was terminated, not merely denied.
+  const killFindings = allFindings.filter((f) => action(f) === "kill");
+  const blockedFindings = allFindings.filter((f) => action(f) === "block" || action(f) === "kill");
   const blockedContent = allContent.filter((c) => cp[c.ruleId] === "block");
 
   if (!findings.length && !content.length) {
     console.error(`${C.green}✓ MoorAI: clean — forwarding to claude -p${C.off}\n`);
-    process.exit(await runClaude(prompt));
+    process.exit(await runClaude(prompt, policy, action));
   }
 
   if (findings.length) printFindings(findings);
@@ -159,7 +183,9 @@ async function main() {
     const parts = [];
     if (blockedFindings.length) parts.push(`threat policy (#${blockedFindings.map((f) => f.threat.id).join(", #")})`);
     if (blockedContent.length) parts.push(`content policy (${blockedContent.map((c) => c.label).join(", ")})`);
-    console.error(`${C.red}✗ blocked by ${parts.join(" + ")} — nothing sent to claude -p${C.off}`);
+    const verb = killFindings.length ? "killed" : "blocked";
+    console.error(`${C.red}✗ ${verb} by ${parts.join(" + ")} — nothing sent to claude -p${C.off}`);
+    if (killFindings.length) await reportSessionKill("prompt", killFindings);
     process.exit(3);
   }
 
@@ -188,7 +214,7 @@ async function main() {
     recordIntent(intent);
     post({ threatId: 0, category: "Intent: user override", riskLevel: "Info", stage: "egress", tool: "claude -p", ts: intent.ts, contentHash: intent.contentHash, ...IDENTITY });
   }
-  process.exit(await runClaude(final));
+  process.exit(await runClaude(final, policy, action));
 }
 
 main();
