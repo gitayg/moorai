@@ -198,3 +198,62 @@ correlation metric (**B3**), evidence retention (**B5**, `MOORAI_RETENTION_DAYS`
 - **Fix — threat #39 OWASP tag.** The secrets engine (18 detectors) maps to threat 39, tagged
   **LLM07** ("Prompt Leakage"); secrets are **LLM02** (Sensitive Information Disclosure). One-line data
   fix (`threat 39.owasp: LLM07 → LLM02`), corpus-safe. Surfaced by `npm run benchmark`.
+
+---
+
+## Deep-market sweep (2026) — Tier-2/Tier-3 + GTM + Tier-1 deferrals
+
+Sourced from the 2026 competitive analysis (ServiceNow AICT, Endor, Backslash, Certiv, MCP-security
+tooling, AI-SPM, AI-governance + non-human-identity, GTM). Tier-1 Top 5 already shipped in v0.43.0
+(agent) / v0.34.0 (console): model-endpoint allow-list, slopsquat firewall, MCP hardening (invisible-
+payload + rug-pull drift), jailbreak detectors, entitlement envelope.
+
+### Shipped in this batch (v0.44.0 agent / v0.35.0 console)
+- **Secret-egress fingerprinting** (#65) — fingerprints local secret values (project `.env`, cloud creds)
+  as one-way hashes on-device; flags/blocks when a value appears verbatim in an outbound command / MCP
+  arg. `cli/secret-egress.mjs`; wired in the hook (Bash + MCP). Content-free (only the hash + verdict leave).
+- **Insecure-defaults / expanded-sink pack** (#61) — SSRF, path traversal, XXE, JWT `alg=none`/verify-off/
+  hardcoded-secret, TLS-verify-off, permissive CORS, `debug=True`/`ALLOWED_HOSTS=*`, insecure randomness,
+  hardcoded creds, `chmod 0777`, insecure cookies, CSRF-off, open redirect, public cloud storage. ~27
+  regexes in `code-insecure-defaults`, output-stage, keyword-gated / placeholder-excluded.
+- **A2A / sub-agent delegation detection** (#66) — hook intercepts the `Task` tool: records the delegation
+  content-free, scans the delegated prompt for injection, applies the parent's entitlement envelope.
+- **agent→server MCP config-hash reporting** — `/api/device-report` now feeds each reported server's
+  config hash into the registry, so a silently-changed server flags as drift (drift UI shipped v0.34.0).
+
+### Deferred (refinements / heavier)
+- **Cross-server toxic-flow correlation** — extend the single-session lethal-trifecta so the three legs
+  assembled across *different* MCP servers is flagged (confused-deputy). Refinement of the shipped
+  trifecta; medium effort, marginal over the single-session signal — sequence later.
+- **Fleet AI-BOM export** — ALREADY SHIPPED (`/api/aibom` + `/aibom/export` JSON+CSV, `store.aibom()`);
+  no work needed. Listed here only to record it's covered.
+
+### Deferred — data / model / infra pipelines (not a coding-session task)
+- **Full registry Bloom filter** (slopsquat completeness) — answer "does this npm/PyPI/crates name exist?"
+  fully offline. Needs a build pipeline that downloads ~4M names + ships a binary Bloom filter in the
+  notarized DMG (size decision). Today: curated popular-list + edit-distance covers the high-value squat
+  *targets*. Design doc produced (see the market-sweep agent output); implement the BUILD script + loader.
+- **PromptGuard-2 (22M) on-device classifier** — bundle the ONNX weights + a JS/Rust inference runtime
+  into the DMG for ML jailbreak escalation. Detectors shipped; local-model escalation already runs via
+  the existing Ollama hook. Blocker: DMG size + notarization + runtime choice.
+- **Tool-description injection scan** (MCP) — needs the agent to capture MCP `tools/list` schemas (not
+  currently fetched); then run the injection engine + invisible-payload scan on tool descriptions at
+  discovery time (line-jumping defense). Pairs with schema-hash pinning.
+- **Intra-file taint-lite** — tree-sitter source→sink dataflow to confirm injection detectors and cut
+  false positives. Deferred: tree-sitter is a heavy dep; scope to intra-file (whole-repo reachability is
+  on-device-hard).
+- **JIT capability elevation** — minimal standing entitlement envelope + time-boxed, auto-expiring grants
+  ("write to /deploy for 30 min") instead of per-call prompts. Needs a TTL grant state machine (server
+  policy + agent honoring). Medium; sequence after the envelope beds in.
+
+### GTM / positioning track (content + external — see the glick.run repo draft)
+- **Reposition** the site to "content-free, open-core AI coding-agent security — at the endpoint"; lead
+  with content-free-vs-tokenization (drafted in glick-run-website, pending review + deploy).
+- **Shadow-agent discovery wedge** messaging; **per-device pricing** (free AGPL agent + paid per-device
+  console) — drafted.
+- **Trust pack** — (a) publish a versioned, reproducible detection benchmark (docs/BENCHMARK.md → public
+  page); (b) commission a **third-party zero-egress audit** (external engagement — the AGPL agent makes
+  it cheap); (c) **SOC 2 Type II** for the console (org process). (b) and (c) are not code — track as
+  business tasks. Court the Gartner AI-SPM Market Guide (H2 2026) as the content-free/open-core entrant.
+- **Beachhead** — regulated/high-IP verticals (fintech, defense, pharma, legal) where "content never
+  leaves the device" is a hard requirement.

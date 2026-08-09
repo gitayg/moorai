@@ -624,5 +624,47 @@ export const DETECTORS = [
     hint: "Install of a hallucinated / typosquatted package (name is a near-miss of a popular package or a known-bad name).",
     patterns: [/\b(?:npm|pnpm|yarn|bun|pip3?|pipx|cargo)\s+(?:install|add|i)\b[^\n]{0,140}/i],
     refine: (m) => !!inspectInstall(m)
+  },
+  {
+    // Tier-2 / #61 (LLM05) — insecure DEFAULTS / misconfigurations AI agents commonly emit, complementing
+    // the injection/exec/crypto/deser detectors: SSRF, path traversal, XXE, JWT alg=none / verify-off /
+    // hardcoded secret, TLS-verify-off, permissive CORS, debug=True / ALLOWED_HOSTS=*, insecure randomness
+    // for security values, hardcoded creds, world-writable perms, insecure cookies, CSRF-off, open redirect,
+    // public cloud storage. Keyword-gated / placeholder-excluded to hold precision. Output-stage, content-free.
+    detectorId: "code-insecure-defaults",
+    threatId: 61,
+    stage: "output",
+    mode: "warn",
+    hint: "Insecure default / misconfiguration in generated code (SSRF, path traversal, XXE, TLS-off, CORS *, debug, weak randomness, hardcoded secret, …).",
+    patterns: [
+      /\b(?:fetch|axios|got|superagent|https?\.get|request)\s*\([^)]{0,60}\breq(?:uest)?\.(?:query|params|body)\b/,
+      /\b(?:requests\.(?:get|post|put|delete|head|patch|request)|urlopen|httpx\.(?:get|post|Client))\s*\([^)]{0,80}\brequest\.(?:args|form|values|json|GET|POST)\b/,
+      /\b(?:fs\.(?:readFile|readFileSync|createReadStream|writeFile|writeFileSync|unlink|open|openSync|appendFile)|res\.(?:sendFile|download))\s*\([^)]{0,80}\breq(?:uest)?\.(?:query|params|body)\b/,
+      /\b(?:open|send_file|send_from_directory)\s*\([^)]{0,80}\brequest\.(?:args|form|values|files|GET|POST)\b/,
+      /\bresolve_entities\s*=\s*True|\bnoent\s*=\s*True|libxml_disable_entity_loader\s*\(\s*false\s*\)/,
+      /setExpandEntityReferences\s*\(\s*true\s*\)|\.setFeature\s*\(\s*["'][^"']*(?:external-general-entities|external-parameter-entities|load-external-dtd)["']\s*,\s*true\s*\)/,
+      /\balgorithm[s]?\s*[:=]\s*(?:\[\s*)?["']none["']/i,
+      /jwt\.decode\s*\([^)]*\bverify\s*=\s*False|["']?verify_signature["']?\s*[:=]\s*(?:False|false)/,
+      /\brequests\.(?:get|post|put|delete|head|patch|request|Session)\b[^;\n]{0,120}\bverify\s*=\s*False\b/,
+      /rejectUnauthorized\s*:\s*false/,
+      /NODE_TLS_REJECT_UNAUTHORIZED\s*[:=]\s*['"]?0\b/,
+      /InsecureSkipVerify\s*:\s*true/,
+      /CURLOPT_SSL_VERIFY(?:PEER|HOST)\s*,\s*(?:0|false|FALSE)\b/,
+      /ssl\._create_unverified_context\b|_create_unverified_https_context\b|ssl\.CERT_NONE\b/,
+      /Access-Control-Allow-Origin["']?\s*[:,]\s*["']\*["']/,
+      /cors\s*\(\s*\{[^}]*\borigin\s*:\s*(?:["']\*["']|true)/,
+      /(?<!#[^\n]*)(?<!\/\/[^\n]*)\.run\s*\([^)]*\bdebug\s*=\s*True/,
+      /(?<!#[^\n]*)(?<!\/\/[^\n]*)\bDEBUG\s*=\s*True\b/,
+      /ALLOWED_HOSTS\s*=\s*\[\s*["']\*["']\s*\]/,
+      /\b(?:token|secret|otp|nonce|salt|password|passwd|apiKey|api_key|sessionId|session_id|resetToken|csrf|verificationCode)\w*\s*[:=][^;\n]{0,60}\bMath\.random\s*\(/i,
+      /\b(?:token|secret|otp|nonce|salt|password|passwd|api_key|session|reset_token|csrf|verification_code)\w*\s*=\s*[^#\n]{0,80}\brandom\.(?:random|randint|choice|randrange|getrandbits|sample|shuffle)\s*\(/i,
+      /\b(?:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|db[_-]?pass(?:word)?)\s*[:=]\s*["'](?!(?:\s|x{2,}|\*{2,}|<|\$\{|process\.env|os\.environ|todo|change[_-]?me|changeme|placeholder|your[_-]?|example|test|dummy|none|null|redacted|\.\.\.|%s|\{\{)[^"']*)[^"'\s]{6,}["']/i,
+      /\bchmod\s+(?:-R\s+)?0?777\b|\bos\.chmod\s*\([^)]*0o?777|\bfs\.chmod(?:Sync)?\s*\([^)]*0o?7(?:77|66)|\bumask\s*\(\s*0+\s*\)/,
+      /SESSION_COOKIE_(?:SECURE|HTTPONLY)\s*=\s*False|CSRF_COOKIE_SECURE\s*=\s*False/,
+      /@csrf_exempt\b|csrfProtection\s*:\s*false/i,
+      /\bres\.redirect\s*\(\s*(?:`[^`]*\$\{[^}]*\breq(?:uest)?\b|req(?:uest)?\.(?:query|params|body))/,
+      /\bredirect\s*\(\s*[^)]{0,40}\brequest\.(?:args|form|values|GET|POST)\b/,
+      /["']?(?:ACL|acl)["']?\s*[:=]\s*["']public-read(?:-write)?["']|BlockPublicAcls\s*[:=]\s*(?:False|false)/
+    ]
   }
 ];

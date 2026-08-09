@@ -16,7 +16,8 @@ import { fileURLToPath } from "node:url";
 import { join, dirname, basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideMcpServer, decideMcpArgs, decideEndpoints, decideEnvelope, extractReadPaths } from "./hook-core.mjs";
+import { buildEngine, decideText, decideMcpServer, decideMcpArgs, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths } from "./hook-core.mjs";
+import { egressHits } from "./secret-egress.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, requestKill } from "./signals.mjs";
 import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
 import { isRulesFile, rulesFileKind } from "../data/rules-files.js";
@@ -39,7 +40,7 @@ function installHooks() {
   const cmd = `node ${JSON.stringify(SELF)}`;
   const entry = (matcher) => ({ matcher, hooks: [{ type: "command", command: cmd }] });
   const cur = Array.isArray(s.hooks.PreToolUse) ? s.hooks.PreToolUse : [];
-  s.hooks.PreToolUse = [...cur.filter((e) => !isCuraiq(e)), entry("Read"), entry("Bash"), entry("mcp__.*")];
+  s.hooks.PreToolUse = [...cur.filter((e) => !isCuraiq(e)), entry("Read"), entry("Bash"), entry("mcp__.*"), entry("Task")];
   writeSettings(s);
   console.error(`MoorAI hooks installed in ${settingsPath()}`);
 }
@@ -168,6 +169,19 @@ function reportEnvelope(policy, tool, ctx, stage) {
   return mode === "block";
 }
 
+// Tier-2 / #65 — local secret-value egress. Fingerprints local secrets on-device and checks the
+// outbound text for a verbatim match; only the matched hashes leave. Blocks when policy #65 is block/kill.
+function checkSecretEgress(policy, text, tool, stage) {
+  try {
+    const hits = egressHits(text);
+    if (!hits.length) return false;
+    const act = threatActionFor(policy, 65);
+    const block = act === "block" || act === "kill";
+    post({ threatId: 65, category: "Local secret value egress", riskLevel: block ? "Blocked" : "Critical", stage, tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "egress:" + hits.join("."), ...IDENTITY });
+    return block;
+  } catch { return false; }
+}
+
 function emit(decision, reason) {
   if (decision === "allow") process.exit(0);
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision === "deny" ? "deny" : "ask", permissionDecisionReason: `MoorAI: ${reason}` } }));
@@ -224,6 +238,7 @@ async function main() {
     logBehavior("Bash", ti.command || "bash", btext, { decision: dec, findings: finds }, "file");
     await maybeEscalate(policy, btext, "file", "hook:Bash", { findings: finds });
     if (killIds.length) killSession("Bash", killIds, "file");
+    if (checkSecretEgress(policy, ti.command, "Bash", "egress") && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; }
     if (reportEnvelope(policy, "Bash", { tool: "Bash", paths: extractReadPaths(ti.command) }, "file") && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; }
     return emit(dec, `${killIds.length ? "killed session" : "blocked"} via Bash — ${reasons.join(", ")}`);
   }
@@ -240,11 +255,27 @@ async function main() {
     // T1-1 — model-endpoint allow-list on the serialized args (a tool arg pointing at a rogue LLM host).
     const epD = decideEndpoints(policy, args);
     if (epD.decision === "deny") { post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); return emit("deny", epD.reason); }
+    // Tier-2 / #65 — a local secret value shipped as an MCP tool argument.
+    if (checkSecretEgress(policy, args, tool, "egress")) return emit("deny", `${tool} — local secret egress`);
     const d = decideText(engine, policy, args, "prompt"); // #2 — scan args
     report(d.findings, "egress", `hook:${tool}`, d.decision === "deny", policy.captureTier, { toolName: tool, argText: args }, signApproval(tool, argsH, d.decision === "deny" ? "deny" : "allow"));
     logBehavior(tool, tool, args, d, "egress");
     if (d.kill) killSession(tool, d.killIds, "egress");
     return emit(d.decision, `${d.kill ? "killed session" : "blocked"} ${tool} — ${d.reasons.join(", ")}`);
+  }
+  // Tier-2 / #66 — sub-agent spawn / A2A delegation (Claude Code's Task tool). Record the delegation
+  // content-free, scan the delegated prompt for injection, apply the parent's entitlement envelope, and
+  // block per policy. Extends blast-radius visibility to children that could otherwise bypass parent controls.
+  if (tool === "Task") {
+    const desc = JSON.stringify(ti);
+    const act = threatActionFor(policy, 66);
+    const block = act === "block" || act === "kill";
+    post({ threatId: 66, category: "Sub-agent / A2A delegation", riskLevel: block ? "Blocked" : "Medium", stage: "behavior", tool: "hook:Task", ts: new Date().toISOString(), contentHash: djb2((ti.subagent_type || "") + "|" + desc), subagentType: ti.subagent_type, ...IDENTITY });
+    logBehavior("Task", "Task", desc, { decision: block ? "deny" : "allow", findings: [] }, "behavior");
+    const pd = decideText(engine, policy, ti.prompt || "", "prompt"); // scan the delegated prompt for injection
+    report(pd.findings, "egress", "hook:Task", pd.decision === "deny", policy.captureTier, { toolName: "Task" });
+    if (block || pd.decision === "deny" || reportEnvelope(policy, "Task", { tool: "Task" }, "behavior")) return emit("deny", `Task (sub-agent delegation) — ${block ? "blocked by policy" : pd.decision === "deny" ? pd.reasons.join(", ") : "out of envelope"}`);
+    return emit("allow", "sub-agent delegation logged");
   }
   process.exit(0); // unknown tool → allow
 }

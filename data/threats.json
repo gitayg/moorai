@@ -1170,6 +1170,41 @@
       "owasp": "LLM06",
       "atlas": "AML.T0053",
       "stride": "Elevation of Privilege"
+    },
+    {
+      "id": 65,
+      "category": "Data Exposure",
+      "threat": "Local secret value egress",
+      "example": "A value from a local secret store (project .env, cloud credentials) appears verbatim in an outbound command, MCP tool argument, or prompt — the agent is about to ship a real secret off the device.",
+      "response": "Block outbound flows that carry a known local secret value. MoorAI fingerprints local secret values on-device (one-way hash) and matches them against egress — only the hash and a verdict ever leave, never the value.",
+      "severity": 5,
+      "likelihood": 3,
+      "riskScore": 15,
+      "riskLevel": "Critical",
+      "sources": [
+        "OWASP"
+      ],
+      "owasp": "LLM02",
+      "atlas": "AML.T0024",
+      "stride": "Information Disclosure"
+    },
+    {
+      "id": 66,
+      "category": "Agents & Permissions",
+      "threat": "Sub-agent / A2A delegation",
+      "example": "An agent spawns a sub-agent or delegates a task to another agent (A2A), extending the blast radius through a child that may inherit less oversight than the parent — a delegated action can bypass controls scoped to the parent.",
+      "response": "Track sub-agent spawns and agent-to-agent delegation; apply the parent's entitlement envelope and tier to the child, and flag delegation outside the authorized scope. MoorAI records the delegation graph content-free (tool + fingerprint lineage, never content).",
+      "severity": 4,
+      "likelihood": 3,
+      "riskScore": 12,
+      "riskLevel": "High",
+      "sources": [
+        "OWASP",
+        "Agent safety"
+      ],
+      "owasp": "LLM06",
+      "atlas": "AML.T0053",
+      "stride": "Elevation of Privilege"
     }
   ]
 }

@@ -484,6 +484,36 @@
       "id": "obf-bidi-override",
       "text": "const admin = ‮false‬; // looks safe",
       "expect": 50
+    },
+    {
+      "id": "def-tls-off",
+      "text": "requests.post(url, data=d, verify=False)",
+      "stage": "output",
+      "expect": 61
+    },
+    {
+      "id": "def-cors-wild",
+      "text": "res.header(\"Access-Control-Allow-Origin\", \"*\")",
+      "stage": "output",
+      "expect": 61
+    },
+    {
+      "id": "def-debug",
+      "text": "app.run(host=\"0.0.0.0\", debug=True)",
+      "stage": "output",
+      "expect": 61
+    },
+    {
+      "id": "def-fp-jitter",
+      "text": "const jitter = Math.random() * backoffMs;",
+      "stage": "output",
+      "none": true
+    },
+    {
+      "id": "def-fp-verify-true",
+      "text": "resp = requests.get(url, verify=True)",
+      "stage": "output",
+      "none": true
     }
   ]
 }
