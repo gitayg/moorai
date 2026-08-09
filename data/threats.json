@@ -1117,6 +1117,59 @@
       "owasp": "LLM05",
       "atlas": "AML.T0011",
       "stride": "Tampering"
+    },
+    {
+      "id": 62,
+      "category": "Add-ons & Tools",
+      "threat": "Hallucinated or typosquatted dependency",
+      "example": "An AI coding agent suggests installing a package that doesn't exist (a hallucinated name attackers pre-register — 'slopsquatting') or one whose name is a near-miss of a popular package ('reqeusts' for 'requests', 'lodahs' for 'lodash'), pulling malicious code into the project.",
+      "response": "Do not install packages an agent names without verifying they exist and are the intended, popular package. MoorAI flags install commands whose package name typosquats a known-popular package or looks hallucinated — content-free, matched on the name only.",
+      "severity": 4,
+      "likelihood": 4,
+      "riskScore": 16,
+      "riskLevel": "High",
+      "sources": [
+        "OWASP",
+        "Socket"
+      ],
+      "owasp": "LLM03",
+      "atlas": "AML.T0010",
+      "stride": "Tampering"
+    },
+    {
+      "id": 63,
+      "category": "Data Exposure",
+      "threat": "Unapproved model endpoint (rogue LLM egress)",
+      "example": "An agent is pointed at a non-approved LLM/API endpoint — a base-URL override (ANTHROPIC_BASE_URL / OPENAI_BASE_URL) or a direct call to an unsanctioned provider or proxy — so prompts, code, and secrets are exfiltrated to an attacker-controlled or unvetted destination.",
+      "response": "Restrict which model endpoints agents may use to an approved allow-list. MoorAI flags base-URL overrides and direct calls to LLM endpoints not on your organization's allow-list — host-level, content-free.",
+      "severity": 5,
+      "likelihood": 3,
+      "riskScore": 15,
+      "riskLevel": "High",
+      "sources": [
+        "OWASP"
+      ],
+      "owasp": "LLM02",
+      "atlas": "AML.T0024",
+      "stride": "Information Disclosure"
+    },
+    {
+      "id": 64,
+      "category": "Agents & Permissions",
+      "threat": "Agent entitlement drift (out-of-scope action)",
+      "example": "An agent takes an action outside its declared authorized envelope — reads a directory, calls a tool or MCP server, or reaches an endpoint it was never scoped for — the signal that a correctly-permissioned agent has quietly turned into a breach.",
+      "response": "Declare each agent's authorized scope (tools, paths, MCP servers, endpoints) and alert or block when observed behavior drifts from it. MoorAI compares actions against the policy's entitlement envelope — content-free (names/paths only, never content).",
+      "severity": 4,
+      "likelihood": 3,
+      "riskScore": 12,
+      "riskLevel": "High",
+      "sources": [
+        "OWASP",
+        "Agent safety"
+      ],
+      "owasp": "LLM06",
+      "atlas": "AML.T0053",
+      "stride": "Elevation of Privilege"
     }
   ]
 }

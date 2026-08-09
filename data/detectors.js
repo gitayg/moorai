@@ -1,5 +1,6 @@
 import { INJECTION_I18N } from "./injection-i18n.js";
 import { SECRET_DETECTORS } from "./secrets-patterns.js";
+import { inspectInstall } from "./popular-packages.js";
 
 export const DETECTORS = [
   {
@@ -351,10 +352,13 @@ export const DETECTORS = [
     threatId: 50,
     stage: "prompt",
     mode: "warn",
-    hint: "Contains zero-width or direction-override characters that hide instructions from humans (RAG / embedding poisoning).",
+    hint: "Zero-width run or direction-override characters that hide instructions from humans (RAG / embedding poisoning).",
     patterns: [
-      /[\u200B-\u200D\u2060\uFEFF]/,
-      /[\u202A-\u202E\u2066-\u2069]/
+      // FP-scoped: a RUN of \u22652 consecutive zero-widths (stego signal) \u2014 a single ZWJ between emoji
+      // scalars or one leading BOM never matches. Bidi is limited to the two OVERRIDES (Trojan Source);
+      // plain RTL embeddings/isolates are legitimate and no longer flagged.
+      /[\u200B-\u200D\u2060\uFEFF]{2,}/,
+      /[\u202D\u202E]/
     ]
   },
   {
@@ -553,5 +557,72 @@ export const DETECTORS = [
       /\b(unserialize|Marshal\.load)\s*\(/i,
       /\bnew\s+ObjectInputStream\s*\(/
     ]
+  },
+  {
+    // T1-1 / #63 (LLM02) — base-URL override that redirects an agent's model traffic to a non-official
+    // endpoint (the classic exfil-via-rogue-endpoint / logging-proxy vector). Flags the override itself;
+    // hook-core additionally enforces the org's endpoint allow-list on the extracted host. Content-free
+    // (host + env-var name only). Loopback overrides (local models) are intentionally NOT matched here.
+    detectorId: "model-endpoint-override",
+    threatId: 63,
+    stages: ["prompt", "output"],
+    mode: "warn",
+    hint: "Model base-URL override to a non-official endpoint — possible rogue-LLM egress.",
+    patterns: [
+      /\b(ANTHROPIC_BASE_URL|ANTHROPIC_API_URL|OPENAI_BASE_URL|OPENAI_API_BASE|OPENAI_PROXY|AZURE_OPENAI_ENDPOINT|HF_ENDPOINT|GROQ_BASE_URL|MISTRAL_BASE_URL|TOGETHER_BASE_URL|OPENROUTER_BASE_URL|COHERE_BASE_URL|LITELLM_PROXY_URL|OLLAMA_BASE_URL)\s*[=:]\s*["']?https?:\/\/(?!(?:localhost|127\.0\.0\.1|\[::1\]))/i
+    ]
+  },
+  {
+    // T1-3 / #50 (LLM08) - net-new invisible-text coverage beyond idx-invisible-text: Unicode Tag block
+    // (ASCII smuggling), ANSI/OSC terminal escapes, and the variation-selector supplement (byte
+    // smuggling). Near-certainly malicious in prompts/files/output, so they flag on presence.
+    // Content-free - matches the control chars themselves, never surrounding content.
+    detectorId: "obf-invisible-instructions",
+    threatId: 50,
+    stages: ["prompt", "output"],
+    mode: "warn",
+    hint: "Hidden/invisible text (Unicode tag block, ANSI escape, or variation-selector smuggling).",
+    patterns: [
+      /[\u{E0000}-\u{E007F}]/u,
+      /\x1b[\[\]P^_]/,
+      /[\u{E0100}-\u{E01EF}]/u
+    ]
+  },
+  {
+    // T1-4 / #2 (LLM01) — direct jailbreak / persona-bypass phrasings, a curated high-precision subset
+    // (DAN lineage, developer/god-mode unlock, named personas, restriction-removal, prefix injection,
+    // safety-bypass, chat-template control-token injection, grandma/fiction framings). Each object noun
+    // is scoped so normal dev prompts ("act as a code reviewer", "enable developer mode in webpack",
+    // "disable the safety check in the test harness") do NOT match. Content-free (phrasing only).
+    detectorId: "inj-jailbreak",
+    threatId: 2,
+    stage: "prompt",
+    mode: "warn",
+    hint: "Direct jailbreak / persona-bypass phrasing (possible prompt injection).",
+    patterns: [
+      /\byou\s+are\s+(?:now\s+)?in\s+(?:developer|dev|debug|god|dan|jailbreak|unrestricted|unfiltered|uncensored|sudo|root|kernel)\s+mode\b|\b(?:enable|enter|activate|turn\s+on|switch\s+(?:in)?to|unlock)\s+(?:the\s+)?(?:god|dan|jailbreak|unrestricted|unfiltered|uncensored|do[\s-]?anything|no[\s-]?holds?[\s-]?barred)\s+mode\b/i,
+      /\bDAN\b[\s\S]{0,60}?\bdo\s+anything\s+now\b|\bdo\s+anything\s+now\b[\s\S]{0,60}?\bDAN\b|\byou\s+are\s+(?:going\s+to\s+(?:act|pretend)\s+(?:as|to\s+be)\s+)?DAN\b/i,
+      /\b(?:you\s+are|act\s+as|roleplay\s+as|role-?play\s+as|pretend\s+to\s+be|become|simulate|behave\s+like)\s+(?:now\s+)?(?:AIM|STAN|DUDE|Mongo\s+Tom|Evil\s+Confidant|AntiGPT|BetterDAN|UnfilteredGPT|JailBreak)\b/i,
+      /\byou\s+are\s+(?:now\s+)?(?:a\s+|an\s+)?[\w\s,'-]{0,45}?(?:with\s+no|without\s+(?:any\s+)?|free\s+(?:from|of)|that\s+(?:has\s+no|ignores))\s*(?:restriction|filter|limit|rule|guideline|censorship|guardrail|boundar|constraint)s?\b/i,
+      /\byou\s+are\s+(?:now\s+)?no\s+longer\s+(?:bound|restricted|limited|constrained|governed|subject\s+to|obligated)\b/i,
+      /\b(?:start|begin|preface|prefix|open)\s+(?:your\s+)?(?:response|reply|answer|output|message)\s+(?:with|by\s+saying)\b[^"'“\n]{0,30}["'“](?:sure|of\s+course|certainly|absolutely|here(?:'s|\s+is|\s+are)|yes,?\s+i)/i,
+      /\b(?:bypass|disable|turn\s+off|deactivate|circumvent|evade|switch\s+off|suppress|lift)\s+(?:(?:your|the|all)\s+){0,2}(?:safety|content|ethical|moderation)\s+(?:filter|guardrail|restriction|polic(?:y|ies)|mechanism|constraint)s?\b/i,
+      /<\|(?:im_start|im_end|eot_id|start_header_id|end_header_id|endoftext|assistant|system|user)\|>|\[INST\]|\[\/INST\]|<<SYS>>/i,
+      /\b(?:my\s+)?(?:deceased|dead|late|dying|departed)\s+(?:grand\s?ma|grand\s?mother|granny|nana|gran|grandpa|grand\s?father)\b[\s\S]{0,90}?(?:used\s+to|would\s+(?:always\s+)?(?:tell|read|recite|sing|whisper|list)|tell\s+me|read\s+me|recite|whisper)/i,
+      /\b(?:in\s+(?:a|this)\s+(?:fictional|hypothetical|imaginary|purely\s+theoretical)\s+(?:world|scenario|story|setting|universe)|(?:this\s+is|it['’]s)\s+(?:just|purely|only)?\s*(?:a\s+)?(?:fiction|hypothetical|thought\s+experiment|role[\s-]?play))\b[\s\S]{0,80}?\b(?:no\s+(?:rules|restrictions|limits|consequences|filters|boundaries)|anything\s+(?:is\s+allowed|goes)|nothing\s+(?:is\s+)?(?:forbidden|off[\s-]limits|banned))/i
+    ]
+  },
+  {
+    // T1-2 / #62 (LLM03) — hallucinated / typosquatted dependency in an install command. The pattern
+    // matches any install command; refine() classifies the package NAME offline (known-malicious,
+    // typosquat near-miss of a popular package, or cross-ecosystem confusion) and only fires when
+    // suspicious — so benign installs of real popular packages never flag. Content-free (name only).
+    detectorId: "dep-typosquat",
+    threatId: 62,
+    stages: ["prompt", "output"],
+    mode: "warn",
+    hint: "Install of a hallucinated / typosquatted package (name is a near-miss of a popular package or a known-bad name).",
+    patterns: [/\b(?:npm|pnpm|yarn|bun|pip3?|pipx|cargo)\s+(?:install|add|i)\b[^\n]{0,140}/i],
+    refine: (m) => !!inspectInstall(m)
   }
 ];

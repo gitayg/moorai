@@ -9,7 +9,7 @@ import { DETECTORS } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
 import { loadConfig } from "./config.mjs";
-import { calibrateRisk } from "./hook-core.mjs";
+import { calibrateRisk, decideEndpoints } from "./hook-core.mjs";
 import { recordExposure, recordIntent } from "./signals.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -177,12 +177,17 @@ async function main() {
   if (findings.length) printFindings(findings);
   if (content.length) { console.error(`\n${C.bold}Parental-control review${C.off}`); for (const c of content) printContent([c], cp[c.ruleId] === "block"); console.error(""); }
 
+  // T1-1 — model-endpoint allow-list: a base-URL override / rogue LLM host in the prompt hard-blocks.
+  const epD = decideEndpoints(policy, prompt);
+  if (epD.decision === "deny") { const a = { threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: "claude -p", ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }; post(a); }
+
   // Hard block: any threat or content category set to "block". The user cannot override.
-  const hardBlock = blockedFindings.length > 0 || blockedContent.length > 0;
+  const hardBlock = blockedFindings.length > 0 || blockedContent.length > 0 || epD.decision === "deny";
   if (hardBlock) {
     const parts = [];
     if (blockedFindings.length) parts.push(`threat policy (#${blockedFindings.map((f) => f.threat.id).join(", #")})`);
     if (blockedContent.length) parts.push(`content policy (${blockedContent.map((c) => c.label).join(", ")})`);
+    if (epD.decision === "deny") parts.push(epD.reason);
     const verb = killFindings.length ? "killed" : "blocked";
     console.error(`${C.red}✗ ${verb} by ${parts.join(" + ")} — nothing sent to claude -p${C.off}`);
     if (killFindings.length) await reportSessionKill("prompt", killFindings);

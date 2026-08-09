@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { DETECTORS } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
+import { extractEndpointHosts, endpointApproved } from "../data/model-endpoints.js";
 import { TIER_OF } from "../data/data-tiers.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { compilePacks } from "../data/detector-packs.js";
@@ -105,6 +106,33 @@ export function decideMcpArgs(policy, tool, argsText) {
     if (!ok) return { decision: "deny", reason: `${tool} argument is not on the allow-list` };
   }
   return { decision: "allow" };
+}
+
+// T1-1 / #63 — model-endpoint allow-list. Enforce only when policy.endpointAllow is set; a referenced
+// LLM endpoint host (base-URL override target or direct provider call) not on the list → deny. Loopback
+// (local models) is always allowed. Content-free: operates on hosts, never content.
+export function decideEndpoints(policy, text) {
+  const allow = policy?.endpointAllow;
+  if (!Array.isArray(allow) || !allow.length) return { decision: "allow", hosts: [] };
+  const bad = extractEndpointHosts(text).filter((h) => !endpointApproved(h, allow));
+  if (bad.length) return { decision: "deny", hosts: bad, reason: `model endpoint(s) not on the allow-list: ${bad.join(", ")}` };
+  return { decision: "allow", hosts: [] };
+}
+
+// T1-5 / #64 — agent entitlement envelope. policy.entitlements = { tools:[], paths:[], mcp:[] } declares
+// the agent's authorized surface; an observed tool / path-prefix / MCP server outside it is "drift".
+// Returns the out-of-scope reasons (empty = in scope). Enforcement strictness is policy.entitlementMode
+// ("off" | "alert" | "block"). Content-free: names/paths only. An empty/absent envelope → always in scope.
+export function decideEnvelope(policy, { tool, paths = [], mcpServer } = {}) {
+  const env = policy?.entitlements;
+  if (!env || typeof env !== "object") return { inScope: true, reasons: [] };
+  const reasons = [];
+  if (Array.isArray(env.tools) && env.tools.length && tool && !env.tools.includes(tool)) reasons.push(`tool:${tool}`);
+  if (Array.isArray(env.mcp) && env.mcp.length && mcpServer && !env.mcp.includes(mcpServer)) reasons.push(`mcp:${mcpServer}`);
+  if (Array.isArray(env.paths) && env.paths.length) {
+    for (const p of paths) { if (p && !env.paths.some((a) => String(p).startsWith(a))) reasons.push(`path:${p}`); }
+  }
+  return { inScope: reasons.length === 0, reasons };
 }
 
 // Conservative file-path extraction from a Bash command — only for unambiguous leading file-readers.

@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { join, dirname, basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideMcpServer, decideMcpArgs, extractReadPaths } from "./hook-core.mjs";
+import { buildEngine, decideText, decideMcpServer, decideMcpArgs, decideEndpoints, decideEnvelope, extractReadPaths } from "./hook-core.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, requestKill } from "./signals.mjs";
 import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
 import { isRulesFile, rulesFileKind } from "../data/rules-files.js";
@@ -157,6 +157,17 @@ function killSession(tool, ids, stage) {
   post({ threatId: 0, category: "Session terminated (kill)", riskLevel: "Blocked", stage, tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "kill:" + ids.join("."), ...IDENTITY });
 }
 
+// T1-5 / #64 — report agent entitlement drift content-free (only the out-of-scope reason tokens leave)
+// and return whether policy says to block it. entitlementMode: "off" (default) | "alert" | "block".
+function reportEnvelope(policy, tool, ctx, stage) {
+  const mode = policy?.entitlementMode || "off";
+  if (mode === "off") return false;
+  const { inScope, reasons } = decideEnvelope(policy, ctx);
+  if (inScope) return false;
+  post({ threatId: 64, category: "Agent entitlement drift", riskLevel: mode === "block" ? "Blocked" : "High", stage, tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "drift:" + djb2(reasons.join("|")), driftReasons: reasons, ...IDENTITY });
+  return mode === "block";
+}
+
 function emit(decision, reason) {
   if (decision === "allow") process.exit(0);
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision === "deny" ? "deny" : "ask", permissionDecisionReason: `MoorAI: ${reason}` } }));
@@ -186,7 +197,9 @@ async function main() {
     await maybeEscalate(policy, text, "file", "hook:Read", d);
     if (isRulesFile(ti.file_path)) reportRulesFile(ti.file_path, text, d);
     if (d.kill) killSession("Read", d.killIds, "file");
-    return emit(d.decision, `${d.kill ? "killed session" : "blocked Read"} of ${basename(ti.file_path || "file")} — ${d.reasons.join(", ")}`);
+    let rdec = d.decision;
+    if (reportEnvelope(policy, "Read", { tool: "Read", paths: [ti.file_path] }, "file") && rdec !== "deny") rdec = "deny";
+    return emit(rdec, `${d.kill ? "killed session" : "blocked Read"} of ${basename(ti.file_path || "file")} — ${d.reasons.join(", ")}`);
   }
   if (tool === "Bash") {
     let dec = "allow", reasons = [], finds = [], btext = "", killIds = [];
@@ -198,11 +211,21 @@ async function main() {
       if (RANK[d.decision] > RANK[dec]) { dec = d.decision; reasons = d.reasons; }
       if (isRulesFile(p)) reportRulesFile(p, t, d);
     }
+    // T1-2/T1-1 — scan the COMMAND itself (not just files it reads) so command-level detectors enforce:
+    // typosquat/hallucinated install (#62), destructive (#43), reverse shell (#54), untrusted install (#57).
+    const cmdD = decideText(engine, policy, ti.command, "prompt");
+    finds.push(...cmdD.findings);
+    if (cmdD.kill) killIds.push(...cmdD.killIds);
+    if (RANK[cmdD.decision] > RANK[dec]) { dec = cmdD.decision; reasons = cmdD.reasons; }
+    // T1-1 — model-endpoint allow-list: a base-URL override / direct call to a non-approved LLM host.
+    const epD = decideEndpoints(policy, ti.command);
+    if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: "hook:Bash", ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); }
     report(finds, "file", "hook:Bash", dec === "deny", policy.captureTier, { toolName: "Bash", cmdShape: commandShape(ti.command) });
     logBehavior("Bash", ti.command || "bash", btext, { decision: dec, findings: finds }, "file");
     await maybeEscalate(policy, btext, "file", "hook:Bash", { findings: finds });
     if (killIds.length) killSession("Bash", killIds, "file");
-    return emit(dec, `${killIds.length ? "killed session" : "blocked file read"} via Bash — ${reasons.join(", ")}`);
+    if (reportEnvelope(policy, "Bash", { tool: "Bash", paths: extractReadPaths(ti.command) }, "file") && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; }
+    return emit(dec, `${killIds.length ? "killed session" : "blocked"} via Bash — ${reasons.join(", ")}`);
   }
   if (tool.startsWith("mcp__")) {
     const server = tool.split("__")[1] || "";
@@ -212,6 +235,11 @@ async function main() {
     if (sd.decision === "deny") { post({ threatId: 0, category: "MCP: unapproved server", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(server), ...IDENTITY, ...(signApproval(tool, argsH, "deny") || {}) }); return emit("deny", sd.reason); }
     const ad = decideMcpArgs(policy, tool, args); // #18 — per-tool argument allow/deny rules
     if (ad.decision === "deny") { post({ threatId: 0, category: "MCP: denied tool argument", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(args), ...IDENTITY, ...(signApproval(tool, argsH, "deny") || {}) }); return emit("deny", ad.reason); }
+    // T1-5 — entitlement envelope: an MCP server outside the agent's declared scope is drift.
+    if (reportEnvelope(policy, tool, { tool, mcpServer: server }, "egress")) return emit("deny", `${tool} — out-of-envelope MCP server`);
+    // T1-1 — model-endpoint allow-list on the serialized args (a tool arg pointing at a rogue LLM host).
+    const epD = decideEndpoints(policy, args);
+    if (epD.decision === "deny") { post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); return emit("deny", epD.reason); }
     const d = decideText(engine, policy, args, "prompt"); // #2 — scan args
     report(d.findings, "egress", `hook:${tool}`, d.decision === "deny", policy.captureTier, { toolName: tool, argText: args }, signApproval(tool, argsH, d.decision === "deny" ? "deny" : "allow"));
     logBehavior(tool, tool, args, d, "egress");
