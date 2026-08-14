@@ -134,7 +134,7 @@ export class DetectionEngine {
         const g = new RegExp(p.source, p.flags.includes("g") ? p.flags : p.flags + "g");
         // Honor refine so an entropy-gated detector never over-redacts a benign long string — scan
         // and redact must agree on what's a secret.
-        out = out.replace(g, (m) => (d.refine && !d.refine(m)) ? m : `[REDACTED:#${d.threatId}]`);
+        out = out.replace(g, (m) => (d.refine && !d.refine(m, text)) ? m : `[REDACTED:#${d.threatId}]`);
       }
     }
     return out;
@@ -150,14 +150,16 @@ export class DetectionEngine {
 
   // #7 — like _firstMatch, but if the detector has a `refine(match)` predicate (entropy/allowlist
   // gate for shapeless secrets), keep scanning occurrences until one passes. No refine → identical to
-  // _firstMatch, so existing detectors are unaffected.
+  // _firstMatch, so existing detectors are unaffected. refine also receives the FULL scanned text as
+  // a second arg (ignored by string-only refines), so a proximity gate like taint-lite can look
+  // beyond the matched span for a nearby source without widening the pattern.
   _matchDetector(text, d) {
     if (!d.refine) return this._firstMatch(text, d.patterns);
     for (const p of d.patterns) {
       const g = new RegExp(p.source, p.flags.includes("g") ? p.flags : p.flags + "g");
       let m;
       while ((m = g.exec(text)) !== null) {
-        if (d.refine(m[0])) return m[0];
+        if (d.refine(m[0], text)) return m[0];
         if (m.index === g.lastIndex) g.lastIndex++; // guard against zero-width matches
       }
     }

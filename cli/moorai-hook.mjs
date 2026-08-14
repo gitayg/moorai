@@ -22,7 +22,7 @@ import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesB
 import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
 import { isRulesFile, rulesFileKind } from "../data/rules-files.js";
 import { signApproval, argsHash } from "../data/agency-sign.mjs";
-import { contentTells, assessSession, assessTrifecta, trifectaLegs } from "../data/agent-behavior.js";
+import { contentTells, assessSession, assessTrifecta, assessCrossServerTrifecta, trifectaLegs, serverOf } from "../data/agent-behavior.js";
 import { classifyLocal } from "../data/model-escalation.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
@@ -92,15 +92,24 @@ function logBehavior(tool, identity, scannedText, d, stage) {
     const risk = (d.findings || []).reduce((m, f) => (RISK_RANK[f.riskLevel] > RISK_RANK[m] ? f.riskLevel : m), "Low");
     const flags = contentTells(scannedText || "");
     const legs = trifectaLegs(tool, stage, d.findings || [], flags); // #1 — content-free trifecta legs
-    const beforeS = assessSession(readAgentEvents()), beforeT = assessTrifecta(readAgentEvents());
-    recordAgentEvent({ ts: Date.now(), sig: `${tool}|${djb2(identity || tool)}`, ok: d.decision !== "deny", risk, flags, legs });
-    const events = readAgentEvents(), afterS = assessSession(events), afterT = assessTrifecta(events);
+    const server = serverOf(tool); // which MCP server (or "local") contributed this event's legs
+    const priorEvents = readAgentEvents();
+    const beforeS = assessSession(priorEvents), beforeT = assessTrifecta(priorEvents), beforeX = assessCrossServerTrifecta(priorEvents);
+    recordAgentEvent({ ts: Date.now(), sig: `${tool}|${djb2(identity || tool)}`, ok: d.decision !== "deny", risk, flags, legs, server });
+    const events = readAgentEvents(), afterS = assessSession(events), afterT = assessTrifecta(events), afterX = assessCrossServerTrifecta(events);
     if (afterS.level === "autonomous-signature" && beforeS.level !== "autonomous-signature") {
       post({ threatId: 0, category: "Autonomous-agent behavior", riskLevel: "Critical", stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "sig:" + afterS.tells.map((t) => t.id).join("."), signature: { level: afterS.level, score: afterS.score, tells: afterS.tells.map((t) => t.id), events: afterS.events }, ...IDENTITY });
     }
     // #1 — the lethal trifecta just closed in this session (all three legs now present).
     if (afterT.present && !beforeT.present) {
       post({ threatId: 59, category: "Lethal trifecta exposure", riskLevel: "High", stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "trifecta:read.ingest.callout", signature: { legs: afterT.legs }, ...IDENTITY });
+    }
+    // Cross-server confused-deputy — the trifecta just closed across ≥2 DISTINCT servers, so no single
+    // server's tool profile looks lethal. Distinct content-free alert (reuses threat 59 with its own
+    // category + a signature listing the contributing servers per leg). Server identifiers may leave the
+    // device; content never does. Best-effort: still inside the enforcement-neutral try/catch.
+    if (afterX.crossServer && !beforeX.crossServer) {
+      post({ threatId: 59, category: "Cross-server toxic flow", riskLevel: "High", stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "xserver:" + afterX.servers.join("+"), signature: { crossServer: true, servers: afterX.servers, legs: afterX.legs, serversByLeg: afterX.serversByLeg }, ...IDENTITY });
     }
   } catch { /* behavior signal is best-effort; never affects enforcement */ }
 }
@@ -163,9 +172,11 @@ function killSession(tool, ids, stage) {
 function reportEnvelope(policy, tool, ctx, stage) {
   const mode = policy?.entitlementMode || "off";
   if (mode === "off") return false;
-  const { inScope, reasons } = decideEnvelope(policy, ctx);
-  if (inScope) return false;
-  post({ threatId: 64, category: "Agent entitlement drift", riskLevel: mode === "block" ? "Blocked" : "High", stage, tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "drift:" + djb2(reasons.join("|")), driftReasons: reasons, ...IDENTITY });
+  const d = decideEnvelope(policy, { ...ctx, actor: IDENTITY.actor }); // JIT: honor this actor's live grants
+  // A live grant covered an otherwise-out-of-envelope action — log the time-boxed elevation, content-free.
+  if (d.elevated) post({ threatId: 0, category: "JIT elevation used", riskLevel: "Info", stage, tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "elev:" + djb2(String(d.usedGrants)), ...IDENTITY });
+  if (d.inScope) return false;
+  post({ threatId: 64, category: "Agent entitlement drift", riskLevel: mode === "block" ? "Blocked" : "High", stage, tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "drift:" + djb2(d.reasons.join("|")), driftReasons: d.reasons, ...IDENTITY });
   return mode === "block";
 }
 

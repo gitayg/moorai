@@ -123,16 +123,22 @@ export function decideEndpoints(policy, text) {
 // the agent's authorized surface; an observed tool / path-prefix / MCP server outside it is "drift".
 // Returns the out-of-scope reasons (empty = in scope). Enforcement strictness is policy.entitlementMode
 // ("off" | "alert" | "block"). Content-free: names/paths only. An empty/absent envelope → always in scope.
-export function decideEnvelope(policy, { tool, paths = [], mcpServer } = {}) {
+export function decideEnvelope(policy, { tool, paths = [], mcpServer, actor } = {}) {
   const env = policy?.entitlements;
-  if (!env || typeof env !== "object") return { inScope: true, reasons: [] };
+  if (!env || typeof env !== "object") return { inScope: true, reasons: [], elevated: false };
   const reasons = [];
   if (Array.isArray(env.tools) && env.tools.length && tool && !env.tools.includes(tool)) reasons.push(`tool:${tool}`);
   if (Array.isArray(env.mcp) && env.mcp.length && mcpServer && !env.mcp.includes(mcpServer)) reasons.push(`mcp:${mcpServer}`);
   if (Array.isArray(env.paths) && env.paths.length) {
     for (const p of paths) { if (p && !env.paths.some((a) => String(p).startsWith(a))) reasons.push(`path:${p}`); }
   }
-  return { inScope: reasons.length === 0, reasons };
+  // JIT elevation: an out-of-envelope reason covered by a live, non-expired grant for THIS actor is
+  // allowed (time-boxed) rather than flagged. Grants are exact for tool:/mcp:, prefix for path:.
+  const grants = (Array.isArray(policy?.elevations) ? policy.elevations : []).filter((g) => !actor || g.actor === actor);
+  const covered = (r) => grants.some((g) => g.capability === r ||
+    (g.capability.startsWith("path:") && r.startsWith("path:") && r.slice(5).startsWith(g.capability.slice(5))));
+  const remaining = reasons.filter((r) => !covered(r));
+  return { inScope: remaining.length === 0, reasons: remaining, elevated: remaining.length < reasons.length, usedGrants: reasons.length - remaining.length };
 }
 
 // Conservative file-path extraction from a Bash command — only for unambiguous leading file-readers.

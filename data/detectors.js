@@ -1,6 +1,7 @@
 import { INJECTION_I18N } from "./injection-i18n.js";
 import { SECRET_DETECTORS } from "./secrets-patterns.js";
 import { inspectInstall } from "./popular-packages.js";
+import { taintedFlow } from "./taint.js";
 
 export const DETECTORS = [
   {
@@ -666,5 +667,33 @@ export const DETECTORS = [
       /\bredirect\s*\(\s*[^)]{0,40}\brequest\.(?:args|form|values|GET|POST)\b/,
       /["']?(?:ACL|acl)["']?\s*[:=]\s*["']public-read(?:-write)?["']|BlockPublicAcls\s*[:=]\s*(?:False|false)/
     ]
+  },
+  {
+    // #61 (LLM05) — CONFIRMED tainted flow: intra-file taint-lite (data/taint.js) layered on top of the
+    // pattern-only insecure-code detectors above. The pattern matches the dangerous SINK family; refine()
+    // fires ONLY when an untrusted SOURCE (req.body, request.args, process.argv, input(), os.environ,
+    // event/params, location.search, scanf, …) sits on the same line as, or within a small line window of,
+    // that sink. This is a high-confidence "source→sink" signal the console can prioritize over the broad
+    // hardcoded-literal matches — which stay AS-IS for coverage. Output-stage, content-free (the sink match
+    // is clipped/hashed like every other finding; taint.js returns tokens, never surrounding code).
+    detectorId: "code-tainted-flow",
+    threatId: 61,
+    stage: "output",
+    mode: "warn",
+    hint: "Confirmed tainted flow — untrusted input reaches a dangerous sink (SQL/shell/eval/HTML/deserialize).",
+    patterns: [
+      /\b(?:execute|executemany|executescript|query|prepare|raw)\s*\(/i,
+      /\bos\.(?:system|popen)\s*\(/,
+      /\bsubprocess\.(?:run|call|check_output|check_call|Popen)\s*\(/,
+      /\bchild_process\.(?:exec|execSync|spawn|spawnSync)\s*\(/,
+      /\beval\s*\(/,
+      /\bnew\s+Function\s*\(/,
+      /\.(?:inner|outer)HTML\s*=/,
+      /\.insertAdjacentHTML\s*\(/,
+      /\bdocument\.write(?:ln)?\s*\(/,
+      /\b(?:c?[Pp]ickle)\.loads?\s*\(/,
+      /\byaml\.load\s*\(/
+    ],
+    refine: (_m, text) => taintedFlow(text)
   }
 ];

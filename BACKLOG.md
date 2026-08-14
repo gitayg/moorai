@@ -220,11 +220,15 @@ payload + rug-pull drift), jailbreak detectors, entitlement envelope.
   content-free, scans the delegated prompt for injection, applies the parent's entitlement envelope.
 - **agent→server MCP config-hash reporting** — `/api/device-report` now feeds each reported server's
   config hash into the registry, so a silently-changed server flags as drift (drift UI shipped v0.34.0).
+- **Cross-server toxic-flow correlation** (v0.46.0) — SHIPPED. Each content-free agent event now carries a
+  `server` attribution (parsed from `mcp__<server>__<tool>`; `local` for Read/Bash/Task).
+  `assessCrossServerTrifecta(events)` in `data/agent-behavior.js` attributes each trifecta leg to the
+  server that produced it and reports `crossServer:true` when the three legs cannot be pinned on any single
+  server (confused-deputy the single-server scanner misses). The hook (`logBehavior`) emits a distinct
+  content-free alert reusing threat 59 with `category: "Cross-server toxic flow"` and a signature listing
+  the contributing servers per leg. Same-session trifecta alert unchanged; enforcement-neutral (fail-open).
 
 ### Deferred (refinements / heavier)
-- **Cross-server toxic-flow correlation** — extend the single-session lethal-trifecta so the three legs
-  assembled across *different* MCP servers is flagged (confused-deputy). Refinement of the shipped
-  trifecta; medium effort, marginal over the single-session signal — sequence later.
 - **Fleet AI-BOM export** — ALREADY SHIPPED (`/api/aibom` + `/aibom/export` JSON+CSV, `store.aibom()`);
   no work needed. Listed here only to record it's covered.
 

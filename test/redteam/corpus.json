@@ -514,6 +514,36 @@
       "text": "resp = requests.get(url, verify=True)",
       "stage": "output",
       "none": true
+    },
+    {
+      "id": "taint-sql-request",
+      "text": "db.execute(f\"SELECT * FROM t WHERE id={request.args.get('id')}\")",
+      "stage": "output",
+      "expect": 61
+    },
+    {
+      "id": "taint-cmd-argv",
+      "text": "os.system(\"ping -c 1 \" + sys.argv[1])",
+      "stage": "output",
+      "expect": 61
+    },
+    {
+      "id": "taint-xss-location",
+      "text": "el.innerHTML = location.search.slice(1)",
+      "stage": "output",
+      "expect": 61
+    },
+    {
+      "id": "taint-fp-hardcoded-sql",
+      "text": "db.execute(\"SELECT * FROM t WHERE id = 1\")",
+      "stage": "output",
+      "none": true
+    },
+    {
+      "id": "taint-fp-innerhtml-literal",
+      "text": "el.innerHTML = \"<b>Loading…</b>\";",
+      "stage": "output",
+      "none": true
     }
   ]
 }

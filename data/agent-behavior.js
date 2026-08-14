@@ -124,6 +124,49 @@ export function assessTrifecta(events) {
   return { present, count, legs };
 }
 
+// Parse the MCP server that a tool call belongs to. The hook sees MCP tools as `mcp__<server>__<tool>`;
+// local tools (Read/Bash/Task) have no server prefix and are attributed to a synthetic "local" server.
+// Output is a bare identifier — content-free by construction (server names are allowed to leave the device).
+export function serverOf(tool) {
+  const t = String(tool || "");
+  if (t.startsWith("mcp__")) return t.split("__")[1] || "unknown";
+  return "local";
+}
+
+// Cross-server ("confused deputy") lethal trifecta. A single-server scanner only sees a toxic flow when
+// ONE server holds all three legs. The dangerous case it misses: the three legs are assembled across
+// DISTINCT servers — private data READ via one MCP server, then an exfil-capable CALLOUT via another —
+// so no single server's tool profile looks lethal, yet the session as a whole is. This attributes each
+// content-free leg to the server whose event produced it (e.event.server, defaulting to "local") and
+// reports whether the trifecta cannot be pinned on any single server.
+export function assessCrossServerTrifecta(events) {
+  const evs = Array.isArray(events) ? events : [];
+  const bySrv = { read: new Set(), ingest: new Set(), callout: new Set() };
+  for (const e of evs) {
+    const l = e.legs || {};
+    const srv = e.server || "local";
+    if (l.read) bySrv.read.add(srv);
+    if (l.ingest) bySrv.ingest.add(srv);
+    if (l.callout) bySrv.callout.add(srv);
+  }
+  const legs = { read: bySrv.read.size > 0, ingest: bySrv.ingest.size > 0, callout: bySrv.callout.size > 0 };
+  const present = legs.read && legs.ingest && legs.callout;
+  // A single server "owns" the whole trifecta only if it contributed all three legs itself.
+  let singleServerOwns = false;
+  if (present) {
+    for (const s of bySrv.read) if (bySrv.ingest.has(s) && bySrv.callout.has(s)) { singleServerOwns = true; break; }
+  }
+  const servers = [...new Set([...bySrv.read, ...bySrv.ingest, ...bySrv.callout])].sort();
+  const crossServer = present && !singleServerOwns && servers.length >= 2;
+  return {
+    present,
+    crossServer,
+    servers,
+    legs,
+    serversByLeg: { read: [...bySrv.read].sort(), ingest: [...bySrv.ingest].sort(), callout: [...bySrv.callout].sort() }
+  };
+}
+
 // Derive the three content-free trifecta legs for a single tool call from what the hook already knows:
 // the tool name, the stage, and the finding classes (threat ids) — no prompt/file content required.
 const SENSITIVE_THREATS = new Set([1, 9, 15, 39, 44, 45, 55]); // secrets, PII, PHI, source/IP, cards
