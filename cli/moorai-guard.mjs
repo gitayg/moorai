@@ -63,6 +63,17 @@ function reportContent(c, enforce) {
   });
 }
 
+// Coach-as-literacy (EU AI Act Art. 4 angle): each time MoorAI SHOWS a developer the "why + what to do"
+// for a finding, that is a just-in-time AI-literacy touchpoint delivered at the point of use. Emit a
+// content-free record — topic + framework + actor, never any content — with stage "coach" so the
+// console can show literacy coverage (evidence of "measures taken to your best extent"). Not a threat.
+function reportTouchpoint(f) {
+  return post({
+    threatId: f.threat.id, category: `Literacy: ${f.threat.category}`, riskLevel: "Info",
+    stage: "coach", tool: "claude -p", ts: new Date().toISOString(), contentHash: "coach:" + f.threat.id, ...IDENTITY
+  });
+}
+
 function printContent(content, enforce) {
   const tag = enforce ? `${C.red}BLOCKED (policy)` : `${C.org}CONTENT`;
   for (const c of content) {
@@ -74,9 +85,10 @@ function printFindings(findings) {
   console.error(`\n${C.bold}MoorAI pre-flight review${C.off} ${C.dim}— ${findings.length} issue(s) before sending to claude -p${C.off}\n`);
   for (const f of findings) {
     const c = color(f.threat.riskLevel);
-    console.error(`  ${c}● ${f.mode === "coach" ? "COACH" : f.threat.riskLevel}${C.off}  #${f.threat.id} ${f.threat.threat}  ${C.dim}[${f.threat.category}]${C.off}`);
+    const fw = [f.threat.owasp, f.threat.atlas].filter(Boolean).join(" · ");
+    console.error(`  ${c}● ${f.mode === "coach" ? "COACH" : f.threat.riskLevel}${C.off}  #${f.threat.id} ${f.threat.threat}  ${C.dim}[${f.threat.category}]${f.threat.owasp ? ` ${fw}` : ""}${C.off}`);
     console.error(`     ${C.dim}matched:${C.off} ${f.match}`);
-    console.error(`     ${f.threat.response}\n`);
+    console.error(`     ${C.dim}why:${C.off} ${f.threat.response}\n`);
   }
 }
 
@@ -174,7 +186,7 @@ async function main() {
     process.exit(await runClaude(prompt, policy, action));
   }
 
-  if (findings.length) printFindings(findings);
+  if (findings.length) { printFindings(findings); await Promise.allSettled(findings.map((f) => reportTouchpoint(f))); }
   if (content.length) { console.error(`\n${C.bold}Parental-control review${C.off}`); for (const c of content) printContent([c], cp[c.ruleId] === "block"); console.error(""); }
 
   // T1-1 — model-endpoint allow-list: a base-URL override / rogue LLM host in the prompt hard-blocks.

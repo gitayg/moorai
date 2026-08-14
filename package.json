@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "0.44.0",
+  "version": "0.45.0",
   "description": "MoorAI agent — on-device guardrails for AI coding agents (community edition, AGPL-3.0)",
   "type": "module",
   "bin": {
@@ -11,7 +11,13 @@
     "moorai-redteam": "cli/moorai-redteam.mjs",
     "moorai-agentwatch": "cli/moorai-agentwatch.mjs"
   },
-  "files": ["cli/", "src/", "data/", "scripts/redteam.mjs", "test/redteam/corpus.json"],
+  "files": [
+    "cli/",
+    "src/",
+    "data/",
+    "scripts/redteam.mjs",
+    "test/redteam/corpus.json"
+  ],
   "scripts": {
     "client": "python3 -m http.server 8000",
     "guard": "node cli/moorai-guard.mjs",
