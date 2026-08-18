@@ -108,6 +108,21 @@ export function decideMcpArgs(policy, tool, argsText) {
   return { decision: "allow" };
 }
 
+// The on-device AI Agent Gateway — the single chokepoint every MCP tool-call passes through. Pure and
+// unit-testable: composes the server allow-list (#3), per-tool argument rules (#18), and the argument
+// content scan (#2) into ONE decision, in that order, short-circuiting on the first deny. Returns the
+// decision plus a `gate` tag ("server"|"args"|"content"|null) so the caller can post the matching
+// content-free alert, and the findings / kill signal from the content scan. The caller layers the
+// impure gates (entitlement envelope, endpoint allow-list, secret-egress) and records the audit line.
+export function mcpGateway(engine, policy, { tool, server, args }) {
+  const sd = decideMcpServer(policy, server);
+  if (sd.decision === "deny") return { gate: "server", decision: "deny", reason: sd.reason, findings: [], kill: false, killIds: [] };
+  const ad = decideMcpArgs(policy, tool, args);
+  if (ad.decision === "deny") return { gate: "args", decision: "deny", reason: ad.reason, findings: [], kill: false, killIds: [] };
+  const d = decideText(engine, policy, args, "prompt");
+  return { gate: d.decision === "allow" ? null : "content", decision: d.decision, reason: d.reasons.join(", "), findings: d.findings, kill: d.kill, killIds: d.killIds };
+}
+
 // T1-1 / #63 — model-endpoint allow-list. Enforce only when policy.endpointAllow is set; a referenced
 // LLM endpoint host (base-URL override target or direct provider call) not on the list → deny. Loopback
 // (local models) is always allowed. Content-free: operates on hosts, never content.

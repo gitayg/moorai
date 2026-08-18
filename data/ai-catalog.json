@@ -1,0 +1,291 @@
+{
+  "$comment": "MoorAI shadow-AI catalog — single source of truth for what counts as an AI desktop app or AI browser/editor extension. Consumed by BOTH the Rust host (src-tauri/src/platform.rs via include_str! + serde_json) and the JS CLI AIBOM (cli/moorai-aibom.mjs). Content-free discovery only: matching is by app path existence, extension NAME keywords, and known extension IDs — never storage, page, or file contents. 'keywords' are plain lowercase SUBSTRINGS (not regexes) so Rust substring-matching and JS agree byte-for-byte; add explicit variants (e.g. 'aws-toolkit' AND 'awstoolkit') rather than regex wildcards.",
+  "version": 1,
+  "apps": [
+    {
+      "id": "chatgpt",
+      "name": "ChatGPT",
+      "vendor": "OpenAI",
+      "mac": ["ChatGPT.app"],
+      "macBundle": ["com.openai.chat"],
+      "win": ["Programs/ChatGPT/ChatGPT.exe", "ChatGPT/ChatGPT.exe"],
+      "winLnk": ["ChatGPT.lnk"]
+    },
+    {
+      "id": "chatgpt-atlas",
+      "name": "ChatGPT Atlas",
+      "vendor": "OpenAI",
+      "mac": ["ChatGPT Atlas.app"],
+      "macBundle": ["com.openai.atlas"],
+      "win": ["Programs/ChatGPT Atlas/ChatGPT Atlas.exe"],
+      "winLnk": ["ChatGPT Atlas.lnk"]
+    },
+    {
+      "id": "claude",
+      "name": "Claude",
+      "vendor": "Anthropic",
+      "mac": ["Claude.app"],
+      "macBundle": ["com.anthropic.claudefordesktop"],
+      "win": ["AnthropicClaude/claude.exe", "Programs/Claude/Claude.exe"],
+      "winLnk": ["Claude.lnk"]
+    },
+    {
+      "id": "copilot",
+      "name": "Copilot",
+      "vendor": "Microsoft",
+      "mac": ["Copilot.app"],
+      "macBundle": ["com.microsoft.copilot"],
+      "win": ["Programs/Copilot/Copilot.exe"],
+      "winLnk": ["Copilot.lnk"]
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "vendor": "Anysphere",
+      "mac": ["Cursor.app"],
+      "macBundle": ["com.todesktop.230313mzl4w4u92"],
+      "win": ["Programs/cursor/Cursor.exe"],
+      "winLnk": ["Cursor.lnk"]
+    },
+    {
+      "id": "windsurf",
+      "name": "Windsurf",
+      "vendor": "Codeium",
+      "mac": ["Windsurf.app"],
+      "macBundle": ["com.exafunction.windsurf"],
+      "win": ["Programs/Windsurf/Windsurf.exe"],
+      "winLnk": ["Windsurf.lnk"]
+    },
+    {
+      "id": "perplexity",
+      "name": "Perplexity",
+      "vendor": "Perplexity AI",
+      "mac": ["Perplexity.app"],
+      "macBundle": ["ai.perplexity.mac"],
+      "win": ["Programs/Perplexity/Perplexity.exe"],
+      "winLnk": ["Perplexity.lnk"]
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama",
+      "vendor": "Ollama",
+      "mac": ["Ollama.app"],
+      "macBundle": ["com.electron.ollama"],
+      "win": ["Programs/Ollama/ollama app.exe", "Programs/Ollama/ollama.exe"],
+      "winLnk": ["Ollama.lnk"]
+    },
+    {
+      "id": "lm-studio",
+      "name": "LM Studio",
+      "vendor": "LM Studio",
+      "mac": ["LM Studio.app"],
+      "macBundle": ["ai.elementlabs.lmstudio"],
+      "win": ["Programs/lm-studio/LM Studio.exe"],
+      "winLnk": ["LM Studio.lnk"]
+    },
+    {
+      "id": "msty",
+      "name": "Msty",
+      "vendor": "Msty",
+      "mac": ["Msty.app"],
+      "macBundle": ["com.msty.app"],
+      "win": ["Programs/Msty/Msty.exe"],
+      "winLnk": ["Msty.lnk"]
+    },
+    {
+      "id": "jan",
+      "name": "Jan",
+      "vendor": "Jan / Menlo",
+      "mac": ["Jan.app"],
+      "macBundle": ["jan.ai.app"],
+      "win": ["Programs/jan/Jan.exe"],
+      "winLnk": ["Jan.lnk"]
+    },
+    {
+      "id": "raycast",
+      "name": "Raycast",
+      "vendor": "Raycast",
+      "mac": ["Raycast.app"],
+      "macBundle": ["com.raycast.macos"],
+      "win": [],
+      "winLnk": []
+    }
+  ],
+  "extensions": [
+    {
+      "id": "chatgpt",
+      "name": "ChatGPT / OpenAI",
+      "vendor": "OpenAI",
+      "keywords": ["chatgpt", "openai", "webchatgpt", "gpt-4", "gpt4"],
+      "ids": []
+    },
+    {
+      "id": "claude",
+      "name": "Claude / Anthropic",
+      "vendor": "Anthropic",
+      "keywords": ["claude", "anthropic"],
+      "ids": []
+    },
+    {
+      "id": "copilot",
+      "name": "Copilot",
+      "vendor": "Microsoft / GitHub",
+      "keywords": ["copilot"],
+      "ids": []
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini / Google AI",
+      "vendor": "Google",
+      "keywords": ["gemini", "bard"],
+      "ids": []
+    },
+    {
+      "id": "perplexity",
+      "name": "Perplexity",
+      "vendor": "Perplexity AI",
+      "keywords": ["perplexity"],
+      "ids": []
+    },
+    {
+      "id": "monica",
+      "name": "Monica AI",
+      "vendor": "Monica",
+      "keywords": ["monica"],
+      "ids": []
+    },
+    {
+      "id": "sider",
+      "name": "Sider AI",
+      "vendor": "Sider",
+      "keywords": ["sider"],
+      "ids": []
+    },
+    {
+      "id": "merlin",
+      "name": "Merlin AI",
+      "vendor": "Foyer",
+      "keywords": ["merlin"],
+      "ids": []
+    },
+    {
+      "id": "harpa",
+      "name": "HARPA AI",
+      "vendor": "HARPA",
+      "keywords": ["harpa"],
+      "ids": []
+    },
+    {
+      "id": "compose-ai",
+      "name": "Compose AI",
+      "vendor": "Compose AI",
+      "keywords": ["composeai", "compose ai"],
+      "ids": []
+    },
+    {
+      "id": "maxai",
+      "name": "MaxAI",
+      "vendor": "MaxAI",
+      "keywords": ["maxai", "max ai"],
+      "ids": []
+    },
+    {
+      "id": "jasper",
+      "name": "Jasper",
+      "vendor": "Jasper AI",
+      "keywords": ["jasper"],
+      "ids": []
+    },
+    {
+      "id": "wiseone",
+      "name": "Wiseone",
+      "vendor": "Wiseone",
+      "keywords": ["wiseone"],
+      "ids": []
+    },
+    {
+      "id": "continue",
+      "name": "Continue",
+      "vendor": "Continue",
+      "keywords": ["continue"],
+      "ids": []
+    },
+    {
+      "id": "codeium",
+      "name": "Codeium",
+      "vendor": "Codeium",
+      "keywords": ["codeium"],
+      "ids": []
+    },
+    {
+      "id": "cody",
+      "name": "Cody / Sourcegraph",
+      "vendor": "Sourcegraph",
+      "keywords": ["cody", "sourcegraph"],
+      "ids": []
+    },
+    {
+      "id": "tabnine",
+      "name": "Tabnine",
+      "vendor": "Tabnine",
+      "keywords": ["tabnine"],
+      "ids": []
+    },
+    {
+      "id": "cline",
+      "name": "Cline / Roo Code",
+      "vendor": "Cline",
+      "keywords": ["cline", "roo-code", "roocode", "roo-cline", "kilocode"],
+      "ids": []
+    },
+    {
+      "id": "supermaven",
+      "name": "Supermaven",
+      "vendor": "Supermaven",
+      "keywords": ["supermaven"],
+      "ids": []
+    },
+    {
+      "id": "codegpt",
+      "name": "CodeGPT",
+      "vendor": "CodeGPT",
+      "keywords": ["codegpt"],
+      "ids": []
+    },
+    {
+      "id": "amazon-q",
+      "name": "Amazon Q / AWS Toolkit / CodeWhisperer",
+      "vendor": "Amazon",
+      "keywords": ["amazon-q", "amazonq", "aws-toolkit", "awstoolkit", "codewhisperer"],
+      "ids": []
+    },
+    {
+      "id": "windsurf-ext",
+      "name": "Windsurf / Codeium",
+      "vendor": "Codeium",
+      "keywords": ["windsurf"],
+      "ids": []
+    },
+    {
+      "id": "augment",
+      "name": "Augment",
+      "vendor": "Augment",
+      "keywords": ["augment"],
+      "ids": []
+    },
+    {
+      "id": "pieces",
+      "name": "Pieces",
+      "vendor": "Pieces",
+      "keywords": ["pieces"],
+      "ids": []
+    },
+    {
+      "id": "blackbox",
+      "name": "Blackbox AI",
+      "vendor": "Blackbox",
+      "keywords": ["blackbox"],
+      "ids": []
+    }
+  ]
+}

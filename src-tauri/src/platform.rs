@@ -322,49 +322,124 @@ pub fn launch_login_terminal(bin: &str) -> Result<(), String> {
 
 // --- device inventory ---
 
+// Shared shadow-AI catalog (data/ai-catalog.json), embedded at compile time so BOTH this Rust host
+// and the JS CLI AIBOM (cli/moorai-aibom.mjs) agree on "what counts as AI" from one source of truth.
+// Rust can't import JS, so the catalog is JSON read via include_str! + serde_json. Content-free:
+// only app-path presence, extension NAME keywords, and known extension IDs drive the match.
+fn ai_catalog() -> &'static serde_json::Value {
+    use std::sync::OnceLock;
+    static CATALOG: OnceLock<serde_json::Value> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        serde_json::from_str(include_str!("../../data/ai-catalog.json"))
+            .unwrap_or_else(|_| serde_json::json!({ "apps": [], "extensions": [] }))
+    })
+}
+
+// Match a browser/editor extension against the catalog by known store id (exact, case-insensitive)
+// or by display-name keyword (plain lowercase substring — kept substring, not regex, so this and the
+// JS side match byte-for-byte). Returns the catalog entry id when it's a known AI extension.
+// NOTE: "extension dir/name present" ≠ enabled — this is presence, not activity. Acceptable for
+// content-free discovery; only the name/id ever leaves the device, never storage or page content.
+fn ai_ext_match(name: &str, id: &str) -> Option<String> {
+    let name_l = name.to_lowercase();
+    let exts = ai_catalog().get("extensions")?.as_array()?;
+    for e in exts {
+        let entry_id = e.get("id").and_then(|v| v.as_str());
+        if let Some(ids) = e.get("ids").and_then(|v| v.as_array()) {
+            if ids.iter().any(|x| x.as_str().map(|s| s.eq_ignore_ascii_case(id)).unwrap_or(false)) {
+                return entry_id.map(|s| s.to_string());
+            }
+        }
+        if let Some(kws) = e.get("keywords").and_then(|v| v.as_array()) {
+            if kws.iter().any(|k| k.as_str().map(|s| name_l.contains(s)).unwrap_or(false)) {
+                return entry_id.map(|s| s.to_string());
+            }
+        }
+    }
+    None
+}
+
+// Start-menu shortcut probe (Windows): the .lnk may sit directly in Programs\ or one folder deep
+// (e.g. Programs\ChatGPT\ChatGPT.lnk). Presence-only.
+#[cfg(windows)]
+fn start_menu_has(dir: &str, leaf: &str) -> bool {
+    if Path::new(&format!("{dir}/{leaf}")).exists() {
+        return true;
+    }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if e.path().is_dir() && e.path().join(leaf).exists() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+// Catalog-driven installed AI desktop apps (display names). Presence-only (path existence).
+// macOS: /Applications + ~/Applications (per-user installs). Windows: %LOCALAPPDATA%,
+// %PROGRAMFILES%, %PROGRAMFILES(X86)% for the exe, plus Start-Menu .lnk shortcuts.
+fn installed_ai_apps() -> Vec<String> {
+    let apps = match ai_catalog().get("apps").and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => return vec![],
+    };
+    let strs = |a: &serde_json::Value, key: &str| -> Vec<String> {
+        a.get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default()
+    };
+
+    #[cfg(target_os = "macos")]
+    let roots: Vec<String> = vec!["/Applications".to_string(), format!("{}/Applications", home_dir())];
+
+    #[cfg(windows)]
+    let (roots, start_menus): (Vec<String>, Vec<String>) = {
+        let var = |k: &str| std::env::var(k).unwrap_or_default();
+        let roots: Vec<String> = [var("LOCALAPPDATA"), var("ProgramFiles"), var("ProgramFiles(x86)")]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect();
+        let start_menus: Vec<String> = [var("APPDATA"), var("ProgramData")]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("{s}/Microsoft/Windows/Start Menu/Programs"))
+            .collect();
+        (roots, start_menus)
+    };
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let _ = &strs; // no platform paths on other OSes
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    return vec![];
+
+    #[cfg(any(target_os = "macos", windows))]
+    apps.iter()
+        .filter_map(|a| {
+            let name = a.get("name")?.as_str()?;
+            #[cfg(target_os = "macos")]
+            let hit = strs(a, "mac")
+                .iter()
+                .any(|leaf| roots.iter().any(|r| Path::new(&format!("{r}/{leaf}")).exists()));
+            #[cfg(windows)]
+            let hit = strs(a, "win")
+                .iter()
+                .any(|frag| roots.iter().any(|r| Path::new(&format!("{r}/{frag}")).exists()))
+                || strs(a, "winLnk")
+                    .iter()
+                    .any(|lnk| start_menus.iter().any(|sm| start_menu_has(sm, lnk)));
+            if hit { Some(name.to_string()) } else { None }
+        })
+        .collect()
+}
+
 // Installed AI apps + CLI tools, plus OS + version. Metadata only, never content.
 pub fn ai_tools() -> serde_json::Value {
     let home = home_dir();
 
-    #[cfg(target_os = "macos")]
-    let apps: Vec<(&str, String)> = vec![
-        ("ChatGPT", "/Applications/ChatGPT.app".into()),
-        ("Claude", "/Applications/Claude.app".into()),
-        ("Copilot", "/Applications/Copilot.app".into()),
-        ("ChatGPT Atlas", "/Applications/ChatGPT Atlas.app".into()),
-        ("Cursor", "/Applications/Cursor.app".into()),
-        ("Perplexity", "/Applications/Perplexity.app".into()),
-        ("Ollama", "/Applications/Ollama.app".into()),
-        ("LM Studio", "/Applications/LM Studio.app".into()),
-        ("Msty", "/Applications/Msty.app".into()),
-        ("Jan", "/Applications/Jan.app".into()),
-        ("Raycast", "/Applications/Raycast.app".into()),
-        ("Windsurf", "/Applications/Windsurf.app".into()),
-    ];
-    #[cfg(windows)]
-    let apps: Vec<(&str, String)> = {
-        let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
-        // Best-effort default install locations for the Windows desktop builds of these apps.
-        vec![
-            ("ChatGPT", format!("{local}/Programs/ChatGPT/ChatGPT.exe")),
-            ("Claude", format!("{local}/AnthropicClaude/claude.exe")),
-            ("Copilot", format!("{local}/Programs/Copilot/Copilot.exe")),
-            ("Cursor", format!("{local}/Programs/cursor/Cursor.exe")),
-            ("Perplexity", format!("{local}/Programs/Perplexity/Perplexity.exe")),
-            ("Ollama", format!("{local}/Programs/Ollama/ollama app.exe")),
-            ("LM Studio", format!("{local}/Programs/lm-studio/LM Studio.exe")),
-            ("Jan", format!("{local}/Programs/jan/Jan.exe")),
-            ("Windsurf", format!("{local}/Programs/Windsurf/Windsurf.exe")),
-        ]
-    };
-    #[cfg(not(any(target_os = "macos", windows)))]
-    let apps: Vec<(&str, String)> = vec![];
-
-    let mut tools: Vec<String> = apps
-        .iter()
-        .filter(|(_, p)| Path::new(p).exists())
-        .map(|(n, _)| n.to_string())
-        .collect();
+    let mut tools: Vec<String> = installed_ai_apps();
 
     // CLI AI tools — resolved through the same finder used to launch them.
     for (label, name) in [("claude CLI", "claude"), ("codex CLI", "codex"), ("copilot CLI", "copilot")] {
@@ -527,7 +602,9 @@ pub fn browsers() -> serde_json::Value {
                     if let Some(ver) = ver {
                         if let Ok(t) = std::fs::read_to_string(ver.join("manifest.json")) {
                             if let Ok(m) = serde_json::from_str::<serde_json::Value>(&t) {
-                                exts.push(serde_json::json!({ "name": resolve_ext_name(&ver, &m, &id), "id": id, "broad": ext_broad(&m) }));
+                                let nm = resolve_ext_name(&ver, &m, &id);
+                                let aim = ai_ext_match(&nm, &id);
+                                exts.push(serde_json::json!({ "name": nm, "id": id, "broad": ext_broad(&m), "ai": aim.is_some(), "aiId": aim }));
                             }
                         }
                     }
@@ -555,7 +632,8 @@ pub fn browsers() -> serde_json::Value {
                                 }
                                 let id = a.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                 let nm = a.pointer("/defaultLocale/name").and_then(|v| v.as_str()).unwrap_or(&id).to_string();
-                                exts.push(serde_json::json!({ "name": nm, "id": id, "broad": false }));
+                                let aim = ai_ext_match(&nm, &id);
+                                exts.push(serde_json::json!({ "name": nm, "id": id, "broad": false, "ai": aim.is_some(), "aiId": aim }));
                             }
                         }
                     }
@@ -584,7 +662,8 @@ pub fn browsers() -> serde_json::Value {
                             continue;
                         }
                         let name = id.rsplit('.').next().unwrap_or(&id).to_string();
-                        exts.push(serde_json::json!({ "name": name, "id": id, "broad": false }));
+                        let aim = ai_ext_match(&name, &id);
+                        exts.push(serde_json::json!({ "name": name, "id": id, "broad": false, "ai": aim.is_some(), "aiId": aim }));
                     }
                 }
             }
@@ -593,6 +672,33 @@ pub fn browsers() -> serde_json::Value {
     }
 
     serde_json::json!(result)
+}
+
+// Distinct shadow-AI signal (Feature 2): the catalog-matched AI desktop apps + the AI-classified
+// browser/editor extensions, as clean arrays. Reuses the same content-free collectors and the same
+// /api/device-report sink — no new endpoint, no new data leaving the device (names/ids/flags only).
+pub fn ai_shadow() -> serde_json::Value {
+    let apps = installed_ai_apps();
+    let mut extensions = vec![];
+    if let Some(browser_list) = browsers().as_array() {
+        for b in browser_list {
+            let browser = b.get("browser").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if let Some(exts) = b.get("extensions").and_then(|v| v.as_array()) {
+                for e in exts {
+                    if e.get("ai").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        extensions.push(serde_json::json!({
+                            "browser": browser,
+                            "name": e.get("name").cloned().unwrap_or(serde_json::Value::Null),
+                            "id": e.get("id").cloned().unwrap_or(serde_json::Value::Null),
+                            "aiId": e.get("aiId").cloned().unwrap_or(serde_json::Value::Null),
+                            "broad": e.get("broad").cloned().unwrap_or(serde_json::Value::Bool(false)),
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    serde_json::json!({ "apps": apps, "extensions": extensions })
 }
 
 // Pending OS security/software updates (posture signal). macOS: `softwareupdate -l`. Windows: the

@@ -163,7 +163,9 @@ export async function reportDevice() {
     try { accounts = (await invoke("device_accounts")).accounts || []; } catch {}
     let aiAssets = null; // #7 — models/providers + local models (config metadata only)
     try { aiAssets = await invoke("device_ai_assets"); } catch {}
-    const full = { ...dev, browsers, mcp, posture, accounts, aiAssets };
+    let aiShadow = null; // Feature 2 — shadow-AI: catalog-matched AI apps + AI browser extensions (names/ids/flags only)
+    try { aiShadow = await invoke("device_ai_shadow"); } catch {}
+    const full = { ...dev, browsers, mcp, posture, accounts, aiAssets, aiShadow };
     fetch(`${BASE}/api/device-report`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },

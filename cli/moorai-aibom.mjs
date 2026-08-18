@@ -14,8 +14,11 @@
 
 import { readFileSync, readdirSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { readAgentEvents } from "./signals.mjs";
+
+const SELF_DIR = dirname(fileURLToPath(import.meta.url));
 
 const HOME = homedir();
 const read = (p) => { try { return readFileSync(p, "utf8"); } catch { return null; } };
@@ -77,7 +80,19 @@ function mcpServers() {
 // ---- editor AI extensions (the harness, + version) & agent skills/plugins ----
 // The CSA HF post-mortem calls for telemetry to include "model and harness versions… VS Code
 // extensions, skills, MCP servers, plugins." Directory listings only — names + versions, never content.
-const AI_EXT = /copilot|continue|codeium|cody|tabnine|claude|cline|roo.?code|kilocode|supermaven|codegpt|aws.?toolkit|amazon.*q|windsurf|augment|sourcegraph|pieces|blackbox|codewhisperer/i;
+// Shared source of truth: derive the AI-extension classifier from data/ai-catalog.json so the CLI
+// AIBOM and the Tauri device report agree on "what counts as AI". Keywords are plain substrings
+// (matched byte-for-byte on the Rust side); we escape any regex specials and OR them together. Falls
+// back to the historical inline pattern if the catalog can't be read (backward-compatible).
+function loadAiExtRegex() {
+  const fallback = /copilot|continue|codeium|cody|tabnine|claude|cline|roo.?code|kilocode|supermaven|codegpt|aws.?toolkit|amazon.*q|windsurf|augment|sourcegraph|pieces|blackbox|codewhisperer/i;
+  const cat = readJson(join(SELF_DIR, "..", "data", "ai-catalog.json"));
+  const kws = (cat?.extensions || []).flatMap((e) => Array.isArray(e.keywords) ? e.keywords : []);
+  if (!kws.length) return fallback;
+  const esc = kws.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).filter(Boolean);
+  try { return new RegExp(esc.join("|"), "i"); } catch { return fallback; }
+}
+const AI_EXT = loadAiExtRegex();
 function editorExtensions() {
   const out = [], seen = new Set();
   const dirs = [".vscode/extensions", ".vscode-insiders/extensions", ".vscode-server/extensions", ".cursor/extensions", ".windsurf/extensions", ".vscodium/extensions"];

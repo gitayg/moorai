@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { join, dirname, basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideMcpServer, decideMcpArgs, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths } from "./hook-core.mjs";
+import { buildEngine, decideText, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway } from "./hook-core.mjs";
 import { egressHits } from "./secret-egress.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, requestKill } from "./signals.mjs";
 import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
@@ -257,22 +257,27 @@ async function main() {
     const server = tool.split("__")[1] || "";
     const args = JSON.stringify(ti);
     const argsH = argsHash(args); // #20 — content-free hash of the args (never the args themselves)
-    const sd = decideMcpServer(policy, server); // #3 — allow-list first, short-circuits
-    if (sd.decision === "deny") { post({ threatId: 0, category: "MCP: unapproved server", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(server), ...IDENTITY, ...(signApproval(tool, argsH, "deny") || {}) }); return emit("deny", sd.reason); }
-    const ad = decideMcpArgs(policy, tool, args); // #18 — per-tool argument allow/deny rules
-    if (ad.decision === "deny") { post({ threatId: 0, category: "MCP: denied tool argument", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(args), ...IDENTITY, ...(signApproval(tool, argsH, "deny") || {}) }); return emit("deny", ad.reason); }
+    // On-device AI Agent Gateway: one named chokepoint for every MCP tool-call — server allow-list (#3)
+    // → per-tool arg rules (#18) → argument content scan (#2), same order and short-circuits as before.
+    const g = mcpGateway(engine, policy, { tool, server, args });
+    // Content-free gateway ledger: record ONE audit line per MCP call (pass, coach, or block) so the
+    // console can prove what every agent was allowed to do — closing the gap where denials and clean
+    // passes recorded nothing locally. Best-effort; never affects the allow/deny decision.
+    const audit = (decision) => { try { recordAction(applyCaptureTier({ threatId: 0, category: "MCP tool call", riskLevel: decision === "deny" ? "Blocked" : "Info", stage: "mcp", tool: `hook:${tool}`, decision, mcpServer: server, ts: new Date().toISOString(), contentHash: argsH, ...IDENTITY }, {}, policy.captureTier || "content-free")); } catch { /* ledger is best-effort */ } };
+    if (g.gate === "server") { post({ threatId: 0, category: "MCP: unapproved server", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(server), ...IDENTITY, ...(signApproval(tool, argsH, "deny") || {}) }); audit("deny"); return emit("deny", g.reason); }
+    if (g.gate === "args") { post({ threatId: 0, category: "MCP: denied tool argument", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(args), ...IDENTITY, ...(signApproval(tool, argsH, "deny") || {}) }); audit("deny"); return emit("deny", g.reason); }
     // T1-5 — entitlement envelope: an MCP server outside the agent's declared scope is drift.
-    if (reportEnvelope(policy, tool, { tool, mcpServer: server }, "egress")) return emit("deny", `${tool} — out-of-envelope MCP server`);
+    if (reportEnvelope(policy, tool, { tool, mcpServer: server }, "egress")) { audit("deny"); return emit("deny", `${tool} — out-of-envelope MCP server`); }
     // T1-1 — model-endpoint allow-list on the serialized args (a tool arg pointing at a rogue LLM host).
     const epD = decideEndpoints(policy, args);
-    if (epD.decision === "deny") { post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); return emit("deny", epD.reason); }
+    if (epD.decision === "deny") { post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); audit("deny"); return emit("deny", epD.reason); }
     // Tier-2 / #65 — a local secret value shipped as an MCP tool argument.
-    if (checkSecretEgress(policy, args, tool, "egress")) return emit("deny", `${tool} — local secret egress`);
-    const d = decideText(engine, policy, args, "prompt"); // #2 — scan args
-    report(d.findings, "egress", `hook:${tool}`, d.decision === "deny", policy.captureTier, { toolName: tool, argText: args }, signApproval(tool, argsH, d.decision === "deny" ? "deny" : "allow"));
-    logBehavior(tool, tool, args, d, "egress");
-    if (d.kill) killSession(tool, d.killIds, "egress");
-    return emit(d.decision, `${d.kill ? "killed session" : "blocked"} ${tool} — ${d.reasons.join(", ")}`);
+    if (checkSecretEgress(policy, args, tool, "egress")) { audit("deny"); return emit("deny", `${tool} — local secret egress`); }
+    report(g.findings, "egress", `hook:${tool}`, g.decision === "deny", policy.captureTier, { toolName: tool, argText: args }, signApproval(tool, argsH, g.decision === "deny" ? "deny" : "allow"));
+    logBehavior(tool, tool, args, { decision: g.decision, findings: g.findings }, "egress");
+    if (g.kill) killSession(tool, g.killIds, "egress");
+    audit(g.decision);
+    return emit(g.decision, `${g.kill ? "killed session" : "blocked"} ${tool} — ${g.reason}`);
   }
   // Tier-2 / #66 — sub-agent spawn / A2A delegation (Claude Code's Task tool). Record the delegation
   // content-free, scan the delegated prompt for injection, apply the parent's entitlement envelope, and

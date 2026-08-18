@@ -488,6 +488,11 @@ fn dir_sensitive(path: String) -> serde_json::Value {
 #[tauri::command]
 fn device_browsers() -> serde_json::Value { platform::browsers() }
 
+// Shadow-AI signal (Feature 2) — catalog-matched AI desktop apps + AI browser/editor extensions.
+// Content-free; rides the existing /api/device-report sink.
+#[tauri::command]
+fn device_ai_shadow() -> serde_json::Value { platform::ai_shadow() }
+
 // Checks for pending OS software/security updates (posture signal). Can be slow — call async.
 #[tauri::command]
 fn os_patch_status() -> serde_json::Value { platform::patch_status() }
@@ -589,7 +594,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![native_log, app_version, identity, run_agent, save_provision, set_agent_auth, open_url, open_login_terminal, restart_app, check_and_install_update, about_info, term_open, term_input, term_resize, term_kill, device_ai_tools, device_ai_assets, device_mcp, os_patch_status, device_browsers, device_posture, device_accounts, dir_sensitive])
+        .invoke_handler(tauri::generate_handler![native_log, app_version, identity, run_agent, save_provision, set_agent_auth, open_url, open_login_terminal, restart_app, check_and_install_update, about_info, term_open, term_input, term_resize, term_kill, device_ai_tools, device_ai_assets, device_mcp, os_patch_status, device_browsers, device_ai_shadow, device_posture, device_accounts, dir_sensitive])
         .run(tauri::generate_context!())
         .expect("error while running MoorAI");
 }
