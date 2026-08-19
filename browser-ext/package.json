@@ -1,0 +1,6 @@
+{
+  "name": "moorai-browser-guard",
+  "private": true,
+  "type": "commonjs",
+  "description": "MoorAI Browser Guard — MV3 companion extension. This package.json only scopes detectors.js to CommonJS for the Node unit test; Chrome ignores it."
+}
