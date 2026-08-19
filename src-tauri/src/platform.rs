@@ -746,3 +746,25 @@ pub fn security_posture() -> serde_json::Value {
         serde_json::json!({})
     }
 }
+
+#[cfg(test)]
+mod discovery_smoke {
+    // Runtime smoke test for the shadow-AI/app+browser discovery (Feature 2). Unlike `cargo check`,
+    // this actually INVOKES the collectors on the host OS and prints what they detect, so the
+    // platform-specific (#[cfg]) paths are exercised for real. Run: cargo test discovery -- --nocapture
+    use super::*;
+
+    #[test]
+    fn discovery_runs_on_this_host() {
+        let tools = ai_tools();
+        let browsers_v = browsers();
+        let shadow = ai_shadow();
+        println!("\n===== ai_tools() =====\n{}", serde_json::to_string_pretty(&tools).unwrap());
+        println!("\n===== browsers() (extensions w/ ai flags) =====\n{}", serde_json::to_string_pretty(&browsers_v).unwrap());
+        println!("\n===== ai_shadow() =====\n{}", serde_json::to_string_pretty(&shadow).unwrap());
+        // The collectors must always return well-formed JSON (never panic / null), even on a bare host.
+        assert!(!tools.is_null(), "ai_tools returned null");
+        assert!(shadow.get("apps").map(|v| v.is_array()).unwrap_or(false), "ai_shadow.apps missing/!array");
+        assert!(shadow.get("extensions").map(|v| v.is_array()).unwrap_or(false), "ai_shadow.extensions missing/!array");
+    }
+}
