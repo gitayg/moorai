@@ -156,6 +156,39 @@ export function decideEnvelope(policy, { tool, paths = [], mcpServer, actor } = 
   return { inScope: remaining.length === 0, reasons: remaining, elevated: remaining.length < reasons.length, usedGrants: reasons.length - remaining.length };
 }
 
+// Break-glass / offline fail-closed (#33) — pure posture helpers. The I/O (reading the policy cache,
+// the durable posture sidecar, and the break-glass marker file) lives in moorai-hook.mjs; these only
+// classify. The default posture is "fail-open" — today's behavior — and is NEVER flipped implicitly.
+
+// Normalize a policy's offline posture. Anything other than an explicit "fail-closed" is "fail-open".
+export function offlineMode(policy) {
+  return policy && policy.offlineMode === "fail-closed" ? "fail-closed" : "fail-open";
+}
+
+// Is a break-glass override currently active? `text` is the raw content of ~/.curaiq/break-glass, which
+// carries an expiry the operator sets. Accepts {expires|expiry|until|exp: <ISO|epoch-ms>}, a bare ISO
+// string, or a bare epoch-ms number/string. Absent, malformed, or expired → false (fail-closed stays).
+export function breakGlassActive(text, now = Date.now()) {
+  if (!text) return false;
+  let exp;
+  try { const j = JSON.parse(text); exp = j && typeof j === "object" ? (j.expires ?? j.expiry ?? j.until ?? j.exp) : j; }
+  catch { exp = String(text).trim(); }
+  if (exp == null || exp === "") return false;
+  let t;
+  if (typeof exp === "number") t = exp;
+  else if (/^\d+$/.test(String(exp).trim())) t = Number(String(exp).trim()); // bare epoch-ms
+  else t = Date.parse(String(exp));
+  return Number.isFinite(t) && t > now;
+}
+
+// Fail-closed MCP floor: raise an otherwise-allowed MCP decision to policy.mcpFloor (e.g. "ask"). Inert
+// unless the policy sets mcpFloor — normal policies never do, so this is backward-compatible.
+export function mcpFloor(policy, decision) {
+  const floor = policy && policy.mcpFloor;
+  if (!floor || !RANK[floor]) return decision;
+  return RANK[floor] > RANK[decision] ? floor : decision;
+}
+
 // Conservative file-path extraction from a Bash command — only for unambiguous leading file-readers.
 // Anything with a pipe/redirect/subshell is left alone (fail-open); the strong guarantee is on Read.
 export function extractReadPaths(command) {

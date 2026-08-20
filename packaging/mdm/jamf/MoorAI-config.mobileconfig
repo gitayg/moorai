@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  MoorAI managed configuration profile (macOS / Jamf).
+
+  WHAT THIS DOES
+    Pre-seeds the MoorAI enrollment values (console URL, tenant, install token) into the
+    app's managed-preferences domain `run.glick.curaiq` so they are:
+      - distributed and MDM-enforced from the console (admins edit them centrally), and
+      - readable by the Jamf deploy script, which materializes them into the file the
+        on-device agent actually reads: ~/.curaiq/config.json.
+
+  WHY A PROFILE *AND* A SCRIPT
+    The MoorAI CLI hook (cli/config.mjs) reads its binding from ~/.curaiq/config.json — a
+    per-user JSON file, NOT from CFPreferences/defaults. A configuration profile cannot write
+    an arbitrary JSON file, so this profile is the authoritative, locked *source of values*,
+    and moorai-jamf-deploy.sh reads it (`defaults read run.glick.curaiq ...` or Jamf script
+    params) and writes ~/.curaiq/config.json per user. Keeping the values here means an admin
+    can rotate the token or re-point the console from Jamf without re-running the installer.
+
+  HOW TO CUSTOMIZE
+    Replace every REPLACE_WITH_* placeholder below with your org's values, then upload this
+    file to Jamf Pro:  Computers > Configuration Profiles > Upload.  Scope to the target
+    smart/static group. The two UUIDs may stay as-is (they only need to be stable & unique
+    within your Jamf instance) or be regenerated with `uuidgen`.
+
+  PLACEHOLDERS
+    REPLACE_WITH_SERVER_URL   e.g. https://console.moorai.example.com   (your MoorAI console)
+    REPLACE_WITH_TENANT       e.g. acme-corp                            (your tenant slug)
+    REPLACE_WITH_INSTALL_TOKEN e.g. it_live_xxxxxxxxxxxxxxxxxxxxxxxx     (per-tenant enroll token)
+-->
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <!-- Custom-settings payload: writes to the managed-preferences domain run.glick.curaiq. -->
+      <key>PayloadType</key>
+      <string>com.apple.ManagedClient.preferences</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>PayloadIdentifier</key>
+      <string>run.glick.curaiq.settings</string>
+      <key>PayloadUUID</key>
+      <string>4B97E23B-04B9-4481-BA65-E051409CE605</string>
+      <key>PayloadEnabled</key>
+      <true/>
+      <key>PayloadDisplayName</key>
+      <string>MoorAI Managed Settings</string>
+      <key>PayloadContent</key>
+      <dict>
+        <key>run.glick.curaiq</key>
+        <dict>
+          <key>Forced</key>
+          <array>
+            <dict>
+              <key>mcx_preference_settings</key>
+              <dict>
+                <!-- MoorAI console base URL. The agent pulls policy from
+                     <ServerURL>/api/policy?tenant=<Tenant> and posts content-free
+                     alerts to <ServerURL>/api/alerts. -->
+                <key>ServerURL</key>
+                <string>REPLACE_WITH_SERVER_URL</string>
+                <!-- Tenant slug — selects which console policy this fleet receives. -->
+                <key>Tenant</key>
+                <string>REPLACE_WITH_TENANT</string>
+                <!-- Per-tenant installation token, sent as the X-Install-Token header on
+                     every policy/alert request. Treat as a secret; rotate from the console. -->
+                <key>InstallToken</key>
+                <string>REPLACE_WITH_INSTALL_TOKEN</string>
+              </dict>
+            </dict>
+          </array>
+        </dict>
+      </dict>
+    </dict>
+  </array>
+  <key>PayloadDisplayName</key>
+  <string>MoorAI Managed Configuration</string>
+  <key>PayloadDescription</key>
+  <string>Pre-seeds MoorAI enrollment (console URL, tenant, install token) for zero-touch fleet rollout. Content-free by design: only the device-to-console binding is configured here; no prompt, file, or agent output is ever collected by this profile.</string>
+  <key>PayloadOrganization</key>
+  <string>REPLACE_WITH_ORG_NAME</string>
+  <key>PayloadIdentifier</key>
+  <string>run.glick.curaiq.managedconfig</string>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>384F0910-D3B7-495B-B22C-974FF097F7F6</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+  <key>PayloadScope</key>
+  <string>System</string>
+</dict>
+</plist>

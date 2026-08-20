@@ -16,7 +16,8 @@ import { fileURLToPath } from "node:url";
 import { join, dirname, basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway } from "./hook-core.mjs";
+import { buildEngine, decideText, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, breakGlassActive, mcpFloor } from "./hook-core.mjs";
+import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, requestKill } from "./signals.mjs";
 import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
@@ -53,15 +54,42 @@ function uninstallHooks() {
 // ---- policy load (cached; per-call HTTP would be too slow) ----
 const CONFIG = loadConfig();
 const CACHE = join(os.homedir(), ".curaiq", "hook-policy.json");
+// #33 — break-glass marker (operator-created, holds an expiry) and the durable last-known posture the
+// hook remembers so a fail-closed org stays fail-closed even if the policy cache is later deleted.
+const BREAK_GLASS = join(os.homedir(), ".curaiq", "break-glass");
+const POSTURE_SIDECAR = join(os.homedir(), ".curaiq", "offline-posture");
+
+// Returns { policy, source } where source is:
+//   "fresh"        — freshly fetched from the server (and re-cached)
+//   "cache"        — served from the fresh-cache window without a fetch attempt
+//   "cache-offline"— fetch FAILED, falling back to the last-known cached policy (offline; #33 point 2)
+//   "none"         — no policy at all (offline AND no cache)
 async function loadPolicy() {
-  try { if (Date.now() - statSync(CACHE).mtimeMs < 60000) return JSON.parse(readFileSync(CACHE, "utf8")); } catch { /* stale/absent */ }
+  try { if (Date.now() - statSync(CACHE).mtimeMs < 60000) return { policy: JSON.parse(readFileSync(CACHE, "utf8")), source: "cache" }; } catch { /* stale/absent */ }
   try {
     const headers = CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {};
     const p = await fetch(`${CONFIG.serverUrl}/api/policy?tenant=${encodeURIComponent(CONFIG.tenant)}`, { headers, signal: AbortSignal.timeout(1500) }).then((r) => r.json());
-    if (p) { try { mkdirSync(dirname(CACHE), { recursive: true }); writeFileSync(CACHE, JSON.stringify(p)); } catch {} return p; }
+    if (p) { try { mkdirSync(dirname(CACHE), { recursive: true }); writeFileSync(CACHE, JSON.stringify(p)); } catch {} return { policy: p, source: "fresh" }; }
   } catch { /* offline */ }
-  try { return JSON.parse(readFileSync(CACHE, "utf8")); } catch { return null; }
+  try { return { policy: JSON.parse(readFileSync(CACHE, "utf8")), source: "cache-offline" }; } catch { return { policy: null, source: "none" }; }
 }
+
+// #33 — remember the org's chosen posture durably, so it survives a later cache deletion. Written every
+// time a real policy loads. For an org that never set offlineMode this is "fail-open" → no-cache stays
+// exit(0)/allow (unchanged default). Best-effort; a write error never affects enforcement.
+function rememberPosture(policy) {
+  try { mkdirSync(dirname(POSTURE_SIDECAR), { recursive: true }); writeFileSync(POSTURE_SIDECAR, offlineMode(policy)); } catch { /* best-effort */ }
+}
+// Durable last-known posture for the NO-policy/no-cache case: env override → sidecar → "fail-open".
+function durablePosture() {
+  const env = String(process.env.MOORAI_OFFLINE_MODE || "").trim();
+  if (env === "fail-closed" || env === "fail-open") return env;
+  try { const m = readFileSync(POSTURE_SIDECAR, "utf8").trim(); if (m === "fail-closed" || m === "fail-open") return m; } catch { /* absent */ }
+  return "fail-open"; // default — never flip an org to fail-closed implicitly
+}
+function readBreakGlassText() { try { return readFileSync(BREAK_GLASS, "utf8"); } catch { return ""; } }
+// #33 — content-free policy-posture signals (category/hash only; no file, arg, or content ever).
+function postPosture(category, hash, riskLevel) { return post({ threatId: 0, category, riskLevel, stage: "policy", tool: "hook:policy", ts: new Date().toISOString(), contentHash: hash, ...IDENTITY }); }
 
 // ---- content-free reporting ----
 function djb2(s) { let h = 5381; for (let i = 0; i < String(s).length; i++) h = ((h << 5) + h + String(s).charCodeAt(i)) >>> 0; return "h" + h.toString(16); }
@@ -210,8 +238,24 @@ async function main() {
   try { input = JSON.parse((await readStdin()) || "{}"); } catch { process.exit(0); }
   const tool = input.tool_name || "";
   const ti = input.tool_input || {};
-  const policy = await loadPolicy();
-  if (!policy) process.exit(0); // fail open — governance, not a sandbox
+  let { policy, source } = await loadPolicy();
+  if (policy) rememberPosture(policy); // durable last-known posture survives a later cache deletion (#33)
+  // #33 — break-glass / offline fail-closed. Wrapped so a bug here can never harden-then-crash: on ANY
+  // error with no policy we fall through to the legacy exit(0) (fail-open), exactly as before.
+  try {
+    if (!policy) {
+      if (durablePosture() !== "fail-closed") process.exit(0); // fail-open (default) — UNCHANGED behavior
+      // Fail-closed posture with no policy: break-glass (if active) forces fail-open so an operator can
+      // recover a locked-out machine; otherwise apply the conservative, reviewable built-in default.
+      if (breakGlassActive(readBreakGlassText())) { await postPosture("Break-glass active (fail-open override)", "breakglass:active", "High"); process.exit(0); }
+      postPosture("Offline: fail-closed default applied", "offline:fail-closed", "High");
+      policy = OFFLINE_DEFAULT_POLICY;
+    } else {
+      // A fail-closed org can still break-glass out of its cached/live policy entirely.
+      if (offlineMode(policy) === "fail-closed" && breakGlassActive(readBreakGlassText())) { await postPosture("Break-glass active (fail-open override)", "breakglass:active", "High"); process.exit(0); }
+      if (source === "cache-offline") postPosture("Offline: enforcing last-known policy", "offline:last-known", "Info"); // #33 point 2
+    }
+  } catch { if (!policy) process.exit(0); /* preserve legacy fail-open on any error when no policy */ }
   const engine = buildEngine(policy);
 
   if (tool === "Read") {
@@ -273,11 +317,15 @@ async function main() {
     if (epD.decision === "deny") { post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); audit("deny"); return emit("deny", epD.reason); }
     // Tier-2 / #65 — a local secret value shipped as an MCP tool argument.
     if (checkSecretEgress(policy, args, tool, "egress")) { audit("deny"); return emit("deny", `${tool} — local secret egress`); }
+    // #33 — fail-closed MCP floor: raise an otherwise-allowed MCP call to "ask" (justify). Inert unless
+    // policy.mcpFloor is set (only the offline fail-closed default sets it), so normal policies are unaffected.
+    const floored = mcpFloor(policy, g.decision);
+    if (floored !== g.decision) { g.decision = floored; g.reason = g.reason || "fail-closed default: MCP requires justification"; }
     report(g.findings, "egress", `hook:${tool}`, g.decision === "deny", policy.captureTier, { toolName: tool, argText: args }, signApproval(tool, argsH, g.decision === "deny" ? "deny" : "allow"));
     logBehavior(tool, tool, args, { decision: g.decision, findings: g.findings }, "egress");
     if (g.kill) killSession(tool, g.killIds, "egress");
     audit(g.decision);
-    return emit(g.decision, `${g.kill ? "killed session" : "blocked"} ${tool} — ${g.reason}`);
+    return emit(g.decision, `${g.kill ? "killed session" : g.decision === "ask" ? "needs justification" : "blocked"} ${tool} — ${g.reason}`);
   }
   // Tier-2 / #66 — sub-agent spawn / A2A delegation (Claude Code's Task tool). Record the delegation
   // content-free, scan the delegated prompt for injection, apply the parent's entitlement envelope, and

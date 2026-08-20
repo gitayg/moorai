@@ -1,0 +1,36 @@
+{
+  "_comment": "Reference values for the MoorAI Intune Win32 app. This file documents the enroll parameters and app metadata an admin fills in; it is NOT read by the agent at runtime (the agent reads %USERPROFILE%\\.curaiq\\config.json, which Install-MoorAI.ps1 writes). Replace every REPLACE_WITH_* value, then use these when creating the Win32 app in the Intune admin center.",
+
+  "enrollment": {
+    "_comment": "Passed to Install-MoorAI.ps1. serverUrl + tenant are required; installToken may be empty for an open console.",
+    "serverUrl": "REPLACE_WITH_SERVER_URL",
+    "tenant": "REPLACE_WITH_TENANT",
+    "installToken": "REPLACE_WITH_INSTALL_TOKEN",
+    "mooraiHome": "C:\\Program Files\\MoorAI",
+    "pkgUrl": ""
+  },
+
+  "win32App": {
+    "displayName": "MoorAI Agent",
+    "publisher": "REPLACE_WITH_ORG_NAME",
+    "description": "On-device guardrails for AI coding agents. Content-free: policy is pulled per-tenant from the MoorAI console at runtime.",
+    "installContext": "user",
+    "_installContextNote": "Use 'user' so the per-user config + Claude Code hooks land in the human profile. If you must deploy in 'system' context, pair with the per-user logon task described in ../README.md.",
+    "installCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Install-MoorAI.ps1 -ServerUrl \"REPLACE_WITH_SERVER_URL\" -Tenant \"REPLACE_WITH_TENANT\" -InstallToken \"REPLACE_WITH_INSTALL_TOKEN\"",
+    "uninstallCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Uninstall-MoorAI.ps1",
+    "detectionScript": "Detect-MoorAI.ps1",
+    "returnCodes": {
+      "0": "success",
+      "1707": "success",
+      "3010": "soft reboot",
+      "1641": "hard reboot",
+      "1618": "retry"
+    }
+  },
+
+  "requirements": {
+    "minimumOS": "Windows10_1809",
+    "architecture": "x64",
+    "_note": "The git install channel requires git + Node.js 18+ on the device. For an offline fleet, host a prebuilt agent tarball and set enrollment.pkgUrl instead."
+  }
+}
