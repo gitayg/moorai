@@ -24,7 +24,7 @@ import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
 import { isRulesFile, rulesFileKind } from "../data/rules-files.js";
 import { signApproval, argsHash } from "../data/agency-sign.mjs";
 import { contentTells, assessSession, assessTrifecta, assessCrossServerTrifecta, trifectaLegs, serverOf } from "../data/agent-behavior.js";
-import { classifyLocal } from "../data/model-escalation.mjs";
+import { classifyOpportunistic } from "../data/model-escalation.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -142,15 +142,17 @@ function logBehavior(tool, identity, scannedText, d, stage) {
   } catch { /* behavior signal is best-effort; never affects enforcement */ }
 }
 
-// Bold B1 / #21 — opportunistic local-model escalation. Only when the org enables it AND the regex
-// pass was ambiguous (nothing already High+); consults a loopback model and emits a content-free
-// second-opinion alert (#58). The text never leaves the device; a failure never changes enforcement.
+// Bold B1 / #21 — opportunistic model escalation. Only when the org enables it AND the regex pass was
+// ambiguous (nothing already High+); consults the unified opportunistic classifier (local loopback
+// model first, else the agent's OWN provider when the org opted in and a device key exists) and emits
+// a content-free second-opinion alert (#58). No NEW egress/third party; a failure never changes
+// enforcement (fail-open).
 async function maybeEscalate(policy, text, stage, tool, d) {
   try {
     if (!policy || !policy.modelEscalation || !text || !text.trim()) return;
     const strong = (d.findings || []).some((f) => f.riskLevel === "High" || f.riskLevel === "Critical" || f.riskLevel === "Blocked");
     if (strong) return; // regex is already confident — skip the second opinion
-    const v = await classifyLocal(text);
+    const v = await classifyOpportunistic(text, policy);
     if (v && v.flagged && v.confidence >= 0.6) {
       post({ threatId: 58, category: `Model-flagged: ${v.category}`, riskLevel: v.confidence >= 0.85 ? "High" : "Medium", stage, tool: `escalate:${tool}`, ts: new Date().toISOString(), contentHash: djb2(text), ...IDENTITY });
     }

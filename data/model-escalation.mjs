@@ -5,6 +5,8 @@
 // unchanged (the console still receives only category + risk + hash). Fail-open: any error, timeout,
 // or absent model yields no verdict and never changes enforcement.
 
+import { hasDeviceKey, classifyWithProvider } from "./device-inference.mjs";
+
 const HOST = "http://127.0.0.1:11434"; // loopback only — do not make this configurable to a remote host
 const DEFAULT_MODEL = process.env.MOORAI_LOCAL_MODEL || "llama3.2:1b";
 
@@ -44,4 +46,29 @@ export async function classifyLocal(text, { model = DEFAULT_MODEL, timeoutMs = 2
       confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0))
     };
   } catch { return null; }
+}
+
+// Unified opportunistic classifier. Regex/deterministic ALWAYS runs first and owns enforcement (the
+// caller only reaches here on an ambiguous scan). Backend order:
+//   1) LOCAL model (Ollama on loopback) when present — zero egress, always preferred.
+//   2) the AGENT'S OWN PROVIDER (Anthropic) — ONLY when the org opted in (policy.semanticEscalation
+//      === "provider") AND a usable API key already lives on the device. No key → no provider call.
+//   3) null — no backend available; the caller keeps the regex-only verdict (fail-open).
+// This introduces no NEW egress / no NEW third party: the provider is the one the developer's agent
+// already talks to. Never throws; any error yields null.
+export async function classifyOpportunistic(text, policy) {
+  if (!text || !String(text).trim()) return null;
+  try {
+    if (await localModelAvailable()) {
+      const local = await classifyLocal(text);
+      if (local) return { ...local, backend: "local" };
+    }
+  } catch { /* fall through to provider / null */ }
+  try {
+    if (policy && policy.semanticEscalation === "provider" && hasDeviceKey()) {
+      const v = await classifyWithProvider(text);
+      if (v) return { ...v, backend: "provider" };
+    }
+  } catch { /* fail-open */ }
+  return null;
 }
