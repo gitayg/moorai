@@ -169,6 +169,15 @@ test("VERIFY: a successful verification reports WHICH key verified, so it can be
 //   "ask"          → OFFLINE_DEFAULT_POLICY applied (mcpFloor) — the policy was refused
 //   "deny"         → a signed policy whose mcpAllow excludes the probe was applied and ENFORCED
 // Unlike those files the HOME here PERSISTS across runs, because self-arming is a property of run N+1.
+//
+// NOTE — last-known-good (see the LKG section in hook-core.mjs) changed what "the policy was refused"
+// looks like from the outside, and these tests were updated to say so. A device that has ever fetched a
+// verified policy over the network keeps it, so refusing a poisoned cache no longer lands on the offline
+// default ("ask"); it lands on the last VERIFIED policy, which enforces its own rules ("deny"). The
+// security property under test is unchanged — the poisoned file is not trusted — but the outcome is now
+// strictly stronger, so these assert `enforced` plus the policy:lkg:applied signal rather than `refused`.
+// The cases that still expect "ask" are the ones where NO verified policy was ever fetched, or where the
+// trust state (corrupt/rebind pin) refuses the last-known-good copy too.
 
 function newHome() {
   const home = mkdtempSync(join(tmpdir(), "moorai-pin-"));
@@ -234,7 +243,9 @@ test("E2E SELF-ARMING: seeing a signed policy ONCE makes `echo '{}'` fail foreve
     writeFileSync(CACHE(home), "{}");
     const r2 = await run(home, {});
     assert.ok(!bypassed(r2), "poisoned cache was trusted — enforcement bypassed on an unanchored device");
-    assert.ok(refused(r2), `must fall through to the offline default; stdout was ${JSON.stringify(r2.stdout)}`);
+    // ...and the refusal now ENFORCES, via the last-known-good verified policy, rather than merely alerting.
+    assert.ok(enforced(r2), `must enforce with last-known-good; stdout was ${JSON.stringify(r2.stdout)}`);
+    assert.ok(r2.hashes.includes("policy:lkg:applied"), `got ${JSON.stringify(r2.hashes)}`);
     const tamper = r2.alerts.filter((a) => String(a.contentHash || "").startsWith("policy:cache:"));
     assert.equal(tamper.length, 1, `expected one policy tamper alert, got ${JSON.stringify(r2.hashes)}`);
     assert.equal(tamper[0].contentHash, "policy:cache:unsigned");
@@ -249,7 +260,7 @@ test("E2E SELF-ARMING: the pin also survives the whole-outage path (cache outsid
     writeFileSync(CACHE(home), '{"offlineMode":"fail-open","threatPolicy":{}}');
     ageCache(home);
     const r = await run(home, {});
-    assert.ok(refused(r), `stdout was ${JSON.stringify(r.stdout)}`);
+    assert.ok(enforced(r), `stdout was ${JSON.stringify(r.stdout)}`);
   });
 });
 
@@ -258,7 +269,7 @@ test("E2E SELF-ARMING: after pinning, a policy signed by ANOTHER key is refused"
     await run(home, { serve: SIGNED(), pubkey: pubkeyBody(consoleKey) });
     writeFileSync(CACHE(home), sign({ offlineMode: "fail-open", mcpAllow: ["probe"] }, { key: rogueKey.privateKey }));
     const r = await run(home, {});
-    assert.ok(refused(r), `a rogue-signed policy must not apply; stdout was ${JSON.stringify(r.stdout)}`);
+    assert.ok(enforced(r), `a rogue-signed policy must not apply; stdout was ${JSON.stringify(r.stdout)}`);
     assert.ok(r.hashes.includes("policy:cache:untrusted"), `got ${JSON.stringify(r.hashes)}`);
   });
 });
@@ -268,7 +279,7 @@ test("E2E SELF-ARMING: after pinning, a policy signed for ANOTHER tenant is refu
     await run(home, { serve: SIGNED(), pubkey: pubkeyBody(consoleKey) });
     writeFileSync(CACHE(home), sign({ offlineMode: "fail-open", mcpAllow: ["probe"] }, { tenant: "other-corp" }));
     const r = await run(home, {});
-    assert.ok(refused(r), `a cross-tenant policy must not apply; stdout was ${JSON.stringify(r.stdout)}`);
+    assert.ok(enforced(r), `a cross-tenant policy must not apply; stdout was ${JSON.stringify(r.stdout)}`);
     assert.ok(r.hashes.includes("policy:cache:mismatch"), `got ${JSON.stringify(r.hashes)}`);
   });
 });
@@ -280,7 +291,7 @@ test("E2E SELF-ARMING: repointing serverUrl at an attacker console cannot re-pin
     await run(home, { serve: SIGNED(), pubkey: pubkeyBody(consoleKey) });
     rmSync(CACHE(home), { force: true });
     const r = await run(home, { serve: sign({ offlineMode: "fail-open", mcpAllow: ["probe"] }, { key: rogueKey.privateKey }), pubkey: pubkeyBody(rogueKey) });
-    assert.ok(refused(r), `an attacker console must not be able to re-pin; stdout was ${JSON.stringify(r.stdout)}`);
+    assert.ok(enforced(r), `an attacker console must not be able to re-pin; stdout was ${JSON.stringify(r.stdout)}`);
     assert.deepEqual(pinKeys(home), [id(consoleKey)], "the pin must not have learned the attacker's key");
     assert.ok(r.hashes.includes("policy:server:untrusted"), `got ${JSON.stringify(r.hashes)}`);
   });
@@ -294,7 +305,7 @@ test("E2E: erasing ONE pin copy neither downgrades the device nor passes silentl
     rmSync(PIN_A(home), { force: true }); // `rm ~/.curaiq/policy-pin.json`
     writeFileSync(CACHE(home), "{}");
     const r = await run(home, {});
-    assert.ok(refused(r), `the surviving copy must still enforce; stdout was ${JSON.stringify(r.stdout)}`);
+    assert.ok(enforced(r), `the surviving copy must still enforce; stdout was ${JSON.stringify(r.stdout)}`);
     assert.ok(r.hashes.includes("policy:pin:evidence-missing"), `expected an evidence-missing alert, got ${JSON.stringify(r.hashes)}`);
   });
 });
@@ -391,7 +402,7 @@ test("E2E ANCHOR: an anchored device also pins, so removing the MDM env var cann
     assert.deepEqual(pinKeys(home), [id(consoleKey)], "an anchored device records the key it verified");
     writeFileSync(CACHE(home), "{}");
     const r = await run(home, {}); // MOORAI_POLICY_PUBKEY unset — the shell-profile attack
-    assert.ok(refused(r), `dropping the env anchor must not re-open the bypass; stdout was ${JSON.stringify(r.stdout)}`);
+    assert.ok(enforced(r), `dropping the env anchor must not re-open the bypass; stdout was ${JSON.stringify(r.stdout)}`);
   });
 });
 

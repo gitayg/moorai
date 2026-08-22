@@ -484,6 +484,154 @@ export function parsePublishedKeys(text, { tenant = "" } = {}) {
   return [...new Set(parseTrustedKeys(parts.join("\n")).map(publicKeyId).filter(Boolean))];
 }
 
+// ---- Last-known-good VERIFIED policy ----
+//
+// The gap the signing/pinning work above left, stated plainly: refusing a poisoned cache means "no
+// policy", and for a FAIL-OPEN org "no policy" means exit(0). So an attacker who poisons the cache on a
+// pinned device still gets their bypass — the device merely alerts about it on the way out. Detection
+// without enforcement is not enforcement.
+//
+// The fix keeps the last policy that ACTUALLY PASSED SIGNATURE VERIFICATION, delivered fresh over the
+// network, and enforces with it when the live and cached copies are both refused. Two properties make
+// this safe rather than a second poisoning surface:
+//
+//   1. It is stored WITH its signature envelope and RE-VERIFIED on load against the same anchor/pin.
+//      The file is in the agent's own write scope; "we wrote it" is not a trust argument. A last-known-
+//      good the attacker can rewrite is worthless unless the rewrite still verifies — and if they could
+//      produce that, they would not need this file.
+//   2. A verified FRESH policy always wins and replaces it, so an org that legitimately relaxes its
+//      policy is never dragged back to an older, stricter one.
+//
+// Precedence: verified fresh → verified cache → verified last-known-good → offline default / posture.
+// "No policy" is reached only when nothing verifies.
+//
+// This is a pure selector: the caller supplies the already-read copies (root-owned system copy first,
+// then the two user-scope copies) and the same verify() it uses for the cache and the fresh fetch.
+export function selectLastKnownGood(copies, verify) {
+  for (const c of copies || []) {
+    if (!c || !c.raw || !String(c.raw).trim()) continue;
+    let v;
+    try { v = verify(c.raw); } catch { continue; }
+    if (v && v.policy) return { copy: c.source, policy: v.policy, raw: c.raw };
+  }
+  return null;
+}
+
+// ---- Pin absent on a device that shows prior operation ----
+//
+// The residual risk policy-pin.test.mjs already documents: erasing BOTH pin copies returns an
+// unanchored device to first contact, and first contact trusts anything. That cannot be FIXED here —
+// the hook runs as the user, and any secret it could read to authenticate the pin, the attacker reads
+// too. What CAN be improved is tamper-EVIDENCE: distinguishing "genuinely fresh install" from "device
+// that has demonstrably been operating and has now lost its pin".
+//
+// The discriminator has to be evidence of PRIOR PINNING, not merely of prior operation. That
+// distinction is load-bearing and was arrived at by counter-example: "posture files or an action-audit
+// log exist but the pin is gone" looks like a strong tamper signal, but it fires on a perfectly healthy
+// fleet — a console that does not sign never forms a pin (the documented no-brick property), while its
+// devices write posture copies and audit lines from their second run onward. That heuristic would raise
+// a Critical alert on every hook invocation for every such device, which is worse than useless.
+//
+// So `pinningEvidence` is limited to artifacts a device can only hold if it once verified a REAL console
+// signature: the pin breadcrumb (written in a third directory whenever a pin exists) and the
+// last-known-good store (written only for a fresh policy whose signature actually verified, status
+// "ok" — never for the trivially-trusted unanchored case). `operationEvidence` is carried alongside as
+// SOC context only; it never decides, precisely because of the false positive above.
+//
+// Deliberately NOT a fail-closed trigger — see the reasoning recorded next to the caller.
+export function assessPinAbsence({ enrolled = false, trustMode = "unpinned", pinningEvidence = [], operationEvidence = [] } = {}) {
+  // Only an UNPINNED device is in this state at all. anchored/pinned have their key; corrupt/rebind are
+  // already reported as their own, stronger tamper signals.
+  const clean = (a) => [...new Set((a || []).filter(Boolean))].sort();
+  if (trustMode !== "unpinned" || !enrolled) return { suspicious: false, evidence: [], context: [] };
+  const evidence = clean(pinningEvidence);
+  return { suspicious: evidence.length > 0, evidence, context: evidence.length ? clean(operationEvidence) : [] };
+}
+
+// ---- Windows ACL evaluation for readRootOwned ----
+//
+// On POSIX a "system" file is trusted only when the OS says the user cannot have written it: root-owned
+// and not group/world-writable. On Windows there is no such thing to stat, and readRootOwned used to
+// return %ProgramData%\MoorAI\* contents UNCONDITIONALLY — so on Windows the trust anchor, the policy
+// anchor and the machine-wide posture latch were all trusted with no verification at all, even though
+// %ProgramData% subtrees created by a non-elevated process inherit a permissive ACL.
+//
+// These functions evaluate `icacls <file>` output. Kept pure so they are testable off-Windows; the
+// caller does the spawn and fails CLOSED (treats the file as untrusted) on any error.
+
+// Inheritance/propagation flags icacls prints in their own parentheses — they are not rights.
+const ICACLS_FLAGS = new Set(["OI", "CI", "IO", "NP", "I"]);
+
+// Rights that let the holder change or replace the file's bytes. Covers both the simple rights icacls
+// prints as a single letter group (F/M/W) and the comma-separated specific rights.
+const ICACLS_WRITE = new Set(["F", "M", "W", "WD", "AD", "WA", "WEA", "D", "DE", "DC", "WDAC", "WO"]);
+
+// Principals whose write access does NOT make a file user-writable, because holding them already
+// requires administrator/SYSTEM privilege — the same bar POSIX root-ownership sets. Anything else with
+// write access is treated as ordinary-user write, INCLUDING named user accounts: this is an allow-list
+// on purpose. A denied-by-mistake ACL degrades the device to "no anchor" (its behavior before the file
+// existed), which is the safe direction; an accepted-by-mistake ACL is a silent enforcement bypass.
+// CREATOR OWNER is deliberately ABSENT: it is not an administrator, it is whoever created the file —
+// which under %ProgramData%, in the exact scenario this check exists for, is the ordinary user. The
+// standard inherited CREATOR OWNER ACE is harmless because it is inherit-ONLY (IO) and therefore does
+// not apply to the file itself; that is handled below, and it is the right reason to ignore it.
+const ICACLS_PRIVILEGED = new Set([
+  "SYSTEM", "LOCAL SYSTEM", "ADMINISTRATORS", "ADMINISTRATOR", "TRUSTEDINSTALLER",
+  "DOMAIN ADMINS", "ENTERPRISE ADMINS"
+]);
+
+// "NT AUTHORITY\\Authenticated Users" → "AUTHENTICATED USERS"; "BUILTIN\\Users" → "USERS".
+export function normalizeAclPrincipal(name) {
+  const s = String(name || "").trim();
+  const i = s.lastIndexOf("\\");
+  return (i >= 0 ? s.slice(i + 1) : s).trim().toUpperCase();
+}
+
+// Parse `icacls <path>` output into ACEs. The first line carries the path before the first ACE; pass
+// filePath so it can be stripped exactly rather than guessed at.
+export function parseIcacls(output, filePath = "") {
+  const p = String(filePath || "");
+  const aces = [];
+  for (const rawLine of String(output || "").split(/\r?\n/)) {
+    if (!rawLine || !rawLine.trim()) continue;
+    if (/^(Successfully processed|Failed processing)/i.test(rawLine.trim())) continue;
+    const line = p && rawLine.startsWith(p) ? rawLine.slice(p.length) : rawLine;
+    // principal:(flag)(flag)(rights) — the principal is everything before the colon that is immediately
+    // followed by the parenthesised groups that run to end of line.
+    const m = line.match(/^\s*(.+?):((?:\([^()]*\))+)\s*$/);
+    if (!m) continue;
+    const groups = (m[2].match(/\(([^()]*)\)/g) || []).map((g) => g.slice(1, -1).trim());
+    const rights = [];
+    let inheritOnly = false;
+    for (const g of groups) {
+      const u = g.toUpperCase();
+      if (ICACLS_FLAGS.has(u)) { if (u === "IO") inheritOnly = true; continue; }
+      for (const t of u.split(",")) { const tok = t.trim(); if (tok) rights.push(tok); }
+    }
+    aces.push({ principal: m[1].trim(), rights, inheritOnly });
+  }
+  return aces;
+}
+
+// Decide whether an ACL leaves the file writable by someone who is not an administrator. Returns
+// { permissive, reasons } — reasons name the offending principal + rights, never file content.
+// An ACL with NO parseable entries is permissive: we could not establish the guarantee, so we do not
+// claim it (fail closed), exactly as a POSIX stat failure reads as untrusted.
+export function icaclsPermissive(output, filePath = "") {
+  const aces = parseIcacls(output, filePath);
+  if (!aces.length) return { permissive: true, reasons: ["no-acl-entries"], aces };
+  const reasons = [];
+  for (const a of aces) {
+    if (a.inheritOnly) continue; // inherit-only ACEs govern children, not this file
+    const w = a.rights.filter((r) => ICACLS_WRITE.has(r));
+    if (!w.length) continue;
+    const who = normalizeAclPrincipal(a.principal);
+    if (ICACLS_PRIVILEGED.has(who)) continue;
+    reasons.push(`${who}:${w.join("+")}`);
+  }
+  return { permissive: reasons.length > 0, reasons, aces };
+}
+
 // Fail-closed MCP floor: raise an otherwise-allowed MCP decision to policy.mcpFloor (e.g. "ask"). Inert
 // unless the policy sets mcpFloor — normal policies never do, so this is backward-compatible.
 export function mcpFloor(policy, decision) {

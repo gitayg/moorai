@@ -12,11 +12,12 @@
 //   node moorai-hook.mjs uninstall  # remove only MoorAI's entries
 
 import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { join, dirname, basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, verifyPolicySignature, POLICY_PIN_VERSION, reconcilePolicyPins, policyTrust, parsePublishedKeys } from "./hook-core.mjs";
+import { buildEngine, decideText, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, verifyPolicySignature, POLICY_PIN_VERSION, reconcilePolicyPins, policyTrust, parsePublishedKeys, selectLastKnownGood, assessPinAbsence, icaclsPermissive } from "./hook-core.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, requestKill } from "./signals.mjs";
@@ -87,10 +88,67 @@ const SYSTEM_POSTURE = process.platform === "win32"
 const POLICY_PIN = join(os.homedir(), ".curaiq", "policy-pin.json");
 const POLICY_PIN_LATCH = join(os.homedir(), ".moorai", "policy-pin.json");
 
+// Last-known-good VERIFIED policy — the copies that let a fail-open org ENFORCE through a poisoned
+// cache instead of merely alerting about it. Same two-copy user-scope pattern as the pin and the
+// posture latch, plus a root-owned system copy that is preferred when one exists (an MDM can drop a
+// signed policy there; the hook only ever reads it). The stored bytes are the console's ORIGINAL signed
+// body and are re-verified on load — see selectLastKnownGood in hook-core.mjs for why that matters.
+const POLICY_LKG = join(os.homedir(), ".curaiq", "policy-lkg.json");
+const POLICY_LKG_LATCH = join(os.homedir(), ".moorai", "policy-lkg.json");
+const POLICY_LKG_SYSTEM = process.platform === "win32"
+  ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "policy-lkg.json")
+  : "/etc/moorai/policy-lkg.json";
+
+// "This device has held a policy-key pin" — a breadcrumb in a THIRD directory, deliberately outside both
+// ~/.curaiq and ~/.moorai so that `rm ~/.curaiq/policy-pin.json ~/.moorai/policy-pin.json` (and the
+// `rm -rf ~/.curaiq` wipe) leaves something behind that contradicts "this is a fresh install". It holds
+// no key and no secret — it could not usefully hold one, since the hook runs as the user and anything it
+// can read the attacker can read. Its only job is to make an ERASED pin distinguishable from an absent
+// one. Deleting it too is possible and is the stated residual risk.
+const PIN_BREADCRUMB = process.platform === "win32"
+  ? join(process.env.LOCALAPPDATA || join(os.homedir(), "AppData", "Local"), "MoorAI", "pinned")
+  : join(os.homedir(), ".config", "moorai", "pinned");
+
+// Artifacts that exist ONLY on a device that has verified a real console signature. These decide whether
+// a missing pin is suspicious — see assessPinAbsence for why "prior operation" artifacts cannot.
+const PINNING_ARTIFACTS = [
+  ["pin-breadcrumb", () => PIN_BREADCRUMB],
+  ["policy-lkg", () => POLICY_LKG],
+  ["policy-lkg-latch", () => POLICY_LKG_LATCH]
+];
+// Artifacts a device only produces by actually RUNNING. Reported as context on a suspicious pin absence
+// so a SOC can see how long the device had been operating; never a trigger on their own.
+const OPERATION_ARTIFACTS = [
+  ["posture-sidecar", () => POSTURE_SIDECAR],
+  ["posture-latch", () => POSTURE_LATCH],
+  ["action-audit", () => join(os.homedir(), ".curaiq", "action-audit.jsonl")],
+  ["exposure-ledger", () => join(os.homedir(), ".curaiq", "exposure-ledger.jsonl")],
+  ["agent-events", () => join(os.homedir(), ".curaiq", "agent-events.jsonl")]
+];
+// Only the artifact NAMES ever leave the device, never a byte of their contents.
+function presentArtifacts(list) {
+  const out = [];
+  for (const [name, path] of list) {
+    try { if (statSync(path()).size > 0) out.push(name); } catch { /* absent */ }
+  }
+  return out;
+}
+function writePinBreadcrumb() {
+  try {
+    if (statSync(PIN_BREADCRUMB).size > 0) return; // already recorded; never rewritten
+  } catch { /* absent — write it */ }
+  try {
+    mkdirSync(dirname(PIN_BREADCRUMB), { recursive: true });
+    writeFileSync(PIN_BREADCRUMB, JSON.stringify({ v: POLICY_PIN_VERSION, tenant: String(CONFIG.tenant), first: new Date().toISOString() }));
+  } catch { /* best-effort */ }
+}
+
 // Returns { policy, source, rejected } where source is:
 //   "fresh"        — freshly fetched from the server (and re-cached)
 //   "cache"        — served from the fresh-cache window without a fetch attempt
 //   "cache-offline"— fetch FAILED, falling back to the last-known cached policy (offline; #33 point 2)
+//   "last-known-good" — live AND cached copies were both refused (or absent); enforcing the last policy
+//                       that actually passed signature verification, re-verified on the way in
 //   "none"         — no policy at all (offline AND no cache, OR nothing that verified)
 //
 // Every candidate policy must carry a console signature this device's trust state verifies. One that
@@ -111,6 +169,16 @@ async function loadPolicy() {
   const anchorKeys = policyKeys();    // explicit anchor: root-owned /etc/moorai/policy.pub or MDM env
   const pin = readPolicyPin();        // this device's own TOFU record
   const trust = policyTrust({ anchorKeys, pin, tenant: CONFIG.tenant });
+  // A device that has demonstrably been operating but holds NO pin and NO anchor is not a fresh install
+  // — it is a device whose pin was erased. Computed here (not in main) because it also shortens the
+  // window: while in that state the cache's 60s short-circuit is skipped so every invocation attempts a
+  // fresh network fetch, which is the only thing that can re-pin the device.
+  const absence = assessPinAbsence({
+    enrolled: Boolean(CONFIG.installToken),
+    trustMode: trust.mode,
+    pinningEvidence: presentArtifacts(PINNING_ARTIFACTS),
+    operationEvidence: presentArtifacts(OPERATION_ARTIFACTS)
+  });
   const rejected = [];
   const verify = (raw) => {
     let p;
@@ -134,7 +202,7 @@ async function loadPolicy() {
   // A CACHED policy never re-pins, however valid it looks: the cache file is in the agent's own write
   // scope, so letting it teach the device a key would hand the attacker the pin. Only a signature
   // delivered fresh over the network from the configured server can arm or roll the pin forward.
-  if (withinWindow && cached && cached.policy) return { policy: cached.policy, source: "cache", rejected, pin, trust };
+  if (withinWindow && !absence.suspicious && cached && cached.policy) return { policy: cached.policy, source: "cache", rejected, pin, trust, absence };
 
   try {
     const headers = CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {};
@@ -151,8 +219,23 @@ async function loadPolicy() {
       // gains nothing while risking a mismatch with whatever the console signed.
       if (v.policy) {
         try { mkdirSync(dirname(CACHE), { recursive: true }); writeFileSync(CACHE, raw); } catch {}
-        armPolicyPin(trust, pin, v, JSON.parse(raw), published);
-        return { policy: v.policy, source: "fresh", rejected, pin, trust };
+        // Non-empty result ⇒ a REAL console signature verified on this fetch — under the anchor, under
+        // an already-pinned key, or (first contact) under the key the server published. That is the same
+        // bar last-known-good needs, and it is NOT the same as v.status: on first contact the policy is
+        // admitted as "unanchored" (the device holds no key yet) and only the TOFU re-check proves it.
+        const armed = armPolicyPin(trust, pin, v, JSON.parse(raw), published);
+        // A verified FRESH policy is the only thing allowed to become last-known-good, and it always
+        // replaces the previous one. Fresh-only is the point: the cache is attacker-writable, so
+        // promoting a merely-cached policy would let a planted (but still validly signed, e.g. rolled
+        // back) body outlive the cache it was planted in. Always-replace is what keeps an org that
+        // legitimately RELAXES its policy from being dragged back to an older, stricter one.
+        //
+        // A REAL signature only — never the trivially-trusted "unanchored" case. A last-known-good with
+        // no real signature behind it could not survive its own re-verification anyway, and recording
+        // one would destroy this file's second job: being proof the device once verified a real
+        // signature (see assessPinAbsence).
+        if (v.status === "ok" || armed) writePolicyLkg(raw);
+        return { policy: v.policy, source: "fresh", rejected, pin, trust, absence };
       }
       // A body that PARSED but did not verify is the repointed-serverUrl variant of the same attack
       // (config.json sits in the same write scope as the cache). A non-JSON body is just a broken or
@@ -162,8 +245,29 @@ async function loadPolicy() {
     }
   } catch { /* offline */ }
 
-  if (cached && cached.policy) return { policy: cached.policy, source: "cache-offline", rejected, pin, trust };
-  return { policy: null, source: "none", rejected, pin, trust };
+  if (cached && cached.policy) return { policy: cached.policy, source: "cache-offline", rejected, pin, trust, absence };
+  // Nothing live and nothing cached verified. Before falling through to "no policy" — which for a
+  // fail-open org means exit(0), i.e. the attacker's bypass — enforce with the last policy that really
+  // did pass verification, re-verified now against the same anchor/pin. Read lazily: three extra file
+  // reads must not sit on the happy path.
+  const lkg = selectLastKnownGood([
+    { source: "system", raw: readRootOwned(POLICY_LKG_SYSTEM) },
+    { source: "primary", raw: readText(POLICY_LKG) },
+    { source: "latch", raw: readText(POLICY_LKG_LATCH) }
+  ], verify);
+  if (lkg) return { policy: lkg.policy, source: "last-known-good", lkgCopy: lkg.copy, rejected, pin, trust, absence };
+  return { policy: null, source: "none", rejected, pin, trust, absence };
+}
+
+// Record the last VERIFIED policy, byte-for-byte as the console served it (the signature covers the
+// body, so re-serializing gains nothing and risks a digest mismatch). Both user-scope copies, in two
+// different directories, for the same reason the pin and the posture latch have two: `rm -rf ~/.curaiq`
+// must not take the device's memory with it. There is deliberately no write to POLICY_LKG_SYSTEM — the
+// hook runs as the user and cannot write /etc, so a "system copy" it wrote would be a fiction.
+function writePolicyLkg(raw) {
+  for (const p of [POLICY_LKG, POLICY_LKG_LATCH]) {
+    try { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, raw); } catch { /* best-effort */ }
+  }
 }
 
 // ---- policy-key pin I/O (the pure logic lives in hook-core.mjs) ----
@@ -187,6 +291,9 @@ function readPolicyPin() { return reconcilePolicyPins({ primary: readText(POLICY
 // The first-contact window is real and is not claimed away: an attacker who owns the device BEFORE it
 // ever reaches its console can pin their own key. /etc/moorai/policy.pub removes that window; nothing
 // this process can do by itself does.
+//
+// Returns whether a real console signature was established on this fetch (i.e. there was something to
+// pin). The caller uses it as the bar for recording a last-known-good policy — see there.
 function armPolicyPin(trust, pin, verdict, policy, publishedRaw) {
   try {
     const published = parsePublishedKeys(publishedRaw, { tenant: CONFIG.tenant });
@@ -197,8 +304,10 @@ function armPolicyPin(trust, pin, verdict, policy, publishedRaw) {
       const t = verifyPolicySignature(policy, { keys: parseTrustedKeys(published.join("\n")), tenant: CONFIG.tenant });
       if (t.trusted && t.status === "ok") learn = [t.keyId];
     }
-    writePolicyPin(pin, learn.filter(Boolean));
-  } catch { /* pinning is durability, never enforcement — a failure here must not change the decision */ }
+    learn = learn.filter(Boolean);
+    writePolicyPin(pin, learn);
+    return learn.length > 0;
+  } catch { return false; /* pinning is durability, never enforcement — a failure here must not change the decision */ }
 }
 
 // Write BOTH copies when there is something new to record, or when the copies disagree (which also
@@ -206,6 +315,10 @@ function armPolicyPin(trust, pin, verdict, policy, publishedRaw) {
 function writePolicyPin(pin, ids) {
   const keys = [...new Set([...(pin.keys || []), ...ids])];
   if (!keys.length) return;
+  // Record "this device has pinned" in the third location on every run that HAS a pin, so the breadcrumb
+  // self-heals if deleted while the pin still exists. It is never written when there is no pin, which is
+  // what keeps it meaningful as evidence.
+  writePinBreadcrumb();
   const stale = keys.length !== (pin.keys || []).length || pin.evidenceMissing || pin.corrupt || pin.tenant !== CONFIG.tenant;
   if (!stale) return;
   const body = JSON.stringify({ v: POLICY_PIN_VERSION, tenant: String(CONFIG.tenant), keys, updated: new Date().toISOString() });
@@ -214,14 +327,42 @@ function writePolicyPin(pin, ids) {
   }
 }
 
+// Windows has no POSIX ownership to stat, and this function used to return %ProgramData%\MoorAI\*
+// contents UNCONDITIONALLY there — so on Windows the break-glass anchor, the policy anchor and the
+// machine-wide posture latch were all "trusted" with no verification that an ordinary user could not
+// have written them. That is not a theoretical gap: a %ProgramData% subtree created by a non-elevated
+// process inherits an ACL that lets its creator (and often BUILTIN\Users) write.
+//
+// So ask the OS. `icacls <file>` is present on every supported Windows and needs no dependency; the
+// parsing lives in hook-core.mjs (icaclsPermissive) as a pure function so it can be tested off-Windows.
+// Everything here is the thin part: spawn, cache, and FAIL CLOSED — if the check cannot be performed
+// (icacls missing, access denied, timeout, unparseable output) or the ACL grants write to anyone who is
+// not an administrator, the file is untrusted and reads as "", exactly as a user-writable POSIX file does.
+//
+// Cached for the life of the process: this runs on every hook invocation, and one hook invocation is
+// one tool call. RUNTIME BEHAVIOR ON WINDOWS IS UNVERIFIED — no Windows host was available.
+const WIN_ACL_CACHE = new Map();
+function windowsFileIsProtected(p) {
+  if (WIN_ACL_CACHE.has(p)) return WIN_ACL_CACHE.get(p);
+  let ok = false;
+  try {
+    const out = execFileSync("icacls", [p], { encoding: "utf8", timeout: 3000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    ok = !icaclsPermissive(out, p).permissive;
+  } catch { ok = false; }
+  WIN_ACL_CACHE.set(p, ok);
+  return ok;
+}
+
 // Read a file that is only trusted when the OS says the user cannot have written it: root-owned and
-// not group/world-writable. Anything else — missing, user-owned, loosely permissioned — reads as "",
-// because a "system" file the agent can rewrite is worth exactly as much as one under ~/.curaiq.
-// (No POSIX ownership on Windows; there the ACL on %ProgramData%\MoorAI is what carries this.)
+// not group/world-writable on POSIX, administrator/SYSTEM-only per its ACL on Windows. Anything else —
+// missing, user-owned, loosely permissioned, or unverifiable — reads as "", because a "system" file the
+// agent can rewrite is worth exactly as much as one under ~/.curaiq. statSync first, so a file that does
+// not exist costs nothing and never spawns anything.
 function readRootOwned(p) {
   try {
     const st = statSync(p);
-    if (process.platform !== "win32" && (st.uid !== 0 || (st.mode & 0o022))) return "";
+    if (process.platform === "win32") { if (!windowsFileIsProtected(p)) return ""; }
+    else if (st.uid !== 0 || (st.mode & 0o022)) return "";
     return readFileSync(p, "utf8");
   } catch { return ""; }
 }
@@ -389,6 +530,28 @@ function reportPinTamper(pin, trust) {
   else if (pin.evidenceMissing) out.push(postPosture("Policy key pin evidence missing", "policy:pin:evidence-missing", "High"));
   return Promise.all(out);
 }
+// The pin is GONE on a device that has demonstrably been operating. Distinct from pin:evidence-missing
+// (one copy survived) and pin:corrupt (a copy exists but is unreadable): here BOTH copies are absent,
+// which is the one pin state that is indistinguishable from a new device by the pin files alone — so it
+// is named from the OTHER evidence instead. Content-free: artifact NAMES only, never their contents.
+//
+// WHY THIS DOES NOT ALSO FORCE FAIL-CLOSED, stated rather than assumed:
+//   * The same state is reached legitimately. A fleet whose console never signed (the documented
+//     no-brick property) operates for months and never forms a pin; the day the console starts signing,
+//     every one of those devices looks exactly like this. So does a restored/migrated home directory.
+//     Forcing fail-closed here would brick a healthy fleet at precisely the moment the org upgraded.
+//   * A fail-CLOSED org is already protected in this state by the posture ratchet, which is independent
+//     of the pin: durablePosture() keeps returning fail-closed and OFFLINE_DEFAULT_POLICY applies.
+//   * For a fail-OPEN org, refusing the cache here would REDUCE enforcement, not raise it: the cached
+//     policy (poisoned or not) is the only policy such a device has, and "no policy" for them is
+//     exit(0). Fail-closed-by-heuristic would be strictly worse than the alert.
+// What IS done instead is bounded and cannot brick anything: the 60s cache short-circuit is skipped
+// while in this state, so every invocation attempts the fresh network fetch that is the only path back
+// to a pin. Re-pinning already requires that network fetch — a cached policy never arms the pin.
+function reportPinAbsence(absence) {
+  if (!absence || !absence.suspicious) return Promise.resolve();
+  return postPosture("Policy key pin absent on a device with prior operation", "policy:pin:absent-operational", "Critical", { pinEvidence: absence.evidence, pinEvidenceContext: absence.context });
+}
 // Read + verify the marker. `raw` is kept only to derive a one-way hash for the tamper alert.
 function breakGlassVerdict() {
   let raw = "";
@@ -405,7 +568,7 @@ function reportBreakGlassTamper(bg) {
   return postPosture(`Break-glass marker rejected (${bg.status})`, `breakglass:${bg.status}:${djb2(bg.raw)}`, level);
 }
 // #33 — content-free policy-posture signals (category/hash only; no file, arg, or content ever).
-function postPosture(category, hash, riskLevel) { return post({ threatId: 0, category, riskLevel, stage: "policy", tool: "hook:policy", ts: new Date().toISOString(), contentHash: hash, ...IDENTITY }); }
+function postPosture(category, hash, riskLevel, extra) { return post({ threatId: 0, category, riskLevel, stage: "policy", tool: "hook:policy", ts: new Date().toISOString(), contentHash: hash, ...(extra || {}), ...IDENTITY }); }
 
 // ---- content-free reporting ----
 function djb2(s) { let h = 5381; for (let i = 0; i < String(s).length; i++) h = ((h << 5) + h + String(s).charCodeAt(i)) >>> 0; return "h" + h.toString(16); }
@@ -562,7 +725,7 @@ async function main() {
   try { input = JSON.parse((await readStdin()) || "{}"); } catch { process.exit(0); }
   const tool = input.tool_name || "";
   const ti = input.tool_input || {};
-  let { policy, source, rejected, pin, trust } = await loadPolicy();
+  let { policy, source, rejected, pin, trust, absence, lkgCopy } = await loadPolicy();
   // Ratcheted posture read BEFORE rememberPosture rewrites the copies, so this run still sees what the
   // device knew on the way in (and any tampering with it) rather than what we are about to record.
   const posture = durablePosture();
@@ -580,6 +743,9 @@ async function main() {
     // Awaited for the same reason: an erased or mangled pin is a tamper signal in its own right, and the
     // fail-open exit below would otherwise race the POST.
     if (pin && (pin.corrupt || pin.evidenceMissing || trust.mode === "rebind")) await reportPinTamper(pin, trust);
+    // Awaited for the same reason as the reports above: this is a Critical signal and the fail-open
+    // exit below would otherwise race the POST and lose it.
+    await reportPinAbsence(absence);
     if (!policy) {
       if (posture.posture !== "fail-closed") process.exit(0); // fail-open (default) — UNCHANGED behavior
       // The ratchet just refused a downgrade (or found a copy erased) — awaited so the signal cannot be
@@ -588,12 +754,20 @@ async function main() {
       // Fail-closed posture with no policy: break-glass (if operator-signed and live) forces fail-open so
       // an operator can recover a locked-out machine; otherwise apply the reviewable built-in default.
       if (bg.active) { await postPosture("Break-glass active (fail-open override)", "breakglass:active", "High"); process.exit(0); }
-      postPosture("Offline: fail-closed default applied", "offline:fail-closed", "High");
+      // Awaited: the SOC's ONLY signal that a device fell back to the built-in fail-closed default.
+      // emit() calls process.exit(0), so a fire-and-forget POST here is lost whenever the decision
+      // path finishes first. post() is bounded (1500ms) and never throws, so this cannot hang.
+      await postPosture("Offline: fail-closed default applied", "offline:fail-closed", "High");
       policy = OFFLINE_DEFAULT_POLICY;
     } else {
       // A fail-closed org can still break-glass out of its cached/live policy entirely.
       if (offlineMode(policy) === "fail-closed" && bg.active) { await postPosture("Break-glass active (fail-open override)", "breakglass:active", "High"); process.exit(0); }
       if (source === "cache-offline") await postPosture("Offline: enforcing last-known policy", "offline:last-known", "Info"); // #33 point 2 — awaited so the signal isn't lost on exit
+      // The live AND cached copies were both refused (or absent) and this device fell back to the last
+      // policy that genuinely verified. When `rejected` is non-empty that means enforcement is running
+      // THROUGH an active poisoning attempt rather than collapsing to exit(0) — which is the whole point
+      // of keeping it. Awaited for the same reason.
+      if (source === "last-known-good") await postPosture("Enforcing last-known-good verified policy", "policy:lkg:applied", "High", { lkgCopy: lkgCopy || "", lkgReason: rejected && rejected.length ? "refused" : "absent" });
     }
   } catch { if (!policy) process.exit(0); /* preserve legacy fail-open on any error when no policy */ }
   const engine = buildEngine(policy);
