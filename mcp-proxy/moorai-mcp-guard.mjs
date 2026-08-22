@@ -22,7 +22,7 @@ import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "../cli/config.mjs";
-import { buildEngine, mcpGateway } from "../cli/hook-core.mjs";
+import { buildEngine, mcpGateway, literacyTouchpoint } from "../cli/hook-core.mjs";
 import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
 
@@ -100,10 +100,15 @@ function auditCall(tool, decision, argsHash) {
 function alertBlock(tool, gate, reason, argsHash) {
   const category = gate === "server" ? "MCP: unapproved server" : gate === "args" ? "MCP: denied tool argument" : "MCP: blocked tool argument";
   post({ threatId: 0, category, riskLevel: "Blocked", stage: "mcp", tool: `desktop:${tool}`, decision: "deny", mcpServer: SERVER, ts: new Date().toISOString(), contentHash: argsHash, ...IDENTITY });
+  // Coach-as-literacy: the blocked-call message Claude Desktop shows the user is a literacy touchpoint.
+  try { post({ ...literacyTouchpoint({ threatId: 0, category, tool: `desktop:${tool}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
 }
 function alertFindings(tool, findings, blocked, argsHash) {
   for (const f of findings || []) {
     post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage: "mcp", tool: `desktop:${tool}`, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: djb2(f.match || ""), ...IDENTITY });
+    if (blocked || f.riskLevel === "High" || f.riskLevel === "Critical") {
+      try { post({ ...literacyTouchpoint({ threatId: f.threatId, category: f.category, tool: `desktop:${tool}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
+    }
   }
 }
 

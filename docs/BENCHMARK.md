@@ -1,25 +1,25 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-08-05T21:58:08.422Z
+> Generated: 2026-08-22T16:21:56.223Z
 
-- **Detectors:** 53
-- **Threats:** 60
-- **Adversarial corpus:** 67/67 passed (100.0%)
+- **Detectors:** 65
+- **Threats:** 66
+- **Adversarial corpus:** 102/102 passed (100.0%)
 - **OWASP LLM Top 10:** 9/10 items covered by ≥1 on-device detector
 
 ## OWASP LLM Top 10 (2025) coverage
 
 | Item | Name | Threats | Detectors | Status |
 |------|------|--------:|----------:|--------|
-| LLM01 | Prompt Injection | 4 | 5 | ✅ covered |
-| LLM02 | Sensitive Information Disclosure | 13 | 28 | ✅ covered |
-| LLM03 | Supply Chain | 5 | 1 | ✅ covered |
+| LLM01 | Prompt Injection | 4 | 6 | ✅ covered |
+| LLM02 | Sensitive Information Disclosure | 15 | 29 | ✅ covered |
+| LLM03 | Supply Chain | 6 | 2 | ✅ covered |
 | LLM04 | Data & Model Poisoning | 1 | 0 | — |
-| LLM05 | Improper Output Handling | 5 | 6 | ✅ covered |
-| LLM06 | Excessive Agency | 12 | 5 | ✅ covered |
+| LLM05 | Improper Output Handling | 6 | 14 | ✅ covered |
+| LLM06 | Excessive Agency | 14 | 5 | ✅ covered |
 | LLM07 | System Prompt Leakage | 2 | 2 | ✅ covered |
-| LLM08 | Vector & Embedding Weaknesses | 3 | 1 | ✅ covered |
+| LLM08 | Vector & Embedding Weaknesses | 3 | 2 | ✅ covered |
 | LLM09 | Misinformation | 13 | 4 | ✅ covered |
 | LLM10 | Unbounded Consumption | 2 | 1 | ✅ covered |
 

@@ -3,6 +3,7 @@
 // process. Governance, not a sandbox: on any error or missing policy the caller fails OPEN (allows).
 
 import { readFileSync } from "node:fs";
+import { createPublicKey, verify as cryptoVerify, createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { DETECTORS } from "../data/detectors.js";
@@ -36,6 +37,24 @@ export function threatActionFor(policy, id) {
 }
 
 const RANK = { allow: 1, ask: 2, deny: 3 };
+
+// Coach-as-literacy (EU AI Act Art. 4). Every surface that SHOWS a developer the "why + what to do"
+// for a finding is delivering a just-in-time AI-literacy touchpoint at the point of use. This builds
+// the content-free record for that moment — topic + framework + actor, never any content — so the
+// console's literacy coverage reflects ALL surfaces, not just the CLI guard. Shared here because the
+// hook, the Claude Desktop MCP proxy, the browser extension and the Tauri host all coach, and a
+// literacy number that counts only one of them under-reports evidence the console exports.
+export function literacyTouchpoint({ threatId = 0, category = "", tool = "moorai" } = {}) {
+  return {
+    threatId,
+    category: `Literacy: ${category}`,
+    riskLevel: "Info",
+    stage: "coach",
+    tool,
+    ts: new Date().toISOString(),
+    contentHash: "coach:" + threatId
+  };
+}
 
 // #10 — context-aware severity. The same pattern is more critical by WHERE it was caught: a secret
 // read into an agent's context (stage "file") or shipped as an MCP tool-call argument (stage "mcp"/
@@ -165,20 +184,184 @@ export function offlineMode(policy) {
   return policy && policy.offlineMode === "fail-closed" ? "fail-closed" : "fail-open";
 }
 
-// Is a break-glass override currently active? `text` is the raw content of ~/.curaiq/break-glass, which
-// carries an expiry the operator sets. Accepts {expires|expiry|until|exp: <ISO|epoch-ms>}, a bare ISO
-// string, or a bare epoch-ms number/string. Absent, malformed, or expired → false (fail-closed stays).
-export function breakGlassActive(text, now = Date.now()) {
-  if (!text) return false;
-  let exp;
-  try { const j = JSON.parse(text); exp = j && typeof j === "object" ? (j.expires ?? j.expiry ?? j.until ?? j.exp) : j; }
-  catch { exp = String(text).trim(); }
-  if (exp == null || exp === "") return false;
-  let t;
-  if (typeof exp === "number") t = exp;
-  else if (/^\d+$/.test(String(exp).trim())) t = Number(String(exp).trim()); // bare epoch-ms
-  else t = Date.parse(String(exp));
-  return Number.isFinite(t) && t > now;
+// Break-glass marker authenticity. The marker forces FAIL-OPEN on a fail-closed device, so mere
+// presence is not a trust test: the hook runs as the user, and the agent being governed can write
+// ~/.curaiq/break-glass with one already-permitted Bash call. The pre-v2 format ("any content that
+// parses to a future timestamp") therefore let a prompt-injected agent switch the enforcement layer
+// off — `echo '{"expires":"2030-01-01"}' > ~/.curaiq/break-glass`. It is NOT accepted any more, and
+// there is deliberately no backwards compatibility: the old format is unauthenticated by construction.
+//
+// A marker is now an ed25519 statement signed by an OPERATOR key the device holds only OUTSIDE the
+// agent's write scope (see BG_ANCHOR in moorai-hook.mjs). Scope fields are inside the signature, so a
+// marker minted for one device/tenant cannot be replayed onto another.
+export const BREAK_GLASS_VERSION = 2;
+
+// The exact bytes signed and verified — keep the operator's signing procedure and this in lockstep.
+export function breakGlassCanonical(m) {
+  return `moorai-break-glass|v${m.v}|${m.tenant}|${m.device}|${m.expires}|${m.nonce}`;
+}
+
+// Parse a trust-anchor blob into ed25519 public KeyObjects. Accepts PEM blocks (what `openssl pkey
+// -pubout` emits) and/or one base64 SPKI DER key per line, with # comments. Unparseable entries are
+// skipped rather than throwing — a corrupt anchor must degrade to "no key", never to a crash.
+export function parseTrustedKeys(text) {
+  const s = String(text || "");
+  const out = [];
+  const PEM = /-----BEGIN PUBLIC KEY-----[\s\S]*?-----END PUBLIC KEY-----/g;
+  for (const p of s.match(PEM) || []) { try { out.push(createPublicKey(p)); } catch { /* skip */ } }
+  for (const line of s.replace(PEM, "").split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) continue;
+    try { out.push(createPublicKey({ key: Buffer.from(t, "base64"), format: "der", type: "spki" })); } catch { /* skip */ }
+  }
+  return out;
+}
+
+function expiryMs(exp) {
+  const s = String(exp).trim();
+  return /^\d+$/.test(s) ? Number(s) : Date.parse(s);
+}
+
+// Verify a break-glass marker. Returns { active, status } where status is one of:
+//   absent | malformed | unsigned | no-anchor | untrusted | mismatch | expired | active
+// Only "active" grants fail-open. Every other status — including the ambiguous ones (no trust anchor
+// on the device, unparseable expiry) — keeps the device fail-closed, and every status other than
+// "absent" is a tamper signal the caller reports to the SOC.
+export function verifyBreakGlass(text, { now = Date.now(), keys = [], tenant = "", device = "" } = {}) {
+  if (!text || !String(text).trim()) return { active: false, status: "absent" };
+  let m;
+  try { m = JSON.parse(text); } catch { return { active: false, status: "malformed" }; }
+  if (!m || typeof m !== "object" || Array.isArray(m)) return { active: false, status: "malformed" };
+  // No signature at all is reported as "unsigned" rather than "malformed" — that is the pre-v2 format
+  // and the shape a forging agent produces, and a SOC should see it named for what it is.
+  if (typeof m.sig !== "string" || !m.sig) return { active: false, status: "unsigned" };
+  if (Number(m.v) !== BREAK_GLASS_VERSION || m.expires == null || m.expires === "") return { active: false, status: "malformed" };
+  if (!keys.length) return { active: false, status: "no-anchor" };
+  // Re-derive the signed bytes from the named fields only — never trust the file's own byte layout.
+  const body = { v: BREAK_GLASS_VERSION, tenant: String(m.tenant ?? ""), device: String(m.device ?? ""), expires: String(m.expires), nonce: String(m.nonce ?? "") };
+  const msg = Buffer.from(breakGlassCanonical(body));
+  const sig = Buffer.from(m.sig, "base64");
+  const ok = keys.some((k) => { try { return cryptoVerify(null, msg, k, sig); } catch { return false; } });
+  if (!ok) return { active: false, status: "untrusted" };
+  // Scope is inside the signature: only the operator can widen it to the "*" fleet-wide wildcard.
+  if (body.tenant !== "*" && body.tenant !== String(tenant)) return { active: false, status: "mismatch" };
+  if (body.device !== "*" && body.device !== String(device)) return { active: false, status: "mismatch" };
+  const t = expiryMs(body.expires);
+  if (!Number.isFinite(t)) return { active: false, status: "malformed" };
+  if (t <= now) return { active: false, status: "expired" };
+  return { active: true, status: "active" };
+}
+
+// Offline-posture RATCHET (#33 follow-up). Break-glass fixed the "forge the override file" door; the
+// POSTURE itself was the other door into the same room. It used to be read from two sources the
+// governed agent can write — MOORAI_OFFLINE_MODE and ~/.curaiq/offline-posture — so a prompt-injected
+// agent with one already-permitted Bash call (`echo fail-open > ~/.curaiq/offline-posture`) silently
+// returned a fail-closed device to fail-open. The asymmetry that fixes it: HARDENING is safe and needs
+// no proof, WEAKENING is an enforcement bypass and must never be taken from the user's write scope.
+//
+// This classifies the already-read source values; the I/O — and the ownership check that makes the
+// machine-wide source trustworthy — lives in moorai-hook.mjs. Inputs are raw strings ("" = absent):
+//   system  — machine-wide latch, ALREADY ownership-checked (root-owned, not group/world-writable)
+//   sidecar — ~/.curaiq/offline-posture   (user scope — the agent can write it)
+//   latch   — ~/.moorai/posture           (user scope — second copy, in a different directory)
+//   env     — MOORAI_OFFLINE_MODE         (user scope — the agent can export it)
+//
+// Rules: "fail-closed" from ANY source wins. "fail-open" from a user-scope source can only establish
+// the never-configured default; it can never undo a ratchet, and asserting it against one is recorded
+// as a refused downgrade for the SOC. Anything that is not one of the two literals is ignored outright
+// — junk must never be read as "fail-open". evidenceMissing flags the erase-the-evidence move: one of
+// the two user-scope copies still says fail-closed while the other no longer corroborates it.
+export function ratchetPosture({ system = "", sidecar = "", latch = "", env = "" } = {}) {
+  const norm = (v) => (String(v ?? "").trim() === "fail-closed" ? "fail-closed" : String(v ?? "").trim() === "fail-open" ? "fail-open" : "");
+  const s = { system: norm(system), sidecar: norm(sidecar), latch: norm(latch), env: norm(env) };
+  const hardenedBy = Object.keys(s).filter((k) => s[k] === "fail-closed");
+  if (!hardenedBy.length) return { posture: "fail-open", hardenedBy, downgradeAttempt: [], evidenceMissing: false, sources: s };
+  const userPair = [s.sidecar, s.latch];
+  return {
+    posture: "fail-closed",
+    hardenedBy,
+    downgradeAttempt: ["system", "sidecar", "latch", "env"].filter((k) => s[k] === "fail-open"),
+    evidenceMissing: userPair.includes("fail-closed") && userPair.includes(""),
+    sources: s
+  };
+}
+
+// ---- Policy-cache authenticity ----
+//
+// The third door into the same room the break-glass marker and the posture ratchet closed. The policy
+// cache (~/.curaiq/hook-policy.json) is in the governed agent's own write scope and carried no
+// integrity check, so one already-permitted Bash call —
+//
+//     echo '{}' > ~/.curaiq/hook-policy.json
+//
+// — collapsed enforcement outright: `{}` is a "real policy", so it outranks the posture ratchet by
+// design (a policy is an AUTHORIZED relaxation), AND it flattens every detector to "notify" via
+// threatActionFor's fallback. Measured, not assumed: the exposure is not the 60s freshness window,
+// because when the server is unreachable loadPolicy falls back to the SAME file ("cache-offline") for
+// the whole outage.
+//
+// The fix mirrors break-glass exactly rather than inventing a second trust model: the console signs
+// each tenant's policy with ed25519, and the device verifies against a key held OUTSIDE the agent's
+// write scope (root-owned /etc/moorai/policy.pub, or MDM-injected MOORAI_POLICY_PUBKEY — see
+// POLICY_ANCHOR in moorai-hook.mjs). tenant + issued-at are INSIDE the signed bytes, so a genuinely
+// signed policy cannot be replayed onto another tenant.
+export const POLICY_SIG_VERSION = 1;
+
+// Deterministic serialization — key-sorted, so the digest does not depend on JSON key order or on the
+// exact bytes the cache file happens to hold. Must stay byte-identical to the console's canonicalJson.
+export function canonicalJson(v) {
+  if (v === undefined) return "null";
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(",")}]`;
+  return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(v[k])}`).join(",")}}`;
+}
+
+// sha256 over the whole policy MINUS the signature envelope — every field the engine reads is covered.
+export function policyDigest(policy) {
+  const { policySig, ...body } = policy || {};
+  return createHash("sha256").update(canonicalJson(body)).digest("hex");
+}
+
+// The exact bytes signed and verified — a WIRE FORMAT shared with the console; changing it invalidates
+// every policy already signed, so it is pinned literally in the tests on both sides.
+export function policyCanonical(s) {
+  return `moorai-policy|v${s.v}|${s.tenant}|${s.iat}|${s.digest}`;
+}
+
+// Verify a policy's signature. Returns { trusted, status }:
+//   unanchored | ok            → trusted
+//   unsigned | malformed | untrusted | mismatch → NOT trusted; the caller must treat the policy as if
+//                                                 it did not exist (fall through to the posture ratchet)
+//
+// COMPATIBILITY — deliberate choice (a): verification is REQUIRED ONLY WHEN AN ANCHOR IS PRESENT.
+// /etc/moorai is optional today and most installs have no anchor at all, so a hard requirement would
+// brick every existing endpoint the moment it upgraded (its console may not sign yet either). An
+// unanchored device therefore behaves exactly as before — it has no key, so it can verify nothing, and
+// pretending otherwise would only convert a silent bypass into a silent outage. A device WITH an anchor
+// never accepts an unsigned or unverifiable policy: shipping the anchor IS the opt-in to the guarantee,
+// exactly like shipping /etc/moorai/breakglass.pub or the root-owned posture latch.
+//
+// No max-age check on `iat`: the offline path exists precisely to enforce the last-known policy through
+// an outage, so expiring it would defeat #33. iat is inside the signature for audit + future rollback
+// detection, not as a TTL.
+export function verifyPolicySignature(policy, { keys = [], tenant = "" } = {}) {
+  if (!keys.length) return { trusted: true, status: "unanchored" };
+  if (!policy || typeof policy !== "object" || Array.isArray(policy)) return { trusted: false, status: "malformed" };
+  const s = policy.policySig;
+  // No envelope at all is named "unsigned" rather than "malformed" — that is both the pre-signing
+  // format and the shape a forging agent produces, and a SOC should see it named for what it is.
+  if (!s || typeof s !== "object" || typeof s.sig !== "string" || !s.sig) return { trusted: false, status: "unsigned" };
+  if (Number(s.v) !== POLICY_SIG_VERSION || s.alg !== "ed25519" || !s.iat) return { trusted: false, status: "malformed" };
+  // Re-derive the signed bytes from the named fields and a fresh digest of the body — never trust the
+  // file's own byte layout, and never trust a digest the file supplies.
+  const msg = Buffer.from(policyCanonical({ v: POLICY_SIG_VERSION, tenant: String(s.tenant ?? ""), iat: String(s.iat), digest: policyDigest(policy) }));
+  let sig;
+  try { sig = Buffer.from(s.sig, "base64"); } catch { return { trusted: false, status: "malformed" }; }
+  const ok = keys.some((k) => { try { return cryptoVerify(null, msg, k, sig); } catch { return false; } });
+  if (!ok) return { trusted: false, status: "untrusted" };
+  // Tenant is inside the signature, so a genuinely signed policy cannot be replayed across tenants.
+  if (String(s.tenant ?? "") !== String(tenant)) return { trusted: false, status: "mismatch" };
+  return { trusted: true, status: "ok" };
 }
 
 // Fail-closed MCP floor: raise an otherwise-allowed MCP decision to policy.mcpFloor (e.g. "ask"). Inert

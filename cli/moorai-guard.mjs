@@ -150,7 +150,7 @@ function runClaude(prompt, policy, action) {
 
 async function main() {
   const { decide: decideFlag, prompt } = parseArgs(process.argv.slice(2));
-  if (!prompt) { console.error("usage: raiseme-guard [--decide proceed|redact|abort] <prompt>"); process.exit(2); }
+  if (!prompt) { console.error("usage: moorai-guard [--decide proceed|redact|abort] <prompt>"); process.exit(2); }
 
   const policy = await getPolicy();
   // #5 — consent-visible banner: never let an elevated capture tier run silently on the device.

@@ -20,6 +20,23 @@ function report(entry) {
   if (!entry) return;
   nativeLog(entry);
   if (entry.alert) postAlert(entry.alert);
+  // Coach-as-literacy (EU AI Act Art. 4): the Detection drawer showing the user the "why + what to do"
+  // for a finding is a just-in-time literacy touchpoint. Mirrors literacyTouchpoint() in
+  // cli/hook-core.mjs — kept in shape-sync by hand because the host bundles src/, not cli/.
+  const a = entry.alert;
+  if (a && (a.riskLevel === "Blocked" || a.riskLevel === "High" || a.riskLevel === "Critical")) {
+    try {
+      postAlert({
+        threatId: a.threatId || 0,
+        category: `Literacy: ${a.category}`,
+        riskLevel: "Info",
+        stage: "coach",
+        tool: a.tool,
+        ts: new Date().toISOString(),
+        contentHash: "coach:" + (a.threatId || 0)
+      });
+    } catch { /* literacy is evidence, not enforcement */ }
+  }
 }
 
 const $ = (id) => document.getElementById(id);

@@ -7,21 +7,28 @@
 MoorAI is a **native desktop "Managed AI Host"** for office workers, paired with a **central
 server** for policy and visibility. The employee does their AI work *inside* MoorAI — a native
 app with an embedded, managed webview — so the host sees every prompt, response, paste, and
-upload natively (no browser extension, no DOM hacks). It detects the 40-threat matrix in real
+upload natively (no browser extension, no DOM hacks). It detects the 66-threat matrix in real
 time, **coaches the employee** with the matrix's guidance, and **reports redacted alerts** to a
 central server so the security team has visibility.
 
-**Posture: voluntary and awareness-first — nothing is blocked.** Adoption is opt-in (self-install),
-the user is warned but can always override, and central is alerted but does not enforce. MoorAI's
-value is (a) **coaching** the employees who use it and (b) giving the security team **visibility**
-into AI-usage risk — *not* hard prevention. Because adoption is voluntary, it does not prevent
-Shadow AI by construction; it reduces risk for those who opt in and surfaces organization-wide
-risk signals.
+**Posture: adoption is voluntary; enforcement is policy-driven.** Adoption is opt-in
+(self-install), but MoorAI does block. `threatActionFor` in [`cli/hook-core.mjs`](../cli/hook-core.mjs)
+resolves every threat to one of `notify` · `justify` · `block` · `kill`, and
+[`cli/moorai-hook.mjs`](../cli/moorai-hook.mjs) turns those into real Claude Code `allow`/`ask`/`deny`
+verdicts — up to terminating the session outright (`killSession`). The **default is report-first**:
+an unconfigured threat resolves to `notify`, so a finding is reported rather than blocked unless an
+admin escalates it via `threatPolicy` / `tierPolicy` (six threats — 11, 43, 46, 47, 48, 49 — default
+to `justify` instead). Central distributes the policy that selects those actions. MoorAI's value is
+(a) **coaching** the employees who use it, (b) giving the security team **visibility** into AI-usage
+risk, and (c) **deterministic prevention** where policy calls for it. Because adoption is voluntary,
+it still does not prevent Shadow AI by construction; it reduces risk for those who opt in and
+surfaces organization-wide risk signals.
 
-- **Rule-base:** [`data/threats.json`](../data/threats.json) — 40 threats, 14 categories, English.
+- **Rule-base:** [`data/threats.json`](../data/threats.json) — 66 threats, 14 categories, English.
   Each threat is a rule: `example` = trigger context, `response` = intervention,
   `riskScore = severity × likelihood`.
-- **Intervention model:** **warn + allow override**, risk-tiered (awareness-first, non-blocking).
+- **Intervention model:** risk-tiered and policy-driven — `notify` (report) → `justify` (ask) →
+  `block` (deny) → `kill` (terminate session). Report-first by default, blocking when configured.
 
 ## Architecture
 
@@ -34,7 +41,7 @@ tapped into. Making it smarter never lets it see a wire it isn't connected to. A
 |---|---|---|
 | Human ↔ AI (chat: prompts, pastes, uploads, responses) | inside the host webview | **Managed Host** — always |
 | AI ↔ tools (agent tool-calls: send email, update CRM, delete file) | model backend / remote MCP server — **never crosses the webview** | **MCP gateway (or API/egress proxy)** — when agents act |
-| AI outside the host (other browser, native app, phone) | a different process/device | optional out-of-host monitor |
+| AI outside the host (other browser, native app, phone) | a different process/device | **browser extension** (shipped) for browser AI; no tap for native apps / phones |
 | Deepfake call / vishing | a phone line — no data wire | coach-only (no tap possible) |
 
 **Why MCP is needed (conditionally):** agent tool-calls execute on the AI↔tools wire, which does
@@ -44,7 +51,7 @@ tool-call can be deterministically blocked *before* it executes). It is **not a 
 feeds the same harness.
 
 **The trigger:** harness + host is genuinely enough for *conversational* AI. Add the MCP/proxy tap
-**only when agentic tool-use is in scope** — hence it sits in v3, not the MVP.
+**only when agentic tool-use is in scope** — hence it shipped in v3, not the MVP.
 
 **Why not just "see everything" from one tap:** no single tap sees everything. A TLS-intercepting
 egress proxy still misses on-device/off-network AI and sees raw bytes without in-app context, so it
@@ -86,26 +93,41 @@ to the cloud for its own reasoning.
 ### Components
 - **MoorAI Client** — native desktop Managed AI Host (self-installed, voluntary). Hosts the
   managed webview, runs the detection brain locally, coaches the user, reports alerts up.
-- **MoorAI Guard (CLI)** — `raiseme-guard` wraps `claude -p`: captures the prompt at the submit
+- **MoorAI Guard (CLI)** — `moorai-guard` wraps `claude -p`: captures the prompt at the submit
   boundary, runs the local review, and forwards only the approved/redacted prompt to the real
   `claude -p`. The runnable proof that the harness reviews egress before the agent. (`npm run guard`.)
-- **MoorAI Server** — web app on **crane.glick.run** (AppCrane). Distributes policy + rule-base
-  to clients, ingests redacted alerts, and serves the security-team dashboard. Does **not** enforce.
+- **MoorAI Server** — distributes policy + rule-base to clients, ingests redacted alerts, and serves
+  the security-team dashboard. The client's default endpoint is `http://localhost:8787`, overridable
+  via the `MoorAI_SERVER` env var or `serverUrl` in the config ([`cli/config.mjs`](../cli/config.mjs)).
+  The server does not enforce directly — it distributes the **policy** that drives client-side
+  enforcement.
 
 ### Client form factor — native Managed AI Host
 - Native desktop app (cross-platform from one codebase). All AI tools are reached through the host.
 - In-band inspection points: **pre-submit** (prompt), **post-response** (AI output),
   **upload/drag-drop** (files), **paste/clipboard** (into the prompt box).
-- *Later companion (optional):* a browser extension / native monitor to **detect** AI use *outside*
-  the host, and an SDK/MCP middleware layer to guardrail agentic tool-calls.
+- *Companion surfaces (shipped):* a browser extension ([`browser-ext/`](../browser-ext/)) to
+  **detect** AI use *outside* the host, and an MCP middleware layer
+  ([`mcp-proxy/`](../mcp-proxy/)) that guardrails agentic tool-calls.
 
-### Detection brain — 3-tier escalation cascade
+### Detection brain — tiered escalation cascade
 Cheapest-and-most-private first; the escalation order *is* the privacy order.
 
-1. **Tier 1 — deterministic rules** — always on, local, instant, zero egress.
-2. **Tier 2 — local LLM** — on ambiguity, local, private. Nothing leaves the device.
-3. **Tier 3 — cloud SDK** — hardest cases, **policy-gated, if available**. Anthropic SDK, **only
-   when org policy allows and only on redacted/structured signals — never raw sensitive content.**
+1. **Tier 1 — deterministic rules** — always on, local, instant, zero egress. Owns the allow/deny
+   decision.
+2. **Tier 2 — local model** — on ambiguity, opportunistic and policy-gated
+   ([`data/model-escalation.mjs`](../data/model-escalation.mjs)). Ollama on the loopback interface
+   (`127.0.0.1:11434`, default `llama3.2:1b`) — deliberately not configurable to a remote host, so
+   nothing leaves the device. Fail-open: no model, timeout or error yields no verdict and never
+   changes enforcement.
+3. **Tier 2b — device-side provider inference** — when no local model is present
+   ([`data/device-inference.mjs`](../data/device-inference.mjs)). Reuses the API key **already on the
+   developer's machine** (`ANTHROPIC_API_KEY` or an admin key file), so no new third party and no new
+   egress is introduced. **MoorAI's own cloud never holds an AI credential and never makes the LLM
+   call.** No key → fall back to regex-only, fail-open.
+
+There is no MoorAI-hosted inference tier: escalation is local-first, then the developer's own
+credential, then nothing.
 
 ### Telemetry — redacted alerts only
 Client → Server alerts carry **redacted metadata only**: threat id, category, risk tier, timestamp,
@@ -113,22 +135,33 @@ tool used, optional content hash / redacted snippet. **Never raw sensitive conte
 MoorAI would itself commit threats #1 / #9 / #33 on every phone-home.
 
 ### Policy — server → client
-Server distributes: approved-tools allowlist, risk thresholds, Tier-3 egress policy, and rule-base
-updates. Client pulls on launch and periodically; works offline against the last-known policy.
+Server distributes: approved-tools allowlist, risk thresholds, per-threat/per-tier enforcement
+actions (`threatPolicy` / `tierPolicy`), model-escalation policy, and rule-base updates. Client
+pulls on launch and periodically; works offline against the last-known policy.
 
 ## Risk distribution (from the matrix)
 
-| Level | Count | Score |
+Counts are the shipped `riskLevel` labels in `data/threats.json` — the field the engine actually
+ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 66 threats.
+
+| Level | Count | Nominal score band |
 |---|---|---|
-| Critical | 16 | ≥ 20 |
-| High | 23 | 12–19 |
-| Medium | 1 | 6–11 |
+| Critical | 17 | ≥ 20 |
+| High | 40 | 12–19 |
+| Medium | 9 | 6–11 |
+
+Note: 8 of the 66 threats carry a `riskLevel` label outside the nominal band their `riskScore`
+would place them in (e.g. #65 scores 15 but is labeled Critical; #43 scores 6 but is labeled High).
+The label wins at runtime; the bands in `meta.scoring` are documentation, not an invariant the data
+is validated against.
 
 ## Capabilities
 
 ### A. Host / gateway (client)
 1. **Approved-tools launcher** — the allowlisted AI tools, reached through the host. *Coaches on
-   threats 4, 5, 7, 28 (cannot prevent them, since adoption is voluntary).*
+   threats 4, 5, 7, 28; when an MCP allow-list is configured, an off-list server is denied outright
+   (`checkServer`, [`cli/hook-core.mjs`](../cli/hook-core.mjs)) — but a user who never installs
+   MoorAI is still unreached.*
 2. **Per-context sessions** — a separate conversation per customer / project / topic. *Threat 36.*
 
 ### B. In-band detection (client; mapped to threat clusters)
@@ -143,51 +176,68 @@ updates. Client pulls on launch and periodically; works offline against the last
 11. **Output-sharing check** — scans summaries/screenshots before sharing. *Threats 20, 37.*
 
 ### C. Runtime (client)
-12. **Risk-prioritized alerting** — uses `riskScore` to rank interventions.
+12. **Risk-prioritized alerting** — ranks findings by `riskLevel`, then `riskScore` as the tiebreak.
 13. **In-context guidance** — surfaces the matching `response` + a source link.
 14. **Local audit log** — on-device record of detections/decisions.
 15. **Redacted alert reporting** — sends redacted alerts to the server (metadata only).
 16. **Policy pull** — fetches allowlist/thresholds/rule-base from the server; offline-tolerant.
 17. **Privacy-preserving** — inspection is local; only redacted metadata leaves the device.
 
-### D. Central server (crane.glick.run)
-18. **Policy & rule-base distribution** — central allowlist, thresholds, Tier-3 egress policy, and
-    versioned rule-base pushed to clients.
+### D. Central server
+18. **Policy & rule-base distribution** — central allowlist, thresholds, per-threat/per-tier
+    enforcement actions, and versioned rule-base pushed to clients.
 19. **Alert ingestion** — receives and stores redacted client alerts.
 20. **Security dashboard** — org-wide risk view: alerts by threat / category / risk tier / user,
-    trends over time. **Visibility, not enforcement.**
+    trends over time. The dashboard itself is **visibility**; enforcement happens on the client,
+    driven by the policy this server distributes.
 
-## Intervention tiers (warn + allow override)
+## Intervention tiers (policy-driven)
 
-- **Critical / High** → prominent inline warning + the matrix's defensive-response text + an
-  explicit "proceed anyway" acknowledgement (logged + reported). Never hard-blocks.
-- **Medium** → passive nudge.
+The action comes from policy, not from the risk level alone — `threatActionFor` resolves
+per-threat → data-tier → approval-set → `notify`.
+
+- **`notify`** (the default for an unconfigured threat) → prominent inline warning + the matrix's
+  defensive-response text; the call proceeds and the finding is logged + reported.
+- **`justify`** → surfaced as Claude Code `ask`: the developer must acknowledge/justify before the
+  call proceeds (logged + reported). Default for threats 11, 43, 46, 47, 48, 49.
+- **`block`** → Claude Code `deny`; the tool call does not execute.
+- **`kill`** → denies the call *and* terminates the session (`killSession`). `killOnCritical`
+  promotes any Critical `block` to a `kill` without per-threat configuration.
 
 ## Coverage & blind spots
 
 - **Strong, native, in-band** for AI work done *inside* the host.
-- **Blind spot:** AI use *outside* the host (other browsers, native AI apps, agentic tool-calls) —
-  unobserved, because adoption is voluntary and nothing is enforced. Surfaced only if/when the
-  optional later companion monitor ships. The security dashboard therefore reflects *opt-in
-  population* risk, not total org risk — a limitation to state plainly to stakeholders.
+- **Agentic tool-calls** are covered by the shipped MCP middleware ([`mcp-proxy/`](../mcp-proxy/)),
+  and **browser AI** by the companion extension ([`browser-ext/`](../browser-ext/)) — both are the
+  taps the "one brain, many eyes" model calls for, and both can deny, not merely observe.
+- **Blind spot:** AI use on surfaces with no tap at all — native AI desktop apps without an
+  integration, other devices, phones — plus anything on a machine where the user never installed
+  MoorAI. Adoption remains voluntary, so the security dashboard reflects *opt-in population* risk,
+  not total org risk — a limitation to state plainly to stakeholders.
 
 ## Build phasing
 
 - **MVP** — native host shell + approved-tools launcher + Tier-1 rules + pre-submit DLP +
   output-safety + warn-and-override UI, driven by `data/threats.json`. Local audit log.
-- **v2** — central server on crane.glick.run (policy distribution + alert ingestion + dashboard);
-  client policy-pull and redacted alert reporting; Tier-2 local LLM; upload/paste guards; per-context sessions.
-- **v3** — Tier-3 cloud-SDK escalation (policy-gated); out-of-host detection companion; SDK/MCP
-  agentic guardrails; richer dashboard analytics.
+- **v2** — central server (policy distribution + alert ingestion + dashboard); client policy-pull
+  and redacted alert reporting; Tier-2 local model; upload/paste guards; per-context sessions.
+- **v3** *(shipped)* — out-of-host detection companion ([`browser-ext/`](../browser-ext/)); MCP
+  agentic guardrails ([`mcp-proxy/`](../mcp-proxy/)); on-device model escalation. The Tier-3
+  cloud-SDK escalation originally planned here was **dropped**: escalation is local-first, then the
+  developer's own on-machine credential, and MoorAI's cloud never makes the LLM call.
+
+## DECIDED
+
+- **Native runtime/toolkit** — **Tauri** (see [`src-tauri/`](../src-tauri/)), chosen over Electron
+  for size, auditability and a clean local-model sidecar.
+- **Local model** — **nothing is bundled.** Tier 2 is opportunistic: it uses an Ollama model already
+  present on the machine (default `llama3.2:1b`), else the developer's own provider credential, else
+  regex-only. This keeps the installer small and avoids shipping a model in the notarized build.
 
 ## OPEN DECISIONS
 
-- **Native runtime/toolkit** — cross-platform from one codebase: **Tauri** (small, auditable,
-  clean local-LLM sidecar; OS-webview quirks) vs **Electron** (consistent Chromium rendering;
-  heavy). Lean Tauri. Native Swift/WinUI is *not* cross-platform.
-- **Local LLM** — which small model to bundle for Tier 2; size/perf budget.
-- **Server stack** — the crane.glick.run app (likely Node + SQLite per AppCrane conventions);
-  dashboard framework.
+- **Server stack** — hosting target and dashboard framework (likely Node + SQLite per AppCrane
+  conventions). The client defaults to `http://localhost:8787` until this lands.
 
 ## Sources
 

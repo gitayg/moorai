@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { join, dirname, basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, breakGlassActive, mcpFloor } from "./hook-core.mjs";
+import { buildEngine, decideText, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, verifyPolicySignature } from "./hook-core.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, requestKill } from "./signals.mjs";
@@ -58,36 +58,235 @@ const CACHE = join(os.homedir(), ".curaiq", "hook-policy.json");
 // hook remembers so a fail-closed org stays fail-closed even if the policy cache is later deleted.
 const BREAK_GLASS = join(os.homedir(), ".curaiq", "break-glass");
 const POSTURE_SIDECAR = join(os.homedir(), ".curaiq", "offline-posture");
+// Second user-scope copy of the same fact, deliberately in a DIFFERENT directory so the one-liner
+// erasures (`rm ~/.curaiq/offline-posture`, `rm -rf ~/.curaiq`) do not take the memory with them.
+const POSTURE_LATCH = join(os.homedir(), ".moorai", "posture");
+// Machine-wide posture latch — the trustworthy source. Root-owned and not group/world-writable, the
+// same rule as breakglass.pub, and provisioned the same way (installer/MDM). It is the only posture
+// source a same-user process genuinely cannot rewrite, so a fail-closed fleet should ship it:
+//
+//   # macOS/Linux, via MDM alongside /etc/moorai/breakglass.pub
+//   sudo install -d -m 0755 -o root /etc/moorai
+//   printf fail-closed | sudo tee /etc/moorai/offline-posture >/dev/null
+//   sudo chown root /etc/moorai/offline-posture && sudo chmod 0644 /etc/moorai/offline-posture
+//   # Windows → %ProgramData%\MoorAI\offline-posture (ACL: Administrators/SYSTEM write only)
+//
+// To retire it, remove the file (root) — the device then falls back to the user-scope copies, which a
+// real policy keeps current. The hook never writes here; it only reads.
+const SYSTEM_POSTURE = process.platform === "win32"
+  ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "offline-posture")
+  : "/etc/moorai/offline-posture";
 
-// Returns { policy, source } where source is:
+// Returns { policy, source, rejected } where source is:
 //   "fresh"        — freshly fetched from the server (and re-cached)
 //   "cache"        — served from the fresh-cache window without a fetch attempt
 //   "cache-offline"— fetch FAILED, falling back to the last-known cached policy (offline; #33 point 2)
-//   "none"         — no policy at all (offline AND no cache)
+//   "none"         — no policy at all (offline AND no cache, OR nothing that verified)
+//
+// On an ANCHORED device every candidate policy must carry a console signature this device's trust
+// anchor verifies (see POLICY_ANCHOR / verifyPolicySignature). One that does not is not "a weaker
+// policy" — it is NO policy, and the caller falls through to durablePosture()/OFFLINE_DEFAULT_POLICY
+// exactly as if the file were absent. Never fail OPEN on a verification error.
+//
+// The FRESH path is verified too, not just the cache: ~/.curaiq/config.json is in the same write scope
+// as the cache, so `serverUrl` can be repointed at an attacker-run localhost that serves `{}` — the
+// identical bypass wearing a different hat. `rejected` carries the content-free (source, status) pairs
+// for the tamper alert; only those NAMES ever leave the device.
 async function loadPolicy() {
-  try { if (Date.now() - statSync(CACHE).mtimeMs < 60000) return { policy: JSON.parse(readFileSync(CACHE, "utf8")), source: "cache" }; } catch { /* stale/absent */ }
+  const keys = policyKeys();          // [] = unanchored device → verification is a no-op (compat)
+  const rejected = [];
+  const verify = (raw) => {
+    let p;
+    try { p = JSON.parse(raw); } catch { return { bad: "malformed" }; }
+    if (!p || typeof p !== "object" || Array.isArray(p)) return { bad: "malformed" };
+    const v = verifyPolicySignature(p, { keys, tenant: CONFIG.tenant });
+    return v.trusted ? { policy: p } : { bad: v.status };
+  };
+
+  // One read + one verify of the cache, whatever path we end up taking — the file is the same file in
+  // the "fresh window" and the "offline fallback" cases, so it must not be able to raise two alerts.
+  let cacheRaw = null, withinWindow = false;
+  try { const st = statSync(CACHE); cacheRaw = readFileSync(CACHE, "utf8"); withinWindow = Date.now() - st.mtimeMs < 60000; } catch { /* absent */ }
+  const cached = cacheRaw == null ? null : verify(cacheRaw);
+  if (cached && cached.bad) rejected.push({ source: "cache", status: cached.bad });
+  if (withinWindow && cached && cached.policy) return { policy: cached.policy, source: "cache", rejected };
+
   try {
     const headers = CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {};
-    const p = await fetch(`${CONFIG.serverUrl}/api/policy?tenant=${encodeURIComponent(CONFIG.tenant)}`, { headers, signal: AbortSignal.timeout(1500) }).then((r) => r.json());
-    if (p) { try { mkdirSync(dirname(CACHE), { recursive: true }); writeFileSync(CACHE, JSON.stringify(p)); } catch {} return { policy: p, source: "fresh" }; }
+    const raw = await fetch(`${CONFIG.serverUrl}/api/policy?tenant=${encodeURIComponent(CONFIG.tenant)}`, { headers, signal: AbortSignal.timeout(1500) }).then((r) => (r.ok ? r.text() : ""));
+    if (raw && raw.trim()) {
+      const v = verify(raw);
+      // Cache the server's ORIGINAL bytes — the signature covers the policy body, and re-serializing
+      // gains nothing while risking a mismatch with whatever the console signed.
+      if (v.policy) { try { mkdirSync(dirname(CACHE), { recursive: true }); writeFileSync(CACHE, raw); } catch {} return { policy: v.policy, source: "fresh", rejected }; }
+      // A body that PARSED but did not verify is the repointed-serverUrl variant of the same attack
+      // (config.json sits in the same write scope as the cache). A non-JSON body is just a broken or
+      // hijacked-into-uselessness server — the existing offline signal already covers that, and calling
+      // it tampering would page a SOC every time a proxy returned an error page.
+      if (v.bad !== "malformed") rejected.push({ source: "server", status: v.bad });
+    }
   } catch { /* offline */ }
-  try { return { policy: JSON.parse(readFileSync(CACHE, "utf8")), source: "cache-offline" }; } catch { return { policy: null, source: "none" }; }
+
+  if (cached && cached.policy) return { policy: cached.policy, source: "cache-offline", rejected };
+  return { policy: null, source: "none", rejected };
 }
 
+// Read a file that is only trusted when the OS says the user cannot have written it: root-owned and
+// not group/world-writable. Anything else — missing, user-owned, loosely permissioned — reads as "",
+// because a "system" file the agent can rewrite is worth exactly as much as one under ~/.curaiq.
+// (No POSIX ownership on Windows; there the ACL on %ProgramData%\MoorAI is what carries this.)
+function readRootOwned(p) {
+  try {
+    const st = statSync(p);
+    if (process.platform !== "win32" && (st.uid !== 0 || (st.mode & 0o022))) return "";
+    return readFileSync(p, "utf8");
+  } catch { return ""; }
+}
+function readText(p) { try { return readFileSync(p, "utf8"); } catch { return ""; } }
+
 // #33 — remember the org's chosen posture durably, so it survives a later cache deletion. Written every
-// time a real policy loads. For an org that never set offlineMode this is "fail-open" → no-cache stays
-// exit(0)/allow (unchanged default). Best-effort; a write error never affects enforcement.
+// time a real policy loads, to BOTH user-scope copies. For an org that never set offlineMode this is
+// "fail-open" → no-cache stays exit(0)/allow (unchanged default). What is recorded is the RATCHETED
+// posture, not the policy's alone: on an MDM-latched device the copies record fail-closed even while a
+// fail-open policy is in force, so the next offline run sees no contradiction (and raises no false
+// downgrade alert). Best-effort; a write error never affects enforcement.
 function rememberPosture(policy) {
-  try { mkdirSync(dirname(POSTURE_SIDECAR), { recursive: true }); writeFileSync(POSTURE_SIDECAR, offlineMode(policy)); } catch { /* best-effort */ }
+  const mode = readRootOwned(SYSTEM_POSTURE).trim() === "fail-closed" ? "fail-closed" : offlineMode(policy);
+  for (const p of [POSTURE_SIDECAR, POSTURE_LATCH]) {
+    try { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, mode); } catch { /* best-effort */ }
+  }
 }
-// Durable last-known posture for the NO-policy/no-cache case: env override → sidecar → "fail-open".
+// Durable last-known posture for the NO-policy/no-cache case — a ONE-WAY RATCHET, not a lookup.
+// Hardening is unauthenticated (any source may say fail-closed); weakening never comes from here at
+// all. The only routes back to fail-open are the two authenticated ones, both handled by the caller:
+// a real (fresh or cached) policy whose offlineMode is not fail-closed, and an operator-signed
+// break-glass marker.
+//
+// WHAT A SAME-USER ATTACKER CAN STILL DO — stated plainly, because the hook runs as the user:
+//   * On a device with the root-owned SYSTEM_POSTURE latch: nothing. The latch cannot be written or
+//     deleted without root, so fail-closed survives any erasure of ~/.curaiq and ~/.moorai. This is
+//     the configuration to ship in production, and it is why the fallback below is a fallback.
+//   * WITHOUT that latch, an attacker who knows this code can still erase BOTH user-scope copies
+//     (`rm ~/.curaiq/offline-posture ~/.moorai/posture`) and land back at the never-configured
+//     default, fail-open. Two copies in two directories defeat the one-liner and the ~/.curaiq wipe,
+//     and any partial erasure is reported (evidenceMissing) — but this is tamper-EVIDENCE, not
+//     tamper-proofing, and no key or HMAC can change that: any secret this process can read to
+//     authenticate the file, the attacker can read too.
+//   * The policy cache (CACHE, above) is also user-writable, and a planted permissive
+//     ~/.curaiq/hook-policy.json used to be an independent — and strictly wider — route to the same
+//     outcome: a policy is an AUTHORIZED relaxation, so it outranks this ratchet by design, and `{}`
+//     disabled the detectors too, not just the posture. CLOSED: the console now signs each tenant's
+//     policy and loadPolicy verifies it against POLICY_ANCHOR before the policy is trusted at all, so
+//     on an anchored device a planted cache is treated as NO cache and lands here, on this ratchet.
+//     An UNANCHORED device is still exposed to it — shipping /etc/moorai/policy.pub is the opt-in.
 function durablePosture() {
-  const env = String(process.env.MOORAI_OFFLINE_MODE || "").trim();
-  if (env === "fail-closed" || env === "fail-open") return env;
-  try { const m = readFileSync(POSTURE_SIDECAR, "utf8").trim(); if (m === "fail-closed" || m === "fail-open") return m; } catch { /* absent */ }
-  return "fail-open"; // default — never flip an org to fail-closed implicitly
+  return ratchetPosture({
+    system: readRootOwned(SYSTEM_POSTURE),
+    sidecar: readText(POSTURE_SIDECAR),
+    latch: readText(POSTURE_LATCH),
+    env: process.env.MOORAI_OFFLINE_MODE
+  });
 }
-function readBreakGlassText() { try { return readFileSync(BREAK_GLASS, "utf8"); } catch { return ""; } }
+// A refused downgrade is one of the strongest tamper signals this hook can produce: something in the
+// user's write scope actively asserted "fail-open" at a device that knows it is fail-closed. Content-
+// free — only the NAMES of the disagreeing sources leave, never any file content.
+function reportPostureTamper(pv) {
+  if (pv.downgradeAttempt.length) return postPosture("Offline posture downgrade refused", `posture:downgrade-refused:${pv.downgradeAttempt.join(".")}`, "Critical");
+  if (pv.evidenceMissing) return postPosture("Offline posture evidence missing", "posture:evidence-missing", "High");
+  return Promise.resolve();
+}
+// #33 — the operator trust anchor for break-glass. ~/.curaiq/ is deliberately NOT a key source: the
+// hook runs as the user, so anything the agent can write there it can also forge. Only two sources are
+// accepted, both provisioned by the installer/MDM rather than by the agent:
+//   1. BG_ANCHOR — a machine-wide file that must be root-owned and not group/world-writable on POSIX.
+//      This is the only source a same-user process genuinely cannot rewrite; prefer it in production.
+//   2. MOORAI_BREAKGLASS_PUBKEY — an MDM-injected env var, for hosts with no root-writable path.
+//      Weaker: an agent that can edit the user's shell profile can influence a FUTURE host launch.
+//
+// OPERATOR PROCEDURE (the pre-v2 "write a future date into the file" flow is gone — it was forgeable
+// by the very agent this product governs, so it is not accepted and there is no compatibility path):
+//
+//   # once per tenant, on the operator's machine — the private key NEVER goes on an endpoint
+//   openssl genpkey -algorithm ed25519 -out moorai-operator.key
+//   openssl pkey -in moorai-operator.key -pubout -out breakglass.pub
+//   # ship breakglass.pub to the fleet via MDM:
+//   #   macOS/Linux → /etc/moorai/breakglass.pub  (root:wheel, mode 0644)
+//   #   Windows     → %ProgramData%\MoorAI\breakglass.pub
+//
+//   # per incident, mint a marker scoped to ONE device and a short expiry, then hand it to the user:
+//   node -e 'const c=require("crypto"),f=require("fs");
+//     const b={v:2,tenant:"acme",device:"laptop-17",expires:new Date(Date.now()+4*3600e3).toISOString(),nonce:c.randomBytes(8).toString("hex")};
+//     const m=`moorai-break-glass|v${b.v}|${b.tenant}|${b.device}|${b.expires}|${b.nonce}`;
+//     b.sig=c.sign(null,Buffer.from(m),c.createPrivateKey(f.readFileSync("moorai-operator.key"))).toString("base64");
+//     process.stdout.write(JSON.stringify(b));' > break-glass
+//   # the user drops that file at ~/.curaiq/break-glass — it is useless on any other device.
+//
+// `device` is os.hostname() and `tenant` is the enrolled tenant; "*" in either field is a signed
+// fleet-wide grant. An unsigned, unverifiable, or out-of-scope marker never grants fail-open — and is
+// itself reported as tampering (reportBreakGlassTamper below).
+const BG_ANCHOR = process.platform === "win32"
+  ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "breakglass.pub")
+  : "/etc/moorai/breakglass.pub";
+
+// Policy-signing trust anchor — the SAME two provisioning routes as break-glass (root-owned machine
+// file first, MDM env var second), a DIFFERENT key: break-glass is the operator's incident key, this is
+// the console's per-tenant policy-signing key. Both are held outside the agent's write scope; neither
+// grants the other's power.
+//
+// OPERATOR PROCEDURE — deploying the policy public key to a fleet:
+//
+//   # 1. read the tenant's public key off the console (any enrolled device's install token works)
+//   curl -H "X-Install-Token: $TOKEN" https://console.example.com/api/policy/pubkey
+//   #    → {"tenant":"acme","alg":"ed25519","publicKey":"<base64 SPKI DER>","pem":"-----BEGIN PUBLIC KEY-----..."}
+//
+//   # 2. ship it via MDM, root-owned and not group/world-writable (same rule as breakglass.pub):
+//   #   macOS/Linux → /etc/moorai/policy.pub   (root:wheel, 0644)
+//   sudo install -d -m 0755 -o root /etc/moorai
+//   printf '%s\n' "$PEM" | sudo tee /etc/moorai/policy.pub >/dev/null
+//   sudo chown root /etc/moorai/policy.pub && sudo chmod 0644 /etc/moorai/policy.pub
+//   #   Windows     → %ProgramData%\MoorAI\policy.pub  (ACL: Administrators/SYSTEM write only)
+//   #   no root-writable path → MDM-inject MOORAI_POLICY_PUBKEY=<base64 SPKI DER> (weaker: an agent
+//   #   that can edit the user's shell profile can influence a FUTURE host launch)
+//
+// Shipping this file IS the opt-in: until it lands the device verifies nothing and behaves exactly as
+// it did before (see verifyPolicySignature's compatibility note). Deploy it to fail-closed fleets FIRST
+// — that is where an unsigned cache is a total enforcement bypass. The console must already be signing
+// (v0.50+) before the anchor lands, or the device will reject every policy and fall to the offline
+// default; roll the server first, then the anchor.
+const POLICY_ANCHOR = process.platform === "win32"
+  ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "policy.pub")
+  : "/etc/moorai/policy.pub";
+
+// A user-writable "system" anchor is no better than ~/.curaiq — readRootOwned rejects it rather than pretend.
+function anchorText() { return readRootOwned(BG_ANCHOR); }
+function trustedKeys() {
+  try { return parseTrustedKeys(`${anchorText()}\n${process.env.MOORAI_BREAKGLASS_PUBKEY || ""}`); } catch { return []; }
+}
+function policyKeys() {
+  try { return parseTrustedKeys(`${readRootOwned(POLICY_ANCHOR)}\n${process.env.MOORAI_POLICY_PUBKEY || ""}`); } catch { return []; }
+}
+// A cached/served policy that failed verification on an anchored device is one of the strongest signals
+// this hook produces: something put material in MoorAI's own policy file that no console signed, and
+// enforcement would have collapsed to whatever it said. Reported per rejected SOURCE, content-free —
+// only the source name and the failure status leave, never one byte of the policy itself.
+function reportPolicyTamper(rejected) {
+  return Promise.all((rejected || []).map((r) => postPosture(`Policy signature rejected (${r.status})`, `policy:${r.source}:${r.status}`, "Critical")));
+}
+// Read + verify the marker. `raw` is kept only to derive a one-way hash for the tamper alert.
+function breakGlassVerdict() {
+  let raw = "";
+  try { raw = readFileSync(BREAK_GLASS, "utf8"); } catch { return { active: false, status: "absent", raw: "" }; }
+  return { ...verifyBreakGlass(raw, { keys: trustedKeys(), tenant: CONFIG.tenant, device: os.hostname() }), raw };
+}
+// #33 defense-in-depth — a break-glass marker that does not verify is itself a strong tamper signal:
+// something wrote MoorAI's own operator-override file with material no operator signed. Reported in
+// EVERY posture (including fail-open, where the marker grants nothing) so a SOC sees a planted marker
+// before the outage it was planted for. Content-free: status + a one-way hash of the marker only.
+function reportBreakGlassTamper(bg) {
+  if (bg.active || bg.status === "absent") return Promise.resolve();
+  const level = bg.status === "expired" ? "High" : "Critical"; // expired can be innocent; the rest cannot
+  return postPosture(`Break-glass marker rejected (${bg.status})`, `breakglass:${bg.status}:${djb2(bg.raw)}`, level);
+}
 // #33 — content-free policy-posture signals (category/hash only; no file, arg, or content ever).
 function postPosture(category, hash, riskLevel) { return post({ threatId: 0, category, riskLevel, stage: "policy", tool: "hook:policy", ts: new Date().toISOString(), contentHash: hash, ...IDENTITY }); }
 
@@ -107,6 +306,12 @@ function report(findings, stage, tool, blocked, tier, extras, agency) {
     post(alert);            // → server → SIEM (address configured server-side, #1)
     recordExposure(alert);  // → local content-free exposure ledger; ignores non-secret categories
     recordAction(alert);    // → local searchable action-audit log (#5), already tier-gated
+    // Coach-as-literacy: a finding that reaches the developer (blocked, or surfaced as "ask" with the
+    // why + what-to-do) is an AI-literacy touchpoint. Emit the content-free record so the console's
+    // Art. 4 literacy coverage counts this surface too. Best-effort: never affects the decision.
+    if (blocked || f.riskLevel === "High" || f.riskLevel === "Critical") {
+      try { post({ ...literacyTouchpoint({ threatId: f.threatId, category: f.category, tool }), ...IDENTITY }); } catch { /* literacy is evidence, not enforcement */ }
+    }
   }
 }
 
@@ -240,22 +445,35 @@ async function main() {
   try { input = JSON.parse((await readStdin()) || "{}"); } catch { process.exit(0); }
   const tool = input.tool_name || "";
   const ti = input.tool_input || {};
-  let { policy, source } = await loadPolicy();
+  let { policy, source, rejected } = await loadPolicy();
+  // Ratcheted posture read BEFORE rememberPosture rewrites the copies, so this run still sees what the
+  // device knew on the way in (and any tampering with it) rather than what we are about to record.
+  const posture = durablePosture();
   if (policy) rememberPosture(policy); // durable last-known posture survives a later cache deletion (#33)
   // #33 — break-glass / offline fail-closed. Wrapped so a bug here can never harden-then-crash: on ANY
   // error with no policy we fall through to the legacy exit(0) (fail-open), exactly as before.
   try {
+    // Verified ONCE, in every posture: an unverifiable marker must be reported even where it grants
+    // nothing, and a verified one must be operator-signed before it can disable enforcement.
+    const bg = breakGlassVerdict();
+    await reportBreakGlassTamper(bg);
+    // Awaited for the same reason as the break-glass report: the fail-open exit below would otherwise
+    // race the POST and lose the strongest signal of the run.
+    if (rejected && rejected.length) await reportPolicyTamper(rejected);
     if (!policy) {
-      if (durablePosture() !== "fail-closed") process.exit(0); // fail-open (default) — UNCHANGED behavior
-      // Fail-closed posture with no policy: break-glass (if active) forces fail-open so an operator can
-      // recover a locked-out machine; otherwise apply the conservative, reviewable built-in default.
-      if (breakGlassActive(readBreakGlassText())) { await postPosture("Break-glass active (fail-open override)", "breakglass:active", "High"); process.exit(0); }
+      if (posture.posture !== "fail-closed") process.exit(0); // fail-open (default) — UNCHANGED behavior
+      // The ratchet just refused a downgrade (or found a copy erased) — awaited so the signal cannot be
+      // lost to the process.exit that follows, exactly like the break-glass tamper report above.
+      await reportPostureTamper(posture);
+      // Fail-closed posture with no policy: break-glass (if operator-signed and live) forces fail-open so
+      // an operator can recover a locked-out machine; otherwise apply the reviewable built-in default.
+      if (bg.active) { await postPosture("Break-glass active (fail-open override)", "breakglass:active", "High"); process.exit(0); }
       postPosture("Offline: fail-closed default applied", "offline:fail-closed", "High");
       policy = OFFLINE_DEFAULT_POLICY;
     } else {
       // A fail-closed org can still break-glass out of its cached/live policy entirely.
-      if (offlineMode(policy) === "fail-closed" && breakGlassActive(readBreakGlassText())) { await postPosture("Break-glass active (fail-open override)", "breakglass:active", "High"); process.exit(0); }
-      if (source === "cache-offline") postPosture("Offline: enforcing last-known policy", "offline:last-known", "Info"); // #33 point 2
+      if (offlineMode(policy) === "fail-closed" && bg.active) { await postPosture("Break-glass active (fail-open override)", "breakglass:active", "High"); process.exit(0); }
+      if (source === "cache-offline") await postPosture("Offline: enforcing last-known policy", "offline:last-known", "Info"); // #33 point 2 — awaited so the signal isn't lost on exit
     }
   } catch { if (!policy) process.exit(0); /* preserve legacy fail-open on any error when no policy */ }
   const engine = buildEngine(policy);

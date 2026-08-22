@@ -58,6 +58,28 @@
           // keepalive lets the POST survive a navigation away right after the user hits send
           keepalive: true
         }).catch(() => {}); // fail-open, silent
+
+        // Coach-as-literacy (EU AI Act Art. 4): the in-page banner we show for this finding is a
+        // just-in-time literacy touchpoint. Mirrors literacyTouchpoint() in cli/hook-core.mjs — the
+        // extension is a separate runtime and cannot import it, so the shape is kept in sync by hand.
+        if (blocked || f.riskLevel === "High" || f.riskLevel === "Critical") {
+          fetch(`${cfg.serverUrl.replace(/\/$/, "")}/api/alerts`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              threatId: f.threatId,
+              category: `Literacy: ${f.category}`,
+              riskLevel: "Info",
+              stage: "coach",
+              tool: `browser:${site}`,
+              ts,
+              contentHash: "coach:" + f.threatId,
+              host,
+              source: "browser-ext"
+            }),
+            keepalive: true
+          }).catch(() => {});
+        }
       }
     } catch { /* fail-open, silent — telemetry must never break the page */ }
   }
