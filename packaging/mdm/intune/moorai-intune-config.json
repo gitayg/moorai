@@ -16,6 +16,7 @@
     "description": "On-device guardrails for AI coding agents. Content-free: policy is pulled per-tenant from the MoorAI console at runtime.",
     "installContext": "user",
     "_installContextNote": "Use 'user' so the per-user config + Claude Code hooks land in the human profile. If you must deploy in 'system' context, pair with the per-user logon task described in ../README.md.",
+    "_anchorHardeningNote": "Hardening the machine-wide trust-anchor directory %ProgramData%\\MoorAI (policy.pub, breakglass.pub, offline-posture) requires an ELEVATED run, so a 'user'-context install deliberately skips it and does not create the directory. If you use anchors, also run Install-MoorAI.ps1 once as SYSTEM - an Intune platform script (Devices > Scripts) runs as SYSTEM. See section 5 of ../README.md.",
     "installCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Install-MoorAI.ps1 -ServerUrl \"REPLACE_WITH_SERVER_URL\" -Tenant \"REPLACE_WITH_TENANT\" -InstallToken \"REPLACE_WITH_INSTALL_TOKEN\"",
     "uninstallCommand": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Uninstall-MoorAI.ps1",
     "detectionScript": "Detect-MoorAI.ps1",

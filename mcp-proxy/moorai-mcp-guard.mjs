@@ -18,13 +18,14 @@
 //                      basename of the real command. install.mjs passes the configured server key here.
 
 import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
-import { join, dirname, basename } from "node:path";
+import { basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "../cli/config.mjs";
-import { buildEngine, mcpGateway, literacyTouchpoint } from "../cli/hook-core.mjs";
+import { buildEngine, mcpGateway, literacyTouchpoint, loadVerifiedPolicy, ratchetPosture, readRootOwned, readText, POSTURE_SIDECAR, POSTURE_LATCH, SYSTEM_POSTURE } from "../cli/hook-core.mjs";
+import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
+import { contentHash } from "../cli/content-hash.mjs";
 
 // ---- argv parsing: [--server label] -- realcmd args... ----
 function parseArgv(argv) {
@@ -62,27 +63,83 @@ function post(alert) {
   } catch { /* never let a network/timeout error touch the proxy path */ }
 }
 
-// ---- policy load (identical strategy to the hook: reuse the ~/.curaiq/hook-policy.json cache) ----
-const CACHE = join(os.homedir(), ".curaiq", "hook-policy.json");
-async function loadPolicy() {
-  try { if (Date.now() - statSync(CACHE).mtimeMs < 60000) return JSON.parse(readFileSync(CACHE, "utf8")); } catch { /* stale/absent */ }
-  try {
-    const headers = CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {};
-    const p = await fetch(`${CONFIG.serverUrl}/api/policy?tenant=${encodeURIComponent(CONFIG.tenant)}`, { headers, signal: AbortSignal.timeout(1500) }).then((r) => r.json());
-    if (p) { try { mkdirSync(dirname(CACHE), { recursive: true }); writeFileSync(CACHE, JSON.stringify(p)); } catch {} return p; }
-  } catch { /* offline */ }
-  try { return JSON.parse(readFileSync(CACHE, "utf8")); } catch { return null; }
-}
+// ---- policy load ----
+//
+// THE FIFTH BYPASS DOOR, and it was this file. loadPolicy() here used to be a verbatim copy of the
+// hook's PRE-v0.51 logic — `JSON.parse(readFileSync(~/.curaiq/hook-policy.json))`, no signature check,
+// no anchor, no pin. v0.51-v0.53 closed `echo '{}' > ~/.curaiq/hook-policy.json` in cli/moorai-hook.mjs,
+// but Claude Desktop kept reading the SAME attacker-writable file with none of that verification, so
+// the one-liner still collapsed enforcement here.
+//
+// There is now no copy at all: loadVerifiedPolicy() lives in cli/hook-core.mjs and BOTH entrypoints
+// call it, so the anchor precedence (/etc/moorai/policy.pub → TOFU pin → nothing), the TOFU arming,
+// the last-known-good fallback and the "unverifiable policy is NO policy" rule are the same code, not
+// the same intent. Re-verification happens on EVERY refresh, not once at startup: this process is
+// long-lived, so a cache poisoned an hour after Claude Desktop launched has to be caught too.
+//
+// DIVERGENCE FROM THE HOOK, stated rather than hidden: break-glass (#33) is not honoured here. An
+// operator-signed marker forces the hook fail-OPEN; this proxy has no such override, so a fail-closed
+// device stays enforced in Claude Desktop until the marker lets the policy load again. That is the
+// safe direction (more enforcement, not less), and Claude Desktop has no interactive justify banner
+// for the operator to answer anyway.
 
 // mutable — refreshed lazily so a long-lived Claude Desktop session picks up policy changes.
 let POLICY = null;
 let ENGINE = null;
 let LAST_POLICY_LOAD = 0;
+// Tamper alerts are deduped by their content-free token: this process re-verifies every 60s, and a
+// poisoned cache that is left in place would otherwise page the SOC once a minute forever.
+const REPORTED = new Set();
+function reportOnce(category, hash, riskLevel) {
+  if (REPORTED.has(hash)) return;
+  REPORTED.add(hash);
+  post({ threatId: 0, category, riskLevel, stage: "policy", tool: "desktop:policy", ts: new Date().toISOString(), contentHash: hash, ...IDENTITY });
+}
+
+// Same content-free signals the hook emits, under the same tokens, so one console rule covers both
+// surfaces. Only source names and failure statuses leave — never a byte of the policy.
+function reportPolicyTrust({ rejected, pin, trust, absence }) {
+  for (const r of rejected || []) reportOnce(`Policy signature rejected (${r.status})`, `policy:${r.source}:${r.status}`, "Critical");
+  if (trust && trust.mode === "rebind") reportOnce("Policy key pin tenant rebind refused", "policy:pin:tenant-rebind", "Critical");
+  if (pin && pin.corrupt) reportOnce("Policy key pin unreadable", "policy:pin:corrupt", "Critical");
+  else if (pin && pin.evidenceMissing) reportOnce("Policy key pin evidence missing", "policy:pin:evidence-missing", "High");
+  if (absence && absence.suspicious) reportOnce("Policy key pin absent on a device with prior operation", "policy:pin:absent-operational", "Critical");
+}
+
+// The hook's durable posture ratchet, read through the same shared helpers. "Unverifiable policy = no
+// policy" only bites if "no policy" is not simply "forward everything": a fail-closed org gets the
+// reviewable built-in default (OFFLINE_DEFAULT_POLICY) here exactly as it does in the hook. A
+// fail-open org keeps today's behaviour — no engine, forward — which is the documented default.
+function durablePosture() {
+  return ratchetPosture({
+    system: readRootOwned(SYSTEM_POSTURE),
+    sidecar: readText(POSTURE_SIDECAR),
+    latch: readText(POSTURE_LATCH),
+    env: process.env.MOORAI_OFFLINE_MODE
+  });
+}
+
 async function ensurePolicy() {
   if (Date.now() - LAST_POLICY_LOAD < 60000 && ENGINE) return;
   try {
-    POLICY = await loadPolicy();
-    ENGINE = buildEngine(POLICY);
+    const v = await loadVerifiedPolicy(CONFIG);
+    reportPolicyTrust(v);
+    let policy = v.policy;
+    if (!policy) {
+      const posture = durablePosture();
+      if (posture.posture === "fail-closed") {
+        reportOnce("Offline: fail-closed default applied", "offline:fail-closed", "High");
+        policy = OFFLINE_DEFAULT_POLICY;
+      }
+    } else if (v.source === "last-known-good") {
+      reportOnce("Enforcing last-known-good verified policy", "policy:lkg:applied", "High");
+    }
+    POLICY = policy;
+    // buildEngine(null) is deliberate and UNCHANGED from before this fix: with no policy at all the
+    // gateway still scans arguments and reports findings under threatActionFor's defaults. Refusing a
+    // poisoned cache must not be allowed to REDUCE what the proxy sees — that would hand the attacker
+    // a quieter bypass than the one just closed.
+    ENGINE = buildEngine(policy);
     LAST_POLICY_LOAD = Date.now();
   } catch { /* keep whatever we had; fail open below if still null */ }
 }
@@ -105,7 +162,7 @@ function alertBlock(tool, gate, reason, argsHash) {
 }
 function alertFindings(tool, findings, blocked, argsHash) {
   for (const f of findings || []) {
-    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage: "mcp", tool: `desktop:${tool}`, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: djb2(f.match || ""), ...IDENTITY });
+    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage: "mcp", tool: `desktop:${tool}`, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: contentHash(f.match || ""), ...IDENTITY });
     if (blocked || f.riskLevel === "High" || f.riskLevel === "Critical") {
       try { post({ ...literacyTouchpoint({ threatId: f.threatId, category: f.category, tool: `desktop:${tool}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
     }
@@ -151,7 +208,7 @@ async function handleLine(rawLine) {
     await ensurePolicy();
     const tool = msg.params.name || "";
     const args = JSON.stringify(msg.params.arguments == null ? {} : msg.params.arguments);
-    const argsHash = djb2(args);
+    const argsHash = contentHash(args);
 
     if (!ENGINE) { auditCall(tool, "allow", argsHash); forward(rawLine); return; } // fail open: no engine
 

@@ -1,11 +1,17 @@
-// #1/#2/#3 — shared, side-effect-free core for the MoorAI PreToolUse hook. Kept separate from the
-// stdin/stdout entrypoint (moorai-hook.mjs) so the decision logic is unit-testable without spawning a
-// process. Governance, not a sandbox: on any error or missing policy the caller fails OPEN (allows).
+// #1/#2/#3 — shared core for the MoorAI PreToolUse hook AND the Claude Desktop MCP proxy. Kept
+// separate from the stdin/stdout entrypoints (cli/moorai-hook.mjs, mcp-proxy/moorai-mcp-guard.mjs) so
+// the decision logic is unit-testable without spawning a process. Governance, not a sandbox: on any
+// error or missing policy the caller fails OPEN (allows).
+//
+// Everything down to the "Policy TRUST + LOAD" banner near the bottom is pure. That last section owns
+// the policy-trust I/O, and it is here rather than in one entrypoint precisely because BOTH need it.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { createPublicKey, verify as cryptoVerify, createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import os from "node:os";
 import { DETECTORS } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { extractEndpointHosts, endpointApproved } from "../data/model-endpoints.js";
@@ -111,6 +117,104 @@ export function decideMcpServer(policy, serverName) {
   return { decision: "deny", reason: `MCP server '${serverName}' is not on your organization's allow-list.` };
 }
 
+// ---- ReDoS gate for POLICY-SUPPLIED regexes ----
+//
+// policy.mcpToolRules[tool].deny/allow are pattern STRINGS shipped by the console and compiled here.
+// They used to go straight into `new RegExp(p, "i")` with no gate at all, so one crafted pattern hung
+// every MCP tool call on the device. Measured on this repo (node v22, `re.test()`, wall clock):
+//
+//   "(a+)+$"      vs 31 a's + "!"  →  56402 ms   (caught by data/detector-packs.js's guard)
+//   "(a|a)+$"     vs 29 a's + "!"  →  28144 ms   (NOT caught by it — overlapping alternation)
+//   ".*.*="       vs 1000 a's      →    188 ms   (NOT caught — quadratic, and 8546 ms at n=4000)
+//   "a.*a.*a.*="  vs 1000 a's      →  55990 ms   (NOT caught — cubic)
+//
+// So the detector-pack guard's two rules are necessary but far from sufficient. The rule that actually
+// separates the measured-fast from the measured-catastrophic is not "which shapes look nested" but
+// HOW MANY unbounded quantifiers the pattern has: with at most one, and with no ambiguous quantified
+// alternation, matching degrades to linear-per-start-position and the worst shapes measured at 50 KB
+// were ~900 ms rather than minutes (see MAX_QUANTIFIED_SCAN below).
+//
+// The cost of the rule is over-rejection: a refused pattern is DROPPED (the same as today's `catch`
+// on an uncompilable pattern), so a deny rule that needs two `.*` stops enforcing. That is acceptable
+// here specifically because `decideMcpArgs` uses an UNANCHORED `.test()`: leading and trailing `.*`
+// are redundant by construction (`.*foo.*` ≡ `foo`), and `deny` is a LIST, so "foo then bar" is
+// naturally written as two entries rather than `.*foo.*bar.*`.
+//
+// NOTE — data/detector-packs.js still carries its own weaker `redosProne`/`safePattern` pair for
+// server-supplied detector packs. Pointing it at safeRegex() below is the right follow-up; it was out
+// of scope for this change: data/ was outside the file set this change was allowed to touch.
+const MAX_PATTERN_LEN = 400;
+
+// Count unbounded quantifiers (`+`, `*`, `{n,}`) that actually apply, skipping escapes (`\*`) and
+// character-class contents (`[*+]`). `?` and `{n,m}` are bounded and do not count.
+function unboundedQuantifiers(src) {
+  let n = 0, inClass = false;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (c === "\\") { i++; continue; }
+    if (inClass) { if (c === "]") inClass = false; continue; }
+    if (c === "[") { inClass = true; continue; }
+    if (c === "+" || c === "*") { n++; continue; }
+    if (c === "{") {
+      const close = src.indexOf("}", i);
+      if (close > i && /^\{\d+,\s*\}$/.test(src.slice(i, close + 1))) n++;
+      if (close > i) i = close;
+    }
+  }
+  return n;
+}
+
+// A quantified group whose alternation branches can match the same input is the `(a|a)+` family — the
+// gap measured above. Provably-disjoint branches (plain literals with pairwise-distinct first
+// characters, e.g. `(foo|bar)+`, measured at 0 ms) stay allowed; anything else is refused, because
+// deciding real disjointness is not something a cheap syntactic check can do.
+function ambiguousQuantifiedAlternation(src) {
+  for (const m of src.matchAll(/\((\?:)?([^()]*)\)\s*(?:[+*]|\{\d+,\s*\})/g)) {
+    const body = m[2];
+    if (!body.includes("|")) continue;
+    const branches = body.split("|");
+    const firsts = new Set();
+    for (const b of branches) {
+      // A character class counts as NOT a plain literal: `([a-z]|x)+` has one unbounded quantifier and
+      // no nesting, yet its branches overlap on every letter — measured at 1892 ms against 24 x's.
+      if (!b.length || /[\\^$.|?*+{}[\]]/.test(b)) return true;
+      if (firsts.has(b[0].toLowerCase())) return true;         // shared first char → branches overlap
+      firsts.add(b[0].toLowerCase());
+    }
+  }
+  return false;
+}
+
+// Reject the shapes measured above; returns a reason string, or "" when the pattern is acceptable.
+export function redosReason(src) {
+  if (typeof src !== "string" || !src.length) return "empty";
+  if (src.length > MAX_PATTERN_LEN) return "too-long";
+  if (ambiguousQuantifiedAlternation(src)) return "ambiguous-alternation";
+  // Strictly stronger than detector-packs' two shape rules: `(a+)+`, `(a*)*` and `a+*` all carry TWO
+  // unbounded quantifiers, so the count catches every shape they did — and, unlike their regexes,
+  // this one is character-class aware, so `[*+]{3}x` is no longer refused for a `*+` that is data.
+  if (unboundedQuantifiers(src) > 1) return "multiple-unbounded-quantifiers";
+  return "";
+}
+
+// Compile a policy-supplied pattern, or null if it is unsafe or uncompilable.
+export function safeRegex(src, flags = "i") {
+  if (redosReason(src)) return null;
+  try { return new RegExp(src, flags); } catch { return null; }
+}
+
+// Execution bound. A pattern that survives redosReason() still costs O(n²) in the worst case because
+// `.test()` retries at every start position: measured at 50 KB, the worst surviving shapes ("a*b",
+// ".*END", "(ab|cd)+z") took ~900 ms. Patterns with NO unbounded quantifier are linear and are given
+// the FULL text — which is what real deny rules look like ("BLOCKME", "AKIA[0-9A-Z]{16}"), so the
+// common case loses no coverage at all. Only a quantifier-bearing pattern sees a truncated view, at
+// 16 KB — the same measurements scale to ~90 ms there. A length cap is preferred over a per-pattern
+// timeout because regex execution in V8 is synchronous and cannot be interrupted in-process.
+const MAX_QUANTIFIED_SCAN = 16384;
+function boundedText(re, text) {
+  return unboundedQuantifiers(re.source) === 0 || text.length <= MAX_QUANTIFIED_SCAN ? text : text.slice(0, MAX_QUANTIFIED_SCAN);
+}
+
 // #18 — per-tool MCP argument rules. policy.mcpToolRules[tool] = { deny:[regex], allow:[regex] }.
 // A deny pattern matched in the serialized args → deny. If an allow-list is set for the tool, at least
 // one allow pattern must match or it's denied. No rule for the tool → allow (unchanged behavior).
@@ -118,11 +222,10 @@ export function decideMcpArgs(policy, tool, argsText) {
   const rules = policy?.mcpToolRules?.[tool];
   if (!rules) return { decision: "allow" };
   const text = String(argsText || "");
-  const mk = (p) => { try { return new RegExp(p, "i"); } catch { return null; } };
-  if (Array.isArray(rules.deny)) for (const p of rules.deny) { const re = mk(p); if (re && re.test(text)) return { decision: "deny", reason: `${tool} argument matches a denied pattern` }; }
+  const hit = (p) => { const re = safeRegex(p); return re ? re.test(boundedText(re, text)) : false; };
+  if (Array.isArray(rules.deny)) for (const p of rules.deny) { if (hit(p)) return { decision: "deny", reason: `${tool} argument matches a denied pattern` }; }
   if (Array.isArray(rules.allow) && rules.allow.length) {
-    const ok = rules.allow.some((p) => { const re = mk(p); return re && re.test(text); });
-    if (!ok) return { decision: "deny", reason: `${tool} argument is not on the allow-list` };
+    if (!rules.allow.some(hit)) return { decision: "deny", reason: `${tool} argument is not on the allow-list` };
   }
   return { decision: "allow" };
 }
@@ -648,4 +751,416 @@ export function extractReadPaths(command) {
   const m = cmd.match(/^(?:cat|head|tail|less|bat|xxd|nl|more)\s+(.+)$/);
   if (!m) return [];
   return m[1].split(/\s+/).filter((t) => t && !t.startsWith("-")).slice(0, 8);
+}
+
+// =============================================================================================
+// Policy TRUST + LOAD (I/O).  SHARED, deliberately: this used to live only in cli/moorai-hook.mjs,
+// and mcp-proxy/moorai-mcp-guard.mjs carried a verbatim COPY of the hook's pre-v0.51 loader —
+// `JSON.parse(readFileSync(CACHE))`, no signature check, no anchor, no pin. So v0.53.0 closed
+// `echo '{}' > ~/.curaiq/hook-policy.json` for Claude Code while leaving Claude Desktop wide open
+// through the very same file. A copy is exactly how that door was left open, so there is now ONE
+// implementation and both entrypoints call loadVerifiedPolicy().
+//
+// This section is the only part of hook-core that touches the filesystem, the network and the
+// clock; everything above it is still pure. The pure primitives it composes (verifyPolicySignature,
+// policyTrust, reconcilePolicyPins, selectLastKnownGood, assessPinAbsence, icaclsPermissive) live
+// above and are unchanged.
+// =============================================================================================
+
+// Windows has no POSIX ownership to stat, and this function used to return %ProgramData%\MoorAI\*
+// contents UNCONDITIONALLY there — so on Windows the break-glass anchor, the policy anchor and the
+// machine-wide posture latch were all "trusted" with no verification that an ordinary user could not
+// have written them. That is not a theoretical gap: a %ProgramData% subtree created by a non-elevated
+// process inherits an ACL that lets its creator (and often BUILTIN\Users) write.
+//
+// So ask the OS. `icacls <file>` is present on every supported Windows and needs no dependency; the
+// parsing lives in hook-core.mjs (icaclsPermissive) as a pure function so it can be tested off-Windows.
+// Everything here is the thin part: spawn, cache, and FAIL CLOSED — if the check cannot be performed
+// (icacls missing, access denied, timeout, unparseable output) or the ACL grants write to anyone who is
+// not an administrator, the file is untrusted and reads as "", exactly as a user-writable POSIX file does.
+//
+// Cached for the life of the process: this runs on every hook invocation, and one hook invocation is
+// one tool call — so the cache dedupes the anchor paths WITHIN one tool call and nothing across calls.
+//
+// VALIDATED on a real Windows 11 box (DESKTOP-JOL2MB8): 10 captures, 10 correct verdicts. The parser
+// itself is exercised off-Windows by test/windows-acl.test.mjs, which now carries the real captures.
+// The spawn wrapper right below is still not covered by a test.
+//
+// KNOWN GAP — `icacls` NEVER PRINTS THE FILE'S OWNER, and this check therefore does not consider it.
+// Confirmed absent from all 10 real captures, and the icacls reference has no owner-display switch at
+// all (only `/setowner`, which writes). That matters because an object's owner implicitly holds
+// WRITE_DAC — "An object's owner implicitly has WRITE_DAC access to the object" — and the owner of a
+// new object is "the default owner SID from the primary or impersonation token of the creating
+// process" (learn.microsoft.com/en-us/windows/win32/secauthz/owner-of-a-new-object). So a file whose
+// DACL reads administrator-only can still be OWNED by an ordinary user, who can re-grant themselves at
+// will. Concretely: create the anchor (C:\ProgramData inherits BUILTIN\Users:(CI)(WD,AD,WEA,WA) onto
+// C:\ProgramData\MoorAI, so an unprivileged process can), then `icacls f /inheritance:r /grant
+// SYSTEM:(F) Administrators:(F)` to scrub your own inherited CREATOR OWNER ACE. icacls then reports a
+// clean admin-only DACL, this function returns true, and the forged anchor is trusted.
+//
+// DECIDED (deliberately): NOT fixed here, because the owner probe is the wrong place to fix it.
+//   - It cannot be done cheaply. icacls has no owner switch, so it needs a second spawn per anchor
+//     path — PowerShell Get-Acl (hundreds of ms, on a hot path that already spawns icacls up to 4x per
+//     tool call) or `dir /q`, whose output is locale-dependent and cannot be parsed reliably blind.
+//   - Its failure mode is worse than the gap. This code fails closed, so an owner probe that misparses
+//     on some locale/host turns EVERY Windows anchor untrusted at once and silently drops policy and
+//     break-glass enforcement fleet-wide.
+//   - The precondition is removable for free, one level up. The whole attack needs an unprivileged
+//     process to create a file under C:\ProgramData\MoorAI. packaging/mdm/intune/Install-MoorAI.ps1
+//     creates that directory with `New-Item -Force` and NO ACL hardening, so it simply inherits
+//     C:\ProgramData's user-writable ACE. One `icacls /inheritance:r /grant` there, at install time,
+//     as SYSTEM, kills the DACL path and the owner path together at zero hot-path cost. Do that first.
+// UNPROVEN, and the measurement that would settle it: on the real box, from a NON-elevated shell, run
+// `New-Item C:\ProgramData\MoorAIOwnerProbe\p.pub -Force` then `(Get-Acl ...).Owner`. If that returns
+// the user rather than BUILTIN\Administrators, the bypass above is reachable as written. (Files
+// created there by an ELEVATED admin were measured as owned by BUILTIN\Administrators, which is the
+// uninteresting case — a privileged owner. The non-elevated case was never run.)
+const WIN_ACL_CACHE = new Map();
+function windowsFileIsProtected(p) {
+  if (WIN_ACL_CACHE.has(p)) return WIN_ACL_CACHE.get(p);
+  let ok = false;
+  try {
+    const out = execFileSync("icacls", [p], { encoding: "utf8", timeout: 3000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    ok = !icaclsPermissive(out, p).permissive;
+  } catch { ok = false; }
+  WIN_ACL_CACHE.set(p, ok);
+  return ok;
+}
+
+// Read a file that is only trusted when the OS says the user cannot have written it: root-owned and
+// not group/world-writable on POSIX, administrator/SYSTEM-only per its ACL on Windows. Anything else —
+// missing, user-owned, loosely permissioned, or unverifiable — reads as "", because a "system" file the
+// agent can rewrite is worth exactly as much as one under ~/.curaiq. statSync first, so a file that does
+// not exist costs nothing and never spawns anything.
+export function readRootOwned(p) {
+  try {
+    const st = statSync(p);
+    if (process.platform === "win32") { if (!windowsFileIsProtected(p)) return ""; }
+    else if (st.uid !== 0 || (st.mode & 0o022)) return "";
+    return readFileSync(p, "utf8");
+  } catch { return ""; }
+}
+export function readText(p) { try { return readFileSync(p, "utf8"); } catch { return ""; } }
+
+export const POLICY_CACHE = join(os.homedir(), ".curaiq", "hook-policy.json");
+
+export const POSTURE_SIDECAR = join(os.homedir(), ".curaiq", "offline-posture");
+// Second user-scope copy of the same fact, deliberately in a DIFFERENT directory so the one-liner
+// erasures (`rm ~/.curaiq/offline-posture`, `rm -rf ~/.curaiq`) do not take the memory with them.
+export const POSTURE_LATCH = join(os.homedir(), ".moorai", "posture");
+// Machine-wide posture latch — the trustworthy source. Root-owned and not group/world-writable, the
+// same rule as breakglass.pub, and provisioned the same way (installer/MDM). It is the only posture
+// source a same-user process genuinely cannot rewrite, so a fail-closed fleet should ship it:
+//
+//   # macOS/Linux, via MDM alongside /etc/moorai/breakglass.pub
+//   sudo install -d -m 0755 -o root /etc/moorai
+//   printf fail-closed | sudo tee /etc/moorai/offline-posture >/dev/null
+//   sudo chown root /etc/moorai/offline-posture && sudo chmod 0644 /etc/moorai/offline-posture
+//   # Windows → %ProgramData%\MoorAI\offline-posture (ACL: Administrators/SYSTEM write only)
+//
+// To retire it, remove the file (root) — the device then falls back to the user-scope copies, which a
+// real policy keeps current. The hook never writes here; it only reads.
+export const SYSTEM_POSTURE = process.platform === "win32"
+  ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "offline-posture")
+  : "/etc/moorai/offline-posture";
+
+// Policy-key PIN (Trust On First Use) — the self-arming half of policy verification. Two copies in two
+// DIFFERENT directories, exactly like the posture latch and for exactly the same reason: `rm
+// ~/.curaiq/policy-pin.json` and `rm -rf ~/.curaiq` must not take the device's memory with them, and a
+// partial erasure must be visible. There is deliberately no third, root-owned pin: the hook runs as the
+// user and cannot write /etc, so a "system pin" it wrote would be a fiction. The root-owned path that
+// does exist is POLICY_ANCHOR below — provisioned by MDM, outranking every pin. See the pinning section
+// in hook-core.mjs for what this achieves (tamper-EVIDENCE) and what it does not (tamper-proofing).
+const POLICY_PIN = join(os.homedir(), ".curaiq", "policy-pin.json");
+const POLICY_PIN_LATCH = join(os.homedir(), ".moorai", "policy-pin.json");
+
+// Last-known-good VERIFIED policy — the copies that let a fail-open org ENFORCE through a poisoned
+// cache instead of merely alerting about it. Same two-copy user-scope pattern as the pin and the
+// posture latch, plus a root-owned system copy that is preferred when one exists (an MDM can drop a
+// signed policy there; the hook only ever reads it). The stored bytes are the console's ORIGINAL signed
+// body and are re-verified on load — see selectLastKnownGood in hook-core.mjs for why that matters.
+const POLICY_LKG = join(os.homedir(), ".curaiq", "policy-lkg.json");
+const POLICY_LKG_LATCH = join(os.homedir(), ".moorai", "policy-lkg.json");
+const POLICY_LKG_SYSTEM = process.platform === "win32"
+  ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "policy-lkg.json")
+  : "/etc/moorai/policy-lkg.json";
+
+// "This device has held a policy-key pin" — a breadcrumb in a THIRD directory, deliberately outside both
+// ~/.curaiq and ~/.moorai so that `rm ~/.curaiq/policy-pin.json ~/.moorai/policy-pin.json` (and the
+// `rm -rf ~/.curaiq` wipe) leaves something behind that contradicts "this is a fresh install". It holds
+// no key and no secret — it could not usefully hold one, since the hook runs as the user and anything it
+// can read the attacker can read. Its only job is to make an ERASED pin distinguishable from an absent
+// one. Deleting it too is possible and is the stated residual risk.
+const PIN_BREADCRUMB = process.platform === "win32"
+  ? join(process.env.LOCALAPPDATA || join(os.homedir(), "AppData", "Local"), "MoorAI", "pinned")
+  : join(os.homedir(), ".config", "moorai", "pinned");
+
+// Artifacts that exist ONLY on a device that has verified a real console signature. These decide whether
+// a missing pin is suspicious — see assessPinAbsence for why "prior operation" artifacts cannot.
+const PINNING_ARTIFACTS = [
+  ["pin-breadcrumb", () => PIN_BREADCRUMB],
+  ["policy-lkg", () => POLICY_LKG],
+  ["policy-lkg-latch", () => POLICY_LKG_LATCH]
+];
+// Artifacts a device only produces by actually RUNNING. Reported as context on a suspicious pin absence
+// so a SOC can see how long the device had been operating; never a trigger on their own.
+const OPERATION_ARTIFACTS = [
+  ["posture-sidecar", () => POSTURE_SIDECAR],
+  ["posture-latch", () => POSTURE_LATCH],
+  ["action-audit", () => join(os.homedir(), ".curaiq", "action-audit.jsonl")],
+  ["exposure-ledger", () => join(os.homedir(), ".curaiq", "exposure-ledger.jsonl")],
+  ["agent-events", () => join(os.homedir(), ".curaiq", "agent-events.jsonl")]
+];
+// Only the artifact NAMES ever leave the device, never a byte of their contents.
+function presentArtifacts(list) {
+  const out = [];
+  for (const [name, path] of list) {
+    try { if (statSync(path()).size > 0) out.push(name); } catch { /* absent */ }
+  }
+  return out;
+}
+function writePinBreadcrumb(config) {
+  try {
+    if (statSync(PIN_BREADCRUMB).size > 0) return; // already recorded; never rewritten
+  } catch { /* absent — write it */ }
+  try {
+    mkdirSync(dirname(PIN_BREADCRUMB), { recursive: true });
+    writeFileSync(PIN_BREADCRUMB, JSON.stringify({ v: POLICY_PIN_VERSION, tenant: String(config.tenant), first: new Date().toISOString() }));
+  } catch { /* best-effort */ }
+}
+
+// Policy-signing trust anchor — the SAME two provisioning routes as break-glass (root-owned machine
+// file first, MDM env var second), a DIFFERENT key: break-glass is the operator's incident key, this is
+// the console's per-tenant policy-signing key. Both are held outside the agent's write scope; neither
+// grants the other's power.
+//
+// OPERATOR PROCEDURE — deploying the policy public key to a fleet:
+//
+//   # 1. read the tenant's public key off the console (any enrolled device's install token works)
+//   curl -H "X-Install-Token: $TOKEN" https://console.example.com/api/policy/pubkey
+//   #    → {"tenant":"acme","alg":"ed25519","publicKey":"<base64 SPKI DER>","pem":"-----BEGIN PUBLIC KEY-----..."}
+//
+//   # 2. ship it via MDM, root-owned and not group/world-writable (same rule as breakglass.pub):
+//   #   macOS/Linux → /etc/moorai/policy.pub   (root:wheel, 0644)
+//   sudo install -d -m 0755 -o root /etc/moorai
+//   printf '%s\n' "$PEM" | sudo tee /etc/moorai/policy.pub >/dev/null
+//   sudo chown root /etc/moorai/policy.pub && sudo chmod 0644 /etc/moorai/policy.pub
+//   #   Windows     → %ProgramData%\MoorAI\policy.pub  (ACL: Administrators/SYSTEM write only)
+//   #   no root-writable path → MDM-inject MOORAI_POLICY_PUBKEY=<base64 SPKI DER> (weaker: an agent
+//   #   that can edit the user's shell profile can influence a FUTURE host launch)
+//
+// Shipping this file is no longer the only route to the guarantee — a device now ARMS ITSELF the first
+// time its console serves a signed policy (POLICY_PIN, above). The anchor is still strictly stronger
+// and still worth deploying to fail-closed fleets: it outranks the pin, it removes the first-contact
+// window, and being root-owned it survives an attacker who erases both user-scope pin copies. Roll the
+// server first, then the anchor: the console must already be signing (v0.50+) before the anchor lands,
+// or the device will reject every policy and fall to the offline default.
+//
+// OPERATOR PROCEDURE — ROTATING THE CONSOLE'S POLICY SIGNING KEY without bricking pinned devices.
+// A pinned device refuses a policy signed by a key it has never trusted, so "generate K2 and start
+// signing with it" would lock out the whole fleet. Use the overlap window instead:
+//
+//   1. Generate K2 on the console and PUBLISH it at /api/policy/pubkey, while still SIGNING with K1.
+//   2. Wait one policy-refresh cycle (the device fetches at most every 60s, so minutes, not days; give
+//      laptops that are offline or asleep however long your fleet actually needs). Each device fetches
+//      a policy that verifies under its already-pinned K1, and that signature is what authorizes K2
+//      joining its pin — an attacker who does not hold K1 can never reach this branch.
+//   3. Cut over: sign with K2. Every device that completed step 2 already trusts it, offline included.
+//   4. Devices that missed the window are not bricked, they are FAIL-SAFE: they refuse the K2 policy,
+//      raise policy:cache:untrusted / policy:server:untrusted, and fall back to the last-known signed
+//      policy or OFFLINE_DEFAULT_POLICY. Recover one by re-running step 1-2 with K1 restored, by
+//      shipping the anchor (which outranks the pin), or — last resort, and it re-opens the
+//      first-contact window — by deleting ~/.curaiq/policy-pin.json and ~/.moorai/policy-pin.json.
+//
+// On an ANCHORED device none of this applies: rotation there is "ship the new policy.pub via MDM".
+const POLICY_ANCHOR = process.platform === "win32"
+  ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "policy.pub")
+  : "/etc/moorai/policy.pub";
+
+function policyKeys() {
+  try { return parseTrustedKeys(`${readRootOwned(POLICY_ANCHOR)}\n${process.env.MOORAI_POLICY_PUBKEY || ""}`); } catch { return []; }
+}
+
+// ---- policy-key pin I/O (the pure logic lives in hook-core.mjs) ----
+
+function readPolicyPin() { return reconcilePolicyPins({ primary: readText(POLICY_PIN), secondary: readText(POLICY_PIN_LATCH) }); }
+
+// Learn (or roll forward) the pin from a policy that was just delivered FRESH over the network and
+// accepted. Three cases, and the difference between them is the whole security argument:
+//
+//   anchored — record the anchor key that actually verified this policy, so that pulling the MDM env
+//              var out of a future shell (the one anchor route an agent can influence) cannot silently
+//              return the device to "verifies nothing".
+//   pinned   — the policy verified under an ALREADY-PINNED key. That signature is what vouches for the
+//              fetch, so any key the server publishes alongside it may join the pin: this is the
+//              key-ROTATION path, and an attacker cannot reach it without already holding a pinned key.
+//              An unsigned or wrongly-signed fetch never gets here — it is `rejected` above.
+//   unpinned — FIRST CONTACT (TOFU). Pin only if the key the server publishes actually verifies the
+//              policy it served. A console that does not sign publishes nothing that verifies, so no
+//              pin forms and the device keeps behaving exactly as it did before this change.
+//
+// The first-contact window is real and is not claimed away: an attacker who owns the device BEFORE it
+// ever reaches its console can pin their own key. /etc/moorai/policy.pub removes that window; nothing
+// this process can do by itself does.
+//
+// Returns whether a real console signature was established on this fetch (i.e. there was something to
+// pin). The caller uses it as the bar for recording a last-known-good policy — see there.
+function armPolicyPin(config, trust, pin, verdict, policy, publishedRaw) {
+  try {
+    const published = parsePublishedKeys(publishedRaw, { tenant: config.tenant });
+    let learn = [];
+    if (trust.mode === "anchored") learn = [verdict.keyId];
+    else if (trust.mode === "pinned") learn = [verdict.keyId, ...published];
+    else if (trust.mode === "unpinned" && published.length) {
+      const t = verifyPolicySignature(policy, { keys: parseTrustedKeys(published.join("\n")), tenant: config.tenant });
+      if (t.trusted && t.status === "ok") learn = [t.keyId];
+    }
+    learn = learn.filter(Boolean);
+    writePolicyPin(config, pin, learn);
+    return learn.length > 0;
+  } catch { return false; /* pinning is durability, never enforcement — a failure here must not change the decision */ }
+}
+
+// Write BOTH copies when there is something new to record, or when the copies disagree (which also
+// HEALS a single erased copy — the caller has already reported it by then, so the signal is not lost).
+function writePolicyPin(config, pin, ids) {
+  const keys = [...new Set([...(pin.keys || []), ...ids])];
+  if (!keys.length) return;
+  // Record "this device has pinned" in the third location on every run that HAS a pin, so the breadcrumb
+  // self-heals if deleted while the pin still exists. It is never written when there is no pin, which is
+  // what keeps it meaningful as evidence.
+  writePinBreadcrumb(config);
+  const stale = keys.length !== (pin.keys || []).length || pin.evidenceMissing || pin.corrupt || pin.tenant !== config.tenant;
+  if (!stale) return;
+  const body = JSON.stringify({ v: POLICY_PIN_VERSION, tenant: String(config.tenant), keys, updated: new Date().toISOString() });
+  for (const p of [POLICY_PIN, POLICY_PIN_LATCH]) {
+    try { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, body); } catch { /* best-effort */ }
+  }
+}
+
+// Returns { policy, source, rejected } where source is:
+//   "fresh"        — freshly fetched from the server (and re-cached)
+//   "cache"        — served from the fresh-cache window without a fetch attempt
+//   "cache-offline"— fetch FAILED, falling back to the last-known cached policy (offline; #33 point 2)
+//   "last-known-good" — live AND cached copies were both refused (or absent); enforcing the last policy
+//                       that actually passed signature verification, re-verified on the way in
+//   "none"         — no policy at all (offline AND no cache, OR nothing that verified)
+//
+// Every candidate policy must carry a console signature this device's trust state verifies. One that
+// does not is not "a weaker policy" — it is NO policy, and the caller falls through to
+// durablePosture()/OFFLINE_DEFAULT_POLICY exactly as if the file were absent. Never fail OPEN on a
+// verification error.
+//
+// The trust state comes from policyTrust(): the explicit anchor if one is deployed, else this device's
+// own PIN if it has ever verified a real console signature, else nothing (a never-signed console keeps
+// working exactly as before — the no-brick property). That last case is the only remaining opening, and
+// it closes by itself the first time the console signs.
+//
+// The FRESH path is verified too, not just the cache: ~/.curaiq/config.json is in the same write scope
+// as the cache, so `serverUrl` can be repointed at an attacker-run localhost that serves `{}` — the
+// identical bypass wearing a different hat. `rejected` carries the content-free (source, status) pairs
+// for the tamper alert; only those NAMES ever leave the device.
+export async function loadVerifiedPolicy(config) {
+  const anchorKeys = policyKeys();    // explicit anchor: root-owned /etc/moorai/policy.pub or MDM env
+  const pin = readPolicyPin();        // this device's own TOFU record
+  const trust = policyTrust({ anchorKeys, pin, tenant: config.tenant });
+  // A device that has demonstrably been operating but holds NO pin and NO anchor is not a fresh install
+  // — it is a device whose pin was erased. Computed here (not in main) because it also shortens the
+  // window: while in that state the cache's 60s short-circuit is skipped so every invocation attempts a
+  // fresh network fetch, which is the only thing that can re-pin the device.
+  const absence = assessPinAbsence({
+    enrolled: Boolean(config.installToken),
+    trustMode: trust.mode,
+    pinningEvidence: presentArtifacts(PINNING_ARTIFACTS),
+    operationEvidence: presentArtifacts(OPERATION_ARTIFACTS)
+  });
+  const rejected = [];
+  const verify = (raw) => {
+    let p;
+    try { p = JSON.parse(raw); } catch { return { bad: "malformed" }; }
+    if (!p || typeof p !== "object" || Array.isArray(p)) return { bad: "malformed" };
+    // A pin we know existed but cannot use (mangled file, or config.json now naming another tenant)
+    // refuses everything rather than degrading to "verify nothing" — otherwise corrupting the pin would
+    // be a downgrade path, which is the very hole this whole mechanism closes.
+    if (trust.mode === "rebind") return { bad: "pin-tenant-rebind" };
+    if (trust.mode === "corrupt") return { bad: "pin-unusable" };
+    const v = verifyPolicySignature(p, { keys: trust.keys, tenant: config.tenant });
+    return v.trusted ? { policy: p, status: v.status, keyId: v.keyId } : { bad: v.status };
+  };
+
+  // One read + one verify of the cache, whatever path we end up taking — the file is the same file in
+  // the "fresh window" and the "offline fallback" cases, so it must not be able to raise two alerts.
+  let cacheRaw = null, withinWindow = false;
+  try { const st = statSync(POLICY_CACHE); cacheRaw = readFileSync(POLICY_CACHE, "utf8"); withinWindow = Date.now() - st.mtimeMs < 60000; } catch { /* absent */ }
+  const cached = cacheRaw == null ? null : verify(cacheRaw);
+  if (cached && cached.bad) rejected.push({ source: "cache", status: cached.bad });
+  // A CACHED policy never re-pins, however valid it looks: the cache file is in the agent's own write
+  // scope, so letting it teach the device a key would hand the attacker the pin. Only a signature
+  // delivered fresh over the network from the configured server can arm or roll the pin forward.
+  if (withinWindow && !absence.suspicious && cached && cached.policy) return { policy: cached.policy, source: "cache", rejected, pin, trust, absence };
+
+  try {
+    const headers = config.installToken ? { "X-Install-Token": config.installToken } : {};
+    const q = (p) => fetch(`${config.serverUrl}${p}`, { headers, signal: AbortSignal.timeout(1500) }).then((r) => (r.ok ? r.text() : "")).catch(() => "");
+    // The published-key fetch runs in PARALLEL with the policy fetch, so it costs no extra latency, and
+    // only on devices with no explicit anchor (an anchored device already has the stronger statement).
+    const [raw, published] = await Promise.all([
+      q(`/api/policy?tenant=${encodeURIComponent(config.tenant)}`),
+      trust.mode === "anchored" || trust.mode === "rebind" || trust.mode === "corrupt" ? Promise.resolve("") : q("/api/policy/pubkey")
+    ]);
+    if (raw && raw.trim()) {
+      const v = verify(raw);
+      // Cache the server's ORIGINAL bytes — the signature covers the policy body, and re-serializing
+      // gains nothing while risking a mismatch with whatever the console signed.
+      if (v.policy) {
+        try { mkdirSync(dirname(POLICY_CACHE), { recursive: true }); writeFileSync(POLICY_CACHE, raw); } catch {}
+        // Non-empty result ⇒ a REAL console signature verified on this fetch — under the anchor, under
+        // an already-pinned key, or (first contact) under the key the server published. That is the same
+        // bar last-known-good needs, and it is NOT the same as v.status: on first contact the policy is
+        // admitted as "unanchored" (the device holds no key yet) and only the TOFU re-check proves it.
+        const armed = armPolicyPin(config, trust, pin, v, JSON.parse(raw), published);
+        // A verified FRESH policy is the only thing allowed to become last-known-good, and it always
+        // replaces the previous one. Fresh-only is the point: the cache is attacker-writable, so
+        // promoting a merely-cached policy would let a planted (but still validly signed, e.g. rolled
+        // back) body outlive the cache it was planted in. Always-replace is what keeps an org that
+        // legitimately RELAXES its policy from being dragged back to an older, stricter one.
+        //
+        // A REAL signature only — never the trivially-trusted "unanchored" case. A last-known-good with
+        // no real signature behind it could not survive its own re-verification anyway, and recording
+        // one would destroy this file's second job: being proof the device once verified a real
+        // signature (see assessPinAbsence).
+        if (v.status === "ok" || armed) writePolicyLkg(raw);
+        return { policy: v.policy, source: "fresh", rejected, pin, trust, absence };
+      }
+      // A body that PARSED but did not verify is the repointed-serverUrl variant of the same attack
+      // (config.json sits in the same write scope as the cache). A non-JSON body is just a broken or
+      // hijacked-into-uselessness server — the existing offline signal already covers that, and calling
+      // it tampering would page a SOC every time a proxy returned an error page.
+      if (v.bad !== "malformed") rejected.push({ source: "server", status: v.bad });
+    }
+  } catch { /* offline */ }
+
+  if (cached && cached.policy) return { policy: cached.policy, source: "cache-offline", rejected, pin, trust, absence };
+  // Nothing live and nothing cached verified. Before falling through to "no policy" — which for a
+  // fail-open org means exit(0), i.e. the attacker's bypass — enforce with the last policy that really
+  // did pass verification, re-verified now against the same anchor/pin. Read lazily: three extra file
+  // reads must not sit on the happy path.
+  const lkg = selectLastKnownGood([
+    { source: "system", raw: readRootOwned(POLICY_LKG_SYSTEM) },
+    { source: "primary", raw: readText(POLICY_LKG) },
+    { source: "latch", raw: readText(POLICY_LKG_LATCH) }
+  ], verify);
+  if (lkg) return { policy: lkg.policy, source: "last-known-good", lkgCopy: lkg.copy, rejected, pin, trust, absence };
+  return { policy: null, source: "none", rejected, pin, trust, absence };
+}
+
+// Record the last VERIFIED policy, byte-for-byte as the console served it (the signature covers the
+// body, so re-serializing gains nothing and risks a digest mismatch). Both user-scope copies, in two
+// different directories, for the same reason the pin and the posture latch have two: `rm -rf ~/.curaiq`
+// must not take the device's memory with it. There is deliberately no write to POLICY_LKG_SYSTEM — the
+// hook runs as the user and cannot write /etc, so a "system copy" it wrote would be a fiction.
+function writePolicyLkg(raw) {
+  for (const p of [POLICY_LKG, POLICY_LKG_LATCH]) {
+    try { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, raw); } catch { /* best-effort */ }
+  }
 }

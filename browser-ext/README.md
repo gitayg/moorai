@@ -31,7 +31,9 @@ X-Install-Token: <token>
 { threatId, category, riskLevel, stage: "browser", tool: "browser:<site>", ts, contentHash, host }
 ```
 
-`contentHash` is a **one-way djb2 hash** (the same hash the agent uses in `cli/moorai-hook.mjs`) of the
+`contentHash` is a **keyed one-way hash** — HMAC-SHA-256 under your tenant's install token, the same
+hash the agent uses (`cli/content-hash.mjs`), so a span hashes identically in the browser and in the
+CLI. With no install token configured it is the explicit `h2:nokey` marker, never a weaker hash. Of the
 matched span — the matched text is used only to compute that hash and is then discarded. No prompt text,
 no matched substring, and only the URL **host** (never the full URL or query string) is included.
 Reporting **fails open and silent**: any network error, or no configured server, simply sends nothing.
@@ -48,7 +50,7 @@ There is **no bundled ML model** — detection is deterministic regex/rules only
   OpenAI/Anthropic, DB connection strings) plus the **entropy + allowlist gate** for the two "shapeless"
   cases (generic secret assignment, AWS secret key)
 
-The `djb2` hash is copied byte-for-byte from `cli/moorai-hook.mjs` so hashes are consistent with the agent.
+`content-hash.js` is a synchronous plain-JS HMAC-SHA-256 (the gate must run inside a capture-phase event handler, so `crypto.subtle` is unusable); `test/content-hash.test.mjs` asserts it matches `node:crypto` byte-for-byte, so hashes stay consistent with the agent.
 
 ## Load unpacked (Chrome / Edge)
 
@@ -75,7 +77,8 @@ The `djb2` hash is copied byte-for-byte from `cli/moorai-hook.mjs` so hashes are
 ```
 browser-ext/
   manifest.json        MV3 manifest (minimal permissions; host perms only for the 3 AI sites)
-  detectors.js         on-device, content-free detection engine (agent-subset regexes + djb2)
+  content-hash.js      keyed one-way content hash (HMAC-SHA-256), loaded before detectors.js
+  detectors.js         on-device, content-free detection engine (agent-subset regexes)
   content.js           composer detection, send interception, coach/block banner
   report.js            content-free POST to <serverUrl>/api/alerts
   content.css          banner styling

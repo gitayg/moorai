@@ -1,6 +1,7 @@
 // Unit test for the ported browser-ext detectors. Runs in Node:  node browser-ext/test-detectors.mjs
 // Verifies: (a) fake secret/PII/credential strings ARE flagged, (b) benign text is NOT flagged,
-// (c) the browser djb2 matches the agent's djb2 byte-for-byte on a sample string.
+// (c) the browser's keyed content hash matches the agent's byte-for-byte on a sample string, and
+//     that an unkeyed extension emits the explicit NO_KEY sentinel rather than anything reversible.
 
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -8,13 +9,17 @@ import { dirname, join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
+const H = require(join(here, "content-hash.js")); // must load before detectors.js (as the manifest does)
 const D = require(join(here, "detectors.js"));
 
-// Independent reference djb2, transcribed from cli/moorai-hook.mjs, to prove the port matches.
-function agentDjb2(s) {
-  let h = 5381;
-  for (let i = 0; i < String(s).length; i++) h = ((h << 5) + h + String(s).charCodeAt(i)) >>> 0;
-  return "h" + h.toString(16);
+const TOKEN = "it_live_testtoken";
+H.setKey(TOKEN);
+
+// Independent reference implementation using node:crypto, to prove the hand-rolled port matches.
+import { createHmac } from "node:crypto";
+function agentHash(s) {
+  const key = createHmac("sha256", TOKEN).update("moorai/content-hash/v2", "utf8").digest();
+  return "h2:" + createHmac("sha256", key).update(String(s), "utf8").digest("hex").slice(0, 16);
 }
 
 let pass = 0, fail = 0;
@@ -60,13 +65,23 @@ for (const t of benignSamples) {
 check("UUID assigned to a var is NOT a secret (benign-shape guard)",
   !flags('request_id = "550e8400-e29b-41d4-a716-446655440000"', "secret-generic-assignment"));
 
-// --- (c) djb2 parity with the agent ---
+// --- (c) keyed content-hash parity with the agent ---
 console.log("\nHash parity:");
 const sample = "AKIAIOSFODNN7EXAMPLE";
-const mine = D.djb2(sample);
-const theirs = agentDjb2(sample);
-check(`djb2("${sample}") === agent djb2  (${mine})`, mine === theirs);
-check("djb2 is content-free (does not contain the input)", !mine.includes(sample));
+const mine = H.contentHash(sample);
+const theirs = agentHash(sample);
+check(`contentHash("${sample}") === agent contentHash  (${mine})`, mine === theirs);
+check("the hash is content-free (does not contain the input)", !mine.includes(sample));
+check("the hash carries the h2: version prefix", mine.startsWith("h2:"));
+// A finding produced by scan() must carry the same keyed hash — the span never escapes scan().
+const finding = D.scan(`aws_key = "${sample}"`).find((f) => f.contentHash === theirs);
+check("scan() emits the keyed hash for the matched span", Boolean(finding));
+check("scan() never returns the matched span itself",
+  !JSON.stringify(D.scan(`aws_key = "${sample}"`)).includes(sample));
+// Keyless extension must NOT fall back to anything reversible.
+H.setKey("");
+check("no key configured → explicit NO_KEY sentinel", H.contentHash(sample) === "h2:nokey");
+H.setKey(TOKEN);
 
 console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES PRESENT"} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

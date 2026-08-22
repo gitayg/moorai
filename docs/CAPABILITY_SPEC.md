@@ -72,7 +72,9 @@ The invariant it must satisfy is **content-free egress, not "never decrypt"**:
   is what separates this from a vendor whose "on-device" DLP calls a cloud model to read your
   prompts. On-device inspection with off-device classification is *not* content-free.
 - Only the same redacted signal leaves the device as everywhere else: **category · risk level ·
-  one-way hash**.
+  keyed one-way hash** (HMAC-SHA-256 under the tenant's enrollment token — see
+  `cli/content-hash.mjs`; an unkeyed digest of a small-space value like a phone number or an SSN is
+  enumerable and would not be one-way in practice).
 - The root CA is generated **locally, per device**, never shared or escrowed, and its installation
   is disclosed and reversible. Uninstall removes it.
 - Because the interceptor is **open source (AGPL-3.0)**, this is auditable rather than asserted —
@@ -131,7 +133,7 @@ credential, then nothing.
 
 ### Telemetry — redacted alerts only
 Client → Server alerts carry **redacted metadata only**: threat id, category, risk tier, timestamp,
-tool used, optional content hash / redacted snippet. **Never raw sensitive content** — otherwise
+tool used, optional keyed content hash / redacted snippet. **Never raw sensitive content** — otherwise
 MoorAI would itself commit threats #1 / #9 / #33 on every phone-home.
 
 ### Policy — server → client

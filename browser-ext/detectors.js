@@ -11,8 +11,9 @@
 // are copied VERBATIM from the agent so a finding here means the same thing it would in the CLI hook.
 //
 // CONTENT-FREE BY CONSTRUCTION: this module returns only { threatId, category, riskLevel, label,
-// and a one-way djb2 hash of the matched span }. The matched text is used solely to compute the hash
-// and is never returned to, stored by, or transmitted by the caller. Detection runs entirely locally.
+// and a KEYED one-way hash of the matched span }. The matched text is used solely to compute the
+// hash and is never returned to, stored by, or transmitted by the caller. Detection runs entirely
+// locally. Requires content-hash.js to be loaded first (manifest.json lists it ahead of this file).
 //
 // Loadable two ways from ONE file:
 //   * Chrome MV3 content script  → sets globalThis.MoorAIDetectors (content.js reads it; same isolated world)
@@ -21,13 +22,11 @@
 (function (root) {
   "use strict";
 
-  // ---- one-way content-free hash — copied VERBATIM from cli/moorai-hook.mjs `djb2` ----
-  // Kept byte-identical so a hash computed in the browser matches the agent's hash for the same span.
-  function djb2(s) {
-    let h = 5381;
-    for (let i = 0; i < String(s).length; i++) h = ((h << 5) + h + String(s).charCodeAt(i)) >>> 0;
-    return "h" + h.toString(16);
-  }
+  // ---- keyed one-way content hash — content-hash.js, loaded ahead of this file ----
+  // HMAC-SHA-256 under the tenant's install token, so the fingerprint of a matched span cannot be
+  // enumerated back to the span by anyone holding only the alert stream. Byte-identical to the
+  // agent's for the same token and span. See browser-ext/content-hash.js for the full rationale.
+  const H = root.MoorAIContentHash;
 
   // ---- entropy + allowlist gate — copied from data/secrets-patterns.js ----
   // The two "shapeless" secret detectors (generic assignment, AWS secret key) would false-positive on
@@ -152,7 +151,7 @@
           category: d.category,
           riskLevel: d.riskLevel,
           label: d.label,
-          contentHash: djb2(span)  // one-way; the span itself is discarded by the caller
+          contentHash: H.contentHash(span)  // keyed one-way; the span itself is discarded by the caller
         });
         break; // one finding per detector, like the engine's per-detector dedup
       }
@@ -165,7 +164,7 @@
     return findings.reduce((a, f) => (!a || (RISK_RANK[f.riskLevel] || 0) > (RISK_RANK[a.riskLevel] || 0) ? f : a), null);
   }
 
-  const api = { DETECTORS, scan, worst, djb2, isHighSeverity, shannonEntropy, looksLikeSecret, RISK_RANK };
+  const api = { DETECTORS, scan, worst, isHighSeverity, shannonEntropy, looksLikeSecret, RISK_RANK };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api; // Node (unit test)
   root.MoorAIDetectors = api;                                               // content-script isolated world

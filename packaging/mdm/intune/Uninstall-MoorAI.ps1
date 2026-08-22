@@ -17,8 +17,19 @@ param(
 
 $ErrorActionPreference = "SilentlyContinue"
 
-$LogDir = Join-Path $env:ProgramData "MoorAI"
-New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+# %ProgramData%\MoorAI is the machine-wide TRUST ANCHOR directory that cli/moorai-hook.mjs reads
+# policy.pub / breakglass.pub / offline-posture from — see the long note in Install-MoorAI.ps1.
+# Never CREATE it here: creating it inherits C:\ProgramData's BUILTIN\Users create-file ACE, and an
+# uninstall may well run non-elevated, so it could not be hardened afterwards. A user-writable
+# anchor directory left behind by an uninstall is exactly the precondition for a forged anchor.
+# Log into it only if it already exists (an install created and hardened it); otherwise fall back
+# to the user scope.
+$AnchorDir = Join-Path $env:ProgramData "MoorAI"
+if (Test-Path -LiteralPath $AnchorDir) { $LogDir = $AnchorDir }
+else {
+    $LogDir = Join-Path $env:TEMP "MoorAI"
+    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+}
 $LogFile = Join-Path $LogDir "uninstall.log"
 function Write-Log { param([string]$m) Add-Content -Path $LogFile -Value ("{0}  {1}" -f (Get-Date -Format s), $m); Write-Output $m }
 

@@ -5,8 +5,8 @@
 // The alert object mirrors cli/moorai-hook.mjs `report()` / `post()`:
 //   { threatId, category, riskLevel, stage:"browser", tool:"browser:<site>", ts, contentHash, ... }
 //
-// GUARANTEE: the prompt text NEVER leaves the browser. Only { category, riskLevel, contentHash (djb2),
-// host-only URL, ts } are sent. Fail-open and SILENT on any error or missing config — this is
+// GUARANTEE: the prompt text NEVER leaves the browser. Only { category, riskLevel, contentHash (a
+// keyed HMAC-SHA-256 of the matched span, not the span), host-only URL, ts } are sent. Fail-open and SILENT on any error or missing config — this is
 // governance telemetry, never a blocker.
 //
 // Exposes globalThis.MoorAIReport.send(findings, site) for content.js (same content-script isolated world).
@@ -46,7 +46,7 @@
           stage: "browser",              // browser-AI coverage stage (distinct from the agent's file/egress)
           tool: `browser:${site}`,       // e.g. browser:chatgpt / browser:claude / browser:copilot
           ts,
-          contentHash: f.contentHash,    // djb2 one-way hash of the matched span — never the span itself
+          contentHash: f.contentHash,    // keyed one-way hash of the matched span — never the span itself
           host,                          // host only; never the full URL, never query strings
           source: "browser-ext"
         };

@@ -32,8 +32,16 @@ Claude Desktop  ⇄  moorai-mcp-guard  ⇄  real MCP server
   **verbatim and transparently**.
 
 It is the **same gateway, engine, detectors, and policy** as the Claude Code PreToolUse hook: it reuses
-`buildEngine` + `mcpGateway` from `cli/hook-core.mjs` and the same policy cache
-(`~/.curaiq/hook-policy.json`), fetched/served identically.
+`buildEngine` + `mcpGateway` + `loadVerifiedPolicy` from `cli/hook-core.mjs`, so both entrypoints share
+one implementation rather than a copy.
+
+The policy is **signature-verified before it is trusted**. `loadVerifiedPolicy` checks the console's
+ed25519 envelope against the machine-wide anchor (`/etc/moorai/policy.pub`, `%ProgramData%\MoorAI\policy.pub`,
+or an MDM-injected key) or a TOFU pin established from a verified fetch. An unsigned, tampered, or
+wrong-tenant `~/.curaiq/hook-policy.json` is treated as **no policy at all** — the proxy falls back to the
+last verified policy, then to the offline default per the posture ratchet — and emits a content-free
+tamper alert. Writing `{}` into the cache therefore cannot disarm the gate. Because the proxy is a
+long-lived process, verification re-runs on every lazy refresh, not once at startup.
 
 ## Content-free by construction
 

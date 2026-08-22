@@ -82,7 +82,8 @@ the **desktop app** (Tauri host that wraps the agent terminal) is optional on to
   `InstallToken` into the managed-preferences domain `run.glick.curaiq` (the app's bundle
   identifier). This is the MDM-locked *source of values*; the deploy script materializes them into
   `~/.curaiq/config.json`.
-- **`jamf/moorai-jamf-deploy.sh`** — installs the agent, writes the per-user config, registers hooks.
+- **`jamf/moorai-jamf-deploy.sh`** — installs the agent, writes the per-user config, registers hooks,
+  and normalizes the `/etc/moorai` trust-anchor directory to `root:wheel 0755` (see section 5).
 
 ### Steps
 
@@ -133,7 +134,8 @@ tool call in any terminal pulls tenant policy from the console. No user interact
 ## 4. Windows — Microsoft Intune (Win32 app)
 
 ### Files
-- **`intune/Install-MoorAI.ps1`** — silent install + enroll (writes config, registers hooks).
+- **`intune/Install-MoorAI.ps1`** — silent install + enroll (writes config, registers hooks) and,
+  when run elevated, hardens the `%ProgramData%\MoorAI` trust-anchor directory (see section 5).
 - **`intune/Uninstall-MoorAI.ps1`** — silent uninstall (de-registers hooks, removes config + agent).
 - **`intune/Detect-MoorAI.ps1`** — Intune detection rule (agent files **and** enrolled config present).
 - **`intune/moorai-intune-config.json`** — reference values + the exact install/uninstall commands.
@@ -169,7 +171,8 @@ tool call in any terminal pulls tenant policy from the console. No user interact
      powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Uninstall-MoorAI.ps1
      ```
    - **Install behavior:** **User** *(recommended — config + hooks are per-user)*. If you must use
-     **System**, pair with the logon task in the note below.
+     **System**, pair with the logon task in the note below. If you use machine-wide trust anchors,
+     you additionally need one SYSTEM-context run to harden the anchor directory — see section 5.
 
 4. **Detection rule.** Rules format → **Use a custom detection script** → upload `Detect-MoorAI.ps1`.
    It exits 0 only when the agent files **and** an enrolled `config.json` (non-empty `serverUrl` +
@@ -190,7 +193,103 @@ first tool call pulls tenant policy. No interaction.
 
 ---
 
-## 5. Verifying an enrolled device
+## 5. Machine-wide trust anchors — required permissions
+
+Separate from the per-user enroll config, the agent reads a small set of **machine-wide anchor
+files**. `readRootOwned()` in `cli/moorai-hook.mjs` treats these as authoritative:
+
+| File | What it controls |
+|---|---|
+| `policy.pub` | Public key that policy signatures are verified against |
+| `breakglass.pub` | Operator break-glass key |
+| `offline-posture` | The fail-closed latch used when the console is unreachable |
+| `policy-lkg.json` | Last-known-good policy |
+
+| Platform | Anchor directory | Required directory permissions | Required file permissions |
+|---|---|---|---|
+| macOS / Linux | `/etc/moorai` | `root:wheel`, mode `0755` | `root`-owned, mode `0644` |
+| Windows | `%ProgramData%\MoorAI` | Inheritance **removed**; `SYSTEM` + `Administrators` full control; `Users` **read-only**; owner `Administrators` | inherited from the directory |
+
+**Users must keep READ access.** The hook runs as the signed-in user and has to read these files.
+Locking users out entirely makes every anchor unreadable and fails the device closed. What users
+must not have is create/write/delete. Nothing writes to the anchor directory at runtime — the hook
+deliberately never writes the machine-wide last-known-good copy — so read-only costs nothing.
+
+### Why this matters: a user-writable anchor directory defeats the anchor
+
+The anchor is only worth the permissions on the directory that holds it. On Windows,
+`C:\ProgramData` carries an inheritable ACE granting `BUILTIN\Users` write:
+
+```
+BUILTIN\Users:(I)(CI)(WD,AD,WEA,WA)      # measured on Windows 11 Pro, build 26100
+```
+
+Any subdirectory created there with a plain `New-Item -Force` inherits it, so **an ordinary user can
+create files in the anchor directory**. That is enough to forge an anchor, in two ways:
+
+1. **DACL scrub via ownership.** The user creates the anchor file, which makes them its **owner**,
+   and [an object's owner implicitly holds `WRITE_DAC`][owner-doc]. They then run
+   `icacls <file> /inheritance:r /grant SYSTEM:(F) Administrators:(F)` to strip their own ACE.
+   `icacls` has no switch that prints an owner, so the DACL now reads administrator-only, the hook's
+   check passes, and the **forged anchor is trusted** — while the user, still the owner, can rewrite
+   it at will.
+2. Any future gap in DACL parsing.
+
+Hardening the *directory* removes the precondition for both at zero runtime cost, which is why the
+fix lives in the installer rather than in the hook's per-tool-call hot path.
+
+`Install-MoorAI.ps1` now does this at install time, using **well-known SIDs rather than localized
+group names** (a German Windows has `BUILTIN\Benutzer`, not `Users`):
+
+```powershell
+icacls "$dir" /setowner "*S-1-5-32-544" /T /C /Q
+icacls "$dir" /inheritance:r `
+  /grant "*S-1-5-18:(OI)(CI)(F)" `        # NT AUTHORITY\SYSTEM      — full
+  /grant "*S-1-5-32-544:(OI)(CI)(F)" `    # BUILTIN\Administrators   — full
+  /grant "*S-1-5-32-545:(OI)(CI)(RX)"     # BUILTIN\Users            — read + execute only
+```
+
+It is idempotent, **repairs** a directory that already exists with weak permissions, and **fails the
+install** if hardening does not verify — a user-writable anchor directory is worse than none,
+because the hook trusts whatever it finds there.
+
+[owner-doc]: https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-of-a-new-object
+
+> **The hardening requires a SYSTEM-context (elevated) run.** A user-context install cannot set the
+> ACL, so `Install-MoorAI.ps1` deliberately **does not create** `%ProgramData%\MoorAI` when it is not
+> elevated — creating it unhardened is precisely the attacker's precondition. If you deploy the app
+> in **User** context (the default recommendation, because config + hooks are per-user) **and you use
+> machine-wide anchors**, also run the installer once in SYSTEM context — an Intune **platform
+> script** (Devices → Scripts) runs as SYSTEM and is the natural vehicle — so the directory exists
+> and is hardened before any user can create it.
+
+> **If you already deployed MoorAI before this hardening shipped**, the anchor directory on those
+> devices was created with the inherited user-writable ACL. Re-running the installer in SYSTEM
+> context repairs the permissions and logs a warning naming any anchor files it finds — but it
+> **cannot tell a genuine anchor from one a user planted while the directory was writable**. Treat
+> every existing anchor file on those devices as suspect: delete and re-deploy `policy.pub`,
+> `breakglass.pub` and `offline-posture` from MDM, and rotate the policy-signing key if a forged
+> `policy.pub` would have been accepted. On macOS this does not apply — `/etc` is `root:wheel 0755`,
+> so an ordinary user could never have created `/etc/moorai` in the first place.
+
+### Verifying the anchor directory
+
+```powershell
+# Windows — expect Users to have (RX) only, and no (I) inherited entries
+icacls C:\ProgramData\MoorAI
+(Get-Acl C:\ProgramData\MoorAI).Owner                      # BUILTIN\Administrators
+(Get-Acl C:\ProgramData\MoorAI).AreAccessRulesProtected    # True
+```
+
+```bash
+# macOS — expect  drwxr-xr-x  root  wheel
+ls -ld /etc/moorai
+ls -l  /etc/moorai        # anchor files: -rw-r--r--  root
+```
+
+---
+
+## 6. Verifying an enrolled device
 
 ```bash
 # macOS
@@ -211,7 +310,7 @@ device — it simply runs on last-known/cached policy.
 
 ---
 
-## 6. Signing & notarization — [ADMIN PLACEHOLDER] summary
+## 7. Signing & notarization — [ADMIN PLACEHOLDER] summary
 
 Certificates are the one thing this directory can't provide. Detailed steps live in
 `../../docs/SIGNING.md` (macOS); the Windows equivalent is Authenticode `signtool`.
@@ -227,12 +326,19 @@ the desktop app as an opt-in follow-up once the build is notarized/signed.
 
 ---
 
-## 7. Uninstall / offboarding
+## 8. Uninstall / offboarding
 
 - **macOS:** run `node <MOORAI_HOME>/cli/moorai-hook.mjs uninstall` (removes only MoorAI's hook
   entries), then delete `~/.curaiq` and `MOORAI_HOME`. Remove the Jamf profile to unbind values.
 - **Windows:** the Intune **Uninstall** action runs `Uninstall-MoorAI.ps1` (de-registers hooks,
   removes `~/.curaiq` and `MOORAI_HOME`).
+
+> **The anchor directory is left in place on purpose.** Neither uninstaller removes
+> `%ProgramData%\MoorAI` or `/etc/moorai`. On Windows, deleting it would let any ordinary user
+> recreate it with the inherited user-writable ACL, so a hardened empty directory is the safer
+> end state. `Uninstall-MoorAI.ps1` likewise never *creates* it — an uninstall may run
+> non-elevated, and it could not harden what it created. To remove it during decommissioning,
+> delete it from an elevated context along with the anchor files.
 
 ---
 

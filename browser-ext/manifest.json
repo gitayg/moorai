@@ -25,6 +25,7 @@
         "https://copilot.microsoft.com/*"
       ],
       "js": [
+        "content-hash.js",
         "detectors.js",
         "report.js",
         "content.js"

@@ -6,8 +6,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-
-function djb2(s) { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0; return "h" + h.toString(16); }
+import { contentHash } from "./content-hash.mjs";
 
 // Values too short or obviously non-secret (placeholders) are ignored to avoid false matches.
 const PLACEHOLDER = /^(?:todo|tbd|changeme|placeholder|example|test|none|null|true|false|localhost|your[-_ ]?\w*|<[^>]*>|\$\{[^}]*\}|x{3,}|\*{3,}|\.{3,})$/i;
@@ -35,7 +34,7 @@ function loadLocalSecrets(cwd) {
   const dir = cwd || process.cwd();
   if (_cache && _cache.dir === dir) return _cache.values;
   const values = new Map(); // value -> hash (dedup)
-  const add = (v) => { if (isSecretish(v) && !values.has(v)) values.set(v, djb2(v)); };
+  const add = (v) => { if (isSecretish(v) && !values.has(v)) values.set(v, contentHash(v)); };
   const readFileSafe = (p) => { try { const b = readFileSync(p); return b.includes(0) ? "" : b.subarray(0, 262144).toString("utf8"); } catch { return ""; } };
   // Project dotenv files
   try { for (const f of readdirSync(dir)) { if (f === ".env" || f.startsWith(".env.")) parseEnv(readFileSafe(join(dir, f))).forEach(add); } } catch { /* no dir access */ }

@@ -114,6 +114,52 @@ install_agent() {
   log "agent installed at ${MOORAI_HOME}"
 }
 
+# ------------------------------------------------- machine-wide trust anchor (/etc/moorai)
+# cli/moorai-hook.mjs reads policy.pub, breakglass.pub, offline-posture and policy-lkg.json from
+# /etc/moorai as the machine-wide TRUST ANCHOR. readRootOwned() accepts a file there only when
+# stat says uid 0 AND the mode has no group/write or other/write bit (mode & 0o022 == 0) — so a
+# wrongly-owned or group-writable anchor is silently ignored, and an anchor an ordinary user could
+# rewrite would be worth no more than one under ~/.curaiq.
+#
+# UNLIKE WINDOWS, macOS has no forgery precondition to remove here: /etc (-> /private/etc) is
+# root:wheel 0755, so an ordinary user cannot create /etc/moorai in the first place. The Windows
+# equivalent of this step is load-bearing because C:\ProgramData grants BUILTIN\Users create-file
+# rights that every child inherits; this one is normalization — it gives the anchors a correct
+# home and REPAIRS a directory an admin deployed with the wrong owner or mode.
+#
+# Matches what moorai-hook.mjs documents: `install -d -m 0755 -o root /etc/moorai`, anchor files
+# 0644 root-owned. 0755/0644 keeps them world-READABLE, which is required: the hook runs as the
+# user and has to read them.
+ANCHOR_DIR="/etc/moorai"
+harden_anchor_dir() {
+  if [ "$(/usr/bin/id -u)" -ne 0 ]; then
+    log "WARNING: not running as root; leaving ${ANCHOR_DIR} untouched (Jamf policies run as root)."
+    return 0
+  fi
+  /usr/bin/install -d -m 0755 -o root -g wheel "$ANCHOR_DIR" || die "cannot create/harden ${ANCHOR_DIR}"
+  # Repair an existing directory deployed with the wrong owner or a too-permissive mode.
+  /usr/sbin/chown root:wheel "$ANCHOR_DIR" || die "cannot chown ${ANCHOR_DIR}"
+  /bin/chmod 0755 "$ANCHOR_DIR"            || die "cannot chmod ${ANCHOR_DIR}"
+  for anchor in policy.pub breakglass.pub offline-posture policy-lkg.json; do
+    [ -f "${ANCHOR_DIR}/${anchor}" ] || continue
+    /usr/sbin/chown root:wheel "${ANCHOR_DIR}/${anchor}" || die "cannot chown ${ANCHOR_DIR}/${anchor}"
+    /bin/chmod 0644 "${ANCHOR_DIR}/${anchor}"            || die "cannot chmod ${ANCHOR_DIR}/${anchor}"
+    log "anchor normalized: ${ANCHOR_DIR}/${anchor} (root:wheel 0644)"
+  done
+  # Fail loudly rather than leave a group/world-writable anchor directory in place: the hook trusts
+  # what it finds here, so a writable one is worse than none.
+  mode="$(/usr/bin/stat -f%Lp "$ANCHOR_DIR")"
+  owner="$(/usr/bin/stat -f%u "$ANCHOR_DIR")"
+  [ "$owner" = "0" ] || die "${ANCHOR_DIR} is owned by uid ${owner}, not root."
+  # `8#` forces base-8 explicitly: bash reads a bare leading zero as octal but other shells do not,
+  # and stat -f%Lp prints no leading zero anyway (e.g. "755"). 8#22 is the g+w / o+w mask that
+  # readRootOwned() tests as `st.mode & 0o022`.
+  if [ "$(( 8#$mode & 8#22 ))" -ne 0 ]; then
+    die "${ANCHOR_DIR} is group- or world-writable (mode ${mode}); the hook would reject every anchor in it."
+  fi
+  log "trust-anchor directory hardened: ${ANCHOR_DIR} (root:wheel ${mode})"
+}
+
 # --------------------------------------------------- write per-user enroll config
 # JSON shape read by cli/config.mjs: { serverUrl, tenant, installToken }.
 # `save_provision` in the Tauri host writes the identical file; we do it here so a
@@ -153,6 +199,7 @@ register_hooks() {
 
 # ------------------------------------------------------------------------- main
 install_agent
+harden_anchor_dir
 if [ "$DEFER_USER" -eq 0 ]; then
   write_enroll_config "$CONSOLE_USER" "$USER_HOME"
   register_hooks "$CONSOLE_USER"

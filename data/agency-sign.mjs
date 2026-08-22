@@ -4,7 +4,8 @@
 // (tool + args HASH + decision + nonce + ts). The private key never leaves the device; the console
 // verifies the signature and pins the public key (trust-on-first-use), so the Agency-Enforcement trail
 // cannot be forged or tampered with. All of this is metadata — no prompt or argument content leaves.
-import { generateKeyPairSync, createPrivateKey, createPublicKey, sign as cryptoSign, randomBytes, createHash } from "node:crypto";
+import { generateKeyPairSync, createPrivateKey, createPublicKey, sign as cryptoSign, randomBytes } from "node:crypto";
+import { contentHash } from "../cli/content-hash.mjs";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -27,8 +28,13 @@ function loadKeys() {
   return true;
 }
 
-// Content-free hash of the serialized tool arguments (never the arguments themselves).
-export function argsHash(s) { return createHash("sha256").update(String(s || "")).digest("base64").slice(0, 22); }
+// Keyed one-way hash of the serialized tool arguments (never the arguments themselves). MCP arguments
+// carry file paths, prompts and secrets, so this is the same small-input-space problem as a matched
+// span: a plain SHA-256 of `{"path":"/etc/shadow"}` is guessable, so it goes through the tenant-keyed
+// HMAC in cli/content-hash.mjs. The console rebuilds the signed canonical string from the argsHash
+// field it RECEIVES (server/db.js `_verifyEd`), so changing the derivation does not affect signature
+// verification — only what a reader of the stored token can recover from it.
+export function argsHash(s) { return contentHash(s); }
 
 // The exact bytes signed + verified — keep agent and server in lockstep.
 export function canonical(t) { return `${t.tool}|${t.argsHash}|${t.decision}|${t.nonce}|${t.ts}`; }

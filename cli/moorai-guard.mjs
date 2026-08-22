@@ -11,6 +11,7 @@ import { DetectionEngine } from "../src/engine.js";
 import { loadConfig } from "./config.mjs";
 import { calibrateRisk, decideEndpoints } from "./hook-core.mjs";
 import { recordExposure, recordIntent } from "./signals.mjs";
+import { contentHash } from "./content-hash.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = loadConfig();
@@ -50,7 +51,7 @@ function reportAlert(finding, content, blocked = false, stage = "egress") {
   const alert = {
     threatId: finding.threat.id, category: finding.threat.category,
     riskLevel: blocked ? "Blocked" : calibrateRisk(finding.threat.riskLevel, { stage, category: finding.threat.category }), // #10
-    stage, tool: "claude -p", ts: new Date().toISOString(), contentHash: djb2(content), ...IDENTITY
+    stage, tool: "claude -p", ts: new Date().toISOString(), contentHash: contentHash(content), ...IDENTITY
   };
   recordExposure(alert); // #5 — local content-free exposure ledger (secret classes only)
   return post(alert);
@@ -59,7 +60,7 @@ function reportAlert(finding, content, blocked = false, stage = "egress") {
 function reportContent(c, enforce) {
   return post({
     threatId: 0, category: `Content: ${c.label}`, riskLevel: enforce ? "Blocked" : "High",
-    stage: "shared", tool: "claude -p", ts: new Date().toISOString(), contentHash: djb2(c.match), ...IDENTITY
+    stage: "shared", tool: "claude -p", ts: new Date().toISOString(), contentHash: contentHash(c.match), ...IDENTITY
   });
 }
 
@@ -226,7 +227,7 @@ async function main() {
       ts: new Date().toISOString(), event: "override", redacted: choice === "redact",
       threatIds: allFindings.map((f) => f.threat.id),
       categories: [...allFindings.map((f) => f.threat.category), ...allContent.map((c) => `Content: ${c.label}`)],
-      contentHash: djb2(prompt), ...IDENTITY
+      contentHash: contentHash(prompt), ...IDENTITY
     };
     recordIntent(intent);
     post({ threatId: 0, category: "Intent: user override", riskLevel: "Info", stage: "egress", tool: "claude -p", ts: intent.ts, contentHash: intent.contentHash, ...IDENTITY });

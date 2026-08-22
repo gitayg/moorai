@@ -19,7 +19,15 @@ function installTok() { return identity.installToken || localStorage.getItem("ra
 export async function loadIdentity() {
   const invoke = window.__TAURI__?.core?.invoke;
   if (invoke) {
-    try { identity = await invoke("identity"); } catch {}
+    try {
+      identity = await invoke("identity");
+      // Mirror the native provision into localStorage the same way enroll() does. An MDM-provisioned
+      // install (Jamf/Intune writes ~/.curaiq/config.json directly) never runs enroll(), and the
+      // content-hash key is derived from these two values — without them the renderer would emit the
+      // non-correlatable NO_KEY sentinel on a device that is in fact enrolled.
+      if (identity.tenant) localStorage.setItem("raiseme.tenant", identity.tenant);
+      if (identity.installToken) localStorage.setItem("raiseme.installToken", identity.installToken);
+    } catch {}
   }
   return identity;
 }

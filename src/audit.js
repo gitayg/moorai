@@ -1,11 +1,7 @@
+import { contentHash } from "./content-hash.js";
+
 const KEY = "raiseme.audit";
 const MAX = 100;
-
-function hash(s) {
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
-  return "h" + h.toString(16);
-}
 
 export class Audit {
   constructor(store = localStorage) {
@@ -39,7 +35,7 @@ export class Audit {
         stage,
         tool,
         ts,
-        contentHash: content ? hash(content) : null
+        contentHash: content ? contentHash(content) : null
       };
     }
 
