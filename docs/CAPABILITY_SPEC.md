@@ -46,11 +46,34 @@ feeds the same harness.
 **The trigger:** harness + host is genuinely enough for *conversational* AI. Add the MCP/proxy tap
 **only when agentic tool-use is in scope** — hence it sits in v3, not the MVP.
 
-**Why not just "see everything" from one tap:** the only single point that approaches it is a
-TLS-intercepting egress proxy — rejected because it still misses on-device/off-network AI, sees raw
-bytes but not in-app context, and **breaks the locked privacy posture** (*inspection is local; only
-redacted metadata leaves the device*). "See everything" reduces to either tapping every wire (the
-multi-surface suite under another name) or a MITM proxy that contradicts this posture.
+**Why not just "see everything" from one tap:** no single tap sees everything. A TLS-intercepting
+egress proxy still misses on-device/off-network AI and sees raw bytes without in-app context, so it
+cannot replace the harness or the MCP gateway. "See everything" reduces to tapping every wire — the
+multi-surface suite. The proxy is therefore an **additional** wire, never the only one.
+
+### Local TLS inspection — permitted, opt-in, never the default
+**Local TLS inspection is explicitly permitted** as an optional extra layer, offered during
+installation and **off unless the user opts in**. It exists to cover the chat/egress surface the
+harness and MCP gateway cannot reach — browser AI, cloud AI desktop apps, and any client that
+speaks HTTPS without an integration.
+
+The invariant it must satisfy is **content-free egress, not "never decrypt"**:
+
+- Decryption and classification happen **entirely on the device** (Tier-1 regex → Tier-2 local
+  model). The plaintext never leaves the machine.
+- **Sending content to a third-party API to classify it is forbidden** — that is the line, and it
+  is what separates this from a vendor whose "on-device" DLP calls a cloud model to read your
+  prompts. On-device inspection with off-device classification is *not* content-free.
+- Only the same redacted signal leaves the device as everywhere else: **category · risk level ·
+  one-way hash**.
+- The root CA is generated **locally, per device**, never shared or escrowed, and its installation
+  is disclosed and reversible. Uninstall removes it.
+- Because the interceptor is **open source (AGPL-3.0)**, this is auditable rather than asserted —
+  anyone can verify that no content path leaves the device.
+
+Default posture is unchanged: agent hook + MCP gateway, no certificate, no interception. Local TLS
+inspection is the opt-in depth setting for teams that want the extra coverage and accept the
+trade-offs (certificate trust, cert-pinning breakage, per-platform network extensions).
 
 ### Core principle — MoorAI is a pre-flight egress guard
 MoorAI sits **in front of** the agent and reviews what is about to be sent **before** it leaves
