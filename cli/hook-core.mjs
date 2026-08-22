@@ -357,11 +357,131 @@ export function verifyPolicySignature(policy, { keys = [], tenant = "" } = {}) {
   const msg = Buffer.from(policyCanonical({ v: POLICY_SIG_VERSION, tenant: String(s.tenant ?? ""), iat: String(s.iat), digest: policyDigest(policy) }));
   let sig;
   try { sig = Buffer.from(s.sig, "base64"); } catch { return { trusted: false, status: "malformed" }; }
-  const ok = keys.some((k) => { try { return cryptoVerify(null, msg, k, sig); } catch { return false; } });
-  if (!ok) return { trusted: false, status: "untrusted" };
+  // find, not some: the caller needs to know WHICH key verified so it can be pinned (see pinning below).
+  const hit = keys.find((k) => { try { return cryptoVerify(null, msg, k, sig); } catch { return false; } });
+  if (!hit) return { trusted: false, status: "untrusted" };
   // Tenant is inside the signature, so a genuinely signed policy cannot be replayed across tenants.
   if (String(s.tenant ?? "") !== String(tenant)) return { trusted: false, status: "mismatch" };
-  return { trusted: true, status: "ok" };
+  return { trusted: true, status: "ok", keyId: publicKeyId(hit) };
+}
+
+// ---- Policy-key PINNING (Trust On First Use) ----
+//
+// The hole the signing change above left open, stated plainly: verification was "required only when an
+// anchor is present", and the anchor has to be deployed by hand. So on every device WITHOUT
+// /etc/moorai/policy.pub — the majority — `echo '{}' > ~/.curaiq/hook-policy.json` still collapsed
+// enforcement, because a device with no key can verify nothing. Protection you have to switch on is
+// protection most fleets never get.
+//
+// The fix is the SAME asymmetry ratchetPosture uses: arming is safe and needs no proof, DISarming is an
+// enforcement bypass and must never be taken from the agent's write scope. The first time a device sees
+// a policy its console really signed, it PINS that signing key (Trust On First Use — already how the
+// console trusts device keys). From then on an unsigned policy, one signed by a different key, and one
+// signed for a different tenant are all NO policy.
+//
+// WHAT THIS IS AND IS NOT — the hook runs AS THE USER, so say it straight:
+//   * It is TAMPER-EVIDENT, not tamper-proof. An attacker who can write ~/.curaiq/hook-policy.json can
+//     also delete the pin. Two copies in two directories (mirroring the posture latch) defeat the
+//     one-liner and the `rm -rf ~/.curaiq` wipe, and any PARTIAL erasure or mangling is reported — but
+//     an attacker who erases both copies is back at first contact. No key or HMAC can change that: any
+//     secret this process can read to authenticate the pin, the attacker can read too.
+//   * The root-owned /etc/moorai/policy.pub anchor remains the ONLY hard guarantee, and it still wins:
+//     it outranks any pin, and it removes the first-contact window entirely. Ship it to fail-closed
+//     fleets. The pin is what protects the devices that never got it.
+export const POLICY_PIN_VERSION = 1;
+
+// Canonical identity for a public key: base64 SPKI DER — the same shape MOORAI_POLICY_PUBKEY and the
+// console's /api/policy/pubkey use, so a pin can be diffed against either by eye.
+export function publicKeyId(key) {
+  try {
+    // Already a public KeyObject → export it directly; createPublicKey() only accepts a private one.
+    const k = key && key.type === "public" ? key : createPublicKey(key);
+    return k.export({ type: "spki", format: "der" }).toString("base64");
+  } catch { return ""; }
+}
+
+// Parse ONE pin copy. Returns null for "not a pin" — absent, empty, unparseable, wrong version, or
+// missing either field. The caller distinguishes absent from mangled (mangled is a tamper signal).
+export function parsePolicyPin(text) {
+  if (!text || !String(text).trim()) return null;
+  let p;
+  try { p = JSON.parse(text); } catch { return null; }
+  if (!p || typeof p !== "object" || Array.isArray(p)) return null;
+  if (Number(p.v) !== POLICY_PIN_VERSION) return null;
+  if (typeof p.tenant !== "string" || !p.tenant) return null;
+  const keys = Array.isArray(p.keys) ? p.keys.filter((k) => typeof k === "string" && k.trim()) : [];
+  if (!keys.length) return null;
+  return { tenant: p.tenant, keys, updated: typeof p.updated === "string" ? p.updated : "" };
+}
+
+// Reconcile the two user-scope copies. Deliberately mirrors ratchetPosture's evidenceMissing: a pin in
+// ONE copy is still a pin (erasing one must not disarm the device), and the disagreement is reported.
+//   pinned          — this device has, at some point, verified a real console signature
+//   corrupt         — a pin file EXISTS but does not parse: we know a pin existed, so refuse rather than
+//                     read it as "never pinned". Truncate-the-file is not a downgrade path.
+//   evidenceMissing — one copy holds the pin and the other is gone (the erase-the-evidence move)
+export function reconcilePolicyPins({ primary = "", secondary = "" } = {}) {
+  const raw = { primary, secondary };
+  const parsed = {}, states = {};
+  for (const k of ["primary", "secondary"]) {
+    const t = raw[k];
+    if (t == null || !String(t).trim()) { states[k] = "absent"; parsed[k] = null; continue; }
+    parsed[k] = parsePolicyPin(t);
+    states[k] = parsed[k] ? "pin" : "corrupt";
+  }
+  const names = ["primary", "secondary"];
+  const present = names.filter((k) => states[k] === "pin");
+  const corrupt = names.some((k) => states[k] === "corrupt");
+  const absent = names.filter((k) => states[k] === "absent");
+  const keys = [...new Set(present.flatMap((k) => parsed[k].keys))];
+  const tenants = [...new Set(present.map((k) => parsed[k].tenant))];
+  return {
+    pinned: keys.length > 0 || corrupt,
+    keys,
+    corrupt,
+    tenant: tenants[0] ?? "",
+    tenantConflict: tenants.length > 1,
+    evidenceMissing: present.length > 0 && absent.length > 0,
+    states
+  };
+}
+
+// Resolve what this device verifies policies against, and how much it may learn. Modes:
+//   anchored — an explicit trust anchor is present; it DECIDES, outranking any pin (it is the stronger
+//              statement: root put it there, and it covers first contact too)
+//   pinned   — no anchor, but this device has verified a real signature before → the pinned keys decide
+//   rebind   — a pin exists for a DIFFERENT tenant than config.json now claims. ~/.curaiq/config.json is
+//              in the same write scope as the cache, so if a tenant rename silently dropped the pin the
+//              pin would be one `sed` away from useless. Refuse everything instead.
+//   corrupt  — a pin file exists but is unusable (mangled, or holds keys that will not load). Refuse.
+//   unpinned — never armed: verifies nothing, exactly as before this change (the no-brick property)
+export function policyTrust({ anchorKeys = [], pin = null, tenant = "" } = {}) {
+  if (anchorKeys.length) return { mode: "anchored", keys: anchorKeys };
+  if (!pin || !pin.pinned) return { mode: "unpinned", keys: [] };
+  if (pin.corrupt) return { mode: "corrupt", keys: [] };
+  if (pin.tenantConflict || String(pin.tenant) !== String(tenant)) return { mode: "rebind", keys: [] };
+  const keys = parseTrustedKeys(pin.keys.join("\n"));
+  // A pin we cannot load keys out of must NOT collapse to "unpinned" — that would make "write garbage
+  // into the keys array" a downgrade path.
+  if (!keys.length) return { mode: "corrupt", keys: [] };
+  return { mode: "pinned", keys };
+}
+
+// Read the console's GET /api/policy/pubkey body → the key id(s) it publishes for THIS tenant. Junk, a
+// 404 page, and a body published for another tenant all yield [] (→ no pin forms; nothing breaks).
+// `keys` (an array) is accepted alongside the single-key shape so a console that publishes an overlap
+// pair during rotation works without a device change.
+export function parsePublishedKeys(text, { tenant = "" } = {}) {
+  let j;
+  try { j = JSON.parse(String(text || "")); } catch { return []; }
+  if (!j || typeof j !== "object" || Array.isArray(j)) return [];
+  if (tenant && j.tenant != null && String(j.tenant) !== String(tenant)) return [];
+  const parts = [];
+  const push = (x) => { if (typeof x === "string") parts.push(x); else if (x && typeof x === "object") { push(x.pem); push(x.publicKey); } };
+  if (Array.isArray(j.keys)) j.keys.forEach(push);
+  push(j.publicKey);
+  push(j.pem);
+  return [...new Set(parseTrustedKeys(parts.join("\n")).map(publicKeyId).filter(Boolean))];
 }
 
 // Fail-closed MCP floor: raise an otherwise-allowed MCP decision to policy.mcpFloor (e.g. "ask"). Inert

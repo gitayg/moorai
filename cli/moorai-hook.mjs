@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { join, dirname, basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, verifyPolicySignature } from "./hook-core.mjs";
+import { buildEngine, decideText, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, verifyPolicySignature, POLICY_PIN_VERSION, reconcilePolicyPins, policyTrust, parsePublishedKeys } from "./hook-core.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, requestKill } from "./signals.mjs";
@@ -77,30 +77,52 @@ const SYSTEM_POSTURE = process.platform === "win32"
   ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "offline-posture")
   : "/etc/moorai/offline-posture";
 
+// Policy-key PIN (Trust On First Use) — the self-arming half of policy verification. Two copies in two
+// DIFFERENT directories, exactly like the posture latch and for exactly the same reason: `rm
+// ~/.curaiq/policy-pin.json` and `rm -rf ~/.curaiq` must not take the device's memory with them, and a
+// partial erasure must be visible. There is deliberately no third, root-owned pin: the hook runs as the
+// user and cannot write /etc, so a "system pin" it wrote would be a fiction. The root-owned path that
+// does exist is POLICY_ANCHOR below — provisioned by MDM, outranking every pin. See the pinning section
+// in hook-core.mjs for what this achieves (tamper-EVIDENCE) and what it does not (tamper-proofing).
+const POLICY_PIN = join(os.homedir(), ".curaiq", "policy-pin.json");
+const POLICY_PIN_LATCH = join(os.homedir(), ".moorai", "policy-pin.json");
+
 // Returns { policy, source, rejected } where source is:
 //   "fresh"        — freshly fetched from the server (and re-cached)
 //   "cache"        — served from the fresh-cache window without a fetch attempt
 //   "cache-offline"— fetch FAILED, falling back to the last-known cached policy (offline; #33 point 2)
 //   "none"         — no policy at all (offline AND no cache, OR nothing that verified)
 //
-// On an ANCHORED device every candidate policy must carry a console signature this device's trust
-// anchor verifies (see POLICY_ANCHOR / verifyPolicySignature). One that does not is not "a weaker
-// policy" — it is NO policy, and the caller falls through to durablePosture()/OFFLINE_DEFAULT_POLICY
-// exactly as if the file were absent. Never fail OPEN on a verification error.
+// Every candidate policy must carry a console signature this device's trust state verifies. One that
+// does not is not "a weaker policy" — it is NO policy, and the caller falls through to
+// durablePosture()/OFFLINE_DEFAULT_POLICY exactly as if the file were absent. Never fail OPEN on a
+// verification error.
+//
+// The trust state comes from policyTrust(): the explicit anchor if one is deployed, else this device's
+// own PIN if it has ever verified a real console signature, else nothing (a never-signed console keeps
+// working exactly as before — the no-brick property). That last case is the only remaining opening, and
+// it closes by itself the first time the console signs.
 //
 // The FRESH path is verified too, not just the cache: ~/.curaiq/config.json is in the same write scope
 // as the cache, so `serverUrl` can be repointed at an attacker-run localhost that serves `{}` — the
 // identical bypass wearing a different hat. `rejected` carries the content-free (source, status) pairs
 // for the tamper alert; only those NAMES ever leave the device.
 async function loadPolicy() {
-  const keys = policyKeys();          // [] = unanchored device → verification is a no-op (compat)
+  const anchorKeys = policyKeys();    // explicit anchor: root-owned /etc/moorai/policy.pub or MDM env
+  const pin = readPolicyPin();        // this device's own TOFU record
+  const trust = policyTrust({ anchorKeys, pin, tenant: CONFIG.tenant });
   const rejected = [];
   const verify = (raw) => {
     let p;
     try { p = JSON.parse(raw); } catch { return { bad: "malformed" }; }
     if (!p || typeof p !== "object" || Array.isArray(p)) return { bad: "malformed" };
-    const v = verifyPolicySignature(p, { keys, tenant: CONFIG.tenant });
-    return v.trusted ? { policy: p } : { bad: v.status };
+    // A pin we know existed but cannot use (mangled file, or config.json now naming another tenant)
+    // refuses everything rather than degrading to "verify nothing" — otherwise corrupting the pin would
+    // be a downgrade path, which is the very hole this whole mechanism closes.
+    if (trust.mode === "rebind") return { bad: "pin-tenant-rebind" };
+    if (trust.mode === "corrupt") return { bad: "pin-unusable" };
+    const v = verifyPolicySignature(p, { keys: trust.keys, tenant: CONFIG.tenant });
+    return v.trusted ? { policy: p, status: v.status, keyId: v.keyId } : { bad: v.status };
   };
 
   // One read + one verify of the cache, whatever path we end up taking — the file is the same file in
@@ -109,16 +131,29 @@ async function loadPolicy() {
   try { const st = statSync(CACHE); cacheRaw = readFileSync(CACHE, "utf8"); withinWindow = Date.now() - st.mtimeMs < 60000; } catch { /* absent */ }
   const cached = cacheRaw == null ? null : verify(cacheRaw);
   if (cached && cached.bad) rejected.push({ source: "cache", status: cached.bad });
-  if (withinWindow && cached && cached.policy) return { policy: cached.policy, source: "cache", rejected };
+  // A CACHED policy never re-pins, however valid it looks: the cache file is in the agent's own write
+  // scope, so letting it teach the device a key would hand the attacker the pin. Only a signature
+  // delivered fresh over the network from the configured server can arm or roll the pin forward.
+  if (withinWindow && cached && cached.policy) return { policy: cached.policy, source: "cache", rejected, pin, trust };
 
   try {
     const headers = CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {};
-    const raw = await fetch(`${CONFIG.serverUrl}/api/policy?tenant=${encodeURIComponent(CONFIG.tenant)}`, { headers, signal: AbortSignal.timeout(1500) }).then((r) => (r.ok ? r.text() : ""));
+    const q = (p) => fetch(`${CONFIG.serverUrl}${p}`, { headers, signal: AbortSignal.timeout(1500) }).then((r) => (r.ok ? r.text() : "")).catch(() => "");
+    // The published-key fetch runs in PARALLEL with the policy fetch, so it costs no extra latency, and
+    // only on devices with no explicit anchor (an anchored device already has the stronger statement).
+    const [raw, published] = await Promise.all([
+      q(`/api/policy?tenant=${encodeURIComponent(CONFIG.tenant)}`),
+      trust.mode === "anchored" || trust.mode === "rebind" || trust.mode === "corrupt" ? Promise.resolve("") : q("/api/policy/pubkey")
+    ]);
     if (raw && raw.trim()) {
       const v = verify(raw);
       // Cache the server's ORIGINAL bytes — the signature covers the policy body, and re-serializing
       // gains nothing while risking a mismatch with whatever the console signed.
-      if (v.policy) { try { mkdirSync(dirname(CACHE), { recursive: true }); writeFileSync(CACHE, raw); } catch {} return { policy: v.policy, source: "fresh", rejected }; }
+      if (v.policy) {
+        try { mkdirSync(dirname(CACHE), { recursive: true }); writeFileSync(CACHE, raw); } catch {}
+        armPolicyPin(trust, pin, v, JSON.parse(raw), published);
+        return { policy: v.policy, source: "fresh", rejected, pin, trust };
+      }
       // A body that PARSED but did not verify is the repointed-serverUrl variant of the same attack
       // (config.json sits in the same write scope as the cache). A non-JSON body is just a broken or
       // hijacked-into-uselessness server — the existing offline signal already covers that, and calling
@@ -127,8 +162,56 @@ async function loadPolicy() {
     }
   } catch { /* offline */ }
 
-  if (cached && cached.policy) return { policy: cached.policy, source: "cache-offline", rejected };
-  return { policy: null, source: "none", rejected };
+  if (cached && cached.policy) return { policy: cached.policy, source: "cache-offline", rejected, pin, trust };
+  return { policy: null, source: "none", rejected, pin, trust };
+}
+
+// ---- policy-key pin I/O (the pure logic lives in hook-core.mjs) ----
+
+function readPolicyPin() { return reconcilePolicyPins({ primary: readText(POLICY_PIN), secondary: readText(POLICY_PIN_LATCH) }); }
+
+// Learn (or roll forward) the pin from a policy that was just delivered FRESH over the network and
+// accepted. Three cases, and the difference between them is the whole security argument:
+//
+//   anchored — record the anchor key that actually verified this policy, so that pulling the MDM env
+//              var out of a future shell (the one anchor route an agent can influence) cannot silently
+//              return the device to "verifies nothing".
+//   pinned   — the policy verified under an ALREADY-PINNED key. That signature is what vouches for the
+//              fetch, so any key the server publishes alongside it may join the pin: this is the
+//              key-ROTATION path, and an attacker cannot reach it without already holding a pinned key.
+//              An unsigned or wrongly-signed fetch never gets here — it is `rejected` above.
+//   unpinned — FIRST CONTACT (TOFU). Pin only if the key the server publishes actually verifies the
+//              policy it served. A console that does not sign publishes nothing that verifies, so no
+//              pin forms and the device keeps behaving exactly as it did before this change.
+//
+// The first-contact window is real and is not claimed away: an attacker who owns the device BEFORE it
+// ever reaches its console can pin their own key. /etc/moorai/policy.pub removes that window; nothing
+// this process can do by itself does.
+function armPolicyPin(trust, pin, verdict, policy, publishedRaw) {
+  try {
+    const published = parsePublishedKeys(publishedRaw, { tenant: CONFIG.tenant });
+    let learn = [];
+    if (trust.mode === "anchored") learn = [verdict.keyId];
+    else if (trust.mode === "pinned") learn = [verdict.keyId, ...published];
+    else if (trust.mode === "unpinned" && published.length) {
+      const t = verifyPolicySignature(policy, { keys: parseTrustedKeys(published.join("\n")), tenant: CONFIG.tenant });
+      if (t.trusted && t.status === "ok") learn = [t.keyId];
+    }
+    writePolicyPin(pin, learn.filter(Boolean));
+  } catch { /* pinning is durability, never enforcement — a failure here must not change the decision */ }
+}
+
+// Write BOTH copies when there is something new to record, or when the copies disagree (which also
+// HEALS a single erased copy — the caller has already reported it by then, so the signal is not lost).
+function writePolicyPin(pin, ids) {
+  const keys = [...new Set([...(pin.keys || []), ...ids])];
+  if (!keys.length) return;
+  const stale = keys.length !== (pin.keys || []).length || pin.evidenceMissing || pin.corrupt || pin.tenant !== CONFIG.tenant;
+  if (!stale) return;
+  const body = JSON.stringify({ v: POLICY_PIN_VERSION, tenant: String(CONFIG.tenant), keys, updated: new Date().toISOString() });
+  for (const p of [POLICY_PIN, POLICY_PIN_LATCH]) {
+    try { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, body); } catch { /* best-effort */ }
+  }
 }
 
 // Read a file that is only trusted when the OS says the user cannot have written it: root-owned and
@@ -178,7 +261,11 @@ function rememberPosture(policy) {
 //     disabled the detectors too, not just the posture. CLOSED: the console now signs each tenant's
 //     policy and loadPolicy verifies it against POLICY_ANCHOR before the policy is trusted at all, so
 //     on an anchored device a planted cache is treated as NO cache and lands here, on this ratchet.
-//     An UNANCHORED device is still exposed to it — shipping /etc/moorai/policy.pub is the opt-in.
+//     An UNANCHORED device closes the same door by itself the first time its console serves a signed
+//     policy: the signing key is PINNED (POLICY_PIN, TOFU) and a planted cache stops verifying from
+//     then on. Two windows remain, both stated rather than papered over — a device that never reaches
+//     a signing console (no pin ever forms; unchanged legacy behavior), and an attacker who erases
+//     BOTH pin copies to return the device to first contact. /etc/moorai/policy.pub closes both.
 function durablePosture() {
   return ratchetPosture({
     system: readRootOwned(SYSTEM_POSTURE),
@@ -248,11 +335,30 @@ const BG_ANCHOR = process.platform === "win32"
 //   #   no root-writable path → MDM-inject MOORAI_POLICY_PUBKEY=<base64 SPKI DER> (weaker: an agent
 //   #   that can edit the user's shell profile can influence a FUTURE host launch)
 //
-// Shipping this file IS the opt-in: until it lands the device verifies nothing and behaves exactly as
-// it did before (see verifyPolicySignature's compatibility note). Deploy it to fail-closed fleets FIRST
-// — that is where an unsigned cache is a total enforcement bypass. The console must already be signing
-// (v0.50+) before the anchor lands, or the device will reject every policy and fall to the offline
-// default; roll the server first, then the anchor.
+// Shipping this file is no longer the only route to the guarantee — a device now ARMS ITSELF the first
+// time its console serves a signed policy (POLICY_PIN, above). The anchor is still strictly stronger
+// and still worth deploying to fail-closed fleets: it outranks the pin, it removes the first-contact
+// window, and being root-owned it survives an attacker who erases both user-scope pin copies. Roll the
+// server first, then the anchor: the console must already be signing (v0.50+) before the anchor lands,
+// or the device will reject every policy and fall to the offline default.
+//
+// OPERATOR PROCEDURE — ROTATING THE CONSOLE'S POLICY SIGNING KEY without bricking pinned devices.
+// A pinned device refuses a policy signed by a key it has never trusted, so "generate K2 and start
+// signing with it" would lock out the whole fleet. Use the overlap window instead:
+//
+//   1. Generate K2 on the console and PUBLISH it at /api/policy/pubkey, while still SIGNING with K1.
+//   2. Wait one policy-refresh cycle (the device fetches at most every 60s, so minutes, not days; give
+//      laptops that are offline or asleep however long your fleet actually needs). Each device fetches
+//      a policy that verifies under its already-pinned K1, and that signature is what authorizes K2
+//      joining its pin — an attacker who does not hold K1 can never reach this branch.
+//   3. Cut over: sign with K2. Every device that completed step 2 already trusts it, offline included.
+//   4. Devices that missed the window are not bricked, they are FAIL-SAFE: they refuse the K2 policy,
+//      raise policy:cache:untrusted / policy:server:untrusted, and fall back to the last-known signed
+//      policy or OFFLINE_DEFAULT_POLICY. Recover one by re-running step 1-2 with K1 restored, by
+//      shipping the anchor (which outranks the pin), or — last resort, and it re-opens the
+//      first-contact window — by deleting ~/.curaiq/policy-pin.json and ~/.moorai/policy-pin.json.
+//
+// On an ANCHORED device none of this applies: rotation there is "ship the new policy.pub via MDM".
 const POLICY_ANCHOR = process.platform === "win32"
   ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "policy.pub")
   : "/etc/moorai/policy.pub";
@@ -271,6 +377,17 @@ function policyKeys() {
 // only the source name and the failure status leave, never one byte of the policy itself.
 function reportPolicyTamper(rejected) {
   return Promise.all((rejected || []).map((r) => postPosture(`Policy signature rejected (${r.status})`, `policy:${r.source}:${r.status}`, "Critical")));
+}
+// The pin's own tamper signals — the exact analogue of posture:evidence-missing, and for the same
+// reason: an ERASED pin is itself the attack, not the absence of one. A device that has verified a real
+// console signature does not spontaneously forget it, so a missing, mangled, or re-tenanted pin is
+// reported rather than quietly treated as a fresh install. Content-free: a fixed token, nothing else.
+function reportPinTamper(pin, trust) {
+  const out = [];
+  if (trust.mode === "rebind") out.push(postPosture("Policy key pin tenant rebind refused", "policy:pin:tenant-rebind", "Critical"));
+  if (pin.corrupt) out.push(postPosture("Policy key pin unreadable", "policy:pin:corrupt", "Critical"));
+  else if (pin.evidenceMissing) out.push(postPosture("Policy key pin evidence missing", "policy:pin:evidence-missing", "High"));
+  return Promise.all(out);
 }
 // Read + verify the marker. `raw` is kept only to derive a one-way hash for the tamper alert.
 function breakGlassVerdict() {
@@ -445,7 +562,7 @@ async function main() {
   try { input = JSON.parse((await readStdin()) || "{}"); } catch { process.exit(0); }
   const tool = input.tool_name || "";
   const ti = input.tool_input || {};
-  let { policy, source, rejected } = await loadPolicy();
+  let { policy, source, rejected, pin, trust } = await loadPolicy();
   // Ratcheted posture read BEFORE rememberPosture rewrites the copies, so this run still sees what the
   // device knew on the way in (and any tampering with it) rather than what we are about to record.
   const posture = durablePosture();
@@ -460,6 +577,9 @@ async function main() {
     // Awaited for the same reason as the break-glass report: the fail-open exit below would otherwise
     // race the POST and lose the strongest signal of the run.
     if (rejected && rejected.length) await reportPolicyTamper(rejected);
+    // Awaited for the same reason: an erased or mangled pin is a tamper signal in its own right, and the
+    // fail-open exit below would otherwise race the POST.
+    if (pin && (pin.corrupt || pin.evidenceMissing || trust.mode === "rebind")) await reportPinTamper(pin, trust);
     if (!policy) {
       if (posture.posture !== "fail-closed") process.exit(0); // fail-open (default) — UNCHANGED behavior
       // The ratchet just refused a downgrade (or found a copy erased) — awaited so the signal cannot be
