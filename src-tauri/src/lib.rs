@@ -521,35 +521,6 @@ fn set_agent_auth(method: String, token: String) -> Result<(), String> {
     Ok(())
 }
 
-// Fallback agent path: the local claude CLI (uses its own OAuth login). MoorAI has already
-// pre-flight reviewed the prompt on the JS side.
-#[tauri::command]
-fn run_agent(prompt: String) -> Result<String, String> {
-    let bin = find_claude().ok_or("claude CLI not found — paste an OAuth token or API key in setup")?;
-    // On Windows the resolved binary may be a .cmd/.bat shim, which CreateProcess can't run directly.
-    let out = {
-        #[cfg(windows)]
-        {
-            let lower = bin.to_ascii_lowercase();
-            if lower.ends_with(".cmd") || lower.ends_with(".bat") {
-                std::process::Command::new("cmd.exe").args(["/c", &bin, "-p"]).arg(&prompt).output()
-            } else {
-                std::process::Command::new(&bin).arg("-p").arg(&prompt).output()
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            std::process::Command::new(&bin).arg("-p").arg(&prompt).output()
-        }
-    }
-    .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        Err(format!("{}{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout)).trim().to_string())
-    }
-}
-
 // Native OS identity for the security dashboard — metadata only, no content.
 #[tauri::command]
 fn identity() -> serde_json::Value {
@@ -594,7 +565,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![native_log, app_version, identity, run_agent, save_provision, set_agent_auth, open_url, open_login_terminal, restart_app, check_and_install_update, about_info, term_open, term_input, term_resize, term_kill, device_ai_tools, device_ai_assets, device_mcp, os_patch_status, device_browsers, device_ai_shadow, device_posture, device_accounts, dir_sensitive])
+        .invoke_handler(tauri::generate_handler![native_log, app_version, identity, save_provision, set_agent_auth, open_url, open_login_terminal, restart_app, check_and_install_update, about_info, term_open, term_input, term_resize, term_kill, device_ai_tools, device_ai_assets, device_mcp, os_patch_status, device_browsers, device_ai_shadow, device_posture, device_accounts, dir_sensitive])
         .run(tauri::generate_context!())
         .expect("error while running MoorAI");
 }

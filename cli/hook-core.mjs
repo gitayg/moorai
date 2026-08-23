@@ -18,6 +18,7 @@ import { extractEndpointHosts, endpointApproved } from "../data/model-endpoints.
 import { TIER_OF } from "../data/data-tiers.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { compilePacks } from "../data/detector-packs.js";
+import { redosReason, safeRegex, unboundedQuantifiers } from "../src/safe-regex.js";
 import { DetectionEngine } from "../src/engine.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -140,68 +141,10 @@ export function decideMcpServer(policy, serverName) {
 // are redundant by construction (`.*foo.*` ≡ `foo`), and `deny` is a LIST, so "foo then bar" is
 // naturally written as two entries rather than `.*foo.*bar.*`.
 //
-// NOTE — data/detector-packs.js still carries its own weaker `redosProne`/`safePattern` pair for
-// server-supplied detector packs. Pointing it at safeRegex() below is the right follow-up; it was out
-// of scope for this change: data/ was outside the file set this change was allowed to touch.
-const MAX_PATTERN_LEN = 400;
-
-// Count unbounded quantifiers (`+`, `*`, `{n,}`) that actually apply, skipping escapes (`\*`) and
-// character-class contents (`[*+]`). `?` and `{n,m}` are bounded and do not count.
-function unboundedQuantifiers(src) {
-  let n = 0, inClass = false;
-  for (let i = 0; i < src.length; i++) {
-    const c = src[i];
-    if (c === "\\") { i++; continue; }
-    if (inClass) { if (c === "]") inClass = false; continue; }
-    if (c === "[") { inClass = true; continue; }
-    if (c === "+" || c === "*") { n++; continue; }
-    if (c === "{") {
-      const close = src.indexOf("}", i);
-      if (close > i && /^\{\d+,\s*\}$/.test(src.slice(i, close + 1))) n++;
-      if (close > i) i = close;
-    }
-  }
-  return n;
-}
-
-// A quantified group whose alternation branches can match the same input is the `(a|a)+` family — the
-// gap measured above. Provably-disjoint branches (plain literals with pairwise-distinct first
-// characters, e.g. `(foo|bar)+`, measured at 0 ms) stay allowed; anything else is refused, because
-// deciding real disjointness is not something a cheap syntactic check can do.
-function ambiguousQuantifiedAlternation(src) {
-  for (const m of src.matchAll(/\((\?:)?([^()]*)\)\s*(?:[+*]|\{\d+,\s*\})/g)) {
-    const body = m[2];
-    if (!body.includes("|")) continue;
-    const branches = body.split("|");
-    const firsts = new Set();
-    for (const b of branches) {
-      // A character class counts as NOT a plain literal: `([a-z]|x)+` has one unbounded quantifier and
-      // no nesting, yet its branches overlap on every letter — measured at 1892 ms against 24 x's.
-      if (!b.length || /[\\^$.|?*+{}[\]]/.test(b)) return true;
-      if (firsts.has(b[0].toLowerCase())) return true;         // shared first char → branches overlap
-      firsts.add(b[0].toLowerCase());
-    }
-  }
-  return false;
-}
-
-// Reject the shapes measured above; returns a reason string, or "" when the pattern is acceptable.
-export function redosReason(src) {
-  if (typeof src !== "string" || !src.length) return "empty";
-  if (src.length > MAX_PATTERN_LEN) return "too-long";
-  if (ambiguousQuantifiedAlternation(src)) return "ambiguous-alternation";
-  // Strictly stronger than detector-packs' two shape rules: `(a+)+`, `(a*)*` and `a+*` all carry TWO
-  // unbounded quantifiers, so the count catches every shape they did — and, unlike their regexes,
-  // this one is character-class aware, so `[*+]{3}x` is no longer refused for a `*+` that is data.
-  if (unboundedQuantifiers(src) > 1) return "multiple-unbounded-quantifiers";
-  return "";
-}
-
-// Compile a policy-supplied pattern, or null if it is unsafe or uncompilable.
-export function safeRegex(src, flags = "i") {
-  if (redosReason(src)) return null;
-  try { return new RegExp(src, flags); } catch { return null; }
-}
+// The guard itself lives in ../src/safe-regex.js so data/detector-packs.js can share it without
+// closing an import cycle (this file imports compilePacks from there). Re-exported here because both
+// the MCP proxy and the tests import it from hook-core.
+export { redosReason, safeRegex };
 
 // Execution bound. A pattern that survives redosReason() still costs O(n²) in the worst case because
 // `.test()` retries at every start position: measured at 50 KB, the worst surviving shapes ("a*b",
@@ -260,6 +203,18 @@ export function decideEndpoints(policy, text) {
 // the agent's authorized surface; an observed tool / path-prefix / MCP server outside it is "drift".
 // Returns the out-of-scope reasons (empty = in scope). Enforcement strictness is policy.entitlementMode
 // ("off" | "alert" | "block"). Content-free: names/paths only. An empty/absent envelope → always in scope.
+//
+// A path is in scope when it IS the allowed prefix or sits under it. The boundary check matters: a
+// bare `startsWith` also put `/Users/dev/acme-app-secrets` inside an `/Users/dev/acme-app` envelope,
+// so a sibling directory that merely shared a leading substring escaped the confinement entirely.
+export function pathInScope(p, allowed) {
+  const path = String(p), a = String(allowed).replace(/[/\\]+$/, "");
+  if (!a) return true;
+  if (path === a) return true;
+  const next = path[a.length];
+  return path.startsWith(a) && (next === "/" || next === "\\");
+}
+
 export function decideEnvelope(policy, { tool, paths = [], mcpServer, actor } = {}) {
   const env = policy?.entitlements;
   if (!env || typeof env !== "object") return { inScope: true, reasons: [], elevated: false };
@@ -267,13 +222,15 @@ export function decideEnvelope(policy, { tool, paths = [], mcpServer, actor } = 
   if (Array.isArray(env.tools) && env.tools.length && tool && !env.tools.includes(tool)) reasons.push(`tool:${tool}`);
   if (Array.isArray(env.mcp) && env.mcp.length && mcpServer && !env.mcp.includes(mcpServer)) reasons.push(`mcp:${mcpServer}`);
   if (Array.isArray(env.paths) && env.paths.length) {
-    for (const p of paths) { if (p && !env.paths.some((a) => String(p).startsWith(a))) reasons.push(`path:${p}`); }
+    for (const p of paths) { if (p && !env.paths.some((a) => pathInScope(p, a))) reasons.push(`path:${p}`); }
   }
   // JIT elevation: an out-of-envelope reason covered by a live, non-expired grant for THIS actor is
   // allowed (time-boxed) rather than flagged. Grants are exact for tool:/mcp:, prefix for path:.
   const grants = (Array.isArray(policy?.elevations) ? policy.elevations : []).filter((g) => !actor || g.actor === actor);
+  // Same label-boundary rule as the envelope itself: a grant for path:/Users/dev/acme-app must not
+  // silently cover path:/Users/dev/acme-app-secrets.
   const covered = (r) => grants.some((g) => g.capability === r ||
-    (g.capability.startsWith("path:") && r.startsWith("path:") && r.slice(5).startsWith(g.capability.slice(5))));
+    (g.capability.startsWith("path:") && r.startsWith("path:") && pathInScope(r.slice(5), g.capability.slice(5))));
   const remaining = reasons.filter((r) => !covered(r));
   return { inScope: remaining.length === 0, reasons: remaining, elevated: remaining.length < reasons.length, usedGrants: reasons.length - remaining.length };
 }
@@ -445,8 +402,11 @@ export function policyCanonical(s) {
 // exactly like shipping /etc/moorai/breakglass.pub or the root-owned posture latch.
 //
 // No max-age check on `iat`: the offline path exists precisely to enforce the last-known policy through
-// an outage, so expiring it would defeat #33. iat is inside the signature for audit + future rollback
-// detection, not as a TTL.
+// an outage, so expiring it would defeat #33. iat is inside the signature for audit and for ROLLBACK
+// detection, not as a TTL. The rollback comparison itself is deliberately NOT here: this function is
+// pure and stateless, and the high-water mark it would need is device state. It lives in
+// loadVerifiedPolicy's verify(), against the mark reconciled from the pin and the root-owned copy — see
+// the F-202 section above.
 export function verifyPolicySignature(policy, { keys = [], tenant = "" } = {}) {
   if (!keys.length) return { trusted: true, status: "unanchored" };
   if (!policy || typeof policy !== "object" || Array.isArray(policy)) return { trusted: false, status: "malformed" };
@@ -514,7 +474,9 @@ export function parsePolicyPin(text) {
   if (typeof p.tenant !== "string" || !p.tenant) return null;
   const keys = Array.isArray(p.keys) ? p.keys.filter((k) => typeof k === "string" && k.trim()) : [];
   if (!keys.length) return null;
-  return { tenant: p.tenant, keys, updated: typeof p.updated === "string" ? p.updated : "" };
+  // `iat` is the policy high-water mark (F-202). Optional and absent from every pin written before it
+  // existed, so it must never be a parse requirement — an old pin stays a valid pin with no mark yet.
+  return { tenant: p.tenant, keys, iat: Number.isFinite(iatOrder(p.iat)) ? String(p.iat) : "", updated: typeof p.updated === "string" ? p.updated : "" };
 }
 
 // Reconcile the two user-scope copies. Deliberately mirrors ratchetPosture's evidenceMissing: a pin in
@@ -538,9 +500,13 @@ export function reconcilePolicyPins({ primary = "", secondary = "" } = {}) {
   const absent = names.filter((k) => states[k] === "absent");
   const keys = [...new Set(present.flatMap((k) => parsed[k].keys))];
   const tenants = [...new Set(present.map((k) => parsed[k].tenant))];
+  // The MAX of the two marks, for the same reason a pin in ONE copy is still a pin: erasing or rewinding
+  // one copy must not lower the device's high-water mark.
+  const iat = present.reduce((acc, k) => maxIat(acc, parsed[k].iat), "");
   return {
     pinned: keys.length > 0 || corrupt,
     keys,
+    iat,
     corrupt,
     tenant: tenants[0] ?? "",
     tenantConflict: tenants.length > 1,
@@ -585,6 +551,102 @@ export function parsePublishedKeys(text, { tenant = "" } = {}) {
   push(j.publicKey);
   push(j.pem);
   return [...new Set(parseTrustedKeys(parts.join("\n")).map(publicKeyId).filter(Boolean))];
+}
+
+// ---- Signing-key REVOCATION (F-201) ----
+//
+// The gap: the pin only ever GREW. writePolicyPin unioned every newly-learned key into the set and
+// verifyPolicySignature accepts a signature from ANY key in it, so a leaked K1 stayed trusted forever on
+// every already-pinned device — even after the operator completed the documented rotation to K2. That
+// makes rotation a continuity mechanism and NOT a compromise-recovery one, which is the opposite of what
+// an operator reaches for it for.
+//
+// The channel is a `revokedKeys` array INSIDE the policy body, so it is covered by policyDigest and
+// therefore by the console's existing signature — no new key, no new endpoint, no new trust root. The
+// console does not emit the field yet; absent ⇒ [] ⇒ behaviour is byte-identical to before.
+//
+// WHAT THIS IS AND IS NOT. Same honesty as the pin above: both pin copies live under the user's home, so
+// on an UNANCHORED device an attacker who can write the policy cache can also rewrite the pin and undo a
+// pruning. Revocation there is TAMPER-EVIDENT (a refusal raises a content-free alert), not enforced. On
+// a device with the root-owned /etc/moorai/policy.pub anchor the pin does not decide at all, so a key
+// removed from the anchor is genuinely gone — that is the hard guarantee, and it is the anchor's, not
+// this function's. Nor does this stop a stolen key from acting WITH its stolen authority: a thief
+// holding K1 can sign anything K1 could sign, revoking K2 included. What it does buy is that the
+// operator, signing with K2, can take K1 out of the fleet's keyring without waiting for every device to
+// be reprovisioned.
+export function parseRevokedKeys(policy) {
+  const r = policy && policy.revokedKeys;
+  if (!Array.isArray(r)) return [];
+  return [...new Set(r.filter((k) => typeof k === "string" && k.trim()).map((k) => k.trim()))];
+}
+
+// Prune revoked ids out of a pin set. `refused` is a content-free reason the caller reports as tampering;
+// when it is set, NOTHING is pruned — a revocation we cannot apply safely is not applied at all.
+//
+//   self  — the policy carrying the list verifies under a key the list itself revokes (or under no
+//           identified key at all). Honouring that would let a stolen K1 order K1's own replacement out
+//           of the pin and lock the operator out of their own fleet.
+//   empty — applying the list would leave the pin with NO keys. That is the most dangerous outcome in
+//           this whole change and the reason it is checked explicitly: policyTrust would report the
+//           device as "unpinned" and verifyPolicySignature answers { trusted: true, status: "unanchored" }
+//           for an empty key set, so an over-broad revocation would not tighten the device, it would
+//           turn every future unsigned policy into an accepted one. Refuse and alert instead.
+export function applyKeyRevocation({ keys = [], revoked = [], verifiedBy = "" } = {}) {
+  const list = parseRevokedKeys({ revokedKeys: revoked });
+  const hit = keys.filter((k) => list.includes(k));
+  if (!hit.length) return { keys, pruned: [], refused: "" };
+  if (!verifiedBy || list.includes(verifiedBy)) return { keys, pruned: [], refused: "self" };
+  const kept = keys.filter((k) => !list.includes(k));
+  if (!kept.length) return { keys, pruned: [], refused: "empty" };
+  return { keys: kept, pruned: hit, refused: "" };
+}
+
+// ---- Policy `iat` HIGH-WATER MARK (F-202) ----
+//
+// The gap: verifyPolicySignature checks the signature, the alg and the tenant, but nothing compared
+// `iat` against anything, and no monotonic state existed anywhere. So an OLD but validly signed policy
+// could be replayed — most directly by the governed agent itself, via an already-permitted write to
+// ~/.curaiq/hook-policy.json — to roll a tightening back, silently, with a signature that verifies.
+//
+// The mark is the highest `iat` this device has ever ACCEPTED from a real console signature. A policy
+// whose iat is STRICTLY older is refused. Strictly: an unchanged policy re-fetched with the same iat
+// must keep being accepted, or every steady-state fetch breaks.
+//
+// HARD vs EVIDENT, again: the user-scope mark lives beside the pin and is as erasable as the pin, so on
+// an unanchored device this is tamper-EVIDENT (refusal + content-free alert) and an attacker who rewinds
+// both copies is back where they started. A root-owned /etc/moorai/policy-hwm.json (or the ProgramData
+// equivalent) that an MDM ships is the hard version: the hook only ever reads it, and it wins whenever
+// it is higher. An UNPINNED device gets nothing from this at all — it verifies no signatures, so it has
+// no accepted-policy history to be monotonic about, and no mark is ever recorded for it.
+export function iatOrder(iat) {
+  const s = String(iat ?? "").trim();
+  if (!s) return NaN;
+  const t = Date.parse(s);
+  return Number.isFinite(t) ? t : NaN;
+}
+// Unparseable or absent on EITHER side ⇒ no comparison is possible ⇒ not a rollback. A device that has
+// never recorded a mark, and a console that dates its policies in some format Date.parse cannot read,
+// both keep working exactly as before rather than refusing everything.
+export function isPolicyRollback(iat, mark) {
+  const a = iatOrder(iat), b = iatOrder(mark);
+  return Number.isFinite(a) && Number.isFinite(b) && a < b;
+}
+export function maxIat(a, b) {
+  const x = iatOrder(a), y = iatOrder(b);
+  if (!Number.isFinite(y)) return Number.isFinite(x) ? String(a) : "";
+  if (!Number.isFinite(x)) return String(b);
+  return y > x ? String(b) : String(a);
+}
+
+// The root-owned mark's file format: the same shape as the pin, minus the keys. Wrong version or another
+// tenant's mark reads as "no mark" rather than as an error — a stale MDM drop must not brick the device.
+export function parsePolicyHwm(text, { tenant = "" } = {}) {
+  let j;
+  try { j = JSON.parse(String(text || "")); } catch { return ""; }
+  if (!j || typeof j !== "object" || Array.isArray(j)) return "";
+  if (Number(j.v) !== POLICY_PIN_VERSION) return "";
+  if (tenant && String(j.tenant ?? "") !== String(tenant)) return "";
+  return Number.isFinite(iatOrder(j.iat)) ? String(j.iat) : "";
 }
 
 // ---- Last-known-good VERIFIED policy ----
@@ -874,6 +936,20 @@ export const SYSTEM_POSTURE = process.platform === "win32"
 const POLICY_PIN = join(os.homedir(), ".curaiq", "policy-pin.json");
 const POLICY_PIN_LATCH = join(os.homedir(), ".moorai", "policy-pin.json");
 
+// Root-owned copy of the policy `iat` high-water mark (F-202). The user-scope mark rides inside the two
+// pin copies above and is exactly as erasable as they are — tamper-EVIDENT. This one is the hard
+// version, provisioned the same way as the posture latch and read the same way (readRootOwned: root-owned
+// and not group/world-writable on POSIX, Administrators/SYSTEM-only per its ACL on Windows). The hook
+// NEVER writes here; a mark this process could write would be a mark the attacker could write.
+//
+//   # macOS/Linux, via MDM alongside /etc/moorai/policy.pub
+//   printf '{"v":1,"tenant":"acme","iat":"2026-08-21T00:00:00.000Z"}' | sudo tee /etc/moorai/policy-hwm.json >/dev/null
+//   sudo chown root /etc/moorai/policy-hwm.json && sudo chmod 0644 /etc/moorai/policy-hwm.json
+//   # Windows → %ProgramData%\MoorAI\policy-hwm.json  (ACL: Administrators/SYSTEM write only)
+const POLICY_HWM_SYSTEM = process.platform === "win32"
+  ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "policy-hwm.json")
+  : "/etc/moorai/policy-hwm.json";
+
 // Last-known-good VERIFIED policy — the copies that let a fail-open org ENFORCE through a poisoned
 // cache instead of merely alerting about it. Same two-copy user-scope pattern as the pin and the
 // posture latch, plus a root-owned system copy that is preferred when one exists (an MDM can drop a
@@ -1005,34 +1081,51 @@ function readPolicyPin() { return reconcilePolicyPins({ primary: readText(POLICY
 //
 // Returns whether a real console signature was established on this fetch (i.e. there was something to
 // pin). The caller uses it as the bar for recording a last-known-good policy — see there.
-function armPolicyPin(config, trust, pin, verdict, policy, publishedRaw) {
+// Revocation (F-201) and the iat high-water mark (F-202) both land here, and for the same reason: this
+// is the one place that knows a signature was delivered FRESH over the network and actually verified.
+// Neither may be learned from the cache — it is in the agent's own write scope, so a cached body could
+// otherwise revoke the fleet's real key or park the mark in the future and refuse every real policy.
+function armPolicyPin(config, trust, pin, verdict, policy, publishedRaw, rejected) {
   try {
     const published = parsePublishedKeys(publishedRaw, { tenant: config.tenant });
-    let learn = [];
+    let learn = [], verifiedBy = verdict.keyId || "";
     if (trust.mode === "anchored") learn = [verdict.keyId];
     else if (trust.mode === "pinned") learn = [verdict.keyId, ...published];
     else if (trust.mode === "unpinned" && published.length) {
       const t = verifyPolicySignature(policy, { keys: parseTrustedKeys(published.join("\n")), tenant: config.tenant });
-      if (t.trusted && t.status === "ok") learn = [t.keyId];
+      if (t.trusted && t.status === "ok") { learn = [t.keyId]; verifiedBy = t.keyId; }
     }
     learn = learn.filter(Boolean);
-    writePolicyPin(config, pin, learn);
-    return learn.length > 0;
+    const armed = learn.length > 0;
+    const rev = applyKeyRevocation({
+      keys: [...new Set([...(pin.keys || []), ...learn])],
+      revoked: parseRevokedKeys(policy),
+      verifiedBy
+    });
+    if (rev.refused) rejected.push({ source: "revocation", status: rev.refused });
+    // Only a REAL console signature moves the mark. The trivially-trusted "unanchored" case has verified
+    // nothing, so letting it set a mark would hand an unpinned device's attacker a permanent refusal.
+    const mark = armed || verdict.status === "ok" ? maxIat(pin.iat, policy && policy.policySig && policy.policySig.iat) : pin.iat;
+    writePolicyPin(config, pin, rev.keys, mark);
+    return armed;
   } catch { return false; /* pinning is durability, never enforcement — a failure here must not change the decision */ }
 }
 
 // Write BOTH copies when there is something new to record, or when the copies disagree (which also
 // HEALS a single erased copy — the caller has already reported it by then, so the signal is not lost).
-function writePolicyPin(config, pin, ids) {
-  const keys = [...new Set([...(pin.keys || []), ...ids])];
+// `keys` is the FINAL set, not a list of additions — revocation has to be able to make it smaller, and a
+// union here would silently undo every pruning applyKeyRevocation just did. The empty case is still
+// refused: an empty pin file reads as "unpinned", which is a downgrade, not a tightening.
+function writePolicyPin(config, pin, keys, mark) {
   if (!keys.length) return;
   // Record "this device has pinned" in the third location on every run that HAS a pin, so the breadcrumb
   // self-heals if deleted while the pin still exists. It is never written when there is no pin, which is
   // what keeps it meaningful as evidence.
   writePinBreadcrumb(config);
-  const stale = keys.length !== (pin.keys || []).length || pin.evidenceMissing || pin.corrupt || pin.tenant !== config.tenant;
+  const same = (a, b) => [...a].sort().join("\n") === [...b].sort().join("\n");
+  const stale = !same(keys, pin.keys || []) || String(mark || "") !== String(pin.iat || "") || pin.evidenceMissing || pin.corrupt || pin.tenant !== config.tenant;
   if (!stale) return;
-  const body = JSON.stringify({ v: POLICY_PIN_VERSION, tenant: String(config.tenant), keys, updated: new Date().toISOString() });
+  const body = JSON.stringify({ v: POLICY_PIN_VERSION, tenant: String(config.tenant), keys, iat: String(mark || ""), updated: new Date().toISOString() });
   for (const p of [POLICY_PIN, POLICY_PIN_LATCH]) {
     try { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, body); } catch { /* best-effort */ }
   }
@@ -1074,6 +1167,10 @@ export async function loadVerifiedPolicy(config) {
     pinningEvidence: presentArtifacts(PINNING_ARTIFACTS),
     operationEvidence: presentArtifacts(OPERATION_ARTIFACTS)
   });
+  // The effective high-water mark: this device's own record, or a root-owned one an MDM shipped,
+  // whichever is HIGHER. The root-owned copy is the only one outside the agent's write scope, so it is
+  // the only one that makes rollback refusal a guarantee rather than evidence.
+  const mark = maxIat(pin.iat, parsePolicyHwm(readRootOwned(POLICY_HWM_SYSTEM), { tenant: config.tenant }));
   const rejected = [];
   const verify = (raw) => {
     let p;
@@ -1085,7 +1182,13 @@ export async function loadVerifiedPolicy(config) {
     if (trust.mode === "rebind") return { bad: "pin-tenant-rebind" };
     if (trust.mode === "corrupt") return { bad: "pin-unusable" };
     const v = verifyPolicySignature(p, { keys: trust.keys, tenant: config.tenant });
-    return v.trusted ? { policy: p, status: v.status, keyId: v.keyId } : { bad: v.status };
+    if (!v.trusted) return { bad: v.status };
+    // A validly signed but SUPERSEDED body is not a weaker policy, it is no policy — same treatment as a
+    // bad signature, so the caller falls through to the fresh fetch, then the last-known-good, and never
+    // to "no policy". The LKG copy's own iat IS the mark (both are written from the same accepted fetch),
+    // and the comparison is strict, so the fallback still verifies.
+    if (isPolicyRollback(p.policySig && p.policySig.iat, mark)) return { bad: "rollback" };
+    return { policy: p, status: v.status, keyId: v.keyId };
   };
 
   // One read + one verify of the cache, whatever path we end up taking — the file is the same file in
@@ -1118,7 +1221,7 @@ export async function loadVerifiedPolicy(config) {
         // an already-pinned key, or (first contact) under the key the server published. That is the same
         // bar last-known-good needs, and it is NOT the same as v.status: on first contact the policy is
         // admitted as "unanchored" (the device holds no key yet) and only the TOFU re-check proves it.
-        const armed = armPolicyPin(config, trust, pin, v, JSON.parse(raw), published);
+        const armed = armPolicyPin(config, trust, pin, v, JSON.parse(raw), published, rejected);
         // A verified FRESH policy is the only thing allowed to become last-known-good, and it always
         // replaces the previous one. Fresh-only is the point: the cache is attacker-writable, so
         // promoting a merely-cached policy would let a planted (but still validly signed, e.g. rolled

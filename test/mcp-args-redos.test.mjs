@@ -2,8 +2,8 @@
 //
 // policy.mcpToolRules[tool].deny/allow are pattern STRINGS the console ships; they used to go straight
 // into `new RegExp(p, "i")` with no gate at all, so one crafted pattern hung every MCP tool call on
-// the device. data/detector-packs.js already gated server-supplied DETECTOR patterns, but its two
-// shape rules miss the overlapping-alternation family — verified here, not assumed.
+// the device. data/detector-packs.js gated server-supplied DETECTOR patterns, but its two shape rules
+// missed the overlapping-alternation family — verified here, not assumed.
 //
 // These assert on MEASURED milliseconds, not on the shape of the pattern: a gate that "looks right"
 // but still lets a catastrophic pattern compile is worth nothing.
@@ -16,9 +16,10 @@ import { decideMcpArgs, redosReason, safeRegex } from "../cli/hook-core.mjs";
 
 const ms = (fn) => { const t0 = process.hrtime.bigint(); fn(); return Number(process.hrtime.bigint() - t0) / 1e6; };
 
-// The detector-pack guard, copied here VERBATIM as a fixture so the claim "it misses this shape" is
-// checked against the real thing rather than remembered. If data/detector-packs.js is ever pointed at
-// safeRegex(), this fixture becomes the historical record of why.
+// The detector-pack guard, copied here VERBATIM as a fixture so the claim "it missed this shape" is
+// checked against the real thing rather than remembered. data/detector-packs.js has since been pointed
+// at safeRegex(), so this fixture is now the historical record of why; test/detector-packs-redos.test.mjs
+// carries the same fixture and measures the switchover.
 function packsRedosProne(src) {
   if (/\([^)]*[+*][^)]*\)\s*[+*]/.test(src)) return true;
   if (/[+*}]\s*[+*]/.test(src)) return true;

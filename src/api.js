@@ -224,32 +224,6 @@ export async function ocrImage(base64, mime) {
   return (await r.json()).text || "";
 }
 
-// Send an approved prompt to the agent. Primary path: direct Anthropic API with the saved key
-// (works without the claude CLI). Fallback: the local claude CLI in the native host.
-export async function runAgent(prompt) {
-  const method = getAuthMethod();
-  const token = localStorage.getItem("raiseme.agentToken");
-  const invoke = window.__TAURI__?.core?.invoke;
-
-  // API key → direct API call (works without the claude CLI).
-  if (method === "apikey" && token) {
-    try { return { ok: true, text: await callAnthropic(prompt, token, "apikey") }; }
-    catch (e) { return { ok: false, text: String(e.message || e) }; }
-  }
-
-  // OAuth → the claude CLI (it holds the subscription login and manages tokens/refresh).
-  if (invoke) {
-    try { return { ok: true, text: await invoke("run_agent", { prompt }) }; }
-    catch (e) { return { ok: false, text: `${e}\n\nOAuth runs through the claude CLI — run \`claude\` to log in, or switch to API key in setup.` }; }
-  }
-  return {
-    ok: false,
-    text: method === "apikey"
-      ? "Add an API key in setup (the tenant chip)."
-      : "OAuth needs the claude CLI — install it and run `claude` to log in, or switch to API key in setup."
-  };
-}
-
 // When running inside the Tauri host, also persist to the native on-device audit sink.
 export function nativeLog(entry) {
   const invoke = window.__TAURI__?.core?.invoke;

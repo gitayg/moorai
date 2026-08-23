@@ -58,5 +58,8 @@ export function endpointApproved(host, allow) {
   if (!h) return true;
   if (h === "localhost" || h === "127.0.0.1" || h === "[::1]") return true;
   if (!Array.isArray(allow) || !allow.length) return true; // no allow-list set → report-only
-  return allow.some((a) => { const s = String(a).toLowerCase().trim(); return s && (h === s || h.endsWith("." + s) || h.endsWith(s)); });
+  // Exact host, or a subdomain of the entry. The match MUST stop at a label boundary: a bare
+  // `h.endsWith(s)` also approved `evilanthropic.com` against an `anthropic.com` entry, which let an
+  // attacker-registered lookalike pass the very control meant to stop redirected model egress.
+  return allow.some((a) => { const s = String(a).toLowerCase().trim(); return s && (h === s || h.endsWith("." + s)); });
 }

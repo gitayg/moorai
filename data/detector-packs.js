@@ -5,23 +5,19 @@
 // threat id so severity + response + data-tier all resolve unchanged; an unknown id simply yields no
 // finding.
 //
-// Untrusted input, so two guards: a length cap and a rejection of nested/adjacent unbounded
-// quantifiers (the classic catastrophic-backtracking / ReDoS shapes). Patterns are compiled as
-// RegExp, never eval'd.
+// Untrusted input, so the pattern goes through the shared ReDoS guard in src/safe-regex.js — the same
+// one the MCP argument rules use. It replaces the weaker local pair this file used to carry, which
+// missed the overlapping-alternation family (`(a|a)+$` measured at 28144 ms) and the polynomial one
+// (`.*.*=` at 8546 ms), and which falsely refused `[*+]{3}x` because its adjacency rule was not
+// character-class aware. Patterns are compiled as RegExp, never eval'd.
 
-const MAX_PATTERN_LEN = 400;
+import { safeRegex } from "../src/safe-regex.js";
 
-// Reject the obvious ReDoS shapes: `(a+)+`, `(a*)*`, `(a+)*`, and two adjacent unbounded quantifiers.
-function redosProne(src) {
-  if (/\([^)]*[+*][^)]*\)\s*[+*]/.test(src)) return true;      // (…+…)+ / (…*…)*
-  if (/[+*}]\s*[+*]/.test(src)) return true;                    // a+* / a*+ / }{,}* adjacency
-  return false;
-}
-
+// Pack flags are sanitized rather than passed through: an invalid flag makes RegExp throw, which
+// would silently drop the whole pattern. Empty string, not safeRegex's "i" default — pack patterns
+// have always been case-sensitive unless the pack says otherwise.
 function safePattern(src, flags) {
-  if (typeof src !== "string" || !src.length || src.length > MAX_PATTERN_LEN) return null;
-  if (redosProne(src)) return null;
-  try { return new RegExp(src, String(flags || "").replace(/[^gimsuy]/g, "")); } catch { return null; }
+  return safeRegex(src, String(flags || "").replace(/[^gimsuy]/g, ""));
 }
 
 const slug = (s, fallback) => String(s || fallback).replace(/[^\w-]/g, "").slice(0, 40) || fallback;

@@ -470,11 +470,15 @@ async function main() {
     const d = decideText(engine, policy, text, "file");
     report(d.findings, "file", "hook:Read", d.decision === "deny", policy.captureTier, { filePath: ti.file_path, toolName: "Read" });
     logBehavior("Read", ti.file_path || "file", text, d, "file");
-    await maybeEscalate(policy, text, "file", "hook:Read", d);
     if (isRulesFile(ti.file_path)) reportRulesFile(ti.file_path, text, d);
     if (d.kill) killSession("Read", d.killIds, "file");
     let rdec = d.decision;
     if (reportEnvelope(policy, "Read", { tool: "Read", paths: [ti.file_path] }, "file") && rdec !== "deny") rdec = "deny";
+    // AFTER every check that can still deny, and skipped entirely on a deny: escalation can send the
+    // text to the agent's own provider, so running it first meant content the policy was about to
+    // block had already left the device. The mcp__/Task branches always denied before their external
+    // calls; Read and Bash did not.
+    if (rdec !== "deny") await maybeEscalate(policy, text, "file", "hook:Read", d);
     return emit(rdec, `${d.kill ? "killed session" : "blocked Read"} of ${basename(ti.file_path || "file")} — ${d.reasons.join(", ")}`);
   }
   if (tool === "Bash") {
@@ -498,10 +502,12 @@ async function main() {
     if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: "hook:Bash", ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); }
     report(finds, "file", "hook:Bash", dec === "deny", policy.captureTier, { toolName: "Bash", cmdShape: commandShape(ti.command) });
     logBehavior("Bash", ti.command || "bash", btext, { decision: dec, findings: finds }, "file");
-    await maybeEscalate(policy, btext, "file", "hook:Bash", { findings: finds });
     if (killIds.length) killSession("Bash", killIds, "file");
     if (checkSecretEgress(policy, ti.command, "Bash", "egress") && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; }
     if (reportEnvelope(policy, "Bash", { tool: "Bash", paths: extractReadPaths(ti.command) }, "file") && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; }
+    // See the Read branch: escalation runs last and never on a deny, so a local-secret-egress or
+    // out-of-envelope command cannot ship its content to the provider on its way to being blocked.
+    if (dec !== "deny") await maybeEscalate(policy, btext, "file", "hook:Bash", { findings: finds });
     return emit(dec, `${killIds.length ? "killed session" : "blocked"} via Bash — ${reasons.join(", ")}`);
   }
   if (tool.startsWith("mcp__")) {

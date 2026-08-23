@@ -141,6 +141,31 @@ Server distributes: approved-tools allowlist, risk thresholds, per-threat/per-ti
 actions (`threatPolicy` / `tierPolicy`), model-escalation policy, and rule-base updates. Client
 pulls on launch and periodically; works offline against the last-known policy.
 
+The policy is an ed25519-signed envelope. The client trusts it via, in order: a root-owned anchor
+(`/etc/moorai/policy.pub`, `%ProgramData%\MoorAI\policy.pub`, or MDM-injected `MOORAI_POLICY_PUBKEY`),
+else a TOFU pin learned from the first verified fetch. Two properties are enforced on top of the
+signature itself:
+
+- **Key revocation.** A `revokedKeys` list inside the signed body prunes matching keys from the
+  device's pin, so an operator signing with K2 can evict a leaked K1 without reprovisioning. Two
+  refusals guard it: a key may not revoke itself (otherwise a stolen key locks the operator out),
+  and pruning may never empty the pin (an empty key set degrades to `unanchored`, which would turn
+  a revocation into a total bypass). Both refusals emit a content-free tamper alert.
+- **Rollback refusal.** The highest accepted `iat` is retained as a high-water mark; a strictly
+  older — though validly signed — policy is refused and alerted, so a superseded policy cannot be
+  replayed to undo a tightening. Equal `iat` is accepted, or steady-state re-fetch would break. A
+  refusal falls back to last-known-good, never to "no policy", so #33 offline enforcement is intact.
+
+**Strength, stated honestly.** Both mechanisms are HARD only where the state they depend on is
+outside the agent's own write scope. Rollback refusal is hard when a root-owned
+`/etc/moorai/policy-hwm.json` is present, because the hook reads but never writes it. Revocation is
+**never** hard: it prunes the pin, and both pin copies live under the user's home directory, so a
+local attacker who can poison the policy cache can rewind the pin too — and on an anchored device
+the pin is not the deciding key set at all, so pruning changes no enforcement decision there. On an
+anchored fleet the real revocation mechanism remains shipping a new root-owned `policy.pub`.
+Everywhere else these are tamper-EVIDENT (alerted), not tamper-proof — which is the same posture as
+the rest of the product: the hook runs as the user, so nothing under `~/` is a trust boundary.
+
 ## Risk distribution (from the matrix)
 
 Counts are the shipped `riskLevel` labels in `data/threats.json` — the field the engine actually
