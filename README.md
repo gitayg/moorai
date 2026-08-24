@@ -171,9 +171,34 @@ trips. Content-free: timestamps, action fingerprints, allow/deny, risk, and tell
 | | |
 |---|---|
 | **Agents** | Claude Code (full hook enforcement) · Codex / Copilot CLI (detection-only — no equivalent deny hook) |
-| **Surfaces** | prompts · AI outputs · files read into context · MCP tool calls · pasted images (OCR) · RAG/index payloads · the agent's auto-loaded skill surface (skills, subagents, commands, MCP configs, hook-bearing settings) |
+| **Surfaces** | prompts · AI outputs · files read into context · MCP tool calls · pasted images (on-device OCR) · RAG/index payloads · the agent's auto-loaded skill surface (skills, subagents, commands, MCP configs, hook-bearing settings) |
 | **Platforms** | macOS · Windows |
 | **Detects** | secrets · PII / PHI · source-code leakage · prompt injection · destructive commands · second-order/hidden-instruction injection · skill-surface poisoning & drift |
+
+### Image inspection (#23) — where the OCR runs
+
+A pasted screenshot is text as far as policy is concerned, so MoorAI recovers the text and runs it
+through the same detectors as any pasted file. That extraction uses **the operating system's own
+text-recognition engine**: no model is bundled into the installer, and the image never reaches the
+MoorAI console. Honest platform matrix:
+
+| Platform | Engine | Does the image leave the device? |
+|---|---|---|
+| macOS | `Vision.framework` (`VNRecognizeTextRequest`) — ships with the OS | **No.** Fully on-device. |
+| Windows | `Windows.Media.Ocr.OcrEngine` — ships with the OS, needs an OCR **language pack** for a profile language | **No.** Fully on-device. |
+| Windows with no OCR language pack, Linux, or the app opened in a plain browser | none | See below. |
+
+Where the OS provides no engine, MoorAI does **not** fall back to its own servers. If — and only if
+— the device already holds an AI provider key (`ANTHROPIC_API_KEY`, the admin key file at
+`~/.curaiq/provider-key`, or the agent token saved in MoorAI; the same resolution as
+[`data/device-inference.mjs`](data/device-inference.mjs)), the app offers a fallback that sends the
+image **device → provider directly**, to the provider the developer's own agent already talks to.
+That path is disclosed in the UI before it runs and emits a content-free alert so it is visible in
+the console. With no engine **and** no key, image inspection is **skipped** and says so — it never
+degrades into silent egress.
+
+> The Windows engine is compile-verified for `x86_64-pc-windows-msvc` but has not yet been exercised
+> against a real image on a real Windows host.
 
 ## How it works
 

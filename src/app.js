@@ -5,7 +5,8 @@ import { TIER_OF } from "../data/data-tiers.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { DetectionEngine } from "./engine.js";
 import { Audit } from "./audit.js";
-import { getPolicy, postAlert, nativeLog, loadIdentity, enroll, serverBase, currentTenant, setAgentAuth, getAuthMethod, setAuthMethod, openUrl, reportDevice, reportPatches, reportPrompt, appVersion, checkUpdate, restartApp, checkAndInstallUpdate, reportIdentity, aboutInfo, ocrImage } from "./api.js";
+import { getPolicy, postAlert, nativeLog, loadIdentity, enroll, serverBase, currentTenant, setAgentAuth, getAuthMethod, setAuthMethod, openUrl, reportDevice, reportPatches, reportPrompt, appVersion, checkUpdate, restartApp, checkAndInstallUpdate, reportIdentity, aboutInfo } from "./api.js";
+import { ocrCapability, ocrImage, engineLabel, decideImageInspection } from "./ocr.js";
 import { BUILD } from "./buildinfo.js";
 
 // Which agent CLI the user is driving. Constrained to the admin's per-policy allow-list.
@@ -573,36 +574,47 @@ async function handleFile(file, source) {
       review.appendChild(act);
     }
   } else if ((file.type || "").startsWith("image/")) {
-    // #23 — if the tenant enabled image inspection (BYO vision key), OCR the image server-side and
-    // run the extracted text through the SAME PII/secret policy as any file. The vision key stays on
-    // the server; only text comes back. Falls back to the informational card when disabled/unavailable.
+    // #23 — recover the image's text and run it through the SAME PII/secret policy as any file. The
+    // OS's own engine does it on-device (macOS Vision / Windows OCR): no bundled model, and the image
+    // never leaves the machine. Where the OS ships no engine we say so and, only with a provider key
+    // already on this device, offer the disclosed device → provider fallback. Otherwise: skipped.
     const note = document.createElement("div");
     note.className = "card coach";
     note.innerHTML = `<div class="top"><span class="chip lvl coach">Image</span><span class="name">Image ${esc(source)}</span></div><div class="hint"></div>`;
     review.appendChild(note);
     const hint = note.querySelector(".hint");
-    if (policy?.imageInspection?.enabled && (file.size || 0) <= 4 * 1024 * 1024) {
-      hint.textContent = "Extracting text (OCR) to scan for secrets & PII…";
+    const cap = await ocrCapability();
+    const plan = decideImageInspection(cap, {
+      sizeBytes: file.size || 0,
+      maxBytes: cap.maxBytes || 4 * 1024 * 1024,
+      policyDisabled: policy?.imageInspection?.enabled === false
+    });
+    hint.textContent = plan.hint;
+    if (plan.mode !== "skip") {
+      // The fallback is egress, so it is visible in the console before it happens — content-free:
+      // threat id, category, risk and stage only, with no hash of the image or its name.
+      if (plan.mode === "provider") {
+        report(audit.record({ action: "alert", stage: "upload", tool: TOOL, finding: { mode: "warn", hint: plan.hint, match: "", threat: engine.threat(27) }, content: null }));
+      }
       try {
-        const text = (await ocrImage(await fileToBase64(file), file.type)).slice(0, 200000);
+        const res = await ocrImage(await fileToBase64(file), file.type, plan.mode === "provider");
+        const text = String(res.text || "").slice(0, 200000);
         if (text.trim()) {
-          hint.textContent = "OCR text scanned against policy.";
+          hint.textContent = res.leftDevice
+            ? `Text extracted by ${engineLabel(res.engine)} and scanned against policy.`
+            : `Text extracted on-device by ${engineLabel(res.engine)} and scanned against policy — the image never left this device.`;
           const cb = reviewContent(text, "shared", review);
           const fb = renderFindings(text, "file", review);
           if (cb || fb) banner(review, "✗ Blocked by policy — image not shared with the agent.", "block");
           else banner(review, "✓ OCR clean — no secrets or PII found in the image.", "clean");
         } else { hint.textContent = "OCR found no readable text in the image. Upload event logged."; }
       } catch (e) { hint.textContent = `Couldn't inspect the image (${e.message}). Upload event logged.`; }
-    } else {
-      hint.textContent = (file.size || 0) > 4 * 1024 * 1024
-        ? "Image too large to inspect (over 4MB). Upload event logged."
-        : "Image content is not inspected — enable image inspection (BYO vision key) in your policy. Upload event logged.";
     }
   }
   renderLog();
 }
 
-// Read a File as base64 (no data-URL prefix) for the OCR endpoint.
+// Read a File as base64 (no data-URL prefix) for the native OCR command.
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const r = new FileReader();

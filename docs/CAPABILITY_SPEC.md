@@ -201,7 +201,21 @@ is validated against.
 
 ### B. In-band detection (client; mapped to threat clusters)
 3. **Sensitive-data guard (DLP)** — pre-submit + paste inspection. *Threats 1, 9, 15, 33, 39.*
-4. **Upload guard** — intercepts file uploads / drag-drop. *Threats 18, 27.*
+4. **Upload guard** — intercepts file uploads / drag-drop. *Threats 18, 27.* Pasted/dropped **images**
+   are inspected by recovering their text with the **OS's own recognition engine** and running it
+   through the same detectors — macOS `Vision.framework`, Windows `Windows.Media.Ocr.OcrEngine`. No
+   model is bundled and the image never reaches the MoorAI console. Three states, and the UI names
+   the applicable one before the user pastes:
+
+   | Device | Behaviour |
+   |---|---|
+   | macOS; Windows with an OCR language pack | **On-device.** Nothing leaves the machine. |
+   | No OS engine, but a provider key already on the device | **Disclosed fallback.** Sent **device → provider directly** (never via MoorAI), using the key already present — env `ANTHROPIC_API_KEY`, the admin key file, or the saved agent token, resolved exactly as [`data/device-inference.mjs`](../data/device-inference.mjs) does. Emits a content-free alert. |
+   | No OS engine and no key | **Skipped**, and said so. Never a silent fallback to egress. |
+
+   The fallback is structurally unreachable whenever a native engine exists: the host ignores the
+   caller's opt-in in that case ([`src-tauri/src/ocr.rs`](../src-tauri/src/ocr.rs)). *Windows OCR is
+   compile-verified only — not yet run against a real image on a real Windows host.*
 5. **Prompt-injection scanner** — inspects pasted/external content. *Threats 2, 3, 40.*
 6. **Output-safety scanner** — dangerous links/scripts/macros + fake sources. *Threats 8, 17, 29, 32, 34, 35.*
 7. **Social-engineering / BEC sentinel** — bank-detail/payment/invoice/deepfake patterns. *Threats 10–13, 30, 31.*

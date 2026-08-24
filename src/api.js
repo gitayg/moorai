@@ -210,19 +210,10 @@ export async function getPolicy() {
   }
 }
 
-// #23 — OCR a base64 image via the server's BYO-vision key (key stays server-side; only the
-// extracted text returns, then the host runs the same PII/secret policy on it). Throws on failure so
-// the caller can fall back to the "not inspected" card.
-export async function ocrImage(base64, mime) {
-  const r = await fetch(`${BASE}/api/ocr`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
-    body: JSON.stringify({ image: base64, mime: mime || "image/png" }),
-    signal: AbortSignal.timeout(30000)
-  });
-  if (!r.ok) { let e = `ocr ${r.status}`; try { e = (await r.json()).error || e; } catch {} throw new Error(e); }
-  return (await r.json()).text || "";
-}
+// #23 — image OCR deliberately does NOT live here. It is a native, on-device call (see src/ocr.js →
+// src-tauri/src/ocr.rs): the raw image must never reach the MoorAI console, so there is no image
+// endpoint in this module. Where the OS ships no text-recognition engine, the host talks to the
+// developer's own AI provider directly with the key already on the device — still not through us.
 
 // When running inside the Tauri host, also persist to the native on-device audit sink.
 export function nativeLog(entry) {

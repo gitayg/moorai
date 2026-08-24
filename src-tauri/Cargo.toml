@@ -1,6 +1,6 @@
 [package]
 name = "curaiq"
-version = "0.56.0"
+version = "0.57.0"
 description = "MoorAI Managed AI Host"
 edition = "2021"
 
@@ -14,13 +14,23 @@ serde_json = "1"
 portable-pty = "0.8"
 tauri-plugin-updater = "2.10.1"
 reqwest = { version = "0.13", features = ["blocking", "json", "query"] }
+base64 = "0.22"
+
+# #23 — on-device OCR via Vision.framework. The recognition model ships with macOS, so these are
+# binding crates only: nothing is added to the bundle and no image ever leaves the device.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-vision = "0.3"
 
 # Native Windows security-posture inventory. `wmi` is the ergonomic serde layer over windows-rs
 # (SecurityCenter2 AV/firewall, BitLocker); `winreg` covers firewall-profile + reboot-pending state.
 [target.'cfg(windows)'.dependencies]
 wmi = "0.14"
 winreg = "0.52"
-windows = { version = "0.59", features = ["Win32_System_JobObjects", "Win32_System_Threading", "Win32_Foundation"] }
+# Media_Ocr/Graphics_Imaging/Storage_Streams/Foundation_Collections are #23's on-device OCR engine —
+# the Windows counterpart of Vision.framework, likewise shipped by the OS rather than bundled.
+windows = { version = "0.59", features = ["Win32_System_JobObjects", "Win32_System_Threading", "Win32_Foundation", "Media_Ocr", "Graphics_Imaging", "Storage_Streams", "Foundation_Collections"] }
 
 [lib]
 name = "curaiq_lib"

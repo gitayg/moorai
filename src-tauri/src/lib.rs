@@ -1,3 +1,9 @@
+mod ocr;
+mod ocr_provider;
+#[cfg(target_os = "macos")]
+mod ocr_vision;
+#[cfg(windows)]
+mod ocr_winocr;
 mod platform;
 #[cfg(windows)]
 mod winsec;
@@ -501,7 +507,7 @@ fn os_patch_status() -> serde_json::Value { platform::patch_status() }
 #[tauri::command]
 fn device_posture() -> serde_json::Value { platform::security_posture() }
 
-fn read_config() -> serde_json::Value {
+pub(crate) fn read_config() -> serde_json::Value {
     std::fs::read_to_string(platform::config_path())
         .ok()
         .and_then(|c| serde_json::from_str(&c).ok())
@@ -565,7 +571,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![native_log, app_version, identity, save_provision, set_agent_auth, open_url, open_login_terminal, restart_app, check_and_install_update, about_info, term_open, term_input, term_resize, term_kill, device_ai_tools, device_ai_assets, device_mcp, os_patch_status, device_browsers, device_ai_shadow, device_posture, device_accounts, dir_sensitive])
+        .invoke_handler(tauri::generate_handler![native_log, app_version, identity, save_provision, set_agent_auth, open_url, open_login_terminal, restart_app, check_and_install_update, about_info, term_open, term_input, term_resize, term_kill, device_ai_tools, device_ai_assets, device_mcp, os_patch_status, device_browsers, device_ai_shadow, device_posture, device_accounts, dir_sensitive, ocr::ocr_capability, ocr::ocr_image])
         .run(tauri::generate_context!())
         .expect("error while running MoorAI");
 }
