@@ -282,8 +282,7 @@ const EXPECTED_DJB2_ARGS = {
     "d.reasons.join(\"|\")",                     // entitlement-drift reasons (policy vocabulary)
     "epD.hosts.join(\",\")",                     // model-endpoint hostnames (Bash path)
     "epD.hosts.join(\",\")",                     // model-endpoint hostnames (MCP path)
-    "server",                                   // MCP server name
-    "text"                                      // rules-file fingerprint (whole agent config file)
+    "server"                                    // MCP server name
   ],
   "cli/moorai-guard.mjs": [
     "`${os.userInfo().username}@${os.hostname()}`",

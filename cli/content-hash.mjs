@@ -55,7 +55,7 @@
 // falls back to a reversible hash. A constant is chosen over a random value on purpose — a random
 // per-alert value is indistinguishable from a real fingerprint and would silently inflate any
 // "distinct values seen" count, whereas `h2:nokey` is self-describing to anyone reading the column.
-import { createHmac } from "node:crypto";
+import { createHmac, createHash } from "node:crypto";
 import { loadConfig } from "./config.mjs";
 
 export const HASH_PREFIX = "h2:";       // version tag: old reversible values are bare "h<hex>"
@@ -90,3 +90,20 @@ function key() {
 
 // The call every emit site uses: fingerprint a matched span / prompt / argument blob.
 export function contentHash(s) { return hashWithKey(key(), s); }
+
+// A drift FINGERPRINT is a different problem from a content hash, and needs a different primitive.
+//
+// It compares a whole file against its own previous value, so it must be stable on every device —
+// including an unenrolled one. contentHash() cannot serve: with no enrollment token it returns the
+// NO_KEY sentinel for every input, so every file hashes identically and drift silently stops
+// firing. That is a detection outage disguised as a privacy feature.
+//
+// Unkeyed is acceptable HERE, where it was not for a matched span, because the threat differs. A
+// span is drawn from a tiny space (~10^9 SSNs) and is therefore enumerable; a whole agent config
+// file is not, so reversal is not the risk. The risk is FORGERY — a 32-bit djb2 lets an attacker
+// who controls the file append a suffix that collides with the stored baseline and suppresses the
+// drift alert. SHA-256 removes that, and needs no key to do it.
+export const FP_PREFIX = "fp2:";
+export function fileFingerprint(s) {
+  return FP_PREFIX + createHash("sha256").update(String(s ?? ""), "utf8").digest("hex").slice(0, 16);
+}

@@ -28,7 +28,7 @@ import { isNewDestination } from "../data/destination-map.js";
 import { signApproval, argsHash } from "../data/agency-sign.mjs";
 import { contentTells, assessSession, assessTrifecta, assessCrossServerTrifecta, trifectaLegs, serverOf } from "../data/agent-behavior.js";
 import { classifyOpportunistic } from "../data/model-escalation.mjs";
-import { contentHash } from "./content-hash.mjs";
+import { contentHash, fileFingerprint } from "./content-hash.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -357,7 +357,11 @@ function reportSkillFile(path, text, d) {
   try {
     const kind = skillSurfaceKind(path);
     if (!kind || !text) return;
-    const fp = djb2(text);
+    // KEYED, not djb2: this fingerprints the whole agent config file, which is content. Every other
+    // surviving djb2 site hashes policy vocabulary (host names, server names, grant names) where
+    // keying would break dedup for no confidentiality gain — this one was the exception that made
+    // the classification guard's own "all remaining sites are non-content" claim untrue.
+    const fp = fileFingerprint(text);
     const intents = skillIntents(text, d.findings);
     const injected = (d.findings || []).some((f) => [3, 40, 50, 51].includes(f.threatId));
     const key = `${kind}|${path}`;
