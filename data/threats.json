@@ -1154,6 +1154,23 @@
       "stride": "Information Disclosure"
     },
     {
+      "id": 67,
+      "category": "Data Exposure",
+      "threat": "Transit interception (proxy / CA environment injection)",
+      "example": "An attacker with no special privileges sets HTTPS_PROXY and NODE_EXTRA_CA_CERTS (or SSL_CERT_FILE / REQUESTS_CA_BUNDLE) on the agent process. The destination is unchanged — the agent still connects to its approved provider — but every request now transits an interceptor that reads the prompt, the generated code, and the API key in cleartext. Because the injected CA makes the forged certificate legitimately trusted, the client reports the connection as verified and nothing appears wrong.",
+      "response": "Treat proxy and CA-trust environment overrides as egress-affecting configuration, not developer convenience. MoorAI reports any proxy or CA override on an agent launch and denies an unsanctioned proxy when an allow-list is configured (policy.transitAllow) — host and variable NAME only, content-free. Distinct from #63, which checks the destination and passes this by design.",
+      "severity": 5,
+      "likelihood": 3,
+      "riskScore": 15,
+      "riskLevel": "High",
+      "sources": [
+        "OWASP"
+      ],
+      "owasp": "LLM02",
+      "atlas": "AML.T0024",
+      "stride": "Information Disclosure"
+    },
+    {
       "id": 64,
       "category": "Agents & Permissions",
       "threat": "Agent entitlement drift (out-of-scope action)",

@@ -1,4 +1,4 @@
-// On-device, content-free signal logs. Two append-only JSONL files under the agent's config dir:
+// On-device, content-free signal logs. Three append-only JSONL files under the agent's config dir:
 //
 //   exposure-ledger.jsonl  (#5) — every time a secret/credential class is exposed to an agent, one
 //     line: category, calibrated risk, stage, tool, identity, one-way content hash, timestamp. Never
@@ -8,6 +8,11 @@
 //     without a typed justification), one line capturing that intent signal. This is the datum
 //     defenders lack: legitimate agentic use resembles attack, and a signed human "proceed" is what
 //     disambiguates the two. The justification text stays on the device; only its hash leaves.
+//   destinations.jsonl     — per-agent destination map: one line per (agent/tool → external
+//     destination) observation, where a destination is a HOST or an MCP SERVER NAME and the row also
+//     carries the hook's own allow/ask/deny verdict for that call. Answers "where did this agent
+//     actually reach?" — the observed counterpart to the console's allow-lists. No URL path, no query
+//     string, no argument: the host extractor never captures them.
 //
 // Both fail open and silent: a logging error must never affect the enforcement decision.
 
@@ -23,6 +28,8 @@ const AGENT_EVENTS = join(DIR, "agent-events.jsonl");
 const AGENT_EVENTS_CAP = 400; // rolling window; keep the file bounded
 const ACTION_AUDIT = join(DIR, "action-audit.jsonl"); // #5 — searchable per-action timeline
 const ACTION_CAP = 1000;
+const DESTINATIONS = join(DIR, "destinations.jsonl"); // per-agent destination map — hosts / MCP servers reached
+const DESTINATION_CAP = 2000;
 const RULES_BASELINE = join(DIR, "rules-baseline.json"); // rules-file drift: last fingerprint per kind
 const RETENTION_DAYS = Number(process.env.MOORAI_RETENTION_DAYS) || 90; // Bold B5 — you control how long on-device evidence lives (0 = keep forever)
 
@@ -79,7 +86,20 @@ export function recordAction(entry) {
 }
 export function readActions() { return readJsonl(ACTION_AUDIT); }
 
-// Rules-file drift baseline (content-free) — last-seen one-way fingerprint per rules-file kind.
+// Per-agent destination map — one line per (agent/tool → external destination) observation. The row is
+// a host or an MCP server name plus the hook's own verdict; there is no URL path, query string, or
+// argument in it. Same append/cap/prune discipline as the action audit above.
+export function recordDestination(entry) {
+  append(DESTINATIONS, entry);
+  try { const rows = readJsonl(DESTINATIONS); if (rows.length > DESTINATION_CAP) writeFileSync(DESTINATIONS, rows.slice(-DESTINATION_CAP).map((r) => JSON.stringify(r)).join("\n") + "\n"); } catch { /* best-effort */ }
+  pruneByAge(DESTINATIONS);
+}
+export function readDestinations() { return readJsonl(DESTINATIONS); }
+
+// Skill-surface drift baseline (content-free) — last-seen one-way fingerprint per skill-surface FILE.
+// The key is `kind|path` (see reportSkillFile): a device has one CLAUDE.md but a dozen
+// .claude/agents/*.md, so a per-KIND slot made every sibling definition look like drift from the last
+// one read. The path stays here on the device; only `kind` and the fingerprint are ever emitted.
 export function rulesBaseline() { try { return JSON.parse(readFileSync(RULES_BASELINE, "utf8")); } catch { return {}; } }
 export function setRulesBaseline(kind, fp) { try { const b = rulesBaseline(); b[kind] = fp; mkdirSync(DIR, { recursive: true }); writeFileSync(RULES_BASELINE, JSON.stringify(b)); } catch { /* best-effort */ } }
 
@@ -98,4 +118,5 @@ export function readLedger() { return readJsonl(LEDGER); }
 export function readIntent() { return readJsonl(INTENT); }
 export const LEDGER_PATH = LEDGER;
 export const INTENT_PATH = INTENT;
+export const DESTINATIONS_PATH = DESTINATIONS;
 export const AGENT_EVENTS_PATH = AGENT_EVENTS;

@@ -49,7 +49,7 @@ test("ORDER: escalation is skipped entirely once the decision is deny", () => {
 test("ORDER: escalation remains advisory — it must never set a decision", () => {
   // Moving the call is only safe because maybeEscalate cannot change enforcement. If that ever changes,
   // the reordering silently drops a deny, so pin the property here.
-  const body = src.slice(idx("async function maybeEscalate"), idx("function reportRulesFile"));
+  const body = src.slice(idx("async function maybeEscalate"), idx("function reportSkillFile"));
   assert.ok(body.length > 0, "maybeEscalate not found");
   assert.ok(!/\breturn\s+(true|false|"deny"|'deny')/.test(body), "maybeEscalate must not return a decision");
   assert.ok(!/\bdec\s*=/.test(body), "maybeEscalate must not assign a decision");

@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import os from "node:os";
 import { DETECTORS } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
-import { extractEndpointHosts, endpointApproved } from "../data/model-endpoints.js";
+import { extractEndpointHosts, endpointApproved, extractTransitOverrides, proxyApproved } from "../data/model-endpoints.js";
 import { TIER_OF } from "../data/data-tiers.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { compilePacks } from "../data/detector-packs.js";
@@ -197,6 +197,27 @@ export function decideEndpoints(policy, text) {
   const bad = extractEndpointHosts(text).filter((h) => !endpointApproved(h, allow));
   if (bad.length) return { decision: "deny", hosts: bad, reason: `model endpoint(s) not on the allow-list: ${bad.join(", ")}` };
   return { decision: "allow", hosts: [] };
+}
+
+// T1-1 / #67 — transit interception. decideEndpoints() asks WHERE the agent is sending and is
+// therefore blind to this: a proxy override does not change the destination, so the host stays
+// api.anthropic.com and the allow-list passes it while every byte transits an interceptor.
+//
+// Report-first, deliberately. A corporate egress proxy is legitimate and common, so an unset
+// `transitAllow` reports rather than denies; only an explicit allow-list makes an unsanctioned proxy
+// a deny. A CA override is reported on its own even with no proxy — on its own it is inert, but it
+// is the half that makes interception SILENT (the forged chain validates), so it is worth surfacing.
+export function decideTransit(policy, text) {
+  const { proxies, caVars } = extractTransitOverrides(text);
+  if (!proxies.length && !caVars.length) return { decision: "allow", proxies: [], caVars: [] };
+  const allow = policy?.transitAllow;
+  const bad = proxies.filter((h) => !proxyApproved(h, allow));
+  const armed = Array.isArray(allow) && allow.length;
+  const reason = [
+    bad.length ? `proxy not on the allow-list: ${bad.join(", ")}` : "",
+    caVars.length ? `CA trust override: ${caVars.join(", ")}` : ""
+  ].filter(Boolean).join("; ");
+  return { decision: armed && bad.length ? "deny" : "allow", proxies, caVars, bad, reason };
 }
 
 // T1-5 / #64 — agent entitlement envelope. policy.entitlements = { tools:[], paths:[], mcp:[] } declares

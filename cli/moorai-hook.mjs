@@ -19,9 +19,12 @@ import { loadConfig } from "./config.mjs";
 import { buildEngine, decideText, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, loadVerifiedPolicy, readRootOwned, readText, POSTURE_SIDECAR, POSTURE_LATCH, SYSTEM_POSTURE } from "./hook-core.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
-import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, requestKill } from "./signals.mjs";
+import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, recordDestination, readDestinations, requestKill } from "./signals.mjs";
 import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
-import { isRulesFile, rulesFileKind } from "../data/rules-files.js";
+import { isSkillSurface, skillSurfaceKind } from "../data/skill-surface.js";
+import { skillIntents } from "./skill-analysis.mjs";
+import { extractHosts } from "../data/model-endpoints.js";
+import { isNewDestination } from "../data/destination-map.js";
 import { signApproval, argsHash } from "../data/agency-sign.mjs";
 import { contentTells, assessSession, assessTrifecta, assessCrossServerTrifecta, trifectaLegs, serverOf } from "../data/agent-behavior.js";
 import { classifyOpportunistic } from "../data/model-escalation.mjs";
@@ -235,7 +238,7 @@ const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform
 // nothing at all from Read / Bash / MCP / Task findings — the product's core telemetry.
 //
 // FIX: every post() registers its promise here, and every exit path drains PENDING first. Registering
-// inside post() rather than threading return values through report()/logBehavior()/reportRulesFile()/
+// inside post() rather than threading return values through report()/logBehavior()/reportSkillFile()/
 // reportEnvelope()/checkSecretEgress()/killSession()/maybeEscalate() is deliberate: those are eleven
 // separate call sites, several inside best-effort try/catch blocks, and the next one added would have
 // silently gone back to being lost. One chokepoint cannot be forgotten.
@@ -329,23 +332,67 @@ async function maybeEscalate(policy, text, stage, tool, d) {
   } catch { /* escalation is advisory; fail-open */ }
 }
 
-// Rules-file hygiene (Backslash-inspired, content-free). A coding-agent rules/config file the agent
-// auto-loads is high-value to poison — one injected directive steers every future prompt. Flags two
-// things, content-free: (a) injected/hidden instructions found in the file (reuses the injection
-// detectors), and (b) drift from the last-seen fingerprint. Only the file KIND and a one-way hash leave.
-function reportRulesFile(path, text, d) {
+// Skill Analysis (Backslash-inspired, content-free). Every file on the agent's auto-loaded SKILL
+// SURFACE — skills, subagent definitions, slash commands, MCP server configs, hook-bearing settings
+// files, instruction/memory files (data/skill-surface.js) — is high-value to poison: one injected
+// directive steers every future prompt, and a hook entry in a settings file is straight code execution.
+//
+// Reports three things about each one, all content-free:
+//   (a) INVENTORY — the file's kind, seen at the moment the agent actually loaded it.
+//   (b) INTENT    — what the file instructs, as CATEGORY LABELS from the fixed vocabulary in
+//                   cli/skill-analysis.mjs. Every label is a rename of a finding the detection engine
+//                   already produced; no text, no matched span, no excerpt is ever attached.
+//   (c) DRIFT     — divergence from the last-seen fingerprint of THAT file.
+//
+// The fingerprint stays the unkeyed djb2 of the whole file, deliberately. The keyed HMAC exists because
+// a matched span (an SSN, a card) has a small enough candidate space to enumerate; a whole agent config
+// file does not, so keying it would buy no confidentiality and would break the cross-device dedup the
+// console gets from identical files fingerprinting identically. test/content-hash.test.mjs pins this.
+//
+// The BASELINE KEY is per-FILE (kind + path), not per-kind. It had to change with the widened surface:
+// a device has one CLAUDE.md but a dozen .claude/agents/*.md, and a single "claude-agent" slot would
+// have made every agent definition look like drift from the previous one on every read. The path stays
+// on the device — the baseline file is local and only `kind` + the fingerprint are ever emitted.
+function reportSkillFile(path, text, d) {
   try {
-    const kind = rulesFileKind(path);
+    const kind = skillSurfaceKind(path);
     if (!kind || !text) return;
     const fp = djb2(text);
+    const intents = skillIntents(text, d.findings);
     const injected = (d.findings || []).some((f) => [3, 40, 50, 51].includes(f.threatId));
+    const key = `${kind}|${path}`;
     const base = rulesBaseline();
-    const drift = base[kind] != null && base[kind] !== fp;
-    setRulesBaseline(kind, fp);
-    if (injected || drift) {
-      post({ threatId: 60, category: injected ? "Rules-file poisoning" : "Rules-file drift", riskLevel: injected ? "High" : "Medium", stage: "file", tool: `rules:${kind}`, ts: new Date().toISOString(), contentHash: fp, ...IDENTITY });
+    const drift = base[key] != null && base[key] !== fp;
+    setRulesBaseline(key, fp);
+    if (injected || drift || intents.length) {
+      post({
+        threatId: 60,
+        category: injected ? "Skill-file poisoning" : drift ? "Skill-file drift" : "Skill-file intent",
+        riskLevel: injected ? "High" : drift ? "Medium" : "Info",
+        stage: "file", tool: `skill:${kind}`, ts: new Date().toISOString(), contentHash: fp,
+        skillKind: kind, skillIntents: intents, ...IDENTITY
+      });
     }
   } catch { /* best-effort; never affects enforcement */ }
+}
+
+// Per-agent destination map — record, content-free, that this agent/tool reached these destinations and
+// what the hook decided. `names` are hosts (data/model-endpoints.js never captures a URL path or query
+// string) or MCP server names. An alert fires only the FIRST time an agent reaches a given destination,
+// so a busy agent produces one signal per new destination rather than one per call; the running counts
+// and first/last-seen live in the on-device ledger, read with `moorai-destinations`.
+function recordDestinations(tool, kind, names, decision) {
+  try {
+    if (!names || !names.length) return;
+    const prior = readDestinations();
+    for (const name of [...new Set(names)]) {
+      const row = { ts: new Date().toISOString(), tool, kind, name, decision, ...IDENTITY };
+      const fresh = isNewDestination(prior, row);
+      recordDestination(row);
+      prior.push(row);
+      if (fresh) post({ threatId: 0, category: "Agent destination: first seen", riskLevel: decision === "deny" ? "High" : "Info", stage: "egress", tool: `hook:${tool}`, ts: row.ts, contentHash: `dest:${kind}:${name}`, destination: { kind, name, decision }, ...IDENTITY });
+    }
+  } catch { /* the map is evidence, not enforcement */ }
 }
 
 function readFileCapped(fp) {
@@ -470,7 +517,7 @@ async function main() {
     const d = decideText(engine, policy, text, "file");
     report(d.findings, "file", "hook:Read", d.decision === "deny", policy.captureTier, { filePath: ti.file_path, toolName: "Read" });
     logBehavior("Read", ti.file_path || "file", text, d, "file");
-    if (isRulesFile(ti.file_path)) reportRulesFile(ti.file_path, text, d);
+    if (isSkillSurface(ti.file_path)) reportSkillFile(ti.file_path, text, d);
     if (d.kill) killSession("Read", d.killIds, "file");
     let rdec = d.decision;
     if (reportEnvelope(policy, "Read", { tool: "Read", paths: [ti.file_path] }, "file") && rdec !== "deny") rdec = "deny";
@@ -489,7 +536,7 @@ async function main() {
       finds.push(...d.findings);
       if (d.kill) killIds.push(...d.killIds);
       if (RANK[d.decision] > RANK[dec]) { dec = d.decision; reasons = d.reasons; }
-      if (isRulesFile(p)) reportRulesFile(p, t, d);
+      if (isSkillSurface(p)) reportSkillFile(p, t, d);
     }
     // T1-2/T1-1 — scan the COMMAND itself (not just files it reads) so command-level detectors enforce:
     // typosquat/hallucinated install (#62), destructive (#43), reverse shell (#54), untrusted install (#57).
@@ -508,6 +555,9 @@ async function main() {
     // See the Read branch: escalation runs last and never on a deny, so a local-secret-egress or
     // out-of-envelope command cannot ship its content to the provider on its way to being blocked.
     if (dec !== "deny") await maybeEscalate(policy, btext, "file", "hook:Bash", { findings: finds });
+    // Recorded last, so the destination map stores the verdict the call ACTUALLY got rather than the
+    // interim one — a host reached by a command that was then denied must read as denied.
+    recordDestinations("Bash", "host", extractHosts(ti.command), dec);
     return emit(dec, `${killIds.length ? "killed session" : "blocked"} via Bash — ${reasons.join(", ")}`);
   }
   if (tool.startsWith("mcp__")) {
@@ -520,7 +570,14 @@ async function main() {
     // Content-free gateway ledger: record ONE audit line per MCP call (pass, coach, or block) so the
     // console can prove what every agent was allowed to do — closing the gap where denials and clean
     // passes recorded nothing locally. Best-effort; never affects the allow/deny decision.
-    const audit = (decision) => { try { recordAction(applyCaptureTier({ threatId: 0, category: "MCP tool call", riskLevel: decision === "deny" ? "Blocked" : "Info", stage: "mcp", tool: `hook:${tool}`, decision, mcpServer: server, ts: new Date().toISOString(), contentHash: argsH, ...IDENTITY }, {}, policy.captureTier || "content-free")); } catch { /* ledger is best-effort */ } };
+    // The destination map hangs off the SAME chokepoint for the same reason: this branch has six
+    // separate return sites, and threading a recording call through each one is how the next one added
+    // silently stops being recorded. Both the server and any host named in the args are destinations.
+    const audit = (decision) => {
+      try { recordAction(applyCaptureTier({ threatId: 0, category: "MCP tool call", riskLevel: decision === "deny" ? "Blocked" : "Info", stage: "mcp", tool: `hook:${tool}`, decision, mcpServer: server, ts: new Date().toISOString(), contentHash: argsH, ...IDENTITY }, {}, policy.captureTier || "content-free")); } catch { /* ledger is best-effort */ }
+      recordDestinations(tool, "mcp", [server], decision);
+      recordDestinations(tool, "host", extractHosts(args), decision);
+    };
     if (g.gate === "server") { post({ threatId: 0, category: "MCP: unapproved server", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(server), ...IDENTITY, ...(signApproval(tool, argsH, "deny") || {}) }); audit("deny"); return emit("deny", g.reason); }
     if (g.gate === "args") { post({ threatId: 0, category: "MCP: denied tool argument", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: contentHash(args), ...IDENTITY, ...(signApproval(tool, argsH, "deny") || {}) }); audit("deny"); return emit("deny", g.reason); }
     // T1-5 — entitlement envelope: an MCP server outside the agent's declared scope is drift.

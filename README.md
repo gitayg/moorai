@@ -29,8 +29,11 @@ That's the exact trade MoorAI refuses.
 - **AI output review** — reviews what the agent says *back*, not just what's typed. On-device output screening flags **secrets, PII, and insecure code the agent generates** (SQL injection, XSS, command injection, `eval`/dynamic exec, weak crypto, unsafe deserialization) and masks secret spans on the `-p` path — emitting only a content-free verdict, never the reply. An intra-file **taint-lite** check (dependency-free source→sink proximity) raises a high-confidence *confirmed tainted-flow* signal when untrusted input actually reaches one of those sinks, so the console can prioritize real flows over hardcoded-literal matches.
 - **Battle-tested secrets engine** — ~14 provider families (GitHub, AWS, Stripe, Slack, GCP, OpenAI/Anthropic, DB connection strings, …) plus Shannon-entropy scoring with an allowlist (UUIDs, git SHAs, base64) so it doesn't false-positive on the things that aren't secrets.
 - **Model-endpoint allow-listing** — bounds *which LLM endpoints* an agent may talk to. A base-URL override (`ANTHROPIC_BASE_URL=…`) or a direct call to a non-approved provider is flagged/blocked at the endpoint — the exfil-via-rogue-endpoint defense, host-level and content-free (loopback / local models always allowed).
+- **Transit-override detection (#67)** — the allow-list above asks *where* the agent is sending; this asks *what the traffic passes through on the way*. Setting `HTTPS_PROXY` plus a CA override (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, …) on an agent leaves the destination untouched — so the endpoint allow-list still passes it — while every request transits an interceptor that reads the prompt, the generated code and the API key in cleartext. Measured, not theorised: with those two variables set, a real Claude Code session decrypted at the proxy with the client reporting the TLS as **authorized**, because the injected CA makes the forged chain legitimately trusted. It needs no privileges. MoorAI reports any proxy or CA override and denies an unsanctioned proxy when `policy.transitAllow` is set — proxy **host** and variable **name** only, never the CA path or its contents. Report-first by default, because a corporate egress proxy is legitimate; loopback is deliberately *not* auto-approved, since a loopback proxy is what an on-device interceptor looks like.
 - **Slopsquatting firewall** — an offline typosquat / hallucinated-package classifier (Damerau-Levenshtein against a curated popular-package list + a known-bad set) gates `npm/pip/cargo install` of near-miss names (`reqeusts`, `lodahs`) and documented hallucinations — the #1 AI-supply-chain threat, checked entirely on-device (name only).
 - **MCP hardening** — an approval-gating lifecycle for MCP servers, **rug-pull detection** (a server whose config changes after approval is knocked back to pending), and an **invisible-payload scanner** (Unicode tag-block / ANSI escapes / bidi-override / variation-selector smuggling) that catches instructions hidden from human review.
+- **Skill Analysis** — an inventory + *intent* view of the whole **skill surface** an agent auto-loads, not just its rules file: `SKILL.md` and `.claude/skills/**`, subagent definitions (`.claude/agents/*.md`), slash commands (`.claude/commands/**`), MCP server configs (`.mcp.json`, `~/.claude.json`, `managed-mcp.json`, `claude_desktop_config.json`), the settings files that can carry **hooks** (`.claude/settings.json`, `settings.local.json`, `managed-settings.json`), plugin manifests and their hook/monitor declarations, path-scoped rules and memory files, plus the other vendors' equivalents (`.cursorrules`, `.windsurfrules`, `.clinerules`, copilot-instructions). Every file gets its **kind**, a set of **intent category labels** — *hidden-instructions*, *instruction-override*, *external-network-egress*, *security-control-or-privilege-change*, *references-credentials*, *invisible-characters*, … — and a **drift fingerprint** per file. The labels are renames of findings the existing detection engine already produced; **no text, matched span, or excerpt is ever attached**, so a poisoned skill can be triaged without reading it off the device.
+- **Per-agent destination map** — the observed counterpart to your allow-lists: for each agent/tool, *which external destinations it actually reached*. **Hosts** (never a URL path or query string — they are not captured in the first place) and **MCP server names**, with call counts, first/last-seen, and the allow/ask/deny verdict each call actually got. Kept in an on-device ledger; the console gets one content-free alert the first time an agent touches a new destination, over the existing alert path. View it with `moorai-destinations`.
 - **Agent entitlement envelope** — declare each agent's authorized tools / path-prefixes / MCP servers; an action outside the envelope is flagged as **entitlement drift** and alerted or blocked — least-privilege for coding agents, content-free.
 - **Local secret-egress detection** — fingerprints your local secret values (`.env`, cloud creds) on-device as keyed one-way hashes and blocks an outbound command or tool-call that carries one verbatim — catching a real secret leaving even when it isn't in a recognizable token shape. Only the hash + a verdict leave.
 - **Insecure-defaults screening** — flags misconfigurations agents habitually emit (SSRF, path traversal, XXE, JWT `alg=none`, TLS-verify-off, wildcard CORS, `debug=True`, insecure randomness for tokens, hardcoded creds, world-writable perms, open redirect) — on top of the SQLi/XSS/RCE/deserialization coverage.
@@ -83,6 +86,32 @@ Now a `Read` of a `.env`, a secret in an MCP tool-call argument, or a call to an
 unapproved MCP server is blocked before it reaches the agent — content-free,
 fails open (governance, not a sandbox).
 
+### Skill Analysis — what is your agent actually being told to do?
+
+No separate command: the analysis runs inside the same PreToolUse hooks. Whenever the agent loads a
+file on its skill surface, MoorAI emits one content-free record carrying the file's **kind**, its
+**intent labels**, and a per-file **drift fingerprint** — `Skill-file poisoning` when the injection
+detectors fire in it, `Skill-file drift` when it changed since MoorAI last saw it, `Skill-file intent`
+otherwise.
+
+**Limits, stated plainly.**
+
+- **Intent coverage is exactly detector coverage.** Every label is a rename of an existing threat id,
+  content tell, or host extraction — there is deliberately no second detection engine here, because a
+  forked engine would sit outside `threatActionFor` and your detector packs. An instruction the engine
+  has no detector for produces no label: **"no labels" means "nothing the engine recognizes", not
+  "benign"**.
+- **Files are seen when the agent loads them**, via the Read/Bash hooks. MoorAI does not walk the
+  filesystem inventorying skill files that no agent has touched, so a freshly poisoned file is flagged
+  on first load, not before it.
+- **The drift fingerprint is an unkeyed DJB2** of the whole file, not the keyed HMAC used for matched
+  spans. That is deliberate: the keyed hash exists because an SSN or a card has a small enough
+  candidate space to enumerate, which a whole agent config file does not — and an unkeyed fingerprint
+  is what lets the console see that two devices hold the *same* poisoned file.
+- **Path classification is by filename, not by content**, so a file that an agent loads through a
+  non-standard path (`skillDirectories`, a symlink farm, a plugin root outside the known layout) is
+  scanned by the detectors like any other file but is not labelled as skill surface.
+
 ### Review what was exposed — on-device, no server
 
 ```bash
@@ -92,6 +121,26 @@ npx moorai-ledger --format md  # Markdown report
 ```
 
 Content-free by construction: category, risk, stage, device, and a keyed one-way hash — never a secret value.
+
+### Where did this agent actually reach?
+
+```bash
+npx moorai-destinations              # per-agent map of hosts + MCP servers reached
+npx moorai-destinations --format md  # Markdown report
+```
+
+Per agent/tool: every external destination observed, with call counts, first/last-seen and the
+allow/ask/deny verdict each call got. A destination is a **host** or an **MCP server name** — never a
+URL path, query string, request body, tool argument or response, because the extractor never captures
+them. Compare against your MCP allow-list and model-endpoint allow-list to find reach the policy did
+not intend. Reads only `~/.curaiq/destinations.jsonl`; nothing leaves.
+
+**Limits, stated plainly.** The map sees what the hook sees, which is Bash commands and MCP tool
+calls — not raw sockets opened by a compiled binary or by an MCP server's own child process. Hosts are
+extracted from `http(s)://` URLs, so `curl example.com` (no scheme), an SSH remote, or a bare IP
+literal is not recorded; a **dotless** internal hostname is captured only when it appears as a
+base-URL env-var override (`OLLAMA_HOST=http://gpu-box:11434`), not from a plain URL. It is an
+inventory of observed reach, not a network tap.
 
 ### Verify your policy catches the attacks — on your own machine
 
@@ -122,9 +171,9 @@ trips. Content-free: timestamps, action fingerprints, allow/deny, risk, and tell
 | | |
 |---|---|
 | **Agents** | Claude Code (full hook enforcement) · Codex / Copilot CLI (detection-only — no equivalent deny hook) |
-| **Surfaces** | prompts · AI outputs · files read into context · MCP tool calls · pasted images (OCR) · RAG/index payloads |
+| **Surfaces** | prompts · AI outputs · files read into context · MCP tool calls · pasted images (OCR) · RAG/index payloads · the agent's auto-loaded skill surface (skills, subagents, commands, MCP configs, hook-bearing settings) |
 | **Platforms** | macOS · Windows |
-| **Detects** | secrets · PII / PHI · source-code leakage · prompt injection · destructive commands · second-order/hidden-instruction injection |
+| **Detects** | secrets · PII / PHI · source-code leakage · prompt injection · destructive commands · second-order/hidden-instruction injection · skill-surface poisoning & drift |
 
 ## How it works
 

@@ -7,7 +7,7 @@
 MoorAI is a **native desktop "Managed AI Host"** for office workers, paired with a **central
 server** for policy and visibility. The employee does their AI work *inside* MoorAI — a native
 app with an embedded, managed webview — so the host sees every prompt, response, paste, and
-upload natively (no browser extension, no DOM hacks). It detects the 66-threat matrix in real
+upload natively (no browser extension, no DOM hacks). It detects the 67-threat matrix in real
 time, **coaches the employee** with the matrix's guidance, and **reports redacted alerts** to a
 central server so the security team has visibility.
 
@@ -24,7 +24,7 @@ risk, and (c) **deterministic prevention** where policy calls for it. Because ad
 it still does not prevent Shadow AI by construction; it reduces risk for those who opt in and
 surfaces organization-wide risk signals.
 
-- **Rule-base:** [`data/threats.json`](../data/threats.json) — 66 threats, 14 categories, English.
+- **Rule-base:** [`data/threats.json`](../data/threats.json) — 67 threats, 14 categories, English.
   Each threat is a rule: `example` = trigger context, `response` = intervention,
   `riskScore = severity × likelihood`.
 - **Intervention model:** risk-tiered and policy-driven — `notify` (report) → `justify` (ask) →
@@ -136,6 +136,14 @@ Client → Server alerts carry **redacted metadata only**: threat id, category, 
 tool used, optional keyed content hash / redacted snippet. **Never raw sensitive content** — otherwise
 MoorAI would itself commit threats #1 / #9 / #33 on every phone-home.
 
+Two further field families are permitted under this rule and are named here so the contract stays
+enumerable rather than implicit: `skillKind` + `skillIntents` (a file kind and closed-vocabulary intent
+labels — §B2 11a) and `destination` (`{kind, name, decision}` — a host or MCP server name — §B2 11b).
+Both are names and categories, never content. The invariant is asserted empirically rather than
+declared: `test/skill-analysis.test.mjs` and `test/destinations.test.mjs` each plant a unique canary in
+a fixture, capture every byte the hook POSTs plus the on-device ledgers, and fail if the canary, a
+matched span, a verbatim source line, a URL path, a query string or a request header appears in either.
+
 ### Policy — server → client
 Server distributes: approved-tools allowlist, risk thresholds, per-threat/per-tier enforcement
 actions (`threatPolicy` / `tierPolicy`), model-escalation policy, and rule-base updates. Client
@@ -169,7 +177,7 @@ the rest of the product: the hook runs as the user, so nothing under `~/` is a t
 ## Risk distribution (from the matrix)
 
 Counts are the shipped `riskLevel` labels in `data/threats.json` — the field the engine actually
-ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 66 threats.
+ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 67 threats.
 
 | Level | Count | Nominal score band |
 |---|---|---|
@@ -177,7 +185,7 @@ ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 66 threat
 | High | 40 | 12–19 |
 | Medium | 9 | 6–11 |
 
-Note: 8 of the 66 threats carry a `riskLevel` label outside the nominal band their `riskScore`
+Note: 8 of the 67 threats carry a `riskLevel` label outside the nominal band their `riskScore`
 would place them in (e.g. #65 scores 15 but is labeled Critical; #43 scores 6 but is labeled High).
 The label wins at runtime; the bands in `meta.scoring` are documentation, not an invariant the data
 is validated against.
@@ -201,6 +209,83 @@ is validated against.
 9. **Permissions-exposure watch** — over-broad / role-irrelevant results. *Threat 6.*
 10. **Ethics check** — human-review nudge on AI-assisted screening. *Threat 16.*
 11. **Output-sharing check** — scans summaries/screenshots before sharing. *Threats 20, 37.*
+
+### B2. Skill-surface analysis (client)
+
+11a. **Skill Analysis** — inventory + intent + drift for every file on the agent's **auto-loaded skill
+   surface**, classified by PATH in [`data/skill-surface.js`](../data/skill-surface.js) and reported by
+   `reportSkillFile` in [`cli/moorai-hook.mjs`](../cli/moorai-hook.mjs). *Threat 60.* Three emissions,
+   all content-free (kind + labels + a one-way fingerprint):
+
+   - `Skill-file poisoning` (High) — the injection detectors fired inside the file (threats 3/40/50/51).
+   - `Skill-file drift` (Medium) — the file changed since MoorAI last saw **that file**.
+   - `Skill-file intent` (Info) — the file carries intent labels but is neither poisoned nor drifted.
+
+   **The surface, and how each entry was verified.** "Observed" = confirmed against a real `~/.claude`
+   layout on a developer machine. "Doc" = confirmed against the harness's own published documentation
+   (`code.claude.com/docs/en/{memory,settings,mcp,hooks-guide,plugins,managed-settings}`) but not seen
+   on disk here. Both are matched; the distinction is recorded rather than blurred.
+
+   | kind | paths | verified |
+   |---|---|---|
+   | `claude-skill` | `.claude/skills/**`, any `SKILL.md` | observed |
+   | `claude-agent` | `.claude/agents/**.md` | observed |
+   | `claude-command` | `.claude/commands/**` (files **and** `<name>/SKILL.md` directories) | observed |
+   | `claude-settings` | `.claude/settings.json`, `.claude/settings.local.json` — carry `hooks` | observed |
+   | `claude-hook` | `.claude/hooks/**` | observed |
+   | `claude-managed-settings` | `managed-settings.json`, `managed-settings.d/*.json` (macOS `/Library/Application Support/ClaudeCode/`, Linux `/etc/claude-code/`, Windows `C:\Program Files\ClaudeCode\`) | doc |
+   | `claude-user-config` | `~/.claude.json` — the user-scope `mcpServers` map | observed |
+   | `.mcp.json` | project-scope MCP servers | doc |
+   | `managed-mcp` | `managed-mcp.json` | doc |
+   | `claude-desktop-config` | `claude_desktop_config.json` — Claude Desktop, guarded via [`mcp-proxy/`](../mcp-proxy/) | doc |
+   | `claude-plugin` | `.claude-plugin/{plugin,marketplace}.json` | observed |
+   | `plugin-hooks` / `plugin-monitors` / `plugin-lsp` / `plugin-agent` | `hooks/hooks.json`, `monitors/monitors.json`, `.lsp.json`, `plugins/**/agents/*.md` | doc |
+   | `claude-rule` | `.claude/rules/**.md` (path-scoped rules) | doc |
+   | `claude-memory` | `.claude/projects/<p>/memory/*.md` | observed |
+   | `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md` | project, nested, user and managed scopes | observed / doc / doc |
+   | `.cursorrules`, `.cursor/rules`, `cursor-mcp`, `.windsurfrules`, `.clinerules`, `copilot-instructions`, `codex-config` | other vendors' equivalents | doc |
+
+   **Intent labels** are a closed vocabulary (`INTENT_LABELS`,
+   [`cli/skill-analysis.mjs`](../cli/skill-analysis.mjs)), each one a rename of an existing threat id, an
+   existing content tell ([`data/agent-behavior.js`](../data/agent-behavior.js)) or the existing host
+   extractor ([`data/model-endpoints.js`](../data/model-endpoints.js)). There is deliberately **no second
+   detection engine**: a forked engine would sit outside `threatActionFor` and the org's detector packs.
+
+   **Limits.** (a) Intent coverage *is* detector coverage — an instruction with no detector produces no
+   label, so "no labels" means "nothing recognized", never "benign". (b) Files are seen when an agent
+   loads them through the Read/Bash hooks; MoorAI does not walk the filesystem inventorying untouched
+   skill files. (c) Classification is by PATH, so a skill reached via `skillDirectories`, a symlink farm,
+   or a plugin root outside the known layout is still scanned by the detectors but is not labelled as
+   skill surface. (d) The drift fingerprint is an unkeyed DJB2 of the whole file, not the keyed HMAC used
+   for matched spans — a whole config file has no enumerable candidate space, and an unkeyed value is
+   what lets the console see two devices holding the *same* poisoned file. Pinned by
+   `test/content-hash.test.mjs`. (e) The baseline key is per **file** (`kind|path`), not per kind; the
+   path stays on the device, only `kind` + the fingerprint are emitted.
+
+11b. **Per-agent destination map** — an on-device aggregation of the external destinations each
+   agent/tool actually reached: a **host** or an **MCP server name**, with counts, first/last-seen and
+   the allow/ask/deny verdict that call actually received. Storage follows the exposure/intent ledger
+   pattern (`destinations.jsonl` in [`cli/signals.mjs`](../cli/signals.mjs)); rollup is pure
+   ([`data/destination-map.js`](../data/destination-map.js)); the viewer is
+   [`cli/moorai-destinations.mjs`](../cli/moorai-destinations.mjs), exposed exactly like `moorai-ledger`.
+   The console is notified over the **existing** `/api/alerts` path — `Agent destination: first seen`,
+   emitted once per newly observed agent→destination pair, so a busy agent yields one signal per new
+   destination rather than one per call. No new telemetry channel and no new endpoint.
+
+   Recording points are chokepoints, not per-return-site calls: the Bash branch records after the final
+   verdict (so a host reached by a command that was then denied reads as denied), and the MCP branch
+   hangs off the same `audit()` closure the gateway ledger uses, which every one of its six return
+   sites already goes through.
+
+   **Content-free by construction:** `extractHosts` captures the host and stops — a URL path, query
+   string, header or body is never captured, so there is nothing to strip downstream.
+
+   **Limits.** The map sees what the hook sees: Bash commands and MCP tool calls. It is **not a network
+   tap** — a compiled binary's raw socket, or an MCP server's own child process, is invisible to it.
+   Hosts come from `http(s)://` URLs, so `curl example.com` (no scheme), an SSH remote, or a bare IP
+   literal is not recorded; a **dotless** internal hostname is captured only via a base-URL env-var
+   override (`OLLAMA_HOST=http://gpu-box:11434`), not from a plain URL. The `decision` recorded is the
+   hook's verdict for the call, not proof the connection succeeded or failed.
 
 ### C. Runtime (client)
 12. **Risk-prioritized alerting** — ranks findings by `riskLevel`, then `riskScore` as the tiebreak.
