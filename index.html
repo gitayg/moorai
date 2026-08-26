@@ -27,6 +27,14 @@
 
       <div id="enroll" class="enroll">
         <div class="enroll-row">
+          <span class="enroll-label">No account yet? Create one — this device enrolls itself:</span>
+          <input id="signup-name" placeholder="organisation / admin name" />
+          <input id="signup-email" type="email" placeholder="you@company.com" />
+          <button id="signup-btn">Create account</button>
+          <span id="signup-status" class="enroll-status"></span>
+        </div>
+        <hr class="enroll-hr" />
+        <div class="enroll-row">
           <span class="enroll-label">Enroll device — paste your installation token:</span>
           <input id="enroll-token" placeholder="installation token" />
           <button id="enroll-btn">Enroll</button>

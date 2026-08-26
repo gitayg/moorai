@@ -60,6 +60,20 @@ Because you can read the code. The agent is **AGPL-3.0 and open source** — the
 
 Community edition: runs standalone, local policy control, no account required.
 
+### Enroll a device in a management account
+
+Two ways, both in the app's settings panel (the gear in the status bar):
+
+- **Create an account from inside the app** — enter an organisation/admin name and an email,
+  press **Create account**, then click the verification link in the email that arrives. The app
+  waits on that click and enrolls itself the moment it lands; there is no token to copy. The app
+  polls by a single-use, 30-minute claim token only — your email address is never sent back to the
+  server, so the wait cannot be used to ask whether some address has an account.
+- **Paste an installation token** — for devices provisioned by an admin. Get one from the MoorAI
+  portal → **Installs → Create installation**, or provision from a terminal with the `curl` line the
+  panel shows. MDM-provisioned installs (Jamf/Intune writing `~/.curaiq/config.json`) use this path
+  and never see the signup form.
+
 ### One-line install (CLI guard + Claude Code hooks)
 
 ```bash

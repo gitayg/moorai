@@ -1,4 +1,5 @@
 // Client ↔ server bridge. Offline-tolerant: failures never block the user.
+import { startSignup, pollClaim } from "./signup.js";
 const BASE = (localStorage.getItem("raiseme.server") || "https://moorai.glick.run").replace(/\/+$/, "");
 const CLIENT_ID = (() => {
   let id = localStorage.getItem("raiseme.clientId");
@@ -142,6 +143,25 @@ export async function enroll(token, serverUrl) {
   identity.tenant = prov.tenant;
   identity.installToken = token;
   return prov;
+}
+
+// In-app signup: create the management account and get back the claim token used to wait for the
+// verification click. The protocol lives in ./signup.js; this only binds the real fetch + BASE.
+export function signUp(name, email) {
+  return startSignup({ base: BASE, name, email, fetchImpl: (u, o) => fetch(u, o) });
+}
+
+// Wait for the verification click, then provision through the SAME enroll() the paste-a-token path
+// uses — so there is exactly one place that persists a provision.
+export async function awaitClaim(claimToken, onPending) {
+  const ready = await pollClaim({
+    base: BASE,
+    claimToken,
+    fetchImpl: (u, o) => fetch(u, o),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    onPending
+  });
+  return await enroll(ready.installToken, ready.serverUrl);
 }
 
 // Lightweight, scan-independent beacon: lands identity + agent version on the server immediately at

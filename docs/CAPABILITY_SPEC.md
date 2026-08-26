@@ -313,6 +313,14 @@ is validated against.
 18. **Policy & rule-base distribution** — central allowlist, thresholds, per-threat/per-tier
     enforcement actions, and versioned rule-base pushed to clients.
 19. **Alert ingestion** — receives and stores redacted client alerts.
+19a. **Account signup + device claim** — `POST /api/signup` with `claim: true` creates the tenant,
+    mails the verification link, and returns a single-use claim token valid for 30 minutes. The
+    client then polls `GET /api/signup/claim?claim=<token>` — `202` until the link is clicked, then
+    one `200` carrying the tenant, the install token and the server URL, after which the claim token
+    is dead. The client sends the claim token and nothing else: a claim-by-email lookup would be an
+    unauthenticated account-enumeration oracle. Protocol in [`src/signup.js`](../src/signup.js);
+    the ready claim is handed to the same `enroll()` the paste-a-token path uses, so provisioning
+    lives in one place.
 20. **Security dashboard** — org-wide risk view: alerts by threat / category / risk tier / user,
     trends over time. The dashboard itself is **visibility**; enforcement happens on the client,
     driven by the policy this server distributes.

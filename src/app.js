@@ -5,7 +5,7 @@ import { TIER_OF } from "../data/data-tiers.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { DetectionEngine } from "./engine.js";
 import { Audit } from "./audit.js";
-import { getPolicy, postAlert, nativeLog, loadIdentity, enroll, serverBase, currentTenant, setAgentAuth, getAuthMethod, setAuthMethod, openUrl, reportDevice, reportPatches, reportPrompt, appVersion, checkUpdate, restartApp, checkAndInstallUpdate, reportIdentity, aboutInfo } from "./api.js";
+import { getPolicy, postAlert, nativeLog, loadIdentity, enroll, signUp, awaitClaim, serverBase, currentTenant, setAgentAuth, getAuthMethod, setAuthMethod, openUrl, reportDevice, reportPatches, reportPrompt, appVersion, checkUpdate, restartApp, checkAndInstallUpdate, reportIdentity, aboutInfo } from "./api.js";
 import { ocrCapability, ocrImage, engineLabel, decideImageInspection } from "./ocr.js";
 import { BUILD } from "./buildinfo.js";
 
@@ -700,6 +700,35 @@ function wireEnrollment() {
     $("enroll-copy").textContent = "Copied";
     setTimeout(() => ($("enroll-copy").textContent = "Copy"), 1500);
   });
+  $("signup-btn").addEventListener("click", async () => {
+    const name = $("signup-name").value.trim();
+    const email = $("signup-email").value.trim();
+    const status = $("signup-status"), btn = $("signup-btn");
+    if (!name || !email) { status.className = "enroll-status err"; status.textContent = "name and email are required"; return; }
+    status.className = "enroll-status"; status.textContent = "creating account…";
+    btn.disabled = true;
+    try {
+      const { claimToken } = await signUp(name, email);
+      status.textContent = `check your email — click the link we sent to ${email}`;
+      const started = Date.now();
+      // Polls by claim token alone. The email never goes back to the server, so this cannot be used
+      // to ask whether some address has an account.
+      const prov = await awaitClaim(claimToken, () => {
+        status.textContent = `check your email — click the link we sent to ${email} (waiting ${Math.round((Date.now() - started) / 1000)}s)`;
+      });
+      status.className = "enroll-status ok"; status.textContent = `enrolled → ${prov.tenant}`;
+      $("signup-name").value = ""; $("signup-email").value = "";
+      refreshEnrollChip();
+      await loadIdentity();
+      const dev = await reportDevice();
+      reportPatches(dev);
+    } catch (e) {
+      status.className = "enroll-status err"; status.textContent = String(e.message || e);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
   $("enroll-btn").addEventListener("click", async () => {
     const token = $("enroll-token").value.trim();
     const status = $("enroll-status");
