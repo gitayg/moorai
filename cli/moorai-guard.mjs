@@ -12,6 +12,7 @@ import { loadConfig } from "./config.mjs";
 import { calibrateRisk, decideEndpoints } from "./hook-core.mjs";
 import { recordExposure, recordIntent } from "./signals.mjs";
 import { contentHash } from "./content-hash.mjs";
+import { classifyOpportunistic } from "../data/model-escalation.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = loadConfig();
@@ -45,6 +46,22 @@ const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform
 
 function post(alert) {
   return fetch(`${SERVER}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(alert) }).catch(() => {});
+}
+
+// #21 — model escalation, extended from the PreToolUse hook (cli/moorai-hook.mjs::maybeEscalate) to the
+// claude -p guard. An advisory second opinion from the on-device model (loopback / the device's own
+// provider key), gated on policy.modelEscalation. Reached ONLY on the forward paths — past every block
+// decision — so content the policy denies is never sent to the model (F-301). It posts a content-free
+// alert and never changes the regex-owned decision. Skips when regex is already confident, and fail-open.
+async function maybeEscalate(policy, text, findings) {
+  try {
+    if (!policy || !policy.modelEscalation || !text || !text.trim()) return;
+    if (findings.some((f) => f.threat.riskLevel === "High" || f.threat.riskLevel === "Critical" || f.threat.riskLevel === "Blocked")) return;
+    const v = await classifyOpportunistic(text, policy);
+    if (v && v.flagged && v.confidence >= 0.6) {
+      post({ threatId: 58, category: `Model-flagged: ${v.category}`, riskLevel: v.confidence >= 0.85 ? "High" : "Medium", stage: "egress", tool: "escalate:claude -p", ts: new Date().toISOString(), contentHash: contentHash(text), ...IDENTITY });
+    }
+  } catch { /* advisory; fail-open */ }
 }
 
 function reportAlert(finding, content, blocked = false, stage = "egress") {
@@ -232,6 +249,7 @@ async function main() {
     recordIntent(intent);
     post({ threatId: 0, category: "Intent: user override", riskLevel: "Info", stage: "egress", tool: "claude -p", ts: intent.ts, contentHash: intent.contentHash, ...IDENTITY });
   }
+  await maybeEscalate(policy, final, allFindings);
   process.exit(await runClaude(final, policy, action));
 }
 

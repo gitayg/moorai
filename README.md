@@ -5,7 +5,7 @@
 ### On-device guardrails for AI coding agents. Nothing leaves the machine.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-ff4d6d.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-e4e4ef.svg)](#install)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-e4e4ef.svg)](#install)
 [![Build: Windows](https://github.com/gitayg/moorai/actions/workflows/release-windows.yml/badge.svg)](https://github.com/gitayg/moorai/actions)
 
 **MoorAI reviews what your developers send to AI coding agents — and what those agents read, run, and reply — right on the device, before anything is exposed.** Secrets, PII, and source code never leave the machine to be checked. Your security team sees content-free signals, never the prompts.
@@ -186,7 +186,7 @@ trips. Content-free: timestamps, action fingerprints, allow/deny, risk, and tell
 |---|---|
 | **Agents** | Claude Code (full hook enforcement) · Codex / Copilot CLI (detection-only — no equivalent deny hook) |
 | **Surfaces** | prompts · AI outputs · files read into context · MCP tool calls · pasted images (on-device OCR) · RAG/index payloads · the agent's auto-loaded skill surface (skills, subagents, commands, MCP configs, hook-bearing settings) |
-| **Platforms** | macOS · Windows |
+| **Platforms** | macOS · Windows · Linux (on-device OCR is a second-class tier — see below) |
 | **Detects** | secrets · PII / PHI · source-code leakage · prompt injection · destructive commands · second-order/hidden-instruction injection · skill-surface poisoning & drift |
 
 ### Image inspection (#23) — where the OCR runs
@@ -200,7 +200,8 @@ MoorAI console. Honest platform matrix:
 |---|---|---|
 | macOS | `Vision.framework` (`VNRecognizeTextRequest`) — ships with the OS | **No.** Fully on-device. |
 | Windows | `Windows.Media.Ocr.OcrEngine` — ships with the OS, needs an OCR **language pack** for a profile language | **No.** Fully on-device. |
-| Windows with no OCR language pack, Linux, or the app opened in a plain browser | none | See below. |
+| Linux | `Tesseract` via the `leptess` binding (system `libtesseract`, pulled in as a `.deb`/`.rpm` dependency) — **opportunistic, second-class** vs the OS engines | **No.** Fully on-device. |
+| Windows with no OCR language pack, or the app opened in a plain browser | none | See below. |
 
 Where the OS provides no engine, MoorAI does **not** fall back to its own servers. If — and only if
 — the device already holds an AI provider key (`ANTHROPIC_API_KEY`, the admin key file at
@@ -211,8 +212,10 @@ That path is disclosed in the UI before it runs and emits a content-free alert s
 the console. With no engine **and** no key, image inspection is **skipped** and says so — it never
 degrades into silent egress.
 
-> The Windows engine is compile-verified for `x86_64-pc-windows-msvc` but has not yet been exercised
-> against a real image on a real Windows host.
+> The Windows engine is runtime-verified on a real Windows 11 host — `Windows.Media.Ocr` read back
+> 8/8 sensitive strings (incl. an AWS key and an SSN) off a clean render. The Linux/Tesseract tier is
+> validated end-to-end but **second-class**: accuracy on dense secret strings is below the macOS/Windows
+> OS engines, so treat it as opportunistic, not parity.
 
 ## How it works
 

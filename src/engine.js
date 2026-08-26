@@ -25,6 +25,19 @@ export class DetectionEngine {
   // choke-point contract for a future embedding writer; today it's reachable via the file path.
   scanForIndex(text) { return this.scan(text, "index"); }
 
+  // #21 — optional, policy-gated semantic escalation. Regex/entropy above stays the fast path and OWNS
+  // enforcement; this awaits a bounded, fail-open second opinion from an on-device model ONLY when the
+  // caller injects the escalator (`escalate` from src/semantic.js) — which is the ambiguity gate's async
+  // sibling to `_matchDetector`'s sync `refine`. Injection (not import) keeps this class free of the
+  // node-only provider code, so the browser bundle that imports engine.js never pulls it in. No escalator
+  // → identical to `scan` (fail-open). See src/semantic.js for the gating, backends, and content-free
+  // reduction; the caller must run this AFTER any deny decision (F-301 ordering).
+  async scanSemantic(text, stage, policy, escalate, opts) {
+    const base = this.scan(text, stage);
+    if (typeof escalate !== "function") return base;
+    return escalate(this, base, text, stage, policy, opts);
+  }
+
   // Parental-control content review (profanity, sexual, violence, etc.) — separate from
   // the security threat scan. Returns matched content categories.
   scanContent(text, categories) {

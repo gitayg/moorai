@@ -4,6 +4,8 @@ mod ocr_provider;
 mod ocr_vision;
 #[cfg(windows)]
 mod ocr_winocr;
+#[cfg(target_os = "linux")]
+mod ocr_tesseract;
 mod platform;
 #[cfg(windows)]
 mod winsec;

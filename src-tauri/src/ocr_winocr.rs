@@ -2,9 +2,11 @@
 // path: the recognition model is part of the OS (installed as a language pack), so nothing is added
 // to the installer and no image leaves the device.
 //
-// COMPILE-VERIFIED, RUNTIME-UNVERIFIED: this module is proved to build for x86_64-pc-windows-msvc,
-// but `cargo check` does not execute it and this project's dev machine is macOS. It has not been run
-// against a real image on a real Windows host.
+// RUNTIME-VERIFIED on a real Windows 11 host: this WinRT chain (TryCreateFromUserProfileLanguages →
+// BitmapDecoder → SoftwareBitmap → RecognizeAsync → Lines, with the `en` language pack) read back
+// 8/8 sensitive needles off a clean render — including an AWS key and an SSN — with one minor l→1
+// substitution class on dense monospace secrets. The project's dev machine is still macOS, so
+// `cargo check` here only compiles it; the runtime proof came from the Win11 validation run.
 use windows::Graphics::Imaging::{BitmapAlphaMode, BitmapDecoder, BitmapPixelFormat, SoftwareBitmap};
 use windows::Media::Ocr::OcrEngine;
 use windows::Storage::Streams::{DataWriter, InMemoryRandomAccessStream};

@@ -32,6 +32,12 @@ winreg = "0.52"
 # the Windows counterpart of Vision.framework, likewise shipped by the OS rather than bundled.
 windows = { version = "0.59", features = ["Win32_System_JobObjects", "Win32_System_Threading", "Win32_Foundation", "Media_Ocr", "Graphics_Imaging", "Storage_Streams", "Foundation_Collections"] }
 
+# #39 — Linux on-device OCR. Linux ships no OS text-recognition engine, so this tier binds Tesseract
+# via leptess (links system libtesseract/libleptonica). Opportunistic/second-class vs Vision & Windows
+# OCR. Kept under the Linux target table so macOS/Windows builds never try to link libtesseract.
+[target.'cfg(target_os = "linux")'.dependencies]
+leptess = "0.14"
+
 [lib]
 name = "curaiq_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

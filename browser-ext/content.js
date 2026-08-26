@@ -25,6 +25,11 @@
     if (h === "chatgpt.com" || h === "chat.openai.com") return "chatgpt";
     if (h === "claude.ai") return "claude";
     if (h === "copilot.microsoft.com") return "copilot";
+    if (h === "gemini.google.com") return "gemini";
+    if (h === "perplexity.ai" || h === "www.perplexity.ai") return "perplexity";
+    if (h === "chat.mistral.ai") return "mistral";
+    if (h === "chat.deepseek.com") return "deepseek";
+    if (h === "grok.com") return "grok";
     return "unknown";
   }
   const SITE = siteOf();
@@ -42,6 +47,26 @@
     copilot: {
       composer: ["textarea#userInput", "textarea[data-testid='composer-input']", "textarea[placeholder]", "div[contenteditable='true']"],
       send: ["button[data-testid='submit-button']", "button[aria-label='Submit']", "button[title='Submit']", "button[aria-label*='Send']", "button[type='submit']"]
+    },
+    gemini: {
+      composer: ["rich-textarea .ql-editor[contenteditable='true']", "div.ql-editor[contenteditable='true']", "div[contenteditable='true'][role='textbox']", "div[contenteditable='true']"],
+      send: ["button.mat-mdc-icon-button.send-button", "button.send-button", "button[aria-label*='Send']", "button[data-testid='send-button']"]
+    },
+    perplexity: {
+      composer: ["textarea[placeholder*='Ask']", "div[contenteditable='true'][role='textbox']", "textarea[id*='input']", "div[contenteditable='true']", "textarea"],
+      send: ["button[aria-label='Submit']", "button[aria-label*='Submit']", "button[type='submit']", "button[aria-label*='Send']"]
+    },
+    mistral: {
+      composer: ["textarea[name='message.text']", "div.ProseMirror[contenteditable='true']", "textarea[placeholder*='Le Chat']", "div[contenteditable='true']"],
+      send: ["button[type='submit']", ".ms-auto button[type='submit']", "button[aria-label*='Send']", "button.bg-state-primary"]
+    },
+    deepseek: {
+      composer: ["textarea#chat-input", "textarea[placeholder*='Message DeepSeek']", "textarea[placeholder*='Ask']", "textarea", "div[contenteditable='true']"],
+      send: ["button[aria-label*='Send']", "button[data-testid='send-button']", "div[role='button'][aria-disabled]", "button.send-button"]
+    },
+    grok: {
+      composer: ["textarea[aria-label='Ask Grok anything']", "main form textarea", "textarea[placeholder]", "textarea", "div[contenteditable='true']"],
+      send: ["button[aria-label='Submit']", "button[type='submit']", "button[aria-label='Send message']", "button[data-testid='send-button']"]
     },
     unknown: { composer: ["textarea", "div[contenteditable='true']"], send: ["button[type='submit']"] }
   };

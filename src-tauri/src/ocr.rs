@@ -21,7 +21,11 @@ fn native_engine() -> Option<&'static str> {
 fn native_engine() -> Option<&'static str> {
     crate::ocr_winocr::engine()
 }
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+fn native_engine() -> Option<&'static str> {
+    crate::ocr_tesseract::engine()
+}
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn native_engine() -> Option<&'static str> {
     None
 }
@@ -34,7 +38,11 @@ fn native_recognize(bytes: &[u8]) -> Result<String, String> {
 fn native_recognize(bytes: &[u8]) -> Result<String, String> {
     crate::ocr_winocr::recognize(bytes)
 }
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+fn native_recognize(bytes: &[u8]) -> Result<String, String> {
+    crate::ocr_tesseract::recognize(bytes)
+}
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn native_recognize(_bytes: &[u8]) -> Result<String, String> {
     Err("no on-device text recognition on this platform".into())
 }

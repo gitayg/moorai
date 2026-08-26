@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "MoorAI Browser Guard",
   "version": "0.1.0",
-  "description": "On-device, content-free prompt guard for browser GenAI (ChatGPT / Claude / Copilot). Mirrors MoorAI's agent guardrails: detection runs locally; only a category, risk level, and one-way hash ever leave the browser.",
+  "description": "On-device, content-free prompt guard for browser GenAI (ChatGPT / Claude / Copilot / Gemini / Perplexity / Mistral Le Chat / DeepSeek / Grok). Mirrors MoorAI's agent guardrails: detection runs locally; only a category, risk level, and one-way hash ever leave the browser.",
   "permissions": [
     "activeTab",
     "storage"
@@ -11,7 +11,13 @@
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
     "https://claude.ai/*",
-    "https://copilot.microsoft.com/*"
+    "https://copilot.microsoft.com/*",
+    "https://gemini.google.com/*",
+    "https://perplexity.ai/*",
+    "https://www.perplexity.ai/*",
+    "https://chat.mistral.ai/*",
+    "https://chat.deepseek.com/*",
+    "https://grok.com/*"
   ],
   "optional_host_permissions": [
     "https://*/*"
@@ -22,7 +28,13 @@
         "https://chatgpt.com/*",
         "https://chat.openai.com/*",
         "https://claude.ai/*",
-        "https://copilot.microsoft.com/*"
+        "https://copilot.microsoft.com/*",
+        "https://gemini.google.com/*",
+        "https://perplexity.ai/*",
+        "https://www.perplexity.ai/*",
+        "https://chat.mistral.ai/*",
+        "https://chat.deepseek.com/*",
+        "https://grok.com/*"
       ],
       "js": [
         "content-hash.js",

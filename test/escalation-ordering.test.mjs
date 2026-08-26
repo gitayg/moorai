@@ -17,6 +17,8 @@ import { fileURLToPath } from "node:url";
 
 const HOOK = join(dirname(fileURLToPath(import.meta.url)), "..", "cli", "moorai-hook.mjs");
 const src = readFileSync(HOOK, "utf8");
+const GUARD = join(dirname(fileURLToPath(import.meta.url)), "..", "cli", "moorai-guard.mjs");
+const gsrc = readFileSync(GUARD, "utf8");
 
 // Index of each call within a branch, so "which runs first" is checked structurally.
 const idx = (needle, from = 0) => src.indexOf(needle, from);
@@ -44,6 +46,24 @@ test("ORDER: escalation is skipped entirely once the decision is deny", () => {
   for (const guard of ['if (rdec !== "deny") await maybeEscalate', 'if (dec !== "deny") await maybeEscalate']) {
     assert.ok(src.includes(guard), `missing deny-guard: ${guard}`);
   }
+});
+
+test("GUARD/F-301: maybeEscalate runs only AFTER the hard-block exit", () => {
+  // The claude -p guard hard-blocks (process.exit(3)) before it can forward. Every maybeEscalate call
+  // must sit past that exit, so a prompt the policy denies is never sent to the on-device model.
+  const blockExit = gsrc.indexOf("nothing sent to claude -p");
+  assert.ok(blockExit > -1, "guard hard-block exit not found — update this test");
+  const calls = [...gsrc.matchAll(/maybeEscalate\(policy,/g)].map((m) => m.index).filter((i) => i > gsrc.indexOf("async function maybeEscalate") + 40);
+  assert.ok(calls.length >= 1, "expected the proceed-path maybeEscalate call");
+  for (const c of calls) assert.ok(c > blockExit, "guard escalation must not precede the hard-block exit");
+});
+
+test("GUARD: guard escalation is advisory — never sets/returns a decision", () => {
+  const body = gsrc.slice(gsrc.indexOf("async function maybeEscalate"), gsrc.indexOf("async function main"));
+  assert.ok(body.length > 0, "guard maybeEscalate not found");
+  assert.ok(!/\bhardBlock\s*=/.test(body), "guard maybeEscalate must not assign the block decision");
+  assert.ok(!/\breturn\s+(true|false|"deny"|'deny')/.test(body), "guard maybeEscalate must not return a decision");
+  assert.ok(/policy\.modelEscalation/.test(body), "guard escalation must be gated on policy.modelEscalation");
 });
 
 test("ORDER: escalation remains advisory — it must never set a decision", () => {

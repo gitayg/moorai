@@ -1,7 +1,8 @@
 # MoorAI Browser Guard
 
 A companion **Manifest V3** browser extension (Chrome / Edge) that extends MoorAI's guardrails beyond
-coding-agent CLIs to **browser GenAI** — ChatGPT, Claude, and Microsoft Copilot on the web.
+coding-agent CLIs to **browser GenAI** — ChatGPT, Claude, Microsoft Copilot, Google Gemini, Perplexity,
+Mistral Le Chat, DeepSeek, and Grok on the web.
 
 It reviews the prompt you type into a browser AI **before it is sent**, entirely on your machine, and —
 mirroring the MoorAI agent — it is **content-free by construction**.
@@ -12,6 +13,11 @@ mirroring the MoorAI agent — it is **content-free by construction**.
   - ChatGPT — `https://chatgpt.com/*`, `https://chat.openai.com/*`
   - Claude — `https://claude.ai/*`
   - Copilot — `https://copilot.microsoft.com/*`
+  - Gemini — `https://gemini.google.com/*`
+  - Perplexity — `https://perplexity.ai/*`, `https://www.perplexity.ai/*`
+  - Mistral Le Chat — `https://chat.mistral.ai/*`
+  - DeepSeek — `https://chat.deepseek.com/*`
+  - Grok — `https://grok.com/*`
 - Intercepts the send action (**Enter** without Shift, and the **send button** click).
 - Scans the text **locally** with a deterministic regex/rules engine (`detectors.js`) — a faithful
   subset of the agent's own detectors (secrets, keys, PII, payment data, prompt injection).
@@ -60,8 +66,8 @@ There is **no bundled ML model** — detection is deterministic regex/rules only
 4. Open the extension's **Options** to choose **Coach** or **Block** mode and (optionally) set your MoorAI
    console URL + install token. When you set a server URL, the browser will prompt to grant that origin
    the reporting host permission (kept out of the always-on permissions for least privilege).
-5. Visit ChatGPT / Claude / Copilot and type a prompt containing, e.g., a fake secret — the coach banner
-   appears before the prompt is sent.
+5. Visit any supported site (ChatGPT / Claude / Copilot / Gemini / Perplexity / Le Chat / DeepSeek / Grok)
+   and type a prompt containing, e.g., a fake secret — the coach banner appears before the prompt is sent.
 
 ## Configuration
 
@@ -76,7 +82,7 @@ There is **no bundled ML model** — detection is deterministic regex/rules only
 
 ```
 browser-ext/
-  manifest.json        MV3 manifest (minimal permissions; host perms only for the 3 AI sites)
+  manifest.json        MV3 manifest (minimal permissions; one host perm per supported AI site)
   content-hash.js      keyed one-way content hash (HMAC-SHA-256), loaded before detectors.js
   detectors.js         on-device, content-free detection engine (agent-subset regexes)
   content.js           composer detection, send interception, coach/block banner

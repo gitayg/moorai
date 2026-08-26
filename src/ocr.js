@@ -18,6 +18,7 @@ function invoker() {
 export function engineLabel(engine) {
   if (engine === "macos-vision") return "macOS Vision";
   if (engine === "windows-ocr") return "Windows OCR";
+  if (engine === "linux-tesseract") return "Tesseract (Linux)";
   return "your AI provider";
 }
 

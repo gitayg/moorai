@@ -108,8 +108,9 @@ to the cloud for its own reasoning.
 - Native desktop app (cross-platform from one codebase). All AI tools are reached through the host.
 - In-band inspection points: **pre-submit** (prompt), **post-response** (AI output),
   **upload/drag-drop** (files), **paste/clipboard** (into the prompt box).
-- *Companion surfaces (shipped):* a browser extension ([`browser-ext/`](../browser-ext/)) to
-  **detect** AI use *outside* the host, and an MCP middleware layer
+- *Companion surfaces (shipped):* a content-free browser extension ([`browser-ext/`](../browser-ext/))
+  that guards prompts across 8 GenAI web apps (ChatGPT, Claude, Copilot, Gemini, Perplexity, Mistral,
+  DeepSeek, Grok) to **detect** AI use *outside* the host, and an MCP middleware layer
   ([`mcp-proxy/`](../mcp-proxy/)) that guardrails agentic tool-calls.
 
 ### Detection brain — tiered escalation cascade
@@ -203,19 +204,20 @@ is validated against.
 3. **Sensitive-data guard (DLP)** — pre-submit + paste inspection. *Threats 1, 9, 15, 33, 39.*
 4. **Upload guard** — intercepts file uploads / drag-drop. *Threats 18, 27.* Pasted/dropped **images**
    are inspected by recovering their text with the **OS's own recognition engine** and running it
-   through the same detectors — macOS `Vision.framework`, Windows `Windows.Media.Ocr.OcrEngine`. No
-   model is bundled and the image never reaches the MoorAI console. Three states, and the UI names
-   the applicable one before the user pastes:
+   through the same detectors — macOS `Vision.framework`, Windows `Windows.Media.Ocr.OcrEngine`, Linux
+   `Tesseract` (via `leptess`, a second-class tier). No model is bundled and the image never reaches the
+   MoorAI console. Three states, and the UI names the applicable one before the user pastes:
 
    | Device | Behaviour |
    |---|---|
-   | macOS; Windows with an OCR language pack | **On-device.** Nothing leaves the machine. |
+   | macOS; Windows with an OCR language pack; Linux with the Tesseract package | **On-device.** Nothing leaves the machine. (Linux/Tesseract is second-class — below the OS engines.) |
    | No OS engine, but a provider key already on the device | **Disclosed fallback.** Sent **device → provider directly** (never via MoorAI), using the key already present — env `ANTHROPIC_API_KEY`, the admin key file, or the saved agent token, resolved exactly as [`data/device-inference.mjs`](../data/device-inference.mjs) does. Emits a content-free alert. |
    | No OS engine and no key | **Skipped**, and said so. Never a silent fallback to egress. |
 
    The fallback is structurally unreachable whenever a native engine exists: the host ignores the
    caller's opt-in in that case ([`src-tauri/src/ocr.rs`](../src-tauri/src/ocr.rs)). *Windows OCR is
-   compile-verified only — not yet run against a real image on a real Windows host.*
+   runtime-verified on a real Windows 11 host (8/8 sensitive strings off a clean render); the
+   Linux/Tesseract tier is validated end-to-end but second-class — below the macOS/Windows OS engines.*
 5. **Prompt-injection scanner** — inspects pasted/external content. *Threats 2, 3, 40.*
 6. **Output-safety scanner** — dangerous links/scripts/macros + fake sources. *Threats 8, 17, 29, 32, 34, 35.*
 7. **Social-engineering / BEC sentinel** — bank-detail/payment/invoice/deepfake patterns. *Threats 10–13, 30, 31.*
