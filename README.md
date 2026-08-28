@@ -180,6 +180,18 @@ actions, machine-speed bursts, benchmark/decoy strings, LLM-generated obfuscatio
 artifacts, and more. Runs on the device; the hook also emits an alert automatically when the signature
 trips. Content-free: timestamps, action fingerprints, allow/deny, risk, and tell flags — never content.
 
+### Investigate, discover, attest — three content-free reports
+
+```bash
+npx moorai-trace                              # replay the agent's action chain, in order — for incident investigation
+npx moorai-shadow --strict                    # find unsanctioned AI (models · MCP servers · editor extensions) vs your allow-list
+npx moorai-compliance --framework eu-ai-act   # evidence pack mapped to EU AI Act / NIST AI RMF / ISO 42001 controls
+```
+
+- **`moorai-trace`** reconstructs the on-device action chain — `time · actor · tool · decision · risk · destination · args-hash` — from the content-free logs, so you can answer *"what did this agent do?"* after an incident without ever surfacing a prompt or file.
+- **`moorai-shadow`** layers a sanctioned/unsanctioned check on top of the AIBOM inventory (allow-list in `~/.moorai/config.json` `sanctioned`, or `MOORAI_SANCTIONED`); `--strict` exits non-zero for CI/posture gates.
+- **`moorai-compliance`** maps the device's existing content-free signals to framework controls and marks each **covered / partial / not-covered honestly** — the evidence layer a cost-pressured SOC can actually keep.
+
 ### Stream to your SIEM / observability stack — OpenTelemetry, content-free
 
 Point MoorAI at any OTLP collector and every governed decision is exported as an OpenTelemetry span

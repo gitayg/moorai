@@ -2132,7 +2132,7 @@ dependencies = [
 
 [[package]]
 name = "moorai"
-version = "0.62.2"
+version = "0.63.0"
 dependencies = [
  "base64 0.22.1",
  "leptess",

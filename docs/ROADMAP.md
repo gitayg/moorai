@@ -56,5 +56,12 @@ language in the agentic-security guidance is asking for.
 class, timing), with deviation scoring. Content-free by construction (features are already hashes/metadata).
 Pairs naturally with #1: the streamed history is the training/evaluation substrate.
 
-**Status:** signature detection ships and is the baseline story until this lands; don't market a
-"learned per-agent baseline" before it exists.
+**Status:**
+- **DONE (v0.63.0) — the compute engine:** `data/agent-baseline.js` (`buildBaseline`, `scoreDeviation`,
+  `scoreWindow`) builds per-actor content-free profiles (tool / risk / server / legs distributions +
+  robust median/IQR cadence) and scores how anomalous an event/window is FOR THAT ACTOR, with
+  explainable top factors and cold-start damping. Pure, deterministic, no deps, no I/O.
+- **TODO — wire it into enforcement:** the module is standalone by design; a caller in the hook /
+  `data/agent-behavior.js` still has to consume it (feed it the historical `agent-events.jsonl`
+  window and act on the score). Weights/thresholds are chosen for explainability, not yet tuned on
+  real recorded traffic. Until it's wired in AND tuned, signature detection remains the shipping story.
