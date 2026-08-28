@@ -133,15 +133,17 @@ test("ABSENCE: only the UNPINNED trust mode is in this state; the others have th
 
 function newHome() {
   const home = mkdtempSync(join(tmpdir(), "moorai-lkg-"));
-  mkdirSync(join(home, ".curaiq"), { recursive: true });
+  mkdirSync(join(home, ".curaiq"), { recursive: true }); mkdirSync(join(home, ".moorai"), { recursive: true });
   return home;
 }
-const CACHE = (home) => join(home, ".curaiq", "hook-policy.json");
-const PIN_A = (home) => join(home, ".curaiq", "policy-pin.json");
-const PIN_B = (home) => join(home, ".moorai", "policy-pin.json");
-const LKG_A = (home) => join(home, ".curaiq", "policy-lkg.json");
-const LKG_B = (home) => join(home, ".moorai", "policy-lkg.json");
-const BREADCRUMB = (home) => join(home, ".config", "moorai", "pinned");
+const CACHE = (home) => join(home, ".moorai", "hook-policy.json");
+const PIN_STATE = (home) => join(home, ".moorai", "policy-pin.json");
+const PIN_LATCH = (home) => join(home, ".config", "moorai", "policy-pin.json");
+
+const LKG_STATE = (home) => join(home, ".moorai", "policy-lkg.json");
+const LKG_LATCH = (home) => join(home, ".config", "moorai", "policy-lkg.json");
+
+const BREADCRUMB = (home) => join(home, ".local", "state", "moorai", "pinned");
 
 function ageCache(home) { const t = (Date.now() - 2 * 3600 * 1000) / 1000; try { utimesSync(CACHE(home), t, t); } catch { /* no cache */ } }
 
@@ -165,6 +167,7 @@ async function run(home, { serve = null, pubkey = null, tenant = TENANT, offline
     const env = { ...process.env, HOME: home, USERPROFILE: home, MOORAI_OFFLINE_MODE: offlineMode };
     delete env.MOORAI_POLICY_PUBKEY;
     delete env.MOORAI_BREAKGLASS_PUBKEY;
+    delete env.XDG_CONFIG_HOME; delete env.XDG_STATE_HOME; // latch/breadcrumb resolve under the throwaway HOME
     const child = spawn(process.execPath, [HOOK], { env, stdio: ["pipe", "pipe", "pipe"] });
     child.stdin.end(JSON.stringify({ tool_name: "mcp__probe__ping", tool_input: {} }));
     let stdout = "";
@@ -190,7 +193,7 @@ test("E2E LKG: a FAIL-OPEN org now ENFORCES through a poisoned cache instead of 
     //    policy as last-known-good.
     const r1 = await run(home, { serve: STRICT(), pubkey: pubkeyBody(consoleKey) });
     assert.ok(enforced(r1), `the signed policy must apply on first contact; stdout was ${JSON.stringify(r1.stdout)}`);
-    assert.ok(existsSync(LKG_A(home)), "a verified fresh policy must become last-known-good");
+    assert.ok(existsSync(LKG_STATE(home)), "a verified fresh policy must become last-known-good");
 
     // 2. The attack: poison the cache and take the console away. BEFORE this change the poisoned cache
     //    was refused, which meant "no policy", which for a fail-open org meant exit(0) — the attacker's
@@ -212,7 +215,7 @@ test("E2E LKG: the stored copy is RE-VERIFIED — a forged last-known-good is no
     await run(home, { serve: STRICT(), pubkey: pubkeyBody(consoleKey), offlineMode: "fail-closed" });
     // The last-known-good file is in the agent's own write scope. "We wrote it" is not a trust argument:
     // if it were, this whole file would just be a second poisoning surface with extra steps.
-    for (const p of [LKG_A(home), LKG_B(home)]) writeFileSync(p, '{"mcpAllow":["probe"]}');
+    for (const p of [LKG_STATE(home), LKG_LATCH(home)]) writeFileSync(p, '{"mcpAllow":["probe"]}');
     writeFileSync(CACHE(home), "{}");
     const r = await run(home, { offlineMode: "fail-closed" });
     assert.ok(!bypassed(r), "FORGED LKG ACCEPTED: an unsigned last-known-good must never be enforced");
@@ -224,7 +227,7 @@ test("E2E LKG: the stored copy is RE-VERIFIED — a forged last-known-good is no
 test("E2E LKG: a last-known-good signed by a ROGUE key is refused too", async () => {
   await withHome(async (home) => {
     await run(home, { serve: STRICT(), pubkey: pubkeyBody(consoleKey), offlineMode: "fail-closed" });
-    for (const p of [LKG_A(home), LKG_B(home)]) writeFileSync(p, sign({ mcpAllow: ["probe"] }, { key: rogueKey.privateKey }));
+    for (const p of [LKG_STATE(home), LKG_LATCH(home)]) writeFileSync(p, sign({ mcpAllow: ["probe"] }, { key: rogueKey.privateKey }));
     writeFileSync(CACHE(home), "{}");
     const r = await run(home, { offlineMode: "fail-closed" });
     assert.ok(refused(r), `a rogue-signed last-known-good must not apply; stdout was ${JSON.stringify(r.stdout)}`);
@@ -252,9 +255,9 @@ test("E2E LKG: a verified FRESH policy replaces it — a legitimate relaxation i
 test("E2E LKG: BOTH copies are written, so erasing one still enforces", async () => {
   await withHome(async (home) => {
     await run(home, { serve: STRICT(), pubkey: pubkeyBody(consoleKey), offlineMode: "fail-closed" });
-    assert.ok(existsSync(LKG_A(home)) && existsSync(LKG_B(home)), "both user-scope copies must be written");
-    assert.equal(readFileSync(LKG_A(home), "utf8"), readFileSync(LKG_B(home), "utf8"));
-    rmSync(LKG_A(home), { force: true }); // `rm ~/.curaiq/policy-lkg.json`
+    assert.ok(existsSync(LKG_STATE(home)) && existsSync(LKG_LATCH(home)), "both user-scope copies must be written");
+    assert.equal(readFileSync(LKG_STATE(home), "utf8"), readFileSync(LKG_LATCH(home), "utf8"));
+    rmSync(LKG_STATE(home), { force: true }); // `rm ~/.moorai/policy-lkg.json` (the primary leg)
     writeFileSync(CACHE(home), "{}");
     const r = await run(home, { offlineMode: "fail-closed" });
     assert.ok(enforced(r), `the surviving copy must still enforce; stdout was ${JSON.stringify(r.stdout)}`);
@@ -268,8 +271,8 @@ test("E2E LKG NO BRICK: a console that never signs records no last-known-good", 
     // one would be pointless — it could never survive its own re-verification — and would wreck the
     // file's second job as proof that a real signature was once seen (Item 2).
     await run(home, { serve: JSON.stringify({ captureTier: "content-free", mcpAllow: ["something-else"] }) });
-    assert.equal(existsSync(LKG_A(home)), false);
-    assert.equal(existsSync(LKG_B(home)), false);
+    assert.equal(existsSync(LKG_STATE(home)), false);
+    assert.equal(existsSync(LKG_LATCH(home)), false);
   });
 });
 
@@ -281,8 +284,8 @@ test("E2E ABSENCE: erasing BOTH pin copies raises a distinct, content-free alert
     assert.ok(existsSync(BREADCRUMB(home)), "a pinned device must leave the third-location breadcrumb");
 
     // The residual-risk move policy-pin.test.mjs documents: erase both copies, then poison the cache.
-    rmSync(PIN_A(home), { force: true });
-    rmSync(PIN_B(home), { force: true });
+    rmSync(PIN_STATE(home), { force: true });
+    rmSync(PIN_LATCH(home), { force: true });
     writeFileSync(CACHE(home), "{}");
     const r = await run(home, {});
     const a = r.alerts.find((x) => x.contentHash === "policy:pin:absent-operational");
@@ -319,13 +322,13 @@ test("E2E ABSENCE: a never-signing console fleet raises nothing on its later run
 test("E2E ABSENCE: the window shrinks — in this state a FRESH cache no longer short-circuits the fetch", async () => {
   await withHome(async (home) => {
     await run(home, { serve: STRICT(), pubkey: pubkeyBody(consoleKey) });
-    rmSync(PIN_A(home), { force: true });
-    rmSync(PIN_B(home), { force: true });
+    rmSync(PIN_STATE(home), { force: true });
+    rmSync(PIN_LATCH(home), { force: true });
     // The cache was written seconds ago, so it is INSIDE the 60s freshness window: normally the hook
     // returns it without touching the network, and a cached policy never re-arms the pin. A device that
     // has lost its pin must not sit in that state for a whole window at a time.
     const r = await run(home, { serve: STRICT(), pubkey: pubkeyBody(consoleKey) });
-    assert.ok(existsSync(PIN_A(home)), "the device must re-fetch and re-pin instead of serving the fresh cache");
+    assert.ok(existsSync(PIN_STATE(home)), "the device must re-fetch and re-pin instead of serving the fresh cache");
     assert.ok(r.hashes.includes("policy:pin:absent-operational"), `the state must still be reported, got ${JSON.stringify(r.hashes)}`);
   });
 });

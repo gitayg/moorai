@@ -23,7 +23,7 @@ export async function loadIdentity() {
     try {
       identity = await invoke("identity");
       // Mirror the native provision into localStorage the same way enroll() does. An MDM-provisioned
-      // install (Jamf/Intune writes ~/.curaiq/config.json directly) never runs enroll(), and the
+      // install (Jamf/Intune writes ~/.moorai/config.json directly) never runs enroll(), and the
       // content-hash key is derived from these two values — without them the renderer would emit the
       // non-correlatable NO_KEY sentinel on a device that is in fact enrolled.
       if (identity.tenant) localStorage.setItem("raiseme.tenant", identity.tenant);
@@ -49,7 +49,7 @@ export async function restartApp() {
 export async function aboutInfo() {
   const invoke = window.__TAURI__?.core?.invoke;
   if (invoke) { try { return await invoke("about_info"); } catch {} }
-  return { version: "", identifier: "run.glick.curaiq", platform: "web", arch: "", authority: "—", signed: false };
+  return { version: "", identifier: "run.glick.moorai", platform: "web", arch: "", authority: "—", signed: false };
 }
 
 // Silently check the update server, and if a newer signed build exists, download + install it in

@@ -565,27 +565,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
 
 [[package]]
-name = "curaiq"
-version = "0.59.0"
-dependencies = [
- "base64 0.22.1",
- "leptess",
- "objc2",
- "objc2-foundation",
- "objc2-vision",
- "portable-pty",
- "reqwest",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-updater",
- "windows 0.59.0",
- "winreg 0.52.0",
- "wmi",
-]
-
-[[package]]
 name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2149,6 +2128,27 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "moorai"
+version = "0.61.0"
+dependencies = [
+ "base64 0.22.1",
+ "leptess",
+ "objc2",
+ "objc2-foundation",
+ "objc2-vision",
+ "portable-pty",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-updater",
+ "windows 0.59.0",
+ "winreg 0.52.0",
+ "wmi",
 ]
 
 [[package]]

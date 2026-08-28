@@ -16,7 +16,13 @@ cask "moorai" do
   app "MoorAI.app"
 
   # Config + provisioning written by the host. Leaves user data on `brew uninstall`; removed on zap.
+  # ~/.moorai is the current state dir; ~/.config/moorai and ~/.local/state/moorai are the latch and
+  # breadcrumb legs; ~/.curaiq and ~/.raiseme are pre-rebrand dirs cleaned up on upgraded machines.
   zap trash: [
+    "~/.moorai",
+    "~/.config/moorai",
+    "~/.local/state/moorai",
     "~/.curaiq",
+    "~/.raiseme",
   ]
 end

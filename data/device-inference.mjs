@@ -12,26 +12,28 @@
 // This module never throws: every path fails open to null. The only side effect is reading the key.
 
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { readState } from "../cli/state-dirs.mjs";
 
 const API_URL = "https://api.anthropic.com/v1/messages";
 const MODEL = process.env.MOORAI_PROVIDER_MODEL || "claude-3-5-haiku-latest";
 
 // Admin-configured key file (an alternative to the env var, for machines where the agent runs without
-// ANTHROPIC_API_KEY in its environment). Plain text, one key, chmod 600 by the installer/admin.
-const KEY_FILE = process.env.MOORAI_PROVIDER_KEY_FILE || join(homedir(), ".curaiq", "provider-key");
+// ANTHROPIC_API_KEY in its environment). Plain text, one key, chmod 600 by the installer/admin. The
+// MOORAI_PROVIDER_KEY_FILE env override wins; otherwise it lives in the agent's state dir
+// (~/.moorai/provider-key), with the pre-rebrand ~/.curaiq location read as a fallback.
+function readKeyFile() {
+  const override = process.env.MOORAI_PROVIDER_KEY_FILE;
+  if (override) { try { return readFileSync(override, "utf8"); } catch { return ""; } }
+  return readState("provider-key");
+}
 
 // Read the device key: env first, then the admin key file. Returns a trimmed string or null. Pure
 // except for the file read.
 export function deviceKey() {
   const env = (process.env.ANTHROPIC_API_KEY || "").trim();
   if (env) return env;
-  try {
-    const k = readFileSync(KEY_FILE, "utf8").trim();
-    if (k) return k;
-  } catch { /* no key file — fall through */ }
-  return null;
+  const k = readKeyFile().trim();
+  return k || null;
 }
 
 // True when a usable provider key exists on this device. Cheap; no network.

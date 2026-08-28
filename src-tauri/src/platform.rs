@@ -6,7 +6,7 @@ use std::path::Path;
 // --- paths & identity ---
 
 // The user's home directory: $HOME on Unix, %USERPROFILE% on Windows. Forward slashes work in
-// std::fs paths on Windows, so callers can keep using `format!("{home}/.curaiq")` unchanged.
+// std::fs paths on Windows, so callers can keep using `format!("{home}/.moorai")` unchanged.
 pub fn home_dir() -> String {
     #[cfg(windows)]
     {
@@ -18,10 +18,28 @@ pub fn home_dir() -> String {
     }
 }
 
+// The agent's config directory — the WRITE location. Rebrand: ~/.curaiq -> ~/.moorai. Callers that
+// READ a config file use config_read_path(), which falls back to the pre-rebrand ~/.curaiq copy so an
+// install predating the rebrand keeps working until the host next writes the new location.
 pub fn config_dir() -> String {
-    format!("{}/.curaiq", home_dir())
+    format!("{}/.moorai", home_dir())
 }
 
+// Read path for a config-scoped file: the new location if present, else the pre-rebrand ~/.curaiq copy,
+// else the new location (so a not-yet-created file still resolves to where it WILL be written).
+pub fn config_read_path(name: &str) -> String {
+    let current = format!("{}/{}", config_dir(), name);
+    if std::path::Path::new(&current).exists() {
+        return current;
+    }
+    let legacy = format!("{}/.curaiq/{}", home_dir(), name);
+    if std::path::Path::new(&legacy).exists() {
+        return legacy;
+    }
+    current
+}
+
+// The canonical config.json WRITE path (always the new ~/.moorai location).
 pub fn config_path() -> String {
     format!("{}/config.json", config_dir())
 }
@@ -91,7 +109,7 @@ pub fn is_signed() -> bool {
     #[cfg(target_os = "macos")]
     {
         if let Ok(exe) = std::env::current_exe() {
-            // exe = .../MoorAI.app/Contents/MacOS/curaiq → the .app bundle is 3 levels up.
+            // exe = .../MoorAI.app/Contents/MacOS/moorai → the .app bundle is 3 levels up.
             if let Some(bundle) = exe.ancestors().nth(3) {
                 if let Ok(out) = std::process::Command::new("codesign").arg("-dvv").arg(bundle).output() {
                     for line in String::from_utf8_lossy(&out.stderr).lines() {

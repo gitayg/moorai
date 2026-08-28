@@ -1,5 +1,5 @@
 {
-  "_comment": "Reference values for the MoorAI Intune Win32 app. This file documents the enroll parameters and app metadata an admin fills in; it is NOT read by the agent at runtime (the agent reads %USERPROFILE%\\.curaiq\\config.json, which Install-MoorAI.ps1 writes). Replace every REPLACE_WITH_* value, then use these when creating the Win32 app in the Intune admin center.",
+  "_comment": "Reference values for the MoorAI Intune Win32 app. This file documents the enroll parameters and app metadata an admin fills in; it is NOT read by the agent at runtime (the agent reads %USERPROFILE%\\.moorai\\config.json, which Install-MoorAI.ps1 writes). Replace every REPLACE_WITH_* value, then use these when creating the Win32 app in the Intune admin center.",
 
   "enrollment": {
     "_comment": "Passed to Install-MoorAI.ps1. serverUrl + tenant are required; installToken may be empty for an open console.",

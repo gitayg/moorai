@@ -15,7 +15,7 @@ const PROMPT: &str = "Transcribe every character of text visible in this image, 
 
 fn key_file() -> String {
     std::env::var("MOORAI_PROVIDER_KEY_FILE")
-        .unwrap_or_else(|_| format!("{}/provider-key", crate::platform::config_dir()))
+        .unwrap_or_else(|_| crate::platform::config_read_path("provider-key"))
 }
 
 pub fn device_key() -> Option<String> {

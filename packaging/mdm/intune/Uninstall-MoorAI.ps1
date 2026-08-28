@@ -41,9 +41,11 @@ if ($node -and (Test-Path $hook)) {
     Write-Log "hooks de-registered"
 }
 
-# Remove the per-user enroll config.
-$cfgDir = Join-Path $env:USERPROFILE ".curaiq"
-if (Test-Path $cfgDir) { Remove-Item -Recurse -Force $cfgDir; Write-Log "removed $cfgDir" }
+# Remove the per-user enroll config (current + pre-rebrand location).
+foreach ($d in @(".moorai", ".curaiq")) {
+    $cfgDir = Join-Path $env:USERPROFILE $d
+    if (Test-Path $cfgDir) { Remove-Item -Recurse -Force $cfgDir; Write-Log "removed $cfgDir" }
+}
 
 # Remove the agent install directory.
 if (Test-Path $MooraiHome) { Remove-Item -Recurse -Force $MooraiHome; Write-Log "removed $MooraiHome" }

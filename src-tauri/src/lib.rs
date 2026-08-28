@@ -215,7 +215,7 @@ fn tool_allowed(tool: &str) -> bool {
     }
 }
 
-// Writes the provision config (serverUrl + tenant) to ~/.curaiq/config.json — used when the
+// Writes the provision config (serverUrl + tenant) to ~/.moorai/config.json — used when the
 // user enrolls by pasting an installation token in the app.
 #[tauri::command]
 fn save_provision(config: serde_json::Value) -> Result<(), String> {
@@ -251,7 +251,12 @@ fn about_info() -> serde_json::Value {
     // Authenticode on Windows). We surface only a boolean, never the identity / Team ID.
     serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
-        "identifier": "run.glick.curaiq",
+        // Bundle identifier. Kept in lockstep with tauri.conf.json's `identifier`. The CuraIQ→MoorAI
+        // flip (run.glick.curaiq → run.glick.moorai) makes the OS treat this as a NEW app, so it ships
+        // only with a validated transitional bridge release (see packaging/mdm/README.md "Identifier
+        // migration"). Per-user config is home-based (~/.moorai, cli/state-dirs.mjs), NOT bundle-scoped,
+        // so it survives the flip untouched.
+        "identifier": "run.glick.moorai",
         "platform": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "signed": platform::is_signed()
@@ -274,7 +279,7 @@ async fn check_and_install_update(app: tauri::AppHandle) -> Result<bool, String>
     }
 }
 
-// Merge a boolean flag into ~/.curaiq/config.json without clobbering other keys.
+// Merge a boolean flag into ~/.moorai/config.json without clobbering other keys.
 fn set_config_bool(key: &str, val: bool) {
     let mut cfg = read_config();
     if !cfg.is_object() { cfg = serde_json::json!({}); }
@@ -510,7 +515,7 @@ fn os_patch_status() -> serde_json::Value { platform::patch_status() }
 fn device_posture() -> serde_json::Value { platform::security_posture() }
 
 pub(crate) fn read_config() -> serde_json::Value {
-    std::fs::read_to_string(platform::config_path())
+    std::fs::read_to_string(platform::config_read_path("config.json"))
         .ok()
         .and_then(|c| serde_json::from_str(&c).ok())
         .unwrap_or_else(|| serde_json::json!({}))
@@ -546,7 +551,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Term::default())
         // #3 — kill-session watcher. The guard's PreToolUse hook runs out-of-process, so a "kill"
-        // verdict is delivered as a small content-free sentinel file (~/.curaiq/kill-session). Poll for
+        // verdict is delivered as a small content-free sentinel file (~/.moorai/kill-session). Poll for
         // it and terminate the live agent PTY when it appears — detect-and-prevent for the interactive
         // session. A stale sentinel (older than 60s, e.g. left by a prior run) is consumed but ignored.
         .setup(|app| {

@@ -173,9 +173,9 @@ async function runHook({ cache, cacheAgeMs = 0, anchorPub, tenant = TENANT, serv
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${server.address().port}`;
   try {
-    mkdirSync(join(home, ".curaiq"), { recursive: true });
+    mkdirSync(join(home, ".curaiq"), { recursive: true }); mkdirSync(join(home, ".moorai"), { recursive: true });
     writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: url, tenant }));
-    const cachePath = join(home, ".curaiq", "hook-policy.json");
+    const cachePath = join(home, ".moorai", "hook-policy.json");
     if (cache != null) {
       writeFileSync(cachePath, cache);
       if (cacheAgeMs) { const t = (Date.now() - cacheAgeMs) / 1000; utimesSync(cachePath, t, t); }

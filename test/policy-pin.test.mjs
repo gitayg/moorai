@@ -181,13 +181,16 @@ test("VERIFY: a successful verification reports WHICH key verified, so it can be
 
 function newHome() {
   const home = mkdtempSync(join(tmpdir(), "moorai-pin-"));
-  mkdirSync(join(home, ".curaiq"), { recursive: true });
+  mkdirSync(join(home, ".curaiq"), { recursive: true }); mkdirSync(join(home, ".moorai"), { recursive: true });
   return home;
 }
-const CACHE = (home) => join(home, ".curaiq", "hook-policy.json");
-const PIN_A = (home) => join(home, ".curaiq", "policy-pin.json");
-const PIN_B = (home) => join(home, ".moorai", "policy-pin.json");
-const pinKeys = (home, p = PIN_A(home)) => (existsSync(p) ? parsePolicyPin(readFileSync(p, "utf8")).keys : null);
+const CACHE = (home) => join(home, ".moorai", "hook-policy.json");
+// Two ACTIVE write legs in different dirs (~/.moorai + ~/.config/moorai) and the pre-rebrand read-only
+// leg (~/.curaiq). PIN_A/PIN_B were ~/.curaiq/~/.moorai before the rebrand.
+const PIN_STATE = (home) => join(home, ".moorai", "policy-pin.json");
+const PIN_LATCH = (home) => join(home, ".config", "moorai", "policy-pin.json");
+const PIN_LEGACY = (home) => join(home, ".curaiq", "policy-pin.json");
+const pinKeys = (home, p = PIN_STATE(home)) => (existsSync(p) ? parsePolicyPin(readFileSync(p, "utf8")).keys : null);
 
 // Age the cache past the 60s freshness window, so the next run actually goes to the network. Without
 // this a second run inside a minute short-circuits on the cache and never re-fetches.
@@ -212,6 +215,7 @@ async function run(home, { serve = null, pubkey = null, anchorPub = null, tenant
     const env = { ...process.env, HOME: home, USERPROFILE: home, MOORAI_OFFLINE_MODE: offlineMode };
     if (anchorPub) env.MOORAI_POLICY_PUBKEY = anchorPub; else delete env.MOORAI_POLICY_PUBKEY;
     delete env.MOORAI_BREAKGLASS_PUBKEY;
+    delete env.XDG_CONFIG_HOME; delete env.XDG_STATE_HOME; // latch/breadcrumb resolve under the throwaway HOME
     const child = spawn(process.execPath, [HOOK], { env, stdio: ["pipe", "pipe", "pipe"] });
     child.stdin.end(JSON.stringify({ tool_name: "mcp__probe__ping", tool_input: {} }));
     let stdout = "";
@@ -237,7 +241,7 @@ test("E2E SELF-ARMING: seeing a signed policy ONCE makes `echo '{}'` fail foreve
     const r1 = await run(home, { serve: SIGNED(), pubkey: pubkeyBody(consoleKey) });
     assert.ok(enforced(r1), `the signed policy must apply on first contact; stdout was ${JSON.stringify(r1.stdout)}`);
     assert.deepEqual(pinKeys(home), [id(consoleKey)], "first contact must pin the console's signing key");
-    assert.deepEqual(pinKeys(home, PIN_B(home)), [id(consoleKey)], "the pin must be written to BOTH directories");
+    assert.deepEqual(pinKeys(home, PIN_LATCH(home)), [id(consoleKey)], "the pin must be written to BOTH directories");
 
     // Run 2 — the exact attack, on the same still-unanchored device, with the console unreachable.
     writeFileSync(CACHE(home), "{}");
@@ -302,7 +306,7 @@ test("E2E SELF-ARMING: repointing serverUrl at an attacker console cannot re-pin
 test("E2E: erasing ONE pin copy neither downgrades the device nor passes silently", async () => {
   await withHome(async (home) => {
     await run(home, { serve: SIGNED(), pubkey: pubkeyBody(consoleKey) });
-    rmSync(PIN_A(home), { force: true }); // `rm ~/.curaiq/policy-pin.json`
+    rmSync(PIN_STATE(home), { force: true }); // `rm ~/.curaiq/policy-pin.json`
     writeFileSync(CACHE(home), "{}");
     const r = await run(home, {});
     assert.ok(enforced(r), `the surviving copy must still enforce; stdout was ${JSON.stringify(r.stdout)}`);
@@ -313,8 +317,8 @@ test("E2E: erasing ONE pin copy neither downgrades the device nor passes silentl
 test("E2E: a pin file that exists but is mangled is refused as corrupt, not read as 'no pin'", async () => {
   await withHome(async (home) => {
     await run(home, { serve: SIGNED(), pubkey: pubkeyBody(consoleKey) });
-    writeFileSync(PIN_A(home), "{}");
-    writeFileSync(PIN_B(home), "{}");
+    writeFileSync(PIN_STATE(home), "{}");
+    writeFileSync(PIN_LATCH(home), "{}");
     writeFileSync(CACHE(home), "{}");
     const r = await run(home, {});
     assert.ok(refused(r), `a corrupt pin must fail closed; stdout was ${JSON.stringify(r.stdout)}`);
@@ -339,8 +343,9 @@ test("E2E RESIDUAL RISK: erasing BOTH copies DOES return the device to first con
   // not tamper-proofing. The root-owned /etc/moorai/policy.pub anchor is the only hard guarantee.
   await withHome(async (home) => {
     await run(home, { serve: SIGNED(), pubkey: pubkeyBody(consoleKey) });
-    rmSync(PIN_A(home), { force: true });
-    rmSync(PIN_B(home), { force: true });
+    rmSync(PIN_STATE(home), { force: true });
+    rmSync(PIN_LATCH(home), { force: true });
+    rmSync(PIN_LEGACY(home), { force: true }); // full erasure incl. the pre-rebrand leg
     writeFileSync(CACHE(home), "{}");
     const r = await run(home, {});
     assert.ok(bypassed(r), "documented residual risk: a fully erased pin is indistinguishable from a new device");
@@ -353,8 +358,8 @@ test("E2E NO BRICK: a console that never signs forms no pin and keeps working", 
   await withHome(async (home) => {
     const r1 = await run(home, { serve: JSON.stringify({ captureTier: "content-free", mcpAllow: ["something-else"] }) });
     assert.ok(enforced(r1), `an unsigned policy must still apply on a never-signing console; stdout was ${JSON.stringify(r1.stdout)}`);
-    assert.equal(existsSync(PIN_A(home)), false, "no signature ever verified — nothing may be pinned");
-    assert.equal(existsSync(PIN_B(home)), false);
+    assert.equal(existsSync(PIN_STATE(home)), false, "no signature ever verified — nothing may be pinned");
+    assert.equal(existsSync(PIN_LATCH(home)), false);
     assert.ok(!r1.hashes.some((h) => String(h).startsWith("policy:")), `no tamper signal expected, got ${JSON.stringify(r1.hashes)}`);
 
     // ...and the pre-existing (documented) unsigned-cache behavior is unchanged on such a device.
@@ -369,7 +374,26 @@ test("E2E NO BRICK: a console whose pubkey endpoint is missing (older build) for
   await withHome(async (home) => {
     const r = await run(home, { serve: SIGNED(), pubkey: null }); // 404 on /api/policy/pubkey
     assert.ok(enforced(r), `the signed policy must still apply; stdout was ${JSON.stringify(r.stdout)}`);
-    assert.equal(existsSync(PIN_A(home)), false, "no published key to TOFU against — no pin may form");
+    assert.equal(existsSync(PIN_STATE(home)), false, "no published key to TOFU against — no pin may form");
+  });
+});
+
+// ---- rebrand migration: a pre-rebrand device pinned only in ~/.curaiq ----
+
+test("E2E MIGRATION: a legacy-only (~/.curaiq) pin still arms the device against a poisoned cache", async () => {
+  // Before the rebrand the pin lived only in ~/.curaiq. After it, the active legs are ~/.moorai and
+  // ~/.config/moorai — both absent on a freshly-upgraded device. The read-only legacy leg must still
+  // arm it, or the rebrand would silently reopen the `echo '{}' > cache` hole.
+  await withHome(async (home) => {
+    const r1 = await run(home, { serve: SIGNED(), pubkey: pubkeyBody(consoleKey) }); // pins to the active legs
+    assert.ok(enforced(r1));
+    const pin = readFileSync(PIN_STATE(home), "utf8");
+    writeFileSync(PIN_LEGACY(home), pin);            // move the only copy to the pre-rebrand dir
+    rmSync(PIN_STATE(home), { force: true });
+    rmSync(PIN_LATCH(home), { force: true });
+    writeFileSync(CACHE(home), "{}");                // the poisoned-cache attack
+    const r2 = await run(home, {});
+    assert.ok(!bypassed(r2), "a legacy ~/.curaiq pin must still arm the device against a poisoned cache");
   });
 });
 
@@ -387,9 +411,10 @@ test("E2E ANCHOR: the explicit anchor is honored on FIRST contact, before any pi
 test("E2E ANCHOR: the anchor OUTRANKS a pin, including a pin holding a rogue key", async () => {
   await withHome(async (home) => {
     mkdirSync(join(home, ".moorai"), { recursive: true });
+    mkdirSync(join(home, ".config", "moorai"), { recursive: true });
     const rogue = JSON.stringify({ v: POLICY_PIN_VERSION, tenant: TENANT, keys: [id(rogueKey)] });
-    writeFileSync(PIN_A(home), rogue);
-    writeFileSync(PIN_B(home), rogue);
+    writeFileSync(PIN_STATE(home), rogue);
+    writeFileSync(PIN_LATCH(home), rogue);
     writeFileSync(CACHE(home), SIGNED()); // signed by the real console, which only the ANCHOR knows
     const r = await run(home, { anchorPub: id(consoleKey) });
     assert.ok(enforced(r), `the anchor must decide, not the pin; stdout was ${JSON.stringify(r.stdout)}`);

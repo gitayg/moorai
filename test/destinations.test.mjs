@@ -140,7 +140,7 @@ async function runHook(input, { home, policy = { captureTier: "content-free" } }
   child.stdin.end(JSON.stringify(input));
   await new Promise((r) => child.on("exit", r));
   await new Promise((r) => setTimeout(r, 1200));
-  const read = (f) => { const p = join(h, ".curaiq", f); return existsSync(p) ? readFileSync(p, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []; };
+  const read = (f) => { const p = join(h, ".moorai", f); return existsSync(p) ? readFileSync(p, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []; };
   server.close();
   return { home: h, stdout, bodies, alerts: bodies.map((b) => { try { return JSON.parse(b); } catch { return {}; } }), destinations: read("destinations.jsonl") };
 }

@@ -688,7 +688,7 @@ function button(label, cls, onClick) {
 
 // ----- enrollment + agent auth -----
 function wireEnrollment() {
-  $("enroll-cmd").textContent = `curl -s "${serverBase()}/d/<TOKEN>" -o ~/.curaiq/config.json`;
+  $("enroll-cmd").textContent = `curl -s "${serverBase()}/d/<TOKEN>" -o ~/.moorai/config.json`;
   refreshEnrollChip();
 
   $("enroll-toggle").addEventListener("click", () => {

@@ -71,7 +71,7 @@ Two ways, both in the app's settings panel (the gear in the status bar):
   server, so the wait cannot be used to ask whether some address has an account.
 - **Paste an installation token** — for devices provisioned by an admin. Get one from the MoorAI
   portal → **Installs → Create installation**, or provision from a terminal with the `curl` line the
-  panel shows. MDM-provisioned installs (Jamf/Intune writing `~/.curaiq/config.json`) use this path
+  panel shows. MDM-provisioned installs (Jamf/Intune writing `~/.moorai/config.json`) use this path
   and never see the signup form.
 
 ### One-line install (CLI guard + Claude Code hooks)
@@ -147,7 +147,7 @@ Per agent/tool: every external destination observed, with call counts, first/las
 allow/ask/deny verdict each call got. A destination is a **host** or an **MCP server name** — never a
 URL path, query string, request body, tool argument or response, because the extractor never captures
 them. Compare against your MCP allow-list and model-endpoint allow-list to find reach the policy did
-not intend. Reads only `~/.curaiq/destinations.jsonl`; nothing leaves.
+not intend. Reads only `~/.moorai/destinations.jsonl`; nothing leaves.
 
 **Limits, stated plainly.** The map sees what the hook sees, which is Bash commands and MCP tool
 calls — not raw sockets opened by a compiled binary or by an MCP server's own child process. Hosts are
@@ -205,7 +205,7 @@ MoorAI console. Honest platform matrix:
 
 Where the OS provides no engine, MoorAI does **not** fall back to its own servers. If — and only if
 — the device already holds an AI provider key (`ANTHROPIC_API_KEY`, the admin key file at
-`~/.curaiq/provider-key`, or the agent token saved in MoorAI; the same resolution as
+`~/.moorai/provider-key`, or the agent token saved in MoorAI; the same resolution as
 [`data/device-inference.mjs`](data/device-inference.mjs)), the app offers a fallback that sends the
 image **device → provider directly**, to the provider the developer's own agent already talks to.
 That path is disclosed in the UI before it runs and emits a content-free alert so it is visible in

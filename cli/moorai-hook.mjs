@@ -16,10 +16,11 @@ import { fileURLToPath } from "node:url";
 import { join, dirname, basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, loadVerifiedPolicy, readRootOwned, readText, POSTURE_SIDECAR, POSTURE_LATCH, SYSTEM_POSTURE } from "./hook-core.mjs";
+import { buildEngine, decideText, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "./hook-core.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, recordDestination, readDestinations, requestKill } from "./signals.mjs";
+import { readState } from "./state-dirs.mjs";
 import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
 import { isSkillSurface, skillSurfaceKind } from "../data/skill-surface.js";
 import { skillIntents } from "./skill-analysis.mjs";
@@ -66,7 +67,6 @@ function uninstallHooks() {
 const CONFIG = loadConfig();
 // #33 — break-glass marker (operator-created, holds an expiry) and the durable last-known posture the
 // hook remembers so a fail-closed org stays fail-closed even if the policy cache is later deleted.
-const BREAK_GLASS = join(os.homedir(), ".curaiq", "break-glass");
 
 // #33 — remember the org's chosen posture durably, so it survives a later cache deletion. Written every
 // time a real policy loads, to BOTH user-scope copies. For an org that never set offlineMode this is
@@ -76,7 +76,7 @@ const BREAK_GLASS = join(os.homedir(), ".curaiq", "break-glass");
 // downgrade alert). Best-effort; a write error never affects enforcement.
 function rememberPosture(policy) {
   const mode = readRootOwned(SYSTEM_POSTURE).trim() === "fail-closed" ? "fail-closed" : offlineMode(policy);
-  for (const p of [POSTURE_SIDECAR, POSTURE_LATCH]) {
+  for (const p of [POSTURE_STATE, POSTURE_LATCH]) {
     try { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, mode); } catch { /* best-effort */ }
   }
 }
@@ -110,8 +110,9 @@ function rememberPosture(policy) {
 function durablePosture() {
   return ratchetPosture({
     system: readRootOwned(SYSTEM_POSTURE),
-    sidecar: readText(POSTURE_SIDECAR),
+    state: readText(POSTURE_STATE),
     latch: readText(POSTURE_LATCH),
+    legacy: readText(POSTURE_LEGACY),
     env: process.env.MOORAI_OFFLINE_MODE
   });
 }
@@ -203,8 +204,8 @@ function reportPinAbsence(absence) {
 }
 // Read + verify the marker. `raw` is kept only to derive a one-way hash for the tamper alert.
 function breakGlassVerdict() {
-  let raw = "";
-  try { raw = readFileSync(BREAK_GLASS, "utf8"); } catch { return { active: false, status: "absent", raw: "" }; }
+  const raw = readState("break-glass"); // ~/.moorai, falling back to the pre-rebrand ~/.curaiq
+  if (!raw) return { active: false, status: "absent", raw: "" };
   return { ...verifyBreakGlass(raw, { keys: trustedKeys(), tenant: CONFIG.tenant, device: os.hostname() }), raw };
 }
 // #33 defense-in-depth — a break-glass marker that does not verify is itself a strong tamper signal:

@@ -208,7 +208,7 @@ never the contents of any credential file):
   ~/.lmstudio/models, ~/.cache/lm-studio/models    local LM Studio model names (directory listing)
   ~/.vscode/extensions, ~/.cursor/extensions, …    editor AI extensions + versions (the "harness"; dir listing)
   ~/.claude/plugins, ~/.claude/skills, ~/.claude/commands   agent skills / plugins / commands (names only)
-  ~/.curaiq/agent-events.jsonl                     content-free call counts for the usage/cost signal (OWASP LLM10)
+  ~/.moorai/agent-events.jsonl                     content-free call counts for the usage/cost signal (OWASP LLM10)
 
 For each MCP server it infers capability scope (network / filesystem / credential)
 from the launch command, its args, and environment-variable NAMES only — it never

@@ -34,7 +34,7 @@
 //     Deriving from it keeps their hashes byte-identical — a property this repo already relies on
 //     and tests — with no new provisioning step, no new secret to distribute, and no console change.
 //
-// KEY SOURCE: the enrollment installToken in ~/.curaiq/config.json. `packaging/mdm/jamf/
+// KEY SOURCE: the enrollment installToken in ~/.moorai/config.json. `packaging/mdm/jamf/
 // moorai-jamf-deploy.sh` documents it as the "per-tenant enroll token" and pushes one value to the
 // whole fleet; the browser extension's options page takes the same token. It is passed through one
 // HMAC with a domain-separation label so the hashing key is not the bearer token itself.
@@ -47,7 +47,7 @@
 // threat — a server DB dump, SIEM access, or a stolen audit.jsonl must not yield plaintext SSNs.
 //
 // It does NOT defend against an attacker who already owns the device. That attacker reads
-// ~/.curaiq/config.json for the token and — far more to the point — reads the plaintext directly
+// ~/.moorai/config.json for the token and — far more to the point — reads the plaintext directly
 // off disk and out of memory. No on-device hash can change that, and claiming otherwise would be
 // the same overclaim this commit exists to remove.
 //

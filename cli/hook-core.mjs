@@ -15,6 +15,7 @@ import os from "node:os";
 import { DETECTORS } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { extractEndpointHosts, endpointApproved, extractTransitOverrides, proxyApproved } from "../data/model-endpoints.js";
+import { statePath, latchPath, breadcrumbPath } from "./state-dirs.mjs";
 import { TIER_OF } from "../data/data-tiers.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { compilePacks } from "../data/detector-packs.js";
@@ -352,17 +353,21 @@ export function verifyBreakGlass(text, { now = Date.now(), keys = [], tenant = "
 // as a refused downgrade for the SOC. Anything that is not one of the two literals is ignored outright
 // — junk must never be read as "fail-open". evidenceMissing flags the erase-the-evidence move: one of
 // the two user-scope copies still says fail-closed while the other no longer corroborates it.
-export function ratchetPosture({ system = "", sidecar = "", latch = "", env = "" } = {}) {
+export function ratchetPosture({ system = "", state = "", latch = "", legacy = "", env = "" } = {}) {
   const norm = (v) => (String(v ?? "").trim() === "fail-closed" ? "fail-closed" : String(v ?? "").trim() === "fail-open" ? "fail-open" : "");
-  const s = { system: norm(system), sidecar: norm(sidecar), latch: norm(latch), env: norm(env) };
+  const s = { system: norm(system), state: norm(state), latch: norm(latch), legacy: norm(legacy), env: norm(env) };
   const hardenedBy = Object.keys(s).filter((k) => s[k] === "fail-closed");
   if (!hardenedBy.length) return { posture: "fail-open", hardenedBy, downgradeAttempt: [], evidenceMissing: false, sources: s };
-  const userPair = [s.sidecar, s.latch];
+  // The two ACTIVE write legs — `state` (~/.moorai) and `latch` (~/.config/moorai), in different dirs.
+  // `legacy` (pre-rebrand ~/.curaiq, read-only) still hardens and is still flagged if someone sets it
+  // to fail-open, but its ABSENCE is normal on a post-rebrand install, so it must not count toward
+  // evidenceMissing — only a partial erasure of the two active legs does.
+  const activePair = [s.state, s.latch];
   return {
     posture: "fail-closed",
     hardenedBy,
-    downgradeAttempt: ["system", "sidecar", "latch", "env"].filter((k) => s[k] === "fail-open"),
-    evidenceMissing: userPair.includes("fail-closed") && userPair.includes(""),
+    downgradeAttempt: ["system", "state", "latch", "legacy", "env"].filter((k) => s[k] === "fail-open"),
+    evidenceMissing: activePair.includes("fail-closed") && activePair.includes(""),
     sources: s
   };
 }
@@ -506,24 +511,28 @@ export function parsePolicyPin(text) {
 //   corrupt         — a pin file EXISTS but does not parse: we know a pin existed, so refuse rather than
 //                     read it as "never pinned". Truncate-the-file is not a downgrade path.
 //   evidenceMissing — one copy holds the pin and the other is gone (the erase-the-evidence move)
-export function reconcilePolicyPins({ primary = "", secondary = "" } = {}) {
-  const raw = { primary, secondary };
+export function reconcilePolicyPins({ primary = "", secondary = "", legacy = "" } = {}) {
+  const raw = { primary, secondary, legacy };
   const parsed = {}, states = {};
-  for (const k of ["primary", "secondary"]) {
+  for (const k of ["primary", "secondary", "legacy"]) {
     const t = raw[k];
     if (t == null || !String(t).trim()) { states[k] = "absent"; parsed[k] = null; continue; }
     parsed[k] = parsePolicyPin(t);
     states[k] = parsed[k] ? "pin" : "corrupt";
   }
-  const names = ["primary", "secondary"];
+  const names = ["primary", "secondary", "legacy"];
   const present = names.filter((k) => states[k] === "pin");
   const corrupt = names.some((k) => states[k] === "corrupt");
-  const absent = names.filter((k) => states[k] === "absent");
   const keys = [...new Set(present.flatMap((k) => parsed[k].keys))];
   const tenants = [...new Set(present.map((k) => parsed[k].tenant))];
-  // The MAX of the two marks, for the same reason a pin in ONE copy is still a pin: erasing or rewinding
-  // one copy must not lower the device's high-water mark.
+  // The MAX mark across ALL copies (incl. the read-only legacy leg), for the same reason a pin in ONE
+  // copy is still a pin: erasing or rewinding one copy must not lower the device's high-water mark.
   const iat = present.reduce((acc, k) => maxIat(acc, parsed[k].iat), "");
+  // evidenceMissing tracks only the two ACTIVE write legs — a post-rebrand device legitimately has no
+  // legacy (~/.curaiq) copy, so its absence must not read as an erase-the-evidence move.
+  const active = ["primary", "secondary"];
+  const activePresent = active.filter((k) => states[k] === "pin");
+  const activeAbsent = active.filter((k) => states[k] === "absent");
   return {
     pinned: keys.length > 0 || corrupt,
     keys,
@@ -531,7 +540,7 @@ export function reconcilePolicyPins({ primary = "", secondary = "" } = {}) {
     corrupt,
     tenant: tenants[0] ?? "",
     tenantConflict: tenants.length > 1,
-    evidenceMissing: present.length > 0 && absent.length > 0,
+    evidenceMissing: activePresent.length > 0 && activeAbsent.length > 0,
     states
   };
 }
@@ -925,12 +934,21 @@ export function readRootOwned(p) {
 }
 export function readText(p) { try { return readFileSync(p, "utf8"); } catch { return ""; } }
 
-export const POLICY_CACHE = join(os.homedir(), ".curaiq", "hook-policy.json");
+// The policy cache is a SINGLE-location file (not a fallback read): a legacy fallback would let a
+// stale ~/.curaiq cache shadow a freshly-written ~/.moorai one. It is ephemeral (re-fetched every 60s),
+// so a pre-rebrand ~/.curaiq cache is simply ignored and replaced on the next fetch — no data to lose.
+export const POLICY_CACHE = statePath("hook-policy.json");
 
-export const POSTURE_SIDECAR = join(os.homedir(), ".curaiq", "offline-posture");
-// Second user-scope copy of the same fact, deliberately in a DIFFERENT directory so the one-liner
-// erasures (`rm ~/.curaiq/offline-posture`, `rm -rf ~/.curaiq`) do not take the memory with them.
-export const POSTURE_LATCH = join(os.homedir(), ".moorai", "posture");
+// Two user-scope copies of the offline posture in DELIBERATELY-DIFFERENT directories, so a one-liner
+// erasure (`rm ~/.moorai/posture`, `rm -rf ~/.moorai`) or a single-file `rm` cannot take the device's
+// memory with it, and a PARTIAL erasure stays detectable (evidenceMissing). POSTURE_STATE (~/.moorai)
+// was the pre-rebrand latch, so its value is continuous across the rebrand; POSTURE_LATCH is the fresh
+// second directory. POSTURE_LEGACY is the pre-rebrand ~/.curaiq sidecar, kept READ-ONLY and folded
+// into the primary leg on read (strongestPosture) so an install that predates the rebrand — where the
+// only copy was in ~/.curaiq — is never silently downgraded to fail-open.
+export const POSTURE_STATE = statePath("posture");
+export const POSTURE_LATCH = latchPath("posture");
+export const POSTURE_LEGACY = join(os.homedir(), ".curaiq", "offline-posture");
 // Machine-wide posture latch — the trustworthy source. Root-owned and not group/world-writable, the
 // same rule as breakglass.pub, and provisioned the same way (installer/MDM). It is the only posture
 // source a same-user process genuinely cannot rewrite, so a fail-closed fleet should ship it:
@@ -954,8 +972,9 @@ export const SYSTEM_POSTURE = process.platform === "win32"
 // user and cannot write /etc, so a "system pin" it wrote would be a fiction. The root-owned path that
 // does exist is POLICY_ANCHOR below — provisioned by MDM, outranking every pin. See the pinning section
 // in hook-core.mjs for what this achieves (tamper-EVIDENCE) and what it does not (tamper-proofing).
-const POLICY_PIN = join(os.homedir(), ".curaiq", "policy-pin.json");
-const POLICY_PIN_LATCH = join(os.homedir(), ".moorai", "policy-pin.json");
+const POLICY_PIN = statePath("policy-pin.json");           // ~/.moorai — primary (was the latch; continuous)
+const POLICY_PIN_LATCH = latchPath("policy-pin.json");     // ~/.config/moorai — fresh second directory
+const POLICY_PIN_LEGACY = join(os.homedir(), ".curaiq", "policy-pin.json"); // pre-rebrand, READ-ONLY
 
 // Root-owned copy of the policy `iat` high-water mark (F-202). The user-scope mark rides inside the two
 // pin copies above and is exactly as erasable as they are — tamper-EVIDENT. This one is the hard
@@ -976,8 +995,9 @@ const POLICY_HWM_SYSTEM = process.platform === "win32"
 // posture latch, plus a root-owned system copy that is preferred when one exists (an MDM can drop a
 // signed policy there; the hook only ever reads it). The stored bytes are the console's ORIGINAL signed
 // body and are re-verified on load — see selectLastKnownGood in hook-core.mjs for why that matters.
-const POLICY_LKG = join(os.homedir(), ".curaiq", "policy-lkg.json");
-const POLICY_LKG_LATCH = join(os.homedir(), ".moorai", "policy-lkg.json");
+const POLICY_LKG = statePath("policy-lkg.json");            // ~/.moorai — primary (was the latch; continuous)
+const POLICY_LKG_LATCH = latchPath("policy-lkg.json");      // ~/.config/moorai — fresh second directory
+const POLICY_LKG_LEGACY = join(os.homedir(), ".curaiq", "policy-lkg.json"); // pre-rebrand, READ-ONLY
 const POLICY_LKG_SYSTEM = process.platform === "win32"
   ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "policy-lkg.json")
   : "/etc/moorai/policy-lkg.json";
@@ -988,25 +1008,31 @@ const POLICY_LKG_SYSTEM = process.platform === "win32"
 // no key and no secret — it could not usefully hold one, since the hook runs as the user and anything it
 // can read the attacker can read. Its only job is to make an ERASED pin distinguishable from an absent
 // one. Deleting it too is possible and is the stated residual risk.
-const PIN_BREADCRUMB = process.platform === "win32"
-  ? join(process.env.LOCALAPPDATA || join(os.homedir(), "AppData", "Local"), "MoorAI", "pinned")
-  : join(os.homedir(), ".config", "moorai", "pinned");
+const PIN_BREADCRUMB = breadcrumbPath("pinned");
+// Pre-rebrand breadcrumb (POSIX only — on Windows BREADCRUMB_DIR is the same %LOCALAPPDATA%\MoorAI, so
+// the crumb is continuous). READ-ONLY: a device that pinned before the rebrand still reads as "has
+// pinned before", so an erased pin stays distinguishable from a genuinely fresh install.
+const PIN_BREADCRUMB_LEGACY = process.platform === "win32" ? null : join(os.homedir(), ".config", "moorai", "pinned");
 
 // Artifacts that exist ONLY on a device that has verified a real console signature. These decide whether
 // a missing pin is suspicious — see assessPinAbsence for why "prior operation" artifacts cannot.
 const PINNING_ARTIFACTS = [
   ["pin-breadcrumb", () => PIN_BREADCRUMB],
+  ["pin-breadcrumb-legacy", () => PIN_BREADCRUMB_LEGACY],
+  ["policy-pin-legacy", () => POLICY_PIN_LEGACY],
   ["policy-lkg", () => POLICY_LKG],
-  ["policy-lkg-latch", () => POLICY_LKG_LATCH]
+  ["policy-lkg-latch", () => POLICY_LKG_LATCH],
+  ["policy-lkg-legacy", () => POLICY_LKG_LEGACY]
 ];
 // Artifacts a device only produces by actually RUNNING. Reported as context on a suspicious pin absence
 // so a SOC can see how long the device had been operating; never a trigger on their own.
 const OPERATION_ARTIFACTS = [
-  ["posture-sidecar", () => POSTURE_SIDECAR],
+  ["posture-state", () => POSTURE_STATE],
   ["posture-latch", () => POSTURE_LATCH],
-  ["action-audit", () => join(os.homedir(), ".curaiq", "action-audit.jsonl")],
-  ["exposure-ledger", () => join(os.homedir(), ".curaiq", "exposure-ledger.jsonl")],
-  ["agent-events", () => join(os.homedir(), ".curaiq", "agent-events.jsonl")]
+  ["posture-legacy", () => POSTURE_LEGACY],
+  ["action-audit", () => statePath("action-audit.jsonl")],
+  ["exposure-ledger", () => statePath("exposure-ledger.jsonl")],
+  ["agent-events", () => statePath("agent-events.jsonl")]
 ];
 // Only the artifact NAMES ever leave the device, never a byte of their contents.
 function presentArtifacts(list) {
@@ -1080,7 +1106,7 @@ function policyKeys() {
 
 // ---- policy-key pin I/O (the pure logic lives in hook-core.mjs) ----
 
-function readPolicyPin() { return reconcilePolicyPins({ primary: readText(POLICY_PIN), secondary: readText(POLICY_PIN_LATCH) }); }
+function readPolicyPin() { return reconcilePolicyPins({ primary: readText(POLICY_PIN), secondary: readText(POLICY_PIN_LATCH), legacy: readText(POLICY_PIN_LEGACY) }); }
 
 // Learn (or roll forward) the pin from a policy that was just delivered FRESH over the network and
 // accepted. Three cases, and the difference between them is the whole security argument:
@@ -1272,7 +1298,8 @@ export async function loadVerifiedPolicy(config) {
   const lkg = selectLastKnownGood([
     { source: "system", raw: readRootOwned(POLICY_LKG_SYSTEM) },
     { source: "primary", raw: readText(POLICY_LKG) },
-    { source: "latch", raw: readText(POLICY_LKG_LATCH) }
+    { source: "latch", raw: readText(POLICY_LKG_LATCH) },
+    { source: "legacy", raw: readText(POLICY_LKG_LEGACY) }
   ], verify);
   if (lkg) return { policy: lkg.policy, source: "last-known-good", lkgCopy: lkg.copy, rejected, pin, trust, absence };
   return { policy: null, source: "none", rejected, pin, trust, absence };

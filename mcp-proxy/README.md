@@ -38,7 +38,7 @@ one implementation rather than a copy.
 The policy is **signature-verified before it is trusted**. `loadVerifiedPolicy` checks the console's
 ed25519 envelope against the machine-wide anchor (`/etc/moorai/policy.pub`, `%ProgramData%\MoorAI\policy.pub`,
 or an MDM-injected key) or a TOFU pin established from a verified fetch. An unsigned, tampered, or
-wrong-tenant `~/.curaiq/hook-policy.json` is treated as **no policy at all** — the proxy falls back to the
+wrong-tenant `~/.moorai/hook-policy.json` is treated as **no policy at all** — the proxy falls back to the
 last verified policy, then to the offline default per the posture ratchet — and emits a content-free
 tamper alert. Writing `{}` into the cache therefore cannot disarm the gate. Because the proxy is a
 long-lived process, verification re-runs on every lazy refresh, not once at startup.
@@ -47,7 +47,7 @@ long-lived process, verification re-runs on every lazy refresh, not once at star
 
 Only **category / risk / one-way hash / server / tool / decision** ever leave the device — the same
 content-free contract as the hook. **Tool-call content is never emitted.** Each call produces one
-content-free audit line in the local ledger (`~/.curaiq/action-audit.jsonl`) and a content-free alert to
+content-free audit line in the local ledger (`~/.moorai/action-audit.jsonl`) and a content-free alert to
 the console `/api/alerts`, using the config/token resolved by `cli/config.mjs`.
 
 ## Governance, not a sandbox — fail OPEN

@@ -9,7 +9,7 @@
 # WHAT IT DOES (all steps idempotent — safe to re-run on every Jamf check-in):
 #   1. Installs the MoorAI CLI agent into MOORAI_HOME (default /usr/local/moorai),
 #      either from a Jamf-distributed .pkg/.dmg or via the git installer.
-#   2. Writes ~/.curaiq/config.json  {serverUrl, tenant, installToken} for the
+#   2. Writes ~/.moorai/config.json  {serverUrl, tenant, installToken} for the
 #      logged-in user — the file cli/config.mjs reads to bind to your console.
 #   3. Runs `node <MOORAI_HOME>/cli/moorai-hook.mjs install` as that user, which
 #      registers MoorAI's PreToolUse entries in ~/.claude/settings.json.
@@ -26,7 +26,8 @@
 #   $8  PKG_URL        URL of a prebuilt agent tarball/pkg (optional; see INSTALL below)
 #
 # If $4/$5/$6 are empty, the script falls back to the managed-preferences domain
-# `run.glick.curaiq` delivered by MoorAI-config.mobileconfig (recommended: set the
+# `run.glick.moorai` delivered by MoorAI-config.mobileconfig (pre-rebrand profiles
+# under `run.glick.curaiq` are still honored as a fallback; recommended: set the
 # values once in the profile and leave the script params blank).
 # =============================================================================
 set -u
@@ -38,16 +39,24 @@ INSTALL_TOKEN="${6:-}"
 MOORAI_HOME="${7:-/usr/local/moorai}"
 PKG_URL="${8:-}"
 
-PROFILE_DOMAIN="run.glick.curaiq"   # managed-preferences domain from the .mobileconfig
+PROFILE_DOMAIN="run.glick.moorai"          # managed-preferences domain (= app bundle id) from the .mobileconfig
+PROFILE_DOMAIN_LEGACY="run.glick.curaiq"   # pre-rebrand bundle id; still honored for un-repushed profiles
 
 log() { /usr/bin/logger -t "MoorAI-deploy" "$1"; echo "MoorAI-deploy: $1"; }
 die() { log "ERROR: $1"; exit 1; }
 
 # ---------------------------------------------------- fall back to managed prefs
 # When a script param is blank, read the value the configuration profile forced
-# into the run.glick.curaiq domain. `defaults read <domain> <key>` resolves the
-# managed (Forced) value at the system level.
-prof() { /usr/bin/defaults read "$PROFILE_DOMAIN" "$1" 2>/dev/null; }
+# into the run.glick.moorai domain. `defaults read <domain> <key>` resolves the
+# managed (Forced) value at the system level. Bridge: fleets still shipping the
+# pre-rebrand MoorAI-config.mobileconfig push to run.glick.curaiq, so fall back to
+# that domain until every profile is re-pushed to the new one.
+prof() {
+  local v
+  v="$(/usr/bin/defaults read "$PROFILE_DOMAIN" "$1" 2>/dev/null)"
+  [ -n "$v" ] || v="$(/usr/bin/defaults read "$PROFILE_DOMAIN_LEGACY" "$1" 2>/dev/null)"
+  printf '%s' "$v"
+}
 [ -z "$SERVER_URL" ]    && SERVER_URL="$(prof ServerURL)"
 [ -z "$TENANT" ]        && TENANT="$(prof Tenant)"
 [ -z "$INSTALL_TOKEN" ] && INSTALL_TOKEN="$(prof InstallToken)"
@@ -119,7 +128,7 @@ install_agent() {
 # /etc/moorai as the machine-wide TRUST ANCHOR. readRootOwned() accepts a file there only when
 # stat says uid 0 AND the mode has no group/write or other/write bit (mode & 0o022 == 0) — so a
 # wrongly-owned or group-writable anchor is silently ignored, and an anchor an ordinary user could
-# rewrite would be worth no more than one under ~/.curaiq.
+# rewrite would be worth no more than one under ~/.moorai.
 #
 # UNLIKE WINDOWS, macOS has no forgery precondition to remove here: /etc (-> /private/etc) is
 # root:wheel 0755, so an ordinary user cannot create /etc/moorai in the first place. The Windows
@@ -166,7 +175,7 @@ harden_anchor_dir() {
 # headless MDM install needs no interactive token paste.
 write_enroll_config() {
   user="$1"; home="$2"
-  cfg_dir="${home}/.curaiq"
+  cfg_dir="${home}/.moorai"
   cfg_file="${cfg_dir}/config.json"
   /bin/mkdir -p "$cfg_dir"
   /usr/bin/tee "$cfg_file" >/dev/null <<JSON

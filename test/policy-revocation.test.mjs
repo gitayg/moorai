@@ -175,13 +175,15 @@ test("PIN: the mark rides inside the pin record, is optional, and reconciles as 
 
 function newHome() {
   const home = mkdtempSync(join(tmpdir(), "moorai-revoke-"));
-  mkdirSync(join(home, ".curaiq"), { recursive: true });
+  mkdirSync(join(home, ".curaiq"), { recursive: true }); mkdirSync(join(home, ".moorai"), { recursive: true });
   return home;
 }
-const CACHE = (home) => join(home, ".curaiq", "hook-policy.json");
-const PIN_A = (home) => join(home, ".curaiq", "policy-pin.json");
-const LKG_A = (home) => join(home, ".curaiq", "policy-lkg.json");
-const pin = (home) => (existsSync(PIN_A(home)) ? parsePolicyPin(readFileSync(PIN_A(home), "utf8")) : null);
+const CACHE = (home) => join(home, ".moorai", "hook-policy.json");
+const PIN_STATE = (home) => join(home, ".moorai", "policy-pin.json");
+const PIN_LATCH = (home) => join(home, ".config", "moorai", "policy-pin.json");
+const PIN_LEGACY = (home) => join(home, ".curaiq", "policy-pin.json");
+const LKG_STATE = (home) => join(home, ".moorai", "policy-lkg.json");
+const pin = (home) => (existsSync(PIN_STATE(home)) ? parsePolicyPin(readFileSync(PIN_STATE(home), "utf8")) : null);
 
 function ageCache(home) { const t = (Date.now() - 2 * 3600 * 1000) / 1000; try { utimesSync(CACHE(home), t, t); } catch { /* no cache */ } }
 
@@ -203,6 +205,7 @@ async function run(home, { serve = null, pubkey = null, tenant = TENANT, offline
     const env = { ...process.env, HOME: home, USERPROFILE: home, MOORAI_OFFLINE_MODE: offlineMode };
     delete env.MOORAI_POLICY_PUBKEY;
     delete env.MOORAI_BREAKGLASS_PUBKEY;
+    delete env.XDG_CONFIG_HOME; delete env.XDG_STATE_HOME; // latch/breadcrumb resolve under the throwaway HOME
     const child = spawn(process.execPath, [HOOK], { env, stdio: ["pipe", "pipe", "pipe"] });
     child.stdin.end(JSON.stringify({ tool_name: "mcp__probe__ping", tool_input: {} }));
     let stdout = "";
@@ -239,7 +242,7 @@ test("E2E REVOKE: a revoked key stops verifying — the leaked K1 can no longer 
     const r = await run(home, { serve: STRICT({ revokedKeys: [id(K1)] }, { iat: T3, key: K2.privateKey }), pubkey: pubkeyBody(K2) });
     assert.ok(enforced(r), `the K2 policy must apply; stdout was ${JSON.stringify(r.stdout)}`);
     assert.deepEqual(pin(home).keys, [id(K2)], "K1 must be gone from the pin");
-    assert.ok(existsSync(LKG_A(home)), "the revoking policy is itself the new last-known-good");
+    assert.ok(existsSync(LKG_STATE(home)), "the revoking policy is itself the new last-known-good");
 
     // The attack the revocation exists to stop: the thief holding K1 signs a policy that opens the probe
     // up and plants it in the cache. Before F-201 K1 was still pinned, so this was accepted and the
@@ -281,7 +284,7 @@ test("E2E REVOKE: the pin is never emptied — the whole keyring cannot be revok
     // Proof that an empty pin really would be a bypass, i.e. that the guard above is load-bearing: with
     // the pin erased, an unsigned policy IS accepted.
     ageCache(home);
-    rmSync(PIN_A(home)); rmSync(join(home, ".moorai", "policy-pin.json"));
+    rmSync(PIN_STATE(home), { force: true }); rmSync(PIN_LATCH(home), { force: true }); rmSync(PIN_LEGACY(home), { force: true }); // full erasure across all legs
     writeFileSync(CACHE(home), JSON.stringify({ captureTier: "content-free", mcpAllow: ["probe"] }));
     const r = await run(home, {});
     assert.ok(bypassed(r), `an unpinned device accepts an unsigned policy — that is what an emptied pin becomes; stdout was ${JSON.stringify(r.stdout)}`);

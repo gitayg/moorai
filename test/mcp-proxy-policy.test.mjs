@@ -44,10 +44,12 @@ const STRICT = sign({ captureTier: "content-free", mcpToolRules: { echo: { deny:
 // Drive one proxy process over stdio and return the responses by JSON-RPC id, plus what the REAL
 // server actually received.
 async function driveProxy(home, recvLog, { serverUrl, env = {}, payload = "please BLOCKME now" }) {
+  const childEnv = { ...process.env, HOME: home, USERPROFILE: home, MoorAI_SERVER: serverUrl, MoorAI_TENANT: TENANT, ...env };
+  delete childEnv.XDG_CONFIG_HOME; delete childEnv.XDG_STATE_HOME; // latch/breadcrumb resolve under the throwaway HOME
   const child = spawn(process.execPath, [GUARD, "--server", "testsrv", "--", process.execPath, FAKE, recvLog], {
     cwd: ROOT,
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, HOME: home, USERPROFILE: home, MoorAI_SERVER: serverUrl, MoorAI_TENANT: TENANT, ...env }
+    env: childEnv
   });
   child.stderr.on("data", () => {});
   const byId = new Map();
@@ -77,7 +79,7 @@ const isBlocked = (m) => Boolean(m && m.result && m.result.isError === true && /
 
 test("PROXY: a poisoned policy cache does NOT disarm the Claude Desktop gate", async () => {
   const home = mkdtempSync(join(tmpdir(), "moorai-proxy-"));
-  mkdirSync(join(home, ".curaiq"), { recursive: true });
+  mkdirSync(join(home, ".curaiq"), { recursive: true }); mkdirSync(join(home, ".moorai"), { recursive: true });
   const alerts = [];
 
   // Phase 1 — a reachable console serving a SIGNED strict policy. The device pins the key (TOFU) and
@@ -109,7 +111,7 @@ test("PROXY: a poisoned policy cache does NOT disarm the Claude Desktop gate", a
   // Phase 2 — the console goes away and the attacker runs the one-liner:
   //     echo '{}' > ~/.curaiq/hook-policy.json
   consoleDown = true;
-  writeFileSync(join(home, ".curaiq", "hook-policy.json"), "{}");
+  writeFileSync(join(home, ".moorai", "hook-policy.json"), "{}");
 
   const poisoned = await driveProxy(home, join(home, "recv-2.log"), { serverUrl: url });
   assert.ok(isBlocked(poisoned.byId.get(2)),
@@ -122,8 +124,8 @@ test("PROXY: a poisoned policy cache does NOT disarm the Claude Desktop gate", a
   // The mechanism that made the above possible, asserted last so it never preempts the headline claim:
   // phase 1's verified fetch armed the TOFU pin (which is what makes the planted body untrusted) and
   // recorded the signed body as last-known-good (which is what keeps enforcement running through it).
-  assert.ok(existsSync(join(home, ".curaiq", "policy-pin.json")), "the device must have pinned the console key");
-  assert.ok(existsSync(join(home, ".curaiq", "policy-lkg.json")), "the verified policy must be recorded as last-known-good");
+  assert.ok(existsSync(join(home, ".moorai", "policy-pin.json")), "the device must have pinned the console key");
+  assert.ok(existsSync(join(home, ".moorai", "policy-lkg.json")), "the verified policy must be recorded as last-known-good");
   // Content-free tamper signal, under the same token the hook emits.
   assert.ok(alerts.some((a) => a.contentHash === "policy:cache:unsigned"),
     `no content-free tamper alert for the poisoned cache: ${JSON.stringify(alerts.map((a) => a.contentHash))}`);
@@ -140,15 +142,16 @@ const AWS_ARG = "AKIAIOSFODNN7EXAMPLE wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
 
 test("PROXY: an unverifiable cache is NO policy — a fail-closed device falls to the offline default", async () => {
   const home = mkdtempSync(join(tmpdir(), "moorai-proxy-nolkg-"));
-  mkdirSync(join(home, ".curaiq"), { recursive: true });
+  mkdirSync(join(home, ".curaiq"), { recursive: true }); mkdirSync(join(home, ".moorai"), { recursive: true });
   mkdirSync(join(home, ".moorai"), { recursive: true });
+  mkdirSync(join(home, ".config", "moorai"), { recursive: true });
   writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: "http://127.0.0.1:1", tenant: TENANT, installToken: "tok" }));
   // A pin for the real console key — the device has verified a real signature before, so the planted
-  // (unsigned) body is refused rather than trusted.
+  // (unsigned) body is refused rather than trusted. Written to BOTH active legs (~/.moorai + ~/.config/moorai).
   const pin = JSON.stringify({ v: 1, tenant: TENANT, keys: [publicKeyId(consoleKey.publicKey)], updated: new Date().toISOString() });
-  writeFileSync(join(home, ".curaiq", "policy-pin.json"), pin);
   writeFileSync(join(home, ".moorai", "policy-pin.json"), pin);
-  writeFileSync(join(home, ".curaiq", "hook-policy.json"), PLANTED);
+  writeFileSync(join(home, ".config", "moorai", "policy-pin.json"), pin);
+  writeFileSync(join(home, ".moorai", "hook-policy.json"), PLANTED);
 
   const r = await driveProxy(home, join(home, "recv.log"), {
     serverUrl: "http://127.0.0.1:1",
@@ -158,7 +161,7 @@ test("PROXY: an unverifiable cache is NO policy — a fail-closed device falls t
   assert.ok(isBlocked(r.byId.get(2)),
     "the planted permissive cache applied — a secret in a tool argument was not blocked");
   assert.ok(!/AKIAIOSFODNN7EXAMPLE/.test(r.received), "the real MCP server received the secret-bearing call");
-  assert.equal(readFileSync(join(home, ".curaiq", "hook-policy.json"), "utf8"), PLANTED,
+  assert.equal(readFileSync(join(home, ".moorai", "hook-policy.json"), "utf8"), PLANTED,
     "a refused cache must be left exactly as planted, never promoted");
 
   rmSync(home, { recursive: true, force: true });
@@ -169,9 +172,9 @@ test("PROXY: with the SAME planted cache trusted, the call would have passed (th
   // on a device with NO pin and NO anchor the planted body IS trusted ("unanchored" — the documented
   // no-brick behaviour), and the very same secret-bearing argument is forwarded.
   const home = mkdtempSync(join(tmpdir(), "moorai-proxy-unpinned-"));
-  mkdirSync(join(home, ".curaiq"), { recursive: true });
+  mkdirSync(join(home, ".curaiq"), { recursive: true }); mkdirSync(join(home, ".moorai"), { recursive: true });
   writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: "http://127.0.0.1:1", tenant: TENANT, installToken: "tok" }));
-  writeFileSync(join(home, ".curaiq", "hook-policy.json"), PLANTED);
+  writeFileSync(join(home, ".moorai", "hook-policy.json"), PLANTED);
 
   const r = await driveProxy(home, join(home, "recv.log"), { serverUrl: "http://127.0.0.1:1", payload: AWS_ARG });
   assert.ok(!isBlocked(r.byId.get(2)), "an unanchored, unpinned device is expected to keep trusting its cache");

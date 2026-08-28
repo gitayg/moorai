@@ -18,13 +18,14 @@ MoorAI is **content-free and on-device**. Two things bind a device to your conso
 
 | What | Where | Written by (interactive) | Written by (MDM) |
 |---|---|---|---|
-| **Enroll config** — `serverUrl`, `tenant`, `installToken` | `~/.curaiq/config.json` (per user)¹ | The desktop app's setup screen (`save_provision` in the Tauri host) when the user pastes an install token | The Jamf / Intune deploy script — **no token paste needed** |
+| **Enroll config** — `serverUrl`, `tenant`, `installToken` | `~/.moorai/config.json` (per user)¹ | The desktop app's setup screen (`save_provision` in the Tauri host) when the user pastes an install token | The Jamf / Intune deploy script — **no token paste needed** |
 | **Governance hooks** — PreToolUse entries for `Read`, `Bash`, `mcp__.*`, `Task` | `~/.claude/settings.json` (per user) | `node <MOORAI_HOME>/cli/moorai-hook.mjs install` | Same command, run by the deploy script as the user |
 
-¹ Verified in source: `cli/config.mjs` reads `~/.curaiq/config.json` (legacy fallback
-`~/.raiseme/config.json`), shape `{ serverUrl, tenant, installToken }`. On Windows the Rust host
+¹ Verified in source: `cli/config.mjs` reads `~/.moorai/config.json` (legacy fallbacks
+`~/.curaiq/config.json` then `~/.raiseme/config.json`, in that order), shape
+`{ serverUrl, tenant, installToken }`. On Windows the Rust host
 resolves `~` to `%USERPROFILE%` (`src-tauri/src/platform.rs`), so the file is
-`%USERPROFILE%\.curaiq\config.json`.
+`%USERPROFILE%\.moorai\config.json`.
 
 At runtime the agent pulls policy from:
 
@@ -33,7 +34,7 @@ GET  <serverUrl>/api/policy?tenant=<tenant>      header: X-Install-Token: <insta
 POST <serverUrl>/api/alerts                       header: X-Install-Token: <installToken>   (content-free alerts)
 ```
 
-Policy is cached at `~/.curaiq/hook-policy.json` for 60 s, and the agent **fails open** (allows)
+Policy is cached at `~/.moorai/hook-policy.json` for 60 s, and the agent **fails open** (allows)
 when the console is unreachable — it is governance, not a sandbox. That is what makes a headless
 MDM rollout safe: a device is useful the moment the agent is on disk, and becomes *governed* as
 soon as the config binds it to a tenant.
@@ -55,7 +56,7 @@ soon as the config binds it to a tenant.
 
 > **Assumption (stated explicitly).** No single "MDM enroll" command exists in the repo today; the
 > interactive path is the desktop app's token-paste screen (`save_provision`). These artifacts
-> reproduce that same end state — the identical `~/.curaiq/config.json` file plus the hook
+> reproduce that same end state — the identical `~/.moorai/config.json` file plus the hook
 > registration — **non-interactively**. If your console later adds a dedicated enroll endpoint or a
 > provisioning-profile format, swap the "write config.json" step for it; nothing else changes.
 
@@ -70,7 +71,7 @@ the **desktop app** (Tauri host that wraps the agent terminal) is optional on to
 |---|---|---|
 | CLI agent + hooks | `git` clone or prebuilt tarball into `MOORAI_HOME` | same |
 | Desktop app *(optional)* | `MoorAI_<version>_universal.dmg` | `MoorAI_<version>_x64-setup.exe` (NSIS) |
-| Enroll config | `~/.curaiq/config.json` (script) | `%USERPROFILE%\.curaiq\config.json` (script) |
+| Enroll config | `~/.moorai/config.json` (script) | `%USERPROFILE%\.moorai\config.json` (script) |
 | Managed values | `jamf/MoorAI-config.mobileconfig` | `intune/moorai-intune-config.json` |
 
 ---
@@ -79,9 +80,11 @@ the **desktop app** (Tauri host that wraps the agent terminal) is optional on to
 
 ### Files
 - **`jamf/MoorAI-config.mobileconfig`** — configuration profile. Pre-seeds `ServerURL`, `Tenant`,
-  `InstallToken` into the managed-preferences domain `run.glick.curaiq` (the app's bundle
+  `InstallToken` into the managed-preferences domain `run.glick.moorai` (the app's bundle
   identifier). This is the MDM-locked *source of values*; the deploy script materializes them into
-  `~/.curaiq/config.json`.
+  `~/.moorai/config.json`. Fleets that deployed a pre-rebrand profile targeting `run.glick.curaiq`
+  keep working — the deploy script reads the new domain first and falls back to the old one until
+  the profile is re-pushed. See **Identifier migration** below.
 - **`jamf/moorai-jamf-deploy.sh`** — installs the agent, writes the per-user config, registers hooks,
   and normalizes the `/etc/moorai` trust-anchor directory to `root:wheel 0755` (see section 5).
 
@@ -113,7 +116,8 @@ the **desktop app** (Tauri host that wraps the agent terminal) is optional on to
    | `$8` | Package URL | tarball URL *(optional; blank = git install)* |
 
    > If you set the values in the `.mobileconfig` (step 2), **leave $4–$6 blank** — the script reads
-   > them back with `defaults read run.glick.curaiq …`. One source of truth, rotatable from Jamf.
+   > them back with `defaults read run.glick.moorai …` (with a `run.glick.curaiq` fallback for
+   > pre-rebrand profiles). One source of truth, rotatable from Jamf.
 
 5. **Create the policy.** Jamf Pro → **Policies → New**: trigger *Recurring Check-in* (+ *Enrollment
    Complete* for zero-touch), add the profile + the script, scope to the group. The script is
@@ -121,8 +125,8 @@ the **desktop app** (Tauri host that wraps the agent terminal) is optional on to
    users.
 
 ### Zero-touch flow (Jamf)
-`Enrollment Complete` → profile installs (values land in `run.glick.curaiq`) → script installs the
-agent, writes `~/.curaiq/config.json` for the console user, registers hooks → first Claude Code
+`Enrollment Complete` → profile installs (values land in `run.glick.moorai`) → script installs the
+agent, writes `~/.moorai/config.json` for the console user, registers hooks → first Claude Code
 tool call in any terminal pulls tenant policy from the console. No user interaction.
 
 > **Per-user note.** Config + hooks live in `$HOME`. The script targets the **console user** by
@@ -182,7 +186,7 @@ tool call in any terminal pulls tenant policy from the console. No user interact
 
 ### Zero-touch flow (Intune)
 Device enrolls → Win32 app installs in user context → `Install-MoorAI.ps1` clones/unpacks the
-agent, writes `%USERPROFILE%\.curaiq\config.json`, registers hooks → detection script confirms →
+agent, writes `%USERPROFILE%\.moorai\config.json`, registers hooks → detection script confirms →
 first tool call pulls tenant policy. No interaction.
 
 > **Per-user note (System-context installs).** In SYSTEM context `%USERPROFILE%` is the SYSTEM
@@ -293,14 +297,14 @@ ls -l  /etc/moorai        # anchor files: -rw-r--r--  root
 
 ```bash
 # macOS
-cat ~/.curaiq/config.json                       # serverUrl / tenant / installToken present
+cat ~/.moorai/config.json                       # serverUrl / tenant / installToken present
 node /usr/local/moorai/cli/moorai-redteam.mjs   # prints "tenant: … · server: …" and policy status
 grep -c moorai-hook ~/.claude/settings.json     # >= 1  → PreToolUse hooks registered
 ```
 
 ```powershell
 # Windows
-Get-Content "$env:USERPROFILE\.curaiq\config.json"
+Get-Content "$env:USERPROFILE\.moorai\config.json"
 Select-String -Path "$env:USERPROFILE\.claude\settings.json" -Pattern moorai-hook
 ```
 
@@ -329,9 +333,10 @@ the desktop app as an opt-in follow-up once the build is notarized/signed.
 ## 8. Uninstall / offboarding
 
 - **macOS:** run `node <MOORAI_HOME>/cli/moorai-hook.mjs uninstall` (removes only MoorAI's hook
-  entries), then delete `~/.curaiq` and `MOORAI_HOME`. Remove the Jamf profile to unbind values.
+  entries), then delete `~/.moorai` (and, on a device upgraded from a CuraIQ build, the
+  pre-rebrand `~/.curaiq`) and `MOORAI_HOME`. Remove the Jamf profile to unbind values.
 - **Windows:** the Intune **Uninstall** action runs `Uninstall-MoorAI.ps1` (de-registers hooks,
-  removes `~/.curaiq` and `MOORAI_HOME`).
+  removes `~/.moorai`, the pre-rebrand `~/.curaiq`, and `MOORAI_HOME`).
 
 > **The anchor directory is left in place on purpose.** Neither uninstaller removes
 > `%ProgramData%\MoorAI` or `/etc/moorai`. On Windows, deleting it would let any ordinary user
@@ -339,6 +344,42 @@ the desktop app as an opt-in follow-up once the build is notarized/signed.
 > end state. `Uninstall-MoorAI.ps1` likewise never *creates* it — an uninstall may run
 > non-elevated, and it could not harden what it created. To remove it during decommissioning,
 > delete it from an elevated context along with the anchor files.
+
+---
+
+## 9. Identifier migration (CuraIQ → MoorAI)
+
+The app's **bundle identifier** changed from `run.glick.curaiq` to `run.glick.moorai` (the compiled
+binary and macOS bundle executable were likewise renamed `curaiq` → `moorai`). The OS keys app
+identity, upgrade paths, and managed-preferences domains off the bundle id, so this is a
+**deliberate, one-time break**, not a transparent version bump.
+
+**What survives the flip automatically — no admin action:**
+- **Per-user enrollment + latch state.** Config, policy pins, offline posture, and last-known-good
+  policy live under `~/.moorai` / `~/.config/moorai` / `~/.local/state/moorai` (Windows:
+  `%APPDATA%\MoorAI`, `%LOCALAPPDATA%\MoorAI`) — **home-based, not bundle-scoped** — so they are
+  untouched by the identifier change. The agent additionally reads the pre-rebrand `~/.curaiq` as a
+  fallback.
+- **Machine-wide trust anchors.** `/etc/moorai` and `%ProgramData%\MoorAI` are path-based and
+  unaffected.
+- **Existing managed profiles.** `moorai-jamf-deploy.sh` reads the new `run.glick.moorai` domain
+  first and **falls back to `run.glick.curaiq`**, so a fleet that hasn't re-pushed its profile keeps
+  enrolling. Re-push `MoorAI-config.mobileconfig` (now targeting the new domain) at your convenience.
+
+**What does NOT cross the flip — plan for it:**
+- **In-place auto-update does not span the identifier change.** To the OS the new-id build is a new
+  app: macOS may keep the old `run.glick.curaiq` app bundle alongside it, and Windows **NSIS installs
+  side-by-side** rather than upgrading. Moving an existing install onto the new id requires a
+  **transitional bridge release** (a final `run.glick.curaiq` build whose updater directs the device
+  to install the new-id package, and whose Windows installer removes the old app first), plus a
+  manual cleanup of the leftover old bundle where present.
+
+> **⚠️ Release gate — do not ship the identifier flip unvalidated.** The code carries the new
+> identifier, but a build must be validated on a **real Windows machine (NSIS upgrade/side-by-side
+> behavior) and a real macOS machine (bundle replacement, codesign/notarization under the new id,
+> managed-prefs binding)** before any tagged release. Until then, ship from a branch that keeps
+> `run.glick.curaiq`, or hold the release. Tagging this as-is without the bridge will break
+> auto-update for every existing CuraIQ-identifier install.
 
 ---
 

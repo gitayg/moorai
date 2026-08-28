@@ -217,7 +217,7 @@ async function runHook(hookInput, { installToken = TOKEN_A } = {}) {
     let stdout = "";
     child.stdout.on("data", (c) => (stdout += c));
     await new Promise((r) => child.on("close", r));
-    const read = (f) => { try { return readFileSync(join(home, ".curaiq", f), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
+    const read = (f) => { try { return readFileSync(join(home, ".moorai", f), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
     return { stdout, actions: read("action-audit.jsonl"), events: read("agent-events.jsonl") };
   } finally {
     await new Promise((r) => server.close(r));

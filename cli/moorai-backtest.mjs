@@ -31,7 +31,7 @@ import { loadConfig } from "./config.mjs";
 
 // Display only — signals.mjs owns the writer and does not export this path. readActions() is the
 // single reader; this constant exists so --help can name the file the user should expect.
-const ACTION_AUDIT_PATH = join(homedir(), ".curaiq", "action-audit.jsonl");
+const ACTION_AUDIT_PATH = join(homedir(), ".moorai", "action-audit.jsonl");
 
 // The one sentence every surface must show. Same wording as the console's server/backtest.js.
 export const LIMITATION =

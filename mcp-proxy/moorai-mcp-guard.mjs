@@ -21,7 +21,7 @@ import { spawn } from "node:child_process";
 import { basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "../cli/config.mjs";
-import { buildEngine, mcpGateway, literacyTouchpoint, loadVerifiedPolicy, ratchetPosture, readRootOwned, readText, POSTURE_SIDECAR, POSTURE_LATCH, SYSTEM_POSTURE } from "../cli/hook-core.mjs";
+import { buildEngine, mcpGateway, literacyTouchpoint, loadVerifiedPolicy, ratchetPosture, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "../cli/hook-core.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
@@ -113,8 +113,9 @@ function reportPolicyTrust({ rejected, pin, trust, absence }) {
 function durablePosture() {
   return ratchetPosture({
     system: readRootOwned(SYSTEM_POSTURE),
-    sidecar: readText(POSTURE_SIDECAR),
+    state: readText(POSTURE_STATE),
     latch: readText(POSTURE_LATCH),
+    legacy: readText(POSTURE_LEGACY),
     env: process.env.MOORAI_OFFLINE_MODE
   });
 }

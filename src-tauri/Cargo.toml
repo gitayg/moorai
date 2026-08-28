@@ -1,6 +1,6 @@
 [package]
-name = "curaiq"
-version = "0.59.0"
+name = "moorai"
+version = "0.61.0"
 description = "MoorAI Managed AI Host"
 edition = "2021"
 
@@ -39,5 +39,5 @@ windows = { version = "0.59", features = ["Win32_System_JobObjects", "Win32_Syst
 leptess = "0.14"
 
 [lib]
-name = "curaiq_lib"
+name = "moorai_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

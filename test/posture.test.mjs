@@ -35,8 +35,8 @@ const HOST_LATCHED = existsSync(SYSTEM_LATCH);
 // ---- unit: the pure ratchet ----
 
 test("RATCHET: fail-closed from any single source wins over fail-open from every other", () => {
-  for (const k of ["system", "sidecar", "latch", "env"]) {
-    const src = { system: "fail-open", sidecar: "fail-open", latch: "fail-open", env: "fail-open", [k]: "fail-closed" };
+  for (const k of ["system", "state", "latch", "env"]) {
+    const src = { system: "fail-open", state: "fail-open", latch: "fail-open", env: "fail-open", [k]: "fail-closed" };
     const r = ratchetPosture(src);
     assert.equal(r.posture, "fail-closed", `${k}=fail-closed must harden`);
     assert.ok(r.hardenedBy.includes(k));
@@ -44,13 +44,13 @@ test("RATCHET: fail-closed from any single source wins over fail-open from every
 });
 
 test("RATCHET: a user-scope fail-open is recorded as a refused downgrade, not honored", () => {
-  const r = ratchetPosture({ latch: "fail-closed", sidecar: "fail-open", env: "fail-open" });
+  const r = ratchetPosture({ latch: "fail-closed", state: "fail-open", env: "fail-open" });
   assert.equal(r.posture, "fail-closed");
-  assert.deepEqual(r.downgradeAttempt.sort(), ["env", "sidecar"]);
+  assert.deepEqual(r.downgradeAttempt.sort(), ["env", "state"]);
 });
 
 test("RATCHET: erasing one of the two user-scope copies is evidence-missing, not a downgrade", () => {
-  const r = ratchetPosture({ latch: "fail-closed", sidecar: "" });
+  const r = ratchetPosture({ latch: "fail-closed", state: "" });
   assert.equal(r.posture, "fail-closed");
   assert.equal(r.evidenceMissing, true);
   assert.deepEqual(r.downgradeAttempt, []);
@@ -65,17 +65,17 @@ test("RATCHET: a never-configured device defaults to fail-open with no tamper si
 });
 
 test("RATCHET: a consistently fail-open device stays fail-open and is not flagged", () => {
-  const r = ratchetPosture({ sidecar: "fail-open", latch: "fail-open" });
+  const r = ratchetPosture({ state: "fail-open", latch: "fail-open" });
   assert.equal(r.posture, "fail-open");
   assert.deepEqual(r.downgradeAttempt, []);
   assert.equal(r.evidenceMissing, false);
 });
 
 test("RATCHET: junk in a posture source is ignored, never read as fail-open", () => {
-  const r = ratchetPosture({ latch: "fail-closed", sidecar: "nonsense", env: "FAIL-OPEN" });
+  const r = ratchetPosture({ latch: "fail-closed", state: "nonsense", env: "FAIL-OPEN" });
   assert.equal(r.posture, "fail-closed");
   assert.deepEqual(r.downgradeAttempt, []); // junk is not an assertion of anything
-  assert.equal(r.evidenceMissing, true);    // ...but the sidecar no longer corroborates the latch
+  assert.equal(r.evidenceMissing, true);    // ...but the state no longer corroborates the latch
 });
 
 // ---- end-to-end through the real hook process ----
@@ -90,7 +90,7 @@ function mint({ tenant = TENANT, device = hostname(), expires = "2099-01-01T00:0
   return JSON.stringify({ ...body, sig: edSign(null, Buffer.from(breakGlassCanonical(body)), operator.privateKey).toString("base64") });
 }
 
-async function runHook({ sidecar, latch, env, policy, marker, anchorPub } = {}) {
+async function runHook({ state, latch, legacy, env, policy, marker, anchorPub } = {}) {
   const home = mkdtempSync(join(tmpdir(), "moorai-posture-"));
   const alerts = [];
   const server = http.createServer((req, res) => {
@@ -107,10 +107,14 @@ async function runHook({ sidecar, latch, env, policy, marker, anchorPub } = {}) 
   try {
     mkdirSync(join(home, ".curaiq"), { recursive: true });
     writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: url, tenant: TENANT }));
-    if (sidecar != null) writeFileSync(join(home, ".curaiq", "offline-posture"), sidecar);
-    if (latch != null) { mkdirSync(join(home, ".moorai"), { recursive: true }); writeFileSync(join(home, ".moorai", "posture"), latch); }
+    // state -> ~/.moorai/posture (primary write leg), latch -> ~/.config/moorai/posture (2nd write leg),
+    // legacy -> ~/.curaiq/offline-posture (pre-rebrand read-only leg).
+    if (state != null) { mkdirSync(join(home, ".moorai"), { recursive: true }); writeFileSync(join(home, ".moorai", "posture"), state); }
+    if (latch != null) { mkdirSync(join(home, ".config", "moorai"), { recursive: true }); writeFileSync(join(home, ".config", "moorai", "posture"), latch); }
+    if (legacy != null) writeFileSync(join(home, ".curaiq", "offline-posture"), legacy);
     if (marker != null) writeFileSync(join(home, ".curaiq", "break-glass"), marker);
     const e = { ...process.env, HOME: home, USERPROFILE: home };
+    delete e.XDG_CONFIG_HOME; delete e.XDG_STATE_HOME; // resolve the latch/breadcrumb dirs under the throwaway HOME
     if (env != null) e.MOORAI_OFFLINE_MODE = env; else delete e.MOORAI_OFFLINE_MODE;
     if (anchorPub) e.MOORAI_BREAKGLASS_PUBKEY = anchorPub; else delete e.MOORAI_BREAKGLASS_PUBKEY;
     const child = spawn(process.execPath, [HOOK], { env: e, stdio: ["pipe", "pipe", "pipe"] });
@@ -130,34 +134,34 @@ const enforced = (r) => /"permissionDecision":"ask"/.test(r.stdout);
 // ---- the vulnerability itself ----
 
 test("E2E: the exact `echo fail-open > ~/.curaiq/offline-posture` attack does NOT downgrade the device", async () => {
-  const r = await runHook({ latch: "fail-closed", sidecar: "fail-open\n" });
+  const r = await runHook({ state: "fail-closed", legacy: "fail-open\n" });
   assert.ok(enforced(r), `device must stay fail-closed; hook stdout was ${JSON.stringify(r.stdout)}`);
 });
 
 test("E2E: MOORAI_OFFLINE_MODE=fail-open does NOT downgrade a fail-closed device", async () => {
-  const r = await runHook({ latch: "fail-closed", sidecar: "fail-closed", env: "fail-open" });
+  const r = await runHook({ state: "fail-closed", latch: "fail-closed", env: "fail-open" });
   assert.ok(enforced(r), `env must not relax enforcement; hook stdout was ${JSON.stringify(r.stdout)}`);
 });
 
-test("E2E: DELETING the posture sidecar does not downgrade the device", async () => {
-  const r = await runHook({ latch: "fail-closed" }); // sidecar omitted entirely
-  assert.ok(enforced(r), `a deleted sidecar must not mean fail-open; stdout was ${JSON.stringify(r.stdout)}`);
+test("E2E: DELETING the state leg (~/.moorai) does not downgrade the device", async () => {
+  const r = await runHook({ latch: "fail-closed" }); // state leg omitted; only the latch dir holds it
+  assert.ok(enforced(r), `a deleted state leg must not mean fail-open; stdout was ${JSON.stringify(r.stdout)}`);
 });
 
-test("E2E: deleting the other copy does not downgrade it either", async () => {
-  const r = await runHook({ sidecar: "fail-closed" }); // latch omitted entirely
+test("E2E: deleting the other copy (~/.config/moorai latch) does not downgrade it either", async () => {
+  const r = await runHook({ state: "fail-closed" }); // latch leg omitted; only the state dir holds it
   assert.ok(enforced(r), `stdout was ${JSON.stringify(r.stdout)}`);
 });
 
 test("E2E: a refused downgrade raises a Critical, content-free tamper alert", async () => {
-  const r = await runHook({ latch: "fail-closed", sidecar: "fail-open", env: "fail-open" });
+  const r = await runHook({ state: "fail-closed", latch: "fail-open", env: "fail-open" });
   const a = r.alerts.find((x) => String(x.contentHash || "").startsWith("posture:downgrade-refused"));
   assert.ok(a, `expected a downgrade-refused alert, got: ${JSON.stringify(r.hashes)}`);
   assert.equal(a.riskLevel, "Critical");
   assert.equal(a.stage, "policy");
   assert.match(a.contentHash, /^posture:downgrade-refused:/);
   assert.match(a.contentHash, /env/);
-  assert.match(a.contentHash, /sidecar/);
+  assert.match(a.contentHash, /latch/);
 });
 
 test("E2E: erasing one copy raises the evidence-missing signal, not a downgrade", async () => {
@@ -169,20 +173,39 @@ test("E2E: erasing one copy raises the evidence-missing signal, not a downgrade"
 // ---- the legitimate paths still work ----
 
 test("E2E: hardening (fail-open → fail-closed) still needs no proof at all", async () => {
-  const viaEnv = await runHook({ sidecar: "fail-open", latch: "fail-open", env: "fail-closed" });
+  const viaEnv = await runHook({ state: "fail-open", latch: "fail-open", env: "fail-closed" });
   assert.ok(enforced(viaEnv), `env hardening must apply; stdout was ${JSON.stringify(viaEnv.stdout)}`);
-  const viaFile = await runHook({ sidecar: "fail-closed" });
-  assert.ok(enforced(viaFile), `sidecar hardening must apply; stdout was ${JSON.stringify(viaFile.stdout)}`);
+  const viaFile = await runHook({ state: "fail-closed" });
+  assert.ok(enforced(viaFile), `state-leg hardening must apply; stdout was ${JSON.stringify(viaFile.stdout)}`);
+});
+
+// ---- rebrand migration: a pre-rebrand install had its only copy in ~/.curaiq ----
+
+test("E2E: MIGRATION — a legacy-only (~/.curaiq) fail-closed device is NOT downgraded after the rebrand", async () => {
+  // Before the rebrand the offline posture lived only in ~/.curaiq/offline-posture. After it, the two
+  // active legs are ~/.moorai and ~/.config/moorai — both absent on a freshly-upgraded device. The
+  // read-only legacy leg must still harden, or the rebrand would silently reopen the fail-open door.
+  const r = await runHook({ legacy: "fail-closed" });
+  assert.ok(enforced(r), `legacy ~/.curaiq posture must still ratchet fail-closed; stdout was ${JSON.stringify(r.stdout)}`);
+});
+
+test("E2E: MIGRATION — a fail-OPEN legacy leg is flagged as a downgrade attempt, not silently absorbed", async () => {
+  // The legacy leg hardens, but it is still attacker-writable; a fail-open value there must surface as
+  // tamper-evidence (downgrade-refused) rather than being quietly folded away.
+  const r = await runHook({ state: "fail-closed", legacy: "fail-open" });
+  assert.ok(enforced(r), "the active state leg keeps it fail-closed");
+  const a = r.alerts.find((x) => String(x.contentHash || "").startsWith("posture:downgrade-refused"));
+  assert.ok(a && /legacy/.test(a.contentHash), `a fail-open legacy leg must be flagged; got ${JSON.stringify(r.hashes)}`);
 });
 
 test("E2E: a REAL server policy saying fail-open legitimately relaxes a fail-closed device", { skip: HOST_LATCHED && "host has a system posture latch" }, async () => {
-  const r = await runHook({ latch: "fail-closed", sidecar: "fail-closed", policy: { offlineMode: "fail-open", captureTier: "content-free" } });
+  const r = await runHook({ state: "fail-closed", latch: "fail-closed", policy: { offlineMode: "fail-open", captureTier: "content-free" } });
   assert.equal(r.stdout, "", "a real policy is an authorized relaxation — the hook must not enforce the offline default");
   assert.equal(r.code, 0);
 });
 
 test("E2E: an operator-signed break-glass marker still grants fail-open on a ratcheted device", { skip: HOST_LATCHED && "host has a system posture latch" }, async () => {
-  const r = await runHook({ latch: "fail-closed", sidecar: "fail-closed", marker: mint(), anchorPub: PUB_B64 });
+  const r = await runHook({ state: "fail-closed", latch: "fail-closed", marker: mint(), anchorPub: PUB_B64 });
   assert.equal(r.stdout, "", "break-glass means fail-open — the hook must emit no deny/ask");
   assert.equal(r.code, 0);
   assert.ok(r.hashes.includes("breakglass:active"), `expected break-glass to activate, got: ${JSON.stringify(r.hashes)}`);
@@ -209,11 +232,12 @@ test("E2E: a policy load writes BOTH posture copies, so one erasure still leaves
     writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: `http://127.0.0.1:${server.address().port}`, tenant: TENANT }));
     const e = { ...process.env, HOME: home, USERPROFILE: home };
     delete e.MOORAI_OFFLINE_MODE; delete e.MOORAI_BREAKGLASS_PUBKEY;
+    delete e.XDG_CONFIG_HOME; delete e.XDG_STATE_HOME; // latch dir must resolve under the throwaway HOME
     const child = spawn(process.execPath, [HOOK], { env: e, stdio: ["pipe", "pipe", "pipe"] });
     child.stdin.end(JSON.stringify({ tool_name: "mcp__probe__ping", tool_input: {} }));
     await new Promise((r) => child.on("close", r));
-    assert.ok(existsSync(join(home, ".curaiq", "offline-posture")), "sidecar must be written");
-    assert.ok(existsSync(join(home, ".moorai", "posture")), "second copy must be written outside ~/.curaiq");
+    assert.ok(existsSync(join(home, ".moorai", "posture")), "primary state copy must be written");
+    assert.ok(existsSync(join(home, ".config", "moorai", "posture")), "second copy must be written in a DIFFERENT dir (~/.config/moorai)");
   } finally {
     await new Promise((r) => server.close(r));
     rmSync(home, { recursive: true, force: true });

@@ -17,11 +17,11 @@
 // Both fail open and silent: a logging error must never affect the enforcement decision.
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { isSecretCategory } from "./hook-core.mjs";
+import { STATE_DIR } from "./state-dirs.mjs";
 
-const DIR = join(homedir(), ".curaiq");
+const DIR = STATE_DIR; // ~/.moorai (was ~/.curaiq before the rebrand)
 const LEDGER = join(DIR, "exposure-ledger.jsonl");
 const INTENT = join(DIR, "intent-log.jsonl");
 const AGENT_EVENTS = join(DIR, "agent-events.jsonl");

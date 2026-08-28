@@ -6,7 +6,7 @@
     Intune considers a Win32 app "installed" when its detection script writes to
     STDOUT and exits 0. This script confirms BOTH:
       1. the agent files exist (cli\moorai-hook.mjs under MooraiHome), and
-      2. the current user is enrolled (%USERPROFILE%\.curaiq\config.json has a
+      2. the current user is enrolled (%USERPROFILE%\.moorai\config.json has a
          non-empty serverUrl + tenant).
 
     If either check fails it exits 1 with no output -> Intune treats the app as not
@@ -25,7 +25,8 @@ $hook = Join-Path $MooraiHome "cli\moorai-hook.mjs"
 
 if (-not (Test-Path $hook)) { exit 1 }   # agent not installed
 
-$cfgFile = Join-Path $env:USERPROFILE ".curaiq\config.json"
+$cfgFile = Join-Path $env:USERPROFILE ".moorai\config.json"
+if (-not (Test-Path $cfgFile)) { $cfgFile = Join-Path $env:USERPROFILE ".curaiq\config.json" }  # pre-rebrand fallback
 if (-not (Test-Path $cfgFile)) { exit 1 }  # not enrolled for this user
 
 try {

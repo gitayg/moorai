@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "MoorAI",
-  "version": "0.60.0",
-  "identifier": "run.glick.curaiq",
+  "version": "0.61.0",
+  "identifier": "run.glick.moorai",
   "build": {
     "frontendDist": "../.tauridist",
     "beforeBuildCommand": "node scripts/stage-frontend.mjs",

@@ -50,7 +50,7 @@ async function runHook(input, { policy = { captureTier: "content-free" } } = {})
   const port = server.address().port;
 
   const home = mkdtempSync(join(tmpdir(), "moorai-alert-"));
-  mkdirSync(join(home, ".curaiq"), { recursive: true });
+  mkdirSync(join(home, ".curaiq"), { recursive: true }); mkdirSync(join(home, ".moorai"), { recursive: true });
   writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: `http://127.0.0.1:${port}`, tenant: "acme" }));
 
   const child = spawn(process.execPath, [HOOK], {
@@ -68,7 +68,7 @@ async function runHook(input, { policy = { captureTier: "content-free" } } = {})
   // is where it would land — so an empty `alerts` here is a real loss, not a race in the test.
   await new Promise((r) => setTimeout(r, 1200));
 
-  const auditPath = join(home, ".curaiq", "action-audit.jsonl");
+  const auditPath = join(home, ".moorai", "action-audit.jsonl");
   const audit = existsSync(auditPath) ? readFileSync(auditPath, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
   server.close();
   rmSync(home, { recursive: true, force: true });
@@ -124,9 +124,9 @@ test("DELIVERY: an unreachable server cannot hang or change the decision", async
   // a black-hole address (TEST-NET-1, RFC 5737: routed nowhere) so the request neither connects nor
   // is refused, and assert the deny still comes out well inside the bound.
   const home = mkdtempSync(join(tmpdir(), "moorai-blackhole-"));
-  mkdirSync(join(home, ".curaiq"), { recursive: true });
+  mkdirSync(join(home, ".curaiq"), { recursive: true }); mkdirSync(join(home, ".moorai"), { recursive: true });
   writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: "http://192.0.2.1:8787", tenant: "acme" }));
-  writeFileSync(join(home, ".curaiq", "hook-policy.json"), JSON.stringify({ captureTier: "content-free", mcpAllow: ["approved-only"] }));
+  writeFileSync(join(home, ".moorai", "hook-policy.json"), JSON.stringify({ captureTier: "content-free", mcpAllow: ["approved-only"] }));
 
   const t0 = Date.now();
   const child = spawn(process.execPath, [HOOK], { cwd: ROOT, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, HOME: home, USERPROFILE: home } });

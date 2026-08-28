@@ -5,17 +5,17 @@
 
   WHAT THIS DOES
     Pre-seeds the MoorAI enrollment values (console URL, tenant, install token) into the
-    app's managed-preferences domain `run.glick.curaiq` so they are:
+    app's managed-preferences domain `run.glick.moorai` so they are:
       - distributed and MDM-enforced from the console (admins edit them centrally), and
       - readable by the Jamf deploy script, which materializes them into the file the
-        on-device agent actually reads: ~/.curaiq/config.json.
+        on-device agent actually reads: ~/.moorai/config.json.
 
   WHY A PROFILE *AND* A SCRIPT
-    The MoorAI CLI hook (cli/config.mjs) reads its binding from ~/.curaiq/config.json — a
+    The MoorAI CLI hook (cli/config.mjs) reads its binding from ~/.moorai/config.json — a
     per-user JSON file, NOT from CFPreferences/defaults. A configuration profile cannot write
     an arbitrary JSON file, so this profile is the authoritative, locked *source of values*,
-    and moorai-jamf-deploy.sh reads it (`defaults read run.glick.curaiq ...` or Jamf script
-    params) and writes ~/.curaiq/config.json per user. Keeping the values here means an admin
+    and moorai-jamf-deploy.sh reads it (`defaults read run.glick.moorai ...` or Jamf script
+    params) and writes ~/.moorai/config.json per user. Keeping the values here means an admin
     can rotate the token or re-point the console from Jamf without re-running the installer.
 
   HOW TO CUSTOMIZE
@@ -34,13 +34,13 @@
   <key>PayloadContent</key>
   <array>
     <dict>
-      <!-- Custom-settings payload: writes to the managed-preferences domain run.glick.curaiq. -->
+      <!-- Custom-settings payload: writes to the managed-preferences domain run.glick.moorai. -->
       <key>PayloadType</key>
       <string>com.apple.ManagedClient.preferences</string>
       <key>PayloadVersion</key>
       <integer>1</integer>
       <key>PayloadIdentifier</key>
-      <string>run.glick.curaiq.settings</string>
+      <string>run.glick.moorai.settings</string>
       <key>PayloadUUID</key>
       <string>4B97E23B-04B9-4481-BA65-E051409CE605</string>
       <key>PayloadEnabled</key>
@@ -49,7 +49,7 @@
       <string>MoorAI Managed Settings</string>
       <key>PayloadContent</key>
       <dict>
-        <key>run.glick.curaiq</key>
+        <key>run.glick.moorai</key>
         <dict>
           <key>Forced</key>
           <array>
@@ -82,7 +82,7 @@
   <key>PayloadOrganization</key>
   <string>REPLACE_WITH_ORG_NAME</string>
   <key>PayloadIdentifier</key>
-  <string>run.glick.curaiq.managedconfig</string>
+  <string>run.glick.moorai.managedconfig</string>
   <key>PayloadType</key>
   <string>Configuration</string>
   <key>PayloadUUID</key>

@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Installs the MoorAI agent, writes the per-user enrollment config
-    (%USERPROFILE%\.curaiq\config.json), and registers the on-device Claude Code
+    (%USERPROFILE%\.moorai\config.json), and registers the on-device Claude Code
     PreToolUse hooks (%USERPROFILE%\.claude\settings.json) — all non-interactively,
     so a managed Windows device is governed the moment it checks in, with no user
     pasting an install token.
@@ -290,7 +290,7 @@ function Install-Agent {
 # JSON shape read by cli/config.mjs: { serverUrl, tenant, installToken }.
 function Write-EnrollConfig {
     param([string] $Home)
-    $cfgDir  = Join-Path $Home ".curaiq"
+    $cfgDir  = Join-Path $Home ".moorai"
     $cfgFile = Join-Path $cfgDir "config.json"
     New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
     $cfg = [ordered]@{

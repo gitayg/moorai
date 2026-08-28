@@ -6,20 +6,24 @@
 // cannot be forged or tampered with. All of this is metadata — no prompt or argument content leaves.
 import { generateKeyPairSync, createPrivateKey, createPublicKey, sign as cryptoSign, randomBytes } from "node:crypto";
 import { contentHash } from "../cli/content-hash.mjs";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { STATE_DIR, statePath, readState } from "../cli/state-dirs.mjs";
 
-const DIR = join(homedir(), ".curaiq");
-const KEY = join(DIR, "agency-ed25519.key");
+// The per-device signing key is a STABLE identity: the console pins its public half on first use
+// (TOFU), so it must NOT be regenerated across the CuraIQ→MoorAI rebrand or the pin breaks. New keys
+// are written to ~/.moorai; an existing key in the pre-rebrand ~/.curaiq (or ~/.raiseme) is read in
+// place via readState() so an upgraded device keeps signing with its already-pinned key.
+const KEY = statePath("agency-ed25519.key"); // ~/.moorai — the WRITE path for a brand-new device
 
 let _priv = null, _pubB64 = null;
 function loadKeys() {
   if (_priv) return true;
-  try { _priv = createPrivateKey(readFileSync(KEY, "utf8")); } catch {
+  const existing = readState("agency-ed25519.key"); // ~/.moorai, then pre-rebrand ~/.curaiq / ~/.raiseme
+  if (existing) { try { _priv = createPrivateKey(existing); } catch { _priv = null; } }
+  if (!_priv) {
     try {
       const { privateKey } = generateKeyPairSync("ed25519");
-      mkdirSync(DIR, { recursive: true });
+      mkdirSync(STATE_DIR, { recursive: true });
       writeFileSync(KEY, privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
       _priv = privateKey;
     } catch { return false; }
