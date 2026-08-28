@@ -15,6 +15,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { contentHash } from "./content-hash.mjs";
 
 let VERSION = "unknown";
 try { VERSION = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")).version; } catch { /* version is cosmetic */ }
@@ -63,9 +64,27 @@ function spanAttrs(alert = {}) {
 
 // A governed decision maps to one span. A blocked/denied call is an ERROR span so backends flag it.
 const BLOCKED = new Set(["Blocked"]);
+// Tamper-evidence for the record once it has left the device. A tenant-keyed HMAC over the record's
+// canonical content-free fields: an attacker who alters a field in the SIEM copy can't recompute a
+// matching hash without the tenant key, so the modification is detectable. Inputs are all metadata or
+// existing hashes — no content. (Gap/reorder detection across records — a linked prev-hash chain with
+// a locked monotonic sequence — is the tracked follow-on; see docs/ROADMAP.md.)
+// The exact bytes the record hash is taken over — a pipe-joined, fixed-order list of the record's
+// content-free fields. Exported + pure so the field set, order, and decision inference are testable
+// without depending on whether contentHash is keyed on this box.
+export function canonicalRecord(alert = {}, tenant, nanos) {
+  const decision = alert.decision || (alert.riskLevel === "Blocked" ? "deny" : "allow");
+  return [alert.tool, alert.category, alert.riskLevel, decision, alert.stage, alert.contentHash, tenant, nanos]
+    .map((v) => (v == null ? "" : String(v))).join("|");
+}
+function recordHash(alert, tenant, nanos) {
+  return contentHash(canonicalRecord(alert, tenant, nanos));
+}
+
 export function buildTracePayload(alert = {}, { tenant, version = VERSION, now = Date.now() } = {}) {
   const nanos = String(BigInt(now) * 1000000n);
   const attrs = spanAttrs({ ...alert, tenant: tenant ?? alert.tenant });
+  attrs.push(attr("moorai.record_hash", s(recordHash(alert, tenant ?? alert.tenant, nanos))));
   return {
     resourceSpans: [{
       resource: { attributes: [

@@ -24,14 +24,21 @@ erasure, we don't prevent it.
 
 **Direction:** make the **off-device stream the immutable record** rather than trying to make the
 endpoint a WORM store. The OTel/SIEM copy already leaves the device append-only from the endpoint's
-point of view; position and document *that* as the durable evidence store, and consider:
-- a monotonic sequence number + running hash-chain on emitted records so a gap/reorder in the SIEM
-  copy is detectable (tamper-evidence that survives into the pipeline);
-- optional local append-only hardening (e.g. platform WORM/immutable-flag where available) as
-  defense-in-depth, opportunistic and fail-open like the rest of the on-device signals.
+point of view; position and document *that* as the durable evidence store.
 
-Do **not** claim "immutable" for the on-device logs until/unless this lands; the honest line is
-"signed + tamper-evident on the device, immutable once streamed."
+- **DONE (v0.62.2):** per-record tamper-evidence in the stream — every emitted span carries
+  `moorai.record_hash`, a **tenant-keyed HMAC** over the record's canonical content-free fields
+  (`cli/otel.mjs` `canonicalRecord` / `recordHash`). An attacker who alters a field in the SIEM copy
+  can't recompute a matching hash without the tenant key, so a *modified* record is detectable.
+- **TODO — gap/reorder detection:** a linked **prev-hash chain + monotonic sequence** so a *removed*
+  or *reordered* record is also detectable. Blocked on cross-process sequencing: hooks are short-lived
+  separate processes, so a naive read-last-then-increment counter races. Needs an flock-guarded (or
+  atomic-append-derived) monotonic counter, fail-open like the rest of the signals.
+- **TODO (optional):** local append-only hardening (platform WORM/immutable-flag where available) as
+  defense-in-depth.
+
+Do **not** claim "immutable" for the on-device logs until the chain lands; the honest line is
+"signed + per-record tamper-evident, and immutable once streamed."
 
 ### 2. Learned per-agent behavioral baseline (non-human digital actor)
 

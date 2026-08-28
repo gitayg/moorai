@@ -5,7 +5,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { buildTracePayload, emitOtel, otlpEndpoint } from "../cli/otel.mjs";
+import { buildTracePayload, emitOtel, otlpEndpoint, canonicalRecord } from "../cli/otel.mjs";
+import { contentHash } from "../cli/content-hash.mjs";
 
 const findAttr = (attrs, key) => attrs.find((a) => a.key === key)?.value;
 
@@ -35,6 +36,26 @@ test("payload uses GenAI + moorai attributes and maps a blocked call to an ERROR
   const res = p.resourceSpans[0].resource.attributes;
   assert.equal(findAttr(res, "service.name").stringValue, "moorai");
   assert.equal(findAttr(res, "moorai.tenant").stringValue, "acme");
+});
+
+test("canonical record: fixed field set, order, and decision inference", () => {
+  // Deterministic + key-independent — this is what makes a reordering/omission detectable in test.
+  assert.equal(
+    canonicalRecord({ tool: "Bash", category: "Secret egress", riskLevel: "Blocked", contentHash: "h:abc", stage: "pre" }, "acme", "123"),
+    "Bash|Secret egress|Blocked|deny|pre|h:abc|acme|123"
+  );
+  // decision inferred from a Blocked risk, else defaults allow; explicit decision wins.
+  assert.equal(canonicalRecord({ tool: "Read", riskLevel: "Low", contentHash: "h:x" }, "t", "9").split("|")[3], "allow");
+  assert.equal(canonicalRecord({ tool: "mcp:x", decision: "ask", riskLevel: "Low" }, "t", "9").split("|")[3], "ask");
+});
+
+test("record_hash is the keyed hash of exactly that canonical record", () => {
+  const base = { tool: "Bash", category: "Secret egress", riskLevel: "Blocked", contentHash: "h:abc", stage: "pre" };
+  const now = 1735689600000, nanos = String(BigInt(now) * 1000000n);
+  const rh = findAttr(buildTracePayload(base, { tenant: "acme", now }).resourceSpans[0].scopeSpans[0].spans[0].attributes, "moorai.record_hash").stringValue;
+  assert.equal(rh, contentHash(canonicalRecord(base, "acme", nanos)));
+  // The keyed HMAC's unforgeability + field-sensitivity is proven in content-hash.test.mjs; the
+  // canonical-record test above pins the field set/order that feeds it.
 });
 
 test("a non-blocked call is an UNSET (ok) span", () => {
