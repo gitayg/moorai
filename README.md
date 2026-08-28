@@ -180,6 +180,24 @@ actions, machine-speed bursts, benchmark/decoy strings, LLM-generated obfuscatio
 artifacts, and more. Runs on the device; the hook also emits an alert automatically when the signature
 trips. Content-free: timestamps, action fingerprints, allow/deny, risk, and tell flags — never content.
 
+### Stream to your SIEM / observability stack — OpenTelemetry, content-free
+
+Point MoorAI at any OTLP collector and every governed decision is exported as an OpenTelemetry span
+(GenAI semantic conventions) that Datadog, Dynatrace, Grafana, Elastic, or your SIEM ingest natively —
+**but carrying no prompt, response, argument, or file-path content**. Only governance metadata and the
+tenant-keyed argument hash leave: `gen_ai.tool.name`, `moorai.category`, `moorai.risk`,
+`moorai.decision`, `moorai.args_hash`. A blocked call is an ERROR span, so denials light up in your
+existing dashboards. It is the standard telemetry envelope with none of the content — observability you
+can pipe into your SIEM without a data-residency problem, and without vendor lock-in.
+
+```bash
+export MOORAI_OTLP_ENDPOINT="https://otel-collector.example:4318"   # OTLP/HTTP (JSON) base URL
+export MOORAI_OTLP_HEADERS="x-api-key=…"                            # optional ingest headers
+```
+
+Off unless an endpoint is set; emission is bounded and best-effort and never affects an enforcement
+decision. (Or set `otlpEndpoint` / `otlpHeaders` in the device config.)
+
 ## Coverage
 
 | | |

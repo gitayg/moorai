@@ -30,6 +30,7 @@ import { signApproval, argsHash } from "../data/agency-sign.mjs";
 import { contentTells, assessSession, assessTrifecta, assessCrossServerTrifecta, trifectaLegs, serverOf } from "../data/agent-behavior.js";
 import { classifyOpportunistic } from "../data/model-escalation.mjs";
 import { contentHash, fileFingerprint } from "./content-hash.mjs";
+import { emitOtel } from "./otel.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -252,6 +253,11 @@ const PENDING = [];
 function post(alert) {
   const p = fetch(`${CONFIG.serverUrl}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(alert), signal: AbortSignal.timeout(1500) }).catch(() => {});
   PENDING.push(p);
+  // Content-free OTLP mirror of the same governance event — no-op unless an OTLP endpoint is
+  // configured. Same chokepoint as the alert so it can't be forgotten; same bounded, drained,
+  // never-rejects contract, so telemetry can't gate or delay the decision.
+  const o = emitOtel(alert, { config: CONFIG, identity: IDENTITY });
+  if (o) PENDING.push(o);
   return p;
 }
 // Drain in a loop: an awaited post() (the posture/tamper reports) is already settled by the time we

@@ -26,6 +26,7 @@ import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
 import { contentHash } from "../cli/content-hash.mjs";
+import { emitOtel } from "../cli/otel.mjs";
 
 // ---- argv parsing: [--server label] -- realcmd args... ----
 function parseArgv(argv) {
@@ -53,6 +54,9 @@ const CONFIG = loadConfig();
 function djb2(s) { let h = 5381; for (let i = 0; i < String(s).length; i++) h = ((h << 5) + h + String(s).charCodeAt(i)) >>> 0; return "h" + h.toString(16); }
 const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: djb2(`${os.userInfo().username}@${os.hostname()}`) };
 function post(alert) {
+  // Content-free OTLP mirror — no-op unless an OTLP endpoint is configured; bounded + swallows errors,
+  // so it can never touch the proxy path (same contract as the alert post below).
+  try { emitOtel(alert, { config: CONFIG, identity: IDENTITY }); } catch { /* telemetry is never enforcement */ }
   try {
     return fetch(`${CONFIG.serverUrl}/api/alerts`, {
       method: "POST",
