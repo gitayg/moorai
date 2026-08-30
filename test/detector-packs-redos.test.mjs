@@ -11,6 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { compilePacks } from "../data/detector-packs.js";
+import { DetectionEngine } from "../src/engine.js";
 
 const ms = (fn) => { const t0 = process.hrtime.bigint(); fn(); return Number(process.hrtime.bigint() - t0) / 1e6; };
 
@@ -83,6 +84,45 @@ test("PACKS: flags are still sanitized, not passed through to throw", () => {
   const out = pack(["ACME-[0-9]{6}"], "gx");
   assert.equal(out.length, 1, "a pattern must survive a sloppy flag string");
   assert.equal(out[0].patterns[0].flags, "g");
+});
+
+// _matchDetector's refine path recompiles a detector's pattern with a global flag. It used to do so
+// with `new RegExp(p.source, ...)`, trusting the source was already vetted — a hole if an unvetted
+// pattern ever reached a refine-carrying detector. It now routes p.source back through safeRegex, so
+// a multi-unbounded-quantifier pattern is skipped rather than compiled into a backtracking bomb.
+const enginePack = (patterns, refine) =>
+  new DetectionEngine(
+    { threats: [{ id: 1, riskLevel: "High", riskScore: 50 }] },
+    [{ detectorId: "evil", threatId: 1, stage: "prompt", mode: "warn", patterns, refine }]
+  );
+
+test("ENGINE: refine recompile SKIPS a multi-unbounded-quantifier pattern (no finding)", () => {
+  // Deterministic falsification — fast to evaluate either way. Pre-fix, `new RegExp("a+b+c")` compiles,
+  // matches "aaabbbc", refine passes, and a finding is produced. Post-fix, safeRegex refuses the two
+  // unbounded quantifiers and returns null, so the pattern is skipped and nothing is found.
+  const engine = enginePack([/a+b+c/], () => true);
+  const findings = engine.scan("aaabbbc", "prompt");
+  assert.deepEqual(findings, [], "the multi-quantifier pattern must be skipped by the guard, not matched");
+});
+
+test("ENGINE: refine recompile REFUSES a catastrophic pattern in single-digit ms", () => {
+  // `.*.*=` is polynomial-backtracking (EVIL[2] above, ~1672 ms at 1500 chars via a bare RegExp). The
+  // refine path must not evaluate it: safeRegex returns null, so scan returns fast with no finding.
+  const engine = enginePack([/.*.*=/], () => true);
+  const input = "a".repeat(2000); // no "=" → forces full backtracking if it were ever compiled
+  const took = ms(() => {
+    const findings = engine.scan(input, "prompt");
+    assert.deepEqual(findings, [], "the catastrophic pattern must be refused, not matched");
+  });
+  assert.ok(took < 50, `refine recompile must reject the pattern, not evaluate it — took ${took}ms`);
+});
+
+test("ENGINE: a SAFE refine pattern still matches as before (behavior preserved)", () => {
+  // Single unbounded quantifier → safeRegex compiles it, refine runs, the match is returned unchanged.
+  const engine = enginePack([/sk-[a-z0-9]+/], (m) => m.length >= 8);
+  const findings = engine.scan("token sk-abcdef1234 here", "prompt");
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].detectorId, "evil");
 });
 
 test("PACKS: pack patterns stay CASE-SENSITIVE by default", () => {

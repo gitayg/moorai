@@ -1,3 +1,5 @@
+import { safeRegex } from "./safe-regex.js";
+
 const LEVEL_RANK = { Critical: 4, High: 3, Medium: 2, Low: 1 };
 
 export class DetectionEngine {
@@ -169,7 +171,8 @@ export class DetectionEngine {
   _matchDetector(text, d) {
     if (!d.refine) return this._firstMatch(text, d.patterns);
     for (const p of d.patterns) {
-      const g = new RegExp(p.source, p.flags.includes("g") ? p.flags : p.flags + "g");
+      const g = safeRegex(p.source, p.flags.includes("g") ? p.flags : p.flags + "g");
+      if (!g) continue;
       let m;
       while ((m = g.exec(text)) !== null) {
         if (d.refine(m[0], text)) return m[0];
