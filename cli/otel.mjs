@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { contentHash } from "./content-hash.mjs";
+import { nextLink } from "./record-chain.mjs";
 
 let VERSION = "unknown";
 try { VERSION = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")).version; } catch { /* version is cosmetic */ }
@@ -81,10 +82,21 @@ function recordHash(alert, tenant, nanos) {
   return contentHash(canonicalRecord(alert, tenant, nanos));
 }
 
-export function buildTracePayload(alert = {}, { tenant, version = VERSION, now = Date.now() } = {}) {
+export function buildTracePayload(alert = {}, { tenant, version = VERSION, now = Date.now(), chain = false } = {}) {
   const nanos = String(BigInt(now) * 1000000n);
-  const attrs = spanAttrs({ ...alert, tenant: tenant ?? alert.tenant });
-  attrs.push(attr("moorai.record_hash", s(recordHash(alert, tenant ?? alert.tenant, nanos))));
+  const t = tenant ?? alert.tenant;
+  const attrs = spanAttrs({ ...alert, tenant: t });
+  const rhash = recordHash(alert, t, nanos);
+  attrs.push(attr("moorai.record_hash", s(rhash)));
+  // Chain the emitted stream so the collector can detect a dropped, reordered, or inserted span — the
+  // record hash alone proves a single record, the seq/prev links prove the sequence. Opt-in so the
+  // payload builder stays pure for tests; emitOtel turns it on. Fail-open: nextLink never throws.
+  if (chain) {
+    const link = nextLink("otel", rhash, { tenant: t });
+    attrs.push(attr("moorai.record_seq", i(link.seq)));
+    attrs.push(attr("moorai.record_prev", s(link.prev)));
+    attrs.push(attr("moorai.record_chash", s(link.chash)));
+  }
   return {
     resourceSpans: [{
       resource: { attributes: [
@@ -118,7 +130,7 @@ export function emitOtel(alert, { config = {}, identity = {}, fetchImpl = fetch 
   if (!base) return null;
   const tenant = identity.tenant || alert?.tenant;
   let body;
-  try { body = JSON.stringify(buildTracePayload(alert || {}, { tenant })); } catch { return null; }
+  try { body = JSON.stringify(buildTracePayload(alert || {}, { tenant, chain: true })); } catch { return null; }
   try {
     return fetchImpl(`${base}/v1/traces`, {
       method: "POST",

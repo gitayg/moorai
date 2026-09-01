@@ -15,6 +15,7 @@
 
 import os from "node:os";
 import { assessSession, TELL_DEFS } from "../data/agent-behavior.js";
+import { agentBaselineReport } from "../data/agent-baseline.js";
 import { readAgentEvents, AGENT_EVENTS_PATH } from "./signals.mjs";
 import { loadConfig } from "./config.mjs";
 
@@ -42,6 +43,10 @@ const CONFIG = loadConfig();
 const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant };
 const events = readAgentEvents();
 const res = assessSession(events);
+// Per-agent learned baseline + the three content-free forensic detections (orphan agents, cross-agent
+// messaging, trace gaps). Fully fail-open — agentBaselineReport swallows any error into an empty report,
+// so this can never change agent-watch's verdict or exit code.
+const report = agentBaselineReport(events);
 
 async function emitAlert() {
   const alert = {
@@ -68,11 +73,36 @@ function toText() {
     out += `\n  ${C.dim}Tells fired:${C.off}\n`;
     for (const t of res.tells) out += `    ${col}#${t.id}${C.off}  ${t.label}\n`;
   } else out += `\n  ${C.g}No autonomous-behavior tells in the current window.${C.off}\n`;
+  out += baselineText();
   out += `\n  ${C.dim}Reference: CSA/SANS "Hugging Face Incident Initial Post-Mortem", §IV Observations.${C.off}\n`;
   return out;
 }
 
-if (fmt === "json") process.stdout.write(JSON.stringify({ ...res, tenant: CONFIG.tenant }, null, 2) + "\n");
+// Per-agent baseline + the three content-free detections. Additive to the verdict above; content-free
+// (opaque actor ids shown truncated, counts, and severities — never a prompt, arg, or path).
+const short = (id) => { const s = String(id || ""); return s.length > 14 ? s.slice(0, 14) + "…" : s; };
+function baselineText() {
+  let out = `\n  ${C.b}Per-agent baseline${C.off} ${C.dim}(${report.actorCount} actor${report.actorCount === 1 ? "" : "s"}, ${report.events} events)${C.off}\n`;
+  const entries = Object.entries(report.agents);
+  if (!entries.length) out += `    ${C.dim}no per-agent history yet${C.off}\n`;
+  for (const [actor, a] of entries) {
+    const conf = a.lowConfidence ? `${C.y}low-confidence${C.off}` : `${C.dim}conf ${a.confidence.toFixed(2)}${C.off}`;
+    out += `    ${short(actor)}  ${C.dim}events=${a.n} tools=${a.tools} servers=${a.servers.length}${C.off}  ${conf}\n`;
+  }
+  const { orphans, crossAgent, traceGaps } = report.detections;
+  const t = report.totals;
+  const any = t.orphans + t.crossAgent + t.traceGaps;
+  out += `\n  ${C.b}Content-free detections${C.off}\n`;
+  if (!any) { out += `    ${C.g}none in the current window${C.off}\n`; return out; }
+  const line = (f) => `    ${sevCol(f.severity)}#${f.type}${C.off}  ${C.dim}agent=${short(f.agent)} sev=${f.severity} count=${f.count}${C.off}\n`;
+  for (const f of orphans) out += line(f);
+  for (const f of crossAgent) out += line(f);
+  for (const f of traceGaps) out += `    ${sevCol(f.severity)}#${f.type}${C.off}  ${C.dim}agent=${short(f.agent)} kind=${f.evidence.kind} sev=${f.severity} count=${f.count}${C.off}\n`;
+  return out;
+}
+function sevCol(s) { return s === "high" ? C.r : s === "medium" ? C.y : C.dim; }
+
+if (fmt === "json") process.stdout.write(JSON.stringify({ ...res, baseline: report, tenant: CONFIG.tenant }, null, 2) + "\n");
 else process.stdout.write(toText());
 
 if (emit && res.level !== "clean") {

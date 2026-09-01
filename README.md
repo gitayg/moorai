@@ -186,11 +186,16 @@ trips. Content-free: timestamps, action fingerprints, allow/deny, risk, and tell
 npx moorai-trace                              # replay the agent's action chain, in order — for incident investigation
 npx moorai-shadow --strict                    # find unsanctioned AI (models · MCP servers · editor extensions) vs your allow-list
 npx moorai-compliance --framework eu-ai-act   # evidence pack mapped to EU AI Act / NIST AI RMF / ISO 42001 controls
+npx moorai-compliance --format stix           # export the same findings as a STIX 2.1 bundle for SIEM/TIP interchange
+npx moorai-verify-chain                       # tamper-evidence check — detect a deleted, reordered, or edited evidence-log record
+npx moorai-honeytokens register               # register a content-free canary (only its one-way hash is stored)
 ```
 
 - **`moorai-trace`** reconstructs the on-device action chain — `time · actor · tool · decision · risk · destination · args-hash` — from the content-free logs, so you can answer *"what did this agent do?"* after an incident without ever surfacing a prompt or file.
 - **`moorai-shadow`** layers a sanctioned/unsanctioned check on top of the AIBOM inventory (allow-list in `~/.moorai/config.json` `sanctioned`, or `MOORAI_SANCTIONED`); `--strict` exits non-zero for CI/posture gates.
-- **`moorai-compliance`** maps the device's existing content-free signals to framework controls and marks each **covered / partial / not-covered honestly** — the evidence layer a cost-pressured SOC can actually keep.
+- **`moorai-compliance`** maps the device's existing content-free signals to framework controls and marks each **covered / partial / not-covered honestly** — the evidence layer a cost-pressured SOC can actually keep. `--format stix` emits the findings as a STIX 2.1 bundle (custom `x-moorai-finding` objects + hash-keyed indicators) for threat-intel interchange.
+- **`moorai-verify-chain`** walks each on-device evidence log and verifies its prev-hash chain — a deleted, reordered, or in-place-edited record breaks the chain and is reported. Every log line and every emitted OTel span is chain-stamped (`cli/record-chain.mjs`), so the record hash proves each record and the chain proves the *sequence* (immutable once streamed to your SIEM).
+- **`moorai-honeytokens`** registers content-free canaries — a decoy value nobody should ever touch; only its one-way hash is stored, and a later hit is a high-signal alert with zero content at rest.
 
 ### Stream to your SIEM / observability stack — OpenTelemetry, content-free
 

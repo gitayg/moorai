@@ -30,15 +30,21 @@ point of view; position and document *that* as the durable evidence store.
   `moorai.record_hash`, a **tenant-keyed HMAC** over the record's canonical content-free fields
   (`cli/otel.mjs` `canonicalRecord` / `recordHash`). An attacker who alters a field in the SIEM copy
   can't recompute a matching hash without the tenant key, so a *modified* record is detectable.
-- **TODO — gap/reorder detection:** a linked **prev-hash chain + monotonic sequence** so a *removed*
-  or *reordered* record is also detectable. Blocked on cross-process sequencing: hooks are short-lived
-  separate processes, so a naive read-last-then-increment counter races. Needs an flock-guarded (or
-  atomic-append-derived) monotonic counter, fail-open like the rest of the signals.
+- **DONE (v0.64.0) — gap/reorder detection:** a linked **prev-hash chain + monotonic sequence**
+  (`cli/record-chain.mjs`, borrowed from AgentDFIR's hash-chained custody log). Every on-device
+  evidence-log line (`cli/signals.mjs` `append`) and every emitted OTel span (`cli/otel.mjs`,
+  `moorai.record_seq` / `record_prev` / `record_chash`) now carries a keyless SHA-256 chain link over
+  the previous record, so a *removed*, *reordered*, or *inserted* record breaks the chain — detectable
+  by `moorai-verify-chain` locally and by seq-gap on the SIEM stream. The cross-process race is handled
+  fail-open (lock-free head advance; a rare fork is surfaced by `verifyChain` as an anomaly, never
+  dropped or blocking). The two hashes are complementary: keyed `record_hash` proves per-record
+  authenticity, keyless `chash` proves cross-record continuity once the stream anchors the head.
 - **TODO (optional):** local append-only hardening (platform WORM/immutable-flag where available) as
   defense-in-depth.
 
-Do **not** claim "immutable" for the on-device logs until the chain lands; the honest line is
-"signed + per-record tamper-evident, and immutable once streamed."
+The honest line is now "signed + per-record tamper-evident, chained for gap/reorder detection, and
+immutable once streamed." Still **not** tamper-PROOF on-device (a local actor can delete; the chain
+makes the deletion detectable once the head has been streamed off-device).
 
 ### 2. Learned per-agent behavioral baseline (non-human digital actor)
 
@@ -61,10 +67,18 @@ Pairs naturally with #1: the streamed history is the training/evaluation substra
   `scoreWindow`) builds per-actor content-free profiles (tool / risk / server / legs distributions +
   robust median/IQR cadence) and scores how anomalous an event/window is FOR THAT ACTOR, with
   explainable top factors and cold-start damping. Pure, deterministic, no deps, no I/O.
-- **TODO — wire it into enforcement:** the module is standalone by design; a caller in the hook /
-  `data/agent-behavior.js` still has to consume it (feed it the historical `agent-events.jsonl`
-  window and act on the score). Weights/thresholds are chosen for explainability, not yet tuned on
-  real recorded traffic. Until it's wired in AND tuned, signature detection remains the shipping story.
+- **DONE (v0.64.0) — consumed + surfaced + forensic detections:** `data/agent-baseline.js` now reads
+  the `agent-events.jsonl` window (`agentBaselineReport`) and `cli/moorai-agentwatch.mjs` renders the
+  per-actor baseline. Added three content-free AgentDFIR-style detectors (`data/agent-detections.js`):
+  **orphan agents** (child event with no parent lineage), **cross-agent messaging** (handoff to a
+  different agent / shared destination), and **trace gaps** (missing monotonic `seq`/`step`, truncated
+  session, or a cadence break). Trace-gap's step branch is live today because `append` now stamps the
+  chain `seq` on every event row (see #1).
+- **TODO — activate lineage + tune:** orphan / cross-agent detectors only fire once the hook emits the
+  content-free lineage fields (`parent` / `session` / `agent` / `target`) — today `recordAgentEvent`
+  (`cli/moorai-hook.mjs`) emits `{ts, sig, ok, risk, flags, legs, server}`. Add those fields in the hot
+  path, then tune weights/thresholds on real recorded traffic. Until then, signature detection plus the
+  now-live trace-gap and baseline surfacing are the shipping story.
 
 ## Adjacent / optional (tracked here so they don't get lost; not agent-repo core)
 

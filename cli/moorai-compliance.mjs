@@ -15,6 +15,7 @@
 //   node cli/moorai-compliance.mjs --framework nist-ai-rmf --json
 //   node cli/moorai-compliance.mjs --framework iso-42001
 //   node cli/moorai-compliance.mjs --framework all --json
+//   node cli/moorai-compliance.mjs --format stix          # STIX 2.1 bundle of the same content-free findings
 //
 // SACRED RULE — content-free: evidence is metadata, counts, retention windows, control-coverage
 // booleans and one-way-hash-derived class labels only. Never a prompt, file content, output, or
@@ -26,6 +27,7 @@ import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readLedger, readIntent, readActions, readDestinations, readAgentEvents } from "./signals.mjs";
+import { stixFromEvidence } from "./moorai-stix.mjs";
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
 const RETENTION_DAYS = Number(process.env.MOORAI_RETENTION_DAYS) || 90; // mirrors signals.mjs default
@@ -208,6 +210,7 @@ const HELP = `MoorAI compliance — content-free evidence packs mapped to AI-gov
 
 Usage:
   moorai-compliance --framework <eu-ai-act|nist-ai-rmf|iso-42001|all> [--json]
+  moorai-compliance --format stix        # STIX 2.1 bundle of the same content-free findings
   moorai-compliance --help
 
 Maps the device's EXISTING content-free signals to framework controls and shows, per control,
@@ -227,6 +230,19 @@ marked NOT COVERED rather than fabricated. Read-only, no network, fail-open.
 
 const argv = process.argv.slice(2);
 if (argv.includes("--help") || argv.includes("-h")) { process.stdout.write(HELP); process.exit(0); }
+const format = argv.includes("--format") ? argv[argv.indexOf("--format") + 1] : null;
+
+// STIX 2.1 export — a threat-intel bundle over the SAME content-free evidence the other formats use.
+// Framework-agnostic (the bundle is a device-wide finding export), so --framework is optional here.
+// Best-effort / fail-open: any read/build error degrades to an empty, still-valid bundle.
+if (format === "stix") {
+  let bundle;
+  try { bundle = stixFromEvidence(collectEvidence(), { now: Date.now() }); }
+  catch { bundle = { type: "bundle", id: "bundle--00000000-0000-5000-8000-000000000000", objects: [] }; }
+  process.stdout.write(JSON.stringify(bundle, null, 2) + "\n");
+  process.exit(0);
+}
+
 const framework = argv.includes("--framework") ? argv[argv.indexOf("--framework") + 1] : null;
 if (!framework || !(framework === "all" || FRAMEWORKS[framework])) {
   process.stderr.write(`Choose a framework: --framework <eu-ai-act|nist-ai-rmf|iso-42001|all>\n\n${HELP}`);

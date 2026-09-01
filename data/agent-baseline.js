@@ -19,6 +19,9 @@
 // categorical fields (tool / risk / server / flags / legs) and a robust median+IQR on inter-arrival
 // gaps for cadence. Deterministic: same events in → same profile and same score out.
 
+import { readAgentEvents } from "../cli/signals.mjs";
+import { detectOrphanAgents, detectCrossAgentMessaging, detectTraceGaps } from "./agent-detections.js";
+
 // Same risk ordering the hook uses (cli/moorai-hook.mjs) so a "risk spike" is measured on the same scale.
 const RISK_RANK = { Low: 1, Medium: 2, High: 3, Critical: 4, Blocked: 5 };
 
@@ -255,4 +258,60 @@ export function scoreWindow(baseline, events) {
   const raw = noisyOr(factors.map((f) => f.contribution));
   const score = raw * confidence;
   return { score, confidence, lowConfidence: profile.n < MIN_EVENTS, coldStart: false, actor, events: evs.length, factors };
+}
+
+// ---- Wiring: consume the on-device event stream and produce the per-agent baseline PLUS the three
+// content-free forensic detections (orphan agents, cross-agent messaging, trace gaps). The scoring
+// functions above stay pure; this is the layer the CLI and any console-side collector call. FAIL-OPEN by
+// construction — every read/build/detect step is wrapped and degrades to an empty result, so nothing
+// here can throw into a caller that might sit on the enforcement path.
+
+// Run the three detections over an event array, each independently fail-open.
+export function runAgentDetections(events) {
+  const evs = Array.isArray(events) ? events : [];
+  const safe = (fn) => { try { return fn(evs) || []; } catch { return []; } };
+  return { orphans: safe(detectOrphanAgents), crossAgent: safe(detectCrossAgentMessaging), traceGaps: safe(detectTraceGaps) };
+}
+
+// Read the on-device event stream (the "engine actually consumes the streams" step). Wrapped: a read
+// error yields an empty window rather than propagating.
+function readEvents() { try { return readAgentEvents(); } catch { return []; } }
+
+// The full report: baseline profile per actor + the detections bucketed onto the agent they name, plus
+// the complete detection lists and totals. `events` defaults to the on-device stream; tests pass an
+// explicit array (no I/O). Content-free throughout — only ids, counts, timestamps, and hashes.
+export function agentBaselineReport(events) {
+  try {
+    const evs = Array.isArray(events) ? events : readEvents();
+    const baseline = buildBaseline(evs);
+    const detections = runAgentDetections(evs);
+    const findingsFor = (list, actor) => list.filter((f) => f.agent === actor);
+    const agents = {};
+    for (const [actor, profile] of Object.entries(baseline.actors)) {
+      agents[actor] = {
+        n: profile.n,
+        tools: Object.keys(profile.tools).length,
+        maxRiskRank: profile.maxRiskRank,
+        servers: Object.keys(profile.servers),
+        cadence: profile.cadence,
+        lastTs: profile.lastTs,
+        confidence: confidenceOf(profile.n),
+        lowConfidence: profile.n < MIN_EVENTS,
+        detections: {
+          orphan: findingsFor(detections.orphans, actor),
+          crossAgent: findingsFor(detections.crossAgent, actor),
+          traceGaps: findingsFor(detections.traceGaps, actor)
+        }
+      };
+    }
+    return {
+      events: evs.length,
+      actorCount: baseline.actorCount,
+      agents,
+      detections,
+      totals: { orphans: detections.orphans.length, crossAgent: detections.crossAgent.length, traceGaps: detections.traceGaps.length }
+    };
+  } catch {
+    return { events: 0, actorCount: 0, agents: {}, detections: { orphans: [], crossAgent: [], traceGaps: [] }, totals: { orphans: 0, crossAgent: 0, traceGaps: 0 } };
+  }
 }

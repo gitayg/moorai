@@ -17,9 +17,10 @@
 // Both fail open and silent: a logging error must never affect the enforcement decision.
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { isSecretCategory } from "./hook-core.mjs";
 import { STATE_DIR } from "./state-dirs.mjs";
+import { nextLink, recordRhash } from "./record-chain.mjs";
 
 const DIR = STATE_DIR; // ~/.moorai (was ~/.curaiq before the rebrand)
 const LEDGER = join(DIR, "exposure-ledger.jsonl");
@@ -33,8 +34,21 @@ const DESTINATION_CAP = 2000;
 const RULES_BASELINE = join(DIR, "rules-baseline.json"); // rules-file drift: last fingerprint per kind
 const RETENTION_DAYS = Number(process.env.MOORAI_RETENTION_DAYS) || 90; // Bold B5 — you control how long on-device evidence lives (0 = keep forever)
 
+// Every appended line is chain-stamped (record-chain.mjs): a per-record fingerprint plus the seq/prev/
+// chash link, so deletion, reordering, or in-place edits of these evidence logs are detectable after
+// the fact (moorai-verify-chain). Best-effort and fail-open — a chain error must never block the write
+// or the enforcement decision, so the stamp is wrapped and the raw line is still written on failure.
 function append(file, obj) {
-  try { mkdirSync(DIR, { recursive: true }); appendFileSync(file, JSON.stringify(obj) + "\n"); } catch { /* never block enforcement on a log write */ }
+  try {
+    mkdirSync(DIR, { recursive: true });
+    let line = obj;
+    try {
+      const rhash = recordRhash(obj);
+      const link = nextLink(basename(file), rhash, { tenant: obj && obj.tenant });
+      line = { ...obj, rhash, seq: link.seq, prev: link.prev, chash: link.chash };
+    } catch { /* chain stamp is best-effort; fall back to the unstamped record */ }
+    appendFileSync(file, JSON.stringify(line) + "\n");
+  } catch { /* never block enforcement on a log write */ }
 }
 function readJsonl(file) {
   try { return readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; }

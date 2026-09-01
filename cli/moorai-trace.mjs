@@ -20,8 +20,10 @@
 //   node cli/moorai-trace.mjs --agent <sig-or-hash> # one actor only
 //   node cli/moorai-trace.mjs --help
 
-import { readActions, readAgentEvents, AGENT_EVENTS_PATH } from "./signals.mjs";
+import { readFileSync } from "node:fs";
+import { AGENT_EVENTS_PATH } from "./signals.mjs";
 import { statePath } from "./state-dirs.mjs";
+import { boundedParseJsonl } from "./sanitize.mjs";
 
 const ACTION_AUDIT_PATH = statePath("action-audit.jsonl");
 
@@ -98,12 +100,29 @@ function matchesAgent(step, q) {
   return [step.actor, step.who].filter(Boolean).join(" ").toLowerCase().includes(q.toLowerCase());
 }
 
+// Read one on-device JSONL log under hard bounds. These logs are written from agent/model-influenced
+// events, so a single poisoned line — malformed JSON, or one blown up to gigabytes to hang the parser
+// — must surface as a visible TRACE_GAP, never a silent drop and never a crash that erases the whole
+// chain. Non-object records (a bare `null`/number line) are simply skipped; only unreadable lines gap.
+function readBounded(path, norm, source) {
+  let text = "";
+  try { text = readFileSync(path, "utf8"); } catch { return { steps: [], gaps: [] }; }
+  const { records, gaps } = boundedParseJsonl(text, { maxBytes: 16 * 1024 * 1024, maxLines: 20000, maxLineBytes: 65536 });
+  return {
+    steps: records.filter((r) => r && typeof r === "object").map(norm),
+    gaps: gaps.map((g) => ({ reason: g.reason, index: g.index, source })),
+  };
+}
+
 function buildChain() {
-  const steps = [...readActions().map(normAction), ...readAgentEvents().map(normEvent)]
+  const a = readBounded(ACTION_AUDIT_PATH, normAction, "action-audit");
+  const e = readBounded(AGENT_EVENTS_PATH, normEvent, "agent-events");
+  const ordered = [...a.steps, ...e.steps]
     .filter((s) => s.ms != null)
-    .sort((a, b) => a.ms - b.ms)
+    .sort((x, y) => x.ms - y.ms)
     .filter((s) => matchesAgent(s, agentQ));
-  return steps.length > LIMIT ? steps.slice(-LIMIT) : steps;
+  const steps = ordered.length > LIMIT ? ordered.slice(-LIMIT) : ordered;
+  return { steps, gaps: [...a.gaps, ...e.gaps] };
 }
 
 // ---- renderers ----
@@ -129,5 +148,17 @@ function toText(steps) {
     + head + "\n" + head.replace(/[^\s]/g, "-") + "\n" + body + "\n";
 }
 
-const steps = buildChain();
-process.stdout.write(asJson ? JSON.stringify(steps, null, 2) + "\n" : toText(steps));
+// TRACE_GAP lines make an unreadable/oversize source line VISIBLE in the replay instead of vanishing.
+function gapsText(gaps) {
+  if (!gaps.length) return "";
+  const lines = gaps.map((g) => `  TRACE_GAP  ${g.source} line ${g.index}  —  ${g.reason}`).join("\n");
+  return `\n${gaps.length} trace gap(s) — source line(s) skipped as unreadable, NOT silently dropped:\n${lines}\n`;
+}
+
+const { steps, gaps } = buildChain();
+if (asJson) {
+  const gapRows = gaps.map((g) => ({ type: "TRACE_GAP", reason: g.reason, index: g.index, source: g.source }));
+  process.stdout.write(JSON.stringify([...steps, ...gapRows], null, 2) + "\n");
+} else {
+  process.stdout.write(toText(steps) + gapsText(gaps));
+}
