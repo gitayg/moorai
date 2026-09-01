@@ -25,7 +25,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { STATE_DIR } from "./state-dirs.mjs";
-import { contentHash } from "./content-hash.mjs";
+import { contentHash, NO_KEY } from "./content-hash.mjs";
 
 export const HONEYTOKENS_PATH = join(STATE_DIR, "honeytokens.json");
 
@@ -66,8 +66,10 @@ export function registerHoneytoken(value, { label } = {}) {
 // should never be touched was touched. `registered` defaults to the on-device store for convenience;
 // pass it explicitly to keep this a pure function of its inputs.
 export function checkHoneytokens(observedHashes, registered = loadHoneytokens()) {
-  const seen = new Set((Array.isArray(observedHashes) ? observedHashes : [observedHashes]).map((h) => String(h)));
-  return (registered || []).filter((t) => seen.has(String(t.hash)));
+  // Never match on the NO_KEY sentinel: on an unenrolled device every value hashes to it, so matching
+  // it would make every observed value "hit" every registered token. A honeytoken needs an enrolled key.
+  const seen = new Set((Array.isArray(observedHashes) ? observedHashes : [observedHashes]).map((h) => String(h)).filter((h) => h !== NO_KEY));
+  return (registered || []).filter((t) => String(t.hash) !== NO_KEY && seen.has(String(t.hash)));
 }
 
 // ------------------------------------------------------------------------------------------------

@@ -20,7 +20,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join, basename } from "node:path";
 import { isSecretCategory } from "./hook-core.mjs";
 import { STATE_DIR } from "./state-dirs.mjs";
-import { nextLink, recordRhash } from "./record-chain.mjs";
+import { stampRecord } from "./record-chain.mjs";
 
 const DIR = STATE_DIR; // ~/.moorai (was ~/.curaiq before the rebrand)
 const LEDGER = join(DIR, "exposure-ledger.jsonl");
@@ -42,11 +42,8 @@ function append(file, obj) {
   try {
     mkdirSync(DIR, { recursive: true });
     let line = obj;
-    try {
-      const rhash = recordRhash(obj);
-      const link = nextLink(basename(file), rhash, { tenant: obj && obj.tenant });
-      line = { ...obj, rhash, seq: link.seq, prev: link.prev, chash: link.chash };
-    } catch { /* chain stamp is best-effort; fall back to the unstamped record */ }
+    try { line = stampRecord(basename(file), obj, { tenant: obj && obj.tenant }); }
+    catch { /* chain stamp is best-effort; fall back to the unstamped record */ }
     appendFileSync(file, JSON.stringify(line) + "\n");
   } catch { /* never block enforcement on a log write */ }
 }

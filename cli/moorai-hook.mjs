@@ -29,8 +29,9 @@ import { isNewDestination } from "../data/destination-map.js";
 import { signApproval, argsHash } from "../data/agency-sign.mjs";
 import { contentTells, assessSession, assessTrifecta, assessCrossServerTrifecta, trifectaLegs, serverOf } from "../data/agent-behavior.js";
 import { classifyOpportunistic } from "../data/model-escalation.mjs";
-import { contentHash, fileFingerprint } from "./content-hash.mjs";
+import { contentHash, fileFingerprint, NO_KEY } from "./content-hash.mjs";
 import { emitOtel } from "./otel.mjs";
+import { loadHoneytokens, checkHoneytokens } from "./moorai-honeytokens.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -226,6 +227,28 @@ function djb2(s) { let h = 5381; for (let i = 0; i < String(s).length; i++) h = 
 // #10 — every emitted action carries a stable, content-free actor fingerprint (one-way hash of
 // user@device) so the console can tie actions to an operator without storing raw identity as the key.
 const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: djb2(`${os.userInfo().username}@${os.hostname()}`) };
+// Content-free lineage for the per-agent baseline / forensic detections (data/agent-detections.js).
+// SESSION is the current agent/session id (Claude Code's session_id, one-way hashed), set in main().
+// It groups an actor's events for trace-gap detection and is the source id for cross-agent handoffs.
+let SESSION = "";
+// #canary — registered honeytokens (hash-only; see cli/moorai-honeytokens.mjs). Loaded once. A hit is
+// exact equality against a content hash the hook already computes, so no plaintext is involved.
+const HONEYTOKENS = loadHoneytokens();
+// A decoy value that exists only to be a trap showed up in a matched span — the strongest single
+// signal the hook can raise. Content-free: only the token's own hash (and optional operator label)
+// leave. Best-effort and advisory: the finding that produced this hash already carries the allow/deny;
+// a canary is a signal, never the enforcement decision.
+function checkHoneytoken(hash, stage, tool) {
+  try {
+    // NO_KEY guard: an unenrolled device hashes EVERY value to the same sentinel, so without it a
+    // honeytoken (also nokey) would match every finding — a false canary on each event. A honeytoken
+    // is only meaningful on an enrolled (keyed) device.
+    if (!HONEYTOKENS.length || !hash || hash === NO_KEY) return;
+    for (const h of checkHoneytokens([hash], HONEYTOKENS)) {
+      post({ threatId: 0, category: "Honeytoken canary triggered", riskLevel: "Critical", stage, tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: h.hash, honeytoken: h.label ? { label: h.label } : {}, ...IDENTITY });
+    }
+  } catch { /* canary is a signal; never affects enforcement */ }
+}
 // ---- alert delivery + the exit gate ----
 //
 // MEASURED BUG (this is why the gate below exists). Every alert on the main enforcement path was
@@ -274,6 +297,7 @@ async function exitHook() {
 function report(findings, stage, tool, blocked, tier, extras, agency) {
   for (const f of findings) {
     const base = { threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool, ts: new Date().toISOString(), contentHash: contentHash(f.match || ""), ...IDENTITY };
+    checkHoneytoken(base.contentHash, stage, tool); // #canary — a matched span equal to a registered honeytoken
     // #5 — attach only the fields the policy's capture tier permits (content-free by default). The
     // server independently re-strips above the device's stored tier, so this is one of two backstops.
     const alert = applyCaptureTier(base, { ...extras, matchText: f.match }, tier || "content-free");
@@ -295,7 +319,7 @@ function report(findings, stage, tool, blocked, tier, extras, agency) {
 // + timeline). Entirely side-effectful and wrapped: a failure here must never change the hook's
 // allow/deny decision (governance, fail-open).
 const RISK_RANK = { Low: 1, Medium: 2, High: 3, Critical: 4, Blocked: 5 };
-function logBehavior(tool, identity, scannedText, d, stage) {
+function logBehavior(tool, identity, scannedText, d, stage, lineage = {}) {
   try {
     const risk = (d.findings || []).reduce((m, f) => (RISK_RANK[f.riskLevel] > RISK_RANK[m] ? f.riskLevel : m), "Low");
     const flags = contentTells(scannedText || "");
@@ -303,7 +327,10 @@ function logBehavior(tool, identity, scannedText, d, stage) {
     const server = serverOf(tool); // which MCP server (or "local") contributed this event's legs
     const priorEvents = readAgentEvents();
     const beforeS = assessSession(priorEvents), beforeT = assessTrifecta(priorEvents), beforeX = assessCrossServerTrifecta(priorEvents);
-    recordAgentEvent({ ts: Date.now(), sig: `${tool}|${contentHash(identity || tool)}`, ok: d.decision !== "deny", risk, flags, legs, server });
+    // `agent`/`session` (this actor, one-way hashed) group events for the per-agent baseline + trace-gap
+    // detection; `lineage` carries a content-free handoff edge (role/to/parent) on a Task delegation for
+    // cross-agent-messaging detection. All additive metadata — the signature assessors ignore them.
+    recordAgentEvent({ ts: Date.now(), sig: `${tool}|${contentHash(identity || tool)}`, ok: d.decision !== "deny", risk, flags, legs, server, agent: SESSION, session: SESSION, ...lineage });
     const events = readAgentEvents(), afterS = assessSession(events), afterT = assessTrifecta(events), afterX = assessCrossServerTrifecta(events);
     if (afterS.level === "autonomous-signature" && beforeS.level !== "autonomous-signature") {
       post({ threatId: 0, category: "Autonomous-agent behavior", riskLevel: "Critical", stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "sig:" + afterS.tells.map((t) => t.id).join("."), signature: { level: afterS.level, score: afterS.score, tells: afterS.tells.map((t) => t.id), events: afterS.events }, ...IDENTITY });
@@ -475,6 +502,7 @@ async function main() {
   try { input = JSON.parse((await readStdin()) || "{}"); } catch { process.exit(0); }
   const tool = input.tool_name || "";
   const ti = input.tool_input || {};
+  SESSION = contentHash(input.session_id || ""); // content-free actor/session id for baseline + lineage
   let { policy, source, rejected, pin, trust, absence, lkgCopy } = await loadVerifiedPolicy(CONFIG);
   // Ratcheted posture read BEFORE rememberPosture rewrites the copies, so this run still sees what the
   // device knew on the way in (and any tampering with it) rather than what we are about to record.
@@ -616,7 +644,9 @@ async function main() {
     const act = threatActionFor(policy, 66);
     const block = act === "block" || act === "kill";
     post({ threatId: 66, category: "Sub-agent / A2A delegation", riskLevel: block ? "Blocked" : "Medium", stage: "behavior", tool: "hook:Task", ts: new Date().toISOString(), contentHash: contentHash((ti.subagent_type || "") + "|" + desc), subagentType: ti.subagent_type, ...IDENTITY });
-    logBehavior("Task", "Task", desc, { decision: block ? "deny" : "allow", findings: [] }, "behavior");
+    // Content-free handoff edge: this session (parent) is delegating to a child agent (subagent_type,
+    // one-way hashed). Surfaces as cross-agent messaging in data/agent-detections.js.
+    logBehavior("Task", "Task", desc, { decision: block ? "deny" : "allow", findings: [] }, "behavior", { role: "handoff", parent: SESSION, to: contentHash(ti.subagent_type || "") });
     const pd = decideText(engine, policy, ti.prompt || "", "prompt"); // scan the delegated prompt for injection
     report(pd.findings, "egress", "hook:Task", pd.decision === "deny", policy.captureTier, { toolName: "Task" });
     if (block || pd.decision === "deny" || reportEnvelope(policy, "Task", { tool: "Task" }, "behavior")) return emit("deny", `Task (sub-agent delegation) — ${block ? "blocked by policy" : pd.decision === "deny" ? pd.reasons.join(", ") : "out of envelope"}`);

@@ -74,11 +74,18 @@ Pairs naturally with #1: the streamed history is the training/evaluation substra
   different agent / shared destination), and **trace gaps** (missing monotonic `seq`/`step`, truncated
   session, or a cadence break). Trace-gap's step branch is live today because `append` now stamps the
   chain `seq` on every event row (see #1).
-- **TODO — activate lineage + tune:** orphan / cross-agent detectors only fire once the hook emits the
-  content-free lineage fields (`parent` / `session` / `agent` / `target`) — today `recordAgentEvent`
-  (`cli/moorai-hook.mjs`) emits `{ts, sig, ok, risk, flags, legs, server}`. Add those fields in the hot
-  path, then tune weights/thresholds on real recorded traffic. Until then, signature detection plus the
-  now-live trace-gap and baseline surfacing are the shipping story.
+- **DONE (v0.64.1) — lineage wired + honeytoken canary:** `cli/moorai-hook.mjs` now stamps every
+  agent event with a content-free `agent`/`session` id (hashed `session_id`), and a `Task` delegation
+  emits a handoff edge (`role:"handoff"`, `parent`, `to:<hashed subagent_type>`). That activates
+  **cross-agent-messaging** detection on real delegations and gives **trace-gap** per-session grouping.
+  Honeytokens are wired into the enforcement path: each matched span's content hash is checked against
+  the registered canaries (`checkHoneytoken`), firing a Critical alert on a hit — guarded against the
+  `NO_KEY` sentinel so an unenrolled device is inert rather than noisy.
+- **TODO — orphan lineage + tune:** the **orphan-agent** detector needs a subagent's OWN later events to
+  carry the `parent` that spawned them; Claude Code's standard hook payload does not expose a
+  parent/subagent session id, so today we can record the parent→child edge at spawn but not tag the
+  child's subsequent events. Activate fully if/when that linkage is available. Weights/thresholds remain
+  chosen for explainability, not yet tuned on real recorded traffic.
 
 ## Adjacent / optional (tracked here so they don't get lost; not agent-repo core)
 

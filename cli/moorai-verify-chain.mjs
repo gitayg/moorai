@@ -16,7 +16,7 @@
 import { readFileSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { STATE_DIR } from "./state-dirs.mjs";
-import { verifyChain, recordRhash } from "./record-chain.mjs";
+import { verifyChain } from "./record-chain.mjs";
 
 const KNOWN = ["exposure-ledger.jsonl", "intent-log.jsonl", "action-audit.jsonl", "agent-events.jsonl", "destinations.jsonl"];
 
@@ -50,7 +50,7 @@ function readJsonl(path) {
 
 const results = resolveTargets(target).map(({ name, path }) => {
   const rows = readJsonl(path);
-  const v = verifyChain(rows, { rhashOf: recordRhash });
+  const v = verifyChain(rows);
   return { log: name, records: v.count, ok: v.ok, breaks: v.breaks };
 });
 

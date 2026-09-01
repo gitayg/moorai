@@ -30,14 +30,17 @@ import { STATE_DIR } from "./state-dirs.mjs";
 const sha256hex = (s) => createHash("sha256").update(String(s ?? ""), "utf8").digest("hex");
 const chainHash = (prev, seq, rhash) => sha256hex(`${prev}|${seq}|${rhash}`);
 
-// The chain fields a record carries — excluded when fingerprinting the record's own content.
-const CHAIN_FIELDS = ["seq", "prev", "chash", "rhash"];
+// The chain metadata lives under a single `chain` key on each record, namespaced so its fields
+// (seq/prev/chash/rhash) can never collide with a domain field of the same name — notably `seq`, which
+// data/agent-detections.js reads as a per-agent STEP counter and which the chain's global per-log
+// sequence must not masquerade as. Excluded when fingerprinting the record's own content.
+const CHAIN_KEY = "chain";
 
 // A stable, content-free fingerprint of a log record's own fields (chain metadata excluded), with
 // keys sorted so re-serialisation is deterministic. Lets verifyChain detect an in-place field edit.
 export function recordRhash(obj) {
   const src = obj && typeof obj === "object" ? obj : {};
-  const keys = Object.keys(src).filter((k) => !CHAIN_FIELDS.includes(k)).sort();
+  const keys = Object.keys(src).filter((k) => k !== CHAIN_KEY).sort();
   return sha256hex(JSON.stringify(keys.map((k) => [k, src[k]]))).slice(0, 32);
 }
 
@@ -61,6 +64,16 @@ function writeHead(dir, logKey, head) {
   try { mkdirSync(dir, { recursive: true }); writeFileSync(headPath(dir, logKey), JSON.stringify(head)); } catch { /* best-effort */ }
 }
 
+// Stamp an on-device log record with its chain metadata under the namespaced `chain` key:
+// { seq, prev, chash, rhash }. rhash is a fresh content fingerprint of the record (chain excluded);
+// the chain link is taken over that rhash. This is what cli/signals.mjs append() writes. `dir` is
+// injectable for tests. Never throws — on failure returns the record with a genesis-linked stamp.
+export function stampRecord(logKey, obj, { tenant, dir = STATE_DIR } = {}) {
+  const rhash = recordRhash(obj);
+  const link = nextLink(logKey, rhash, { tenant, dir });
+  return { ...obj, [CHAIN_KEY]: { seq: link.seq, prev: link.prev, chash: link.chash, rhash } };
+}
+
 // Advance `logKey`'s chain by one and return the stamp { seq, prev, chash } to attach to the record.
 // `rhash` is the record's fingerprint (keyed authenticity hash on the OTel stream, recordRhash on the
 // on-device logs; may be empty on an unenrolled device — the continuity chain still holds). `dir` is
@@ -79,36 +92,37 @@ export function nextLink(logKey, rhash, { tenant, dir = STATE_DIR } = {}) {
   }
 }
 
-// Verify a sequence of records in file order. Each must carry { seq, prev, chash } (and rhash, folded
-// into the recompute). Reports every discontinuity: a chash that does not recompute (record altered),
-// a prev that does not match the previous record's chash (reorder / insertion), a seq that is not
-// exactly previous+1 (gap = deletion, or duplicate/fork), and — when `rhashOf` is supplied — a stored
-// rhash that does not match a fresh fingerprint of the record's content (in-place field edit).
-// Pass { logKey, tenant } to additionally require the first record to commit to genesis (a full-stream
-// check); omit it to check internal continuity only, which tolerates age/count retention pruning of
-// the head. Pure and content-free — reads only chain metadata and (via rhashOf) the record's own
-// content-free fields.
-export function verifyChain(records, { logKey, tenant, rhashOf } = {}) {
+// Verify a sequence of stamped records in file order. Each must carry a `chain` sub-object
+// { seq, prev, chash, rhash }. Reports every discontinuity: a stored rhash that does not match a fresh
+// fingerprint of the record's content (in-place field edit → content_altered), a chash that does not
+// recompute (chash_mismatch), a prev that does not match the previous record's chash (reorder /
+// insertion → prev_mismatch), and a seq that is not exactly previous+1 (gap = deletion, or
+// duplicate/fork → seq_gap / seq_nonmonotonic). Pass { logKey, tenant } to additionally require the
+// first record to commit to genesis (a full-stream check); omit it to check internal continuity only,
+// which tolerates age/count retention pruning of the head. Pure and content-free — reads only the chain
+// metadata and (to recompute rhash) the record's own content-free fields.
+export function verifyChain(records, { logKey, tenant } = {}) {
   const breaks = [];
   const anchored = logKey != null;
   let prevChash = anchored ? genesis(logKey, tenant) : null;
   let prevSeq = null;
   for (let idx = 0; idx < records.length; idx++) {
     const r = records[idx] || {};
-    if (typeof r.chash !== "string" || typeof r.prev !== "string" || !Number.isInteger(r.seq)) {
-      breaks.push({ index: idx, seq: r.seq ?? null, reason: "unchained" });
+    const c = r[CHAIN_KEY];
+    if (!c || typeof c.chash !== "string" || typeof c.prev !== "string" || !Number.isInteger(c.seq)) {
+      breaks.push({ index: idx, seq: c && c.seq != null ? c.seq : null, reason: "unchained" });
       prevChash = null; prevSeq = null; // an unchained row breaks linkage for the next check
       continue;
     }
-    if (rhashOf && typeof r.rhash === "string" && rhashOf(r) !== r.rhash) breaks.push({ index: idx, seq: r.seq, reason: "content_altered" });
-    if (chainHash(r.prev, r.seq, r.rhash || "") !== r.chash) breaks.push({ index: idx, seq: r.seq, reason: "chash_mismatch" });
+    if (typeof c.rhash === "string" && recordRhash(r) !== c.rhash) breaks.push({ index: idx, seq: c.seq, reason: "content_altered" });
+    if (chainHash(c.prev, c.seq, c.rhash || "") !== c.chash) breaks.push({ index: idx, seq: c.seq, reason: "chash_mismatch" });
     if (prevSeq === null) {
-      if (anchored && r.prev !== prevChash) breaks.push({ index: idx, seq: r.seq, reason: "genesis_mismatch" });
+      if (anchored && c.prev !== prevChash) breaks.push({ index: idx, seq: c.seq, reason: "genesis_mismatch" });
     } else {
-      if (r.prev !== prevChash) breaks.push({ index: idx, seq: r.seq, reason: "prev_mismatch" });
-      if (r.seq !== prevSeq + 1) breaks.push({ index: idx, seq: r.seq, reason: r.seq <= prevSeq ? "seq_nonmonotonic" : "seq_gap" });
+      if (c.prev !== prevChash) breaks.push({ index: idx, seq: c.seq, reason: "prev_mismatch" });
+      if (c.seq !== prevSeq + 1) breaks.push({ index: idx, seq: c.seq, reason: c.seq <= prevSeq ? "seq_nonmonotonic" : "seq_gap" });
     }
-    prevChash = r.chash; prevSeq = r.seq;
+    prevChash = c.chash; prevSeq = c.seq;
   }
   return { ok: breaks.length === 0, count: records.length, breaks };
 }
