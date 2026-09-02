@@ -17,7 +17,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SLUG = "raiseme";
+const SLUG = "moorai";
 const MCP = "https://crane.glick.run/api/mcp";
 const BASE = "https://moorai.glick.run";
 
