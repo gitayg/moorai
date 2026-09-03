@@ -228,9 +228,20 @@ function djb2(s) { let h = 5381; for (let i = 0; i < String(s).length; i++) h = 
 // user@device) so the console can tie actions to an operator without storing raw identity as the key.
 const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: djb2(`${os.userInfo().username}@${os.hostname()}`) };
 // Content-free lineage for the per-agent baseline / forensic detections (data/agent-detections.js).
-// SESSION is the current agent/session id (Claude Code's session_id, one-way hashed), set in main().
+// SESSION is the current trace/session id (Claude Code's session_id, one-way hashed), set in main().
 // It groups an actor's events for trace-gap detection and is the source id for cross-agent handoffs.
 let SESSION = "";
+// ACTOR is whose events these are. For a subagent's OWN tool calls, Claude Code stamps the hook stdin
+// payload with `agent_id` + `agent_type` (verified against the hooks docs — these are common input
+// fields present only inside a subagent). That is the subagent-lineage linkage the orphan/baseline TODO
+// was blocked on: it lets a subagent's later events be attributed to the subagent as a DISTINCT actor,
+// not merged into the spawning session. We key the actor on `agent_type` (falling back to `agent_id`)
+// so it JOINS the Task handoff edge, which targets `to:contentHash(subagent_type)`, and so a stable
+// agent kind accrues enough events to learn a baseline. For the top-level agent (no agent_id) ACTOR is
+// just the session. SUBAGENT_LINEAGE carries the child→parent edge (parent = the spawning session) that
+// the child's events then all carry. Content-free: agent_type/agent_id are one-way hashed, never raw.
+let ACTOR = "";
+let SUBAGENT_LINEAGE = {};
 // #canary — registered honeytokens (hash-only; see cli/moorai-honeytokens.mjs). Loaded once. A hit is
 // exact equality against a content hash the hook already computes, so no plaintext is involved.
 const HONEYTOKENS = loadHoneytokens();
@@ -330,7 +341,7 @@ function logBehavior(tool, identity, scannedText, d, stage, lineage = {}) {
     // `agent`/`session` (this actor, one-way hashed) group events for the per-agent baseline + trace-gap
     // detection; `lineage` carries a content-free handoff edge (role/to/parent) on a Task delegation for
     // cross-agent-messaging detection. All additive metadata — the signature assessors ignore them.
-    recordAgentEvent({ ts: Date.now(), sig: `${tool}|${contentHash(identity || tool)}`, ok: d.decision !== "deny", risk, flags, legs, server, agent: SESSION, session: SESSION, ...lineage });
+    recordAgentEvent({ ts: Date.now(), sig: `${tool}|${contentHash(identity || tool)}`, ok: d.decision !== "deny", risk, flags, legs, server, agent: ACTOR, session: SESSION, ...SUBAGENT_LINEAGE, ...lineage });
     const events = readAgentEvents(), afterS = assessSession(events), afterT = assessTrifecta(events), afterX = assessCrossServerTrifecta(events);
     if (afterS.level === "autonomous-signature" && beforeS.level !== "autonomous-signature") {
       post({ threatId: 0, category: "Autonomous-agent behavior", riskLevel: "Critical", stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "sig:" + afterS.tells.map((t) => t.id).join("."), signature: { level: afterS.level, score: afterS.score, tells: afterS.tells.map((t) => t.id), events: afterS.events }, ...IDENTITY });
@@ -502,7 +513,17 @@ async function main() {
   try { input = JSON.parse((await readStdin()) || "{}"); } catch { process.exit(0); }
   const tool = input.tool_name || "";
   const ti = input.tool_input || {};
-  SESSION = contentHash(input.session_id || ""); // content-free actor/session id for baseline + lineage
+  SESSION = contentHash(input.session_id || ""); // content-free trace/session id for baseline + lineage
+  // Subagent lineage: a subagent's own tool-call payloads carry agent_id/agent_type (see ACTOR above).
+  // Attribute those events to the subagent (a distinct actor) with the spawning session as its parent;
+  // top-level events stay attributed to the session. All ids are one-way hashed — content-free.
+  if (input.agent_id || input.agent_type) {
+    ACTOR = contentHash(input.agent_type || input.agent_id);
+    SUBAGENT_LINEAGE = { parent: SESSION, role: "subagent" };
+  } else {
+    ACTOR = SESSION;
+    SUBAGENT_LINEAGE = {};
+  }
   let { policy, source, rejected, pin, trust, absence, lkgCopy } = await loadVerifiedPolicy(CONFIG);
   // Ratcheted posture read BEFORE rememberPosture rewrites the copies, so this run still sees what the
   // device knew on the way in (and any tampering with it) rather than what we are about to record.

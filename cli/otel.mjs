@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { contentHash } from "./content-hash.mjs";
 import { nextLink } from "./record-chain.mjs";
+import { buildAttestation as buildAttestationCore } from "./moorai-attest.mjs";
 
 let VERSION = "unknown";
 try { VERSION = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")).version; } catch { /* version is cosmetic */ }
@@ -121,6 +122,21 @@ export function buildTracePayload(alert = {}, { tenant, version = VERSION, now =
       }]
     }]
   };
+}
+
+// OPT-IN, add-only: turn a governed alert into an in-toto attestation Statement (SLSA provenance),
+// reusing the same content-free field set + decision inference the OTel span uses. Pure — it emits
+// nothing and never touches the wire; a caller opts in explicitly. Fail-open: on any error it returns
+// null rather than affecting an enforcement decision.
+export function buildAttestation(alert = {}, { tenant, version } = {}) {
+  try {
+    const decision = alert.decision || (alert.riskLevel === "Blocked" ? "deny" : "allow");
+    const record = {
+      tool: alert.tool, category: alert.category, riskLevel: alert.riskLevel,
+      decision, stage: alert.stage, tenant: tenant ?? alert.tenant, contentHash: alert.contentHash
+    };
+    return buildAttestationCore(record, version != null ? { version } : {});
+  } catch { return null; }
 }
 
 // Emit one content-free span for a governed event. Returns the in-flight promise (so the caller can

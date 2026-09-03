@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "0.64.2",
+  "version": "0.65.0",
   "description": "MoorAI agent — on-device guardrails for AI coding agents (community edition, AGPL-3.0)",
   "type": "module",
   "bin": {
@@ -16,7 +16,8 @@
     "moorai-compliance": "cli/moorai-compliance.mjs",
     "moorai-verify-chain": "cli/moorai-verify-chain.mjs",
     "moorai-stix": "cli/moorai-stix.mjs",
-    "moorai-honeytokens": "cli/moorai-honeytokens.mjs"
+    "moorai-honeytokens": "cli/moorai-honeytokens.mjs",
+    "moorai-attest": "cli/moorai-attest.mjs"
   },
   "files": [
     "cli/",

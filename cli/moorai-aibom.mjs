@@ -17,6 +17,7 @@ import { homedir, hostname } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readAgentEvents } from "./signals.mjs";
+import { toCycloneDX, toSpdx } from "../data/sbom.js";
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -194,8 +195,11 @@ function toCsv(d) {
 const HELP = `MoorAI AIBOM — content-free AI Bill of Materials for this machine.
 
 Usage:
-  moorai-aibom [--format json|md|csv]   (default: json)
+  moorai-aibom [--format json|md|csv|cyclonedx|spdx]   (default: json)
   moorai-aibom --help
+
+  cyclonedx  emit a valid CycloneDX 1.6 JSON SBOM (content-free)
+  spdx       emit a valid SPDX 2.3 JSON document (content-free)
 
 What it reads (configuration metadata ONLY — never a token value, never a prompt,
 never the contents of any credential file):
@@ -220,4 +224,9 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) { process.st
 
 const fmt = (process.argv.includes("--format") ? process.argv[process.argv.indexOf("--format") + 1] : "json");
 const bom = buildAibom();
-process.stdout.write(fmt === "md" ? toMarkdown(bom) : fmt === "csv" ? toCsv(bom) : JSON.stringify(bom, null, 2) + "\n");
+const out = fmt === "md" ? toMarkdown(bom)
+  : fmt === "csv" ? toCsv(bom)
+  : fmt === "cyclonedx" ? JSON.stringify(toCycloneDX(bom), null, 2) + "\n"
+  : fmt === "spdx" ? JSON.stringify(toSpdx(bom), null, 2) + "\n"
+  : JSON.stringify(bom, null, 2) + "\n";
+process.stdout.write(out);

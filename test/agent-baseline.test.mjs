@@ -76,6 +76,40 @@ test("two actors get independent baselines", () => {
   assert.ok(bashForA.score > 0.7, `Bash should be anomalous for A, got ${bashForA.score}`);
 });
 
+test("per-agent grouping: events are profiled by their `agent` lineage id, not the sig target slot", () => {
+  // The hook stamps `agent` (the session for a top-level call, a DISTINCT id for a subagent's own
+  // calls) while the actor slot of `sig` is a hash of the tool TARGET. Here two streams share ONE sig
+  // slot (same hashed target) but carry different `agent` ids — a parent session and a subagent. A
+  // per-agent baseline must treat them as two actors; if it fell back to the shared sig slot they would
+  // merge into one (actorCount === 1) and this test would fail.
+  const target = "h2:same-target-hash";
+  const parent = "h2:session-parent";
+  const child = "h2:subagent-child";
+  const evs = [];
+  for (let i = 0; i < 12; i++) {
+    evs.push({ ts: 1_000_000 + i * 1000, sig: sig("Read", target), agent: parent, session: parent, ok: true, risk: "Low", server: "files-mcp", flags: {}, legs: {} });
+    evs.push({ ts: 1_000_500 + i * 1000, sig: sig("Read", target), agent: child, session: parent, parent, role: "subagent", ok: true, risk: "Low", server: "files-mcp", flags: {}, legs: {} });
+  }
+  const base = buildBaseline(evs);
+  assert.equal(base.actorCount, 2, "the parent session and the subagent must be distinct baseline actors");
+  assert.ok(base.actors[parent] && base.actors[child], "both lineage ids must have their own profile");
+
+  // Each event is scored against its OWN agent's profile — proven by which actor scoreDeviation selects.
+  const parentEvt = scoreDeviation(base, { ts: 1_100_000, sig: sig("Read", target), agent: parent, session: parent, ok: true, risk: "Low", server: "files-mcp", flags: {}, legs: {} });
+  const childEvt = scoreDeviation(base, { ts: 1_100_000, sig: sig("Bash", target), agent: child, session: parent, parent, role: "subagent", ok: true, risk: "Low", server: "files-mcp", flags: {}, legs: {} });
+  assert.equal(parentEvt.actor, parent, "the parent event must resolve to the parent profile via `agent`");
+  assert.equal(childEvt.actor, child, "the subagent event must resolve to the subagent profile via `agent`");
+  assert.ok(childEvt.score > 0.7, `Bash is novel for the subagent (only ever Read), got ${childEvt.score}`);
+});
+
+test("legacy rows with no `agent` still group by the sig actor slot (backward compatible)", () => {
+  // Pre-lineage events carry only a `sig`. Grouping must fall back to its actor slot so old windows and
+  // the pure-sig tests above keep working unchanged.
+  const base = buildBaseline(stablePattern(A, "Read", 12));   // no `agent` field anywhere
+  assert.equal(base.actorCount, 1);
+  assert.ok(base.actors[A], "the sig actor slot is the fallback grouping key when `agent` is absent");
+});
+
 test("cold start: a thin baseline yields a low-confidence, damped result", () => {
   const base = buildBaseline(stablePattern(A, "Read", 2)); // only 2 events for A
   const r = scoreDeviation(base, { ts: 1_100_000, sig: sig("Bash", A), ok: false, risk: "Critical", server: "evil-mcp", flags: {}, legs: { callout: true } });

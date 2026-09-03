@@ -11,9 +11,11 @@
 //             risk:"Low|Medium|High|Critical|Blocked", flags?:{...booleans},
 //             legs?:{read,ingest,callout}, server?:string }
 //
-// The actor identity is ALREADY a one-way hash (the part of `sig` after the `|`); we group by it and
-// never reverse it. The tool name is the part before the `|`. Nothing here reads a prompt, a file, an
-// argument, or an output — a stray content field on an event is simply never looked at.
+// The actor identity is a one-way hash the hook stamps as `agent` (the session for a top-level call, a
+// DISTINCT id for a subagent's own calls; see actorId() below) — we group by it and never reverse it.
+// Legacy rows with no `agent` fall back to the actor slot of `sig` (the part after the `|`). The tool
+// name is the part before the `|`. Nothing here reads a prompt, a file, an argument, or an output — a
+// stray content field on an event is simply never looked at.
 //
 // The whole thing is frequency/statistics, no ML dependency and no new deps: relative frequencies for
 // categorical fields (tool / risk / server / flags / legs) and a robust median+IQR on inter-arrival
@@ -56,6 +58,20 @@ function splitSig(sig) {
 export function actorOf(sig) { return splitSig(sig).actor; }
 export function toolOf(sig) { return splitSig(sig).tool; }
 
+// The actor to profile an event under. The hook now stamps a content-free lineage id on every event
+// (`agent` — the session for a top-level call, or a DISTINCT id for a subagent's own calls; see
+// cli/moorai-hook.mjs), which is the identity a "per-agent" baseline must group by. `sig` cannot serve
+// as that key: its actor slot is a hash of the tool TARGET (file path / command), so the autonomous-
+// behavior signature can use the whole `sig` as a per-ACTION fingerprint — grouping by it would learn a
+// per-target norm, not a per-agent one, and would merge every subagent back into its spawner. So prefer
+// the explicit `agent` id and fall back to the `sig` actor only for legacy rows (pre-lineage) and the
+// pure unit tests that carry a `sig` alone.
+function actorId(e) {
+  const a = e && (e.agent ?? e.agentId);
+  if (a != null && a !== "") return String(a);
+  return splitSig(e && e.sig).actor;
+}
+
 // ---- small robust-statistics helpers on a numeric array (no deps). ----
 function quantile(sorted, q) {
   if (sorted.length === 0) return 0;
@@ -94,7 +110,8 @@ export function buildBaseline(events) {
   const byActor = new Map();
   for (const e of evs) {
     if (!e || typeof e.sig !== "string") continue;
-    const { tool, actor } = splitSig(e.sig);
+    const tool = splitSig(e.sig).tool;
+    const actor = actorId(e);
     let p = byActor.get(actor);
     if (!p) {
       p = { n: 0, tools: {}, risks: {}, servers: {}, flagKeys: {}, legKeys: {}, maxRiskRank: 0, _ts: [] };
@@ -146,7 +163,8 @@ function noisyOr(values) {
 // read WHY. Content-free: only e.sig / e.risk / e.flags / e.legs / e.server / e.ts are consulted.
 export function scoreDeviation(baseline, event) {
   const e = event || {};
-  const { tool, actor } = splitSig(e.sig);
+  const tool = splitSig(e.sig).tool;
+  const actor = actorId(e);
   const profile = baseline && baseline.actors ? baseline.actors[actor] : undefined;
 
   // Unknown actor: nothing learned yet. Honest cold start — near-zero score, explicitly low-confidence.
@@ -220,7 +238,7 @@ export function scoreWindow(baseline, events) {
   const evs = (Array.isArray(events) ? events : []).filter((e) => e && typeof e.sig === "string");
   if (evs.length === 0) return { score: 0, confidence: 0, lowConfidence: true, coldStart: true, actor: null, factors: [] };
 
-  const actor = splitSig(evs[0].sig).actor;
+  const actor = actorId(evs[0]);
   const profile = baseline && baseline.actors ? baseline.actors[actor] : undefined;
   if (!profile) {
     return { score: 0, confidence: 0, lowConfidence: true, coldStart: true, actor,

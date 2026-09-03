@@ -189,6 +189,8 @@ npx moorai-compliance --framework eu-ai-act   # evidence pack mapped to EU AI Ac
 npx moorai-compliance --format stix           # export the same findings as a STIX 2.1 bundle for SIEM/TIP interchange
 npx moorai-verify-chain                       # tamper-evidence check — detect a deleted, reordered, or edited evidence-log record
 npx moorai-honeytokens register               # register a content-free canary (only its one-way hash is stored)
+npx moorai-attest                             # export governed records as an in-toto / SLSA provenance attestation (SSCS interchange)
+npx moorai-aibom --format cyclonedx           # export the AI Bill of Materials as a CycloneDX 1.6 SBOM (also --format spdx)
 ```
 
 - **`moorai-trace`** reconstructs the on-device action chain — `time · actor · tool · decision · risk · destination · args-hash` — from the content-free logs, so you can answer *"what did this agent do?"* after an incident without ever surfacing a prompt or file.
@@ -196,6 +198,7 @@ npx moorai-honeytokens register               # register a content-free canary (
 - **`moorai-compliance`** maps the device's existing content-free signals to framework controls and marks each **covered / partial / not-covered honestly** — the evidence layer a cost-pressured SOC can actually keep. `--format stix` emits the findings as a STIX 2.1 bundle (custom `x-moorai-finding` objects + hash-keyed indicators) for threat-intel interchange.
 - **`moorai-verify-chain`** walks each on-device evidence log and verifies its prev-hash chain — a deleted, reordered, or in-place-edited record breaks the chain and is reported. Every log line and every emitted OTel span is chain-stamped (`cli/record-chain.mjs`), so the record hash proves each record and the chain proves the *sequence* (immutable once streamed to your SIEM).
 - **`moorai-honeytokens`** registers content-free canaries — a decoy value nobody should ever touch; only its one-way hash is stored, and a later hit is a high-signal alert with zero content at rest.
+- **`moorai-attest`** emits the governed record chain as an **in-toto attestation / SLSA provenance predicate**, built only from the content-free fields (tool · category · risk · decision · stage · tenant + the one-way hashes + chain seq/prev/chash) — so an agent's action evidence plugs into the software-supply-chain attestation ecosystem without carrying any content. The AIBOM also exports as a standard **CycloneDX 1.6** or **SPDX 2.3** SBOM (`moorai-aibom --format cyclonedx|spdx`).
 
 ### Stream to your SIEM / observability stack — OpenTelemetry, content-free
 

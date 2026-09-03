@@ -1,6 +1,6 @@
 [package]
 name = "moorai"
-version = "0.64.2"
+version = "0.65.0"
 description = "MoorAI Managed AI Host"
 edition = "2021"
 

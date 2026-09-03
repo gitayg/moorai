@@ -39,6 +39,11 @@ point of view; position and document *that* as the durable evidence store.
   fail-open (lock-free head advance; a rare fork is surfaced by `verifyChain` as an anomaly, never
   dropped or blocking). The two hashes are complementary: keyed `record_hash` proves per-record
   authenticity, keyless `chash` proves cross-record continuity once the stream anchors the head.
+- **DONE (v0.65.0) — evidence interchange:** the same content-free record now exports in the formats the
+  wider ecosystem consumes — OTLP spans (v0.62.0), **STIX 2.1** (v0.64.0), and now an **in-toto
+  attestation / SLSA provenance predicate** (`cli/moorai-attest.mjs`) built only from the content-free
+  fields, so the agent's action evidence answers the software-supply-chain attestation gap. The AIBOM
+  also exports as a standard **CycloneDX 1.6** / **SPDX 2.3** SBOM (`moorai-aibom --format …`).
 - **TODO (optional):** local append-only hardening (platform WORM/immutable-flag where available) as
   defense-in-depth.
 
@@ -81,11 +86,21 @@ Pairs naturally with #1: the streamed history is the training/evaluation substra
   Honeytokens are wired into the enforcement path: each matched span's content hash is checked against
   the registered canaries (`checkHoneytoken`), firing a Critical alert on a hit — guarded against the
   `NO_KEY` sentinel so an unenrolled device is inert rather than noisy.
-- **TODO — orphan lineage + tune:** the **orphan-agent** detector needs a subagent's OWN later events to
-  carry the `parent` that spawned them; Claude Code's standard hook payload does not expose a
-  parent/subagent session id, so today we can record the parent→child edge at spawn but not tag the
-  child's subsequent events. Activate fully if/when that linkage is available. Weights/thresholds remain
-  chosen for explainability, not yet tuned on real recorded traffic.
+- **DONE (v0.65.0) — subagent lineage wired:** the earlier assumption was wrong — Claude Code's
+  PreToolUse payload DOES expose subagent lineage: a subagent's own tool-call hook stdin carries
+  `agent_id` + `agent_type` (verified against the hooks docs and real `~/.claude/projects/.../subagents/`
+  transcripts; `session_id` stays equal to the parent, so `agent_type` is the distinguishing key).
+  `cli/moorai-hook.mjs` now attributes a subagent's events to the subagent as a **distinct actor**
+  (`agent = contentHash(agent_type)`, keyed on type so it joins the Task handoff edge), with the spawning
+  session as `parent` and `role:"subagent"`. This also fixed a real bug: `data/agent-baseline.js` was
+  grouping by the `sig` target slot (so the "per-agent" baseline was per-*target*) — it now groups by the
+  `agent` id, so each subagent type is profiled separately and cross-agent-messaging / trace-gap group
+  correctly. Content-free (all ids one-way hashed); inert on unenrolled devices (`NO_KEY`).
+- **TODO — orphan detector + tune:** orphan-agent detection stays inert for real subagents — a subagent
+  self-attests its own session (= parent id) and the payload exposes no parent-*agent* chain (only the
+  leaf `agent_id`/`agent_type` + root session), so `missing-parent` cannot fire without fabrication; left
+  intact rather than forced. Weights/thresholds remain chosen for explainability — tuning still needs a
+  real recorded corpus (none exists yet).
 
 ## Adjacent / optional (tracked here so they don't get lost; not agent-repo core)
 

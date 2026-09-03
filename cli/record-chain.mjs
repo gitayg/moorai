@@ -36,6 +36,13 @@ const chainHash = (prev, seq, rhash) => sha256hex(`${prev}|${seq}|${rhash}`);
 // sequence must not masquerade as. Excluded when fingerprinting the record's own content.
 const CHAIN_KEY = "chain";
 
+// Pure, add-only accessor: return a record's chain sub-object ({ seq, prev, chash, rhash }) or null.
+// Single-sources the CHAIN_KEY so callers (e.g. the attestation builder) never hardcode "chain".
+export function chainOf(obj) {
+  const c = obj && typeof obj === "object" ? obj[CHAIN_KEY] : null;
+  return c && typeof c === "object" ? c : null;
+}
+
 // A stable, content-free fingerprint of a log record's own fields (chain metadata excluded), with
 // keys sorted so re-serialisation is deterministic. Lets verifyChain detect an in-place field edit.
 export function recordRhash(obj) {
