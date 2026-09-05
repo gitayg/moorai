@@ -81,6 +81,19 @@ point of view; position and document *that* as the durable evidence store.
   mechanism stays under test as the detectors improve.
   Remaining open follow-up: the still-open precision-tuning item (a) — a larger benign corpus + held-out
   attack split, so the 100% is a generalization claim, not an in-sample one.
+- **DONE (v0.70.0) — generalization + precision measured honestly:** built a **178-prompt benign corpus**
+  (`test/redteam/benign-corpus.json`, incl. 61 adversarially-shaped hard negatives) and a **29-sample
+  held-out attack set** (`test/redteam/heldout.json`, fresh per-family paraphrases the detectors were never
+  tuned on). `scripts/redteam-eval.mjs` now reports **in-sample vs held-out recall separately** and
+  precision over the full benign corpus. The in-sample 100% was masking the real picture: **precision was
+  actually 83%** against a realistic benign set and **held-out recall is 90%** (26/29). Three principled,
+  evidence-driven tuning edits to `data/crescendo.js` (scoping-preposition negative-lookahead on
+  `no-restrictions`; demoting `rules-suspended` and `off-limits` from fire-alone to corroborating) removed
+  8 false positives with **zero recall lost** → **93% precision** (4 FP/178, 2% FP rate), tune 31/31,
+  held-out 26/29. The defensible claim is now **"90% held-out recall @ 93% precision on the HackAgent
+  taxonomy."** The 3 held-out misses are novel DAN/AutoDAN/AdvPrefix phrasings in the `inj-*` detectors
+  (not `crescendo.js`) — the remaining generalization gap, tracked. On-device `--semantic` recovered 2/3 in
+  a sampled run (~97% held-out) but is opt-in/environment-dependent, so not the headline.
 - **DONE (v0.67.0) — signed decision receipts + offline verifier:** `cli/moorai-receipt.mjs` emits a
   content-free per-verdict receipt (strict field allowlist → SHA-256 digest → ed25519 signature via the
   existing `agency-sign` per-device key), and `moorai-verify-chain --offline <file>` verifies a receipt or

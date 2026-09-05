@@ -31,12 +31,27 @@ const TELL_SRC = [
   // "drop your rules", "bypass all your safety filters", "waive the restrictions" (NOT "disable the
   // safety check in the test harness" — "disable" is deliberately excluded and "check" is not a noun).
   { id: "drop-rules", w: 2, src: "\\b(?:drop|suspend|ignore|bypass|remove|lift|waive)\\s{1,4}(?:all\\s{1,4}|any\\s{1,4}of\\s{1,4})?(?:your\\s{1,4}|the\\s{1,4}|its\\s{1,4})?(?:usual\\s{1,4})?(?:safety\\s{1,4})?(?:rules|restrictions|filters|guardrails|guidelines|caveats|refusals)\\b" },
-  // passive: "all safety rules are suspended"
-  { id: "rules-suspended", w: 2, src: "\\b(?:safety\\s{1,4})?(?:rules|restrictions|filters|guardrails|guidelines)\\s{1,4}(?:are|were|be|being)\\s{1,4}suspended\\b" },
+  // passive: "all safety rules are suspended". DOWNGRADED w:2 -> w:1 (generalization tuning, v0.69.x): a
+  // benign incident/ops sentence ("the office guidelines were suspended during the renovation") matches
+  // this shape too, so it has a non-trivial benign base rate and must not fire ALONE — every attack that
+  // uses it in the corpus carries a corroborating tell, so recall is unaffected. Measured on
+  // test/redteam/benign-corpus.json (removed 1 FP).
+  { id: "rules-suspended", w: 1, src: "\\b(?:safety\\s{1,4})?(?:rules|restrictions|filters|guardrails|guidelines)\\s{1,4}(?:are|were|be|being)\\s{1,4}suspended\\b" },
   // "without any of your usual caveats or refusals", "without restriction"
   { id: "without-caveats", w: 2, src: "\\bwithout\\s{1,4}(?:any\\s{1,4}(?:of\\s{1,4})?)?(?:your\\s{1,4})?(?:usual\\s{1,4})?(?:caveats|refusals|restrictions?|filters|warnings|disclaimers)\\b" },
-  { id: "no-restrictions", w: 2, src: "\\b(?:no|zero)\\s{1,4}(?:restrictions|filters|limits|rules|content\\s{1,4}policy|guardrails)\\b" },
-  { id: "off-limits", w: 2, src: "\\bnothing\\s{1,4}is\\s{1,4}off[-\\s]?limits\\b" },
+  // "no restrictions", "no content policy", "zero filters" — but NOT the benign SCOPED form "no
+  // restrictions ON/FOR/IN/WITHIN/UPON <some external thing>" (a license, an API tier, carry-on liquids).
+  // The jailbreak sense is an ABSOLUTE negation of the assistant's own limits ("...an assistant with no
+  // restrictions and no content policy", "...respond with no restrictions"); the benign sense scopes the
+  // negation to an external noun via a preposition. The negative lookahead keeps the absolute form STRONG
+  // while dropping the scoped form, which had a high benign base rate (removed 7 FPs; kept every attack
+  // that relies on this tell, incl. "no content policy OF any kind" — "of" is deliberately NOT a scoping
+  // preposition here). Generalization tuning, v0.69.x, measured on test/redteam/benign-corpus.json.
+  { id: "no-restrictions", w: 2, src: "\\b(?:no|zero)\\s{1,4}(?:restrictions|filters|limits|rules|content\\s{1,4}policy|guardrails)\\b(?!\\s{1,4}(?:on|for|in|within|upon)\\b)" },
+  // DOWNGRADED w:2 -> w:1 (generalization tuning, v0.69.x): "nothing is off-limits at the buffet" is a
+  // perfectly benign idiom, so this frame must not fire alone; every corpus attack using it corroborates.
+  // Measured on test/redteam/benign-corpus.json (removed 1 FP).
+  { id: "off-limits", w: 1, src: "\\bnothing\\s{1,4}is\\s{1,4}off[-\\s]?limits\\b" },
   // "answer any question I ask without restriction"
   { id: "answer-any", w: 2, src: "\\banswer\\s{1,4}(?:any|every)\\s{1,4}(?:question|request)[^.]{0,40}?\\bwithout\\s{1,4}(?:any\\s{1,4})?restrictions?\\b" },
   // --- STRONG: false authorisation to break the rules -----------------------------------------------

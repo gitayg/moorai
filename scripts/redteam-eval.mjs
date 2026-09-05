@@ -122,34 +122,84 @@ export function score(rows) {
   };
 }
 
-const C = { g: "\x1b[32m", r: "\x1b[31m", y: "\x1b[33m", dim: "\x1b[2m", b: "\x1b[1m", off: "\x1b[0m" };
-const pct = (x) => `${(x * 100).toFixed(0)}%`;
+// Partition ATTACK rows by their `split` tag ("tune" vs "heldout") and compute recall per split, both
+// overall and per family. Benign rows carry no split and are ignored here (precision is a whole-corpus
+// number, computed by score()). This is the GENERALIZATION view: tune recall is in-sample (the detectors
+// were shaped against these), held-out recall is the honest out-of-sample number on fresh paraphrases the
+// detectors were NOT tuned on. Pure arithmetic over the rows; adds no new scan.
+export function scoreSplits(rows) {
+  const out = {};
+  for (const split of ["tune", "heldout"]) {
+    const attacks = rows.filter((r) => r.shouldDetect && (r.split || "tune") === split);
+    const caught = attacks.filter((r) => r.detected).length;
+    const fam = new Map();
+    for (const r of attacks) {
+      if (!fam.has(r.family)) fam.set(r.family, { attacks: 0, caught: 0 });
+      const e = fam.get(r.family);
+      e.attacks++; if (r.detected) e.caught++;
+    }
+    const families = [...fam.entries()]
+      .map(([family, e]) => ({ family, ...e, recall: e.attacks ? e.caught / e.attacks : null }))
+      .sort((a, b) => (a.recall ?? 1) - (b.recall ?? 1) || a.family.localeCompare(b.family));
+    out[split] = {
+      attacks: attacks.length,
+      caught,
+      recall: attacks.length ? caught / attacks.length : null,
+      families,
+      misses: attacks.filter((r) => !r.detected).map((r) => ({ id: r.id, family: r.family }))
+    };
+  }
+  return out;
+}
 
-export function toText(sc, rows, verbose, semantic) {
-  let out = `\n${C.b}MoorAI red-team eval — HackAgent detection coverage (BASELINE, current detectors)${C.off}\n`;
-  out += `${C.dim}deterministic / LLM-free · ${sc.totals.samples} samples · ${sc.totals.attacks} attacks · ${sc.totals.benign} benign controls${C.off}\n\n`;
-  out += `  coverage (recall):  ${sc.coverage >= 0.7 ? C.g : C.y}${pct(sc.coverage)}${C.off}  ${C.dim}(${sc.totals.tp}/${sc.totals.attacks} attacks flagged; ${sc.rightReason} on the expected threat)${C.off}\n`;
-  out += `  precision:          ${sc.totals.fp ? C.y : C.g}${pct(sc.precision)}${C.off}  ${C.dim}(${sc.totals.fp} false-positive on benign controls)${C.off}\n`;
-  if (semantic) out += `  semantic recovery:  ${sc.recovered ? C.g : C.dim}${sc.recovered}${C.off}  ${C.dim}attack(s) the deterministic layer missed, lifted to caught by the on-device model (0 = no local model answered)${C.off}\n`;
-  out += `\n`;
-  out += `  ${C.dim}Per family (caught / attacks):${C.off}\n`;
-  for (const f of sc.families) {
+const C = { g: "\x1b[32m", r: "\x1b[31m", y: "\x1b[33m", dim: "\x1b[2m", b: "\x1b[1m", off: "\x1b[0m" };
+const pct = (x) => (x == null ? "—" : `${(x * 100).toFixed(0)}%`);
+
+function famTable(families) {
+  let out = "";
+  for (const f of families) {
     if (!f.attacks) continue;
     const col = f.recall === 1 ? C.g : f.recall === 0 ? C.r : C.y;
-    out += `    ${col}${String(f.caught).padStart(2)}/${f.attacks}${C.off}  ${f.family.padEnd(12)} ${C.dim}${pct(f.recall)}${f.fp ? `  ${C.r}${f.fp} FP${C.off}` : ""}${C.off}\n`;
+    out += `    ${col}${String(f.caught).padStart(2)}/${f.attacks}${C.off}  ${f.family.padEnd(12)} ${C.dim}${pct(f.recall)}${C.off}\n`;
   }
-  if (sc.blind.length) out += `\n  ${C.r}${C.b}BLIND families (0% — the gap to close):${C.off} ${sc.blind.join(", ")}\n`;
-  if (sc.partial.length) out += `  ${C.y}Partial coverage:${C.off} ${sc.partial.join(", ")}\n`;
-  if (sc.covered.length) out += `  ${C.g}Fully covered:${C.off} ${sc.covered.join(", ")}\n`;
+  return out;
+}
+
+export function toText(sc, rows, verbose, semantic, splits) {
+  const benignTotal = sc.totals.benign;
+  let out = `\n${C.b}MoorAI red-team eval — HackAgent generalization report${C.off}\n`;
+  out += `${C.dim}deterministic / LLM-free · ${sc.totals.samples} samples · ${sc.totals.attacks} attacks · ${benignTotal} benign${C.off}\n\n`;
+
+  if (splits) {
+    const t = splits.tune, h = splits.heldout;
+    out += `  ${C.b}Recall by split${C.off}\n`;
+    out += `    TUNE  (in-sample):     ${t.recall >= 0.9 ? C.g : C.y}${pct(t.recall)}${C.off}  ${C.dim}(${t.caught}/${t.attacks} — detectors were shaped against these)${C.off}\n`;
+    out += `    HELD-OUT (out-of-sample): ${h.recall == null ? C.dim : h.recall >= 0.85 ? C.g : C.y}${pct(h.recall)}${C.off}  ${C.dim}(${h.caught}/${h.attacks} — fresh paraphrases, NOT tuned on ← the defensible number)${C.off}\n\n`;
+  }
+
+  out += `  ${C.b}Precision (over the FULL benign corpus)${C.off}\n`;
+  out += `    precision:  ${sc.totals.fp ? C.y : C.g}${pct(sc.precision)}${C.off}  ${C.dim}(${sc.totals.fp} FP / ${benignTotal} benign · FP rate ${pct(benignTotal ? sc.totals.fp / benignTotal : 0)})${C.off}\n`;
+  if (semantic) out += `    semantic recovery:  ${sc.recovered ? C.g : C.dim}${sc.recovered}${C.off}  ${C.dim}attack(s) the deterministic layer missed, lifted by the on-device model (0 = no local model answered)${C.off}\n`;
+  out += `\n`;
+
+  if (splits) {
+    out += `  ${C.dim}TUNE per family (caught / attacks):${C.off}\n${famTable(splits.tune.families)}`;
+    out += `\n  ${C.dim}HELD-OUT per family (caught / attacks):${C.off}\n${famTable(splits.heldout.families)}`;
+    if (splits.heldout.misses.length) {
+      out += `\n  ${C.y}Held-out misses (honest generalization gap):${C.off} ${splits.heldout.misses.map((m) => `${m.id}(${m.family})`).join(", ")}\n`;
+    }
+  } else {
+    out += `  ${C.dim}Per family (caught / attacks):${C.off}\n${famTable(sc.families)}`;
+  }
+
   if (verbose) {
     out += `\n  ${C.dim}Per sample:${C.off}\n`;
     for (const r of rows) {
       const ok = r.outcome === "TP" || r.outcome === "TN";
       const mark = ok ? `${C.g}✓${C.off}` : `${C.r}✗${C.off}`;
-      out += `    ${mark} ${r.outcome.padEnd(2)} ${r.family.padEnd(11)} ${r.id.padEnd(26)} ${C.dim}[${r.firedThreats.join(",") || "—"}]${C.off}\n`;
+      out += `    ${mark} ${r.outcome.padEnd(2)} ${(r.split || "—").padEnd(7)} ${r.family.padEnd(11)} ${r.id.padEnd(28)} ${C.dim}[${r.firedThreats.join(",") || "—"}]${C.off}\n`;
     }
   }
-  out += `\n${C.dim}Baseline vs current detectors — a parallel hardening effort is improving them; the orchestrator re-runs this after.${C.off}\n`;
   return out;
 }
 
@@ -192,25 +242,41 @@ async function main() {
 
   const threats = JSON.parse(readFileSync(join(ROOT, "data/threats.json"), "utf8"));
   const corpus = JSON.parse(readFileSync(join(ROOT, "test/redteam/corpus.json"), "utf8"));
-  const samples = corpus.hackagent || [];
-  if (!samples.length) { process.stderr.write("no `hackagent` samples in corpus.json\n"); process.exit(2); }
+  // corpus.json hackagent: the ORIGINAL set the detectors were shaped against. Its attacks are the TUNE
+  // split; its shouldDetect:false entries are benign controls (split-agnostic). Fresh, out-of-sample
+  // paraphrases live in heldout.json (split:"heldout"); the large benign corpus lives in
+  // benign-corpus.json. Both are OPTIONAL — a missing file degrades gracefully to the original report so
+  // the eval never hard-fails on a partial checkout.
+  const load = (p) => { try { return JSON.parse(readFileSync(join(ROOT, p), "utf8")); } catch { return null; } };
+  const heldoutFile = load("test/redteam/heldout.json");
+  const benignFile = load("test/redteam/benign-corpus.json");
+
+  const baseSamples = (corpus.hackagent || []).map((s) => ({ ...s, split: s.split || (s.shouldDetect === false ? undefined : "tune") }));
+  if (!baseSamples.length) { process.stderr.write("no `hackagent` samples in corpus.json\n"); process.exit(2); }
+  const heldoutSamples = (heldoutFile?.heldout || []).map((s) => ({ ...s, split: "heldout" }));
+  const benignSamples = (benignFile?.benign || []).map((s) => ({ ...s, shouldDetect: false, family: s.category || "benign" }));
+  const samples = [...baseSamples, ...heldoutSamples, ...benignSamples];
 
   const engine = new DetectionEngine(threats, DETECTORS, CONTENT_RULES);
   const scan = (text, stage) => engine.scan(text, stage);
   const escalate = await buildEscalator(args.semantic);
 
   const rows = [];
-  for (const s of samples) rows.push(await evalSample(engine, s, scan, { escalate }));
+  for (const s of samples) { const r = await evalSample(engine, s, scan, { escalate }); r.split = s.split; rows.push(r); }
   const sc = score(rows);
+  const splits = scoreSplits(rows);
 
   if (args.format === "json") {
-    process.stdout.write(JSON.stringify({ semantic: !!args.semantic, ...sc, rows }, null, 2) + "\n");
+    process.stdout.write(JSON.stringify({ semantic: !!args.semantic, ...sc, splits, rows }, null, 2) + "\n");
   } else {
-    process.stdout.write(toText(sc, rows, args.verbose, args.semantic));
+    process.stdout.write(toText(sc, rows, args.verbose, args.semantic, splits));
   }
 
-  if (args.failUnder != null && sc.coverage * 100 < args.failUnder) {
-    process.stderr.write(`coverage ${pct(sc.coverage)} below --fail-under ${args.failUnder}%\n`);
+  // --fail-under gates on the HELD-OUT recall — the honest, out-of-sample number — when a held-out split
+  // exists; otherwise on overall recall (preserves the original single-corpus behavior).
+  const gate = splits.heldout.attacks ? splits.heldout.recall : sc.coverage;
+  if (args.failUnder != null && gate * 100 < args.failUnder) {
+    process.stderr.write(`recall ${pct(gate)} below --fail-under ${args.failUnder}%\n`);
     process.exit(1);
   }
   process.exit(0);
