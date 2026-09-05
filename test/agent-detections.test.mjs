@@ -7,7 +7,10 @@
 //   (per-file runner only — never `node --test` across the whole suite)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { detectOrphanAgents, detectCrossAgentMessaging, detectTraceGaps } from "../data/agent-detections.js";
+import {
+  detectOrphanAgents, detectCrossAgentMessaging, detectTraceGaps,
+  detectVelocityBurst, detectConfusedDeputy, detectFanOutAnomaly
+} from "../data/agent-detections.js";
 
 const agentsOf = (findings) => new Set(findings.map((f) => f.agent));
 const shapeOk = (f) =>
@@ -130,10 +133,97 @@ test("trace-gap: a contiguous, steady-cadence, fully-observed trace is NOT flagg
   assert.deepEqual(detectTraceGaps(events), []);
 });
 
+// -------------------------------------------------------------- velocity / burst ----
+
+test("velocity: a machine-speed burst far below the agent's own cadence is flagged", () => {
+  const events = [];
+  for (let i = 0; i < 20; i++) events.push({ ts: 1000 + i * 1000, sig: "T|A", agent: "A" }); // steady 1s cadence (19 gaps)
+  let t = 1000 + 19 * 1000;
+  for (let i = 0; i < 4; i++) { t += 10; events.push({ ts: t, sig: "T|A", agent: "A" }); }    // 4 calls 10ms apart → burst (minority)
+  const findings = detectVelocityBurst(events);
+  assert.ok(findings.every(shapeOk));
+  const a = findings.find((f) => f.agent === "A");
+  assert.ok(a, "the bursting agent should be flagged");
+  assert.equal(a.evidence.kind, "cadence-burst");
+  assert.ok(a.evidence.burstGaps >= 2, "at least two fast gaps counted");
+  assert.equal(a.evidence.medianMs, 1000);
+  assert.ok(a.evidence.peakRatio >= 8);
+});
+
+test("velocity: a steady cadence with a single long idle gap is NOT a burst", () => {
+  const events = [];
+  for (let i = 0; i < 7; i++) events.push({ ts: 1000 + i * 1000, sig: "T|A", agent: "A" }); // steady
+  events.push({ ts: 1000 + 6 * 1000 + 600_000, sig: "T|A", agent: "A" });                   // long idle gap (trace-gap, not burst)
+  assert.deepEqual(detectVelocityBurst(events), []);
+});
+
+// ---------------------------------------------------------- confused deputy / boundary ----
+
+test("confused-deputy: ingest of untrusted content then egress to a NEW destination is flagged", () => {
+  const events = [
+    { ts: 1000, sig: "Read|A", agent: "A", server: "files", legs: { read: true, ingest: true } }, // untrusted content in
+    { ts: 2000, sig: "Fetch|A", agent: "A", server: "evil.example", legs: { callout: true } }       // egress to a fresh sink
+  ];
+  const findings = detectConfusedDeputy(events);
+  assert.ok(findings.every(shapeOk));
+  const a = findings.find((f) => f.agent === "A");
+  assert.ok(a, "the pivoting agent should be flagged");
+  assert.equal(a.evidence.kind, "inject-then-egress");
+  assert.ok(a.evidence.destinations.includes("evil.example"));
+  assert.equal(a.count, 1);
+});
+
+test("confused-deputy: egress to an already-seen destination, or egress before any ingest, is NOT flagged", () => {
+  const seenDest = [
+    { ts: 1000, sig: "Fetch|A", agent: "A", server: "api", legs: { callout: true } },   // api reached first
+    { ts: 2000, sig: "Read|A", agent: "A", server: "files", legs: { ingest: true } },   // then ingest
+    { ts: 3000, sig: "Fetch|A", agent: "A", server: "api", legs: { callout: true } }    // egress to KNOWN api → no pivot
+  ];
+  assert.deepEqual(detectConfusedDeputy(seenDest), []);
+  const egressFirst = [
+    { ts: 1000, sig: "Fetch|B", agent: "B", server: "new", legs: { callout: true } },   // egress before any ingest
+    { ts: 2000, sig: "Read|B", agent: "B", server: "files", legs: { ingest: true } }
+  ];
+  assert.deepEqual(detectConfusedDeputy(egressFirst), []);
+});
+
+// ---------------------------------------------------------------- subagent fan-out ----
+
+test("fan-out: a parent spawning far more distinct children than the norm is flagged", () => {
+  const events = [];
+  for (let i = 0; i < 6; i++) events.push({ ts: 1000 + i, sig: "Task|c" + i, agent: "c" + i, parent: "P1", role: "subagent" });
+  events.push({ ts: 2000, sig: "Task|d0", agent: "d0", parent: "P2", role: "subagent" }); // P2 spawns 1
+  events.push({ ts: 2001, sig: "Task|e0", agent: "e0", parent: "P3", role: "subagent" }); // P3 spawns 1
+  const findings = detectFanOutAnomaly(events);
+  assert.ok(findings.every(shapeOk));
+  assert.deepEqual(agentsOf(findings), new Set(["P1"]));
+  const p1 = findings.find((f) => f.agent === "P1");
+  assert.equal(p1.evidence.kind, "subagent-fan-out");
+  assert.equal(p1.count, 6);
+  assert.equal(p1.evidence.distinctChildren, 6);
+  assert.equal(p1.evidence.baseline, "population");
+});
+
+test("fan-out: parents with comparable, modest child counts are NOT flagged", () => {
+  const events = [
+    { ts: 1, sig: "Task|a", agent: "a", parent: "P1", role: "subagent" },
+    { ts: 2, sig: "Task|b", agent: "b", parent: "P1", role: "subagent" },
+    { ts: 3, sig: "Task|c", agent: "c", parent: "P2", role: "subagent" },
+    { ts: 4, sig: "Task|d", agent: "d", parent: "P2", role: "subagent" },
+    { ts: 5, sig: "Task|e", agent: "e", parent: "P3", role: "subagent" },
+    { ts: 6, sig: "Task|f", agent: "f", parent: "P3", role: "subagent" },
+    { ts: 7, sig: "Task|g", agent: "g", parent: "P3", role: "subagent" } // P3 has 3, still not an outlier vs 2,2
+  ];
+  assert.deepEqual(detectFanOutAnomaly(events), []);
+});
+
 // ------------------------------------------------------------------- fail-open ----
 
 test("fail-open: bad or empty input never throws, always returns an array", () => {
-  for (const fn of [detectOrphanAgents, detectCrossAgentMessaging, detectTraceGaps]) {
+  for (const fn of [
+    detectOrphanAgents, detectCrossAgentMessaging, detectTraceGaps,
+    detectVelocityBurst, detectConfusedDeputy, detectFanOutAnomaly
+  ]) {
     assert.deepEqual(fn([]), []);
     assert.deepEqual(fn(null), []);
     assert.deepEqual(fn(undefined), []);

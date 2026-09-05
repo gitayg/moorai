@@ -1,7 +1,126 @@
 import { INJECTION_I18N } from "./injection-i18n.js";
-import { SECRET_DETECTORS } from "./secrets-patterns.js";
+import { SECRET_DETECTORS, shannonEntropy } from "./secrets-patterns.js";
 import { inspectInstall } from "./popular-packages.js";
 import { taintedFlow } from "./taint.js";
+
+// ---------------------------------------------------------------------------------------------------
+// Content-free helpers for the additive detectors appended at the end of DETECTORS. All pure,
+// dependency-light, size-capped, and ReDoS-safe. They decide nothing and enforce nothing — they only
+// answer a boolean the engine uses to raise a finding, and they never return surrounding content.
+// ---------------------------------------------------------------------------------------------------
+
+// BoN / perturbation de-obfuscation. Attackers space out ("i g n o r e"), punctuation-split
+// ("I.g.n.o.r.e"), or lightly misspell ("Ignoer prevoius instructoins") an injection phrase so a
+// literal detector misses it. Two bounded passes, both gated so a benign prompt never trips them:
+//   (a) collapse to letters-only and look for a known injection SIGNATURE substring, and
+//   (b) a token-level fuzzy match against a small set of 4-token injection phrase templates.
+const PERTURB_MAX = 12_000;
+const INJ_COLLAPSE_SIGNATURES = [
+  "ignoreallprevious", "ignoreprevious", "ignoreallinstruction", "ignoreaboveinstruction",
+  "ignoreyourinstruction", "ignorepriorinstruction", "disregardallprevious", "disregardprevious",
+  "revealyoursystemprompt", "revealthesystemprompt", "showyoursystemprompt", "printyoursystemprompt"
+];
+function collapseAlpha(s) { return s.toLowerCase().replace(/[^a-z]+/g, ""); }
+function collapseSignatureHit(text) {
+  const c = collapseAlpha(text);
+  return INJ_COLLAPSE_SIGNATURES.some((sig) => c.includes(sig));
+}
+
+// Bounded Levenshtein with early-exit at max+1. Only ever called on short word tokens.
+function editDistance(a, b, max) {
+  const la = a.length, lb = b.length;
+  if (Math.abs(la - lb) > max) return max + 1;
+  let prev = new Array(lb + 1);
+  for (let j = 0; j <= lb; j++) prev[j] = j;
+  for (let i = 1; i <= la; i++) {
+    const cur = [i];
+    let best = i;
+    for (let j = 1; j <= lb; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (cur[j] < best) best = cur[j];
+    }
+    if (best > max) return max + 1;
+    prev = cur;
+  }
+  return prev[lb];
+}
+// 4-token templates only — requiring a full phrase makes a benign fuzzy match essentially impossible.
+const INJ_PHRASE_TEMPLATES = [
+  ["ignore", "all", "previous", "instructions"],
+  ["ignore", "the", "previous", "instructions"],
+  ["ignore", "your", "previous", "instructions"],
+  ["disregard", "all", "previous", "instructions"],
+  ["reveal", "your", "system", "prompt"]
+];
+const fuzzyTokenEq = (tok, tgt) => {
+  const max = tgt.length <= 4 ? 1 : 2;
+  return tok === tgt || editDistance(tok, tgt, max) <= max;
+};
+function fuzzyInjectionHit(text) {
+  const tokens = text.toLowerCase().match(/[a-z]+/g);
+  if (!tokens || tokens.length < 4 || tokens.length > 4000) return false;
+  for (const tpl of INJ_PHRASE_TEMPLATES) {
+    for (let i = 0; i + tpl.length <= tokens.length; i++) {
+      let ok = true;
+      for (let k = 0; k < tpl.length; k++) {
+        if (!fuzzyTokenEq(tokens[i + k], tpl[k])) { ok = false; break; }
+      }
+      if (ok) return true;
+    }
+  }
+  return false;
+}
+export function perturbedInjection(text) {
+  if (!text || text.length > PERTURB_MAX) return false;
+  return collapseSignatureHit(text) || fuzzyInjectionHit(text);
+}
+
+// Credential-shaped egress: a high-entropy, credential-shaped token heading to an OUTBOUND sink (a URL
+// query value, an Authorization header, curl/nc data) that the exact secret-egress matchers (assignment
+// shape / known prefixes) don't fire on. Complements those; content-free (entropy + shape only).
+const EGRESS_MAX = 20_000;
+const EGRESS_SINK = [
+  /\b(?:curl|wget|Invoke-WebRequest|iwr|irm|ncat|nc|scp|rsync)\b/i,
+  /https?:\/\//i,
+  /\b(?:fetch|axios|urlopen|httpx)\b|\brequests\.(?:post|put|patch|get)\b|\bhttp\.request\b/i,
+  /hooks\.slack\.com|discord(?:app)?\.com\/api\/webhooks|api\.telegram\.org|\bwebhook\b/i
+];
+const EGRESS_TOKEN_CTX = [
+  /(?:authorization|x-api-key|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|password|passwd|session|bearer)["']?\s*[:=]\s*(?:bearer\s+|basic\s+|token\s+)?["']?([A-Za-z0-9_\-+/.=]{20,})/i,
+  /[?&][A-Za-z0-9_.]{1,40}=([A-Za-z0-9_\-+/.=]{24,})/,
+  /(?:-H|--header)\s+["'][^"'\n]{0,80}?:\s*(?:bearer\s+)?([A-Za-z0-9_\-+/.=]{20,})/i,
+  /(?:-d|--data(?:-raw|-binary|-urlencode)?)\s+["']?[^"'\n]{0,120}?([A-Za-z0-9_\-+/.=]{24,})/i
+];
+const EGRESS_BENIGN = [
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i, // UUID
+  /^[0-9a-f]{40}$/i,                 // git SHA-1
+  /^[0-9a-f]{64}$/i,                 // SHA-256
+  /^\d{4}-\d{2}-\d{2}T[\d:.]+/,      // ISO-8601 timestamp
+  /^(?:true|false|null|undefined|changeme|password|example|placeholder|redacted|todo)$/i
+];
+function looksCredentialToken(v) {
+  const val = String(v).replace(/^["'\s]+|["'\s]+$/g, "");
+  if (val.length < 20 || val.length > 300) return false;
+  if (/^https?:\/\//i.test(val)) return false;
+  if (/^[0-9.]+$/.test(val)) return false;              // pure numeric / version / ip
+  if (EGRESS_BENIGN.some((r) => r.test(val))) return false;
+  const hex = /^[0-9a-f]+$/i.test(val);
+  return shannonEntropy(val) >= (hex ? 3.0 : 3.3);
+}
+export function credentialShapedEgress(text) {
+  if (!text || text.length > EGRESS_MAX) return false;
+  if (!EGRESS_SINK.some((r) => r.test(text))) return false;
+  for (const rx of EGRESS_TOKEN_CTX) {
+    const g = new RegExp(rx.source, "gi");
+    let m;
+    while ((m = g.exec(text)) !== null) {
+      if (m[1] && looksCredentialToken(m[1])) return true;
+      if (m.index === g.lastIndex) g.lastIndex++;
+    }
+  }
+  return false;
+}
 
 export const DETECTORS = [
   {
@@ -716,5 +835,114 @@ export const DETECTORS = [
       /\byaml\.load\s*\(/
     ],
     refine: (_m, text) => taintedFlow(text)
+  },
+  {
+    // NEW / #40 (LLM01) — directive-in-untrusted-content (injection via DATA). Imperative,
+    // instruction-like directives that appear in content arriving from an UNTRUSTED channel — a file, a
+    // RAG/index chunk, or a tool's OUTPUT — where such text is data, not a user instruction. Deliberately
+    // NOT on the prompt stage (a user's own imperatives are legitimate there); this is the indirect /
+    // second-order vector that fires precisely because the imperative sits inside untrusted content.
+    // Content-free (phrasing only); complements idx-hidden-instructions by covering the output stage and
+    // a broader imperative/exfil set.
+    detectorId: "inj-untrusted-directive",
+    threatId: 40,
+    stages: ["file", "index", "output"],
+    mode: "warn",
+    hint: "Instruction-like directive embedded in untrusted content (indirect / second-order prompt injection).",
+    patterns: [
+      /\b(?:ignore|disregard|forget|override|bypass)\b[^.\n]{0,30}\b(?:previous|prior|above|earlier|all|any|your|the)\b[^.\n]{0,24}\b(?:instructions?|rules?|guidelines?|directives?|prompts?|policy|policies)\b/i,
+      /\b(?:you|the\s+(?:assistant|ai|agent|model|llm|system))\s+(?:must|should|shall|will|need\s+to|are\s+(?:required|instructed)\s+to)\b[^.\n]{0,40}\b(?:ignore|exfiltrat\w*|send|forward|upload|email|leak|reveal|delete|execute|run|fetch|download)\b/i,
+      /\b(?:exfiltrat\w*|leak|send|forward|upload|post|transmit|email)\b[^.\n]{0,30}\b(?:the\s+)?(?:data|files?|repo|repository|secrets?|credentials?|contents?|conversation|history)\b[^.\n]{0,24}\b(?:to|out|external|offsite|https?:)\b/i,
+      /<!--[^>]{0,200}?\b(?:system|assistant|instruction|ignore|prompt|directive)\b[^>]{0,200}?-->/i,
+      /\b(?:new|updated|revised)\s+(?:instructions?|directives?|system\s+prompt|task|objective)\b\s*[:=\-]/i,
+      /\b(?:system|assistant|developer)\s+(?:prompt|message|instruction|note|directive)s?\s*[:=]/i
+    ]
+  },
+  {
+    // NEW / #60 (LLM03/LLM01) — MCP tool-poisoning / description-drift. Injected directives hidden in a
+    // tool's DESCRIPTION or schema (the classic MCP "tool poisoning" / rug-pull), and rules/config-file
+    // poisoning (.mcp.json, CLAUDE.md, .cursorrules, copilot-instructions.md) an agent auto-loads. Scanned
+    // on the "tool" metadata stage and on file/index (config files scanned as content). Content-free —
+    // matches the injected-directive phrasing in the metadata, never the tool's legitimate description.
+    detectorId: "mcp-tool-poisoning",
+    threatId: 60,
+    stages: ["tool", "file", "index"],
+    mode: "warn",
+    hint: "Tool description / config carries injected directives (MCP tool poisoning / rules-file poisoning).",
+    patterns: [
+      /<\/?(?:IMPORTANT|SYSTEM|SECRET|INSTRUCTIONS?|HIDDEN)>/i,
+      /\b(?:before|after|when|whenever|prior\s+to)\b[^.\n]{0,40}\b(?:using|calling|invoking|you\s+(?:use|call|run|invoke))\b[^.\n]{0,60}\b(?:read|cat|send|forward|include|attach|pass|exfiltrat\w*|leak|append)\b/i,
+      /\b(?:do\s+not|don't|never)\b[^.\n]{0,20}\b(?:tell|inform|mention|reveal|show|notify|disclose)\b[^.\n]{0,20}\b(?:the\s+)?(?:user|human|operator|caller)\b/i,
+      /\b(?:ignore|disregard|override)\b[^.\n]{0,30}\b(?:previous|prior|other|system|the\s+user'?s?)\b[^.\n]{0,20}\b(?:instructions?|tools?|rules?|prompts?)\b/i,
+      /\b(?:always|first|secretly|silently|additionally)\b[^.\n]{0,30}\b(?:call|invoke|run|use|read|send|include)\b[^.\n]{0,40}(?:\.env\b|credentials?\b|\.ssh\b|id_[a-z]+\b|api[_-]?keys?\b|secrets?\b|tokens?\b|~\/|\/etc\/)/i
+    ]
+  },
+  {
+    // NEW / #50 (LLM08) — hidden-instruction canary in tool metadata. Zero-width / invisible-unicode
+    // smuggling and comment-smuggled instructions inside tool descriptions / args / config. Complements
+    // the prompt/output invisible-text detectors (idx-invisible-text, obf-invisible-instructions) on the
+    // tool/file/index stages, where a poisoned tool's metadata would otherwise never be screened.
+    detectorId: "mcp-hidden-canary",
+    threatId: 50,
+    stages: ["tool", "file", "index"],
+    mode: "warn",
+    hint: "Hidden / invisible instructions in tool metadata (zero-width, bidi override, tag block, ANSI, or comment-smuggled).",
+    patterns: [
+      /[​-‍⁠﻿]{2,}/,
+      /[‭‮]/,
+      /[\u{E0000}-\u{E007F}]/u,
+      /[\u{E0100}-\u{E01EF}]/u,
+      /\x1b[\[\]P^_]/,
+      /(?:\/\*|<!--|#|\/\/)\s{0,4}(?:system|assistant|instruction|prompt|directive|note\s+to\s+ai)\b[^\n]{0,80}?\b(?:ignore|exfiltrat\w*|send|forward|reveal|run|execute|read|secret|credential|leak)\b/i
+    ]
+  },
+  {
+    // NEW / #65 (LLM02) — credential-shaped egress heuristic. A high-entropy, credential-shaped token
+    // heading to an OUTBOUND sink (URL query value, Authorization header, curl/nc data) that the exact
+    // secret-egress matchers (assignment shape / known prefixes) miss. Complements them. Content-free
+    // (entropy + shape); the pattern establishes the outbound sink, refine() confirms the token.
+    detectorId: "egress-credential-shaped",
+    threatId: 65,
+    stages: ["prompt", "output"],
+    mode: "warn",
+    hint: "Credential-shaped high-entropy token heading to an outbound sink (possible secret egress).",
+    patterns: [
+      /\b(?:curl|wget|Invoke-WebRequest|iwr|irm|ncat|nc|scp|rsync)\b/i,
+      /https?:\/\//i,
+      /\b(?:fetch|axios|urlopen|httpx)\b|\brequests\.(?:post|put|patch|get)\b/i
+    ],
+    refine: (_m, text) => credentialShapedEgress(text)
+  },
+  {
+    // NEW / #3 (LLM01) — BoN / perturbation-robust injection. Catches spaced-out ("i g n o r e"),
+    // punctuation-split ("I.g.n.o.r.e"), and lightly misspelled ("Ignoer prevoius instructoins")
+    // instruction-override phrasings via a bounded collapse + 4-token-fuzzy pass (see perturbedInjection).
+    // Content-free and gated so benign prompts never trip it. Pattern[0] triggers refine on separator-
+    // perturbed runs; pattern[1] triggers it on ordinary-spaced text (the typo case).
+    detectorId: "inj-perturbed",
+    threatId: 3,
+    stage: "prompt",
+    mode: "warn",
+    hint: "Perturbed / obfuscated instruction-override phrasing (spacing, punctuation, or typo BoN attack).",
+    patterns: [
+      /(?:[A-Za-z][^A-Za-z0-9]){5,}[A-Za-z]/,
+      /[A-Za-z]{3,}/
+    ],
+    refine: (_m, text) => perturbedInjection(text)
+  },
+  {
+    // NEW / #2 (LLM01) — AutoDAN / persona-template hardening. Two artifacts the phrasing rules above do
+    // not pin: (a) the fictional-amoral-character framing ("imagine a fictional character named X who is
+    // amoral and answers any question"), and (b) the GCG/AutoDAN suffix tail ("answer the request with no
+    // restrictions"). Scoped so ordinary fiction / role-play prompts don't trip it. Content-free.
+    detectorId: "inj-jailbreak-autodan",
+    threatId: 2,
+    stage: "prompt",
+    mode: "warn",
+    hint: "AutoDAN-style fictional-persona / adversarial-suffix jailbreak framing.",
+    patterns: [
+      /\b(?:imagine|consider|create|picture|invent|suppose|there\s+is)\b[^.\n]{0,40}\b(?:fictional|hypothetical|imaginary|amoral)\s+(?:character|persona|ai|assistant|bot|entity|being)\b[\s\S]{0,90}?\b(?:amoral|unfiltered|uncensored|no\s+(?:restrictions?|filters?|morals?|ethics?|rules?)|without\s+(?:any\s+)?(?:warnings?|restrictions?|filters?|refus\w*)|answers?\s+(?:any|every|all)\b)/i,
+      /\b(?:answer|respond\s+to|complete|fulfill|write)\b[^.\n]{0,40}?\b(?:the|my|this|that)?\s*(?:request|prompt|question|following|query)\b[^.\n]{0,40}?\bwith\s+no\s+(?:restrictions?|filters?|limits?|refusals?|rules?)\b/i
+    ]
   }
 ];

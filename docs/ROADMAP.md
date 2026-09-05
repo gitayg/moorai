@@ -54,6 +54,12 @@ point of view; position and document *that* as the durable evidence store.
   (1 benign FP to chase), with **PAP / TAP** left BLIND by design (semantic/multi-turn → model-escalation,
   not a faked regex). `scripts/moorai-validate-blocking.mjs` proves the ACTION layer holds even after a
   hijack: **12/12 malicious tool calls denied (100%)** under an enforcing policy.
+- **DONE (v0.67.0) — signed decision receipts + offline verifier:** `cli/moorai-receipt.mjs` emits a
+  content-free per-verdict receipt (strict field allowlist → SHA-256 digest → ed25519 signature via the
+  existing `agency-sign` per-device key), and `moorai-verify-chain --offline <file>` verifies a receipt or
+  an in-toto attestation with no network (recompute digest → reject tampered payloads → check signature
+  against a pinned key). Generation fail-open, verification fail-closed; 13 falsify-first tests including a
+  planted-secret content-free assertion.
 - **TODO (optional):** local append-only hardening (platform WORM/immutable-flag where available) as
   defense-in-depth.
 
@@ -106,6 +112,13 @@ Pairs naturally with #1: the streamed history is the training/evaluation substra
   grouping by the `sig` target slot (so the "per-agent" baseline was per-*target*) — it now groups by the
   `agent` id, so each subagent type is profiled separately and cross-agent-messaging / trace-gap group
   correctly. Content-free (all ids one-way hashed); inert on unenrolled devices (`NO_KEY`).
+- **DONE (v0.67.0) — first learned-deviation detectors:** `data/agent-detections.js` gained three
+  content-free behavioral detectors scored against each actor's *own* window — **velocity-burst** (cadence
+  above the actor's robust median/IQR), **confused-deputy** (an injection tell followed by a sensitive
+  action in the same actor's window), and **fan-out-anomaly** (a spawning actor delegating to abnormally
+  many subagents) — wired into `agentBaselineReport`. This is the first cut of the "flag deviation from an
+  actor's own norm" bar; thresholds are chosen for explainability and still need tuning against a real
+  recorded distribution.
 - **TODO — orphan detector + tune:** orphan-agent detection stays inert for real subagents — a subagent
   self-attests its own session (= parent id) and the payload exposes no parent-*agent* chain (only the
   leaf `agent_id`/`agent_type` + root session), so `missing-parent` cannot fire without fabrication; left

@@ -17,6 +17,11 @@ import { semanticEnabled } from "../data/semantic-escalation.js";
 
 const LEVEL_RANK = { Critical: 4, High: 3, Medium: 2, Low: 1 };
 const CONFIRM_MIN = 0.5;
+// The threat a miss-recovery finding is attributed to (threats.json #58, "Model-escalated risk"). A
+// recovered finding is advisory by construction — it says "a bounded on-device model flagged this",
+// never a specific taxonomy id the model cannot know — so it is NOT scored as the "right reason".
+const SEMANTIC_MISS_THREAT_ID = 58;
+const SEMANTIC_MISS_THREAT_FALLBACK = { id: SEMANTIC_MISS_THREAT_ID, riskLevel: "Medium", riskScore: 6 };
 
 function contentFree(v) {
   return {
@@ -31,7 +36,11 @@ function contentFree(v) {
 // returns null WITHOUT consulting any model — the off-by-default, zero-egress guarantee lives here.
 // Hard-bounded by timeoutMs on top of the per-backend timeouts, so it can never hang the hook. Never
 // throws; every failure path resolves to null (fail-open — the caller keeps the regex-only verdict).
-export async function semanticVerdict(text, policy, { timeoutMs = 3500 } = {}) {
+// The outer hard-bound. Default 3500ms; when an operator raises the per-backend budget
+// (MOORAI_LOCAL_TIMEOUT_MS, see data/model-escalation.mjs) the guard grows to sit just past it, so a
+// deliberately longer local-model call isn't clipped by the wrapper before it can answer.
+const OUTER_GUARD_MS = Math.max(3500, (Number(process.env.MOORAI_LOCAL_TIMEOUT_MS) || 0) + 1000);
+export async function semanticVerdict(text, policy, { timeoutMs = OUTER_GUARD_MS } = {}) {
   if (!semanticEnabled(policy)) return null;
   if (!text || !String(text).trim()) return null;
   let timer;
@@ -100,4 +109,39 @@ export async function escalate(engine, base, text, stage, policy, opts = {}) {
       (LEVEL_RANK[b.threat.riskLevel] - LEVEL_RANK[a.threat.riskLevel]) ||
       (b.threat.riskScore - a.threat.riskScore)
   );
+}
+
+// Miss-recovery path (#21) — the SEMANTIC lever the detector-gated escalate() above cannot pull. The
+// detect gate only fires for a detector that opted in (`d.semantic === "detect"`); the persuasion (PAP)
+// and multi-turn (PAIR/TAP crescendo) families have NO stable text signature, so no deterministic
+// detector exists to opt them in. This is the entry point for content the deterministic engine returned
+// NOTHING for: it asks the SAME policy-gated, fail-open on-device model layer (semanticVerdict →
+// classifyOpportunistic; local loopback first, then the agent's OWN provider only when the org opted in
+// and a device key already exists) for a bounded second opinion, and when the model flags a risk with
+// confidence ≥ CONFIRM_MIN returns ONE synthetic, content-free finding attributed to threat #58.
+//
+// It NEVER changes an enforcement decision: the caller reaches here only after the deterministic layer
+// found nothing, and every failure path (policy off, empty text, null/negative/low-confidence verdict,
+// model absent) resolves to null — the caller keeps its regex-only verdict. Content-free: the finding
+// carries only the model's short category label (never the span). `opts.verdict(text, policy)` overrides
+// the model call so tests and the coverage harness can drive it deterministically without a live model.
+export async function escalateMiss(engine, text, stage, policy, opts = {}) {
+  if (!semanticEnabled(policy)) return null;
+  if (!text || !String(text).trim()) return null;
+  const verdict = opts.verdict
+    ? await opts.verdict(text, policy)
+    : await semanticVerdict(text, policy, opts);
+  if (!verdict || verdict.flagged !== true || verdict.confidence < CONFIRM_MIN) return null;
+  const threat = (engine && typeof engine.threat === "function" && engine.threat(SEMANTIC_MISS_THREAT_ID))
+    || SEMANTIC_MISS_THREAT_FALLBACK;
+  return {
+    detectorId: "semantic-escalation",
+    mode: "warn",
+    hint: "On-device model flagged a semantic/conversational risk the deterministic engine missed",
+    match: `semantic:${verdict.category}`,
+    threat,
+    semantic: true,
+    confidence: verdict.confidence,
+    backend: verdict.backend
+  };
 }

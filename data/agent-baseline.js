@@ -22,7 +22,10 @@
 // gaps for cadence. Deterministic: same events in → same profile and same score out.
 
 import { readAgentEvents } from "../cli/signals.mjs";
-import { detectOrphanAgents, detectCrossAgentMessaging, detectTraceGaps } from "./agent-detections.js";
+import {
+  detectOrphanAgents, detectCrossAgentMessaging, detectTraceGaps,
+  detectVelocityBurst, detectConfusedDeputy, detectFanOutAnomaly
+} from "./agent-detections.js";
 
 // Same risk ordering the hook uses (cli/moorai-hook.mjs) so a "risk spike" is measured on the same scale.
 const RISK_RANK = { Low: 1, Medium: 2, High: 3, Critical: 4, Blocked: 5 };
@@ -278,17 +281,25 @@ export function scoreWindow(baseline, events) {
   return { score, confidence, lowConfidence: profile.n < MIN_EVENTS, coldStart: false, actor, events: evs.length, factors };
 }
 
-// ---- Wiring: consume the on-device event stream and produce the per-agent baseline PLUS the three
-// content-free forensic detections (orphan agents, cross-agent messaging, trace gaps). The scoring
-// functions above stay pure; this is the layer the CLI and any console-side collector call. FAIL-OPEN by
-// construction — every read/build/detect step is wrapped and degrades to an empty result, so nothing
-// here can throw into a caller that might sit on the enforcement path.
+// ---- Wiring: consume the on-device event stream and produce the per-agent baseline PLUS the six
+// content-free forensic detections — the graph-shape trio (orphan agents, cross-agent messaging, trace
+// gaps) and the behavioral trio (velocity/burst, confused-deputy trust-boundary, subagent fan-out). The
+// scoring functions above stay pure; this is the layer the CLI and any console-side collector call.
+// FAIL-OPEN by construction — every read/build/detect step is wrapped and degrades to an empty result, so
+// nothing here can throw into a caller that might sit on the enforcement path.
 
-// Run the three detections over an event array, each independently fail-open.
+// Run all detections over an event array, each independently fail-open.
 export function runAgentDetections(events) {
   const evs = Array.isArray(events) ? events : [];
   const safe = (fn) => { try { return fn(evs) || []; } catch { return []; } };
-  return { orphans: safe(detectOrphanAgents), crossAgent: safe(detectCrossAgentMessaging), traceGaps: safe(detectTraceGaps) };
+  return {
+    orphans: safe(detectOrphanAgents),
+    crossAgent: safe(detectCrossAgentMessaging),
+    traceGaps: safe(detectTraceGaps),
+    velocity: safe(detectVelocityBurst),
+    confusedDeputy: safe(detectConfusedDeputy),
+    fanOut: safe(detectFanOutAnomaly)
+  };
 }
 
 // Read the on-device event stream (the "engine actually consumes the streams" step). Wrapped: a read
@@ -318,7 +329,10 @@ export function agentBaselineReport(events) {
         detections: {
           orphan: findingsFor(detections.orphans, actor),
           crossAgent: findingsFor(detections.crossAgent, actor),
-          traceGaps: findingsFor(detections.traceGaps, actor)
+          traceGaps: findingsFor(detections.traceGaps, actor),
+          velocity: findingsFor(detections.velocity, actor),
+          confusedDeputy: findingsFor(detections.confusedDeputy, actor),
+          fanOut: findingsFor(detections.fanOut, actor)
         }
       };
     }
@@ -327,9 +341,20 @@ export function agentBaselineReport(events) {
       actorCount: baseline.actorCount,
       agents,
       detections,
-      totals: { orphans: detections.orphans.length, crossAgent: detections.crossAgent.length, traceGaps: detections.traceGaps.length }
+      totals: {
+        orphans: detections.orphans.length,
+        crossAgent: detections.crossAgent.length,
+        traceGaps: detections.traceGaps.length,
+        velocity: detections.velocity.length,
+        confusedDeputy: detections.confusedDeputy.length,
+        fanOut: detections.fanOut.length
+      }
     };
   } catch {
-    return { events: 0, actorCount: 0, agents: {}, detections: { orphans: [], crossAgent: [], traceGaps: [] }, totals: { orphans: 0, crossAgent: 0, traceGaps: 0 } };
+    return {
+      events: 0, actorCount: 0, agents: {},
+      detections: { orphans: [], crossAgent: [], traceGaps: [], velocity: [], confusedDeputy: [], fanOut: [] },
+      totals: { orphans: 0, crossAgent: 0, traceGaps: 0, velocity: 0, confusedDeputy: 0, fanOut: 0 }
+    };
   }
 }

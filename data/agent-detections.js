@@ -167,6 +167,18 @@ function median(nums) {
   return n % 2 ? g[mid] : (g[mid - 1] + g[mid]) / 2;
 }
 
+// Linear-interpolated quantile of an ALREADY-SORTED ascending array. Same method data/agent-baseline.js
+// uses for its cadence IQR, kept local so this module keeps no import edge back into the baseline.
+function quantileSorted(sorted, q) {
+  const n = sorted.length;
+  if (!n) return 0;
+  if (n === 1) return sorted[0];
+  const pos = (n - 1) * q;
+  const lo = Math.floor(pos), hi = Math.ceil(pos);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+}
+function iqrOf(sorted) { return quantileSorted(sorted, 0.75) - quantileSorted(sorted, 0.25); }
+
 export function detectTraceGaps(events) {
   try {
     const evs = rows(events);
@@ -219,5 +231,164 @@ export function detectTraceGaps(events) {
       }
     }
     return out;
+  } catch { return []; }
+}
+
+// ---- velocity / burst anomaly. An agent whose tool-call CADENCE spikes far above its OWN robust
+// baseline — i.e. it starts firing much faster than it usually does. Content-free: computed purely from
+// per-agent inter-arrival gaps, exactly the median+IQR robust statistic data/agent-baseline.js learns for
+// cadence. A "burst gap" is one both below the robust lower fence (median - 1.5·IQR, so a naturally
+// jittery actor is not flagged) AND at least BURST_RATIO× faster than the actor's median gap. A single
+// tight gap is noise; BURST_MIN_BURSTS gaps make a sustained machine-speed burst. Long IDLE gaps are the
+// opposite direction and are trace-gap's job, never counted here. ----
+const BURST_MIN_GAPS = 4;      // need a few gaps before the median is a trustworthy cadence norm
+const BURST_RATIO = 8;         // a burst gap fires at least this many times faster than the agent's median
+const BURST_MIN_BURSTS = 2;    // a burst is >= this many fast gaps, not one fluke
+
+export function detectVelocityBurst(events) {
+  try {
+    const evs = rows(events);
+    if (!evs.length) return [];
+    const byAgent = new Map();
+    for (const e of evs) {
+      const t = tsOf(e);
+      if (t == null) continue;
+      const a = ownId(e);
+      if (!byAgent.has(a)) byAgent.set(a, []);
+      byAgent.get(a).push(t);
+    }
+    const out = [];
+    for (const [agent, times] of byAgent) {
+      const ts = times.slice().sort((a, b) => a - b);
+      if (ts.length < BURST_MIN_GAPS + 1) continue;
+      const gaps = [];
+      for (let i = 1; i < ts.length; i++) gaps.push(ts[i] - ts[i - 1]);
+      const sorted = gaps.slice().sort((a, b) => a - b);
+      const med = median(sorted);
+      if (med <= 0) continue;
+      const iqr = iqrOf(sorted);
+      const floor = med - 1.5 * iqr;   // robust lower fence — the same fence data/agent-baseline.js uses
+      if (!(floor > 0)) continue;      // jittery actor (fast is already normal) → no burst callable
+      const ratioThr = med / BURST_RATIO;
+      // A burst gap is below BOTH the robust fence (so a jittery actor is not flagged) AND at least
+      // BURST_RATIO× the median (so a mild, within-fence speed-up is not called a burst). Tested as two
+      // conditions, never collapsed to min() — a negative fence must suppress, not invert, the ratio test.
+      let burst = 0, minGap = Infinity;
+      for (const g of gaps) if (g >= 0 && g < floor && g <= ratioThr) { burst++; if (g < minGap) minGap = g; }
+      if (burst < BURST_MIN_BURSTS) continue;
+      const denom = Math.max(minGap, 1);
+      const peakRatio = Math.round(med / denom);
+      out.push({
+        type: "velocity-burst",
+        agent,
+        severity: burst >= 5 || peakRatio >= 4 * BURST_RATIO ? "high" : burst >= 3 || peakRatio >= 2 * BURST_RATIO ? "medium" : "low",
+        count: burst,
+        evidence: { kind: "cadence-burst", burstGaps: burst, medianMs: med, minGapMs: minGap === Infinity ? null : minGap, peakRatio, events: ts.length }
+      });
+    }
+    return out.sort((a, b) => b.count - a.count || a.agent.localeCompare(b.agent));
+  } catch { return []; }
+}
+
+// ---- confused deputy / trust-boundary crossing. The classic inject → act pivot, told content-free from
+// the trifecta legs already on each event: an agent that INGESTED untrusted content (a read/ingest leg)
+// and then, later in its own trace, performs an EGRESS/exec action (a callout leg, or an exec/egress/exfil
+// flag) toward a destination it had NOT reached before. The novelty of the destination is what separates
+// an ordinary "read a file, call its usual API" flow from an injected instruction steering the agent to a
+// fresh sink. Never reads the content of the read or the callout — only the boolean legs and the opaque
+// destination id (host / MCP server name), the same class of id destinations.jsonl already stores. ----
+function legsOf(e) { const l = e && e.legs; return l && typeof l === "object" ? l : {}; }
+function isIngest(e) { const l = legsOf(e); return l.ingest === true || l.read === true; }
+function isEgress(e) {
+  const l = legsOf(e), f = e.flags || {};
+  return l.callout === true || f.exec === true || f.egress === true || f.exfil === true;
+}
+
+export function detectConfusedDeputy(events) {
+  try {
+    const evs = rows(events);
+    if (!evs.length) return [];
+    const byAgent = new Map();
+    for (const e of evs) { const a = ownId(e); if (!byAgent.has(a)) byAgent.set(a, []); byAgent.get(a).push(e); }
+    const out = [];
+    for (const [agent, list] of byAgent) {
+      const ordered = list.slice().sort((a, b) => (tsOf(a) ?? 0) - (tsOf(b) ?? 0));
+      const seenDest = new Set();
+      let ingested = false, ingestTs = null;
+      let count = 0; const pivots = []; const dests = new Set();
+      for (const e of ordered) {
+        const dest = serverOf(e) || "local";
+        // egress AFTER an ingest, to a destination this agent had not reached before → inject→act pivot.
+        if (isEgress(e) && ingested && !seenDest.has(dest)) {
+          count++; dests.add(dest);
+          if (pivots.length < 10) pivots.push({ ingestTs, egressTs: tsOf(e) ?? null, destination: dest });
+        }
+        if (isIngest(e)) { ingested = true; ingestTs = tsOf(e) ?? ingestTs; }
+        seenDest.add(dest);
+      }
+      if (count > 0) {
+        out.push({
+          type: "confused-deputy",
+          agent,
+          severity: sev(count, 2, 4),
+          count,
+          evidence: { kind: "inject-then-egress", pivots, destinations: [...dests].sort(), events: ordered.length }
+        });
+      }
+    }
+    return out.sort((a, b) => b.count - a.count || a.agent.localeCompare(b.agent));
+  } catch { return []; }
+}
+
+// ---- subagent fan-out anomaly. A parent spawning an unusual number of DISTINCT child agents (role-marked
+// subagent events) versus the norm — a lineage-fork bomb or a runaway orchestrator. Baseline is the robust
+// median+IQR of distinct-child counts across every observed parent; a parent above median + 1.5·IQR (and
+// at least double the median, so a small population's IQR jitter cannot flag a merely-slightly-busy parent)
+// is the anomaly. With only one parent there is no population to compare against, so a plain absolute floor
+// applies. Content-free: only opaque parent/child ids and counts. ----
+const FAN_OUT_MIN = 3;     // never flag a parent with fewer than this many distinct children
+const FAN_OUT_FLOOR = 6;   // with no population baseline (a single parent), flag only at this absolute count
+
+export function detectFanOutAnomaly(events) {
+  try {
+    const evs = rows(events);
+    if (!evs.length) return [];
+    const byParent = new Map(); // parent id → Set(distinct child id)
+    for (const e of evs) {
+      if (!isChildRole(roleOf(e))) continue;
+      const parent = parentOf(e);
+      if (!parent) continue;
+      const child = ownId(e);
+      if (!child || child === parent) continue;
+      if (!byParent.has(parent)) byParent.set(parent, new Set());
+      byParent.get(parent).add(child);
+    }
+    if (!byParent.size) return [];
+    const counts = [...byParent.values()].map((s) => s.size).sort((a, b) => a - b);
+    const med = median(counts);
+    const upperFence = med + 1.5 * iqrOf(counts);
+    const havePopulation = byParent.size >= 2;
+    const out = [];
+    for (const [parent, kids] of byParent) {
+      const k = kids.size;
+      if (k < FAN_OUT_MIN) continue;
+      const flagged = havePopulation
+        ? (k >= Math.max(upperFence, FAN_OUT_MIN) && k >= 2 * med)
+        : (k >= FAN_OUT_FLOOR);
+      if (!flagged) continue;
+      const ratio = med > 0 ? k / med : k;
+      out.push({
+        type: "fan-out-anomaly",
+        agent: parent,
+        severity: ratio >= 3 || k >= 12 ? "high" : ratio >= 2 || k >= 8 ? "medium" : "low",
+        count: k,
+        evidence: {
+          kind: "subagent-fan-out", distinctChildren: k, children: [...kids].sort(),
+          medianFanOut: med, upperFence: havePopulation ? upperFence : null,
+          baseline: havePopulation ? "population" : "floor"
+        }
+      });
+    }
+    return out.sort((a, b) => b.count - a.count || a.agent.localeCompare(b.agent));
   } catch { return []; }
 }

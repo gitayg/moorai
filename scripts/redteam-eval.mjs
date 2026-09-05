@@ -51,12 +51,23 @@ export function parseArgs(argv) {
   };
 }
 
-// Run one labelled sample and reduce it to a content-free verdict row. `scan` is the (optionally
-// semantic) scanner: (text, stage) -> Promise<findings[]> | findings[]. Exported + injectable so the
-// test can drive it with a stub engine.
-export async function evalSample(engine, s, scan) {
+// Run one labelled sample and reduce it to a content-free verdict row. `scan` is the deterministic
+// scanner: (text, stage) -> Promise<findings[]> | findings[]. Exported + injectable so the test can drive
+// it with a stub engine.
+//
+// `opts.escalate(engine, text, stage) -> Promise<finding|null>` is the OPTIONAL miss-recovery hook (only
+// --semantic wires it). It runs ONLY when the deterministic layer returned nothing, so it can lift a
+// MISSED sample to a caught one but can never suppress or alter a deterministic finding — coverage with
+// escalation is therefore monotonically ≥ the deterministic baseline. Turn-based samples are flattened
+// to one newline-joined text so a multi-turn crescendo is judged as a whole (see src/semantic.js).
+export async function evalSample(engine, s, scan, opts = {}) {
   const stage = s.stage || "prompt";
-  const findings = s.turns ? await engine.scanSession(s.turns) : await scan(s.text, stage);
+  let findings = s.turns ? await engine.scanSession(s.turns) : await scan(s.text, stage);
+  let recovered = false;
+  if (opts.escalate && findings.length === 0) {
+    const extra = await opts.escalate(engine, s.turns ? s.turns.join("\n") : s.text, stage);
+    if (extra) { findings = [extra]; recovered = true; }
+  }
   const ids = findings.map((f) => f.threat.id);
   const detected = findings.length > 0;
   const correctThreat = s.expectThreat != null ? ids.includes(s.expectThreat) : detected;
@@ -72,6 +83,7 @@ export async function evalSample(engine, s, scan) {
     detected,
     correctThreat,
     firedThreats: ids,
+    recovered, // true when the deterministic layer missed and the semantic escalation caught it
     outcome
   };
 }
@@ -100,6 +112,7 @@ export function score(rows) {
   return {
     totals: { samples: rows.length, attacks, benign: fp + tn, tp, fn, fp, tn },
     coverage: recall, precision, rightReason,
+    recovered: rows.filter((r) => r.recovered).length, // attacks the semantic layer lifted from FN
     families,
     blind: withAttacks.filter((f) => f.recall === 0).map((f) => f.family),
     partial: withAttacks.filter((f) => f.recall > 0 && f.recall < 1).map((f) => f.family),
@@ -110,11 +123,13 @@ export function score(rows) {
 const C = { g: "\x1b[32m", r: "\x1b[31m", y: "\x1b[33m", dim: "\x1b[2m", b: "\x1b[1m", off: "\x1b[0m" };
 const pct = (x) => `${(x * 100).toFixed(0)}%`;
 
-export function toText(sc, rows, verbose) {
+export function toText(sc, rows, verbose, semantic) {
   let out = `\n${C.b}MoorAI red-team eval — HackAgent detection coverage (BASELINE, current detectors)${C.off}\n`;
   out += `${C.dim}deterministic / LLM-free · ${sc.totals.samples} samples · ${sc.totals.attacks} attacks · ${sc.totals.benign} benign controls${C.off}\n\n`;
   out += `  coverage (recall):  ${sc.coverage >= 0.7 ? C.g : C.y}${pct(sc.coverage)}${C.off}  ${C.dim}(${sc.totals.tp}/${sc.totals.attacks} attacks flagged; ${sc.rightReason} on the expected threat)${C.off}\n`;
-  out += `  precision:          ${sc.totals.fp ? C.y : C.g}${pct(sc.precision)}${C.off}  ${C.dim}(${sc.totals.fp} false-positive on benign controls)${C.off}\n\n`;
+  out += `  precision:          ${sc.totals.fp ? C.y : C.g}${pct(sc.precision)}${C.off}  ${C.dim}(${sc.totals.fp} false-positive on benign controls)${C.off}\n`;
+  if (semantic) out += `  semantic recovery:  ${sc.recovered ? C.g : C.dim}${sc.recovered}${C.off}  ${C.dim}attack(s) the deterministic layer missed, lifted to caught by the on-device model (0 = no local model answered)${C.off}\n`;
+  out += `\n`;
   out += `  ${C.dim}Per family (caught / attacks):${C.off}\n`;
   for (const f of sc.families) {
     if (!f.attacks) continue;
@@ -136,13 +151,17 @@ export function toText(sc, rows, verbose) {
   return out;
 }
 
-// OPTIONAL, gated: build a scanner backed by the on-device semantic escalation. No-ops (identical to the
-// deterministic scan) unless a policy enables it AND a local model answers — see src/semantic.js.
-async function buildScanner(engine, semantic) {
-  if (!semantic) return (text, stage) => engine.scan(text, stage);
-  const { escalate } = await import("../src/semantic.js");
-  const policy = { semanticEscalation: "on" };
-  return (text, stage) => engine.scanSemantic(text, stage, policy, escalate);
+// OPTIONAL, gated miss-recovery escalator. Returns null unless --semantic is set; otherwise a function
+// that routes a MISSED span through the on-device model layer (src/semantic.js → escalateMiss). No-ops
+// (returns null per sample) unless a local model answers — or, when the mode is "provider", the agent's
+// own device key exists. Default mode is "local" (zero egress) so the benchmark never makes a NEW
+// provider call unless explicitly opted in via MOORAI_EVAL_SEMANTIC_MODE=provider.
+async function buildEscalator(semantic) {
+  if (!semantic) return null;
+  const { escalateMiss } = await import("../src/semantic.js");
+  const mode = process.env.MOORAI_EVAL_SEMANTIC_MODE === "provider" ? "provider" : "local";
+  const policy = { semanticEscalation: mode };
+  return (engine, text, stage) => escalateMiss(engine, text, stage, policy);
 }
 
 async function main() {
@@ -155,16 +174,17 @@ async function main() {
   if (!samples.length) { process.stderr.write("no `hackagent` samples in corpus.json\n"); process.exit(2); }
 
   const engine = new DetectionEngine(threats, DETECTORS, CONTENT_RULES);
-  const scan = await buildScanner(engine, args.semantic);
+  const scan = (text, stage) => engine.scan(text, stage);
+  const escalate = await buildEscalator(args.semantic);
 
   const rows = [];
-  for (const s of samples) rows.push(await evalSample(engine, s, scan));
+  for (const s of samples) rows.push(await evalSample(engine, s, scan, { escalate }));
   const sc = score(rows);
 
   if (args.format === "json") {
     process.stdout.write(JSON.stringify({ semantic: !!args.semantic, ...sc, rows }, null, 2) + "\n");
   } else {
-    process.stdout.write(toText(sc, rows, args.verbose));
+    process.stdout.write(toText(sc, rows, args.verbose, args.semantic));
   }
 
   if (args.failUnder != null && sc.coverage * 100 < args.failUnder) {
