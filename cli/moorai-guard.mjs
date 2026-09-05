@@ -12,7 +12,7 @@ import { loadConfig } from "./config.mjs";
 import { calibrateRisk, decideEndpoints } from "./hook-core.mjs";
 import { recordExposure, recordIntent } from "./signals.mjs";
 import { contentHash } from "./content-hash.mjs";
-import { classifyOpportunistic } from "../data/model-escalation.mjs";
+import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = loadConfig();
@@ -48,18 +48,39 @@ function post(alert) {
   return fetch(`${SERVER}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(alert) }).catch(() => {});
 }
 
+// Content-free advisory post for one escalate/escalateMiss finding: only the model's short category
+// label (from the finding's `semantic:<label>` match) and a one-way hash of the input — never the span.
+function postSemantic(f, text) {
+  const cat = String(f.match || "").replace(/^semantic:/, "") || f.category || "model";
+  return post({ threatId: f.threat.id, category: `Model-flagged: ${cat}`, riskLevel: (f.confidence || 0) >= 0.85 ? "High" : "Medium", stage: "egress", tool: "escalate:claude -p", ts: new Date().toISOString(), contentHash: contentHash(text), ...IDENTITY });
+}
+
 // #21 — model escalation, extended from the PreToolUse hook (cli/moorai-hook.mjs::maybeEscalate) to the
-// claude -p guard. An advisory second opinion from the on-device model (loopback / the device's own
-// provider key), gated on policy.modelEscalation. Reached ONLY on the forward paths — past every block
-// decision — so content the policy denies is never sent to the model (F-301). It posts a content-free
-// alert and never changes the regex-owned decision. Skips when regex is already confident, and fail-open.
+// claude -p guard, now wired through the ENGINE's semantic orchestration (src/semantic.js) instead of the
+// bare classifyOpportunistic→#58 shortcut. An advisory second opinion from the on-device model (loopback
+// / the device's own provider key). Reached ONLY on the forward paths — past every block decision — so
+// content the policy denies is never sent to the model (F-301). It posts content-free alerts and never
+// changes the regex-owned decision. Skips when regex is already confident, and is fail-open throughout.
+//
+// GATING: kept on policy.modelEscalation (the operator opt-in, backward compatible), AND escalate()/
+// escalateMiss() gate INTERNALLY on semanticEnabled(policy) (semanticEscalation ≠ "off", default OFF), so
+// the semantic path runs only when BOTH flags are set — never wider than before, off by default. Two
+// levers: escalate() ADDS a content-free finding for a detect-gate detector the model flags (production:
+// `semantic-persuasion`, threat #2), and escalateMiss() emits ONE #58 when the engine found nothing at
+// all. A single bounded verdict is shared across both (opts.verdict) → at most ONE model call.
 async function maybeEscalate(policy, text, findings) {
   try {
     if (!policy || !policy.modelEscalation || !text || !text.trim()) return;
     if (findings.some((f) => f.threat.riskLevel === "High" || f.threat.riskLevel === "Critical" || f.threat.riskLevel === "Blocked")) return;
-    const v = await classifyOpportunistic(text, policy);
-    if (v && v.flagged && v.confidence >= 0.6) {
-      post({ threatId: 58, category: `Model-flagged: ${v.category}`, riskLevel: v.confidence >= 0.85 ? "High" : "Medium", stage: "egress", tool: "escalate:claude -p", ts: new Date().toISOString(), contentHash: contentHash(text), ...IDENTITY });
+    const base = engine.scan(text, "prompt");
+    let shared;
+    const opts = { verdict: (t, p) => (shared ??= semanticVerdict(t, p)) };
+    const after = await escalate(engine, base, text, "prompt", policy, opts);
+    const seen = new Set(base.map((f) => f.threat.id));
+    for (const f of after) if (!seen.has(f.threat.id)) postSemantic(f, text);
+    if (!base.length) {
+      const miss = await escalateMiss(engine, text, "prompt", policy, opts);
+      if (miss) postSemantic(miss, text);
     }
   } catch { /* advisory; fail-open */ }
 }

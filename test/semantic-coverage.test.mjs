@@ -1,13 +1,15 @@
-// #21 — SEMANTIC-family coverage recovery. The deterministic engine caps at ~61% on the HackAgent corpus
-// because the persuasion (PAP) and multi-turn tree-of-attacks (PAIR/TAP crescendo) families have NO
-// stable text signature — regex/normalization cannot catch them by design. The lever is the policy-gated
-// on-device model layer: escalateMiss() (src/semantic.js) routes a span the deterministic layer MISSED to
-// a bounded, fail-open second opinion and, when the model flags a risk, returns one content-free finding.
+// #21 — SEMANTIC-family miss recovery. Historically the persuasion (PAP) and multi-turn (PAIR/TAP
+// crescendo) families were BLIND deterministically and only the policy-gated on-device model recovered
+// them. As of v0.68.0 the weighted persuasion-tell + crescendo analyzer (data/crescendo.js) catches those
+// families deterministically, so escalateMiss()'s role has shifted from "primary catch for blind families"
+// to a BACKSTOP for any span the deterministic layer has no signature for. escalateMiss() (src/semantic.js)
+// routes such a MISSED span to a bounded, fail-open second opinion and, when the model flags a risk,
+// returns one content-free finding (#58).
 //
 // These tests are STUB-DRIVEN: the model verdict is injected, so the routing/scoring logic is proven with
-// NO live model (the measurement against a real local model is a separate, environment-dependent run).
-// Falsify-first: the first test proves the deterministic engine genuinely misses these families, so the
-// recovery path is real and not redundant.
+// NO live model (the measurement against a real local model is a separate, environment-dependent run). The
+// mechanism tests use a SYNTHETIC guaranteed-miss span (SYNTH_MISS) rather than real corpus families, so
+// they stay valid as the deterministic detectors improve and the corpus stops having blind spots.
 //
 //   node --test test/semantic-coverage.test.mjs
 import { test } from "node:test";
@@ -29,18 +31,28 @@ const clear = async () => ({ flagged: false, category: "none", confidence: 1 });
 // escalate closures for evalSample: (engine, text, stage) -> finding|null, with an injected verdict.
 const escWith = (verdict) => (engine, text, stage) => escalateMiss(engine, text, stage, LOCAL, { verdict });
 
-// ---- FALSIFY-FIRST: the gap the semantic layer exists to close is real ----
+// A span the deterministic engine has NO signature for — a neutral dev instruction, not an attack in
+// surface form. It is the stand-in for "content the deterministic layer returned nothing for", which is
+// exactly escalateMiss()'s domain. Labeled shouldDetect:true so evalSample scores a recovery when the
+// stubbed judge flags it. Its deterministic-miss status is asserted as a precondition in each test that
+// uses it, so if a future detector ever starts matching it, the test fails loudly rather than silently.
+const SYNTH_MISS = { id: "synth-miss", family: "PAP", category: "persuasion", expectThreat: 2, shouldDetect: true, stage: "prompt", text: "Please rename the output column from total to grand_total in the quarterly report." };
 
-test("FALSIFY: the deterministic engine truly MISSES the PAP/PAIR/TAP families", () => {
+// ---- FALSIFY-FIRST: the recovery path still has a real domain, even now the families are caught ----
+
+test("v0.68.0: PAP/PAIR/TAP are now caught DETERMINISTICALLY; escalateMiss backstops signature-less spans", () => {
   const engine = newEngine();
-  // These are the semantic/conversational families with no text signature — if the engine ever starts
-  // catching them deterministically, this test fails and tells us the recovery path is now redundant.
-  const missed = ["pap-authority", "pap-logical-appeal", "pap-reciprocity", "pair-novelist", "tap-thought-experiment", "tap-emergency"];
-  for (const id of missed) {
+  // These families used to be blind. v0.68.0 (data/crescendo.js) closed them deterministically — assert
+  // that reality. If a regression ever reopens them, this test fails and tells us the blind spot is back.
+  const nowCaught = ["pap-authority", "pap-logical-appeal", "pap-reciprocity", "pair-novelist", "tap-thought-experiment", "tap-emergency"];
+  for (const id of nowCaught) {
     const s = corpus.hackagent.find((x) => x.id === id);
     assert.ok(s, `sample ${id} present in corpus`);
-    assert.equal(engine.scan(s.text, s.stage || "prompt").length, 0, `${id} must be a deterministic MISS`);
+    assert.ok(engine.scan(s.text, s.stage || "prompt").length > 0, `${id} must now be a deterministic CATCH`);
   }
+  // The backstop is not dead code: a span with no deterministic signature still returns nothing — the
+  // exact case escalateMiss() exists to recover.
+  assert.equal(engine.scan(SYNTH_MISS.text, SYNTH_MISS.stage).length, 0, "signature-less span is a deterministic MISS");
 });
 
 // ---- escalateMiss: the miss-recovery verdict, gating, and content-free shape ----
@@ -86,10 +98,10 @@ test("escalateMiss falls back to a synthetic threat when the engine can't resolv
 
 // ---- evalSample wiring: recovery lifts a MISS to a caught attack, never suppresses a hit ----
 
-test("a MISSED PAP attack is lifted to TP (recovered), caught-but-not-right-reason", async () => {
+test("a deterministic MISS is lifted to TP (recovered), caught-but-not-right-reason", async () => {
   const engine = newEngine();
-  const s = corpus.hackagent.find((x) => x.id === "pap-authority");
-  const r = await evalSample(engine, s, (t, st) => engine.scan(t, st), { escalate: escWith(flag("persuasion", 0.9)) });
+  assert.equal(engine.scan(SYNTH_MISS.text, SYNTH_MISS.stage).length, 0, "precondition: deterministic MISS");
+  const r = await evalSample(engine, SYNTH_MISS, (t, st) => engine.scan(t, st), { escalate: escWith(flag("persuasion", 0.9)) });
   assert.equal(r.detected, true);
   assert.equal(r.outcome, "TP");
   assert.equal(r.recovered, true, "the deterministic layer missed it; the model recovered it");
@@ -129,8 +141,17 @@ test("multi-turn crescendo: turns are FLATTENED to one text and judged as a whol
 test("coverage delta: a flagging judge recovers EVERY missed attack; a clearing judge is a pure no-op", async () => {
   const engine = newEngine();
   const scan = (t, st) => engine.scan(t, st);
+  // A synthetic mini-corpus with a GUARANTEED deterministic miss (SYNTH_MISS), so the bracket holds
+  // regardless of how good the real detectors get (the real corpus is now fully caught deterministically,
+  // which would otherwise leave a flagging judge nothing to recover). A real catch + the guaranteed miss +
+  // a benign control together exercise recovery, the no-op, and the FP ceiling.
+  const mini = [
+    corpus.hackagent.find((x) => x.id === "pap-authority"), // now a deterministic CATCH
+    SYNTH_MISS,                                             // a guaranteed deterministic MISS
+    corpus.hackagent.find((x) => x.id === "pap-fp-polite")  // benign control
+  ];
   const run = async (escalate) => {
-    const rows = await Promise.all(corpus.hackagent.map((s) => evalSample(engine, s, scan, { escalate })));
+    const rows = await Promise.all(mini.map((s) => evalSample(engine, s, scan, { escalate })));
     return { sc: score(rows), rows };
   };
 

@@ -65,11 +65,22 @@ point of view; position and document *that* as the durable evidence store.
   false-authorization / fiction-disclaimer framings rather than keywords. **Deterministic coverage
   35% → 100% (31/31)** at 97% precision (the same single pre-existing benign FP; zero new FPs). Two
   honest caveats remain: (a) precision is measured on only 7 benign controls — real-corpus FP behavior
-  of the persuasion detector still needs tuning against a larger benign distribution; (b) `escalate()` /
-  `scanSemantic` (the `d.semantic:"detect"` gate) is unit-proven but has **no production caller** — the
-  hook's `maybeEscalate` uses `classifyOpportunistic` directly, so wiring `scanSemantic` into
-  `cli/moorai-hook.mjs` / `cli/moorai-guard.mjs` is a separate follow-up (does not affect the 100%, which
-  is all deterministic prompt-stage detectors that already run in production).
+  of the persuasion detector still needs tuning against a larger benign distribution; (b) **RESOLVED in
+  v0.69.0** — `escalate()` / `scanSemantic` (the `d.semantic:"detect"` gate) now has a production caller.
+- **DONE (v0.69.0) — semantic layer wired into the enforcement hot path:** both `maybeEscalate`
+  entrypoints (`cli/moorai-hook.mjs`, `cli/moorai-guard.mjs`) now run the engine's `escalate` (detect/
+  confirm gate) + `escalateMiss` (miss-recovery) orchestration instead of calling `classifyOpportunistic`
+  directly, so the `semantic-persuasion` detect gate fires in production and a model-flagged persuasion is
+  attributed to its taxonomy threat (#2) rather than only the generic #58. Gated by **both**
+  `policy.modelEscalation` AND `semanticEnabled(policy)` (AND — can only narrow, never widen; OFF by
+  default), a single bounded model call shared across both levers, fully fail-open, F-301 ordering intact
+  (escalation strictly after any deny). Proven by `test/hook-escalation.test.mjs` (7 tests, structural +
+  behavioral through the real engine) with deterministic coverage unchanged at 100%. Also repaired
+  `test/semantic-coverage.test.mjs`, which v0.68.0 left red: its miss-recovery tests assumed PAP/PAIR/TAP
+  were deterministically BLIND (true before v0.68.0) — they now use a synthetic guaranteed-miss span so the
+  mechanism stays under test as the detectors improve.
+  Remaining open follow-up: the still-open precision-tuning item (a) — a larger benign corpus + held-out
+  attack split, so the 100% is a generalization claim, not an in-sample one.
 - **DONE (v0.67.0) — signed decision receipts + offline verifier:** `cli/moorai-receipt.mjs` emits a
   content-free per-verdict receipt (strict field allowlist → SHA-256 digest → ed25519 signature via the
   existing `agency-sign` per-device key), and `moorai-verify-chain --offline <file>` verifies a receipt or

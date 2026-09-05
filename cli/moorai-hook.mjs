@@ -28,7 +28,7 @@ import { extractHosts } from "../data/model-endpoints.js";
 import { isNewDestination } from "../data/destination-map.js";
 import { signApproval, argsHash } from "../data/agency-sign.mjs";
 import { contentTells, assessSession, assessTrifecta, assessCrossServerTrifecta, trifectaLegs, serverOf } from "../data/agent-behavior.js";
-import { classifyOpportunistic } from "../data/model-escalation.mjs";
+import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
 import { contentHash, fileFingerprint, NO_KEY } from "./content-hash.mjs";
 import { emitOtel } from "./otel.mjs";
 import { loadHoneytokens, checkHoneytokens } from "./moorai-honeytokens.mjs";
@@ -360,19 +360,48 @@ function logBehavior(tool, identity, scannedText, d, stage, lineage = {}) {
   } catch { /* behavior signal is best-effort; never affects enforcement */ }
 }
 
-// Bold B1 / #21 — opportunistic model escalation. Only when the org enables it AND the regex pass was
-// ambiguous (nothing already High+); consults the unified opportunistic classifier (local loopback
-// model first, else the agent's OWN provider when the org opted in and a device key exists) and emits
-// a content-free second-opinion alert (#58). No NEW egress/third party; a failure never changes
-// enforcement (fail-open).
-async function maybeEscalate(policy, text, stage, tool, d) {
+// Content-free advisory post for one escalate/escalateMiss finding. Carries only the model's short
+// category label (from the finding's `semantic:<label>` match) and a one-way hash of the input — never
+// the span text. riskLevel mirrors the pre-wiring shortcut (confidence ≥ 0.85 → High, else Medium).
+function postSemanticFinding(f, text, stage, tool) {
+  const cat = String(f.match || "").replace(/^semantic:/, "") || f.category || "model";
+  post({ threatId: f.threat.id, category: `Model-flagged: ${cat}`, riskLevel: (f.confidence || 0) >= 0.85 ? "High" : "Medium", stage, tool: `escalate:${tool}`, ts: new Date().toISOString(), contentHash: contentHash(text), ...IDENTITY });
+}
+
+// Bold B1 / #21 — opportunistic model escalation, now wired through the ENGINE's semantic orchestration
+// (src/semantic.js) instead of the bare classifyOpportunistic→#58 shortcut. Reached only on the ambiguity
+// gate: the org opted in (policy.modelEscalation) AND the regex pass produced nothing already-confident
+// (High/Critical/Blocked). Two levers, both fail-open and strictly ADVISORY — they only ADD findings and
+// can never flip a decision:
+//   * escalate()     — the detect/confirm gate over detectors that opted in via `d.semantic`. In
+//     production the only such detector is `semantic-persuasion` (threat #2, DETECT gate): when the
+//     on-device model flags a persuasion/jailbreak framing the deterministic engine missed, escalate()
+//     ADDS a content-free threat-#2 finding, which we post. A confirm-gate DROP cannot be honored here —
+//     the hook already POSTed the deterministic findings via report() before this runs and has no retract
+//     path — but no confirm-gate detector ships in production, so nothing is lost today (documented, not
+//     papered over).
+//   * escalateMiss() — miss-recovery for content the deterministic engine found NOTHING for → one
+//     content-free #58 finding, the same output the old shortcut produced.
+// GATING: policy.modelEscalation is kept as the operator opt-in (backward compatible), AND both levers
+// gate INTERNALLY on semanticEnabled(policy) (semanticEscalation ≠ "off", default OFF). So the semantic
+// path runs only when BOTH flags are set — it is never WIDER than before, and stays OFF by default. A
+// single bounded verdict is shared across both levers (opts.verdict) so there is at most ONE model call.
+// No NEW egress / third party; every failure path (policy off, model absent, timeout, throw) is a no-op.
+async function maybeEscalate(policy, text, stage, tool, d, engine) {
   try {
-    if (!policy || !policy.modelEscalation || !text || !text.trim()) return;
+    if (!policy || !policy.modelEscalation || !text || !text.trim() || !engine) return;
     const strong = (d.findings || []).some((f) => f.riskLevel === "High" || f.riskLevel === "Critical" || f.riskLevel === "Blocked");
     if (strong) return; // regex is already confident — skip the second opinion
-    const v = await classifyOpportunistic(text, policy);
-    if (v && v.flagged && v.confidence >= 0.6) {
-      post({ threatId: 58, category: `Model-flagged: ${v.category}`, riskLevel: v.confidence >= 0.85 ? "High" : "Medium", stage, tool: `escalate:${tool}`, ts: new Date().toISOString(), contentHash: contentHash(text), ...IDENTITY });
+    const base = engine.scan(text, stage);
+    let shared;
+    const opts = { verdict: (t, p) => (shared ??= semanticVerdict(t, p)) };
+    const after = await escalate(engine, base, text, stage, policy, opts);
+    const seen = new Set(base.map((f) => f.threat.id));
+    for (const f of after) if (!seen.has(f.threat.id)) postSemanticFinding(f, text, stage, tool);
+    // Miss-recovery only when the deterministic engine found NOTHING at all (escalateMiss's contract).
+    if (!base.length) {
+      const miss = await escalateMiss(engine, text, stage, policy, opts);
+      if (miss) postSemanticFinding(miss, text, stage, tool);
     }
   } catch { /* escalation is advisory; fail-open */ }
 }
@@ -585,7 +614,7 @@ async function main() {
     // text to the agent's own provider, so running it first meant content the policy was about to
     // block had already left the device. The mcp__/Task branches always denied before their external
     // calls; Read and Bash did not.
-    if (rdec !== "deny") await maybeEscalate(policy, text, "file", "hook:Read", d);
+    if (rdec !== "deny") await maybeEscalate(policy, text, "file", "hook:Read", d, engine);
     return emit(rdec, `${d.kill ? "killed session" : "blocked Read"} of ${basename(ti.file_path || "file")} — ${d.reasons.join(", ")}`);
   }
   if (tool === "Bash") {
@@ -614,7 +643,7 @@ async function main() {
     if (reportEnvelope(policy, "Bash", { tool: "Bash", paths: extractReadPaths(ti.command) }, "file") && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; }
     // See the Read branch: escalation runs last and never on a deny, so a local-secret-egress or
     // out-of-envelope command cannot ship its content to the provider on its way to being blocked.
-    if (dec !== "deny") await maybeEscalate(policy, btext, "file", "hook:Bash", { findings: finds });
+    if (dec !== "deny") await maybeEscalate(policy, btext, "file", "hook:Bash", { findings: finds }, engine);
     // Recorded last, so the destination map stores the verdict the call ACTUALLY got rather than the
     // interim one — a host reached by a command that was then denied must read as denied.
     recordDestinations("Bash", "host", extractHosts(ti.command), dec);
