@@ -131,6 +131,37 @@ point of view; position and document *that* as the durable evidence store.
   **METHOD NOTE — do not burn this set.** Tuning against `heldout-v2.json` would destroy it exactly as
   Wave A destroyed `heldout.json`. The next tuning wave must split it (tune half / locked test half) or
   generate a v3 for final measurement.
+- **DONE (v0.73.0) — root-cause fix wave: locked-half generalization 31.8% → 70.5%.** Run as a controlled
+  experiment: `scripts/split-heldout-v2.mjs` split v2 stratified by (family, axis) into a tune half
+  (61 attacks/25 benign) and a **LOCKED** test half (44/10); the fixing agent was given ONLY the tune half
+  and never accessed the locked file (verified — corpus untouched, zero references in every changed file).
+  The orchestrator scored the locked half independently afterwards.
+
+  | | before | after |
+  |---|---|---|
+  | **LOCKED test half** | 31.8% (14/44), 0 FP/10 | **70.5% (31/44), 0 FP/10** |
+  | tune half | 34.4% (21/61), 3 FP/25 | 78.7% (48/61), 3 FP/25 (same IDs) |
+
+  **The gains transferred** — an 8.2-point tune/test gap is a small, expected overfit margin, so this is
+  real generalization, not memorisation. Four root causes fixed: (a) policy-negation vocabulary widened to
+  ordinary "has shed/dropped/stripped its policies" paraphrases (still w:1 corroborators);
+  (b) `ovr-your-ruleset` gained a bounded adjective slot so "override **your safety** rules" lands — this
+  also carried the decoded reverse-char/caesar/homoglyph variants of the same sentence;
+  (c) `foldConfusables()` in `data/normalize.js` (ASCII-gated NFKC + Cyrillic/Greek appearance table, no
+  regex surface); (d) a shared `OVERRIDE_VERB_ALIASES` table canonicalising multi-word synonyms, consumed
+  by BOTH the structural tells and the BoN de-perturbation path, plus a slot-shaped fuzzy matcher so typo
+  compounds with the synonym/adjective axes. Precision gates held exactly (4 FP/178 unchanged, same IDs).
+  Ablation: normalize off 75.4%, injection-tells off 62.3%, detectors off 47.5% — all three load-bearing.
+
+  Also repaired `test/detector-improvements.test.mjs`, which had been RED since v0.71.0 (17/19): its
+  BASELINE engine excluded only the v0.67.0 detectors, so the v0.71.0 structural detectors sat inside the
+  "baseline" and caught the sample a RED→GREEN test asserts the baseline misses. `NEW_IDS` now covers every
+  hardening wave. Same stale-canary class as the earlier `semantic-coverage` repair — worth watching for
+  after every wave that adds detectors.
+
+  **Still weak (next targets):** persuasion (0/5) and thought-experiment (0/2) — these live in
+  `data/crescendo.js`/the semantic layer, untouched here; PAP 0/5 and TAP 0/4 overall. Plus one leetspeak
+  miss whose `LEET` table maps `1→i` only (the sample uses `1` as `l`).
 - **DONE (v0.67.0) — signed decision receipts + offline verifier:** `cli/moorai-receipt.mjs` emits a
   content-free per-verdict receipt (strict field allowlist → SHA-256 digest → ed25519 signature via the
   existing `agency-sign` per-device key), and `moorai-verify-chain --offline <file>` verifies a receipt or

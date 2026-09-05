@@ -22,9 +22,19 @@ import { DetectionEngine } from "../src/engine.js";
 
 const threats = JSON.parse(readFileSync(new URL("../data/threats.json", import.meta.url)));
 
+// The BASELINE means "the engine before the detection-hardening waves". It must exclude every detector
+// added by those waves, not just the first wave's six — otherwise a LATER wave's detector sits inside the
+// "baseline" and catches the very sample a RED->GREEN test asserts the baseline misses, turning a real
+// improvement into a spurious test failure. That is exactly what happened when the v0.71.0 structural
+// inj-* detectors landed: inj-persona-bypass caught the fictional-amoral persona from inside the baseline.
 const NEW_IDS = new Set([
+  // v0.67.0 — first hardening wave
   "inj-untrusted-directive", "mcp-tool-poisoning", "mcp-hidden-canary",
-  "egress-credential-shaped", "inj-perturbed", "inj-jailbreak-autodan"
+  "egress-credential-shaped", "inj-perturbed", "inj-jailbreak-autodan",
+  // v0.68.0 — persuasion / crescendo
+  "persuasion-jailbreak", "semantic-persuasion",
+  // v0.71.0 — structural slot patterns
+  "inj-override-structural", "inj-prefix-forcing", "inj-persona-bypass"
 ]);
 
 const improved = new DetectionEngine(threats, DETECTORS, CONTENT_RULES);

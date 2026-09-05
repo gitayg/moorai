@@ -144,6 +144,52 @@ function rot13(text) {
   return out !== text ? { kind: "rot13", text: out } : null;
 }
 
+// CONFUSABLE (homoglyph) FOLDING. h4rm3l's homoglyph transform swaps a handful of Cyrillic/Greek
+// look-alikes into an otherwise ASCII sentence — "оvеrrіdе уоur sаfеtу rulеs" is Cyrillic о е і у а с р
+// — and every ASCII-anchored detector then sees a string it has no pattern for and scores exactly 0.
+// Folding is the same idea as the leetspeak table one block up, just for a different substitution
+// alphabet: a single table lookup per character (no regex, so no backtracking surface), plus NFKC to
+// collapse the fullwidth / mathematical-alphanumeric families the same way.
+//
+// The mapping is by APPEARANCE, not by transliteration (Cyrillic "р" folds to Latin "p", not "r"),
+// because appearance is what the attack exploits. Folding legitimate Cyrillic or Greek prose yields
+// gibberish — which is harmless: this only ADDS a variant for the engine to re-scan, it never replaces
+// the raw scan, and no `nl` obfuscation signal is set, so ordinary non-ASCII text raises nothing.
+const CONFUSABLES = {
+  // Cyrillic lowercase
+  "а": "a", "в": "b", "е": "e", "к": "k", "м": "m", "н": "h",
+  "о": "o", "р": "p", "с": "c", "т": "t", "у": "y", "х": "x",
+  "ё": "e", "є": "e", "ѕ": "s", "і": "i", "ї": "i", "ј": "j",
+  "һ": "h", "ӏ": "l", "ԁ": "d", "ԛ": "q", "ԝ": "w", "ґ": "r",
+  // Cyrillic uppercase
+  "А": "A", "В": "B", "Е": "E", "З": "3", "К": "K", "М": "M",
+  "Н": "H", "О": "O", "Р": "P", "С": "C", "Т": "T", "У": "Y",
+  "Х": "X", "Ѕ": "S", "І": "I", "Ј": "J", "Ӏ": "I",
+  // Greek lowercase
+  "α": "a", "β": "b", "γ": "y", "ε": "e", "η": "n", "ι": "i",
+  "κ": "k", "ν": "v", "ο": "o", "ρ": "p", "σ": "o", "τ": "t",
+  "υ": "u", "χ": "x", "μ": "u", "ς": "c",
+  // Greek uppercase
+  "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I",
+  "Κ": "K", "Μ": "M", "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T",
+  "Υ": "Y", "Χ": "X",
+  // Latin-block and symbol look-alikes NFKC leaves alone
+  "ı": "i", "ȷ": "j", "‐": "-", "‑": "-", "⁄": "/", "ǃ": "!",
+  "\u00a0": " ", "\u2007": " ", "\u202f": " ", "\u200b": "", "\u200c": "", "\u200d": "", "\ufeff": ""
+};
+
+function foldConfusables(text) {
+  if (!/[^\u0000-\u007f]/.test(text)) return null; // pure ASCII — nothing to fold (cheap gate)
+  let s = text;
+  try { s = s.normalize("NFKC"); } catch { /* fail-open: fold the raw string */ }
+  let out = "";
+  for (const ch of s) {
+    const r = CONFUSABLES[ch];
+    out += r === undefined ? ch : r;
+  }
+  return out !== text ? { kind: "confusable-fold", text: out } : null;
+}
+
 function reverseChars(text) {
   // No `nl` obfuscation signal here: reversing ANY prose yields letters+spaces, so "looks like natural
   // language" is not a tell for reversal (it is for an ENCODED blob). A reversed instruction is still
@@ -167,6 +213,9 @@ function* transformsOf(node) {
   yield decodeBase64(text);
   yield decodeHex(text);
   yield decodeUnicodeEscapes(text);
+  // Cheap (ASCII-gated) and first among the same-length transforms, so a homoglyph attack is folded
+  // to Latin at depth 1 and the layered decoders below still have depth left to run over the result.
+  yield foldConfusables(text);
   yield rot13(text);
   yield leet(text);
   yield reverseChars(text);

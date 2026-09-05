@@ -28,9 +28,41 @@ import { safeRegex } from "../src/safe-regex.js";
 
 const MAX_INPUT = 16_000; // per-text scan cap (chars) — bounds every regex .test() below
 
+// ---------------------------------------------------------------------------------------------------
+// SHARED override-verb ALIAS table. The override VERB slot below enumerates single-word verbs
+// (ignore/disregard/forget/…), so a multi-word SYNONYM of the same act — "pay no attention to the
+// earlier directives" — has the whole attack shape and matches nothing. Rather than splice a 200-char
+// alternation into every override pattern (safeRegex caps a pattern at 400 chars, and three of them
+// are already near it), the aliases are CANONICALISED to "ignore" in one bounded pass before scoring.
+// One table, two consumers: the structural tells here, and the BoN / perturbation path in
+// data/detectors.js, which de-perturbs "p a y  n o  a t t e n t i o n  t o" and then runs these same
+// tells over the recovered text. Duplicating the vocabulary in both places is exactly what let the
+// collapse+synonym compound through in the first place.
+export const OVERRIDE_VERB_ALIASES = [
+  "pay no attention to", "pay no heed to", "pay no mind to",
+  "take no notice of", "take no account of", "turn a blind eye to",
+  "do away with",
+  "brush aside", "set aside", "put aside", "cast aside", "push aside", "leave aside",
+  "toss aside", "wave aside", "sweep aside"
+];
+const ALIAS_SRC =
+  "\\b(?:pay\\s{1,4}no\\s{1,4}(?:attention|heed|mind)\\s{1,4}to" +
+  "|take\\s{1,4}no\\s{1,4}(?:notice|account)\\s{1,4}of" +
+  "|turn\\s{1,4}a\\s{1,4}blind\\s{1,4}eye\\s{1,4}to" +
+  "|do\\s{1,4}away\\s{1,4}with" +
+  "|(?:brush|set|put|cast|push|leave|toss|wave|sweep)\\s{1,4}aside)\\b";
+const ALIAS_RE = safeRegex(ALIAS_SRC, "gi");
+
+// Rewrite every alias occurrence to the canonical verb. Content-free: the result is consumed only by
+// the boolean scorers below (and by detectors.js's boolean perturbation gate) — it is never returned
+// to a caller, logged, or attached to a finding.
+export function canonicalizeOverrideVerbs(text) {
+  return ALIAS_RE ? text.replace(ALIAS_RE, "ignore") : text;
+}
+
 function cap(text) {
   const s = String(text);
-  return s.length > MAX_INPUT ? s.slice(0, MAX_INPUT) : s;
+  return canonicalizeOverrideVerbs(s.length > MAX_INPUT ? s.slice(0, MAX_INPUT) : s);
 }
 
 // Compile a tell table through safeRegex. A rejected/uncompilable source is DROPPED, not shipped — one
@@ -52,8 +84,18 @@ const NEGATION_SRC = [
   { id: "neg-unbounded-entity", w: 1, g: "neg", src: "\\b(?:unbounded|unrestricted|unfiltered|uncensored|unrestrained|unshackled|unchained|amoral|lawless|jailbroken)\\s{1,4}(?:ai|assistant|model|agent|bot|entity|persona|character|version|mode|system|gpt)\\b" },
   // "never filters a reply", "never refuses", "does not censor"
   { id: "neg-never-filters", w: 1, g: "neg", src: "\\b(?:never|doesn'?t|does\\s{1,4}not|won'?t|will\\s{1,4}not|cannot)\\s{1,4}(?:filters?|refuses?|refuse|declines?|decline|censors?|censor|moderates?|hold\\s{1,4}back|holds\\s{1,4}back)\\b" },
-  // "treats every safety policy as optional", "content guidelines are irrelevant/void/disabled"
-  { id: "neg-policy-optional", w: 1, g: "neg", src: "\\b(?:safety|content|ethical|moderation|alignment)\\s{1,4}(?:polic(?:y|ies)|rules?|guidelines?|filters?|restrictions?|constraints?)\\b[^.\\n]{0,28}\\b(?:optional|irrelevant|disabled|void|meaningless|inapplicable|suspended|waived|no\\s{1,4}longer\\s{1,4}apply|do\\s{1,4}not\\s{1,4}apply)\\b" },
+  // "treats every safety policy as optional", "content guidelines are irrelevant/void/disabled",
+  // "treats all safety limits as permanently removed"
+  { id: "neg-policy-optional", w: 1, g: "neg", src: "\\b(?:safety|content|ethical|moderation|alignment)\\s{1,4}(?:polic(?:y|ies)|rules?|guidelines?|filters?|restrictions?|constraints?|limits?|guardrails?)\\b[^.\\n]{0,28}\\b(?:optional|irrelevant|disabled|void|meaningless|inapplicable|suspended|waived|removed|revoked|lifted|gone|no\\s{1,4}longer\\s{1,4}apply|do\\s{1,4}not\\s{1,4}apply)\\b" },
+  // The SAME "it no longer HAS policies" concept in ordinary verbs — the paraphrase slot the persona
+  // gate was missing entirely. "an AI that has SHED every content policy", "whose guardrails were
+  // STRIPPED out", "DROPPED all of its content guidelines". Forward order: {shedding verb} … {policy
+  // noun}. Still w:1 — "we removed the deprecated rules from the linter" is an ordinary sentence, so
+  // it corroborates a named persona / an override slot and never fires alone.
+  { id: "neg-shed-policy", w: 1, g: "neg", src: "\\b(?:shed|shedding|sheds|dropped|drops|abandoned|abandons|removed|removes|stripped|strips|waived|waives|discarded|discards|jettisoned|renounced|scrapped|deleted|revoked|lifted|shrugged|left)\\b[^.\\n]{0,40}\\b(?:polic(?:y|ies)|guidelines?|guardrails?|restrictions?|safeguards?|filters?|limits?|limitations?|constraints?|rules?|censorship|refusals?)\\b" },
+  // Mirror order: {policy noun} … {shedding verb}. "every safety restriction was left behind",
+  // "all safety limits as permanently removed", "its content policies were done away with".
+  { id: "neg-policy-shed", w: 1, g: "neg", src: "\\b(?:polic(?:y|ies)|guidelines?|guardrails?|restrictions?|safeguards?|filters?|limits?|limitations?|constraints?|rules?)\\b[^.\\n]{0,40}\\b(?:shed|dropped|abandoned|removed|stripped|waived|discarded|scrapped|deleted|revoked|lifted|left\\s{1,4}behind|done\\s{1,4}away\\s{1,4}with|switched\\s{1,4}off|turned\\s{1,4}off)\\b" },
   // "answers anything", "responds to every request"
   { id: "neg-answers-anything", w: 1, g: "neg", src: "\\b(?:answers?|responds?\\s{1,4}to|complies?\\s{1,4}with|obeys?)\\s{1,4}(?:absolutely\\s{1,4}|literally\\s{1,4}){0,1}(?:anything|any\\s{1,4}(?:question|request|prompt|instruction)|every\\s{1,4}(?:question|request|prompt|instruction))\\b" },
   // "with no restrictions / without any guardrails" scoped to the ASSISTANT's own limits
@@ -74,7 +116,20 @@ const NEGATION_SRC = [
 // previous instructions" does not.
 // ---------------------------------------------------------------------------------------------------
 const VERB = "(?:ignore|disregard|forget|override|discard|bypass|skip|abandon)";
-const DET = "(?:all\\s{1,4}|any\\s{1,4}|the\\s{1,4}|your\\s{1,4}|every\\s{1,4}|those\\s{1,4}|these\\s{1,4}){0,2}";
+// Same determiner set as before, factored so the shared `\s{1,4}` is written once — 52 chars instead
+// of 82, which is what buys room for the adjective slot below inside safeRegex's 400-char cap.
+const DET = "(?:(?:all|any|the|your|every|those|these)\\s{1,4}){0,2}";
+// ONE bounded adjective may sit between the determiner and the rules-noun. "override your SAFETY
+// rules" is the same act as "override your rules"; requiring strict adjacency there was not buying
+// precision, it was just a gap (it also defeated the decoded reverse-char / caesar / homoglyph
+// variants of that one sentence). The slot is a closed vocabulary of RULESET adjectives, so the hard
+// negative that adjacency was protecting — "ignore the previous FORMATTING instructions" — still does
+// not match: "formatting" is not in this list, and `your` is still required by ovr-your-ruleset.
+// (Kept to 95 chars on purpose: with VERB and the ruleset-noun list, ovr-your-ruleset lands at 381 of
+// safeRegex's 400-char budget. A rejected tell is DROPPED SILENTLY, so the compile-count test in
+// test/generalization-v2.test.mjs is what keeps a future addition here from vanishing.)
+const ADJ = "(?:(?:safety|content|ethical|system|internal|operating|core|default|usual|current)\\s{1,4}){0,1}";
+const RULE_NOUN = "(?:instructions?|guidance|guidelines?|rules?|directives?|prompts?|messages?|commands?|constraints?|context)";
 
 const OVERRIDE_SRC = [
   // STRONG — the SYSTEM-AUTHORITY object. "Disregard the system message", "override the developer prompt".
@@ -82,10 +137,17 @@ const OVERRIDE_SRC = [
   { id: "ovr-system-authority", w: 2, g: "ovr", src: `\\b${VERB}\\s{1,4}${DET}(?:system|developer|operator|initial|original)\\s{1,4}(?:message|prompt|instructions?|directives?|context|configuration)\\b` },
   // STRONG — the classic {previous|prior|earlier|above} x {instruction-noun}, adjacent (see note above).
   { id: "ovr-previous-instructions", w: 2, g: "ovr", src: `\\b${VERB}\\s{1,4}${DET}(?:previous|prior|earlier|above|preceding|foregoing|earlier-stated)\\s{1,4}(?:instructions?|prompts?|messages?|directives?|rules?|guidelines?|commands?|constraints?|context)\\b` },
-  // STRONG — the object is the assistant's OWN ruleset. "override your guidelines", "discard your configuration".
-  { id: "ovr-your-ruleset", w: 2, g: "ovr", src: `\\b${VERB}\\s{1,4}(?:all\\s{1,4}|any\\s{1,4}of\\s{1,4}){0,1}your\\s{1,4}(?:own\\s{1,4}){0,1}(?:rules?|guidelines?|instructions?|directives?|configuration|programming|training|constraints?|restrictions?|polic(?:y|ies)|system\\s{1,4}prompt)\\b` },
-  // STRONG — "forget everything you were told/instructed/programmed".
-  { id: "ovr-forget-told", w: 2, g: "ovr", src: "\\b(?:forget|discard|disregard)\\s{1,4}(?:everything|all|anything)\\s{1,4}(?:that\\s{1,4}){0,1}(?:you\\s{1,4}){0,1}(?:were|have\\s{1,4}been|was)\\s{1,4}(?:told|instructed|programmed|taught|given|configured)\\b" },
+  // STRONG — the object is the assistant's OWN ruleset. "override your guidelines", "discard your
+  // configuration", "override your SAFETY rules" (one bounded adjective — see ADJ above).
+  { id: "ovr-your-ruleset", w: 2, g: "ovr", src: `\\b${VERB}\\s{1,4}(?:(?:all|any\\s{1,4}of)\\s{1,4}){0,1}your\\s{1,4}(?:own\\s{1,4}){0,1}${ADJ}(?:rules?|guidelines?|instructions?|directives?|configuration|programming|training|constraints?|restrictions?|polic(?:y|ies)|system\\s{1,4}prompt)\\b` },
+  // STRONG — the same {qualifier} x {rules-noun} object in the OTHER word order: "ignore the guidance
+  // ABOVE", "disregard the instructions given earlier". Adjacency between determiner and noun is kept,
+  // so "ignore the formatting instructions above" still does not match.
+  { id: "ovr-noun-qualified", w: 2, g: "ovr", src: `\\b${VERB}\\s{1,4}${DET}${RULE_NOUN}\\s{1,4}(?:above|earlier|previously|already)\\b` },
+  // STRONG — "forget everything you were told/instructed/programmed", and the passive twin
+  // "ignore everything STATED EARLIER / said above".
+  { id: "ovr-forget-told", w: 2, g: "ovr", src: `\\b${VERB}\\s{1,4}(?:everything|all|anything)\\s{1,4}(?:that\\s{1,4}){0,1}(?:you\\s{1,4}){0,1}(?:were|have\\s{1,4}been|was)\\s{1,4}(?:told|instructed|programmed|taught|given|configured)\\b` },
+  { id: "ovr-everything-stated", w: 2, g: "ovr", src: `\\b${VERB}\\s{1,4}(?:everything|anything)\\s{1,4}(?:stated|said|given|provided|mentioned|written|specified|listed|set\\s{1,4}out)\\s{1,4}(?:earlier|above|previously|before|prior|so\\s{1,4}far)\\b` },
   // WEAK — a bare "ignore the above". Legitimately used to retract one's own last message ("ignore the
   // above, typo"), so it corroborates rather than fires.
   { id: "ovr-the-above", w: 1, g: "ovr", src: "\\b(?:ignore|disregard|forget)\\s{1,4}(?:everything\\s{1,4}(?:above|before|prior)|all\\s{1,4}of\\s{1,4}the\\s{1,4}above|the\\s{1,4}above)\\b" },
@@ -149,6 +211,15 @@ const PERSONA_SRC = [
   { id: "per-named", w: 1, g: "persona", cs: true, src: "\\b(?:[Rr]espond|[Rr]eply|[Aa]nswer|[Aa]ct|[Bb]ehave|[Ss]peak|[Oo]perate|[Ff]unction|[Tt]alk|[Ww]rite)\\s{1,4}(?:only\\s{1,4}|solely\\s{1,4}|exclusively\\s{1,4}|now\\s{1,4}|always\\s{1,4}|from\\s{1,4}now\\s{1,4}on\\s{1,4}){0,2}as\\s{1,4}(?:a\\s{1,4}|an\\s{1,4}|the\\s{1,4}){0,1}(?:[A-Z][A-Za-z0-9]{2,24}|[a-z]{2,14}(?:GPT|AI|Bot))\\b" },
   // "you are now Zephyr-9", "you will be OmniMind"
   { id: "per-you-are", w: 1, g: "persona", cs: true, src: "\\b(?:[Yy]ou\\s{1,4}are|[Yy]ou'?re|[Yy]ou\\s{1,4}will\\s{1,4}be)\\s{1,4}(?:now\\s{1,4}|henceforth\\s{1,4}){1,2}(?:a\\s{1,4}|an\\s{1,4}|the\\s{1,4}){0,1}(?:[A-Z][A-Za-z0-9]{2,24}|[a-z]{2,14}(?:GPT|AI|Bot))\\b" },
+  // The COUNTERFACTUAL / modal assignment of the same persona — "if you were unbound you would
+  // already BE Vantablack", "you'd be OmniMind". Same slot, different auxiliary; still w:1 and still
+  // useless without a policy negation, which is what keeps "you will be the reviewer here" inert
+  // (lowercase role) and "You would be Alice on this ticket" a true negative absent a negation.
+  { id: "per-you-would-be", w: 1, g: "persona", cs: true, src: "\\b[Yy]ou(?:\\s{1,4}(?:will|would|shall|must)|'?ll|'?d)\\s{1,4}(?:now\\s{1,4}|already\\s{1,4}|henceforth\\s{1,4}){0,2}be\\s{1,4}(?:a\\s{1,4}|an\\s{1,4}|the\\s{1,4}){0,1}(?:[A-Z][A-Za-z0-9]{2,24}|[a-z]{2,14}(?:GPT|AI|Bot))\\b" },
+  // The persona is ACTIVATED rather than asserted: "Enter Nullpoint mode", "adopt the Vantablack
+  // persona", "switch to Cinder protocol". {activation verb} x {Name} x {persona noun} — three slots,
+  // so the co-occurrence gate still has to find a negation before anything fires.
+  { id: "per-activate-mode", w: 1, g: "persona", cs: true, src: "\\b(?:[Ee]nter|[Aa]ctivate|[Aa]dopt|[Aa]ssume|[Ee]ngage|[Ll]oad|[Ss]witch\\s{1,4}to|[Tt]urn\\s{1,4}on)\\s{1,4}(?:the\\s{1,4}|a\\s{1,4}){0,1}(?:[A-Z][A-Za-z0-9]{2,24}|[a-z]{2,14}(?:GPT|AI|Bot))[\\s-]{1,4}(?:mode|persona|character|profile|protocol|personality)\\b" },
   // "an entity that …", "a persona called X", "an alter-ego which …" — the persona is INTRODUCED as a
   // construct. Broad on purpose; it can only ever fire together with a negation tell.
   { id: "per-entity", w: 1, g: "persona", src: "\\b(?:an?|the)\\s{1,4}(?:entity|persona|alter[\\s-]?ego|character|construct|version\\s{1,4}of\\s{1,4}yourself)\\s{1,4}(?:named|called|known\\s{1,4}as|that|which|who|with)\\b" },
