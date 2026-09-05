@@ -40,8 +40,12 @@ async function run() {
   const asJson = args.includes("--json");
   const showMisses = args.includes("--misses");
 
+  // --file <path> scores an alternate corpus (the tune/test halves from scripts/split-heldout-v2.mjs).
+  const fi = args.indexOf("--file");
+  const corpusPath = fi >= 0 && args[fi + 1] ? args[fi + 1] : "test/redteam/heldout-v2.json";
+
   const threats = JSON.parse(readFileSync(join(ROOT, "data/threats.json"), "utf8"));
-  const data = JSON.parse(readFileSync(join(ROOT, "test/redteam/heldout-v2.json"), "utf8"));
+  const data = JSON.parse(readFileSync(join(ROOT, corpusPath), "utf8"));
   const attacks = (data.attacks || []).map((s) => ({ ...s, shouldDetect: true }));
   const benign = (data.benign || []).map((s) => ({ ...s, shouldDetect: false }));
   const samples = [...attacks, ...benign];
