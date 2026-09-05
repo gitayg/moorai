@@ -1,6 +1,16 @@
 import { safeRegex } from "./safe-regex.js";
+import { normalizeVariants } from "../data/normalize.js";
 
 const LEVEL_RANK = { Critical: 4, High: 3, Medium: 2, Low: 1 };
+
+// Detectors re-run over DECODED / NORMALIZED variants (see _scanNormalized). Scoped to the
+// instruction-override / jailbreak / extraction / exfil / reverse-shell family — the payloads that
+// red-team encoders (CipherChat/FlipAttack/h4rm3l) hide — so re-scanning decoded blobs cannot
+// resurface the noisier DLP/PII/legal/citation detectors on incidental decoded bytes.
+const RESCAN_ON_VARIANT = (d) =>
+  /^(inj|sysprompt)/.test(d.detectorId) ||
+  d.detectorId === "idx-hidden-instructions" ||
+  d.detectorId === "exec-reverse-shell";
 
 export class DetectionEngine {
   constructor(threatData, detectors, contentRules = []) {
@@ -87,11 +97,51 @@ export class DetectionEngine {
       if (!prev || finding.mode === "warn") byThreat.set(threat.id, finding);
     }
 
+    // Normalization / decode pre-pass — catch instructions hidden behind an encoding, a reversal, or
+    // layers of both. Purely ADDITIVE: it only adds findings for threats the raw scan didn't already
+    // flag, and is wrapped fail-open so a normalization error can never change the raw decision.
+    try { this._scanNormalized(text, want, byThreat); } catch { /* fail-open: keep the raw result */ }
+
     return [...byThreat.values()].sort(
       (a, b) =>
         (LEVEL_RANK[b.threat.riskLevel] - LEVEL_RANK[a.threat.riskLevel]) ||
         (b.threat.riskScore - a.threat.riskScore)
     );
+  }
+
+  // Re-run the instruction-family detectors over bounded decoded/normalized variants of the input, and
+  // raise an obfuscation signal when an encoded blob decodes to hidden natural-language text. Adds a
+  // finding ONLY for a threat the raw scan missed (`!byThreat.has`), so it never overrides or reorders
+  // an existing raw finding — the raw result stays byte-for-byte the same when nothing was hidden.
+  _scanNormalized(text, want, byThreat) {
+    const variants = normalizeVariants(text);
+    if (!variants.length) return;
+    const rescan = this.detectors.filter((d) => this._inStage(d, want) && RESCAN_ON_VARIANT(d));
+
+    for (const v of variants) {
+      // (a) obfuscation signal: an encoded blob that decodes to concealed prose (threat #50, LLM08).
+      if (v.nl) {
+        const t50 = this.threat(50);
+        if (t50 && !byThreat.has(t50.id)) {
+          byThreat.set(t50.id, {
+            detectorId: "obf-encoded-payload", mode: "warn",
+            hint: `Encoded (${v.kind}) content decodes to hidden natural-language text (obfuscation).`,
+            match: this._clip(v.text), threat: t50, obfuscated: v.kind
+          });
+        }
+      }
+      // (b) decoded-reveals-a-detector: the hidden instruction, now in cleartext, trips a detector.
+      for (const d of rescan) {
+        const threat = this.threat(d.threatId);
+        if (!threat || byThreat.has(threat.id)) continue;
+        const match = this._matchDetector(v.text, d);
+        if (!match) continue;
+        byThreat.set(threat.id, {
+          detectorId: d.detectorId, mode: d.mode || "warn", hint: d.hint,
+          match: this._clip(match), threat, obfuscated: v.kind
+        });
+      }
+    }
   }
 
   // Multi-turn injection review. A jailbreak is often split across turns (persona setup in one

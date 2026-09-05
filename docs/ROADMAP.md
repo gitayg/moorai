@@ -44,6 +44,16 @@ point of view; position and document *that* as the durable evidence store.
   attestation / SLSA provenance predicate** (`cli/moorai-attest.mjs`) built only from the content-free
   fields, so the agent's action evidence answers the software-supply-chain attestation gap. The AIBOM
   also exports as a standard **CycloneDX 1.6** / **SPDX 2.3** SBOM (`moorai-aibom --format …`).
+- **DONE (v0.66.0) — obfuscation-evasion hardening + coverage benchmark:** a bounded, DoS/ReDoS-capped
+  decode/normalize pre-pass (`data/normalize.js`, wired additively into `src/engine.js` `scan()`) re-runs
+  the detectors over decoded/reversed variants, so encoded/obfuscated payloads (CipherChat base64/hex/
+  rot13/caesar, FlipAttack reversal, h4rm3l composed transforms) that defeat plain-text scanning are now
+  caught; plus a content-free `inj-jailbreak-templates` detector for DAN/AutoDAN/AdvPrefix artifacts. A
+  deterministic, LLM-free red-team coverage benchmark keyed to the HackAgent taxonomy (`scripts/redteam-eval.mjs`,
+  `test/redteam/corpus.json` `hackagent` set) measures it: **detection coverage 35% → 61%**, precision 95%
+  (1 benign FP to chase), with **PAP / TAP** left BLIND by design (semantic/multi-turn → model-escalation,
+  not a faked regex). `scripts/moorai-validate-blocking.mjs` proves the ACTION layer holds even after a
+  hijack: **12/12 malicious tool calls denied (100%)** under an enforcing policy.
 - **TODO (optional):** local append-only hardening (platform WORM/immutable-flag where available) as
   defense-in-depth.
 

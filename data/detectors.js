@@ -614,6 +614,27 @@ export const DETECTORS = [
     ]
   },
   {
+    // T2 / #2 (LLM01) — well-known STATIC jailbreak-template + adversarial-prefix markers that the
+    // broader inj-jailbreak phrasings above do not pin: the DAN/Developer-Mode "output" markers,
+    // AIM/Niccolo (Machiavellian) persona, the AutoDAN one-shot "Hypothetical response … is as
+    // follows" template, and the AdvPrefix affirmative-prefix forcing. Each marker is a fixed,
+    // documented artifact of a specific published template — content-free (marker phrasing only), and
+    // scoped tightly so ordinary role-play / dev prompts don't trip it. Kept distinct from
+    // inj-jailbreak so template-signature coverage can evolve without touching the phrasing rules.
+    detectorId: "inj-jailbreak-templates",
+    threatId: 2,
+    stage: "prompt",
+    mode: "warn",
+    hint: "Matches a known jailbreak template / adversarial-prefix marker (DAN / AutoDAN / AIM lineage).",
+    patterns: [
+      /\b(?:DAN|Developer)\s+Mode\s+(?:enabled|output)\b|\(\s*🔓[^)]*\)|\(\s*(?:🔓\s*)?Developer\s+Mode\s+Output\s*\)/i,
+      /\bAIM\b[\s\S]{0,40}?\balways\s+intelligent\s+and\s+Machiavellian\b|\bNiccol[oò]\b[\s\S]{0,60}?\bAIM\b/i,
+      /\bhypothetical\s+response\b[\s\S]{0,60}?\bthe\s+way\s+to\s+(?:describe|depict)\s+a\s+character\b[\s\S]{0,80}?\bis\s+as\s+follows\b/i,
+      /\brewrite\s+the\s+hypothetical\s+response\s+from\s+the\s+perspective\s+of\s+(?:that\s+)?character\b/i,
+      /\bnever\s+(?:say|use\s+the\s+phrase)\b[^.\n]{0,30}\b(?:i(?:'|\s+a)m\s+sorry|i\s+cannot|i\s+can'?t|as\s+an\s+ai)\b/i
+    ]
+  },
+  {
     // T1-2 / #62 (LLM03) — hallucinated / typosquatted dependency in an install command. The pattern
     // matches any install command; refine() classifies the package NAME offline (known-malicious,
     // typosquat near-miss of a popular package, or cross-ecosystem confusion) and only fires when
