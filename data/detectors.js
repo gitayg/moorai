@@ -3,6 +3,7 @@ import { SECRET_DETECTORS, shannonEntropy } from "./secrets-patterns.js";
 import { inspectInstall } from "./popular-packages.js";
 import { taintedFlow } from "./taint.js";
 import { persuasionHit } from "./crescendo.js";
+import { overrideStructuralHit, prefixForcingHit, personaBypassHit } from "./injection-tells.js";
 
 // ---------------------------------------------------------------------------------------------------
 // Content-free helpers for the additive detectors appended at the end of DETECTORS. All pure,
@@ -945,6 +946,62 @@ export const DETECTORS = [
       /\b(?:imagine|consider|create|picture|invent|suppose|there\s+is)\b[^.\n]{0,40}\b(?:fictional|hypothetical|imaginary|amoral)\s+(?:character|persona|ai|assistant|bot|entity|being)\b[\s\S]{0,90}?\b(?:amoral|unfiltered|uncensored|no\s+(?:restrictions?|filters?|morals?|ethics?|rules?)|without\s+(?:any\s+)?(?:warnings?|restrictions?|filters?|refus\w*)|answers?\s+(?:any|every|all)\b)/i,
       /\b(?:answer|respond\s+to|complete|fulfill|write)\b[^.\n]{0,40}?\b(?:the|my|this|that)?\s*(?:request|prompt|question|following|query)\b[^.\n]{0,40}?\bwith\s+no\s+(?:restrictions?|filters?|limits?|refusals?|rules?)\b/i
     ]
+  },
+  {
+    // NEW / #3 (LLM01) — STRUCTURAL instruction override. inj-ignore above enumerates the literal
+    // phrasings it was tuned on ("ignore the previous instructions"), so a paraphrase that names a
+    // different authority object — "disregard the SYSTEM MESSAGE", "override your configuration" —
+    // walks past it. This detector matches the SLOT SHAPE instead: {override verb} x {authority
+    // object}, scored by weighted corroboration in data/injection-tells.js (one STRONG slot tell, or a
+    // weak one plus a second signal). The patterns here are only a cheap PREFILTER that wakes refine();
+    // overrideStructuralHit() makes the decision over the full text. Content-free (booleans only).
+    detectorId: "inj-override-structural",
+    threatId: 3,
+    stage: "prompt",
+    mode: "warn",
+    hint: "Structural instruction-override shape (override verb + system/authority object).",
+    patterns: [
+      /\b(?:ignore|disregard|forget|override|discard|bypass|skip|abandon)\s{1,4}(?:all|any|the|your|every|those|these|system|developer|operator|everything|anything|previous|prior|earlier|above|preceding|initial|original)\b/i
+    ],
+    refine: (_m, text) => overrideStructuralHit(text)
+  },
+  {
+    // NEW / #2 (LLM01) — AdvPrefix PREFIX-FORCING, generalized. inj-jailbreak's prefix rule pins one
+    // word order ("start your response with") and a fixed affirmation list, so "your reply must
+    // literally begin with 'Of course…'" slipped through on BOTH counts. Here the concept — force the
+    // reply to OPEN with an affirmation — is decomposed into a shape tell (either word order), an
+    // opener tell (a QUOTED literal, which is vocabulary-free, or an affirmation), and a
+    // refusal-suppression tell; prefixForcingHit() requires the shape plus two more points, so the
+    // benign "start your answer with a one-line summary" stays a true negative. Content-free.
+    detectorId: "inj-prefix-forcing",
+    threatId: 2,
+    stage: "prompt",
+    mode: "warn",
+    hint: "Forces the reply to open with a pinned affirmative prefix (AdvPrefix-style).",
+    patterns: [
+      /\b(?:begin|start|open|preface|prefix|lead)\w{0,4}\s{1,4}(?:your|the|each|every|with|by)\b/i,
+      /\b(?:response|reply|answer|output|message|completion)\s{1,4}(?:must|should|has|have|needs?|will|shall|is)\b/i
+    ],
+    refine: (_m, text) => prefixForcingHit(text)
+  },
+  {
+    // NEW / #2 (LLM01) — DAN / persona bypass as a CO-OCCURRENCE, not a name list. inj-jailbreak
+    // enumerates published persona names (AIM, STAN, DUDE, BetterDAN…), which by construction can only
+    // catch personas someone already published — "respond only as UnfilteredGPT" missed. This detector
+    // requires two slots to co-occur: a NAMED / introduced persona ("respond only as <Name>", "an
+    // entity that…") AND a policy negation ("treats every safety policy as optional", "never filters",
+    // "answers anything"). Neither half fires alone, which is what keeps the benign twins ("Act as a
+    // Linux terminal", "an unfiltered view of the logs") true negatives. Content-free.
+    detectorId: "inj-persona-bypass",
+    threatId: 2,
+    stage: "prompt",
+    mode: "warn",
+    hint: "Named persona assigned together with a safety-policy negation (DAN-style persona bypass).",
+    patterns: [
+      /\b(?:respond|reply|answer|act|behave|speak|operate|function|talk|write)\s{1,4}(?:only|solely|exclusively|now|always|from)?\s{0,4}as\b/i,
+      /\b(?:an?|the)\s{1,4}(?:entity|persona|alter[\s-]?ego|character|construct)\b/i
+    ],
+    refine: (_m, text) => personaBypassHit(text)
   },
   {
     // NEW / #2 (LLM01) — PAP / PAIR / TAP hardening. These three families carry NO stable override

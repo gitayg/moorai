@@ -94,6 +94,20 @@ point of view; position and document *that* as the durable evidence store.
   taxonomy."** The 3 held-out misses are novel DAN/AutoDAN/AdvPrefix phrasings in the `inj-*` detectors
   (not `crescendo.js`) — the remaining generalization gap, tracked. On-device `--semantic` recovered 2/3 in
   a sampled run (~97% held-out) but is opt-in/environment-dependent, so not the headline.
+- **DONE (v0.71.0) — inj-* generalized from literals to structural slots (Wave A):** the three v0.70.0
+  held-out misses shared one root cause — the `inj-*` detectors matched enumerated literals, not concepts.
+  `data/injection-tells.js` (NEW) replaces the literal lists with **slot patterns + weighted corroboration**
+  (the model ported from `crescendo.js`): {override verb}×{authority object} (incl. system/developer
+  message, your own ruleset), prefix-forcing in either word order with a vocabulary-free quoted-opener
+  path, and persona-bypass as a co-occurrence gate (named persona AND policy negation). Three new detectors
+  in `data/detectors.js` (`inj-override-structural` #3, `inj-prefix-forcing` #2, `inj-persona-bypass` #2),
+  content-free, `safeRegex`-compiled, memoised, size-capped. All 3 prior misses now caught with **precision
+  unchanged (4 FP/178)**; `test/injection-tells.test.mjs` proves generalization on novel phrasings not in
+  any corpus (and caught a real case-sensitivity bug in the persona verb during integration).
+  **CAVEAT — the held-out number is now BURNED:** those 29 samples were the target of this fix, so the
+  post-Wave-A "held-out 29/29" is NOT a valid generalization measure. The public claim stays **90% held-out
+  @ 93% precision** until **Wave B** builds a FRESH held-out set (adversarial mutation generator + 100+ new
+  samples) and re-measures the real out-of-sample number — which may honestly land below 100%.
 - **DONE (v0.67.0) — signed decision receipts + offline verifier:** `cli/moorai-receipt.mjs` emits a
   content-free per-verdict receipt (strict field allowlist → SHA-256 digest → ed25519 signature via the
   existing `agency-sign` per-device key), and `moorai-verify-chain --offline <file>` verifies a receipt or
