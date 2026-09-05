@@ -2,6 +2,7 @@ import { INJECTION_I18N } from "./injection-i18n.js";
 import { SECRET_DETECTORS, shannonEntropy } from "./secrets-patterns.js";
 import { inspectInstall } from "./popular-packages.js";
 import { taintedFlow } from "./taint.js";
+import { persuasionHit } from "./crescendo.js";
 
 // ---------------------------------------------------------------------------------------------------
 // Content-free helpers for the additive detectors appended at the end of DETECTORS. All pure,
@@ -944,5 +945,42 @@ export const DETECTORS = [
       /\b(?:imagine|consider|create|picture|invent|suppose|there\s+is)\b[^.\n]{0,40}\b(?:fictional|hypothetical|imaginary|amoral)\s+(?:character|persona|ai|assistant|bot|entity|being)\b[\s\S]{0,90}?\b(?:amoral|unfiltered|uncensored|no\s+(?:restrictions?|filters?|morals?|ethics?|rules?)|without\s+(?:any\s+)?(?:warnings?|restrictions?|filters?|refus\w*)|answers?\s+(?:any|every|all)\b)/i,
       /\b(?:answer|respond\s+to|complete|fulfill|write)\b[^.\n]{0,40}?\b(?:the|my|this|that)?\s*(?:request|prompt|question|following|query)\b[^.\n]{0,40}?\bwith\s+no\s+(?:restrictions?|filters?|limits?|refusals?|rules?)\b/i
     ]
+  },
+  {
+    // NEW / #2 (LLM01) — PAP / PAIR / TAP hardening. These three families carry NO stable override
+    // phrase: each turn is near-benign and the intent rides a PERSUASION FRAME — a fiction disclaimer
+    // ("for pure fiction", "only for the story"), a false authorisation ("full authorization", "it's
+    // legal for you to", "approved red-team"), a rule-suspension ("drop your rules", "without your usual
+    // caveats", "nothing is off-limits"), or a manufactured urgency ("emergency", "lives depend on it",
+    // "just this once"). The two broad prefilter patterns below only wake refine() — persuasionHit()
+    // (data/crescendo.js) does the real scoring (one STRONG tell, or two WEAK tells) so a lone polite
+    // or fiction word never fires. Content-free; refine reads the full text and returns a boolean.
+    // Prompt-stage only (not "inj*"/session) so scanSession and the strict `cases` gate are untouched.
+    detectorId: "persuasion-jailbreak",
+    threatId: 2,
+    stage: "prompt",
+    mode: "warn",
+    hint: "Persuasion / social-engineering framing (PAP/PAIR/TAP) that tries to talk the assistant out of its rules.",
+    patterns: [
+      /\b(?:fiction|fictional|story|hypothetical|thought|emergency|authorization|authorisation|professional|legal|rules|restrictions?|filters|caveats|refusals|guardrails|guidelines|favou?r|off[-\s]?limits)\b/i,
+      /\b(?:drop|suspend|bypass|waive|without|no|zero|suspended)\b/i
+    ],
+    refine: (_m, text) => persuasionHit(text)
+  },
+  {
+    // #21 — the SEMANTIC detect-gate detector. It has NO deterministic pattern (the `(?!)` never matches),
+    // so scan() and the strict `cases` gate never raise it; it exists purely to opt threat #2 into the
+    // model-gated ADD path in src/semantic.js::escalate() (the `d.semantic === "detect"` branch). When the
+    // policy enables escalation AND a bounded on-device model flags a conversational risk the deterministic
+    // layer missed, escalate() emits ONE content-free threat-#2 finding for this detector. INERT unless the
+    // model both runs and flags; fail-open otherwise. See the report's "wiring" note: escalate()/scanSemantic
+    // still needs a production caller (today maybeEscalate uses classifyOpportunistic directly).
+    detectorId: "semantic-persuasion",
+    threatId: 2,
+    stage: "prompt",
+    mode: "warn",
+    hint: "On-device model flagged a persuasion / jailbreak framing the deterministic engine missed.",
+    patterns: [/(?!)/],
+    semantic: "detect"
   }
 ];

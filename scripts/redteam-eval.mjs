@@ -65,7 +65,9 @@ export async function evalSample(engine, s, scan, opts = {}) {
   let findings = s.turns ? await engine.scanSession(s.turns) : await scan(s.text, stage);
   let recovered = false;
   if (opts.escalate && findings.length === 0) {
-    const extra = await opts.escalate(engine, s.turns ? s.turns.join("\n") : s.text, stage);
+    // Pass the TURN ARRAY through (not only the flattened text) so a multi-turn sample is judged as a
+    // trajectory/arc, not a single concatenated blob. Single-turn samples pass turns=null.
+    const extra = await opts.escalate(engine, s.turns ? s.turns.join("\n") : s.text, stage, s.turns || null);
     if (extra) { findings = [extra]; recovered = true; }
   }
   const ids = findings.map((f) => f.threat.id);
@@ -159,9 +161,29 @@ export function toText(sc, rows, verbose, semantic) {
 async function buildEscalator(semantic) {
   if (!semantic) return null;
   const { escalateMiss } = await import("../src/semantic.js");
+  const { crescendoTrajectory } = await import("../data/crescendo.js");
   const mode = process.env.MOORAI_EVAL_SEMANTIC_MODE === "provider" ? "provider" : "local";
   const policy = { semanticEscalation: mode };
-  return (engine, text, stage) => escalateMiss(engine, text, stage, policy);
+  return async (engine, text, stage, turns) => {
+    // Multi-turn: judge the ARC across turns FIRST — a deterministic, content-free crescendo verdict
+    // (data/crescendo.js) that needs no model and can lift a crescendo the flattened-text model call
+    // would miss. Only runs on the miss-recovery path (deterministic layer already returned nothing),
+    // so it is strictly ADDITIVE — coverage stays monotonic vs the baseline.
+    if (Array.isArray(turns) && turns.length > 1) {
+      const traj = crescendoTrajectory(turns);
+      if (traj.flagged) {
+        const threat = (engine && typeof engine.threat === "function" && engine.threat(58))
+          || { id: 58, riskLevel: "Medium", riskScore: 6 };
+        return {
+          detectorId: "crescendo-trajectory", mode: "warn",
+          hint: "Multi-turn crescendo: a persuasion/fiction frame escalated across turns.",
+          match: `crescendo:${traj.tells.join(".") || "arc"}`, // content-free tell IDs only
+          threat, semantic: true, confidence: 0.7, trajectory: true
+        };
+      }
+    }
+    return escalateMiss(engine, text, stage, policy);
+  };
 }
 
 async function main() {

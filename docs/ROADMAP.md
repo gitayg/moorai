@@ -54,6 +54,22 @@ point of view; position and document *that* as the durable evidence store.
   (1 benign FP to chase), with **PAP / TAP** left BLIND by design (semantic/multi-turn → model-escalation,
   not a faked regex). `scripts/moorai-validate-blocking.mjs` proves the ACTION layer holds even after a
   hijack: **12/12 malicious tool calls denied (100%)** under an enforcing policy.
+- **DONE (v0.67.0) — coverage lift + productionized detectors:** six additive content-free detectors
+  (`inj-untrusted-directive`, `mcp-tool-poisoning`, `mcp-hidden-canary`, `egress-credential-shaped`,
+  `inj-perturbed`, `inj-jailbreak-autodan`) took deterministic coverage **61% → 77%** (BoN 1/4→4/4,
+  AutoDAN 2/4→4/4), and the on-device semantic-escalation path (`--semantic`) became functional,
+  recovering the PAP family with a live local model (~94% with the model at the time).
+- **DONE (v0.68.0) — 100% HackAgent coverage, deterministically:** a weighted persuasion-tell +
+  crescendo-trajectory analyzer (`data/crescendo.js`; `persuasion-jailbreak` + `semantic-persuasion`
+  detectors) closes the last three families — **PAP, PAIR, TAP** — keying on rule-suspension /
+  false-authorization / fiction-disclaimer framings rather than keywords. **Deterministic coverage
+  35% → 100% (31/31)** at 97% precision (the same single pre-existing benign FP; zero new FPs). Two
+  honest caveats remain: (a) precision is measured on only 7 benign controls — real-corpus FP behavior
+  of the persuasion detector still needs tuning against a larger benign distribution; (b) `escalate()` /
+  `scanSemantic` (the `d.semantic:"detect"` gate) is unit-proven but has **no production caller** — the
+  hook's `maybeEscalate` uses `classifyOpportunistic` directly, so wiring `scanSemantic` into
+  `cli/moorai-hook.mjs` / `cli/moorai-guard.mjs` is a separate follow-up (does not affect the 100%, which
+  is all deterministic prompt-stage detectors that already run in production).
 - **DONE (v0.67.0) — signed decision receipts + offline verifier:** `cli/moorai-receipt.mjs` emits a
   content-free per-verdict receipt (strict field allowlist → SHA-256 digest → ed25519 signature via the
   existing `agency-sign` per-device key), and `moorai-verify-chain --offline <file>` verifies a receipt or
