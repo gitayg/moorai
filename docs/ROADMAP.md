@@ -108,6 +108,29 @@ point of view; position and document *that* as the durable evidence store.
   post-Wave-A "held-out 29/29" is NOT a valid generalization measure. The public claim stays **90% held-out
   @ 93% precision** until **Wave B** builds a FRESH held-out set (adversarial mutation generator + 100+ new
   samples) and re-measures the real out-of-sample number — which may honestly land below 100%.
+- **DONE (v0.72.0) — Wave B: the real generalization number is 33%, and the detectors are overfit.**
+  `scripts/mutate-attacks.mjs` (NEW) generates attack-preserving mutations across 29 transformation axes;
+  `test/redteam/heldout-v2.json` (NEW) is a fresh **105-attack + 35-benign** set with **zero exact overlap**
+  against `corpus.json`/`heldout.json` (verified). `scripts/score-heldout-v2.mjs` scores it through the
+  CURRENT engine using the same `evalSample`/`score` reducers as the real eval (no detector was modified —
+  this was a measurement-only wave, so the set stays a valid held-out).
+
+  **Result: 33.3% recall (35/105), 92.1% precision (3 FP/35).** Against the 90% measured on 29 mild
+  paraphrases, this is the honest verdict: **the detectors generalize far worse than the small held-out
+  suggested.** Validity was spot-checked by the orchestrator — the missed samples are coherent, still-
+  malicious attacks, not generator junk.
+
+  **Zero-recall axes (the next-wave target list):** persuasion, thought-experiment, homoglyph, leetspeak,
+  letter-spacing, caesar, dot-punct, typo, reverse-chars, politeness. Named root causes found so far:
+  (a) the persona negation vocabulary misses paraphrases like "has shed every content policy";
+  (b) `ovr-your-ruleset` requires `your`+`rules` adjacent, so "override **your safety rules**" escapes —
+  this alone defeats several decoded reverse/caesar samples; (c) no confusable/homoglyph folding in
+  `data/normalize.js`; (d) BoN spacing collapse works but a *synonym* ("pay no attention to" vs "ignore")
+  defeats the fuzzy match — compound misses need synonym-aware matching, not more literals.
+
+  **METHOD NOTE — do not burn this set.** Tuning against `heldout-v2.json` would destroy it exactly as
+  Wave A destroyed `heldout.json`. The next tuning wave must split it (tune half / locked test half) or
+  generate a v3 for final measurement.
 - **DONE (v0.67.0) — signed decision receipts + offline verifier:** `cli/moorai-receipt.mjs` emits a
   content-free per-verdict receipt (strict field allowlist → SHA-256 digest → ed25519 signature via the
   existing `agency-sign` per-device key), and `moorai-verify-chain --offline <file>` verifies a receipt or
