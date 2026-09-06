@@ -19,6 +19,12 @@ import { DETECTORS } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
 import { evalSample, score } from "./redteam-eval.mjs";
+import { escalateMiss } from "../src/semantic.js";
+
+// --semantic routes DETERMINISTIC MISSES ONLY to the policy-gated on-device model (same contract as
+// redteam-eval --semantic): coverage is monotonic, a hit is never suppressed, and a model failure is
+// fail-open. This measures the FULL shipped stack, not just the regex layer.
+const SEMANTIC_POLICY = { semanticEscalation: "local", modelEscalation: true };
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -53,9 +59,14 @@ async function run() {
   const engine = new DetectionEngine(threats, DETECTORS, CONTENT_RULES);
   const scan = (text, stage) => engine.scan(text, stage);
 
+  const useSemantic = args.includes("--semantic");
+  const opts = useSemantic
+    ? { escalate: (eng, text, stage) => escalateMiss(eng, text, stage, SEMANTIC_POLICY) }
+    : undefined;
+
   const rows = [];
   for (const s of samples) {
-    const r = await evalSample(engine, s, scan);
+    const r = await evalSample(engine, s, scan, opts);
     r.axis = s.axis;
     rows.push(r);
   }
