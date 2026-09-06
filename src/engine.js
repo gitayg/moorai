@@ -183,7 +183,10 @@ export class DetectionEngine {
     for (const d of this.detectors) {
       const injPrompt = d.stage === "prompt" && d.detectorId.startsWith("inj");
       if (!injPrompt && d.stage !== "session") continue;
-      const match = this._firstMatch(joined, d.patterns);
+      // _matchDetector, NOT _firstMatch: a detector whose pattern is a cheap prefilter gated by
+      // refine() (inj-perturbed's is /[A-Za-z]{3,}/) matches essentially any text on patterns alone.
+      // Using _firstMatch here made scanSession(["hello","world"]) fire inj-persistent at Critical.
+      const match = this._matchDetector(joined, d);
       if (!match) continue;
       const threat = this.threat(d.threatId);
       if (!threat) continue;
@@ -192,7 +195,7 @@ export class DetectionEngine {
 
     // (c) persistence: injection signals in ≥2 distinct turns
     const injDetectors = this.detectors.filter((d) => d.stage === "prompt" && d.detectorId.startsWith("inj"));
-    const flagged = recent.filter((t) => injDetectors.some((d) => this._firstMatch(t, d.patterns)));
+    const flagged = recent.filter((t) => injDetectors.some((d) => this._matchDetector(t, d)));
     if (flagged.length >= 2) {
       const threat = this.threat(3);
       if (threat) add({ detectorId: "inj-persistent", mode: "warn", hint: `Repeated injection attempts across ${flagged.length} turns.`, match: `${flagged.length} turns`, threat, multiTurn: true });

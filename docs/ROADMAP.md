@@ -45,6 +45,15 @@ did not survive obfuscation even when comprehension did. Refusal rate by surface
 read base64", which a better model fixes, but "safety training did not transfer to a decoded payload",
 which it may not.
 
+**NUMBER CORRECTION (v0.77.1) — every 88.6% / 39-of-44 figure below predates this.** The locked-half
+deterministic figure is **86.4% (38/44)**. `DetectionEngine.scanSession` called `_firstMatch(text,
+d.patterns)`, which ignores `refine()` — so a detector whose pattern is a cheap prefilter gated entirely
+by refine (`inj-perturbed`'s is `/[A-Za-z]{3,}/`) matched essentially any prose, every turn counted as
+"flagged", and `inj-persistent` (threat 3, **Critical**) fired on *any* two-turn window:
+`scanSession(["hello","world"])` → Critical. Not user-facing (scanSession has no production caller), but
+it scored every multi-turn sample as caught for free. Fixed to use `_matchDetector`; regression test in
+`test/scan-session-refine.test.mjs` (reverting the fix turns 3 of 4 red).
+
 Caveats carried with the rule: the baseline is an **8B open-weights proxy**, not the frontier model an
 agent actually runs; 11/54 samples flipped across 5 runs; the headline is rule-dependent by ±8 points
 (any-run 38.6% / majority 45.5% / every-run 54.5%); and the 17-run comprehension check is a keyword proxy,

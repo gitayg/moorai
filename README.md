@@ -207,7 +207,7 @@ npx moorai-aibom --format cyclonedx           # export the AI Bill of Materials 
 
     | | before fixes | after fixes |
     |---|---|---|
-    | **Locked test half, deterministic** (never seen during tuning) | 31.8% (14/44) | **88.6% (39/44)** at **100% precision** (0 FP/10) |
+    | **Locked test half, deterministic** (never seen during tuning) | 31.8% (14/44) | **86.4% (38/44)** at **100% precision** (0 FP/10) |
     | **Locked test half, full stack** (+ on-device model) | — | **100% (44/44)** at **100% precision** |
     | Tune half | 34.4% (21/61) | 100% (61/61) |
 
