@@ -29,6 +29,7 @@ import { extractHosts } from "../data/model-endpoints.js";
 import { isNewDestination } from "../data/destination-map.js";
 import { signApproval, argsHash } from "../data/agency-sign.mjs";
 import { contentTells, assessSession, assessTrifecta, assessCrossServerTrifecta, trifectaLegs, serverOf } from "../data/agent-behavior.js";
+import { agentBaselineReport } from "../data/agent-baseline.js";
 import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
 import { takeEscalationOutcomes } from "../data/model-escalation.mjs";
 import { semanticEnabled } from "../data/semantic-escalation.js";
@@ -245,6 +246,11 @@ let SESSION = "";
 // the child's events then all carry. Content-free: agent_type/agent_id are one-way hashed, never raw.
 let ACTOR = "";
 let SUBAGENT_LINEAGE = {};
+// The verified policy for this invocation, set in main() once it resolves. Module-scope rather than a
+// parameter because logBehavior() is the ONE chokepoint every branch already funnels through, and the
+// agent-detection hand-off hangs off it for the same reason post() and recordDestinations() do: four
+// call sites, and the fifth one added would silently stop scanning.
+let POLICY = null;
 // #canary — registered honeytokens (hash-only; see cli/moorai-honeytokens.mjs). Loaded once. A hit is
 // exact equality against a content hash the hook already computes, so no plaintext is involved.
 const HONEYTOKENS = loadHoneytokens();
@@ -360,7 +366,158 @@ function logBehavior(tool, identity, scannedText, d, stage, lineage = {}) {
     if (afterX.crossServer && !beforeX.crossServer) {
       post({ threatId: 59, category: "Cross-server toxic flow", riskLevel: "High", stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "xserver:" + afterX.servers.join("+"), signature: { crossServer: true, servers: afterX.servers, legs: afterX.legs, serversByLeg: afterX.serversByLeg }, ...IDENTITY });
     }
+    // The event this call just recorded is now in the window — hand the six content-free agent
+    // detections (data/agent-detections.js) to the detached scanner. Gated, out-of-band, advisory.
+    maybeAgentScan(tool);
   } catch { /* behavior signal is best-effort; never affects enforcement */ }
+}
+
+// ---- the six agent/behavioral detections, on a production path (out-of-band) ----
+//
+// MEASURED MOTIVATION. data/agent-detections.js ships six content-free detections — orphan agents,
+// cross-agent messaging, trace gaps, velocity bursts, confused-deputy pivots and subagent fan-out —
+// and before this wiring NOTHING on the enforcement path called them. `runAgentDetections` /
+// `agentBaselineReport` had exactly one caller outside the library: cli/moorai-agentwatch.mjs, an
+// offline reporting CLI a deployment has to remember to run. So the product shipped six detectors a
+// real deployment could neither see nor act on.
+//
+// The natural home is here: logBehavior() already appends the very event these detections read, and
+// already posts content-free alerts on a transition. This adds one more transition post.
+//
+// OUT-OF-BAND, for the SAME reason escalation is (see maybeEscalate). The hook process's lifetime IS
+// the tool call's block. The detectors themselves are cheap (measured: agentBaselineReport over a
+// full 400-event window — the cap in cli/signals.mjs — is p50 0.7ms, p95 1.4ms), but the ALERTS are
+// not: each finding is one more POST in the parent's PENDING drain, which exitHook() awaits before
+// the process ends. A window with N standing findings would put N bounded-but-real requests between
+// the decision and the agent's next move. Detections are ADVISORY by construction — they can never
+// change an allow/deny decision — so the agent has no reason to wait on any of it. The hot path only
+// decides WHETHER to scan and hands the window to a DETACHED worker (`moorai-hook.mjs agentscan`),
+// exactly as escalation does.
+//
+// GATED, DEFAULT OFF (policy.agentDetections). docs/ROADMAP.md is explicit that these thresholds were
+// chosen for EXPLAINABILITY against no production distribution, and the measurement agrees: a
+// synthetic-but-plausible 400-event window of seven agents on three sessions produced 379 trace-gap
+// findings. Defaulting that on would turn a SOC console into noise and get the whole layer muted,
+// which is the same way the escalation layer ended up dead while still looking wired. So the operator
+// opts in per tenant, the same lever shape as policy.modelEscalation.
+//
+// Fail-open throughout: a failed write or spawn is swallowed and the call proceeds.
+function agentDetectionsEnabled(policy) {
+  const v = policy && policy.agentDetections;
+  return v === true || v === "on";
+}
+const AGENT_SCAN_STAMP = "agent-scan.stamp";
+const AGENT_SCAN_INTERVAL_MS = 10000;
+function maybeAgentScan(tool) {
+  try {
+    if (!agentDetectionsEnabled(POLICY)) return;
+    // NO_KEY guard — the same trap the honeytoken canary has. On an unenrolled device contentHash()
+    // returns the h2:nokey sentinel for EVERY input, so ACTOR, SESSION and every handoff target
+    // collapse onto one id. The event graph then has a single actor whose every trace is merged:
+    // lineage edges self-cancel (parent === child) and the merged trace shows phantom gaps and
+    // phantom cadence bursts. A behavioural detection is only meaningful on an enrolled device.
+    if (contentHash("agentscan/probe") === NO_KEY) return;
+    mkdirSync(STATE_DIR, { recursive: true });
+    // HARD BOUND on the background cost. The hot path is measurably unaffected either way (N=21 per
+    // side, a fresh sandbox per run so every ON run pays the full stat+stamp+spawn, a full 400-event
+    // window on disk in both: off p50 186ms / on p50 182ms, delta -4ms), but an agent session is
+    // hundreds of tool calls and one detached node process per call is real machine load for no gain:
+    // these are behavioural
+    // signals over a ROLLING WINDOW, so scanning every ~10s says everything scanning 300 times a
+    // minute would. Two syscalls on the hot path (stat + write), both inside the fail-open catch.
+    const stamp = join(STATE_DIR, AGENT_SCAN_STAMP);
+    try { if (Date.now() - statSync(stamp).mtimeMs < AGENT_SCAN_INTERVAL_MS) return; } catch { /* never scanned */ }
+    writeFileSync(stamp, "", { mode: 0o600 });
+    spawn(process.execPath, [SELF, "agentscan", String(tool || "")], { detached: true, stdio: "ignore" }).unref();
+  } catch { /* behavioural detections are advisory; fail-open */ }
+}
+
+// The detached worker: `moorai-hook.mjs agentscan <tool>`. Reads the on-device event window itself
+// (nothing is handed over, so unlike the escalation worker there is no payload file and no scanned
+// content at rest), runs the six detections, and posts one content-free alert per NEW finding.
+//
+// DEDUP is what makes this liveable. A standing finding — an orphan agent that is still in the
+// window, a trace gap that already happened — is true on EVERY subsequent tool call. Without a seen-
+// set the layer would post one alert per finding per tool call forever. The key is
+// type|agent|severity, so a finding re-alerts when it WORSENS (low → medium → high) and stays quiet
+// otherwise. The set is capped and content-free (opaque ids only).
+const AGENT_SEEN_FILE = "agent-detections-seen.json";
+const AGENT_SEEN_CAP = 500;
+const AGENT_SCAN_MAX_ALERTS = 10; // a burst cap: a pathological window must not become an alert storm
+const AGENT_DETECTION_LABEL = {
+  "orphan-agent": "orphan agent",
+  "cross-agent-messaging": "cross-agent messaging",
+  "trace-gap": "trace gap",
+  "velocity-burst": "velocity burst",
+  "confused-deputy": "confused deputy",
+  "fan-out-anomaly": "subagent fan-out"
+};
+const AGENT_SEVERITY_RISK = { high: "High", medium: "Medium", low: "Info" };
+function readAgentSeen() { try { const o = JSON.parse(readFileSync(join(STATE_DIR, AGENT_SEEN_FILE), "utf8")); return o && typeof o === "object" ? o : {}; } catch { return {}; } }
+function writeAgentSeen(seen) {
+  try {
+    const keys = Object.keys(seen);
+    if (keys.length > AGENT_SEEN_CAP) {
+      const keep = keys.sort((a, b) => seen[a] - seen[b]).slice(-AGENT_SEEN_CAP);
+      seen = Object.fromEntries(keep.map((k) => [k, seen[k]]));
+    }
+    mkdirSync(STATE_DIR, { recursive: true });
+    writeFileSync(join(STATE_DIR, AGENT_SEEN_FILE), JSON.stringify(seen), { mode: 0o600 });
+  } catch { /* the seen-set is hygiene; losing it only costs a duplicate alert */ }
+}
+const SEVERITY_RANK = { low: 1, medium: 2, high: 3 };
+async function runAgentScanWorker(tool) {
+  try {
+    // Re-checked in the worker, not just in the parent: a worker must never be able to WIDEN the
+    // parent's gate, and this one can be invoked directly.
+    const { policy } = await loadVerifiedPolicy(CONFIG);
+    if (!agentDetectionsEnabled(policy)) return exitHook();
+    if (contentHash("agentscan/probe") === NO_KEY) return exitHook();
+    const report = agentBaselineReport(readAgentEvents());
+    const seen = readAgentSeen();
+    const findings = [];
+    for (const bucket of Object.keys(report.totals)) for (const f of report.detections[bucket] || []) findings.push(f);
+    // Sentinel-keyed findings are dropped even on an enrolled device: events recorded BEFORE
+    // enrollment carry the h2:nokey id, and enrolling later must not turn that legacy window into a
+    // storm of phantom cross-agent / trace-gap findings.
+    //
+    // COLLAPSED BY KEY WITHIN THE SCAN TOO, not only across scans. A detector can return many findings
+    // that share one key — detectTraceGaps emits one finding PER GAP, so a single agent with a choppy
+    // trace yields dozens of `trace-gap|<agent>|medium` rows. MEASURED: a synthetic 400-event window
+    // produced 379 trace-gap findings over 8 distinct type|agent|severity keys; without this collapse
+    // the layer posted 71 alerts (10 per tool call for 7 calls, the burst cap draining a queue) for 8
+    // actual conditions. A SOC wants the condition, not the row count — the per-gap detail stays
+    // available locally via `moorai-agentwatch`.
+    const byKey = new Map();
+    for (const f of findings) {
+      if (!f.agent || f.agent === NO_KEY) continue;
+      const key = `${f.type}|${f.agent}|${f.severity}`;
+      const prev = byKey.get(key);
+      if (!prev || f.count > prev.count) byKey.set(key, f);
+    }
+    const fresh = [...byKey.entries()]
+      .filter(([key]) => !(seen[key] > 0))
+      .map(([, f]) => f)
+      .sort((a, b) => (SEVERITY_RANK[b.severity] || 0) - (SEVERITY_RANK[a.severity] || 0) || b.count - a.count)
+      .slice(0, AGENT_SCAN_MAX_ALERTS);
+    for (const f of fresh) {
+      seen[`${f.type}|${f.agent}|${f.severity}`] = Date.now();
+      post({
+        threatId: 0,
+        category: `Agent behavior: ${AGENT_DETECTION_LABEL[f.type] || f.type}`,
+        riskLevel: AGENT_SEVERITY_RISK[f.severity] || "Info",
+        stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(),
+        contentHash: `agentdet:${f.type}:${f.agent}`,
+        // A FIXED content-free projection, never the raw `evidence` object. The detectors document
+        // evidence as ids/timestamps/counts, but a whitelist is the thing that stays true when a
+        // detector later grows a field.
+        detection: { type: f.type, agent: f.agent, severity: f.severity, count: f.count },
+        ...IDENTITY
+      });
+    }
+    if (fresh.length) writeAgentSeen(seen);
+  } catch { /* behavioural detections are advisory; fail-open */ }
+  return exitHook();
 }
 
 // Content-free advisory post for one escalate/escalateMiss finding. Carries only the model's short
@@ -626,6 +783,9 @@ async function main() {
   // The detached escalation worker (see maybeEscalate). Never reads stdin and never writes a decision:
   // by the time it runs the hook that spawned it has already emitted its verdict and exited.
   if (cmd === "escalate") return runEscalationWorker(process.argv[3]);
+  // The detached agent-detection scanner (see maybeAgentScan). Like the escalation worker it never
+  // reads stdin and never writes a decision: the hook that spawned it has already emitted its verdict.
+  if (cmd === "agentscan") return runAgentScanWorker(process.argv[3]);
 
   let input;
   try { input = JSON.parse((await readStdin()) || "{}"); } catch { process.exit(0); }
@@ -688,6 +848,7 @@ async function main() {
       if (source === "last-known-good") await postPosture("Enforcing last-known-good verified policy", "policy:lkg:applied", "High", { lkgCopy: lkgCopy || "", lkgReason: rejected && rejected.length ? "refused" : "absent" });
     }
   } catch { if (!policy) return exitHook(); /* preserve legacy fail-open on any error when no policy */ }
+  POLICY = policy; // read by logBehavior's agent-detection hand-off (maybeAgentScan)
   const engine = buildEngine(policy);
 
   if (tool === "Read") {

@@ -48,13 +48,27 @@ const res = assessSession(events);
 // so this can never change agent-watch's verdict or exit code.
 const report = agentBaselineReport(events);
 
+// The content-free projection of one finding — the SAME shape cli/moorai-hook.mjs's out-of-band scan
+// posts, so a console/SIEM sees one contract whichever path produced the finding. Deliberately NOT the
+// raw `evidence` object: the detectors document it as ids/timestamps/counts only, but a fixed
+// projection is the thing that stays true when a detector later adds a field.
+const projectFinding = (f) => ({ type: f.type, agent: f.agent, severity: f.severity, count: f.count });
+
 async function emitAlert() {
+  // The six content-free detections travel WITH the signature verdict. Before this they did not:
+  // the payload was built from assessSession() alone, so an orphan agent, a cross-agent handoff, a
+  // trace gap, a velocity burst, a confused-deputy pivot or a fan-out anomaly never reached the SIEM
+  // at all — the CLI printed some of them locally and that was the end of it.
+  const detections = {};
+  for (const bucket of Object.keys(report.totals)) detections[bucket] = (report.detections[bucket] || []).map(projectFinding);
+  const findings = Object.values(report.totals).reduce((a, b) => a + b, 0);
   const alert = {
     threatId: 0, category: "Autonomous-agent behavior",
     riskLevel: res.level === "autonomous-signature" ? "Critical" : "High",
     stage: "behavior", tool: "moorai-agentwatch", ts: new Date().toISOString(),
     contentHash: "sig:" + res.tells.map((t) => t.id).join("."),
     signature: { level: res.level, score: res.score, tells: res.tells.map((t) => t.id), events: res.events },
+    detections, detectionTotals: report.totals,
     ...IDENTITY
   };
   try {
@@ -89,15 +103,22 @@ function baselineText() {
     const conf = a.lowConfidence ? `${C.y}low-confidence${C.off}` : `${C.dim}conf ${a.confidence.toFixed(2)}${C.off}`;
     out += `    ${short(actor)}  ${C.dim}events=${a.n} tools=${a.tools} servers=${a.servers.length}${C.off}  ${conf}\n`;
   }
-  const { orphans, crossAgent, traceGaps } = report.detections;
+  // Every bucket, both in the summary guard and in the render. This used to sum and print only
+  // orphans/crossAgent/traceGaps, so a window whose only finding was a confused-deputy pivot, a
+  // velocity burst or a fan-out anomaly printed "none in the current window" while --format json
+  // reported it — a finding that exists but prints "none" is worse than no detector at all.
+  // Driven off report.totals' own keys so a seventh detector cannot silently go unrendered.
   const t = report.totals;
-  const any = t.orphans + t.crossAgent + t.traceGaps;
+  const any = Object.values(t).reduce((a, b) => a + b, 0);
   out += `\n  ${C.b}Content-free detections${C.off}\n`;
   if (!any) { out += `    ${C.g}none in the current window${C.off}\n`; return out; }
-  const line = (f) => `    ${sevCol(f.severity)}#${f.type}${C.off}  ${C.dim}agent=${short(f.agent)} sev=${f.severity} count=${f.count}${C.off}\n`;
-  for (const f of orphans) out += line(f);
-  for (const f of crossAgent) out += line(f);
-  for (const f of traceGaps) out += `    ${sevCol(f.severity)}#${f.type}${C.off}  ${C.dim}agent=${short(f.agent)} kind=${f.evidence.kind} sev=${f.severity} count=${f.count}${C.off}\n`;
+  // `kind` is the detector's own fixed vocabulary label ("inject-then-egress", "cadence-burst", …),
+  // not content; shown when the finding carries one.
+  const line = (f) => {
+    const kind = f.evidence && f.evidence.kind ? ` kind=${f.evidence.kind}` : "";
+    return `    ${sevCol(f.severity)}#${f.type}${C.off}  ${C.dim}agent=${short(f.agent)}${kind} sev=${f.severity} count=${f.count}${C.off}\n`;
+  };
+  for (const bucket of Object.keys(t)) for (const f of report.detections[bucket] || []) out += line(f);
   return out;
 }
 function sevCol(s) { return s === "high" ? C.r : s === "medium" ? C.y : C.dim; }
@@ -105,7 +126,10 @@ function sevCol(s) { return s === "high" ? C.r : s === "medium" ? C.y : C.dim; }
 if (fmt === "json") process.stdout.write(JSON.stringify({ ...res, baseline: report, tenant: CONFIG.tenant }, null, 2) + "\n");
 else process.stdout.write(toText());
 
-if (emit && res.level !== "clean") {
+// Emit on a signature verdict OR on any of the six detections. The old condition was the signature
+// alone, so a window whose only finding was (say) an orphan agent sent nothing at all.
+const detectionCount = Object.values(report.totals).reduce((a, b) => a + b, 0);
+if (emit && (res.level !== "clean" || detectionCount > 0)) {
   const ok = await emitAlert();
   if (fmt !== "json") process.stderr.write(ok ? "  → alert sent to server (→ SIEM/SOC + timeline)\n" : "  → emit failed (server unreachable; verdict stands locally)\n");
 }

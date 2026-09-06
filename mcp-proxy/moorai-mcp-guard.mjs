@@ -5,8 +5,28 @@
 // Claude Desktop has NO PreToolUse hooks (that is a Claude Code CLI feature), but it launches MCP servers
 // from claude_desktop_config.json. So we guard it by spawning THIS proxy in place of the real server; the
 // proxy spawns the real server as a child and pumps stdio both ways, gating every `tools/call` through
-// mcpGateway (server allow-list #3 → per-tool arg rules #18 → argument content scan #2). All other
-// JSON-RPC traffic (initialize, tools/list, notifications, responses) passes through verbatim.
+// mcpGateway (server allow-list #3 → per-tool arg rules #18 → argument content scan #2).
+//
+// AND — new — OBSERVING every `tools/list` response at the "tool" stage. The header used to say
+// "tools/list passes through verbatim", and it still does byte-for-byte; what changed is that the
+// bytes are now also COPIED to a bounded, fail-open scanner. Until this existed, `grep -rn
+// 'decideText([^)]*"tool"' cli/` returned zero: data/detectors.js shipped mcp-tool-poisoning (#60)
+// and mcp-hidden-canary (#50) scoped to ["tool","file","index"] and no shipped caller ever handed
+// them a tool description or an input schema. See mcp-proxy/tool-scan.mjs for the composition and
+// the caps, mcp-proxy/tool-baseline.mjs for the cross-call (shadowing / capability-expansion) half.
+//
+// ENFORCEMENT POSTURE AT THE tools/list STAGE — REPORT-FIRST, and never a mutation:
+//   * A tools/list response is NEVER altered, delayed, reordered, or dropped. Byte-identity is a
+//     hard contract (test/mcp-tool-stage.test.mjs asserts it on the wire), because "block" here
+//     could only mean deleting a tool from the agent's list, which is a lie about what the server
+//     offers and breaks clients that cache the list.
+//   * A finding therefore ALERTS. Every vector-3 threat resolves through threatActionFor, whose
+//     default for #60/#50 is "notify" — the house default; nothing here invents a new blocking one.
+//   * Only when an org policy explicitly resolves a finding to block/kill does anything stronger
+//     happen, and it happens at the NEXT surface rather than this one: the tool is QUARANTINED, and
+//     the already-existing, already-tested tools/call gate refuses calls to it. Observation at list
+//     time, enforcement at call time.
+// All other JSON-RPC traffic (initialize, notifications, responses) passes through verbatim.
 //
 // Content-free by construction: only category / risk / one-way hash / server / tool / decision may leave
 // the device. Tool-call CONTENT is NEVER emitted. Governance, not a sandbox: on ANY error (bad policy,
@@ -19,9 +39,12 @@
 
 import { spawn } from "node:child_process";
 import { basename } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import os from "node:os";
 import { loadConfig } from "../cli/config.mjs";
-import { buildEngine, mcpGateway, literacyTouchpoint, loadVerifiedPolicy, ratchetPosture, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "../cli/hook-core.mjs";
+import { buildEngine, mcpGateway, decideText, literacyTouchpoint, loadVerifiedPolicy, ratchetPosture, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "../cli/hook-core.mjs";
+import { CAPS, toolsOfResponse, toolScanText, toolIdentity } from "./tool-scan.mjs";
+import { loadBaseline, saveBaseline, driftSignals, recordTool } from "./tool-baseline.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
@@ -185,8 +208,14 @@ child.on("error", (e) => {
 });
 child.on("exit", (code, signal) => { process.exit(code == null ? (signal ? 1 : 0) : code); });
 
-// Responses from the real server → Claude Desktop, verbatim (transparent pass-through).
-child.stdout.pipe(process.stdout);
+// Responses from the real server → Claude Desktop, VERBATIM. The write happens FIRST and with the
+// raw Buffer — the observer downstream gets a decoded COPY and can never influence, delay, reorder or
+// mutate what the agent receives. `.pipe()` was replaced by this handler for exactly one reason: to
+// take that copy. If observeChunk throws, the bytes are already gone out the door.
+child.stdout.on("data", (chunk) => {
+  process.stdout.write(chunk);
+  try { observeChunk(chunk); } catch { /* observation is evidence, never transport */ }
+});
 // The real server's diagnostics → our stderr (Claude Desktop surfaces these in its MCP logs).
 child.stderr.pipe(process.stderr);
 
@@ -215,6 +244,16 @@ async function handleLine(rawLine) {
     const args = JSON.stringify(msg.params.arguments == null ? {} : msg.params.arguments);
     const argsHash = contentHash(args);
 
+    // Deferred enforcement from the tool stage. A tools/list finding NEVER edits the list; if — and
+    // only if — org policy resolved that finding to block/kill, the tool lands here and the call is
+    // refused through the same path an argument-level block already takes.
+    if (QUARANTINE.has(tool)) {
+      alertBlock(tool, "content", "tool metadata quarantined", argsHash);
+      auditCall(tool, "deny", argsHash);
+      writeBlock(msg.id, "this tool's advertised metadata was blocked by policy (MCP tool poisoning)");
+      return;
+    }
+
     if (!ENGINE) { auditCall(tool, "allow", argsHash); forward(rawLine); return; } // fail open: no engine
 
     const g = mcpGateway(ENGINE, POLICY, { tool, server: SERVER, args });
@@ -235,6 +274,120 @@ async function handleLine(rawLine) {
     // Governance, not a sandbox: any gate error must not drop the call — forward it unchanged.
     forward(rawLine);
   }
+}
+
+// ============================================================================================
+// THE TOOL STAGE — observation of tools/list RESPONSES (server → agent).
+// ============================================================================================
+//
+// Everything below runs on a COPY, after the bytes have already been forwarded. It is structurally
+// incapable of blocking, delaying, dropping or rewriting a message; the worst a bug here can do is
+// produce no alert. That is the fail-open contract, expressed as control flow rather than as a
+// promise: there is no path from this section back to process.stdout or to child.stdin.
+
+// Tools whose metadata resolved to a BLOCK under org policy. Empty under the default policy (#60/#50
+// resolve to "notify" via threatActionFor), so this is inert unless an admin armed it. Enforcement
+// lands on the next tools/call, never on the list itself.
+const QUARANTINE = new Set();
+
+const SEEN_ALERTS = new Set(); // dedup content-free tokens; a long-lived session re-lists often
+const MAX_SEEN = 2048;
+function seenOnce(token) {
+  if (SEEN_ALERTS.has(token)) return false;
+  if (SEEN_ALERTS.size >= MAX_SEEN) SEEN_ALERTS.clear();
+  SEEN_ALERTS.add(token);
+  return true;
+}
+
+function alertTool(toolName, { category, riskLevel, threatId = 0, hash, decision = "notify" }) {
+  post({ threatId, category, riskLevel, stage: "tool", tool: `desktop:${toolName}`, decision, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: hash, ...IDENTITY });
+  if (riskLevel === "High" || riskLevel === "Critical" || riskLevel === "Blocked") {
+    try { post({ ...literacyTouchpoint({ threatId, category, tool: `desktop:${toolName}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
+  }
+  try {
+    recordAction(applyCaptureTier({
+      threatId, category, riskLevel, stage: "tool", tool: `desktop:${toolName}`, decision,
+      mcpServer: SERVER, ts: new Date().toISOString(), contentHash: hash, ...IDENTITY
+    }, {}, (POLICY && POLICY.captureTier) || "content-free"));
+  } catch { /* ledger is best-effort */ }
+}
+
+// One tools/list response. Bounded by CAPS.maxTools and by a wall-clock budget checked BETWEEN tools
+// — regex execution in V8 is synchronous and cannot be interrupted mid-match, so the honest bound is
+// "stop starting new work", plus the per-tool byte cap that keeps any single match small.
+async function observeTools(tools) {
+  if (process.env.MOORAI_TEST_TOOLSCAN_THROW) throw new Error("injected tool-scan fault (test hook)");
+  await ensurePolicy();
+  const deadline = Date.now() + CAPS.scanBudgetMs;
+  const baseline = loadBaseline();
+  let counter = 0;
+  for (const t of Object.values(baseline)) if ((t.n || 0) > counter) counter = t.n || 0;
+  let dirty = false;
+
+  const limit = Math.min(tools.length, CAPS.maxTools);
+  for (let i = 0; i < limit; i++) {
+    if (Date.now() > deadline) break;
+    const tool = tools[i];
+    const name = String(tool.name);
+
+    // (a) content scan of the metadata at the "tool" stage — the detectors that had no caller.
+    if (ENGINE) {
+      const d = decideText(ENGINE, POLICY, toolScanText(tool), "tool");
+      for (const f of d.findings) {
+        if (!seenOnce(`${name}|${f.threatId}|${f.category}`)) continue;
+        alertTool(name, {
+          threatId: f.threatId, category: f.category,
+          riskLevel: d.decision === "deny" ? "Blocked" : f.riskLevel,
+          hash: contentHash(f.match || ""),
+          decision: d.decision === "deny" ? "quarantine" : "notify"
+        });
+      }
+      // Report-first: only an explicit org block/kill escalates, and it escalates to the tools/call
+      // gate rather than to touching this response.
+      if (d.decision === "deny") QUARANTINE.add(name);
+    }
+
+    // (b) cross-call drift — shadowing across servers, capability expansion / rug-pull on one server.
+    const cur = toolIdentity(tool, SERVER);
+    for (const sig of driftSignals(baseline[cur.key], cur)) {
+      if (!seenOnce(sig.token)) continue;
+      alertTool(name, { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token });
+    }
+    recordTool(baseline, cur, ++counter);
+    dirty = true;
+  }
+  if (dirty) saveBaseline(baseline);
+}
+
+// Decoded copy of the child's stdout, split on newlines. A StringDecoder (not chunk.toString()) so a
+// multi-byte character straddling two chunks does not corrupt the copy — a corrupted copy would only
+// fail to parse, but silently losing detections is exactly the failure this whole file is fixing.
+const outDecoder = new StringDecoder("utf8");
+let obsBuf = "";
+let obsSkip = false; // a single line over the cap: forwarded (already), never parsed
+let obsQueue = Promise.resolve();
+
+function observeChunk(chunk) {
+  obsBuf += outDecoder.write(chunk);
+  let nl;
+  while ((nl = obsBuf.indexOf("\n")) >= 0) {
+    const line = obsBuf.slice(0, nl);
+    obsBuf = obsBuf.slice(nl + 1);
+    if (obsSkip) { obsSkip = false; continue; }
+    if (line.length > CAPS.maxLineBytes || !line.includes("\"tools\"")) continue;
+    obsQueue = obsQueue.then(() => observeLine(line)).catch(() => {});
+  }
+  if (obsBuf.length > CAPS.maxLineBytes) { obsBuf = ""; obsSkip = true; }
+}
+
+async function observeLine(line) {
+  try {
+    // Matched STRUCTURALLY, not by pairing a request id: a tool list pushed outside the
+    // request/response pair — a schema refresh, a list_changed follow-up — is observed too, and no
+    // per-request bookkeeping has to be kept (or bounded) to make that work.
+    const tools = toolsOfResponse(JSON.parse(line));
+    if (tools) await observeTools(tools);
+  } catch { /* unparseable, oversized, or a scan failure — the bytes already went out */ }
 }
 
 // ---- newline-delimited framing of Claude Desktop → proxy stdin. Buffer partial lines; a tool-call must
