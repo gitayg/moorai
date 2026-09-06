@@ -10,7 +10,21 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { STATE_DIR, statePath } from "../cli/state-dirs.mjs";
 
 const HOST = "http://127.0.0.1:11434"; // loopback only — do not make this configurable to a remote host
-const DEFAULT_MODEL = process.env.MOORAI_LOCAL_MODEL || "llama3.2:1b";
+
+// MEASURED, not guessed. On the heldout-v2 tune half (61 attacks / 25 benign), with identical detectors:
+//   deterministic only        96.7% recall, 3 FP/25
+//   + llama3.2:1b             96.7% recall (+0), 10 FP/25 (+7)   <- the old default: STRICTLY HARMFUL
+//   + llama3:latest (8B)     100.0% recall (+2),  3 FP/25 (+0)
+// A ~1B model is not merely weaker here, it is negative: it recovers nothing and manufactures threat-#58
+// findings on benign text. Latency was never the reason to prefer it (it is fast — p50 261ms — and the 8B
+// is 461-545ms warm, both inside the 2500ms budget; the 14.8s once attributed to the 8B was a COLD MODEL
+// LOAD, not inference). So the default is the model we measured as beneficial.
+const DEFAULT_MODEL = process.env.MOORAI_LOCAL_MODEL || "llama3:latest";
+
+// Models measured to make results WORSE. An explicit MOORAI_LOCAL_MODEL is still honoured — the operator's
+// config wins — but the choice is recorded so "escalation is on and my false positives went up" is
+// diagnosable instead of invisible. Absent from this list only means unmeasured, not endorsed.
+const UNDERPOWERED_MODELS = new Set(["llama3.2:1b", "llama3.2:1b-instruct-q4_K_M", "qwen2.5:0.5b", "tinyllama"]);
 // Per-call generate budget. Default unchanged (2500ms) so the hook never hangs; MOORAI_LOCAL_TIMEOUT_MS
 // lets an operator (or the coverage harness) allow a larger/cold local model more time when they choose.
 const DEFAULT_TIMEOUT_MS = Number(process.env.MOORAI_LOCAL_TIMEOUT_MS) || 2500;
@@ -57,7 +71,8 @@ export const OUTCOME_KINDS = [
   "timeout",      // the per-backend budget (MOORAI_LOCAL_TIMEOUT_MS) aborted the request
   "guard-timeout",// src/semantic.js's outer hard-bound won the race before any backend answered
   "error",        // non-OK HTTP, or a throw that was not a timeout
-  "unparseable"   // the model answered, but not with the { risk, category, confidence } contract
+  "unparseable",  // the model answered, but not with the { risk, category, confidence } contract
+  "underpowered"  // the operator pointed MOORAI_LOCAL_MODEL at a model measured to make results WORSE
 ];
 const OUTCOMES = [];
 const OUTCOME_LOG = statePath("escalation-outcomes.jsonl");
@@ -90,6 +105,10 @@ export async function localModelAvailable(timeoutMs = 400) {
 // signal before anything leaves the device.
 export async function classifyLocal(text, { model = DEFAULT_MODEL, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   if (!text || !text.trim()) return null;
+  // The operator's explicit model choice is honoured — we do not override config — but a model measured
+  // to ADD false positives without adding recall is recorded, so the effect is diagnosable rather than
+  // being silently blamed on the detectors.
+  if (UNDERPOWERED_MODELS.has(model)) recordEscalationOutcome("underpowered", 0, "local");
   const prompt =
     "You are a security classifier for an AI coding agent. " +
     CLASSIFIER_CRITERIA +

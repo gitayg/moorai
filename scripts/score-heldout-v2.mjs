@@ -10,6 +10,13 @@
 //   node scripts/score-heldout-v2.mjs            # text report
 //   node scripts/score-heldout-v2.mjs --json     # machine-readable
 //   node scripts/score-heldout-v2.mjs --misses   # also list every missed attack id
+//   node scripts/score-heldout-v2.mjs --policy offline   # AMTSO prevention under another posture
+//
+// It ALSO reports the AMTSO outcome split (prevented / detected-but-not-prevented / missed /
+// inconclusive) using the same reducers — held-out recall is a DETECTION number, and AMTSO's
+// "Guidelines for Testing of Agentic Security Products" v1.0 says presenting it as protection is a
+// reporting error. Prevention is derived from threatActionFor, the function the shipped hook enforces
+// with; see the derivation note in scripts/redteam-eval.mjs.
 //
 // Content-free: emits only ids / axes / threat-ids / booleans, never a sample's text.
 import { readFileSync } from "node:fs";
@@ -18,7 +25,7 @@ import { dirname, join } from "node:path";
 import { DETECTORS } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
-import { evalSample, score } from "./redteam-eval.mjs";
+import { evalSample, score, resolvePolicy, amtsoText } from "./redteam-eval.mjs";
 import { escalateMiss } from "../src/semantic.js";
 
 // --semantic routes DETERMINISTIC MISSES ONLY to the policy-gated on-device model (same contract as
@@ -60,9 +67,16 @@ async function run() {
   const scan = (text, stage) => engine.scan(text, stage);
 
   const useSemantic = args.includes("--semantic");
-  const opts = useSemantic
-    ? { escalate: (eng, text, stage) => escalateMiss(eng, text, stage, SEMANTIC_POLICY) }
-    : undefined;
+  // Enforcement posture the AMTSO PREVENTION half is derived against. Default "builtin" = no org
+  // policy, i.e. threatActionFor's own fallbacks — the same default every other caller of evalSample
+  // gets, so the detection numbers below are unchanged by this.
+  const pi = args.indexOf("--policy");
+  const { policy: enforcementPolicy, label: postureLabel } = resolvePolicy(pi >= 0 ? args[pi + 1] : "builtin");
+  const ti = args.indexOf("--timeout-ms");
+  const timeoutMs = ti >= 0 && args[ti + 1] ? Number(args[ti + 1]) : null;
+
+  const opts = { policy: enforcementPolicy, timeoutMs };
+  if (useSemantic) opts.escalate = (eng, text, stage) => escalateMiss(eng, text, stage, SEMANTIC_POLICY);
 
   const rows = [];
   for (const s of samples) {
@@ -77,15 +91,27 @@ async function run() {
   const overallRecall = attackRows.filter((r) => r.detected).length / attackRows.length;
   const misses = attackRows.filter((r) => !r.detected).map((r) => ({ id: r.id, family: r.family, axis: r.axis }));
   const fps = rows.filter((r) => !r.shouldDetect && r.detected).map((r) => ({ id: r.id, axis: r.axis, firedThreats: r.firedThreats }));
+  // AMTSO inconclusive rows are ALSO in `misses` above (they are undetected), deliberately: `misses`
+  // and `overallRecall` keep their historical, conservative meaning. This list names them separately
+  // so a reader can tell "we could not tell" apart from "the attack got through".
+  const inconclusive = rows.filter((r) => r.amtso === "inconclusive")
+    .map((r) => ({ id: r.id, family: r.family, axis: r.axis, error: r.error }));
 
   if (asJson) {
     process.stdout.write(JSON.stringify({
       totals: sc.totals,
       overallRecall,
       precision: sc.precision,
-      families: sc.families.filter((f) => f.attacks > 0).map((f) => ({ family: f.family, attacks: f.attacks, caught: f.caught, recall: f.recall })),
+      families: sc.families.filter((f) => f.attacks > 0).map((f) => ({
+        family: f.family, attacks: f.attacks, caught: f.caught, recall: f.recall,
+        prevented: f.prevented, detectedNotPrevented: f.detectedNotPrevented,
+        missed: f.missed, inconclusive: f.inconclusive
+      })),
       byAxis,
-      misses, fps
+      posture: postureLabel,
+      amtso: sc.amtso,
+      coverageExclInconclusive: sc.coverageExclInconclusive,
+      misses, fps, inconclusive
     }, null, 2) + "\n");
     return;
   }
@@ -98,10 +124,13 @@ async function run() {
   out += `  ${C.b}Overall held-out recall:${C.off} ${col(overallRecall)}${pct(overallRecall)}${C.off}  ${C.dim}(${attackRows.filter((r) => r.detected).length}/${attackRows.length} attacks caught)${C.off}\n`;
   out += `  ${C.b}Precision on new benign:${C.off}  ${sc.totals.fp ? C.y : C.g}${pct(sc.precision)}${C.off}  ${C.dim}(${fps.length} FP / ${benign.length} benign · FP rate ${pct(fps.length / benign.length)})${C.off}\n\n`;
 
+  out += amtsoText(sc, postureLabel) + `\n`;
+
   out += `  ${C.b}Recall by family${C.off}\n`;
   for (const f of sc.families) {
     if (!f.attacks) continue;
-    out += `    ${col(f.recall)}${String(f.caught).padStart(2)}/${String(f.attacks).padEnd(2)}${C.off}  ${f.family.padEnd(12)} ${C.dim}${pct(f.recall)}${C.off}\n`;
+    out += `    ${col(f.recall)}${String(f.caught).padStart(2)}/${String(f.attacks).padEnd(2)}${C.off}  ${f.family.padEnd(12)} ${C.dim}${pct(f.recall)}${C.off}`
+      + `  ${C.dim}[amtso ${f.prevented}P / ${f.detectedNotPrevented}D / ${f.missed}M / ${f.inconclusive}I]${C.off}\n`;
   }
   out += `\n  ${C.b}Recall by transformation axis (worst first ← next-wave targets)${C.off}\n`;
   for (const a of byAxis) {
