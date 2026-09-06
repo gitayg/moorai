@@ -27,6 +27,8 @@ export const NORMALIZE_MAX_BLOBS = 16;      // cap encoded blobs decoded per tra
 export const NORMALIZE_MAX_DEPTH = 3;       // layered decode/normalize depth (h4rm3l composes 2–3
 // transforms in practice; deeper is combinatorially expensive for no real-world gain).
 export const NORMALIZE_MAX_VARIANTS = 64;   // hard ceiling on variants → bounds total detector work.
+export const LEET_MAX_VARIANTS = 8;         // ceiling on leetspeak ambiguity candidates PER CALL —
+// shared across the whole BFS, not per node (see leetAmbiguous).
 const CAESAR_MAX_LEN = 2_000;               // full 25-shift caesar sweep only on short inputs.
 
 const PRINTABLE_RATIO = 0.85; // a decoded blob must be mostly printable to be treated as hidden text
@@ -139,6 +141,88 @@ function leet(text) {
   return changed ? { kind: "leetspeak", text: out } : null;
 }
 
+// LEETSPEAK AMBIGUITY. `1` (and `!`) is the one leet glyph that stands for TWO letters — `i` AND `l` —
+// and the single-mapping table above commits to `i`, which silently mis-decodes real attacks:
+// `un10ck3d 9u4rdr4115` recovers as "uniocked … guardraiis", so the detector that wants
+// "unlocked … guardrails" never fires and the whole leetspeak axis scores zero. Every other glyph in
+// LEET is unambiguous, so `1`/`!` are the only positions worth branching on.
+//
+// The branch is over STRATEGIES, not positions — a per-position cartesian product is 2^k and a paste of
+// 40 000 `1`s would be 2^40000 candidates. Each strategy is a total function of (run length, index in
+// run), so the candidate count is a CONSTANT (2 isolated readings × 4 run readings, minus the one that
+// duplicates plain leet() = 7) no matter how long the input or how many ambiguous characters it holds;
+// cost is 7 × O(n). Runs are the useful unit because English leet clusters that way: `411` → "all" (run→l),
+// `9u4rdr4115` → "rails" and `w111` → "will" (run→ first i, rest l), while a lone `1` is usually `l`
+// in `un10ck3d` and `i` in `d1s4b13`.
+const LEET_ISOLATED = ["i", "l"];
+const LEET_RUNS = {
+  i: () => "i",
+  l: () => "l",
+  il: (k) => (k === 0 ? "i" : "l"),
+  li: (k) => (k === 0 ? "l" : "i")
+};
+// (iso "i" + run "i") is byte-identical to plain leet() above, so it is dropped: 7 strategies, and
+// with the plain variant that is at most LEET_MAX_VARIANTS = 8 leetspeak candidates.
+const LEET_STRATEGIES = LEET_ISOLATED.flatMap((iso) =>
+  Object.entries(LEET_RUNS).map(([id, run]) => ({ kind: `leetspeak-${iso}${id}`, iso, run }))
+).filter((s) => s.kind !== "leetspeak-ii").slice(0, LEET_MAX_VARIANTS);
+
+const LEET_MIN_TOKEN_GLYPHS = 2;  // a qualifying token needs ≥2 leet digits — one digit is `v1`/`s3`.
+const LEET_MIN_TOKEN_RATIO = 0.25; // …and enough of the text must look encoded, so a lone identifier
+// inside ordinary prose does not trigger the expansion.
+const LEET_MAX_TOKEN_LEN = 24;     // hashes / base64 / API keys are long, dense and NOT leetspeak.
+const LEET_GLYPH = /[013456789]/g;
+const LEET_ADJACENT = /[A-Za-z][013456789]|[013456789][A-Za-z]/;
+
+// Does this text look leetspeak-ENCODED (as opposed to ordinary text that merely contains digits)?
+// Returns true only when a meaningful share of whitespace tokens are short, letter-bearing, digit-dense
+// and digit-adjacent — and at least one of THOSE tokens carries the ambiguous glyph, so a sha256 hash
+// full of `1`s next to the word "sha256" cannot open the gate.
+function looksLeetEncoded(text) {
+  const tokens = text.match(/\S+/g);
+  if (!tokens) return false;
+  let qualifying = 0, ambiguous = false;
+  for (const t of tokens) {
+    if (t.length > LEET_MAX_TOKEN_LEN) continue;
+    if (!/[A-Za-z]/.test(t) || !LEET_ADJACENT.test(t)) continue;
+    if ((t.match(LEET_GLYPH) || []).length < LEET_MIN_TOKEN_GLYPHS) continue;
+    qualifying++;
+    if (/[1!]/.test(t)) ambiguous = true;
+  }
+  return ambiguous && qualifying / tokens.length >= LEET_MIN_TOKEN_RATIO;
+}
+
+// `budget` is shared by every node of one normalizeVariants() call, so the ambiguity fan-out costs at
+// most LEET_MAX_VARIANTS candidates for the WHOLE traversal — a leet-looking root cannot spend the
+// budget again at depth 2 and 3 and squeeze a sibling's base64 layer out of NORMALIZE_MAX_VARIANTS.
+function* leetAmbiguous(text, budget) {
+  if (budget.leet <= 0 || !/[1!]/.test(text) || !looksLeetEncoded(text)) return;
+  const n = text.length;
+  // Position bookkeeping: for every ambiguous character, its index within its maximal run and that
+  // run's length. One linear pass; no per-position branching.
+  const idxInRun = new Int32Array(n), lenOfRun = new Int32Array(n);
+  for (let i = 0; i < n; i++) {
+    const c = text[i];
+    if (c !== "1" && c !== "!") continue;
+    let j = i;
+    while (j < n && (text[j] === "1" || text[j] === "!")) j++;
+    for (let k = i; k < j; k++) { idxInRun[k] = k - i; lenOfRun[k] = j - i; }
+    i = j - 1;
+  }
+  for (const s of LEET_STRATEGIES) {
+    if (budget.leet <= 0) return;
+    let out = "";
+    for (let i = 0; i < n; i++) {
+      const c = text[i];
+      if (c === "1" || c === "!") out += lenOfRun[i] > 1 ? s.run(idxInRun[i]) : s.iso;
+      else out += LEET[c] ?? c;
+    }
+    if (out === text) continue;
+    budget.leet--;
+    yield { kind: s.kind, text: out };
+  }
+}
+
 function rot13(text) {
   const out = caesar(text, 13);
   return out !== text ? { kind: "rot13", text: out } : null;
@@ -208,7 +292,7 @@ function reverseWords(text) {
   return out !== text ? { kind: "reverse-words", text: out } : null;
 }
 
-function* transformsOf(node) {
+function* transformsOf(node, budget) {
   const { text, depth } = node;
   yield decodeBase64(text);
   yield decodeHex(text);
@@ -227,6 +311,10 @@ function* transformsOf(node) {
       if (out !== text) yield { kind: "caesar-" + sh, text: out };
     }
   }
+  // LAST: the leet ambiguity fan-out is the widest single transform (up to 8), so yielding it after
+  // every decoder keeps it from consuming the shared NORMALIZE_MAX_VARIANTS budget that a sibling
+  // node's base64/hex layer still needs.
+  yield* leetAmbiguous(text, budget);
 }
 
 // Produce the bounded set of decoded/normalized variants of `text`. Never includes the raw input.
@@ -240,13 +328,14 @@ export function normalizeVariants(text, opts = {}) {
 
   const out = [];
   const seen = new Set([text]);
+  const budget = { leet: opts.maxLeetVariants ?? LEET_MAX_VARIANTS };
   let frontier = [{ text, depth: 0 }];
 
   while (frontier.length && out.length < maxVariants) {
     const next = [];
     for (const node of frontier) {
       if (node.depth >= maxDepth) continue;
-      for (const child of transformsOf(node)) {
+      for (const child of transformsOf(node, budget)) {
         if (out.length >= maxVariants) break;
         if (!child || !child.text || seen.has(child.text)) continue;
         seen.add(child.text);

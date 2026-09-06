@@ -11,16 +11,17 @@
 //   node moorai-hook.mjs install    # register in ~/.claude/settings.json (idempotent)
 //   node moorai-hook.mjs uninstall  # remove only MoorAI's entries
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname, basename } from "node:path";
+import { spawn } from "node:child_process";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
 import { buildEngine, decideText, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "./hook-core.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, recordDestination, readDestinations, requestKill } from "./signals.mjs";
-import { readState } from "./state-dirs.mjs";
+import { readState, STATE_DIR } from "./state-dirs.mjs";
 import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
 import { isSkillSurface, skillSurfaceKind } from "../data/skill-surface.js";
 import { skillIntents } from "./skill-analysis.mjs";
@@ -29,6 +30,8 @@ import { isNewDestination } from "../data/destination-map.js";
 import { signApproval, argsHash } from "../data/agency-sign.mjs";
 import { contentTells, assessSession, assessTrifecta, assessCrossServerTrifecta, trifectaLegs, serverOf } from "../data/agent-behavior.js";
 import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
+import { takeEscalationOutcomes } from "../data/model-escalation.mjs";
+import { semanticEnabled } from "../data/semantic-escalation.js";
 import { contentHash, fileFingerprint, NO_KEY } from "./content-hash.mjs";
 import { emitOtel } from "./otel.mjs";
 import { loadHoneytokens, checkHoneytokens } from "./moorai-honeytokens.mjs";
@@ -387,11 +390,79 @@ function postSemanticFinding(f, text, stage, tool) {
 // path runs only when BOTH flags are set — it is never WIDER than before, and stays OFF by default. A
 // single bounded verdict is shared across both levers (opts.verdict) so there is at most ONE model call.
 // No NEW egress / third party; every failure path (policy off, model absent, timeout, throw) is a no-op.
+// OUT-OF-BAND (measured). This used to run the model INLINE and `await` it before emit(). The hook
+// process's lifetime IS the tool call's block — Claude Code reads this process's stdout to EOF — so an
+// inline model call is time the developer's agent spends waiting. Measured end-to-end on this hot path,
+// same clean input, warm on-device 8B: escalation off p50 87ms, escalation on p50 664ms; a COLD model
+// load (first escalation after boot, or after Ollama's keep_alive evicts the model) blows the 2500ms
+// budget entirely and the layer silently never fires — which is precisely how it ended up dead in
+// production while still looking wired up.
+//
+// The fix is placement, not budget. Escalation's ONLY output is a content-free advisory POST; it cannot
+// change an enforcement decision (pinned by test/escalation-ordering.test.mjs), so nothing about the
+// decision needs it. So the hot path now only decides WHETHER to escalate and hands the job to a
+// DETACHED worker (`moorai-hook.mjs escalate <payload>`), which outlives this process. The decision is
+// emitted immediately; a slow, cold, absent or timing-out model costs the agent nothing.
+//
+// The job is handed over as a 0600 file under STATE_DIR rather than a pipe because a Bash-branch scan
+// concatenates several capped file reads and can exceed a pipe buffer, which would silently truncate
+// the payload as the parent exits. The worker unlinks it as its first action and stale payloads are
+// swept, so scanned content is at rest on-device only for the moment between the two processes — the
+// same device, and the same trust boundary as the loopback model call it feeds. Nothing new leaves.
+//
+// GATING is UNCHANGED and, if anything, narrower: policy.modelEscalation (the operator opt-in) AND
+// semanticEnabled(policy) (semanticEscalation ≠ "off", default OFF). The second was previously only
+// enforced INSIDE escalate()/escalateMiss(); checking it here too means a policy with escalation off
+// does not even spawn. Fail-open throughout: a failed write or spawn is swallowed and the call proceeds.
 async function maybeEscalate(policy, text, stage, tool, d, engine) {
   try {
-    if (!policy || !policy.modelEscalation || !text || !text.trim() || !engine) return;
+    if (!policy || !policy.modelEscalation || !semanticEnabled(policy) || !text || !text.trim() || !engine) return;
     const strong = (d.findings || []).some((f) => f.riskLevel === "High" || f.riskLevel === "Critical" || f.riskLevel === "Blocked");
     if (strong) return; // regex is already confident — skip the second opinion
+    mkdirSync(STATE_DIR, { recursive: true });
+    sweepEscalationJobs();
+    const jobPath = join(STATE_DIR, `escalate-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.json`);
+    writeFileSync(jobPath, JSON.stringify({ policy, text, stage, tool }), { mode: 0o600 });
+    spawn(process.execPath, [SELF, "escalate", jobPath], { detached: true, stdio: "ignore" }).unref();
+  } catch { /* escalation is advisory; fail-open */ }
+}
+
+// A worker that never started (spawn refused, machine powered off mid-handoff) would leave scanned
+// content at rest. Sweep anything older than the worker could plausibly still be using.
+const ESCALATION_JOB_TTL_MS = 300000;
+function sweepEscalationJobs() {
+  try {
+    for (const name of readdirSync(STATE_DIR)) {
+      if (!name.startsWith("escalate-") || !name.endsWith(".json")) continue;
+      const p = join(STATE_DIR, name);
+      try { if (Date.now() - statSync(p).mtimeMs > ESCALATION_JOB_TTL_MS) unlinkSync(p); } catch { /* raced */ }
+    }
+  } catch { /* sweeping is hygiene, never enforcement */ }
+}
+
+// The detached worker: `moorai-hook.mjs escalate <payload>`. This is the code that used to run inline in
+// maybeEscalate, verbatim in behaviour — the two levers of the engine's semantic orchestration
+// (src/semantic.js), both fail-open and strictly ADVISORY (they only ADD findings and can never flip a
+// decision, which is what makes running them out-of-band sound):
+//   * escalate()     — the detect/confirm gate over detectors that opted in via `d.semantic`. In
+//     production the only such detector is `semantic-persuasion` (threat #2, DETECT gate): when the
+//     on-device model flags a persuasion/jailbreak framing the deterministic engine missed, escalate()
+//     ADDS a content-free threat-#2 finding, which we post. A confirm-gate DROP still cannot be honored
+//     — the parent already POSTed the deterministic findings and there is no retract path — but no
+//     confirm-gate detector ships in production, so nothing is lost today (documented, not papered over).
+//   * escalateMiss() — miss-recovery for content the deterministic engine found NOTHING for → one
+//     content-free #58 finding.
+// Both gate INTERNALLY on semanticEnabled(policy) as well, so the worker cannot widen the parent's gate.
+// A single bounded verdict is shared across both levers (opts.verdict) → at most ONE model call.
+// Finally it drains the escalation OUTCOME ledger so a timeout is visible as a timeout rather than
+// being indistinguishable from "the model looked and said benign".
+async function runEscalationWorker(jobPath) {
+  try {
+    const raw = readFileSync(jobPath, "utf8");
+    try { unlinkSync(jobPath); } catch { /* already gone */ }
+    const job = JSON.parse(raw);
+    const { policy, text, stage, tool } = job;
+    const engine = buildEngine(policy);
     const base = engine.scan(text, stage);
     let shared;
     const opts = { verdict: (t, p) => (shared ??= semanticVerdict(t, p)) };
@@ -403,7 +474,22 @@ async function maybeEscalate(policy, text, stage, tool, d, engine) {
       const miss = await escalateMiss(engine, text, stage, policy, opts);
       if (miss) postSemanticFinding(miss, text, stage, tool);
     }
+    postEscalationOutcomes(stage, tool);
   } catch { /* escalation is advisory; fail-open */ }
+  return exitHook();
+}
+
+// Content-free observability for the escalation layer itself. Carries ONLY the fixed outcome label
+// (answered / unavailable / timeout / guard-timeout / error / unparseable), the duration and which
+// backend was tried — never text, never the model's category. Without this a permanently timing-out
+// model is indistinguishable from a permanently benign one, which is the regression that hid this
+// layer's failure in the first place.
+function postEscalationOutcomes(stage, tool) {
+  try {
+    for (const o of takeEscalationOutcomes()) {
+      post({ threatId: 0, category: "Escalation outcome", riskLevel: "Info", stage, tool: `escalate:${tool}`, ts: new Date().toISOString(), contentHash: `escalation:${o.outcome}`, escalation: o, ...IDENTITY });
+    }
+  } catch { /* observability is evidence, never enforcement */ }
 }
 
 // Skill Analysis (Backslash-inspired, content-free). Every file on the agent's auto-loaded SKILL
@@ -537,6 +623,9 @@ async function main() {
   const cmd = process.argv[2];
   if (cmd === "install") return installHooks();
   if (cmd === "uninstall") return uninstallHooks();
+  // The detached escalation worker (see maybeEscalate). Never reads stdin and never writes a decision:
+  // by the time it runs the hook that spawned it has already emitted its verdict and exited.
+  if (cmd === "escalate") return runEscalationWorker(process.argv[3]);
 
   let input;
   try { input = JSON.parse((await readStdin()) || "{}"); } catch { process.exit(0); }

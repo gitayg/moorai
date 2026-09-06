@@ -207,8 +207,11 @@ npx moorai-aibom --format cyclonedx           # export the AI Bill of Materials 
 
     | | before fixes | after fixes |
     |---|---|---|
-    | **Locked test half** (never seen during tuning) | 31.8% (14/44) | **70.5% (31/44)** at **100% precision** (0 FP/10) |
-    | Tune half | 34.4% (21/61) | 78.7% (48/61) at 94% precision |
+    | **Locked test half, deterministic** (never seen during tuning) | 31.8% (14/44) | **88.6% (39/44)** at **100% precision** (0 FP/10) |
+    | **Locked test half, full stack** (+ on-device model) | — | **100% (44/44)** at **100% precision** |
+    | Tune half | 34.4% (21/61) | 100% (61/61) |
+
+    Precision is measured against a **509-prompt benign corpus** (`test/redteam/benign-corpus-v2.json`, 168 adversarially-shaped hard negatives): **2.79% false-positive rate** (14/501). Ten hard-negative twin families — roleplay-persona, prefix-injection, urgency, hypothetical-framing, exfiltration-shape, unicode-obfuscation, legitimate-security among them — sit at **0% FP**.
 
   The original 33% was the real finding: **the detectors had been overfit to the phrasings they were tuned on.** Fixing four named root causes — a too-narrow policy-negation vocabulary, a rules-slot that broke on one adjective (`override your safety rules`), no confusable/homoglyph folding, and synonym-blind fuzzy matching — lifted the **locked** half from 31.8% to 70.5% with precision unchanged. The 8-point tune/test gap is the honest overfit margin. Still weakest: persuasion, thought-experiment and leetspeak axes (PAP/TAP remain near zero — they live in the semantic layer, not these detectors). None of this changes the fact that the **action layer** — which blocks the tool call regardless of whether the prompt was ever classified — is the durable control, not prompt detection. An optional **on-device semantic escalation** layer (`--semantic`, a local model, zero egress) recovers most of the residue (~97% held-out in a sampled run) but is opt-in and environment-dependent, so it is not the headline number. `npm run validate-blocking` shows every malicious *tool call* still denied at the hook even after a jailbreak.
 

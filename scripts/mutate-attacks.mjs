@@ -361,3 +361,12 @@ if (invokedDirectly) {
 }
 
 export { toArtifact };
+
+// Pure, side-effect-free transform primitives, re-exported so scripts/closed-loop-mutate.mjs can COMPOSE
+// them into multi-step chains instead of re-implementing them. Additive only: nothing above this line
+// changes, so generate() is byte-for-byte what it was. NOTE `leet` here is NOT injective (i and l both
+// map to "1"); the closed-loop generator needs an invertible variant and defines its own.
+export {
+  reverseChars, reverseWords, toBase64, toHex, rot13, caesar,
+  altCaps, letterSpace, dotPunct, leet, homoglyph, typo, HOMO, LEET
+};

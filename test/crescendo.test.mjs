@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  persuasionHit, persuasionScore, persuasionTells, crescendoTrajectory, TELLS
+  persuasionHit, persuasionScore, persuasionTells, crescendoTrajectory, TELLS, TELL_COUNTS
 } from "../data/crescendo.js";
 import { DETECTORS } from "../data/detectors.js";
 import { DetectionEngine } from "../src/engine.js";
@@ -40,7 +40,15 @@ const BENIGN = {
 };
 
 test("every tell source compiled through safeRegex (none dropped)", () => {
-  assert.equal(TELLS.length, 20);
+  // Asserted DECLARED === COMPILED rather than against a hard-coded total. The hard-coded 20 tested the
+  // table's size, not the property in this test's name, so it went stale the moment the persuasion model
+  // was generalized (v0.71.x) — while still passing straight through a safeRegex rejection as long as the
+  // count happened to match. safeRegex DROPS a source over its 400-char cap silently, so this comparison
+  // is the thing that actually makes such a drop loud.
+  assert.equal(TELL_COUNTS.tells.compiled, TELL_COUNTS.tells.declared,
+    `${TELL_COUNTS.tells.declared - TELL_COUNTS.tells.compiled} persuasion tell(s) dropped by safeRegex`);
+  assert.equal(TELL_COUNTS.override.compiled, TELL_COUNTS.override.declared);
+  assert.equal(TELLS.length, TELL_COUNTS.tells.declared);
 });
 
 test("persuasion scorer fires on all PAP/PAIR/TAP framings", () => {

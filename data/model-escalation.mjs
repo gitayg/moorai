@@ -6,6 +6,8 @@
 // or absent model yields no verdict and never changes enforcement.
 
 import { hasDeviceKey, classifyWithProvider } from "./device-inference.mjs";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { STATE_DIR, statePath } from "../cli/state-dirs.mjs";
 
 const HOST = "http://127.0.0.1:11434"; // loopback only — do not make this configurable to a remote host
 const DEFAULT_MODEL = process.env.MOORAI_LOCAL_MODEL || "llama3.2:1b";
@@ -39,6 +41,42 @@ export const CLASSIFIER_CRITERIA =
   "capitals, or asks for a summary/opener. Pick the single best short category label from: secret, pii, " +
   "injection, destructive, exfiltration, jailbreak, persuasion, crescendo.";
 
+// ---- observability (content-free) ----
+//
+// MEASURED MOTIVATION: every failure of this layer used to resolve to `null`, and `null` is also what a
+// model returns when it declines to flag. So "the model timed out on a cold load and the layer never
+// fired" and "the model looked and said benign" were the SAME observable — which is exactly how the
+// escalation layer ended up silently dead in production while still appearing wired up. Each attempt now
+// records WHICH of those happened.
+//
+// Content-free by construction: an outcome record carries only { outcome, ms, backend } — a fixed label,
+// a duration, and which backend was tried. No text, no span, no category from the model.
+export const OUTCOME_KINDS = [
+  "answered",     // a backend returned a parseable verdict
+  "unavailable",  // no backend at all (no loopback model, no opted-in provider key)
+  "timeout",      // the per-backend budget (MOORAI_LOCAL_TIMEOUT_MS) aborted the request
+  "guard-timeout",// src/semantic.js's outer hard-bound won the race before any backend answered
+  "error",        // non-OK HTTP, or a throw that was not a timeout
+  "unparseable"   // the model answered, but not with the { risk, category, confidence } contract
+];
+const OUTCOMES = [];
+const OUTCOME_LOG = statePath("escalation-outcomes.jsonl");
+
+// Records one attempt. Best-effort on BOTH legs (in-memory for the caller, JSONL for the operator):
+// observability must never be able to throw into a fail-open path.
+export function recordEscalationOutcome(outcome, ms, backend = "") {
+  const row = { outcome, ms: Math.max(0, Math.round(ms)), backend };
+  try { OUTCOMES.push(row); } catch { /* never throws into enforcement */ }
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    appendFileSync(OUTCOME_LOG, JSON.stringify({ ts: new Date().toISOString(), ...row }) + "\n");
+  } catch { /* the ledger is evidence, not enforcement */ }
+  return row;
+}
+
+// Drains what this process has recorded so the caller can emit it (and so a test can assert on it).
+export function takeEscalationOutcomes() { return OUTCOMES.splice(0); }
+
 // Cheap liveness probe so we don't hang the hook when no local model is running.
 export async function localModelAvailable(timeoutMs = 400) {
   try {
@@ -58,6 +96,9 @@ export async function classifyLocal(text, { model = DEFAULT_MODEL, timeoutMs = D
     ' Respond with ONLY compact JSON: {"risk":true|false,"category":"short-label","confidence":0.0-1.0}. ' +
     "CONTENT:\n" +
     text.slice(0, 4000);
+  // Outcome recording is deliberately on EVERY exit path of this function: a silent null is the failure
+  // mode this layer actually had in production (see OUTCOME_KINDS above).
+  const t0 = Date.now();
   try {
     const r = await fetch(HOST + "/api/generate", {
       method: "POST",
@@ -65,16 +106,22 @@ export async function classifyLocal(text, { model = DEFAULT_MODEL, timeoutMs = D
       body: JSON.stringify({ model, prompt, stream: false, format: "json", options: { temperature: 0 } }),
       signal: AbortSignal.timeout(timeoutMs)
     });
-    if (!r.ok) return null;
+    if (!r.ok) { recordEscalationOutcome("error", Date.now() - t0, "local"); return null; }
     const j = await r.json();
     const parsed = JSON.parse(j.response || "{}");
-    if (!parsed || typeof parsed.risk !== "boolean") return null;
+    if (!parsed || typeof parsed.risk !== "boolean") { recordEscalationOutcome("unparseable", Date.now() - t0, "local"); return null; }
+    recordEscalationOutcome("answered", Date.now() - t0, "local");
     return {
       flagged: parsed.risk,
       category: String(parsed.category || "model-flagged").slice(0, 40),
       confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0))
     };
-  } catch { return null; }
+  } catch (e) {
+    // AbortSignal.timeout rejects with a TimeoutError; anything else is a real error (connection
+    // refused, malformed JSON body, …). Distinguishing them is the whole point of the ledger.
+    recordEscalationOutcome(e && e.name === "TimeoutError" ? "timeout" : "error", Date.now() - t0, "local");
+    return null;
+  }
 }
 
 // Unified opportunistic classifier. Regex/deterministic ALWAYS runs first and owns enforcement (the
@@ -87,17 +134,25 @@ export async function classifyLocal(text, { model = DEFAULT_MODEL, timeoutMs = D
 // already talks to. Never throws; any error yields null.
 export async function classifyOpportunistic(text, policy) {
   if (!text || !String(text).trim()) return null;
+  const t0 = Date.now();
+  let tried = false;
   try {
     if (await localModelAvailable()) {
+      tried = true; // classifyLocal records its own outcome (answered / timeout / error / unparseable)
       const local = await classifyLocal(text);
       if (local) return { ...local, backend: "local" };
     }
   } catch { /* fall through to provider / null */ }
   try {
     if (policy && policy.semanticEscalation === "provider" && hasDeviceKey()) {
+      tried = true;
       const v = await classifyWithProvider(text);
-      if (v) return { ...v, backend: "provider" };
+      if (v) { recordEscalationOutcome("answered", Date.now() - t0, "provider"); return { ...v, backend: "provider" }; }
+      recordEscalationOutcome("unparseable", Date.now() - t0, "provider");
+      return null;
     }
-  } catch { /* fail-open */ }
+  } catch { recordEscalationOutcome("error", Date.now() - t0, "provider"); return null; }
+  // No backend was reachable at all — distinct from "a backend looked and declined to flag".
+  if (!tried) recordEscalationOutcome("unavailable", Date.now() - t0, "none");
   return null;
 }

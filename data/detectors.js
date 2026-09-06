@@ -1129,7 +1129,13 @@ export const DETECTORS = [
     hint: "Persuasion / social-engineering framing (PAP/PAIR/TAP) that tries to talk the assistant out of its rules.",
     patterns: [
       /\b(?:fiction|fictional|story|hypothetical|thought|emergency|authorization|authorisation|professional|legal|rules|restrictions?|filters|caveats|refusals|guardrails|guidelines|favou?r|off[-\s]?limits)\b/i,
-      /\b(?:drop|suspend|bypass|waive|without|no|zero|suspended)\b/i
+      /\b(?:drop|suspend|bypass|waive|without|no|zero|suspended)\b/i,
+      // Third prefilter: persuasionHit() scores some PAP/TAP framings correctly but the two patterns
+      // above never wake refine() on them (measured: two tune-half samples scored 4 and 2 with
+      // detectorPrefilterMatches=false). Widening here is only safe BECAUSE crescendo.js now caps a
+      // concept group at its max weight instead of summing — without that cap this same widening
+      // surfaced a latent double-counted benign hit and breached the <=4 FP corpus gate.
+      /\b(?:approved|authori[sz]ed|disabled|polic(?:y|ies)|safety)\b/i
     ],
     refine: (_m, text) => persuasionHit(text)
   },

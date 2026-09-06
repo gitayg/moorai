@@ -162,6 +162,57 @@ point of view; position and document *that* as the durable evidence store.
   **Still weak (next targets):** persuasion (0/5) and thought-experiment (0/2) — these live in
   `data/crescendo.js`/the semantic layer, untouched here; PAP 0/5 and TAP 0/4 overall. Plus one leetspeak
   miss whose `LEET` table maps `1→i` only (the sample uses `1` as `l`).
+- **DONE (v0.74.0) — seven-track wave: locked-half 70.5% → 88.6% deterministic, 100% full-stack.**
+  Five parallel efforts on strictly disjoint files, each measured against the tune half only; the
+  orchestrator scored the **locked** half afterwards (no agent ever opened it).
+
+  | locked test half (44 attacks / 10 benign) | session start | after v0.73.0 | **now** |
+  |---|---|---|---|
+  | deterministic | 31.8% | 70.5% | **88.6% (39/44)** |
+  | full stack (+ on-device model) | — | 95.5% | **100% (44/44)** |
+  | precision | 0 FP/10 | 0 FP/10 | **0 FP/10** |
+
+  - **`data/crescendo.js` — 20 enumerated literals → 35 structural slot tells.** Closed the persuasion
+    block: PAP 0/5→4/5, TAP 0/4→3/4, PAIR 2/5→5/5, thought-experiment 0/2→2/2, fiction-frame 1/3→3/3.
+    Found and fixed a **latent double-counting FP** (`authority-role` + `approved-redteam` are one concept;
+    summing them scored a benign sample at 3 — invisible only because the prefilter never woke it, and it
+    breached the ≤4 gate the moment the prefilter widened). Fixed with a group cap: a concept contributes
+    its MAX weight, not the sum. Also fixed an engine-level DoS regression it introduced (60k input
+    136ms→426ms via per-occurrence `refine()`) with the `memo1` guard → **2.9ms**.
+  - **`data/detectors.js`** — third prefilter pattern on `persuasion-jailbreak`, so `refine()` actually
+    wakes on framings `persuasionHit` already scored correctly. Safe ONLY because of the group cap above.
+    Tune half → 100% (61/61), FP unchanged.
+  - **`data/normalize.js` — multi-variant leetspeak.** `1`/`!` are the only ambiguous glyphs; branching over
+    run-strategies (not positions) gives a CONSTANT 7 extra candidates instead of 2^k. Root cause was
+    deeper than the table: `RESCAN_ON_VARIANT` only re-runs `inj*`/`sysprompt*`, and only the mixed `il`
+    reading recovers `guardra11s`→`guardrails`. Gated so 0 of 711 benign samples gain a variant.
+  - **Escalation moved OFF the hot path.** Its only output is a content-free advisory that cannot change a
+    decision, so it never belonged there. Detached worker + job file: hot path with escalation on
+    **667ms → 108ms**; default install unchanged (97→100ms). Timeouts are now RECORDED
+    (`answered`/`timeout`/`guard-timeout`/`unavailable`/…) instead of being indistinguishable from
+    "model said benign".
+    **FINDING — the shipped default model is harmful.** `llama3.2:1b` is fast (p50 261ms, 86/86 in budget)
+    but on the tune half added **+7 FP and +0 recall**; the 8B added +2 recall and +0 FP. The earlier
+    "2500ms is too short" diagnosis was WRONG — that 14.8s was a cold model load, not inference.
+  - **`test/redteam/benign-corpus-v2.json` — 509 benign / 168 hard negatives.** FP rate **2.79%**
+    (14/501). Ten twin families at 0% FP. Produced the precision-debt list below.
+  - **`scripts/closed-loop-mutate.mjs` + `heldout-v3.json` (160 attacks/97 benign).** An adaptive adversary
+    that mutates SURVIVORS each round. Found **20 compounding chains at 100% evasion whose every one-step
+    reduction is caught** — invisible to a one-shot generator. Worst: **`dot-punct→letter-spacing`, which
+    needs no decoding at all** (plainly readable text that walks past the engine); `caesar5` is the
+    strongest amplifier (10 of 20). Validity is mechanical: every candidate is round-tripped back to the
+    exact core or dropped.
+
+  **PRECISION DEBT (next wave's target list, from benign-corpus-v2):** `dlp-phone` fires on
+  `ghp_…0123456789` (trailing digits look like a phone number); `destructive-command` cannot distinguish
+  DISCUSSING a command from ISSUING one (`"explain the difference between git revert and git reset --hard"`);
+  `secret-*` fires on the canonical documentation placeholders this repo's own convention mandates
+  (`AKIAIOSFODNN7EXAMPLE`, `ghp_ABCDEF…`); `inj-override-structural` fires on an override verb with a
+  NON-AGENT object (`"the linter should ignore all previous rules"`); `dep-typosquat` fires on a prompt
+  naming no package.
+
+  **NOTE:** `test/semantic.test.mjs` is 8/9 on any machine with a reachable local model — that test assumes
+  the loopback model is absent (as in CI). It needs an env guard, not a code fix.
 - **DONE (v0.67.0) — signed decision receipts + offline verifier:** `cli/moorai-receipt.mjs` emits a
   content-free per-verdict receipt (strict field allowlist → SHA-256 digest → ed25519 signature via the
   existing `agency-sign` per-device key), and `moorai-verify-chain --offline <file>` verifies a receipt or

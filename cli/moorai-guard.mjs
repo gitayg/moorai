@@ -13,6 +13,7 @@ import { calibrateRisk, decideEndpoints } from "./hook-core.mjs";
 import { recordExposure, recordIntent } from "./signals.mjs";
 import { contentHash } from "./content-hash.mjs";
 import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
+import { takeEscalationOutcomes } from "../data/model-escalation.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = loadConfig();
@@ -82,7 +83,20 @@ async function maybeEscalate(policy, text, findings) {
       const miss = await escalateMiss(engine, text, "prompt", policy, opts);
       if (miss) postSemantic(miss, text);
     }
+    postEscalationOutcomes();
   } catch { /* advisory; fail-open */ }
+}
+
+// Content-free observability for the escalation layer itself — only the fixed outcome label
+// (answered / unavailable / timeout / guard-timeout / error / unparseable), the duration, and which
+// backend was tried. Never text, never the model's category. Without it a permanently timing-out model
+// is indistinguishable from a permanently benign one.
+function postEscalationOutcomes() {
+  try {
+    for (const o of takeEscalationOutcomes()) {
+      post({ threatId: 0, category: "Escalation outcome", riskLevel: "Info", stage: "prompt", tool: "escalate:claude -p", ts: new Date().toISOString(), contentHash: `escalation:${o.outcome}`, escalation: o, ...IDENTITY });
+    }
+  } catch { /* observability is evidence, never enforcement */ }
 }
 
 function reportAlert(finding, content, blocked = false, stage = "egress") {
@@ -270,8 +284,16 @@ async function main() {
     recordIntent(intent);
     post({ threatId: 0, category: "Intent: user override", riskLevel: "Info", stage: "egress", tool: "claude -p", ts: intent.ts, contentHash: intent.contentHash, ...IDENTITY });
   }
-  await maybeEscalate(policy, final, allFindings);
-  process.exit(await runClaude(final, policy, action));
+  // Started here (same point in the sequence as before, so the F-301 ordering is unchanged: past every
+  // block/exit) but NOT awaited before the forward call. The guard's escalation is advisory too, and the
+  // model call — up to seconds on a cold on-device load — used to be serialised in front of `claude -p`
+  // for no benefit. Overlapping it with the reply costs nothing and delays nothing; it is still awaited
+  // before exit so the advisory POST is never lost to process teardown. maybeEscalate swallows its own
+  // errors, so this await cannot reject.
+  const escalation = maybeEscalate(policy, final, allFindings);
+  const code = await runClaude(final, policy, action);
+  await escalation;
+  process.exit(code);
 }
 
 main();

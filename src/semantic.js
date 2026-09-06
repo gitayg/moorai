@@ -12,7 +12,7 @@
 // NOTE on ordering (see test/escalation-ordering.test.mjs, F-301): the caller MUST place the escalate
 // call AFTER any deny decision, so content the policy is about to block is never sent to the provider.
 // This module does not — and cannot — reorder the caller's pipeline; it only classifies what it is given.
-import { classifyOpportunistic } from "../data/model-escalation.mjs";
+import { classifyOpportunistic, recordEscalationOutcome } from "../data/model-escalation.mjs";
 import { semanticEnabled } from "../data/semantic-escalation.js";
 
 const LEVEL_RANK = { Critical: 4, High: 3, Medium: 2, Low: 1 };
@@ -40,13 +40,21 @@ function contentFree(v) {
 // (MOORAI_LOCAL_TIMEOUT_MS, see data/model-escalation.mjs) the guard grows to sit just past it, so a
 // deliberately longer local-model call isn't clipped by the wrapper before it can answer.
 const OUTER_GUARD_MS = Math.max(3500, (Number(process.env.MOORAI_LOCAL_TIMEOUT_MS) || 0) + 1000);
+// Sentinel so "the guard fired" is distinguishable from "a backend resolved null".
+const GUARD_EXPIRED = Symbol("escalation-guard-timeout");
 export async function semanticVerdict(text, policy, { timeoutMs = OUTER_GUARD_MS } = {}) {
   if (!semanticEnabled(policy)) return null;
   if (!text || !String(text).trim()) return null;
   let timer;
+  const t0 = Date.now();
   try {
-    const guard = new Promise((res) => { timer = setTimeout(() => res(null), timeoutMs); });
+    const guard = new Promise((res) => { timer = setTimeout(() => res(GUARD_EXPIRED), timeoutMs); });
     const v = await Promise.race([classifyOpportunistic(text, policy), guard]);
+    // Observability (content-free): the outer guard winning the race is a DISTINCT failure from a
+    // backend answering "not a risk". Both used to be an indistinguishable null — which is how a
+    // permanently timing-out model looked exactly like a permanently benign one. The per-backend
+    // outcomes are recorded inside data/model-escalation.mjs; only this one is ours to record.
+    if (v === GUARD_EXPIRED) { recordEscalationOutcome("guard-timeout", Date.now() - t0, "none"); return null; }
     return v && typeof v.flagged === "boolean" ? contentFree(v) : null;
   } catch {
     return null;
