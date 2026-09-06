@@ -135,8 +135,11 @@ function corpus(sb, mode) {
   const destructiveExpect = off ? "ask" : "deny"; // offline default floors #43 to justify (ask), not deny
   const mcpServerExpect = off ? "ask" : "deny"; // offline has no allow-list → mcpFloor raises it to ask
   const mcpArgExpect = "deny"; // a planted secret is hard-denied by the DLP content scan in BOTH modes
-  const untrustedInstallExpect = off ? "allow" : "deny"; // #57 not in the offline default → allowed offline
-  const revShellExpect = off ? "allow" : "deny"; // #54 not in the offline default → allowed offline
+  // #57 / #54 are no longer offline-mode gaps: they are in the BUILT-IN prevention tier
+  // (BUILTIN_DEFAULT_ACTIONS in cli/hook-core.mjs), which every posture — including a device with no
+  // org policy at all — resolves through. So offline inherits them rather than falling back to allow.
+  const untrustedInstallExpect = off ? "ask" : "deny"; // #57 built-in default is "justify" → ask
+  const revShellExpect = "deny"; // #54 built-in default is "block" → deny in both modes
   const taskExpect = off ? "allow" : "deny"; // injected-prompt (#3) only blocked when the policy blocks #3
   const benignMcpExpect = off ? "ask" : "allow"; // offline mcpFloor floors EVERY MCP call (even benign) to ask
 

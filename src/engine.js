@@ -44,8 +44,16 @@ export class DetectionEngine {
   _wantStages(stage) { return (stage === "file" || stage === "index") ? ["prompt", stage] : [stage]; }
   _inStage(d, want) { return (d.stages || [d.stage]).some((s) => want.includes(s)); }
 
-  // #5 — scan content headed for a local vector store / RAG index before it's embedded. Single
-  // choke-point contract for a future embedding writer; today it's reachable via the file path.
+  // #5 — the choke-point for content the agent INGESTS INTO ITS CONTEXT without a user typing it and
+  // without a tool call. Written for "a local vector store / RAG index before it's embedded", and it
+  // still is that if an embedding writer ever ships — but the product has no vector store, and this
+  // method had NO shipped caller at all, which made the three detectors that declare the "index" stage
+  // (inj-untrusted-directive, mcp-tool-poisoning, mcp-hidden-canary) partially dead surface.
+  //
+  // The shipped caller is now cli/moorai-hook.mjs's detached `indexscan` worker, which screens the
+  // AUTO-LOADED SKILL SURFACE (CLAUDE.md, AGENTS.md, .mcp.json, .claude/settings.json, .cursorrules —
+  // see data/skill-surface.js, "instruction / memory files loaded into context at session start").
+  // Those files enter the model at session start with no tool call, so no other stage ever saw them.
   scanForIndex(text) { return this.scan(text, "index"); }
 
   // #21 — optional, policy-gated semantic escalation. Regex/entropy above stays the fast path and OWNS

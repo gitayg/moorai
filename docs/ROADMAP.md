@@ -252,8 +252,12 @@ point of view; position and document *that* as the durable evidence store.
     **FINDING — the shipped default model is harmful.** `llama3.2:1b` is fast (p50 261ms, 86/86 in budget)
     but on the tune half added **+7 FP and +0 recall**; the 8B added +2 recall and +0 FP. The earlier
     "2500ms is too short" diagnosis was WRONG — that 14.8s was a cold model load, not inference.
-  - **`test/redteam/benign-corpus-v2.json` — 509 benign / 168 hard negatives.** FP rate **2.79%**
-    (14/501). Ten twin families at 0% FP. Produced the precision-debt list below.
+  - **`test/redteam/benign-corpus-v2.json` — 509 benign / 168 hard negatives at the time.** Produced the
+    precision-debt list below. **SUPERSEDED (v0.78.0):** the corpus is now **610 benign / 269 hard
+    negatives** and the FP rate is **3.32% (20/602)**. It went up because 101 deliberately-obfuscated
+    benign samples were added — and before they existed the FP gate could not distinguish a safe detector
+    from one scoring 48 false positives, so the harder corpus with the worse number is the better
+    measurement. **3.32% (20/602) is the current figure everywhere; the v0.74.0-era rate is retired.**
   - **`scripts/closed-loop-mutate.mjs` + `heldout-v3.json` (160 attacks/97 benign).** An adaptive adversary
     that mutates SURVIVORS each round. Found **20 compounding chains at 100% evasion whose every one-step
     reduction is caught** — invisible to a one-shot generator. Worst: **`dot-punct→letter-spacing`, which
@@ -284,10 +288,15 @@ point of view; position and document *that* as the durable evidence store.
 
   | threshold | locked half recall | locked FP | benign-v2 FP rate |
   |---|---|---|---|
-  | off | 88.6% (39/44) | 0/10 | 2.79% |
-  | 1 | 93.2% (41/44) | 1/10 | **5.59%** |
-  | **3 (knee)** | **90.9% (40/44)** | **0/10** | **2.79%** |
-  | ≥5 | 88.6% | 0/10 | 2.79% |
+  | off | 88.6% (39/44) | 0/10 | baseline |
+  | 1 | 93.2% (41/44) | 1/10 | **materially worse** |
+  | **3 (knee)** | **90.9% (40/44)** | **0/10** | **unchanged from baseline** |
+  | ≥5 | 88.6% | 0/10 | unchanged from baseline |
+
+  The FP-rate column was measured against the then-509-sample benign corpus; those absolute rates are
+  retired (the corpus is now 610 samples and the current rate is **3.32%, 20/602**) and the sweep has
+  **not** been re-run against it, so only the shape survives: no added false positives at the knee, a
+  materially worse rate at threshold 1.
 
   **Verdict: the dial buys exactly ONE attack.** It is free (no added FP, +1.3% latency, consulted at most
   once per scan) but it is one sample, and the tune half has zero headroom (already 100%). Measured why it
@@ -302,6 +311,30 @@ point of view; position and document *that* as the durable evidence store.
   `risk-aggregate` finding and no `aggregateScore` field may EVER appear with the dial off) and only then
   did the deliberate break go red. **No caller turns the dial on** — `hook-core.mjs`, `src/app.js` and the
   scripts all construct 3-arg; wiring `policy.scoringMode` through the enforcement path remains open.
+- **DONE (v0.78.0) — the two unmeasured AMTSO vectors, and what enrollment is worth.**
+  `scripts/score-vector24.mjs` + two new corpora score vector 2 (indirect content injection) and
+  vector 4 (outbound action). Vector 4 is scored through the **enforcement surface**, not
+  `engine.scan()`, because the vector is defined by the action, not the prose that led to it.
+
+  | vector 4 (57 attacks / 24 benign) | recall |
+  |---|---|
+  | enforcing policy | **75.4%** |
+  | offline fail-closed | **86.0%** |
+  | **enrolled, no policy at all** | **31.6%** |
+  | **unenrolled** | **0%** |
+
+  FP **12.5%**. The bottom two rows are the whole argument for the built-in prevention tier and for
+  keeping an unenrolled device inert: with no policy file present, enrollment alone is the difference
+  between 31.6% and nothing.
+
+  **Vector 2 is the weak one, and the number to quote is not the recall.** 45 attacks / 17 benign:
+  **73.3% recall, 78.6% precision, 52.9% FP** — and only **11 of 33** catches fired for the *right*
+  reason. A catch attributed to the wrong threat is a catch we cannot claim understanding of, so treat
+  vector 2 as the next detection wave's target, not as coverage.
+
+  **Attack-vector distribution across all 624 attack samples**, for weighting that wave: direct input
+  296 / 47.4% · indirect content 130 / 20.8% · tool/MCP supply chain 78 / 12.5% · outbound action
+  62 / 9.9% · memory/cross-agent 42 / 6.7% · static code artifact 16 / 2.6%.
 - **DONE (v0.67.0) — signed decision receipts + offline verifier:** `cli/moorai-receipt.mjs` emits a
   content-free per-verdict receipt (strict field allowlist → SHA-256 digest → ed25519 signature via the
   existing `agency-sign` per-device key), and `moorai-verify-chain --offline <file>` verifies a receipt or

@@ -15,10 +15,13 @@ central server so the security team has visibility.
 (self-install), but MoorAI does block. `threatActionFor` in [`cli/hook-core.mjs`](../cli/hook-core.mjs)
 resolves every threat to one of `notify` · `justify` · `block` · `kill`, and
 [`cli/moorai-hook.mjs`](../cli/moorai-hook.mjs) turns those into real Claude Code `allow`/`ask`/`deny`
-verdicts — up to terminating the session outright (`killSession`). The **default is report-first**:
-an unconfigured threat resolves to `notify`, so a finding is reported rather than blocked unless an
-admin escalates it via `threatPolicy` / `tierPolicy` (six threats — 11, 43, 46, 47, 48, 49 — default
-to `justify` instead). Central distributes the policy that selects those actions. MoorAI's value is
+verdicts — up to terminating the session outright (`killSession`). The **default is report-first for
+everything ambiguous**, but it is no longer report-*only*: an **enrolled** device with no organisation
+policy at all now resolves through `BUILTIN_DEFAULT_ACTIONS`, which blocks threats **54** (reverse shell)
+and **65** (local secret egress) and halts-for-sign-off on **55, 56, 57, 63, 44**. Six threats — 11, 43,
+46, 47, 48, 49 — keep the `justify` they already had from the approval set; everything else still
+resolves to `notify`. An **unenrolled** device stays completely inert, by design. Central distributes
+the policy that overrides any of this in either direction. MoorAI's value is
 (a) **coaching** the employees who use it, (b) giving the security team **visibility** into AI-usage
 risk, and (c) **deterministic prevention** where policy calls for it. Because adoption is voluntary,
 it still does not prevent Shadow AI by construction; it reduces risk for those who opt in and
@@ -330,22 +333,52 @@ is validated against.
 ## Intervention tiers (policy-driven)
 
 The action comes from policy, not from the risk level alone — `threatActionFor` resolves
-per-threat → data-tier → approval-set → `notify`.
+per-threat → data-tier → **built-in prevention tier** → approval-set → `notify`.
 
-- **`notify`** (the default for an unconfigured threat) → prominent inline warning + the matrix's
-  defensive-response text; the call proceeds and the finding is logged + reported.
+- **`notify`** (the default for a threat none of the earlier tiers name) → prominent inline warning +
+  the matrix's defensive-response text; the call proceeds and the finding is logged + reported.
 - **`justify`** → surfaced as Claude Code `ask`: the developer must acknowledge/justify before the
-  call proceeds (logged + reported). Default for threats 11, 43, 46, 47, 48, 49.
-- **`block`** → Claude Code `deny`; the tool call does not execute.
+  call proceeds (logged + reported). Built-in default for threats **55, 56, 57, 63, 44**; approval-set
+  default for **11, 43, 46, 47, 48, 49**.
+- **`block`** → Claude Code `deny`; the tool call does not execute. Built-in default for threat **54**
+  (reverse shell / RCE) and **65** (local secret-value egress).
 - **`kill`** → denies the call *and* terminates the session (`killSession`). `killOnCritical`
   promotes any Critical `block` to a `kill` without per-threat configuration.
+
+**The built-in prevention tier** (`BUILTIN_DEFAULT_ACTIONS`, [`cli/hook-core.mjs`](../cli/hook-core.mjs))
+is what an **enrolled** device stops with no organisation policy at all. It exists because the measured
+truth before it was *prevention 0% out of the box* — the hook returned early on the fail-open posture and
+`threatActionFor` was never consulted, so a device with no policy detected a reverse shell and let it run.
+An **unenrolled** device is unchanged and stays inert.
+
+Promotion is evidence-bound: an entry had to fire on **zero** benign samples across 890 benign prompts,
+*and* the corpora had to actually exercise that detector's stages — otherwise "0 benign fires" is a
+measurement artifact. Threat 60 looked like the strongest candidate by fire counts and was rejected on
+exactly that ground. Threats 43, 39, 15, 2, 3, 40 and 50 did not clear the bar and were deliberately not
+promoted. `block` is reserved for threats with no legitimate developer reading whatsoever; everything
+high-harm with an everyday variant gets `justify`, so the call is halted for a human rather than killed.
+
+**One documented exception.** On the **write path only**, threat 65 resolves to `justify`/ask rather than
+`block` — copying `.env` → `.env.local` is routine and no benign corpus measures it, so the evidence that
+justified the hard deny elsewhere does not exist here.
+
+An org policy still wins in **both** directions, because `threatPolicy` / `tierPolicy` are consulted
+before this tier: a tenant can soften any entry to `notify`/`disabled` or harden one the map omits.
 
 ## Coverage & blind spots
 
 - **Strong, native, in-band** for AI work done *inside* the host.
 - **Agentic tool-calls** are covered by the shipped MCP middleware ([`mcp-proxy/`](../mcp-proxy/)),
   and **browser AI** by the companion extension ([`browser-ext/`](../browser-ext/)) — both are the
-  taps the "one brain, many eyes" model calls for, and both can deny, not merely observe.
+  taps the "one brain, many eyes" model calls for, and both can deny, not merely observe. The proxy
+  now watches **both directions**: `tools/call` arguments agent→server, and — new — `tools/list`
+  metadata (report-first, the listing is never mutated) and `tools/call` **results** server→agent,
+  where an explicit `deny` replaces the result with a tool error.
+- **The reach of that, measured rather than asserted.** Against a 12-action malicious set the proxy
+  refused **12/12** while enforcing (8 by the argument scan, 2 by the result scan) and forwarded
+  **4/4** benign actions — but only **4 of those 12 actions natively traverse MCP at all**. The
+  installer covers Claude Desktop, project `.mcp.json`, Cursor and VS Code / Copilot; **Codex is not
+  covered**, because its config is TOML and the installer writes JSON.
 - **Blind spot:** AI use on surfaces with no tap at all — native AI desktop apps without an
   integration, other devices, phones — plus anything on a machine where the user never installed
   MoorAI. Adoption remains voluntary, so the security dashboard reflects *opt-in population* risk,

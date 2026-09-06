@@ -10,6 +10,14 @@
 //   - justify (ask) on every MCP tool-call            (mcpFloor: raises an otherwise-allowed call to ask)
 // Benign reads / commands still resolve to allow — fail-closed hardens the high-risk categories, it does
 // not brick the workflow. Content-free throughout: the capture tier is pinned to "content-free".
+//
+// This list is NOT the whole of what fail-closed enforces, and must not be read as such. threatActionFor
+// resolves threatPolicy → tierPolicy → BUILTIN_DEFAULT_ACTIONS (cli/hook-core.mjs) → APPROVAL_THREATS,
+// so every threat absent from the map below still inherits the built-in prevention tier: reverse shell
+// (#54) and local secret-value egress (#65) hard-deny, and credential-file access (#55), destructive
+// tool/MCP calls (#56), untrusted installs (#57) and rogue model endpoints (#63) halt for sign-off.
+// Fail-closed is therefore never weaker than fail-open — it is this map layered ON TOP of that tier.
+// They are deliberately not duplicated here: one definition, one place to change.
 export const OFFLINE_DEFAULT_POLICY = {
   offlineMode: "fail-closed",
   captureTier: "content-free",

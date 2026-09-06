@@ -11,7 +11,7 @@
 //   node moorai-hook.mjs install    # register in ~/.claude/settings.json (idempotent)
 //   node moorai-hook.mjs uninstall  # remove only MoorAI's entries
 
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, statSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname, basename } from "node:path";
 import { spawn } from "node:child_process";
@@ -41,20 +41,77 @@ const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
 
 // ---- install / uninstall (settings.json merge) ----
+//
+// TWO INDEPENDENT LAYERS HAVE TO NAME A TOOL BEFORE THE PRODUCT SEES IT, and each one is invisible on
+// its own. PRETOOL_MATCHERS is what the agent host is told to invoke the hook FOR; DISPATCHED_TOOLS is
+// what main() actually BRANCHES on. A tool missing from the first is never handed to the hook at all; a
+// tool missing from the second falls through main()'s closing `return exitHook()` and is allowed unread.
+// Write / Edit / MultiEdit / NotebookEdit / WebFetch were missing from BOTH — measured three ways:
+// identical payload text was deny as Bash and allow as Write, the vector-4 corpus scored 0/4 stopped on
+// them in every mode, and two Write→Bash / Edit→Bash chains ran to completion untouched.
+//
+// Both are plain array literals so test/hook-tool-coverage.test.mjs can READ them out of this file and
+// assert every dispatched tool has a matcher covering it. It reads rather than imports because main()
+// runs at module scope and awaits stdin, so an `import()` of this module never resolves.
+const PRETOOL_MATCHERS = ["Read", "Bash", "mcp__.*", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"];
+// One representative name per branch in main(); "mcp__github__create_issue" stands for the mcp__* family.
+const DISPATCHED_TOOLS = ["Read", "Bash", "mcp__github__create_issue", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"];
+
 function settingsPath() { return join(os.homedir(), ".claude", "settings.json"); }
 function isCuraiq(entry) { return JSON.stringify(entry).includes("moorai-hook"); }
 function readSettings() { try { return JSON.parse(readFileSync(settingsPath(), "utf8")); } catch { return {}; } }
-function writeSettings(s) { mkdirSync(dirname(settingsPath()), { recursive: true }); writeFileSync(settingsPath(), JSON.stringify(s, null, 2)); }
+// Atomic replace. This file is now written from a HOOK process (convergeHooks below) that can run
+// concurrently with the agent host re-reading it, and a settings.json observed half-written disables
+// every hook on the device — including this one. Rename is the cheap way to make that unobservable.
+function writeSettings(s) {
+  const p = settingsPath();
+  mkdirSync(dirname(p), { recursive: true });
+  const tmp = `${p}.moorai-${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(s, null, 2));
+  renameSync(tmp, p);
+}
+function hookEntry(matcher) { return { matcher, hooks: [{ type: "command", command: `node ${JSON.stringify(SELF)}` }] }; }
+function withOurEntries(s) {
+  const cur = Array.isArray(s.hooks?.PreToolUse) ? s.hooks.PreToolUse : [];
+  return [...cur.filter((e) => !isCuraiq(e)), ...PRETOOL_MATCHERS.map(hookEntry)];
+}
 
 function installHooks() {
   const s = readSettings();
   s.hooks = s.hooks || {};
-  const cmd = `node ${JSON.stringify(SELF)}`;
-  const entry = (matcher) => ({ matcher, hooks: [{ type: "command", command: cmd }] });
-  const cur = Array.isArray(s.hooks.PreToolUse) ? s.hooks.PreToolUse : [];
-  s.hooks.PreToolUse = [...cur.filter((e) => !isCuraiq(e)), entry("Read"), entry("Bash"), entry("mcp__.*"), entry("Task")];
+  s.hooks.PreToolUse = withOurEntries(s);
   writeSettings(s);
   console.error(`MoorAI hooks installed in ${settingsPath()}`);
+}
+
+// THE UPGRADE PATH, which is part of the fix rather than an afterthought. installHooks() writes
+// settings.json exactly ONCE, at install time. Every device installed before this change holds the old
+// four-matcher PreToolUse list and does NOT gain the new matchers merely because the code on disk was
+// updated — so a fix only new installs get is half a fix. scripts/install.sh does re-run `install` on
+// an update, but only when MOORAI_NOHOOK is unset, and nothing re-runs it for a device updated any
+// other way (a git pull in ~/.moorai, an MDM that pushes files, a repo checkout).
+//
+// So the hook converges its OWN registration on an ordinary invocation. Four properties keep that safe
+// to put on the hot path:
+//   * It runs only when the device ALREADY has MoorAI entries. No entries means uninstalled (or never
+//     installed), and an uninstalled device must stay uninstalled — this never re-adds.
+//   * It writes only when the matcher set actually differs, so it writes at most once per upgrade and
+//     never again. The steady-state cost is one small readFileSync.
+//   * The write is atomic (writeSettings above), so two hook processes racing produce one intact file.
+//   * It is wrapped: a read error, a parse error, or a read-only home changes nothing about the
+//     decision this invocation is about to emit. Governance, fail-open.
+function convergeHooks() {
+  try {
+    const s = readSettings();
+    const cur = Array.isArray(s.hooks?.PreToolUse) ? s.hooks.PreToolUse : [];
+    const ours = cur.filter(isCuraiq);
+    if (!ours.length) return; // uninstalled — never re-add
+    const have = new Set(ours.map((e) => e && e.matcher));
+    if (ours.length === PRETOOL_MATCHERS.length && PRETOOL_MATCHERS.every((m) => have.has(m))) return;
+    s.hooks = s.hooks || {};
+    s.hooks.PreToolUse = withOurEntries(s);
+    writeSettings(s);
+  } catch { /* registration hygiene; never affects enforcement */ }
 }
 function uninstallHooks() {
   const s = readSettings();
@@ -71,6 +128,18 @@ function uninstallHooks() {
 // implementation, two entrypoints, no second door. Everything below is the part that is genuinely
 // hook-only: break-glass, the posture ratchet, and the content-free reports for both.
 const CONFIG = loadConfig();
+// #2 — the baseline an ENROLLED device gets when its org has published no policy yet. Deliberately EMPTY
+// of threat configuration: with no threatPolicy and no tierPolicy, threatActionFor() falls straight
+// through to BUILTIN_DEFAULT_ACTIONS (cli/hook-core.mjs) — the reviewable, evidence-bound prevention tier
+// that hard-denies reverse shell (#54) and local secret-value egress (#65) and halts #44/55/56/57/63 for
+// sign-off, while every ambiguous class (39 secrets, 15 PII, 2/3/40/50/51/60 injection) stays report-only.
+//
+// It is deliberately NOT data/offline-default.js's OFFLINE_DEFAULT_POLICY. That object is the FAIL-CLOSED
+// default: it additionally hard-blocks 39/15/1/44 and floors every MCP call to "ask". A device that
+// merely has no policy yet has not opted into fail-closed, and applying fail-closed hardening to it would
+// be a posture change nobody asked for. The two states stay distinct, and test/hook-tool-coverage.test.mjs
+// pins the difference.
+const NO_POLICY_BASELINE = { captureTier: "content-free", builtinDefault: true };
 // #33 — break-glass marker (operator-created, holds an expiry) and the durable last-known posture the
 // hook remembers so a fail-closed org stays fail-closed even if the policy cache is later deleted.
 
@@ -523,6 +592,133 @@ async function runAgentScanWorker(tool) {
 // Content-free advisory post for one escalate/escalateMiss finding. Carries only the model's short
 // category label (from the finding's `semantic:<label>` match) and a one-way hash of the input — never
 // the span text. riskLevel mirrors the pre-wiring shortcut (confidence ≥ 0.85 → High, else Medium).
+// ---- the "index" stage on a production path (out-of-band) ----
+//
+// MEASURED MOTIVATION. src/engine.js ships `scanForIndex(text) { return this.scan(text, "index"); }` and
+// before this wiring NOTHING called it. scripts/score-vectors.mjs recorded the finding verbatim
+// ("DetectionEngine.scanForIndex exists but no shipped caller"), and three detectors —
+// inj-untrusted-directive, mcp-tool-poisoning, mcp-hidden-canary — declare the stage, so this was
+// partially dead detector surface, not just a dead method.
+//
+// WHAT THE STAGE IS FOR. The engine's comment aims it at "a local vector store / RAG index ... a future
+// embedding writer". MoorAI has no embedding writer and no vector store, so read the stage for what it
+// actually distinguishes: content the agent INGESTS INTO ITS CONTEXT without a user typing it and
+// without a tool call. In a coding agent that is the auto-loaded SKILL SURFACE — data/skill-surface.js
+// labels its own section "instruction / memory files loaded into context at session start": CLAUDE.md,
+// AGENTS.md, .mcp.json, .claude/settings.json, .cursorrules. The vector-3 corpus agrees: its
+// index-stage samples are poisoned-autoload-config / malicious-tool-description / hidden-canary-in-metadata.
+//
+// THE GAP THIS CLOSES. Those files are loaded at session start with NO tool call, so the PreToolUse hook
+// never sees them. They were screened only when the agent happened to `Read` one — a poisoned CLAUDE.md
+// steers every subsequent prompt and went unscreened. This is a genuinely NEW production input, which is
+// why the stage was wired rather than deleted.
+//
+// OUT-OF-BAND, for the same reason escalation and the agent scan are (see maybeEscalate /
+// maybeAgentScan): the hook process's lifetime IS the tool call's block. The hot path only decides
+// WHETHER to scan (one stat + one write + one detached spawn, at most once per INDEX_SCAN_INTERVAL_MS)
+// and hands the work to `moorai-hook.mjs indexscan`, which outlives it. REPORT-ONLY by construction:
+// the worker has no way to reach the parent's verdict, so an ingested-content finding can never block a
+// tool call that has nothing to do with it.
+//
+// BOUNDED. A FIXED candidate list, not a directory walk — every entry is cross-checked against
+// data/skill-surface.js (that table is the authority on what an agent auto-loads), each read is capped
+// at 256KB by readFileCapped, and at most INDEX_MAX_FILES are considered per run.
+//
+// NO ALERT STORM, BUT RUG-PULLS STILL FIRE. The worker remembers each path's keyed fingerprint and
+// re-scans only what CHANGED, so a standing poisoned file alerts once instead of every interval, and a
+// context file poisoned mid-session is re-scanned on the next interval. The memory is content-free
+// (path -> one-way fingerprint) and lives only on the device.
+//
+// DEFAULT ON, opt-out via policy.indexScan — unlike policy.agentDetections, these are the same tuned,
+// precision-measured detectors that already enforce at the file stage, and a stage that only fires when
+// an operator opts in is the disease this change exists to cure. Fail-open throughout.
+const INDEX_SCAN_STAMP = "index-scan.stamp";
+const INDEX_SCAN_INTERVAL_MS = 900000; // 15 min — auto-loaded context changes rarely
+const INDEX_SEEN_FILE = "index-scan-seen.json";
+const INDEX_SEEN_CAP = 200;
+const INDEX_MAX_FILES = 12;
+// [base, relative path]. "project" = the agent's cwd (the hook and its worker both run there).
+const INDEX_SURFACE = [
+  ["project", "CLAUDE.md"],
+  ["project", "CLAUDE.local.md"],
+  ["project", "AGENTS.md"],
+  ["project", ".cursorrules"],
+  ["project", ".mcp.json"],
+  ["project", join(".claude", "settings.json")],
+  ["project", join(".claude", "settings.local.json")],
+  ["home", join(".claude", "CLAUDE.md")],
+  ["home", join(".claude", "settings.json")]
+];
+function indexScanEnabled(policy) {
+  const v = policy && policy.indexScan;
+  return !(v === false || v === "off"); // default ON
+}
+function indexSurfacePaths() {
+  const home = os.homedir();
+  const out = [];
+  for (const [base, rel] of INDEX_SURFACE) {
+    const p = join(base === "home" ? home : process.cwd(), rel);
+    // The skill-surface table decides what counts as auto-loaded; a path it does not recognise is not
+    // ingested context and has no business being scanned here.
+    if (isSkillSurface(p)) out.push(p);
+  }
+  return [...new Set(out)].slice(0, INDEX_MAX_FILES);
+}
+function maybeIndexScan() {
+  try {
+    if (!indexScanEnabled(POLICY)) return;
+    mkdirSync(STATE_DIR, { recursive: true });
+    const stamp = join(STATE_DIR, INDEX_SCAN_STAMP);
+    try { if (Date.now() - statSync(stamp).mtimeMs < INDEX_SCAN_INTERVAL_MS) return; } catch { /* never scanned */ }
+    writeFileSync(stamp, "", { mode: 0o600 });
+    spawn(process.execPath, [SELF, "indexscan"], { detached: true, stdio: "ignore" }).unref();
+  } catch { /* the ingest scan is advisory; fail-open */ }
+}
+function readIndexSeen() { try { const o = JSON.parse(readFileSync(join(STATE_DIR, INDEX_SEEN_FILE), "utf8")); return o && typeof o === "object" ? o : {}; } catch { return {}; } }
+function writeIndexSeen(seen) {
+  try {
+    // Bounded: a machine that visits many projects must not grow this without limit. Dropping the
+    // memory only costs one duplicate alert per still-poisoned file.
+    if (Object.keys(seen).length > INDEX_SEEN_CAP) seen = {};
+    mkdirSync(STATE_DIR, { recursive: true });
+    writeFileSync(join(STATE_DIR, INDEX_SEEN_FILE), JSON.stringify(seen), { mode: 0o600 });
+  } catch { /* the memory is hygiene; losing it only costs a duplicate alert */ }
+}
+
+// The detached worker: `moorai-hook.mjs indexscan`. Reads the auto-loaded context surface itself
+// (nothing is handed over, so like the agent scanner there is no payload file and no scanned content at
+// rest), runs it through the engine's index choke-point, and posts one content-free alert per finding.
+async function runIndexScanWorker() {
+  try {
+    // Re-checked in the worker, not just in the parent: a worker must never be able to WIDEN the
+    // parent's gate, and this one can be invoked directly.
+    const { policy } = await loadVerifiedPolicy(CONFIG);
+    if (!policy || !indexScanEnabled(policy)) return exitHook();
+    const engine = buildEngine(policy);
+    const seen = readIndexSeen();
+    let changed = false;
+    for (const p of indexSurfacePaths()) {
+      const text = readFileCapped(p);
+      if (!text || !text.trim()) continue;
+      const fp = fileFingerprint(text);
+      if (seen[p] === fp) continue; // unchanged since the last ingest scan
+      seen[p] = fp;
+      changed = true;
+      const findings = [];
+      // scanForIndex, NOT scan(text, "file"): this is the choke-point the engine documents for ingested
+      // content, and routing through it is what makes the stage reachable rather than merely declared.
+      for (const f of engine.scanForIndex(text)) {
+        if (threatActionFor(policy, f.threat.id) === "disabled") continue;
+        findings.push({ threatId: f.threat.id, category: f.threat.category, riskLevel: f.threat.riskLevel, match: f.match });
+      }
+      // blocked=false always: this path is advisory and has no verdict to carry.
+      if (findings.length) report(findings, "index", "hook:ingest", false, policy.captureTier, { filePath: p, toolName: "ContextIngest" });
+    }
+    if (changed) writeIndexSeen(seen);
+  } catch { /* the ingest scan is advisory; fail-open */ }
+  return exitHook();
+}
+
 function postSemanticFinding(f, text, stage, tool) {
   const cat = String(f.match || "").replace(/^semantic:/, "") || f.category || "model";
   post({ threatId: f.threat.id, category: `Model-flagged: ${cat}`, riskLevel: (f.confidence || 0) >= 0.85 ? "High" : "Medium", stage, tool: `escalate:${tool}`, ts: new Date().toISOString(), contentHash: contentHash(text), ...IDENTITY });
@@ -776,6 +972,19 @@ async function emit(decision, reason) {
 
 async function readStdin() { const chunks = []; for await (const c of process.stdin) chunks.push(c); return Buffer.concat(chunks).toString("utf8"); }
 
+// The four host tools that put agent-authored bytes on disk, and the field of each that carries the
+// bytes the agent is about to COMMIT. Typed defensively (a `content` of null, an `edits` that is not an
+// array, an edit entry that is not an object) because a malformed payload must produce an empty scan and
+// an allow, never a throw on the hot path — governance, fail-open.
+const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+function writeText(tool, ti) {
+  if (tool === "Write") return typeof ti.content === "string" ? ti.content : "";
+  if (tool === "Edit") return typeof ti.new_string === "string" ? ti.new_string : "";
+  if (tool === "NotebookEdit") return typeof ti.new_source === "string" ? ti.new_source : "";
+  if (tool === "MultiEdit") return (Array.isArray(ti.edits) ? ti.edits : []).map((e) => (e && typeof e.new_string === "string" ? e.new_string : "")).join("\n");
+  return "";
+}
+
 async function main() {
   const cmd = process.argv[2];
   if (cmd === "install") return installHooks();
@@ -786,9 +995,17 @@ async function main() {
   // The detached agent-detection scanner (see maybeAgentScan). Like the escalation worker it never
   // reads stdin and never writes a decision: the hook that spawned it has already emitted its verdict.
   if (cmd === "agentscan") return runAgentScanWorker(process.argv[3]);
+  // The detached auto-loaded-context (index stage) scanner. Same contract as the two above: no stdin,
+  // no decision — it only posts content-free findings for context the agent ingests without a tool call.
+  if (cmd === "indexscan") return runIndexScanWorker();
 
   let input;
   try { input = JSON.parse((await readStdin()) || "{}"); } catch { process.exit(0); }
+  // Bring a pre-existing four-matcher install up to the current matcher set (see convergeHooks). Placed
+  // here, on the hook's own hot path, because nothing else on an updated device re-runs `install`.
+  // No-ops on an uninstalled device and after the first converged run; wrapped, so it cannot affect the
+  // decision below.
+  convergeHooks();
   const tool = input.tool_name || "";
   const ti = input.tool_input || {};
   SESSION = contentHash(input.session_id || ""); // content-free trace/session id for baseline + lineage
@@ -824,19 +1041,44 @@ async function main() {
     // exit below would otherwise race the POST and lose it.
     await reportPinAbsence(absence);
     if (!policy) {
-      if (posture.posture !== "fail-closed") return exitHook(); // fail-open (default) — UNCHANGED behavior
-      // The ratchet just refused a downgrade (or found a copy erased) — awaited so the signal cannot be
-      // lost to the process.exit that follows, exactly like the break-glass tamper report above.
-      await reportPostureTamper(posture);
-      // Fail-closed posture with no policy: break-glass (if operator-signed and live) forces fail-open so
-      // an operator can recover a locked-out machine; otherwise apply the reviewable built-in default.
-      if (bg.active) { await postPosture("Break-glass active (fail-open override)", "breakglass:active", "High"); return exitHook(); }
-      // Awaited: the SOC's ONLY signal that a device fell back to the built-in fail-closed default.
-      // exitHook() now drains every post() before exiting, so this await is no longer what makes the
-      // signal survive — it is kept because it also ORDERS the posture report ahead of the decision
-      // path. post() is bounded (1500ms) and never throws, so it cannot hang either way.
-      await postPosture("Offline: fail-closed default applied", "offline:fail-closed", "High");
-      policy = OFFLINE_DEFAULT_POLICY;
+      if (posture.posture !== "fail-closed") {
+        // #2 — "no policy" is NOT the same state as "not enrolled", and conflating them is what made the
+        // built-in prevention tier unreachable on exactly the devices with no org policy. Measured: with
+        // no policy file a reverse shell returned ALLOW even though BUILTIN_DEFAULT_ACTIONS resolves
+        // threat 54 to "block"; a policy of {"captureTier":"content-free"} — which configures nothing at
+        // all — returned DENY for the same command. The defaults worked; this early return was simply in
+        // front of them, because it fires before buildEngine() and therefore before threatActionFor is
+        // ever consulted.
+        //
+        // ENROLLMENT IS THE LINE, and it is the line this repo already draws elsewhere:
+        //   * cli/hook-core.mjs assessPinAbsence takes `enrolled: Boolean(config.installToken)` — the
+        //     same predicate, already load-bearing for the pin's own tamper reasoning.
+        //   * cli/content-hash.mjs collapses EVERY fingerprint to the h2:nokey sentinel with no token,
+        //     so an unenrolled device's alerts are non-correlatable by construction.
+        //   * cli/config.mjs reports tenant "unprovisioned" and serverUrl localhost, so there is no
+        //     console for a developer to appeal a block to.
+        //   * scripts/score-vector5-production.mjs has a documented `--unenrolled` mode whose stated
+        //     purpose is to MEASURE that inertness ("the wiring is deliberately NO_KEY-inert").
+        // A device nobody enrolled must not start denying a developer's tool calls, so that case keeps
+        // exit(0) exactly as before. An ENROLLED device whose org simply has not published a policy yet
+        // is the opposite case — it opted in, it has a console, and it is precisely the device that
+        // needs the defaults most.
+        if (!CONFIG.installToken) return exitHook(); // never enrolled — inert by design (UNCHANGED)
+        policy = NO_POLICY_BASELINE;
+      } else {
+        // The ratchet just refused a downgrade (or found a copy erased) — awaited so the signal cannot be
+        // lost to the process.exit that follows, exactly like the break-glass tamper report above.
+        await reportPostureTamper(posture);
+        // Fail-closed posture with no policy: break-glass (if operator-signed and live) forces fail-open so
+        // an operator can recover a locked-out machine; otherwise apply the reviewable built-in default.
+        if (bg.active) { await postPosture("Break-glass active (fail-open override)", "breakglass:active", "High"); return exitHook(); }
+        // Awaited: the SOC's ONLY signal that a device fell back to the built-in fail-closed default.
+        // exitHook() now drains every post() before exiting, so this await is no longer what makes the
+        // signal survive — it is kept because it also ORDERS the posture report ahead of the decision
+        // path. post() is bounded (1500ms) and never throws, so it cannot hang either way.
+        await postPosture("Offline: fail-closed default applied", "offline:fail-closed", "High");
+        policy = OFFLINE_DEFAULT_POLICY;
+      }
     } else {
       // A fail-closed org can still break-glass out of its cached/live policy entirely.
       if (offlineMode(policy) === "fail-closed" && bg.active) { await postPosture("Break-glass active (fail-open override)", "breakglass:active", "High"); return exitHook(); }
@@ -850,6 +1092,10 @@ async function main() {
   } catch { if (!policy) return exitHook(); /* preserve legacy fail-open on any error when no policy */ }
   POLICY = policy; // read by logBehavior's agent-detection hand-off (maybeAgentScan)
   const engine = buildEngine(policy);
+  // The "index" stage's production caller: screen the context this agent auto-loaded (CLAUDE.md,
+  // .mcp.json, settings, rules files) — content that enters the model with no tool call, so no other
+  // branch below ever sees it. Detached, interval-bounded, report-only; see maybeIndexScan.
+  maybeIndexScan();
 
   if (tool === "Read") {
     const text = readFileCapped(ti.file_path);
@@ -898,6 +1144,89 @@ async function main() {
     // interim one — a host reached by a command that was then denied must read as denied.
     recordDestinations("Bash", "host", extractHosts(ti.command), dec);
     return emit(dec, `${killIds.length ? "killed session" : "blocked"} via Bash — ${reasons.join(", ")}`);
+  }
+  // ---- the write family: Write / Edit / MultiEdit / NotebookEdit ----
+  //
+  // ROUTED TO THE "output" STAGE, deliberately, and not to "file". The two are not interchangeable:
+  //   * "file" is content the agent INGESTS — src/engine.js _wantStages expands it to ["prompt","file"],
+  //     so it runs the 61 prompt detectors, which is the whole injection family. That is the right set
+  //     for text arriving from somewhere else, and the wrong set for text the model just wrote: an agent
+  //     writing documentation that quotes "ignore all previous instructions" is a doc, not an attack,
+  //     and that is exactly where a false positive on the hottest path in the product would come from.
+  //   * "output" is model-generated content crossing a boundary, which is precisely what a write is.
+  //     Its 47 detectors are the ones built for generated content — every secret-*, the DLP set,
+  //     exec-reverse-shell, cred-file-access, pkg-install-untrusted, model-endpoint-override,
+  //     egress-credential-shaped, out-code-exec/out-links, and the whole code-* vulnerability family
+  //     (SQL injection, command injection, eval, insecure deserialization, weak crypto, tainted flow).
+  // Measured on the vector-4 write corpus before choosing: "output" is the only stage that fires at all
+  // on the two source-backdoor samples, and it fires on ZERO of the four benign write controls, as do
+  // "file" and "prompt". So "output" strictly dominates here — more recall at identical benign cost.
+  //
+  // The text scanned is what the agent is about to COMMIT, never what is already on disk: Write's
+  // `content`, Edit's `new_string`, every MultiEdit edit's `new_string`, NotebookEdit's `new_source`.
+  // Scanning `old_string` would report the victim file's existing contents as the agent's own act.
+  if (WRITE_TOOLS.has(tool)) {
+    const path = ti.file_path || ti.notebook_path || "";
+    const text = writeText(tool, ti);
+    const d = decideText(engine, policy, text, "output");
+    let dec = d.decision, reasons = d.reasons.slice();
+    report(d.findings, "output", `hook:${tool}`, dec === "deny", policy.captureTier, { filePath: path, toolName: tool });
+    logBehavior(tool, path || tool, text, d, "output");
+    if (d.kill) killSession(tool, d.killIds, "output");
+    // T1-1 — a rogue LLM base-URL being written INTO a config/source file is the same threat as one
+    // typed at a shell; inert unless the org set endpointAllow, so it costs nothing by default.
+    const epD = decideEndpoints(policy, text);
+    if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); }
+    // Tier-2 / #65 — a real local credential being written verbatim into a new file. This is the FIRST
+    // half of stage-then-exfiltrate (corpus v4-chain-005): the value lands on disk under an innocuous
+    // name and the second step ships the file, so a hook that only watches the shipping step sees a
+    // curl of a path and no secret at all. Reported at stage "file" rather than "egress" because the
+    // bytes have not left the device yet — naming it egress here would overclaim.
+    // JUSTIFY, not DENY, and only on this path. The other three checkSecretEgress call sites watch a
+    // credential LEAVING the device (a Bash pipe, a WebFetch URL, an MCP argument) and deny outright.
+    // Here the bytes are still local, and the benign twin of this exact shape is routine: copying .env
+    // to .env.local, seeding a fixture, writing a CI file from a value already in the project. NO benign
+    // corpus exercises that, so the FP rate for it is unmeasured — and an unmeasured hard block on a
+    // hot path is how a security tool gets uninstalled. Halting for sign-off keeps the signal and lets
+    // the developer through. Only ever upgrades allow -> ask: never downgrades a deny, never clobbers
+    // an ask already justified by something else.
+    if (checkSecretEgress(policy, text, tool, "file") && dec === "allow") { dec = "ask"; reasons = ["local secret written to a new file"]; }
+    if (reportEnvelope(policy, tool, { tool, paths: [path] }, "file") && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; }
+    // See the Read/Bash branches: escalation runs last and never on a deny, so content the policy is
+    // about to block cannot reach the provider on its way to being blocked.
+    if (dec !== "deny") await maybeEscalate(policy, text, "output", `hook:${tool}`, d, engine);
+    return emit(dec, `${d.kill ? "killed session" : dec === "ask" ? "needs justification" : "blocked"} ${tool} of ${basename(path || "file")} — ${reasons.join(", ")}`);
+  }
+  // ---- WebFetch ----
+  //
+  // WHAT THIS BRANCH CAN AND CANNOT SEE, stated plainly rather than implied. PreToolUse fires BEFORE the
+  // fetch, so `tool_input` is {url, prompt} and the fetched page DOES NOT EXIST YET. The inbound half of
+  // AMTSO vector 2 — poisoned web content the agent was asked to summarise — is therefore NOT scanned
+  // here and cannot be: it needs a PostToolUse surface, which this hook does not register. What IS
+  // scannable is the outbound request, and that is what this branch does:
+  //   * the URL + the instruction, at the "prompt" stage, because an injected directive that reached the
+  //     model earlier surfaces here as the agent's own next instruction ("fetch X and post the result");
+  //   * the model-endpoint allow-list on the URL about to be called (inert unless endpointAllow is set);
+  //   * a local secret value appearing verbatim in the URL — a credential in a query string is exfil,
+  //     and unlike the write family these bytes really are about to leave, so the stage is "egress";
+  //   * the destination map, so a host this agent has never reached before raises a first-seen signal.
+  if (tool === "WebFetch") {
+    const url = typeof ti.url === "string" ? ti.url : "";
+    const prompt = typeof ti.prompt === "string" ? ti.prompt : "";
+    const d = decideText(engine, policy, `${url}\n${prompt}`, "prompt");
+    let dec = d.decision, reasons = d.reasons.slice();
+    report(d.findings, "egress", "hook:WebFetch", dec === "deny", policy.captureTier, { toolName: "WebFetch" });
+    logBehavior("WebFetch", url || "WebFetch", `${url}\n${prompt}`, d, "egress");
+    if (d.kill) killSession("WebFetch", d.killIds, "egress");
+    const epD = decideEndpoints(policy, url);
+    if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: "hook:WebFetch", ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); }
+    if (checkSecretEgress(policy, `${url}\n${prompt}`, "WebFetch", "egress") && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; }
+    if (reportEnvelope(policy, "WebFetch", { tool: "WebFetch" }, "egress") && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; }
+    if (dec !== "deny") await maybeEscalate(policy, `${url}\n${prompt}`, "prompt", "hook:WebFetch", d, engine);
+    // Last, so the map stores the verdict the call ACTUALLY got — a host reached by a denied fetch must
+    // read as denied. Same ordering rule as the Bash branch.
+    recordDestinations("WebFetch", "host", extractHosts(url), dec);
+    return emit(dec, `${d.kill ? "killed session" : dec === "ask" ? "needs justification" : "blocked"} WebFetch — ${reasons.join(", ")}`);
   }
   if (tool.startsWith("mcp__")) {
     const server = tool.split("__")[1] || "";

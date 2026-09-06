@@ -10,6 +10,10 @@
 //   node scripts/score-vectors.mjs --fps           # list every false positive
 //   node scripts/score-vectors.mjs --file <path>   # score an alternate corpus with the same logic
 //
+// Vectors 2 (indirect content) and 4 (outbound action) have their own corpora and their own scorer,
+// scripts/score-vector24.mjs — they are not in VECTOR_FILES below. `--file <path>` runs any corpus
+// through this file's logic when that is the comparison you want.
+//
 // WHY THIS IS NOT scripts/score-heldout-v2.mjs. That scorer assumes one sample = one string scanned at
 // one stage. Neither of these vectors fits:
 //   * vector 3 samples are TOOL METADATA and CONFIG FILES, which are only reachable at the "tool",
@@ -66,13 +70,18 @@ export const VECTOR_FILES = {
 // Which STAGES a shipped harness actually feeds the engine, established by reading the call sites rather
 // than assumed. Anything false here is a corpus that can only be scored through the library API — a
 // reachability FINDING, not a detection result. Re-derive with:
-//   grep -rn "engine.scan(\|decideText(" cli mcp-proxy src
+//   grep -rn "engine.scan(\|decideText(\|scanForIndex(" cli mcp-proxy src
+//
+// BOTH reachability findings this table originally recorded are now CLOSED — `tool` in v0.77.0 and
+// `index` in v0.78.0 — so every stage the engine defines has a production caller. Kept as a table rather
+// than deleted because the reachability question is the one worth re-asking after every wave: a detector
+// with no caller measures nothing, however well it scores in a script.
 export const STAGE_REACHABILITY = {
-  prompt: { reachable: true, via: "cli/moorai-hook.mjs (UserPromptSubmit, Bash command, Task delegated prompt), cli/moorai-guard.mjs, src/app.js" },
-  file: { reachable: true, via: "cli/moorai-hook.mjs decideText(..., \"file\") on file reads, including every data/skill-surface.js path" },
-  output: { reachable: true, via: "cli/moorai-guard.mjs engine.scan(out, \"output\"), src/app.js" },
-  index: { reachable: false, via: "DetectionEngine.scanForIndex exists but no shipped caller writes to a vector store; reachable only via the file stage, which also runs the index-stage detectors" },
-  tool: { reachable: false, via: "NO shipped caller. mcp-proxy/moorai-mcp-guard.mjs scans tools/call ARGUMENTS only and passes tools/list through verbatim, so tool DESCRIPTIONS and SCHEMAS are never scanned in production" }
+  prompt: { reachable: true, via: "cli/moorai-hook.mjs (UserPromptSubmit, Bash command, Task delegated prompt, WebFetch url+prompt), cli/moorai-guard.mjs, src/app.js" },
+  file: { reachable: true, via: "cli/moorai-hook.mjs decideText(..., \"file\") on file reads, including every data/skill-surface.js path; mcp-proxy/moorai-mcp-guard.mjs scans every tools/call RESULT at this stage and can replace a denied one with a tool error" },
+  output: { reachable: true, via: "cli/moorai-guard.mjs engine.scan(out, \"output\"), src/app.js, and cli/moorai-hook.mjs on the Write/Edit/MultiEdit/NotebookEdit write family" },
+  index: { reachable: true, via: "cli/moorai-hook.mjs runs DetectionEngine.scanForIndex from a detached worker over the agent's auto-loaded context files (CLAUDE.md, AGENTS.md, .mcp.json, ...); default ON, opt-out policy.indexScan:false. NOT covered: .claude/skills/** and .claude/agents/*.md" },
+  tool: { reachable: true, via: "mcp-proxy/moorai-mcp-guard.mjs copies every tools/list RESPONSE to a bounded scanner at the tool stage (mcp-proxy/tool-scan.mjs), so tool DESCRIPTIONS and SCHEMAS reach mcp-tool-poisoning/#60 and mcp-hidden-canary/#50. Report-first: the listing is forwarded byte-identical and enforcement happens at the next tools/call" }
 };
 
 function loadCorpus(path) {

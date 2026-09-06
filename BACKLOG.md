@@ -148,14 +148,14 @@ behind it — this is the tool.
 
 ## Expose the red-team suite as a customer trust test
 
-**Idea (from the GuardAI ML-testing angle):** `scripts/redteam.mjs` (57/57 internal) proves the engine
-catches its attack corpus — but only we see it. Expose it (`moorai-redteam`, or a console "Test my
-policy" action) so a customer runs the adversarial corpus against **their own ACTIVE policy on their
-own machine** and sees the coverage. Turns an internal test into a trust feature: "verify, don't
-trust." Content-free; maps results to the OWASP LLM attack classes.
+**Status: SHIPPED (agent side).** `cli/moorai-redteam.mjs` (`npx moorai-redteam`, `npm run
+redteam-policy`) runs the adversarial corpus against the customer's **own ACTIVE policy on their own
+machine** and reports, per attack class, whether the live policy actually *acts* — content-free, exits
+non-zero on a gap. `scripts/redteam.mjs` remains the internal engine check: **101/102**, the single
+failure (`sec-generic-entropy`) pre-existing.
 
-**To do:** a CLI that loads the tenant policy + runs the corpus + reports pass/fail per threat class;
-optionally a console button that shows the same coverage grid per tenant.
+**Still open:** the console half — a "Test my policy" action showing the same coverage grid per tenant.
+Console repo, not this one.
 
 ## "AI-integrated development pipeline" positioning (copy)
 
@@ -240,9 +240,12 @@ payload + rug-pull drift), jailbreak detectors, entitlement envelope.
 - **PromptGuard-2 (22M) on-device classifier** — bundle the ONNX weights + a JS/Rust inference runtime
   into the DMG for ML jailbreak escalation. Detectors shipped; local-model escalation already runs via
   the existing Ollama hook. Blocker: DMG size + notarization + runtime choice.
-- **Tool-description injection scan** (MCP) — needs the agent to capture MCP `tools/list` schemas (not
-  currently fetched); then run the injection engine + invisible-payload scan on tool descriptions at
-  discovery time (line-jumping defense). Pairs with schema-hash pinning.
+- ~~**Tool-description injection scan** (MCP)~~ — **SHIPPED.** `mcp-proxy/moorai-mcp-guard.mjs` copies
+  every `tools/list` response to a bounded scanner (`mcp-proxy/tool-scan.mjs`) at the `tool` stage, so
+  descriptions and input schemas reach `mcp-tool-poisoning` (#60) and `mcp-hidden-canary` (#50) at
+  discovery time; `mcp-proxy/tool-baseline.mjs` carries the cross-call shadowing / capability-expansion
+  half. Report-first — the listing is forwarded byte-identical and a blocking policy quarantines the tool
+  so the existing `tools/call` gate refuses it. Remaining: schema-hash **pinning** as a distinct control.
 - **Intra-file taint-lite** — tree-sitter source→sink dataflow to confirm injection detectors and cut
   false positives. Deferred: tree-sitter is a heavy dep; scope to intra-file (whole-repo reachability is
   on-device-hard).

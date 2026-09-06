@@ -26,7 +26,16 @@
 //     happen, and it happens at the NEXT surface rather than this one: the tool is QUARANTINED, and
 //     the already-existing, already-tested tools/call gate refuses calls to it. Observation at list
 //     time, enforcement at call time.
-// All other JSON-RPC traffic (initialize, notifications, responses) passes through verbatim.
+//
+// AND — new again — SCANNING AND, WHERE POLICY SAYS SO, BLOCKING every tool RESULT (server → agent).
+// A tools/list is metadata; a tool RESULT is the content the agent actually ingests, and it was the
+// one direction this proxy had no eyes on at all. See "THE RESULT STAGE" below for the defect as it
+// was measured, why the stage is "file", what "block" can and cannot prevent once a tool has already
+// run, and — the crux — how the fail-open guarantee survives inverting write-first into
+// parse-then-forward. Report-first here too: the default policy resolves #39 to "notify" and forwards.
+//
+// All other JSON-RPC traffic (initialize, notifications, server→client requests) passes through
+// verbatim.
 //
 // Content-free by construction: only category / risk / one-way hash / server / tool / decision may leave
 // the device. Tool-call CONTENT is NEVER emitted. Governance, not a sandbox: on ANY error (bad policy,
@@ -39,11 +48,10 @@
 
 import { spawn } from "node:child_process";
 import { basename } from "node:path";
-import { StringDecoder } from "node:string_decoder";
 import os from "node:os";
 import { loadConfig } from "../cli/config.mjs";
 import { buildEngine, mcpGateway, decideText, literacyTouchpoint, loadVerifiedPolicy, ratchetPosture, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "../cli/hook-core.mjs";
-import { CAPS, toolsOfResponse, toolScanText, toolIdentity } from "./tool-scan.mjs";
+import { CAPS, toolsOfResponse, toolScanText, toolIdentity, resultOfResponse, resultScanText } from "./tool-scan.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "./tool-baseline.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { applyCaptureTier } from "../data/capture-tiers.js";
@@ -208,14 +216,11 @@ child.on("error", (e) => {
 });
 child.on("exit", (code, signal) => { process.exit(code == null ? (signal ? 1 : 0) : code); });
 
-// Responses from the real server → Claude Desktop, VERBATIM. The write happens FIRST and with the
-// raw Buffer — the observer downstream gets a decoded COPY and can never influence, delay, reorder or
-// mutate what the agent receives. `.pipe()` was replaced by this handler for exactly one reason: to
-// take that copy. If observeChunk throws, the bytes are already gone out the door.
-child.stdout.on("data", (chunk) => {
-  process.stdout.write(chunk);
-  try { observeChunk(chunk); } catch { /* observation is evidence, never transport */ }
-});
+// Responses from the real server → Claude Desktop. See "THE RESULT STAGE" below for why this is now a
+// parse-THEN-forward framer rather than the write-first copy it used to be, and for the deadline that
+// keeps fail-open true across that inversion. A throw escaping the framer forwards the raw chunk.
+child.stdout.on("data", (chunk) => { onServerChunk(chunk); });
+child.stdout.on("end", () => { flushPending(); });
 // The real server's diagnostics → our stderr (Claude Desktop surfaces these in its MCP logs).
 child.stderr.pipe(process.stderr);
 
@@ -226,7 +231,41 @@ function writeBlock(id, reason) {
   process.stdout.write(JSON.stringify(msg) + "\n");
 }
 
+// The RESULT-side twin of writeBlock, and deliberately the SAME shape: a tool-result carrying
+// `isError: true`, NOT a protocol-level JSON-RPC `error` object. A protocol error is a transport
+// failure to a client — it can surface as a broken session or a retry loop — whereas an isError
+// result is the documented way a tool says "this went wrong", which every MCP client already renders
+// to the model as text. `reason` is a list of threat ids and category NAMES produced by decideText;
+// no byte of the result it replaces appears in it, which is the whole point of replacing it.
+function blockedResultLine(id, reason) {
+  return JSON.stringify({
+    jsonrpc: "2.0", id,
+    result: { content: [{ type: "text", text: `MoorAI blocked this MCP tool result: ${reason}` }], isError: true }
+  }) + "\n";
+}
+
 function forward(rawLine) { child.stdin.write(rawLine + "\n"); }
+
+// ---- id → tool name, so a RESULT can be attributed to the call that produced it. ----
+// The result stage matches structurally and never REQUIRES this map (a result whose call we never saw
+// is still scanned, just attributed to "mcp"), so the map is a label, not a correctness dependency —
+// which is what lets it be bounded by simple FIFO eviction instead of by a timeout. Entries are
+// deleted on use, so a well-behaved session keeps at most the in-flight calls.
+const CALL_TOOL = new Map();
+const MAX_CALL_TOOL = 512;
+function rememberCall(id, tool) {
+  if (id == null) return;
+  if (CALL_TOOL.size >= MAX_CALL_TOOL) CALL_TOOL.delete(CALL_TOOL.keys().next().value);
+  CALL_TOOL.set(String(id), String(tool || "mcp"));
+}
+function toolForId(id) {
+  if (id == null) return "mcp";
+  const k = String(id);
+  const v = CALL_TOOL.get(k);
+  if (v == null) return "mcp";
+  CALL_TOOL.delete(k);
+  return v;
+}
 
 // ---- gate one JSON-RPC message. tools/call is inspected; everything else is forwarded verbatim. ----
 async function handleLine(rawLine) {
@@ -254,7 +293,7 @@ async function handleLine(rawLine) {
       return;
     }
 
-    if (!ENGINE) { auditCall(tool, "allow", argsHash); forward(rawLine); return; } // fail open: no engine
+    if (!ENGINE) { auditCall(tool, "allow", argsHash); rememberCall(msg.id, tool); forward(rawLine); return; } // fail open: no engine
 
     const g = mcpGateway(ENGINE, POLICY, { tool, server: SERVER, args });
 
@@ -269,6 +308,7 @@ async function handleLine(rawLine) {
     // allow OR coach ("ask"): Claude Desktop has no interactive banner, so coach = allow + record.
     alertFindings(tool, g.findings, false, argsHash);
     auditCall(tool, g.decision, argsHash);
+    rememberCall(msg.id, tool);
     forward(rawLine);
   } catch {
     // Governance, not a sandbox: any gate error must not drop the call — forward it unchanged.
@@ -359,35 +399,234 @@ async function observeTools(tools) {
   if (dirty) saveBaseline(baseline);
 }
 
-// Decoded copy of the child's stdout, split on newlines. A StringDecoder (not chunk.toString()) so a
-// multi-byte character straddling two chunks does not corrupt the copy — a corrupted copy would only
-// fail to parse, but silently losing detections is exactly the failure this whole file is fixing.
-const outDecoder = new StringDecoder("utf8");
-let obsBuf = "";
-let obsSkip = false; // a single line over the cap: forwarded (already), never parsed
-let obsQueue = Promise.resolve();
+// ============================================================================================
+// THE RESULT STAGE — the content a tool RETURNS, which the agent INGESTS, and which this proxy
+// could not see at all until now.
+// ============================================================================================
+//
+// THE DEFECT, measured before a line was written. The old observer skipped every line that did not
+// contain the substring `"tools"`, and toolsOfResponse required `result.tools` — so the ONLY thing
+// ever inspected on the server→agent direction was a tool LISTING. Reproduced against a child server
+// that returns a secret regardless of its arguments:
+//
+//     ARGS sent (benign path only):       {path:'/home/u/creds/.env'}
+//     agent received the secret verbatim: true
+//     alerts raised by the proxy:         []
+//
+// That is exactly the two misses in mcp-proxy/measure-mcp-coverage.mjs condition B (read-dotenv,
+// bash-cat-creds): a credential READ carries only a path in its arguments, so nothing incriminating
+// exists until the RESULT comes back.
+//
+// WHAT "BLOCK" MEANS HERE, stated precisely so it is not oversold. By the time a result exists the
+// tool has already run — the file has already been read, and no proxy can un-read it. Blocking the
+// result prevents the secret from entering the AGENT'S CONTEXT, and therefore from being summarised,
+// quoted, or shipped onward to the next tool call. That is the harm this stage exists to stop; it is
+// not, and is not claimed to be, prevention of the read itself. The CALL-side gate above is the one
+// that prevents execution.
+//
+// STAGE: "file". Measured on this repo's own engine, not assumed:
+//     stage    DOTENV fixture        an injected directive in a result
+//     file     #39 Critical          #3 Critical, #40, #55, #60
+//     output   #39 Critical          #17 High, #55, #40      (no Critical #3)
+// Both catch the secret; only "file" catches result-borne injection as Critical, and "file" is the
+// SAME stage cli/moorai-hook.mjs uses when Claude Code reads a file — so one org policy resolves
+// identically on both surfaces instead of needing a second, parallel rule set.
+//
+// ---- HOW FAIL-OPEN SURVIVES PARSE-THEN-FORWARD ----
+//
+// The old ordering (`process.stdout.write(chunk)` first, observe a copy second) WAS the fail-open
+// guarantee: a bug downstream could not touch the transport because the bytes had already left. That
+// ordering also makes blocking impossible, so it is gone. Fail-open is now four explicit properties
+// instead of one accident of ordering:
+//
+//   1. EXACTLY-ONCE WRITE. gateResult() holds a `done` latch and a `pass()` that forwards the
+//      ORIGINAL bytes. Every early return, every catch, and the deadline all funnel through it, so a
+//      line is written once and only once, and the fallback is always the untouched original.
+//   2. A HARD PER-MESSAGE DEADLINE (CAPS.resultDeadlineMs). The decision races an unref'd timer;
+//      losing the race forwards the original. This is what bounds the ASYNC hazards — a policy
+//      refresh, a starved microtask queue, any await a later change introduces.
+//   3. A SIZE CAP INSTEAD OF A TIMER FOR SYNCHRONOUS WORK. V8 cannot interrupt a running regex, so a
+//      timer is not a bound on the scan itself. CAPS.maxResultBytes is: at 64 KB of composed text,
+//      decideText at stage "file" measured 3.8-4.2 ms warm on this repo. Over CAPS.maxLineBytes a
+//      line is never parsed at all — it is streamed straight through. LESS scanning, never a delayed
+//      or dropped message.
+//   4. NOTHING ELSE MAY BLOCK. Only a result whose findings resolve to `deny` through the existing
+//      threatActionFor is replaced. "ask" (justify) and "notify" forward, because Claude Desktop has
+//      no interactive banner — the same rule the call-side gate already follows. Under the default
+//      policy #39 resolves to "notify", so the default does NOT start blocking results.
+//
+// FRAMING is now done on BYTES, not on a decoded string. The old path needed a StringDecoder because
+// it decoded arbitrary chunks; splitting on the 0x0a byte cannot split a multi-byte character (no
+// UTF-8 continuation byte is 0x0a), so a line is decoded only once it is whole. Every write goes
+// through one ordered queue, so lines cannot be reordered, merged, or split.
 
-function observeChunk(chunk) {
-  obsBuf += outDecoder.write(chunk);
-  let nl;
-  while ((nl = obsBuf.indexOf("\n")) >= 0) {
-    const line = obsBuf.slice(0, nl);
-    obsBuf = obsBuf.slice(nl + 1);
-    if (obsSkip) { obsSkip = false; continue; }
-    if (line.length > CAPS.maxLineBytes || !line.includes("\"tools\"")) continue;
-    obsQueue = obsQueue.then(() => observeLine(line)).catch(() => {});
+const EMPTY = Buffer.alloc(0);
+let obsQueue = Promise.resolve(); // the OFF-path tools/list observation chain (see the bottom of this file)
+let outPending = EMPTY;   // bytes of the current, incomplete line
+let outRaw = false;       // this line blew past maxLineBytes: stream it through raw until its newline
+let outQueue = Promise.resolve(); // ONE ordered write queue; nothing writes to stdout outside it
+
+function emitRaw(buf) { outQueue = outQueue.then(() => { process.stdout.write(buf); }, () => {}); }
+function emitLine(buf) { outQueue = outQueue.then(() => gateResult(buf), () => gateResult(buf)); }
+
+// Newline framing of the child's stdout. `emitted` exists so the outer catch cannot double-write: if
+// nothing has gone out yet the whole chunk is forwarded raw, and if something has, the framer state is
+// reset rather than the already-sent bytes repeated.
+function onServerChunk(chunk) {
+  let emitted = false;
+  try {
+    // Test hook for a SYNCHRONOUS framer fault — the fault class that the old write-first ordering
+    // made unreachable, and that a parse-then-forward design has to answer for explicitly. Placed
+    // before any emit so the fallback below is exactly-once. Inert unless the env var is set.
+    if (process.env.MOORAI_TEST_OBSERVE_THROW) throw new Error("injected synchronous observer fault (test hook)");
+    let buf = chunk;
+    if (outRaw) {
+      const nl = buf.indexOf(0x0a);
+      if (nl < 0) { emitted = true; emitRaw(buf); return; }
+      emitted = true; emitRaw(buf.subarray(0, nl + 1));
+      outRaw = false;
+      buf = buf.subarray(nl + 1);
+      if (!buf.length) return;
+    }
+    if (outPending.length) buf = Buffer.concat([outPending, buf]);
+    let start = 0, nl;
+    while ((nl = buf.indexOf(0x0a, start)) >= 0) {
+      emitted = true;
+      emitLine(buf.subarray(start, nl + 1)); // the newline travels WITH the line: framing is preserved by construction
+      start = nl + 1;
+    }
+    const rest = buf.subarray(start);
+    if (rest.length > CAPS.maxLineBytes) {
+      // A line with no newline in sight, past the cap. Buffering further is exactly what a hostile
+      // server wants; forward what we have and pass the remainder through raw. Unscanned, never stuck.
+      outRaw = true; outPending = EMPTY; emitted = true; emitRaw(Buffer.from(rest));
+    } else outPending = rest.length ? Buffer.from(rest) : EMPTY;
+  } catch {
+    if (!emitted) emitRaw(chunk);
+    outPending = EMPTY; outRaw = false;
   }
-  if (obsBuf.length > CAPS.maxLineBytes) { obsBuf = ""; obsSkip = true; }
 }
 
-async function observeLine(line) {
+// The child died mid-line. A partial line is not a message, but withholding bytes is not this file's
+// job — forward whatever is buffered.
+function flushPending() {
+  if (outPending.length) { const p = outPending; outPending = EMPTY; emitRaw(p); }
+}
+
+// Race any decision against an unref'd timer. Resolves to `null` on timeout OR on rejection, and the
+// single caller treats null as "forward the original". unref() so a pending timer can never be the
+// reason this process outlives its stdio.
+function withDeadline(promise, ms) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } };
+    const timer = setTimeout(() => { if (!settled) { settled = true; resolve(null); } }, ms);
+    if (timer.unref) timer.unref();
+    promise.then(finish, () => finish(null));
+  });
+}
+
+// The sliding overload window described at CAPS.resultBudgetMs. Not a kill switch: it goes quiet only
+// while the window is hot, and says so once, content-free.
+let winStart = 0, winSpent = 0, winSaid = false;
+function budgetOk() {
+  const now = Date.now();
+  if (now - winStart > CAPS.resultWindowMs) { winStart = now; winSpent = 0; }
+  return winSpent < CAPS.resultBudgetMs;
+}
+
+async function scanResult(result) {
+  if (process.env.MOORAI_TEST_RESULTSCAN_THROW) throw new Error("injected result-scan fault (test hook)");
+  // Test hook for an ASYNC stall — the fault class CAPS.resultDeadlineMs exists for, and the only way
+  // to exercise it deterministically. A synchronous hang cannot be simulated OR survived; that is what
+  // CAPS.maxResultBytes bounds instead, and it is stated as such. Inert unless the env var is set.
+  const stallMs = Number(process.env.MOORAI_TEST_RESULT_STALL_MS || 0);
+  if (stallMs > 0) await new Promise((r) => setTimeout(r, stallMs));
+  // No engine → forward. A refresh is KICKED OFF but never awaited: loadVerifiedPolicy does network
+  // I/O, and awaiting it here would put a remote server's latency on the agent's transport. By the
+  // time any tools/call result exists, handleLine has already awaited ensurePolicy for that call.
+  if (!ENGINE) { ensurePolicy(); return null; }
+  if (!budgetOk()) {
+    if (!winSaid) { winSaid = true; reportOnce("Result scanning throttled (overload window)", "result:budget:throttled", "Info"); }
+    return null;
+  }
+  const text = resultScanText(result);
+  if (!text) return null;
+  const t0 = Date.now();
+  const d = decideText(ENGINE, POLICY, text, "file");
+  winSpent += Date.now() - t0;
+  return d;
+}
+
+// NOT deduped through seenOnce, unlike the tool stage, and the difference is deliberate: a tool's
+// advertised metadata is a standing PROPERTY (re-listed constantly, worth reporting once), whereas a
+// result is an EVENT — the second time a credential file crosses this boundary is a second exfiltration
+// opportunity, not a repeat of the first.
+function alertResult(toolName, findings, blocked) {
+  for (const f of findings || []) {
+    const hash = contentHash(f.match || "");
+    const riskLevel = blocked ? "Blocked" : f.riskLevel;
+    const decision = blocked ? "deny" : "notify";
+    post({ threatId: f.threatId, category: f.category, riskLevel, stage: "result", tool: `desktop:${toolName}`, decision, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: hash, ...IDENTITY });
+    if (blocked || f.riskLevel === "High" || f.riskLevel === "Critical") {
+      try { post({ ...literacyTouchpoint({ threatId: f.threatId, category: f.category, tool: `desktop:${toolName}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
+    }
+    try {
+      recordAction(applyCaptureTier({
+        threatId: f.threatId, category: f.category, riskLevel, stage: "result", tool: `desktop:${toolName}`,
+        decision, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: hash, ...IDENTITY
+      }, {}, (POLICY && POLICY.captureTier) || "content-free"));
+    } catch { /* ledger is best-effort */ }
+  }
+}
+
+// ONE message from the child. Exactly one write happens, and the default is always the original bytes.
+async function gateResult(lineBuf) {
+  let done = false;
+  const pass = () => { if (!done) { done = true; process.stdout.write(lineBuf); } };
   try {
-    // Matched STRUCTURALLY, not by pairing a request id: a tool list pushed outside the
-    // request/response pair — a schema refresh, a list_changed follow-up — is observed too, and no
-    // per-request bookkeeping has to be kept (or bounded) to make that work.
-    const tools = toolsOfResponse(JSON.parse(line));
-    if (tools) await observeTools(tools);
-  } catch { /* unparseable, oversized, or a scan failure — the bytes already went out */ }
+    // Over the line cap: never parsed, never buffered further — forwarded and declared unscanned.
+    if (lineBuf.length > CAPS.maxLineBytes) return pass();
+    const s = lineBuf.toString("utf8");
+    if (!s.trim() || s.indexOf("\"result\"") < 0) return pass(); // only a RESPONSE can carry either stage's payload
+    let msg;
+    try { msg = JSON.parse(s); } catch { return pass(); }
+
+    // The tool stage is unchanged and stays FORWARD-FIRST: a tools/list response is never altered,
+    // delayed or reordered (test/mcp-tool-stage.test.mjs asserts byte-identity on the wire), so it is
+    // written before the observation is queued and the observation is structurally unable to block.
+    const tools = toolsOfResponse(msg);
+    if (tools) { pass(); queueToolObservation(tools); return; }
+
+    const result = resultOfResponse(msg);
+    if (!result) return pass();
+
+    const verdict = await withDeadline(scanResult(result), CAPS.resultDeadlineMs);
+    if (!verdict || !verdict.findings.length) return pass();
+
+    // Report-first. Only an explicit block/kill resolution refuses; the house default for #39 is
+    // "notify", so an unconfigured device reports and forwards.
+    const blocked = verdict.decision === "deny" && msg.id != null;
+    const toolName = toolForId(msg.id);
+    if (blocked) {
+      done = true;
+      process.stdout.write(blockedResultLine(msg.id, verdict.reasons.join(", ") || "policy"));
+    } else pass();
+    alertResult(toolName, verdict.findings, blocked);
+  } catch {
+    pass(); // governance, not a sandbox
+  } finally {
+    pass(); // belt-and-braces: no path may leave a message unwritten
+  }
+}
+
+// ---- tools/list observation backlog. This one is OFF the transport (the bytes are already gone), so
+// it is the one queue where a backlog may be DROPPED rather than allowed to grow without bound. ----
+let obsInFlight = 0;
+function queueToolObservation(tools) {
+  if (obsInFlight >= CAPS.maxQueuedObs) return; // skip a LISTING, never a result
+  obsInFlight++;
+  obsQueue = obsQueue.then(() => observeTools(tools)).catch(() => {}).finally(() => { obsInFlight--; });
 }
 
 // ---- newline-delimited framing of Claude Desktop → proxy stdin. Buffer partial lines; a tool-call must

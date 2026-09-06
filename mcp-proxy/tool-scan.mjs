@@ -38,7 +38,41 @@ export const CAPS = {
   maxFieldBytes: 4096,   // any single string value contributes at most this much
   maxSchemaNodes: 256,   // schema nodes visited per tool
   maxSchemaDepth: 8,     // schema recursion depth
-  scanBudgetMs: 250      // wall-clock budget for one tools/list response; checked BETWEEN tools
+  scanBudgetMs: 250,     // wall-clock budget for one tools/list response; checked BETWEEN tools
+
+  // ---- the RESULT stage. A tool result is the OTHER thing a server sends, and it is bigger and far
+  // more frequent than a tool listing: a file read, a DB dump, a log tail. Every bound below exists
+  // because the proxy must never be the reason a result was slow, and because "load the whole thing
+  // into memory to scan it" is exactly what a hostile server would like us to do. ----
+  maxResultBytes: 65536, // composed scan text per tools/call result (64 KB). ~4 ms of engine time at
+                         // the "file" stage, measured; beyond it the result is scanned only up to
+                         // here — LESS scanning, never a delayed or dropped message.
+  maxResultNodes: 512,   // JSON nodes visited while harvesting result text
+  maxResultDepth: 8,     // recursion depth of that harvest
+
+  // ---- the two bounds that changed when the result stage became able to BLOCK. ----
+  //
+  // maxQueuedObs was written for an off-path observer that could safely DROP a backlogged line. The
+  // result stage is no longer off-path — its queue IS the transport, and dropping a line there would
+  // lose a message. So the cap moved to the one queue where dropping is still safe: the tools/list
+  // observation, which remains forward-first and structurally unable to block.
+  maxQueuedObs: 64,      // tools/list observations that may be in flight; over this, a LISTING is
+                         // skipped unscanned rather than queued without bound. Never a result.
+
+  // resultDeadlineMs is the wall-clock wall that makes parse-then-forward safe. Every result-stage
+  // decision races this timer, and losing the race forwards the ORIGINAL bytes. It bounds the ASYNC
+  // hazards (a policy refresh, a starved microtask queue, any await a later change adds). It cannot
+  // bound a synchronous regex pass — V8 cannot interrupt one — which is what maxResultBytes is for:
+  // measured on this repo, decideText over 64 KB at stage "file" costs 3.8-4.2 ms warm.
+  resultDeadlineMs: 750,
+
+  // An overload valve, NOT a kill switch. The previous shape of this budget was cumulative for the
+  // life of the process, which meant ~1250 ordinary results permanently blinded the stage — and a
+  // hostile server could buy that blindness deliberately with cheap traffic before sending the
+  // payload. It is now a SLIDING WINDOW: at most resultBudgetMs of scanning per resultWindowMs
+  // (~8% of one core). Exceed it and the stage skips results until the window rolls, then resumes.
+  resultBudgetMs: 5000,
+  resultWindowMs: 60000
 };
 
 // A JSON-RPC response carrying a tool list. Matched structurally (result.tools is an array of objects
@@ -52,6 +86,76 @@ export function toolsOfResponse(msg) {
   if (!Array.isArray(t)) return null;
   const tools = t.filter((x) => x && typeof x === "object" && !Array.isArray(x) && typeof x.name === "string");
   return tools.length ? tools : null;
+}
+
+// A JSON-RPC RESPONSE carrying tool RESULT content — the content the agent INGESTS, which the proxy
+// never looked at. Matched structurally, like toolsOfResponse, and deliberately NOT by pairing a
+// request id: an id map is state that has to be bounded, and a result that arrives without its
+// request still deserves to be scanned. The four rejections below are the whole contract:
+//
+//   result.tools present  -> a tools/list; the tool stage owns it, and double-scanning it would
+//                            double every tool-poisoning alert.
+//   msg.method present    -> a server->client REQUEST or notification (sampling/createMessage,
+//                            notifications/message). Not a result, whatever else it carries.
+//   msg.error present     -> a JSON-RPC error; there is no result content to ingest.
+//   non-object result     -> nothing to walk.
+//
+// Note what this deliberately DOES accept: any method's result, not just tools/call. `resources/read`
+// ({contents:[{text}]}) and `prompts/get` ({messages:[{content:{text}}]}) are the same ingestion event
+// wearing a different shape, and the harvester below is shape-agnostic, so they come along free.
+export function resultOfResponse(msg) {
+  if (!msg || typeof msg !== "object" || Array.isArray(msg)) return null;
+  if (msg.method != null) return null;
+  if (msg.error != null) return null;
+  const r = msg.result;
+  if (!r || typeof r !== "object" || Array.isArray(r)) return null;
+  if (Array.isArray(r.tools)) return null;
+  return r;
+}
+
+// Base64 payloads. `data` (image / audio content blocks) and `blob` (binary resource contents) are
+// megabytes of base64 that no text detector can read; harvesting them would spend the entire byte
+// budget on noise and buffer the exact thing the caps exist to avoid. Skipped by key, and declared
+// as uncovered rather than quietly dropped.
+const BINARY_KEYS = new Set(["data", "blob"]);
+
+// Harvest the model-visible STRINGS out of a result, bounded three ways at once (nodes, depth, total
+// bytes). Every string value is taken, not only `content[].text`: `structuredContent` values, a
+// resource `uri`, an error string in a tool's own payload are all things the model reads, and keying
+// on one field name would make the harvester wrong the moment a server used a different shape.
+function walkResult(node, depth, out, budget) {
+  if (budget.nodes <= 0 || budget.bytes <= 0 || depth > CAPS.maxResultDepth || node == null) return;
+  if (Array.isArray(node)) {
+    for (const item of node) { if (budget.nodes <= 0 || budget.bytes <= 0) return; walkResult(item, depth + 1, out, budget); }
+    return;
+  }
+  if (typeof node !== "object") return;
+  budget.nodes--;
+  for (const k of Object.keys(node)) {
+    if (budget.nodes <= 0 || budget.bytes <= 0) return;
+    const v = node[k];
+    if (typeof v === "string") {
+      if (BINARY_KEYS.has(k) || !v) continue;
+      const take = v.length > budget.bytes ? v.slice(0, budget.bytes) : v;
+      budget.bytes -= take.length;
+      out.push(take);
+    } else if (v && typeof v === "object") walkResult(v, depth + 1, out, budget);
+  }
+}
+
+// The text the engine sees for one result, at stage "file". One value per line for the same reason
+// toolScanText does it: detector patterns use [^.\n]{0,N} spans, so a match must not be stitched
+// together across two unrelated fields.
+// The cap is on the COMPOSED text, so the join's own separators have to be inside it: budgeting only
+// the harvested values let a result of N fields exceed maxResultBytes by N-1 newlines (measured: 65537
+// bytes against a 65536 cap on a single-field result, because the trailing budget slice was taken
+// before the join). The final clip is what actually holds the contract; the walk budget is what stops
+// us from BUILDING megabytes in order to throw them away.
+export function resultScanText(result) {
+  if (!result || typeof result !== "object") return "";
+  const out = [];
+  walkResult(result, 0, out, { nodes: CAPS.maxResultNodes, bytes: CAPS.maxResultBytes });
+  return clip(out.join("\n"), CAPS.maxResultBytes);
 }
 
 function clip(s, n) { const v = String(s); return v.length > n ? v.slice(0, n) : v; }

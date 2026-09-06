@@ -4,6 +4,7 @@ import { inspectInstall } from "./popular-packages.js";
 import { taintedFlow } from "./taint.js";
 import { persuasionHit } from "./crescendo.js";
 import { overrideStructuralHit, prefixForcingHit, personaBypassHit } from "./injection-tells.js";
+import { deliberateObscurityHit } from "./obfuscation-signal.js";
 
 // ---------------------------------------------------------------------------------------------------
 // Content-free helpers for the additive detectors appended at the end of DETECTORS. All pure,
@@ -1138,6 +1139,39 @@ export const DETECTORS = [
       /\b(?:approved|authori[sz]ed|disabled|polic(?:y|ies)|safety)\b/i
     ],
     refine: (_m, text) => persuasionHit(text)
+  },
+  {
+    // NEW / #50 (LLM08) — SCHEME-AGNOSTIC deliberate obscurity. Every obfuscation detector above this
+    // point (and every decoder in data/normalize.js) knows a SCHEME: base64, hex, rot13, caesar,
+    // leetspeak, reversal, confusable-fold, unicode-escape, the Unicode tag block. Enumeration loses to
+    // invention — this project's own closed-loop adversary produced compounding chains that survive every
+    // one-step decoder. This detector asks the scheme-free question instead: does the text carry the
+    // STATISTICAL FINGERPRINTS of deliberate concealment (separator wedging, mixed script inside a word,
+    // case alternation, digit interleaving, an encoded-blob shape, letter-frequency divergence on
+    // prose-shaped text, zero-width interleaving)?
+    //
+    // Obscurity ALONE is deliberately NOT enough, and that is a MEASURED decision, not caution:
+    // test/redteam/heldout-v3.json's benign half is 77/97 obfuscated through the SAME chain grammar as
+    // its attacks, so an obscurity-only rule scores ~1:1 recall to false positive there (109 of 160
+    // attacks, 62 of 97 benign) and adds an FP on benign-corpus-v2 as well. data/obfuscation-signal.js
+    // therefore caps ALL obscurity tells at one shared concept point and requires a second, independent,
+    // still content-free signal — a DECODE-AND-ACT directive in the carrier prose, the one step an
+    // encoded injection cannot skip. Nothing here decodes anything or inspects the concealed payload.
+    //
+    // The patterns are a cheap PREFILTER only; deliberateObscurityHit() decides over the full text and is
+    // memoised on the last text, because _matchDetector re-invokes refine() for every occurrence.
+    // warn-mode and content-free: each prefilter match is a single word, never a span of the payload.
+    detectorId: "obf-deliberate-obscurity",
+    threatId: 50,
+    stage: "prompt",
+    mode: "warn",
+    hint: "Text shows the statistical fingerprints of deliberate obfuscation together with an instruction to decode and act on it.",
+    patterns: [
+      /\b(?:decode[sd]?|decoding|de-?obfuscate[sd]?|decipher(?:ed|s)?|decrypt(?:ed|s)?|unscramble[sd]?|unmask(?:ed|s)?|unpack(?:ed|s)?|restore[sd]?|reverse[sd]?|translate[sd]?|convert(?:ed|s)?|expand(?:ed|s)?)\b/i,
+      /\b(?:carry\s{1,4}out|obey|comply|appl(?:y|ies)|follow|execute|perform|act\s{1,4}on)\b/i,
+      /\b(?:encoded|obscured|scrambled|garbled|obfuscated|reversed|shifted)\b/i
+    ],
+    refine: (_m, text) => deliberateObscurityHit(text)
   },
   {
     // #21 — the SEMANTIC detect-gate detector. It has NO deterministic pattern (the `(?!)` never matches),
