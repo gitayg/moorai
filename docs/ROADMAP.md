@@ -4,6 +4,55 @@ Tracked work items that are known and deliberate, not yet built. Keep this hones
 gaps we've named in positioning go so they don't get lost. Close an item by shipping it and moving the
 note into the changelog/commit history.
 
+## PROCESS RULE — measure the model-refusal baseline BEFORE building a detector
+
+**Learned the expensive way in v0.77.0. Apply this before any future detection wave.**
+
+A detector is only worth building for an attack family the underlying model does **not** already refuse.
+AMTSO states the principle ("model refusal … should not be counted as product detection or prevention")
+but the practical consequence is a prioritisation rule: *recall you add on top of a refusal is worth
+~nothing; recall you add where the model complies is worth everything.*
+
+Measured on the locked half (`scripts/measure-refusal-baseline.mjs`, llama3:latest 8B proxy, N=5):
+
+| model refuses reliably | our marginal value | | model NEVER refuses | our marginal value |
+|---|---|---|---|---|
+| PAP 5/5, PAIR 4/4, TAP 3/3, AdvPrefix 4/4, AutoDAN 7/9 | **0–2** | | BoN 0/4, CipherChat 0/4, DAN 0/4, FlipAttack 0/3, h4rm3l 0/4 | **the whole family** |
+
+**18 of our 20 marginal catches are obfuscation/encoding families.** The corollary is uncomfortable and
+should be stated plainly: the v0.74.0 persuasion wave (crescendo.js, 20 literals → 35 structural slot
+tells, closing PAP 0/5→4/5, TAP 0/4→3/4, PAIR 2/5→5/5) bought **close to zero marginal protection**,
+because the model already refuses those. The load-bearing work is the *obfuscation* layer —
+`data/normalize.js`, leetspeak, homoglyph folding, FlipAttack, CipherChat — where the model does not
+recognise the payload as harmful at all and therefore never refuses it.
+
+**So the order of operations for any new family is:**
+1. Measure the refusal baseline for that family FIRST (`measure-refusal-baseline.mjs`).
+2. If the model refuses it reliably, the detector is defence-in-depth at best — deprioritise it, and do
+   not let it into a marketing number as if it were protection.
+3. Build where the model complies.
+
+**Read this before over-reading the obfuscation half.** Inspection of the runs shows the 8B model was
+mostly **not complying** with the obfuscated families — it was **failing to decode them**. It read base64
+and hallucinated the plaintext, misread leetspeak as a Caesar cipher, botched the reversal; decoded intent
+surfaced in only **17 of 75** obfuscation runs. A frontier model decodes all of these correctly and might
+then refuse, so **14 of the 20 marginal catches are the soft part of the figure.**
+
+The finding that *does* survive, and the one to defend: **in the 17 runs where the model demonstrably did
+decode the hidden ask, it refused 0 times.** Safety behaviour keyed on plain-language surface features and
+did not survive obfuscation even when comprehension did. Refusal rate by surface form: **plain-language
+77%, obfuscated 1%.** That is the real justification for the normalization layer — not "the model can't
+read base64", which a better model fixes, but "safety training did not transfer to a decoded payload",
+which it may not.
+
+Caveats carried with the rule: the baseline is an **8B open-weights proxy**, not the frontier model an
+agent actually runs; 11/54 samples flipped across 5 runs; the headline is rule-dependent by ±8 points
+(any-run 38.6% / majority 45.5% / every-run 54.5%); and the 17-run comprehension check is a keyword proxy,
+not a graded judgement. Re-run against the real model when `claude -p` auth is restored before treating
+any family's number as settled. Note one correction already ran in our favour and was fixed: refusal
+markers written for Claude's phrasing scored llama3 refusals as compliance, over-stating marginal value
+until corrected (47.7% → 45.5%).
+
 ## Evidence-layer gaps (from the "AI's Evidence Problem" framing)
 
 Context: the content-free OTel export (v0.62.0, `cli/otel.mjs`) makes MoorAI a content-free *source*
