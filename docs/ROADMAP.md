@@ -213,6 +213,37 @@ point of view; position and document *that* as the durable evidence store.
 
   **NOTE:** `test/semantic.test.mjs` is 8/9 on any machine with a reachable local model — that test assumes
   the loopback model is absent (as in CI). It needs an env guard, not a code fix.
+- **DONE (v0.75.0) — global weighted scoring dial: shipped OFF, and the honest answer is "marginal".**
+  `data/risk-score.js` unions the tell IDs already declared across `injection-tells.js` / `crescendo.js`,
+  sums their EXISTING `w:` weights (nothing was fitted — the union matters because the 7 `NEGATION_SRC`
+  tells belong to two tables and summing twice would let one restated concept corroborate itself), and
+  promotes a sample only when nothing else fired. Promote-only, so it is monotonic and cannot lose recall.
+  Wired via a 4th `DetectionEngine` arg + `setScoring()`; `policy.scoringMode` defaults to `"off"`, and
+  with it off the output is **byte-identical** to the pre-change engine (789 samples, 0 diffs, compared
+  against `git show HEAD:src/engine.js`).
+
+  Threshold sweep (the actual deliverable):
+
+  | threshold | locked half recall | locked FP | benign-v2 FP rate |
+  |---|---|---|---|
+  | off | 88.6% (39/44) | 0/10 | 2.79% |
+  | 1 | 93.2% (41/44) | 1/10 | **5.59%** |
+  | **3 (knee)** | **90.9% (40/44)** | **0/10** | **2.79%** |
+  | ≥5 | 88.6% | 0/10 | 2.79% |
+
+  **Verdict: the dial buys exactly ONE attack.** It is free (no added FP, +1.3% latency, consulted at most
+  once per scan) but it is one sample, and the tune half has zero headroom (already 100%). Measured why it
+  cannot buy more: **3 of the 5 locked-half misses carry an aggregate of exactly 0** — no weak tell of any
+  kind fires, so no threshold can ever reach them; 1 more ties with 14 benign samples and is unseparable.
+  Only `hv2-advprefix-affirm-prefix-104` (three prefix tells, no `shape` tell) is a genuine instance of the
+  thesis. The value is structural: a future wave can now ship a w:1 tell that would otherwise never fire
+  alone. **Landed at `mode:"off"`; revisit the curve after the next tell wave.**
+
+  Its own falsification pass found a hole in ITS OWN test: the byte-identity check compared engine-to-engine,
+  so a break enabling the dial for all three engines would have passed. It added an absolute invariant (no
+  `risk-aggregate` finding and no `aggregateScore` field may EVER appear with the dial off) and only then
+  did the deliberate break go red. **No caller turns the dial on** — `hook-core.mjs`, `src/app.js` and the
+  scripts all construct 3-arg; wiring `policy.scoringMode` through the enforcement path remains open.
 - **DONE (v0.67.0) — signed decision receipts + offline verifier:** `cli/moorai-receipt.mjs` emits a
   content-free per-verdict receipt (strict field allowlist → SHA-256 digest → ed25519 signature via the
   existing `agency-sign` per-device key), and `moorai-verify-chain --offline <file>` verifies a receipt or

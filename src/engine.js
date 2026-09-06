@@ -1,5 +1,6 @@
 import { safeRegex } from "./safe-regex.js";
 import { normalizeVariants } from "../data/normalize.js";
+import { aggregateRisk, resolveScoring, scoreLabel } from "../data/risk-score.js";
 
 const LEVEL_RANK = { Critical: 4, High: 3, Medium: 2, Low: 1 };
 
@@ -13,12 +14,22 @@ const RESCAN_ON_VARIANT = (d) =>
   d.detectorId === "exec-reverse-shell";
 
 export class DetectionEngine {
-  constructor(threatData, detectors, contentRules = []) {
+  constructor(threatData, detectors, contentRules = [], scoring = null) {
     this.sources = threatData.sources || {};
     this._baseDetectors = detectors;
     this.detectors = detectors;
     this.contentRules = contentRules;
     this.threatsById = new Map(threatData.threats.map((t) => [t.id, t]));
+    this.setScoring(scoring);
+  }
+
+  // Global weighted risk-score dial (data/risk-score.js) — OFF unless a policy opts in. `_scoring` is
+  // null for every mode but "weighted", so the two call sites below are a single null check and the scan
+  // path stays byte-identical to the pre-scoring engine (test/risk-score.test.mjs proves this over the
+  // full corpora). Fail-open: a malformed policy resolves to off, never to a changed verdict.
+  setScoring(policy) {
+    const s = resolveScoring(policy);
+    this._scoring = s.mode === "weighted" ? s : null;
   }
 
   // #22 — merge org-defined detector packs (already compiled) on top of the built-ins. Idempotent:
@@ -102,6 +113,12 @@ export class DetectionEngine {
     // flag, and is wrapped fail-open so a normalization error can never change the raw decision.
     try { this._scanNormalized(text, want, byThreat); } catch { /* fail-open: keep the raw result */ }
 
+    // Global weighted risk score — PROMOTE-ONLY. Consulted ONLY when the boolean path (raw + normalized)
+    // produced NOTHING, so it can add a finding but can never suppress, reorder or alter one; recall is
+    // therefore monotonically >= the boolean baseline at every threshold. `_scoring` is null by default,
+    // which makes this a single null check and leaves the result byte-identical to before.
+    this._promoteByScore(text, byThreat);
+
     return [...byThreat.values()].sort(
       (a, b) =>
         (LEVEL_RANK[b.threat.riskLevel] - LEVEL_RANK[a.threat.riskLevel]) ||
@@ -181,11 +198,39 @@ export class DetectionEngine {
       if (threat) add({ detectorId: "inj-persistent", mode: "warn", hint: `Repeated injection attempts across ${flagged.length} turns.`, match: `${flagged.length} turns`, threat, multiTurn: true });
     }
 
+    // The same promote-only dial over the joined turn window (see scan()). Off by default.
+    this._promoteByScore(joined, byThreat, true);
+
     return [...byThreat.values()].sort(
       (a, b) =>
         (LEVEL_RANK[b.threat.riskLevel] - LEVEL_RANK[a.threat.riskLevel]) ||
         (b.threat.riskScore - a.threat.riskScore)
     );
+  }
+
+  // Promote a set of SUB-THRESHOLD signals into one finding when their combined weight clears the
+  // configured threshold. No-op unless the dial is on AND the boolean path found nothing — the two
+  // conditions that make this monotonic. Wrapped fail-open: any error inside the scoring layer leaves
+  // the boolean verdict exactly as it was. Content-free: the finding carries a rendered score and tell
+  // COUNTS, never a span (test/risk-score.test.mjs plants a canary and asserts it).
+  _promoteByScore(text, byThreat, multiTurn = false) {
+    if (!this._scoring || byThreat.size > 0) return;
+    try {
+      const agg = aggregateRisk(text, this._scoring);
+      if (!agg.promote) return;
+      const threat = this.threat(this._scoring.threatId);
+      if (!threat) return;
+      const tells = agg.tellIds.length + (agg.persuasion > 0 ? 1 : 0);
+      byThreat.set(threat.id, {
+        detectorId: "risk-aggregate",
+        mode: "warn",
+        hint: `${tells} individually sub-threshold injection signals corroborate (aggregate weight ${agg.score} >= ${agg.threshold}).`,
+        match: scoreLabel(agg),
+        threat,
+        aggregateScore: agg.score,
+        ...(multiTurn ? { multiTurn: true } : {})
+      });
+    } catch { /* fail-open: the boolean verdict stands */ }
   }
 
   // Replaces matched sensitive spans with redaction tags. Skips coach-mode detectors
