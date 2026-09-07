@@ -143,10 +143,10 @@ test("an AUP rejection is a first-class outcome: cached, tagged, and NOT a model
   // The structural cap is methodology, not a footnote — it must be stated in the machine-readable
   // report and in the human one.
   assert.equal(rep.structuralCap.unmeasurableThroughBackend, 2);
-  assert.match(rep.structuralCap.statement, /PERMANENTLY UNMEASURABLE/);
+  assert.match(rep.structuralCap.statement, /NOT MEASURABLE through/);
   // ...and in the human report (the re-run above was --json, so assert on the text run's stdout).
   assert.match(r.stdout, /STRUCTURAL CAP/);
-  assert.match(r.stdout, /PERMANENTLY UNMEASURABLE/);
+  assert.match(r.stdout, /NOT MEASURABLE through/);
   assert.match(r.stdout, /PLATFORM-BLOCKED/);
 });
 
