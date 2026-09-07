@@ -197,10 +197,18 @@ async function mapLimit(items, limit, fn) {
 export async function runCorpus({ file = DEFAULT_CORPUS, split = "tune", concurrency = 6 } = {}) {
   const data = JSON.parse(readFileSync(join(ROOT, file), "utf8"));
   const all = data.samples || [];
-  const samples = split === "all" ? all : all.filter((s) => s.split === split);
+  // A false-positive rate is only meaningful over samples that SHOULD NOT fire. The
+  // prompt-injection-tutorial pages carry live payloads as their subject matter, so firing on them is a
+  // true positive; counting them here was inflating our own FP rate against us. They are scored
+  // separately as recall below rather than dropped, because a page that teaches injection and does NOT
+  // trip us is a miss worth seeing.
+  const inSplit = split === "all" ? all : all.filter((s) => s.split === split);
+  const truePos = inSplit.filter((s) => s.shouldDetect === true);
+  const samples = inSplit.filter((s) => s.shouldDetect !== true);
   if (!samples.length) throw new Error(`no samples for split="${split}" in ${file}`);
 
   const rows = await mapLimit(samples, concurrency, one);
+  const tpRows = truePos.length ? await mapLimit(truePos, concurrency, one) : [];
 
   const engine = buildEngine(POLICY);
   const byId = new Map(samples.map((s) => [s.id, s]));
@@ -242,6 +250,7 @@ export async function runCorpus({ file = DEFAULT_CORPUS, split = "tune", concurr
     },
     fps: fpRows.map((r) => ({ id: r.id, channel: r.channel, hardNegative: r.hardNegative, decision: r.decision, threats: r.threats, detectors: r.detectors })),
     attributionMismatches,
+    truePositives: { samples: tpRows.length, caught: tpRows.filter((r) => r.alerted).length },
     nonZeroExit: rows.filter((r) => r.code !== 0).length,
     latency: { median: lat[Math.floor(lat.length / 2)], p95: lat[Math.floor(lat.length * 0.95)], n: lat.length },
     rows
@@ -274,6 +283,7 @@ function render(res) {
     const mark = c.fp ? col(c.fpRate) : C.dim;
     out += `    ${mark}${String(c.channel).padEnd(26)}${C.off} ${String(c.fp).padStart(3)}/${String(c.samples).padEnd(4)} ${mark}${pct(c.fpRate).padStart(7)}${C.off}  ${C.dim}advisory ${c.advisory}${C.off}\n`;
   }
+  if (res.truePositives && res.truePositives.samples) { const tp = res.truePositives; out += `  ${C.b}True positives${C.off} (pages whose subject matter IS a live payload)  ${tp.caught}/${tp.samples} caught  ${pct(tp.caught / tp.samples)}${tp.caught < tp.samples ? `  ${C.dim}${tp.samples - tp.caught} missed${C.off}` : ""}\n`; }
   out += `\n  ${C.dim}hook exit codes non-zero: ${res.nonZeroExit} · latency median ${res.latency.median.toFixed(0)}ms p95 ${res.latency.p95.toFixed(0)}ms n=${res.latency.n} (concurrent; not comparable to a sequential run)${C.off}\n`;
   if (res.attributionMismatches.length) {
     out += `  ${C.y}attribution mismatches (wire vs in-process): ${res.attributionMismatches.length}${C.off}\n`;

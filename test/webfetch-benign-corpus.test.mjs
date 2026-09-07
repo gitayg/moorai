@@ -48,7 +48,8 @@ test("every sample is well-formed and declares itself benign", () => {
     assert.equal(typeof s.id, "string", `bad id: ${JSON.stringify(s.id)}`);
     assert.ok(!ids.has(s.id), `duplicate id ${s.id}`);
     ids.add(s.id);
-    assert.equal(s.shouldDetect, false, `${s.id} must declare shouldDetect:false`);
+    assert.equal(typeof s.shouldDetect, "boolean", `${s.id} must declare shouldDetect`);
+    if (s.shouldDetect) assert.equal(s.hard_negative, false, `${s.id} is a true positive, not a hard negative`);
     assert.equal(s.stage, "output", `${s.id} must declare the output stage`);
     assert.equal(typeof s.channel, "string");
     assert.equal(typeof s.hard_negative, "boolean");
@@ -92,7 +93,11 @@ test("the hard-negative slice is substantial and covers the buckets that decide 
   const hnChannels = new Set(hn.map((s) => s.channel));
   // dlp-email's fate is decided by ordinary pages that merely carry a contact address, so that bucket
   // is load-bearing rather than decorative.
-  for (const need of ["contact-email-page", "security-advisory", "cred-rotation-runbook", "prompt-injection-tutorial", "encoded-blob", "human-imperative", "non-english-docs"]) {
+  // prompt-injection-tutorial was here and was REMOVED, not forgotten: those pages carry live injection
+  // payloads as their subject matter, and an agent reading one cannot tell teaching material from an
+  // attack because the text is identical. Firing on them is correct, so they are true positives now and
+  // scoring them as benign controls was overstating our false-positive rate.
+  for (const need of ["contact-email-page", "security-advisory", "cred-rotation-runbook", "encoded-blob", "human-imperative", "non-english-docs"]) {
     assert.ok(hnChannels.has(need), `hard-negative channel missing: ${need}`);
   }
   assert.ok(S.filter((s) => s.channel === "contact-email-page").length >= 25, "contact-email-page bucket too thin to price dlp-email");
