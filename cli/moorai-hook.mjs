@@ -1083,13 +1083,45 @@ function responseText(input) {
 // REPORT-FIRST. Findings resolve through the existing threatActionFor, exactly as everywhere else.
 // Measured with no policy: the 24 attacks resolve 20 allow / 4 ask and the 11 benign controls 10 allow
 // / 1 ask — zero denies. A block requires an org policy that resolves a threat to block/kill.
+// Rebuild a decideText result with some threats removed. The decision is RECOMPUTED from what survives
+// rather than carried over — dropping the only finding that caused a deny must drop the deny with it,
+// or the suppression would be cosmetic. Reasons and kill signals are rebuilt the same way. Content-rule
+// findings (threatId 0) are never candidates for removal.
+function dropOutboundOnly(res, threatIds, policy) {
+  const kept = res.findings.filter((f) => !threatIds.has(f.threatId));
+  if (kept.length === res.findings.length) return res;
+  const RANKED = { allow: 0, ask: 1, deny: 2 };
+  const out = { decision: "allow", reasons: [], findings: kept, kill: false, killIds: [] };
+  for (const f of kept) {
+    const act = f.threatId === 0 ? (f.riskLevel === "Blocked" ? "block" : "justify") : threatActionFor(policy, f.threatId);
+    if (act === "block" || act === "kill") { if (RANKED.deny > RANKED[out.decision]) out.decision = "deny"; out.reasons.push(`#${f.threatId} ${f.category}`); }
+    else if (act === "justify") { if (RANKED.ask > RANKED[out.decision]) out.decision = "ask"; out.reasons.push(`#${f.threatId} ${f.category} (needs sign-off)`); }
+    if (act === "kill" && res.killIds.includes(f.threatId)) { out.kill = true; out.killIds.push(f.threatId); }
+  }
+  return out;
+}
+
 async function handlePostToolUse(input, tool, policy, engine) {
   if (!POST_DISPATCHED_TOOLS.includes(tool)) return exitHook();
   const text = responseText(input);
   if (!text) return exitHook();
   const ti = input.tool_input || {};
   const url = typeof ti.url === "string" ? ti.url : (typeof ti.query === "string" ? ti.query : "");
-  const d = decideText(engine, policy, text, "output");
+  // OUTBOUND-ONLY DETECTORS MUST NOT JUDGE INBOUND CONTENT. The "output" stage historically meant
+  // "content the agent is about to emit"; wiring PostToolUse to it made it ALSO mean "content the agent
+  // just ingested", and every outbound-only detector came along silently. Measured on a 311-sample
+  // benign web corpus: egress-credential-shaped (#65) fired on 4 ordinary pages and, because
+  // BUILTIN_DEFAULT_ACTIONS resolves 65 to "block", HARD-BLOCKED them on a device with no org policy at
+  // all — roughly 1.3% of benign fetched pages. Its own comment says it looks for a token "heading to an
+  // OUTBOUND sink"; its patterns are bare curl/fetch/https://, which any documentation page contains.
+  // On this surface nothing is leaving the device, so it is answering a question that was not asked.
+  // It also catches NOTHING here: 0 of the 24 output-stage vector-2 attacks, 0 uniquely. Dropping it
+  // costs no recall and removes the only source of by-default blocking on benign pages.
+  // The durable fix is a distinct ingest stage rather than a suppression list; this is the narrow,
+  // measured stopgap. Anything added here needs the same two numbers: what it catches, what it costs.
+  const OUTBOUND_ONLY_THREATS = new Set([65]);
+  const raw = decideText(engine, policy, text, "output");
+  const d = dropOutboundOnly(raw, OUTBOUND_ONLY_THREATS, policy);
   report(d.findings, "output", `hook:${tool}`, d.decision === "deny", policy.captureTier, { toolName: tool });
   logBehavior(tool, url || tool, text, d, "output");
   if (d.kill) killSession(tool, d.killIds, "output");
