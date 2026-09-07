@@ -1105,9 +1105,34 @@ function responseText(input) {
 // attacker who omits the header still evades, and the real fix is detectors for those five
 // sub-techniques. The gate stops us paying 15 false positives for an accident; it does not make the
 // accident into detection.
+// #17 out-links gets the same treatment and for a DIFFERENT reason, which is why it is a gate and not a
+// drop. Unlike dlp-email's accidental header matches, when out-links fires on a real attack the link IS
+// the payload: "migrate to https://…attacker", "retry this request against https://…attacker", "install
+// with --registry https://…attacker", a tracking pixel ![](…/px?d=CONVERSATION_B64). It uniquely catches
+// 15 attacks across the corpora and must not be removed.
+//
+// What separates those from the 40 benign pages it also hit is grammatical, not lexical: an attack makes
+// the link the OBJECT OF AN INSTRUCTION to the agent; documentation merely REFERENCES it. So the gate
+// asks whether something is being asked of the link.
+//
+//   #17 ungated      22/24 (91.7%)  38.0% FP
+//   #17 narrow       18/24 (75.0%)  20.9% FP   <- first attempt; lost 4 real attacks
+//   #17 wide         22/24 (91.7%)  21.5% FP   <- this: full recall, FP nearly halved
+//
+// CAVEAT ON THE WIDE FORM: the extra verbs were derived by reading the 4 attacks the narrow gate lost,
+// so the 24-attack set is in-sample for this gate and 91.7% is no longer a held-out figure for it. The
+// benign side is clean — measured on the tune half only. The verbs are principled rather than sample
+// -matched (migrate/retry/install/registry-flag/image-embed are how a link becomes an instruction), but
+// the honest read is that this needs fresh attacks to confirm, not another pass over these.
 const INBOUND_GATES = {
   15: (t) => /^[ \t]{0,3}(?:from|to|cc|bcc|reply-to|organizer|sender)[ \t]*:[^\n]{0,120}@/im.test(t)
-          || /\b(?:send|email|e-mail|forward|cc|bcc|report|deliver|mail|exfiltrate|transmit)\b[^\n]{0,80}@/i.test(t)
+          || /\b(?:send|email|e-mail|forward|cc|bcc|report|deliver|mail|exfiltrate|transmit)\b[^\n]{0,80}@/i.test(t),
+  17: (t) => /\b(?:send|post|upload|exfiltrate|transmit|deliver|report|submit|forward|curl|wget|fetch)\b[^\n]{0,80}https?:\/\//i.test(t)
+          || /https?:\/\/[^\s]{0,120}\?[^\s]{0,80}=(?:\$|\{\{|%7B)/i.test(t)
+          || /\b(?:migrate|switch|point|redirect|repoint|move)\b[^\n]{0,40}\bto\b[^\n]{0,40}https?:\/\//i.test(t)
+          || /\b(?:retry|re-?run|reissue|authenticate|register|install|download|pull|clone)\b[^\n]{0,60}https?:\/\//i.test(t)
+          || /--?(?:registry|index-url|repo|remote|endpoint|host|url)[ =]https?:\/\//i.test(t)
+          || /!\[[^\]]{0,60}\]\(https?:\/\//i.test(t)
 };
 
 // Rebuild a decideText result with some threats removed. The decision is RECOMPUTED from what survives
