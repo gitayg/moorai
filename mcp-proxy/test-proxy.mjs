@@ -13,14 +13,19 @@
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { generateKeyPairSync, sign as edSign } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import http from "node:http";
 import os from "node:os";
 import { wrapConfig, unwrapConfig, isWrapped, GUARD_PATH } from "./install.mjs";
+import { policyCanonical, policyDigest, POLICY_SIG_VERSION, publicKeyId } from "../cli/hook-core.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const GUARD = join(HERE, "moorai-mcp-guard.mjs");
 const FAKE = join(HERE, "test-fake-mcp-server.mjs");
+
+const TENANT = "acme";
 
 let failures = 0;
 function ok(cond, msg) { console.log(`${cond ? "PASS" : "FAIL"}  ${msg}`); if (!cond) failures++; }
@@ -30,15 +35,48 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 async function testProxy() {
   console.log("\n== Part A: stdio proxy ==");
   const home = mkdtempSync(join(os.tmpdir(), "moorai-mcp-test-"));
-  mkdirSync(join(home, ".curaiq"), { recursive: true });
-  // Fresh policy cache (<60s) → the guard uses it directly and never hits the network. Deny any `echo`
-  // call whose serialized args contain BLOCKME (per-tool arg rule, #18).
-  writeFileSync(join(home, ".curaiq", "hook-policy.json"), JSON.stringify({ mcpToolRules: { echo: { deny: ["BLOCKME"] } }, captureTier: "content-free" }));
+  mkdirSync(join(home, ".moorai"), { recursive: true });
+
+  // The guard reads its policy through loadVerifiedPolicy() (v0.51-v0.53 hardening) from ~/.moorai,
+  // NOT the pre-rebrand ~/.curaiq this fixture used to write. Same fixture shape as the maintained
+  // test/mcp-proxy-policy.test.mjs — an ed25519 console key, a signed body, and a local console serving
+  // both the pubkey and the policy — so the deny rule arms the way it does on a real device.
+  // Measured, so the comment does not overstate it: on this throwaway HOME the device is unanchored
+  // (no /etc/moorai/policy.pub) and starts unpinned, and a first fetch is admitted on TOFU — a
+  // corrupted signature here still yields an enforcing policy. Signature TRUST is the maintained
+  // test's subject, not Part A's; what Part A pins is that the gate blocks and the real server never
+  // sees the call. Signing correctly is what keeps this fixture honest if unanchored trust is ever
+  // tightened, and it arms the pin below.
+  const consoleKey = generateKeyPairSync("ed25519");
+  const pubkeyBody = JSON.stringify({ tenant: TENANT, alg: "ed25519", publicKey: publicKeyId(consoleKey.publicKey) });
+  // Deny any `echo` call whose serialized args contain BLOCKME (per-tool arg rule, #18).
+  const policy = { captureTier: "content-free", mcpToolRules: { echo: { deny: ["BLOCKME"] } } };
+  const iat = "2026-08-21T00:00:00.000Z";
+  const sig = edSign(null, Buffer.from(policyCanonical({ v: POLICY_SIG_VERSION, tenant: TENANT, iat, digest: policyDigest(policy) })), consoleKey.privateKey).toString("base64");
+  const SIGNED = JSON.stringify({ ...policy, policySig: { v: POLICY_SIG_VERSION, alg: "ed25519", tenant: TENANT, iat, sig } });
+
+  const console_ = http.createServer((req, res) => {
+    if (req.url.startsWith("/api/policy")) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(req.url === "/api/policy/pubkey" ? pubkeyBody : SIGNED);
+      return;
+    }
+    if (req.url === "/api/alerts" && req.method === "POST") { req.resume(); res.writeHead(200); res.end("{}"); return; }
+    res.writeHead(404); res.end();
+  });
+  await new Promise((r) => console_.listen(0, "127.0.0.1", r));
+  const url = `http://127.0.0.1:${console_.address().port}`;
+  writeFileSync(join(home, ".moorai", "config.json"), JSON.stringify({ serverUrl: url, tenant: TENANT, installToken: "tok" }));
+  // Deliberately NO pre-written cache: a fresh (<60s) cache makes ensurePolicy() short-circuit before
+  // it ever fetches, so the signature would go unchecked and no TOFU pin would arm. Starting empty
+  // forces the real path — fetch, verify, pin, record last-known-good — which is what a real device does.
   const recvLog = join(home, "received.log");
 
+  const childEnv = { ...process.env, HOME: home, USERPROFILE: home, MoorAI_SERVER: url, MoorAI_TENANT: TENANT };
+  delete childEnv.XDG_CONFIG_HOME; delete childEnv.XDG_STATE_HOME; // latch/breadcrumb resolve under the throwaway HOME
   const child = spawn(process.execPath, [GUARD, "--server", "testsrv", "--", process.execPath, FAKE, recvLog], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, HOME: home, USERPROFILE: home, MoorAI_SERVER: "http://127.0.0.1:1", MoorAI_TENANT: "test" }
+    env: childEnv
   });
   child.stderr.on("data", (d) => { const s = d.toString(); if (s.trim()) process.stderr.write("[guard stderr] " + s); });
 
@@ -87,6 +125,7 @@ async function testProxy() {
 
   try { child.stdin.end(); } catch {}
   try { child.kill(); } catch {}
+  await new Promise((r) => console_.close(r));
 }
 
 // ---------- Part B: install.mjs config rewrite ----------
