@@ -92,7 +92,7 @@ npm run guard -- "here is my key sk-ant-api03-... please debug the charge"
 ### Wire the context-interception hooks into Claude Code
 
 ```bash
-node cli/moorai-hook.mjs install     # registers PreToolUse hooks in ~/.claude/settings.json
+node cli/moorai-hook.mjs install     # registers PreToolUse + PostToolUse hooks in ~/.claude/settings.json
 node cli/moorai-hook.mjs uninstall   # removes only MoorAI's entries
 ```
 
@@ -108,11 +108,14 @@ The write family scans at the **`output`** stage, deliberately not `file`: the f
 is a doc, not an attack. Existing installs converge on the current matcher list on ordinary invocations —
 only when MoorAI entries are already present, so nothing an operator uninstalled is ever re-added.
 
-`WebFetch` scans the URL and the prompt at the **`prompt`** stage. **The limit matters and is not
-incidental:** PreToolUse fires *before* the fetch, so the fetched page does not exist yet. Only the
-outbound request is scanned. **Inbound web content is not scanned and cannot be from this surface** — that
-needs a PostToolUse registration, which MoorAI does not have. `WebSearch`, `Glob` and `Grep` remain
-unregistered.
+`WebFetch` is covered on **both** surfaces, and the split is the point. `PreToolUse` fires *before* the
+fetch, so `tool_input` is `{url, prompt}` and the page does not exist yet — that surface scans the
+**outbound request** at the **`prompt`** stage and can deny it. Inbound content is covered by a separate
+`PostToolUse` registration (`WebFetch` · `WebSearch`, added in v0.79.0), which scans what came back at the
+**`output`** stage. That surface **cannot un-run the tool**: `permissionDecision` is PreToolUse-only, so a
+finding degrades to advisory `additionalContext` unless org policy explicitly resolves it to a block.
+`Glob` and `Grep` remain unregistered. Full stage-and-surface map:
+[`docs/DETECTION_ENGINE.md`](docs/DETECTION_ENGINE.md).
 
 **The context an agent auto-loads is screened too.** A detached worker runs the engine's `index` stage
 over the files the agent pulls in on its own — `CLAUDE.md`, `AGENTS.md`, `.mcp.json` and their siblings.
