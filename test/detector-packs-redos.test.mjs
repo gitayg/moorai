@@ -105,16 +105,30 @@ test("ENGINE: refine recompile SKIPS a multi-unbounded-quantifier pattern (no fi
   assert.deepEqual(findings, [], "the multi-quantifier pattern must be skipped by the guard, not matched");
 });
 
-test("ENGINE: refine recompile REFUSES a catastrophic pattern in single-digit ms", () => {
-  // `.*.*=` is polynomial-backtracking (EVIL[2] above, ~1672 ms at 1500 chars via a bare RegExp). The
-  // refine path must not evaluate it: safeRegex returns null, so scan returns fast with no finding.
+test("ENGINE: refine recompile REFUSES a catastrophic pattern rather than evaluating it", () => {
+  // `.*.*=` is polynomial-backtracking (EVIL[2] above). The refine path must not evaluate it: safeRegex
+  // returns null, so scan returns fast with no finding. Timing is the ONLY thing that separates the two
+  // outcomes here — the input has no "=", so an evaluated pattern also produces no finding — which is
+  // why this assertion is a stopwatch and cannot simply be made deterministic.
+  //
+  // THE BUDGET IS SIZED FROM MEASUREMENT, not from "single-digit ms". At 50ms this test was a flake:
+  // it read 83ms in 1 of 12 full-suite runs in a 2-core Linux container at --test-concurrency=4, which
+  // is the same failure mode that made test/detector-hardening.test.mjs red in this repo's first CI run
+  // — a millisecond budget tight enough to trip on scheduler noise. MEASURED on both sides of the gap:
+  //   refusing  (this path, guard working)     sub-1ms idle; 83ms worst of 12 contended runs
+  //   EVALUATING (`new RegExp(".*.*=").test()`  1273ms on an idle M4 Mac / 1403ms in an idle 2-core
+  //              over the same 2000 chars)      Linux container
+  // 300ms sits ~3.6x above the worst observed refusal and ~4.2x below the cheapest observed evaluation,
+  // so it still separates the two outcomes by a wide margin. WHAT IS GIVEN UP: a refusal that somehow
+  // took 100-300ms would now pass unnoticed, and on a host far slower than either measured here even
+  // 300ms could be noise — this asserts "refused, not evaluated", not "refused in single-digit ms".
   const engine = enginePack([/.*.*=/], () => true);
   const input = "a".repeat(2000); // no "=" → forces full backtracking if it were ever compiled
   const took = ms(() => {
     const findings = engine.scan(input, "prompt");
     assert.deepEqual(findings, [], "the catastrophic pattern must be refused, not matched");
   });
-  assert.ok(took < 50, `refine recompile must reject the pattern, not evaluate it — took ${took}ms`);
+  assert.ok(took < 300, `refine recompile must reject the pattern, not evaluate it — took ${took}ms (evaluating it measures >1200ms)`);
 });
 
 test("ENGINE: a SAFE refine pattern still matches as before (behavior preserved)", () => {

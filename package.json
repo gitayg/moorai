@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "0.80.1",
+  "version": "0.80.2",
   "description": "MoorAI agent — on-device guardrails for AI coding agents (community edition, AGPL-3.0)",
   "type": "module",
   "bin": {
@@ -48,7 +48,7 @@
     "test:harnesses": "node scripts/hooktest.mjs && node cli/verify-gateway.mjs && node browser-ext/test-detectors.mjs && node mcp-proxy/test-proxy.mjs && node scripts/redteam.mjs && node scripts/moorai-validate-blocking.mjs && node scripts/moorai-validate-blocking.mjs --mode offline",
     "test:generated": "node scripts/benchmark.mjs && git diff --exit-code -I generatedAt -I '^> Generated:' -- docs/BENCHMARK.md docs/benchmark.json && git checkout -- docs/BENCHMARK.md docs/benchmark.json",
     "test:scorers": "node scripts/redteam-eval.mjs --fail-under 96 && node scripts/score-benign-v2.mjs --fail-over 4",
-    "test:unit": "node --test --test-concurrency=4 test/*.test.mjs"
+    "test:unit": "node --test --test-concurrency=4 --import ./test/hermetic-env.mjs test/*.test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

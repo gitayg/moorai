@@ -9,7 +9,29 @@ import { hasDeviceKey, classifyWithProvider } from "./device-inference.mjs";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { STATE_DIR, statePath } from "../cli/state-dirs.mjs";
 
-const HOST = "http://127.0.0.1:11434"; // loopback only — do not make this configurable to a remote host
+// LOOPBACK ONLY. The zero-egress guarantee in the header is enforced here rather than asserted: the
+// port may be pointed elsewhere (a second Ollama, a test double) but the HOST may not, so no setting
+// can turn this layer into an egress path. MOORAI_LOCAL_HOST is REFUSED unless its hostname is a
+// loopback literal, and anything refused falls back to the default — never to the operator's value.
+//
+// Why it is settable at all: without a seam, the escalation tests are decided by whether the machine
+// running them happens to have Ollama listening. That is not hypothetical — it is what made this
+// suite disagree with itself across machines. test/escalation-async.test.mjs's timeout observability
+// case needs a backend that is present and never answers (it passed only on a dev box with Ollama
+// running, and reported "unavailable" everywhere else), and test/semantic.test.mjs's no-provider-key
+// fail-open case needs no backend at all (it passed only where Ollama was absent).
+const DEFAULT_HOST = "http://127.0.0.1:11434";
+const LOOPBACK = new Set(["127.0.0.1", "::1", "[::1]", "localhost"]);
+export function localHost() {
+  const v = process.env.MOORAI_LOCAL_HOST;
+  if (!v) return DEFAULT_HOST;
+  try {
+    const u = new URL(v);
+    const h = u.hostname.replace(/^\[|\]$/g, "");
+    if (!LOOPBACK.has(h) && !/^127\./.test(h)) return DEFAULT_HOST; // refused: never off-device
+    return u.origin;
+  } catch { return DEFAULT_HOST; }
+}
 
 // MEASURED, not guessed. On the heldout-v2 tune half (61 attacks / 25 benign), with identical detectors:
 //   deterministic only        96.7% recall, 3 FP/25
@@ -95,7 +117,7 @@ export function takeEscalationOutcomes() { return OUTCOMES.splice(0); }
 // Cheap liveness probe so we don't hang the hook when no local model is running.
 export async function localModelAvailable(timeoutMs = 400) {
   try {
-    const r = await fetch(HOST + "/api/tags", { signal: AbortSignal.timeout(timeoutMs) });
+    const r = await fetch(localHost() + "/api/tags", { signal: AbortSignal.timeout(timeoutMs) });
     return r.ok;
   } catch { return false; }
 }
@@ -119,7 +141,7 @@ export async function classifyLocal(text, { model = DEFAULT_MODEL, timeoutMs = D
   // mode this layer actually had in production (see OUTCOME_KINDS above).
   const t0 = Date.now();
   try {
-    const r = await fetch(HOST + "/api/generate", {
+    const r = await fetch(localHost() + "/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, prompt, stream: false, format: "json", options: { temperature: 0 } }),

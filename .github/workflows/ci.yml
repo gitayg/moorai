@@ -128,9 +128,21 @@ jobs:
       # forever and never exits. Measured: a bare `node --test` was still running after 241 seconds
       # having reported exactly one file. The explicit `test/*.test.mjs` glob terminates in ~95s.
       #
-      # --test-concurrency is pinned so the run does not vary with the runner's core count. KNOWN
-      # LOAD SENSITIVITY: test/detector-hardening.test.mjs asserts a normalization pre-pass finishes
-      # "well under 1s"; at concurrency 18 it measured 1648ms and failed, and passed at concurrency 4
-      # and 2. If that single test ever goes red in CI, it is contention, not a detector regression.
+      # --test-concurrency is pinned so the run does not vary with the runner's core count.
+      #
+      # THE LOAD SENSITIVITY NOTED HERE IS GONE, and pinning concurrency was never enough to fix it.
+      # test/detector-hardening.test.mjs used to require a normalization pre-pass to finish "well under
+      # 1s": 1648ms at concurrency 18, and still 1942ms at the pinned concurrency 4 on this runner, which
+      # is one of the failures in the first run of this workflow. A millisecond budget cannot be made
+      # reliable on a machine whose speed is not ours, so that test now asserts the SCALING RATIO
+      # (double the input, the cost may not grow more than 10x) — measured on the runner itself, so
+      # contention cancels out. The absolute budget survives as an opt-in case gated on MOORAI_PERF_ABS,
+      # which is deliberately NOT set here. See the comments in that file for what was given up.
+      #
+      # The suite is also hermetic against the runner's own environment now, which it was not: this
+      # image ships `XDG_CONFIG_HOME=$HOME/.config` written literally (unexpanded) into /etc/environment,
+      # and cli/state-dirs.mjs resolved a state directory from it. That was a product bug, fixed in
+      # state-dirs.mjs; test/hermetic-env.mjs (preloaded by `npm run test:unit`) additionally clears the
+      # base-directory variables so a sandboxed HOME really is the whole sandbox.
       - name: Unit tests
         run: npm run test:unit

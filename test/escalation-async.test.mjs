@@ -193,9 +193,36 @@ test("TIMEOUT E2E: a model that always times out neither delays the hook nor cha
 
 // ---- 4. OBSERVABILITY: a timeout must be distinguishable from 'the model said benign' ----
 
+// The backend under test is a STUB, not whatever the machine happens to be running. Before this it was
+// the ambient Ollama: a dev box with `ollama serve` up made the probe succeed and the generate stall,
+// so the outer guard fired and the test passed — and every machine without Ollama (CI, a container, a
+// new laptop) recorded "unavailable" instead and the test failed. MEASURED: this case was one of the 11
+// failures in this repo's first CI run, and the ONLY one that also reproduced in a clean Linux
+// container with nothing else changed. A test whose verdict depends on an unrelated daemon is not
+// evidence either way, so the stub supplies exactly the state the assertion is about — a backend that
+// is PRESENT (/api/tags answers) and never ANSWERS (/api/generate hangs) — on every machine.
+async function stallingBackend() {
+  const held = [];
+  const srv = http.createServer((req, res) => {
+    if (req.url.startsWith("/api/tags")) { res.setHeader("content-type", "application/json"); return res.end(JSON.stringify({ models: [] })); }
+    held.push(res); // /api/generate: accepted, never answered
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const saved = process.env.MOORAI_LOCAL_HOST;
+  process.env.MOORAI_LOCAL_HOST = `http://127.0.0.1:${srv.address().port}`;
+  return () => {
+    if (saved === undefined) delete process.env.MOORAI_LOCAL_HOST; else process.env.MOORAI_LOCAL_HOST = saved;
+    for (const r of held) r.destroy();
+    srv.close();
+  };
+}
+
 test("OBSERVABILITY: a timed-out escalation records a distinct, content-free outcome", async () => {
+  const stop = await stallingBackend();
   takeEscalationOutcomes(); // drain
-  await semanticVerdict(CLEAN_BUT_PERSUASIVE, { modelEscalation: true, semanticEscalation: "local" }, { timeoutMs: 20 });
+  try {
+    await semanticVerdict(CLEAN_BUT_PERSUASIVE, { modelEscalation: true, semanticEscalation: "local" }, { timeoutMs: 20 });
+  } finally { stop(); }
   const got = takeEscalationOutcomes();
   assert.ok(got.length >= 1, "every escalation attempt must record an outcome");
   const kinds = got.map((o) => o.outcome);

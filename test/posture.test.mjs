@@ -14,9 +14,9 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir, hostname } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import http from "node:http";
 import { ratchetPosture, breakGlassCanonical, BREAK_GLASS_VERSION } from "../cli/hook-core.mjs";
 
@@ -242,4 +242,45 @@ test("E2E: a policy load writes BOTH posture copies, so one erasure still leaves
     await new Promise((r) => server.close(r));
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+// ---- the base directory the latch leg resolves to ----
+//
+// REGRESSION (found by this repo's first CI run, and invisible on macOS). Every GitHub Actions Ubuntu
+// image writes `XDG_CONFIG_HOME=$HOME/.config` LITERALLY into /etc/environment — the value that reaches
+// a process is the unexpanded eleven characters. cli/state-dirs.mjs used it verbatim, so LATCH_DIR
+// became the RELATIVE path "$HOME/.config/moorai", which resolves against process.cwd() — i.e. against
+// whatever directory the governed agent happens to be working in. The second copy of the posture
+// ratchet, the policy-key pin and the last-known-good policy therefore landed inside the agent's own
+// write scope and moved on every `cd`, and a device that changed directory then reported
+// posture:downgrade-refused / policy:pin:evidence-missing at its console with nothing wrong.
+//
+// The XDG spec settles it: a relative value in one of these variables is INVALID and must be ignored.
+// Asserted in a child process because the directories are resolved once, at module load.
+function latchDirUnder(env) {
+  const r = spawnSync(process.execPath, ["-e", "import('./cli/state-dirs.mjs').then(m => process.stdout.write(m.LATCH_DIR))"],
+    { cwd: ROOT, env: { ...process.env, ...env }, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  return r.stdout;
+}
+
+test("XDG: a RELATIVE XDG_CONFIG_HOME is invalid and must be ignored, not resolved against cwd", { skip: process.platform === "win32" ? "POSIX legs" : false }, () => {
+  const home = mkdtempSync(join(tmpdir(), "moorai-xdg-"));
+  try {
+    // The exact value every GitHub Actions Ubuntu runner exports.
+    const got = latchDirUnder({ HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: "$HOME/.config" });
+    assert.ok(isAbsolute(got), `the latch dir must never be cwd-relative; got ${JSON.stringify(got)}`);
+    assert.equal(got, join(home, ".config", "moorai"), "an invalid XDG value must fall back to the spec default under HOME");
+    assert.ok(!got.startsWith(ROOT), "the latch must never land inside the directory the agent is working in");
+    // ...and any other relative form is equally invalid.
+    assert.equal(latchDirUnder({ HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: "cfg" }), join(home, ".config", "moorai"));
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("XDG: an ABSOLUTE XDG_CONFIG_HOME is still honoured (the fix must not break XDG support)", { skip: process.platform === "win32" ? "POSIX legs" : false }, () => {
+  const home = mkdtempSync(join(tmpdir(), "moorai-xdg-"));
+  const cfg = mkdtempSync(join(tmpdir(), "moorai-cfg-"));
+  try {
+    assert.equal(latchDirUnder({ HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: cfg }), join(cfg, "moorai"));
+  } finally { rmSync(home, { recursive: true, force: true }); rmSync(cfg, { recursive: true, force: true }); }
 });
