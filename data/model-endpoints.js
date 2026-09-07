@@ -42,7 +42,19 @@ export const CA_ENV_VARS = [
   "CURL_CA_BUNDLE", "AWS_CA_BUNDLE", "GIT_SSL_CAINFO"
 ];
 
-const HOST_RE = /\bhttps?:\/\/([a-z0-9.-]+\.[a-z]{2,}|localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/gi;
+// The optional userinfo group is the enforcement half of #63, not a nicety. The capture group used to
+// start immediately after `://`, and its character class excludes `@` and `:`, so a userinfo-bearing
+// URL matched NOTHING AT ALL: `curl https://alice:hunter2@api.openai.com/v1` yielded no hosts, and an
+// empty host list is an ALLOW — appending a username to a rogue endpoint defeated policy.endpointAllow
+// outright. Userinfo is SKIPPED, never captured (a non-capturing group), so no credential fragment can
+// reach the host list. The class stops at `/ ? # " ' ;` and whitespace so an `@` in a path or query
+// (`/users/me@example.com`) cannot be mistaken for userinfo, and the {0,256} bound keeps the optional
+// group from scanning an unbounded run before failing — this text is free-form agent input and every
+// `https://` in it is a match start, so an unbounded scan is quadratic. Past that bound the direct-URL
+// sweep behaves as it did before the fix; that residual is pinned as a LIMIT test in
+// test/endpoint-userinfo.test.mjs rather than left silent. The base-URL-override branch goes through
+// hostOf, which has no such bound.
+const HOST_RE = /\bhttps?:\/\/(?:[^\s/?#@"';]{0,256}@)?([a-z0-9.-]+\.[a-z]{2,}|localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/gi;
 
 // Transit overrides present in the text: { proxies:[host], caVars:[NAME] }. Content-free — the proxy
 // HOST and the env-var NAME, never the CA file's path or contents.
@@ -110,16 +122,32 @@ export function extractHosts(text) {
   return [...hosts];
 }
 
+// Host of a base-URL override value. Scheme is REQUIRED here (the callers' own regexes only capture
+// `https?://…`), which is the one thing that separates this from proxyHostOf below — see that
+// function's note, which described this exact userinfo flaw and worked around it locally while the
+// version here stayed broken. The old body was `/^https?:\/\/([^/:\s"';]+)/i`: it stopped at the first
+// colon, so `https://bob:pw@api.groq.com/v1` yielded "bob" — the wrong host AND a credential fragment
+// on a path that hashes its output into telemetry. Userinfo is dropped, the port is dropped, and the
+// authority is cut at `/ ? #` so no path or query string can ride along.
 function hostOf(url) {
-  const m = String(url).match(/^https?:\/\/([^/:\s"';]+)/i);
-  return m ? m[1].toLowerCase() : null;
+  const m = String(url).match(/^https?:\/\/([^\s"';]*)/i);
+  if (!m) return null;
+  let s = m[1].split(/[/?#]/)[0];
+  const at = s.lastIndexOf("@");
+  if (at !== -1) s = s.slice(at + 1);
+  if (s.startsWith("[")) return (s.slice(0, s.indexOf("]") + 1) || s).toLowerCase();  // [::1]:8080
+  return s.split(":")[0].toLowerCase() || null;
 }
 
 // A proxy value is not a plain URL: the scheme is often absent or non-http (socks5://), and it may
-// carry userinfo. `hostOf` cannot be reused — it stops at the first colon, so
-// `http://user:pw@evil.example:8080` yields "user", which both misses the real host and puts a
-// credential fragment in the output. Userinfo is dropped, never captured, and the port is dropped so
-// the value compares cleanly against an allow-list of hostnames.
+// carry userinfo. `hostOf` cannot be reused — it REQUIRES an http(s) scheme and would return null for
+// `socks5://…` and for a bare `evil.example:3128`. Userinfo is dropped, never captured, and the port
+// is dropped so the value compares cleanly against an allow-list of hostnames.
+//
+// Worth recording: this comment used to justify itself by noting that `hostOf` "stops at the first
+// colon, so http://user:pw@evil.example:8080 yields user" — the flaw was known, written down, and
+// worked around HERE, while `hostOf` itself was left broken for the whole of #63's enforcement path.
+// Documenting a defect at the one call site that dodges it is not fixing it.
 function proxyHostOf(raw) {
   let s = String(raw).trim().replace(/^["']|["']$/g, "").replace(/^[a-z0-9+.-]+:\/\//i, "");
   s = s.split("/")[0];
