@@ -1094,7 +1094,12 @@ async function handlePostToolUse(input, tool, policy, engine) {
   logBehavior(tool, url || tool, text, d, "output");
   if (d.kill) killSession(tool, d.killIds, "output");
   if (d.decision !== "deny") await maybeEscalate(policy, text, "output", `hook:${tool}`, d, engine);
-  return emitPost(d.decision, `${d.kill ? "killed session" : "blocked"} ingested ${tool} content — ${d.reasons.join(", ")}`);
+  // The verb must match what actually happened. It used to be hardcoded "blocked", so an `ask` — which
+  // on this surface degrades to advisory additionalContext and gates nothing — still announced itself to
+  // the model as a block. That is false text entering the model's context, on benign pages as well as
+  // attacks, and the likely consequence is the model refusing content nothing refused.
+  const verb = d.kill ? "killed session on" : d.decision === "deny" ? "blocked" : "flagged";
+  return emitPost(d.decision, `${verb} ingested ${tool} content — ${d.reasons.join(", ")}`);
 }
 
 // The PostToolUse response envelope. Deliberately NOT emit(): that one writes the PreToolUse
