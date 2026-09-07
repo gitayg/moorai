@@ -1,0 +1,136 @@
+name: ci
+
+# THE DEFECT THIS EXISTS TO END. Every harness in this repo reports failure correctly and nothing
+# consumed the exit code: `.github/workflows/` held one `cargo check` and two tag-only release
+# builds, there was no `npm test`, and no git hook. Four stale canaries survived a year that way —
+# a test asserting a credential-exfiltration bypass was correct, mcp-proxy/test-proxy.mjs red 3/15,
+# scripts/benchmark.mjs printing red misses and exiting 0, corpus scorers pinning moved matchers.
+# A correct exit code nobody reads is not a gate. This workflow reads them.
+#
+# ORDER IS DELIBERATE: cheapest first. Every gate above `node --test` runs in under 4 seconds, so a
+# break surfaces in ~10s of runner time instead of after the ~80s unit suite. Everything lives in ONE
+# job because the whole thing is ~2 minutes — splitting would cost more in checkout/setup than it saves,
+# and a 40-minute PR gate is a gate people disable.
+#
+# CI AND `npm test` MUST NOT DRIFT. Every command whose exact form matters — the unit-test glob and
+# concurrency, the two pinned scorer thresholds, the timestamp-tolerant docs diff — lives in ONE place,
+# package.json, and is invoked here as `npm run test:*`. The seven sub-second harnesses are spelled out
+# as separate steps only so a failure names itself in the Actions UI; `npm run test:harnesses` runs the
+# same seven in the same order, and adding one means adding it in both places.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      # Node 22. Every gate below was verified locally on v22.22.0; node 20 was NOT verified, and
+      # `--test-concurrency` only exists from 20.10 anyway. windows-check.yml stays on 20 because it
+      # only needs node to stage the frontend for cargo.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # NO `npm ci` ON PURPOSE. Every file these gates execute imports only `node:` builtins and
+      # repo-local paths — the two runtime deps (@xterm/*) are frontend-only and @tauri-apps/cli is
+      # a release tool. Installing would add ~30s to every PR to satisfy nothing. If a gate ever
+      # grows a third-party import it will fail loudly with ERR_MODULE_NOT_FOUND, which is the
+      # correct way to discover that this comment went stale.
+
+      # Enumeration is a plain glob over test/*.test.mjs, so a NEW test file is picked up with no
+      # edit here. That is the point: a hand-maintained list is how a suite quietly stops covering
+      # its newest tests. This step prints the count and the names so the log shows what ran.
+      - name: Enumerate unit test files
+        run: |
+          ls test/*.test.mjs
+          n=$(ls test/*.test.mjs | wc -l)
+          echo "unit test files: $n"
+          [ "$n" -gt 0 ] || { echo "::error::no test/*.test.mjs matched — the glob or the directory moved"; exit 1; }
+
+      # --- Sub-second harnesses: fail here and the runner has burned ~20 seconds. ---
+
+      - name: Hook decision tests
+        run: node scripts/hooktest.mjs
+
+      - name: MCP gateway verification
+        run: node cli/verify-gateway.mjs
+
+      - name: Browser-extension detector parity
+        run: node browser-ext/test-detectors.mjs
+
+      - name: MCP proxy tests
+        run: node mcp-proxy/test-proxy.mjs
+
+      # 101/102 with sec-generic-entropy on the accepted-failure baseline. That list is xfail-STRICT:
+      # an unlisted miss is red, and a LISTED id that starts passing is also red, so the excuse cannot
+      # outlive the bug. Do not add entries to make this green.
+      - name: Red-team corpus
+        run: node scripts/redteam.mjs
+
+      # --- Generated documentation currency ---
+      #
+      # docs/BENCHMARK.md and docs/benchmark.json are OUTPUTS of scripts/benchmark.mjs and are
+      # committed, because docs/DETECTION_ENGINE.md links to BENCHMARK.md as published evidence.
+      # They must therefore be verified current rather than dropped. The generator stamps a wall-clock
+      # `generatedAt`, so a plain `git diff --exit-code` can never pass; the `npm run test:generated`
+      # script excludes ONLY that timestamp line in each file, which means every substantive number —
+      # detector count, threat count, corpus score, OWASP coverage — is still diffed byte-for-byte.
+      # On success it restores the two files, so running the gate locally does not leave the working
+      # tree dirty (the churn two agents kept tripping over). It also runs the benchmark's own corpus
+      # gate, which shares redteam's accepted-failure baseline.
+      - name: Benchmark + generated docs are current
+        run: npm run test:generated || { echo "::error::docs/BENCHMARK.md or docs/benchmark.json is stale — run 'npm run benchmark' and commit the result"; exit 1; }
+
+      # --- End-to-end enforcement, ~2.5s each ---
+
+      - name: Blocking validation (policy posture)
+        run: node scripts/moorai-validate-blocking.mjs
+
+      - name: Blocking validation (offline fail-closed posture)
+        run: node scripts/moorai-validate-blocking.mjs --mode offline
+
+      # --- Pinned precision/recall thresholds ---
+      #
+      # Both scorers are DETERMINISTIC over static corpora (verified: three consecutive runs of
+      # score-benign-v2 returned a byte-identical fpRate), so these are ratchets, not dice.
+      #
+      #   --fail-under 96 : held-out recall measured 100% (29/29 attacks, 10 families) on 2026-09-07.
+      #                     96 tolerates exactly one regression (28/29 = 96.55%); two (27/29 = 93.1%)
+      #                     is red. Tight enough to catch a real detector regression, loose enough
+      #                     that one accepted miss does not require a same-day workflow edit.
+      #   --fail-over 4   : benign-corpus-v2 false-positive rate measured 3.32% (20 FP of 602 counted)
+      #                     on 2026-09-07. 4% allows 24 FP — four more than today — before red.
+      #
+      # redteam-eval reads corpus.json / heldout.json / benign-corpus.json only. It never opens
+      # test/redteam/heldout-v2-test.json; the locked split stays out of CI entirely, because a
+      # threshold tuned against a held-out set burns the held-out set.
+      - name: Precision / recall thresholds
+        run: npm run test:scorers
+
+      # --- Unit suite, last because it is the long pole (~95s of the ~2min total) ---
+      #
+      # NEVER run `node --test` with no arguments. Node's default patterns include `**/test-*.mjs`,
+      # which matches mcp-proxy/test-fake-mcp-server.mjs — a stdio JSON-RPC server that reads stdin
+      # forever and never exits. Measured: a bare `node --test` was still running after 241 seconds
+      # having reported exactly one file. The explicit `test/*.test.mjs` glob terminates in ~95s.
+      #
+      # --test-concurrency is pinned so the run does not vary with the runner's core count. KNOWN
+      # LOAD SENSITIVITY: test/detector-hardening.test.mjs asserts a normalization pre-pass finishes
+      # "well under 1s"; at concurrency 18 it measured 1648ms and failed, and passed at concurrency 4
+      # and 2. If that single test ever goes red in CI, it is contention, not a detector regression.
+      - name: Unit tests
+        run: npm run test:unit
