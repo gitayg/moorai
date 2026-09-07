@@ -17,7 +17,9 @@
 //
 // ── WHICH MODEL IS BEING MEASURED — read this before quoting any number from this harness ─────────
 //
-// Both probes drive the LOCAL Ollama model on 127.0.0.1:11434 (default llama3:latest, 8B, Q4_K_M) —
+// Both probes drive the LOCAL Ollama model on 127.0.0.1:11434 (default llama3:latest, 8B, Q4_0 —
+// verified against `ollama show llama3:latest`; this comment said Q4_K_M and was wrong, which matters
+// because the published refusal baseline names the quantization as part of reproducing the run) —
 // the same backend `data/model-escalation.mjs` ships as the semantic-escalation tier.
 //
 // This is a PROXY, and the proxy is the headline caveat. The question AMTSO actually asks is about the
