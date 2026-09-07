@@ -1119,7 +1119,17 @@ async function handlePostToolUse(input, tool, policy, engine) {
   // costs no recall and removes the only source of by-default blocking on benign pages.
   // The durable fix is a distinct ingest stage rather than a suppression list; this is the narrow,
   // measured stopgap. Anything added here needs the same two numbers: what it catches, what it costs.
-  const OUTBOUND_ONLY_THREATS = new Set([65]);
+  // #32 out-code-exec joins it on the same evidence, and NOT because it is named out-*. Its hint is
+  // "Output contains runnable code / a risky command" and its first pattern is a bare ``` fence, so
+  // every fetched page carrying a code block alerts: 62 of 158 benign samples, the single largest
+  // contributor on this surface. Across vector2/3/5 and heldout-tune it fires on 6 attacks and catches
+  // ZERO uniquely — whenever it is right, something else is right too. Free to drop here.
+  //
+  // out-links (#17) is deliberately NOT in this set even though it fires on 40 benign samples and shares
+  // the out-* prefix. It catches 15 attacks NOTHING else catches. Dropping both on the naming pattern
+  // would have cost 15 real detections to save 40 alerts — the measurement is what separates them, and
+  // the prefix is not evidence.
+  const OUTBOUND_ONLY_THREATS = new Set([65, 32]);
   const raw = decideText(engine, policy, text, "output");
   const d = dropOutboundOnly(raw, OUTBOUND_ONLY_THREATS, policy);
   report(d.findings, "output", `hook:${tool}`, d.decision === "deny", policy.captureTier, { toolName: tool });
