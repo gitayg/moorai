@@ -249,6 +249,26 @@ async function run() {
     })
   };
 
+  // HARNESS-VALIDITY INVARIANTS. These three are not measurements, they are contracts, and each must
+  // be 0 — an unparseable sample means the corpus is not exercising the tool stage at all, rename
+  // drift means the harness is scoring the tool NAME rather than its content, and a content leak
+  // breaks the product's content-free guarantee. All three were computed, printed in the summary, and
+  // discarded: a run that leaked prompt content into the alert stream said so on screen and still
+  // exited 0. Gated with exitCode (not exit) so the full report still prints.
+  //
+  // Deliberately NOT gated: recall, wiring loss and the benign FP count. Those are the measurement
+  // this script exists to take and are legitimately non-zero; turning them into a gate would be a
+  // behavioural decision about the product, not a fix to a broken exit code.
+  const invariants = [
+    ["corpus samples that would not parse as a tool descriptor", out.parseFailures.map((p) => p.id)],
+    ["rename-neutrality violations (harness validity)", out.renameDrift],
+    ["content leaked into the alert stream", out.contentLeaks.map((l) => l.id)]
+  ].filter(([, ids]) => ids.length);
+  for (const [name, ids] of invariants) {
+    process.exitCode = 1;
+    process.stderr.write(`INVARIANT VIOLATED — ${name}: ${ids.length} (${ids.slice(0, 8).join(", ")})\n`);
+  }
+
   if (asJson) { console.log(JSON.stringify(out, null, 2)); return; }
 
   console.log(`\n=== AMTSO vector 3 — tool stage, measured END-TO-END through mcp-proxy/moorai-mcp-guard.mjs ===`);

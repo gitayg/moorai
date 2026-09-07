@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { DETECTORS } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
+import { classifyFailures, reportAcceptedFailures } from "./accepted-failures.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const threats = JSON.parse(readFileSync(join(ROOT, "data/threats.json"), "utf8"));
@@ -96,5 +97,15 @@ for (const [k, name] of Object.entries(OWASP)) {
   console.log(`   ${c.detectors > 0 ? g("✓") : r("·")} ${k} ${name} ${`\x1b[2m(${c.threats} threats, ${c.detectors} detectors)\x1b[0m`}`);
 }
 console.log(`\n  wrote docs/benchmark.json + docs/BENCHMARK.md`);
-if (fails.length) console.log(r(`  corpus misses: ${fails.join(", ")}`));
-process.exit(0);
+
+// THE DEFECT THIS REPLACES: `if (fails.length) console.log(r("corpus misses: ...")); process.exit(0);`
+// — the miss list was computed, printed in red, and then thrown away. A benchmark that publishes
+// docs/BENCHMARK.md while reporting red and returning success cannot fail CI, cannot fail a
+// pre-commit hook, and cannot fail a human skimming output. It scores the SAME corpus as
+// `npm run redteam`, so it shares that harness's accepted-failure baseline rather than keeping a
+// second opinion about which misses are known.
+const cls = classifyFailures(fails, corpus.cases.map((c) => c.id));
+const unexpected = new Set(cls.unexpected);
+if (unexpected.size) console.log(r(`  corpus misses: ${fails.filter((id) => unexpected.has(id)).join(", ")}`));
+const clean = reportAcceptedFailures(cls);
+process.exit(clean ? 0 : 1);

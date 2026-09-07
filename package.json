@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "0.79.7",
+  "version": "0.79.8",
   "description": "MoorAI agent — on-device guardrails for AI coding agents (community edition, AGPL-3.0)",
   "type": "module",
   "bin": {
@@ -25,6 +25,7 @@
     "src/",
     "data/",
     "scripts/redteam.mjs",
+    "scripts/accepted-failures.mjs",
     "test/redteam/corpus.json"
   ],
   "scripts": {
