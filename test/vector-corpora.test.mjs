@@ -12,7 +12,7 @@
 // scripts/score-vectors.mjs output, which is a snapshot, not an invariant.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { DETECTORS } from "../data/detectors.js";
@@ -242,14 +242,72 @@ test("scoreVector arithmetic is consistent with the rows it is given", () => {
 
 // ------------------------------------------------------- reachability findings ----
 
-// These encode what was MEASURED about the shipped harnesses, so the finding does not quietly rot. If a
-// future change wires a caller for one of these stages, this test fails and the table gets updated —
-// which is the point.
-test("the tool stage has no shipped caller (recorded finding, not an aspiration)", () => {
-  assert.equal(STAGE_REACHABILITY.tool.reachable, false);
+// HISTORY — CLOSED FINDING. Until v0.78.0 this file asserted `STAGE_REACHABILITY.tool.reachable ===
+// false`: the "tool" stage had detectors scoped to it (mcp-tool-poisoning, mcp-hidden-canary) but NO
+// shipped caller anywhere — `grep -rn 'decideText([^)]*"tool"' cli/` returned zero hits, so the corpus
+// exercised a stage nothing could reach. That gap was closed by mcp-proxy/tool-scan.mjs +
+// mcp-proxy/moorai-mcp-guard.mjs, which copy every tools/list response to a bounded scan at stage
+// "tool". The finding is therefore no longer true, and the old assertion is retired.
+//
+// It is NOT replaced by a flipped constant. `assert.equal(..., true)` would rot exactly the way the
+// old line did: it pins today's answer, not the property that made the answer worth knowing. What is
+// asserted instead is the INVARIANT the original finding was really about — the reachability table
+// tells the truth about the shipping code. So this goes red when:
+//   * any stage regresses to reachable:false (the original defect, coming back);
+//   * a stage is claimed reachable but the files its `via` names no longer exist;
+//   * a stage is claimed reachable but NONE of those files still passes that stage to a scan
+//     entry point (the wiring was deleted or renamed while the prose stayed behind);
+//   * a new stage is added to the table with no wiring at all.
+// Falsification (all three observed red before this test was accepted): flipping tool.reachable to
+// false, renaming the stage literal at the mcp-guard call site, and pointing a `via` at a file that
+// does not exist each fail this test; reverting each returns it to green.
+
+// A file path mentioned inside a `via` string.
+const VIA_PATH = /\b(?:cli|src|mcp-proxy|data|scripts)\/[A-Za-z0-9_.\/-]+\.(?:mjs|js)\b/g;
+// A stage literal actually handed to a scan entry point as a trailing argument, e.g.
+//   decideText(engine, policy, text, "file")   .scan(out, "output")   decideText(E, P, f(t), "tool")
+// `[^;]` keeps the match inside one statement so an unrelated later string cannot satisfy it.
+const callSite = (stage) =>
+  new RegExp(`\\b(?:decideText|scan|scanForIndex|scanSession)\\s*\\([^;]{0,200}?,\\s*"${stage}"\\s*\\)`);
+
+test("the stage reachability table agrees with the shipping code", () => {
+  const stages = Object.keys(STAGE_REACHABILITY);
+  assert.deepEqual(
+    stages.slice().sort(),
+    [...VALID_STAGES].sort(),
+    "STAGE_REACHABILITY must cover exactly the valid stages — no stage may go undeclared",
+  );
+
+  for (const stage of stages) {
+    const entry = STAGE_REACHABILITY[stage];
+    assert.equal(
+      entry.reachable,
+      true,
+      `stage "${stage}" is marked unreachable: a shipped harness that used to reach it is gone, or a corpus stage was never wired. Detectors scoped to it are dead weight until a caller exists.`,
+    );
+
+    const files = [...new Set(String(entry.via).match(VIA_PATH) || [])];
+    assert.ok(files.length > 0, `stage "${stage}": \`via\` names no source file, so the claim is unverifiable`);
+
+    for (const f of files) {
+      assert.ok(
+        existsSync(join(ROOT, f)),
+        `stage "${stage}": \`via\` names ${f}, which does not exist — the table has drifted from the tree`,
+      );
+    }
+
+    const wired = files.filter((f) => callSite(stage).test(readFileSync(join(ROOT, f), "utf8")));
+    assert.ok(
+      wired.length > 0,
+      `stage "${stage}" is claimed reachable via [${files.join(", ")}], but none of them passes "${stage}" to decideText/scan/scanForIndex/scanSession. Either the wiring was removed and reachable must go false, or \`via\` is stale and must name the file that really calls it.`,
+    );
+  }
+});
+
+test("the tool stage the finding was about is still exercised and still detector-covered", () => {
   const toolAttacks = V3.attacks.filter((s) => s.stage === "tool");
-  assert.ok(toolAttacks.length >= 30, "the vector-3 corpus must exercise the tool stage even though nothing calls it");
-  // The detectors themselves DO cover the stage — the gap is the harness, not the rule set.
+  assert.ok(toolAttacks.length >= 30, "the vector-3 corpus must keep exercising the tool stage");
+  // The detectors always covered the stage — the closed gap was the harness, not the rule set.
   const toolScoped = DETECTORS.filter((d) => (d.stages || [d.stage]).includes("tool")).map((d) => d.detectorId);
   assert.ok(toolScoped.includes("mcp-tool-poisoning"), "mcp-tool-poisoning must still be tool-scoped");
   assert.ok(toolScoped.includes("mcp-hidden-canary"), "mcp-hidden-canary must still be tool-scoped");

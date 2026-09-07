@@ -280,8 +280,22 @@ const EXPECTED_DJB2_ARGS = {
     "`${os.userInfo().username}@${os.hostname()}`", // actor — the same record carries both in clear
     "String(d.usedGrants)",                     // JIT grant names (policy vocabulary)
     "d.reasons.join(\"|\")",                     // entitlement-drift reasons (policy vocabulary)
-    "epD.hosts.join(\",\")",                     // model-endpoint hostnames (Bash path)
-    "epD.hosts.join(\",\")",                     // model-endpoint hostnames (MCP path)
+    // ---- threat #63, "Unapproved model endpoint". FOUR sites, one per tool family that can name an
+    // endpoint. All four hash the SAME expression under the SAME guard (epD.decision === "deny") into
+    // the same record shape, because they are the same enforcement applied at four chokepoints.
+    // REVIEWED when the write/WebFetch pair arrived in 2f66be3 (v0.78.0, "close four
+    // unreachable-enforcement defects"): epD.hosts is NOT the scanned text. It is the output of
+    // extractEndpointHosts(), which captures only a URL's authority component and never its path or
+    // query, then keeps only hosts matching the 20-entry public LLM_ENDPOINT_HOSTS list or a
+    // base-URL-override target. Measured on the write path — the strongest case, since its input is
+    // arbitrary content the agent is about to commit — the input
+    //   `const k="sk-proj-abc123"; fetch("https://api.openai.com/v1")`
+    // reduces to exactly "api.openai.com", and a URL carrying an sk- key and an SSN in its query
+    // string reduces to the bare host. So content-free holds and the value stays policy vocabulary.
+    "epD.hosts.join(\",\")",                     // Bash command             (decideEndpoints on ti.command)
+    "epD.hosts.join(\",\")",                     // Write/Edit/MultiEdit/NotebookEdit (on the text being committed)
+    "epD.hosts.join(\",\")",                     // WebFetch                 (on ti.url)
+    "epD.hosts.join(\",\")",                     // MCP tool args            (on the serialized args)
     "server"                                    // MCP server name
   ],
   "cli/moorai-guard.mjs": [
