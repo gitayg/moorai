@@ -1083,12 +1083,43 @@ function responseText(input) {
 // REPORT-FIRST. Findings resolve through the existing threatActionFor, exactly as everywhere else.
 // Measured with no policy: the 24 attacks resolve 20 allow / 4 ask and the 11 benign controls 10 allow
 // / 1 ask — zero denies. A block requires an org policy that resolves a threat to block/kill.
+// PII (#15) needs a CONTEXT gate on ingested content rather than removal, and the difference is the
+// whole point. dlp-email is a bare address regex. At the prompt stage that is right — the user is
+// handing over PII. On a page the agent merely READ, an address is not an event: it fired on 15 of 15
+// benign contact pages, 100%.
+//
+// But it cannot follow #65 and #32 into the drop set: it uniquely catches 5 of the 24 attacks, and
+// removing it costs 21 points of recall to save 10 of false positives. Those 5 span five DIFFERENT
+// sub-techniques — credential-harvest, exfil-directive, persistence-directive, authority-spoof,
+// silent-suppression — so they are not one class with one fix. What they share is the CHANNEL: every
+// email- and calendar-shaped sample carries a From:/Organizer: header, so the detector fires on the
+// shape rather than the attack. It is a channel detector wearing a PII detector's name.
+//
+// The gate splits shape from substance: count the address when it sits in a message-header position or
+// is the target of a send/forward directive; ignore it in prose and page footers, which is where every
+// benign contact page puts it. Measured, all three options, against the 24 attacks and 311 benign:
+//   #15 on     22/24 (91.7%)  46.3% FP     <- fires on any address
+//   #15 gated  22/24 (91.7%)  38.9% FP     <- this
+//   #15 off    17/24 (70.8%)  36.0% FP     <- loses 5 attacks for 3 more points
+// Full recall, most of the benefit. NOTE the honest caveat: these 5 remain WRONG-REASON catches — an
+// attacker who omits the header still evades, and the real fix is detectors for those five
+// sub-techniques. The gate stops us paying 15 false positives for an accident; it does not make the
+// accident into detection.
+const INBOUND_GATES = {
+  15: (t) => /^[ \t]{0,3}(?:from|to|cc|bcc|reply-to|organizer|sender)[ \t]*:[^\n]{0,120}@/im.test(t)
+          || /\b(?:send|email|e-mail|forward|cc|bcc|report|deliver|mail|exfiltrate|transmit)\b[^\n]{0,80}@/i.test(t)
+};
+
 // Rebuild a decideText result with some threats removed. The decision is RECOMPUTED from what survives
 // rather than carried over — dropping the only finding that caused a deny must drop the deny with it,
 // or the suppression would be cosmetic. Reasons and kill signals are rebuilt the same way. Content-rule
 // findings (threatId 0) are never candidates for removal.
-function dropOutboundOnly(res, threatIds, policy) {
-  const kept = res.findings.filter((f) => !threatIds.has(f.threatId));
+function dropOutboundOnly(res, threatIds, policy, text) {
+  const kept = res.findings.filter((f) => {
+    if (threatIds.has(f.threatId)) return false;
+    const gate = INBOUND_GATES[f.threatId];
+    return gate ? gate(text || "") : true;
+  });
   if (kept.length === res.findings.length) return res;
   const RANKED = { allow: 0, ask: 1, deny: 2 };
   const out = { decision: "allow", reasons: [], findings: kept, kill: false, killIds: [] };
@@ -1131,7 +1162,7 @@ async function handlePostToolUse(input, tool, policy, engine) {
   // the prefix is not evidence.
   const OUTBOUND_ONLY_THREATS = new Set([65, 32]);
   const raw = decideText(engine, policy, text, "output");
-  const d = dropOutboundOnly(raw, OUTBOUND_ONLY_THREATS, policy);
+  const d = dropOutboundOnly(raw, OUTBOUND_ONLY_THREATS, policy, text);
   report(d.findings, "output", `hook:${tool}`, d.decision === "deny", policy.captureTier, { toolName: tool });
   logBehavior(tool, url || tool, text, d, "output");
   if (d.kill) killSession(tool, d.killIds, "output");
