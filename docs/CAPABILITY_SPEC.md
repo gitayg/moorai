@@ -263,6 +263,8 @@ is validated against.
    | `claude-memory` | `.claude/projects/<p>/memory/*.md` | observed |
    | `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md` | project, nested, user and managed scopes | observed / doc / doc |
    | `.cursorrules`, `.cursor/rules`, `cursor-mcp`, `.windsurfrules`, `.clinerules`, `copilot-instructions`, `codex-config` | other vendors' equivalents | doc |
+   | `cline-mcp`, `windsurf-mcp`, `vscode-mcp`, `continue-mcp`, `amazon-q-mcp`, `kiro-mcp` | other clients' dedicated MCP-config files (`cline_mcp_settings.json`, `.codeium/windsurf/mcp_config.json`, `.vscode/mcp.json`, `.continue/mcpServers/*`, `.aws/amazonq` & `.amazonq/mcp.json`, `.kiro/settings/mcp.json`) | doc |
+   | `zed-mcp` | Zed `context_servers` — lives inside `~/.config/zed/settings.json` or project `.zed/settings.json` (a general settings file, anchored to the `zed` dir; no overlap with `.claude/settings.json`) | doc |
 
    **Intent labels** are a closed vocabulary (`INTENT_LABELS`,
    [`cli/skill-analysis.mjs`](../cli/skill-analysis.mjs)), each one a rename of an existing threat id, an

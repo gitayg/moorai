@@ -60,7 +60,22 @@ const SURFACE_CASES = [
   ["/x/plugins/mk/plugins/p/agents/a.md", "plugin-agent"],
   ["/repo/.cursorrules", ".cursorrules"],
   ["/repo/.github/copilot-instructions.md", "copilot-instructions"],
-  ["C:\\Users\\u\\.claude\\agents\\auditor.md", "claude-agent"]
+  ["C:\\Users\\u\\.claude\\agents\\auditor.md", "claude-agent"],
+  // other clients' dedicated MCP-config files (paths confirmed from each client's own docs/code)
+  ["/u/.cline/data/settings/cline_mcp_settings.json", "cline-mcp"],
+  ["/u/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json", "cline-mcp"],
+  ["/u/.codeium/windsurf/mcp_config.json", "windsurf-mcp"],
+  ["/repo/.vscode/mcp.json", "vscode-mcp"],
+  ["/repo/.continue/mcpServers/playwright.yaml", "continue-mcp"],
+  ["/u/.config/zed/settings.json", "zed-mcp"],
+  ["/repo/.zed/settings.json", "zed-mcp"],
+  ["/u/.aws/amazonq/mcp.json", "amazon-q-mcp"],
+  ["/repo/.amazonq/mcp.json", "amazon-q-mcp"],
+  ["/repo/.kiro/settings/mcp.json", "kiro-mcp"],
+  ["/u/.kiro/settings/mcp.json", "kiro-mcp"],
+  // cross-platform (backslash) coverage for two of the new entries
+  ["C:\\Users\\u\\.codeium\\windsurf\\mcp_config.json", "windsurf-mcp"],
+  ["C:\\repo\\.vscode\\mcp.json", "vscode-mcp"]
 ];
 
 test("SURFACE: every auto-loaded skill-surface path resolves to its kind", () => {
@@ -72,7 +87,15 @@ test("SURFACE: every auto-loaded skill-surface path resolves to its kind", () =>
 });
 
 test("SURFACE: ordinary project files are NOT the skill surface", () => {
-  for (const p of ["/repo/src/index.js", "/repo/README.md", "/repo/src/memory/notes.md", "/repo/docs/agents/design.md", "/repo/skills.md", ""]) {
+  for (const p of ["/repo/src/index.js", "/repo/README.md", "/repo/src/memory/notes.md", "/repo/docs/agents/design.md", "/repo/skills.md", "",
+    // one benign sibling per new MCP-config client — proves the new regexes do not over-match
+    "/u/.cline/data/settings/other.json",              // Cline: not cline_mcp_settings.json
+    "/u/.codeium/windsurf/config.json",                // Windsurf: not mcp_config.json
+    "/repo/.vscode/settings.json",                     // VS Code: settings.json is not the MCP file
+    "/u/.continue/config.yaml",                        // Continue: the config.yaml block is the shape-trap, NOT matched
+    "/u/.config/zed/keymap.json",                      // Zed: keymap.json is not settings.json
+    "/u/.aws/amazonq/cli-agents/foo.json",             // Amazon Q: an agent file, not mcp.json
+    "/repo/.kiro/steering/product.md"]) {              // Kiro: a steering file, not settings/mcp.json
     assert.equal(skillSurfaceKind(p), null, p);
     assert.equal(isSkillSurface(p), false, p);
   }

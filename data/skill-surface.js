@@ -60,6 +60,26 @@ const SURFACE = [
   [/(^|[/\\])\.cursorrules$/i, ".cursorrules", false],
   [/(^|[/\\])\.cursor[/\\]rules([/\\].+)?$/i, ".cursor/rules", false],
   [/(^|[/\\])\.cursor[/\\]mcp\.json$/i, "cursor-mcp", false],
+
+  // ---- other clients' DEDICATED MCP-config files (paths confirmed from each client's own docs/code) ----
+  // Cline: code reads ~/.cline/data/settings/cline_mcp_settings.json (VS Code extension globalStorage
+  //   uses the same filename); the ~/.cline/mcp.json in the overview docs is a documented-but-wrong path.
+  [/(^|[/\\])cline_mcp_settings\.json$/i, "cline-mcp", false],
+  // Windsurf (Cascade): ~/.codeium/windsurf/mcp_config.json.
+  [/(^|[/\\])\.codeium[/\\]windsurf[/\\]mcp_config\.json$/i, "windsurf-mcp", false],
+  // VS Code: workspace .vscode/mcp.json (dedicated MCP file — distinct from the .mcp.json entry above).
+  [/(^|[/\\])\.vscode[/\\]mcp\.json$/i, "vscode-mcp", false],
+  // Continue: dedicated per-server files under .continue/mcpServers/ (the mcpServers block inside
+  //   .continue/config.yaml is NOT matched — a general config file, not an MCP-dedicated surface).
+  [/(^|[/\\])\.continue[/\\]mcpServers[/\\][^/\\]+\.(ya?ml|json)$/i, "continue-mcp", false],
+  // Zed: MCP ("context servers") live inside settings.json — global ~/.config/zed/settings.json or
+  //   project .zed/settings.json. Anchored to the zed dir so it cannot clash with .claude/settings.json.
+  [/(^|[/\\])\.?zed[/\\]settings\.json$/i, "zed-mcp", false],
+  // Amazon Q Developer: global ~/.aws/amazonq/mcp.json or workspace .amazonq/mcp.json.
+  [/(^|[/\\])\.?amazonq[/\\]mcp\.json$/i, "amazon-q-mcp", false],
+  // Kiro: workspace .kiro/settings/mcp.json or user ~/.kiro/settings/mcp.json.
+  [/(^|[/\\])\.kiro[/\\]settings[/\\]mcp\.json$/i, "kiro-mcp", false],
+
   [/(^|[/\\])\.windsurfrules$/i, ".windsurfrules", false],
   [/(^|[/\\])\.clinerules$/i, ".clinerules", false],
   [/(^|[/\\])\.github[/\\]copilot-instructions\.md$/i, "copilot-instructions", false],
