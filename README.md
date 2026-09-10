@@ -325,6 +325,32 @@ degrades into silent egress.
 > validated end-to-end but **second-class**: accuracy on dense secret strings is below the macOS/Windows
 > OS engines, so treat it as opportunistic, not parity.
 
+## Using the engine as a library
+
+The scan engine is importable as a stable API from the `moorai/scan` entry point, so
+another app can depend on this repo directly without reaching into internal paths.
+
+Add it as a pinned git dependency:
+
+```bash
+npm install github:gitayg/moorai#v0.82.0
+```
+
+Then scan a path on-device (findings are content-free — hashes, never the matched text):
+
+```js
+import { scanPath } from "moorai/scan";
+
+const result = scanPath("./some-skill");
+console.log(result.verdict); // CLEAN | CAUTION | REVIEW | DO-NOT-INSTALL
+```
+
+The barrel (`scan.mjs`) re-exports only the public scan surface — `scanPath`,
+`scanFileText`, `buildEngine`, `decideText`, `skillIntents`, `contentHash`,
+`skillSurfaceKind`, `isSkillSurface`, and the `VERDICTS` / `VERDICT_RANK` /
+`decisionToVerdict` / `worseVerdict` / `tierOf` / `jsonStrings` / `NO_KEY` helpers —
+so internal files can move without breaking consumers.
+
 ## How it works
 
 A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against a 60+ threat matrix + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is AGPL; the console is commercial.

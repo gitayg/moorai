@@ -1,8 +1,12 @@
 {
   "name": "moorai",
-  "version": "0.81.0",
+  "version": "0.82.0",
   "description": "MoorAI agent — on-device guardrails for AI coding agents (community edition, AGPL-3.0)",
   "type": "module",
+  "exports": {
+    ".": "./scan.mjs",
+    "./scan": "./scan.mjs"
+  },
   "bin": {
     "moorai-aibom": "cli/moorai-aibom.mjs",
     "moorai-guard": "cli/moorai-guard.mjs",
@@ -22,6 +26,7 @@
     "moorai-scan": "cli/moorai-scan.mjs"
   },
   "files": [
+    "scan.mjs",
     "cli/",
     "src/",
     "data/",
