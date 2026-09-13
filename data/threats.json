@@ -1,7 +1,7 @@
 {
   "meta": {
     "name": "MoorAI Threat Rule-Base",
-    "version": "0.4.0",
+    "version": "0.4.1",
     "description": "AI-security threat matrix for office workers, translated to English. Each threat is a detection rule: example = trigger context, response = intervention. riskScore = severity x likelihood.",
     "scoring": {
       "severity": "1-5 (impact if it occurs)",
@@ -39,7 +39,10 @@
     "Meetings & Sharing",
     "Data & Knowledge",
     "Identity & Access",
-    "Operations & Costs"
+    "Operations & Costs",
+    "Advisory & Guidance",
+    "Human Approval Required",
+    "Data Exposure"
   ],
   "threats": [
     {
