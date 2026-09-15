@@ -1,16 +1,23 @@
 # Packaging & distribution
 
-Two install channels for MoorAI: **npm** (the CLI tools — `moorai-aibom`, `moorai-guard`,
-`moorai-hook`) and **Homebrew** (the macOS desktop app). Both are prepared here; publishing needs
-your accounts and is a manual step (do it only after the repo is public and the name is secured).
+Two install channels for MoorAI: **npm** (the `moorai-*` CLI tools) and **Homebrew** (the macOS
+desktop app). Both are prepared here; publishing needs your accounts and is a manual step (do it only
+after the repo is public and the name is secured).
 
 ## npm — the CLI tools
 
-`package.json` is already publish-ready: `bin` exposes the three CLIs and `files` ships only
-`cli/ src/ data/ scripts/redteam.mjs` (not the Rust/Tauri host). After publishing, anyone can run the
-standalone AIBOM with no install:
+`package.json` is already publish-ready: `bin` exposes 16 CLIs (`moorai-scan`, `moorai-aibom`,
+`moorai-guard`, `moorai-hook`, `moorai-ledger`, `moorai-redteam`, `moorai-agentwatch`,
+`moorai-destinations`, `moorai-trace`, `moorai-shadow`, `moorai-compliance`, `moorai-verify-chain`,
+`moorai-stix`, `moorai-honeytokens`, `moorai-attest`, `moorai-receipt`), `exports` exposes
+`moorai/scan`, and `files` ships only `scan.mjs cli/ src/ data/ scripts/redteam.mjs
+scripts/accepted-failures.mjs test/redteam/corpus.json` (not the Rust/Tauri host). `npm pack
+--dry-run` lists 81 files, 457.0 kB packed.
+
+The zero-install entry point is the pre-install skill gate — after publishing, anyone can run:
 
 ```bash
+npx moorai-scan ./some-skill      # content-free verdict on a skill / MCP config before installing it
 npx moorai-aibom --format md      # content-free AI Bill of Materials for the machine
 npx moorai-guard -- "prompt"      # pre-flight guard for claude -p
 ```
@@ -21,22 +28,28 @@ npm login                          # once, as the account that owns the "moorai"
 npm publish --access public        # from the repo root
 ```
 > Reserve the `moorai` name on npm now (even with a stub) so nobody squats it before launch.
-> The package is ESM, Node ≥ 20 (uses global fetch). No runtime deps for the CLIs.
+> The package is ESM and the CLIs use global `fetch` (Node 18+); CI builds on Node 20. No `engines`
+> field is set. The CLIs import no runtime deps (the two xterm deps are for the desktop webview).
 
 ## Homebrew — the desktop app
 
-`homebrew/moorai.rb` is a cask that installs the signed macOS DMG from GitHub Releases.
+`homebrew/moorai.rb` is a cask that installs the macOS DMG from `https://moorai.glick.run/download/app`
+— the same installer `npm run release` / `release-macos.yml` uploads. GitHub Releases carry no macOS
+asset. The build is Apple-silicon only, so the cask declares `depends_on arch: :arm64`.
+
+That URL has no version in it and always serves the latest build, so the cask uses
+`version :latest` + `sha256 :no_check` (the Cask Cookbook's case for a `url` with no version
+information whose contents change between releases) and `auto_updates true` (the app downloads and
+installs its own updates via the Tauri updater).
 
 **Set up the tap (once):**
 1. Create a public repo `github.com/gitayg/homebrew-tap`.
 2. Add this file at `Casks/moorai.rb`.
 3. Users then: `brew install --cask gitayg/tap/moorai`
 
-**Per release:**
-1. Bump `version` in the cask.
-2. `shasum -a 256 MoorAI_<version>_universal.dmg` → paste into `sha256`.
-3. Confirm the `url` matches the actual release-asset filename Tauri produced.
-4. Commit the tap repo.
+**Per release:** nothing to change in the cask. Ship the DMG as usual (`npm run release` or a
+version tag); `brew install` picks up whatever `/download/app` serves. Edit the cask only if the
+download URL, the architecture, the minimum macOS or the zap paths change.
 
 > Optional later: submit to `homebrew-cask` core once there's adoption (they require a notable
 > user base). The personal tap works immediately with no such bar.

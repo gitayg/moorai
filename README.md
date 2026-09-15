@@ -55,7 +55,7 @@ Because you can read the code. The agent is **MIT and open source** — the whol
 
 ## Install
 
-**macOS** — download the signed, notarized `.dmg` from [Releases](https://github.com/gitayg/moorai/releases).
+**macOS (Apple silicon)** — download the `.dmg` from [moorai.glick.run/download/app](https://moorai.glick.run/download/app) (it is not attached to GitHub Releases), or `brew install --cask gitayg/tap/moorai` once the tap is published — see [packaging/README.md](packaging/README.md). The app updates itself in place.
 **Windows** — download the signed `-setup.exe` from [Releases](https://github.com/gitayg/moorai/releases) (built in the open by CI).
 
 Community edition: runs standalone, local policy control, no account required.
@@ -284,7 +284,7 @@ decision. (Or set `otlpEndpoint` / `otlpHeaders` in the device config.)
 
 | | |
 |---|---|
-| **Agents** | Claude Code (full hook enforcement) · Claude Desktop · Cursor · VS Code / Copilot · any project `.mcp.json` consumer (MCP stdio proxy — **enforcement, host-independently**, but only over MCP; see the bound below) · **Codex: not covered at all** — its config is TOML and our installer writes JSON |
+| **Agents** | Claude Code (full hook enforcement) · Claude Desktop · Cursor · VS Code / Copilot · any project `.mcp.json` consumer (MCP stdio proxy — **enforcement, host-independently**, but only over MCP; see the bound below) · **Codex: hooks and the MCP proxy do not cover it** — its config is TOML and our installer writes JSON; only prompts typed into the desktop app's guarded composer are reviewed, as they are for every agent in its picker |
 | **Surfaces** | prompts · AI outputs · files read into context · **files the agent writes or edits** · MCP tool calls · **MCP tool listings and tool results** · **outbound `WebFetch` requests** · pasted images (on-device OCR) · the agent's auto-loaded context files (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`, …) · the agent's auto-loaded skill surface (skills, subagents, commands, MCP configs, hook-bearing settings) |
 | **Platforms** | macOS · Windows · Linux (on-device OCR is a second-class tier — see below) |
 | **Detects** | secrets · PII / PHI · source-code leakage · prompt injection · destructive commands · second-order/hidden-instruction injection · skill-surface poisoning & drift |
@@ -353,7 +353,7 @@ so internal files can move without breaking consumers.
 
 ## How it works
 
-A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against a 60+ threat matrix + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is MIT; the console is commercial.
+A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against a 67-threat matrix (17 categories) + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is MIT; the console is commercial.
 
 ## Learn more
 
