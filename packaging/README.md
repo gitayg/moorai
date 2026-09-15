@@ -42,10 +42,15 @@ That URL has no version in it and always serves the latest build, so the cask us
 information whose contents change between releases) and `auto_updates true` (the app downloads and
 installs its own updates via the Tauri updater).
 
-**Set up the tap (once):**
-1. Create a public repo `github.com/gitayg/homebrew-tap`.
-2. Add this file at `Casks/moorai.rb`.
-3. Users then: `brew install --cask gitayg/tap/moorai`
+**The tap:** published at [`gitayg/homebrew-tap`](https://github.com/gitayg/homebrew-tap) as `Casks/moorai.rb`.
+This file is the source of truth, so copy any change into the tap repo. Users install with:
+
+```bash
+brew install --cask gitayg/tap/moorai
+```
+
+Homebrew won't load casks from third-party taps until they are trusted. Installing by the fully qualified name trusts
+only this cask. Users who tap first and use the short name need `brew trust --cask gitayg/tap/moorai`.
 
 **Per release:** nothing to change in the cask. Ship the DMG as usual (`npm run release` or a
 version tag); `brew install` picks up whatever `/download/app` serves. Edit the cask only if the
