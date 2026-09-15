@@ -357,9 +357,9 @@ A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the d
 
 ## Learn more
 
-- **Website & comparisons** — [glick.run/moorai](https://glick.run/moorai.html)
-- **How it stacks up** — vs [Lakera](https://glick.run/moorai-vs-lakera.html) · [Prompt Security](https://glick.run/moorai-vs-prompt-security.html) · [BigID](https://glick.run/moorai-vs-bigid.html) · [Harmonic](https://glick.run/moorai-vs-harmonic.html) · [Zenity](https://glick.run/moorai-vs-zenity.html) · [Netskope](https://glick.run/moorai-vs-netskope.html)
+- **Website & comparisons** — [moorai.dev](https://moorai.dev/)
+- **How it stacks up** — vs [Lakera](https://moorai.dev/moorai-vs-lakera.html) · [Prompt Security](https://moorai.dev/moorai-vs-sentinelone.html) · [BigID](https://moorai.dev/moorai-vs-bigid.html) · [Harmonic](https://moorai.dev/moorai-vs-harmonic.html) · [Zenity](https://moorai.dev/moorai-vs-zenity.html) · [Netskope](https://moorai.dev/moorai-vs-netskope.html)
 
 ## License
 
-The MoorAI community agent is licensed under the [MIT License](LICENSE). The management server is a separate, proprietary product.
+The MoorAI community agent is licensed under the [MIT License](LICENSE). The management server is a separate product, source-available under the [Elastic License 2.0](https://www.elastic.co/licensing/elastic-license).
