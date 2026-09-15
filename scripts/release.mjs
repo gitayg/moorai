@@ -15,6 +15,7 @@ import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { uploadUpdater } from "./release-updater.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SLUG = "moorai";
@@ -102,21 +103,9 @@ if (up.sha256 !== sha) throw new Error(`upload sha mismatch: local ${sha} vs sto
 console.log(`  ${up.container_path} ✓ sha256 verified`);
 
 // ---- 2b. upload updater artifact + signature (for in-app auto-update) ----
-const macDir = join(ROOT, "src-tauri/target/release/bundle/macos");
-const tgzName = readdirSync(macDir).find((f) => f.endsWith(".app.tar.gz"));
-const sigName = readdirSync(macDir).find((f) => f.endsWith(".app.tar.gz.sig"));
-if (tgzName && sigName) {
-  log("Uploading updater artifact + signature");
-  const tgz = readFileSync(join(macDir, tgzName));
-  copyFileSync(join(macDir, tgzName), join(ROOT, "dist/MoorAI.app.tar.gz"));
-  copyFileSync(join(macDir, sigName), join(ROOT, "dist/MoorAI.app.tar.gz.sig"));
-  const ut = await mcp("appcrane_set_data_blob", { slug: SLUG, env: "production", path: "MoorAI.app.tar.gz", encoding: "base64", content: tgz.toString("base64") });
-  if (ut.sha256 !== sha256(tgz)) throw new Error("updater artifact sha mismatch");
-  await mcp("appcrane_set_data_blob", { slug: SLUG, env: "production", path: "MoorAI.app.tar.gz.sig", encoding: "utf-8", content: readFileSync(join(macDir, sigName), "utf8") });
-  console.log(`  ${ut.container_path} (${ut.bytes} B) + signature ✓`);
-} else {
-  console.log("  ⚠ no updater artifact — check the 'updater' bundle target + TAURI_SIGNING_PRIVATE_KEY");
-}
+// Uploads MoorAI.app.tar.gz, .sig, then the MoorAI.app.tar.gz.version sidecar (the server's updater
+// manifest reads the desktop version from it; see scripts/release-updater.mjs).
+await uploadUpdater({ mcp, macDir: join(ROOT, "src-tauri/target/release/bundle/macos"), distDir: join(ROOT, "dist"), slug: SLUG, version: V, log });
 
 // ---- 3. verify the published installer ----
 // The management server (separate repo) serves the DMG we just uploaded to /data — confirm it's live.

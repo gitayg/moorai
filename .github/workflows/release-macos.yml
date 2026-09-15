@@ -105,4 +105,5 @@ jobs:
             dist/MoorAI.dmg
             dist/MoorAI.app.tar.gz
             dist/MoorAI.app.tar.gz.sig
+            dist/MoorAI.app.tar.gz.version
           if-no-files-found: warn
