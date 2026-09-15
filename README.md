@@ -4,7 +4,7 @@
 
 ### On-device guardrails for AI coding agents. Nothing leaves the machine.
 
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-ff4d6d.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-3ecf8e.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-e4e4ef.svg)](#install)
 [![Build: Windows](https://github.com/gitayg/moorai/actions/workflows/release-windows.yml/badge.svg)](https://github.com/gitayg/moorai/actions)
 
@@ -49,7 +49,7 @@ That's the exact trade MoorAI refuses.
 
 ## Why you can trust the "nothing leaves" claim
 
-Because you can read the code. The agent is **AGPL-3.0 and open source** — the whole detection and reporting path is right here. Cloud DLP tools ask you to take "we don't store your prompts" on faith. MoorAI's telemetry is content-free *by construction*, and the construction is auditable.
+Because you can read the code. The agent is **MIT and open source** — the whole detection and reporting path is right here. Cloud DLP tools ask you to take "we don't store your prompts" on faith. MoorAI's telemetry is content-free *by construction*, and the construction is auditable.
 
 **Governance without surveillance.**
 
@@ -353,7 +353,7 @@ so internal files can move without breaking consumers.
 
 ## How it works
 
-A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against a 60+ threat matrix + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is AGPL; the console is commercial.
+A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against a 60+ threat matrix + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is MIT; the console is commercial.
 
 ## Learn more
 
@@ -362,4 +362,4 @@ A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the d
 
 ## License
 
-The MoorAI community agent is licensed under [AGPL-3.0](LICENSE). The management server is a separate, proprietary product.
+The MoorAI community agent is licensed under the [MIT License](LICENSE). The management server is a separate, proprietary product.

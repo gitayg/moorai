@@ -1,7 +1,8 @@
 {
   "name": "moorai",
-  "version": "0.82.1",
-  "description": "MoorAI agent — on-device guardrails for AI coding agents (community edition, AGPL-3.0)",
+  "version": "0.83.0",
+  "license": "MIT",
+  "description": "MoorAI agent — on-device guardrails for AI coding agents (community edition, MIT)",
   "type": "module",
   "exports": {
     ".": "./scan.mjs",

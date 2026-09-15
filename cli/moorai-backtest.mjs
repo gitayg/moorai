@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // moorai-backtest — replay YOUR OWN history against a CANDIDATE policy, on this machine, before you
 // adopt it. "What would this policy change have done to me last month?" answered from evidence
-// instead of imagination. The standalone twin of the console's Policy Backtest, so the AGPL agent
+// instead of imagination. The standalone twin of the console's Policy Backtest, so the open-source agent
 // has the capability without a server or an account.
 //
 // Content-free by construction, and that is the point: recomputing a historical event's action needs

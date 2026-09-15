@@ -80,7 +80,7 @@ The invariant it must satisfy is **content-free egress, not "never decrypt"**:
   enumerable and would not be one-way in practice).
 - The root CA is generated **locally, per device**, never shared or escrowed, and its installation
   is disclosed and reversible. Uninstall removes it.
-- Because the interceptor is **open source (AGPL-3.0)**, this is auditable rather than asserted —
+- Because the interceptor is **open source (MIT)**, this is auditable rather than asserted —
   anyone can verify that no content path leaves the device.
 
 Default posture is unchanged: agent hook + MCP gateway, no certificate, no interception. Local TLS

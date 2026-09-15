@@ -34,5 +34,5 @@ python3 -m http.server 8000            # exercise the webview UI
 
 ## Licensing of contributions
 
-MoorAI is licensed under **AGPL-3.0**. By submitting a contribution you agree it is licensed under
+MoorAI is licensed under **MIT**. By submitting a contribution you agree it is licensed under
 the same terms.

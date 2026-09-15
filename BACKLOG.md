@@ -256,10 +256,10 @@ payload + rug-pull drift), jailbreak detectors, entitlement envelope.
 ### GTM / positioning track (content + external — see the glick.run repo draft)
 - **Reposition** the site to "content-free, open-core AI coding-agent security — at the endpoint"; lead
   with content-free-vs-tokenization (drafted in glick-run-website, pending review + deploy).
-- **Shadow-agent discovery wedge** messaging; **per-device pricing** (free AGPL agent + paid per-device
+- **Shadow-agent discovery wedge** messaging; **per-device pricing** (free MIT agent + paid per-device
   console) — drafted.
 - **Trust pack** — (a) publish a versioned, reproducible detection benchmark (docs/BENCHMARK.md → public
-  page); (b) commission a **third-party zero-egress audit** (external engagement — the AGPL agent makes
+  page); (b) commission a **third-party zero-egress audit** (external engagement — the MIT agent makes
   it cheap); (c) **SOC 2 Type II** for the console (org process). (b) and (c) are not code — track as
   business tasks. Court the Gartner AI-SPM Market Guide (H2 2026) as the content-free/open-core entrant.
 - **Beachhead** — regulated/high-IP verticals (fintech, defense, pharma, legal) where "content never
