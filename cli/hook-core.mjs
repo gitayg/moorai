@@ -120,13 +120,49 @@ export function calibrateRisk(base, { stage, category } = {}) {
   return base;
 }
 
+// Safer alternatives — the static, per-threat "do it this way instead" line from data/threats.json.
+// Content-free by construction: the text is fixed per threat id and never includes the matched span.
+// Ordered highest riskScore first (stable on ties), deduplicated, so [0] is the most important one.
+function orderedAlternatives(threats) {
+  const seen = new Set();
+  const out = [];
+  for (const t of [...threats].sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0))) {
+    const a = t.saferAlternative;
+    if (a && !seen.has(a)) { seen.add(a); out.push(a); }
+  }
+  return out;
+}
+
+let THREATS_BY_ID = null;
+export function saferAlternativesFor(ids) {
+  if (!THREATS_BY_ID) {
+    const { threats } = JSON.parse(readFileSync(join(ROOT, "data/threats.json"), "utf8"));
+    THREATS_BY_ID = new Map(threats.map((t) => [t.id, t]));
+  }
+  return orderedAlternatives(ids.map((id) => THREATS_BY_ID.get(id)).filter(Boolean));
+}
+
+// The user-visible reason with the first (highest-risk) safer alternative appended. The caller keeps
+// the `MoorAI: ` prefix, which cli/agent-hooks/shim.mjs strips.
+export function withSafer(reason, alternatives) {
+  const alt = alternatives && alternatives[0];
+  if (!alt) return reason;
+  const r = String(reason || "").trimEnd();
+  return `${r}${/[.!?]$/.test(r) ? "" : "."} Safer: ${alt}`;
+}
+
 // Scan text and reduce all findings to a single decision (deny > ask > allow) plus content-free
 // findings for reporting. Only "block" → deny; "justify" → ask; "notify"/"alert" → allow-but-report.
-export function decideText(engine, policy, text, stage) {
-  const out = { decision: "allow", reasons: [], findings: [], kill: false, killIds: [] };
+// `alternatives` holds the safer-alternative lines of the findings that drove a non-allow decision.
+// opts.ctx is handed to refine() (e.g. {template:true} for an env template file); opts.only restricts
+// the verdict to a set of threat ids and skips content rules.
+export function decideText(engine, policy, text, stage, opts = {}) {
+  const out = { decision: "allow", reasons: [], findings: [], kill: false, killIds: [], alternatives: [] };
   if (!text || !text.trim()) return out;
   const bump = (d) => { if (RANK[d] > RANK[out.decision]) out.decision = d; };
-  for (const f of engine.scan(text, stage)) {
+  const driving = [];
+  for (const f of engine.scan(text, stage, opts.ctx)) {
+    if (opts.only && !opts.only.includes(f.threat.id)) continue;
     const act = threatActionFor(policy, f.threat.id);
     if (act === "disabled") continue;
     const level = calibrateRisk(f.threat.riskLevel, { stage, category: f.threat.category });
@@ -135,10 +171,12 @@ export function decideText(engine, policy, text, stage) {
     // Code only knows allow/ask/deny); the kill signal is carried out-of-band via out.kill for the host.
     // killOnCritical promotes any Critical block to a kill without per-threat config.
     const kill = act === "kill" || (policy?.killOnCritical && act === "block" && level === "Critical");
-    if (act === "block" || act === "kill") { bump("deny"); out.reasons.push(`#${f.threat.id} ${f.threat.category}`); }
-    else if (act === "justify") { bump("ask"); out.reasons.push(`#${f.threat.id} ${f.threat.category} (needs sign-off)`); }
+    if (act === "block" || act === "kill") { bump("deny"); out.reasons.push(`#${f.threat.id} ${f.threat.category}`); driving.push(f.threat); }
+    else if (act === "justify") { bump("ask"); out.reasons.push(`#${f.threat.id} ${f.threat.category} (needs sign-off)`); driving.push(f.threat); }
     if (kill) { out.kill = true; out.killIds.push(f.threat.id); }
   }
+  out.alternatives = orderedAlternatives(driving);
+  if (opts.only) return out;
   const cp = policy?.contentPolicy || {};
   const enabled = Object.keys(cp).filter((id) => cp[id] && cp[id] !== "disabled");
   if (enabled.length) for (const c of engine.scanContent(text, enabled)) {
@@ -149,6 +187,20 @@ export function decideText(engine, policy, text, stage) {
     else if (act === "justify") bump("ask");
   }
   return out;
+}
+
+// A committed env template (.env.example / .env.sample / .env.template) holds placeholders by design.
+export function isEnvTemplate(path) {
+  return /(^|[\/\\])\.env\.(example|sample|template)$/i.test(String(path || ""));
+}
+
+// #55 for a Read tool call. Bash is scanned as command TEXT, so `cat <path>/.env` hits
+// cred-file-access; a Read carries only the path and was never checked against #55 at all. Probing the
+// same detector with the equivalent read command gives a Read exactly the verdict the `cat` gets —
+// no stricter — and only #55 is consulted, so a filename cannot trip any other prompt detector.
+export function decideCredFileRead(engine, policy, path) {
+  if (typeof path !== "string" || !path || /[\r\n]/.test(path)) return decideText(engine, policy, "", "prompt");
+  return decideText(engine, policy, `cat ${path}`, "prompt", { only: [55] });
 }
 
 // #3 — MCP server allow/deny. Enforce only when an allow-list is set; otherwise report-only (preserve
@@ -227,7 +279,7 @@ export function mcpGateway(engine, policy, { tool, server, args }) {
   const ad = decideMcpArgs(policy, tool, args);
   if (ad.decision === "deny") return { gate: "args", decision: "deny", reason: ad.reason, findings: [], kill: false, killIds: [] };
   const d = decideText(engine, policy, args, "prompt");
-  return { gate: d.decision === "allow" ? null : "content", decision: d.decision, reason: d.reasons.join(", "), findings: d.findings, kill: d.kill, killIds: d.killIds };
+  return { gate: d.decision === "allow" ? null : "content", decision: d.decision, reason: d.reasons.join(", "), findings: d.findings, kill: d.kill, killIds: d.killIds, alternatives: d.alternatives };
 }
 
 // T1-1 / #63 — model-endpoint allow-list. Enforce only when policy.endpointAllow is set; a referenced

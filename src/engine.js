@@ -91,14 +91,16 @@ export class DetectionEngine {
     return (threat.sources || []).map((key) => ({ key, url: this.sources[key] }));
   }
 
-  scan(text, stage) {
+  // `ctx` is optional caller context handed to refine() as its third argument — e.g. {template:true}
+  // when the text is a committed env template, so a secret gate can treat EXAMPLE values as placeholders.
+  scan(text, stage, ctx) {
     if (!text || !text.trim()) return [];
     const byThreat = new Map();
     const want = this._wantStages(stage);
 
     for (const d of this.detectors) {
       if (!this._inStage(d, want)) continue;
-      const match = this._matchDetector(text, d);
+      const match = this._matchDetector(text, d, ctx);
       if (!match) continue;
 
       const threat = this.threat(d.threatId);
@@ -274,14 +276,14 @@ export class DetectionEngine {
   // _firstMatch, so existing detectors are unaffected. refine also receives the FULL scanned text as
   // a second arg (ignored by string-only refines), so a proximity gate like taint-lite can look
   // beyond the matched span for a nearby source without widening the pattern.
-  _matchDetector(text, d) {
+  _matchDetector(text, d, ctx) {
     if (!d.refine) return this._firstMatch(text, d.patterns);
     for (const p of d.patterns) {
       const g = safeRegex(p.source, p.flags.includes("g") ? p.flags : p.flags + "g");
       if (!g) continue;
       let m;
       while ((m = g.exec(text)) !== null) {
-        if (d.refine(m[0], text)) return m[0];
+        if (d.refine(m[0], text, ctx)) return m[0];
         if (m.index === g.lastIndex) g.lastIndex++; // guard against zero-width matches
       }
     }

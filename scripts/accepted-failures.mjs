@@ -16,13 +16,9 @@
 // Do NOT add an entry to make a red run green. An entry is a statement that the miss is understood
 // and accepted, with the reason written down.
 
-export const ACCEPTED_CORPUS_FAILURES = {
-  "sec-generic-entropy":
-    'expects threat #39 on `API_KEY = "<32-char base62>"` — a generic high-entropy blob with no vendor ' +
-    "prefix. The shipped secret detectors are vendor-prefixed (AKIA…, ghp_…, sk-…); a bare entropy " +
-    "heuristic broad enough to catch this fires on hashes, UUIDs and base64 blobs across the benign " +
-    "corpus. Pre-existing and deliberate: measured as a known miss at v0.78.0 (redteam 101/102)."
-};
+// sec-generic-entropy was listed here until the entropy-gated secret detectors were found to be dead
+// (refused by the engine's ReDoS gate since v0.63.2) and revived with bounded patterns; it now passes.
+export const ACCEPTED_CORPUS_FAILURES = {};
 
 // failedIds: ids the harness actually scored as failing this run.
 // allIds:    every id the harness scored, so an allowlist entry naming a case that no longer exists

@@ -608,14 +608,15 @@ export const DETECTORS = [
     ]
   },
   {
-    // #53 (LLM10) — oversized single input (token-blowup / unbounded consumption). Linear regex.
+    // #53 (LLM10) — oversized single input (token-blowup / unbounded consumption). Anchored: the
+    // unanchored /[\s\S]{60000,}/ retried from every offset, so a 40-59 KB input cost seconds per scan.
     detectorId: "oversized-input",
     threatId: 53,
     stage: "prompt",
     mode: "warn",
     hint: "Extremely large single input — possible token-blowup / unbounded consumption.",
     patterns: [
-      /[\s\S]{60000,}/
+      /^[\s\S]{60000}/
     ]
   },
   {
@@ -641,13 +642,24 @@ export const DETECTORS = [
   {
     // #55 (LLM02) — the agent reads a credential / secret file. Prompt + output (agent proposes the read).
     // Anchored on read verbs + credential paths, plus a few bare high-signal paths.
+    //
+    // The first pattern matches the credential PATH TOKEN, not a fixed window. It used to allow at most
+    // 50 characters between the verb and `.env`, so `cat .env` and `cat ~/p/.env` were #55 but
+    // `cat /Users/me/work/clients/acme/api/.env` was not — the verdict depended on how deep the project
+    // sat on disk. Now the verb (plus up to 50 chars of flags) must be followed by a shell delimiter, and
+    // the token after it may be a path of any realistic length (≤512) ending in the credential name.
+    // The lookbehind keeps it linear: measured ≤2.3ms on 60KB adversarial inputs (`/cat` × 15000 was
+    // 24.8ms with an optional delimiter, 1.5ms for the old pattern).
+    // Env TEMPLATES (.env.example / .sample / .template) are committed on purpose and hold placeholders,
+    // so they are excluded — before this change `cat .env.example` was #55 only because `\b` matched at
+    // the second dot.
     detectorId: "cred-file-access",
     threatId: 55,
     stages: ["prompt", "output"],
     mode: "warn",
     hint: "Reads a credential / secret file (.env, cloud creds, SSH key, /etc/shadow).",
     patterns: [
-      /\b(cat|less|more|head|tail|type|Get-Content|xxd|base64|strings|nano|vi|vim|open)\b[^\n]{0,50}(\.env\b|\.aws[\/\\]credentials|\.ssh[\/\\]id_[a-z0-9]+|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.pgpass\b|\.docker[\/\\]config\.json|\.kube[\/\\]config)/i,
+      /(?<=\b(?:cat|less|more|head|tail|type|Get-Content|xxd|base64|strings|nano|vi|vim|open)\b[^\n]{0,50}[\s"'`;|&<>()])[^\s"'`;|&<>()]{0,512}?(?:\.env\b(?!\.(?:example|sample|template)\b)|\.aws[\/\\]credentials|\.ssh[\/\\]id_[a-z0-9]+|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.pgpass\b|\.docker[\/\\]config\.json|\.kube[\/\\]config)/i,
       /[~\/][^\s"']*\.aws[\/\\]credentials\b/i,
       /\.ssh[\/\\]id_(rsa|ed25519|ecdsa|dsa)\b/i,
       /(^|[\s"'=])\/etc\/shadow\b/,
@@ -746,7 +758,7 @@ export const DETECTORS = [
     hint: "Dynamic code execution (eval / new Function / string-arg timer / exec of input).",
     patterns: [
       /\beval\s*\(\s*(?!["'`)\s])/,
-      /\bnew\s+Function\s*\(/,
+      /\bnew\s{1,16}Function\s{0,16}\(/,
       /\b(setTimeout|setInterval)\s*\(\s*["'`]/,
       /\bexec\s*\(\s*f["']/i,
       /\b(exec|eval)\s*\([^)]*\b(input|request|argv|params|req\.(body|query|params))\b/i
@@ -928,7 +940,7 @@ export const DETECTORS = [
       /\bsubprocess\.(?:run|call|check_output|check_call|Popen)\s*\(/,
       /\bchild_process\.(?:exec|execSync|spawn|spawnSync)\s*\(/,
       /\beval\s*\(/,
-      /\bnew\s+Function\s*\(/,
+      /\bnew\s{1,16}Function\s{0,16}\(/,
       /\.(?:inner|outer)HTML\s*=/,
       /\.insertAdjacentHTML\s*\(/,
       /\bdocument\.write(?:ln)?\s*\(/,

@@ -1,10 +1,11 @@
 // MULTI-HOST MCP ENFORCEMENT — is it real, and is it REACHABLE?
 //
-// The published posture (README.md line 240) is:
+// The posture this test was written against was:
 //
 //     Claude Code (full hook enforcement) · Codex / Copilot CLI (detection-only — no equivalent deny hook)
 //
-// That is true of the *hook*. It is not automatically true of the *MCP proxy*, which is host-agnostic
+// Codex and Copilot CLI now have pre-tool hook adapters (cli/agent-hooks/); this test still covers the
+// separate question of the MCP proxy. It is not automatically true of the *MCP proxy*, which is host-agnostic
 // by construction: mcp-proxy/moorai-mcp-guard.mjs speaks nothing but newline-delimited JSON-RPC over
 // stdio, and every MCP host — Claude Desktop, Cursor, VS Code/Copilot, any `.mcp.json` consumer —
 // launches stdio servers the same way. Nothing in the guard knows or cares which host spawned it.

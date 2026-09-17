@@ -118,7 +118,7 @@ export function scanFileText({ engine, policy, text, relativePath, surfaceKind }
 }
 
 // Depth-first walk that never follows symlinks (loop-safe) and skips .git. Returns absolute file paths.
-function walkFiles(root) {
+export function walkFiles(root) {
   const out = [];
   const recurse = (dir) => {
     let entries;

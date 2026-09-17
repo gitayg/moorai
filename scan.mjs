@@ -22,3 +22,11 @@ export { skillIntents } from "./cli/skill-analysis.mjs";
 export { contentHash, NO_KEY } from "./cli/content-hash.mjs";
 
 export { skillSurfaceKind, isSkillSurface } from "./data/skill-surface.js";
+
+export {
+  resolveMcpPackages,
+  analyzePackage,
+  scanPathWithPackages,
+  parsePackageArg,
+  packagesEnabled,
+} from "./cli/mcp-package.mjs";

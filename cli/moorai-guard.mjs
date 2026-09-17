@@ -141,7 +141,8 @@ function printFindings(findings) {
     const fw = [f.threat.owasp, f.threat.atlas].filter(Boolean).join(" · ");
     console.error(`  ${c}● ${f.mode === "coach" ? "COACH" : f.threat.riskLevel}${C.off}  #${f.threat.id} ${f.threat.threat}  ${C.dim}[${f.threat.category}]${f.threat.owasp ? ` ${fw}` : ""}${C.off}`);
     console.error(`     ${C.dim}matched:${C.off} ${f.match}`);
-    console.error(`     ${C.dim}why:${C.off} ${f.threat.response}\n`);
+    console.error(`     ${C.dim}why:${C.off} ${f.threat.response}${f.threat.saferAlternative ? "" : "\n"}`);
+    if (f.threat.saferAlternative) console.error(`     ${C.dim}safer:${C.off} ${f.threat.saferAlternative}\n`);
   }
 }
 

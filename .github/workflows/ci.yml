@@ -75,7 +75,7 @@ jobs:
       - name: MCP proxy tests
         run: node mcp-proxy/test-proxy.mjs
 
-      # 101/102 with sec-generic-entropy on the accepted-failure baseline. That list is xfail-STRICT:
+      # 102/102; the accepted-failure baseline is empty. That list is xfail-STRICT:
       # an unlisted miss is red, and a LISTED id that starts passing is also red, so the excuse cannot
       # outlive the bug. Do not add entries to make this green.
       - name: Red-team corpus

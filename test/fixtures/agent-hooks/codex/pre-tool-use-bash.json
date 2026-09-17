@@ -1,0 +1,12 @@
+{
+  "session_id": "019a0000-0000-7000-8000-000000000001",
+  "turn_id": "1",
+  "transcript_path": null,
+  "cwd": "__CWD__",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-5-codex",
+  "permission_mode": "default",
+  "tool_name": "Bash",
+  "tool_input": { "command": "ls -la" },
+  "tool_use_id": "call_fixture_1"
+}

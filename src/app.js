@@ -657,6 +657,7 @@ function card(f, blocked) {
     <div class="hint">${esc(f.hint)}</div>
     <div class="match">matched: ${esc(f.match)}</div>
     <div class="guidance">${blocked ? "Blocked by policy — cannot be sent. " : ""}${esc(t.response)}</div>
+    ${t.saferAlternative ? `<div class="guidance safer">Safer: ${esc(t.saferAlternative)}</div>` : ""}
     <div>${links}</div>`;
   return el;
 }

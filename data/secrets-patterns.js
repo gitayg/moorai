@@ -37,11 +37,28 @@ export function looksLikeSecret(v) {
   return shannonEntropy(val) >= (hex ? 3.0 : 3.5);
 }
 
-// Pull the value out of a `key = "value"` / `key: value` match for the entropy check.
-const valueOf = (m) => {
-  const mm = String(m).match(/["']?([A-Za-z0-9\-_.\/+=]{20,})["']?\s*$/);
-  return mm ? mm[1] : m;
-};
+// The value side of a `NAME = "value"` match, for the entropy check. (The old tail-anchored extractor
+// admitted `_` and `=`, so on `SECRET_KEY=abc…` it returned the whole assignment, name included.)
+const assignedValue = (m) => String(m).replace(/^[^:=]*[:=]\s*/, "");
+
+// Placeholder words that fill template values ("your-api-key-goes-here", "EXAMPLE_SECRET_KEY_VALUE").
+const FILLER = /your|here|goes|example|sample|placeholder|change[_-]?me|replace|insert|dummy|fake|redacted|todo|secret|password|passwd|token|api|access|key|value|xxx+/gi;
+// A monotonic run like 0123456 / abcdefg is a typed placeholder, not generator output.
+const SEQUENTIAL = /0123456|1234567|2345678|3456789|abcdefg|bcdefgh|cdefghi|defghij|qwertyu/i;
+// Template-only markers: in a committed env template an EXAMPLE-bearing value is documentation.
+const TEMPLATE_MARKER = /example|sample|placeholder|dummy|fake/i;
+
+// looksLikeSecret plus placeholder rejection, for values found beside a secret-like NAME. `ctx` is the
+// engine's optional scan context; ctx.template marks a committed env template (.env.example …).
+export function looksLikeAssignedSecret(v, ctx) {
+  const val = String(v).replace(/^["'\s]+|["'\s]+$/g, "");
+  if (!looksLikeSecret(val)) return false;
+  if (SEQUENTIAL.test(val)) return false;
+  if (/^[a-z]+(?:[-_.][a-z]+){3,}$/i.test(val)) return false; // "replace-me-with-a-random-string"
+  if (ctx?.template && TEMPLATE_MARKER.test(val)) return false;
+  const core = val.replace(FILLER, "").replace(/[^A-Za-z0-9]/g, "");
+  return core.length >= 16 && shannonEntropy(core) >= 3.5;
+}
 
 const S = (detectorId, hint, patterns, refine) => {
   const d = { detectorId, threatId: 39, stage: "prompt", stages: ["prompt", "output"], mode: "warn", hint, patterns };
@@ -71,10 +88,22 @@ export const SECRET_DETECTORS = [
     /\b(postgres(ql)?|mysql|mongodb(\+srv)?|redis|amqp):\/\/[^:@\s/]+:[^@\s/]+@/i
   ]),
   // ---- Shapeless: only fire when the value is genuinely high-entropy (entropy + allowlist gate) ----
+  //
+  // EVERY quantifier below is bounded, and that is load-bearing. These detectors carry a refine(), so
+  // src/engine.js _matchDetector recompiles their patterns through safeRegex — which refuses a pattern
+  // with more than one unbounded quantifier. From v0.63.2 to this change both of the original patterns
+  // (`\s*[:=]\s*…{20,}`) were refused and the two detectors never fired at all: a lone
+  // `AWS_SECRET_ACCESS_KEY=…` line produced no finding. test/hook-gaps-named-secret.test.mjs pins it.
   S("secret-generic-assignment", "High-entropy value assigned to a secret-like variable.", [
-    /\b(?:api[_-]?key|secret|token|passwd|password|client[_-]?secret|access[_-]?key|auth[_-]?token|private[_-]?key)\b\s*[:=]\s*["']?[A-Za-z0-9\-_.\/+=]{20,}["']?/i
-  ], (m) => looksLikeSecret(valueOf(m))),
+    /\b(?:api[_-]?key|secret|token|passwd|password|client[_-]?secret|access[_-]?key|auth[_-]?token|private[_-]?key)\b\s{0,8}[:=]\s{0,8}["']?[A-Za-z0-9\-_.\/+=]{20,512}["']?/i
+  ], (m, _t, ctx) => looksLikeAssignedSecret(assignedValue(m), ctx)),
   S("secret-aws-secret", "Looks like an AWS secret access key.", [
-    /aws_secret_access_key\s*[:=]\s*["']?[A-Za-z0-9\/+]{40}["']?/i
-  ], (m) => looksLikeSecret(valueOf(m)))
+    /aws_secret_access_key["']?\s{0,8}[:=]\s{0,8}["']?[A-Za-z0-9\/+]{40}["']?/i
+  ], (m, _t, ctx) => looksLikeAssignedSecret(assignedValue(m), ctx)),
+  // Env-style NAMED secret: FOO_API_KEY / FOO_SECRET_KEY / FOO_TOKEN / FOO_PASSWORD = <high-entropy>.
+  // Upper-case names only — the env-var / .env convention. Lower-case `page_token` / `csrf_token` in
+  // code carry high-entropy values that are not credentials.
+  S("secret-named-assignment", "High-entropy value assigned to a named secret variable (…_API_KEY, …_TOKEN, …).", [
+    /\b(?:[A-Z0-9_]{0,60}_)?(?:SECRET_ACCESS_KEY|SECRET_KEY|API_KEY|TOKEN|PASSWORD)["']?\s{0,8}[:=]\s{0,8}["']?[A-Za-z0-9\-_.\/+=]{20,512}["']?/
+  ], (m, _t, ctx) => looksLikeAssignedSecret(assignedValue(m), ctx))
 ];

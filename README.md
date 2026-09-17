@@ -107,6 +107,28 @@ The write family scans at the **`output`** stage, deliberately not `file`: the f
 61-detector injection family, and an agent writing a doc that quotes *"ignore all previous instructions"*
 is a doc, not an attack. Existing installs converge on the current matcher list on ordinary invocations —
 only when MoorAI entries are already present, so nothing an operator uninstalled is ever re-added.
+The Cursor CLI runs these same hooks but renames the tools: its shell tool arrives as `Shell`, which the
+hook treats exactly as `Bash` (Cursor already rewrites the registered `Bash` matcher to `Shell`, so no
+extra matcher is registered). A `Read` is also checked against #55 by **path**, so reading a `.env` —
+relative, absolute or `~/…`, including `.env.local` / `.env.production` — gets the same `ask` as
+`cat .env`; `.env.example` / `.env.sample` / `.env.template` are not flagged.
+
+**Other agents.** `node cli/moorai-agent-hook.mjs <codex|copilot|gemini|cursor> install` registers a
+pre-tool hook in that agent's own config (`~/.codex/hooks.json`, `~/.copilot/hooks/moorai.json`,
+`~/.gemini/settings.json`, `~/.cursor/hooks.json`); `uninstall` removes only MoorAI's entries. Each
+adapter in [`cli/agent-hooks/`](cli/agent-hooks) translates the agent's hook payload into the Claude
+Code shape, runs the same hook (same engine, policy and telemetry), and translates the verdict back.
+Each was built from that vendor's documentation and published source, and is tested against fixture
+payloads in the documented shape; none has yet been run end to end against the live agent. Per agent:
+
+| Agent | Blocks before the tool runs | "Ask" | Known gaps |
+|---|---|---|---|
+| Codex CLI | yes, after the user trusts the hook once in Codex (`/hooks`) | not supported by Codex; becomes a deny with a message | `web_search` runs server-side and never reaches a hook; plan/permission/plugin tools unmapped |
+| GitHub Copilot CLI | yes | passed through (Copilot's own prompt; denied when no user is present) | `grep`/`glob` results, skill and agent-messaging tools unmapped; long MCP names can be truncated by Copilot |
+| Gemini CLI | yes | passed through (Gemini's confirmation prompt) | `glob`/`grep_search`/`list_directory` unmapped; only web results are scanned after the tool runs |
+| Cursor (IDE and `cursor-agent`) | yes, for shell, MCP, file reads, writes, fetch and subagents | shell and MCP only; `cursor-agent` lets an MCP "ask" through | prompts (`beforeSubmitPrompt`) and several `preToolUse` tools unmapped; fails open on a hook crash |
+
+All four fail open if the hook crashes or times out, like the Claude Code hook.
 
 `WebFetch` is covered on **both** surfaces, and the split is the point. `PreToolUse` fires *before* the
 fetch, so `tool_input` is `{url, prompt}` and the page does not exist yet — that surface scans the
@@ -237,6 +259,8 @@ npx moorai-honeytokens register               # register a content-free canary (
 npx moorai-attest                             # export governed records as an in-toto / SLSA provenance attestation (SSCS interchange)
 npx moorai-aibom --format cyclonedx           # export the AI Bill of Materials as a CycloneDX 1.6 SBOM (also --format spdx)
 npx moorai-scan ./some-skill                  # PRE-INSTALL gate — a content-free verdict on a skill/agent artifact before you install it
+npx moorai-scan ./.mcp.json --packages        # …and download + statically analyse the npm/PyPI package each MCP server launches
+npx moorai-scan --package npm:@scope/server   # one package (also pypi:<name>, github:<owner>/<repo>/<skill-path>)
 ```
 
 - **`moorai-trace`** reconstructs the on-device action chain — `time · actor · tool · decision · risk · destination · args-hash` — from the content-free logs, so you can answer *"what did this agent do?"* after an incident without ever surfacing a prompt or file.
@@ -247,6 +271,8 @@ npx moorai-scan ./some-skill                  # PRE-INSTALL gate — a content-f
 - **`moorai-attest`** emits the governed record chain as an **in-toto attestation / SLSA provenance predicate**, built only from the content-free fields (tool · category · risk · decision · stage · tenant + the one-way hashes + chain seq/prev/chash) — so an agent's action evidence plugs into the software-supply-chain attestation ecosystem without carrying any content. The AIBOM also exports as a standard **CycloneDX 1.6** or **SPDX 2.3** SBOM (`moorai-aibom --format cyclonedx|spdx`).
 - **`moorai-receipt`** emits a signed, content-free **per-verdict decision receipt** — a strict-allowlist payload (tool · category · risk · decision · stage · tenant + the one-way hashes + chain seq/prev/chash), a SHA-256 digest bound only to those fields, and an ed25519 signature from the same per-device agency key as the MCP-approval tokens. `moorai-verify-chain --offline <file>` verifies a receipt (or an in-toto attestation) with **no network** — recomputing the digest to reject tampered payloads and checking the signature against a pinned key. Generation is fail-open (a null signer yields a valid unsigned receipt); verification is fail-closed.
 - **`moorai-scan`** is a **pre-install skill gate** — MoorAI's on-device, content-free answer to a cloud "skill scanner". Point it at a skill/agent artifact on disk (a directory, a `SKILL.md`, a `.mcp.json`, a `.claude/agents/*.md`, …) *before* you install it and it walks the path, classifies each file's skill-surface kind (`data/skill-surface.js`), and runs MoorAI's **own shipped detection engine** over each text file at stage `file` (and `tool` for JSON MCP configs). The **verdict is derived from the engine's own allow/ask/deny decisions — never an invented 0-100 score**: any `deny` → `DO-NOT-INSTALL`, any `ask` → `REVIEW`, low findings only → `CAUTION`, nothing → `CLEAN` (the worst across all files). No external scanner is bundled or invoked, and **no enrollment is required** (it runs before you install, possibly before you enroll). Output is JSON (or `--format md`) and is **content-free** — per finding only `{relativePath, surfaceKind, threatId, category, intentLabels, contentHash, tier}`, never the matched text or file contents — so it never becomes the exfiltration channel a cloud scanner is. Exit codes slot into CI: `0` for CLEAN/CAUTION, non-zero for REVIEW/DO-NOT-INSTALL, tunable with `--fail-on <tier>`.
+
+  **Package code (`--packages`, `--package`).** With `--packages`, each MCP server whose config launches a package (`npx`, `pnpm dlx`, `bunx`, `yarn dlx`, `uvx`, `uv tool run`, `pipx run`) is downloaded from the public registry, its digest checked (npm `sha512` integrity, PyPI `sha256`; a mismatch fails closed), extracted into a temporary directory with traversal, link and size guards, and analysed statically — nothing in it is executed. Only the package name and version leave the device, and only with the flag (or `MOORAI_SCAN_PACKAGES=1`); without it the packages are listed as not analysed. `--package github:<owner>/<repo>/<path>[@ref]` fetches a single skill folder from a public repo the same way. Package code gets its own checks — install scripts that download or run remote code, runtime self-install, environment or credential harvesting next to a network send, obfuscated `eval`, socket reverse shells, typosquatted names, known-malicious packages — and the prompt-oriented detectors are scoped by file type: in code and docs they report at most `CAUTION`, because an MCP server spawning processes or calling APIs is expected. `DO-NOT-INSTALL` needs concrete evidence of malicious or unsafe-by-construction behaviour. Docker images and remote-only servers are reported as not analysed.
 - **Per-agent behavioral baseline detectors.** On top of the fixed agent signatures, three content-free detectors flag deviation from an actor's *own* established behavior: a **velocity burst** (cadence far above the actor's robust median/IQR), a **confused-deputy pivot** (an injection tell followed by a sensitive action in the same actor's window), and a **fan-out anomaly** (a spawning actor delegating to abnormally many subagents). Features are all hashes/metadata; thresholds are chosen for explainability and not yet tuned against a production distribution.
 - **Obfuscation-resistant detection.** A bounded, DoS/ReDoS-capped decode/normalize pre-pass re-runs the detectors over decoded and reversed variants, so **encoded/obfuscated** payloads (base64/hex/rot13/caesar ciphers, reversed text, composed transforms) that defeat plain-text scanning are still caught. All ten HackAgent families — CipherChat, FlipAttack, h4rm3l, DAN, AutoDAN, BoN, AdvPrefix, and the persuasion/multi-turn families **PAP, PAIR, TAP** — are caught by content-free detectors, the last three via a weighted persuasion-tell + crescendo-trajectory analyzer (`data/crescendo.js`). **Measured honestly, and the honest answer depends heavily on how hard the test set is** — we publish both:
   - **Mild paraphrases** (`npm run redteam-eval`, 29 held-out samples, 178-prompt benign corpus): **100% held-out (29/29) at 94% precision (4 FP/178).** Read that as a regression gate, not a generalization claim — a v0.71.0 tuning wave targeted these 29 samples, which burns them as a held-out set. The locked half below is the honest out-of-sample number.
@@ -284,7 +310,7 @@ decision. (Or set `otlpEndpoint` / `otlpHeaders` in the device config.)
 
 | | |
 |---|---|
-| **Agents** | Claude Code (full hook enforcement) · Claude Desktop · Cursor · VS Code / Copilot · any project `.mcp.json` consumer (MCP stdio proxy — **enforcement, host-independently**, but only over MCP; see the bound below) · **Codex: hooks and the MCP proxy do not cover it** — its config is TOML and our installer writes JSON; only prompts typed into the desktop app's guarded composer are reviewed, as they are for every agent in its picker |
+| **Agents** | Claude Code (full hook enforcement) · **Codex CLI, GitHub Copilot CLI, Gemini CLI and Cursor: pre-tool hook enforcement** through `cli/moorai-agent-hook.mjs` (see *Other agents* below) · Claude Desktop · VS Code / Copilot · any project `.mcp.json` consumer (MCP stdio proxy — **enforcement, host-independently**, but only over MCP; see the bound below) |
 | **Surfaces** | prompts · AI outputs · files read into context · **files the agent writes or edits** · MCP tool calls · **MCP tool listings and tool results** · **outbound `WebFetch` requests** · pasted images (on-device OCR) · the agent's auto-loaded context files (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`, …) · the agent's auto-loaded skill surface (skills, subagents, commands, MCP configs, hook-bearing settings) |
 | **Platforms** | macOS · Windows · Linux (on-device OCR is a second-class tier — see below) |
 | **Detects** | secrets · PII / PHI · source-code leakage · prompt injection · destructive commands · second-order/hidden-instruction injection · skill-surface poisoning & drift |

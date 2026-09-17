@@ -379,8 +379,9 @@ before this tier: a tenant can soften any entry to `notify`/`disabled` or harden
 - **The reach of that, measured rather than asserted.** Against a 12-action malicious set the proxy
   refused **12/12** while enforcing (8 by the argument scan, 2 by the result scan) and forwarded
   **4/4** benign actions — but only **4 of those 12 actions natively traverse MCP at all**. The
-  installer covers Claude Desktop, project `.mcp.json`, Cursor and VS Code / Copilot; **Codex is not
-  covered**, because its config is TOML and the installer writes JSON.
+  installer covers Claude Desktop, project `.mcp.json`, Cursor and VS Code / Copilot; Codex's TOML MCP
+  config is not written by it. Codex, Copilot CLI, Gemini CLI and Cursor tool calls are covered by
+  pre-tool hooks instead (`cli/moorai-agent-hook.mjs`; README, *Other agents*).
 - **Blind spot:** AI use on surfaces with no tap at all — native AI desktop apps without an
   integration, other devices, phones — plus anything on a machine where the user never installed
   MoorAI. Adoption remains voluntary, so the security dashboard reflects *opt-in population* risk,
