@@ -27,6 +27,7 @@ import { skillIntents } from "../skill-analysis.mjs";
 import { contentHash } from "../content-hash.mjs";
 import { skillSurfaceKind } from "../../data/skill-surface.js";
 import { stripComments } from "./heuristics.mjs";
+import { notRuntimeReason } from "./paths.mjs";
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const NUL_SNIFF = 8000;
@@ -77,20 +78,25 @@ function readText(full) {
 function toFindings(raw, text, relativePath, surfaceKind, policy, cap) {
   if (!raw.length) return [];
   const intentLabels = skillIntents(text, raw);
+  // A CODE file that is a test, an example or the repository's own CI/dev tooling is not what gets run
+  // when the server is installed — the same rule heuristics.mjs applies to its own block-tier evidence.
+  // Instruction SURFACES are deliberately exempt: an agent loads a SKILL.md wherever it sits.
+  const why = cap === "shell" ? notRuntimeReason(relativePath) : null;
   return raw.map((f) => {
     const native = tierOf(threatActionFor(policy, f.threatId));
     let tier = "notify";
     if (cap === "shell" && f.threatId === REVERSE_SHELL) tier = native;
     else if (cap === "skill" && SKILL_NATIVE.has(f.threatId)) tier = native;
     else if (cap === "skill" && SKILL_JUSTIFY_CAP.has(f.threatId)) tier = native === "notify" ? "notify" : "justify";
+    const downgraded = why && tier === "block";
     return {
       relativePath,
       surfaceKind,
       threatId: f.threatId,
       category: f.category,
-      intentLabels,
+      intentLabels: downgraded ? [...intentLabels, why] : intentLabels,
       contentHash: contentHash(f.match),
-      tier
+      tier: downgraded ? "justify" : tier
     };
   });
 }

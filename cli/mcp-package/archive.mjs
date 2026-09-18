@@ -11,10 +11,20 @@ import { gunzipSync, inflateRawSync } from "node:zlib";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 
+// Caps are overridable from the environment so a small container can lower them (and a big scan can
+// raise them) without a code change: MOORAI_SCAN_MAX_EXTRACT_MB / MOORAI_SCAN_MAX_FILE_MB.
+export function envMb(name, dflt) {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v * 1024 * 1024) : dflt;
+}
+
 export const LIMITS = {
-  maxEntries: 10000,
-  maxFileBytes: 20 * 1024 * 1024,
-  maxTotalBytes: 200 * 1024 * 1024
+  // 25000 scannable files: a published package is far below it, and a large source monorepo (metabase,
+  // posthog) finishes inside it now that unreadable files are dropped during extraction. Hitting it is
+  // still reported (archive-limits-exceeded) rather than passed off as a completed scan.
+  maxEntries: Math.max(1, Math.floor(Number(process.env.MOORAI_SCAN_MAX_ENTRIES) || 25000)),
+  maxFileBytes: envMb("MOORAI_SCAN_MAX_FILE_MB", 20 * 1024 * 1024),
+  maxTotalBytes: envMb("MOORAI_SCAN_MAX_EXTRACT_MB", 512 * 1024 * 1024)
 };
 
 export function safeRelPath(name) {

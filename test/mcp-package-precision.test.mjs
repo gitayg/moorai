@@ -12,14 +12,15 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { analyzePackage, parsePackageArg } from "../cli/mcp-package.mjs";
+import { analyzePackage, parsePackageArg, resolveMcpPackages } from "../cli/mcp-package.mjs";
+import { LIMITS } from "../cli/mcp-package/archive.mjs";
 import { scanPath } from "../cli/scan-core.mjs";
 import { buildEngine } from "../cli/hook-core.mjs";
 import { parseGithubSpec, githubArchiveUrl } from "../cli/mcp-package/github.mjs";
 import { extractRepoSubpath } from "../cli/mcp-package/archive-stream.mjs";
 import { fileClass } from "../cli/mcp-package/scope.mjs";
 import { registryStub, makeTgz } from "./fixtures/mcp-package/build.mjs";
-import { PRECISION, PRECISION_TGZ, SKILL_REPO, COMMIT, repoTarball, codeloadStub } from "./fixtures/mcp-package/precision.mjs";
+import { PRECISION, PRECISION_TGZ, SKILL_REPO, SERVER_REPO, COMMIT, repoTarball, codeloadStub } from "./fixtures/mcp-package/precision.mjs";
 
 const CLI = fileURLToPath(new URL("../cli/moorai-scan.mjs", import.meta.url));
 const engine = buildEngine({});
@@ -246,7 +247,117 @@ test("streaming subpath extraction refuses traversal inside the kept path and ne
 test("CLI: a malformed github spec exits 64", () => {
   const r = spawnSync(process.execPath, [CLI, "--package", "github:acme/../x"], { encoding: "utf8" });
   assert.equal(r.status, 64);
-  assert.match(r.stderr, /github:<owner>\/<repo>\/<path>/);
+  assert.match(r.stderr, /github:<owner>\/<repo>\[\/<path>\]/);
+});
+
+// ---- GitHub repository ROOT (no path): an MCP server published only as source ----
+
+const SERVER_URL = "https://codeload.github.com/acme/server/tar.gz/HEAD";
+const repoRoot = (routes = { [SERVER_URL]: repoTarball(SERVER_REPO, { top: `server-${COMMIT.slice(0, 7)}` }) }, opts = {}) => {
+  const s = codeloadStub(routes);
+  return { s, run: () => analyzePackage(parseGithubSpec("acme/server"), { fetchImpl: s.fetchImpl, engine, ...opts }) };
+};
+
+test("github:<owner>/<repo> with no path parses to the repository root", () => {
+  assert.deepEqual(parsePackageArg("github:acme/server"), { ecosystem: "github", name: "acme/server", path: "", version: null });
+  assert.deepEqual(parseGithubSpec("acme/server@v2.0.0"), { ecosystem: "github", name: "acme/server", path: "", version: "v2.0.0" });
+  assert.deepEqual(parseGithubSpec("https://github.com/acme/server.git"), { ecosystem: "github", name: "acme/server", path: "", version: null });
+  assert.equal(githubArchiveUrl({ name: "acme/server", version: null }), "https://codeload.github.com/acme/server/tar.gz/HEAD");
+});
+
+test("repo root: whole repository scanned, ecosystem github, commit reported, integrity none", async () => {
+  const { s, run } = repoRoot();
+  const r = await run();
+  assert.equal(r.analysed, true);
+  assert.equal(r.ecosystem, "github");
+  assert.equal(r.kind, "repo");
+  assert.equal(r.package, "acme/server@HEAD");
+  assert.equal(r.artifact.commit, COMMIT);
+  assert.deepEqual(r.integrity, { algorithm: "none", verified: false });
+  assert.ok(r.notes.some((n) => n.id === "integrity-none-git-archive"));
+  assert.ok(!r.notes.some((n) => n.id === "no-skill-md"), "a repository having no SKILL.md is normal");
+  assert.deepEqual(s.urls.map((u) => u.url), [SERVER_URL], "only owner/repo/ref leave the device");
+  assert.equal(s.urls[0].opts.redirect, "error");
+});
+
+test("repo root: .git, node_modules and vendor are never extracted; the lockfile is not scanned", async () => {
+  const r = await repoRoot().run();
+  const paths = r.findings.map((f) => f.relativePath).filter(Boolean);
+  assert.ok(!paths.some((p) => /^(node_modules|vendor|\.git)\//.test(p)), JSON.stringify(paths));
+  // Either dropped tree alone would make this DO-NOT-INSTALL (an env dump + POST, and a reverse shell),
+  // so the verdict is the proof they were skipped before a single byte was written.
+  assert.equal(r.verdict, "REVIEW", JSON.stringify(r.findings.map((f) => [f.relativePath, f.threatId, f.tier])));
+  // README, package.json, package-lock.json, src/, dist/, examples/, tests/, .github/, .flox/ — and
+  // none of node_modules/, vendor/, .git/.
+  assert.equal(r.summary.filesTotal, 9);
+  assert.ok(r.summary.filesSkipped >= 1, "package-lock.json is extracted but never scanned");
+});
+
+test("repo root: examples, tests and repo tooling are REVIEW, not DO-NOT-INSTALL", async () => {
+  const r = await repoRoot().run();
+  const remote = r.findings.filter((f) => f.threatId === "pkg-remote-code");
+  assert.deepEqual(remote.map((f) => [f.relativePath, f.tier]).sort(),
+    [[".flox/env/direnv-setup.sh", "justify"], ["examples/bootstrap.sh", "justify"], ["tests/exec.test.js", "justify"]]);
+  assert.deepEqual(remote.map((f) => f.intentLabels[f.intentLabels.length - 1]).sort(), ["repo-tooling", "test-code", "test-code"]);
+  // The engine's own block-tier reverse-shell detector (#54) is downgraded the same way in a CI script.
+  const rev = r.findings.find((f) => f.threatId === 54);
+  assert.ok(rev, JSON.stringify(r.findings.map((f) => f.threatId)));
+  assert.equal(rev.relativePath, ".github/actions/ci/run-test.sh");
+  assert.equal(rev.tier, "justify");
+  assert.ok(rev.intentLabels.includes("repo-tooling"));
+  assert.equal(r.verdict, "REVIEW");
+});
+
+test("the SAME evidence in shipped server code keeps its block tier (true-positive twin)", async () => {
+  const { packageHeuristics } = await import("../cli/mcp-package/heuristics.mjs");
+  const { scanPackageFiles } = await import("../cli/mcp-package/scope.mjs");
+  const { writeFileSync: wf, mkdirSync: md } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const PTY = "#!/bin/bash\npython3 -c 'import os, pty, sys; sys.exit(pty.spawn(sys.argv[1:]))' bash -c 'x' bash\n";
+  const CURL = "#!/bin/bash\ncurl -sfL https://direnv.net/install.sh | bash\n";
+  const root = mkdtempSync(join(tmpdir(), "moorai-twin-"));
+  const files = { "bin/serve.sh": PTY, "bin/boot.sh": CURL, ".github/ci.sh": PTY, ".flox/env/setup.sh": CURL };
+  for (const [f, t] of Object.entries(files)) { mkdirSync(dirname(join(root, f)), { recursive: true }); wf(join(root, f), t); }
+  const abs = Object.keys(files).map((f) => join(root, f));
+  const tiers = Object.fromEntries([...packageHeuristics(root, abs), ...scanPackageFiles(root, abs, { engine }).findings]
+    .filter((f) => f.threatId === "pkg-remote-code" || f.threatId === 54)
+    .map((f) => [`${f.relativePath}:${f.threatId}`, f.tier]));
+  assert.equal(tiers["bin/boot.sh:pkg-remote-code"], "block", JSON.stringify(tiers));
+  assert.equal(tiers["bin/serve.sh:54"], "block", JSON.stringify(tiers));
+  assert.equal(tiers[".flox/env/setup.sh:pkg-remote-code"], "justify", JSON.stringify(tiers));
+  assert.equal(tiers[".github/ci.sh:54"], "justify", JSON.stringify(tiers));
+});
+
+test("repo root: a repository over the cap reports archive-limits-exceeded rather than a verdict", async () => {
+  const big = repoTarball([
+    { name: "README.md", data: "# big\n" },
+    { name: "src/a.js", data: "a".repeat(300 * 1024) },
+    { name: "src/b.js", data: "b".repeat(300 * 1024) }
+  ], { top: `server-${COMMIT.slice(0, 7)}` });
+  const r = await repoRoot({ [SERVER_URL]: big }, { limits: { ...LIMITS, maxTotalBytes: 400 * 1024 } }).run();
+  assert.ok(r.notes.some((n) => n.id === "archive-limits-exceeded"), JSON.stringify(r.notes));
+  assert.equal(r.summary.archive.truncated, true);
+  assert.equal(r.verdict, "REVIEW");
+});
+
+test("repo root: an empty repository fails closed with empty-archive, not path-not-found", async () => {
+  const r = await repoRoot({ [SERVER_URL]: repoTarball([], { top: `server-${COMMIT.slice(0, 7)}` }) }).run();
+  assert.ok(r.notes.some((n) => n.id === "empty-archive"), JSON.stringify(r.notes));
+  assert.equal(r.verdict, "REVIEW");
+});
+
+test("resolveMcpPackages is unchanged by the repo-root path", () => {
+  const cfg = JSON.stringify({ mcpServers: { a: { command: "npx", args: ["-y", "some-mcp"] }, b: { command: "uvx", args: ["mcp-server-fetch"] } } });
+  assert.deepEqual(resolveMcpPackages(cfg), [
+    { ecosystem: "npm", name: "some-mcp", version: null },
+    { ecosystem: "pypi", name: "mcp-server-fetch", version: null }
+  ]);
+});
+
+test("CLI: --package github:<owner>/<repo> with no path is accepted (not a spec error)", () => {
+  const r = spawnSync(process.execPath, [CLI, "--package", "github:acme/server", "--help"], { encoding: "utf8" });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /github:<owner>\/<repo>\[\/<path>\]/);
 });
 
 test("inline install code is remote only when it fetches (locked-split finding)", async () => {

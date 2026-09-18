@@ -10,6 +10,7 @@
 //   node cli/moorai-scan.mjs <path> --packages            # also fetch + analyse the MCP server packages (network, opt-in)
 //   node cli/moorai-scan.mjs --package npm:@scope/pkg@1.2.3  # analyse one registry package, no config file
 //   node cli/moorai-scan.mjs --package github:owner/repo/skills/x[@ref]  # analyse one GitHub-hosted skill
+//   node cli/moorai-scan.mjs --package github:owner/repo[@ref]           # analyse a whole source repository
 //   node cli/moorai-scan.mjs --help
 //   npm run scan -- <path>
 //
@@ -37,7 +38,7 @@ const HELP = `moorai-scan — content-free PRE-INSTALL skill gate for AI coding-
 
 Usage:
   moorai-scan <path> [--packages] [--cache-dir <dir>] [--format json|md] [--fail-on …]
-  moorai-scan --package npm:<name>[@version] | pypi:<name>[==version] | github:<owner>/<repo>/<path>[@ref]
+  moorai-scan --package npm:<name>[@version] | pypi:<name>[==version] | github:<owner>/<repo>[/<path>][@ref]
               [--cache-dir <dir>] [--format json|md]
   moorai-scan --help
 
@@ -48,12 +49,22 @@ Usage:
                 (npx, pnpm dlx, bunx, yarn dlx, uvx, uv tool run, pipx run). Same as MOORAI_SCAN_PACKAGES=1.
                 Only the package name + version is sent, to registry.npmjs.org / pypi.org. Without it the
                 packages are still resolved and listed as "not analysed".
-  --package     analyse a single registry package or GitHub-hosted skill directly (implies network).
-                github: downloads the public repo tarball from codeload.github.com (default branch, or
-                @ref), extracts only <path>, and scans it as a skill (SKILL.md + bundled scripts).
-                Only owner/repo/ref leave the device; a git archive has no registry digest, so the
-                report carries the archive's commit instead of a verified integrity.
+  --package     analyse a single registry package, GitHub-hosted skill, or source repository directly
+                (implies network). github: downloads the public repo tarball from codeload.github.com
+                (default branch, or @ref) and scans either only <path> (as a skill: SKILL.md + bundled
+                scripts) or, with no <path>, the WHOLE repository — the shape of an MCP server published
+                only as source. .git/, node_modules/, vendor/, .venv/ and __pycache__/ are not extracted;
+                lockfiles are not scanned. Only owner/repo/ref leave the device; a git archive has no
+                registry digest, so the report carries the archive's commit and integrity "none".
   --cache-dir   cache package results by name@version + integrity.
+
+Artifacts are STREAMED to a temp file, hashed while streaming (so the registry digest is still verified
+end to end) and extracted from that file, so peak memory does not track archive size. Caps: 128 MB
+compressed / 512 MB extracted / 10000 entries, overridable with MOORAI_SCAN_MAX_ARTIFACT_MB,
+MOORAI_SCAN_MAX_REPO_MB, MOORAI_SCAN_MAX_EXTRACT_MB, MOORAI_SCAN_MAX_FILE_MB and
+MOORAI_SCAN_MAX_ENTRIES. An archive over a cap reports "archive-limits-exceeded" (REVIEW), never a
+clean verdict on a partial read — a large monorepo hits the entry cap and is REVIEW for that reason
+alone, which is an unfinished scan and not a finding about the code.
 
 What it does — using MoorAI's OWN shipped engine, no external scanner:
   1. Walks the path and classifies each file's skill-surface KIND (SKILL.md, .mcp.json, agents, …).
@@ -117,7 +128,7 @@ async function main() {
   if (argv.includes("--package")) {
     const spec = argValue(argv, "--package");
     const entry = await scanPackageArg(spec, { cacheDir });
-    if (!entry) { process.stderr.write(`moorai-scan: bad --package '${spec}' (use npm:<name>[@version], pypi:<name>[==version] or github:<owner>/<repo>/<path>[@ref])\n`); process.exit(64); }
+    if (!entry) { process.stderr.write(`moorai-scan: bad --package '${spec}' (use npm:<name>[@version], pypi:<name>[==version] or github:<owner>/<repo>[/<path>][@ref])\n`); process.exit(64); }
     report = { mode: "package", verdict: entry.verdict, packages: [entry] };
     doc = { ...head, ...report };
     md = `# MoorAI — pre-install package scan\n\n` + renderPackagesMarkdown(report.packages) + `\n---\nGenerated on-device by MoorAI (v${VERSION}). ${entry.ecosystem === "github" ? "Only the repository owner/name and ref were sent, to codeload.github.com." : "Only the package name and version were sent, to the public registry."}\n`;

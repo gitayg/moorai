@@ -1,4 +1,6 @@
-// GitHub-hosted skills for `moorai scan --package github:owner/repo/path[@ref]`.
+// GitHub-hosted source for `moorai scan --package github:owner/repo[/path][@ref]`. With a path it is a
+// single skill folder; with none it is the whole repository — the shape most MCP servers that are
+// published only as source (no npm/PyPI package) actually ship in.
 //
 // PRIVACY CONTRACT (same as registry.mjs): only owner/repo/ref leave the device, in a codeload URL. The
 // path is never sent; the whole public repo tarball is fetched and only that path is extracted.
@@ -14,6 +16,7 @@ const REF = /^[A-Za-z0-9._/-]{1,200}$/;
 const SEGMENT = /^[A-Za-z0-9._+-]{1,200}$/;
 
 // "owner/repo/some/path@ref" → {ecosystem:"github", name:"owner/repo", path:"some/path", version:ref|null}
+// "owner/repo@ref"           → the same with path:"" — scan the repository root.
 export function parseGithubSpec(spec) {
   let s = String(spec || "").trim().replace(/^https:\/\/github\.com\//i, "");
   let version = null;

@@ -2,8 +2,11 @@
 // code `some-server` actually is.
 //
 //   resolveMcpPackages(config)          offline — config → [{ecosystem, name, version} …]
-//   analyzePackage(ref, opts)           OPT-IN network — fetch the exact registry artifact, verify its
-//                                       digest, extract it safely, run scanPath + package heuristics
+//   analyzePackage(ref, opts)           OPT-IN network — STREAM the exact registry artifact to a temp
+//                                       file while hashing it, verify its digest, extract it safely from
+//                                       that file, run scanPath + package heuristics. Nothing larger
+//                                       than one archive entry is ever resident, so a 33 MB package and
+//                                       a 200 MB repository cost the same memory.
 //   scanPathWithPackages(target, opts)  scanPath + a per-package section, packages analysed only when
 //                                       opts.packages is true (CLI: --packages / MOORAI_SCAN_PACKAGES=1)
 //
@@ -19,9 +22,11 @@ import { fileURLToPath } from "node:url";
 import { scanPath, walkFiles, worseVerdict, VERDICT_RANK } from "./scan-core.mjs";
 import { buildEngine } from "./hook-core.mjs";
 import { resolveMcpPackages, parsePackageArg, resolveLaunch } from "./mcp-package/resolve.mjs";
-import { extractArchive } from "./mcp-package/archive.mjs";
-import { extractRepoSubpath } from "./mcp-package/archive-stream.mjs";
-import { resolveNpm, resolvePypi, download, verifyIntegrity, MAX_REPO_BYTES } from "./mcp-package/registry.mjs";
+import { extractArchiveFile } from "./mcp-package/archive-file.mjs";
+import { fileClass } from "./mcp-package/scope.mjs";
+import { LIMITS } from "./mcp-package/archive.mjs";
+import { downloadToFile } from "./mcp-package/download.mjs";
+import { resolveNpm, resolvePypi, matchesIntegrity, MAX_ARTIFACT_BYTES, MAX_REPO_BYTES } from "./mcp-package/registry.mjs";
 import { resolveGithub } from "./mcp-package/github.mjs";
 import { packageHeuristics, nameFindings, HEURISTICS } from "./mcp-package/heuristics.mjs";
 import { scanPackageFiles } from "./mcp-package/scope.mjs";
@@ -133,14 +138,29 @@ function unanalysableReason(ref) {
   return "launch command not resolved to a registry package";
 }
 
-async function extractInto(ref, buf, dir) {
-  if (ref.ecosystem === "github") return extractRepoSubpath(buf, dir, ref.path || "");
-  return extractArchive(buf, dir);
+// What a repository archive carries that is not the product being scanned: version-control internals,
+// installed dependency trees and vendored third-party source. Dropped during extraction, so they cost
+// neither a byte of the extracted-size budget nor a file of the count cap. Build output (dist/, build/,
+// target/) is NOT dropped: for a registry package `dist/` IS the shipped code, and a repository that
+// commits build output ships it too — the same rule in both modes.
+const REPO_SKIP = /(^|\/)(\.git|node_modules|vendor|\.venv|__pycache__)\//;
+
+// A repository is not a published package: it carries images, compiled assets and source in languages
+// this engine does not read. Those are dropped during extraction as well, so a monorepo's budget is
+// spent on the files that are actually scanned instead of being exhausted before the scan finishes
+// (which would report archive-limits-exceeded on a repo that has nothing wrong with it).
+const LOCKFILE = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|uv\.lock|Pipfile\.lock)$/i;
+const repoSkip = (rel) => REPO_SKIP.test(rel) || (fileClass(rel, { skill: true }) === "skip" && !LOCKFILE.test(rel));
+
+async function extractInto(ref, path, dir, limits) {
+  if (ref.ecosystem === "github") return extractArchiveFile(path, dir, { stripTop: true, subpath: ref.path || "", skip: ref.path ? REPO_SKIP : repoSkip, limits });
+  return extractArchiveFile(path, dir, { limits });
 }
 
-export async function analyzePackage(ref, { fetchImpl = globalThis.fetch, cacheDir = null, policy = {}, engine = null, now = Date.now(), workDir = tmpdir() } = {}) {
+export async function analyzePackage(ref, { fetchImpl = globalThis.fetch, cacheDir = null, policy = {}, engine = null, now = Date.now(), workDir = tmpdir(), limits = LIMITS, downloadCap = null } = {}) {
   if (!ANALYSABLE.has(ref.ecosystem)) return unanalysedEntry(ref, unanalysableReason(ref));
   const github = ref.ecosystem === "github";
+  const repoRoot = github && !ref.path;      // `github:owner/repo[@ref]` — the whole repository
   const entry = baseEntry(ref);
   const nameFs = github ? [] : nameFindings(ref);
   const fail = (id) => {
@@ -171,17 +191,30 @@ export async function analyzePackage(ref, { fetchImpl = globalThis.fetch, cacheD
   const hit = cp && readCache(cp);
   if (hit) return { ...hit, notes: entry.notes, cached: true };
 
-  let buf;
-  try { buf = await download(fetchImpl, meta.url, github ? MAX_REPO_BYTES : undefined); } catch (e) { return fail(`download-${e && e.code ? e.code : "error"}`); }
-  entry.artifact.bytes = buf.length;
-  if (github) entry.notes.push({ id: "integrity-none-git-archive" });
-  else if (!verifyIntegrity(buf, meta.integrity)) return fail("integrity-mismatch");
-  else entry.integrity.verified = true;
-
-  const dir = mkdtempSync(join(workDir, "moorai-pkg-"));
+  // The artifact is streamed to this directory, hashed while it streams, extracted from the file, and
+  // the whole directory (artifact included) is removed in `finally` — on success, on an integrity
+  // failure, on an aborted body.
+  const work = mkdtempSync(join(workDir, "moorai-pkg-"));
   try {
+    const artifact = join(work, "artifact");
+    const dir = join(work, "x");
+    mkdirSync(dir);
+
+    let dl;
+    try {
+      dl = await downloadToFile(fetchImpl, meta.url, artifact, {
+        cap: downloadCap || (github ? MAX_REPO_BYTES : MAX_ARTIFACT_BYTES),
+        algorithm: github ? null : meta.integrity.algorithm
+      });
+    } catch (e) { return fail(`download-${e && e.code ? e.code : "error"}`); }
+    entry.artifact.bytes = dl.bytes;
+    if (github) entry.notes.push({ id: "integrity-none-git-archive" });
+    else if (!matchesIntegrity(dl.digest, meta.integrity)) return fail("integrity-mismatch");
+    else entry.integrity.verified = true;
+
     let ex;
-    try { ex = await extractInto(ref, buf, dir); } catch { return fail("extract-failed"); }
+    try { ex = await extractInto(ref, artifact, dir, limits); } catch { return fail("extract-failed"); }
+    rmSync(artifact, { force: true });        // the compressed copy is dead weight from here on
     if (github && ex.commit) entry.artifact.commit = ex.commit;
     const root = github ? dir : extractionRoot(dir);
     const files = walkFiles(root);
@@ -194,12 +227,13 @@ export async function analyzePackage(ref, { fetchImpl = globalThis.fetch, cacheD
     let verdict = verdictOf(all);
     if (ex.rejected) { entry.notes.push({ id: "unsafe-archive-entries", count: ex.rejected }); verdict = worseVerdict(verdict, "REVIEW"); }
     if (ex.truncated) { entry.notes.push({ id: "archive-limits-exceeded" }); verdict = worseVerdict(verdict, "REVIEW"); }
-    if (!files.length) { entry.notes.push({ id: github ? "path-not-found" : "empty-archive" }); verdict = worseVerdict(verdict, "REVIEW"); }
-    if (github && files.length && !skill) entry.notes.push({ id: "no-skill-md" });
+    if (!files.length) { entry.notes.push({ id: github && repoRoot ? "empty-archive" : github ? "path-not-found" : "empty-archive" }); verdict = worseVerdict(verdict, "REVIEW"); }
+    // A whole repository having no SKILL.md is the normal case, not something to flag.
+    if (github && !repoRoot && files.length && !skill) entry.notes.push({ id: "no-skill-md" });
 
     entry.analysed = true;
     entry.verdict = verdict;
-    if (github) entry.kind = skill ? "skill" : "repo-path";
+    if (github) entry.kind = skill ? "skill" : repoRoot ? "repo" : "repo-path";
     entry.summary = {
       filesTotal: files.length,
       filesScanned: scoped.filesScanned,
@@ -213,7 +247,7 @@ export async function analyzePackage(ref, { fetchImpl = globalThis.fetch, cacheD
     if (cp) writeCache(cp, { ...entry, notes: entry.notes.filter((n) => n.id !== "new-package") });
     return entry;
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(work, { recursive: true, force: true });
   }
 }
 

@@ -3,15 +3,18 @@
 // identifying header. Artifact URLs taken from registry metadata are pinned to the registry's own
 // file host and fetched with redirects refused, so hostile metadata cannot point the scanner elsewhere.
 
-import { createHash } from "node:crypto";
+import { envMb } from "./archive.mjs";
 
 const NPM_REGISTRY = "https://registry.npmjs.org/";
 const NPM_FILE_HOST = "registry.npmjs.org";
 const PYPI_API = "https://pypi.org/pypi/";
 const PYPI_FILE_HOST = "files.pythonhosted.org";
 const MAX_META_BYTES = 64 * 1024 * 1024;
-export const MAX_ARTIFACT_BYTES = 50 * 1024 * 1024;
-export const MAX_REPO_BYTES = 250 * 1024 * 1024;   // a whole public repo tarball (codeload.github.com)
+// The artifact is streamed to a temp file, never buffered, so the compressed cap can be generous. Both
+// are overridable: MOORAI_SCAN_MAX_ARTIFACT_MB / MOORAI_SCAN_MAX_REPO_MB (and the EXTRACTED cap lives
+// in archive.mjs as MOORAI_SCAN_MAX_EXTRACT_MB).
+export const MAX_ARTIFACT_BYTES = envMb("MOORAI_SCAN_MAX_ARTIFACT_MB", 128 * 1024 * 1024);
+export const MAX_REPO_BYTES = envMb("MOORAI_SCAN_MAX_REPO_MB", 250 * 1024 * 1024);   // a whole public repo tarball (codeload.github.com)
 
 export class RegistryError extends Error {
   constructor(code) { super(code); this.code = code; }
@@ -107,13 +110,9 @@ export async function resolvePypi(ref, fetchImpl) {
   };
 }
 
-export async function download(fetchImpl, url, cap = MAX_ARTIFACT_BYTES) {
-  return get(fetchImpl, url, cap, null);
-}
-
-export function verifyIntegrity(buf, integrity) {
-  if (!integrity.expected.length) return false;
-  const h = createHash(integrity.algorithm).update(buf);
-  const got = integrity.algorithm === "sha512" ? h.digest("base64") : h.digest("hex");
-  return integrity.expected.includes(got);
+// The artifact digest is computed by download.mjs while the body streams (so the artifact is never
+// buffered just to be hashed); this only compares it against what the registry published.
+export function matchesIntegrity(digest, integrity) {
+  if (!integrity.expected.length || !digest) return false;
+  return integrity.expected.includes(digest);
 }

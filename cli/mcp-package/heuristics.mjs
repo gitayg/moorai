@@ -10,6 +10,7 @@ import { relative, basename, join } from "node:path";
 import { safeRelPath } from "./archive.mjs";
 import { contentHash } from "../content-hash.mjs";
 import { classifyPackage } from "../../data/popular-packages.js";
+import { notRuntimeReason } from "./paths.mjs";
 
 export const HEURISTICS = {
   "pkg-install-script": { category: "install-time-exec", tier: "justify", intent: "untrusted-install" },
@@ -108,10 +109,6 @@ function finding(id, relativePath, span) {
     tier: h.tier
   };
 }
-
-// Test code and fixtures are not run when a package is installed or used, and a security tool's tests
-// are full of attack samples; block-level evidence there is reported for review, not as a verdict.
-const TEST_PATH = /(^|\/)(tests?|__tests__|spec|fixtures?|testdata)\/|(^|\/)test_[^/]+\.py$|_test\.py$|\.(test|spec)\.[cm]?[jt]sx?$/i;
 
 // A block-level match that is only present in comments cannot execute. Keep it visible at review level.
 function capped(f, why) {
@@ -215,7 +212,10 @@ export function packageHeuristics(root, files) {
     }
     if (!CODE_EXT.test(name) || /\.d\.[cm]?ts$/i.test(name)) continue;
     const t = readText(full);
-    if (t) out.push(...codeFindings(t, rel, name).map((f) => (TEST_PATH.test(rel) ? capped(f, "test-code") : f)));
+    if (t) {
+      const why = notRuntimeReason(rel);
+      out.push(...codeFindings(t, rel, name).map((f) => (why ? capped(f, why) : f)));
+    }
   }
   return out;
 }

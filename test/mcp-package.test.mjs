@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { analyzePackage, scanPathWithPackages, packagesEnabled } from "../cli/mcp-package.mjs";
 import { resolveMcpPackages as barrelResolve, analyzePackage as barrelAnalyze } from "../scan.mjs";
 import { buildEngine } from "../cli/hook-core.mjs";
+import { LIMITS } from "../cli/mcp-package/archive.mjs";
 import { makeTgz, NPM_FIXTURES, PYPI_FIXTURES, registryStub, makeZip } from "./fixtures/mcp-package/build.mjs";
 
 const CLI = fileURLToPath(new URL("../cli/moorai-scan.mjs", import.meta.url));
@@ -209,6 +210,87 @@ test("cache: second analysis of the same name@version+integrity does not downloa
   assert.equal(second.cached, true);
   assert.equal(second.verdict, first.verdict);
   assert.equal(readdirSync(join(cacheDir, "mcp-packages")).length, 1);
+});
+
+// ---- streamed download + extraction ----
+//
+// Every test below serves the artifact in chunks far smaller than the artifact, so an implementation
+// that buffered the body and hashed it at the end would still pass — but one that hashed only the FIRST
+// chunk, or dropped the traversal guard once entries stopped arriving whole, would not.
+
+test("STREAMED: a chunked body is hashed across chunk boundaries and still verifies", async () => {
+  const workDir = mkdtempSync(join(tmpdir(), "moorai-stream-"));
+  const { fetchImpl } = registryStub({ "clean-mcp-server": npm("clean-mcp-server") }, { chunkBytes: 64 });
+  const r = await analyzePackage({ ecosystem: "npm", name: "clean-mcp-server", version: null }, { fetchImpl, engine, workDir });
+  assert.equal(r.analysed, true);
+  assert.equal(r.verdict, "CLEAN", JSON.stringify(r.findings));
+  assert.deepEqual(r.integrity, { algorithm: "sha512", verified: true });
+  assert.equal(r.summary.filesTotal, 3);
+  assert.ok(r.artifact.bytes > 0);
+  assert.deepEqual(readdirSync(workDir), [], "artifact file and extraction dir both removed");
+});
+
+test("STREAMED: an integrity mismatch mid-stream fails closed and leaves no temp file", async () => {
+  const workDir = mkdtempSync(join(tmpdir(), "moorai-stream-"));
+  const { fetchImpl } = registryStub({ "clean-mcp-server": { ...npm("clean-mcp-server"), tamper: true } }, { chunkBytes: 512 });
+  const r = await analyzePackage({ ecosystem: "npm", name: "clean-mcp-server", version: null }, { fetchImpl, engine, workDir });
+  assert.equal(r.verdict, "REVIEW");
+  assert.equal(r.analysed, false);
+  assert.equal(r.integrity.verified, false);
+  assert.ok(r.notes.some((n) => n.id === "integrity-mismatch"), JSON.stringify(r.notes));
+  assert.deepEqual(readdirSync(workDir), [], "the downloaded artifact is deleted even on an integrity failure");
+});
+
+test("STREAMED: a traversal entry is still rejected when the archive arrives in chunks", async () => {
+  const workDir = mkdtempSync(join(tmpdir(), "moorai-stream-"));
+  const { fetchImpl } = registryStub({ "traversal-mcp-server": npm("traversal-mcp-server") }, { chunkBytes: 256 });
+  const r = await analyzePackage({ ecosystem: "npm", name: "traversal-mcp-server", version: null }, { fetchImpl, engine, workDir });
+  assert.deepEqual(r.notes, [{ id: "unsafe-archive-entries", count: 3 }]);
+  assert.equal(r.summary.archive.skipped, 1, "the symlink entry is skipped, never created");
+  assert.ok(["REVIEW", "DO-NOT-INSTALL"].includes(r.verdict), r.verdict);
+  assert.deepEqual(readdirSync(workDir), []);
+});
+
+test("STREAMED: an artifact over the extracted-size cap reports archive-limits-exceeded, not a verdict", async () => {
+  const workDir = mkdtempSync(join(tmpdir(), "moorai-stream-"));
+  const files = [
+    { name: "package/package.json", data: JSON.stringify({ name: "big-mcp", version: "1.0.0" }) },
+    { name: "package/a.js", data: "a".repeat(300 * 1024) },
+    { name: "package/b.js", data: "b".repeat(300 * 1024) }
+  ];
+  const { fetchImpl } = registryStub({ "big-mcp": { ecosystem: "npm", artifact: makeTgz(files) } }, { chunkBytes: 4096 });
+  const r = await analyzePackage({ ecosystem: "npm", name: "big-mcp", version: null },
+    { fetchImpl, engine, workDir, limits: { ...LIMITS, maxTotalBytes: 400 * 1024 } });
+  assert.ok(r.notes.some((n) => n.id === "archive-limits-exceeded"), JSON.stringify(r.notes));
+  assert.equal(r.summary.archive.truncated, true);
+  assert.equal(r.verdict, "REVIEW", "a partial read is never reported as CLEAN");
+  assert.deepEqual(readdirSync(workDir), []);
+});
+
+test("STREAMED: a body over the download cap fails closed before anything is extracted", async () => {
+  const workDir = mkdtempSync(join(tmpdir(), "moorai-stream-"));
+  const { fetchImpl } = registryStub({ "clean-mcp-server": npm("clean-mcp-server") }, { chunkBytes: 64 });
+  const r = await analyzePackage({ ecosystem: "npm", name: "clean-mcp-server", version: null }, { fetchImpl, engine, workDir, downloadCap: 128 });
+  assert.equal(r.verdict, "REVIEW");
+  assert.equal(r.analysed, false);
+  assert.deepEqual(r.notes, [{ id: "download-too-large" }]);
+  assert.deepEqual(readdirSync(workDir), [], "the partial download is deleted");
+});
+
+test("STREAMED: a PyPI wheel (zip) is read by offset from the temp file, with the same guards", async () => {
+  const whl = makeZip([
+    { name: "zipmcp/__init__.py", data: "x = 1\n" },
+    { name: "../zip-escape.txt", data: "nope" },
+    { name: "zipmcp/link", data: "/etc/passwd", symlink: true },
+    { name: "zipmcp-0.1.0.pth", data: "import os; os.getcwd()\n" }
+  ]);
+  const { fetchImpl } = registryStub({ zipmcp: { ecosystem: "pypi", kind: "wheel", artifact: whl } }, { chunkBytes: 32 });
+  const r = await analyzePackage({ ecosystem: "pypi", name: "zipmcp", version: null }, { fetchImpl, engine });
+  assert.equal(r.artifact.kind, "wheel");
+  assert.equal(r.summary.archive.format, "zip");
+  assert.equal(r.summary.archive.rejected, 1, "the ../ entry is refused");
+  assert.equal(r.summary.archive.skipped, 1, "the symlink entry is skipped");
+  assert.ok(ids(r).includes("pkg-pth-autoexec"), JSON.stringify(ids(r)));
 });
 
 test("packagesEnabled: --packages flag or MOORAI_SCAN_PACKAGES=1 only", () => {

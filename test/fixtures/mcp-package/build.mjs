@@ -124,9 +124,22 @@ export const PYPI_FIXTURES = {
 export function sha512b64(buf) { return createHash("sha512").update(buf).digest("base64"); }
 export function sha256hex(buf) { return createHash("sha256").update(buf).digest("hex"); }
 
+// A body delivered in many small chunks, the way a real registry response arrives. The streamed
+// downloader must hash across chunk boundaries, so the integrity tests use this rather than a
+// single-chunk Response (which a buffering implementation would also pass).
+export function chunkedBody(buf, chunk = 4096) {
+  return new ReadableStream({
+    start(c) {
+      for (let i = 0; i < buf.length; i += chunk) c.enqueue(new Uint8Array(buf.subarray(i, Math.min(i + chunk, buf.length))));
+      c.close();
+    }
+  });
+}
+
 // A registry stub. `packages` maps name → {ecosystem, artifact:Buffer, kind?, tamper?, createdAt?}.
 // Every requested URL is recorded in `stub.urls` so tests can assert what would have left the device.
-export function registryStub(packages) {
+// With `chunkBytes`, artifact bodies are streamed in chunks of that size instead of in one piece.
+export function registryStub(packages, { chunkBytes = 0 } = {}) {
   const routes = new Map();
   for (const [name, p] of Object.entries(packages)) {
     const created = p.createdAt || "2020-01-01T00:00:00.000Z";
@@ -156,6 +169,7 @@ export function registryStub(packages) {
     urls.push({ url, opts });
     const body = routes.get(url);
     if (body === undefined) return new Response("not found", { status: 404 });
+    if (chunkBytes && Buffer.isBuffer(body)) return new Response(chunkedBody(body, chunkBytes), { status: 200 });
     return new Response(body, { status: 200 });
   };
   return { fetchImpl, urls };
