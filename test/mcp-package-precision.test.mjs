@@ -403,3 +403,20 @@ test("the package cache key changes when the analysis rules change", async () =>
   assert.match(src, /data\/threats\.json/);
   assert.doesNotMatch(src, /const ANALYSIS_REV = "[^"]*";/);
 });
+
+test("a vendor-installer pipe-to-shell in a developer script is review, not a verdict (compiler-explorer case)", async () => {
+  const { notRuntimeReason } = await import("../cli/mcp-package/paths.mjs");
+  const repo = { devScripts: true };
+  // Scanning a whole source repository: a contributor helper script is not what an MCP client runs.
+  assert.equal(notRuntimeReason("etc/scripts/ce-properties-wizard/run.sh", repo), "repo-tooling");
+  assert.equal(notRuntimeReason("scripts/setup.sh", repo), "repo-tooling");
+  assert.equal(notRuntimeReason("tools/bootstrap.sh", repo), "repo-tooling");
+  // The product's own entry point keeps full severity even in a repository.
+  assert.equal(notRuntimeReason("bin/server.js", repo), null);
+  assert.equal(notRuntimeReason("src/index.js", repo), null);
+  // In a published package or a skill, scripts/ can be exactly what runs, so no downgrade there.
+  assert.equal(notRuntimeReason("scripts/setup.sh"), null);
+  assert.equal(notRuntimeReason("etc/scripts/ce-properties-wizard/run.sh"), null);
+  // CI/tooling directories downgrade in every mode.
+  assert.equal(notRuntimeReason(".github/workflows/ci.sh"), "repo-tooling");
+});

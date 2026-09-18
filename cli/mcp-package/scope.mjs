@@ -75,13 +75,13 @@ function readText(full) {
   } catch { return { skip: "unreadable" }; }
 }
 
-function toFindings(raw, text, relativePath, surfaceKind, policy, cap) {
+function toFindings(raw, text, relativePath, surfaceKind, policy, cap, repoRoot = false) {
   if (!raw.length) return [];
   const intentLabels = skillIntents(text, raw);
   // A CODE file that is a test, an example or the repository's own CI/dev tooling is not what gets run
   // when the server is installed — the same rule heuristics.mjs applies to its own block-tier evidence.
   // Instruction SURFACES are deliberately exempt: an agent loads a SKILL.md wherever it sits.
-  const why = cap === "shell" ? notRuntimeReason(relativePath) : null;
+  const why = cap === "shell" ? notRuntimeReason(relativePath, { devScripts: repoRoot }) : null;
   return raw.map((f) => {
     const native = tierOf(threatActionFor(policy, f.threatId));
     let tier = "notify";
@@ -147,7 +147,7 @@ function engineFindings(engine, policy, text, cls, name) {
 }
 
 // → {findings, filesScanned, filesSkipped, surfaces}
-export function scanPackageFiles(root, files, { engine, policy = {}, skill = false } = {}) {
+export function scanPackageFiles(root, files, { engine, policy = {}, skill = false, repoRoot = false } = {}) {
   const rows = [];
   let filesScanned = 0, filesSkipped = 0, surfaces = 0;
   for (const full of files) {
@@ -161,7 +161,7 @@ export function scanPackageFiles(root, files, { engine, policy = {}, skill = fal
     filesScanned++;
     if (!r.text.trim()) continue;
     const { raw, cap } = engineFindings(engine, policy, r.text, cls, basename(rel));
-    for (const f of toFindings(raw, r.text, rel, surfaceKind, policy, cap)) rows.push({ cls, f });
+    for (const f of toFindings(raw, r.text, rel, surfaceKind, policy, cap, repoRoot)) rows.push({ cls, f });
   }
   rows.sort((a, b) => CLASS_ORDER[a.cls] - CLASS_ORDER[b.cls]);
   const seen = new Set();

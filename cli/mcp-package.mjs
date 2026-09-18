@@ -220,8 +220,8 @@ export async function analyzePackage(ref, { fetchImpl = globalThis.fetch, cacheD
     const files = walkFiles(root);
     const skill = github && files.some((f) => /(^|[/\\])SKILL\.md$/i.test(f));
     const eng = engine || buildEngine(policy);
-    const scoped = files.length ? scanPackageFiles(root, files, { engine: eng, policy, skill }) : { findings: [], filesScanned: 0, filesSkipped: 0, surfaces: 0 };
-    const heurFs = packageHeuristics(root, files);
+    const scoped = files.length ? scanPackageFiles(root, files, { engine: eng, policy, skill, repoRoot }) : { findings: [], filesScanned: 0, filesSkipped: 0, surfaces: 0 };
+    const heurFs = packageHeuristics(root, files, { repoRoot });
     const all = [...scoped.findings, ...heurFs, ...nameFs];
 
     let verdict = verdictOf(all);

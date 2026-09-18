@@ -195,7 +195,7 @@ function codeFindings(text, rel, name) {
 }
 
 // files: absolute paths under root (already symlink-free, from scan-core's walk).
-export function packageHeuristics(root, files) {
+export function packageHeuristics(root, files, { repoRoot = false } = {}) {
   const out = [];
   for (const full of files) {
     const rel = relative(root, full).split("\\").join("/");
@@ -213,7 +213,7 @@ export function packageHeuristics(root, files) {
     if (!CODE_EXT.test(name) || /\.d\.[cm]?ts$/i.test(name)) continue;
     const t = readText(full);
     if (t) {
-      const why = notRuntimeReason(rel);
+      const why = notRuntimeReason(rel, { devScripts: repoRoot });
       out.push(...codeFindings(t, rel, name).map((f) => (why ? capped(f, why) : f)));
     }
   }

@@ -24,11 +24,21 @@ export const TEST_PATH = /(^|\/)(tests?|__tests__|__mocks__|__fixtures__|spec|sp
 // published package contains and that no install or run step of the server ever executes.
 export const TOOLING_PATH = /(^|\/)\.(github|gitlab|circleci|devcontainer|flox|husky|buildkite|vscode|idea|azure-pipelines|teamcity)\//i;
 
+// Developer utility scripts a repository ships for its own contributors (a setup wizard, a release
+// helper). They are not what an MCP client runs, and they routinely install a toolchain the honest
+// way a human would — `curl … | sh` of a vendor installer. Block-tier evidence here is reported at
+// review level with the reason, not as a verdict on the product. `bin/` is deliberately NOT here:
+// that is where a package's real entry point lives.
+export const DEV_SCRIPT_PATH = /(^|\/)(etc\/scripts|scripts|tools|hack|contrib|dev|build-support)\//i;
+
 // → "repo-tooling" | "test-code" | null. The label is appended to the finding's intentLabels, so a
 // report always says WHY a piece of block-tier evidence is being shown at review level.
-export function notRuntimeReason(rel) {
+export function notRuntimeReason(rel, { devScripts = false } = {}) {
   if (!rel) return null;
   if (TOOLING_PATH.test(rel)) return "repo-tooling";
+  // Only when the target is a whole source repository: inside a published package or a skill, a
+  // scripts/ directory can be the thing that actually runs.
+  if (devScripts && DEV_SCRIPT_PATH.test(rel)) return "repo-tooling";
   if (TEST_PATH.test(rel)) return "test-code";
   return null;
 }
