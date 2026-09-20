@@ -55,7 +55,7 @@ Because you can read the code. The agent is **MIT and open source** — the whol
 
 ## Install
 
-**macOS (Apple silicon)** — download the `.dmg` from [moorai.glick.run/download/app](https://moorai.glick.run/download/app) (it is not attached to GitHub Releases), or `brew install --cask gitayg/tap/moorai` — see [packaging/README.md](packaging/README.md). The app updates itself in place.
+**macOS (Apple silicon)** — download the `.dmg` from [app.moorai.dev/download/app](https://app.moorai.dev/download/app) (it is not attached to GitHub Releases), or `brew install --cask gitayg/tap/moorai` — see [packaging/README.md](packaging/README.md). The app updates itself in place.
 **Windows** — download the signed `-setup.exe` from [Releases](https://github.com/gitayg/moorai/releases) (built in the open by CI).
 
 Community edition: runs standalone, local policy control, no account required.

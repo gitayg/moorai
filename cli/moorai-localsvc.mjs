@@ -30,7 +30,10 @@ const PORT = Number(process.env.MOORAI_LOCALSVC_PORT || 8799);
 const HOST = "127.0.0.1"; // loopback ONLY — never make this configurable to a public interface
 
 // Origins allowed to script this endpoint. The production console plus localhost dev origins.
+// Both console hostnames are listed: app.moorai.dev is where the console serves from, and
+// moorai.glick.run is the name older installs were built against and still redirects from.
 const ALLOWED_ORIGINS = new Set([
+  "https://app.moorai.dev",
   "https://moorai.glick.run",
   process.env.MOORAI_CONSOLE_ORIGIN || "",
 ].filter(Boolean));

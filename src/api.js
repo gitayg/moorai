@@ -1,6 +1,6 @@
 // Client ↔ server bridge. Offline-tolerant: failures never block the user.
 import { startSignup, pollClaim } from "./signup.js";
-const BASE = (localStorage.getItem("raiseme.server") || "https://moorai.glick.run").replace(/\/+$/, "");
+const BASE = (localStorage.getItem("raiseme.server") || "https://app.moorai.dev").replace(/\/+$/, "");
 const CLIENT_ID = (() => {
   let id = localStorage.getItem("raiseme.clientId");
   if (!id) { id = "c-" + Math.abs(hashStr(navigator.userAgent + screen.width)).toString(16); localStorage.setItem("raiseme.clientId", id); }
