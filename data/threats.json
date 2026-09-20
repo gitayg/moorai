@@ -1,7 +1,7 @@
 {
   "meta": {
     "name": "MoorAI Threat Rule-Base",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "description": "AI-security threat matrix for office workers, translated to English. Each threat is a detection rule: example = trigger context, response = intervention. riskScore = severity x likelihood.",
     "scoring": {
       "severity": "1-5 (impact if it occurs)",
@@ -964,9 +964,9 @@
       "id": 50,
       "category": "Data & Knowledge",
       "threat": "Invisible or obfuscated text in content",
-      "example": "A document, web page, or RAG chunk hides steering text using zero-width characters or bidirectional (Trojan-Source) overrides that a human can't see but the model reads.",
-      "response": "Treat content with hidden or direction-overriding characters as untrusted. Do not act on it; strip or reject the content and report the source.",
-      "saferAlternative": "Strip invisible and bidi control characters, then review the visible text before acting on it.",
+      "example": "A document, web page, or RAG chunk hides steering text a human can't see but the model reads — zero-width characters, bidirectional (Trojan-Source) overrides, or markup that renders the text invisible (same colour as the background, zero font size, a hidden element).",
+      "response": "Treat content with hidden characters or rendering-hidden markup as untrusted. Do not act on it; strip or reject the content and report the source.",
+      "saferAlternative": "Strip invisible characters and hidden elements, then review the visible text before acting on it.",
       "severity": 4,
       "likelihood": 3,
       "riskScore": 12,
@@ -975,7 +975,7 @@
         "OWASP"
       ],
       "owasp": "LLM08",
-      "atlas": "AML.T0051",
+      "atlas": "AML.T0068",
       "stride": "Tampering"
     },
     {
@@ -1291,6 +1291,101 @@
       "owasp": "LLM06",
       "atlas": "AML.T0053",
       "stride": "Elevation of Privilege"
+    },
+    {
+      "id": 68,
+      "category": "Prompt Injection",
+      "threat": "Crafted AI assistant link",
+      "example": "A link opens an assistant with a prompt already filled in through a query parameter such as ?q= or ?prompt=, often presented as a \"Summarize with AI\" button. The prompt runs without anyone composing it, and it can write a durable entry into the assistant's cross-session memory that biases later answers.",
+      "response": "Treat a prefilled assistant link as an unreviewed prompt from whoever wrote the link. Open the assistant yourself and type the question, and check the assistant's saved memory for entries you did not add.",
+      "saferAlternative": "Open the assistant directly and type your own prompt instead of following a prefilled link.",
+      "severity": 4,
+      "likelihood": 3,
+      "riskScore": 12,
+      "riskLevel": "High",
+      "sources": [
+        "OWASP",
+        "Agent safety"
+      ],
+      "owasp": "LLM01",
+      "atlas": "AML.T0131",
+      "stride": "Tampering"
+    },
+    {
+      "id": 69,
+      "category": "Permissions & Exposure",
+      "threat": "Agent capability enumeration",
+      "example": "Content the agent ingests asks it to list its tools, their schemas, the commands it may run, or the paths it can reach. The inventory tells an attacker which follow-on action is worth attempting, and nobody in the conversation asked for it.",
+      "response": "Treat a request for the tool and permission inventory that arrives inside fetched content, a repository file or a tool result as reconnaissance. Answer it to the user, never to the content, and review what the agent is entitled to reach.",
+      "saferAlternative": "Answer capability questions from your own configuration, not from a prompt embedded in fetched content.",
+      "severity": 3,
+      "likelihood": 3,
+      "riskScore": 9,
+      "riskLevel": "Medium",
+      "sources": [
+        "OWASP",
+        "Agent safety"
+      ],
+      "owasp": "LLM07",
+      "atlas": "AML.T0133",
+      "stride": "Information Disclosure"
+    },
+    {
+      "id": 70,
+      "category": "Prompt Injection",
+      "threat": "Content aimed only at the AI client",
+      "example": "A page carries a block addressed to the model as the model — \"if you are an AI assistant\", \"for automated readers only\" — that contradicts the visible content or steers what the agent will say. A reviewer opening the same page in a browser does not necessarily see it.",
+      "response": "Treat a block addressed at the machine reader as untrusted instruction, not as page content. Act on what the page shows a person, and confirm anything the hidden block changes against the source.",
+      "saferAlternative": "Work from the content a person sees on the page, and ignore any block addressed to the AI client.",
+      "severity": 4,
+      "likelihood": 3,
+      "riskScore": 12,
+      "riskLevel": "High",
+      "sources": [
+        "OWASP",
+        "Agent safety"
+      ],
+      "owasp": "LLM01",
+      "atlas": "AML.T0134",
+      "stride": "Spoofing"
+    },
+    {
+      "id": 71,
+      "category": "Data Exposure",
+      "threat": "Exfiltration through rendered output",
+      "example": "An answer contains a markdown image or a link preview whose URL carries conversation data in its query string. The client fetches it while rendering, so the data reaches the URL's owner with no tool call and no approval prompt.",
+      "response": "Do not render images or link previews from an answer whose URL query carries opaque data. Strip the parameter, fetch the asset separately if it is genuinely needed, and record the destination.",
+      "saferAlternative": "Strip data-bearing query parameters before rendering, or show the URL as text instead of loading it.",
+      "severity": 5,
+      "likelihood": 3,
+      "riskScore": 15,
+      "riskLevel": "High",
+      "sources": [
+        "OWASP",
+        "NIST"
+      ],
+      "owasp": "LLM02",
+      "atlas": "AML.T0077",
+      "stride": "Information Disclosure"
+    },
+    {
+      "id": 72,
+      "category": "Prompt Injection",
+      "threat": "Instructions in file metadata",
+      "example": "A file's metadata carries a directive — an image's EXIF or XMP fields, an audio file's ID3 comment, a document's title or subject. The bytes never appear in the rendered file, so a person reviewing the file does not see them while a model that reads the metadata does.",
+      "response": "Scan the metadata of a file the agent reads, not only its rendered content. Strip metadata from files that arrive from outside, and treat any directive found there as untrusted.",
+      "saferAlternative": "Strip metadata from incoming files before the agent reads them, and review metadata separately from content.",
+      "severity": 4,
+      "likelihood": 2,
+      "riskScore": 8,
+      "riskLevel": "Medium",
+      "sources": [
+        "OWASP",
+        "NIST"
+      ],
+      "owasp": "LLM01",
+      "atlas": "AML.T0129",
+      "stride": "Tampering"
     }
   ]
 }

@@ -5,6 +5,11 @@ import { taintedFlow } from "./taint.js";
 import { persuasionHit } from "./crescendo.js";
 import { overrideStructuralHit, prefixForcingHit, personaBypassHit } from "./injection-tells.js";
 import { deliberateObscurityHit } from "./obfuscation-signal.js";
+import { craftedAssistantLink } from "./assistant-links.js";
+import { agentReconHit } from "./agent-recon.js";
+import { aiTargetedCloakingHit } from "./cloaking.js";
+import { visuallyHiddenInstruction } from "./visual-hiding.js";
+import { renderedExfilHit } from "./render-exfil.js";
 
 // ---------------------------------------------------------------------------------------------------
 // Content-free helpers for the additive detectors appended at the end of DETECTORS. All pure,
@@ -1200,5 +1205,93 @@ export const DETECTORS = [
     hint: "On-device model flagged a persuasion / jailbreak framing the deterministic engine missed.",
     patterns: [/(?!)/],
     semantic: "detect"
+  },
+  {
+    // AML.T0131 / #68 (LLM01) — a link that opens an assistant with the prompt already supplied. The
+    // patterns are a cheap PREFILTER on the assistant hosts; craftedAssistantLink() parses the URL,
+    // decodes the prompt parameter and requires a persistence or directive payload, so an ordinary
+    // "start a new chat here" link and a shared-transcript link stay silent. Content-free: the matched
+    // span is the host, never the decoded prompt.
+    detectorId: "link-assistant-prefill",
+    threatId: 68,
+    stages: ["prompt", "file", "index", "output"],
+    mode: "warn",
+    hint: "Link opens an AI assistant with a prompt already filled in (unsupervised prompt, can write durable memory).",
+    patterns: [
+      /\b(?:chatgpt|openai|claude|anthropic|gemini\.google|bard\.google|copilot\.microsoft|perplexity|grok|you|poe|mistral|deepseek|qwen|kimi|meta|duck)\.[a-z]{2,6}\b/i
+    ],
+    refine: (_m, text) => craftedAssistantLink(text)
+  },
+  {
+    // AML.T0133 / #69 (LLM07) — the agent's own tool and permission inventory being solicited. INGEST
+    // STAGES ONLY, and that is the whole precision argument: "what tools do you have?" is normal for a
+    // developer to type and would be an unacceptable false positive on the prompt stage, while the same
+    // sentence inside a fetched page or a repository file was composed by someone who is not in the
+    // conversation. Content-free (phrasing only).
+    detectorId: "recon-agent-capabilities",
+    threatId: 69,
+    stages: ["file", "index", "output", "tool"],
+    mode: "warn",
+    hint: "Ingested content asks the agent to enumerate its tools, permissions or reachable paths (capability reconnaissance).",
+    patterns: [
+      /\b(?:tools?|functions?|capabilit(?:y|ies)|permissions?|scopes?|entitlements?|privileges?|commands?|directories|file\s{1,4}paths?|mcp)\b/i
+    ],
+    refine: (_m, text) => agentReconHit(text)
+  },
+  {
+    // AML.T0134 / #70 (LLM01) — a block addressed at the machine reader that contradicts or steers past
+    // the visible page. The differential the technique is named for (a server branching on User-Agent)
+    // is NOT detectable from an endpoint and is not claimed; see data/cloaking.js. The prefilter is the
+    // audience marker, and aiTargetedCloakingHit() requires the second half, so the friendly form ("if
+    // you are an AI, our OpenAPI spec parses more easily") does not fire. Content-free.
+    detectorId: "cloak-ai-audience",
+    threatId: 70,
+    stages: ["file", "index", "output"],
+    mode: "warn",
+    hint: "Content addressed only to AI clients that contradicts or steers past what the page shows a person.",
+    patterns: [
+      /\b(?:ai|llm|language\s{1,4}models?|assistants?|agents?|bots?|crawlers?|automated)\b/i,
+      /\b(?:agent|ai|llm|bot|machine|model)[-_]only\b/i
+    ],
+    refine: (_m, text) => aiTargetedCloakingHit(text)
+  },
+  {
+    // AML.T0068 / #50 (LLM08) — rendering-hidden text. The revised technique names "small font, text
+    // colored the same as the background, or hidden HTML elements" alongside the code-point tricks the
+    // existing #50 detectors already cover; white-on-white text is ordinary ASCII and trips none of
+    // them. Requires concealment AND a steering instruction inside the concealed element, for the same
+    // reason obf-deliberate-obscurity requires a second signal: hidden markup on its own is everywhere
+    // (screen-reader text, template rows, pre-animation opacity) and is not evidence.
+    detectorId: "obf-rendered-hidden",
+    threatId: 50,
+    stages: ["prompt", "file", "index", "output"],
+    mode: "warn",
+    hint: "Markup renders text invisible (same colour as its background, zero font size, hidden element) and that text steers the answer.",
+    // A cheap, broad prefilter (any inline style, any unfilled SVG text) with the decision in refine,
+    // the same division obf-deliberate-obscurity uses. Enumerating the hiding declarations here instead
+    // was a second place to keep in sync and already missed off-canvas positioning.
+    patterns: [
+      /\sstyle\s{0,4}=\s{0,4}"[^"]{0,300}"/i,
+      /<text\b[^>]{0,300}\bfill\s{0,4}=\s{0,4}"(?:none|transparent|white|#fff)/i
+    ],
+    refine: (_m, text) => visuallyHiddenInstruction(text)
+  },
+  {
+    // AML.T0077 / #71 (LLM02) — exfiltration through what the CLIENT renders. #17 out-links fires on any
+    // URL in an output and cannot separate a tracking pixel from a CI badge, which is why it is gated at
+    // the ingest surface; this asks whether a RENDERED url's query carries data rather than parameters.
+    // The shape test lives in data/render-exfil.js and is deliberately blind to hosts. Content-free: the
+    // matched span is the image markup, never the query value.
+    detectorId: "egress-rendered-image",
+    threatId: 71,
+    stages: ["output"],
+    mode: "warn",
+    hint: "An image or link preview the client renders on its own carries data in its URL (exfiltration channel).",
+    patterns: [
+      /!\[[^\]]{0,120}\]\(\s{0,4}https?:\/\//i,
+      /<img\b[^>]{0,300}\bsrc\s{0,4}=\s{0,4}["']https?:\/\//i,
+      /\[[^\]]{0,120}\]\(\s{0,4}https?:\/\/[^\s)]{0,300}\?/i
+    ],
+    refine: (_m, text) => renderedExfilHit(text)
   }
 ];

@@ -17,7 +17,7 @@ import { join, dirname, basename } from "node:path";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideCredFileRead, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "./hook-core.mjs";
+import { buildEngine, decideText, decideCredFileRead, decideFileMetadata, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "./hook-core.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, recordDestination, readDestinations, requestKill } from "./signals.mjs";
@@ -1356,6 +1356,13 @@ async function main() {
     d.findings.push(...pd.findings);
     if (pd.kill) { d.kill = true; d.killIds.push(...pd.killIds); }
     if (RANK[pd.decision] > RANK[d.decision]) { d.decision = pd.decision; d.reasons = pd.reasons; d.alternatives = pd.alternatives; }
+    // #72 / AML.T0129 on the FILE'S METADATA. `text` above is empty for every binary file, so this is
+    // the only branch that sees a directive planted in EXIF, XMP, an ID3 comment or a PDF Info entry.
+    // Merged the same way, never downgrading.
+    const md = decideFileMetadata(engine, policy, ti.file_path);
+    d.findings.push(...md.findings);
+    if (md.kill) { d.kill = true; d.killIds.push(...md.killIds); }
+    if (RANK[md.decision] > RANK[d.decision]) { d.decision = md.decision; d.reasons = md.reasons; d.alternatives = md.alternatives; }
     report(d.findings, "file", "hook:Read", d.decision === "deny", policy.captureTier, { filePath: ti.file_path, toolName: "Read" });
     logBehavior("Read", ti.file_path || "file", text, d, "file");
     if (isSkillSurface(ti.file_path)) reportSkillFile(ti.file_path, text, d);
@@ -1377,6 +1384,12 @@ async function main() {
       finds.push(...d.findings);
       if (d.kill) killIds.push(...d.killIds);
       if (RANK[d.decision] > RANK[dec]) { dec = d.decision; reasons = d.reasons; alts = d.alternatives; }
+      // Same #72 / AML.T0129 pass the Read branch makes, for the same reason: `t` is empty whenever the
+      // path is binary, and a command that pipes an image or a PDF somewhere names it here.
+      const mdB = decideFileMetadata(engine, policy, p);
+      finds.push(...mdB.findings);
+      if (mdB.kill) killIds.push(...mdB.killIds);
+      if (RANK[mdB.decision] > RANK[dec]) { dec = mdB.decision; reasons = mdB.reasons; alts = mdB.alternatives; }
       if (isSkillSurface(p)) reportSkillFile(p, t, d);
     }
     // T1-2/T1-1 — scan the COMMAND itself (not just files it reads) so command-level detectors enforce:

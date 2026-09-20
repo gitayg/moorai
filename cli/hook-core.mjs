@@ -19,6 +19,7 @@ import { statePath, latchPath, breadcrumbPath } from "./state-dirs.mjs";
 import { TIER_OF } from "../data/data-tiers.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { compilePacks } from "../data/detector-packs.js";
+import { fileMetadataText } from "../data/file-metadata.js";
 import { redosReason, safeRegex, unboundedQuantifiers } from "../src/safe-regex.js";
 import { DetectionEngine } from "../src/engine.js";
 
@@ -201,6 +202,36 @@ export function isEnvTemplate(path) {
 export function decideCredFileRead(engine, policy, path) {
   if (typeof path !== "string" || !path || /[\r\n]/.test(path)) return decideText(engine, policy, "", "prompt");
   return decideText(engine, policy, `cat ${path}`, "prompt", { only: [55] });
+}
+
+// AML.T0129 / #72 for a Read tool call. readFileCapped() returns "" for any file holding a NUL byte, so
+// a JPEG, PNG, PDF or MP3 the agent reads reaches no detector at all; its metadata is the part that can
+// carry a sentence, and it is recovered here and scanned as ordinary file content. A finding on that
+// text means a directive was planted in a channel a person reviewing the file does not see, so #72 is
+// added alongside whatever fired — the CHANNEL is the technique, the payload grammar is not new.
+const METADATA_HEAD_BYTES = 262_144;
+export function decideFileMetadata(engine, policy, path, read = readBytes) {
+  const empty = { decision: "allow", reasons: [], findings: [], kill: false, killIds: [], alternatives: [] };
+  if (typeof path !== "string" || !path) return empty;
+  let text = "";
+  try { text = fileMetadataText(read(path)); } catch { return empty; }
+  if (!text.trim()) return empty;
+  const d = decideText(engine, policy, text, "file");
+  if (!d.findings.length) return empty;
+  const t = engine.threat(72);
+  if (t) {
+    d.findings.push({ threatId: t.id, category: t.category, riskLevel: t.riskLevel, match: "file metadata" });
+    const act = threatActionFor(policy, 72);
+    if (act === "block" || act === "kill") { d.decision = "deny"; d.reasons.push(`#72 ${t.category}`); }
+    else if (act === "justify" && d.decision === "allow") { d.decision = "ask"; d.reasons.push(`#72 ${t.category} (needs sign-off)`); }
+    if (act === "kill") { d.kill = true; d.killIds.push(72); }
+    if (act !== "notify" && act !== "disabled") d.alternatives = orderedAlternatives([t]);
+  }
+  return d;
+}
+
+function readBytes(p) {
+  try { return readFileSync(p).subarray(0, METADATA_HEAD_BYTES); } catch { return null; }
 }
 
 // #3 — MCP server allow/deny. Enforce only when an allow-list is set; otherwise report-only (preserve

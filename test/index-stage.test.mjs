@@ -143,9 +143,15 @@ test("DetectionEngine.scanForIndex is the choke-point and covers the corpus inde
   assert.equal(idxAttacks.length, 5, "the corpus must still carry 5 index-stage attacks");
   const caught = idxAttacks.filter((s) => engine.scanForIndex(s.text).length > 0);
   assert.ok(caught.length >= 4, `scanForIndex must catch >= 4/5 index attacks; caught ${caught.length}`);
-  // the three detectors that declare the stage are the ones that can fire there
+  // The detectors that declare the stage are the ones that can fire there. Pinned as an inventory so
+  // the index surface cannot silently gain or lose one; the four ATLAS v2026.09 detectors joined it
+  // because an auto-loaded rules file is exactly where a crafted assistant link, a capability-recon
+  // request, an AI-addressed block or rendering-hidden steering text would be planted.
   const scoped = DETECTORS.filter((d) => (d.stages || [d.stage]).includes("index")).map((d) => d.detectorId);
-  assert.deepEqual(scoped.sort(), ["inj-untrusted-directive", "mcp-hidden-canary", "mcp-tool-poisoning"]);
+  assert.deepEqual(scoped.sort(), [
+    "cloak-ai-audience", "inj-untrusted-directive", "link-assistant-prefill",
+    "mcp-hidden-canary", "mcp-tool-poisoning", "obf-rendered-hidden", "recon-agent-capabilities"
+  ]);
 });
 
 // The headline number, pinned so it cannot rot: how many of the corpus's index-stage attacks are
