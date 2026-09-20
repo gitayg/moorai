@@ -566,7 +566,9 @@ Stated rather than papered over.
 ## 14. MITRE ATLAS v2026.09 — the agent techniques, and what is not covered
 
 ATLAS v2026.09 (2026-09-15) added agent-specific techniques and revised two older ones. Definitions here
-are taken from `mitre-atlas/atlas-data` `dist/v6/ATLAS-2026.09.yaml`, not from secondary coverage.
+are taken from `mitre-atlas/atlas-data` `dist/v6/ATLAS-2026.09.yaml`, not from secondary coverage. The
+six families below are where MoorAI added detectors; §15 is the rule base's full technique mapping and
+the standard a credit has to pass.
 
 | Technique | Detector | Threat | Stages |
 |---|---|---|---|
@@ -616,3 +618,96 @@ channel. Nothing there decodes pixels, audio samples or compressed streams.
   the CLI hook is a plain Node process with no access to the Tauri host commands, so egress OCR needs
   either a Rust sidecar or a bundled engine. The rendered-URL channel is covered; the image bytes are
   not.
+
+---
+
+## 15. The ATLAS mapping — one rule, every technique it implements
+
+Until rule-base v0.7.0 every one of the 72 threats carried exactly **one** `atlas` id. A rule that
+genuinely implemented three techniques credited one, and the other two read as uncovered everywhere
+the mapping is consumed — the public comparison page, the console's compliance crosswalk
+(`server/compliance.js` groups threats by `t.atlas`), and the SIEM CEF export's `cs2` field. The
+mapping is now `string | string[]`.
+
+### The standard a credit has to pass
+
+A technique is credited when the rule describes a **distinct implemented mechanism** that addresses
+that technique's definition. One rule credits more than one technique **only when it implements each
+distinctly** — never when one technique is a restatement, a superset, a subset, or a plausible
+downstream consequence of another already credited on the same rule. Three tests, all of which must
+pass:
+
+1. **Distinctness.** State in one sentence what the mechanism does *for this technique specifically*
+   that differs from what it does for the other technique credited. If you cannot, credit one.
+2. **Symmetry.** Would the same evidence be accepted from a competitor claiming this technique?
+3. **Adversary action.** Does ATLAS's actual adversary action get detected, blocked, or inventoried?
+   "Related to" and "would help with" are not coverage.
+
+When in doubt the credit is **withheld**. The purpose is an accurate number, not a higher one, and a
+wrong credit on a public page costs far more than a missing one.
+
+### Schema
+
+```jsonc
+"atlas": ["AML.T0051", "AML.T0081", "AML.T0110"],      // string | string[]
+"atlasPartial": { "AML.T0081": "auto-loaded agent-config paths only" }
+```
+
+`atlasPartial` is how a **bounded** credit is stated rather than assumed: the technique is
+implemented, but only over part of what its ATLAS definition covers, and the short phrase is the one
+the public page prints. Every key must also appear in `atlas`; `test/atlas-mapping.test.mjs` fails if
+it does not.
+
+**Every consumer reads the tag through `atlasIds()` (`data/atlas.js`), never the raw field.** A
+reader doing `t.atlas === "AML.T0051"` is false for `["AML.T0051"]`, and `[owasp, atlas].join(" · ")`
+renders `AML.T0051,AML.T0054` as one comma-joined blob. `atlasLabel()` is the display form and
+appends a bounded credit's limit in parentheses.
+
+### The multi-technique credits
+
+| Rule | Techniques | What earns the second (and third) credit |
+|---|---|---|
+| #2 Direct Prompt Injection | T0051, **T0054** | six detectors match the published guardrail-override families — DAN/AutoDAN templates, affirmative-prefix forcing, persona + policy-negation co-occurrence, PAP/PAIR/TAP persuasion frames |
+| #3 Indirect Prompt Injection | T0051, **T0054**, **T0068** | `inj-multiturn-persona` scores persona scaffolding across a *session* window; `inj-perturbed`'s collapse + bounded-fuzzy pass recovers an override phrase deliberately spaced, split or misspelled to evade matching |
+| #22 Memory Poisoning | **T0080** (was T0020) | a write into an assistant's persistent memory is AML.T0080.000, not training-data poisoning |
+| #25 MCP / Connector Tool Poisoning | **T0110** (was T0053) | the rule is a poisoned tool, not a tool invocation; the mechanism is the approved-connector allow-list (`policy.mcpAllow`) |
+| #40 Second-Order Prompt Injection | T0051, **T0099** | `inj-untrusted-directive` runs only at the file / index / tool-output stages — an imperative at rest inside a connected data source, which no prompt-stage detector sees |
+| #43 Destructive command execution | **T0101** (was T0011) | the *agent* runs the irreversible command through its shell tool; T0011 is a user executing an artefact |
+| #47 External email / notifications | T0048, **T0086** | `action-external-comms` matches the send-message tool families and gates them on human approval — exfiltration through a legitimate tool call |
+| #51 System-prompt extraction attempt | **T0056** (was T0051) | `sysprompt-extract` matches the extraction probe itself; T0051 is the means, not what is detected |
+| #52 System-prompt leakage in output | **T0056** (was T0057) | `sysprompt-echo` matches the reply reciting its own instruction block |
+| #54 Reverse shell / RCE | **T0112** (was T0011) | the payload shapes hand a remote host interactive control of the machine through the agent (AML.T0112.000 Local AI Agent) |
+| #55 Credential / secret-file access | **T0098** (was T0057) | `cred-file-access` matches the agent using a tool to collect credentials, before any leak |
+| #56 Destructive tool / MCP call | **T0101** (was T0011) | the irreversible operation is invoked through a *tool*, not a shell |
+| #60 AI rules/config file poisoning | T0051, **T0081**, **T0110** | the `index` stage scans `data/skill-surface.js`'s auto-loaded agent-configuration paths and re-alerts on mid-session poisoning or baseline drift; the `tool` stage scans an MCP tool's model-visible description and schema |
+| #62 Hallucinated / typosquatted dependency | **T0060** (was T0010) | `inspectInstall` classifies the package *name* offline as known-bad or a typosquat near-miss — the adversary-registered entity behind a hallucination |
+| #65 Local secret value egress | T0024, **T0086** | the secret-value fingerprint is matched against MCP *tool arguments*, an egress channel that never touches the inference API |
+| #66 Sub-agent / A2A delegation | T0053, **T0118** | `data/agent-detections.js` reconstructs the spawn/handoff graph and flags orphan subagents and agent-to-agent messages, independent of any tool call |
+| #67 Transit interception | T0024, **T0081** | the proxy and CA-trust overrides are reported by variable *name* at agent launch — the configuration change that weakens the agent's TLS verification, before any request is made |
+| #68 Crafted AI assistant link | T0131, **T0080** | `craftedAssistantLink` requires the decoded payload to ask for *persistence* — a durable cross-session memory write — as a condition separate from the link shape |
+| #70 Content aimed only at the AI client | T0134, **T0130** | `steeringDirectiveHit` is a separately required half: a clause aimed at what the agent will *say*, which involves no contradiction and no cloaking |
+
+Coverage moved from **16 distinct techniques (15 in the 76-technique Agentic AI set)** to **29
+(28 in the set)**. The count is asserted in `test/atlas-mapping.test.mjs`, which also validates every
+credited id against a checked-in copy of ATLAS 2026.09 (`test/atlas-techniques-2026-09.json`) rather
+than against memory.
+
+### Considered and rejected
+
+Rejections are pinned in the same test, so re-adding one has to argue with the list first.
+
+| Rule | Technique | Why not |
+|---|---|---|
+| #69 | T0084 Discover AI Agent Configuration | a restatement of T0133 on the same detector — "what tools do you have?" is one match, not two techniques |
+| #51 | T0069 Discover LLM System Information | the Discovery-tactic superset of the T0056 credit |
+| #21 | T0070 RAG Poisoning | MoorAI indexes nothing and scans no retrieval store; the `index` stage is the skill surface, not a vector store |
+| #40 | T0093 Prompt Infiltration via Public-Facing Application | the mechanism never sees the public-facing application, only the content once the agent reads it |
+| #53 | T0029 Denial of AI Service | the same 60 KB threshold already credited for T0034, relabelled by impact |
+| #17, #29 | T0067 LLM Trusted Output Components Manipulation | `out-links` fires on every URL and `out-citation` on every citation marker, in coach mode — flagging everything is not detection |
+| #59 | T0086 Exfiltration via AI Agent Tool Invocation | the trifecta detects capability *co-occurrence*, not an exfiltrating tool call |
+| #66 | T0103 Deploy AI Agent | the same orphan-subagent detector already credited for T0118 |
+| #57 | T0011 User Execution | a downstream consequence of the T0010 credit on the same evidence |
+| #46, #63 | T0081 Modify AI Agent Configuration | host security posture is not the agent's configuration, and #63 decides a destination host rather than a configuration change |
+| #4, #6, #14, #23 | T0110 / T0085 / T0101 | coaching rules with no detection, inventory, or enforcement mechanism behind them |
+| #62 | T0062 Discover LLM Hallucinations | the adversary's own reconnaissance step; nothing observes it |
+| #55 | T0083 Credentials from AI Agent Configuration | `.npmrc`, `.kube/config` and `.docker/config.json` are tool configuration, not *AI agent* configuration |

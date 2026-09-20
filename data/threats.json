@@ -1,7 +1,7 @@
 {
   "meta": {
     "name": "MoorAI Threat Rule-Base",
-    "version": "0.6.0",
+    "version": "0.7.0",
     "description": "AI-security threat matrix for office workers, translated to English. Each threat is a detection rule: example = trigger context, response = intervention. riskScore = severity x likelihood.",
     "scoring": {
       "severity": "1-5 (impact if it occurs)",
@@ -13,6 +13,10 @@
         "Medium": "6-11",
         "Low": "<6"
       }
+    },
+    "schema": {
+      "atlas": "string | string[] — every MITRE ATLAS (v2026.09) technique the rule genuinely implements. A technique is credited only when the rule describes a distinct implemented mechanism that addresses that technique definition; never for a restatement, superset, subset, or downstream consequence of an id already credited on the same rule. Read it through data/atlas.js atlasIds() — never `t.atlas === id` and never a bare interpolation.",
+      "atlasPartial": "optional { techniqueId: limit } — a credit that is bounded. The technique is implemented, but only over part of what its ATLAS definition covers, and the short limit phrase is the one the public comparison page prints. Every key must also appear in `atlas`."
     }
   },
   "sources": {
@@ -80,7 +84,10 @@
         "NCSC"
       ],
       "owasp": "LLM01",
-      "atlas": "AML.T0051",
+      "atlas": [
+        "AML.T0051",
+        "AML.T0054"
+      ],
       "stride": "Tampering"
     },
     {
@@ -100,7 +107,14 @@
         "OWASP"
       ],
       "owasp": "LLM01",
-      "atlas": "AML.T0051",
+      "atlas": [
+        "AML.T0051",
+        "AML.T0054",
+        "AML.T0068"
+      ],
+      "atlasPartial": {
+        "AML.T0068": "separator/typo-perturbed phrasings only"
+      },
       "stride": "Tampering"
     },
     {
@@ -457,7 +471,10 @@
         "FBI"
       ],
       "owasp": "LLM04",
-      "atlas": "AML.T0020",
+      "atlas": "AML.T0080",
+      "atlasPartial": {
+        "AML.T0080": "guidance only — no memory read or diff"
+      },
       "stride": "Tampering"
     },
     {
@@ -513,7 +530,10 @@
         "OWASP"
       ],
       "owasp": "LLM03",
-      "atlas": "AML.T0053",
+      "atlas": "AML.T0110",
+      "atlasPartial": {
+        "AML.T0110": "approved-connector allow-list only"
+      },
       "stride": "Elevation of Privilege"
     },
     {
@@ -794,7 +814,13 @@
         "OWASP_Agentic"
       ],
       "owasp": "LLM01",
-      "atlas": "AML.T0051",
+      "atlas": [
+        "AML.T0051",
+        "AML.T0099"
+      ],
+      "atlasPartial": {
+        "AML.T0099": "detected on read, not at rest in the data source"
+      },
       "stride": "Tampering"
     },
     {
@@ -848,7 +874,7 @@
         "Agent safety"
       ],
       "owasp": "LLM05",
-      "atlas": "AML.T0011",
+      "atlas": "AML.T0101",
       "stride": "Elevation of Privilege"
     },
     {
@@ -921,7 +947,13 @@
         "Human Approval"
       ],
       "owasp": "LLM06",
-      "atlas": "AML.T0048",
+      "atlas": [
+        "AML.T0048",
+        "AML.T0086"
+      ],
+      "atlasPartial": {
+        "AML.T0086": "send-message tool families only"
+      },
       "stride": "Information Disclosure"
     },
     {
@@ -976,6 +1008,9 @@
       ],
       "owasp": "LLM08",
       "atlas": "AML.T0068",
+      "atlasPartial": {
+        "AML.T0068": "text/markup only"
+      },
       "stride": "Tampering"
     },
     {
@@ -993,7 +1028,7 @@
         "OWASP"
       ],
       "owasp": "LLM07",
-      "atlas": "AML.T0051",
+      "atlas": "AML.T0056",
       "stride": "Information Disclosure"
     },
     {
@@ -1011,7 +1046,7 @@
         "OWASP"
       ],
       "owasp": "LLM07",
-      "atlas": "AML.T0057",
+      "atlas": "AML.T0056",
       "stride": "Information Disclosure"
     },
     {
@@ -1048,7 +1083,10 @@
         "OWASP"
       ],
       "owasp": "LLM05",
-      "atlas": "AML.T0011",
+      "atlas": "AML.T0112",
+      "atlasPartial": {
+        "AML.T0112": "reverse-shell / remote-exec payloads only"
+      },
       "stride": "Elevation of Privilege"
     },
     {
@@ -1067,7 +1105,10 @@
         "OWASP"
       ],
       "owasp": "LLM02",
-      "atlas": "AML.T0057",
+      "atlas": "AML.T0098",
+      "atlasPartial": {
+        "AML.T0098": "local credential files and keychain only"
+      },
       "stride": "Information Disclosure"
     },
     {
@@ -1086,7 +1127,7 @@
         "OWASP_Agentic"
       ],
       "owasp": "LLM06",
-      "atlas": "AML.T0011",
+      "atlas": "AML.T0101",
       "stride": "Tampering"
     },
     {
@@ -1160,7 +1201,15 @@
         "OWASP"
       ],
       "owasp": "LLM08",
-      "atlas": "AML.T0051",
+      "atlas": [
+        "AML.T0051",
+        "AML.T0081",
+        "AML.T0110"
+      ],
+      "atlasPartial": {
+        "AML.T0081": "auto-loaded agent-config paths only",
+        "AML.T0110": "tool definition and schema only"
+      },
       "stride": "Tampering"
     },
     {
@@ -1197,7 +1246,10 @@
         "Socket"
       ],
       "owasp": "LLM03",
-      "atlas": "AML.T0010",
+      "atlas": "AML.T0060",
+      "atlasPartial": {
+        "AML.T0060": "package names only"
+      },
       "stride": "Tampering"
     },
     {
@@ -1233,7 +1285,13 @@
         "OWASP"
       ],
       "owasp": "LLM02",
-      "atlas": "AML.T0024",
+      "atlas": [
+        "AML.T0024",
+        "AML.T0081"
+      ],
+      "atlasPartial": {
+        "AML.T0081": "proxy and CA-trust overrides only"
+      },
       "stride": "Information Disclosure"
     },
     {
@@ -1270,7 +1328,13 @@
         "OWASP"
       ],
       "owasp": "LLM02",
-      "atlas": "AML.T0024",
+      "atlas": [
+        "AML.T0024",
+        "AML.T0086"
+      ],
+      "atlasPartial": {
+        "AML.T0086": "known local secret values only"
+      },
       "stride": "Information Disclosure"
     },
     {
@@ -1289,7 +1353,13 @@
         "Agent safety"
       ],
       "owasp": "LLM06",
-      "atlas": "AML.T0053",
+      "atlas": [
+        "AML.T0053",
+        "AML.T0118"
+      ],
+      "atlasPartial": {
+        "AML.T0118": "requires lineage metadata on agent events"
+      },
       "stride": "Elevation of Privilege"
     },
     {
@@ -1308,7 +1378,13 @@
         "Agent safety"
       ],
       "owasp": "LLM01",
-      "atlas": "AML.T0131",
+      "atlas": [
+        "AML.T0131",
+        "AML.T0080"
+      ],
+      "atlasPartial": {
+        "AML.T0080": "memory writes carried in a crafted assistant link only"
+      },
       "stride": "Tampering"
     },
     {
@@ -1347,6 +1423,9 @@
       ],
       "owasp": "LLM01",
       "atlas": "AML.T0134",
+      "atlasPartial": {
+        "AML.T0134": "endpoint artefact only"
+      },
       "stride": "Spoofing"
     },
     {
@@ -1366,6 +1445,9 @@
       ],
       "owasp": "LLM02",
       "atlas": "AML.T0077",
+      "atlasPartial": {
+        "AML.T0077": "no egress OCR"
+      },
       "stride": "Information Disclosure"
     },
     {
@@ -1385,6 +1467,9 @@
       ],
       "owasp": "LLM01",
       "atlas": "AML.T0129",
+      "atlasPartial": {
+        "AML.T0129": "file-metadata channel only"
+      },
       "stride": "Tampering"
     }
   ]

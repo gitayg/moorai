@@ -13,6 +13,7 @@
 //   (bare `node --test` walks src-tauri/target/ and hangs — always pass the glob.)
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { atlasIds } from "../data/atlas.js";
 import { decideEndpoints, decideTransit } from "../cli/hook-core.mjs";
 import { extractTransitOverrides, proxyApproved } from "../data/model-endpoints.js";
 import { readFileSync } from "node:fs";
@@ -96,6 +97,6 @@ test("TRANSIT: threat #67 is in the matrix and distinct from #63", () => {
   assert.ok(t, "#67 missing from the matrix");
   assert.equal(t.riskLevel, "High");
   assert.equal(t.riskScore, t.severity * t.likelihood);
-  assert.ok(t.owasp && t.atlas && t.stride, "must carry all three framework tags like every other threat");
+  assert.ok(t.owasp && atlasIds(t).length > 0 && t.stride, "must carry all three framework tags like every other threat");
   assert.notEqual(t.threat, threats.find((x) => x.id === 63).threat);
 });

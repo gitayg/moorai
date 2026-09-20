@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { DETECTORS } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
+import { atlasIds } from "../data/atlas.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const threats = JSON.parse(readFileSync(join(ROOT, "data/threats.json"), "utf8"));
@@ -159,6 +160,7 @@ test("every new detector names a threat that exists and carries a safer alternat
     const t = engine.threat(d.threatId);
     assert.ok(t, `${det} points at threat #${d.threatId}, which does not exist`);
     assert.ok(typeof t.saferAlternative === "string" && t.saferAlternative.length > 20, `#${t.id} has no safer alternative`);
-    assert.ok(/^AML\.T0\d{3}$/.test(t.atlas), `#${t.id} has no ATLAS id`);
+    const ids = atlasIds(t);
+    assert.ok(ids.length > 0 && ids.every((id) => /^AML\.T0\d{3}$/.test(id)), `#${t.id} has no well-formed ATLAS id`);
   }
 });

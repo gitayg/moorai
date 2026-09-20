@@ -14,6 +14,7 @@ import { recordExposure, recordIntent } from "./signals.mjs";
 import { contentHash } from "./content-hash.mjs";
 import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
 import { takeEscalationOutcomes } from "../data/model-escalation.mjs";
+import { atlasIds } from "../data/atlas.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = loadConfig();
@@ -138,7 +139,7 @@ function printFindings(findings) {
   console.error(`\n${C.bold}MoorAI pre-flight review${C.off} ${C.dim}— ${findings.length} issue(s) before sending to claude -p${C.off}\n`);
   for (const f of findings) {
     const c = color(f.threat.riskLevel);
-    const fw = [f.threat.owasp, f.threat.atlas].filter(Boolean).join(" · ");
+    const fw = [f.threat.owasp, ...atlasIds(f.threat)].filter(Boolean).join(" · ");
     console.error(`  ${c}● ${f.mode === "coach" ? "COACH" : f.threat.riskLevel}${C.off}  #${f.threat.id} ${f.threat.threat}  ${C.dim}[${f.threat.category}]${f.threat.owasp ? ` ${fw}` : ""}${C.off}`);
     console.error(`     ${C.dim}matched:${C.off} ${f.match}`);
     console.error(`     ${C.dim}why:${C.off} ${f.threat.response}${f.threat.saferAlternative ? "" : "\n"}`);
