@@ -75,9 +75,31 @@ detector, `inj-multilingual` (#3, ~29 languages including Hebrew) already sees a
 auto-loaded rules file. `output` and `tool` do not inherit, so each has its own sibling over the same
 `INJECTION_I18N_OVERRIDE` patterns, reporting the threat its English counterpart on that stage reports:
 `inj-multilingual-untrusted` (#40, `output` — content the agent reads back after a tool runs) and
-`mcp-tool-poisoning-i18n` (#60, `tool` — an MCP tool description). The five "reveal the system prompt"
+`mcp-tool-poisoning-i18n` (#60, `tool` — an MCP tool description). The "reveal the system prompt"
 patterns (`INJECTION_I18N_REVEAL`) stay prompt-only, matching `sysprompt-extract`, so the two languages
 agree on the same sentence.
+
+**The per-language table.** `data/injection-i18n.js` keeps the patterns in `INJECTION_I18N_BY_LANG`, keyed
+by lowercase English language name (`spanish`, `chinese`, `hebrew`; a pattern two languages share is keyed
+by both, `indonesian-malay`, `norwegian-danish`), each entry `{ override: RegExp[], reveal: RegExp[] }`.
+`INJECTION_I18N_OVERRIDE`, `INJECTION_I18N_REVEAL` and `INJECTION_I18N` are flattened from it in table
+order; they are what `data/detectors.js` consumes. All 27 entries have an override pattern; six (Spanish,
+French, German, Chinese, Japanese, Hebrew) have a reveal pattern. `REVEAL_GAP` is the computed, sorted list
+of the other 21, and `test/i18n-table.test.mjs` holds it as a ratchet: a hand-written copy must equal it,
+so adding a reveal pattern fails that test until the language is removed from the copy. The same test
+checks that every pattern has no ambiguous quantified alternation and stays linear on 64 KB inputs.
+
+**Reviewed phrases and coverage.** `test/i18n-fixtures/<language>.json` holds phrases supplied and reviewed
+by a native speaker (`override`, `reveal`, `negatives`, plus `reviewedBy`; schema in the directory's
+README). `test/i18n-fixtures.test.mjs` runs each file through the engine with the stage expectations
+above: override phrases raise #3 / #40 / #60 on every stage, reveal phrases raise #3 on `prompt` / `file` /
+`index` only, negatives raise no multilingual finding anywhere. `hebrew.json` is the one fixture file, a
+verbatim subset of `test/hebrew-injection.test.mjs`. `node scripts/i18n-coverage.mjs [--json]` prints, per
+language, the override and reveal pattern counts, the stages each half reaches (derived from the detectors
+that carry those patterns), whether a fixture file exists, and the false-positive count on
+`test/redteam/benign-<language>.json` when that corpus exists — sample ids only, never text.
+
+**Russian.** The override pattern fires on the directive forms only: the imperative (игнорируй / игнорируйте, and the perfective проигнорируй / проигнорируйте) or the infinitive after an obligation word (должен / должна / должны / нужно / надо / следует), not when не precedes it. Past, present and bare-infinitive forms ("водители игнорировали все указания", "нельзя игнорировать предыдущие инструкции") are how manuals and news talk about instructions and stay silent; `test/russian-injection-precision.test.mjs` pins both halves on all five stages. A human imperative with the attack's exact words ("игнорируйте предыдущие указания отдела кадров") still fires, as Hebrew's he-hr-003 does. The other one-line language patterns have no negation or tense guard yet.
 
 **Hebrew.** `inj-ignore`'s four patterns are English only; Hebrew lives in `data/injection-i18n.js` with the
 other languages. Hebrew has no `\b` word boundary and attaches prefixes (ה ו ל ב ש מ כ) to words, so its
