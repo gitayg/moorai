@@ -33,7 +33,7 @@ by `decideText` / `threatActionFor` in [`cli/hook-core.mjs`](../cli/hook-core.mj
 enforcement are two layers on purpose: the same finding is advisory on one surface and blocking on
 another, and only the caller knows which surface it is.
 
-Rules live in [`data/detectors.js`](../data/detectors.js) — **86 detectors** binding to **72 threats**
+Rules live in [`data/detectors.js`](../data/detectors.js) — **88 detectors** binding to **72 threats**
 in [`data/threats.json`](../data/threats.json) (counts from [BENCHMARK.md](BENCHMARK.md), regenerated
 with `npm run benchmark`; both were re-counted out of the shipped modules while writing this file and
 agree). Detectors are a JavaScript module, not data, because a detector's real decision is a `refine()`
@@ -60,10 +60,10 @@ Counts below were produced by running `_wantStages` / `_inStage` over the shippe
 
 | Stage | Detectors it runs | Fed in production by |
 |---|--:|---|
-| `prompt` | 64 | `cli/moorai-hook.mjs`: the `Bash` **command** itself, the `Task` delegated prompt, the `WebFetch` url + prompt; `mcpGateway`'s argument scan; `cli/moorai-guard.mjs`; the Tauri app (`src/app.js`) |
-| `file` | 69 (64 prompt + 5) | `cli/moorai-hook.mjs` on `Read`, and on every path `extractReadPaths` finds in a `Bash` command; `mcp-proxy/moorai-mcp-guard.mjs` on every `tools/call` **result** |
+| `prompt` | 66 | `cli/moorai-hook.mjs`: the `Bash` **command** itself, the `Task` delegated prompt, the `WebFetch` url + prompt; `mcpGateway`'s argument scan; `cli/moorai-guard.mjs`; the Tauri app (`src/app.js`) |
+| `file` | 71 (66 prompt + 5) | `cli/moorai-hook.mjs` on `Read`, and on every path `extractReadPaths` finds in a `Bash` command; `mcp-proxy/moorai-mcp-guard.mjs` on every `tools/call` **result** |
 | `output` | 54 | `cli/moorai-hook.mjs` on the write family (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`) and on `PostToolUse` ingested content; `cli/moorai-guard.mjs`; `src/app.js` |
-| `index` | 69 (64 prompt + 5) | the detached `moorai-hook.mjs indexscan` worker, over the agent's auto-loaded context files |
+| `index` | 71 (66 prompt + 5) | the detached `moorai-hook.mjs indexscan` worker, over the agent's auto-loaded context files |
 | `tool` | 4 | `mcp-proxy/moorai-mcp-guard.mjs`, on a copy of every `tools/list` response |
 | `session` | 1 | **no enforcement caller** — see below |
 
@@ -237,6 +237,34 @@ aliases with `-Recurse` and `-Force` (`-fo` is the shortest unambiguous `-Force`
 `-Filter`), cmd `rd` / `rmdir` / `del` / `erase` with `/s` and `/q`, and `find … -delete` or
 `find … -exec rm`. Only the delete family is shared: force-push, `DROP TABLE` and `mkfs` stay #43's alone,
 because in #32's sense of "runnable code" they would fire on every SQL or git tutorial a model writes.
+
+### Clipboard reads: one list, a read signal and a sink signal
+
+Developers copy API keys, tokens and passwords to the clipboard, and one shell command puts whatever is
+there into the agent's context. `CLIPBOARD_READ` in `data/detectors.js` lists the documented read
+commands: macOS `pbpaste` and `osascript … the clipboard`, X11 `xclip -o` and `xsel` with an output or
+selection option, Wayland `wl-paste`, and PowerShell `Get-Clipboard`, `gcb` and the WinForms/WPF
+`[…Clipboard]::GetText()` family. Writes (`pbcopy`, `xclip -i`, `xsel -i` or piped into, `wl-copy`,
+`Set-Clipboard`, `clip.exe`, `SetText`, `set the clipboard to`), prose, package names and paths, and
+`--help` / `man` / `which` lookups stay silent. `gcb` counts only in PowerShell shapes, because oh-my-zsh
+also defines it as `git checkout -b`.
+
+Two detectors, both `prompt` stage like #43 (the Bash hook scans the command text at `prompt`;
+`file`/`index` inherit it, `output` does not):
+
+- `clipboard-read` (#39, secret exposure) holds the list itself. Reading the clipboard is ordinary in
+  scripts, and #39 is `notify` with no org policy, so this reports and never halts.
+- `clipboard-to-sink` (#1, sensitive data leak) is built from the same list and fires when the read feeds
+  an outbound sink in the same command: a pipe chain ending in `curl`/`wget`/`nc`/`ncat`/`socat` or the
+  PowerShell web cmdlets, or a URL / network client in the same segment (`curl -d "$(pbpaste)" …`). It is a
+  separate threat so it shows as its own finding next to #39 instead of merging into it. It is not #65:
+  #65 blocks by default and is for confirmed secret values, and clipboard-to-pastebin is a real developer
+  habit. It is also `notify` by default. An org that wants it to halt sets `threatPolicy[1]`, and that
+  setting also covers the card-number and IBAN detectors on #1.
+
+Both sit ahead of every other #39 / #1 detector, because findings are deduped per threat and the last
+`warn` wins. A real secret or card number in the same text therefore keeps the slot.
+`test/clipboard-read.test.mjs` covers this.
 
 ## 4. The three additive passes
 
@@ -555,7 +583,7 @@ Independently, `mcp-proxy/tool-scan.mjs` records `decideText` at stage `file` me
 on 64 KB of composed text, which is why `maxResultBytes` is set where it is. These are single-run figures
 on one machine; treat them as an order of magnitude, not a benchmark.
 
-Coverage numbers — 86 detectors, 72 threats, 102/102 adversarial corpus, 9/10 OWASP LLM Top 10 items with
+Coverage numbers — 88 detectors, 72 threats, 102/102 adversarial corpus, 9/10 OWASP LLM Top 10 items with
 at least one on-device detector — are in [BENCHMARK.md](BENCHMARK.md) and are regenerated by
 `npm run benchmark`. Held-out adversarial recall and the benign false-positive rate are in the README,
 including the locked tune/test split discipline; they are not restated here, so there is one place to
@@ -596,6 +624,13 @@ Stated rather than papered over.
   `xargs rm`, flags after `--`, PowerShell splatting or variable parameters, GNU `--interactive=never` as
   a force equivalent. `-Recurse:$false` still fires. No benign or attack corpus exercises these forms, so
   their recall and false-positive rate rest on the synthetic tests in `test/detector-coverage-tier1.test.mjs`.
+- **Clipboard detection is per command segment and shell-only.** A read and a sink in separate statements
+  (`x=$(pbpaste); curl -d "$x" …`, or through a temp file) raise only the #39 read, not the #1 sink.
+  Reads from inside a language runtime (`pyperclip.paste()`, `clipboardy`, `xdotool`, `tmux
+  show-buffer`, Cygwin `/dev/clipboard`, `termux-clipboard-get`) are not covered. The patterns were
+  written with their tests. No benign or attack corpus contains a clipboard command, so their precision
+  on real agent traffic has not been measured. Because `file` inherits `prompt`, a shell script that
+  contains `pbpaste` raises #39 when the agent reads it. #43 behaves the same way.
 - **The Hebrew benign corpus is self-authored.** `test/redteam/benign-hebrew.json` was written alongside
   the patterns, so it tests text the author anticipated; no real-world Hebrew has been measured. Some
   imperative and question forms are left out on purpose for precision — `test/hebrew-injection.test.mjs`

@@ -1,9 +1,9 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-09-24T10:08:20.528Z
+> Generated: 2026-09-24T22:12:28.312Z
 
-- **Detectors:** 86
+- **Detectors:** 88
 - **Threats:** 72
 - **Adversarial corpus:** 102/102 passed (100.0%)
 - **OWASP LLM Top 10:** 9/10 items covered by ≥1 on-device detector
@@ -13,7 +13,7 @@
 | Item | Name | Threats | Detectors | Status |
 |------|------|--------:|----------:|--------|
 | LLM01 | Prompt Injection | 7 | 18 | ✅ covered |
-| LLM02 | Sensitive Information Disclosure | 17 | 32 | ✅ covered |
+| LLM02 | Sensitive Information Disclosure | 17 | 34 | ✅ covered |
 | LLM03 | Supply Chain | 6 | 2 | ✅ covered |
 | LLM04 | Data & Model Poisoning | 1 | 0 | — |
 | LLM05 | Improper Output Handling | 6 | 14 | ✅ covered |

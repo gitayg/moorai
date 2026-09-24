@@ -264,6 +264,56 @@ export const RECURSIVE_FORCE_DELETE = [
   /\bfind\s[^&|\n]{0,200}?\s-exec(?:dir)?\s{1,4}(?:sudo\s{1,4})?rm\b/i
 ];
 
+// Clipboard READS — the documented shell commands that print the clipboard. Developers copy API keys,
+// tokens and passwords to the clipboard, and one of these puts whatever is there into the agent's
+// context. Reading the clipboard is also ordinary in scripts, so on its own this is report-grade
+// (clipboard-read, #39). Shared, like RECURSIVE_FORCE_DELETE, by two detectors: clipboard-read holds
+// these objects, and CLIPBOARD_TO_SINK below is BUILT from their sources, so a form added here reaches
+// both. Writes (pbcopy, `xclip -i`, `xsel -i`, wl-copy, Set-Clipboard, clip.exe, SetText, `set the
+// clipboard to`) are not reads and must stay silent, and so must the words in prose, package names and
+// paths — hence the (?<![\w.-]) / (?![\w\/-]|\.\w) edges, which leave `src/pbpaste/`, `wl-paste.md`
+// and `clipboardy` unmatched while `/usr/bin/pbpaste` still counts. `man`/`which`/`command -v`/`Get-Help` lookups are docs, not reads.
+const CLIP_LOOKUP = String.raw`(?<!\b(?:man|which|whereis|whatis|apropos|tldr|info|type|Get-Help|Get-Command|command\s{1,4}-v)(?:\s{1,4}[\w.-]{1,24}){0,3}\s{1,4})`;
+const CLIP_HELP = String.raw`(?![^;&|\n]{0,80}?\s(?:--?help|-h|--version|-v|--list-types|-l)(?![\w-]))`;
+export const CLIPBOARD_READ = [
+  // macOS. `pbpaste` has no write mode.
+  new RegExp(String.raw`${CLIP_LOOKUP}(?<![\w.-])pbpaste(?![\w\/-]|\.\w)${CLIP_HELP}`, "i"),
+  // macOS AppleScript. `set the clipboard to …` is the write form and is excluded.
+  /\bosascript\b[^\n]{0,120}?(?<!\bset\s{1,4})\bthe\s+clipboard\b(?!\s+to\b)/i,
+  // X11 xclip. Its default mode is -i (stdin INTO the clipboard); only -o / -out / -output prints it.
+  /(?<![\w.-])xclip(?=\s)(?=[^;&|\n]{0,120}?\s-o(?:ut(?:put)?)?(?![\w-]))/i,
+  // X11 xsel. Short options cluster (`-bo`, `-bi`). A read is a selection or output option with NO input
+  // / append / clear / delete / follow option, no `<` redirect, and xsel not the target of a pipe —
+  // `echo x | xsel -b` feeds stdin, which is a write.
+  /(?<!\|\s{0,8})(?<![\w.-])xsel(?=\s)(?![^;&|\n]{0,120}?(?:<|\s(?:-[a-z]{0,6}[iacdf][a-z]{0,6}|--(?:input|append|clear|delete|follow))(?![\w-])))(?=[^;&|\n]{0,120}?\s(?:-[a-z]{0,6}[obps][a-z]{0,6}|--(?:output|clipboard|primary|secondary))(?![\w-]))/i,
+  // Wayland. `--help`, `--version` and `--list-types` print docs or MIME types, not the contents.
+  new RegExp(String.raw`${CLIP_LOOKUP}(?<![\w.-])wl-paste(?![\w\/-]|\.\w)${CLIP_HELP}`, "i"),
+  // PowerShell.
+  new RegExp(String.raw`${CLIP_LOOKUP}(?<![\w.$-])Get-Clipboard(?![\w-])`, "i"),
+  // `gcb` is Get-Clipboard's stock alias — and oh-my-zsh's `git checkout -b`. Only the PowerShell
+  // shapes count: bare, piped, closed by ) ; } or a quote, or with -Raw / -Format / -TextFormatType. A
+  // branch name after it (`gcb feature/x`) is the git alias and stays silent.
+  /(?<![\w.\/$-])gcb(?=\s{0,4}(?:$|[|;)}"'\n]|-(?:Raw|Format|TextFormatType)\b))/i,
+  // .NET from PowerShell: WinForms and WPF clipboard getters. SetText/SetDataObject are writes.
+  /\[\s{0,4}(?:System\.)?Windows\.(?:Forms\.)?Clipboard\s{0,4}\]::(?:GetText|GetDataObject|GetData|GetFileDropList|GetImage|GetAudioStream)\s{0,4}\(/i
+];
+
+// A clipboard read feeding an OUTBOUND sink in the same command — the distinct, stronger signal
+// (clipboard-to-sink, #1). Built from CLIPBOARD_READ, one pair per read form:
+//   forward — the read, then either a URL / network client later in the SAME segment (no ; & | or
+//             newline between), or a pipe chain ending in a network client (`pbpaste | base64 | curl`);
+//   back    — a URL / network client, then the read later in the same segment (`curl -d "$(pbpaste)"`,
+//             `Invoke-RestMethod -Uri https://… -Body (Get-Clipboard)`).
+// Both are anchored on a literal (the read, or the client/URL), so a scan never restarts at every
+// separator. Deliberately per-segment: `pbpaste > f && curl -F f=@f https://…` and a read on one line
+// with curl on the next are two statements and stay read-only (see DETECTION_ENGINE.md §13).
+const CLIP_NET = String.raw`(?<![\w.\/-])(?:curl|wget|nc|ncat|netcat|socat|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)(?![\w.\/-])`;
+const CLIP_URL = String.raw`\b(?:https?|ftp):\/\/`;
+export const CLIPBOARD_TO_SINK = CLIPBOARD_READ.flatMap((r) => [
+  new RegExp(String.raw`(?:${r.source})(?:[^;&|\n]{0,300}?(?:${CLIP_URL}|${CLIP_NET})|[^;&\n]{0,300}?\|\s{0,4}(?:sudo\s{1,4})?${CLIP_NET})`, "i"),
+  new RegExp(String.raw`(?:${CLIP_URL}|${CLIP_NET})[^;&|\n]{0,300}?(?:${r.source})`, "i")
+]);
+
 export const DETECTORS = [
   {
     // Multilingual prompt-injection — the "ignore previous instructions" / "reveal system prompt"
@@ -398,6 +448,35 @@ export const DETECTORS = [
     mode: "warn",
     hint: "Looks like a 9-digit national ID.",
     patterns: [/(?<!\d)\d{9}(?!\d)/]
+  },
+  {
+    // #39 (LLM02) — the agent READS THE CLIPBOARD from a shell command. Developers copy secrets there, and
+    // the read lands in the model's context: a secret "about to be sent to the AI", which is #39's
+    // definition. #39 is notify with no org policy (and in the `secret` data tier), so this reports and
+    // never halts — reading the clipboard is also ordinary in scripts. Prompt stage only, as #43: the Bash
+    // hook scans the command text at "prompt", file/index inherit it, output does not (a fetched tutorial
+    // or a README the agent writes that mentions pbpaste is not a read).
+    // Placed BEFORE every other #39 / #1 detector on purpose: findings are deduped per threat and the
+    // last warn wins, so a real secret or card number in the same text keeps the slot.
+    detectorId: "clipboard-read",
+    threatId: 39,
+    stage: "prompt",
+    mode: "warn",
+    hint: "Reads the clipboard — developers copy secrets there; its contents enter the agent's context.",
+    patterns: CLIPBOARD_READ
+  },
+  {
+    // #1 (LLM02) — the clipboard read feeds an outbound sink in the SAME command: a pipe into
+    // curl/wget/nc (or the PowerShell web cmdlets), or a URL / network client in the same segment. A
+    // distinct threat so it is its own finding next to clipboard-read's #39 rather than collapsing into
+    // it. NOT #65: #65 is block-by-default and reserved for confirmed secret values, and clipboard →
+    // pastebin is a real developer idiom. Notify with no org policy; an org raises it with threatPolicy.
+    detectorId: "clipboard-to-sink",
+    threatId: 1,
+    stage: "prompt",
+    mode: "warn",
+    hint: "Clipboard contents piped or passed to an outbound network sink in one command (possible exfiltration).",
+    patterns: CLIPBOARD_TO_SINK
   },
   {
     detectorId: "dlp-payment-card",
