@@ -71,13 +71,21 @@ Counts below were produced by running `_wantStages` / `_inStage` over the shippe
 surfaces that no other stage can see.
 
 **Non-English overrides on the inbound stages.** Because `file` and `index` inherit every `prompt`
-detector, `inj-multilingual` (#3, ~26 languages) already sees a repository file or an auto-loaded rules
-file. `output` and `tool` do not inherit, so each has its own sibling over the same
+detector, `inj-multilingual` (#3, ~29 languages including Hebrew) already sees a repository file or an
+auto-loaded rules file. `output` and `tool` do not inherit, so each has its own sibling over the same
 `INJECTION_I18N_OVERRIDE` patterns, reporting the threat its English counterpart on that stage reports:
 `inj-multilingual-untrusted` (#40, `output` — content the agent reads back after a tool runs) and
 `mcp-tool-poisoning-i18n` (#60, `tool` — an MCP tool description). The five "reveal the system prompt"
 patterns (`INJECTION_I18N_REVEAL`) stay prompt-only, matching `sysprompt-extract`, so the two languages
 agree on the same sentence.
+
+**Hebrew.** `inj-ignore`'s four patterns are English only; Hebrew lives in `data/injection-i18n.js` with the
+other languages. Hebrew has no `\b` word boundary and attaches prefixes (ה ו ל ב ש מ כ) to words, so its
+patterns match as substrings, as `data/content-rules.js` already does. A small `hebrew()` compiler inserts a
+bounded niqqud run after every letter and pairs each final letter with its medial form. Because the
+imperative and the past tense of the key verbs are spelled alike, those forms fire only at the start of a
+sentence, line or list item or after a lead-in, and never when negated or conditional. Precision is
+measured on `test/redteam/benign-hebrew.json` (179 ordinary Hebrew texts, 73 hard negatives).
 
 **Which file a path names.** A relative path in a `Read`, in a `Bash` command (`cat notes.md`), and the
 auto-loaded context files the `index` worker screens all resolve against the agent's working directory
@@ -566,6 +574,11 @@ Stated rather than papered over.
   `xargs rm`, flags after `--`, PowerShell splatting or variable parameters, GNU `--interactive=never` as
   a force equivalent. `-Recurse:$false` still fires. No benign or attack corpus exercises these forms, so
   their recall and false-positive rate rest on the synthetic tests in `test/detector-coverage-tier1.test.mjs`.
+- **The Hebrew benign corpus is self-authored.** `test/redteam/benign-hebrew.json` was written alongside
+  the patterns, so it tests text the author anticipated; no real-world Hebrew has been measured. Some
+  imperative and question forms are left out on purpose for precision — `test/hebrew-injection.test.mjs`
+  records which. The compiled Hebrew patterns exceed `redosReason`'s 400-character cap, which is meant for
+  policy-supplied patterns and never applies here because `inj-multilingual` has no `refine`.
 - **Payload `cwd` against real hosts is unverified.** The fix follows the envelope field; whether Claude
   Code ever runs the hook outside the agent's working directory, and whether the payload `cwd` follows a
   `cd` inside a Bash session, has not been observed.

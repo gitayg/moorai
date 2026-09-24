@@ -267,7 +267,7 @@ export const RECURSIVE_FORCE_DELETE = [
 export const DETECTORS = [
   {
     // Multilingual prompt-injection — the "ignore previous instructions" / "reveal system prompt"
-    // intent across ~29 languages (English + Hebrew are covered by inj-ignore below).
+    // intent across ~29 languages, Hebrew included (English is covered by inj-ignore below).
     detectorId: "inj-multilingual",
     threatId: 3,
     stage: "prompt",
