@@ -1,4 +1,4 @@
-import { INJECTION_I18N } from "./injection-i18n.js";
+import { INJECTION_I18N, INJECTION_I18N_OVERRIDE } from "./injection-i18n.js";
 import { SECRET_DETECTORS, shannonEntropy } from "./secrets-patterns.js";
 import { inspectInstall } from "./popular-packages.js";
 import { taintedFlow } from "./taint.js";
@@ -228,6 +228,42 @@ export function credentialShapedEgress(text) {
   return false;
 }
 
+// Recursive, forced deletion — `rm -rf` and every spelling of the same act. Shared by TWO detectors that
+// ask different questions about it: destructive-command (#43, prompt stage — a command about to run)
+// and out-code-exec (#32, output stage — a risky command in what the model wrote or is about to Write).
+// #32 used to carry its own `/\brm\s+-rf\b/`, literal and case-sensitive, and when #43 learned
+// `rm -r -f`, PowerShell and cmd the copy did not — the same command was a finding on one stage and
+// silence on the other. It is shared by reference, not duplicated, so the two cannot drift again.
+// ONLY this family is shared. The rest of #43 (force-push, DROP TABLE, mkfs, …) is not "runnable code"
+// in #32's sense and would fire on every SQL or git tutorial a model writes; #32's own shape (fences,
+// macros, curl|sh) stays its own. #32 is dropped on the PostToolUse ingest surface
+// (OUTBOUND_ONLY_THREATS in cli/moorai-hook.mjs), so widening it does not reach fetched pages.
+export const RECURSIVE_FORCE_DELETE = [
+  /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r/i,
+  // The line above needs r and f in ONE flag cluster, so `rm -r -f`, `rm -f -r` and `rm --recursive
+  // --force` — the same command — went unseen. Two lookaheads, each asking for its own option token
+  // anywhere in the same command segment (stopping at ; & | or a newline, so a later `cp -f` in a
+  // chain cannot lend its flag). Short clusters are limited to rm's real option letters [dfirv]:
+  // that is what keeps PowerShell `rm -r -Filter` (no force) and paths like `notes-for-release`
+  // silent — a generic [a-z] cluster read `-Filter` as a force flag. `-r` without force (`rm -r
+  // build/`, `git rm -r --cached`) stays silent: the target is recursive AND forced, both at once.
+  /\brm(?=\s)(?=[^;&|\n]{0,120}?\s(?:-[dfirv]{0,5}r[dfirv]{0,5}|--recursive)(?![\w-]))(?=[^;&|\n]{0,120}?\s(?:-[dfirv]{0,5}f[dfirv]{0,5}|--force)(?![\w-]))/i,
+  // PowerShell. Remove-Item and its stock aliases, with -Recurse and -Force in any order. PowerShell
+  // accepts any unambiguous parameter prefix, so -r is -Recurse, but -f is ambiguous with -Filter and
+  // is rejected — -fo is the shortest -Force. `-Recurse:$true` is the switch-with-value form.
+  // `Get-ChildItem -Recurse -Force` is a listing and does not match: the verb must be a remove.
+  /\b(?:Remove-Item|ri|rm|rmdir|rd|del|erase)(?=\s)(?=[^;&|\n]{0,160}?\s-r[ecurs]{0,6}(?::\$true)?(?![\w-]))(?=[^;&|\n]{0,160}?\s-fo[rce]{0,3}(?::\$true)?(?![\w-]))/i,
+  // Windows cmd: rd/rmdir /s (whole tree) with /q (no confirmation) is `rm -rf`; so is del /s /q.
+  // Both switches required — `rd /s build` still prompts, and `dir /s /q` (a listing that shows
+  // owners) is not a delete verb. Switches may be glued (`/s/q`), hence the (?:\/[a-z]){0,3} runs.
+  /\b(?:rd|rmdir|del|erase)(?=\s)(?=[^;&|\n]{0,120}?\s(?:\/[a-z]){0,3}\/s(?:\/[a-z]){0,3}(?!\w))(?=[^;&|\n]{0,120}?\s(?:\/[a-z]){0,3}\/q(?:\/[a-z]){0,3}(?!\w))/i,
+  // find with a delete ACTION. A bare `find . -name '*.log'` only lists, so the action is required:
+  // -delete, or -exec/-execdir handing matches to rm. ";" is not a segment stop here because
+  // `-exec rm {} \;` ends in one — the rm comes before it.
+  /\bfind\s[^&|\n]{0,200}?\s-delete(?![\w-])/i,
+  /\bfind\s[^&|\n]{0,200}?\s-exec(?:dir)?\s{1,4}(?:sudo\s{1,4})?rm\b/i
+];
+
 export const DETECTORS = [
   {
     // Multilingual prompt-injection — the "ignore previous instructions" / "reveal system prompt"
@@ -238,6 +274,38 @@ export const DETECTORS = [
     mode: "warn",
     hint: "Contains an instruction-override phrase in a non-English language (possible injection).",
     patterns: INJECTION_I18N
+  },
+  {
+    // #40 (LLM01) — the non-English override arriving through INGESTED content. inj-multilingual above is
+    // prompt-stage; the engine hands file/index the prompt detectors, so a repo file or auto-loaded rules
+    // file already reaches it — but "output" (the PostToolUse ingest surface: fetched pages, tool results)
+    // and "tool" do not inherit prompt detectors, and there an English override fires while a Spanish or
+    // Chinese one fired nothing. Same threat and mode as inj-untrusted-directive, the English detector
+    // for this stage: the phrase sits in content no user typed, so it is indirect / second-order
+    // injection (#40), not a user's own override attempt (#3). Output only — adding file/index would
+    // re-raise, as a second alert, the exact match inj-multilingual already reports there. OVERRIDE half
+    // only: see data/injection-i18n.js for why the reveal-system-prompt half stays prompt-stage.
+    detectorId: "inj-multilingual-untrusted",
+    threatId: 40,
+    stages: ["output"],
+    mode: "warn",
+    hint: "Ingested content carries a non-English instruction-override phrase (indirect / second-order prompt injection).",
+    patterns: INJECTION_I18N_OVERRIDE
+  },
+  {
+    // #60 (LLM03/LLM01) — the same phrases inside MCP tool METADATA. On the "tool" stage the English
+    // override is caught by mcp-tool-poisoning's ignore/disregard pattern and reported as tool poisoning,
+    // so the non-English form maps to the same threat rather than to #40: what is poisoned is the tool
+    // description, and that is the finding an admin acts on (remove the server), not the page. A
+    // separate entry rather than a "tool" stage on the #40 sibling so each stage reports the threat its
+    // English counterpart reports. Not "inj*"-prefixed on purpose, like mcp-tool-poisoning: tool
+    // metadata is not re-scanned over decoded variants.
+    detectorId: "mcp-tool-poisoning-i18n",
+    threatId: 60,
+    stages: ["tool"],
+    mode: "warn",
+    hint: "Tool description / schema carries a non-English instruction-override phrase (MCP tool poisoning).",
+    patterns: INJECTION_I18N_OVERRIDE
   },
   {
     // #5 — second-order / indirect injection: hidden instructions embedded in a document or pasted
@@ -442,7 +510,7 @@ export const DETECTORS = [
       /```/,
       /\b(powershell|invoke-webrequest|set-executionpolicy|cmd\.exe|reg add|schtasks)\b/i,
       /curl\s+[^\n]*\|\s*(ba)?sh/i,
-      /\brm\s+-rf\b/,
+      ...RECURSIVE_FORCE_DELETE,
       /\b(macro|vba|autoopen|enablemacros)\b/i
     ]
   },
@@ -469,7 +537,7 @@ export const DETECTORS = [
     mode: "warn",
     hint: "Contains a destructive, hard-to-reverse command — review before it runs.",
     patterns: [
-      /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r/i,
+      ...RECURSIVE_FORCE_DELETE,
       /\bsudo\s+rm\b/i,
       /\bgit\s+push\s+(--force\b|-f\b)/i,
       /\bgit\s+reset\s+--hard\b/i,

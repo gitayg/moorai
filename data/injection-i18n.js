@@ -3,7 +3,14 @@
 // on-device review inspects non-English prompts too (parity with inline gateways that scan in many
 // languages). English + Hebrew are already covered by the base `inj-ignore` detector; this adds the
 // rest. Patterns match the distinctive verb+object of each phrase, tolerant of inflection.
-export const INJECTION_I18N = [
+//
+// Split in two because the halves have different reach. The instruction-OVERRIDE half is also run on the
+// inbound stages (tool metadata, ingested tool output) by sibling detectors in data/detectors.js — an
+// override phrase planted in content the agent reads is indirect injection in any language. The
+// REVEAL-system-prompt half stays prompt-only, matching English: sysprompt-extract is prompt-stage and
+// "reveal your system prompt" on a fetched page or a tool description fires nothing, so widening only
+// the non-English form would make the two languages disagree about the same sentence.
+export const INJECTION_I18N_OVERRIDE = [
   // "ignore the previous instructions" — instruction-override, per language
   /ignora\s+(las\s+)?(instrucciones|indicaciones)\s+(anteriores|previas)/i,        // Spanish
   /ignore[rz]?\s+(les\s+)?(instructions|consignes)\s+(précédentes|antérieures)/i,   // French
@@ -31,7 +38,9 @@ export const INJECTION_I18N = [
   /ignor(er|ér)\s+(tidligere|forrige|ovenstående)\s+(instruksjoner|instruktioner)/i, // Norwegian / Danish
   /(jätä\s+huomiotta|ohita)\s+(aiemmat|edelliset|yllä\s+olevat)\s+ohjeet/i,          // Finnish
   /hagyd\s+figyelmen\s+kívül\s+(az\s+)?(előző|fenti)\s+utasításokat/i,               // Hungarian
+];
 
+export const INJECTION_I18N_REVEAL = [
   // "reveal / show the system prompt" — a few high-value languages (English handled by base rule)
   /(muestra|revela)\s+(tu\s+)?(prompt\s+del\s+sistema|instrucciones\s+del\s+sistema)/i, // Spanish
   /(montre|révèle)\s+(ton\s+)?(prompt|invite)\s+système/i,                          // French
@@ -39,3 +48,5 @@ export const INJECTION_I18N = [
   /(显示|展示|透露)(你的)?(系统提示|系统指令|系统提示词)/,                                  // Chinese
   /システム\s*プロンプト(を)?\s*(表示|教えて|見せて)/,                                     // Japanese
 ];
+
+export const INJECTION_I18N = [...INJECTION_I18N_OVERRIDE, ...INJECTION_I18N_REVEAL];

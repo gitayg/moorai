@@ -33,7 +33,7 @@ by `decideText` / `threatActionFor` in [`cli/hook-core.mjs`](../cli/hook-core.mj
 enforcement are two layers on purpose: the same finding is advisory on one surface and blocking on
 another, and only the caller knows which surface it is.
 
-Rules live in [`data/detectors.js`](../data/detectors.js) — **84 detectors** binding to **72 threats**
+Rules live in [`data/detectors.js`](../data/detectors.js) — **86 detectors** binding to **72 threats**
 in [`data/threats.json`](../data/threats.json) (counts from [BENCHMARK.md](BENCHMARK.md), regenerated
 with `npm run benchmark`; both were re-counted out of the shipped modules while writing this file and
 agree). Detectors are a JavaScript module, not data, because a detector's real decision is a `refine()`
@@ -60,15 +60,30 @@ Counts below were produced by running `_wantStages` / `_inStage` over the shippe
 
 | Stage | Detectors it runs | Fed in production by |
 |---|--:|---|
-| `prompt` | 61 | `cli/moorai-hook.mjs`: the `Bash` **command** itself, the `Task` delegated prompt, the `WebFetch` url + prompt; `mcpGateway`'s argument scan; `cli/moorai-guard.mjs`; the Tauri app (`src/app.js`) |
-| `file` | 64 (61 prompt + 3) | `cli/moorai-hook.mjs` on `Read`, and on every path `extractReadPaths` finds in a `Bash` command; `mcp-proxy/moorai-mcp-guard.mjs` on every `tools/call` **result** |
-| `output` | 47 | `cli/moorai-hook.mjs` on the write family (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`) and on `PostToolUse` ingested content; `cli/moorai-guard.mjs`; `src/app.js` |
-| `index` | 64 (61 prompt + 3) | the detached `moorai-hook.mjs indexscan` worker, over the agent's auto-loaded context files |
-| `tool` | 2 | `mcp-proxy/moorai-mcp-guard.mjs`, on a copy of every `tools/list` response |
+| `prompt` | 64 | `cli/moorai-hook.mjs`: the `Bash` **command** itself, the `Task` delegated prompt, the `WebFetch` url + prompt; `mcpGateway`'s argument scan; `cli/moorai-guard.mjs`; the Tauri app (`src/app.js`) |
+| `file` | 69 (64 prompt + 5) | `cli/moorai-hook.mjs` on `Read`, and on every path `extractReadPaths` finds in a `Bash` command; `mcp-proxy/moorai-mcp-guard.mjs` on every `tools/call` **result** |
+| `output` | 54 | `cli/moorai-hook.mjs` on the write family (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`) and on `PostToolUse` ingested content; `cli/moorai-guard.mjs`; `src/app.js` |
+| `index` | 69 (64 prompt + 5) | the detached `moorai-hook.mjs indexscan` worker, over the agent's auto-loaded context files |
+| `tool` | 4 | `mcp-proxy/moorai-mcp-guard.mjs`, on a copy of every `tools/list` response |
 | `session` | 1 | **no enforcement caller** — see below |
 
 `prompt`, `file` and `output` are the load-bearing stages; `index` and `tool` exist for two narrow
 surfaces that no other stage can see.
+
+**Non-English overrides on the inbound stages.** Because `file` and `index` inherit every `prompt`
+detector, `inj-multilingual` (#3, ~26 languages) already sees a repository file or an auto-loaded rules
+file. `output` and `tool` do not inherit, so each has its own sibling over the same
+`INJECTION_I18N_OVERRIDE` patterns, reporting the threat its English counterpart on that stage reports:
+`inj-multilingual-untrusted` (#40, `output` — content the agent reads back after a tool runs) and
+`mcp-tool-poisoning-i18n` (#60, `tool` — an MCP tool description). The five "reveal the system prompt"
+patterns (`INJECTION_I18N_REVEAL`) stay prompt-only, matching `sysprompt-extract`, so the two languages
+agree on the same sentence.
+
+**Which file a path names.** A relative path in a `Read`, in a `Bash` command (`cat notes.md`), and the
+auto-loaded context files the `index` worker screens all resolve against the agent's working directory
+from the hook payload's `cwd` (`agentPath` in `cli/moorai-hook.mjs`). Without a `cwd` they fall back to
+the hook process's own directory. Absolute paths are unchanged. The path reported in an alert is still
+the one the agent wrote.
 
 ### Reachability is a property worth stating, not assuming
 
@@ -180,6 +195,18 @@ solely so the semantic layer has a detector to attach a finding to.
 long string would mean scan and redact disagreed about what a secret is.
 
 ---
+
+### One recursive-delete list, two detectors
+
+`destructive-command` (#43, `prompt`) and `out-code-exec` (#32, `output`) hold the same pattern objects,
+`RECURSIVE_FORCE_DELETE` in `data/detectors.js`, so the command a user or agent runs and the command an
+agent writes into a file are judged by one definition and cannot drift apart; a test checks the two
+detectors share the objects by identity. It covers POSIX `rm` with a recursive and a force flag in any
+split or order (`-rf`, `-r -f`, `-R -f`, `--recursive --force`), PowerShell `Remove-Item` and its
+aliases with `-Recurse` and `-Force` (`-fo` is the shortest unambiguous `-Force`; `-f` could be
+`-Filter`), cmd `rd` / `rmdir` / `del` / `erase` with `/s` and `/q`, and `find … -delete` or
+`find … -exec rm`. Only the delete family is shared: force-push, `DROP TABLE` and `mkfs` stay #43's alone,
+because in #32's sense of "runnable code" they would fire on every SQL or git tutorial a model writes.
 
 ## 4. The three additive passes
 
@@ -498,7 +525,7 @@ Independently, `mcp-proxy/tool-scan.mjs` records `decideText` at stage `file` me
 on 64 KB of composed text, which is why `maxResultBytes` is set where it is. These are single-run figures
 on one machine; treat them as an order of magnitude, not a benchmark.
 
-Coverage numbers — 84 detectors, 72 threats, 102/102 adversarial corpus, 9/10 OWASP LLM Top 10 items with
+Coverage numbers — 86 detectors, 72 threats, 102/102 adversarial corpus, 9/10 OWASP LLM Top 10 items with
 at least one on-device detector — are in [BENCHMARK.md](BENCHMARK.md) and are regenerated by
 `npm run benchmark`. Held-out adversarial recall and the benign false-positive rate are in the README,
 including the locked tune/test split discipline; they are not restated here, so there is one place to
@@ -532,6 +559,16 @@ Recorded because a confidently wrong document is what created the task to rewrit
 ## 13. Known gaps and unverified claims
 
 Stated rather than papered over.
+
+- **`~` paths from `extractReadPaths` are not expanded**, so `cat ~/.aws/credentials` gets no content read;
+  only the command-text rule #55 sees it.
+- **Recursive-delete forms still outside `RECURSIVE_FORCE_DELETE`** (#43 and #32 share the list):
+  `xargs rm`, flags after `--`, PowerShell splatting or variable parameters, GNU `--interactive=never` as
+  a force equivalent. `-Recurse:$false` still fires. No benign or attack corpus exercises these forms, so
+  their recall and false-positive rate rest on the synthetic tests in `test/detector-coverage-tier1.test.mjs`.
+- **Payload `cwd` against real hosts is unverified.** The fix follows the envelope field; whether Claude
+  Code ever runs the hook outside the agent's working directory, and whether the payload `cwd` follows a
+  `cd` inside a Bash session, has not been observed.
 
 - **`scanSession` / the `session` stage has no enforcement caller** (§2). Multi-turn injection scores in
   the corpora and enforces nothing in the product.
@@ -593,9 +630,17 @@ that too. The detector is therefore not on the `prompt` stage at all: the same s
 reconnaissance only when it arrives inside a fetched page, a repository file or a tool result, because
 then nobody in the conversation asked it.
 
-**AML.T0129's carrier is the gap, not the payload.** `readFileCapped()` in `cli/moorai-hook.mjs` returns
-`""` for any file containing a NUL byte, so every JPEG, PNG, PDF and MP3 the agent read reached no
-detector at all. `decideFileMetadata` (`cli/hook-core.mjs`) recovers the text fields — EXIF/XMP, PNG
+**AML.T0129's carrier is the gap, not the payload.** `readFileCapped()` in `cli/moorai-hook.mjs` hands the
+first 256 KB to `fileScanText()` (`cli/hook-core.mjs`), which keeps a binary away from the text detectors
+— decoded as UTF-8, a real JPEG, TIFF, PDF, font or Mach-O file fires #1, #15, #45, #50 and #53 on noise.
+A file is binary when it carries a NUL and either starts with a signature the metadata path parses
+(JPEG, PNG, TIFF, `%PDF-`, `ID3` — an uncompressed PDF is 99.5% printable, so no byte statistic separates
+it from text) or has more than 10% invalid UTF-8 and C0 control bytes, NULs excluded from the count so
+padding a file with them cannot make it "binary". Measured: this repository's text files top out at
+0.01%, real binaries start near 24%. A text file carrying stray NULs is content-scanned twice, NULs
+removed and NULs as spaces, because `Ign\0ore` only matches the first way and `all\0previous` only the
+second; the engine reports one finding per threat, so nothing is counted twice. For a binary,
+`decideFileMetadata` (`cli/hook-core.mjs`) recovers the text fields — EXIF/XMP, PNG
 `tEXt`/`iTXt`, ID3v2 frames, a PDF `Info` dictionary — with `data/file-metadata.js` and
 `data/exif.js`, scans them at the `file` stage with the existing detectors, and adds #72 to name the
 channel. Nothing there decodes pixels, audio samples or compressed streams.

@@ -6,8 +6,8 @@
 // the format proves nothing about the format.
 //
 // The end-to-end case runs the REAL hook subprocess against a JPEG on disk, because the gap this closes
-// is in the hook: readFileCapped() returns "" for any file holding a NUL byte, so before the metadata
-// branch existed a binary file the agent read reached no detector at all.
+// is in the hook: readFileCapped() keeps a binary away from the text detectors (fileScanText), so without
+// the metadata branch a binary file the agent read would reach no detector at all.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";

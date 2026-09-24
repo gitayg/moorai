@@ -204,9 +204,70 @@ export function decideCredFileRead(engine, policy, path) {
   return decideText(engine, policy, `cat ${path}`, "prompt", { only: [55] });
 }
 
-// AML.T0129 / #72 for a Read tool call. readFileCapped() returns "" for any file holding a NUL byte, so
-// a JPEG, PNG, PDF or MP3 the agent reads reaches no detector at all; its metadata is the part that can
-// carry a sentence, and it is recovered here and scanned as ordinary file content. A finding on that
+// What the text detectors get to see of a file's first 256 KB (the hook's readFileCapped calls this).
+//
+// It used to be `if (slice.includes(0)) return ""` — git's "a NUL means binary" rule — and that made a
+// single NUL byte an off-switch for content scanning: a directive or a live key in a text file with one
+// stray NUL reached no detector at all. Not hypothetical: three tracked files in this repo carry literal
+// NULs. The rule is now two-step, and a file with NO NUL is decoded exactly as before:
+//
+//   1. A known binary SIGNATURE -> binary. Only the formats data/file-metadata.js parses (JPEG, PNG,
+//      TIFF, PDF, ID3), i.e. the ones decideFileMetadata below owns. PDF is the one that forces this:
+//      an uncompressed PDF is ~99.5% printable (measured on a macOS system PDF: 0.44% odd characters),
+//      so no byte statistic separates it from text, yet its raw decode trips #1 and #15 on digit runs.
+//   2. Otherwise BYTE STATISTICS on the NUL-stripped content: binary when more than 10% of the decoded
+//      characters are invalid UTF-8 or C0 controls a text file does not use. Measured on this repo's
+//      tracked text files: at most 0.01%. On sampled real binaries without a listed signature (SQLite,
+//      Mach-O, gzip, zip, TrueType, AIFF, M4A, HEIC): about 24% and up, most 50%+. NULs are
+//      EXCLUDED from the statistic on purpose — counting them would let an attacker pad a poisoned file
+//      with invisible NULs until it "became" binary, which is the same off-switch with more steps.
+//
+// What stays true either way: a real binary is never handed to the text detectors as UTF-8 garbage
+// (measured: JPEG/TIFF/PDF/font/Mach-O raw decodes fire #50, #53, #1, #15, #45) and still gets its
+// metadata scan. RESIDUAL, stated plainly: an attacker who controls the whole file can still buy the
+// binary verdict — prefix a listed signature, or make >10% of it non-NUL garbage, and add a NUL. That
+// costs a visibly broken file rather than one invisible byte, and it is the price of (b) above.
+//
+// A text file's NULs are handled BOTH ways, because the engine needs both: removed ("Ign\0ore" only
+// matches #40 once rejoined) and as a separator ("all\0previous" only matches with a gap). The two
+// renderings are concatenated; the engine reports one finding per threat, so nothing double-counts.
+const METADATA_MAGIC = [
+  [0xff, 0xd8, 0xff],                         // JPEG
+  [0x89, 0x50, 0x4e, 0x47],                   // PNG
+  [0x49, 0x49, 0x2a, 0x00], [0x4d, 0x4d, 0x00, 0x2a], // TIFF, little- and big-endian
+  [0x25, 0x50, 0x44, 0x46, 0x2d],             // %PDF-
+  [0x49, 0x44, 0x33]                          // ID3 (MP3)
+];
+const BINARY_ODD_RATIO = 0.10;
+function isTextControl(c) { return c === 9 || c === 10 || c === 11 || c === 12 || c === 13 || c === 8 || c === 27; }
+export function fileScanText(head) {
+  if (!head || !head.length) return "";
+  if (!head.includes(0)) return head.toString("utf8");
+  if (METADATA_MAGIC.some((m) => m.every((b, i) => head[i] === b))) return "";
+  // Byte level, not string level: a NUL dropped between the two bytes of a UTF-8 sequence must rejoin
+  // the character rather than leave two replacement characters behind.
+  const joinedBytes = Buffer.allocUnsafe(head.length), spacedBytes = Buffer.allocUnsafe(head.length);
+  let j = 0, s = 0;
+  for (let i = 0; i < head.length; i++) {
+    const b = head[i];
+    if (b !== 0) { joinedBytes[j++] = b; spacedBytes[s++] = b; }
+    else if (s === 0 || spacedBytes[s - 1] !== 0x20) spacedBytes[s++] = 0x20;
+  }
+  const joined = joinedBytes.subarray(0, j).toString("utf8");
+  if (!joined) return "";
+  let odd = 0, n = 0;
+  for (const ch of joined) {
+    n++;
+    const c = ch.codePointAt(0);
+    if (c === 0xfffd || c === 0x7f || (c < 0x20 && !isTextControl(c))) odd++;
+  }
+  if (odd / n > BINARY_ODD_RATIO) return "";
+  return joined + "\n" + spacedBytes.subarray(0, s).toString("utf8");
+}
+
+// AML.T0129 / #72 for a Read tool call. readFileCapped() returns "" for a binary file (fileScanText
+// above), so a JPEG, PNG, PDF or MP3 the agent reads reaches no text detector; its metadata is the
+// part that can carry a sentence, and it is recovered here and scanned as ordinary file content. A finding on that
 // text means a directive was planted in a channel a person reviewing the file does not see, so #72 is
 // added alongside whatever fired — the CHANNEL is the technique, the payload grammar is not new.
 const METADATA_HEAD_BYTES = 262_144;

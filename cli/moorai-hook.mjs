@@ -13,11 +13,11 @@
 
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, statSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { join, dirname, basename } from "node:path";
+import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideCredFileRead, decideFileMetadata, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "./hook-core.mjs";
+import { buildEngine, decideText, decideCredFileRead, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "./hook-core.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, recordDestination, readDestinations, requestKill } from "./signals.mjs";
@@ -698,7 +698,8 @@ const INDEX_SCAN_INTERVAL_MS = 900000; // 15 min — auto-loaded context changes
 const INDEX_SEEN_FILE = "index-scan-seen.json";
 const INDEX_SEEN_CAP = 200;
 const INDEX_MAX_FILES = 12;
-// [base, relative path]. "project" = the agent's cwd (the hook and its worker both run there).
+// [base, relative path]. "project" = the agent's cwd: the payload's `cwd` when the host sent one (handed
+// to the worker on its argv), else the directory the hook and its worker were started in.
 const INDEX_SURFACE = [
   ["project", "CLAUDE.md"],
   ["project", "CLAUDE.local.md"],
@@ -714,25 +715,28 @@ function indexScanEnabled(policy) {
   const v = policy && policy.indexScan;
   return !(v === false || v === "off"); // default ON
 }
-function indexSurfacePaths() {
+function indexSurfacePaths(projectDir) {
   const home = os.homedir();
+  const project = agentPath(projectDir, process.cwd()) || process.cwd();
   const out = [];
   for (const [base, rel] of INDEX_SURFACE) {
-    const p = join(base === "home" ? home : process.cwd(), rel);
+    const p = join(base === "home" ? home : project, rel);
     // The skill-surface table decides what counts as auto-loaded; a path it does not recognise is not
     // ingested context and has no business being scanned here.
     if (isSkillSurface(p)) out.push(p);
   }
   return [...new Set(out)].slice(0, INDEX_MAX_FILES);
 }
-function maybeIndexScan() {
+function maybeIndexScan(agentCwd) {
   try {
     if (!indexScanEnabled(POLICY)) return;
     mkdirSync(STATE_DIR, { recursive: true });
     const stamp = join(STATE_DIR, INDEX_SCAN_STAMP);
     try { if (Date.now() - statSync(stamp).mtimeMs < INDEX_SCAN_INTERVAL_MS) return; } catch { /* never scanned */ }
     writeFileSync(stamp, "", { mode: 0o600 });
-    spawn(process.execPath, [SELF, "indexscan"], { detached: true, stdio: "ignore" }).unref();
+    const args = [SELF, "indexscan"];
+    if (typeof agentCwd === "string" && agentCwd) args.push(agentCwd);
+    spawn(process.execPath, args, { detached: true, stdio: "ignore" }).unref();
   } catch { /* the ingest scan is advisory; fail-open */ }
 }
 function readIndexSeen() { try { const o = JSON.parse(readFileSync(join(STATE_DIR, INDEX_SEEN_FILE), "utf8")); return o && typeof o === "object" ? o : {}; } catch { return {}; } }
@@ -749,7 +753,7 @@ function writeIndexSeen(seen) {
 // The detached worker: `moorai-hook.mjs indexscan`. Reads the auto-loaded context surface itself
 // (nothing is handed over, so like the agent scanner there is no payload file and no scanned content at
 // rest), runs it through the engine's index choke-point, and posts one content-free alert per finding.
-async function runIndexScanWorker() {
+async function runIndexScanWorker(projectDir) {
   try {
     // Re-checked in the worker, not just in the parent: a worker must never be able to WIDEN the
     // parent's gate, and this one can be invoked directly.
@@ -758,7 +762,7 @@ async function runIndexScanWorker() {
     const engine = buildEngine(policy);
     const seen = readIndexSeen();
     let changed = false;
-    for (const p of indexSurfacePaths()) {
+    for (const p of indexSurfacePaths(projectDir)) {
       const text = readFileCapped(p);
       if (!text || !text.trim()) continue;
       const fp = fileFingerprint(text);
@@ -976,10 +980,18 @@ function recordDestinations(tool, kind, names, decision) {
 function readFileCapped(fp) {
   try {
     if (!fp) return "";
-    const slice = readFileSync(fp).subarray(0, 262144);
-    if (slice.includes(0)) return ""; // skip binary
-    return slice.toString("utf8");
+    return fileScanText(readFileSync(fp).subarray(0, 262144));
   } catch { return ""; }
+}
+
+// A path a tool call names, as the AGENT means it. The host's envelope carries the agent's working
+// directory as `cwd` (Claude Code's shared hook input; cli/agent-hooks/* forward the same field), and a
+// relative path is relative to THAT — not to wherever this hook process happened to be started. Only
+// the file READS use it: the path the policy checks and reports see is left exactly as the agent wrote
+// it. No cwd, an absolute path, or a "~/" path (which the shell, not the cwd, expands) -> unchanged.
+function agentPath(p, cwd) {
+  if (typeof p !== "string" || !p || isAbsolute(p) || p.startsWith("~") || typeof cwd !== "string" || !cwd) return p;
+  return resolve(cwd, p);
 }
 
 // #3 — kill enforcement for the interactive session. A "kill" verdict still denies THIS call (below),
@@ -1241,7 +1253,7 @@ async function main() {
   if (cmd === "agentscan") return runAgentScanWorker(process.argv[3]);
   // The detached auto-loaded-context (index stage) scanner. Same contract as the two above: no stdin,
   // no decision — it only posts content-free findings for context the agent ingests without a tool call.
-  if (cmd === "indexscan") return runIndexScanWorker();
+  if (cmd === "indexscan") return runIndexScanWorker(process.argv[3]);
 
   let input;
   try { input = JSON.parse((await readStdin()) || "{}"); } catch { process.exit(0); }
@@ -1340,7 +1352,7 @@ async function main() {
   // The "index" stage's production caller: screen the context this agent auto-loaded (CLAUDE.md,
   // .mcp.json, settings, rules files) — content that enters the model with no tool call, so no other
   // branch below ever sees it. Detached, interval-bounded, report-only; see maybeIndexScan.
-  maybeIndexScan();
+  maybeIndexScan(input.cwd);
 
   // ROUTE BY EVENT FIRST. A PostToolUse WebFetch carries tool_name "WebFetch" just as the PreToolUse one
   // does, so without this the inbound payload would fall into the OUTBOUND WebFetch branch below and be
@@ -1349,7 +1361,7 @@ async function main() {
   if (input.hook_event_name === "PostToolUse") return handlePostToolUse(input, tool, policy, engine);
 
   if (tool === "Read") {
-    const text = readFileCapped(ti.file_path);
+    const text = readFileCapped(agentPath(ti.file_path, input.cwd));
     const d = decideText(engine, policy, text, "file", { ctx: { template: isEnvTemplate(ti.file_path) } });
     // #55 on the PATH — what `cat <path>` gets in the Bash branch below. Merged, never downgrading.
     const pd = decideCredFileRead(engine, policy, ti.file_path);
@@ -1359,7 +1371,7 @@ async function main() {
     // #72 / AML.T0129 on the FILE'S METADATA. `text` above is empty for every binary file, so this is
     // the only branch that sees a directive planted in EXIF, XMP, an ID3 comment or a PDF Info entry.
     // Merged the same way, never downgrading.
-    const md = decideFileMetadata(engine, policy, ti.file_path);
+    const md = decideFileMetadata(engine, policy, agentPath(ti.file_path, input.cwd));
     d.findings.push(...md.findings);
     if (md.kill) { d.kill = true; d.killIds.push(...md.killIds); }
     if (RANK[md.decision] > RANK[d.decision]) { d.decision = md.decision; d.reasons = md.reasons; d.alternatives = md.alternatives; }
@@ -1379,14 +1391,14 @@ async function main() {
   if (tool === "Bash") {
     let dec = "allow", reasons = [], alts = [], finds = [], btext = "", killIds = [];
     for (const p of extractReadPaths(ti.command)) {
-      const t = readFileCapped(p); btext += t + "\n";
+      const t = readFileCapped(agentPath(p, input.cwd)); btext += t + "\n";
       const d = decideText(engine, policy, t, "file", { ctx: { template: isEnvTemplate(p) } });
       finds.push(...d.findings);
       if (d.kill) killIds.push(...d.killIds);
       if (RANK[d.decision] > RANK[dec]) { dec = d.decision; reasons = d.reasons; alts = d.alternatives; }
       // Same #72 / AML.T0129 pass the Read branch makes, for the same reason: `t` is empty whenever the
       // path is binary, and a command that pipes an image or a PDF somewhere names it here.
-      const mdB = decideFileMetadata(engine, policy, p);
+      const mdB = decideFileMetadata(engine, policy, agentPath(p, input.cwd));
       finds.push(...mdB.findings);
       if (mdB.kill) killIds.push(...mdB.killIds);
       if (RANK[mdB.decision] > RANK[dec]) { dec = mdB.decision; reasons = mdB.reasons; alts = mdB.alternatives; }

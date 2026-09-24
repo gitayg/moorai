@@ -14,8 +14,10 @@
 //
 // THREAT MODEL / why no auth beyond origin-lock + localhost bind:
 //   - The socket binds 127.0.0.1 ONLY, so nothing off-box can connect.
-//   - CORS is locked to the console origin (https://moorai.glick.run) + localhost dev origins, so a
-//     random website the developer visits cannot script this endpoint (the browser blocks the response).
+//   - CORS is locked to the console origins (https://app.moorai.dev, where the console serves from, and
+//     https://moorai.glick.run, the older name that redirects to it), an optional MOORAI_CONSOLE_ORIGIN
+//     override, and http(s) localhost / 127.0.0.1 dev origins on any port, so a random website the
+//     developer visits cannot script this endpoint (the browser blocks the response).
 //   - Private Network Access preflight is answered so the console (public HTTPS) may call this private
 //     endpoint at all in modern Chrome.
 //   - The endpoint carries NO secret in/out: the request is plain English, the response is a policy
