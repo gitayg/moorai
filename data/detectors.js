@@ -327,12 +327,17 @@ const CLIP_OUT = String.raw`(?:${CLIP_URL}|${CLIP_NET})`;
 // `ref` in a sink segment: after a URL / client in the same segment, or before one, or piped into one.
 // Anchored on the sink literal or on the reference, never on every character of the window.
 const clipSinkWith = (ref) => String.raw`(?:${CLIP_OUT}[^;&|\n]{0,200}?${ref}|${ref}(?:[^;&|\n]{0,120}?${CLIP_OUT}|[^;&\n]{0,120}?\|\s{0,4}(?:sudo\s{1,4})?${CLIP_NET}))`;
+// Cheap gate before the expensive part: a sink literal must start within 600 characters (the farthest
+// the sink statement can begin: 400 window + a reference ≤ 43 + 120 + a pipe and `sudo`), so a long run of
+// reads and references with no network client or URL anywhere near fails fast instead of trying every
+// reference against every window.
+const CLIP_SINK_AHEAD = String.raw`(?=[\s\S]{0,600}?${CLIP_OUT})`;
 const CLIP_PATH = String.raw`[\w.~\/\\:-]`;
 const CLIP_FILE_REF = String.raw`(?<!${CLIP_PATH}|(?:\s-o|--output(?:-document)?|-OutFile|>)(?:\s{0,4}|=)["']?)\k<cf>(?!${CLIP_PATH})`;
 const CLIP_STATEMENT_SINK = [
-  new RegExp(String.raw`(?<![\w$])(?<cv>[A-Za-z_]\w{0,39})=["']?(?:\$\(|\`)\s{0,4}${CLIP_ANY}[\s\S]{0,400}?${clipSinkWith(String.raw`\$\{?\k<cv>(?!\w)`)}`, "i"),
-  new RegExp(String.raw`\$(?<pv>[A-Za-z_]\w{0,39})\s{0,4}=\s{0,4}(?:\(\s{0,4})?${CLIP_ANY}[\s\S]{0,400}?${clipSinkWith(String.raw`\$\{?\k<pv>(?!\w)`)}`, "i"),
-  new RegExp(String.raw`${CLIP_ANY}(?:(?!\|\s{0,4}(?:tee|Out-File|Set-Content|Add-Content)\b)[^;&\n>]){0,200}?(?:(?<![0-9<>&])>{1,2}\s{0,4}|\|\s{0,4}(?:tee(?:\s{1,4}-a)?|Out-File|Set-Content|Add-Content)(?:\s{1,4}-(?:FilePath|Path|LiteralPath))?\s{1,4})["']?(?!\/dev\/)(?<cf>${CLIP_PATH}{1,120})(?!${CLIP_PATH})[\s\S]{0,400}?${clipSinkWith(CLIP_FILE_REF)}`, "i")
+  new RegExp(String.raw`(?<![\w$])(?<cv>[A-Za-z_]\w{0,39})=["']?(?:\$\(|\`)\s{0,4}${CLIP_ANY}${CLIP_SINK_AHEAD}[\s\S]{0,400}?${clipSinkWith(String.raw`\$\{?\k<cv>(?!\w)`)}`, "i"),
+  new RegExp(String.raw`\$(?<pv>[A-Za-z_]\w{0,39})\s{0,4}=\s{0,4}(?:\(\s{0,4})?${CLIP_ANY}${CLIP_SINK_AHEAD}[\s\S]{0,400}?${clipSinkWith(String.raw`\$\{?\k<pv>(?!\w)`)}`, "i"),
+  new RegExp(String.raw`${CLIP_ANY}(?:(?!\|\s{0,4}(?:tee|Out-File|Set-Content|Add-Content)\b)[^;&\n>]){0,200}?(?:(?<![0-9<>&])>{1,2}\s{0,4}|\|\s{0,4}(?:tee(?:\s{1,4}-a)?|Out-File|Set-Content|Add-Content)(?:\s{1,4}-(?:FilePath|Path|LiteralPath))?\s{1,4})["']?(?!\/dev\/)(?<cf>${CLIP_PATH}{1,120})(?!${CLIP_PATH})${CLIP_SINK_AHEAD}[\s\S]{0,400}?${clipSinkWith(CLIP_FILE_REF)}`, "i")
 ];
 export const CLIPBOARD_TO_SINK = [
   ...CLIPBOARD_READ.flatMap((r) => [

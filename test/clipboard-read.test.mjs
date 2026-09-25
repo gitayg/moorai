@@ -284,7 +284,10 @@ test("pattern cost: 60KB adversarial inputs scan in bounded time", () => {
     "pbpaste>k @k @k @k @k ".repeat(2700),
     "x=$(pbpaste) $x $x $x $x $x $x ".repeat(1800),
     "pbpaste | tee k k k k k ".repeat(2600),
-    "$b=Get-Clipboard $b $b $b $b ".repeat(2100)
+    "$b=Get-Clipboard $b $b $b $b ".repeat(2100),
+    // a sink literal in every window, but never in a segment that names the read
+    "x=$(pbpaste) $x $x; curl a; ".repeat(2000),
+    "pbpaste > k k k; curl a; ".repeat(2400)
   ];
   const detectors = DETECTORS.filter((d) => /^clipboard-/.test(d.detectorId));
   const e = new DetectionEngine(threats, detectors, []);
