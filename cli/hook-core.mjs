@@ -12,7 +12,7 @@ import { createPublicKey, verify as cryptoVerify, createHash } from "node:crypto
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import os from "node:os";
-import { DETECTORS } from "../data/detectors.js";
+import { DETECTORS, CLIPBOARD_READ, OUTBOUND_UPLOAD } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { extractEndpointHosts, endpointApproved, extractTransitOverrides, proxyApproved } from "../data/model-endpoints.js";
 import { statePath, latchPath, breadcrumbPath } from "./state-dirs.mjs";
@@ -188,6 +188,43 @@ export function decideText(engine, policy, text, stage, opts = {}) {
     else if (act === "justify") bump("ask");
   }
   return out;
+}
+
+// Clipboard read in one tool call → outbound upload in a LATER call of the same session. Two content-free
+// booleans per Bash command, recorded on the agent event (cli/moorai-hook.mjs logBehavior): `clip` — the
+// command reads the clipboard (CLIPBOARD_READ); `upload` — it sends a payload off the device
+// (OUTBOUND_UPLOAD) to something other than loopback. Only true keys are returned, so an ordinary
+// event carries neither field. The command text never leaves this function.
+const LOOPBACK_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\]|::1)$/i;
+const BARE_LOOPBACK = /(?<![\w.-])(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0)(?::\d{1,5})?(?![\w.-])/i;
+function loopbackOnly(segment) {
+  const hosts = [...segment.matchAll(/\b(?:https?|ftp):\/\/(?:[^\s\/@'"]{0,200}@)?(\[[0-9a-f:]{2,39}\]|[^\s\/:'"?#]{1,253})/gi)].map((m) => m[1]);
+  if (hosts.length) return hosts.every((h) => LOOPBACK_HOST.test(h));
+  return BARE_LOOPBACK.test(segment);
+}
+export function clipboardSignals(command) {
+  const cmd = String(command || "");
+  const out = {};
+  if (!cmd) return out;
+  if (CLIPBOARD_READ.some((r) => r.test(cmd))) out.clip = true;
+  for (const r of OUTBOUND_UPLOAD) {
+    const m = r.exec(cmd);
+    if (!m) continue;
+    const segment = cmd.slice(m.index).split(/[;&|\n]/)[0];
+    if (!loopbackOnly(segment)) { out.upload = true; break; }
+  }
+  return out;
+}
+// Present once a session has a `clip` event followed by a LATER `upload` event. An event carrying both
+// is clipboard-to-sink's single-command case and does not count against itself.
+export function assessClipboardEgress(events, session) {
+  let clip = false;
+  for (const e of Array.isArray(events) ? events : []) {
+    if (!e || e.session !== session) continue;
+    if (clip && e.upload) return { present: true };
+    if (e.clip) clip = true;
+  }
+  return { present: false };
 }
 
 // A committed env template (.env.example / .env.sample / .env.template) holds placeholders by design.

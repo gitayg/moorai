@@ -17,7 +17,7 @@ import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideCredFileRead, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "./hook-core.mjs";
+import { buildEngine, decideText, decideCredFileRead, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "./hook-core.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, recordDestination, readDestinations, requestKill } from "./signals.mjs";
@@ -476,18 +476,25 @@ function logBehavior(tool, identity, scannedText, d, stage, lineage = {}) {
     const legs = trifectaLegs(tool, stage, d.findings || [], flags); // #1 — content-free trifecta legs
     const server = serverOf(tool); // which MCP server (or "local") contributed this event's legs
     const priorEvents = readAgentEvents();
-    const beforeS = assessSession(priorEvents), beforeT = assessTrifecta(priorEvents), beforeX = assessCrossServerTrifecta(priorEvents);
+    const beforeS = assessSession(priorEvents), beforeT = assessTrifecta(priorEvents), beforeX = assessCrossServerTrifecta(priorEvents), beforeC = assessClipboardEgress(priorEvents, SESSION);
     // `agent`/`session` (this actor, one-way hashed) group events for the per-agent baseline + trace-gap
     // detection; `lineage` carries a content-free handoff edge (role/to/parent) on a Task delegation for
     // cross-agent-messaging detection. All additive metadata — the signature assessors ignore them.
     recordAgentEvent({ ts: Date.now(), sig: `${tool}|${contentHash(identity || tool)}`, ok: d.decision !== "deny", risk, flags, legs, server, agent: ACTOR, session: SESSION, ...SUBAGENT_LINEAGE, ...lineage });
-    const events = readAgentEvents(), afterS = assessSession(events), afterT = assessTrifecta(events), afterX = assessCrossServerTrifecta(events);
+    const events = readAgentEvents(), afterS = assessSession(events), afterT = assessTrifecta(events), afterX = assessCrossServerTrifecta(events), afterC = assessClipboardEgress(events, SESSION);
     if (afterS.level === "autonomous-signature" && beforeS.level !== "autonomous-signature") {
       post({ threatId: 0, category: "Autonomous-agent behavior", riskLevel: "Critical", stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "sig:" + afterS.tells.map((t) => t.id).join("."), signature: { level: afterS.level, score: afterS.score, tells: afterS.tells.map((t) => t.id), events: afterS.events }, ...IDENTITY });
     }
     // #1 — the lethal trifecta just closed in this session (all three legs now present).
     if (afterT.present && !beforeT.present) {
       post({ threatId: 59, category: "Lethal trifecta exposure", riskLevel: "High", stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "trifecta:read.ingest.callout", signature: { legs: afterT.legs }, ...IDENTITY });
+    }
+    // #1 — this session read the clipboard in an earlier call and now sends a payload out. Not a trifecta
+    // leg: `read` is already true for every Bash call, so a clipboard read would add nothing to it, and
+    // the trifecta also needs untrusted-content ingest. The event's `clip` / `upload` booleans come from
+    // clipboardSignals (Bash branch). Report-only like the trifecta post: it never changes the decision.
+    if (afterC.present && !beforeC.present) {
+      post({ threatId: 1, category: "Clipboard read then outbound upload", riskLevel: "High", stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "clip-egress:session", signature: { clip: true, upload: true }, ...IDENTITY });
     }
     // Cross-server confused-deputy — the trifecta just closed across ≥2 DISTINCT servers, so no single
     // server's tool profile looks lethal. Distinct content-free alert (reuses threat 59 with its own
@@ -1414,7 +1421,7 @@ async function main() {
     const epD = decideEndpoints(policy, ti.command);
     if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: "hook:Bash", ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); }
     report(finds, "file", "hook:Bash", dec === "deny", policy.captureTier, { toolName: "Bash", cmdShape: commandShape(ti.command) });
-    logBehavior("Bash", ti.command || "bash", btext, { decision: dec, findings: finds }, "file");
+    logBehavior("Bash", ti.command || "bash", btext, { decision: dec, findings: finds }, "file", clipboardSignals(ti.command));
     if (killIds.length) killSession("Bash", killIds, "file");
     if (checkSecretEgress(policy, ti.command, "Bash", "egress") && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); }
     if (reportEnvelope(policy, "Bash", { tool: "Bash", paths: extractReadPaths(ti.command) }, "file") && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; alts = saferAlternativesFor([64]); }

@@ -305,14 +305,55 @@ export const CLIPBOARD_READ = [
 //   back    — a URL / network client, then the read later in the same segment (`curl -d "$(pbpaste)"`,
 //             `Invoke-RestMethod -Uri https://… -Body (Get-Clipboard)`).
 // Both are anchored on a literal (the read, or the client/URL), so a scan never restarts at every
-// separator. Deliberately per-segment: `pbpaste > f && curl -F f=@f https://…` and a read on one line
-// with curl on the next are two statements and stay read-only (see DETECTION_ENGINE.md §13).
+// separator. These two are per segment; the statement-level forms below cover a read and a sink in
+// separate statements that share a variable or a file.
 const CLIP_NET = String.raw`(?<![\w.\/-])(?:curl|wget|nc|ncat|netcat|socat|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)(?![\w.\/-])`;
 const CLIP_URL = String.raw`\b(?:https?|ftp):\/\/`;
-export const CLIPBOARD_TO_SINK = CLIPBOARD_READ.flatMap((r) => [
-  new RegExp(String.raw`(?:${r.source})(?:[^;&|\n]{0,300}?(?:${CLIP_URL}|${CLIP_NET})|[^;&\n]{0,300}?\|\s{0,4}(?:sudo\s{1,4})?${CLIP_NET})`, "i"),
-  new RegExp(String.raw`(?:${CLIP_URL}|${CLIP_NET})[^;&|\n]{0,300}?(?:${r.source})`, "i")
-]);
+// Across STATEMENTS of one command string (; && || newline), the read and the sink are tied only when
+// the sink statement names what the read produced:
+//   variable — `x=$(pbpaste)` / x=`pbpaste` (sh) or `$x = Get-Clipboard` (PowerShell), then a later
+//              `$x` / `${x}` sitting in a segment with a URL or network client, or piped into one;
+//   file     — the read redirected (`>`, `>>`) or teed / Out-File'd into a path, then a later segment
+//              with a URL or network client that names that exact path (`@/tmp/k`, `< k.txt`,
+//              `--post-file=k`, `-InFile k`). A path that is a download TARGET (`-o f`, `-O f`,
+//              `--output f`, `-OutFile f`, `> f`) or part of a URL path (`/k.txt`) does not count.
+// So `x=$(pbpaste); echo "$x" | wc -c; curl -s https://api.github.com/zen` stays read-only: the one
+// segment naming $x has no sink, and the one with a sink never names $x. Every window is bounded
+// (400 characters from the read to the sink statement, 200 / 120 inside it, names ≤ 120; only the
+// first redirect after a read is taken), and the
+// names are single tokens — a lookahead after each capture stops it backtracking into a shorter prefix.
+const CLIP_ANY = `(?:${CLIPBOARD_READ.map((r) => r.source).join("|")})`;
+const CLIP_OUT = String.raw`(?:${CLIP_URL}|${CLIP_NET})`;
+// `ref` in a sink segment: after a URL / client in the same segment, or before one, or piped into one.
+// Anchored on the sink literal or on the reference, never on every character of the window.
+const clipSinkWith = (ref) => String.raw`(?:${CLIP_OUT}[^;&|\n]{0,200}?${ref}|${ref}(?:[^;&|\n]{0,120}?${CLIP_OUT}|[^;&\n]{0,120}?\|\s{0,4}(?:sudo\s{1,4})?${CLIP_NET}))`;
+const CLIP_PATH = String.raw`[\w.~\/\\:-]`;
+const CLIP_FILE_REF = String.raw`(?<!${CLIP_PATH}|(?:\s-o|--output(?:-document)?|-OutFile|>)(?:\s{0,4}|=)["']?)\k<cf>(?!${CLIP_PATH})`;
+const CLIP_STATEMENT_SINK = [
+  new RegExp(String.raw`(?<![\w$])(?<cv>[A-Za-z_]\w{0,39})=["']?(?:\$\(|\`)\s{0,4}${CLIP_ANY}[\s\S]{0,400}?${clipSinkWith(String.raw`\$\{?\k<cv>(?!\w)`)}`, "i"),
+  new RegExp(String.raw`\$(?<pv>[A-Za-z_]\w{0,39})\s{0,4}=\s{0,4}(?:\(\s{0,4})?${CLIP_ANY}[\s\S]{0,400}?${clipSinkWith(String.raw`\$\{?\k<pv>(?!\w)`)}`, "i"),
+  new RegExp(String.raw`${CLIP_ANY}(?:(?!\|\s{0,4}(?:tee|Out-File|Set-Content|Add-Content)\b)[^;&\n>]){0,200}?(?:(?<![0-9<>&])>{1,2}\s{0,4}|\|\s{0,4}(?:tee(?:\s{1,4}-a)?|Out-File|Set-Content|Add-Content)(?:\s{1,4}-(?:FilePath|Path|LiteralPath))?\s{1,4})["']?(?!\/dev\/)(?<cf>${CLIP_PATH}{1,120})(?!${CLIP_PATH})[\s\S]{0,400}?${clipSinkWith(CLIP_FILE_REF)}`, "i")
+];
+export const CLIPBOARD_TO_SINK = [
+  ...CLIPBOARD_READ.flatMap((r) => [
+    new RegExp(String.raw`(?:${r.source})(?:[^;&|\n]{0,300}?(?:${CLIP_URL}|${CLIP_NET})|[^;&\n]{0,300}?\|\s{0,4}(?:sudo\s{1,4})?${CLIP_NET})`, "i"),
+    new RegExp(String.raw`(?:${CLIP_URL}|${CLIP_NET})[^;&|\n]{0,300}?(?:${r.source})`, "i")
+  ]),
+  ...CLIP_STATEMENT_SINK
+];
+
+// An OUTBOUND UPLOAD — a command that sends a payload off the device, whatever the payload is. Not a
+// detector: the hook records it as a content-free boolean per Bash call (cli/hook-core.mjs
+// clipboardSignals) so a clipboard read in one call and an upload in a LATER call of the same session
+// can be tied (cli/moorai-hook.mjs logBehavior). A plain GET, a download (`-o`, `-O`, `-OutFile`) and
+// a port probe or listener (`nc -z`, `nc -l`) are not uploads. The curl flags are matched case-
+// sensitively on purpose: `-sf` is fail-silently, `-F` is a form upload.
+export const OUTBOUND_UPLOAD = [
+  /(?<![\w.\/-])curl(?![\w.\/-])[^;&|\n]{0,300}?\s(?:-[a-zA-Z]{0,5}[dFT]|--(?:data(?:-binary|-raw|-urlencode|-ascii)?|form(?:-string)?|upload-file|json)|(?:-X|--request)\s{0,4}["']?(?:POST|PUT|PATCH|post|put|patch))(?=[\s=@'"]|$)/,
+  /(?<![\w.\/-])wget(?![\w.\/-])[^;&|\n]{0,300}?\s--(?:post-data|post-file|body-data|body-file|method[= ]["']?(?:POST|PUT|PATCH|post|put|patch))(?![\w-])/,
+  /(?<![\w.\/-])(?:nc|ncat|netcat|socat)(?=\s)(?![^;&|\n]{0,120}?(?:\s-[a-zA-Z]{0,4}[lzh](?![\w-])|listen))/i,
+  /(?<![\w.\/-])(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm)(?![\w.\/-])[^;&|\n]{0,300}?\s-(?:Body|InFile|Method\s{1,4}["']?(?:Post|Put|Patch))(?![\w-])/i
+];
 
 export const DETECTORS = [
   {
@@ -467,7 +508,8 @@ export const DETECTORS = [
   },
   {
     // #1 (LLM02) — the clipboard read feeds an outbound sink in the SAME command: a pipe into
-    // curl/wget/nc (or the PowerShell web cmdlets), or a URL / network client in the same segment. A
+    // curl/wget/nc (or the PowerShell web cmdlets), a URL / network client in the same segment, or a
+    // later statement that sends the variable or file the read filled (`x=$(pbpaste); curl -d "$x" …`). A
     // distinct threat so it is its own finding next to clipboard-read's #39 rather than collapsing into
     // it. NOT #65: #65 is block-by-default and reserved for confirmed secret values, and clipboard →
     // pastebin is a real developer idiom. Notify with no org policy; an org raises it with threatPolicy.
@@ -475,7 +517,7 @@ export const DETECTORS = [
     threatId: 1,
     stage: "prompt",
     mode: "warn",
-    hint: "Clipboard contents piped or passed to an outbound network sink in one command (possible exfiltration).",
+    hint: "Clipboard contents sent to an outbound network sink in one command — piped, inline, or via a variable or file (possible exfiltration).",
     patterns: CLIPBOARD_TO_SINK
   },
   {

