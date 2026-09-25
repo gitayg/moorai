@@ -7,7 +7,7 @@
 MoorAI is a **native desktop "Managed AI Host"** for office workers, paired with a **central
 server** for policy and visibility. The employee does their AI work *inside* MoorAI — a native
 app with an embedded, managed webview — so the host sees every prompt, response, paste, and
-upload natively (no browser extension, no DOM hacks). It detects the 67-threat matrix in real
+upload natively (no browser extension, no DOM hacks). It detects the 72-threat matrix in real
 time, **coaches the employee** with the matrix's guidance, and **reports redacted alerts** to a
 central server so the security team has visibility.
 
@@ -27,7 +27,7 @@ risk, and (c) **deterministic prevention** where policy calls for it. Because ad
 it still does not prevent Shadow AI by construction; it reduces risk for those who opt in and
 surfaces organization-wide risk signals.
 
-- **Rule-base:** [`data/threats.json`](../data/threats.json) — 67 threats, 14 categories, English.
+- **Rule-base:** [`data/threats.json`](../data/threats.json) — 72 threats, 17 categories, English.
   Each threat is a rule: `example` = trigger context, `response` = intervention,
   `riskScore = severity × likelihood`.
 - **Intervention model:** risk-tiered and policy-driven — `notify` (report) → `justify` (ask) →
@@ -181,15 +181,15 @@ the rest of the product: the hook runs as the user, so nothing under `~/` is a t
 ## Risk distribution (from the matrix)
 
 Counts are the shipped `riskLevel` labels in `data/threats.json` — the field the engine actually
-ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 67 threats.
+ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 72 threats.
 
 | Level | Count | Nominal score band |
 |---|---|---|
 | Critical | 17 | ≥ 20 |
-| High | 40 | 12–19 |
-| Medium | 9 | 6–11 |
+| High | 44 | 12–19 |
+| Medium | 11 | 6–11 |
 
-Note: 8 of the 67 threats carry a `riskLevel` label outside the nominal band their `riskScore`
+Note: 8 of the 72 threats carry a `riskLevel` label outside the nominal band their `riskScore`
 would place them in (e.g. #65 scores 15 but is labeled Critical; #43 scores 6 but is labeled High).
 The label wins at runtime; the bands in `meta.scoring` are documentation, not an invariant the data
 is validated against.

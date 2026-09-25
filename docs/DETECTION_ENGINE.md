@@ -635,7 +635,7 @@ Recorded because a confidently wrong document is what created the task to rewrit
 | Latency budget: Tier-1 < 20 ms, Tier-2 ≈ 800 ms | Measured Tier-1 is 0.26–2.47 ms per scan (§11). The semantic guard is 3500 ms by default, not 800. |
 | `detectors.json` and `threats.json` are versioned and the engine pins a schema version | `data/threats.json` has a `meta` block; the engine pins no schema version and validates none. |
 | "Every detector ships positive/negative test cases" | There is no per-detector fixture requirement. Evidence is corpus-level (`test/redteam/`) and the promotion bar in §5 is stated in terms of corpora, not fixtures. |
-| Detectability map over ~40 threats | The matrix is 67 threats. The map is stale and has been dropped rather than half-updated; [BENCHMARK.md](BENCHMARK.md) carries measured coverage instead. |
+| Detectability map over ~40 threats | The matrix is 72 threats. The map is stale and has been dropped rather than half-updated; [BENCHMARK.md](BENCHMARK.md) carries measured coverage instead. |
 
 ---
 
