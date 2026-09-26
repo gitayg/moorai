@@ -337,6 +337,32 @@ sets an out-of-band `kill` flag (the host terminates the session; Claude Code it
 allow/ask/deny). `policy.killOnCritical` promotes any Critical `block` to a kill without per-threat
 configuration.
 
+### Safer alternatives
+
+Every deny or ask names a safer way to do the task: the reason ends in `Safer: <line>`, taken from the
+highest-risk threat that drove the decision. The line is `saferAlternative` in `data/threats.json`, fixed
+per threat, so it never repeats the matched span.
+
+#55 (credential / secret-file access) is the one threat whose line depends on which credential the agent
+reached for. `data/cred-alternatives.js` holds one fixed hint per credential kind, and the kind that
+appears earliest in the scanned text (the command, or `cat <path>` for a Read) selects it:
+
+| Kind | Matches | Hint points at |
+|---|---|---|
+| AWS | `.aws/credentials`, `.aws/config` | `aws sts get-caller-identity`, `aws configure list` (keys masked) |
+| SSH | `.ssh/id_*`, `*.pem`, `*.key` | ssh-agent, `ssh-add -l` (fingerprints only) |
+| kubeconfig | `.kube/config` | `kubectl config current-context`, `kubectl config view --minify` (redacted unless `--raw`) |
+| npm | `.npmrc` | `npm whoami` |
+| git | `.git-credentials` | the credential helper, `git config --get credential.helper` |
+| Docker | `.docker/config.json` | a `credsStore` helper (Docker documents no whoami command) |
+| gcloud | `.config/gcloud`, `gcloud auth …` | `gcloud auth list` |
+| Azure | `.azure/` | `az account show` |
+| env | `.env` (not `.env.example` / `.sample` / `.template`) | `.env.example` for the variable names |
+
+Anything else under #55 (`.pgpass`, `.netrc`, `/etc/shadow`, the keychain) gets #55's own generic line:
+let the tool that owns the credential load it, and check the active identity with that tool's command.
+The scanned text only chooses among these fixed lines; none of it is copied into the message.
+
 ### `BUILTIN_DEFAULT_ACTIONS` — what a device with no org policy stops
 
 ```js

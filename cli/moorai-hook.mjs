@@ -1181,7 +1181,7 @@ function dropOutboundOnly(res, threatIds, policy, text) {
     else if (act === "justify") { if (RANKED.ask > RANKED[out.decision]) out.decision = "ask"; out.reasons.push(`#${f.threatId} ${f.category} (needs sign-off)`); driving.push(f.threatId); }
     if (act === "kill" && res.killIds.includes(f.threatId)) { out.kill = true; out.killIds.push(f.threatId); }
   }
-  out.alternatives = saferAlternativesFor(driving);
+  out.alternatives = saferAlternativesFor(driving, text);
   return out;
 }
 

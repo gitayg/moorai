@@ -15,6 +15,7 @@ import { contentHash } from "./content-hash.mjs";
 import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
 import { takeEscalationOutcomes } from "../data/model-escalation.mjs";
 import { atlasIds } from "../data/atlas.js";
+import { credAlternative } from "../data/cred-alternatives.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = loadConfig();
@@ -142,8 +143,9 @@ function printFindings(findings) {
     const fw = [f.threat.owasp, ...atlasIds(f.threat)].filter(Boolean).join(" · ");
     console.error(`  ${c}● ${f.mode === "coach" ? "COACH" : f.threat.riskLevel}${C.off}  #${f.threat.id} ${f.threat.threat}  ${C.dim}[${f.threat.category}]${f.threat.owasp ? ` ${fw}` : ""}${C.off}`);
     console.error(`     ${C.dim}matched:${C.off} ${f.match}`);
-    console.error(`     ${C.dim}why:${C.off} ${f.threat.response}${f.threat.saferAlternative ? "" : "\n"}`);
-    if (f.threat.saferAlternative) console.error(`     ${C.dim}safer:${C.off} ${f.threat.saferAlternative}\n`);
+    const safer = (f.threat.id === 55 && credAlternative(f.match)) || f.threat.saferAlternative;
+    console.error(`     ${C.dim}why:${C.off} ${f.threat.response}${safer ? "" : "\n"}`);
+    if (safer) console.error(`     ${C.dim}safer:${C.off} ${safer}\n`);
   }
 }
 

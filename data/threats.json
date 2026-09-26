@@ -1095,7 +1095,7 @@
       "threat": "Credential / secret-file access",
       "example": "The agent reads a credential or secret file — .env, ~/.aws/credentials, an SSH private key, .npmrc, .git-credentials, .netrc, .pgpass, kube/gcloud config, or /etc/shadow — or dumps the keychain.",
       "response": "This reads a credential or secret file. Warn before the agent opens .env, key material, or cloud credentials — these should never be sent to the model or copied elsewhere.",
-      "saferAlternative": "Read .env.example for the variable names and let the app load the values at runtime.",
+      "saferAlternative": "Let the tool that owns the credential load it at runtime, and check the active identity with that tool's own command instead of reading the secret file.",
       "severity": 5,
       "likelihood": 3,
       "riskScore": 15,

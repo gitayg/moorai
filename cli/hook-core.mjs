@@ -20,6 +20,7 @@ import { TIER_OF } from "../data/data-tiers.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { compilePacks } from "../data/detector-packs.js";
 import { fileMetadataText } from "../data/file-metadata.js";
+import { credAlternative } from "../data/cred-alternatives.js";
 import { redosReason, safeRegex, unboundedQuantifiers } from "../src/safe-regex.js";
 import { DetectionEngine } from "../src/engine.js";
 
@@ -123,24 +124,27 @@ export function calibrateRisk(base, { stage, category } = {}) {
 
 // Safer alternatives — the static, per-threat "do it this way instead" line from data/threats.json.
 // Content-free by construction: the text is fixed per threat id and never includes the matched span.
+// #55 is the one threat whose line depends on WHICH credential was reached for: `text` selects a fixed
+// per-kind hint from data/cred-alternatives.js (AWS, SSH key, kubeconfig, .env, ...), falling back to
+// #55's generic saferAlternative. The text only picks among fixed lines; none of it is copied out.
 // Ordered highest riskScore first (stable on ties), deduplicated, so [0] is the most important one.
-function orderedAlternatives(threats) {
+function orderedAlternatives(threats, text) {
   const seen = new Set();
   const out = [];
   for (const t of [...threats].sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0))) {
-    const a = t.saferAlternative;
+    const a = (t.id === 55 && credAlternative(text)) || t.saferAlternative;
     if (a && !seen.has(a)) { seen.add(a); out.push(a); }
   }
   return out;
 }
 
 let THREATS_BY_ID = null;
-export function saferAlternativesFor(ids) {
+export function saferAlternativesFor(ids, text) {
   if (!THREATS_BY_ID) {
     const { threats } = JSON.parse(readFileSync(join(ROOT, "data/threats.json"), "utf8"));
     THREATS_BY_ID = new Map(threats.map((t) => [t.id, t]));
   }
-  return orderedAlternatives(ids.map((id) => THREATS_BY_ID.get(id)).filter(Boolean));
+  return orderedAlternatives(ids.map((id) => THREATS_BY_ID.get(id)).filter(Boolean), text);
 }
 
 // The user-visible reason with the first (highest-risk) safer alternative appended. The caller keeps
@@ -176,7 +180,7 @@ export function decideText(engine, policy, text, stage, opts = {}) {
     else if (act === "justify") { bump("ask"); out.reasons.push(`#${f.threat.id} ${f.threat.category} (needs sign-off)`); driving.push(f.threat); }
     if (kill) { out.kill = true; out.killIds.push(f.threat.id); }
   }
-  out.alternatives = orderedAlternatives(driving);
+  out.alternatives = orderedAlternatives(driving, text);
   if (opts.only) return out;
   const cp = policy?.contentPolicy || {};
   const enabled = Object.keys(cp).filter((id) => cp[id] && cp[id] !== "disabled");
