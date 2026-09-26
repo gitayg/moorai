@@ -1,6 +1,6 @@
 [package]
 name = "moorai"
-version = "0.93.0"
+version = "0.94.0"
 license = "MIT"
 description = "MoorAI Managed AI Host"
 edition = "2021"
@@ -16,6 +16,11 @@ portable-pty = "0.8"
 tauri-plugin-updater = "2.10.1"
 reqwest = { version = "0.13", features = ["blocking", "json", "query"] }
 base64 = "0.22"
+# keys-at-rest + running local AI (ai_keys.rs / ai_runtime.rs / content_hash.rs). All three were already
+# in Cargo.lock as transitive deps of tauri/reqwest — no new crate enters the build.
+sha2 = "0.10"
+regex = "1"
+url = "2"
 
 # #23 — on-device OCR via Vision.framework. The recognition model ships with macOS, so these are
 # binding crates only: nothing is added to the bundle and no image ever leaves the device.

@@ -2132,7 +2132,7 @@ dependencies = [
 
 [[package]]
 name = "moorai"
-version = "0.93.0"
+version = "0.94.0"
 dependencies = [
  "base64 0.22.1",
  "leptess",
@@ -2140,12 +2140,15 @@ dependencies = [
  "objc2-foundation",
  "objc2-vision",
  "portable-pty",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-updater",
+ "url",
  "windows 0.59.0",
  "winreg 0.52.0",
  "wmi",

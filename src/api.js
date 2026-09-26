@@ -1,5 +1,6 @@
 // Client ↔ server bridge. Offline-tolerant: failures never block the user.
 import { startSignup, pollClaim } from "./signup.js";
+import { contentHash } from "./content-hash.js";
 const BASE = (localStorage.getItem("raiseme.server") || "https://app.moorai.dev").replace(/\/+$/, "");
 const CLIENT_ID = (() => {
   let id = localStorage.getItem("raiseme.clientId");
@@ -15,6 +16,10 @@ function hashStr(s) {
 
 // Who/what generated the alert. Native OS identity inside the Tauri host; best-effort in a browser.
 let identity = { user: "(browser)", device: navigator.platform || "web", platform: "web", tenant: localStorage.getItem("raiseme.tenant") || "unprovisioned", installToken: localStorage.getItem("raiseme.installToken") || "" };
+// Who, as the console may store it: the tenant-keyed hash of user@device — byte-identical to the CLI
+// senders' actorHash() — so one machine is one actor across the hook, the MCP proxy and this app.
+// `user`/`device` still travel so per-device policy resolves; the console pseudonymises them on ingest.
+function reported() { return { ...identity, actor: contentHash(`${identity.user}@${identity.device}`) }; }
 // The install token authenticates the client to the server for policy + event reporting only.
 function installTok() { return identity.installToken || localStorage.getItem("raiseme.installToken") || ""; }
 export async function loadIdentity() {
@@ -170,7 +175,7 @@ export function reportIdentity() {
   fetch(`${BASE}/api/device-report`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
-    body: JSON.stringify({ ...identity }),
+    body: JSON.stringify(reported()),
     keepalive: true
   }).catch(() => {});
 }
@@ -197,7 +202,7 @@ export async function reportDevice() {
     fetch(`${BASE}/api/device-report`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
-      body: JSON.stringify({ ...identity, ...full }),
+      body: JSON.stringify({ ...reported(), ...full }),
       keepalive: true
     }).catch(() => {});
     return full;
@@ -213,7 +218,7 @@ export async function reportPatches(dev) {
     fetch(`${BASE}/api/device-report`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
-      body: JSON.stringify({ ...identity, ...(dev || {}), patches }),
+      body: JSON.stringify({ ...reported(), ...(dev || {}), patches }),
       keepalive: true
     }).catch(() => {});
     return patches;
@@ -247,7 +252,7 @@ export function postAlert(alert) {
   fetch(`${BASE}/api/alerts`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
-    body: JSON.stringify({ ...alert, ...identity }),
+    body: JSON.stringify({ ...alert, ...reported() }),
     keepalive: true
   }).catch(() => {});
 }
@@ -258,7 +263,7 @@ export function reportPrompt(outcome, findings = 0) {
   fetch(`${BASE}/api/prompt-event`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
-    body: JSON.stringify({ outcome, findings, ts: new Date().toISOString(), ...identity }),
+    body: JSON.stringify({ outcome, findings, ts: new Date().toISOString(), ...reported() }),
     keepalive: true
   }).catch(() => {});
 }

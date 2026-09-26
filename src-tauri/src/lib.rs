@@ -1,3 +1,6 @@
+mod ai_keys;
+mod ai_runtime;
+mod content_hash;
 mod ocr;
 mod ocr_provider;
 #[cfg(target_os = "macos")]
@@ -320,8 +323,11 @@ fn cfg_val(txt: &str, key: &str, sep: char) -> Option<String> {
 
 // #7 — AI asset inventory: which models/providers each agent is configured for, plus local models on
 // disk. Config metadata only (default-model strings; local-model directory NAMES) — never token/auth
-// files. Feeds the console's per-device + fleet AI-asset catalog.
-#[tauri::command]
+// files. Feeds the console's per-device + fleet AI-asset catalog. Also AI-provider keys AT REST
+// (provider + location class + keyed hash only) and RUNNING local model / localhost MCP servers (process
+// names + ports only) — the Rust mirrors of cli/aibom-keys.mjs and cli/aibom-runtime.mjs. `async` so the
+// up-to-5 s OS probes run off the main thread.
+#[tauri::command(async)]
 fn device_ai_assets() -> serde_json::Value {
     let home = platform::home_dir();
     let mut providers: Vec<serde_json::Value> = vec![];
@@ -351,7 +357,10 @@ fn device_ai_assets() -> serde_json::Value {
             for e in rd.flatten() { if e.path().is_dir() { if let Some(n) = e.file_name().to_str() { local.push(serde_json::json!({ "runtime": "lmstudio", "name": n })); } } }
         }
     }
-    serde_json::json!({ "providers": providers, "localModels": local })
+    let key = content_hash::tenant_key();
+    let keys = ai_keys::scan_keys_at_rest(&home, &|v| content_hash::hash_with_key(key.as_ref(), v));
+    let (runtimes, mcp_live) = ai_runtime::collect(&home);
+    serde_json::json!({ "providers": providers, "localModels": local, "apiKeysAtRest": keys, "localRuntimes": runtimes, "localMcpListeners": mcp_live })
 }
 
 // Inventories the MCP servers each coding agent has configured (the agent "posture/config" layer).

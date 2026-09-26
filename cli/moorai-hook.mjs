@@ -33,7 +33,7 @@ import { agentBaselineReport } from "../data/agent-baseline.js";
 import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
 import { takeEscalationOutcomes } from "../data/model-escalation.mjs";
 import { semanticEnabled } from "../data/semantic-escalation.js";
-import { contentHash, fileFingerprint, NO_KEY } from "./content-hash.mjs";
+import { contentHash, fileFingerprint, NO_KEY, actorHash } from "./content-hash.mjs";
 import { emitOtel } from "./otel.mjs";
 import { loadHoneytokens, checkHoneytokens } from "./moorai-honeytokens.mjs";
 // Reused, not reinvented: mcp-proxy/tool-scan.mjs already solved "bound an untrusted, arbitrarily
@@ -361,9 +361,11 @@ function postPosture(category, hash, riskLevel, extra) { return post({ threatId:
 
 // ---- content-free reporting ----
 function djb2(s) { let h = 5381; for (let i = 0; i < String(s).length; i++) h = ((h << 5) + h + String(s).charCodeAt(i)) >>> 0; return "h" + h.toString(16); }
-// #10 — every emitted action carries a stable, content-free actor fingerprint (one-way hash of
-// user@device) so the console can tie actions to an operator without storing raw identity as the key.
-const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: djb2(`${os.userInfo().username}@${os.hostname()}`) };
+// #10 — every emitted action carries a stable, content-free actor fingerprint: the tenant-keyed hash
+// of user@device (actorHash), so the console can tie actions to an operator without the pair being
+// recoverable from it. `user`/`device` still travel so per-device policy resolves; the console
+// replaces both with keyed pseudonyms on ingest and never stores them in the clear.
+const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: actorHash(os.userInfo().username, os.hostname()) };
 // Content-free lineage for the per-agent baseline / forensic detections (data/agent-detections.js).
 // SESSION is the current trace/session id (Claude Code's session_id, one-way hashed), set in main().
 // It groups an actor's events for trace-gap detection and is the source id for cross-agent handoffs.

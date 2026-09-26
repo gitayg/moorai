@@ -107,3 +107,10 @@ export const FP_PREFIX = "fp2:";
 export function fileFingerprint(s) {
   return FP_PREFIX + createHash("sha256").update(String(s ?? ""), "utf8").digest("hex").slice(0, 16);
 }
+
+// The actor fingerprint every sender stamps on an outgoing event: the keyed content hash of
+// user@host. The console groups one machine's events by it and matches JIT grants against it, so it
+// must be stable per tenant — and it must not be the bare djb2 it replaced, which a login name and a
+// hostname (a small space) turn back into plaintext by enumeration. Unenrolled → NO_KEY, like every
+// other keyed value here. The desktop renderer computes the byte-identical value (src/api.js).
+export function actorHash(user, host) { return contentHash(`${user}@${host}`); }

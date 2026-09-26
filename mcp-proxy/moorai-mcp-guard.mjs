@@ -56,7 +56,7 @@ import { loadBaseline, saveBaseline, driftSignals, recordTool } from "./tool-bas
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
-import { contentHash } from "../cli/content-hash.mjs";
+import { contentHash, actorHash } from "../cli/content-hash.mjs";
 import { emitOtel } from "../cli/otel.mjs";
 
 // ---- argv parsing: [--server label] -- realcmd args... ----
@@ -82,8 +82,7 @@ const { label: SERVER, cmd: REAL_CMD, args: REAL_ARGS } = parseArgv(process.argv
 
 // ---- config / identity / content-free reporting (same shape as the Claude Code hook) ----
 const CONFIG = loadConfig();
-function djb2(s) { let h = 5381; for (let i = 0; i < String(s).length; i++) h = ((h << 5) + h + String(s).charCodeAt(i)) >>> 0; return "h" + h.toString(16); }
-const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: djb2(`${os.userInfo().username}@${os.hostname()}`) };
+const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: actorHash(os.userInfo().username, os.hostname()) };
 function post(alert) {
   // Content-free OTLP mirror — no-op unless an OTLP endpoint is configured; bounded + swallows errors,
   // so it can never touch the proxy path (same contract as the alert post below).

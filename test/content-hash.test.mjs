@@ -244,9 +244,10 @@ test("E2E: a Read that exposes a secret records the KEYED hash, never the revers
     assert.ok(!wire.includes(v), `the matched span ${v} reached the on-device log`);
     assert.ok(!wire.includes(legacyDjb2(v)), `the reversible DJB2 of ${v} is still being written`);
   }
-  // The actor fingerprint is deliberately NOT converted: it hashes user@device, which the very same
-  // record already carries in cleartext, so keying it would buy nothing and break actor dedup.
-  for (const a of actions) assert.match(String(a.actor), /^h[0-9a-f]{1,8}$/, "actor must stay the plain DJB2");
+  // The actor fingerprint is keyed too. user@device is a small space, and the console no longer
+  // stores the login/hostname in the clear (it pseudonymises them on ingest), so a bare djb2 actor
+  // would be the one field left that reads the pair back. Same token → same actor: dedup holds.
+  for (const a of actions) assert.match(String(a.actor), /^h2:[0-9a-f]{16}$/, "actor must be the keyed hash");
 });
 
 test("E2E: MCP tool ARGUMENTS are keyed too", { skip: HOST_LATCHED && "host has a root-owned posture latch" }, async () => {
@@ -277,7 +278,7 @@ test("E2E: an UNENROLLED device records the sentinel, not a reversible hash", { 
 const EXPECTED_DJB2_ARGS = {
   "cli/moorai-hook.mjs": [
     "bg.raw",                                   // break-glass marker (operator artefact, not user data)
-    "`${os.userInfo().username}@${os.hostname()}`", // actor — the same record carries both in clear
+    // (the actor is no longer here: it is actorHash(), keyed — see test/actor-keyed.test.mjs)
     "String(d.usedGrants)",                     // JIT grant names (policy vocabulary)
     "d.reasons.join(\"|\")",                     // entitlement-drift reasons (policy vocabulary)
     // ---- threat #63, "Unapproved model endpoint". FOUR sites, one per tool family that can name an
@@ -299,12 +300,9 @@ const EXPECTED_DJB2_ARGS = {
     "server"                                    // MCP server name
   ],
   "cli/moorai-guard.mjs": [
-    "`${os.userInfo().username}@${os.hostname()}`",
     "epD.hosts.join(\",\")"
   ],
-  "mcp-proxy/moorai-mcp-guard.mjs": [
-    "`${os.userInfo().username}@${os.hostname()}`"
-  ]
+  "mcp-proxy/moorai-mcp-guard.mjs": []
 };
 
 test("CLASSIFICATION: every surviving djb2() call site is non-content, and no new one appears", () => {

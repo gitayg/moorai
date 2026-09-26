@@ -1,0 +1,55 @@
+{
+  "note": "Asserted by src-tauri/src/content_hash.rs tests AND test/content-hash-parity.test.mjs: the Rust host and the Node agent must produce identical keyed hashes.",
+  "sets": [
+    {
+      "token": "test-install-token-rust-parity",
+      "vectors": [
+        {
+          "input": "",
+          "hash": "h2:f6db9711cce7a749"
+        },
+        {
+          "input": "hello",
+          "hash": "h2:5f8f90bfcfcac67d"
+        },
+        {
+          "input": "sk-ant-api03-FAKE-not-a-key",
+          "hash": "h2:95a0b8c43c9429cd"
+        },
+        {
+          "input": "ünïcødé → 🔑",
+          "hash": "h2:bf98cdeb4f809e90"
+        },
+        {
+          "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "hash": "h2:7fcff6d38b8c66e6"
+        }
+      ]
+    },
+    {
+      "token": "3f1c9a52-7d0e-4b8f-9a61-FAKE-TENANT-TOKEN-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      "vectors": [
+        {
+          "input": "",
+          "hash": "h2:7d43f216b33c22a5"
+        },
+        {
+          "input": "hello",
+          "hash": "h2:374d505cd29a8c54"
+        },
+        {
+          "input": "sk-ant-api03-FAKE-not-a-key",
+          "hash": "h2:c9a9f4833c27d12b"
+        },
+        {
+          "input": "ünïcødé → 🔑",
+          "hash": "h2:16e4dd08ab5afd4d"
+        },
+        {
+          "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "hash": "h2:2934e5536e2b7a0a"
+        }
+      ]
+    }
+  ]
+}

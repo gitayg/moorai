@@ -11,7 +11,7 @@ import { DetectionEngine } from "../src/engine.js";
 import { loadConfig } from "./config.mjs";
 import { calibrateRisk, decideEndpoints } from "./hook-core.mjs";
 import { recordExposure, recordIntent } from "./signals.mjs";
-import { contentHash } from "./content-hash.mjs";
+import { contentHash, actorHash } from "./content-hash.mjs";
 import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
 import { takeEscalationOutcomes } from "../data/model-escalation.mjs";
 import { atlasIds } from "../data/atlas.js";
@@ -44,8 +44,8 @@ function parseArgs(argv) {
 
 function djb2(s) { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0; return "h" + h.toString(16); }
 
-// #10 — stable content-free actor fingerprint (one-way hash of user@device), stamped on every emit.
-const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: djb2(`${os.userInfo().username}@${os.hostname()}`) };
+// #10 — stable content-free actor fingerprint (tenant-keyed hash of user@device), stamped on every emit.
+const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: actorHash(os.userInfo().username, os.hostname()) };
 
 function post(alert) {
   return fetch(`${SERVER}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(alert) }).catch(() => {});
