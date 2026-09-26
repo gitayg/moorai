@@ -37,6 +37,9 @@ function run(home, args = [], extraEnv = {}) {
   const env = { ...process.env, HOME: home, USERPROFILE: home };
   delete env.XDG_CONFIG_HOME; delete env.XDG_STATE_HOME; // resolve config under the throwaway HOME
   delete env.MOORAI_SANCTIONED; delete env.MOORAI_AIBOM_JSON; // clear ambient BEFORE applying test overrides
+  // The AIBOM also probes RUNNING local model servers (lsof/ps). Point it at a canned-output file that
+  // does not exist → probe "unavailable", so a real Ollama on the test machine cannot enter the result.
+  env.MOORAI_AIBOM_PROBE_FIXTURE = join(home, "no-probe-fixture.json");
   Object.assign(env, extraEnv); // test overrides win
   for (const [k, v] of Object.entries(extraEnv)) if (v === undefined) delete env[k];
   try {

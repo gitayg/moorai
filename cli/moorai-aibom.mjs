@@ -6,6 +6,9 @@
 //
 // Content-free by construction: it reports asset NAMES and COUNTS and infers MCP capability from
 // launch config + env var KEYS only — never token values, never the contents of any credential file.
+// Two collectors look further and still emit nothing but metadata: AI-provider keys AT REST
+// (cli/aibom-keys.mjs — provider + location class + a KEYED one-way hash, never the key or the file)
+// and RUNNING local model / MCP servers (cli/aibom-runtime.mjs — process names + ports only).
 //
 //   node cli/moorai-aibom.mjs                 # JSON (default)
 //   node cli/moorai-aibom.mjs --format md     # Markdown for a report
@@ -18,6 +21,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readAgentEvents } from "./signals.mjs";
 import { toCycloneDX, toSpdx } from "../data/sbom.js";
+import { scanKeysAtRest } from "./aibom-keys.mjs";
+import { defaultRunner, fixtureRunner, probeListeners, probeProcesses, localRuntimes, localMcpListeners } from "./aibom-runtime.mjs";
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -69,9 +74,11 @@ function mcpCaps(cfg) {
   return { net, fs, cred };
 }
 function mcpLevel(caps) { let s = 0; if (caps.net) s += 25; if (caps.fs) s += 25; if (caps.cred) s += 35; if (caps.net && caps.cred) s += 15; return s >= 60 ? "high" : s >= 30 ? "med" : "low"; }
-function mcpServers() {
+// `decls` (optional) collects { name, scope, url, type, transport } for the running-listener match —
+// in memory only; the URL is never emitted (its query string can carry a token).
+function mcpServers(decls = []) {
   const seen = new Set(), out = [];
-  const add = (map, scope) => { if (!map) return; for (const [name, cfg] of Object.entries(map)) { const k = `${scope}:${name}`; if (!name || seen.has(k)) continue; seen.add(k); const caps = mcpCaps(cfg || {}); out.push({ name, scope, transport: (cfg.url || cfg.type === "sse" || cfg.transport === "sse") ? "remote" : "stdio", caps, level: mcpLevel(caps) }); } };
+  const add = (map, scope) => { if (!map) return; for (const [name, cfg] of Object.entries(map)) { const k = `${scope}:${name}`; if (!name || seen.has(k)) continue; seen.add(k); const caps = mcpCaps(cfg || {}); if (cfg && typeof cfg.url === "string") decls.push({ name, scope, url: cfg.url, type: cfg.type, transport: cfg.transport }); out.push({ name, scope, transport: (cfg.url || cfg.type === "sse" || cfg.transport === "sse") ? "remote" : "stdio", caps, level: mcpLevel(caps) }); } };
   const claude = readJson(join(HOME, ".claude.json"));
   if (claude) { add(claude.mcpServers, "claude"); if (claude.projects) for (const p of Object.values(claude.projects)) add(p.mcpServers, "claude"); }
   add(readJson(join(HOME, ".cursor", "mcp.json"))?.mcpServers, "cursor");
@@ -139,10 +146,22 @@ function usage(prov) {
   };
 }
 
+// Running-server probe. MOORAI_AIBOM_PROBE_FIXTURE (a JSON file of canned lsof/ps/netstat/tasklist
+// output) replaces the real commands — the tests' seam, so they never depend on this machine's processes.
+function runtimeProbe() {
+  const runner = process.env.MOORAI_AIBOM_PROBE_FIXTURE ? fixtureRunner(process.env.MOORAI_AIBOM_PROBE_FIXTURE) : defaultRunner;
+  const listeners = probeListeners(runner), processes = probeProcesses(runner);
+  return { listeners, processes, status: listeners == null && processes == null ? "unavailable" : "ok" };
+}
+
 function buildAibom() {
-  const prov = providers(), local = localModels(), mcp = mcpServers();
+  const decls = [];
+  const prov = providers(), local = localModels(), mcp = mcpServers(decls);
   const ext = editorExtensions(), skills = agentSkills();
   const use = usage(prov);
+  const keys = scanKeysAtRest().findings;
+  const probe = runtimeProbe();
+  const runtimes = localRuntimes(probe), mcpLive = localMcpListeners(decls, probe.listeners);
   const models = [...prov.filter((p) => p.model).map((p) => ({ name: p.model, provider: p.provider, local: false })),
     ...local.map((m) => ({ name: m.name, provider: m.runtime, local: true }))];
   const components = [
@@ -154,8 +173,10 @@ function buildAibom() {
   ];
   return {
     bomFormat: "MoorAI-AIBOM", specVersion: "1.0", scope: "device", device: hostname(), generatedAt: new Date().toISOString(),
-    summary: { providers: new Set(prov.map((p) => p.provider)).size, models: models.length, localModels: local.length, agents: new Set(prov.map((p) => p.agent)).size, mcpServers: mcp.length, mcpHighRisk: mcp.filter((s) => s.level === "high").length, editorAiExtensions: ext.length, skills: skills.length, calls: use ? use.events : 0, roughSpendUsd: use ? use.roughSpendUsd : null },
-    providers: prov, localModels: local, mcpServers: mcp, editorExtensions: ext, skills, usage: use, components
+    summary: { providers: new Set(prov.map((p) => p.provider)).size, models: models.length, localModels: local.length, agents: new Set(prov.map((p) => p.agent)).size, mcpServers: mcp.length, mcpHighRisk: mcp.filter((s) => s.level === "high").length, editorAiExtensions: ext.length, skills: skills.length, calls: use ? use.events : 0, roughSpendUsd: use ? use.roughSpendUsd : null,
+      apiKeysAtRest: keys.length, runningLocalRuntimes: runtimes.length, localMcpRunning: mcpLive.filter((m) => m.running === true).length },
+    providers: prov, localModels: local, mcpServers: mcp, editorExtensions: ext, skills, usage: use,
+    apiKeysAtRest: keys, localRuntimes: runtimes, localMcpListeners: mcpLive, runtimeProbe: probe.status, components
   };
 }
 
@@ -173,6 +194,9 @@ function toMarkdown(d) {
     + (d.localModels.length ? `\n\n## Local models\n\n| Runtime | Model |\n|---|---|\n` + d.localModels.map((m) => `| ${m.runtime} | ${m.name} |`).join("\n") : "")
     + `\n\n## MCP servers\n\n| Server | Scope | Transport | Capabilities | Risk |\n|---|---|---|---|---|\n`
     + (d.mcpServers.map((m) => `| ${m.name} | ${m.scope} | ${m.transport} | ${cap(m.caps)} | ${m.level} |`).join("\n") || "| — | — | — | — | — |")
+    + (d.apiKeysAtRest.length ? `\n\n## AI provider keys at rest (keyed hash only — never the key)\n\n| Provider | Location class | Location | Key hash |\n|---|---|---|---|\n` + d.apiKeysAtRest.map((k) => `| ${k.provider} | ${k.locationClass} | ${k.location || "(project .env — path withheld)"} | ${k.keyHash} |`).join("\n") : "")
+    + (d.localRuntimes.length ? `\n\n## Running local model servers\n\n| Runtime | Ports | Bind | Detected by |\n|---|---|---|---|\n` + d.localRuntimes.map((r) => `| ${r.runtime} | ${r.ports.join(", ") || "—"} | ${r.bind} | ${r.detectedBy.join(" + ")} |`).join("\n") : "")
+    + (d.localMcpListeners.length ? `\n\n## Local MCP servers over HTTP/SSE\n\n| Server | Scope | Transport | Port | Running |\n|---|---|---|---|---|\n` + d.localMcpListeners.map((m) => `| ${m.name} | ${m.scope} | ${m.transport} | ${m.port} | ${m.running == null ? "unknown" : m.running ? "yes" : "no"} |`).join("\n") : "")
     + (d.editorExtensions.length ? `\n\n## Editor AI extensions (harness + version)\n\n| Editor | Extension | Version |\n|---|---|---|\n` + d.editorExtensions.map((x) => `| ${x.editor} | ${x.id} | ${x.version || "—"} |`).join("\n") : "")
     + (d.skills.length ? `\n\n## Agent skills & plugins\n\n| Kind | Name |\n|---|---|\n` + d.skills.map((x) => `| ${x.kind} | ${x.name} |`).join("\n") : "")
     + (d.usage ? `\n\n## Usage & cost signal (OWASP LLM10 — content-free)\n\n`
@@ -213,6 +237,26 @@ never the contents of any credential file):
   ~/.vscode/extensions, ~/.cursor/extensions, …    editor AI extensions + versions (the "harness"; dir listing)
   ~/.claude/plugins, ~/.claude/skills, ~/.claude/commands   agent skills / plugins / commands (names only)
   ~/.moorai/agent-events.jsonl                     content-free call counts for the usage/cost signal (OWASP LLM10)
+
+AI-provider keys at rest (reads in memory, emits provider + location class + keyed hash ONLY):
+  ~/.zshrc ~/.zshenv ~/.bashrc ~/.bash_profile ~/.profile ~/.config/fish/config.fish   (shell-rc)
+  ~/.config/aichat ~/.config/shell_gpt ~/.config/io.datasette.llm ~/.config/fabric
+  ~/.config/mods ~/.gemini ~/Library/Application Support/io.datasette.llm            (ai-cli-config;
+                                                   depth <= 2, <= 25 files per dir)
+  .env / .env.<name> in ~ and in each immediate child of ~/code ~/src ~/dev ~/projects ~/Projects
+  ~/workspace ~/repos ~/git ~/Developer           (dotenv; never .env.example|sample|template|dist;
+                                                   <= 200 child dirs per root, <= 300 files total)
+  Every file: skipped if > 1 MB or binary; unreadable = skipped. Shapes: Anthropic, OpenAI,
+  Hugging Face, Perplexity, and Google (only in an AI context — a Google key is not an AI key by shape).
+  A project .env reports no path. keyHash = the agent's keyed per-tenant HMAC ("h2:…"; "h2:nokey"
+  when unenrolled) — the key value, any part of it, and the file contents are never output.
+
+Running local model servers and local MCP servers (names + ports only; never args or environment):
+  macOS/Linux  lsof +c 0 -iTCP -sTCP:LISTEN -nP   and   ps -A -o comm=
+  Windows      netstat -ano                       and   tasklist /FO CSV /NH
+  Runtimes: ollama (process, or a listener on 11434), lmstudio (process "LM Studio"/lms),
+  llama.cpp (process llama-server), vllm (process vllm). MCP servers declared with a localhost
+  http(s) URL in the configs above are matched to a listener on their port (running yes/no/unknown).
 
 For each MCP server it infers capability scope (network / filesystem / credential)
 from the launch command, its args, and environment-variable NAMES only — it never

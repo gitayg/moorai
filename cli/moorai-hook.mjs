@@ -41,6 +41,9 @@ import { loadHoneytokens, checkHoneytokens } from "./moorai-honeytokens.mjs";
 // COMPOSED text (its own comment records the measured off-by-N-newlines bug that taught it to clip
 // after the join). A fetched page is the same problem with a more hostile author.
 import { resultScanText, CAPS } from "../mcp-proxy/tool-scan.mjs";
+import { observeDrift, driftConfig, cloudProfiles, normalizeRemote } from "../data/learned-drift.js";
+import { deletionTally, assessDeletionVolume, deletionConfig } from "../data/deletion-volume.js";
+import { readStateJson, writeStateJson, repoIdentity, LEARNED_DRIFT_FILE, DELETION_VOLUME_FILE } from "./drift-state.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -984,6 +987,56 @@ function recordDestinations(tool, kind, names, decision) {
   } catch { /* the map is evidence, not enforcement */ }
 }
 
+// Learned per-agent drift (data/learned-drift.js). One observation per PreToolUse call, keyed on ACTOR —
+// the same key the behaviour log uses, so a top-level agent's baseline is its SESSION and a subagent's
+// is its agent_type. Every value is hashed with the keyed content hash before it is compared or stored,
+// and the alert carries the type and that hash only; `tool` is the fixed "hook:learned-drift" because
+// for the tool and mcp types the tool name IS the value. Report-only and fail-open: it posts, it never
+// returns a decision, and any error is swallowed.
+//
+// Unenrolled devices (no install token) are skipped: contentHash() returns the one NO_KEY sentinel for
+// every value, so every host, repo and profile would look like the same value and the baseline would
+// be meaningless. Same guard as the honeytoken canary and the agent-detection scanner.
+function observeLearnedDrift(policy, tool, ti, cwd) {
+  try {
+    const cfg = driftConfig(policy);
+    if (cfg.mode === "off" || contentHash("learned-drift/probe") === NO_KEY) return;
+    const vals = [["tool", tool]];
+    if (tool.startsWith("mcp__")) vals.push(["mcp", serverOf(tool)]);
+    const hostText = tool === "Bash" ? ti.command : tool === "WebFetch" ? ti.url : tool.startsWith("mcp__") ? JSON.stringify(ti) : "";
+    for (const h of extractHosts(hostText)) vals.push(["host", h]);
+    const repo = repoIdentity(cwd);
+    if (repo) vals.push(["repo", repo.remote ? normalizeRemote(repo.remote) || repo.root : repo.root]);
+    if (tool === "Bash") for (const p of cloudProfiles(ti.command)) vals.push(["cloud-profile", p]);
+    const items = vals.filter(([, v]) => v).map(([type, v]) => ({ type, key: contentHash(`${type}:${v}`) }));
+    const r = observeDrift(readStateJson(LEARNED_DRIFT_FILE), ACTOR, items, Date.now(), cfg);
+    if (r.dirty) writeStateJson(LEARNED_DRIFT_FILE, r.state);
+    for (const a of r.alerts) {
+      post({ threatId: 64, category: "Agent drift: first seen", riskLevel: "Medium", stage: "behavior", tool: "hook:learned-drift", ts: new Date().toISOString(), contentHash: a.key, drift: { type: a.type, agent: ACTOR, role: SUBAGENT_LINEAGE.role || "agent", baseline: r.baseline }, ...IDENTITY });
+    }
+  } catch { /* drift is a signal, never enforcement */ }
+}
+
+// Cumulative destructive volume (data/deletion-volume.js) for one Bash call, keyed on SESSION. Posts one
+// content-free alert the first time the session crosses the threshold, and returns true when this call
+// is the first deletion after the crossing and policy mode is "ask" (the default) — the caller raises
+// allow -> ask. Counts and timestamps only. On an unenrolled device SESSION is the NO_KEY sentinel for
+// every session, so all sessions share one counter; the time window still bounds it.
+function deletionVolumeStep(policy, command) {
+  try {
+    const cfg = deletionConfig(policy);
+    if (cfg.mode === "off") return false;
+    const tally = deletionTally(command);
+    if (!tally.cmds) return false;
+    const r = assessDeletionVolume(readStateJson(DELETION_VOLUME_FILE), SESSION, tally, Date.now(), cfg);
+    if (r.dirty) writeStateJson(DELETION_VOLUME_FILE, r.state);
+    if (r.alert) {
+      post({ threatId: 43, category: "Unusual deletion volume in session", riskLevel: "High", stage: "behavior", tool: "hook:Bash", ts: new Date().toISOString(), contentHash: "delvol:session", signature: { ...r.alert, windowMin: cfg.windowMin, thresholds: { operands: cfg.operands, recursive: cfg.recursive }, mode: cfg.mode }, ...IDENTITY });
+    }
+    return r.escalate;
+  } catch { return false; }
+}
+
 function readFileCapped(fp) {
   try {
     if (!fp) return "";
@@ -1366,6 +1419,8 @@ async function main() {
   // doubly wrong: it would scan tool_input (the url + prompt, ignoring the page entirely) and answer with
   // the PreToolUse permissionDecision shape, which this event's schema rejects.
   if (input.hook_event_name === "PostToolUse") return handlePostToolUse(input, tool, policy, engine);
+  // Learned per-agent drift — one observation per PreToolUse call, before any branch can return.
+  observeLearnedDrift(policy, tool, ti, input.cwd);
 
   if (tool === "Read") {
     const text = readFileCapped(agentPath(ti.file_path, input.cwd));
@@ -1425,6 +1480,12 @@ async function main() {
     if (killIds.length) killSession("Bash", killIds, "file");
     if (checkSecretEgress(policy, ti.command, "Bash", "egress") && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); }
     if (reportEnvelope(policy, "Bash", { tool: "Bash", paths: extractReadPaths(ti.command) }, "file") && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; alts = saferAlternativesFor([64]); }
+    // Cumulative deletion volume: the first deletion after this session crossed the threshold asks. Only
+    // ever allow -> ask (or adds the reason to an existing ask); never touches a deny.
+    if (deletionVolumeStep(policy, ti.command)) {
+      if (dec === "allow") { dec = "ask"; reasons = ["unusual deletion volume in session"]; alts = saferAlternativesFor([43]); }
+      else if (dec === "ask") reasons = [...reasons, "unusual deletion volume in session"];
+    }
     // See the Read branch: escalation runs last and never on a deny, so a local-secret-egress or
     // out-of-envelope command cannot ship its content to the provider on its way to being blocked.
     if (dec !== "deny") await maybeEscalate(policy, btext, "file", "hook:Bash", { findings: finds }, engine);

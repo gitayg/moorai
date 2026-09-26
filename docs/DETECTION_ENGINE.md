@@ -440,6 +440,69 @@ an unmeasured hard block on a hot path is how a security tool gets uninstalled.
 
 Output shape: `hookSpecificOutput.permissionDecision` = `deny` | `ask`. An `allow` writes nothing.
 
+### Across calls: learned drift and deletion volume
+
+Two `PreToolUse` signals look at more than one call. Both keep their state in `~/.moorai` through
+`cli/drift-state.mjs`, which reads a missing, oversized or unparsable file as empty and swallows every
+write error, so a broken state file never changes a decision. Writes are atomic (temp file + rename).
+
+**Learned per-agent drift** (`data/learned-drift.js`, report-only). The entitlement envelope (#64) is
+declared by hand; this learns one. For each actor it remembers five kinds of value: the `tool` name, the
+`mcp` server, the network `host` (`extractHosts`), the git `repo` the agent works in (the normalised
+`origin` remote, else the first remote, else the repository root path, found by walking up from the
+payload `cwd`; no git binary is run), and the `cloud-profile` named on a Bash command line (`AWS_PROFILE`,
+`--profile` after `aws`/`sam`/`cdk`/`copilot`/`eb`, gcloud `--configuration` and
+`configurations activate`, `CLOUDSDK_ACTIVE_CONFIG_NAME`, kubectl/oc `--context` and `use-context`, helm
+`--kube-context`, `kubectx`, `az account set --subscription`). Every value is hashed with the keyed
+content hash, as `contentHash("<type>:<value>")`, before it is compared or stored. The actor key is the
+behaviour log's `ACTOR`: the hashed session id for a top-level agent, the hashed `agent_type` for a
+subagent. The learning period is the first `learnEvents` calls (default 50) or the first `learnDays` days
+(default 7) of the actor, whichever ends first. During it, values are recorded silently. After it, a
+value the actor has never used posts one alert: threat 64, category `Agent drift: first seen`, stage
+`behavior`, risk Medium, `contentHash` = the keyed hash, `drift` = `{ type, agent, role, baseline }`.
+`tool` is the fixed `hook:learned-drift`, because for the tool and mcp types the tool name is the value.
+The rate limit is one alert per type per actor per `rateLimitHours` (default 24). A rate-limited value is
+still learned. The store is bounded: `maxPerActor` values (default 128, least recently seen evicted) and
+`maxActors` actors (default 32, least recently active evicted). It holds keyed hashes and millisecond
+timestamps only. Configure it with `policy.learnedDrift = { mode: "alert" | "off", learnEvents,
+learnDays, rateLimitHours, maxPerActor, maxActors }`. It never changes allow/deny.
+
+`Agent drift: first seen` is a new category. It does not reuse `Agent destination: first seen`, which
+is a different signal: that alert is keyed per tool, has no learning period, and carries the raw host or
+server name in `destination.name`. A console view built for it would receive alerts without that field.
+
+**Cumulative deletion volume** (`data/deletion-volume.js`). #43 judges one command at a time. This sums
+deletions across the Bash calls of one session (keyed on `SESSION`) in a sliding window. Per command
+segment, a delete verb (`rm`, `rmdir`, `unlink`, `Remove-Item`/`ri`, `del`, `erase`, `rd`, `xargs rm`,
+`find … -delete`, `find … -exec rm`) adds its operand count, or 1 when the operands are not on the command
+line. `git clean` with a force flag and no dry-run flag adds its pathspecs, or 1. Any other #43 pattern
+(`git reset --hard`, `DROP TABLE`, `TRUNCATE TABLE`, `mkfs`, force-push and the rest) adds 1. A delete
+verb segment that matches `RECURSIVE_FORCE_DELETE` also counts as one recursive delete. The first time a
+session reaches `operands` (default 25) or `recursive` (default 5) inside `windowMin` (default 15), the
+hook posts one alert: threat 43, category `Unusual deletion volume in session`, stage `behavior`, risk
+High, `contentHash` `delvol:session`, `signature` = `{ operands, recursive, calls, windowMin, thresholds,
+mode }`. The crossing call itself keeps its decision. In mode `ask` (the default), the next deletion call
+in the session is raised from allow to ask with the reason "unusual deletion volume in session", or has
+that reason added if it already asks. A deny is never touched. Consuming the ask clears the window, so
+another full threshold re-arms it; the alert is not posted again. The state holds `[timestamp, operands,
+recursive]` triples and flags per session, capped at 256 entries per session and 32 sessions. No path,
+operand or command text is stored. Configure it with `policy.deletionVolume = { mode: "ask" | "alert" |
+"off", operands, recursive, windowMin }`.
+
+The escalation covers every deletion, not only recursive ones, because of a measurement. With no org
+policy, #43 already asks on every `rm -rf`, `find -delete` and `git reset --hard`, so escalating only
+recursive deletes would do nothing by default. The calls it does not stop are plain `rm a b c`, `rmdir`
+and `git clean -f`. Where an org sets `threatPolicy[43]` to `notify`, the recursive deletes are allowed
+per call, and the escalation catches the next one after the threshold. `test/deletion-volume.test.mjs`
+covers both cases. `test/learned-drift.test.mjs` covers learned drift. Both drive the real hook.
+
+**Unenrolled devices.** An unenrolled device with no policy exits before either signal runs. With a
+policy, learned drift is skipped, because every value hashes to the same `h2:nokey` sentinel and the
+baseline would be meaningless. This is the same guard the honeytoken canary and the agent-detection
+scanner use. The deletion counter still runs, but `SESSION` is the sentinel for every session, so all
+sessions share one counter. That is the same limit as the trifecta and clipboard alerts. The time window
+still bounds it.
+
 ### `PostToolUse` — cannot un-run a tool
 
 Two matchers: `WebFetch` · `WebSearch`. `WebSearch` is registered because a result title and snippet are
@@ -630,6 +693,11 @@ a document with many prefilter hits: 4,000 inline-styled elements scan at ~25 ms
 at ~14 ms, measured the same way. The per-text memoisation on those five predicates is what keeps that
 linear — without it, `_matchDetector`'s per-occurrence retry makes it quadratic.
 
+The two cross-call signals in §6 were measured as whole-hook wall time over 200 sequential synthetic Bash
+calls (a local policy server, cwd inside a git repository, commands with hosts, profiles and deletes),
+alternating the pre-change hook and the new one twice: p50 94.4 / 93.8 ms before, 97.7 / 97.7 ms after;
+p95 145.1 / 147.9 ms before, 145.4 / 146.5 ms after. That is about 3–4 ms at the median on one machine.
+
 Independently, `mcp-proxy/tool-scan.mjs` records `decideText` at stage `file` measuring 3.8–4.2 ms warm
 on 64 KB of composed text, which is why `maxResultBytes` is set where it is. These are single-run figures
 on one machine; treat them as an order of magnitude, not a benchmark.
@@ -695,6 +763,21 @@ Stated rather than papered over.
   imperative and question forms are left out on purpose for precision — `test/hebrew-injection.test.mjs`
   records which. The compiled Hebrew patterns exceed `redosReason`'s 400-character cap, which is meant for
   policy-supplied patterns and never applies here because `inj-multilingual` has no `refine`.
+- **Learned drift has limits worth stating.** For a top-level agent the actor is the hashed session id,
+  so the baseline starts over in every session and only a subagent (keyed on `agent_type`) keeps one
+  across sessions. The agent runs as the user and can delete `~/.moorai/learned-drift.json`, which puts
+  every actor back into its silent learning period. An evicted value alerts again when it comes back.
+  Parallel hook calls can lose one another's update. The repo is read from the payload `cwd` only, so
+  `git -C other` or a `cd` inside the command is not seen. Hosts have the destination map's limits (a
+  scheme is required). Cloud profiles are read from the command text only, not from the environment the
+  agent inherited, and `--profile` counts only after an AWS-family command. None of the defaults
+  (50 events, 7 days, 24 h) has been measured against real agent traffic.
+- **Deletion volume counts what the command line shows.** A glob (`rm *.log`) counts as one operand,
+  `xargs rm` and `find -delete` as one, and a script that deletes (`./clean.sh`, `npm run clean`,
+  `git rm`, a Python `shutil.rmtree`) as none. Quoted text that contains a #43 pattern counts
+  (`git commit -m "undo git reset --hard"`), except after `echo`/`printf`. MCP destructive tools (#56)
+  are not counted. The segment splitter does not respect quotes. The thresholds (25 operands, 5
+  recursive, 15 minutes) have not been measured against real agent sessions.
 - **Payload `cwd` against real hosts is unverified.** The fix follows the envelope field; whether Claude
   Code ever runs the hook outside the agent's working directory, and whether the payload `cwd` follows a
   `cd` inside a Bash session, has not been observed.
