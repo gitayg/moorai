@@ -71,6 +71,11 @@ function buildSandbox(mode) {
     const cache = join(home, ".moorai", "hook-policy.json");
     mkdirSync(dirname(cache), { recursive: true });
     writeFileSync(cache, JSON.stringify(TEST_POLICY));
+    // Enforcement is an ENROLLED device's behaviour (data/enforcement.js): without an install token the
+    // hook coaches and blocks nothing, whatever policy is on disk. An org that enforces this policy has
+    // enrolled its devices, so the sandbox does too. Offline mode deliberately stays unenrolled — there
+    // the fail-closed posture is the management evidence that keeps enforcement on without a token.
+    writeFileSync(join(home, ".moorai", "config.json"), JSON.stringify({ serverUrl: "http://127.0.0.1:1", tenant: "blockval-test", installToken: "tok-blockval" }));
   }
   return { home, credFile, benignFile };
 }

@@ -141,10 +141,14 @@ export function fromVerdict(verdict, payload) {
   const v = verdict || {};
   const reason = `MoorAI: ${v.reason || "blocked by policy"}`;
   if (isPost(payload || {})) {
+    if (v.coach) return { stdout: JSON.stringify({ additionalContext: v.context || v.coach }), stderr: `${v.coach}\n`, exitCode: 0 };
     if (v.decision === "deny") return { stdout: JSON.stringify({ decision: "block", reason }), exitCode: 0 };
     if (v.context) return { stdout: JSON.stringify({ additionalContext: `MoorAI: ${v.context}` }), exitCode: 0 };
     return { exitCode: 0 };
   }
+  // Coach (unenrolled): preToolUse documents no user- or agent-visible field for an allowed call and
+  // "Empty output uses default behavior"; exit 2 would deny. So: empty stdout, the note on stderr.
+  if (v.coach) return { stderr: `${v.coach}\n`, exitCode: 0 };
   if (v.decision === "deny" || v.decision === "ask") {
     return { stdout: JSON.stringify({ permissionDecision: v.decision, permissionDecisionReason: reason }), exitCode: 0 };
   }

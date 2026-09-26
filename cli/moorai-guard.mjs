@@ -9,7 +9,7 @@ import { DETECTORS } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
 import { loadConfig } from "./config.mjs";
-import { calibrateRisk, decideEndpoints } from "./hook-core.mjs";
+import { calibrateRisk, decideEndpoints, enforcementAllowed, coachMessage } from "./hook-core.mjs";
 import { recordExposure, recordIntent } from "./signals.mjs";
 import { contentHash, actorHash } from "./content-hash.mjs";
 import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
@@ -20,6 +20,9 @@ import { credAlternative } from "../data/cred-alternatives.js";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = loadConfig();
 const SERVER = CONFIG.serverUrl;
+// Coach vs enforce — the shared rule (data/enforcement.js). Unenrolled: the findings are shown with the
+// why and the safer way, and the prompt goes through; nothing is aborted, blocked, killed or posted.
+const ENFORCE = enforcementAllowed(CONFIG);
 const threatData = JSON.parse(readFileSync(join(ROOT, "data/threats.json"), "utf8"));
 const engine = new DetectionEngine(threatData, DETECTORS, CONTENT_RULES);
 
@@ -48,6 +51,7 @@ function djb2(s) { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5
 const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: actorHash(os.userInfo().username, os.hostname()) };
 
 function post(alert) {
+  if (!ENFORCE) return Promise.resolve(); // no console to post to on an unenrolled device
   return fetch(`${SERVER}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(alert) }).catch(() => {});
 }
 
@@ -191,13 +195,13 @@ function runClaude(prompt, policy, action) {
       // #3 — kill/block enforcement. An output finding the policy marks "kill" (or any Critical block
       // when killOnCritical is set) suppresses the whole reply rather than masking spans — prevent,
       // not warn. The dangerous output is never printed and a content-free session-kill is emitted.
-      const killed = flagged.filter((f) => action(f) === "kill" || (policy?.killOnCritical && action(f) === "block" && f.threat.riskLevel === "Critical"));
+      const killed = !ENFORCE ? [] : flagged.filter((f) => action(f) === "kill" || (policy?.killOnCritical && action(f) === "block" && f.threat.riskLevel === "Critical"));
       if (killed.length) {
         console.error(`\n${C.red}✗ MoorAI killed the reply — critical output finding (#${killed.map((f) => f.threat.id).join(", #")}); nothing printed.${C.off}`);
         reportSessionKill("output", killed);
         return resolve(3);
       }
-      const mask = policy?.outputRedaction === true || flagged.some((f) => action(f) === "block" || action(f) === "justify");
+      const mask = policy?.outputRedaction === true || (ENFORCE && flagged.some((f) => action(f) === "block" || action(f) === "justify"));
       if (mask) console.error(`${C.org}↻ masking flagged spans in the reply${C.off}`);
       process.stdout.write(mask ? engine.redact(out, "output") : out);
       resolve(code ?? 0);
@@ -251,7 +255,7 @@ async function main() {
   if (epD.decision === "deny") { const a = { threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: "claude -p", ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }; post(a); }
 
   // Hard block: any threat or content category set to "block". The user cannot override.
-  const hardBlock = blockedFindings.length > 0 || blockedContent.length > 0 || epD.decision === "deny";
+  const hardBlock = ENFORCE && (blockedFindings.length > 0 || blockedContent.length > 0 || epD.decision === "deny");
   if (hardBlock) {
     const parts = [];
     if (blockedFindings.length) parts.push(`threat policy (#${blockedFindings.map((f) => f.threat.id).join(", #")})`);
@@ -263,14 +267,22 @@ async function main() {
     process.exit(3);
   }
 
-  const choice = await decide(decideFlag);
+  // Unenrolled: coach and send. The findings above already carry the why and the safer way; this line
+  // says what was caught and that nothing was held. No prompt, no abort, no intent/override record.
+  if (!ENFORCE) {
+    const ids = [...findings.map((f) => `#${f.threat.id} ${f.threat.category}`), ...content.map((c) => `content: ${c.label}`)];
+    const first = findings[0];
+    const safer = first && ((first.threat.id === 55 && credAlternative(first.match)) || first.threat.saferAlternative);
+    console.error(`${C.org}${coachMessage(`flagged ${ids.length} issue(s) in this prompt — ${ids.join(", ")}`, safer)}${C.off}\n`);
+  }
+  const choice = ENFORCE ? await decide(decideFlag) : "coach";
   if (choice === "abort") { console.error(`${C.red}✗ aborted — nothing sent to claude -p${C.off}`); process.exit(1); }
 
   let final = prompt;
   if (choice === "redact") {
     final = engine.redact(prompt, "prompt");
     console.error(`${C.org}↻ redacted before sending:${C.off} ${final}\n`);
-  } else {
+  } else if (ENFORCE) {
     console.error(`${C.org}⚠ proceeding as-is (override logged)${C.off}\n`);
   }
 
@@ -278,7 +290,7 @@ async function main() {
   // attack; a human "proceed" is the signal that disambiguates them. Content-free: the overridden
   // categories and a one-way hash of the prompt, never the prompt itself. Recorded locally and, as an
   // Info-level alert, to the server (→ SIEM). "abort" already exited above, so reaching here = intent.
-  if (choice !== "abort" && (allFindings.length || allContent.length)) {
+  if (ENFORCE && choice !== "abort" && (allFindings.length || allContent.length)) {
     const intent = {
       ts: new Date().toISOString(), event: "override", redacted: choice === "redact",
       threatIds: allFindings.map((f) => f.threat.id),

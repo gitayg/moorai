@@ -111,11 +111,8 @@ test("the built-in tier adds no new benign ASK either — the only asks are thre
 // carries no threatPolicy and no tierPolicy at all, so every decision below comes from the built-in
 // tier. Measured before the tier existed: all four of these returned "allow".
 //
-// NOTE the deliberate limit of this test: it plants a (contentless) policy file, because
-// cli/moorai-hook.mjs returns exitHook() at its `if (!policy)` branch when the device has NO policy
-// AND the durable posture is fail-open. On that path the engine is never built and threatActionFor is
-// never consulted, so the built-in tier cannot help there. That branch is a separate fix in a file
-// this change does not own; see the report.
+// The device is ENROLLED: enforcement is an enrolled device's behaviour (data/enforcement.js); an
+// unenrolled one runs the same tier but only coaches — see test/unenrolled-coach.test.mjs.
 test("end-to-end: the shipped hook enforces the built-in tier under a policy that configures nothing", async () => {
   const { spawnSync } = await import("node:child_process");
   const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
@@ -124,6 +121,7 @@ test("end-to-end: the shipped hook enforces the built-in tier under a policy tha
   const home = mkdtempSync(join(tmpdir(), "moorai-builtin-"));
   mkdirSync(join(home, ".moorai"), { recursive: true });
   writeFileSync(join(home, ".moorai", "hook-policy.json"), JSON.stringify({ captureTier: "content-free" }));
+  writeFileSync(join(home, ".moorai", "config.json"), JSON.stringify({ installToken: "tok-enrolled-test" }));
 
   const decide = (command) => {
     const res = spawnSync("node", [join(ROOT, "cli/moorai-hook.mjs")], {

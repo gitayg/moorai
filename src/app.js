@@ -5,7 +5,8 @@ import { TIER_OF } from "../data/data-tiers.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { DetectionEngine } from "./engine.js";
 import { Audit } from "./audit.js";
-import { getPolicy, postAlert, nativeLog, loadIdentity, enroll, signUp, awaitClaim, serverBase, currentTenant, setAgentAuth, getAuthMethod, setAuthMethod, openUrl, reportDevice, reportPatches, reportPrompt, appVersion, checkUpdate, restartApp, checkAndInstallUpdate, reportIdentity, aboutInfo } from "./api.js";
+import { COACH_TAIL } from "../data/enforcement.js";
+import { enrolled, getPolicy, postAlert, nativeLog, loadIdentity, enroll, signUp, awaitClaim, serverBase, currentTenant, setAgentAuth, getAuthMethod, setAuthMethod, openUrl, reportDevice, reportPatches, reportPrompt, appVersion, checkUpdate, restartApp, checkAndInstallUpdate, reportIdentity, aboutInfo } from "./api.js";
 import { ocrCapability, ocrImage, engineLabel, decideImageInspection } from "./ocr.js";
 import { BUILD } from "./buildinfo.js";
 
@@ -403,10 +404,12 @@ function reviewContent(text, reviewStage, mount) {
     const act = cp[c.ruleId] || "disabled";
     if (act === "disabled") continue;
     lastFound++;
-    const gate = act === "block" || act === "justify"; // both hold the prompt; justify is recoverable
-    const pseudo = { mode: gate ? "block" : "warn", threat: { id: 0, category: `Content: ${c.label}`, riskLevel: gate ? "Blocked" : "High" } };
+    // Unenrolled (data/enforcement.js): a would-be hold is shown as a coach card and never holds the prompt.
+    const would = act === "block" || act === "justify";
+    const gate = would && enrolled(); // both hold the prompt; justify is recoverable
+    const pseudo = { mode: gate ? "block" : would ? "coach" : "warn", threat: { id: 0, category: `Content: ${c.label}`, riskLevel: gate ? "Blocked" : "High" } };
     // Visibility for every active action; local log + user-facing card only for notify/justify/block.
-    report(audit.record({ action: act === "block" ? "blocked" : act, stage: reviewStage, tool: TOOL, finding: pseudo, content: c.match }, act !== "alert"));
+    report(audit.record({ action: gate ? (act === "block" ? "blocked" : act) : would ? "coach" : act, stage: reviewStage, tool: TOOL, finding: pseudo, content: c.match }, act !== "alert"));
     if (act !== "alert") mount.appendChild(contentCard(c, reviewStage, gate));
     blocked = blocked || gate;
   }
@@ -419,9 +422,12 @@ function renderFindings(text, stage, mount) {
     const act = threatAction(f.threat.id);
     if (act === "disabled") continue;
     lastFound++;
-    const gate = act === "block" || act === "justify"; // both hold the prompt; justify is recoverable
-    report(audit.record({ action: act === "block" ? "blocked" : act, stage, tool: TOOL, finding: f, content: f.match }, act !== "alert"));
-    if (act !== "alert") mount.appendChild(card(f, gate));
+    // Unenrolled (data/enforcement.js): a would-be hold is shown as a coach card and never holds the prompt.
+    const would = act === "block" || act === "justify";
+    const gate = would && enrolled(); // both hold the prompt; justify is recoverable
+    const shown = would && !gate ? { ...f, mode: "coach", coached: true } : f;
+    report(audit.record({ action: gate ? (act === "block" ? "blocked" : act) : would ? "coach" : act, stage, tool: TOOL, finding: shown, content: f.match }, act !== "alert"));
+    if (act !== "alert") mount.appendChild(card(shown, gate));
     blocked = blocked || gate;
   }
   return blocked;
@@ -658,6 +664,7 @@ function card(f, blocked) {
     <div class="match">matched: ${esc(f.match)}</div>
     <div class="guidance">${blocked ? "Blocked by policy — cannot be sent. " : ""}${esc(t.response)}</div>
     ${t.saferAlternative ? `<div class="guidance safer">Safer: ${esc(t.saferAlternative)}</div>` : ""}
+    ${f.coached ? `<div class="guidance">${esc(COACH_TAIL)}</div>` : ""}
     <div>${links}</div>`;
   return el;
 }

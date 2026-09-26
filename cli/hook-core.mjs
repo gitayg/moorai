@@ -372,6 +372,8 @@ export function decideMcpServer(policy, serverName) {
 // closing an import cycle (this file imports compilePacks from there). Re-exported here because both
 // the MCP proxy and the tests import it from hook-core.
 export { redosReason, safeRegex };
+// Enrollment decides coach vs enforce for every surface — see data/enforcement.js.
+export { isEnrolled, enforcementAllowed, coachMessage, coachReason } from "../data/enforcement.js";
 
 // Execution bound. A pattern that survives redosReason() still costs O(n²) in the worst case because
 // `.test()` retries at every start position: measured at 50 KB, the worst surviving shapes ("a*b",

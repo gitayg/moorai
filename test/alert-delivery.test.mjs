@@ -51,7 +51,7 @@ async function runHook(input, { policy = { captureTier: "content-free" } } = {})
 
   const home = mkdtempSync(join(tmpdir(), "moorai-alert-"));
   mkdirSync(join(home, ".curaiq"), { recursive: true }); mkdirSync(join(home, ".moorai"), { recursive: true });
-  writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: `http://127.0.0.1:${port}`, tenant: "acme" }));
+  writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: `http://127.0.0.1:${port}`, tenant: "acme", installToken: "tok-enrolled-test" }));
 
   const child = spawn(process.execPath, [HOOK], {
     cwd: ROOT,
@@ -125,7 +125,7 @@ test("DELIVERY: an unreachable server cannot hang or change the decision", async
   // is refused, and assert the deny still comes out well inside the bound.
   const home = mkdtempSync(join(tmpdir(), "moorai-blackhole-"));
   mkdirSync(join(home, ".curaiq"), { recursive: true }); mkdirSync(join(home, ".moorai"), { recursive: true });
-  writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: "http://192.0.2.1:8787", tenant: "acme" }));
+  writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: "http://192.0.2.1:8787", tenant: "acme", installToken: "tok-enrolled-test" }));
   writeFileSync(join(home, ".moorai", "hook-policy.json"), JSON.stringify({ captureTier: "content-free", mcpAllow: ["approved-only"] }));
 
   const t0 = Date.now();

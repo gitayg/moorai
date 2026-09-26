@@ -88,13 +88,19 @@ test("HOOK (enrolled): every posted alert carries the keyed actor, never djb2", 
   } finally { L.close(); rmSync(h, { recursive: true, force: true }); }
 });
 
-test("HOOK (unenrolled): still posts as today, with the NO_KEY actor — no reversible fallback", async () => {
+// CHANGED DELIBERATELY (owner decision: an unenrolled device coaches and posts nothing — there is no
+// console). This used to assert that the finding still reached the server. The property it protected
+// survives on the one place an unenrolled device still writes, its local content-free ledger: the actor
+// there is the NO_KEY sentinel, never a reversible djb2.
+test("HOOK (unenrolled): posts nothing; the local ledger carries the NO_KEY actor — no reversible fallback", async () => {
   const L = await listener(); const h = home(L.url, { enrolled: false });
   try {
     const code = await run([join(ROOT, "cli", "moorai-hook.mjs")], h, JSON.stringify({ tool_name: "Bash", tool_input: { command: `echo ${AWS}` } }));
     assert.equal(code, 0);
-    assert.ok(L.alerts.some((a) => a.category === "Information & Privacy"), "the finding still reaches the server");
-    assertKeyed(L.alerts, NO_KEY, "hook/unenrolled");
+    assert.deepEqual(L.alerts, [], "an unenrolled device posts nothing");
+    const ledger = readFileSync(join(h, ".moorai", "action-audit.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.ok(ledger.some((a) => a.category === "Information & Privacy"), "the finding is still recorded locally");
+    for (const a of ledger) { assert.equal(a.actor, NO_KEY); assert.notEqual(a.actor, LEGACY); }
   } finally { L.close(); rmSync(h, { recursive: true, force: true }); }
 });
 

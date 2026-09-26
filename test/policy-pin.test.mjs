@@ -211,7 +211,7 @@ async function run(home, { serve = null, pubkey = null, anchorPub = null, tenant
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   try {
-    writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: `http://127.0.0.1:${server.address().port}`, tenant }));
+    writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: `http://127.0.0.1:${server.address().port}`, tenant, installToken: "tok-enrolled-test" }));
     const env = { ...process.env, HOME: home, USERPROFILE: home, MOORAI_OFFLINE_MODE: offlineMode };
     if (anchorPub) env.MOORAI_POLICY_PUBKEY = anchorPub; else delete env.MOORAI_POLICY_PUBKEY;
     delete env.MOORAI_BREAKGLASS_PUBKEY;

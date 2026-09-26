@@ -94,6 +94,11 @@ export function fromVerdict(verdict, payload) {
     const msg = tag(v.reason || "needs confirmation");
     return { stdout: JSON.stringify({ decision: "ask", reason: msg, systemMessage: msg }), exitCode: 0 };
   }
+  // Coach (unenrolled): no decision, so the tool runs; systemMessage is "Displayed immediately to the
+  // user in the terminal" (Gemini CLI hooks reference, common output fields). BeforeTool has no field
+  // that reaches the model on an allowed call; AfterTool keeps its additionalContext below.
+  if (v.coach && !after) return { stdout: JSON.stringify({ systemMessage: v.coach }), exitCode: 0 };
+  if (v.coach && after) return { stdout: JSON.stringify({ systemMessage: v.coach, hookSpecificOutput: { hookEventName: "AfterTool", additionalContext: v.context || v.coach } }), exitCode: 0 };
   if (after && v.context) {
     return { stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "AfterTool", additionalContext: tag(v.context) } }), exitCode: 0 };
   }

@@ -106,7 +106,7 @@ async function runHook({ state, latch, legacy, env, policy, marker, anchorPub } 
   const url = `http://127.0.0.1:${server.address().port}`;
   try {
     mkdirSync(join(home, ".curaiq"), { recursive: true });
-    writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: url, tenant: TENANT }));
+    writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: url, tenant: TENANT, installToken: "tok-enrolled-test" }));
     // state -> ~/.moorai/posture (primary write leg), latch -> ~/.config/moorai/posture (2nd write leg),
     // legacy -> ~/.curaiq/offline-posture (pre-rebrand read-only leg).
     if (state != null) { mkdirSync(join(home, ".moorai"), { recursive: true }); writeFileSync(join(home, ".moorai", "posture"), state); }
@@ -229,7 +229,7 @@ test("E2E: a policy load writes BOTH posture copies, so one erasure still leaves
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   try {
     mkdirSync(join(home, ".curaiq"), { recursive: true });
-    writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: `http://127.0.0.1:${server.address().port}`, tenant: TENANT }));
+    writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: `http://127.0.0.1:${server.address().port}`, tenant: TENANT, installToken: "tok-enrolled-test" }));
     const e = { ...process.env, HOME: home, USERPROFILE: home };
     delete e.MOORAI_OFFLINE_MODE; delete e.MOORAI_BREAKGLASS_PUBKEY;
     delete e.XDG_CONFIG_HOME; delete e.XDG_STATE_HOME; // latch dir must resolve under the throwaway HOME

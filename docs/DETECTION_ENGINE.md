@@ -390,11 +390,29 @@ the call. Threats that do fire on benign text — 39, 15, 43 — are deliberatel
 
 ### Enrollment is the line
 
-- **Unenrolled** (`!CONFIG.installToken`) — `exitHook()`, allow, always. Inert by design, and the repo
-  draws the same line in three other places: `content-hash.mjs` collapses every fingerprint to the
-  `h2:nokey` sentinel, `config.mjs` reports tenant `unprovisioned`, and
-  `scripts/score-vector5-production.mjs` has an `--unenrolled` mode whose stated purpose is to measure
-  that inertness. A device nobody enrolled must not start denying a developer's tool calls.
+- **Unenrolled** (no install token) — **coach**. Without enrollment MoorAI shows what it caught and the
+  safer way; blocking and sign-off apply once the device is enrolled in a console (free up to 200 users).
+  `enforcementAllowed()` in [`data/enforcement.js`](../data/enforcement.js) is the single rule, used by
+  the hook (and through it every agent adapter), the `claude -p` guard, the Claude Desktop MCP proxy and
+  the desktop app. The same engine and `BUILTIN_DEFAULT_ACTIONS` run (or a policy on disk, if present);
+  every would-be `deny`/`ask`/`kill` becomes a coach note instead:
+
+  | Surface | What an unenrolled device does with a would-be block / ask |
+  | --- | --- |
+  | Claude Code hook (PreToolUse) | No `permissionDecision` — the normal permission flow applies. `systemMessage` (shown to the user) and `additionalContext` (given to Claude) carry `MoorAI coach: flagged … — #id Category. Safer: … Not blocked: this device is not enrolled in a MoorAI console.` `"allow"` is deliberately not used: per the hooks reference it "skips the permission prompt". |
+  | Claude Code hook (PostToolUse) | Never `decision: "block"`; the same note as `systemMessage` + `additionalContext`. |
+  | Codex | `systemMessage` + `additionalContext`, no decision (Codex rejects `permissionDecision: "allow"` without `updatedInput`). |
+  | Gemini CLI | `systemMessage` only (BeforeTool has no model-facing field on an allowed call). |
+  | Copilot CLI | Empty stdout (default behaviour) and the note on stderr; `preToolUse` documents no user- or agent-visible field for an allowed call, and exit 2 would deny. |
+  | Cursor | `permission: "allow"`; `user_message` + `agent_message` on `beforeShellExecution` / `beforeMCPExecution`, stderr elsewhere. |
+  | `claude -p` guard | Findings printed with why + safer, one `MoorAI coach:` line, then the prompt is sent unchanged. Exit code is `claude`'s. |
+  | Claude Desktop MCP proxy | The call (or result) is forwarded unchanged; the note goes to stderr, i.e. Claude Desktop's MCP log. No quarantine. |
+  | Desktop app | The finding is a **Coach** card with the safer line; the prompt is never held. |
+
+  Nothing is posted (there is no console); the local content-free ledgers are kept, with the verdict
+  recorded as `coach`, not `Blocked`. No kill sentinel is written. `content-hash.mjs` still collapses every
+  fingerprint to `h2:nokey`. A durable fail-closed posture (MDM root-owned latch, `MOORAI_OFFLINE_MODE`,
+  or one a verified org policy recorded) counts as management and keeps enforcement on without a token.
 - **Enrolled, no policy published** — `NO_POLICY_BASELINE` (`{captureTier:"content-free",
   builtinDefault:true}`) is applied so the built-in tier is reached. This is deliberately **not**
   `OFFLINE_DEFAULT_POLICY`: that one is the *fail-closed* default and additionally blocks 39/15/1/44 and

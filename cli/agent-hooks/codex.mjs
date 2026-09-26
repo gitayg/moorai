@@ -103,6 +103,10 @@ export function fromVerdict(verdict, payload) {
     const msg = `MoorAI: ${reason || "needs confirmation"}. Codex hooks cannot prompt, so this call was held: ask the user to confirm and run it themselves if intended.`;
     return out({ systemMessage: msg, hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: msg } });
   }
+  // Coach (unenrolled): no permissionDecision — codex's parser rejects "allow" without updatedInput as
+  // unsupported — so the call runs; `systemMessage` is a universal field shown to the user and
+  // `additionalContext` is parsed for PreToolUse whether or not a decision is present.
+  if (v.coach) return out({ systemMessage: v.coach, hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: v.coach } });
   if (v.context) return out({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: `MoorAI: ${v.context}` } });
   return { exitCode: 0 };
 }

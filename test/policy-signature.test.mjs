@@ -174,7 +174,7 @@ async function runHook({ cache, cacheAgeMs = 0, anchorPub, tenant = TENANT, serv
   const url = `http://127.0.0.1:${server.address().port}`;
   try {
     mkdirSync(join(home, ".curaiq"), { recursive: true }); mkdirSync(join(home, ".moorai"), { recursive: true });
-    writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: url, tenant }));
+    writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: url, tenant, installToken: "tok-enrolled-test" }));
     const cachePath = join(home, ".moorai", "hook-policy.json");
     if (cache != null) {
       writeFileSync(cachePath, cache);

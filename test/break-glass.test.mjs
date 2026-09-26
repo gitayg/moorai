@@ -188,7 +188,7 @@ async function runHook({ marker, anchorPub, tenant = TENANT }) {
   const url = `http://127.0.0.1:${server.address().port}`;
   try {
     mkdirSync(join(home, ".curaiq"), { recursive: true });
-    writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: url, tenant }));
+    writeFileSync(join(home, ".curaiq", "config.json"), JSON.stringify({ serverUrl: url, tenant, installToken: "tok-enrolled-test" }));
     if (marker != null) writeFileSync(join(home, ".curaiq", "break-glass"), marker);
     const env = { ...process.env, HOME: home, USERPROFILE: home, MOORAI_OFFLINE_MODE: "fail-closed" };
     if (anchorPub) env.MOORAI_BREAKGLASS_PUBKEY = anchorPub; else delete env.MOORAI_BREAKGLASS_PUBKEY;

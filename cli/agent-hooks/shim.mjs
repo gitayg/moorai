@@ -9,7 +9,9 @@ export const HOOK = join(dirname(fileURLToPath(import.meta.url)), "..", "moorai-
 
 // claudePayload: { hook_event_name: "PreToolUse"|"PostToolUse", tool_name, tool_input,
 //   tool_response?, session_id?, cwd? }
-// returns { decision: "allow"|"ask"|"deny", reason: string, context?: string }
+// returns { decision: "allow"|"ask"|"deny", reason: string, context?: string, coach?: string }
+// `coach` is set when the device is not enrolled (data/enforcement.js): the call is allowed and the note
+// (what was caught + the safer way) is for the user, and for the agent where the host has a channel.
 export function evaluate(claudePayload, { env = process.env, timeoutMs = 20000 } = {}) {
   const r = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify(claudePayload),
@@ -23,6 +25,7 @@ export function evaluate(claudePayload, { env = process.env, timeoutMs = 20000 }
   try { j = JSON.parse(out); } catch { return { decision: "allow", reason: "" }; }
   const strip = (s) => String(s || "").replace(/^MoorAI:\s*/, "");
   const h = j.hookSpecificOutput || {};
+  if (j.systemMessage && !h.permissionDecision && j.decision !== "block") return { decision: "allow", reason: "", coach: strip(j.systemMessage), ...(h.additionalContext ? { context: strip(h.additionalContext) } : {}) };
   if (h.permissionDecision) return { decision: h.permissionDecision === "deny" ? "deny" : "ask", reason: strip(h.permissionDecisionReason) };
   if (j.decision === "block") return { decision: "deny", reason: strip(j.reason), context: strip(h.additionalContext) };
   if (h.additionalContext) return { decision: "allow", reason: "", context: strip(h.additionalContext) };

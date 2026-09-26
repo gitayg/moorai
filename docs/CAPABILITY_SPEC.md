@@ -20,7 +20,8 @@ everything ambiguous**, but it is no longer report-*only*: an **enrolled** devic
 policy at all now resolves through `BUILTIN_DEFAULT_ACTIONS`, which blocks threats **54** (reverse shell)
 and **65** (local secret egress) and halts-for-sign-off on **55, 56, 57, 63, 44**. Six threats — 11, 43,
 46, 47, 48, 49 — keep the `justify` they already had from the approval set; everything else still
-resolves to `notify`. An **unenrolled** device stays completely inert, by design. Central distributes
+resolves to `notify`. An **unenrolled** device coaches: same detection, a note with the safer way,
+nothing blocked or posted (`data/enforcement.js`). Central distributes
 the policy that overrides any of this in either direction. MoorAI's value is
 (a) **coaching** the employees who use it, (b) giving the security team **visibility** into AI-usage
 risk, and (c) **deterministic prevention** where policy calls for it. Because adoption is voluntary,
@@ -351,7 +352,8 @@ per-threat → data-tier → **built-in prevention tier** → approval-set → `
 is what an **enrolled** device stops with no organisation policy at all. It exists because the measured
 truth before it was *prevention 0% out of the box* — the hook returned early on the fail-open posture and
 `threatActionFor` was never consulted, so a device with no policy detected a reverse shell and let it run.
-An **unenrolled** device is unchanged and stays inert.
+An **unenrolled** device runs the same tier but coaches instead of enforcing (see
+[DETECTION_ENGINE.md](DETECTION_ENGINE.md#enrollment-is-the-line)).
 
 Promotion is evidence-bound: an entry had to fire on **zero** benign samples across 890 benign prompts,
 *and* the corpora had to actually exercise that detector's stages — otherwise "0 benign fires" is a

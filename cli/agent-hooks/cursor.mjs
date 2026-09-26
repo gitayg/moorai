@@ -94,6 +94,16 @@ const json = (o) => ({ stdout: JSON.stringify(o), exitCode: 0 });
 export function fromVerdict(v, p) {
   const decision = v && v.decision ? v.decision : "allow";
   const ev = p && p.hook_event_name;
+  // Coach (unenrolled): always allow. beforeShellExecution / beforeMCPExecution document user_message
+  // ("Message shown in client") and agent_message ("Message sent to agent") without limiting them to a
+  // deny, so the note rides there; the other events document them only "when denied", so the note goes
+  // to stderr (and to additional_context on postToolUse, where the agent reads it).
+  if (v && v.coach) {
+    if (ev === "beforeShellExecution" || ev === "beforeMCPExecution") return json({ permission: "allow", user_message: v.coach, agent_message: v.coach });
+    if (ev === "postToolUse") return { ...json({ additional_context: v.context || v.coach }), stderr: `${v.coach}\n` };
+    if (ev === "preToolUse" || ev === "beforeReadFile" || ev === "subagentStart") return { ...json({ permission: "allow" }), stderr: `${v.coach}\n` };
+    return { stderr: `${v.coach}\n`, exitCode: 0 };
+  }
   switch (ev) {
     case "beforeShellExecution":
     case "beforeMCPExecution":

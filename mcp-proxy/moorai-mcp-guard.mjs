@@ -50,7 +50,7 @@ import { spawn } from "node:child_process";
 import { basename } from "node:path";
 import os from "node:os";
 import { loadConfig } from "../cli/config.mjs";
-import { buildEngine, mcpGateway, decideText, literacyTouchpoint, loadVerifiedPolicy, ratchetPosture, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "../cli/hook-core.mjs";
+import { buildEngine, mcpGateway, decideText, literacyTouchpoint, loadVerifiedPolicy, ratchetPosture, isEnrolled, enforcementAllowed, coachMessage, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "../cli/hook-core.mjs";
 import { CAPS, toolsOfResponse, toolScanText, toolIdentity, resultOfResponse, resultScanText } from "./tool-scan.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "./tool-baseline.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
@@ -87,6 +87,7 @@ function post(alert) {
   // Content-free OTLP mirror — no-op unless an OTLP endpoint is configured; bounded + swallows errors,
   // so it can never touch the proxy path (same contract as the alert post below).
   try { emitOtel(alert, { config: CONFIG, identity: IDENTITY }); } catch { /* telemetry is never enforcement */ }
+  if (!isEnrolled(CONFIG)) return; // unenrolled: no console, nothing posted
   try {
     return fetch(`${CONFIG.serverUrl}/api/alerts`, {
       method: "POST",
@@ -121,6 +122,15 @@ function post(alert) {
 let POLICY = null;
 let ENGINE = null;
 let LAST_POLICY_LOAD = 0;
+// Coach vs enforce — the shared rule (data/enforcement.js), with the same management evidence the hook
+// uses: a durable fail-closed posture keeps enforcing without a token. Coach = forward everything and
+// write the note to stderr, which Claude Desktop keeps in its MCP server log. Claude Desktop has no
+// channel for a proxy to show the user a message on an allowed call, and the result bytes are never
+// rewritten to carry one — so this note is a log line, not a banner.
+let COACH = !isEnrolled(CONFIG);
+function coachNote(what, reason, alternatives) {
+  try { process.stderr.write(`${coachMessage(`flagged ${what} — ${reason || "policy"}`, alternatives && alternatives[0])}\n`); } catch { /* a note, never enforcement */ }
+}
 // Tamper alerts are deduped by their content-free token: this process re-verifies every 60s, and a
 // poisoned cache that is left in place would otherwise page the SOC once a minute forever.
 const REPORTED = new Set();
@@ -158,6 +168,7 @@ async function ensurePolicy() {
   if (Date.now() - LAST_POLICY_LOAD < 60000 && ENGINE) return;
   try {
     const v = await loadVerifiedPolicy(CONFIG);
+    COACH = !enforcementAllowed(CONFIG, { managed: durablePosture().posture === "fail-closed" });
     reportPolicyTrust(v);
     let policy = v.policy;
     if (!policy) {
@@ -296,6 +307,14 @@ async function handleLine(rawLine) {
 
     const g = mcpGateway(ENGINE, POLICY, { tool, server: SERVER, args });
 
+    if (COACH && g.decision === "deny") {
+      coachNote(`MCP tool call ${tool}`, g.reason, g.alternatives);
+      auditCall(tool, "coach", argsHash);
+      rememberCall(msg.id, tool);
+      forward(rawLine);
+      return;
+    }
+
     if (g.decision === "deny") {
       // Blocked: do NOT forward. The real server never receives the call. Return a clean tool error.
       alertBlock(tool, g.gate, g.reason, argsHash);
@@ -376,14 +395,14 @@ async function observeTools(tools) {
         if (!seenOnce(`${name}|${f.threatId}|${f.category}`)) continue;
         alertTool(name, {
           threatId: f.threatId, category: f.category,
-          riskLevel: d.decision === "deny" ? "Blocked" : f.riskLevel,
+          riskLevel: d.decision === "deny" && !COACH ? "Blocked" : f.riskLevel,
           hash: contentHash(f.match || ""),
-          decision: d.decision === "deny" ? "quarantine" : "notify"
+          decision: d.decision === "deny" ? (COACH ? "coach" : "quarantine") : "notify"
         });
       }
       // Report-first: only an explicit org block/kill escalates, and it escalates to the tools/call
       // gate rather than to touching this response.
-      if (d.decision === "deny") QUARANTINE.add(name);
+      if (d.decision === "deny") { if (COACH) coachNote(`advertised metadata of MCP tool ${name}`, d.reasons.join(", "), d.alternatives); else QUARANTINE.add(name); }
     }
 
     // (b) cross-call drift — shadowing across servers, capability expansion / rug-pull on one server.
@@ -605,8 +624,9 @@ async function gateResult(lineBuf) {
 
     // Report-first. Only an explicit block/kill resolution refuses; the house default for #39 is
     // "notify", so an unconfigured device reports and forwards.
-    const blocked = verdict.decision === "deny" && msg.id != null;
+    const blocked = !COACH && verdict.decision === "deny" && msg.id != null;
     const toolName = toolForId(msg.id);
+    if (COACH && verdict.decision === "deny") coachNote(`MCP tool result from ${toolName}`, verdict.reasons.join(", "), verdict.alternatives);
     if (blocked) {
       done = true;
       process.stdout.write(blockedResultLine(msg.id, verdict.reasons.join(", ") || "policy"));

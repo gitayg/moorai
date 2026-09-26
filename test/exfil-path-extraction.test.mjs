@@ -68,6 +68,8 @@ function buildSandbox() {
   const cache = join(home, ".moorai", "hook-policy.json");
   mkdirSync(dirname(cache), { recursive: true });
   writeFileSync(cache, JSON.stringify(TEST_POLICY));
+  // Enrolled: an unenrolled device coaches and posts nothing (data/enforcement.js).
+  writeFileSync(join(home, ".moorai", "config.json"), JSON.stringify({ installToken: "tok-enrolled-test" }));
   return { home, credFile, benignFile, stageFile: join(home, "tmp", "staged.txt") };
 }
 

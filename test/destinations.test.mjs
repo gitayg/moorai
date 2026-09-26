@@ -132,7 +132,7 @@ async function runHook(input, { home, policy = { captureTier: "content-free" } }
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const h = home || mkdtempSync(join(tmpdir(), "moorai-dest-"));
   mkdirSync(join(h, ".curaiq"), { recursive: true });
-  writeFileSync(join(h, ".curaiq", "config.json"), JSON.stringify({ serverUrl: `http://127.0.0.1:${server.address().port}`, tenant: "acme" }));
+  writeFileSync(join(h, ".curaiq", "config.json"), JSON.stringify({ serverUrl: `http://127.0.0.1:${server.address().port}`, tenant: "acme", installToken: "tok-enrolled-test" }));
   const child = spawn(process.execPath, [HOOK], { cwd: ROOT, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, HOME: h, USERPROFILE: h, MOORAI_OFFLINE_MODE: "" } });
   let stdout = "";
   child.stdout.on("data", (c) => (stdout += c));

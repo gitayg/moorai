@@ -1,6 +1,7 @@
 // Client ↔ server bridge. Offline-tolerant: failures never block the user.
 import { startSignup, pollClaim } from "./signup.js";
 import { contentHash } from "./content-hash.js";
+import { enforcementAllowed } from "../data/enforcement.js";
 const BASE = (localStorage.getItem("raiseme.server") || "https://app.moorai.dev").replace(/\/+$/, "");
 const CLIENT_ID = (() => {
   let id = localStorage.getItem("raiseme.clientId");
@@ -22,6 +23,9 @@ let identity = { user: "(browser)", device: navigator.platform || "web", platfor
 function reported() { return { ...identity, actor: contentHash(`${identity.user}@${identity.device}`) }; }
 // The install token authenticates the client to the server for policy + event reporting only.
 function installTok() { return identity.installToken || localStorage.getItem("raiseme.installToken") || ""; }
+// Coach vs enforce, and post vs stay local — the shared rule (data/enforcement.js). An unenrolled app
+// has no console: it coaches in the UI and posts nothing.
+export function enrolled() { return enforcementAllowed({ installToken: installTok() }); }
 export async function loadIdentity() {
   const invoke = window.__TAURI__?.core?.invoke;
   if (invoke) {
@@ -172,6 +176,7 @@ export async function awaitClaim(claimToken, onPending) {
 // Lightweight, scan-independent beacon: lands identity + agent version on the server immediately at
 // boot, without waiting for the slower device/browser scans (which can be slow or hang).
 export function reportIdentity() {
+  if (!enrolled()) return;
   fetch(`${BASE}/api/device-report`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
@@ -199,7 +204,7 @@ export async function reportDevice() {
     let aiShadow = null; // Feature 2 — shadow-AI: catalog-matched AI apps + AI browser extensions (names/ids/flags only)
     try { aiShadow = await invoke("device_ai_shadow"); } catch {}
     const full = { ...dev, browsers, mcp, posture, accounts, aiAssets, aiShadow };
-    fetch(`${BASE}/api/device-report`, {
+    if (enrolled()) fetch(`${BASE}/api/device-report`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
       body: JSON.stringify({ ...reported(), ...full }),
@@ -215,7 +220,7 @@ export async function reportPatches(dev) {
   if (!invoke) return null;
   try {
     const patches = await invoke("os_patch_status");
-    fetch(`${BASE}/api/device-report`, {
+    if (enrolled()) fetch(`${BASE}/api/device-report`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
       body: JSON.stringify({ ...reported(), ...(dev || {}), patches }),
@@ -248,7 +253,7 @@ export function nativeLog(entry) {
 
 // Fire-and-forget: sends only the redacted alert metadata + who/what generated it.
 export function postAlert(alert) {
-  if (!alert) return;
+  if (!alert || !enrolled()) return;
   fetch(`${BASE}/api/alerts`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
@@ -260,6 +265,7 @@ export function postAlert(alert) {
 // Counts a prompt the user pushed to the agent. Metadata only — no prompt content.
 // outcome: "sent" (reached the agent) | "blocked" (stopped by policy).
 export function reportPrompt(outcome, findings = 0) {
+  if (!enrolled()) return;
   fetch(`${BASE}/api/prompt-event`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },

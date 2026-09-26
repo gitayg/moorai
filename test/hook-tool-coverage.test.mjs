@@ -12,8 +12,8 @@
 //
 //   DEFECT 2 — with no policy file, main() returned before the engine was built, so the built-in
 //     prevention tier (cli/hook-core.mjs BUILTIN_DEFAULT_ACTIONS) was unreachable on exactly the devices
-//     with no org policy. The fix is scoped to ENROLLED devices; an unenrolled device stays inert, and
-//     that inertness is asserted here so it cannot be lost by accident.
+//     with no org policy. The fix is scoped to ENROLLED devices; an unenrolled device never enforces
+//     (it coaches — test/unenrolled-coach.test.mjs), and that is asserted here too.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -280,19 +280,26 @@ test("DEFECT 2: the no-policy baseline does NOT harden like the offline fail-clo
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
-test("DEFECT 2: an UNENROLLED device stays inert — no token, no key, no enforcement", () => {
+// CHANGED DELIBERATELY (owner decision). This test used to pin "an unenrolled device stays inert — no
+// enforcement AND no output". The first half still holds and is still asserted: a device nobody enrolled
+// never denies, asks or kills (no token, no key, no console to appeal to). The second half is gone on
+// purpose: it now COACHES — the same built-in defaults run and the developer and the agent are told what
+// was caught and the safer way (data/enforcement.js; full matrix in test/unenrolled-coach.test.mjs).
+test("DEFECT 2: an UNENROLLED device never enforces — it coaches instead (no permissionDecision)", () => {
   const home = sandbox({ enrolled: false, policy: null });
+  const raw = (payload) => {
+    const res = spawnSync("node", [HOOK], { input: JSON.stringify(payload), env: env(home), encoding: "utf8", timeout: 30000 });
+    assert.equal(res.status, 0, res.stderr);
+    return JSON.parse((res.stdout || "").trim() || "{}");
+  };
   try {
-    // Deliberate, and load-bearing. cli/content-hash.mjs collapses every fingerprint to the h2:nokey
-    // sentinel without an enrollment token, cli/config.mjs reports tenant "unprovisioned", and there is
-    // no console to appeal a block to. scripts/score-vector5-production.mjs measures this same inertness
-    // with --unenrolled. A device nobody enrolled must not start denying a developer's tool calls.
     for (const cmd of [REVERSE_SHELL, UNTRUSTED_INSTALL]) {
-      const r = runHook(home, { tool_name: "Bash", tool_input: { command: cmd }, session_id: "d2-unenrolled" });
-      assert.equal(r.decision, "allow", `unenrolled devices stay inert; got ${r.decision} ${r.reason}`);
+      const o = raw({ tool_name: "Bash", tool_input: { command: cmd }, session_id: "d2-unenrolled" });
+      assert.equal(o.hookSpecificOutput?.permissionDecision, undefined, `unenrolled devices never enforce; got ${JSON.stringify(o)}`);
+      assert.match(o.systemMessage || "", /^MoorAI coach: flagged via Bash — #5[47] /);
     }
-    const w = runHook(home, { tool_name: "Write", tool_input: { file_path: join(home, "src", "s.sh"), content: REVERSE_SHELL }, session_id: "d2-unenrolled-w" });
-    assert.equal(w.decision, "allow", `got ${w.decision} ${w.reason}`);
+    const w = raw({ tool_name: "Write", tool_input: { file_path: join(home, "src", "s.sh"), content: REVERSE_SHELL }, session_id: "d2-unenrolled-w" });
+    assert.equal(w.hookSpecificOutput?.permissionDecision, undefined, JSON.stringify(w));
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 

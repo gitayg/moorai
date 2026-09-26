@@ -57,6 +57,8 @@ function startServer(escalation = true) {
 function sandboxHome(text) {
   const home = mkdtempSync(join(tmpdir(), "moorai-esc-"));
   mkdirSync(join(home, ".moorai"), { recursive: true });
+  // Enrolled: an unenrolled device coaches and posts nothing (data/enforcement.js).
+  writeFileSync(join(home, ".moorai", "config.json"), JSON.stringify({ installToken: "tok-enrolled-test" }));
   const file = join(home, "sample.txt");
   writeFileSync(file, text + "\n");
   return { home, file };
@@ -119,6 +121,8 @@ test("WORKER: the detached worker posts the escalation finding and removes its p
   const { srv, port, cats } = await startServer();
   const home = mkdtempSync(join(tmpdir(), "moorai-esc-w-"));
   mkdirSync(join(home, ".moorai"), { recursive: true });
+  // Enrolled: an unenrolled device coaches and posts nothing (data/enforcement.js).
+  writeFileSync(join(home, ".moorai", "config.json"), JSON.stringify({ installToken: "tok-enrolled-test" }));
   const pf = join(home, ".moorai", "escalate-test.json");
   writeFileSync(pf, JSON.stringify({
     text: CLEAN_BUT_PERSUASIVE, stage: "file", tool: "hook:Read",

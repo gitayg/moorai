@@ -59,7 +59,11 @@ Because you can read the code. The agent is **MIT and open source** — the whol
 **macOS (Apple silicon)** — download the `.dmg` from [app.moorai.dev/download/app](https://app.moorai.dev/download/app) (it is not attached to GitHub Releases), or `brew install --cask gitayg/tap/moorai` — see [packaging/README.md](packaging/README.md). The app updates itself in place.
 **Windows** — download the signed `-setup.exe` from [Releases](https://github.com/gitayg/moorai/releases) (built in the open by CI).
 
-Community edition: runs standalone, local policy control, no account required.
+Community edition: runs standalone, no account required. **Without enrollment MoorAI coaches**: it runs the
+same detection and built-in defaults, and shows you (and, where the agent's hook protocol allows, the agent)
+what it caught and the safer way to do it — it never blocks, never asks for sign-off, never ends a session
+and posts nothing anywhere. **Blocking, sign-off and session kill apply once the device is enrolled** in a
+MoorAI console (free up to 200 users).
 
 ### Enroll a device in a management account
 
@@ -91,11 +95,22 @@ curl -fsSL https://raw.githubusercontent.com/gitayg/moorai/main/scripts/install.
 
 Clones to `~/.moorai`, installs dependencies, and registers the on-device PreToolUse hooks. Needs `git` and Node 18+; content-free, no account. Set `MOORAI_NOHOOK=1` to skip hook registration, or `MOORAI_HOME` to change the location.
 
+Until the device is enrolled the hooks coach. In Claude Code a flagged call reaches its normal permission flow
+with a note shown to you and handed to the agent, for example:
+
+```
+MoorAI coach: flagged via Bash — #54 Output & Code. Safer: For remote access use SSH to a known host; to
+test connectivity use a check like nc -z or curl. Not blocked: this device is not enrolled in a MoorAI console.
+```
+
+Enroll the device (below) to have the same finding denied, held for sign-off, or end the session, per policy.
+
 ### Try the CLI guard in 30 seconds
 
 ```bash
 npm run guard -- "here is my key sk-ant-api03-... please debug the charge"
-# ✗ blocked by policy — nothing sent to claude -p (#39 secret)
+# unenrolled: MoorAI coach: flagged 1 issue(s) in this prompt — #39 … Not blocked: … (the prompt is sent)
+# enrolled, #39 set to block: ✗ blocked by threat policy (#39) — nothing sent to claude -p
 ```
 
 ### Wire the context-interception hooks into Claude Code
@@ -173,8 +188,15 @@ fabricating a path is worse than missing one.
   that bar and were deliberately left at their prior action.
 - **One documented exception** — on the **write path only**, threat 65 resolves to `justify`/ask rather
   than `block`, because copying `.env` → `.env.local` is routine work and no benign corpus measures it.
-- **Unenrolled** — completely inert, unchanged, by design. An org policy still wins in both directions:
-  a tenant can soften any built-in default or harden a threat the map omits.
+- **Unenrolled** — coaches. The same built-in defaults run; where they would deny or ask, the hook
+  instead shows the developer — and hands the agent — the category it caught and the safer alternative,
+  and the call goes on to the host's normal permission flow. Nothing is blocked, held for sign-off or
+  killed, and nothing is posted. The rule lives in one place, `data/enforcement.js`, used by the hook,
+  the Codex / Copilot / Gemini / Cursor adapters, the `claude -p` guard, the Claude Desktop MCP proxy
+  and the desktop app. A device under a fail-closed posture (MDM latch or `MOORAI_OFFLINE_MODE`) keeps
+  enforcing without a token, so removing the token is not a way out of an org's policy.
+- **Enrolled** — an org policy wins in both directions: a tenant can soften any built-in default or
+  harden a threat the map omits.
 
 ### Skill Analysis — what is your agent actually being told to do?
 
