@@ -7,7 +7,7 @@
 MoorAI is a **native desktop "Managed AI Host"** for office workers, paired with a **central
 server** for policy and visibility. The employee does their AI work *inside* MoorAI — a native
 app with an embedded, managed webview — so the host sees every prompt, response, paste, and
-upload natively (no browser extension, no DOM hacks). It detects the 72-threat matrix in real
+upload natively (no browser extension, no DOM hacks). It detects the 77-threat matrix in real
 time, **coaches the employee** with the matrix's guidance, and **reports redacted alerts** to a
 central server so the security team has visibility.
 
@@ -18,7 +18,7 @@ resolves every threat to one of `notify` · `justify` · `block` · `kill`, and
 verdicts — up to terminating the session outright (`killSession`). The **default is report-first for
 everything ambiguous**, but it is no longer report-*only*: an **enrolled** device with no organisation
 policy at all now resolves through `BUILTIN_DEFAULT_ACTIONS`, which blocks threats **54** (reverse shell)
-and **65** (local secret egress) and halts-for-sign-off on **55, 56, 57, 63, 44**. Six threats — 11, 43,
+and **65** (local secret egress) and halts-for-sign-off on **55, 56, 57, 63, 44, 73**. Six threats — 11, 43,
 46, 47, 48, 49 — keep the `justify` they already had from the approval set; everything else still
 resolves to `notify`. An **unenrolled** device coaches: same detection, a note with the safer way,
 nothing blocked or posted (`data/enforcement.js`). Central distributes
@@ -28,7 +28,7 @@ risk, and (c) **deterministic prevention** where policy calls for it. Because ad
 it still does not prevent Shadow AI by construction; it reduces risk for those who opt in and
 surfaces organization-wide risk signals.
 
-- **Rule-base:** [`data/threats.json`](../data/threats.json) — 72 threats, 17 categories, English.
+- **Rule-base:** [`data/threats.json`](../data/threats.json) — 77 threats, 17 categories, English.
   Each threat is a rule: `example` = trigger context, `response` = intervention,
   `riskScore = severity × likelihood`.
 - **Intervention model:** risk-tiered and policy-driven — `notify` (report) → `justify` (ask) →
@@ -182,15 +182,15 @@ the rest of the product: the hook runs as the user, so nothing under `~/` is a t
 ## Risk distribution (from the matrix)
 
 Counts are the shipped `riskLevel` labels in `data/threats.json` — the field the engine actually
-ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 72 threats.
+ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 77 threats.
 
 | Level | Count | Nominal score band |
 |---|---|---|
 | Critical | 17 | ≥ 20 |
-| High | 44 | 12–19 |
-| Medium | 11 | 6–11 |
+| High | 47 | 12–19 |
+| Medium | 13 | 6–11 |
 
-Note: 8 of the 72 threats carry a `riskLevel` label outside the nominal band their `riskScore`
+Note: 8 of the 77 threats carry a `riskLevel` label outside the nominal band their `riskScore`
 would place them in (e.g. #65 scores 15 but is labeled Critical; #43 scores 6 but is labeled High).
 The label wins at runtime; the bands in `meta.scoring` are documentation, not an invariant the data
 is validated against.

@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import os from "node:os";
 import { DETECTORS, CLIPBOARD_READ, OUTBOUND_UPLOAD } from "../data/detectors.js";
+import { agentStateWriteProbe } from "../data/agent-state-paths.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { extractEndpointHosts, endpointApproved, extractTransitOverrides, proxyApproved } from "../data/model-endpoints.js";
 import { statePath, latchPath, breadcrumbPath } from "./state-dirs.mjs";
@@ -68,7 +69,8 @@ export const BUILTIN_DEFAULT_ACTIONS = {
   56: "justify", // Destructive tool / MCP call — mirrors threat 43's long-standing "justify"
   57: "justify", // Unsanctioned install — `npx -y` and `curl | sh` are how rustup/homebrew install
   63: "justify", // Rogue model endpoint — a corporate LiteLLM proxy is a legitimate base-URL override
-  44: "justify"  // PHI / HIPAA — the pattern matches ordinary clinical English, so never a hard deny
+  44: "justify", // PHI / HIPAA — the pattern matches ordinary clinical English, so never a hard deny
+  73: "justify"  // Agent chat-history tampering — pruning old sessions is legitimate; the agent doing it is not routine
 };
 
 // Resolve the action for a threat exactly like the app/guard: per-threat → data-tier → built-in
@@ -243,6 +245,16 @@ export function isEnvTemplate(path) {
 export function decideCredFileRead(engine, policy, path) {
   if (typeof path !== "string" || !path || /[\r\n]/.test(path)) return decideText(engine, policy, "", "prompt");
   return decideText(engine, policy, `cat ${path}`, "prompt", { only: [55] });
+}
+
+// #73 for the Write/Edit family. Those tools carry the target only in file_path, and the write branch
+// scans the CONTENT at "output", so a Write into the agent's transcript store never reached
+// agent-history-tamper. The probe restates the path as the equivalent shell write, and only that
+// detector's threat is consulted, so a filename cannot trip any other prompt detector.
+export function decideAgentStateWrite(engine, policy, path) {
+  if (typeof path !== "string" || !path || /[\r\n]/.test(path)) return decideText(engine, policy, "", "prompt");
+  const id = DETECTORS.find((d) => d.detectorId === "agent-history-tamper")?.threatId;
+  return decideText(engine, policy, agentStateWriteProbe(path), "prompt", { only: [id] });
 }
 
 // What the text detectors get to see of a file's first 256 KB (the hook's readFileCapped calls this).

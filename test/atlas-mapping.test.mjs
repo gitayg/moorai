@@ -1,6 +1,6 @@
 // Per-file runner:  node --test test/atlas-mapping.test.mjs
 //
-// THE DEFECT THIS PINS. Every one of the 72 threats carried exactly ONE `atlas` id — zero arrays.
+// THE DEFECT THIS PINS. Every one of the (then) 72 threats carried exactly ONE `atlas` id — zero arrays.
 // A rule that genuinely implements three ATLAS techniques credited one, and the other two read as
 // uncovered in every consumer of the mapping: the public comparison page, the console's compliance
 // crosswalk (`server/compliance.js` groups threats by `t.atlas`), and the SIEM CEF export. The fix
@@ -104,7 +104,27 @@ const CREDITS = [
   [66, "AML.T0118", "data/agent-detections.js reconstructs the spawn/handoff graph and flags orphan subagents and agent-to-agent messages, independent of any tool call"],
   [67, "AML.T0081", "the proxy and CA-trust environment overrides are reported by variable NAME at agent launch — the configuration change that weakens the agent's TLS verification, before any request"],
   [68, "AML.T0080", "craftedAssistantLink requires the decoded payload to ask for PERSISTENCE — a durable write into cross-session memory — as a condition separate from the link shape"],
+  [73, "AML.T0092", "agent-history-tamper parses each shell segment (and a Write/Edit target path) for a delete, truncate, rewrite or forged write into the agent's own transcript store"],
+  [74, "AML.T0061", "inj-self-replication fires on ingested content that tells the model to reproduce the instruction itself into its replies or into what it creates"],
+  [75, "AML.T0067", "out-link-deceptive compares a link's displayed address with its destination host (lookalike, userinfo-hidden host, bidi/zero-width inside the URL)"],
+  [76, "AML.T0011.000", "model-unsafe-load judges each model-load call on its own arguments (pickle-based load, weights_only=False, allow_pickle, safe_mode=False, trust_remote_code)"],
+  [77, "AML.T0035", "model-artifact-collection matches model weights or datasets in the source of an upload, a hub push, or an archive staged into a temp directory"],
 ];
+
+// The bounded credits among those, with the limit the public comparison page prints.
+const PARTIAL = [
+  [73, "AML.T0092", "local agent transcript files only"],
+  [75, "AML.T0067", "links only"],
+  [76, "AML.T0011.000", "load calls only"],
+  [77, "AML.T0035", "model files and caches, one command"]
+];
+
+test("ATLAS-MAP: the bounded new credits state their limit", () => {
+  for (const [threatId, id, limit] of PARTIAL) assert.equal(atlasPartialNote(byId.get(threatId), id), limit, `#${threatId} ${id}`);
+  assert.equal(atlasPartialNote(byId.get(74), "AML.T0061"), null, "#74 is a full AML.T0061 credit");
+  // AML.T0076 (Corrupt AI Model) is a different technique from loading an unsafe artifact; not credited.
+  assert.ok(!threats.some((t) => atlasIds(t).includes("AML.T0076")), "AML.T0076 is not credited");
+});
 
 test("ATLAS-MAP: every re-mapped credit is present", () => {
   const missing = CREDITS.filter(([threatId, id]) => !idsOf(threatId).includes(id))
@@ -145,8 +165,8 @@ test("ATLAS-MAP: distinct technique coverage, in and out of the Agentic AI set",
   const scored = Object.entries(ATLAS).filter(([id, v]) => v.agentic && !id.includes(".", 7)).length;
 
   assert.equal(scored, 76, "the scored Agentic AI set is 76 top-level techniques");
-  assert.equal(distinct.size, 28, "distinct ATLAS techniques credited across the rule base");
-  assert.equal(agenticTop.length, 27, "credited techniques inside the 76-technique Agentic AI set");
+  assert.equal(distinct.size, 33, "distinct ATLAS techniques credited across the rule base");
+  assert.equal(agenticTop.length, 31, "credited techniques inside the 76-technique Agentic AI set");
 });
 
 // ---------------------------------------------------------------------------------------------

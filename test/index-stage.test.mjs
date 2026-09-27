@@ -146,10 +146,11 @@ test("DetectionEngine.scanForIndex is the choke-point and covers the corpus inde
   // The detectors that declare the stage are the ones that can fire there. Pinned as an inventory so
   // the index surface cannot silently gain or lose one; the four ATLAS v2026.09 detectors joined it
   // because an auto-loaded rules file is exactly where a crafted assistant link, a capability-recon
-  // request, an AI-addressed block or rendering-hidden steering text would be planted.
+  // request, an AI-addressed block or rendering-hidden steering text would be planted. inj-self-replication
+  // (#74) joined for the same reason: a rules file is where a self-copying instruction persists.
   const scoped = DETECTORS.filter((d) => (d.stages || [d.stage]).includes("index")).map((d) => d.detectorId);
   assert.deepEqual(scoped.sort(), [
-    "cloak-ai-audience", "inj-untrusted-directive", "link-assistant-prefill",
+    "cloak-ai-audience", "inj-self-replication", "inj-untrusted-directive", "link-assistant-prefill",
     "mcp-hidden-canary", "mcp-tool-poisoning", "obf-rendered-hidden", "recon-agent-capabilities"
   ]);
 });

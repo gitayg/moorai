@@ -17,7 +17,7 @@ import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideCredFileRead, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE, isEnrolled, enforcementAllowed, coachMessage } from "./hook-core.mjs";
+import { buildEngine, decideText, decideCredFileRead, decideAgentStateWrite, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE, isEnrolled, enforcementAllowed, coachMessage } from "./hook-core.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, recordDestination, readDestinations, requestKill } from "./signals.mjs";
@@ -1544,6 +1544,12 @@ async function main() {
     const text = writeText(tool, ti);
     const d = decideText(engine, policy, text, "output");
     let dec = d.decision, reasons = d.reasons.slice(), alts = d.alternatives;
+    // #73 — the target PATH, probed as the equivalent shell write: a Write/Edit into the agent's own
+    // transcript store (data/agent-state-paths.js). Only that threat is consulted.
+    const sd = decideAgentStateWrite(engine, policy, path);
+    d.findings.push(...sd.findings);
+    if (RANK[sd.decision] > RANK[dec]) { dec = sd.decision; reasons = sd.reasons; alts = sd.alternatives; }
+    if (sd.kill) { d.kill = true; d.killIds.push(...sd.killIds); }
     report(d.findings, "output", `hook:${tool}`, dec === "deny", policy.captureTier, { filePath: path, toolName: tool });
     logBehavior(tool, path || tool, text, d, "output");
     if (d.kill) killSession(tool, d.killIds, "output");

@@ -1,9 +1,9 @@
 {
   "name": "MoorAI Agent Security Benchmark",
-  "generatedAt": "2026-09-24T22:12:28.312Z",
+  "generatedAt": "2026-09-27T01:47:39.184Z",
   "engine": {
-    "detectors": 88,
-    "threats": 72,
+    "detectors": 95,
+    "threats": 77,
     "corpusCases": 102
   },
   "corpus": {
@@ -16,28 +16,28 @@
     "total": 10,
     "byItem": {
       "LLM01": {
-        "threats": 7,
-        "detectors": 18
+        "threats": 8,
+        "detectors": 19
       },
       "LLM02": {
-        "threats": 17,
-        "detectors": 34
+        "threats": 18,
+        "detectors": 36
       },
       "LLM03": {
-        "threats": 6,
-        "detectors": 2
+        "threats": 7,
+        "detectors": 3
       },
       "LLM04": {
         "threats": 1,
         "detectors": 0
       },
       "LLM05": {
-        "threats": 6,
-        "detectors": 14
+        "threats": 7,
+        "detectors": 15
       },
       "LLM06": {
-        "threats": 14,
-        "detectors": 5
+        "threats": 15,
+        "detectors": 6
       },
       "LLM07": {
         "threats": 3,
@@ -45,7 +45,7 @@
       },
       "LLM08": {
         "threats": 3,
-        "detectors": 7
+        "detectors": 8
       },
       "LLM09": {
         "threats": 13,

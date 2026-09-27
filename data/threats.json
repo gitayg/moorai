@@ -1471,6 +1471,113 @@
         "AML.T0129": "file-metadata channel only"
       },
       "stride": "Tampering"
+    },
+    {
+      "id": 73,
+      "category": "Agents & Permissions",
+      "threat": "Agent chat-history tampering",
+      "example": "An agent tool call deletes, truncates, rewrites or fabricates the agent's own session transcripts or prompt history (rm / sed -i / truncate on ~/.claude/projects/*.jsonl, ~/.claude/history.jsonl, ~/.codex/sessions, ~/.cursor/chats, ~/.gemini/tmp/<hash>/chats, ~/.copilot/session-state), or writes a forged thread into that store, hiding what an injected instruction made it do.",
+      "response": "Halt and review before an agent edits its own history. The transcript is the record of what the agent did, and an agent (or an instruction it ingested) that rewrites it is covering its tracks. Keep transcripts out of the agent's write scope and archive them yourself.",
+      "saferAlternative": "Leave the transcripts in place; archive or prune old sessions yourself instead of letting the agent delete or edit them.",
+      "severity": 4,
+      "likelihood": 2,
+      "riskScore": 8,
+      "riskLevel": "Medium",
+      "sources": [
+        "Agent safety",
+        "OWASP_Agentic"
+      ],
+      "owasp": "LLM06",
+      "atlas": "AML.T0092",
+      "atlasPartial": {
+        "AML.T0092": "local agent transcript files only"
+      },
+      "stride": "Repudiation"
+    },
+    {
+      "id": 74,
+      "category": "Prompt Injection",
+      "threat": "Self-replicating prompt",
+      "example": "A fetched page, repository file or tool result tells the model to copy the instruction itself into every reply, every email it writes, every file or commit it creates, or to other agents, so the injection propagates and persists (Morris II-style worm).",
+      "response": "Treat content that asks the model to reproduce itself as an injection, not as page text. Do not copy it into outputs or files; review anything the agent already wrote after ingesting it.",
+      "saferAlternative": "Have the agent summarise the content as data, and check recent outputs and commits for the copied instruction.",
+      "severity": 4,
+      "likelihood": 3,
+      "riskScore": 12,
+      "riskLevel": "High",
+      "sources": [
+        "OWASP",
+        "Agent safety"
+      ],
+      "owasp": "LLM01",
+      "atlas": "AML.T0061",
+      "stride": "Tampering"
+    },
+    {
+      "id": 75,
+      "category": "Output & Code",
+      "threat": "Deceptive link in AI output",
+      "example": "An answer or a fetched page shows a trusted address as the link text — https://github.com/acme/app/releases — while the link opens a lookalike or unrelated host, or a URL is written as https://github.com@mirror.example/ so the real host hides after the @.",
+      "response": "Do not open a link whose visible address differs from its destination. Hover or copy the real URL and check the host before following it.",
+      "saferAlternative": "Open the address you expect by typing it or from a bookmark, not through the link the answer shows.",
+      "severity": 4,
+      "likelihood": 3,
+      "riskScore": 12,
+      "riskLevel": "High",
+      "sources": [
+        "OWASP",
+        "NIST"
+      ],
+      "owasp": "LLM05",
+      "atlas": "AML.T0067",
+      "atlasPartial": {
+        "AML.T0067": "links only"
+      },
+      "stride": "Spoofing"
+    },
+    {
+      "id": 76,
+      "category": "Add-ons & Tools",
+      "threat": "Unsafe AI model loading",
+      "example": "The agent loads a downloaded model with a loader that runs code from the file — torch.load(..., weights_only=False), pickle/joblib/dill of a model from a URL or the Downloads folder, numpy allow_pickle=True, Keras safe_mode=False, or trust_remote_code=True.",
+      "response": "Load downloaded models only in weight-only formats. A pickle-based load of an untrusted file executes whatever the file contains.",
+      "saferAlternative": "Use safetensors, or torch.load(..., weights_only=True), and leave trust_remote_code off unless the repository's code has been reviewed.",
+      "severity": 5,
+      "likelihood": 3,
+      "riskScore": 15,
+      "riskLevel": "High",
+      "sources": [
+        "OWASP",
+        "NIST"
+      ],
+      "owasp": "LLM03",
+      "atlas": "AML.T0011.000",
+      "atlasPartial": {
+        "AML.T0011.000": "load calls only"
+      },
+      "stride": "Elevation of Privilege"
+    },
+    {
+      "id": 77,
+      "category": "Data Exposure",
+      "threat": "AI model or dataset collection",
+      "example": "The agent archives model weights or datasets — ~/.cache/huggingface, ~/.ollama/models, *.safetensors, *.gguf — into a temp directory, pipes them into an upload, copies them to a remote host or bucket, or pushes them to a model hub.",
+      "response": "Stop the transfer and confirm that the model or dataset may leave the device and where it is going.",
+      "saferAlternative": "Publish models through the approved registry or pipeline, not from an agent's shell.",
+      "severity": 4,
+      "likelihood": 2,
+      "riskScore": 8,
+      "riskLevel": "Medium",
+      "sources": [
+        "OWASP",
+        "NIST"
+      ],
+      "owasp": "LLM02",
+      "atlas": "AML.T0035",
+      "atlasPartial": {
+        "AML.T0035": "model files and caches, one command"
+      },
+      "stride": "Information Disclosure"
     }
   ]
 }

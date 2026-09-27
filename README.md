@@ -183,9 +183,11 @@ fabricating a path is worse than missing one.
   fail-open posture, `threatActionFor` was never consulted, and out-of-the-box prevention was measurably
   **0%**. Resolution order is now `policy.threatPolicy` → `policy.tierPolicy` →
   **`BUILTIN_DEFAULT_ACTIONS`** → the approval set → `notify`. `block`: **54** (reverse shell) and **65**
-  (local secret egress). `justify` (halt and ask): **55, 56, 57, 63, 44**. Every promotion had to fire on
+  (local secret egress). `justify` (halt and ask): **55, 56, 57, 63, 44, 73**. Every promotion had to fire on
   **zero** benign samples across 890 benign prompts; threats 43, 39, 15, 2, 3, 40 and 50 did not clear
-  that bar and were deliberately left at their prior action.
+  that bar and were deliberately left at their prior action. #73 (agent chat-history tampering) fires on
+  none of them, but none of them names an agent's transcript store, so its benign evidence is the
+  detector's own hard negatives (`test/agent-state-detectors.test.mjs`).
 - **One documented exception** — on the **write path only**, threat 65 resolves to `justify`/ask rather
   than `block`, because copying `.env` → `.env.local` is routine work and no benign corpus measures it.
 - **Unenrolled** — coaches. The same built-in defaults run; where they would deny or ask, the hook
@@ -417,7 +419,7 @@ so internal files can move without breaking consumers.
 
 ## How it works
 
-A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against a 72-threat matrix (17 categories) + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is MIT; the console is commercial.
+A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against a 77-threat matrix (17 categories) + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is MIT; the console is commercial.
 
 ## Learn more
 
