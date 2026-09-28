@@ -53,7 +53,7 @@ function gatherInventory() {
         ...(bom.providers || []).filter((p) => p.model).map((p) => ({ name: p.model, provider: p.provider, local: false })),
         ...(bom.localModels || []).map((m) => ({ name: m.name, provider: m.runtime, local: true }))
       ],
-      mcpServers: (bom.mcpServers || []).map((s) => ({ name: s.name, scope: s.scope, transport: s.transport, caps: s.caps || {}, level: s.level, running: live.has(`${s.scope}:${s.name}`) ? live.get(`${s.scope}:${s.name}`) : undefined })),
+      mcpServers: (bom.mcpServers || []).map((s) => ({ name: s.name, scope: s.scope, transport: s.transport, caps: s.caps || {}, level: s.level, reputation: s.reputation || null, running: live.has(`${s.scope}:${s.name}`) ? live.get(`${s.scope}:${s.name}`) : undefined })),
       extensions: (bom.editorExtensions || []).map((x) => ({ name: x.id, editor: x.editor, version: x.version })),
       runtimes: (bom.localRuntimes || []).map((r) => ({ name: r.runtime, ports: r.ports || [], bind: r.bind })),
       apiKeys: (bom.apiKeysAtRest || []).map((k) => ({ provider: k.provider, locationClass: k.locationClass, location: k.location, keyHash: k.keyHash }))
@@ -106,14 +106,19 @@ function sanctioned(name, allow) {
 }
 
 // ---- risk note per unsanctioned item ----
+// A server whose first-seen reputation is poor or bad ranks high whatever its inferred scope.
+const LOW_REP = new Set(["poor", "bad"]);
 function mcpRisk(s) {
   const c = s.caps || {};
   const reach = [c.net && "network", c.fs && "filesystem", c.cred && "credential"].filter(Boolean);
-  const risk = s.level === "high" || (c.net && (c.fs || c.cred)) ? "high" : s.level === "med" || c.net || c.fs || c.cred ? "med" : "low";
-  const note = reach.length
+  const r = s.reputation;
+  const lowRep = !!r && LOW_REP.has(r.band);
+  const risk = lowRep || s.level === "high" || (c.net && (c.fs || c.cred)) ? "high" : s.level === "med" || c.net || c.fs || c.cred ? "med" : "low";
+  let note = reach.length
     ? `unapproved MCP server with ${reach.join(" + ")} scope`
     : "unapproved MCP server (no elevated scope inferred)";
-  return { risk, note, scope: reach.join(" · ") || "—" };
+  if (lowRep) note += ` — ${r.band} reputation: ${r.reasons.join(", ")}`;
+  return { risk, note, scope: reach.join(" · ") || "—", ...(r ? { reputation: r } : {}) };
 }
 function modelRisk(m) {
   return m.local
@@ -205,7 +210,7 @@ function renderGroups(items, mode) {
     for (const x of g) {
       const tag = mode === "unclassified" ? "?" : x.risk;
       const meta = x.kind === "model" ? `(${x.local ? "local" : "cloud"}, ${x.provider})`
-        : x.kind === "mcp-server" ? x.scope + (x.running === true ? "  (running)" : "")
+        : x.kind === "mcp-server" ? x.scope + (x.running === true ? "  (running)" : "") + (x.reputation ? `  reputation ${x.reputation.score}/100 ${x.reputation.band}` : "")
         : x.kind === "local-runtime" ? `ports ${x.ports.join(",") || "—"} · ${x.bind}`
         : x.kind === "api-key" ? `${x.locationClass}${x.location ? " " + x.location : ""} · ${x.keyHash}`
         : `${x.editor}${x.version ? " v" + x.version : ""}`;

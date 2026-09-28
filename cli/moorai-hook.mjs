@@ -26,6 +26,9 @@ import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
 import { isSkillSurface, skillSurfaceKind } from "../data/skill-surface.js";
 import { skillIntents } from "./skill-analysis.mjs";
 import { extractHosts } from "../data/model-endpoints.js";
+import { registerInstructionFingerprints } from "./instruction-fingerprints.mjs";
+import { hookReputation } from "./mcp-reputation.mjs";
+import { OUTBOUND_UPLOAD } from "../data/outbound-upload.js";
 import { isNewDestination } from "../data/destination-map.js";
 import { signApproval, argsHash } from "../data/agency-sign.mjs";
 import { contentTells, assessSession, assessTrifecta, assessCrossServerTrifecta, trifectaLegs, serverOf } from "../data/agent-behavior.js";
@@ -44,6 +47,7 @@ import { resultScanText, CAPS } from "../mcp-proxy/tool-scan.mjs";
 import { observeDrift, driftConfig, cloudProfiles, normalizeRemote } from "../data/learned-drift.js";
 import { deletionTally, assessDeletionVolume, deletionConfig } from "../data/deletion-volume.js";
 import { readStateJson, writeStateJson, repoIdentity, LEARNED_DRIFT_FILE, DELETION_VOLUME_FILE } from "./drift-state.mjs";
+import { captureTask, judgeAction, CLASS_TEXT } from "./intent-alignment.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -95,6 +99,10 @@ const POSTTOOL_MATCHERS = ["WebFetch", "WebSearch"];
 // resolves and a test must READ the list rather than import it. test/webfetch-result-stage.test.mjs
 // asserts both layers end-to-end (the registered matcher, and the dispatch) through the real hook.
 const POST_DISPATCHED_TOOLS = ["WebFetch", "WebSearch"];
+// The user's own prompt, for intent alignment (cli/intent-alignment.mjs). UserPromptSubmit takes no
+// matcher; the one entry fires on every prompt. The handler prints nothing — stdout on this event is
+// added to the model's context — and writes only keyed hashes of the prompt's derived features.
+const PROMPT_MATCHERS = [""];
 
 function settingsPath() { return join(os.homedir(), ".claude", "settings.json"); }
 function isCuraiq(entry) { return JSON.stringify(entry).includes("moorai-hook"); }
@@ -114,7 +122,7 @@ function hookEntry(matcher) { return { matcher, hooks: [{ type: "command", comma
 // converge and uninstall all iterate ONE list — the way the PreToolUse-only versions of those three
 // functions drifted apart is exactly how a second event gets added to install and forgotten in
 // converge, leaving upgraded devices permanently on the old surface.
-const REGISTERED_EVENTS = { PreToolUse: PRETOOL_MATCHERS, PostToolUse: POSTTOOL_MATCHERS };
+const REGISTERED_EVENTS = { PreToolUse: PRETOOL_MATCHERS, PostToolUse: POSTTOOL_MATCHERS, UserPromptSubmit: PROMPT_MATCHERS };
 function withOurEntries(s, event) {
   const cur = Array.isArray(s.hooks?.[event]) ? s.hooks[event] : [];
   return [...cur.filter((e) => !isCuraiq(e)), ...REGISTERED_EVENTS[event].map(hookEntry)];
@@ -370,6 +378,9 @@ const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform
 // SESSION is the current trace/session id (Claude Code's session_id, one-way hashed), set in main().
 // It groups an actor's events for trace-gap detection and is the source id for cross-agent handoffs.
 let SESSION = "";
+// The raw session id, kept in memory only: intent alignment hashes it with its own device-local key,
+// because SESSION (tenant-keyed) is one constant sentinel on an unenrolled device.
+let SESSION_ID = "";
 // ACTOR is whose events these are. For a subagent's OWN tool calls, Claude Code stamps the hook stdin
 // payload with `agent_id` + `agent_type` (verified against the hooks docs — these are common input
 // fields present only inside a subagent). That is the subagent-lineage linkage the orphan/baseline TODO
@@ -454,7 +465,9 @@ async function exitHook() {
   await flushAlerts();
   process.exit(0);
 }
+let LEAK_COACH = null; // set by report() when an unenrolled device sees an instr-leak-* finding
 function report(findings, stage, tool, blocked, tier, extras, agency) {
+  if (COACH && !LEAK_COACH && findings.some((f) => String(f.detectorId || "").startsWith("instr-leak-"))) LEAK_COACH = { reason: "flagged #52 protected instructions (CLAUDE.md / AGENTS.md / rules) leaving in output", alts: saferAlternativesFor([52]) };
   if (COACH) blocked = false; // coached, not blocked: the local ledger records what actually happened
   for (const f of findings) {
     const base = { threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool, ts: new Date().toISOString(), contentHash: contentHash(f.match || ""), ...IDENTITY };
@@ -1099,6 +1112,21 @@ function checkSecretEgress(policy, text, tool, stage) {
   } catch { return false; }
 }
 
+// Intent alignment for an already-risky call (cli/intent-alignment.mjs). Posts one content-free alert
+// the first time a session's action targets something its task never mentioned, and returns the
+// adjusted verdict. Only allow -> ask, and only when the org opted in (intentAlignment: "ask") or the
+// device coaches (where "ask" becomes coach text and never a prompt). A deny is not re-judged.
+function intentStep(policy, tool, ti, findings, dec, reasons, alts) {
+  if (dec === "deny") return { dec, reasons, alts };
+  const r = judgeAction(policy, SESSION_ID, tool, ti, findings);
+  if (!r) return { dec, reasons, alts };
+  if (r.fresh) post({ threatId: 64, category: "Action outside the stated task", riskLevel: "Medium", stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: `intent:${r.cls}`, intent: { class: r.cls, unmatched: r.unmatched, targets: r.targets, prompts: r.prompts, semantic: r.semantic, mode: r.mode }, ...IDENTITY });
+  const why = `action outside the stated task — ${CLASS_TEXT[r.cls]}`;
+  if (r.mode !== "ask" && !COACH) return { dec, reasons, alts };
+  if (dec === "allow") return { dec: "ask", reasons: [why], alts: saferAlternativesFor([64]) };
+  return { dec, reasons: [...reasons, why], alts };
+}
+
 // The decision is written to stdout BEFORE the telemetry drain, deliberately. Claude Code reads this
 // process's stdout to completion, so writing early does not release the agent any sooner — what it
 // does buy is that the enforcement verdict is already in the pipe if anything about the drain goes
@@ -1117,6 +1145,7 @@ function coachOut(hookEventName, reason, alternatives) {
 }
 async function emit(decision, reason, alternatives = []) {
   if (COACH && decision !== "allow") process.stdout.write(coachOut("PreToolUse", reason, alternatives));
+  else if (COACH && LEAK_COACH) process.stdout.write(coachOut("PreToolUse", LEAK_COACH.reason, LEAK_COACH.alts));
   else if (decision !== "allow") {
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision === "deny" ? "deny" : "ask", permissionDecisionReason: `MoorAI: ${withSafer(reason, alternatives)}` } }));
   }
@@ -1287,7 +1316,7 @@ async function handlePostToolUse(input, tool, policy, engine) {
   // would have cost 15 real detections to save 40 alerts — the measurement is what separates them, and
   // the prefix is not evidence.
   const OUTBOUND_ONLY_THREATS = new Set([65, 32]);
-  const raw = decideText(engine, policy, text, "output");
+  const raw = decideText(engine, policy, text, "output", { ctx: { inbound: true } });
   const d = dropOutboundOnly(raw, OUTBOUND_ONLY_THREATS, policy, text);
   report(d.findings, "output", `hook:${tool}`, d.decision === "deny", policy.captureTier, { toolName: tool });
   logBehavior(tool, url || tool, text, d, "output");
@@ -1347,6 +1376,7 @@ async function main() {
   const tool = TOOL_ALIASES[input.tool_name] || input.tool_name || "";
   const ti = input.tool_input || {};
   SESSION = contentHash(input.session_id || ""); // content-free trace/session id for baseline + lineage
+  SESSION_ID = typeof input.session_id === "string" ? input.session_id : "";
   // Subagent lineage: a subagent's own tool-call payloads carry agent_id/agent_type (see ACTOR above).
   // Attribute those events to the subagent (a distinct actor) with the spawning session as its parent;
   // top-level events stay attributed to the session. All ids are one-way hashed — content-free.
@@ -1434,6 +1464,9 @@ async function main() {
   COACH = !enforcementAllowed(CONFIG, { managed: posture.posture === "fail-closed" });
   POLICY = policy; // read by logBehavior's agent-detection hand-off (maybeAgentScan)
   const engine = buildEngine(policy);
+  // Instruction-leak fingerprints of the rules files this agent runs under (lazy: nothing is read until a
+  // scan reaches a fingerprint detector with enough text). data/detectors-instruction-leak.js.
+  registerInstructionFingerprints(input.cwd);
   // The "index" stage's production caller: screen the context this agent auto-loaded (CLAUDE.md,
   // .mcp.json, settings, rules files) — content that enters the model with no tool call, so no other
   // branch below ever sees it. Detached, interval-bounded, report-only; see maybeIndexScan.
@@ -1444,6 +1477,8 @@ async function main() {
   // doubly wrong: it would scan tool_input (the url + prompt, ignoring the page entirely) and answer with
   // the PreToolUse permissionDecision shape, which this event's schema rejects.
   if (input.hook_event_name === "PostToolUse") return handlePostToolUse(input, tool, policy, engine);
+  // The user's task, captured as keyed hashes of what it mentions. Never a decision, never output.
+  if (input.hook_event_name === "UserPromptSubmit") { await captureTask(input, policy); return exitHook(); }
   // Learned per-agent drift — one observation per PreToolUse call, before any branch can return.
   observeLearnedDrift(policy, tool, ti, input.cwd);
 
@@ -1468,18 +1503,24 @@ async function main() {
     if (d.kill) killSession("Read", d.killIds, "file");
     let rdec = d.decision, ralts = d.alternatives;
     if (reportEnvelope(policy, "Read", { tool: "Read", paths: [ti.file_path] }, "file") && rdec !== "deny") { rdec = "deny"; ralts = saferAlternativesFor([64]); }
+    let rreasons = d.reasons;
+    ({ dec: rdec, reasons: rreasons, alts: ralts } = intentStep(policy, "Read", ti, d.findings, rdec, rreasons, ralts));
     // AFTER every check that can still deny, and skipped entirely on a deny: escalation can send the
     // text to the agent's own provider, so running it first meant content the policy was about to
     // block had already left the device. The mcp__/Task branches always denied before their external
     // calls; Read and Bash did not.
     if (rdec !== "deny") await maybeEscalate(policy, text, "file", "hook:Read", d, engine);
-    return emit(rdec, `${d.kill ? "killed session" : "blocked Read"} of ${basename(ti.file_path || "file")} — ${d.reasons.join(", ")}`, ralts);
+    return emit(rdec, `${d.kill ? "killed session" : "blocked Read"} of ${basename(ti.file_path || "file")} — ${rreasons.join(", ")}`, ralts);
   }
   if (tool === "Bash") {
     let dec = "allow", reasons = [], alts = [], finds = [], btext = "", killIds = [];
+    // A file an UPLOAD command reads is leaving the device; the command text itself is outbound when it
+    // uploads or names a host. Only these carry ctx.egress (instr-leak-egress is opt-in on it).
+    const uploading = OUTBOUND_UPLOAD.some((r) => r.test(ti.command || ""));
+    const cmdEgress = uploading || extractHosts(ti.command || "").length > 0;
     for (const p of extractReadPaths(ti.command)) {
       const t = readFileCapped(agentPath(p, input.cwd)); btext += t + "\n";
-      const d = decideText(engine, policy, t, "file", { ctx: { template: isEnvTemplate(p) } });
+      const d = decideText(engine, policy, t, "file", { ctx: { template: isEnvTemplate(p), egress: uploading } });
       finds.push(...d.findings);
       if (d.kill) killIds.push(...d.killIds);
       if (RANK[d.decision] > RANK[dec]) { dec = d.decision; reasons = d.reasons; alts = d.alternatives; }
@@ -1493,7 +1534,7 @@ async function main() {
     }
     // T1-2/T1-1 — scan the COMMAND itself (not just files it reads) so command-level detectors enforce:
     // typosquat/hallucinated install (#62), destructive (#43), reverse shell (#54), untrusted install (#57).
-    const cmdD = decideText(engine, policy, ti.command, "prompt");
+    const cmdD = decideText(engine, policy, ti.command, "prompt", { ctx: { egress: cmdEgress } });
     finds.push(...cmdD.findings);
     if (cmdD.kill) killIds.push(...cmdD.killIds);
     if (RANK[cmdD.decision] > RANK[dec]) { dec = cmdD.decision; reasons = cmdD.reasons; alts = cmdD.alternatives; }
@@ -1511,6 +1552,7 @@ async function main() {
       if (dec === "allow") { dec = "ask"; reasons = ["unusual deletion volume in session"]; alts = saferAlternativesFor([43]); }
       else if (dec === "ask") reasons = [...reasons, "unusual deletion volume in session"];
     }
+    ({ dec, reasons, alts } = intentStep(policy, "Bash", ti, finds, dec, reasons, alts));
     // See the Read branch: escalation runs last and never on a deny, so a local-secret-egress or
     // out-of-envelope command cannot ship its content to the provider on its way to being blocked.
     if (dec !== "deny") await maybeEscalate(policy, btext, "file", "hook:Bash", { findings: finds }, engine);
@@ -1542,7 +1584,7 @@ async function main() {
   if (WRITE_TOOLS.has(tool)) {
     const path = ti.file_path || ti.notebook_path || "";
     const text = writeText(tool, ti);
-    const d = decideText(engine, policy, text, "output");
+    const d = decideText(engine, policy, text, "output", { ctx: { targetPath: path } });
     let dec = d.decision, reasons = d.reasons.slice(), alts = d.alternatives;
     // #73 — the target PATH, probed as the equivalent shell write: a Write/Edit into the agent's own
     // transcript store (data/agent-state-paths.js). Only that threat is consulted.
@@ -1593,7 +1635,7 @@ async function main() {
   if (tool === "WebFetch") {
     const url = typeof ti.url === "string" ? ti.url : "";
     const prompt = typeof ti.prompt === "string" ? ti.prompt : "";
-    const d = decideText(engine, policy, `${url}\n${prompt}`, "prompt");
+    const d = decideText(engine, policy, `${url}\n${prompt}`, "prompt", { ctx: { egress: true } });
     let dec = d.decision, reasons = d.reasons.slice(), alts = d.alternatives;
     report(d.findings, "egress", "hook:WebFetch", dec === "deny", policy.captureTier, { toolName: "WebFetch" });
     logBehavior("WebFetch", url || "WebFetch", `${url}\n${prompt}`, d, "egress");
@@ -1629,6 +1671,12 @@ async function main() {
     };
     if (g.gate === "server") { post({ threatId: 0, category: "MCP: unapproved server", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(server), ...IDENTITY, ...(signApproval(tool, argsH, "deny") || {}) }); audit("deny"); return emit("deny", g.reason, saferAlternativesFor([25])); }
     if (g.gate === "args") { post({ threatId: 0, category: "MCP: denied tool argument", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: contentHash(args), ...IDENTITY, ...(signApproval(tool, argsH, "deny") || {}) }); audit("deny"); return emit("deny", g.reason); }
+    // MCP server reputation: evidence about the server's package (registry age, repo link, SkillTriage
+    // verdict). Reported on first sight or a version change; refused only below an org's blockBelow.
+    let rep = null;
+    try { rep = hookReputation(server, { policy: policy.mcpReputation, enforce: !COACH, identityHash: contentHash }); } catch { /* reputation is evidence; fail open */ }
+    if (rep && rep.report) post({ ...rep.alert, ...IDENTITY });
+    if (rep && (rep.action === "block" || rep.action === "coach")) { audit("deny"); return emit("deny", `${tool} — MCP server reputation ${rep.rep.score}/100 (${rep.rep.band}: ${rep.rep.reasons.join(", ")}) is below your organization's threshold`); }
     // T1-5 — entitlement envelope: an MCP server outside the agent's declared scope is drift.
     if (reportEnvelope(policy, tool, { tool, mcpServer: server }, "egress")) { audit("deny"); return emit("deny", `${tool} — out-of-envelope MCP server`, saferAlternativesFor([64])); }
     // T1-1 — model-endpoint allow-list on the serialized args (a tool arg pointing at a rogue LLM host).
@@ -1643,8 +1691,9 @@ async function main() {
     report(g.findings, "egress", `hook:${tool}`, g.decision === "deny", policy.captureTier, { toolName: tool, argText: args }, signApproval(tool, argsH, g.decision === "deny" ? "deny" : "allow"));
     logBehavior(tool, tool, args, { decision: g.decision, findings: g.findings }, "egress");
     if (g.kill) killSession(tool, g.killIds, "egress");
-    audit(g.decision);
-    return emit(g.decision, `${g.kill ? "killed session" : g.decision === "ask" ? "needs justification" : "blocked"} ${tool} — ${g.reason}`, g.alternatives);
+    const it = intentStep(policy, tool, ti, g.findings, g.decision, g.reason ? [g.reason] : [], g.alternatives);
+    audit(it.dec);
+    return emit(it.dec, `${g.kill ? "killed session" : it.dec === "ask" ? "needs justification" : "blocked"} ${tool} — ${it.reasons.join(", ")}`, it.alts);
   }
   // Tier-2 / #66 — sub-agent spawn / A2A delegation (Claude Code's Task tool). Record the delegation
   // content-free, scan the delegated prompt for injection, apply the parent's entitlement envelope, and

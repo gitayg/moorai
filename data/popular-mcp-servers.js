@@ -1,0 +1,86 @@
+// Names of popular MCP servers published to npm and PyPI: the reference set for the MCP-server typosquat
+// check in data/mcp-reputation.js. data/popular-packages.js covers general-purpose libraries; an attacker
+// squatting an MCP server copies an MCP server name, which that list does not hold.
+//
+// Source: the SkillTriage public catalogue seed (skilltriage/data/catalog-seed.json: the official MCP
+// Registry (CC0), modelcontextprotocol/servers, MIT/CC0 community lists, npm, and the mcpizy.com
+// directory), every kind "mcp" entry with an npm or PyPI package, lower-cased and de-duplicated. Package
+// names only: 238 npm + 87 PyPI.
+
+export const POPULAR_MCP_SERVERS = {
+  npm: [
+    "@21st-dev/magic", "@4everland/hosting-mcp", "@aashari/mcp-server-atlassian-jira", "@activecampaign/postmark-mcp",
+    "@aikidosec/mcp", "@antv/mcp-server-chart", "@apify/actors-mcp-server", "@auth0/auth0-mcp-server",
+    "@automattic/mcp-wordpress-remote", "@azure-devops/mcp", "@azure/mcp", "@bankless/onchain-mcp",
+    "@benborla29/mcp-server-mysql", "@bldbl/mcp", "@brave/brave-search-mcp-server", "@brightdata/mcp",
+    "@browserbasehq/mcp", "@browsermcp/mcp", "@browserstack/mcp-server", "@cap-js/mcp-server",
+    "@carbonvoice/cv-mcp-server", "@chargebee/mcp", "@circleci/mcp-server-circleci", "@clerk/agent-toolkit",
+    "@cloudbase/cloudbase-mcp", "@cloudflare/mcp-server-cloudflare", "@cocal/google-calendar-mcp",
+    "@codespar/mcp-mercado-libre", "@codespar/mcp-mercado-pago", "@coingecko/coingecko-mcp",
+    "@crashbytes/pusher-mcp-server", "@crawlbase/mcp", "@currents/mcp", "@debugg-ai/debugg-ai-mcp",
+    "@decodo/mcp-server", "@deepdataspace/dinox-mcp", "@discourse/mcp", "@driflyte/mcp-server", "@e2b/mcp-server",
+    "@edubase/mcp", "@elastic/mcp-server-elasticsearch", "@ericthered926/duckduckgo-mcp-server", "@eslint/mcp",
+    "@executeautomation/playwright-mcp-server", "@getalby/mcp", "@getrember/mcp", "@gitee/mcp-gitee", "@gitkraken/gk",
+    "@gongrzhe/server-gmail-autoauth-mcp", "@google-cloud/cloud-run-mcp", "@google-cloud/gcloud-mcp",
+    "@google-cloud/observability-mcp", "@google-cloud/storage-mcp", "@gotohuman/mcp-server", "@growthbook/mcp",
+    "@hubspot/mcp-server", "@instantdb/mcp", "@integration-app/mcp-server", "@iplocate/mcp-server",
+    "@jetbrains/mcp-proxy", "@kontent-ai/mcp-server", "@kubb/mcp", "@last9/mcp-server", "@launchdarkly/mcp-server",
+    "@line/line-bot-mcp-server", "@linkedapi/mcp", "@llmindset/hf-mcp-server", "@localstack/localstack-mcp-server",
+    "@lovable.dev/mcp-js", "@mailgun/mcp-server", "@makehq/mcp-server", "@mapbox/mcp-server",
+    "@mastra/mcp-docs-server", "@metamask/device-mcp", "@microsoft/postgres-mcp", "@mobilenext/mobile-mcp",
+    "@modelcontextprotocol/server-aws-kb-retrieval", "@modelcontextprotocol/server-brave-search",
+    "@modelcontextprotocol/server-everart", "@modelcontextprotocol/server-everything",
+    "@modelcontextprotocol/server-filesystem", "@modelcontextprotocol/server-gdrive",
+    "@modelcontextprotocol/server-github", "@modelcontextprotocol/server-gitlab",
+    "@modelcontextprotocol/server-google-maps", "@modelcontextprotocol/server-memory",
+    "@modelcontextprotocol/server-pdf", "@modelcontextprotocol/server-postgres",
+    "@modelcontextprotocol/server-puppeteer", "@modelcontextprotocol/server-redis",
+    "@modelcontextprotocol/server-sequential-thinking", "@modelcontextprotocol/server-slack",
+    "@mozilla/firefox-devtools-mcp", "@mux/mux-node", "@negokaz/excel-mcp-server", "@neondatabase/mcp-server-neon",
+    "@netlify/mcp", "@notionhq/notion-mcp-server", "@pandacss/mcp", "@paypal/mcp", "@perplexity-ai/mcp-server",
+    "@pinecone-database/mcp", "@plainsignal/plainsignal-mcp", "@playwright/mcp", "@postman/postman-mcp-server",
+    "@powerdrillai/powerdrill-mcp", "@primer/mcp", "@pulumi/mcp-server", "@rad-security/mcp-server",
+    "@railway/mcp-server", "@remotion/mcp", "@riza-io/riza-mcp", "@salesforce/mcp", "@sap-ux/fiori-mcp-server",
+    "@sentry/mcp-server", "@serdnaley/metabase-mcp", "@shopify/dev-mcp", "@shopsavvy/mcp-server", "@shortcut/mcp",
+    "@smartbear/mcp", "@softeria/ms-365-mcp-server", "@stripe/mcp", "@supabase/mcp-server-supabase", "@supadata/mcp",
+    "@sveltejs/mcp", "@taazkareem/clickup-mcp-server", "@tacticlaunch/mcp-linear", "@taskade/mcp-server",
+    "@testsprite/testsprite-mcp", "@tiberriver256/mcp-server-azure-devops", "@token-metrics-ai/mcp",
+    "@transcend-io/mcp", "@turbopuffer/turbopuffer-mcp", "@twilio-alpha/mcp", "@ui5/mcp-server",
+    "@upstash/context7-mcp", "@vantasdk/vanta-mcp-server", "@winor30/mcp-server-datadog",
+    "@wonderwhy-er/desktop-commander", "@z_ai/mcp-server", "@zencoderai/slack-mcp-server", "@zereight/mcp-gitlab",
+    "agentation-mcp", "agentql-mcp", "agentrpc", "argocd-mcp", "bitcoin-mcp", "blender-mcp", "chrome-devtools-mcp",
+    "codebase-memory-mcp", "comfyui-mcp", "cypress-mcp", "dart-mcp-server", "davinci-resolve-mcp", "dexpaprika-mcp",
+    "discord-mcp", "drand-mcp-server", "duckduckgo-mcp", "edgeone-pages-mcp", "elasticsearch-mcp", "email-mcp",
+    "ethereum-mcp", "exa-mcp-server", "excalidraw-mcp", "fetchserp-mcp-server", "figma-developer-mcp", "figma-mcp",
+    "firecrawl-mcp", "flyonui-mcp", "forevervm", "gluestack-ui-mcp-server", "gologin-mcp", "google-calendar-mcp",
+    "graphlit-mcp-server", "harness-mcp-v2", "hevy-mcp", "hostinger-api-mcp", "hyperbrowser-mcp", "inbox-zero",
+    "jenkins-mcp", "jira-mcp", "mcp-aiven", "mcp-audiense-insights", "mcp-echarts", "mcp-mailtrap", "mcp-redis-cloud",
+    "mcp-remote", "mcp-searxng", "mcp-server-kubernetes", "mcp-server-milvus", "mcp-server-mysql", "mcp-server-s3",
+    "mongodb-mcp-server", "n8n-mcp", "newrelic-mcp", "next-devtools-mcp", "nx-mcp", "obsidian-mcp",
+    "octagon-deep-research-mcp", "octagon-mcp", "ollama-mcp", "openai-mcp-server", "openapi-mcp", "opik-mcp",
+    "perplexity-mcp", "pinecone-mcp", "postman-mcp", "powertools-for-aws-mcp", "prometheus-mcp", "qasphere-mcp",
+    "raindrop-mcp", "ref-tools-mcp", "replicate-mcp", "resend-mcp", "routine-mcp-server", "safari-mcp",
+    "scrapeless-mcp-server", "screenshotone-mcp-server", "scryfall-mcp-server", "search1api-mcp", "selenium-mcp",
+    "slack-mcp-server", "spotify-mcp", "square-mcp-server", "ssh-mcp", "supabase-mcp", "task-master-ai", "tavily-mcp",
+    "telegram-mcp", "terraform-mcp-server", "todoist-mcp-server", "vscode-mcp-server", "weather-mcp", "whatsapp-mcp",
+    "wikipedia-mcp", "wizzy-mcp-tmdb", "xcodebuildmcp", "youtube-transcript-mcp"
+  ],
+  pypi: [
+    "allvoicelab-mcp", "analytics-mcp", "armor-crypto-mcp", "arxiv-mcp-server", "atla-mcp-server", "atlan-mcp-server",
+    "awslabs.aws-api-mcp-server", "awslabs.aws-documentation-mcp-server", "basic-memory", "blender-mcp",
+    "browser-use", "chroma-mcp", "chronulus-mcp", "codegraphcontext", "couchbase-mcp-server", "cua-mcp-server",
+    "cycode", "daisys-mcp", "dbt-mcp", "devhub-cms-mcp", "docker-mcp", "duckduckgo-mcp-server",
+    "elasticsearch-mcp-server", "elementfm_mcp_server", "elevenlabs-mcp", "excel-mcp-server", "fewsats-mcp",
+    "fhir-mcp-server", "fibery-mcp-server", "fulcra-context-mcp", "greptimedb-mcp-server", "ha-mcp",
+    "hologres-mcp-server", "ida-pro-mcp", "jcodemunch-mcp", "jupyter-mcp-server", "kagimcp", "keboola-mcp-server",
+    "llm-sandbox", "marketdata-mcp-server", "mcp-atlassian", "mcp-clickhouse", "mcp-google-sheets", "mcp-grafana",
+    "mcp-hydrolix", "mcp-ip2location-io", "mcp-neo4j-cypher", "mcp-neo4j-memory", "mcp-obsidian", "mcp-portainer",
+    "mcp-server-box", "mcp-server-esignatures", "mcp-server-fetch", "mcp-server-git", "mcp-server-motherduck",
+    "mcp-server-qdrant", "mcp-server-sentry", "mcp-server-sqlite", "mcp-server-starrocks", "mcp-server-time",
+    "mcp-tinybird", "mcp-windbg", "meilisearch-mcp", "meta-ads-mcp", "mureka-mcp", "mysql-mcp-server",
+    "norman-mcp-server", "oceanbase-mcp", "okta-mcp-server", "oxylabs-mcp", "pagerduty-mcp", "plane-mcp-server",
+    "postgres-mcp", "ramp-mcp", "repowise", "ros-mcp", "scout-mcp-local", "scrapling", "seleniumbase", "semgrep-mcp",
+    "serena-agent", "singlestore-mcp-server", "snowflake-labs-mcp", "voice-mode", "windows-mcp", "workspace-mcp",
+    "zotero-mcp-server"
+  ]
+};

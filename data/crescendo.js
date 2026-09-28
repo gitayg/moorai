@@ -15,6 +15,7 @@
 //     quantifier) that is COMPILED THROUGH safeRegex at load — a pattern safeRegex rejects is dropped,
 //     never shipped. All scans are size-capped (MAX_INPUT). No catastrophic backtracking is reachable.
 //   * Pure: this module decides and enforces NOTHING. It answers questions the engine / eval consume.
+import { stripLicenseBoilerplate } from "./license-boilerplate.js";
 import { safeRegex } from "../src/safe-regex.js";
 import { canonicalizeOverrideVerbs } from "./injection-tells.js";
 
@@ -254,7 +255,7 @@ let lastText = null, lastHit = false;
 export function persuasionHit(text) {
   if (text === lastText) return lastHit;
   lastText = text;
-  lastHit = persuasionScore(text) >= 2;
+  lastHit = persuasionScore(stripLicenseBoilerplate(text)) >= 2;
   return lastHit;
 }
 

@@ -12,6 +12,7 @@ import { visuallyHiddenInstruction } from "./visual-hiding.js";
 import { renderedExfilHit } from "./render-exfil.js";
 import { AGENT_STATE_DETECTORS } from "./detectors-agent-state.js";
 import { ARTIFACT_DETECTORS } from "./detectors-artifacts.js";
+import { INSTRUCTION_LEAK_DETECTORS } from "./detectors-instruction-leak.js";
 
 // ---------------------------------------------------------------------------------------------------
 // Content-free helpers for the additive detectors appended at the end of DETECTORS. All pure,
@@ -1482,5 +1483,6 @@ export const DETECTORS = [
     refine: (_m, text) => renderedExfilHit(text)
   },
   ...AGENT_STATE_DETECTORS,
-  ...ARTIFACT_DETECTORS
+  ...ARTIFACT_DETECTORS,
+  ...INSTRUCTION_LEAK_DETECTORS
 ];

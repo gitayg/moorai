@@ -423,3 +423,15 @@ Pairs naturally with #1: the streamed history is the training/evaluation substra
 - **Deeper competitor gaps already covered elsewhere:** shadow-AI discovery, content-free trace/
   session replay, and compliance-evidence packs all shipped in v0.63.0. Semantic/embedding detection
   and a learned baseline (#6 above) remain the open detection items.
+
+## Backlog — "no install" rollout via Claude Code managed settings (2026-09-27)
+
+Lasso Security pitches "no agent to install": its Claude Code hooks are pushed through the enterprise
+managed-settings file and enforced for every user. MoorAI still needs Node and an installed agent, and its
+MDM scripts write each user's `~/.claude/settings.json`. Investigate a rollout where MDM, Falcon for IT or
+SentinelOne RemoteOps drops one machine-wide `managed-settings.d/*.json` drop-in (under
+`/Library/Application Support/ClaudeCode/` or `C:\Program Files\ClaudeCode\`) that registers MoorAI's
+hooks for every user, with the runtime bundled so no separate Node install is needed. Caveat from Claude
+Code's docs: the default `"first-wins"` source behaviour ignores the drop-in when an org already delivers
+policy by MDM or claude.ai, unless `managedSourcesBehavior: "merge"` is set. Also needs per-user config
+(`~/.moorai/config.json`) moved to a machine-wide location. Not started.

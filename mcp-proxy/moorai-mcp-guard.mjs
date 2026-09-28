@@ -58,6 +58,8 @@ import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
 import { contentHash, actorHash } from "../cli/content-hash.mjs";
 import { emitOtel } from "../cli/otel.mjs";
+import { assessServer, addToolSignals } from "../cli/mcp-reputation.mjs";
+import { reputationAction, reputationAlert, reputationSummary } from "../data/mcp-reputation.js";
 
 // ---- argv parsing: [--server label] -- realcmd args... ----
 function parseArgv(argv) {
@@ -215,6 +217,51 @@ function alertFindings(tool, findings, blocked, argsHash) {
   }
 }
 
+// ---- first-seen server reputation (cli/mcp-reputation.mjs, data/mcp-reputation.js) ----
+//
+// The launch command this proxy wraps IS the server's identity, so it is scored once, at startup, and
+// cached per identity + version; the first tools/list adds its tool-stage findings. Report-only by
+// default: an alert (content-free: band, score, category codes) on first sight or a version change when
+// the band is below "good". Only an org policy's mcpReputation.blockBelow on an enforcing device refuses
+// calls, and it refuses them at tools/call like every other gate here. Unenrolled: a coach note instead.
+// Network only when the policy opts in (registry lookup / SkillTriage feed); never a path or an env var.
+const REP_DECL = { command: REAL_CMD, args: REAL_ARGS };
+let REP = null;
+let REP_READY = null;
+function repPolicy() {
+  const p = POLICY && POLICY.mcpReputation;
+  return p && typeof p === "object" ? p : {};
+}
+function reportReputation(rep) {
+  const action = reputationAction(rep, repPolicy(), { enforce: !COACH });
+  if (action === "allow") return;
+  if (COACH) coachNote(`MCP server ${SERVER}`, `reputation ${reputationSummary(rep)}`);
+  const alert = { ...reputationAlert(rep, { server: SERVER, decision: action, identityHash: contentHash(`mcp-reputation:${rep.key}`), tool: "desktop:mcp" }), ...IDENTITY };
+  post(alert);
+  try { recordAction(applyCaptureTier(alert, {}, (POLICY && POLICY.captureTier) || "content-free")); } catch { /* ledger is best-effort */ }
+}
+function startReputation() {
+  REP_READY = ensurePolicy()
+    .then(() => assessServer(REP_DECL, { policy: repPolicy(), engine: ENGINE || undefined }))
+    .then((rep) => { REP = rep; if (rep.firstSeen || rep.versionChanged) reportReputation(rep); return rep; })
+    .catch(() => null);
+  return REP_READY;
+}
+// → true when the call was refused. Only consulted when the policy sets a threshold.
+async function reputationGate(msg, tool, argsHash) {
+  const rp = repPolicy();
+  if (rp.enabled === false || !(Number(rp.blockBelow) > 0)) return false;
+  if (!REP && REP_READY) await withDeadline(REP_READY, 3000);
+  if (!REP) return false; // fail open: no score yet
+  const action = reputationAction(REP, rp, { enforce: !COACH });
+  if (action === "coach") { if (seenOnce(`rep-coach:${REP.versionHash}:${REP.score}`)) coachNote(`calls to MCP server ${SERVER}`, `reputation ${reputationSummary(REP)} is below the org threshold`); return false; }
+  if (action !== "block") return false;
+  if (seenOnce(`rep-block:${REP.versionHash}:${REP.score}`)) reportReputation(REP);
+  auditCall(tool, "deny", argsHash);
+  writeBlock(msg.id, `this MCP server's reputation (${REP.score}/100, ${REP.band}) is below your organization's threshold`);
+  return true;
+}
+
 // ---- spawn the real MCP server ----
 const child = spawn(REAL_CMD, REAL_ARGS, { stdio: ["pipe", "pipe", "pipe"], env: process.env });
 
@@ -303,6 +350,8 @@ async function handleLine(rawLine) {
       return;
     }
 
+    if (await reputationGate(msg, tool, argsHash)) return;
+
     if (!ENGINE) { auditCall(tool, "allow", argsHash); rememberCall(msg.id, tool); forward(rawLine); return; } // fail open: no engine
 
     const g = mcpGateway(ENGINE, POLICY, { tool, server: SERVER, args });
@@ -381,6 +430,7 @@ async function observeTools(tools) {
   let counter = 0;
   for (const t of Object.values(baseline)) if ((t.n || 0) > counter) counter = t.n || 0;
   let dirty = false;
+  const repFindings = [];
 
   const limit = Math.min(tools.length, CAPS.maxTools);
   for (let i = 0; i < limit; i++) {
@@ -391,6 +441,7 @@ async function observeTools(tools) {
     // (a) content scan of the metadata at the "tool" stage — the detectors that had no caller.
     if (ENGINE) {
       const d = decideText(ENGINE, POLICY, toolScanText(tool), "tool");
+      repFindings.push(...d.findings);
       for (const f of d.findings) {
         if (!seenOnce(`${name}|${f.threatId}|${f.category}`)) continue;
         alertTool(name, {
@@ -415,6 +466,15 @@ async function observeTools(tools) {
     dirty = true;
   }
   if (dirty) saveBaseline(baseline);
+
+  // (c) the server's reputation: its own tool metadata is a first-sight signal too.
+  if (repFindings.length) {
+    try {
+      const rep = addToolSignals(REP_DECL, repFindings.map((f) => ({ threatId: f.threatId, riskLevel: f.riskLevel })));
+      REP = rep;
+      if (rep.changed) reportReputation(rep);
+    } catch { /* reputation is evidence; never let it touch the tool stage */ }
+  }
 }
 
 // ============================================================================================
@@ -667,5 +727,6 @@ process.stdin.on("end", () => {
   queue = queue.then(() => { if (buf.length) return handleLine(buf); }).then(() => { try { child.stdin.end(); } catch {} });
 });
 
-// Best-effort warm-up so the first tool-call is not delayed by the initial policy fetch.
-ensurePolicy();
+// Best-effort warm-up so the first tool-call is not delayed by the initial policy fetch; the server's
+// first-seen reputation rides on the same promise.
+startReputation();

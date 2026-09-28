@@ -141,10 +141,12 @@ Client → Server alerts carry **redacted metadata only**: threat id, category, 
 tool used, optional keyed content hash / redacted snippet. **Never raw sensitive content** — otherwise
 MoorAI would itself commit threats #1 / #9 / #33 on every phone-home.
 
-Two further field families are permitted under this rule and are named here so the contract stays
+Four further field families are permitted under this rule and are named here so the contract stays
 enumerable rather than implicit: `skillKind` + `skillIntents` (a file kind and closed-vocabulary intent
-labels — §B2 11a) and `destination` (`{kind, name, decision}` — a host or MCP server name — §B2 11b).
-Both are names and categories, never content. The invariant is asserted empirically rather than
+labels — §B2 11a), `destination` (`{kind, name, decision}` — a host or MCP server name — §B2 11b),
+`intent` (`{class, unmatched, targets, prompts, semantic, mode}` — a class name, counts and flags — §B3
+11c) and `reputation` (`{score, band, reasons}` — a number, a band and category codes, next to the MCP
+server label — §B3 11e). All four are names, categories and counts, never content. The invariant is asserted empirically rather than
 declared: `test/skill-analysis.test.mjs` and `test/destinations.test.mjs` each plant a unique canary in
 a fixture, capture every byte the hook POSTs plus the on-device ledgers, and fail if the canary, a
 matched span, a verbatim source line, a URL path, a query string or a request header appears in either.
@@ -309,6 +311,66 @@ is validated against.
    override (`OLLAMA_HOST=http://gpu-box:11434`), not from a plain URL. The `decision` recorded is the
    hook's verdict for the call, not proof the connection succeeded or failed.
 
+### B3. Task, instruction-file and MCP-server context (client)
+
+11c. **Intent alignment** — does a risky agent action fit the task the user gave in this session?
+   *Threat 64.* The hook registers `UserPromptSubmit` for this alone; the prompt is not scanned by the
+   detection engine. From prompts a person wrote (`system` and `poll_event` turns skipped), it keeps
+   device-keyed HMACs (`~/.moorai/intent.key`, 0600) of the sites, paths, fixed-list service names and
+   up to three labels (`credentials`, `destructive`, `mcp-write`) the prompt mentions, in
+   `~/.moorai/intent-alignment.json` (0600; 64 sessions, 24 h TTL, 512 features). The prompt is never
+   stored ([`cli/intent-alignment.mjs`](../cli/intent-alignment.mjs),
+   [`data/intent-alignment.js`](../data/intent-alignment.js)).
+
+   Only already-risky calls are judged: a `Bash` upload to a non-loopback host (egress), a #43
+   destructive command, a #55 credential read (`Read` or `Bash`), and an MCP tool whose name carries a
+   write verb. Egress is aligned only if every destination site was named, and no label excuses it. The
+   other classes are aligned by their label or by a named path or server. Sessions with no captured task
+   are never judged, and a call already denied is not re-judged. A misaligned call posts one alert per
+   session, class and target: category `Action outside the stated task`, stage `behavior`.
+   `policy.intentAlignment`: `"report"` (default), `"ask"` (opt-in; raises allow to ask), `"off"`.
+   Unenrolled devices coach. An optional semantic tier asks the **loopback** model for labels at prompt
+   time, only when `modelEscalation` and `semanticEscalation` are both on, bounded by
+   `MOORAI_INTENT_TIMEOUT_MS` (default 1500).
+
+   **Limits.** Lexical, not semantic: an upload to a host the user named passes. Pasted text widens the
+   task. The agent can read the key and rewrite the state file, as it can every file under `~/`.
+   `Write`/`Edit`, data in a GET query string and `git push` to a new remote are not judged. The Codex,
+   Cursor, Gemini and Copilot adapters do not forward prompts, so it runs on Claude Code only. It adds
+   one hook process per prompt.
+
+11d. **Protected-instruction leak** — the agent's own rules files leaving the device. *Threat 52.*
+   Three detectors ([`data/detectors-instruction-leak.js`](../data/detectors-instruction-leak.js)):
+   `instr-leak-output` (output stage), `instr-leak-egress` (prompt stage, only on text marked as
+   leaving the device) and `instr-leak-upload-ref` (prompt stage, by path: `curl -d "$(cat CLAUDE.md)"`,
+   `-F @AGENTS.md`, `gh gist create`, `scp`, `aws s3 cp`, …). The files are those listed in
+   [`data/instruction-files.js`](../data/instruction-files.js) — Claude Code (`CLAUDE.md`,
+   `.claude/CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/`, managed policy), Codex (`AGENTS.md`,
+   `AGENTS.override.md`), Gemini (`GEMINI.md`), Copilot (`.github/copilot-instructions.md`,
+   `.github/instructions/`), Cursor (`.cursor/rules/*.mdc`, `.cursorrules`), Windsurf and Cline. Each is
+   fingerprinted as at most 2,048 keyed 40-bit hashes of its 7-word shingles in
+   `~/.moorai/instruction-fp.json`, key in `~/.moorai/instruction-fp.key` (both 0600); only hashes are
+   kept, never text. Wired on the write family (a write into the rules file itself is excluded), `Bash`
+   commands that upload or name a host, `WebFetch` and MCP arguments; `PostToolUse` content is inbound and excluded. Report-only by
+   default; coached on unenrolled devices.
+
+   **Limits.** A paraphrase, translation or hex encoding is not matched. A staged copy
+   (`cp CLAUDE.md /tmp/x`, then an upload) is not tied back. A rules file with fewer than 40
+   distinctive shingles can never fire. `mcp-proxy`, the desktop app and the browser extension register
+   no fingerprints; only the path-based detector runs there.
+
+11e. **MCP server reputation** — a 0-100 score for an MCP server the first time it is seen, and again
+   when its version changes ([`cli/mcp-reputation.mjs`](../cli/mcp-reputation.mjs),
+   [`data/mcp-reputation.js`](../data/mcp-reputation.js)). Bands: good ≥ 80, fair ≥ 60, poor ≥ 35,
+   bad. Scored offline from the package name, the launch command and the copy npx already installed;
+   `mcpReputation.lookup: "registry"` and `mcpReputation.feed` (SkillTriage's published verdicts,
+   downloaded whole) are opt-in and run in the MCP proxy. Cached per server and version. The alert
+   (`MCP: server reputation`) carries the score, band and reason codes only, and is posted when the band
+   is below good. `mcpReputation.blockBelow` refuses a server below the threshold on an enrolled device
+   and coaches on an unenrolled one; `enabled: false` turns it off. `moorai-aibom` and `moorai-shadow`
+   carry the reputation per server. Signals:
+   [`mcp-proxy/README.md`](../mcp-proxy/README.md).
+
 ### C. Runtime (client)
 12. **Risk-prioritized alerting** — ranks findings by `riskLevel`, then `riskScore` as the tiebreak.
 13. **In-context guidance** — surfaces the matching `response` + a source link.
@@ -341,7 +403,7 @@ per-threat → data-tier → **built-in prevention tier** → approval-set → `
 - **`notify`** (the default for a threat none of the earlier tiers name) → prominent inline warning +
   the matrix's defensive-response text; the call proceeds and the finding is logged + reported.
 - **`justify`** → surfaced as Claude Code `ask`: the developer must acknowledge/justify before the
-  call proceeds (logged + reported). Built-in default for threats **55, 56, 57, 63, 44**; approval-set
+  call proceeds (logged + reported). Built-in default for threats **55, 56, 57, 63, 44, 73**; approval-set
   default for **11, 43, 46, 47, 48, 49**.
 - **`block`** → Claude Code `deny`; the tool call does not execute. Built-in default for threat **54**
   (reverse shell / RCE) and **65** (local secret-value egress).

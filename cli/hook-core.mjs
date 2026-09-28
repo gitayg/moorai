@@ -173,7 +173,7 @@ export function decideText(engine, policy, text, stage, opts = {}) {
     const act = threatActionFor(policy, f.threat.id);
     if (act === "disabled") continue;
     const level = calibrateRisk(f.threat.riskLevel, { stage, category: f.threat.category });
-    out.findings.push({ threatId: f.threat.id, category: f.threat.category, riskLevel: level, match: f.match });
+    out.findings.push({ threatId: f.threat.id, category: f.threat.category, riskLevel: level, match: f.match, detectorId: f.detectorId });
     // #3 — "kill" terminates the whole session, not just this call. It still denies the call (Claude
     // Code only knows allow/ask/deny); the kill signal is carried out-of-band via out.kill for the host.
     // killOnCritical promotes any Critical block to a kill without per-threat config.
@@ -425,7 +425,7 @@ export function mcpGateway(engine, policy, { tool, server, args }) {
   if (sd.decision === "deny") return { gate: "server", decision: "deny", reason: sd.reason, findings: [], kill: false, killIds: [] };
   const ad = decideMcpArgs(policy, tool, args);
   if (ad.decision === "deny") return { gate: "args", decision: "deny", reason: ad.reason, findings: [], kill: false, killIds: [] };
-  const d = decideText(engine, policy, args, "prompt");
+  const d = decideText(engine, policy, args, "prompt", { ctx: { egress: true } });
   return { gate: d.decision === "allow" ? null : "content", decision: d.decision, reason: d.reasons.join(", "), findings: d.findings, kill: d.kill, killIds: d.killIds, alternatives: d.alternatives };
 }
 

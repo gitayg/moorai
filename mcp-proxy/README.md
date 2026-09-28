@@ -81,6 +81,31 @@ last verified policy, then to the offline default per the posture ratchet — an
 tamper alert. Writing `{}` into the cache therefore cannot disarm the gate. Because the proxy is a
 long-lived process, verification re-runs on every lazy refresh, not once at startup.
 
+### first sight: the server's REPUTATION
+
+The launch command the proxy wraps is scored once, at startup, and cached per server identity + version
+in `~/.moorai/mcp-reputation.json` (`cli/mcp-reputation.mjs`, scoring in `data/mcp-reputation.js`). A
+score starts at 100; each signal subtracts its weight; bands are good ≥ 80, fair ≥ 60, poor ≥ 35, bad.
+Signals, all offline unless the policy opts in:
+
+- the package name against the known-malicious / popular-library list and the popular MCP server list
+  (`data/popular-mcp-servers.js`, from the SkillTriage catalogue seed) — `pkg-known-malicious`,
+  `pkg-typosquat`, `mcp-typosquat`; an unpinned `npx -y pkg` — `unpinned-version`;
+- the copy npx already installed under `~/.npm/_npx`, read with the package heuristics and scoped engine
+  scan SkillTriage runs — `pkg-install-script-remote`, `pkg-remote-code`, …;
+- the server's own `tools/list` — `tool-poisoning` (#60), `tool-hidden-content` (#50), `tool-metadata`;
+- opt-in `mcpReputation.lookup: "registry"` — MoorAI's `analyzePackage` on the exact registry artifact
+  (only the public name and version reach the public registry): `new-package`, `name-not-published`;
+- opt-in `mcpReputation.feed: true` — SkillTriage's published verdicts, downloaded whole with a bare GET
+  and matched on the device (`catalogue-do-not-install`, `catalogue-review`, …), so the request names no
+  server.
+
+Report-only by default: a content-free alert (`MCP: server reputation`, band, score, category codes —
+never a package name, path, argument or env var) on first sight or a version change when the band is
+below good. `mcpReputation.blockBelow: <n>` refuses `tools/call` to a server scoring below `n` on an
+enforcing device; unenrolled, it coaches instead. `mcpReputation.enabled: false` turns it off. The same
+score appears in `moorai-aibom` (`reputation` per MCP server) and `moorai-shadow`.
+
 ## Content-free by construction
 
 Only **category / risk / one-way hash / server / tool / decision** ever leave the device — the same

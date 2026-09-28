@@ -23,6 +23,7 @@ import { readAgentEvents } from "./signals.mjs";
 import { toCycloneDX, toSpdx } from "../data/sbom.js";
 import { scanKeysAtRest } from "./aibom-keys.mjs";
 import { defaultRunner, fixtureRunner, probeListeners, probeProcesses, localRuntimes, localMcpListeners } from "./aibom-runtime.mjs";
+import { assessServerSync } from "./mcp-reputation.mjs";
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -73,12 +74,21 @@ function mcpCaps(cfg) {
     for (const k of Object.keys(cfg.env)) if (["TOKEN", "KEY", "SECRET", "PASSWORD", "CREDENTIAL"].some((s) => k.toUpperCase().includes(s))) { cred = true; break; }
   return { net, fs, cred };
 }
+// First-seen reputation (cli/mcp-reputation.mjs), OFFLINE: package name lists + the installed npx copy.
+// Command and args only reach it; env is never passed. Emits score, band and category codes only.
+function mcpReputation(cfg) {
+  try {
+    const decl = typeof cfg.url === "string" && cfg.url ? { url: cfg.url } : { command: cfg.command, args: Array.isArray(cfg.args) ? cfg.args : [] };
+    const r = assessServerSync(decl);
+    return { score: r.score, band: r.band, reasons: r.reasons };
+  } catch { return null; }
+}
 function mcpLevel(caps) { let s = 0; if (caps.net) s += 25; if (caps.fs) s += 25; if (caps.cred) s += 35; if (caps.net && caps.cred) s += 15; return s >= 60 ? "high" : s >= 30 ? "med" : "low"; }
 // `decls` (optional) collects { name, scope, url, type, transport } for the running-listener match —
 // in memory only; the URL is never emitted (its query string can carry a token).
 function mcpServers(decls = []) {
   const seen = new Set(), out = [];
-  const add = (map, scope) => { if (!map) return; for (const [name, cfg] of Object.entries(map)) { const k = `${scope}:${name}`; if (!name || seen.has(k)) continue; seen.add(k); const caps = mcpCaps(cfg || {}); if (cfg && typeof cfg.url === "string") decls.push({ name, scope, url: cfg.url, type: cfg.type, transport: cfg.transport }); out.push({ name, scope, transport: (cfg.url || cfg.type === "sse" || cfg.transport === "sse") ? "remote" : "stdio", caps, level: mcpLevel(caps) }); } };
+  const add = (map, scope) => { if (!map) return; for (const [name, cfg] of Object.entries(map)) { const k = `${scope}:${name}`; if (!name || seen.has(k)) continue; seen.add(k); const caps = mcpCaps(cfg || {}); if (cfg && typeof cfg.url === "string") decls.push({ name, scope, url: cfg.url, type: cfg.type, transport: cfg.transport }); out.push({ name, scope, transport: (cfg.url || cfg.type === "sse" || cfg.transport === "sse") ? "remote" : "stdio", caps, level: mcpLevel(caps), reputation: mcpReputation(cfg || {}) }); } };
   const claude = readJson(join(HOME, ".claude.json"));
   if (claude) { add(claude.mcpServers, "claude"); if (claude.projects) for (const p of Object.values(claude.projects)) add(p.mcpServers, "claude"); }
   add(readJson(join(HOME, ".cursor", "mcp.json"))?.mcpServers, "cursor");
@@ -167,13 +177,13 @@ function buildAibom() {
   const components = [
     ...models.map((m) => ({ type: "model", name: m.name, provider: m.provider, local: m.local })),
     ...[...new Set(prov.map((p) => p.agent))].map((a) => ({ type: "agent", name: a })),
-    ...mcp.map((s) => ({ type: "mcp-server", name: s.name, riskLevel: s.level, capabilities: s.caps, transport: s.transport })),
+    ...mcp.map((s) => ({ type: "mcp-server", name: s.name, riskLevel: s.level, capabilities: s.caps, transport: s.transport, reputation: s.reputation })),
     ...ext.map((x) => ({ type: "editor-extension", name: x.id, editor: x.editor, version: x.version })),
     ...skills.map((s) => ({ type: "skill", name: s.name, kind: s.kind }))
   ];
   return {
     bomFormat: "MoorAI-AIBOM", specVersion: "1.0", scope: "device", device: hostname(), generatedAt: new Date().toISOString(),
-    summary: { providers: new Set(prov.map((p) => p.provider)).size, models: models.length, localModels: local.length, agents: new Set(prov.map((p) => p.agent)).size, mcpServers: mcp.length, mcpHighRisk: mcp.filter((s) => s.level === "high").length, editorAiExtensions: ext.length, skills: skills.length, calls: use ? use.events : 0, roughSpendUsd: use ? use.roughSpendUsd : null,
+    summary: { providers: new Set(prov.map((p) => p.provider)).size, models: models.length, localModels: local.length, agents: new Set(prov.map((p) => p.agent)).size, mcpServers: mcp.length, mcpHighRisk: mcp.filter((s) => s.level === "high").length, mcpLowReputation: mcp.filter((s) => s.reputation && (s.reputation.band === "poor" || s.reputation.band === "bad")).length, editorAiExtensions: ext.length, skills: skills.length, calls: use ? use.events : 0, roughSpendUsd: use ? use.roughSpendUsd : null,
       apiKeysAtRest: keys.length, runningLocalRuntimes: runtimes.length, localMcpRunning: mcpLive.filter((m) => m.running === true).length },
     providers: prov, localModels: local, mcpServers: mcp, editorExtensions: ext, skills, usage: use,
     apiKeysAtRest: keys, localRuntimes: runtimes, localMcpListeners: mcpLive, runtimeProbe: probe.status, components
@@ -183,6 +193,7 @@ function buildAibom() {
 // ---- renderers ----
 function toMarkdown(d) {
   const cap = (c) => [c.net && "net", c.fs && "fs", c.cred && "cred"].filter(Boolean).join(" · ") || "—";
+  const rep = (r) => r ? `${r.score}/100 ${r.band}${r.reasons.length ? ` (${r.reasons.join(", ")})` : ""}` : "—";
   const s = d.summary;
   return `# MoorAI — AI Bill of Materials\n\n`
     + `**Device:** ${d.device}  ·  **Generated:** ${d.generatedAt}  ·  **Scope:** this device only\n\n`
@@ -192,8 +203,8 @@ function toMarkdown(d) {
     + `## AI providers & models\n\n| Provider | Agent | Model | Source |\n|---|---|---|---|\n`
     + (d.providers.map((p) => `| ${p.provider} | ${p.agent} | ${p.model || "—"} | ${p.source} |`).join("\n") || "| — | — | — | — |")
     + (d.localModels.length ? `\n\n## Local models\n\n| Runtime | Model |\n|---|---|\n` + d.localModels.map((m) => `| ${m.runtime} | ${m.name} |`).join("\n") : "")
-    + `\n\n## MCP servers\n\n| Server | Scope | Transport | Capabilities | Risk |\n|---|---|---|---|---|\n`
-    + (d.mcpServers.map((m) => `| ${m.name} | ${m.scope} | ${m.transport} | ${cap(m.caps)} | ${m.level} |`).join("\n") || "| — | — | — | — | — |")
+    + `\n\n## MCP servers\n\n| Server | Scope | Transport | Capabilities | Risk | Reputation |\n|---|---|---|---|---|---|\n`
+    + (d.mcpServers.map((m) => `| ${m.name} | ${m.scope} | ${m.transport} | ${cap(m.caps)} | ${m.level} | ${rep(m.reputation)} |`).join("\n") || "| — | — | — | — | — | — |")
     + (d.apiKeysAtRest.length ? `\n\n## AI provider keys at rest (keyed hash only — never the key)\n\n| Provider | Location class | Location | Key hash |\n|---|---|---|---|\n` + d.apiKeysAtRest.map((k) => `| ${k.provider} | ${k.locationClass} | ${k.location || "(project .env — path withheld)"} | ${k.keyHash} |`).join("\n") : "")
     + (d.localRuntimes.length ? `\n\n## Running local model servers\n\n| Runtime | Ports | Bind | Detected by |\n|---|---|---|---|\n` + d.localRuntimes.map((r) => `| ${r.runtime} | ${r.ports.join(", ") || "—"} | ${r.bind} | ${r.detectedBy.join(" + ")} |`).join("\n") : "")
     + (d.localMcpListeners.length ? `\n\n## Local MCP servers over HTTP/SSE\n\n| Server | Scope | Transport | Port | Running |\n|---|---|---|---|---|\n` + d.localMcpListeners.map((m) => `| ${m.name} | ${m.scope} | ${m.transport} | ${m.port} | ${m.running == null ? "unknown" : m.running ? "yes" : "no"} |`).join("\n") : "")
@@ -211,7 +222,7 @@ function toCsv(d) {
   const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   return ["type,name,detail", ...d.components.map((c) => {
     const detail = c.type === "model" ? `${c.provider || ""}${c.local ? " (local)" : ""}`
-      : c.type === "mcp-server" ? `risk=${c.riskLevel}; caps=${["net", "fs", "cred"].filter((k) => c.capabilities?.[k]).join("|") || "none"}` : "";
+      : c.type === "mcp-server" ? `risk=${c.riskLevel}; caps=${["net", "fs", "cred"].filter((k) => c.capabilities?.[k]).join("|") || "none"}${c.reputation ? `; reputation=${c.reputation.score}/${c.reputation.band}` : ""}` : "";
     return [c.type, c.name, detail].map(q).join(",");
   })].join("\n") + "\n";
 }
@@ -257,6 +268,11 @@ Running local model servers and local MCP servers (names + ports only; never arg
   Runtimes: ollama (process, or a listener on 11434), lmstudio (process "LM Studio"/lms),
   llama.cpp (process llama-server), vllm (process vllm). MCP servers declared with a localhost
   http(s) URL in the configs above are matched to a listener on their port (running yes/no/unknown).
+
+For each MCP server it also reports a first-seen REPUTATION (score 0-100, band good/fair/poor/bad,
+and category codes such as mcp-typosquat or pkg-install-script-remote), scored OFFLINE from the
+package name (popular MCP server + library lists) and the copy npx already installed under
+~/.npm/_npx. The result is cached in ~/.moorai/mcp-reputation.json, keyed by server + version.
 
 For each MCP server it infers capability scope (network / filesystem / credential)
 from the launch command, its args, and environment-variable NAMES only — it never

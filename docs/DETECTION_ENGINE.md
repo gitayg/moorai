@@ -33,7 +33,7 @@ by `decideText` / `threatActionFor` in [`cli/hook-core.mjs`](../cli/hook-core.mj
 enforcement are two layers on purpose: the same finding is advisory on one surface and blocking on
 another, and only the caller knows which surface it is.
 
-Rules live in [`data/detectors.js`](../data/detectors.js) — **95 detectors** binding to **77 threats**
+Rules live in [`data/detectors.js`](../data/detectors.js) — **98 detectors** binding to **77 threats**
 in [`data/threats.json`](../data/threats.json) (counts from [BENCHMARK.md](BENCHMARK.md), regenerated
 with `npm run benchmark`; both were re-counted out of the shipped modules while writing this file and
 agree). Detectors are a JavaScript module, not data, because a detector's real decision is a `refine()`
@@ -56,19 +56,26 @@ _wantStages(stage) { return (stage === "file" || stage === "index") ? ["prompt",
 ```
 
 Counts below were produced by running `_wantStages` / `_inStage` over the shipped `DETECTORS` array
-(a run performed while writing this file, node v22.22.0):
+(re-run for v0.97.0, node v22.22.0):
 
 | Stage | Detectors it runs | Fed in production by |
 |---|--:|---|
-| `prompt` | 66 | `cli/moorai-hook.mjs`: the `Bash` **command** itself, the `Task` delegated prompt, the `WebFetch` url + prompt; `mcpGateway`'s argument scan; `cli/moorai-guard.mjs`; the Tauri app (`src/app.js`) |
-| `file` | 71 (66 prompt + 5) | `cli/moorai-hook.mjs` on `Read`, and on every path `extractReadPaths` finds in a `Bash` command; `mcp-proxy/moorai-mcp-guard.mjs` on every `tools/call` **result** |
-| `output` | 54 | `cli/moorai-hook.mjs` on the write family (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`) and on `PostToolUse` ingested content; `cli/moorai-guard.mjs`; `src/app.js` |
-| `index` | 71 (66 prompt + 5) | the detached `moorai-hook.mjs indexscan` worker, over the agent's auto-loaded context files |
+| `prompt` | 71 | `cli/moorai-hook.mjs`: the `Bash` **command** itself, the `Task` delegated prompt, the `WebFetch` url + prompt; `mcpGateway`'s argument scan; `cli/moorai-guard.mjs`; the Tauri app (`src/app.js`) |
+| `file` | 77 (71 prompt + 6) | `cli/moorai-hook.mjs` on `Read`, and on every path `extractReadPaths` finds in a `Bash` command; `mcp-proxy/moorai-mcp-guard.mjs` on every `tools/call` **result** |
+| `output` | 60 | `cli/moorai-hook.mjs` on the write family (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`) and on `PostToolUse` ingested content; `cli/moorai-guard.mjs`; `src/app.js` |
+| `index` | 77 (71 prompt + 6) | the detached `moorai-hook.mjs indexscan` worker, over the agent's auto-loaded context files |
 | `tool` | 4 | `mcp-proxy/moorai-mcp-guard.mjs`, on a copy of every `tools/list` response |
 | `session` | 1 | **no enforcement caller** — see below |
 
 `prompt`, `file` and `output` are the load-bearing stages; `index` and `tool` exist for two narrow
-surfaces that no other stage can see.
+surfaces that no other stage can see. The hook also registers `UserPromptSubmit`, but no stage is fed
+from it: the user's prompt goes to intent alignment only (§6) and is never scanned by the engine.
+
+**Scan context.** The hook hands `decideText` a context object that some `refine` predicates read:
+`egress: true` when the text is leaving the device (the `WebFetch` url + prompt, `mcpGateway`'s
+arguments, a `Bash` command that uploads or names a host, and a file an uploading command reads),
+`inbound: true` on `PostToolUse` ingested content, and `targetPath` on the write family. Only the
+`instr-leak-*` detectors (§6) read the last three today.
 
 **Non-English overrides on the inbound stages.** Because `file` and `index` inherit every `prompt`
 detector, `inj-multilingual` (#3, ~29 languages including Hebrew) already sees a repository file or an
@@ -197,14 +204,23 @@ then runs a bounded-Levenshtein fuzzy match against 4-token phrase templates and
 `egress-credential-shaped`'s first pattern is a bare `curl|wget|…` alternation; its decision is
 `credentialShapedEgress()`, which requires an outbound sink **and** a Shannon-entropy-qualified,
 credential-shaped token in a sink-bearing position, with UUIDs, git SHAs, SHA-256 digests, ISO
-timestamps and placeholder words explicitly excluded. Seventeen detectors ship a `refine`:
+timestamps and placeholder words explicitly excluded. Twenty-seven detectors ship a `refine`:
 `secret-generic-assignment`, `secret-aws-secret`, `secret-named-assignment`, `dep-typosquat`, `code-tainted-flow`,
 `egress-credential-shaped`, `inj-perturbed`, `inj-override-structural`, `inj-prefix-forcing`,
-`inj-persona-bypass`, `persuasion-jailbreak`, `obf-deliberate-obscurity`, and the five ATLAS v2026.09
-detectors in §14: `link-assistant-prefill`, `recon-agent-capabilities`, `cloak-ai-audience`,
-`obf-rendered-hidden`, `egress-rendered-image`. The last five memoise their predicate on the last text,
-as `obf-deliberate-obscurity` does, because their prefilters are broad enough to match many times in one
-document and `_matchDetector` re-invokes `refine` per occurrence.
+`inj-persona-bypass`, `persuasion-jailbreak`, `obf-deliberate-obscurity`, the five ATLAS v2026.09
+detectors in §14 (`link-assistant-prefill`, `recon-agent-capabilities`, `cloak-ai-audience`,
+`obf-rendered-hidden`, `egress-rendered-image`), the seven added with them (`agent-history-tamper`,
+`inj-self-replication`, `egress-rendered-extended`, `out-link-deceptive`, `obf-invisible-output`,
+`model-unsafe-load`, `model-artifact-collection`), and the three `instr-leak-*` detectors (§6). The five
+ATLAS detectors memoise their predicate on the last text, as `obf-deliberate-obscurity` does, because
+their prefilters are broad enough to match many times in one document and `_matchDetector` re-invokes
+`refine` per occurrence. The `instr-leak-*` fingerprint detectors avoid the same cost differently: their
+only pattern is an anchored single-character match, so `refine` runs once per text.
+
+`persuasion-jailbreak` scores text with standard MIT, ISC, BSD and Apache-2.0 licence spans removed
+first (`data/license-boilerplate.js`). A span is removed only from the licence's own opening phrase to
+its own closing phrase within a bounded length, so text appended after a licence is still scored and a
+project's `LICENSE` file does not raise #2 (`test/license-text-no-jailbreak.test.mjs`).
 
 **A refine-gated pattern must pass the ReDoS gate.** `_matchDetector` recompiles it through
 `safeRegex`, which refuses more than one unbounded quantifier — and a refused pattern is skipped
@@ -445,7 +461,7 @@ Nine matchers: `Read` · `Bash` · `mcp__.*` · `Task` · `Write` · `Edit` · `
 | `mcp__*` | serialized arguments, through `mcpGateway` | `prompt` |
 | `Task` | the delegated sub-agent prompt | `prompt` |
 
-The write family routes to `output` rather than `file` deliberately: `file` expands to the 61 prompt
+The write family routes to `output` rather than `file` deliberately: `file` expands to the 71 prompt
 detectors — the whole injection family — and an agent writing documentation that quotes *"ignore all
 previous instructions"* is a doc, not an attack. The source records the measurement behind the choice:
 on the vector-4 write corpus, `output` is the only stage that fires on the two source-backdoor samples
@@ -458,6 +474,90 @@ rather than denying, because copying `.env` → `.env.local` is routine and no b
 an unmeasured hard block on a hot path is how a security tool gets uninstalled.
 
 Output shape: `hookSpecificOutput.permissionDecision` = `deny` | `ask`. An `allow` writes nothing.
+
+### Protected instructions leaving the device (#52)
+
+Three detectors report a copy of the rules files the agent runs under leaving through the agent. All
+three bind to the existing threat #52 (built-in action `notify`), so they report by default and coach on
+an unenrolled device. They live in `data/detectors-instruction-leak.js`.
+
+| Detector | Stage | Fires on |
+|---|---|---|
+| `instr-leak-output` | `output` | text the agent emits that reproduces a substantial share of a fingerprinted rules file |
+| `instr-leak-egress` | `prompt` | the same, only when the scan context says the text is leaving the device (`ctx.egress`) |
+| `instr-leak-upload-ref` | `prompt` | an upload whose data is a rules file, by path: `curl -d "$(cat CLAUDE.md)"`, `curl -F f=@AGENTS.md`, `cat .cursorrules \| base64 \| curl --data-binary @- …`, `gh gist create CLAUDE.md`, `scp`/`rsync` to a remote, `aws s3 cp`/`gsutil cp`/`rclone copy` to a bucket |
+
+**The files.** `data/instruction-files.js` lists them, each name checked against the vendor's own
+documentation: `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/**`, `~/.claude/rules/`
+and Claude Code's managed-policy `CLAUDE.md`; `AGENTS.md` and `AGENTS.override.md` (Codex home and
+project); `GEMINI.md`; `.github/copilot-instructions.md` and `.github/instructions/*.instructions.md`;
+`.cursor/rules/*.mdc` and `.cursorrules`; Windsurf (`.windsurfrules`, `.windsurf/rules`, `.devin/rules`,
+`global_rules.md`) and Cline (`.clinerules`, `.cline/rules`, `~/Documents/Cline/Rules`). The hook
+discovers the ones that exist from the payload `cwd` upward, plus the user and managed scopes
+(`cli/instruction-fingerprints.mjs`).
+
+**The fingerprint is content-free.** Each file is normalised (NFKC, lower-cased, markdown and punctuation
+dropped, JSON and `%` escapes undone), cut into 7-word shingles, and every shingle with fewer than three
+non-stopword tokens is skipped. Template lines that tool generators put into many repositories are cut
+out before shingling. Each shingle is hashed with HMAC-SHA-256 under a 32-byte device key
+(`~/.moorai/instruction-fp.key`, 0600; `data/keyed-hash.js`) and truncated to 40 bits, and a file keeps
+at most 2,048 hashes, chosen as the bottom-k. The cache (`~/.moorai/instruction-fp.json`, 0600) holds
+those numbers and an HMAC of each file's path. No text, shingle or path is stored. A file is re-hashed
+only when its mtime or size changes, and nothing is read until a scan reaches a fingerprint detector with
+at least 160 characters of text.
+
+**A hit needs volume and share.** Base64 blobs in the scanned text are decoded and shingled too. A text
+fires when its estimated reproduced shingles from one file reach 200, or reach 40 and are at least 30%
+of that file. Quoting a line or two, and repeating template boilerplate, stay under that by construction.
+
+**Where it is wired.** The write family passes `targetPath`, and a write whose target is itself a rules
+file (editing `CLAUDE.md`, mirroring it into `AGENTS.md`) is silent. `PostToolUse` content passes
+`inbound: true` and is silent, because a page the agent fetched is not a leak by the agent. `ctx.egress`
+is set on the `WebFetch` url + prompt, on `mcpGateway`'s arguments, on a `Bash` command that uploads or
+names a host, and on a file an uploading command reads. On an unenrolled device, a finding from any of
+the three adds a coaching note even though #52 does not ask.
+
+**Measured.** With one real 3,881-shingle `CLAUDE.md` fingerprinted, the fingerprint detectors fire on
+none of the 1,615 strings of 160 characters or more in `test/redteam/`, and `instr-leak-upload-ref`
+fires on none of the 33,828 strings there. The benign v2 false-positive count is unchanged at 20/602.
+
+### `UserPromptSubmit` — intent alignment only
+
+The hook registers `UserPromptSubmit` with matcher `""` (the event takes no matcher), and
+`convergeHooks` adds it to existing installs on the next hook call. It never decides anything and
+prints nothing, because stdout on this event is added to the model's context. The prompt is not
+scanned by the detection engine.
+
+**Capture** (`cli/intent-alignment.mjs`, pure logic in `data/intent-alignment.js`). Only a prompt a
+person wrote counts as the task: `source` absent, `user`, `sdk`, `loop_wakeup` or `schedule_wakeup`.
+`system` and `poll_event` turns are machine-injected and can carry third-party text, so they are skipped.
+From the prompt it derives the sites (registrable domain) and paths it names, any service name from a
+fixed list of 59 (`github`, `slack`, `jira`, `s3`, …), and up to three labels: `credentials`,
+`destructive`, `mcp-write`. Each feature is hashed with HMAC-SHA-256 under a device key
+(`~/.moorai/intent.key`, 0600) and stored in `~/.moorai/intent-alignment.json` (0600) under a hashed
+session id: at most 64 sessions, a 24-hour TTL and 512 features per session. The prompt text is never
+stored.
+
+**Judging.** Only calls that are already risky are judged, and each under one class:
+
+| Class | Call | Aligned when |
+|---|---|---|
+| `egress` | a `Bash` upload (`curl -d/-F/-T/-X POST`, `wget --post-*`, `Invoke-RestMethod -Body`, `nc`/`socat`/`telnet`, `scp`/`rsync`/`sftp` to a remote) with a non-loopback host | every destination site was named in the task. Labels never excuse egress. |
+| `destructive` | a `Bash` command with a #43 finding | the task carries the `destructive` label, or names one of the operands |
+| `credentials` | a `Read` or `Bash` call with a #55 finding | the task carries the `credentials` label, or names the path |
+| `mcp-write` | an `mcp__` tool whose name has a write verb (`create`, `send`, `post`, `delete`, `push`, …) | the task carries the `mcp-write` label, or names the server |
+
+A session with no captured task is never judged. A call the hook already denied is not re-judged. A
+misaligned call posts one alert per session, class and target: threat #64, category
+`Action outside the stated task`, stage `behavior`, risk Medium, with `intent` =
+`{ class, unmatched, targets, prompts, semantic, mode }`, all counts or flags. No site, path or hash of
+one leaves the device. `policy.intentAlignment` is `"report"` (default: alert only), `"ask"` (opt-in:
+raises an allow to ask, or adds the reason to an existing ask) or `"off"`. An unenrolled device coaches.
+
+**Optional semantic tier.** When both `policy.modelEscalation` and `semanticEscalation` are on, the
+loopback model labels the prompt at capture time with the same three labels, in memory. It is only ever
+the local model; `semanticEscalation: "provider"` does not widen it. The call is bounded by
+`MOORAI_INTENT_TIMEOUT_MS` (default 1500 ms), and any failure yields no labels.
 
 ### Across calls: learned drift and deletion volume
 
@@ -639,6 +739,19 @@ Note the divergence from the hook: **`ask` forwards here.** Claude Desktop has n
 `justify` cannot mean anything; only an explicit `block`/`kill` refuses. Under the default policy #39
 resolves to `notify`, so an unconfigured device reports and forwards.
 
+**Server reputation.** The proxy scores the server it wraps once, at startup, and the Claude Code hook
+scores a server the first time its `mcp__` branch sees it (`cli/mcp-reputation.mjs`, pure scoring in
+`data/mcp-reputation.js`). The score starts at 100 and each signal subtracts its weight; bands are good
+≥ 80, fair ≥ 60, poor ≥ 35, bad below. It is cached per server identity and version, with signals and
+opt-ins listed in [`mcp-proxy/README.md`](../mcp-proxy/README.md). The hook scores offline only: it does
+not run the registry lookup or fetch the feed, but uses a registry result or feed the proxy already
+cached. The alert
+(category `MCP: server reputation`) carries the server label, a keyed identity hash, the score, the
+band and category codes, never a package name, path, argument or env var. It is posted on first sight or
+a version change when the band is below good. `mcpReputation.blockBelow` refuses calls to a server
+scoring below it on an enrolled device and coaches on an unenrolled one; `mcpReputation.enabled: false`
+turns it off.
+
 ---
 
 ## 9. Content-free discipline
@@ -657,6 +770,11 @@ one-way hash**. Tool-call content, file content, matched spans and arguments are
   than silently inflating a "distinct values seen" count.
   It defends a console DB dump, a SIEM stream, a copied `audit.jsonl`. It does **not** defend against an
   attacker who already owns the device; that attacker reads the plaintext off disk.
+- **Two on-device stores use a device key, not the tenant key.** Intent alignment (`intent.key`) and
+  the instruction-leak fingerprints (`instruction-fp.key`) each hash with 32 random bytes kept in
+  `~/.moorai` at mode 0600. Their hashes never leave the device, so there is nothing to correlate across
+  a fleet, and an unenrolled device, which has no tenant key, still gets a real key. Like every file
+  under `~/`, they do not defend against the agent itself, which runs as the same user.
 - **Capture tiers** (`data/capture-tiers.js`) are the only way to add more, and `content-free` is the
   default everywhere. `metadata-plus` adds file paths, tool names and command *shape* (verb + flag names
   + arg counts, never values). `full-capture` adds the matched span and argument text, opt-in only. Two
@@ -717,11 +835,15 @@ calls (a local policy server, cwd inside a git repository, commands with hosts, 
 alternating the pre-change hook and the new one twice: p50 94.4 / 93.8 ms before, 97.7 / 97.7 ms after;
 p95 145.1 / 147.9 ms before, 145.4 / 146.5 ms after. That is about 3–4 ms at the median on one machine.
 
+`UserPromptSubmit` adds one hook process per prompt. Whole-hook wall time for that event measured p50
+119 ms in the release measurement and p50 190 ms / p95 196 ms in a separate 25-run check on the same
+machine with no reachable policy server. The semantic tier, when on, adds up to its 1500 ms budget.
+
 Independently, `mcp-proxy/tool-scan.mjs` records `decideText` at stage `file` measuring 3.8–4.2 ms warm
 on 64 KB of composed text, which is why `maxResultBytes` is set where it is. These are single-run figures
 on one machine; treat them as an order of magnitude, not a benchmark.
 
-Coverage numbers — 95 detectors, 77 threats, 102/102 adversarial corpus, 9/10 OWASP LLM Top 10 items with
+Coverage numbers — 98 detectors, 77 threats, 102/102 adversarial corpus, 9/10 OWASP LLM Top 10 items with
 at least one on-device detector — are in [BENCHMARK.md](BENCHMARK.md) and are regenerated by
 `npm run benchmark`. Held-out adversarial recall and the benign false-positive rate are in the README,
 including the locked tune/test split discipline; they are not restated here, so there is one place to
@@ -804,9 +926,24 @@ Stated rather than papered over.
 - **`scanSession` / the `session` stage has no enforcement caller** (§2). Multi-turn injection scores in
   the corpora and enforces nothing in the product.
 - **`scripts/score-vectors.mjs`'s `STAGE_REACHABILITY` names `UserPromptSubmit`** as a production feed for
-  the `prompt` stage. `UserPromptSubmit` appears nowhere else in the repo; `REGISTERED_EVENTS` in
-  `cli/moorai-hook.mjs` registers only `PreToolUse` and `PostToolUse`. The `prompt` stage table in §2
-  therefore lists what the hook actually feeds it, and does not include a user-prompt hook.
+  the `prompt` stage. `UserPromptSubmit` is registered for intent alignment only (§6); the `prompt`
+  stage table in §2 still lists no user-prompt feed, because the engine never scans the prompt.
+- **Intent alignment is lexical, not semantic.** It asks whether the user ever named a destination,
+  file or service, not whether the action serves the task. An upload to a host the user named passes,
+  even when it is exfiltration to that host. Text pasted into a prompt from an untrusted source widens
+  the task with its hosts and paths. The agent runs as the same user, so it can read `intent.key`,
+  dictionary-attack the hashed sites and paths, or write `intent-alignment.json` to add a host.
+  `Write`/`Edit`, data sent in a GET query string and `git push` to a new remote are not judged. The
+  Codex, Cursor, Gemini and Copilot adapters do not forward prompts, so it runs on Claude Code only.
+- **Instruction-leak fingerprints see copies, not rewrites.** A paraphrase, a translation or a hex
+  encoding of a rules file is not matched. A staged copy (`cp CLAUDE.md /tmp/x`, then an upload of
+  `/tmp/x`) is not tied back to the rules file. A rules file with fewer than 40 distinctive shingles can
+  never fire, because it cannot reach the volume floor. `mcp-proxy`, the desktop app and the browser
+  extension register no fingerprints, so only the path-based `instr-leak-upload-ref` can fire there.
+- **MCP reputation scores provenance, not behaviour.** A server with a well-known name and a clean
+  installed copy scores good; what it does at runtime is for `tools/list` and result scanning (§8).
+  Without the opt-in lookup, a package npx has not installed yet is scored on its name and launch
+  command alone.
 - **Two benign-corpus denominators disagree in the source.** The `BUILTIN_DEFAULT_ACTIONS` comment states
   "610 + 171 = 781 prompts" and then quotes per-threat rates as "4/890", "2/890". The corpora on disk are
   610 and 171. The 890 figure could not be reconciled and is not cited anywhere above.
@@ -995,7 +1132,7 @@ appends a bounded credit's limit in parentheses.
 | #43 Destructive command execution | **T0101** (was T0011) | the *agent* runs the irreversible command through its shell tool; T0011 is a user executing an artefact |
 | #47 External email / notifications | T0048, **T0086** | `action-external-comms` matches the send-message tool families and gates them on human approval — exfiltration through a legitimate tool call |
 | #51 System-prompt extraction attempt | **T0056** (was T0051) | `sysprompt-extract` matches the extraction probe itself; T0051 is the means, not what is detected |
-| #52 System-prompt leakage in output | **T0056** (was T0057) | `sysprompt-echo` matches the reply reciting its own instruction block |
+| #52 System-prompt leakage in output | **T0056** (was T0057) | `sysprompt-echo` matches the reply reciting its own instruction block; the `instr-leak-*` detectors (§6) match the agent's rules files leaving in output or an upload |
 | #54 Reverse shell / RCE | **T0112** (was T0011) | the payload shapes hand a remote host interactive control of the machine through the agent (AML.T0112.000 Local AI Agent) |
 | #55 Credential / secret-file access | **T0098** (was T0057) | `cred-file-access` matches the agent using a tool to collect credentials, before any leak |
 | #56 Destructive tool / MCP call | **T0101** (was T0011) | the irreversible operation is invoked through a *tool*, not a shell |
