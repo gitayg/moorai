@@ -13,7 +13,8 @@ central server so the security team has visibility.
 
 **Posture: adoption is voluntary; enforcement is policy-driven.** Adoption is opt-in
 (self-install), but MoorAI does block. `threatActionFor` in [`cli/hook-core.mjs`](../cli/hook-core.mjs)
-resolves every threat to one of `notify` · `justify` · `block` · `kill`, and
+resolves every threat to one of `notify` · `justify` · `block` · `kill` (plus `mask` for data-tier
+threats, where the caller can rewrite the payload), and
 [`cli/moorai-hook.mjs`](../cli/moorai-hook.mjs) turns those into real Claude Code `allow`/`ask`/`deny`
 verdicts — up to terminating the session outright (`killSession`). The **default is report-first for
 everything ambiguous**, but it is no longer report-*only*: an **enrolled** device with no organisation
@@ -32,7 +33,8 @@ surfaces organization-wide risk signals.
   Each threat is a rule: `example` = trigger context, `response` = intervention,
   `riskScore = severity × likelihood`.
 - **Intervention model:** risk-tiered and policy-driven — `notify` (report) → `justify` (ask) →
-  `block` (deny) → `kill` (terminate session). Report-first by default, blocking when configured.
+  `block` (deny) → `kill` (terminate session), and `mask` (replace the span, let the call proceed) for
+  secrets, PII, payment cards and PHI. Report-first by default, blocking when configured.
 
 ## Architecture
 
@@ -141,12 +143,13 @@ Client → Server alerts carry **redacted metadata only**: threat id, category, 
 tool used, optional keyed content hash / redacted snippet. **Never raw sensitive content** — otherwise
 MoorAI would itself commit threats #1 / #9 / #33 on every phone-home.
 
-Four further field families are permitted under this rule and are named here so the contract stays
+Five further field families are permitted under this rule and are named here so the contract stays
 enumerable rather than implicit: `skillKind` + `skillIntents` (a file kind and closed-vocabulary intent
 labels — §B2 11a), `destination` (`{kind, name, decision}` — a host or MCP server name — §B2 11b),
 `intent` (`{class, unmatched, targets, prompts, semantic, mode}` — a class name, counts and flags — §B3
-11c) and `reputation` (`{score, band, reasons}` — a number, a band and category codes, next to the MCP
-server label — §B3 11e). All four are names, categories and counts, never content. The invariant is asserted empirically rather than
+11c), `reputation` (`{score, band, reasons}` — a number, a band and category codes, next to the MCP
+server label — §B3 11e) and the mask record (`maskedThreats`, `maskedCount`, `maskedIn` — threat ids, a
+count and `input`/`result` — Intervention tiers, `mask`). All five are names, categories and counts, never content. The invariant is asserted empirically rather than
 declared: `test/skill-analysis.test.mjs` and `test/destinations.test.mjs` each plant a unique canary in
 a fixture, capture every byte the hook POSTs plus the on-device ledgers, and fail if the canary, a
 matched span, a verbatim source line, a URL path, a query string or a request header appears in either.
@@ -371,6 +374,36 @@ is validated against.
    carry the reputation per server. Signals:
    [`mcp-proxy/README.md`](../mcp-proxy/README.md).
 
+   The opt-in registry lookup also checks the **repository link**
+   ([`cli/mcp-repo-link.mjs`](../cli/mcp-repo-link.mjs), [`data/repo-link.js`](../data/repo-link.js)):
+   registry provenance first (npm `dist.attestations`, PyPI Trusted Publishing) compared with the
+   declared repository, otherwise the repository's own manifest on github.com or gitlab.com must name the
+   same package (up to 6 monorepo folders tried). `repo-mismatch` (30), `repo-unreachable` (15),
+   `repo-missing` (5); a timeout, 5xx, 429 or an unreadable host is evidence only, never a signal. 4 s per
+   request, 10 s and 12 requests in total, redirects only within the registries, github.com and
+   gitlab.com, public names only. **Limits.** Sigstore signatures are not re-verified. It compares
+   against `HEAD`, so a renamed package reads as a mismatch. bitbucket.org and codeberg.org are not
+   verified.
+
+11f. **Tool-result scanning** — what comes back into the agent after a tool runs. The Claude Code hook's
+   `PostToolUse` matchers are `WebFetch`, `WebSearch`, `Bash`, `Agent`, `Task` and `mcp__.*`; the result
+   (first 64 KB) is scanned at the `output` stage as inbound content. The tool has already run: a block
+   only adds a reason next to the result, and the model still sees the original output. Default
+   report-only; `ask` becomes advisory `additionalContext`; unenrolled devices coach. On `Bash`, MCP and
+   sub-agent results, the action and generated-code threats (#29, #44, #45, #52, #54, #55, #57, #61,
+   #62, #63, #69, #76) are dropped, because `PreToolUse` enforces them when attempted, and the #15/#17
+   gates are narrowed. Sub-agent results are judged on their report only. **Limits.** `PowerShell` is not
+   matched; output past 64 KB is unscanned; `cat .env` reports at both `PreToolUse` and `PostToolUse`;
+   the Codex, Copilot, Gemini and Cursor adapters forward only web results; recall figures are
+   in-sample. [DETECTION_ENGINE.md](DETECTION_ENGINE.md) §6–7.
+
+11g. **Credential paths in MCP tool descriptions** — `mcp-tool-cred-path`
+   ([`data/tool-credpaths.js`](../data/tool-credpaths.js)), `tool` stage, *Threat 60.* Fires only when a
+   description or schema tells the model to read or move a credential file's content into a call, and
+   stays silent on a negated verb, a capability infinitive, the server describing itself, the path as a
+   destination, and public keys or certificate PEMs. Its #60 finding feeds the server's existing
+   `tool-poisoning` reputation signal.
+
 ### C. Runtime (client)
 12. **Risk-prioritized alerting** — ranks findings by `riskLevel`, then `riskScore` as the tiebreak.
 13. **In-context guidance** — surfaces the matching `response` + a source link.
@@ -378,6 +411,15 @@ is validated against.
 15. **Redacted alert reporting** — sends redacted alerts to the server (metadata only).
 16. **Policy pull** — fetches allowlist/thresholds/rule-base from the server; offline-tolerant.
 17. **Privacy-preserving** — inspection is local; only redacted metadata leaves the device.
+17a. **Self-check and explain** — `moorai-doctor` reports whether MoorAI is registered in each agent
+    host (compared with what the current installer writes), whether Claude Code managed settings allow
+    its hooks, enrollment, console reachability, which policy is enforced and whether its signature
+    verifies, posture, break-glass and state-file modes, and runs the real hook on a benign and a
+    known-bad `Bash` command in a temporary copy of the state; read-only, exit 1 on any failed check.
+    `moorai-explain` runs one string through the hook's engine and policy and shows each finding, the
+    detectors dropped by their `refine` gate or by policy, the decision and the safer alternative; local
+    only, engine and policy only. **Limits.** Claude.ai server-managed settings and Windows registry
+    policy are not checked; the self-test covers the `Bash` `PreToolUse` branch only.
 
 ### D. Central server
 18. **Policy & rule-base distribution** — central allowlist, thresholds, per-threat/per-tier
@@ -409,6 +451,20 @@ per-threat → data-tier → **built-in prevention tier** → approval-set → `
   (reverse shell / RCE) and **65** (local secret-value egress).
 - **`kill`** → denies the call *and* terminates the session (`killSession`). `killOnCritical`
   promotes any Critical `block` to a `kill` without per-threat configuration.
+- **`mask`** → the matched span is replaced with `[MOORAI:<tier>:<8 letters>]` (from the keyed content
+  hash; no part of the value survives), the rewritten text is re-scanned, and the call proceeds. Set per
+  threat or per data tier, for the data-tier threats **15, 39, 1, 44** only, and applied only by span
+  detectors. The Claude Code hook rewrites the `Bash` command, the write family's new content, the
+  `WebFetch` url and prompt, MCP argument strings and the `Task` prompt through `PreToolUse`
+  `updatedInput` (with no permission decision, so it never auto-approves), and the six post-tool results
+  through `PostToolUse` `updatedToolOutput`. Anywhere it cannot rewrite — `Read`, files a `Bash` command
+  reads, the other agents' adapters, Cursor's renamed tools, an unenrolled device, a failed re-scan, a
+  value over 256 KB, and the MCP proxy and `claude -p` guard — the threat
+  resolves to `policy.maskFallback` (`notify`/`justify`/`block`), else to its action without the mask
+  entry. Each mask posts a content-free `Sensitive span masked` alert. **Limits.** Not yet observed in a
+  live Claude Code session; another hook's `updatedToolOutput` can override it (the last one wins); the
+  desktop app's own resolver treats `mask` as report-only; the console policy editor may not offer it
+  yet.
 
 **The built-in prevention tier** (`BUILTIN_DEFAULT_ACTIONS`, [`cli/hook-core.mjs`](../cli/hook-core.mjs))
 is what an **enrolled** device stops with no organisation policy at all. It exists because the measured

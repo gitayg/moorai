@@ -1,0 +1,209 @@
+{
+ "recordedAt": "2026-09-29T05:01:12.713Z",
+ "cases": [
+  {
+   "ecosystem": "npm",
+   "name": "@modelcontextprotocol/server-filesystem",
+   "version": "2026.8.31",
+   "expect": {
+    "signals": [],
+    "evidence": [
+     "repo-provenance"
+    ]
+   },
+   "responses": {
+    "https://registry.npmjs.org/@modelcontextprotocol%2fserver-filesystem/2026.8.31": {
+     "status": 200,
+     "body": "{\"name\":\"@modelcontextprotocol/server-filesystem\",\"version\":\"2026.8.31\",\"repository\":{\"url\":\"git+https://github.com/modelcontextprotocol/servers.git\",\"type\":\"git\"},\"dist\":{\"attestations\":{\"url\":\"https://registry.npmjs.org/-/npm/v1/attestations/@modelcontextprotocol%2fserver-filesystem@2026.8.31\",\"provenance\":{\"predicateType\":\"https://slsa.dev/provenance/v1\"}}}}"
+    },
+    "https://registry.npmjs.org/-/npm/v1/attestations/@modelcontextprotocol%2fserver-filesystem@2026.8.31": {
+     "status": 200,
+     "body": "{\"attestations\":[{\"predicateType\":\"https://slsa.dev/provenance/v1\",\"bundle\":{\"dsseEnvelope\":{\"payload\":\"eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJuYW1lIjoicGtnOm5wbS8lNDBtb2RlbGNvbnRleHRwcm90b2NvbC9zZXJ2ZXItZmlsZXN5c3RlbUAyMDI2LjguMzEiLCJkaWdlc3QiOnsic2hhNTEyIjoiOTBhNjg1OTMyMDIxZWE4OGE5YmRjZjdlMTAwNmM5ZTc5ZDg5NjlmOWNjOWNlYWI5OWYzOWIzNWE0YTc1OGM5NzQxODUzMDAwMWE5OTg4YTU2OGExNTA2ZDdlYWRmMzYxOTg0MTRjZjdjODE0NjQzNzQyMWMyMGMzZTJmZTlhZWQifX1dLCJwcmVkaWNhdGVUeXBlIjoiaHR0cHM6Ly9zbHNhLmRldi9wcm92ZW5hbmNlL3YxIiwicHJlZGljYXRlIjp7ImJ1aWxkRGVmaW5pdGlvbiI6eyJidWlsZFR5cGUiOiJodHRwczovL3Nsc2EtZnJhbWV3b3JrLmdpdGh1Yi5pby9naXRodWItYWN0aW9ucy1idWlsZHR5cGVzL3dvcmtmbG93L3YxIiwiZXh0ZXJuYWxQYXJhbWV0ZXJzIjp7IndvcmtmbG93Ijp7InJlZiI6InJlZnMvaGVhZHMvbWFpbiIsInJlcG9zaXRvcnkiOiJodHRwczovL2dpdGh1Yi5jb20vbW9kZWxjb250ZXh0cHJvdG9jb2wvc2VydmVycyIsInBhdGgiOiIuZ2l0aHViL3dvcmtmbG93cy9yZWxlYXNlLnltbCJ9fSwiaW50ZXJuYWxQYXJhbWV0ZXJzIjp7ImdpdGh1YiI6eyJldmVudF9uYW1lIjoid29ya2Zsb3dfZGlzcGF0Y2giLCJyZXBvc2l0b3J5X2lkIjoiODkwNjY4Nzk5IiwicmVwb3NpdG9yeV9vd25lcl9pZCI6IjE4MjI4ODU4OSJ9fSwicmVzb2x2ZWREZXBlbmRlbmNpZXMiOlt7InVyaSI6ImdpdCtodHRwczovL2dpdGh1Yi5jb20vbW9kZWxjb250ZXh0cHJvdG9jb2wvc2VydmVyc0ByZWZzL2hlYWRzL21haW4iLCJkaWdlc3QiOnsiZ2l0Q29tbWl0IjoiNTc5YzM5MDNmMzAwNDRlYjcwMmE1OTlhNzRiM2FlNzc1ODhlNzIyZSJ9fV19LCJydW5EZXRhaWxzIjp7ImJ1aWxkZXIiOnsiaWQiOiJodHRwczovL2dpdGh1Yi5jb20vYWN0aW9ucy9ydW5uZXIvZ2l0aHViLWhvc3RlZCJ9LCJtZXRhZGF0YSI6eyJpbnZvY2F0aW9uSWQiOiJodHRwczovL2dpdGh1Yi5jb20vbW9kZWxjb250ZXh0cHJvdG9jb2wvc2VydmVycy9hY3Rpb25zL3J1bnMvMzM0MTk1OTE3MzIvYXR0ZW1wdHMvMSJ9fX19\"}}}]}"
+    }
+   }
+  },
+  {
+   "ecosystem": "npm",
+   "name": "@upstash/context7-mcp",
+   "version": "4.1.1",
+   "expect": {
+    "signals": [],
+    "evidence": [
+     "repo-verified"
+    ]
+   },
+   "responses": {
+    "https://registry.npmjs.org/@upstash%2fcontext7-mcp/4.1.1": {
+     "status": 200,
+     "body": "{\"name\":\"@upstash/context7-mcp\",\"version\":\"4.1.1\",\"repository\":{\"url\":\"git+https://github.com/upstash/context7.git\",\"type\":\"git\",\"directory\":\"packages/mcp\"},\"dist\":{}}"
+    },
+    "https://raw.githubusercontent.com/upstash/context7/HEAD/packages/mcp/package.json": {
+     "status": 200,
+     "body": "{\"name\":\"@upstash/context7-mcp\"}"
+    }
+   }
+  },
+  {
+   "ecosystem": "npm",
+   "name": "@sentry/mcp-server",
+   "version": null,
+   "expect": {
+    "signals": [],
+    "evidence": [
+     "repo-verified",
+     "repo-monorepo"
+    ]
+   },
+   "responses": {
+    "https://registry.npmjs.org/@sentry%2fmcp-server/latest": {
+     "status": 200,
+     "body": "{\"name\":\"@sentry/mcp-server\",\"version\":\"0.42.0\",\"repository\":{\"url\":\"git+ssh://git@github.com/getsentry/sentry-mcp.git\",\"type\":\"git\"},\"dist\":{}}"
+    },
+    "https://raw.githubusercontent.com/getsentry/sentry-mcp/HEAD/package.json": {
+     "status": 200,
+     "body": "{\"name\":\"sentry-mcp\",\"private\":true}"
+    },
+    "https://raw.githubusercontent.com/getsentry/sentry-mcp/HEAD/packages/mcp-server/package.json": {
+     "status": 200,
+     "body": "{\"name\":\"@sentry/mcp-server\"}"
+    }
+   }
+  },
+  {
+   "ecosystem": "npm",
+   "name": "@iflow-mcp/cameroncooke_xcodebuildmcp",
+   "version": "1.15.1",
+   "expect": {
+    "signals": [
+     "repo-mismatch"
+    ],
+    "evidence": []
+   },
+   "responses": {
+    "https://registry.npmjs.org/@iflow-mcp%2fcameroncooke_xcodebuildmcp/1.15.1": {
+     "status": 200,
+     "body": "{\"name\":\"@iflow-mcp/cameroncooke_xcodebuildmcp\",\"version\":\"1.15.1\",\"repository\":{\"url\":\"git+https://github.com/cameroncooke/XcodeBuildMCP.git\",\"type\":\"git\"},\"dist\":{}}"
+    },
+    "https://raw.githubusercontent.com/cameroncooke/XcodeBuildMCP/HEAD/package.json": {
+     "status": 200,
+     "body": "{\"name\":\"mobilebuildmcp\"}"
+    },
+    "https://raw.githubusercontent.com/cameroncooke/XcodeBuildMCP/HEAD/packages/cameroncooke_xcodebuildmcp/package.json": {
+     "status": 404
+    },
+    "https://raw.githubusercontent.com/cameroncooke/XcodeBuildMCP/HEAD/src/cameroncooke_xcodebuildmcp/package.json": {
+     "status": 404
+    }
+   }
+  },
+  {
+   "ecosystem": "npm",
+   "name": "pinecone-mcp",
+   "version": "1.0.0",
+   "expect": {
+    "signals": [
+     "repo-unreachable"
+    ],
+    "evidence": []
+   },
+   "responses": {
+    "https://registry.npmjs.org/pinecone-mcp/1.0.0": {
+     "status": 200,
+     "body": "{\"name\":\"pinecone-mcp\",\"version\":\"1.0.0\",\"repository\":{\"url\":\"git+https://github.com/YOUR_USERNAME/pinecone-mcp.git\",\"type\":\"git\"},\"dist\":{}}"
+    },
+    "https://raw.githubusercontent.com/YOUR_USERNAME/pinecone-mcp/HEAD/package.json": {
+     "status": 404
+    },
+    "https://github.com/YOUR_USERNAME/pinecone-mcp": {
+     "status": 404
+    }
+   }
+  },
+  {
+   "ecosystem": "npm",
+   "name": "weather-mcp",
+   "version": null,
+   "expect": {
+    "signals": [
+     "repo-missing"
+    ],
+    "evidence": [
+     "repo-none-declared"
+    ]
+   },
+   "responses": {
+    "https://registry.npmjs.org/weather-mcp/latest": {
+     "status": 200,
+     "body": "{\"name\":\"weather-mcp\",\"version\":\"1.0.0\",\"dist\":{}}"
+    }
+   }
+  },
+  {
+   "ecosystem": "npm",
+   "name": "inbox-zero",
+   "version": "0.0.1-security",
+   "expect": {
+    "signals": [
+     "repo-mismatch"
+    ],
+    "evidence": []
+   },
+   "responses": {
+    "https://registry.npmjs.org/inbox-zero/0.0.1-security": {
+     "status": 200,
+     "body": "{\"name\":\"inbox-zero\",\"version\":\"0.0.1-security\",\"repository\":\"npm/security-holder\",\"dist\":{}}"
+    },
+    "https://raw.githubusercontent.com/npm/security-holder/HEAD/package.json": {
+     "status": 200,
+     "body": "{\"name\":\"XXXXXXXX\"}"
+    },
+    "https://raw.githubusercontent.com/npm/security-holder/HEAD/packages/inbox-zero/package.json": {
+     "status": 404
+    },
+    "https://raw.githubusercontent.com/npm/security-holder/HEAD/src/inbox-zero/package.json": {
+     "status": 404
+    }
+   }
+  },
+  {
+   "ecosystem": "pypi",
+   "name": "mcp-server-fetch",
+   "version": "2026.8.18",
+   "expect": {
+    "signals": [],
+    "evidence": [
+     "repo-provenance"
+    ]
+   },
+   "responses": {
+    "https://pypi.org/pypi/mcp-server-fetch/2026.8.18/json": {
+     "status": 200,
+     "body": "{\"info\":{\"name\":\"mcp-server-fetch\",\"version\":\"2026.8.18\",\"project_urls\":{\"Issues\":\"https://github.com/modelcontextprotocol/servers/issues\",\"Repository\":\"https://github.com/modelcontextprotocol/servers/tree/main/src/fetch\"},\"home_page\":null},\"urls\":[{\"filename\":\"mcp_server_fetch-2026.8.18-py3-none-any.whl\"},{\"filename\":\"mcp_server_fetch-2026.8.18.tar.gz\"}]}"
+    },
+    "https://pypi.org/integrity/mcp-server-fetch/2026.8.18/mcp_server_fetch-2026.8.18-py3-none-any.whl/provenance": {
+     "status": 200,
+     "body": "{\"attestation_bundles\":[{\"publisher\":{\"environment\":\"release\",\"kind\":\"GitHub\",\"repository\":\"modelcontextprotocol/servers\",\"workflow\":\"release.yml\"}}]}"
+    }
+   }
+  },
+  {
+   "ecosystem": "pypi",
+   "name": "mcp-server-sqlite",
+   "version": null,
+   "expect": {
+    "signals": [
+     "repo-missing"
+    ],
+    "evidence": [
+     "repo-none-declared"
+    ]
+   },
+   "responses": {
+    "https://pypi.org/pypi/mcp-server-sqlite/json": {
+     "status": 200,
+     "body": "{\"info\":{\"name\":\"mcp-server-sqlite\",\"version\":\"2025.4.25\",\"project_urls\":null,\"home_page\":null},\"urls\":[{\"filename\":\"mcp_server_sqlite-2025.4.25-py3-none-any.whl\"},{\"filename\":\"mcp_server_sqlite-2025.4.25.tar.gz\"}]}"
+    }
+   }
+  }
+ ]
+}

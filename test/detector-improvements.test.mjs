@@ -34,7 +34,8 @@ const NEW_IDS = new Set([
   // v0.68.0 — persuasion / crescendo
   "persuasion-jailbreak", "semantic-persuasion",
   // v0.71.0 — structural slot patterns
-  "inj-override-structural", "inj-prefix-forcing", "inj-persona-bypass"
+  "inj-override-structural", "inj-prefix-forcing", "inj-persona-bypass",
+  "mcp-tool-cred-path"
 ]);
 
 const improved = new DetectionEngine(threats, DETECTORS, CONTENT_RULES);

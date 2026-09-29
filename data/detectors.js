@@ -13,6 +13,7 @@ import { renderedExfilHit } from "./render-exfil.js";
 import { AGENT_STATE_DETECTORS } from "./detectors-agent-state.js";
 import { ARTIFACT_DETECTORS } from "./detectors-artifacts.js";
 import { INSTRUCTION_LEAK_DETECTORS } from "./detectors-instruction-leak.js";
+import { TOOL_CREDPATH_DETECTORS } from "./detectors-tool-credpaths.js";
 
 // ---------------------------------------------------------------------------------------------------
 // Content-free helpers for the additive detectors appended at the end of DETECTORS. All pure,
@@ -1484,5 +1485,6 @@ export const DETECTORS = [
   },
   ...AGENT_STATE_DETECTORS,
   ...ARTIFACT_DETECTORS,
-  ...INSTRUCTION_LEAK_DETECTORS
+  ...INSTRUCTION_LEAK_DETECTORS,
+  ...TOOL_CREDPATH_DETECTORS
 ];

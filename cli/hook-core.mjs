@@ -24,6 +24,7 @@ import { fileMetadataText } from "../data/file-metadata.js";
 import { credAlternative } from "../data/cred-alternatives.js";
 import { redosReason, safeRegex, unboundedQuantifiers } from "../src/safe-regex.js";
 import { DetectionEngine } from "../src/engine.js";
+import { isMaskable } from "./mask.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -77,12 +78,27 @@ export const BUILTIN_DEFAULT_ACTIONS = {
 // prevention tier → approval-set → notify. So a secret in a read file defaults to "notify" (report,
 // don't block) unless an admin explicitly escalates it — the safe default that keeps false positives
 // from blocking work.
-export function threatActionFor(policy, id) {
-  const explicit = policy?.threatPolicy?.[id];
-  if (explicit) return explicit;
+//
+// "mask" (cli/mask.mjs) is the one action that needs the CALLER's cooperation: only a surface that can
+// rewrite the payload (the hook's PreToolUse updatedInput / PostToolUse updatedToolOutput) can honour
+// it, and only for a data-tier threat, which is the only kind that names a removable span. So "mask" is
+// returned solely to a caller that passes { mask: true }, for a maskable threat. Every other caller —
+// the MCP proxy, the guard, scan-core, the backtest, a hook branch that cannot rewrite — gets the
+// FALLBACK and never sees the word: policy.maskFallback when it is notify/justify/block, otherwise the
+// resolution continued as if the mask entry were absent (tier → built-in → approval → notify). A policy
+// that never says "mask" resolves exactly as before, capability or not.
+export const MASK_FALLBACKS = new Set(["notify", "justify", "block"]);
+export function threatActionFor(policy, id, opts = {}) {
   const tier = TIER_OF[id];
-  const tierAct = tier && policy?.tierPolicy?.[tier];
-  if (tierAct) return tierAct;
+  let masked = false;
+  for (const act of [policy?.threatPolicy?.[id], tier && policy?.tierPolicy?.[tier]]) {
+    if (!act) continue;
+    if (act !== "mask") return act;
+    if (masked) continue;
+    masked = true;
+    if (opts.mask && isMaskable(id)) return "mask";
+    if (MASK_FALLBACKS.has(policy?.maskFallback)) return policy.maskFallback;
+  }
   const builtin = BUILTIN_DEFAULT_ACTIONS[id];
   if (builtin) return builtin;
   if (APPROVAL_THREATS.has(id)) return "justify";
@@ -163,17 +179,21 @@ export function withSafer(reason, alternatives) {
 // `alternatives` holds the safer-alternative lines of the findings that drove a non-allow decision.
 // opts.ctx is handed to refine() (e.g. {template:true} for an env template file); opts.only restricts
 // the verdict to a set of threat ids and skips content rules.
+// opts.mask: the caller can rewrite this exact text (see threatActionFor); a finding whose threat resolves
+// to "mask" is then reported as usual, listed in `maskIds`, and does NOT raise the decision — the caller
+// either applies the mask or, if it cannot, resolves those ids to their fallback (maskFallbackDecision).
 export function decideText(engine, policy, text, stage, opts = {}) {
-  const out = { decision: "allow", reasons: [], findings: [], kill: false, killIds: [], alternatives: [] };
+  const out = { decision: "allow", reasons: [], findings: [], kill: false, killIds: [], alternatives: [], maskIds: [] };
   if (!text || !text.trim()) return out;
   const bump = (d) => { if (RANK[d] > RANK[out.decision]) out.decision = d; };
   const driving = [];
   for (const f of engine.scan(text, stage, opts.ctx)) {
     if (opts.only && !opts.only.includes(f.threat.id)) continue;
-    const act = threatActionFor(policy, f.threat.id);
+    const act = threatActionFor(policy, f.threat.id, { mask: !!opts.mask });
     if (act === "disabled") continue;
     const level = calibrateRisk(f.threat.riskLevel, { stage, category: f.threat.category });
     out.findings.push({ threatId: f.threat.id, category: f.threat.category, riskLevel: level, match: f.match, detectorId: f.detectorId });
+    if (act === "mask") { if (!out.maskIds.includes(f.threat.id)) out.maskIds.push(f.threat.id); continue; }
     // #3 — "kill" terminates the whole session, not just this call. It still denies the call (Claude
     // Code only knows allow/ask/deny); the kill signal is carried out-of-band via out.kill for the host.
     // killOnCritical promotes any Critical block to a kill without per-threat config.
@@ -194,6 +214,28 @@ export function decideText(engine, policy, text, stage, opts = {}) {
     else if (act === "justify") bump("ask");
   }
   return out;
+}
+
+// A mask that could not be applied (the span was not in a rewritable field, the rewrite did not verify,
+// or the host cannot rewrite at all) resolves each threat to its fallback action, exactly as a caller
+// without the capability would have. Returns the same { decision, reasons, alternatives } shape as
+// decideText so it merges with the rank rule every branch already uses.
+export function maskFallbackDecision(policy, ids, text) {
+  const out = { decision: "allow", reasons: [], alternatives: [] };
+  const driving = [];
+  for (const id of ids || []) {
+    const act = threatActionFor(policy, id);
+    const t = threatOf(id);
+    const name = t ? `#${id} ${t.category}` : `#${id}`;
+    if (act === "block" || act === "kill") { if (RANK.deny > RANK[out.decision]) out.decision = "deny"; out.reasons.push(`${name} (mask not possible here)`); if (t) driving.push(t); }
+    else if (act === "justify") { if (RANK.ask > RANK[out.decision]) out.decision = "ask"; out.reasons.push(`${name} (mask not possible here; needs sign-off)`); if (t) driving.push(t); }
+  }
+  out.alternatives = orderedAlternatives(driving, text);
+  return out;
+}
+function threatOf(id) {
+  if (!THREATS_BY_ID) saferAlternativesFor([]);
+  return THREATS_BY_ID.get(id);
 }
 
 // Clipboard read in one tool call → outbound upload in a LATER call of the same session. Two content-free
@@ -420,13 +462,14 @@ export function decideMcpArgs(policy, tool, argsText) {
 // decision plus a `gate` tag ("server"|"args"|"content"|null) so the caller can post the matching
 // content-free alert, and the findings / kill signal from the content scan. The caller layers the
 // impure gates (entitlement envelope, endpoint allow-list, secret-egress) and records the audit line.
-export function mcpGateway(engine, policy, { tool, server, args }) {
+// `mask` (optional): the caller can rewrite the arguments (see threatActionFor); maskIds come back for it.
+export function mcpGateway(engine, policy, { tool, server, args, mask = false }) {
   const sd = decideMcpServer(policy, server);
-  if (sd.decision === "deny") return { gate: "server", decision: "deny", reason: sd.reason, findings: [], kill: false, killIds: [] };
+  if (sd.decision === "deny") return { gate: "server", decision: "deny", reason: sd.reason, findings: [], kill: false, killIds: [], maskIds: [] };
   const ad = decideMcpArgs(policy, tool, args);
-  if (ad.decision === "deny") return { gate: "args", decision: "deny", reason: ad.reason, findings: [], kill: false, killIds: [] };
-  const d = decideText(engine, policy, args, "prompt", { ctx: { egress: true } });
-  return { gate: d.decision === "allow" ? null : "content", decision: d.decision, reason: d.reasons.join(", "), findings: d.findings, kill: d.kill, killIds: d.killIds, alternatives: d.alternatives };
+  if (ad.decision === "deny") return { gate: "args", decision: "deny", reason: ad.reason, findings: [], kill: false, killIds: [], maskIds: [] };
+  const d = decideText(engine, policy, args, "prompt", { ctx: { egress: true }, mask });
+  return { gate: d.decision === "allow" ? null : "content", decision: d.decision, reason: d.reasons.join(", "), findings: d.findings, kill: d.kill, killIds: d.killIds, alternatives: d.alternatives, maskIds: d.maskIds };
 }
 
 // T1-1 / #63 — model-endpoint allow-list. Enforce only when policy.endpointAllow is set; a referenced

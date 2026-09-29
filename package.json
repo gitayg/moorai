@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "0.97.0",
+  "version": "0.98.0",
   "license": "MIT",
   "description": "MoorAI agent — on-device guardrails for AI coding agents (community edition, MIT)",
   "type": "module",
@@ -25,7 +25,9 @@
     "moorai-attest": "cli/moorai-attest.mjs",
     "moorai-receipt": "cli/moorai-receipt.mjs",
     "moorai-scan": "cli/moorai-scan.mjs",
-    "moorai-agent-hook": "cli/moorai-agent-hook.mjs"
+    "moorai-agent-hook": "cli/moorai-agent-hook.mjs",
+    "moorai-doctor": "cli/moorai-doctor.mjs",
+    "moorai-explain": "cli/moorai-explain.mjs"
   },
   "files": [
     "scan.mjs",

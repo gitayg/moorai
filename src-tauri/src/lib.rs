@@ -10,6 +10,7 @@ mod ocr_winocr;
 #[cfg(target_os = "linux")]
 mod ocr_tesseract;
 mod platform;
+mod private_file;
 #[cfg(windows)]
 mod winsec;
 
@@ -230,7 +231,7 @@ fn save_provision(config: serde_json::Value) -> Result<(), String> {
     if let (Some(o), Some(n)) = (cfg.as_object_mut(), config.as_object()) {
         for (k, v) in n { o.insert(k.clone(), v.clone()); }
     }
-    std::fs::write(platform::config_path(), serde_json::to_string_pretty(&cfg).unwrap())
+    private_file::write_private(platform::config_path(), &serde_json::to_string_pretty(&cfg).unwrap())
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -288,7 +289,7 @@ fn set_config_bool(key: &str, val: bool) {
     if !cfg.is_object() { cfg = serde_json::json!({}); }
     if let Some(o) = cfg.as_object_mut() { o.insert(key.to_string(), serde_json::Value::Bool(val)); }
     let _ = std::fs::create_dir_all(platform::config_dir());
-    let _ = std::fs::write(platform::config_path(), serde_json::to_string_pretty(&cfg).unwrap_or_default());
+    let _ = private_file::write_private(platform::config_path(), &serde_json::to_string_pretty(&cfg).unwrap_or_default());
 }
 
 // Opens a URL in the system browser (keeps it out of the app's webview).
@@ -538,7 +539,7 @@ fn set_agent_auth(method: String, token: String) -> Result<(), String> {
     if !cfg.is_object() { cfg = serde_json::json!({}); }
     cfg["authMethod"] = serde_json::Value::String(method);
     cfg["agentToken"] = serde_json::Value::String(token);
-    std::fs::write(platform::config_path(), serde_json::to_string_pretty(&cfg).unwrap())
+    private_file::write_private(platform::config_path(), &serde_json::to_string_pretty(&cfg).unwrap())
         .map_err(|e| e.to_string())?;
     Ok(())
 }

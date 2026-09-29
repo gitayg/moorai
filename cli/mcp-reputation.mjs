@@ -16,7 +16,10 @@
 //   OPT-IN lookup     policy.mcpReputation.lookup = "registry": MoorAI's analyzePackage fetches the exact
 //                     registry artifact. Only the public package name (and version) reaches the public
 //                     registry — the same request npx/uvx makes to install it. Adds new-package,
-//                     name-not-published and whatever the downloaded code shows.
+//                     name-not-published and whatever the downloaded code shows. In parallel,
+//                     cli/mcp-repo-link.mjs checks the repository the package declares (registry
+//                     provenance, else the repository's own manifest on github.com / gitlab.com):
+//                     repo-missing, repo-unreachable, repo-mismatch. Public package and repo names only.
 //   OPT-IN feed       policy.mcpReputation.feed = true (or an https URL): SkillTriage's published
 //                     verdicts, downloaded WHOLE with a bare GET and matched here. The request names no
 //                     server, so the feed host learns only that a MoorAI device fetched the feed.
@@ -33,6 +36,7 @@ import { resolveLaunch } from "./mcp-package/resolve.mjs";
 import { nameFindings, packageHeuristics } from "./mcp-package/heuristics.mjs";
 import { scanPackageFiles } from "./mcp-package/scope.mjs";
 import { analyzePackage } from "./mcp-package.mjs";
+import { checkRepoLink } from "./mcp-repo-link.mjs";
 import { buildEngine } from "./hook-core.mjs";
 import { STATE_DIR } from "./state-dirs.mjs";
 import { scoreReputation, signal, classifyMcpName, reputationAction, reputationAlert, REASON_WEIGHTS, TIER_WEIGHT } from "../data/mcp-reputation.js";
@@ -52,7 +56,7 @@ const SELF = dirname(fileURLToPath(import.meta.url));
 // cached server instead of serving a verdict computed under older rules.
 const REP_REV = (() => {
   const h = createHash("sha256");
-  for (const f of ["mcp-reputation.mjs", "mcp-package/heuristics.mjs", "mcp-package/scope.mjs", "../data/mcp-reputation.js", "../data/popular-mcp-servers.js", "../data/popular-packages.js", "../data/detectors.js"]) {
+  for (const f of ["mcp-reputation.mjs", "mcp-package/heuristics.mjs", "mcp-package/scope.mjs", "../data/mcp-reputation.js", "../data/popular-mcp-servers.js", "../data/popular-packages.js", "../data/detectors.js", "mcp-repo-link.mjs", "../data/repo-link.js"]) {
     try { h.update(readFileSync(join(SELF, f))); } catch { h.update(f); }
   }
   return h.digest("hex").slice(0, 16);
@@ -185,9 +189,13 @@ function baseSignals(id, opts) {
 // ---- opt-in registry lookup ---------------------------------------------------------------------
 const LOOKUP_NOTES = { "new-package": "new-package", "integrity-mismatch": "integrity-mismatch" };
 async function registryLookup(id, opts) {
-  const e = await analyzePackage(id.ref, { fetchImpl: opts.fetchImpl || globalThis.fetch, cacheDir: opts.stateDir || STATE_DIR, engine: engineFor(opts) });
-  const signals = (e.findings || []).map(findingSignal);
-  const evidence = [];
+  const fetchImpl = opts.fetchImpl || globalThis.fetch;
+  const [e, link] = await Promise.all([
+    analyzePackage(id.ref, { fetchImpl, cacheDir: opts.stateDir || STATE_DIR, engine: engineFor(opts) }),
+    checkRepoLink(id.ref, { fetchImpl }).catch(() => ({ signals: [], evidence: ["repo-check-failed"] }))
+  ]);
+  const signals = [...(e.findings || []).map(findingSignal), ...link.signals.map((c) => signal(c))];
+  const evidence = [...link.evidence];
   for (const n of e.notes || []) {
     if (LOOKUP_NOTES[n.id]) signals.push(signal(LOOKUP_NOTES[n.id]));
     // A scoped npm 404 may just be a private package; an unscoped one, or PyPI, is a claimable name.

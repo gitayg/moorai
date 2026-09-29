@@ -39,6 +39,9 @@ MCP host  ⇄  moorai-mcp-guard  ⇄  real MCP server
   instead of a hang. The real server never receives the call.
 - **Allow / coach** → forwarded unchanged. The host has no interactive banner, so a "coach"
   (justify) verdict is treated as **allow + record**.
+- **Mask** → not applied here. The proxy never rewrites a call or a result, so a threat an org set to
+  `mask` resolves to `policy.maskFallback` (`notify` / `justify` / `block`), else to the action it would
+  have without the mask entry. The Claude Code hook is the surface that masks.
 
 ### server → agent: the tool LISTING and the tool RESULT
 
@@ -48,7 +51,10 @@ them can block.
 - **`tools/list` responses** are copied to a bounded scanner at the **`tool`** stage
   ([`tool-scan.mjs`](tool-scan.mjs), with the cross-call shadowing / capability-expansion half in
   [`tool-baseline.mjs`](tool-baseline.mjs)), so tool descriptions and input schemas reach
-  `mcp-tool-poisoning` (#60) and `mcp-hidden-canary` (#50). **Report-first, and never a mutation:** the
+  `mcp-tool-poisoning` (#60), `mcp-hidden-canary` (#50) and `mcp-tool-cred-path` (#60: a description that
+  tells the model to read a credential file such as `~/.ssh/id_rsa`, `~/.aws/credentials`, `.env`,
+  `.netrc`, a browser cookie store or a keychain, and pass its contents into a call; silent when the text
+  only names the file, negates the read, or describes what the server itself does). **Report-first, and never a mutation:** the
   listing is forwarded byte-identical, always. "Block" here could only mean deleting a tool from the
   agent's list — a lie about what the server offers. A blocking policy instead **quarantines** the tool,
   and the already-existing `tools/call` gate refuses calls to it. Observation at list time, enforcement
@@ -93,9 +99,11 @@ Signals, all offline unless the policy opts in:
   `pkg-typosquat`, `mcp-typosquat`; an unpinned `npx -y pkg` — `unpinned-version`;
 - the copy npx already installed under `~/.npm/_npx`, read with the package heuristics and scoped engine
   scan SkillTriage runs — `pkg-install-script-remote`, `pkg-remote-code`, …;
-- the server's own `tools/list` — `tool-poisoning` (#60), `tool-hidden-content` (#50), `tool-metadata`;
+- the server's own `tools/list` — `tool-poisoning` (#60, including `mcp-tool-cred-path`),
+  `tool-hidden-content` (#50), `tool-metadata`;
 - opt-in `mcpReputation.lookup: "registry"` — MoorAI's `analyzePackage` on the exact registry artifact
   (only the public name and version reach the public registry): `new-package`, `name-not-published`;
+  and, in parallel, the **repository link** below;
 - opt-in `mcpReputation.feed: true` — SkillTriage's published verdicts, downloaded whole with a bare GET
   and matched on the device (`catalogue-do-not-install`, `catalogue-review`, …), so the request names no
   server.
@@ -104,7 +112,39 @@ Report-only by default: a content-free alert (`MCP: server reputation`, band, sc
 never a package name, path, argument or env var) on first sight or a version change when the band is
 below good. `mcpReputation.blockBelow: <n>` refuses `tools/call` to a server scoring below `n` on an
 enforcing device; unenrolled, it coaches instead. `mcpReputation.enabled: false` turns it off. The same
-score appears in `moorai-aibom` (`reputation` per MCP server) and `moorai-shadow`.
+score appears in `moorai-aibom` (`reputation` per MCP server) and `moorai-shadow`. The Claude Code hook
+scores offline and reuses a registry result the proxy already cached.
+
+**The repository link** (part of the opt-in registry lookup; [`../cli/mcp-repo-link.mjs`](../cli/mcp-repo-link.mjs),
+pure half in [`../data/repo-link.js`](../data/repo-link.js)). Does the package link to a real repository that
+is actually its own?
+
+1. **Registry provenance first**, when the publisher produced it: npm `dist.attestations` (the SLSA
+   predicate's workflow repository) or PyPI Trusted Publishing (`attestation_bundles[].publisher.repository`),
+   compared with the repository the package declares. The registry checked the link at publish time.
+2. **Otherwise the repository's own manifest**, read raw from github.com or gitlab.com at the declared
+   directory or the root (`package.json` `name`; `pyproject.toml`, `setup.cfg`, `setup.py`), must name the
+   same package. A monorepo root is searched at up to 6 candidate folders; not finding the package there
+   is unverified, never a mismatch.
+
+| Reason code | Weight | Meaning |
+|---|--:|---|
+| `repo-mismatch` | 30 | provenance, or the repository's own manifest, names a different package |
+| `repo-unreachable` | 15 | the host says the declared repository is not publicly there (deleted, private, placeholder) |
+| `repo-missing` | 5 | no repository declared, or it cannot be parsed |
+
+Timeouts, 5xx, 429, a host it cannot read and a dynamic name are evidence only, never a signal: unknown is
+not bad. Bounds: 4 s per request, 10 s in total, at most 12 requests, redirects followed by hand (at most
+two) and only within the registries, github.com and gitlab.com. Only the public package name and version
+go to the registry and the public owner / repo / directory the registry published go to the code host; no
+local path, argument, environment value or identifying header.
+
+Measured on 325 popular servers: provenance 128, verified 80, none declared 98, unverified 7,
+unreachable 8, mismatch 2 (one of them a false positive after a rename, `blender-mcp`).
+
+**Limits.** Sigstore signatures on provenance are read, not re-verified. The manifest is read at `HEAD`,
+so a package renamed after publishing reads as a mismatch. Repositories on bitbucket.org and codeberg.org
+are not verified.
 
 ## Content-free by construction
 

@@ -24,6 +24,12 @@ export const REASON_WEIGHTS = {
   "catalogue-name-not-published": 60,
   "catalogue-do-not-install": 70, // SkillTriage's published verdict for this package (a block-tier finding)
   "integrity-mismatch": 50,
+  // Repository link (registry lookup only; cli/mcp-repo-link.mjs). Measured live 2026-09-29 on the 325
+  // listed servers: 98 declare no repository at all (mcp-server-sqlite among them), 8 declare one that
+  // is not publicly there, 2 point at a repository whose manifest names another package (npm's
+  // security-holder placeholder, and one legitimate rename); on 1,514 npm search results the mismatch
+  // rate was 1.8%, mostly third parties republishing someone else's server under their own name.
+  "repo-mismatch": 30,            // provenance or the repository's own manifest names another package
   "mcp-typosquat": 45,            // near-miss of a popular MCP server name
   "pkg-typosquat": 45,            // near-miss of a popular library name (data/popular-packages.js)
   "tool-poisoning": 40,           // #60 in an advertised tool description / schema
@@ -31,12 +37,14 @@ export const REASON_WEIGHTS = {
   "catalogue-review": 20,
   "pkg-ecosystem-confusion": 15,
   "unresolved-launch": 15,        // the launch command resolves to nothing we can identify
+  "repo-unreachable": 15,         // the declared repository is not publicly there (deleted, private, placeholder)
   "new-package": 10,              // first published < 30 days ago (registry lookup only)
   "remote-server": 10,            // an HTTP/SSE server: no code on this device to read
   "docker-image": 10,             // image analysis is not supported
   "tool-metadata": 10,            // any other tool-stage finding
   "catalogue-caution": 5,
   "unpinned-version": 5,          // `npx -y pkg` runs whatever is latest at launch
+  "repo-missing": 5,              // no repository declared, or unparseable (30% of the listed servers)
   "local-source": 5               // a local script: provenance is whoever wrote the file
 };
 // A block-tier finding is what SkillTriage calls DO-NOT-INSTALL, so on its own it lands in "bad" (< 35).

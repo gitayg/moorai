@@ -140,7 +140,7 @@ test("hookRegistered agrees with the matchers cli/moorai-hook.mjs installs", () 
   const m = /const PRETOOL_MATCHERS = (\[[^\]]*\])/.exec(hookSrc);
   assert.ok(m, "cli/moorai-hook.mjs no longer declares PRETOOL_MATCHERS as an array literal");
   assert.deepEqual(JSON.parse(m[1].replace(/'/g, '"')), INSTALLED_MATCHERS, "the scorer's matcher list has drifted from the hook's");
-  for (const t of ["Read", "Bash", "Task", "mcp__github__create_pull_request", "mcp__exfil__upload", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"]) {
+  for (const t of ["Read", "Bash", "Agent", "Task", "mcp__github__create_pull_request", "mcp__exfil__upload", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"]) {
     assert.equal(hookRegistered(t), true, `${t} should be covered by an installed matcher`);
   }
   // What REMAINS of the coverage hole: no installed matcher names these, so the hook never runs for
