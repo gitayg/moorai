@@ -415,8 +415,8 @@ Pairs naturally with #1: the streamed history is the training/evaluation substra
   [[moorai-identifier-flip-gate]] and packaging/mdm/README.md §9.
 - **Cost / token / latency dashboards** — a competitor table-stakes gap, but **console-side**: the
   usage/cost *signal* already exists on-device (`cli/moorai-aibom.mjs` `usage()`), and the OTel export
-  (v0.62.0) can feed any dashboard. The dashboard UI itself belongs to the proprietary management
-  console (separate repo), NOT this agent repo. No agent-repo work; build it in the console.
+  (v0.62.0) can feed any dashboard. The dashboard UI itself belongs to the management console
+  (separate repo, source-available under the Elastic License 2.0), NOT this agent repo. No agent-repo work; build it in the console.
 - **`moorai-vs-zscaler` marketing page** (glick.run / `glick-run-website`) — recommended in the
   competitor review, not built. Lower priority: many `moorai-vs-*` pages already exist. Website repo,
   not this one; clone an existing `moorai-vs-*.njk` if/when wanted.
