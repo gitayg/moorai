@@ -15,8 +15,16 @@
 //   afterFileEdit        {file_path, edits[]}                     -> MultiEdit (DETECTION ONLY: the
 //                                                                    edit already happened and the
 //                                                                    event has no output fields)
-// beforeSubmitPrompt, afterShellExecution, afterMCPExecution and the other preToolUse tools (Delete,
-// Grep, List, ...) have no MoorAI branch; toClaude returns null for them (allow).
+//   beforeSubmitPrompt   {prompt, attachments}                    -> UserPromptSubmit {prompt} — intent
+//                                                                    capture only, never a verdict
+// afterShellExecution, afterMCPExecution and the other preToolUse tools (Delete, Grep, List, ...) have no
+// MoorAI branch; toClaude returns null for them (allow).
+//
+// beforeSubmitPrompt (cursor.com/docs/hooks.md): "Called right after user hits send but before backend
+// request", input `"prompt": "<user prompt text>"`, output only `continue` and `user_message` ("Message
+// shown to the user when the prompt is blocked") — no field reaches the model. cursor-agent 2026.05.27
+// fires it with {conversation_id: ge.getId(), generation_id, model, prompt, attachments: []}, the same
+// conversation_id its tool events carry, which is the session key toClaude uses for both.
 //
 // Output. Permission events answer with JSON on stdout and exit 0. Every permission answer is
 // written out, allow included: an empty stdout is logged as a hook failure (fail-open), and invalid
@@ -81,6 +89,8 @@ export function toClaude(p) {
     }
     case "subagentStart":
       return pre({ tool_name: "Task", tool_input: { subagent_type: p.subagent_type || "", prompt: typeof p.task === "string" ? p.task : "" } });
+    case "beforeSubmitPrompt":
+      return typeof p.prompt === "string" ? { hook_event_name: "UserPromptSubmit", prompt: p.prompt, ...base } : null;
     case "afterFileEdit":
       return typeof p.file_path === "string" ? pre({ tool_name: "MultiEdit", tool_input: { file_path: p.file_path, edits: Array.isArray(p.edits) ? p.edits : [] } }) : null;
     default:
@@ -94,6 +104,8 @@ const json = (o) => ({ stdout: JSON.stringify(o), exitCode: 0 });
 export function fromVerdict(v, p) {
   const decision = v && v.decision ? v.decision : "allow";
   const ev = p && p.hook_event_name;
+  // Captured, never judged: the user's prompt always proceeds, and nothing is said about it.
+  if (ev === "beforeSubmitPrompt") return json({ continue: true });
   // Coach (unenrolled): always allow. beforeShellExecution / beforeMCPExecution document user_message
   // ("Message shown in client") and agent_message ("Message sent to agent") without limiting them to a
   // deny, so the note rides there; the other events document them only "when denied", so the note goes
@@ -135,6 +147,7 @@ const EVENTS = {
   postToolUse: "^(Fetch|WebFetch|WebSearch)$",
   subagentStart: null,
   afterFileEdit: null,
+  beforeSubmitPrompt: null,
 };
 
 const hooksPath = (home) => join(home, ".cursor", "hooks.json");

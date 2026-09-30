@@ -8,6 +8,15 @@
 // hookSpecificOutput.additionalContext is appended to it. Exit 0 is used for every verdict: exit 2 also
 // blocks, but Gemini counts any non-zero exit as a failed hook and shows a warning banner for it.
 // A timeout or crash is dropped from aggregation, so the tool runs (fail open).
+//
+// Intent capture (cli/intent-alignment.mjs). Hooks reference, `BeforeAgent`: "Fires after a user submits
+// a prompt, but before the agent begins planning", input "`prompt`: (`string`) The original text
+// submitted by the user", and `hookSpecificOutput.additionalContext` is "Text that is **appended** to the
+// prompt" — so it is forwarded as Claude's UserPromptSubmit and answers with an empty stdout. Base input
+// carries `session_id` on every event, the same key BeforeTool uses. packages/core/src/core/client.ts
+// fires it once per prompt_id (tool-response turns reuse the id and are deduplicated), and AGAIN for a
+// continuation an AfterAgent hook forces — that text is a hook's `reason`, and there is no field that
+// tells the two apart.
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
 import { join, dirname, isAbsolute, resolve } from "node:path";
 
@@ -66,6 +75,9 @@ export function toClaude(payload) {
   const name = str(payload.tool_name);
   const ti = payload.tool_input && typeof payload.tool_input === "object" ? payload.tool_input : {};
   const base = { session_id: str(payload.session_id), ...(payload.cwd ? { cwd: payload.cwd } : {}) };
+  if (payload.hook_event_name === "BeforeAgent") {
+    return typeof payload.prompt === "string" ? { hook_event_name: "UserPromptSubmit", prompt: payload.prompt, ...base } : null;
+  }
   if (payload.hook_event_name === "BeforeTool") {
     const m = preTool(name, ti, payload);
     if (!m) return null;
@@ -85,6 +97,8 @@ export function toClaude(payload) {
 const tag = (s) => `MoorAI: ${s || "blocked by policy"}`;
 
 export function fromVerdict(verdict, payload) {
+  // Captured, never judged; additionalContext here would be appended to the user's prompt.
+  if (payload?.hook_event_name === "BeforeAgent") return { exitCode: 0 };
   const v = verdict || {};
   const after = payload?.hook_event_name === "AfterTool";
   if (v.decision === "deny") {
@@ -151,7 +165,7 @@ function strip(list) {
   return out;
 }
 
-const entry = (matcher, command) => ({ matcher, hooks: [{ type: "command", name: HOOK_NAME, command, timeout: 30000, description: "MoorAI enforcement" }] });
+const entry = (matcher, command) => ({ ...(matcher ? { matcher } : {}), hooks: [{ type: "command", name: HOOK_NAME, command, timeout: 30000, description: "MoorAI enforcement" }] });
 
 export function install({ home, command }) {
   const file = settingsPath(home);
@@ -159,6 +173,7 @@ export function install({ home, command }) {
   const hooks = data.hooks && typeof data.hooks === "object" ? data.hooks : {};
   hooks.BeforeTool = [...strip(hooks.BeforeTool), entry(PRE_MATCHER, command)];
   hooks.AfterTool = [...strip(hooks.AfterTool), entry(POST_MATCHER, command)];
+  hooks.BeforeAgent = [...strip(hooks.BeforeAgent), entry(null, command)];
   data.hooks = hooks;
   save(file, data, plain);
   if (data.hooksConfig && data.hooksConfig.enabled === false) {
@@ -171,7 +186,7 @@ export function uninstall({ home }) {
   if (!existsSync(file)) return;
   const { data, plain } = load(file);
   if (!data.hooks || typeof data.hooks !== "object") return;
-  for (const ev of ["BeforeTool", "AfterTool"]) {
+  for (const ev of ["BeforeTool", "AfterTool", "BeforeAgent"]) {
     if (!Array.isArray(data.hooks[ev])) continue;
     const kept = strip(data.hooks[ev]);
     if (kept.length) data.hooks[ev] = kept; else delete data.hooks[ev];

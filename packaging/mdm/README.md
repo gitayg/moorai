@@ -74,6 +74,11 @@ the **desktop app** (Tauri host that wraps the agent terminal) is optional on to
 | Enroll config | `~/.moorai/config.json` (script) | `%USERPROFILE%\.moorai\config.json` (script) |
 | Managed values | `jamf/MoorAI-config.mobileconfig` | `intune/moorai-intune-config.json` |
 
+> **Claude Code with `allowManagedHooksOnly`.** That managed setting blocks the user-level hooks both
+> deploy scripts register. Either deploy MoorAI's hook entries in Claude Code's managed settings, or
+> ship the Claude Code plugin and force-enable it there (`"enabledPlugins": {"moorai@moorai": true}`):
+> hooks from plugins force-enabled in managed `enabledPlugins` are exempt. `moorai-doctor` checks both.
+
 ---
 
 ## 3. macOS — Jamf Pro
@@ -86,7 +91,11 @@ the **desktop app** (Tauri host that wraps the agent terminal) is optional on to
   keep working — the deploy script reads the new domain first and falls back to the old one until
   the profile is re-pushed. See **Identifier migration** below.
 - **`jamf/moorai-jamf-deploy.sh`** — installs the agent, writes the per-user config, registers hooks,
-  and normalizes the `/etc/moorai` trust-anchor directory to `root:wheel 0755` (see section 5).
+  and normalizes the `/etc/moorai` trust-anchor directory to `root:wheel 0755` (see section 5). The
+  config holds the install token, so it is private from the moment it exists: under `umask 077` a new
+  `~/.moorai` is created 0700 and the token is written to a 0600 `mktemp` file that is renamed over
+  `config.json`, then chowned to the user and re-chmodded 0700/0600. A pre-existing `config.json` is
+  replaced, not rewritten in place. If that write fails, the script stops with an error.
 
 ### Steps
 
@@ -140,6 +149,9 @@ tool call in any terminal pulls tenant policy from the console. No user interact
 ### Files
 - **`intune/Install-MoorAI.ps1`** — silent install + enroll (writes config, registers hooks) and,
   when run elevated, hardens the `%ProgramData%\MoorAI` trust-anchor directory (see section 5).
+  The config and hook steps take the target profile as `-ProfileDir`. No parameter in these scripts may
+  use a read-only PowerShell automatic variable name (`$Home`, `$Host`, `$PID`, …), which fails at runtime;
+  `test/mdm-powershell-params.test.mjs` enforces that. The script has not been run on a live Windows device.
 - **`intune/Uninstall-MoorAI.ps1`** — silent uninstall (de-registers hooks, removes config + agent).
 - **`intune/Detect-MoorAI.ps1`** — Intune detection rule (agent files **and** enrolled config present).
 - **`intune/moorai-intune-config.json`** — reference values + the exact install/uninstall commands.

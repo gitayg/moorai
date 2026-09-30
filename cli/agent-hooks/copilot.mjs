@@ -15,6 +15,16 @@
 // additionalContext is appended to it. Exit 0 is used for every verdict. Failure modes are version-
 // dependent: 1.0.63 treats any thrown hook error (non-zero exit, timeout) on preToolUse as a deny
 // (fail-closed) but exit 2 as a warning; current docs say exit 2 denies and timeouts fail OPEN.
+//
+// Intent capture (cli/intent-alignment.mjs). docs.github.com/en/copilot/reference/hooks-configuration,
+// `userPromptSubmitted`: "The user submits a prompt"; camelCase input { sessionId, timestamp, cwd,
+// prompt }, and "Command and HTTP config-file `userPromptSubmitted` hooks have their output dropped" —
+// nothing this adapter prints can reach the model. `sessionId` is the same field preToolUse carries. The
+// camelCase payload has no event name, so it is recognised by shape: a `prompt` string and no tool name
+// (the other two events MoorAI registers always carry `toolName`).
+//
+// The `powershell` tool maps to Claude Code's PowerShell tool name, not Bash, so its command is parsed
+// with the PowerShell grammar (cli/hook-core.mjs extractReadPaths).
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -80,8 +90,9 @@ function patchEdits(text) {
 function preTool(name, ti, cwd) {
   switch (name) {
     case "bash":
-    case "powershell":
       return ["Bash", { command: str(ti.command) }];
+    case "powershell":
+      return ["PowerShell", { command: str(ti.command) }];
     case "view":
       return ["Read", { file_path: abs(str(ti.path), cwd) }];
     case "create":
@@ -114,8 +125,16 @@ function preTool(name, ti, cwd) {
 
 function isPost(p) { return p.toolResult !== undefined || p.tool_result !== undefined || /^postToolUse$/i.test(str(p.hook_event_name)); }
 
+function isPrompt(p) {
+  return /^(?:userPromptSubmitted|UserPromptSubmit)$/.test(str(p.hook_event_name)) || (typeof p.prompt === "string" && !str(p.toolName) && !str(p.tool_name));
+}
+
 export function toClaude(payload) {
   if (!payload || typeof payload !== "object") return null;
+  if (isPrompt(payload)) {
+    if (typeof payload.prompt !== "string") return null;
+    return { hook_event_name: "UserPromptSubmit", prompt: payload.prompt, session_id: str(payload.sessionId) || str(payload.session_id), cwd: str(payload.cwd) };
+  }
   const raw = str(payload.toolName) || str(payload.tool_name);
   if (!raw) return null;
   const ti = parseArgs(payload.toolArgs ?? payload.tool_input);
@@ -138,6 +157,7 @@ export function toClaude(payload) {
 }
 
 export function fromVerdict(verdict, payload) {
+  if (isPrompt(payload || {})) return { exitCode: 0 }; // captured, never judged
   const v = verdict || {};
   const reason = `MoorAI: ${v.reason || "blocked by policy"}`;
   if (isPost(payload || {})) {
@@ -184,7 +204,7 @@ export function install({ home, command }) {
   strip(cfg);
   if (cfg.version === undefined) cfg.version = 1;
   const entry = { type: "command", bash: command, powershell: command, timeoutSec: TIMEOUT_SEC };
-  for (const ev of ["preToolUse", "postToolUse"]) cfg.hooks[ev] = [...(cfg.hooks[ev] || []), { ...entry }];
+  for (const ev of ["preToolUse", "postToolUse", "userPromptSubmitted"]) cfg.hooks[ev] = [...(cfg.hooks[ev] || []), { ...entry }];
   mkdirSync(join(file, ".."), { recursive: true });
   writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
   return file;

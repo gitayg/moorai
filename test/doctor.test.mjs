@@ -277,3 +277,102 @@ test("doctor mirrors the hook's private constants by reading them, so they canno
   assert.ok(src.includes(JSON.stringify(breakGlassAnchorPath())) || process.platform === "win32", "break-glass anchor path drifted from moorai-hook.mjs BG_ANCHOR");
   assert.deepEqual(diffSurface({ A: ["x"] }, { A: ["x"] }).ok, true);
 });
+
+// ---- Claude Code plugin installs (hooks/hooks.json, `claude plugin install moorai@moorai`) ----
+// The record mirrors what `claude plugin install moorai@moorai` (Claude Code 2.1.284) wrote into a
+// sandbox HOME: ~/.claude/plugins/installed_plugins.json = { version: 2, plugins: { "<name>@<marketplace>":
+// [{ scope, installPath: <plugins root>/cache/<marketplace>/<plugin>/<version>, version, installedAt,
+// lastUpdated }] } }, plus "enabledPlugins": { "moorai@moorai": true } in ~/.claude/settings.json.
+function installPlugin(home, { id = "moorai@moorai", enabled = true, record = true, mutate = null } = {}) {
+  const claude = join(home, ".claude");
+  const root = join(claude, "plugins", "cache", "moorai", "moorai", "0.99.0");
+  mkdirSync(join(root, "hooks"), { recursive: true });
+  mkdirSync(join(root, "cli"), { recursive: true });
+  const hooks = JSON.parse(readFileSync(join(ROOT, "hooks", "hooks.json"), "utf8"));
+  if (mutate) mutate(hooks);
+  writeFileSync(join(root, "hooks", "hooks.json"), JSON.stringify(hooks));
+  writeFileSync(join(root, "cli", "moorai-hook.mjs"), "// fixture: only its existence is checked\n");
+  const sp = join(claude, "settings.json");
+  let s = {};
+  try { s = JSON.parse(readFileSync(sp, "utf8")); } catch { /* none yet */ }
+  s.enabledPlugins = { ...(s.enabledPlugins || {}), [id]: enabled };
+  writeFileSync(sp, JSON.stringify(s));
+  if (record) writeFileSync(join(claude, "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { [id]: [{ scope: "user", installPath: root, version: "0.99.0", installedAt: "2026-09-30T00:00:00.000Z", lastUpdated: "2026-09-30T00:00:00.000Z" }] } }));
+  return root;
+}
+
+test("doctor: a plugin-only device is registered via the plugin, its hooks.json is compared with the installer's surface, and nothing is written", () => {
+  const home = sandbox();
+  try {
+    installPlugin(home);
+    const before = snapshot(home);
+    const r = doctorSync(home, ["--offline", "--no-selftest", "--json"]);
+    assert.deepEqual(snapshot(home), before, "doctor wrote to HOME");
+    const c = check(r, "host:claude-code");
+    assert.equal(c.status, "ok", c.summary);
+    assert.match(c.summary, /registered via plugin moorai@moorai/);
+    assert.equal(check(r, "hosts:any"), undefined);
+    assert.deepEqual(c.details.events, c.details.expected);
+    assert.equal(r.status, 0, JSON.stringify(r.json.checks.filter((x) => x.status === "fail")));
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("doctor: plugin and settings install together warn — the plugin stands down where the settings copy covers an event", () => {
+  const home = sandbox();
+  try {
+    installClaude(home);
+    installPlugin(home);
+    const r = doctorSync(home, ["--offline", "--no-selftest", "--json"]);
+    const c = check(r, "host:claude-code");
+    assert.equal(c.status, "warn", c.summary);
+    assert.match(c.summary, /both installed; the plugin stands down where the settings copy covers an event — keep one/);
+    assert.match(c.fix, /claude plugin uninstall moorai@moorai/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("doctor: a plugin that is disabled, or enabled with no install record, does not count as registered", () => {
+  for (const opts of [{ enabled: false }, { record: false }]) {
+    const home = sandbox();
+    try {
+      installPlugin(home, opts);
+      const r = doctorSync(home, ["--offline", "--no-selftest", "--json"]);
+      assert.equal(check(r, "host:claude-code").status, "warn", JSON.stringify(opts));
+      assert.equal(check(r, "hosts:any").status, "fail", JSON.stringify(opts));
+      assert.equal(r.status, 1);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  }
+});
+
+test("doctor: the plugin copy's hooks.json missing a current matcher, or its hook file, fails with the plugin update as the fix", () => {
+  const home = sandbox();
+  try {
+    installPlugin(home, { mutate: (h) => { h.hooks.PreToolUse = h.hooks.PreToolUse.filter((e) => e.matcher !== "PowerShell"); } });
+    let r = doctorSync(home, ["--offline", "--no-selftest", "--json"]);
+    let c = check(r, "host:claude-code");
+    assert.equal(c.status, "fail", c.summary);
+    assert.match(c.summary, /plugin moorai@moorai: PreToolUse matchers are \[.*\], current is \[.*PowerShell.*\]/);
+    assert.match(c.fix, /claude plugin update moorai@moorai/);
+    assert.equal(r.status, 1);
+
+    const root = installPlugin(home);
+    rmSync(join(root, "cli", "moorai-hook.mjs"));
+    r = doctorSync(home, ["--offline", "--no-selftest", "--json"]);
+    c = check(r, "host:claude-code");
+    assert.equal(c.status, "fail", c.summary);
+    assert.match(c.summary, /hook file missing: .*cli\/moorai-hook\.mjs/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("doctor managed settings: allowManagedHooksOnly offers force-enabling the plugin, and a force-enabled moorai plugin passes", () => {
+  const dir = mkdtempSync(join(tmpdir(), "moorai-managed-"));
+  try {
+    writeFileSync(join(dir, "managed-settings.json"), JSON.stringify({ allowManagedHooksOnly: true }));
+    let c = checkManaged(readManagedSettings(dir));
+    assert.equal(c.status, "fail");
+    assert.match(c.fix, /force-enable moorai@moorai in managed enabledPlugins/);
+    writeFileSync(join(dir, "managed-settings.json"), JSON.stringify({ allowManagedHooksOnly: true, enabledPlugins: { "moorai@moorai": true } }));
+    c = checkManaged(readManagedSettings(dir));
+    assert.equal(c.status, "ok", c.summary);
+    assert.match(c.summary, /MoorAI plugin moorai@moorai force-enabled/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

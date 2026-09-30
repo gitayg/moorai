@@ -177,14 +177,24 @@ write_enroll_config() {
   user="$1"; home="$2"
   cfg_dir="${home}/.moorai"
   cfg_file="${cfg_dir}/config.json"
-  /bin/mkdir -p "$cfg_dir"
-  /usr/bin/tee "$cfg_file" >/dev/null <<JSON
+  # The file carries the install token, so it is private from the moment it exists: umask 077 for the
+  # mkdir, and the token goes into a fresh 0600 mktemp file that is renamed over config.json. The
+  # rename also means a pre-existing config.json is replaced rather than rewritten in place, so its
+  # old mode never applies and root never writes through a symlink left at that path. The subshell
+  # keeps the umask from reaching the rest of the script; the chmods below stay as belt-and-braces.
+  (
+    umask 077
+    /bin/mkdir -p "$cfg_dir" || exit 1
+    tmp="$(/usr/bin/mktemp "${cfg_dir}/.config.json.XXXXXX")" || exit 1
+    /bin/cat > "$tmp" <<JSON || { /bin/rm -f "$tmp"; exit 1; }
 {
   "serverUrl": "${SERVER_URL}",
   "tenant": "${TENANT}",
   "installToken": "${INSTALL_TOKEN}"
 }
 JSON
+    /bin/mv -f "$tmp" "$cfg_file" || { /bin/rm -f "$tmp"; exit 1; }
+  ) || die "cannot write enroll config ${cfg_file}"
   /usr/sbin/chown -R "${user}" "$cfg_dir"
   /bin/chmod 700 "$cfg_dir"
   /bin/chmod 600 "$cfg_file"

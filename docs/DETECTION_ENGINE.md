@@ -1,6 +1,6 @@
 # MoorAI — Detection Engine
 
-**Describes:** the engine as shipped in **v0.98.0**. Companion to
+**Describes:** the engine as shipped in **v0.99.0**. Companion to
 [CAPABILITY_SPEC.md](CAPABILITY_SPEC.md) (v0.6) and [BENCHMARK.md](BENCHMARK.md).
 
 This file was a v0.1 design document for a system that was designed and then not built that way. It
@@ -60,9 +60,9 @@ Counts below were produced by running `_wantStages` / `_inStage` over the shippe
 
 | Stage | Detectors it runs | Fed in production by |
 |---|--:|---|
-| `prompt` | 71 | `cli/moorai-hook.mjs`: the `Bash` **command** itself, the `Task` delegated prompt, the `WebFetch` url + prompt; `mcpGateway`'s argument scan; `cli/moorai-guard.mjs`; the Tauri app (`src/app.js`) |
-| `file` | 77 (71 prompt + 6) | `cli/moorai-hook.mjs` on `Read`, and on every path `extractReadPaths` finds in a `Bash` command; `mcp-proxy/moorai-mcp-guard.mjs` on every `tools/call` **result** |
-| `output` | 60 | `cli/moorai-hook.mjs` on the write family (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`) and on `PostToolUse` results (`WebFetch`, `WebSearch`, `Bash`, `Agent`/`Task`, `mcp__*`; §6, §7); `cli/moorai-guard.mjs`; `src/app.js` |
+| `prompt` | 71 | `cli/moorai-hook.mjs`: the `Bash` / `PowerShell` **command** itself, the `Task` delegated prompt, the `WebFetch` url + prompt; `mcpGateway`'s argument scan; `cli/moorai-guard.mjs`; the Tauri app (`src/app.js`) |
+| `file` | 77 (71 prompt + 6) | `cli/moorai-hook.mjs` on `Read`, and on every path `extractReadPaths` finds in a `Bash` or `PowerShell` command; `mcp-proxy/moorai-mcp-guard.mjs` on every `tools/call` **result** |
+| `output` | 60 | `cli/moorai-hook.mjs` on the write family (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`) and on `PostToolUse` results (`WebFetch`, `WebSearch`, `Bash`, `PowerShell`, `Agent`/`Task`, `mcp__*`; §6, §7); `cli/moorai-guard.mjs`; `src/app.js` |
 | `index` | 77 (71 prompt + 6) | the detached `moorai-hook.mjs indexscan` worker, over the agent's auto-loaded context files |
 | `tool` | 5 | `mcp-proxy/moorai-mcp-guard.mjs`, on a copy of every `tools/list` response |
 | `session` | 1 | **no enforcement caller** — see below |
@@ -136,7 +136,7 @@ caught by that twice, and both cases were closed in 2026:
 A third gap was a *surface* rather than a stage: nothing scanned content arriving **into** the agent.
 `tools/call` results were wired in v0.78.0 (at the `file` stage) and inbound `WebFetch`/`WebSearch`
 content in **v0.79.0** (`ad3d817`, at the `output` stage), then `Bash`, `Agent`/`Task` and `mcp__*` results
-in **v0.98.0** — §6, §7, §8.
+in **v0.98.0**, and `PowerShell` results in **v0.99.0** — §6, §7, §8.
 
 `scripts/score-vectors.mjs` carries the reachability table as executable data (`STAGE_REACHABILITY`),
 which is the right place for it: it is re-derived by reading call sites rather than by remembering.
@@ -467,10 +467,19 @@ never handed to the hook; a tool missing from the second falls through to `retur
 allowed unread. Both lists are plain array literals so `test/hook-tool-coverage.test.mjs` can read them
 out of the file and assert they agree.
 
+The same matchers can instead come from the Claude Code plugin: [`hooks/hooks.json`](../hooks/hooks.json)
+declares every event and matcher `moorai-hook.mjs install` writes (`test/plugin-manifest.test.mjs` keeps
+the two equal), each running `node "${CLAUDE_PLUGIN_ROOT}/cli/moorai-hook.mjs" --plugin`. Claude Code
+runs a plugin's handler and a `settings.json` handler for the same event side by side, so an invocation
+with `--plugin` exits without output for any event a `settings.json` MoorAI entry covers whose script
+still exists (`settingsCovers`), and it never converges `settings.json`, because the plugin's path is a
+versioned cache directory. A device with both is scanned once per call, by the settings copy wherever it
+covers the event.
+
 ### `PreToolUse` — can deny
 
-Ten matchers: `Read` · `Bash` · `mcp__.*` · `Agent` · `Task` · `Write` · `Edit` · `MultiEdit` ·
-`NotebookEdit` · `WebFetch`. Sub-agent delegation (#66) takes both `Agent`, Claude Code's current name (2.1.251 and later define the
+Eleven matchers: `Read` · `Bash` · `PowerShell` · `mcp__.*` · `Agent` · `Task` · `Write` · `Edit` ·
+`MultiEdit` · `NotebookEdit` · `WebFetch`. Sub-agent delegation (#66) takes both `Agent`, Claude Code's current name (2.1.251 and later define the
 tool as `Agent` with the alias `Task`), and `Task`, which older hosts send and which the Codex, Copilot,
 Cursor and Gemini adapters translate their own sub-agent tools to. Alerts and envelope entries use the
 label `Task` for both.
@@ -478,7 +487,7 @@ label `Task` for both.
 | Branch | What is scanned | Stage |
 |---|---|---|
 | `Read` | the file's contents | `file` |
-| `Bash` | every path `extractReadPaths` finds, **and** the command text itself | `file`, then `prompt` |
+| `Bash` / `PowerShell` | every path `extractReadPaths` finds, **and** the command text itself | `file`, then `prompt` |
 | Write family | what the agent is about to **commit** — `content` / `new_string` / `new_source`, never `old_string` | `output` |
 | `WebFetch` | url + prompt (the page does not exist yet) | `prompt` |
 | `mcp__*` | serialized arguments, through `mcpGateway` | `prompt` |
@@ -498,6 +507,23 @@ an unmeasured hard block on a hot path is how a security tool gets uninstalled.
 
 Output shape: `hookSpecificOutput.permissionDecision` = `deny` | `ask`. An `allow` writes nothing,
 unless a mask was applied (below).
+
+**`PowerShell`.** Claude Code's Windows shell tool, the only shell when Git Bash is absent; its input is
+Bash's shape (`command`). It runs the `Bash` branch under its own name (`SHELL_TOOLS`), not as an alias,
+so alerts read `hook:PowerShell` and `updatedInput` rewrites stay on. What differs is the grammar
+`extractReadPaths(command, { shell: "powershell" })` applies: `\` is a path separator and the backtick
+the escape; the readers `Get-Content`/`gc`/`cat`/`type`/`Select-String`/`Format-Hex`/`Import-Csv`/
+`Import-Clixml`, `Copy-Item` sources, the parameters `-Path`/`-LiteralPath`/`-PSPath`, `-InFile` and
+`-Attachments`, `( )` / `$( )` / `@( )` sub-expressions parsed as segments of their own, and the .NET
+static readers `[IO.File]::ReadAllText` / `ReadAllBytes` / `ReadAllLines` / `ReadLines` / `OpenRead` /
+`OpenText`. A token still carrying `$` is never guessed at. Each resolved file is scanned as `file`
+content and also gets `decideCredFileRead`, the #55 path verdict a `Read` gets, because `gc .env` does
+not carry the `cat .env` text the command-level rule matches. `PS_OUTBOUND_UPLOAD` adds the PowerShell
+uploads `OUTBOUND_UPLOAD` does not name: `Start-BitsTransfer -TransferType Upload`,
+`Send-MailMessage -Attachments`, and a copy or move onto a UNC path (`\\host\share`; `\\?\`, `\\.\`,
+localhost and `wsl.localhost` excluded). Existing installs converge on the new matcher. Whole-hook p50 on
+a benign command was 121 ms for both `Bash` and `PowerShell` (30 calls each, no reachable policy server).
+Limits are in §13.
 
 ### The `mask` action — rewrite the span, let the call proceed
 
@@ -521,13 +547,13 @@ how many spans were withheld and that a tag is not the value.
 
 | Where | Field rewritten | Host channel |
 |---|---|---|
-| `Bash` | the `command` string | `PreToolUse` `updatedInput` |
+| `Bash` / `PowerShell` | the `command` string | `PreToolUse` `updatedInput` |
 | `Write` / `Edit` / `NotebookEdit` | `content` / `new_string` / `new_source` | `PreToolUse` `updatedInput` |
 | `MultiEdit` | each edit's `new_string`, never `old_string` (it must still match the file) | `PreToolUse` `updatedInput` |
 | `WebFetch` | `url` and `prompt` | `PreToolUse` `updatedInput` |
 | `mcp__*` | every string leaf of the arguments | `PreToolUse` `updatedInput` |
 | `Task` | the delegated `prompt` | `PreToolUse` `updatedInput` |
-| the six `PostToolUse` matchers | the result field the text came from | `PostToolUse` `updatedToolOutput` |
+| the seven `PostToolUse` matchers | the result field the text came from | `PostToolUse` `updatedToolOutput` |
 
 On `PreToolUse` the rewrite goes out with **no** `permissionDecision` when the call is otherwise
 allowed, because `allow` skips the permission prompt and a mask must never auto-approve a call; the
@@ -541,7 +567,7 @@ the threat would have had without the mask entry:
 
 | Case | Why |
 |---|---|
-| `Read`, and the files a `Bash` command reads | the secret is in the file, not in the tool input |
+| `Read`, and the files a `Bash` or `PowerShell` command reads | the secret is in the file, not in the tool input |
 | the Codex, Copilot, Gemini and Cursor adapters (`MOORAI_HOOK_HOST=shim`) | the shim reduces the answer to allow/ask/deny and would drop the rewrite |
 | a tool name that arrived under an alias (Cursor's `Shell`) | whether that host applies `updatedInput` is unmeasured |
 | an unenrolled device | coaching changes nothing |
@@ -617,9 +643,9 @@ stored.
 
 | Class | Call | Aligned when |
 |---|---|---|
-| `egress` | a `Bash` upload (`curl -d/-F/-T/-X POST`, `wget --post-*`, `Invoke-RestMethod -Body`, `nc`/`socat`/`telnet`, `scp`/`rsync`/`sftp` to a remote) with a non-loopback host | every destination site was named in the task. Labels never excuse egress. |
-| `destructive` | a `Bash` command with a #43 finding | the task carries the `destructive` label, or names one of the operands |
-| `credentials` | a `Read` or `Bash` call with a #55 finding | the task carries the `credentials` label, or names the path |
+| `egress` | a `Bash` or `PowerShell` upload (`curl -d/-F/-T/-X POST`, `wget --post-*`, `Invoke-RestMethod -Body`, `nc`/`socat`/`telnet`, `scp`/`rsync`/`sftp` to a remote, `Start-BitsTransfer -TransferType Upload`, a copy onto a UNC share) with a non-loopback host; a UNC share's host is its destination | every destination site was named in the task. Labels never excuse egress. |
+| `destructive` | a `Bash` or `PowerShell` command with a #43 finding | the task carries the `destructive` label, or names one of the operands |
+| `credentials` | a `Read`, `Bash` or `PowerShell` call with a #55 finding | the task carries the `credentials` label, or names the path |
 | `mcp-write` | an `mcp__` tool whose name has a write verb (`create`, `send`, `post`, `delete`, `push`, …) | the task carries the `mcp-write` label, or names the server |
 
 A session with no captured task is never judged. A call the hook already denied is not re-judged. A
@@ -633,6 +659,16 @@ raises an allow to ask, or adds the reason to an existing ask) or `"off"`. An un
 loopback model labels the prompt at capture time with the same three labels, in memory. It is only ever
 the local model; `semanticEscalation: "provider"` does not widen it. The call is bounded by
 `MOORAI_INTENT_TIMEOUT_MS` (default 1500 ms), and any failure yields no labels.
+
+**The other agents.** The adapters register a prompt event and forward it as `UserPromptSubmit`, for
+capture only: Codex `UserPromptSubmit`, Cursor `beforeSubmitPrompt`, Gemini `BeforeAgent`, Copilot
+`userPromptSubmitted`. Each answers with nothing the model sees (an empty stdout; Cursor
+`{"continue": true}`), and each uses the session key its tool events carry, so a captured task and a
+later tool call meet. None of those payloads carries a `source`, so every prompt counts as the task,
+including a continuation a hook forces (Gemini fires `BeforeAgent` again for one). Codex runs the new
+hook only after the user trusts it. Adapter installs from before this change get the prompt event only
+when `moorai-agent-hook.mjs <agent> install` is re-run; unlike Claude Code's `settings.json`, the other
+agents' configs are not converged. Windows paths in a prompt (`C:\repo\build`) yield path features too.
 
 ### Across calls: learned drift and deletion volume
 
@@ -699,7 +735,7 @@ still bounds it.
 
 ### `PostToolUse` — cannot un-run a tool
 
-Six matchers: `WebFetch` · `WebSearch` · `Bash` · `Agent` · `Task` · `mcp__.*`. Each returns text a third
+Seven matchers: `WebFetch` · `WebSearch` · `Bash` · `PowerShell` · `Agent` · `Task` · `mcp__.*`. Each returns text a third
 party can influence into the model's context: a fetched page, a search result's title and snippet, a
 `curl`'d page or a `cat`'d file from a cloned repository, a sub-agent's report, an MCP server's
 response. All of it is scanned at the `output` stage with `inbound: true`, as content coming in. Both
@@ -711,10 +747,10 @@ string.
 What is scanned is the first non-empty result field (`tool_response`, then its aliases), as a string or
 through the budgeted walk, clipped to a 64 KB scan window (`CAPS.maxResultBytes`). `Agent`/`Task` results
 are judged on their `content` (the report) only; a background launch (`status: "async_launched"`) has no
-report yet and is skipped, as is a `Bash` result with `isImage: true`. A `PostToolUse` call with nothing
+report yet and is skipped, as is a `Bash` or `PowerShell` result with `isImage: true`. A `PostToolUse` call with nothing
 to judge leaves before the policy is loaded, so the many `Bash` calls that print nothing cost a process
-start and no more. `WebFetch`/`WebSearch` keep the web-tuned inbound gates; `Bash`, `Agent`/`Task` and
-`mcp__*` get their own drops and gates (§7).
+start and no more. `WebFetch`/`WebSearch` keep the web-tuned inbound gates; `Bash`, `PowerShell`, `Agent`/`Task`
+and `mcp__*` get their own drops and gates (§7; `PowerShell` shares `Bash`'s).
 
 The contract was taken from the shipped binary's own Zod schema (Claude Code 2.1.263) rather than from
 prose, because the prose sources disagree with each other and with the runtime: `hookSpecificOutput`
@@ -722,7 +758,7 @@ accepts `additionalContext` / `classifierContext` / `updatedToolOutput` / `updat
 **does not accept `permissionDecision`** — that is `PreToolUse`-only, and emitting the `PreToolUse` shape
 here is silently ignored. The tool has already run by the time this event fires: per the hooks
 reference, `decision: "block"` only adds its reason next to the tool result, and Claude still sees the
-original output. That holds for every one of the six tools alike. So:
+original output. That holds for every one of the seven tools alike. So:
 
 - **allow** → nothing on stdout; the result is delivered untouched. This is what most findings resolve
   to, because most threats default to `notify` (report only).
@@ -786,7 +822,7 @@ the #17 wide verb list was derived by reading the four attacks the narrow gate l
 is **in-sample** for it and its 91.7% is no longer a held-out figure. The benign side of both was measured
 on the tune half only.
 
-**The command, MCP and sub-agent doors** (`Bash`, `mcp__*`, `Agent`/`Task` on `PostToolUse`) return mostly
+**The command, MCP and sub-agent doors** (`Bash` and `PowerShell`, `mcp__*`, `Agent`/`Task` on `PostToolUse`) return mostly
 a developer's own tree and its dependencies (READMEs, `package.json`, source, `git log`), not web pages.
 Two changes apply there, and only there:
 
@@ -1040,6 +1076,17 @@ Stated rather than papered over.
 
 - **`~` paths from `extractReadPaths` are not expanded**, so `cat ~/.aws/credentials` gets no content read;
   only the command-text rule #55 sees it.
+- **The PowerShell grammar reads the common forms, not all of them.** `$env:` and `~` paths are not
+  expanded, so their content is not read. Abbreviated parameters (`-InF` for `-InFile`, `-Att` for
+  `-Attachments`) are not recognised. `Invoke-Expression` and `-EncodedCommand` payloads are not decoded.
+  .NET readers other than the `File` statics listed in §6 (`StreamReader`, for one) are not followed. #54
+  matches `System.Net.Sockets.TCPClient` and misses the shorter `Net.Sockets.TCPClient`. #57 flags
+  `irm … | iex` only when `powershell` precedes it.
+- **The plugin install and the settings install are meant to be exclusive.** With both present, the
+  plugin copy stands down per event only while the `settings.json` entry's script exists; `moorai-doctor`
+  warns about the pair. Plugin hooks are subject to `allowManagedHooksOnly` unless managed settings
+  force-enable `moorai@moorai`. A marketplace install runs `npm ci --ignore-scripts` in the plugin copy
+  and pulls about 20 MB of desktop-app packages the hooks do not use.
 - **Recursive-delete forms still outside `RECURSIVE_FORCE_DELETE`** (#43 and #32 share the list):
   `xargs rm`, flags after `--`, PowerShell splatting or variable parameters, GNU `--interactive=never` as
   a force equivalent. `-Recurse:$false` still fires. No benign or attack corpus exercises these forms, so
@@ -1094,7 +1141,9 @@ Stated rather than papered over.
   the task with its hosts and paths. The agent runs as the same user, so it can read `intent.key`,
   dictionary-attack the hashed sites and paths, or write `intent-alignment.json` to add a host.
   `Write`/`Edit`, data sent in a GET query string and `git push` to a new remote are not judged. The
-  Codex, Cursor, Gemini and Copilot adapters do not forward prompts, so it runs on Claude Code only.
+  Codex, Cursor, Gemini and Copilot hosts do not mark machine-injected turns, so on those agents a
+  hook-forced continuation is captured as part of the task. Their adapter installs are not converged:
+  an install from before the prompt event existed captures nothing until `install` is re-run.
 - **Instruction-leak fingerprints see copies, not rewrites.** A paraphrase, a translation or a hex
   encoding of a rules file is not matched. A staged copy (`cp CLAUDE.md /tmp/x`, then an upload of
   `/tmp/x`) is not tied back to the rules file. A rules file with fewer than 40 distinctive shingles can
@@ -1114,8 +1163,8 @@ Stated rather than papered over.
   hook or proxy paths. The hook's only rewrite is the policy-selected `mask` action (§6), which uses its
   own span walk (`cli/mask.mjs`) and verifies it by re-scanning; the proxy never rewrites.
 - **Post-tool scanning reports; it cannot withhold.** The tool has run by the time `PostToolUse` fires,
-  and a block only adds a reason next to the output the model still sees. `PowerShell` is not a matcher,
-  so its output is not scanned. Output beyond the 64 KB scan window is not scanned. A `cat .env` is
+  and a block only adds a reason next to the output the model still sees. Output beyond the 64 KB scan
+  window is not scanned. A `cat .env` is
   reported twice, at `PreToolUse` (the read) and at `PostToolUse` (the output). The other agents'
   adapters forward only web results. The door measurements (§7) are in-sample for the 87 attacks.
 - **`mask` has not been observed in a live Claude Code session.** Its host contract comes from the hooks

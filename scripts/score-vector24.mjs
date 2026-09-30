@@ -93,7 +93,7 @@ export const VECTOR_FILES = {
 // Kept as source strings and compiled here so the check is the same regex the agent host would apply.
 // Re-derive with: grep -n "const PRETOOL_MATCHERS" cli/moorai-hook.mjs
 // test/vector24-corpus.test.mjs asserts this list still equals that constant, so it cannot drift silently.
-export const INSTALLED_MATCHERS = ["Read", "Bash", "mcp__.*", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"];
+export const INSTALLED_MATCHERS = ["Read", "Bash", "PowerShell", "mcp__.*", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"];
 export function hookRegistered(toolName) {
   return INSTALLED_MATCHERS.some((m) => { try { return new RegExp(m).test(String(toolName || "")); } catch { return false; } });
 }

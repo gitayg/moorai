@@ -175,7 +175,9 @@ test("install/uninstall: user hooks survive, install is idempotent, uninstall le
       assert.equal(r.status, 0, r.stderr);
     }
     let doc = JSON.parse(readFileSync(file, "utf8"));
-    assert.equal(own(doc).length, 1, "install twice leaves exactly one MoorAI entry");
+    assert.equal(own(doc).length, 2, "install twice leaves exactly one MoorAI entry per event (PreToolUse, UserPromptSubmit)");
+    assert.equal(own(doc.hooks.PreToolUse).length, 1);
+    assert.equal(own(doc.hooks.UserPromptSubmit).length, 1);
     assert.deepEqual(doc.hooks.PreToolUse[0], theirs.hooks.PreToolUse[0], "user group keeps index 0 (trust key unchanged)");
     assert.deepEqual(doc.hooks.Stop, theirs.hooks.Stop);
     assert.equal(doc.description, "user hooks");

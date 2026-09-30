@@ -11,13 +11,13 @@
 //   node moorai-hook.mjs install    # register in ~/.claude/settings.json (idempotent)
 //   node moorai-hook.mjs uninstall  # remove only MoorAI's entries
 
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, statSync, renameSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, statSync, renameSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideCredFileRead, decideAgentStateWrite, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision } from "./hook-core.mjs";
+import { buildEngine, decideText, decideCredFileRead, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision } from "./hook-core.mjs";
 import { maskValue, maskNote } from "./mask.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
@@ -66,9 +66,9 @@ const RANK = { allow: 1, ask: 2, deny: 3 };
 // Both are plain array literals so test/hook-tool-coverage.test.mjs can READ them out of this file and
 // assert every dispatched tool has a matcher covering it. It reads rather than imports because main()
 // runs at module scope and awaits stdin, so an `import()` of this module never resolves.
-const PRETOOL_MATCHERS = ["Read", "Bash", "mcp__.*", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"];
+const PRETOOL_MATCHERS = ["Read", "Bash", "PowerShell", "mcp__.*", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"];
 // One representative name per branch in main(); "mcp__github__create_issue" stands for the mcp__* family.
-const DISPATCHED_TOOLS = ["Read", "Bash", "mcp__github__create_issue", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"];
+const DISPATCHED_TOOLS = ["Read", "Bash", "PowerShell", "mcp__github__create_issue", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"];
 // The Cursor CLI runs these same Claude Code hooks but renames the tools it hands them. Measured in
 // cursor-agent 2026.05.27: its Claude-compat map is {Bash:"Shell", Edit:"Write", ...} and the Shell
 // input is {command, cwd, timeout?}, so a "Shell" payload is a Bash payload under another name and was
@@ -76,6 +76,16 @@ const DISPATCHED_TOOLS = ["Read", "Bash", "mcp__github__create_issue", "Agent", 
 // matcher to "Shell" itself (and "mcp__.*" becomes ".*", matched with an unanchored RegExp), so a
 // "Shell" entry would only make Cursor invoke this hook a second time per call.
 const TOOL_ALIASES = { Shell: "Bash" };
+// Claude Code's PowerShell tool (Windows). The hooks reference: "Match `Bash|PowerShell` in hooks that
+// inspect shell commands ... On Windows without Git Bash, the tool is enabled automatically and Claude
+// Code doesn't register the Bash tool at all. A hook that matches only `Bash` never fires there." Its
+// input is Bash's shape ("The fields match the Bash tool, with the command string in `command`") and,
+// in the 2.1.284 binary, its output schema is the Bash one ({stdout, stderr, interrupted, isImage, …}).
+// So it runs the Bash branch — but NOT through TOOL_ALIASES: an alias turns HOST_REWRITES off, and this
+// is Claude Code itself, whose updatedInput / updatedToolOutput are validated against the tool's own
+// schema ("returned updatedInput that failed schema validation"), which the mask preserves. It keeps its
+// own name, so reports read hook:PowerShell and the command parsers get the PowerShell grammar.
+const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
 
 // ---- the INBOUND surface (PostToolUse) ----
 //
@@ -102,12 +112,12 @@ const TOOL_ALIASES = { Shell: "Bash" };
 // still keys on its old name "Task"; an exact-string matcher for a name the host no longer uses simply
 // never fires, so carrying both costs nothing. "mcp__.*" needs the ".*" — per the reference, "a matcher
 // like `mcp__memory` ... is compared as an exact string and matches no tool".
-const POSTTOOL_MATCHERS = ["WebFetch", "WebSearch", "Bash", "Agent", "Task", "mcp__.*"];
+const POSTTOOL_MATCHERS = ["WebFetch", "WebSearch", "Bash", "PowerShell", "Agent", "Task", "mcp__.*"];
 // What handlePostToolUse actually branches on. Kept as a plain array literal for the same reason
 // DISPATCHED_TOOLS is: main() runs at module scope awaiting stdin, so an import() of this module never
 // resolves and a test must READ the list rather than import it. test/webfetch-result-stage.test.mjs
 // asserts both layers end-to-end (the registered matcher, and the dispatch) through the real hook.
-const POST_DISPATCHED_TOOLS = ["WebFetch", "WebSearch", "Bash", "Agent", "Task", "mcp__github__create_issue"];
+const POST_DISPATCHED_TOOLS = ["WebFetch", "WebSearch", "Bash", "PowerShell", "Agent", "Task", "mcp__github__create_issue"];
 function postDispatched(tool) { return POST_DISPATCHED_TOOLS.includes(tool) || tool.startsWith("mcp__"); }
 // The user's own prompt, for intent alignment (cli/intent-alignment.mjs). UserPromptSubmit takes no
 // matcher; the one entry fires on every prompt. The handler prints nothing — stdout on this event is
@@ -144,6 +154,7 @@ function installHooks() {
   for (const event of Object.keys(REGISTERED_EVENTS)) s.hooks[event] = withOurEntries(s, event);
   writeSettings(s);
   console.error(`MoorAI hooks installed in ${settingsPath()}`);
+  if (pluginEnabled(s)) console.error("MoorAI is also enabled as a Claude Code plugin; the plugin now stands down for these events. Run `claude plugin uninstall moorai` to keep one copy.");
 }
 
 // THE UPGRADE PATH, which is part of the fix rather than an afterthought. installHooks() writes
@@ -189,6 +200,24 @@ function convergeHooks() {
     writeSettings(s);
   } catch { /* registration hygiene; never affects enforcement */ }
 }
+// THE PLUGIN INSTALL. hooks/hooks.json (the Claude Code plugin) runs this same file with --plugin, from a
+// versioned copy under ~/.claude/plugins/cache/. Claude Code runs a plugin's handler AND a settings.json
+// handler for the same event side by side ("A plugin's or skill's copy of the same handler stays
+// separate"), so a device with both would be scanned, reported and alerted twice per call. And
+// convergeHooks run from the plugin copy would rewrite settings.json to point at SELF — a cache path
+// Claude Code deletes 14 days after the next plugin update. So a plugin invocation never converges, and
+// it stands down for an event a live settings.json install already covers.
+const AS_PLUGIN = process.argv.includes("--plugin");
+function settingsCovers(event) {
+  try {
+    const entries = readSettings().hooks?.[event];
+    return (Array.isArray(entries) ? entries : []).filter(isCuraiq).some((e) => (e.hooks || []).some((h) => {
+      const m = /^node\s+("(?:[^"\\]|\\.)*")/.exec(h.command || "");
+      return m && existsSync(JSON.parse(m[1]));
+    }));
+  } catch { return false; } // unreadable → run: a double scan beats an unprotected call
+}
+function pluginEnabled(s) { return Object.entries(s.enabledPlugins || {}).some(([id, on]) => on === true && id.startsWith("moorai@")); }
 function uninstallHooks() {
   const s = readSettings();
   let changed = false;
@@ -507,7 +536,7 @@ function logBehavior(tool, identity, scannedText, d, stage, lineage = {}) {
   try {
     const risk = (d.findings || []).reduce((m, f) => (RISK_RANK[f.riskLevel] > RISK_RANK[m] ? f.riskLevel : m), "Low");
     const flags = contentTells(scannedText || "");
-    const legs = trifectaLegs(tool, stage, d.findings || [], flags); // #1 — content-free trifecta legs
+    const legs = trifectaLegs(tool === "PowerShell" ? "Bash" : tool, stage, d.findings || [], flags); // #1 — content-free trifecta legs
     const server = serverOf(tool); // which MCP server (or "local") contributed this event's legs
     const priorEvents = readAgentEvents();
     const beforeS = assessSession(priorEvents), beforeT = assessTrifecta(priorEvents), beforeX = assessCrossServerTrifecta(priorEvents), beforeC = assessClipboardEgress(priorEvents, SESSION);
@@ -1035,11 +1064,11 @@ function observeLearnedDrift(policy, tool, ti, cwd) {
     if (cfg.mode === "off" || contentHash("learned-drift/probe") === NO_KEY) return;
     const vals = [["tool", tool]];
     if (tool.startsWith("mcp__")) vals.push(["mcp", serverOf(tool)]);
-    const hostText = tool === "Bash" ? ti.command : tool === "WebFetch" ? ti.url : tool.startsWith("mcp__") ? JSON.stringify(ti) : "";
+    const hostText = SHELL_TOOLS.has(tool) ? ti.command : tool === "WebFetch" ? ti.url : tool.startsWith("mcp__") ? JSON.stringify(ti) : "";
     for (const h of extractHosts(hostText)) vals.push(["host", h]);
     const repo = repoIdentity(cwd);
     if (repo) vals.push(["repo", repo.remote ? normalizeRemote(repo.remote) || repo.root : repo.root]);
-    if (tool === "Bash") for (const p of cloudProfiles(ti.command)) vals.push(["cloud-profile", p]);
+    if (SHELL_TOOLS.has(tool)) for (const p of cloudProfiles(ti.command)) vals.push(["cloud-profile", p]);
     const items = vals.filter(([, v]) => v).map(([type, v]) => ({ type, key: contentHash(`${type}:${v}`) }));
     const r = observeDrift(readStateJson(LEARNED_DRIFT_FILE), ACTOR, items, Date.now(), cfg);
     if (r.dirty) writeStateJson(LEARNED_DRIFT_FILE, r.state);
@@ -1054,7 +1083,7 @@ function observeLearnedDrift(policy, tool, ti, cwd) {
 // is the first deletion after the crossing and policy mode is "ask" (the default) — the caller raises
 // allow -> ask. Counts and timestamps only. On an unenrolled device SESSION is the NO_KEY sentinel for
 // every session, so all sessions share one counter; the time window still bounds it.
-function deletionVolumeStep(policy, command) {
+function deletionVolumeStep(policy, command, tool = "Bash") {
   try {
     const cfg = deletionConfig(policy);
     if (cfg.mode === "off") return false;
@@ -1063,7 +1092,7 @@ function deletionVolumeStep(policy, command) {
     const r = assessDeletionVolume(readStateJson(DELETION_VOLUME_FILE), SESSION, tally, Date.now(), cfg);
     if (r.dirty) writeStateJson(DELETION_VOLUME_FILE, r.state);
     if (r.alert) {
-      post({ threatId: 43, category: "Unusual deletion volume in session", riskLevel: "High", stage: "behavior", tool: "hook:Bash", ts: new Date().toISOString(), contentHash: "delvol:session", signature: { ...r.alert, windowMin: cfg.windowMin, thresholds: { operands: cfg.operands, recursive: cfg.recursive }, mode: cfg.mode }, ...IDENTITY });
+      post({ threatId: 43, category: "Unusual deletion volume in session", riskLevel: "High", stage: "behavior", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "delvol:session", signature: { ...r.alert, windowMin: cfg.windowMin, thresholds: { operands: cfg.operands, recursive: cfg.recursive }, mode: cfg.mode }, ...IDENTITY });
     }
     return r.escalate;
   } catch { return false; }
@@ -1227,7 +1256,7 @@ function responseField(input, tool) {
     const v = input[k];
     if (v == null) continue;
     // Bash `isImage`: stdout is image data, not text anyone wrote — an encoded blob is not a directive.
-    if (tool === "Bash" && v && typeof v === "object" && v.isImage === true) return null;
+    if (SHELL_TOOLS.has(tool) && v && typeof v === "object" && v.isImage === true) return null;
     if ((tool === "Agent" || tool === "Task") && v && typeof v === "object" && !Array.isArray(v)) {
       if (v.status === "async_launched") return null;
       if (v.content != null) { const t = scanTextOf(v.content); if (t) return { key: k, value: v, text: t }; continue; }
@@ -1392,8 +1421,8 @@ function dropOutboundOnly(res, threatIds, policy, text, mask = false, gates = IN
 // alerting 48 → 45 of 87 (the three above). Kept although measured free to drop: #50 hidden/invisible text (4/0/10), because hiding IS the
 // indirect-injection technique this door exists for, and 10 fires in 1,041 benign is its price.
 const DOOR_DROP = [29, 44, 45, 52, 54, 55, 57, 61, 62, 63, 69, 76];
-const INGEST_ONLY_DROP = { Bash: DOOR_DROP, Agent: DOOR_DROP, Task: DOOR_DROP, mcp: DOOR_DROP };
-const INGEST_NOUN = { WebFetch: "fetched content", WebSearch: "fetched content", Bash: "command output", Agent: "sub-agent report", Task: "sub-agent report" };
+const INGEST_ONLY_DROP = { Bash: DOOR_DROP, PowerShell: DOOR_DROP, Agent: DOOR_DROP, Task: DOOR_DROP, mcp: DOOR_DROP };
+const INGEST_NOUN = { WebFetch: "fetched content", WebSearch: "fetched content", Bash: "command output", PowerShell: "command output", Agent: "sub-agent report", Task: "sub-agent report" };
 const ingestNoun = (tool) => INGEST_NOUN[tool] || "MCP tool result";
 
 // Whether THIS invocation may rewrite a payload (updatedInput / updatedToolOutput). Not when coaching (an
@@ -1537,7 +1566,8 @@ async function main() {
   // No-ops on an uninstalled device and after the first converged run; wrapped, so it cannot affect the
   // decision below.
   // A translated call from another agent (cli/moorai-agent-hook.mjs) must not touch Claude Code's settings.
-  if (process.env.MOORAI_HOOK_HOST !== "shim") convergeHooks();
+  if (process.env.MOORAI_HOOK_HOST !== "shim" && !AS_PLUGIN) convergeHooks();
+  if (AS_PLUGIN && settingsCovers(input.hook_event_name)) return exitHook();
   const tool = TOOL_ALIASES[input.tool_name] || input.tool_name || "";
   const ti = input.tool_input || {};
   HOST_REWRITES = !TOOL_ALIASES[input.tool_name];
@@ -1682,13 +1712,16 @@ async function main() {
     if (rdec !== "deny") await maybeEscalate(policy, text, "file", "hook:Read", d, engine);
     return emit(rdec, `${d.kill ? "killed session" : "blocked Read"} of ${basename(ti.file_path || "file")} — ${rreasons.join(", ")}`, ralts);
   }
-  if (tool === "Bash") {
+  if (SHELL_TOOLS.has(tool)) {
     let dec = "allow", reasons = [], alts = [], finds = [], btext = "", killIds = [];
+    // PowerShell runs this same branch; only the grammar of the parsers differs (see SHELL_TOOLS).
+    const ps = tool === "PowerShell";
+    const readPaths = extractReadPaths(ti.command, ps ? { shell: "powershell" } : undefined);
     // A file an UPLOAD command reads is leaving the device; the command text itself is outbound when it
     // uploads or names a host. Only these carry ctx.egress (instr-leak-egress is opt-in on it).
-    const uploading = OUTBOUND_UPLOAD.some((r) => r.test(ti.command || ""));
+    const uploading = OUTBOUND_UPLOAD.some((r) => r.test(ti.command || "")) || (ps && PS_OUTBOUND_UPLOAD.some((r) => r.test(ti.command || "")));
     const cmdEgress = uploading || extractHosts(ti.command || "").length > 0;
-    for (const p of extractReadPaths(ti.command)) {
+    for (const p of readPaths) {
       const t = readFileCapped(agentPath(p, input.cwd)); btext += t + "\n";
       const d = decideText(engine, policy, t, "file", { ctx: { template: isEnvTemplate(p), egress: uploading } });
       finds.push(...d.findings);
@@ -1701,6 +1734,15 @@ async function main() {
       if (mdB.kill) killIds.push(...mdB.killIds);
       if (RANK[mdB.decision] > RANK[dec]) { dec = mdB.decision; reasons = mdB.reasons; alts = mdB.alternatives; }
       if (isSkillSurface(p)) reportSkillFile(p, t, d);
+      // #55 on the PATH, for PowerShell only. For Bash the command TEXT already carries it (`cat .env`
+      // hits cred-file-access); `gc .env`, `Select-String -Path .env` and `-InFile id_rsa` do not, so
+      // each path the PowerShell parser resolved gets exactly the verdict a Read of it gets.
+      if (ps) {
+        const pd = decideCredFileRead(engine, policy, p);
+        finds.push(...pd.findings);
+        if (pd.kill) killIds.push(...pd.killIds);
+        if (RANK[pd.decision] > RANK[dec]) { dec = pd.decision; reasons = pd.reasons; alts = pd.alternatives; }
+      }
     }
     // T1-2/T1-1 — scan the COMMAND itself (not just files it reads) so command-level detectors enforce:
     // typosquat/hallucinated install (#62), destructive (#43), reverse shell (#54), untrusted install (#57).
@@ -1713,28 +1755,28 @@ async function main() {
     if (RANK[cmdD.decision] > RANK[dec]) { dec = cmdD.decision; reasons = cmdD.reasons; alts = cmdD.alternatives; }
     // T1-1 — model-endpoint allow-list: a base-URL override / direct call to a non-approved LLM host.
     const epD = decideEndpoints(policy, ti.command);
-    if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: "hook:Bash", ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); }
-    report(finds, "file", "hook:Bash", dec === "deny", policy.captureTier, { toolName: "Bash", cmdShape: commandShape(ti.command) });
-    logBehavior("Bash", ti.command || "bash", btext, { decision: dec, findings: finds }, "file", clipboardSignals(ti.command));
-    if (killIds.length) killSession("Bash", killIds, "file");
-    if (checkSecretEgress(policy, ti.command, "Bash", "egress") && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); }
-    if (reportEnvelope(policy, "Bash", { tool: "Bash", paths: extractReadPaths(ti.command) }, "file") && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; alts = saferAlternativesFor([64]); }
+    if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); }
+    report(finds, "file", `hook:${tool}`, dec === "deny", policy.captureTier, { toolName: tool, cmdShape: commandShape(ti.command) });
+    logBehavior(tool, ti.command || "bash", btext, { decision: dec, findings: finds }, "file", clipboardSignals(ti.command));
+    if (killIds.length) killSession(tool, killIds, "file");
+    if (checkSecretEgress(policy, ti.command, tool, "egress") && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); }
+    if (reportEnvelope(policy, tool, { tool: "Bash", paths: readPaths }, "file") && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; alts = saferAlternativesFor([64]); }
     // Cumulative deletion volume: the first deletion after this session crossed the threshold asks. Only
     // ever allow -> ask (or adds the reason to an existing ask); never touches a deny.
-    if (deletionVolumeStep(policy, ti.command)) {
+    if (deletionVolumeStep(policy, ti.command, tool)) {
       if (dec === "allow") { dec = "ask"; reasons = ["unusual deletion volume in session"]; alts = saferAlternativesFor([43]); }
       else if (dec === "ask") reasons = [...reasons, "unusual deletion volume in session"];
     }
-    ({ dec, reasons, alts } = intentStep(policy, "Bash", ti, finds, dec, reasons, alts));
+    ({ dec, reasons, alts } = intentStep(policy, tool, ti, finds, dec, reasons, alts));
     let bmask;
-    ({ dec, reasons, alts, rewrite: bmask } = settleMask(engine, policy, { tool: "Bash", stage: "prompt", ctx: { egress: cmdEgress }, ids: cmdD.maskIds, value: ti, only: ["command"], scanOf: (v) => v.command, dec, reasons, alts, text: ti.command }));
+    ({ dec, reasons, alts, rewrite: bmask } = settleMask(engine, policy, { tool, stage: "prompt", ctx: { egress: cmdEgress }, ids: cmdD.maskIds, value: ti, only: ["command"], scanOf: (v) => v.command, dec, reasons, alts, text: ti.command }));
     // See the Read branch: escalation runs last and never on a deny, so a local-secret-egress or
     // out-of-envelope command cannot ship its content to the provider on its way to being blocked.
-    if (dec !== "deny") await maybeEscalate(policy, btext, "file", "hook:Bash", { findings: finds }, engine);
+    if (dec !== "deny") await maybeEscalate(policy, btext, "file", `hook:${tool}`, { findings: finds }, engine);
     // Recorded last, so the destination map stores the verdict the call ACTUALLY got rather than the
     // interim one — a host reached by a command that was then denied must read as denied.
-    recordDestinations("Bash", "host", extractHosts(ti.command), dec);
-    return emit(dec, `${killIds.length ? "killed session" : "blocked"} via Bash — ${reasons.join(", ")}`, alts, bmask);
+    recordDestinations(tool, "host", extractHosts(ti.command), dec);
+    return emit(dec, `${killIds.length ? "killed session" : "blocked"} via ${tool} — ${reasons.join(", ")}`, alts, bmask);
   }
   // ---- the write family: Write / Edit / MultiEdit / NotebookEdit ----
   //

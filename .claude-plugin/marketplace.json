@@ -1,0 +1,16 @@
+{
+  "name": "moorai",
+  "description": "MoorAI: on-device guardrails for AI coding agents",
+  "owner": {
+    "name": "Itay Glick",
+    "url": "https://github.com/gitayg"
+  },
+  "plugins": [
+    {
+      "name": "moorai",
+      "source": "./",
+      "description": "On-device guardrails for Claude Code: PreToolUse, PostToolUse and UserPromptSubmit hooks that scan for secrets, PII, prompt injection and exfiltration.",
+      "category": "security"
+    }
+  ]
+}

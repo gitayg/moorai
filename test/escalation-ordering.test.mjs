@@ -32,9 +32,10 @@ test("ORDER/Read: maybeEscalate runs AFTER the envelope check that can deny", ()
 });
 
 test("ORDER/Bash: maybeEscalate runs AFTER secret-egress and envelope checks", () => {
-  const branch = idx('if (tool === "Bash")');
+  // The shell branch serves Bash and PowerShell (SHELL_TOOLS); `tool` carries which one.
+  const branch = idx('if (SHELL_TOOLS.has(tool))');
   const secret = idx('checkSecretEgress(policy, ti.command', branch);
-  const envelope = idx('reportEnvelope(policy, "Bash"', branch);
+  const envelope = idx('reportEnvelope(policy, tool', branch);
   const escalate = idx('maybeEscalate(policy, btext', branch);
   assert.ok([branch, secret, envelope, escalate].every((i) => i > -1), "branch shape changed — update this test");
   assert.ok(escalate > secret, "escalation must not precede the local-secret-egress check");

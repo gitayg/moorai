@@ -77,6 +77,7 @@ if (V !== cur) {
   const j = JSON.parse(readFileSync(PKG, "utf8")); j.version = V; writeFileSync(PKG, JSON.stringify(j, null, 2) + "\n");
   const tc = join(ROOT, "src-tauri/tauri.conf.json"); writeFileSync(tc, readFileSync(tc, "utf8").replace(/"version": "[^"]+"/, `"version": "${V}"`));
   const cg = join(ROOT, "src-tauri/Cargo.toml"); writeFileSync(cg, readFileSync(cg, "utf8").replace(/^version = "[^"]+"/m, `version = "${V}"`));
+  const pj = join(ROOT, ".claude-plugin/plugin.json"); writeFileSync(pj, readFileSync(pj, "utf8").replace(/"version": "[^"]+"/, `"version": "${V}"`));
 }
 // Stamp the build-info the About dialog reads (version + release date). Date passed in via args is
 // unavailable here, so we use the wall clock at release time.

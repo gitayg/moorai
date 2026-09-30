@@ -289,8 +289,8 @@ function Install-Agent {
 # -------------------------------------------------- write per-user enroll config
 # JSON shape read by cli/config.mjs: { serverUrl, tenant, installToken }.
 function Write-EnrollConfig {
-    param([string] $Home)
-    $cfgDir  = Join-Path $Home ".moorai"
+    param([string] $ProfileDir)
+    $cfgDir  = Join-Path $ProfileDir ".moorai"
     $cfgFile = Join-Path $cfgDir "config.json"
     New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
     $cfg = [ordered]@{
@@ -310,7 +310,7 @@ function Write-EnrollConfig {
 # unavailable non-interactively, so we register under whichever identity this
 # process runs as; when Intune deploys "for user" this is already the user.
 function Register-Hooks {
-    param([string] $Home)
+    param([string] $ProfileDir)
     $node = (Get-Command node -ErrorAction SilentlyContinue).Source
     if (-not $node) { $node = "node" }
     $hook = Join-Path $MooraiHome "cli\moorai-hook.mjs"
@@ -319,9 +319,9 @@ function Register-Hooks {
     # even if this runs slightly out of the user's own session.
     $prev = $env:USERPROFILE
     try {
-        $env:USERPROFILE = $Home
+        $env:USERPROFILE = $ProfileDir
         & $node $hook install
-        Write-Log "hooks registered (settings.json under $Home\.claude)"
+        Write-Log "hooks registered (settings.json under $ProfileDir\.claude)"
     }
     catch { Write-Log "hook registration failed: $($_.Exception.Message)" }
     finally { $env:USERPROFILE = $prev }
@@ -339,8 +339,8 @@ if ($null -eq $target) {
 }
 
 Write-Log "target user: $($target.User)  home: $($target.Home)"
-Write-EnrollConfig -Home $target.Home
-Register-Hooks    -Home $target.Home
+Write-EnrollConfig -ProfileDir $target.Home
+Register-Hooks    -ProfileDir $target.Home
 
 Write-Log "done. Policy pulled at runtime from $ServerUrl/api/policy?tenant=$Tenant"
 exit 0

@@ -14,6 +14,14 @@
 // review (startup prompt or /hooks) — trust is a hash in config.toml `[hooks.state]` that this adapter
 // deliberately does not forge. Trust keys embed the group index, so MoorAI's group is always appended
 // last to avoid shifting (and un-trusting) the user's existing hooks.
+//
+// Intent capture (cli/intent-alignment.mjs). developers.openai.com/codex/hooks, "UserPromptSubmit":
+// "`matcher` isn't currently used for this event", input adds `turn_id` and "`prompt` | `string` | User
+// prompt that's about to be sent", and "Plain text on `stdout` is added as extra developer context" —
+// so this event is forwarded as Claude's UserPromptSubmit and answers with an EMPTY stdout ("Exit `0`
+// with no output is treated as success and Codex continues"). `session_id` is the same field PreToolUse
+// carries ("Current Codex session id. Subagent hooks use the parent session id"), so a captured task and
+// a later tool call meet under one key, sub-agents included.
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join, dirname, isAbsolute, resolve } from "node:path";
 
@@ -84,7 +92,12 @@ function mapTool(name, input, cwd) {
 }
 
 export function toClaude(payload) {
-  if (!payload || typeof payload !== "object" || payload.hook_event_name !== "PreToolUse") return null;
+  if (!payload || typeof payload !== "object") return null;
+  if (payload.hook_event_name === "UserPromptSubmit") {
+    if (typeof payload.prompt !== "string") return null;
+    return { hook_event_name: "UserPromptSubmit", prompt: payload.prompt, session_id: String(payload.session_id || ""), ...(typeof payload.cwd === "string" ? { cwd: payload.cwd } : {}) };
+  }
+  if (payload.hook_event_name !== "PreToolUse") return null;
   if (typeof payload.tool_name !== "string") return null;
   const cwd = typeof payload.cwd === "string" ? payload.cwd : undefined;
   const mapped = mapTool(payload.tool_name, payload.tool_input, cwd);
@@ -93,6 +106,8 @@ export function toClaude(payload) {
 }
 
 export function fromVerdict(verdict, payload) {
+  // The prompt is never judged, only captured, and stdout on this event reaches the model: say nothing.
+  if (payload && payload.hook_event_name === "UserPromptSubmit") return { exitCode: 0 };
   const v = verdict || {};
   const out = (o) => ({ stdout: JSON.stringify(o), exitCode: 0 });
   const reason = String(v.reason || "").trim().replace(/\.+$/, "");
@@ -158,6 +173,18 @@ export function install({ home, command, codexHome }) {
     pre.push({ matcher: MATCHER, hooks: [entry] });
   }
   doc.hooks.PreToolUse = pre;
+  // UserPromptSubmit: no matcher (Codex ignores it for this event). Same trust rule as above: an existing
+  // MoorAI group is updated in place, a new one goes last.
+  const ups = Array.isArray(doc.hooks.UserPromptSubmit) ? doc.hooks.UserPromptSubmit : [];
+  const promptEntry = { type: "command", command, timeout: 30 };
+  const pat = ups.findIndex((g) => Array.isArray(g?.hooks) && g.hooks.some(isOwn));
+  if (pat >= 0) {
+    const rest = strip(ups.slice(pat + 1));
+    ups.splice(pat, ups.length - pat, { ...ups[pat], hooks: ups[pat].hooks.flatMap((h, i, a) => (!isOwn(h) ? [h] : a.findIndex(isOwn) === i ? [promptEntry] : [])) }, ...rest);
+  } else {
+    ups.push({ hooks: [promptEntry] });
+  }
+  doc.hooks.UserPromptSubmit = ups;
   save(file, doc);
   return file;
 }

@@ -108,7 +108,51 @@ export function expectedSurface(host) {
 
 const pathOf = (p) => p.replace(os.homedir(), "~");
 
-export function checkHost(host, { managedHooks = null } = {}) {
+// ---- Claude Code plugin install (hooks/hooks.json, `claude plugin install moorai@moorai`) ----
+// code.claude.com/docs/en/plugins/loading: "`installed_plugins.json` records each install with its
+// `scope`, `installPath`, and `version`"; the plugins root "is `~/.claude/plugins` unless you set
+// `CLAUDE_CODE_PLUGIN_CACHE_DIR`"; `cache/<marketplace>/<plugin>/<version>/` — "`${CLAUDE_PLUGIN_ROOT}`
+// points at this directory". Shape as Claude Code 2.1.284 writes it:
+// { version: 2, plugins: { "moorai@moorai": [{ scope, installPath, version, installedAt, lastUpdated }] } }.
+// Enabled means `enabledPlugins["moorai@…"] === true`, the same test the hook's pluginEnabled() makes.
+export const PLUGIN_INSTALL = "claude plugin marketplace add gitayg/moorai && claude plugin install moorai@moorai";
+const pluginIdOf = (enabled) => Object.entries(enabled || {}).filter(([id, on]) => on === true && id.startsWith("moorai@")).map(([id]) => id);
+export function pluginsRoot(home = os.homedir(), env = process.env) { return env.CLAUDE_CODE_PLUGIN_CACHE_DIR || join(home, ".claude", "plugins"); }
+export function pluginInstall(settings, { home = os.homedir(), env = process.env, managedPlugins = [] } = {}) {
+  const ids = [...new Set([...pluginIdOf(settings && settings.enabledPlugins), ...managedPlugins])];
+  if (!ids.length) return null;
+  const file = join(pluginsRoot(home, env), "installed_plugins.json");
+  const recs = (readJson(file).data || {}).plugins || {};
+  for (const id of ids) {
+    const list = Array.isArray(recs[id]) ? recs[id] : [];
+    const rec = list.find((r) => r && r.scope === "user" && r.installPath) || list.find((r) => r && r.installPath);
+    if (rec) return { id, installPath: rec.installPath, version: rec.version, scope: rec.scope };
+  }
+  return { id: ids[0], installPath: null, recordFile: file };
+}
+function checkPlugin(base, host, plug, exp) {
+  const fix = `claude plugin update ${plug.id} (or reinstall: claude plugin uninstall ${plug.id} && claude plugin install ${plug.id})`;
+  const hooksFile = join(plug.installPath, "hooks", "hooks.json");
+  const where = `plugin ${plug.id}`;
+  if (!existsSync(plug.installPath)) return { ...base, status: "fail", summary: `${where} is enabled but its copy ${pathOf(plug.installPath)} is gone`, fix, installed: true };
+  const { data, error } = readJson(hooksFile);
+  if (!data) return { ...base, status: "fail", summary: `${where}: ${pathOf(hooksFile)} is ${error || "missing"}`, fix, installed: true };
+  const have = ourSurface(data, host.ours);
+  const scripts = hookScripts(data, host.ours).map((s) => s.split("${CLAUDE_PLUGIN_ROOT}").join(plug.installPath));
+  const details = { file: pathOf(hooksFile), plugin: plug.id, version: plug.version, events: have, expected: exp.surface, scripts: scripts.map(pathOf) };
+  const d = diffSurface(exp.surface, have);
+  const problems = [];
+  if (d.missing.length) problems.push(`missing event(s) ${d.missing.join(", ")}`);
+  for (const s of d.stale) problems.push(`${s.event} matchers are [${s.have.join(" ")}], current is [${s.want.join(" ")}]`);
+  if (d.extra.length) problems.push(`unexpected event(s) ${d.extra.join(", ")}`);
+  const missingScripts = scripts.filter((s) => !existsSync(s));
+  if (missingScripts.length) problems.push(`hook file missing: ${missingScripts.map(pathOf).join(", ")}`);
+  if (!scripts.length) problems.push("no hook script path found in the plugin's hooks.json");
+  if (problems.length) return { ...base, status: "fail", summary: `${where}: ${problems.join("; ")}`, fix, details, installed: true };
+  return { ...base, status: "ok", summary: `registered via plugin ${plug.id} (${plug.version || "unknown version"}, ${pathOf(plug.installPath)}): ${Object.entries(have).map(([e, m]) => `${e}(${m.length})`).join(" ")}`, details, installed: true };
+}
+
+export function checkHost(host, { managedHooks = null, managedPlugins = [], env = process.env, home = os.homedir() } = {}) {
   const base = { id: `host:${host.id}`, group: "hosts", title: host.label };
   const hostPresent = existsSync(host.dir);
   const { exists, data, error } = readJson(host.file, { comments: host.comments });
@@ -116,19 +160,32 @@ export function checkHost(host, { managedHooks = null } = {}) {
   let have = data ? ourSurface(data, host.ours) : {};
   let where = pathOf(host.file);
   let scripts = data ? hookScripts(data, host.ours) : [];
+  const inSettings = Object.keys(have).length > 0;
+  const plug = host.id === "claude-code" ? pluginInstall(data, { home, env, managedPlugins }) : null;
   // Claude Code: MoorAI may be deployed in managed settings instead of the user file.
   if (host.id === "claude-code" && !Object.keys(have).length && managedHooks && Object.keys(ourSurface(managedHooks.data, host.ours)).length) {
     have = ourSurface(managedHooks.data, host.ours); where = `managed settings (${managedHooks.source})`; scripts = hookScripts(managedHooks.data, host.ours);
   }
   if (!Object.keys(have).length) {
+    if (plug && plug.installPath) {
+      const exp = expectedSurface(host);
+      if (exp.error) return { ...base, status: "fail", summary: `could not compute the current MoorAI surface: ${exp.error}`, installed: true };
+      return checkPlugin(base, host, plug, exp);
+    }
+    const why = plug ? `; ${plug.id} is enabled but ${pathOf(plug.recordFile)} has no install record for it` : "";
     if (!hostPresent) return { ...base, status: "skip", summary: `${host.label} not found (${pathOf(host.dir)} absent)`, installed: false };
-    return { ...base, status: "warn", summary: `${host.label} is present but MoorAI is not registered in ${where}`, fix: host.fix, installed: false };
+    return { ...base, status: "warn", summary: `${host.label} is present but MoorAI is not registered in ${where}${host.id === "claude-code" ? " or as a plugin" : ""}${why}`, fix: host.id === "claude-code" ? `${host.fix} — or: ${PLUGIN_INSTALL}` : host.fix, installed: false };
   }
   const exp = expectedSurface(host);
   if (exp.error) return { ...base, status: "fail", summary: `could not compute the current MoorAI surface: ${exp.error}`, installed: true };
   const d = diffSurface(exp.surface, have);
   const missingScripts = scripts.filter((s) => !existsSync(s));
   const details = { file: where, events: have, expected: exp.surface, scripts: scripts.map(pathOf) };
+  // Both: the hook's --plugin copy stands down for each event a live settings.json install covers
+  // (settingsCovers in moorai-hook.mjs), so the settings copy is the one that runs where it covers.
+  const both = inSettings && plug && plug.installPath ? `both installed; the plugin stands down where the settings copy covers an event — keep one (${plug.id} and ${where})` : "";
+  const bothFix = both ? `claude plugin uninstall ${plug.id}, or: node ${JSON.stringify(HOOK)} uninstall` : "";
+  if (both) details.plugin = plug.id;
   const problems = [];
   if (d.missing.length) problems.push(`missing event(s) ${d.missing.join(", ")}`);
   for (const s of d.stale) problems.push(`${s.event} matchers are [${s.have.join(" ")}], current is [${s.want.join(" ")}]`);
@@ -138,7 +195,8 @@ export function checkHost(host, { managedHooks = null } = {}) {
   const other = scripts.filter((s) => existsSync(s) && s !== HOOK && s !== AGENT_HOOK);
   if (host.id === "claude-code" && data && data.disableAllHooks === true) problems.push(`disableAllHooks is true in ${pathOf(host.file)}`);
   if (host.id === "gemini" && data && data.hooksConfig && data.hooksConfig.enabled === false) problems.push("hooksConfig.enabled is false");
-  if (problems.length) return { ...base, status: "fail", summary: problems.join("; "), fix: host.fix, details, installed: true };
+  if (problems.length) return { ...base, status: "fail", summary: `${problems.join("; ")}${both ? `; ${both}` : ""}`, fix: host.fix, details, installed: true };
+  if (both) return { ...base, status: "warn", summary: both, fix: bothFix, details, installed: true };
   const notes = [];
   if (other.length) notes.push(`entries run ${other.map(pathOf).join(", ")} (compared against this package's surface)`);
   if (host.id === "codex") {
@@ -153,7 +211,9 @@ export function checkHost(host, { managedHooks = null } = {}) {
 // `C:\Program Files\ClaudeCode\` (Windows) as managed-settings.json plus an optional managed-settings.d/;
 // the macOS MDM form is the `com.anthropic.claudecode` managed preferences domain.
 // settings-reference: `allowManagedHooksOnly` (Managed scope) "Run only the hooks your organization
-// deploys"; `disableAllHooks` (any file) turns hooks off.
+// deploys"; `disableAllHooks` (any file) turns hooks off. hooks reference: under allowManagedHooksOnly
+// "Hooks from plugins force-enabled in managed settings `enabledPlugins` are exempt", and
+// settings-reference: "Claude Code matches on the full `plugin@marketplace` ID".
 export function managedDir() {
   if (process.platform === "darwin") return "/Library/Application Support/ClaudeCode";
   if (process.platform === "win32") return "C:\\Program Files\\ClaudeCode";
@@ -184,9 +244,11 @@ export function checkManaged(sources = readManagedSettings(), ours = (e) => JSON
   for (const s of sources) for (const [ev, list] of Object.entries(s.data.hooks || {})) merged.hooks[ev] = [...(merged.hooks[ev] || []), ...(Array.isArray(list) ? list : [])];
   const withOurs = Object.keys(ourSurface(merged, ours)).length > 0;
   const managedHooks = withOurs ? { source: sources.map((s) => s.source).join(", "), data: merged } : null;
+  const managedPlugins = [...new Set(sources.flatMap((s) => pluginIdOf(s.data.enabledPlugins)))];
   const disabled = sources.find((s) => s.data.disableAllHooks === true);
-  if (disabled) return { ...base, status: "fail", summary: `disableAllHooks is true in ${disabled.source}: no hook runs, MoorAI included`, fix: "ask the Claude Code admin to remove disableAllHooks", managedHooks };
+  if (disabled) return { ...base, status: "fail", summary: `disableAllHooks is true in ${disabled.source}: no hook runs, MoorAI included`, fix: "ask the Claude Code admin to remove disableAllHooks", managedHooks, managedPlugins };
   const only = sources.find((s) => s.data.allowManagedHooksOnly === true);
-  if (only && !withOurs) return { ...base, status: "fail", summary: `allowManagedHooksOnly is true in ${only.source} and MoorAI is not among the managed hooks: Claude Code will not run MoorAI's user-level hooks`, fix: "deploy MoorAI's hook entries in managed settings (copy the hooks block `moorai-hook.mjs install` writes)", managedHooks };
-  return { ...base, status: "ok", summary: `${sources.length} managed source(s); ${only ? "allowManagedHooksOnly on, MoorAI deployed as a managed hook" : "no hook restriction"}`, managedHooks };
+  if (only && !withOurs && !managedPlugins.length) return { ...base, status: "fail", summary: `allowManagedHooksOnly is true in ${only.source} and MoorAI is not among the managed hooks: Claude Code will not run MoorAI's user-level hooks`, fix: "deploy MoorAI's hook entries in managed settings (copy the hooks block `moorai-hook.mjs install` writes), or force-enable moorai@moorai in managed enabledPlugins (\"enabledPlugins\": {\"moorai@moorai\": true}) — hooks from force-enabled plugins are exempt", managedHooks, managedPlugins };
+  const how = withOurs ? "MoorAI deployed as a managed hook" : `MoorAI plugin ${managedPlugins.join(", ")} force-enabled in managed enabledPlugins`;
+  return { ...base, status: "ok", summary: `${sources.length} managed source(s); ${only ? `allowManagedHooksOnly on, ${how}` : "no hook restriction"}`, managedHooks, managedPlugins };
 }

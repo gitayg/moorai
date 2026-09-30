@@ -35,6 +35,13 @@ surfaces organization-wide risk signals.
 - **Intervention model:** risk-tiered and policy-driven — `notify` (report) → `justify` (ask) →
   `block` (deny) → `kill` (terminate session), and `mask` (replace the span, let the call proceed) for
   secrets, PII, payment cards and PHI. Report-first by default, blocking when configured.
+- **Claude Code install:** `moorai-hook.mjs install` writes the hooks into `~/.claude/settings.json`;
+  the Claude Code plugin `moorai@moorai` ([`hooks/hooks.json`](../hooks/hooks.json)) registers the same
+  events and matchers. Use one. The plugin copy stands down for any event a live `settings.json` install
+  covers and never rewrites `settings.json`; its updates are pinned (`claude plugin update
+  moorai@moorai`); under `allowManagedHooksOnly` it runs only when managed `enabledPlugins` force-enables
+  it. A marketplace install runs `npm ci --ignore-scripts` in the plugin copy (about 20 MB of desktop-app
+  packages the hooks do not use).
 
 ## Architecture
 
@@ -215,7 +222,11 @@ is validated against.
    are inspected by recovering their text with the **OS's own recognition engine** and running it
    through the same detectors — macOS `Vision.framework`, Windows `Windows.Media.Ocr.OcrEngine`, Linux
    `Tesseract` (via `leptess`, a second-class tier). No model is bundled and the image never reaches the
-   MoorAI console. Three states, and the UI names the applicable one before the user pastes:
+   MoorAI console. On macOS, Vision runs twice, accurate then fast, and a fast-pass line the accurate
+   pass lacks is added: on macOS 27 the accurate recognizer misreads some secret characters (`7` → `Z` in
+   `AKIAIOSFODNN7EXAMPLE`). On 224 rendered secrets that took detection from 212 to 219 and exact reads
+   from 157 to 161, at about 20 ms more per image; when the passes disagree, one image can show two
+   finding cards for one key. Three states, and the UI names the applicable one before the user pastes:
 
    | Device | Behaviour |
    |---|---|
@@ -325,22 +336,26 @@ is validated against.
    stored ([`cli/intent-alignment.mjs`](../cli/intent-alignment.mjs),
    [`data/intent-alignment.js`](../data/intent-alignment.js)).
 
-   Only already-risky calls are judged: a `Bash` upload to a non-loopback host (egress), a #43
-   destructive command, a #55 credential read (`Read` or `Bash`), and an MCP tool whose name carries a
-   write verb. Egress is aligned only if every destination site was named, and no label excuses it. The
+   Only already-risky calls are judged: a `Bash` or `PowerShell` upload to a non-loopback host (egress;
+   a UNC share's host counts), a #43 destructive command, a #55 credential read (`Read`, `Bash` or
+   `PowerShell`), and an MCP tool whose name carries a write verb. Egress is aligned only if every destination site was named, and no label excuses it. The
    other classes are aligned by their label or by a named path or server. Sessions with no captured task
    are never judged, and a call already denied is not re-judged. A misaligned call posts one alert per
    session, class and target: category `Action outside the stated task`, stage `behavior`.
    `policy.intentAlignment`: `"report"` (default), `"ask"` (opt-in; raises allow to ask), `"off"`.
    Unenrolled devices coach. An optional semantic tier asks the **loopback** model for labels at prompt
    time, only when `modelEscalation` and `semanticEscalation` are both on, bounded by
-   `MOORAI_INTENT_TIMEOUT_MS` (default 1500).
+   `MOORAI_INTENT_TIMEOUT_MS` (default 1500). The Codex (`UserPromptSubmit`), Cursor
+   (`beforeSubmitPrompt`), Gemini (`BeforeAgent`) and Copilot (`userPromptSubmitted`) adapters forward
+   the prompt for capture only and answer with nothing the model sees.
 
    **Limits.** Lexical, not semantic: an upload to a host the user named passes. Pasted text widens the
    task. The agent can read the key and rewrite the state file, as it can every file under `~/`.
    `Write`/`Edit`, data in a GET query string and `git push` to a new remote are not judged. The Codex,
-   Cursor, Gemini and Copilot adapters do not forward prompts, so it runs on Claude Code only. It adds
-   one hook process per prompt.
+   Cursor, Gemini and Copilot hosts do not mark machine-injected turns, so there a hook-forced
+   continuation counts as the task. Codex runs the prompt hook only after the user trusts it. Adapter
+   installs from before the prompt event need `moorai-agent-hook.mjs <agent> install` re-run; only
+   Claude Code's registration converges on its own. It adds one hook process per prompt.
 
 11d. **Protected-instruction leak** — the agent's own rules files leaving the device. *Threat 52.*
    Three detectors ([`data/detectors-instruction-leak.js`](../data/detectors-instruction-leak.js)):
@@ -386,14 +401,14 @@ is validated against.
    verified.
 
 11f. **Tool-result scanning** — what comes back into the agent after a tool runs. The Claude Code hook's
-   `PostToolUse` matchers are `WebFetch`, `WebSearch`, `Bash`, `Agent`, `Task` and `mcp__.*`; the result
+   `PostToolUse` matchers are `WebFetch`, `WebSearch`, `Bash`, `PowerShell`, `Agent`, `Task` and `mcp__.*`; the result
    (first 64 KB) is scanned at the `output` stage as inbound content. The tool has already run: a block
    only adds a reason next to the result, and the model still sees the original output. Default
-   report-only; `ask` becomes advisory `additionalContext`; unenrolled devices coach. On `Bash`, MCP and
+   report-only; `ask` becomes advisory `additionalContext`; unenrolled devices coach. On `Bash`/`PowerShell`, MCP and
    sub-agent results, the action and generated-code threats (#29, #44, #45, #52, #54, #55, #57, #61,
    #62, #63, #69, #76) are dropped, because `PreToolUse` enforces them when attempted, and the #15/#17
-   gates are narrowed. Sub-agent results are judged on their report only. **Limits.** `PowerShell` is not
-   matched; output past 64 KB is unscanned; `cat .env` reports at both `PreToolUse` and `PostToolUse`;
+   gates are narrowed. Sub-agent results are judged on their report only. **Limits.** Output past 64 KB
+   is unscanned; `cat .env` reports at both `PreToolUse` and `PostToolUse`;
    the Codex, Copilot, Gemini and Cursor adapters forward only web results; recall figures are
    in-sample. [DETECTION_ENGINE.md](DETECTION_ENGINE.md) §6–7.
 
@@ -412,8 +427,10 @@ is validated against.
 16. **Policy pull** — fetches allowlist/thresholds/rule-base from the server; offline-tolerant.
 17. **Privacy-preserving** — inspection is local; only redacted metadata leaves the device.
 17a. **Self-check and explain** — `moorai-doctor` reports whether MoorAI is registered in each agent
-    host (compared with what the current installer writes), whether Claude Code managed settings allow
-    its hooks, enrollment, console reachability, which policy is enforced and whether its signature
+    host (compared with what the current installer writes; for Claude Code, in `settings.json` or as
+    the `moorai` plugin, whose installed `hooks/hooks.json` is compared the same way, and a warning when
+    both are present), whether Claude Code managed settings allow its hooks (a managed hook or a
+    force-enabled `moorai@moorai` plugin under `allowManagedHooksOnly`), enrollment, console reachability, which policy is enforced and whether its signature
     verifies, posture, break-glass and state-file modes, and runs the real hook on a benign and a
     known-bad `Bash` command in a temporary copy of the state; read-only, exit 1 on any failed check.
     `moorai-explain` runs one string through the hook's engine and policy and shows each finding, the
@@ -454,10 +471,10 @@ per-threat → data-tier → **built-in prevention tier** → approval-set → `
 - **`mask`** → the matched span is replaced with `[MOORAI:<tier>:<8 letters>]` (from the keyed content
   hash; no part of the value survives), the rewritten text is re-scanned, and the call proceeds. Set per
   threat or per data tier, for the data-tier threats **15, 39, 1, 44** only, and applied only by span
-  detectors. The Claude Code hook rewrites the `Bash` command, the write family's new content, the
+  detectors. The Claude Code hook rewrites the `Bash` and `PowerShell` command, the write family's new content, the
   `WebFetch` url and prompt, MCP argument strings and the `Task` prompt through `PreToolUse`
-  `updatedInput` (with no permission decision, so it never auto-approves), and the six post-tool results
-  through `PostToolUse` `updatedToolOutput`. Anywhere it cannot rewrite — `Read`, files a `Bash` command
+  `updatedInput` (with no permission decision, so it never auto-approves), and the seven post-tool results
+  through `PostToolUse` `updatedToolOutput`. Anywhere it cannot rewrite — `Read`, files a shell command
   reads, the other agents' adapters, Cursor's renamed tools, an unenrolled device, a failed re-scan, a
   value over 256 KB, and the MCP proxy and `claude -p` guard — the threat
   resolves to `policy.maskFallback` (`notify`/`justify`/`block`), else to its action without the mask

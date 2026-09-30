@@ -17,7 +17,9 @@
 // A dotted token: a hostname, an email's domain, or a filename. Both readings are kept as features —
 // an extra feature can only make an action look aligned, never flag one.
 const DOTTED = /(?<![\w@-])(?:[a-z][a-z0-9+.-]{0,15}:\/\/)?(?:[^\s\/@'"`<>()]{1,64}@)?((?:[a-z0-9_](?:[a-z0-9_-]{0,62}[a-z0-9_])?\.)+[a-z0-9][a-z0-9-]{0,62})(?![\w-])/gi;
-const PATHISH = /(?:^|[\s"'`(=:@])((?:~|\.{1,2})?\/?(?:[\w.@+-]+\/)+[\w.@+-]*|\.[\w][\w.-]*|[\w-]+\.[a-z0-9]{1,8})(?=$|[\s"'`),;:])/gi;
+// `\` separates too, so a Windows path a user types ("clean C:\repo\build") yields features the
+// PowerShell tool's Remove-Item operands can match.
+const PATHISH = /(?:^|[\s"'`(=:@])((?:~|\.{1,2})?[\\/]?(?:[\w.@+-]+[\\/])+[\w.@+-]*|\.[\w][\w.-]*|[\w-]+\.[a-z0-9]{1,8})(?=$|[\s"'`),;:])/gi;
 
 // Service names worth recognising in prose (they are also common MCP server names). A fixed vocabulary:
 // hashing an arbitrary word of the prompt would amount to storing a hashed bag of words.
@@ -76,6 +78,10 @@ export function taskFeatures(prompt) {
 
 // ---- action side ----
 
+// A copy or move whose operand is \\host\share. The host class excludes \\?\ and \\.\ (local device
+// paths) and \\wsl$; localhost / wsl.localhost are dropped with the loopback hosts below.
+const UNC_COPY = /\b(?:Copy-Item|cpi|copy|cp|Move-Item|mi|move|mv|robocopy|xcopy)\b[^\n;|&]*?[\s:]["']?\\\\[a-z0-9][\w.-]{0,252}\\/i;
+const UNC_HOST = /(?:^|[\s:"'])\\\\([a-z0-9][\w.-]{0,252})\\/gi;
 // A payload leaving the device. Same shape family as cli/hook-core.mjs OUTBOUND_UPLOAD (clipboard
 // session rule), restricted to the forms that carry an explicit destination this module can read.
 const UPLOAD = [
@@ -83,7 +89,11 @@ const UPLOAD = [
   /\bwget\b[^\n;|&]*?--(?:post-data|post-file|body-data|body-file|method=(?:POST|PUT))/i,
   /\b(?:Invoke-RestMethod|Invoke-WebRequest|irm|iwr)\b[^\n;|&]*?(?:-Method\s+(?:Post|Put|Patch)|-InFile|-Body)\b/i,
   /\b(?:nc|ncat|netcat|socat|telnet)\b/i,
-  /\b(?:scp|rsync|sftp)\b[^\n;|&]*?\s[\w.-]+@?[\w.-]+:/i
+  /\b(?:scp|rsync|sftp)\b[^\n;|&]*?\s[\w.-]+@?[\w.-]+:/i,
+  // PowerShell: BITS in upload mode, and a copy/move onto a UNC share (SMB egress). Same shapes as
+  // cli/hook-core.mjs PS_OUTBOUND_UPLOAD.
+  /\bStart-BitsTransfer\b[^\n;|&]*?\s-TransferType\s{1,4}["']?Upload/i,
+  UNC_COPY
 ];
 const URL_HOST = /\b(?:https?|ftp|wss?):\/\/(?:[^\s\/@'"]{0,200}@)?(\[[0-9a-f:]{2,39}\]|[^\s\/:'"?#`)]{1,253})/gi;
 const NC_HOST = /\b(?:nc|ncat|netcat|telnet)\b(?:\s+-{1,2}[\w-]+(?:\s+\d+)?)*\s+([a-z0-9][\w.-]*\.[a-z][\w-]*|\d{1,3}(?:\.\d{1,3}){3})\b/gi;
@@ -95,7 +105,8 @@ function egressHosts(command) {
   const hosts = new Set();
   for (const re of [URL_HOST, NC_HOST, SOCAT_HOST]) for (const m of c.matchAll(re)) hosts.add(m[1].toLowerCase());
   if (/\b(?:scp|rsync|sftp)\b/i.test(c)) for (const m of c.matchAll(REMOTE_COPY)) hosts.add(m[1].toLowerCase());
-  return [...hosts].filter((h) => !LOOPBACK.test(h));
+  if (UNC_COPY.test(c)) for (const m of c.matchAll(UNC_HOST)) hosts.add(m[1].toLowerCase());
+  return [...hosts].filter((h) => !LOOPBACK.test(h) && h !== "wsl.localhost");
 }
 
 const MCP_WRITE = /(?:^|[_-])(?:create|update|delete|remove|send|post|write|push|publish|upload|comment|merge|add|edit|put|set|insert|close|reply|share|invite|move|rename|archive|transfer|execute|run|deploy|submit|patch)(?:[_-]|$)/i;
@@ -117,7 +128,7 @@ function commandPaths(command) {
 export function actionTargets(tool, input, findings) {
   const ti = input || {};
   const ids = new Set((findings || []).map((f) => f && f.threatId));
-  if (tool === "Bash") {
+  if (tool === "Bash" || tool === "PowerShell") {
     const cmd = String(ti.command || "");
     if (UPLOAD.some((r) => r.test(cmd))) {
       const sites = [...new Set(egressHosts(cmd).map(siteOf))];
