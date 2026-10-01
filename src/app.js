@@ -6,7 +6,7 @@ import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { DetectionEngine } from "./engine.js";
 import { Audit } from "./audit.js";
 import { COACH_TAIL } from "../data/enforcement.js";
-import { enrolled, getPolicy, postAlert, nativeLog, loadIdentity, enroll, signUp, awaitClaim, serverBase, currentTenant, setAgentAuth, getAuthMethod, setAuthMethod, openUrl, reportDevice, reportPatches, reportPrompt, appVersion, checkUpdate, restartApp, checkAndInstallUpdate, reportIdentity, aboutInfo } from "./api.js";
+import { enrolled, getPolicy, postAlert, nativeLog, loadIdentity, enroll, signUp, awaitClaim, serverBase, currentTenant, setAgentAuth, getAuthMethod, setAuthMethod, openUrl, reportDevice, reportPatches, reportPrompt, reportActivity, appVersion, checkUpdate, restartApp, checkAndInstallUpdate, reportIdentity, aboutInfo } from "./api.js";
 import { ocrCapability, ocrImage, engineLabel, decideImageInspection } from "./ocr.js";
 import { BUILD } from "./buildinfo.js";
 
@@ -92,6 +92,10 @@ async function boot() {
     renderDeviceInfo(dev);
     reportPatches(dev).then((p) => { if (p) renderDeviceInfo({ ...dev, patches: p }); });
   });
+
+  // Coverage integrity: agent use, hourly, independent of the hooks (server/coverage.js in the console).
+  reportActivity();
+  setInterval(reportActivity, 60 * 60 * 1000);
 
   wireEnrollment();
   initTerminal();

@@ -19,6 +19,18 @@
 //   Cline        docs.cline.bot/features/cline-rules: .clinerules/ (or file), .cline/rules/,
 //                ~/Documents/Cline/Rules, ~/.cline/rules, and it also reads .cursorrules,
 //                .windsurfrules, AGENTS.md, ~/.agents/AGENTS.md.
+//   Added 2026-10-01 from the same kind of source:
+//   Copilot      code.visualstudio.com/docs/copilot/customization/custom-instructions: `.github/instructions`
+//                is searched "recursively"; user scope "~/.copilot/instructions".
+//   Kiro         kiro.dev/docs/steering: `.kiro/steering/` and `~/.kiro/steering/`.
+//   Amp          ampcode.com/docs/customize/agents-md: "a file named AGENT.md (without an S)" is the fallback.
+//   Windsurf     docs.devin.ai/desktop/cascade/memories: system rules /Library/Application Support/{Devin,
+//                Windsurf}/rules, /etc/{devin,windsurf}/rules, C:\ProgramData\{Devin,Windsurf}\rules.
+//   NOT here, by design: on-demand prompt files (Cursor/OpenCode/Gemini commands, Windsurf/Cline
+//   workflows, Copilot *.prompt.md, Codex prompts) and Kiro specs. They are on data/skill-surface.js
+//   (scanned for poisoning), but they are not the instructions the agent RUNS UNDER, which is what this
+//   list protects from leaking. Fingerprint discovery (cli/instruction-fingerprints.mjs) is a separate,
+//   explicit walk; it visits .kiro/steering (project and home) and ~/.copilot/instructions as well.
 
 // The upload shapes come from the leaf data/outbound-upload.js (not data/detectors.js, which imports this
 // module through data/detectors-instruction-leak.js — reading it from there would be an import cycle).
@@ -30,14 +42,15 @@ export const INSTRUCTION_FILES = [
   [/(^|\/)CLAUDE\.local\.md$/i, "CLAUDE.local.md"],
   [/(^|\/)CLAUDE\.md$/i, "CLAUDE.md"],
   [/(^|\/)AGENTS\.override\.md$/i, "AGENTS.override.md"],
-  [/(^|\/)AGENTS\.md$/i, "AGENTS.md"],
+  [/(^|\/)AGENTS?\.md$/i, "AGENTS.md"],
   [/(^|\/)GEMINI\.md$/i, "GEMINI.md"],
   [/(^|\/)\.github\/copilot-instructions\.md$/i, "copilot-instructions"],
-  [/(^|\/)\.github\/instructions\/[^/]+\.instructions\.md$/i, "copilot-path-instructions"],
+  [/(^|\/)\.(?:github|copilot)\/instructions\/.+\.instructions\.md$/i, "copilot-path-instructions"],
+  [/(^|\/)\.kiro\/steering\/.+\.md$/i, "kiro-steering"],
   [/(^|\/)\.cursorrules$/i, ".cursorrules"],
   [/(^|\/)\.cursor\/rules\/.+\.mdc?$/i, ".cursor/rules"],
   [/(^|\/)\.windsurfrules$/i, ".windsurfrules"],
-  [/(^|\/)\.(?:windsurf|devin)\/rules\/.+\.md$/i, "windsurf-rule"],
+  [/(^|\/)\.?(?:windsurf|devin)\/rules\/.+\.md$/i, "windsurf-rule"],
   [/(^|\/)windsurf\/memories\/global_rules\.md$/i, "windsurf-global"],
   [/(^|\/)\.clinerules(?:\/.+\.md)?$/i, ".clinerules"],
   [/(^|\/)\.cline\/rules\/.+\.md$/i, "cline-rule"],
@@ -67,13 +80,13 @@ export const isInstructionFilePath = (path) => instructionFileKind(path) !== nul
 
 // The file names above as they appear in a shell word (no directory anchoring needed; a preceding path
 // is allowed). Kept to names distinctive enough that a bare mention is unambiguous.
-const NAME = String.raw`(?:[\w.~\-\/\\]{0,200}[\/\\])?(?:CLAUDE(?:\.local)?\.md|AGENTS(?:\.override)?\.md|GEMINI\.md|copilot-instructions\.md|[\w.\-]{1,100}\.instructions\.md|\.cursorrules|\.windsurfrules|\.clinerules|global_rules\.md|\.cursor[\/\\]rules[\/\\][\w.\-\/\\]{1,200}\.mdc?|\.claude[\/\\]rules[\/\\][\w.\-\/\\]{1,200}\.md)`;
+const NAME = String.raw`(?:[\w.~\-\/\\]{0,200}[\/\\])?(?:CLAUDE(?:\.local)?\.md|AGENTS?(?:\.override)?\.md|GEMINI\.md|copilot-instructions\.md|[\w.\-]{1,100}\.instructions\.md|\.cursorrules|\.windsurfrules|\.clinerules|global_rules\.md|\.cursor[\/\\]rules[\/\\][\w.\-\/\\]{1,200}\.mdc?|\.claude[\/\\]rules[\/\\][\w.\-\/\\]{1,200}\.md|\.kiro[\/\\]steering[\/\\][\w.\-\/\\]{1,200}\.md)`;
 
 export const INSTRUCTION_NAME_RE = new RegExp(`(?<![\\w.\\-])${NAME}(?![\\w.\\-])`, "i");
 
 // The engine-side prefilter for the path detector: no unbounded quantifier, so it passes the ReDoS guard
 // (src/safe-regex.js) the engine compiles every pattern through. refine() does the real work.
-export const INSTRUCTION_NAME_PREFILTER = /(?:CLAUDE(?:\.local)?|AGENTS(?:\.override)?|GEMINI)\.md|copilot-instructions\.md|\.instructions\.md|\.cursorrules|\.windsurfrules|\.clinerules|global_rules\.md|\.cursor[\/\\]rules|\.claude[\/\\]rules/i;
+export const INSTRUCTION_NAME_PREFILTER = /(?:CLAUDE(?:\.local)?|AGENTS?(?:\.override)?|GEMINI)\.md|copilot-instructions\.md|\.instructions\.md|\.cursorrules|\.windsurfrules|\.clinerules|global_rules\.md|\.cursor[\/\\]rules|\.claude[\/\\]rules|\.kiro[\/\\]steering/i;
 
 const READERS = String.raw`(?:cat|tac|head|tail|less|more|base64|base32|xxd|od|hexdump|gzip|bzip2|xz|zstd|tar|zip|openssl|gpg|jq|yq|sed|awk|cut|tr|sort|uniq|iconv|type|Get-Content|gc)`;
 

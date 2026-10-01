@@ -101,7 +101,7 @@ test("doctor: Claude Code registration is compared with what the real installer 
     const c = check(r, "host:claude-code");
     assert.equal(c.status, "ok", c.summary);
     assert.equal(r.status, 0, JSON.stringify(r.json.checks.filter((x) => x.status === "fail")));
-    assert.deepEqual(Object.keys(c.details.expected).sort(), ["PostToolUse", "PreToolUse", "UserPromptSubmit"]);
+    assert.deepEqual(Object.keys(c.details.expected).sort(), ["PostToolUse", "PostToolUseFailure", "PreCompact", "PreToolUse", "Stop", "SubagentStop", "UserPromptSubmit"]);
 
     // A pre-upgrade device: PreToolUse on the old four-matcher list, no PostToolUse / UserPromptSubmit.
     const p = join(home, ".claude", "settings.json");

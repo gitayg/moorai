@@ -181,13 +181,19 @@ Client → Server alerts carry **redacted metadata only**: threat id, category, 
 tool used, optional keyed content hash / redacted snippet. **Never raw sensitive content** — otherwise
 MoorAI would itself commit threats #1 / #9 / #33 on every phone-home.
 
-Five further field families are permitted under this rule and are named here so the contract stays
+Further field families are permitted under this rule and are named here so the contract stays
 enumerable rather than implicit: `skillKind` + `skillIntents` (a file kind and closed-vocabulary intent
 labels — §B2 11a), `destination` (`{kind, name, decision}` — a host or MCP server name — §B2 11b),
 `intent` (`{class, unmatched, targets, prompts, semantic, mode}` — a class name, counts and flags — §B3
 11c), `reputation` (`{score, band, reasons}` — a number, a band and category codes, next to the MCP
 server label — §B3 11e) and the mask record (`maskedThreats`, `maskedCount`, `maskedIn` — threat ids, a
-count and `input`/`result` — Intervention tiers, `mask`). All five are names, categories and counts, never content. The invariant is asserted empirically rather than
+count and `input`/`result` — Intervention tiers, `mask`), verdict provenance on every alert (`policyId`,
+`policySource`, `reasonCode`, `basisCode`, `enforcement` — a policy id derived from its signature envelope
+and digest, and enum codes — §C 17d), the session summary (`summary` — counts — §C 17b), the claim check
+(`claimCheck` — a claim-pattern id, an outcome word and counts — §C 17b), the session-risk and
+circuit-breaker signatures (`signature`, `sessionRisk` — rule names, counts, scores, windows — §C 17c), and
+the agent-posture body sent to `POST /api/agent-posture` (host ids, flag names, scope names, a hook-state
+word, an hour-rounded timestamp — §C 17e). All are names, categories and counts, never content. The invariant is asserted empirically rather than
 declared: `test/skill-analysis.test.mjs` and `test/destinations.test.mjs` each plant a unique canary in
 a fixture, capture every byte the hook POSTs plus the on-device ledgers, and fail if the canary, a
 matched span, a verbatim source line, a URL path, a query string or a request header appears in either.
@@ -310,7 +316,14 @@ is validated against.
    | `claude-rule` | `.claude/rules/**.md` (path-scoped rules) | doc |
    | `claude-memory` | `.claude/projects/<p>/memory/*.md` | observed |
    | `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md` | project, nested, user and managed scopes | observed / doc / doc |
-   | `.cursorrules`, `.cursor/rules`, `cursor-mcp`, `.windsurfrules`, `.clinerules`, `copilot-instructions`, `codex-config` | other vendors' equivalents | doc |
+   | `.cursorrules`, `.cursor/rules`, `cursor-mcp`, `.windsurfrules`, `copilot-instructions`, `codex-config` | other vendors' equivalents | doc |
+   | `AGENTS.override.md`, `GEMINI.md` | Codex's override of `AGENTS.md`; Gemini CLI's context file (`~/.gemini/GEMINI.md` and workspace dirs); `AGENTS.md` also matches Amp's `AGENT.md` fallback | doc |
+   | `copilot-path-instructions`, `copilot-prompt`, `copilot-agent` | `.github/instructions/**/*.instructions.md` (recursive) and `~/.copilot/instructions`; `.github/prompts/*.prompt.md`; `.github/agents/*.md` and `~/.copilot/agents` | doc |
+   | `windsurf-rule`, `windsurf-global`, `windsurf-workflow` | `.windsurf/rules`, `.devin/rules` and the system rules folders; `~/.codeium/windsurf/memories/global_rules.md`; `.windsurf/workflows`, `.devin/workflows`, `global_workflows` and the system workflow folders | doc |
+   | `.clinerules`, `cline-rule`, `cline-workflow` | `.clinerules` as a file or a directory; `.cline/rules`, `~/Documents/Cline/Rules`, `~/.cline/rules`, `~/Cline/Rules`; `.clinerules/workflows`, `~/Documents/Cline/Workflows` | doc |
+   | `cursor-command`, `codex-prompt`, `gemini-command`, `opencode-command`, `opencode-agent` | `.cursor/commands/*.md`; `~/.codex/prompts/*.md`; `.gemini/commands/**/*.toml`; `.opencode/commands`, `.opencode/agents` and their `~/.config/opencode` equivalents | doc |
+   | `kiro-steering`, `kiro-spec`, `kiro-hook` | `.kiro/steering/` and `~/.kiro/steering/`; `.kiro/specs/**/*.md`; `.kiro/hooks/*` | doc |
+   | `gemini-settings`, `amp-settings`, `opencode-config` | `.gemini/settings.json` (project, user, system and `system-defaults.json`) — carries `hooks` and `mcpServers`; `.amp/settings.json` and `~/.config/amp/settings.json`; `opencode.json` — names extra instruction files | doc |
    | `cline-mcp`, `windsurf-mcp`, `vscode-mcp`, `continue-mcp`, `amazon-q-mcp`, `kiro-mcp` | other clients' dedicated MCP-config files (`cline_mcp_settings.json`, `.codeium/windsurf/mcp_config.json`, `.vscode/mcp.json`, `.continue/mcpServers/*`, `.aws/amazonq` & `.amazonq/mcp.json`, `.kiro/settings/mcp.json`) | doc |
    | `zed-mcp` | Zed `context_servers` — lives inside `~/.config/zed/settings.json` or project `.zed/settings.json` (a general settings file, anchored to the `zed` dir; no overlap with `.claude/settings.json`) | doc |
 
@@ -471,6 +484,49 @@ is validated against.
     detectors dropped by their `refine` gate or by policy, the decision and the safer alternative; local
     only, engine and policy only. **Limits.** Claude.ai server-managed settings and Windows registry
     policy are not checked; the self-test covers the `Bash` `PreToolUse` branch only.
+17b. **Lifecycle hooks, session ledger and claimed success** — the Claude Code hook also registers
+    `PostToolUseFailure` (`Bash`, `PowerShell`, `mcp__.*`), `Stop`, `SubagentStop` and `PreCompact`
+    (matcher `""`). Visibility only: they never block a stop or a compaction and print nothing the model
+    reads (an unenrolled device shows the user a `systemMessage` at `Stop` when the claim check fires).
+    Every hook run writes one content-free, chain-stamped row to `~/.moorai/session-ledger.jsonl`
+    ([`cli/session-ledger.mjs`](../cli/session-ledger.mjs)), ids hashed under a device-local
+    `session-ledger.key`, trimmed past about 1 MB. At `Stop` the console gets an `Agent session summary`
+    (counts) when they changed. At `Stop` / `SubagentStop`, [`cli/claim-check.mjs`](../cli/claim-check.mjs)
+    compares `last_assistant_message` (read in memory, never stored or sent) with the turn's recorded
+    outcomes and posts `Agent reported success but tool calls failed` (Medium, `CLAIM_MISMATCH`) when the
+    message claims success while tool calls failed, were denied or were interrupted and were not redone.
+    Report-only. **Measured:** 81.8% precision blind; after tuning on half of a 75-case labelled corpus,
+    70.0% precision and 46.7% recall on the held-out half. `PreCompact` records that compaction happened.
+17c. **Session-level escalation and the runaway circuit breaker** —
+    [`data/session-risk.js`](../data/session-risk.js): taint (an injection-class finding on ingested content,
+    then an outbound action or credential-file read within `windowMin` → #59 `Agent behavior: outbound
+    action after untrusted content`), sequences within `seqSteps` (staged credential → outbound; archive →
+    outbound; mass read → an upload of 4 KB or more to a new destination), slow exfiltration (5 or more
+    transfers of up to 8 KB to one destination summing 16 KB or more), and a decaying score with a threshold
+    alert. `policy.sessionRisk.mode` `report` (default) | `ask` | `off`; defaults threshold 12, `windowMin`
+    30, `halfLifeMin` 15, `seqSteps` 10, `massReads` 30. [`data/circuit-breaker.js`](../data/circuit-breaker.js):
+    the same call 15 times in 5 minutes with an unchanged result, or a 2–4 call cycle repeated 5 times
+    unchanged → #38 `Agent behavior: runaway loop`; optional `ratePerMin` / `maxCalls`, off by default (a
+    simulation could not separate a fast sub-agent from a runaway by rate); keyed per session and
+    `agent_id`. `policy.circuitBreaker.mode` `report` (default) | `deny` (pauses the session for
+    `cooldownMin`, default 15) | `off`. Token burn is not measured: no hook input carries usage. State in
+    `~/.moorai` under a device-local `session.key` (0600): keyed hashes and counts only, 32 sessions, 24 h.
+    **Measured** on scripted sessions: test-fix and build-watch loops raised no alert; runaway loops 3/3.
+17d. **Verdict provenance** — [`cli/provenance.mjs`](../cli/provenance.mjs) stamps every alert and ledger
+    row with `policyId` (`pol:<tenant>:<iat>:<digest12>`, `pol:unsigned:<digest12>`, `builtin-defaults`,
+    `offline-fail-closed-default`, `none`, `not-loaded`), `policySource`, `reasonCode` (the branch that
+    decided; enum in the module), `basisCode` when an override decided, and `enforcement`
+    `AS_CONFIGURED` | `STRENGTHENED` | `LIMITED` | `UNEVALUATED`. A control that never ran — bad stdin, a
+    hook error, no policy after an error, break-glass, an unsupported tool, an empty result, a size cap —
+    is `UNEVALUATED`, never a pass.
+17e. **Coverage integrity, agent side** — [`cli/agent-posture.mjs`](../cli/agent-posture.mjs) (read-only,
+    built on `cli/doctor-hosts.mjs`) reports per host — Claude Code, Codex, Gemini, Cursor, Copilot — the
+    hook state, `lastActive` (hour-rounded), and weakened-setting flags: `hooksDisabled`,
+    `mooraiHookDisabled`, `managedHooksOnly`, `bypassPermissionsDefault`, `sessionBypassPermissions`,
+    `approvalNever`, `approvalUnrestricted`, `autoEditDefault`, `sandboxFullAccess`, `sandboxOff`. The hook
+    sends a content-free heartbeat with this posture to `POST /api/agent-posture` at most once per host per
+    UTC day (retried after 10 minutes on failure); enrolled devices only. The desktop app reports each
+    host's last activity hourly (`device_agent_activity`), independent of every hook.
 
 ### D. Central server
 18. **Policy & rule-base distribution** — central allowlist, thresholds, per-threat/per-tier
@@ -484,6 +540,11 @@ is validated against.
     unauthenticated account-enumeration oracle. Protocol in [`src/signup.js`](../src/signup.js);
     the ready claim is handed to the same `enroll()` the paste-a-token path uses, so provisioning
     lives in one place.
+19b. **Coverage integrity, console side** (console v0.70.0) — stores each device's agent posture from
+    `POST /api/agent-posture` and raises three content-free findings: `Coverage: agent active, no MoorAI
+    hook traffic` (a host in use with no heartbeat covering that moment, found by a sweep after a grace
+    period; server-mode workloads excluded), `Coverage: agent setting weakened` (a flag that appears;
+    `sandboxOff`, a host default, only on a transition), and `Coverage: MoorAI hook removed or stale`.
 20. **Security dashboard** — org-wide risk view: alerts by threat / category / risk tier / user,
     trends over time. The dashboard itself is **visibility**; enforcement happens on the client,
     driven by the policy this server distributes.
@@ -566,6 +627,15 @@ before this tier: a tenant can soften any entry to `notify`/`disabled` or harden
 - **Headless agents** (CI, containers, Agent SDK services) are covered by the same hook in server mode
   (above), observed in one live `claude -p` run. **Blind spot:** an Agent SDK service and a CI run have not
   been watched end to end.
+- **Whether MoorAI is in the path at all** is reported per host (17e, 19b): a daily heartbeat with the
+  weakened settings, and the desktop app's hourly activity report independent of every hook. **Blind
+  spots:** a host disabled after the day's heartbeat shows the next day; a device without the desktop app
+  has no hook-independent activity source; the proxy-versus-hook comparison for the same MCP server is not
+  computed (the console stores no MCP server name and the proxy does not know its host).
+- **Across a session** (17b, 17c): the claim check and the session summary need `Stop`, which only Claude
+  Code sends (the other agents' adapters forward no stop event). The claim check, session risk and the
+  circuit breaker are report-only by default, and have been driven through the real hook with scripted
+  input, not watched in a live session.
 - **Blind spot:** AI use on surfaces with no tap at all — native AI desktop apps without an
   integration, other devices, phones — plus anything on a machine where the user never installed
   MoorAI. Adoption remains voluntary, so the security dashboard reflects *opt-in population* risk,

@@ -490,3 +490,40 @@ platforms, and its scope does not cover custom-built AI applications. Options, s
   agent endpoint, not only against MoorAI.
 
 Not started. Pick the first platform from customer demand.
+
+## Shipped from the 2026-10-01 competitive review (v1.1.0)
+
+Capabilities other agent-security products ship that MoorAI could take on without changing its on-device,
+content-free design. Shipped in v1.1.0:
+
+- **Coverage integrity** — `cli/agent-posture.mjs` reports, per host (Claude Code, Codex, Gemini, Cursor,
+  Copilot), whether MoorAI's hook is registered and current, when the host was last used and the settings
+  that weaken protection (`hooksDisabled`, `bypassPermissionsDefault`, `approvalNever`, `sandboxOff`, …).
+  The hook sends it as a daily content-free heartbeat to `POST /api/agent-posture`; the desktop app reports
+  host activity hourly, independent of every hook. Console v0.70.0 raises `Coverage: agent active, no
+  MoorAI hook traffic`, `Coverage: agent setting weakened` and `Coverage: MoorAI hook removed or stale`.
+- **Session escalation** — `data/session-risk.js`: taint from untrusted content to an outbound action
+  (#59), staged-credential, archive and mass-read exfiltration sequences, slow exfiltration, and a decaying
+  session score. `policy.sessionRisk`, report-only by default.
+- **Runaway circuit breaker** — `data/circuit-breaker.js`: the same call 15 times in 5 minutes with an
+  unchanged result, or a 2–4 call cycle repeated 5 times (#38). `policy.circuitBreaker`, report by default,
+  `deny` pauses the session. Token burn is not measured: no hook input carries usage.
+- **Verdict provenance** — `cli/provenance.mjs`: `policyId`, `policySource`, `reasonCode`, `basisCode` and
+  `enforcement` (`AS_CONFIGURED` / `STRENGTHENED` / `LIMITED` / `UNEVALUATED`) on every alert and ledger
+  row; a control that never ran is `UNEVALUATED`, never a pass.
+- **Lifecycle hooks and the claim check** — `PostToolUseFailure`, `Stop`, `SubagentStop` and `PreCompact`,
+  visibility only; a content-free session ledger, an `Agent session summary` at `Stop`, and `Agent reported
+  success but tool calls failed` when the final message claims success over failed calls (held-out
+  precision 70.0%, recall 46.7%; report-only).
+- **Skill surface** — 41 more documented locations across Cursor, Windsurf/Devin, Copilot, Codex, Gemini,
+  Cline, Kiro, Amp and OpenCode: rules, instruction files, settings that carry hooks or MCP servers, and
+  on-demand commands, workflows, prompt files, custom agents and specs.
+
+**Not built: an MCP proxy-versus-hook cross-check** (does the proxy see calls to the same MCP server the
+hook sees, so a server routed around the proxy shows up). The console stores no MCP server name, and the
+proxy does not know which agent host launched it, so there is nothing to join on. It needs both before it
+can be computed.
+
+**Still open from this list:** watch the lifecycle events and the claim check in a live Claude Code session
+(today they are driven through the real hook with scripted input); widen the claim check's held-out set,
+which is 37 cases written by the rules' author.

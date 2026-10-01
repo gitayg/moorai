@@ -32,10 +32,15 @@ That's the exact trade MoorAI refuses.
 - **Transit-override detection (#67)** — the allow-list above asks *where* the agent is sending; this asks *what the traffic passes through on the way*. Setting `HTTPS_PROXY` plus a CA override (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, …) on an agent leaves the destination untouched — so the endpoint allow-list still passes it — while every request transits an interceptor that reads the prompt, the generated code and the API key in cleartext. Measured, not theorised: with those two variables set, a real Claude Code session decrypted at the proxy with the client reporting the TLS as **authorized**, because the injected CA makes the forged chain legitimately trusted. It needs no privileges. MoorAI reports any proxy or CA override and denies an unsanctioned proxy when `policy.transitAllow` is set — proxy **host** and variable **name** only, never the CA path or its contents. Report-first by default, because a corporate egress proxy is legitimate; loopback is deliberately *not* auto-approved, since a loopback proxy is what an on-device interceptor looks like.
 - **Slopsquatting firewall** — an offline typosquat / hallucinated-package classifier (Damerau-Levenshtein against a curated popular-package list + a known-bad set) gates `npm/pip/cargo install` of near-miss names (`reqeusts`, `lodahs`) and documented hallucinations, checked entirely on-device (name only).
 - **MCP hardening** — an approval-gating lifecycle for MCP servers, **rug-pull detection** (a server whose config changes after approval is knocked back to pending), an **invisible-payload scanner** (Unicode tag-block / ANSI escapes / bidi-override / variation-selector smuggling) that catches instructions hidden from human review, and a tool-description check that reports a tool telling the model to read a credential file (`~/.ssh/id_rsa`, `~/.aws/credentials`, `.env`, a browser or keychain store) and pass its contents into a call.
-- **Skill Analysis** — an inventory + *intent* view of the whole **skill surface** an agent auto-loads, not just its rules file: `SKILL.md` and `.claude/skills/**`, subagent definitions (`.claude/agents/*.md`), slash commands (`.claude/commands/**`), MCP server configs (`.mcp.json`, `~/.claude.json`, `managed-mcp.json`, `claude_desktop_config.json`), the settings files that can carry **hooks** (`.claude/settings.json`, `settings.local.json`, `managed-settings.json`), plugin manifests and their hook/monitor declarations, path-scoped rules and memory files, plus the other vendors' equivalents (`.cursorrules`, `.windsurfrules`, `.clinerules`, copilot-instructions). Every file gets its **kind**, a set of **intent category labels** — *hidden-instructions*, *instruction-override*, *external-network-egress*, *security-control-or-privilege-change*, *references-credentials*, *invisible-characters*, … — and a **drift fingerprint** per file. The labels are renames of findings the existing detection engine already produced; **no text, matched span, or excerpt is ever attached**, so a poisoned skill can be triaged without reading it off the device.
+- **Skill Analysis** — an inventory + *intent* view of the whole **skill surface** an agent auto-loads, not just its rules file: `SKILL.md` and `.claude/skills/**`, subagent definitions (`.claude/agents/*.md`), slash commands (`.claude/commands/**`), MCP server configs (`.mcp.json`, `~/.claude.json`, `managed-mcp.json`, `claude_desktop_config.json`), the settings files that can carry **hooks** (`.claude/settings.json`, `settings.local.json`, `managed-settings.json`), plugin manifests and their hook/monitor declarations, path-scoped rules and memory files, plus the other vendors' equivalents: rules and instruction files (`.cursorrules`, `.windsurfrules`, Windsurf and Cline rule folders, Copilot `.github/instructions`, Codex `AGENTS.override.md`, `GEMINI.md`, Amp `AGENT.md`, Kiro steering), the settings files that carry hooks or MCP servers (`.gemini/settings.json`, `.amp/settings.json`, `opencode.json`, Kiro hooks), and the commands, workflows, prompt files, custom agents and specs an agent injects when invoked (Cursor, Windsurf, Cline, Copilot, Codex, Gemini, OpenCode, Kiro). Every file gets its **kind**, a set of **intent category labels** — *hidden-instructions*, *instruction-override*, *external-network-egress*, *security-control-or-privilege-change*, *references-credentials*, *invisible-characters*, … — and a **drift fingerprint** per file. The labels are renames of findings the existing detection engine already produced; **no text, matched span, or excerpt is ever attached**, so a poisoned skill can be triaged without reading it off the device.
 - **Per-agent destination map** — the observed counterpart to your allow-lists: for each agent/tool, *which external destinations it actually reached*. **Hosts** (never a URL path or query string — they are not captured in the first place) and **MCP server names**, with call counts, first/last-seen, and the allow/ask/deny verdict each call actually got. Kept in an on-device ledger; the console gets one content-free alert the first time an agent touches a new destination, over the existing alert path. View it with `moorai-destinations`.
 - **Agent entitlement envelope** — declare each agent's authorized tools / path-prefixes / MCP servers; an action outside the envelope is flagged as **entitlement drift** and alerted or blocked — least-privilege for coding agents, content-free.
 - **Intent alignment** — flags a risky agent action aimed at something the user's own request never mentioned: an upload to a host the prompt never named, a destructive command or credential read on paths it never named, an MCP write to a service it never named. The `UserPromptSubmit` hook keeps only keyed, device-local hashes of the sites, paths, service names and three labels (*credentials*, *destructive*, *mcp-write*) a prompt mentions — never the prompt. Report-only by default (`policy.intentAlignment: "ask"` raises the call to ask, `"off"` disables it). Lexical; the prompt is captured in Claude Code, Codex, Cursor, Gemini and Copilot — limits below.
+- **Session-level escalation** — what one call cannot show, the session can. An injection-class finding on content the agent ingested (a fetched page, a command's output, an MCP result, a file it read) taints the session for 30 minutes, and an outbound action or credential-file read inside that window raises `Agent behavior: outbound action after untrusted content` (#59). Also across calls: a credential read that was staged (copied, written, encoded or archived) and then sent out; an archive then sent out; a mass read (30 distinct files) then an upload of 4 KB or more to a destination new to the session; and slow exfiltration (5 or more transfers of up to 8 KB each to one destination, summing 16 KB or more). A decaying per-session score posts one alert when it crosses its threshold. Report-only by default (`policy.sessionRisk.mode: "ask"` raises the outbound call to ask, `"off"` disables it). The state on disk is keyed hashes and counts only.
+- **Runaway circuit breaker** — an agent stuck in a loop: the same call 15 times in 5 minutes with an unchanged result, or a 2–4 call cycle repeated 5 times with unchanged results, raises `Agent behavior: runaway loop` (#38). A result that changes is progress, so `npm test` re-run while the agent fixes the code never trips it. Report-only by default; `policy.circuitBreaker.mode: "deny"` pauses the session's tool calls for 15 minutes. Token spend is not measured: no hook event carries usage.
+- **Claimed success vs reality** — at the end of a turn, when the agent's final message says the work succeeded while the turn's commands or MCP calls failed, were denied or were interrupted and were not redone, MoorAI reports `Agent reported success but tool calls failed` (Medium). The message is read in memory, never stored or sent. Report-only, and tuned for precision: 70.0% precision and 46.7% recall on a held-out labelled set.
+- **Verdict provenance** — every alert and every on-device ledger row says which policy decided (`policyId`), which branch decided (`reasonCode`), and whether the verdict was enforced as configured (`AS_CONFIGURED`, `STRENGTHENED`, `LIMITED`, or `UNEVALUATED`). A control that never ran — unreadable input, a hook error, a size cap, break-glass — is recorded as `UNEVALUATED`, never as a pass.
+- **Coverage integrity** — the hook sends a content-free daily heartbeat per agent host with the settings that weaken or switch off protection (hooks disabled, `bypassPermissions`, Codex `approval_policy = "never"`, a sandbox off, …), and the desktop app reports when each agent host was last used, independent of every hook. The console raises a finding for an agent in use with no MoorAI hook traffic, a weakened setting, and a hook removed or gone stale.
 - **Protected-instruction leak detection (#52)** — reports the rules files an agent runs under (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, Copilot, Cursor, Windsurf and Cline rules) leaving the device through the agent: reproduced in what it writes or sends, or uploaded by path (`curl -d "$(cat CLAUDE.md)"`, `gh gist create AGENTS.md`). The files are fingerprinted on-device as keyed hashes of 7-word shingles; no text is stored. Editing the rules file itself, quoting a line or two, and template boilerplate stay silent.
 - **MCP server reputation** — scores an MCP server 0-100 the first time it is seen (bands good / fair / poor / bad) from its package name, its launch command and the copy npx already installed, plus, opt-in, a registry lookup (which also checks that the package's declared repository is really its own, from registry provenance or the repository's own manifest) and SkillTriage's published verdicts. A content-free alert carries the score, band and reason codes; `mcpReputation.blockBelow` refuses a low-scoring server. Details in [`mcp-proxy/README.md`](mcp-proxy/README.md).
 - **Local secret-egress detection** — fingerprints your local secret values (`.env`, cloud creds) on-device as keyed one-way hashes and blocks an outbound command or tool-call that carries one verbatim — catching a real secret leaving even when it isn't in a recognizable token shape. Only the hash + a verdict leave.
@@ -120,7 +125,7 @@ npm run guard -- "here is my key sk-ant-api03-... please debug the charge"
 ### Wire the context-interception hooks into Claude Code
 
 ```bash
-node cli/moorai-hook.mjs install     # registers PreToolUse + PostToolUse + UserPromptSubmit hooks in ~/.claude/settings.json
+node cli/moorai-hook.mjs install     # registers PreToolUse, PostToolUse, UserPromptSubmit, PostToolUseFailure, Stop, SubagentStop and PreCompact hooks in ~/.claude/settings.json
 node cli/moorai-hook.mjs uninstall   # removes only MoorAI's entries
 ```
 
@@ -360,6 +365,66 @@ hook's environment, so a repository's `.claude/settings.json` could otherwise su
 value that a user, project or local settings file sets for one of those is ignored and reported to the console
 (names only); a managed settings value, the launching environment and the root-owned anchor files are trusted.
 
+### Across the session — lifecycle hooks, session risk, runaway loops
+
+Besides `PreToolUse`, `PostToolUse` and `UserPromptSubmit`, the hook registers `PostToolUseFailure`
+(matchers `Bash`, `PowerShell`, `mcp__.*`), `Stop`, `SubagentStop` and `PreCompact` (matcher `""`). These four
+are for visibility only: they never block a stop or a compaction and print nothing the model reads. On an
+unenrolled device the claim check below shows the user a `systemMessage` at `Stop`, and nothing else.
+
+- **Session ledger.** Every hook run writes one content-free, chain-stamped row to
+  `~/.moorai/session-ledger.jsonl`: the event, the tool, a command class (*verify*, *probe*, *effect*,
+  *other*), the call's outcome, the verdict and its provenance. Session, agent, command and tool-use ids are
+  hashes under a device-local key (`session-ledger.key`). The file is trimmed past about 1 MB.
+- **Session summary.** At `Stop`, when the counts changed since the last one, the console gets a content-free
+  `Agent session summary`: prompts, calls, allow / ask / deny, findings, failed and interrupted outcomes,
+  unevaluated, limited and strengthened verdicts, compactions, sub-agent stops and claim mismatches.
+- **Claimed success vs reality.** At `Stop` and `SubagentStop`, the agent's final message
+  (`last_assistant_message`, read in memory, never stored or sent) is compared with the outcomes the ledger
+  holds for the same turn, or the same sub-agent. A message that claims success without a caveat, while a
+  test, build or deploy command, an MCP call or a denied edit failed and was not redone successfully, posts
+  `Agent reported success but tool calls failed` (Medium, reason `CLAIM_MISMATCH`). A message that
+  acknowledges any problem is never a claim, and a probe whose exit 1 is its answer (`grep`, `test`, `diff`)
+  is never a failure. Measured on a 75-case hand-labelled corpus: 81.8% precision blind, before any tuning;
+  after tuning on one half, 70.0% precision and 46.7% recall on the held-out half. Report-only.
+- **Compaction.** `PreCompact` records that a compaction happened, manual or auto.
+- **Session risk and the circuit breaker** (*What it does*, above) keep their state in
+  `~/.moorai/session-risk.json` and `circuit-breaker.json`, hashed under a device-local `session.key` (mode
+  0600): keyed hashes, counts and timestamps for at most 32 sessions, for 24 hours. Defaults: threshold 12,
+  window 30 min, score half-life 15 min, sequences within 10 calls, a mass read at 30 files. The circuit
+  breaker keys each session and sub-agent separately, so parallel sub-agents do not add up into one loop.
+  On scripted sessions it raised no alert on test-fix or build-watch loops and caught 3 of 3 runaway loops.
+  Call-rate and call-budget trips (`ratePerMin`, `maxCalls`) are off unless an org sets them: in a
+  simulation, a fast sub-agent's parallel calls could not be told from a runaway loop by rate. An unenrolled
+  device coaches instead of asking or pausing.
+
+The agent runs as the same user, so it can read the device-local keys and edit or delete these state files,
+as with every other file under `~/.moorai`.
+
+**Verdict provenance.** Every alert and ledger row carries `policyId` — `pol:<tenant>:<issued-at>:<digest>`
+for a signed policy, `pol:unsigned:<digest>`, `builtin-defaults`, `offline-fail-closed-default`, `none`,
+or `not-loaded` when the hook stopped before loading one — with `policySource`, a `reasonCode` naming the
+branch that decided (`NO_MATCH`, `DETECTOR_MATCH`, `MCP_SERVER_NOT_ALLOWED`, `MASK_FALLBACK`,
+`COACH_UNENROLLED`, …), a `basisCode` when an override decided over another branch, and an `enforcement`
+value: `AS_CONFIGURED`; `STRENGTHENED` (stricter than configured: a fail-closed default or floor);
+`LIMITED` (weaker: coached, a mask that fell back, a `PostToolUse` result that can only be flagged); or
+`UNEVALUATED`. A control that never ran is `UNEVALUATED`, never a pass: unreadable input, a hook error, no
+policy after an error, break-glass, a tool the hook does not judge, an empty result, or an allow over a
+size-capped prefix. The codes are listed in [`docs/DETECTION_ENGINE.md`](docs/DETECTION_ENGINE.md) §5.
+
+**Coverage integrity.** Hooks post only on findings, so a console cannot tell "nothing happened" from
+"MoorAI was not in the path". The hook sends a content-free heartbeat to the console at most once per agent
+host per UTC day (and on the day's first `bypassPermissions` session), retried after 10 minutes on failure,
+carrying [`cli/agent-posture.mjs`](cli/agent-posture.mjs)'s posture for Claude Code, Codex, Gemini, Cursor
+and Copilot: whether MoorAI's hook is registered and current (as `moorai-doctor` judges it), when the host
+was last used (rounded to the hour), and the settings that weaken protection — `hooksDisabled`,
+`mooraiHookDisabled`, `managedHooksOnly`, `bypassPermissionsDefault`, `sessionBypassPermissions`,
+`approvalNever`, `approvalUnrestricted`, `autoEditDefault`, `sandboxFullAccess`, `sandboxOff`, each with
+its scope. The desktop app reports each host's last activity hourly on its own, so agent use shows even when
+every hook is switched off. The console (v0.70.0) raises `Coverage: agent active, no MoorAI hook traffic`,
+`Coverage: agent setting weakened` and `Coverage: MoorAI hook removed or stale`. Only enrolled devices send. Never a path, a value outside the listed flags, a project
+name or a session id.
+
 ### Skill Analysis — what is your agent actually being told to do?
 
 No separate command: the analysis runs inside the same PreToolUse hooks. Whenever the agent loads a
@@ -525,9 +590,9 @@ decision. (Or set `otlpEndpoint` / `otlpHeaders` in the device config.)
 | | |
 |---|---|
 | **Agents** | Claude Code (full hook enforcement) · **Codex CLI, GitHub Copilot CLI, Gemini CLI and Cursor: pre-tool hook enforcement** through `cli/moorai-agent-hook.mjs` (see *Other agents* below) · Claude Desktop · VS Code / Copilot · any project `.mcp.json` consumer (MCP stdio proxy — **enforcement, host-independently**, but only over MCP; see the bound below) |
-| **Surfaces** | prompts · AI outputs · files read into context · **files the agent writes or edits** · MCP tool calls · **MCP tool listings and tool results** · **outbound `WebFetch` requests** · **what comes back from `Bash`, `PowerShell`, MCP tools and sub-agents (Claude Code)** · pasted images (on-device OCR) · the agent's auto-loaded context files (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`, …) · the agent's auto-loaded skill surface (skills, subagents, commands, MCP configs, hook-bearing settings) |
+| **Surfaces** | prompts · AI outputs · files read into context · **files the agent writes or edits** · MCP tool calls · **MCP tool listings and tool results** · **outbound `WebFetch` requests** · **what comes back from `Bash`, `PowerShell`, MCP tools and sub-agents (Claude Code)** · pasted images (on-device OCR) · the agent's auto-loaded context files (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`, …) · the agent's auto-loaded skill surface (skills, subagents, commands, MCP configs, hook-bearing settings) · **the session as a whole: failed tool calls, the agent's end-of-turn claim, compactions (Claude Code)** |
 | **Platforms** | macOS · Windows · Linux (on-device OCR is a second-class tier — see below) |
-| **Detects** | secrets · PII / PHI · source-code leakage · prompt injection · destructive commands · second-order/hidden-instruction injection · skill-surface poisoning & drift · the agent's rules files leaving the device · risky actions outside the user's stated task · low-reputation MCP servers · MCP tool descriptions that ask for a credential file |
+| **Detects** | secrets · PII / PHI · source-code leakage · prompt injection · destructive commands · second-order/hidden-instruction injection · skill-surface poisoning & drift · the agent's rules files leaving the device · risky actions outside the user's stated task · low-reputation MCP servers · MCP tool descriptions that ask for a credential file · outbound actions after untrusted content, multi-step and slow exfiltration · runaway loops · success claims over failed tool calls · agents running without MoorAI's hook or with weakened settings |
 
 **The bound on host-independent enforcement, stated plainly.** The MCP proxy enforces on any host that
 launches a stdio MCP server, in both directions — but MCP is one wire. Measured against a 12-action

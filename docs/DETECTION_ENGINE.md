@@ -1,6 +1,6 @@
 # MoorAI — Detection Engine
 
-**Describes:** the engine as shipped in **v1.0.0**. Companion to
+**Describes:** the engine as shipped in **v1.1.0**. Companion to
 [CAPABILITY_SPEC.md](CAPABILITY_SPEC.md) (v0.6) and [BENCHMARK.md](BENCHMARK.md).
 
 This file was a v0.1 design document for a system that was designed and then not built that way. It
@@ -122,6 +122,14 @@ auto-loaded context files the `index` worker screens all resolve against the age
 from the hook payload's `cwd` (`agentPath` in `cli/moorai-hook.mjs`). Without a `cwd` they fall back to
 the hook process's own directory. Absolute paths are unchanged. The path reported in an alert is still
 the one the agent wrote.
+
+**What the `index` worker screens.** `INDEX_SURFACE` in `cli/moorai-hook.mjs`, every 15 minutes at most,
+re-scanning only files whose keyed fingerprint changed: in the project, `CLAUDE.md`, `CLAUDE.local.md`,
+`AGENTS.md`, `AGENTS.override.md`, `GEMINI.md`, `.github/copilot-instructions.md`, `.gemini/settings.json`,
+`.cursorrules`, `.mcp.json`, `.claude/settings.json`, `.claude/settings.local.json`; in the home directory,
+`.claude/CLAUDE.md`, `.claude/settings.json`, `.gemini/GEMINI.md`, `.gemini/settings.json`. A path must also
+be on `data/skill-surface.js`. At most 16 paths are considered per run (`INDEX_MAX_FILES`), which covers the
+whole list; a test keeps the cap at least as large as the list.
 
 ### Reachability is a property worth stating, not assuming
 
@@ -513,6 +521,47 @@ checks the headless answer; it is skipped when the system file binds the console
 child would post to it. The desktop app, AIBOM, the shadow-AI inventory and OS posture do not apply on a
 server. Examples: [`examples/server/`](../examples/server/README.md). Limits are in §13.
 
+### Verdict provenance — which policy, which branch, enforced or not
+
+[`cli/provenance.mjs`](../cli/provenance.mjs) stamps every alert the hook posts (`stampAlert`, in `post()`)
+and every row it writes to the session ledger (§6, *Lifecycle events*) with three content-free fields, so a
+reviewer can tell "allowed because nothing matched" from "allowed because the control never ran", and "blocked
+by the org's rule" from "blocked by a fail-closed floor nobody configured".
+
+- **`policyId`** — the policy that decided. A signed policy is `pol:<tenant>:<iat>:<digest12>` (tenant and
+  issue time from its signature envelope, the first 12 hex characters of `policyDigest`); an unsigned one is
+  `pol:unsigned:<digest12>`. The two built-in policies are `builtin-defaults` (`NO_POLICY_BASELINE`) and
+  `offline-fail-closed-default` (`OFFLINE_DEFAULT_POLICY`). `none` means no policy; `not-loaded` means the
+  hook stopped before loading one (unreadable stdin, the lifecycle events that need no policy).
+  `policySource` says where it came from (the loader's source, `builtin` or `offline-default`).
+- **`reasonCode`** — the branch that produced the verdict, not the threat (the threat is already in
+  `threatId` / `category`): `NO_MATCH`, `DETECTOR_MATCH`, `CONTENT_RULE`, `MCP_SERVER_NOT_ALLOWED`,
+  `MCP_ARG_RULE`, `MCP_REPUTATION`, `MCP_FLOOR`, `ENVELOPE`, `JIT_ELEVATION`, `ENDPOINT_NOT_ALLOWED`,
+  `SECRET_EGRESS`, `INTENT_MISMATCH`, `DELETION_VOLUME`, `SUBAGENT_POLICY`, `SESSION_KILL`, `HEADLESS_ASK`,
+  `MASK_APPLIED`, `MASK_FALLBACK`, `COACH_UNENROLLED`, `BREAK_GLASS`, `POSTURE_FAIL_CLOSED`, `POLICY_OFFLINE`,
+  `POLICY_TAMPER`, `BEHAVIOR_SIGNAL`, `HONEYTOKEN`, `SKILL_FILE`, `MODEL_ESCALATION`, `DESTINATION`,
+  `LITERACY`, `SESSION_SUMMARY`, `CLAIM_MISMATCH`, `OBSERVATION_ONLY`, and the seven
+  `UNEVALUATED_*` codes: `NO_POLICY`, `HOOK_ERROR`, `BAD_INPUT`, `UNSUPPORTED_TOOL`, `EMPTY_RESULT`,
+  `SIZE_CAP`, `EARLY_EXIT`. For an alert the code is looked up from the category the posting branch set
+  (`reasonCodeOf`; categories are fixed strings at each post site); for the ledger row, `main()` records it
+  with `why()` as each branch decides. Adding a code is safe; renaming one breaks console filters.
+- **`basisCode`** — present when an override decided over another branch: a coached verdict keeps the
+  branch that would have decided (`reasonCode` `COACH_UNENROLLED`, `basisCode` `DETECTOR_MATCH`), and so do
+  a mask fallback and an allow over a capped prefix.
+- **`enforcement`** — `AS_CONFIGURED`; `STRENGTHENED`, stricter than the org configured (the fail-closed
+  default policy, the MCP `ask` floor); `LIMITED`, weaker than configured (an unenrolled device's coaching,
+  a `mask` that fell back, a `PostToolUse` ask or block, which only adds a message); or `UNEVALUATED`, the control
+  did not run.
+
+**A control that never ran is `UNEVALUATED`, never a pass.** Every exit through `exitHook()` that no
+branch settled is recorded as `UNEVALUATED`: unparsable stdin (`UNEVALUATED_BAD_INPUT`, `policyId`
+`not-loaded`), a thrown hook error (`UNEVALUATED_HOOK_ERROR`, recorded before the error propagates
+exactly as before), an error with no policy (`UNEVALUATED_NO_POLICY`), an active break-glass marker
+(`BREAK_GLASS`), a tool the hook does not judge (`UNEVALUATED_UNSUPPORTED_TOOL`), a `PostToolUse` with an
+empty result (`UNEVALUATED_EMPTY_RESULT`), and an allow over a size-capped prefix
+(`UNEVALUATED_SIZE_CAP`, with any notify finding in the prefix kept as `basisCode`). The fields are
+metadata: a stamping error is swallowed and never affects delivery or the decision.
+
 ---
 
 ## 6. The two hook surfaces
@@ -682,11 +731,16 @@ an unenrolled device. They live in `data/detectors-instruction-leak.js`.
 **The files.** `data/instruction-files.js` lists them, each name checked against the vendor's own
 documentation: `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/**`, `~/.claude/rules/`
 and Claude Code's managed-policy `CLAUDE.md`; `AGENTS.md` and `AGENTS.override.md` (Codex home and
-project); `GEMINI.md`; `.github/copilot-instructions.md` and `.github/instructions/*.instructions.md`;
+project) and Amp's `AGENT.md` fallback; `GEMINI.md`; `.github/copilot-instructions.md`,
+`.github/instructions/**/*.instructions.md` (searched recursively) and `~/.copilot/instructions`;
 `.cursor/rules/*.mdc` and `.cursorrules`; Windsurf (`.windsurfrules`, `.windsurf/rules`, `.devin/rules`,
-`global_rules.md`) and Cline (`.clinerules`, `.cline/rules`, `~/Documents/Cline/Rules`). The hook
+the system rules folders, `global_rules.md`); Cline (`.clinerules`, `.cline/rules`,
+`~/Documents/Cline/Rules`); and Kiro steering (`.kiro/steering/`, `~/.kiro/steering/`). The hook
 discovers the ones that exist from the payload `cwd` upward, plus the user and managed scopes
-(`cli/instruction-fingerprints.mjs`).
+(`cli/instruction-fingerprints.mjs`). On-demand prompt files — Cursor, OpenCode and Gemini commands,
+Windsurf and Cline workflows, Copilot `*.prompt.md`, Codex prompts, which load only when invoked — and Kiro
+specs are not on this list: they are scanned as skill surface (`data/skill-surface.js`), but they are not
+the instructions the agent runs under.
 
 **The fingerprint is content-free.** Each file is normalised (NFKC, lower-cased, markdown and punctuation
 dropped, JSON and `%` escapes undone), cut into 7-word shingles, and every shingle with fewer than three
@@ -825,6 +879,84 @@ scanner use. The deletion counter still runs, but `SESSION` is the sentinel for 
 sessions share one counter. That is the same limit as the trifecta and clipboard alerts. The time window
 still bounds it.
 
+### Across the session: session risk and the runaway circuit breaker
+
+Two more per-session signals, both pure modules with their state and keyed hashing in
+[`cli/session-state.mjs`](../cli/session-state.mjs). Unlike the stores above they hash with their own
+device key, `~/.moorai/session.key` (32 random bytes, mode 0600), keyed on the raw `session_id`, so an
+unenrolled device keeps sessions apart. `session-risk.json` and `circuit-breaker.json` (mode 0600, atomic
+writes) hold keyed hashes, flags, counts and timestamps for at most 32 sessions (least recently active
+evicted), each dropped after 24 hours idle. Never a command, a path, a host, an argument or a byte of
+output. A missing, oversized (over 1 MB) or unparsable file reads as empty, and every step catches its own
+errors; parallel hook calls can lose one another's update, which costs one observation.
+
+**Session risk** ([`data/session-risk.js`](../data/session-risk.js)). `classifyEvent` reduces each call to
+classes: taint (an injection-class finding — threats 2, 3, 40, 50, 60, 70, 72, 74 — on ingested content: a
+`PostToolUse` result, or a `Read` / `Bash` file read at the `file` stage), a credential file named by the
+call itself (#55 plus a credential path in the call, or an environment dump), a secret value (#39), writes,
+encode, archive, outbound (an upload, a request carrying data in its body or URL, `gh gist create`, a
+`git push` to a URL, an MCP call whose name writes), the destination hosts and a byte estimate. The hook runs
+`sessionRiskStep` after every scan, on `PreToolUse` and `PostToolUse`. Four signals:
+
+- **Taint.** An injection-class finding on ingested content taints the session for `windowMin`. An outbound
+  action, or a credential-file read, inside the window posts `Agent behavior: outbound action after untrusted
+  content` (#59, High) with the taint threat ids, the action class and the minutes since the taint.
+- **Sequences**, each within `seqSteps` calls and `windowMin`: a credential read that was staged (the step
+  wrote a file, or an encode or archive step follows) and then an outbound call (`cred-out`); an archive
+  then outbound (`archive-out`); `massReads` distinct files read, then a non-MCP upload of 4 KB or more to a
+  destination new to the session (`mass-read-out`). Posts `Agent behavior: exfiltration sequence` (#59,
+  High). A bare credential read followed by an upload is not a sequence: that is how a developer tests an API
+  with the key in `.env`, and the per-call secret-egress check (#65) judges a value that is actually sent.
+- **Slow exfiltration.** Transfers of at most 8 KB each (`slowChunkMax`) to one destination inside the
+  window: 5 or more (`slowMinCalls`) summing 16 KB or more (`slowMinBytes`) post `Agent behavior: slow
+  exfiltration` (#59, High).
+- **Score.** Two parts, each decaying with `halfLifeMin`. Weak signals (weighted findings, and each outbound
+  call: 2 to a new destination, 1 otherwise) can raise it to half the threshold and no further, so a session
+  that only reads flagged content (a security repository, a page about prompt injection) never crosses it.
+  Strong signals supply the rest (a taint hit 4, a sequence or slow exfiltration 6). Crossing `threshold`
+  posts `Agent behavior: session risk threshold` (Medium) once. Every alert this module posts carries
+  `sessionRisk` = `{ score, threshold, mode }`.
+
+Each alert kind posts once per session. `policy.sessionRisk = { mode: "report" | "ask" | "off", threshold,
+windowMin, halfLifeMin, seqSteps, massReads, slowMinCalls, slowMinBytes, slowChunkMax, maxSessions }`;
+defaults `report`, 12, 30, 15, 10, 30, 5, 16384, 8192, 32. `report` changes no decision. `ask` raises the
+`PreToolUse` call that completes a taint, sequence or slow-exfiltration signal from allow to ask, and, while
+the score is over the threshold, an outbound or credential call; the reason starts "session risk —" and the
+`reasonCode` is `BEHAVIOR_SIGNAL`. A deny is never touched. An unenrolled device coaches.
+
+**Runaway circuit breaker** ([`data/circuit-breaker.js`](../data/circuit-breaker.js)). The hook hashes each
+`PreToolUse` call's tool and arguments (`circuitStep`) and, on `PostToolUse` and `PostToolUseFailure`, its
+result (`circuitOutcome`; a failure records `F`), keyed per session and `agent_id`, so parallel sub-agents do
+not add up into one another's loop. The last 64 calls are kept. Trips:
+
+- **repeat** — the same call `repeat` (15) times inside `repeatWindowSec` (300) with no change in its
+  result. A failure, and a result that never reached the hook, count as no change; a changing result resets
+  the run, so `npm test` re-run while the agent fixes the code never trips.
+- **cycle** — the last `cycleK` (5) repetitions of a 2-, 3- or 4-call pattern, inside `cycleWindowSec` (900),
+  with no position's result changing: an edit flipped back and forth, two failing commands alternated.
+- **rate** — `ratePerMin` calls in one minute; **budget** — `maxCalls` calls in the session. Both default
+  to 0 (off). Under a modelled timing, a fast sub-agent's parallel calls (about 150 per minute) could not be
+  told from a runaway loop (about 155 per minute) by rate, so neither is on unless an org sets it.
+
+Each trip kind posts once per session: threat 38, category `Agent behavior: runaway loop` (`Agent behavior:
+runaway call rate`, `Agent behavior: session call budget reached`), stage `behavior`, risk Medium (Blocked
+in deny mode), `signature` = the trip's counts and window. `policy.circuitBreaker = { mode: "report" |
+"deny" | "off", repeat, repeatWindowSec, cycleK, cycleWindowSec, ratePerMin, maxCalls, cooldownMin,
+maxSessions }`. In `deny`, the tripping call and every later call in that session and agent are denied for
+`cooldownMin` (default 15; 0 = the rest of the session) with the reason "runaway-agent circuit breaker: …",
+then the history restarts. An unenrolled device coaches and never denies.
+
+Token burn is not measured. The module's header records why: "no hook event Claude Code sends to
+PreToolUse or PostToolUse carries token usage or cost (code.claude.com/docs/en/hooks, common input fields),
+so there is nothing to measure."
+
+**Measured**, on scripted sessions replayed through the real hook (about 200 `PreToolUse` calls each), in
+report mode: the test-fix and build-watch sessions raised no alert from either module, and the circuit
+breaker caught 3 of 3 runaway loops (same failing call, flip-flop, 3-call cycle). Session risk caught 5 of 7
+staged exfiltration chains, 2 of 2 slow-exfiltration sessions, and 23 of 87 and 32 of 87 sequences in two
+taint-then-exfiltrate sets; 11 benign sessions raised 5 session-risk alerts in total, 4 of them the taint
+alert. Limits are in §13.
+
 ### `PostToolUse` — cannot un-run a tool
 
 Seven matchers: `WebFetch` · `WebSearch` · `Bash` · `PowerShell` · `Agent` · `Task` · `mcp__.*`. Each returns text a third
@@ -874,6 +1006,86 @@ Routing is by event first (`input.hook_event_name === "PostToolUse"`), because a
 carries `tool_name: "WebFetch"` exactly as the `PreToolUse` one does. Without that check the inbound
 payload would fall into the outbound branch and be doubly wrong — scanning `tool_input` (the url, not
 the page) and answering in a schema this event rejects.
+
+### Lifecycle events — `PostToolUseFailure`, `Stop`, `SubagentStop`, `PreCompact`
+
+`REGISTERED_EVENTS` also holds `PostToolUseFailure` (matchers `Bash`, `PowerShell`, `mcp__.*`), `Stop`,
+`SubagentStop` and `PreCompact` (matcher `""` each); the plugin's `hooks/hooks.json` declares the same.
+Visibility only: none of them ever blocks a stop or a compaction, and none prints to a channel the model
+reads. On `Stop` and `SubagentStop`, `decision: "block"` and `hookSpecificOutput.additionalContext` both
+continue the conversation with text Claude receives, so neither is ever emitted; an unenrolled device shows
+the user a `systemMessage` at `Stop` when the claim check fires, and nothing else, never on `SubagentStop`.
+`PostToolUseFailure` exists because, per the hooks reference, `PostToolUse` "Runs immediately after a tool
+completes successfully": without it a failed command leaves no outcome at all. `PostToolUseFailure` and
+`PreCompact` are recorded before the policy load.
+
+**The session ledger** ([`cli/session-ledger.mjs`](../cli/session-ledger.mjs)). Every hook run writes one
+row to `~/.moorai/session-ledger.jsonl`: event (`pre`, `post`, `fail`, `prompt`, `stop`, `substop`,
+`compact`), tool, decision, findings count and the provenance fields (§5). Session id, `agent_id`,
+`tool_use_id` and the command are HMAC'd with a device-local key, `session-ledger.key` (mode 0600; not the
+tenant key, because an unenrolled device would hash every session to one sentinel), truncated to 16 hex
+characters. A shell command is also reduced to a class token — `verify` (test, build, lint, typecheck
+runners), `effect` (push, deploy, publish, commit, merge, tag), `probe` (judged on the last pipeline
+segment: `grep`, `test`, `diff`, `ls`, …) or `other` — and, for a verify command, a keyed hash of its
+runner family, so a failed `go test` is resolved only by a later passing `go test`. A `post` row carries
+the call's outcome (`ok`; `interrupted`; `error`, from `isError` or a non-zero exit code); a `fail` row reads
+only the documented `Exit code N` first line and the timeout marker of `error`, which the reference calls
+display text. Rows are chain-stamped (`stampRecord`); past about 1 MB the file is trimmed to its newest
+2,000 rows, and a reader parses at most the trailing 4,000. Best-effort: a write error never affects a
+decision.
+
+**Session summary.** At `Stop`, when the counts differ from the last `Stop` row's, the hook posts `Agent
+session summary` (Info, stage `lifecycle`, reason `SESSION_SUMMARY`) with `summary` = `{ prompts, calls,
+allow, ask, deny, findings, outcomes, failed, interrupted, unevaluated, limited, strengthened, compactions,
+subagentStops, claimMismatches }`.
+
+**Claimed success vs reality** ([`cli/claim-check.mjs`](../cli/claim-check.mjs)). Stop and SubagentStop
+carry `last_assistant_message`, which "contains the text content of Claude's final response, so hooks can
+access it without parsing the transcript file". The transcript is never read. The message is judged in
+memory and never stored or sent; only the id of the claim pattern that matched leaves the module. Scope: for
+`Stop`, the main agent's rows since the user's last prompt; for `SubagentStop`, that sub-agent's rows. A
+*claim* is one of a fixed set of success phrasings (`tests-pass`, `build-ok`, `successfully`, `verified`,
+`now-working`, `has-been-done`, `i-did`, `did`, `everything-works`, `done`, `ready`, `works`), with code
+spans stripped first; a negation in the same sentence cancels it. A *caveat* anywhere in the message —
+failure, inability, refused, aborted, a hedge ("however", "you'll need to", "please run"), errors remain —
+means it is not an unqualified claim. Failures are shell and MCP outcomes of `error`, `interrupted` or
+`denied` (a `PreToolUse` deny); a probe's exit 1 is its answer, not a failure. A failure is resolved by a
+later success of the same command, the same verify runner, or the same MCP tool. The finding fires when there
+is a claim, no caveat, and either the turn's last relevant outcome was bad or a weighty failure (a verify or
+effect command, an MCP call, a denied non-shell action) is unresolved. It posts `Agent reported success but
+tool calls failed` (Medium, stage `lifecycle`, reason `CLAIM_MISMATCH`) with `claimCheck` = `{ claim,
+lastOutcome, calls, failed, denied, interrupted, unresolved, scope }`, once per turn even when
+`stop_hook_active` fires `Stop` twice. Report-only.
+
+Measured against a 75-case hand-labelled corpus (`test/fixtures/claim-check-corpus.json`, scored by
+`scripts/score-claim-check.mjs --split all|tune|heldout`): blind, before any tuning, precision was 81.8%. The
+rules were then tuned against the odd-numbered half only; on the even-numbered held-out half they score
+precision 70.0% (7 TP, 3 FP) and recall 46.7% (7 of 15). The tuned half scores 100% / 100%, which is
+expected and is not evidence. Precision is chosen over recall: a message that names any problem is never
+flagged.
+
+**Compaction.** `PreCompact` writes a `compact` row with `trigger` `manual`, `auto` or `other` and nothing else; the
+summary counts them.
+
+**Coverage heartbeat.** Hooks post only on findings, so a console cannot tell "nothing happened" from "MoorAI
+was not in the path". At most once per host per UTC day, plus once on the day's first `bypassPermissions`
+session, the hook spawns a detached `posturebeat` worker that posts to `POST /api/agent-posture` a
+content-free body: identity, `serverMode`, `heartbeat` = `{ host, permissionMode }`, and the posture from
+[`cli/agent-posture.mjs`](../cli/agent-posture.mjs). The day's stamp is written only after the console
+accepts the post; a failed post is retried after 10 minutes, not on every call. Hosts: `claude-code`, and
+`codex`, `cursor`, `gemini`, `copilot` through their adapters (`MOORAI_HOOK_AGENT`). Enrolled devices only.
+`agent-posture.mjs` is read-only and reuses `cli/doctor-hosts.mjs`, so "registered" and "current" mean what
+`moorai-doctor` means. Per host it reports the hook state (`ok`, `missing`, `stale`, `broken`,
+`untrusted`, `unreadable`, `absent`), `lastActive` (the newest session-log mtime, rounded down to the
+hour), and flags with their scope (`user`, `project`, `local`, `managed`, `system`, `profile`, `session`):
+`hooksDisabled`, `mooraiHookDisabled`, `managedHooksOnly`, `bypassPermissionsDefault`,
+`sessionBypassPermissions`, `approvalNever`, `approvalUnrestricted`, `autoEditDefault`,
+`sandboxFullAccess`, `sandboxOff`. Setting names are quoted from each host's documentation in the module
+header. Copilot CLI reports hook registration only; Gemini's YOLO mode is command-line only and is not a
+setting to read. The desktop app reports each host's `lastActive` hourly through `device_agent_activity`
+(the Rust mirror of the same bounded walk), independent of every hook, so the console can compare agent use
+with the heartbeats. Never a path, a setting value beyond the enumerated weak values, a project name or a
+session id.
 
 ---
 
@@ -1100,7 +1312,9 @@ Where it is enforced:
 | MCP proxy, call side | any gate error forwards the call unchanged. No engine → forward. |
 | MCP file arguments (`cli/mcp-file-args.mjs`) | the whole walk, every `stat` and every read is inside `try/catch`; on an error, or past a cap or the 1 s budget, the verdict stands on whatever was checked so far. |
 | MCP proxy, result side | fail-open survives parse-then-forward as four explicit properties rather than one accident of ordering: an exactly-once `pass()` latch that forwards the **original** bytes from every early return, catch and `finally`; a hard per-message deadline (`resultDeadlineMs: 750`) the decision races; a size cap instead of a timer for synchronous work (`maxResultBytes: 64 KB`; over `maxLineBytes: 1 MB` a line is never parsed at all); and nothing but an explicit `deny` resolution may replace a message. |
-| detached workers | `indexscan`, `agentscan` and `escalate` never read stdin and never write a decision — the hook that spawned them has already emitted its verdict. |
+| detached workers | `indexscan`, `agentscan`, `escalate` and `posturebeat` never read stdin and never write a decision — the hook that spawned them has already emitted its verdict. |
+| session state (`cli/session-state.mjs`, `cli/session-ledger.mjs`) | a missing, oversized or unparsable state file reads as empty; every step and every write is inside `try/catch` and returns "nothing to do"; the ledger write and provenance stamping never affect a decision. |
+| lifecycle events | `PostToolUseFailure`, `Stop`, `SubagentStop` and `PreCompact` never return a blocking decision; their only stdout is the unenrolled `Stop` coach `systemMessage`. |
 
 The costs are real and worth naming: `extractReadPaths` returns nothing for genuinely ambiguous shell
 (`$( )`, backticks, heredocs, unterminated quotes, `$VAR`) because fabricating a path is worse than
@@ -1145,6 +1359,11 @@ of what it read, finish first.
 Independently, `mcp-proxy/tool-scan.mjs` records `decideText` at stage `file` measuring 3.8–4.2 ms warm
 on 64 KB of composed text, which is why `maxResultBytes` is set where it is. These are single-run figures
 on one machine; treat them as an order of magnitude, not a benchmark.
+
+The lifecycle events (§6) add one hook process each. Whole-hook wall time p50, 15 runs each, one machine,
+an unenrolled device with a fresh `~/.moorai` and no reachable console: `PreCompact` 78 ms,
+`PostToolUseFailure` 79 ms (both leave before the policy load), `Stop` 104 ms (a near-empty ledger). `Stop`
+reads at most the ledger's trailing 4,000 rows; its cost on a long session was not measured.
 
 Coverage numbers — 99 detectors, 77 threats, 102/102 adversarial corpus, 9/10 OWASP LLM Top 10 items with
 at least one on-device detector — are in [BENCHMARK.md](BENCHMARK.md) and are regenerated by
@@ -1307,6 +1526,31 @@ Stated rather than papered over.
   (for example `MOORAI_LOCAL_MODEL`) are still read from the environment. A container with no `/etc/moorai/policy.pub` or `MOORAI_POLICY_PUBKEY` starts every run
   unpinned, so it trusts the first policy it fetches. Agent SDK in-process hook callbacks are not
   provided; an SDK service runs the shell hook, one process per tool call.
+- **The lifecycle events, the claim check, the session signals and provenance are tested through the real
+  hook with scripted stdin, not watched in a live Claude Code session.** The `Stop` / `SubagentStop` /
+  `PostToolUseFailure` / `PreCompact` input fields are taken from the hooks reference, not from a captured
+  payload.
+- **The claim check is lexical and English-only.** A success claim phrased outside its fixed set is not a
+  claim, and any caveat word anywhere in the message silences it. Held-out precision is 70.0% and recall
+  46.7% on 37 cases written by the same author as the rules; the 81.8% blind figure was measured before
+  tuning and is not reproducible from the current rules. It sees only `Bash`, `PowerShell` and `mcp__*`
+  outcomes plus `PreToolUse` denials: a failed `Write` or `Edit` that was not denied leaves no outcome. Only
+  Claude Code sends `Stop`; the other agents' adapters do not forward it.
+- **Session risk catches a minority of taint-then-exfiltrate sequences.** On the scripted sets it caught 23
+  of 87 and 32 of 87. A step it does not classify as outbound (for example an MCP tool whose name does not
+  write, or a `WebFetch` whose URL carries no data-like token) is not a step. The state is per device.
+- **The circuit breaker sees calls, not tokens.** Token burn is not measured: no hook input carries usage.
+  A loop whose arguments change on every call (a counter, a timestamp) is not a repeat. Rate and budget
+  trips are off by default. Only calls whose result reached the hook count toward a repeat or a cycle; the
+  Codex, Copilot, Gemini and Cursor adapters forward no command results, so loops are not detected on
+  those agents.
+- **The agent can clear its own session state.** It runs as the same user, so it can read `session.key` and
+  `session-ledger.key` and edit or delete `session-risk.json`, `circuit-breaker.json` and the ledger. The
+  ledger's chain stamps are keyless and not anchored off the device, so they do not stop a rewrite.
+- **The coverage heartbeat is daily and best-effort.** A host disabled after the day's heartbeat shows on
+  the next day's. `lastActive` is the newest session-log mtime, so a host whose logs live elsewhere (a custom
+  `CODEX_HOME` the desktop app's environment does not see) reads as inactive. The desktop app's
+  `device_agent_activity` is compile-checked; its hourly post has not been watched end to end.
 - **Codex is not covered by the MCP proxy installer** (its config is TOML, the installer writes JSON) —
   recorded in [CAPABILITY_SPEC.md](CAPABILITY_SPEC.md) and repeated here because it bounds where any of
   this applies at all.

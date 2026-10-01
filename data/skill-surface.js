@@ -30,18 +30,54 @@ const SURFACE = [
   [/(^|[/\\])\.claude[/\\]settings(\.local)?\.json$/i, "claude-settings", true],
   [/(^|[/\\])\.claude[/\\]hooks([/\\].+)?$/i, "claude-hook", true],
   [/(^|[/\\])hooks[/\\]hooks\.json$/i, "plugin-hooks", false],
+  // Gemini CLI settings carry `hooks` and `mcpServers` (geminicli.com/docs/hooks, /docs/reference/configuration):
+  //   .gemini/settings.json, ~/.gemini/settings.json, /etc/gemini-cli/settings.json,
+  //   C:\ProgramData\gemini-cli\settings.json, /Library/Application Support/GeminiCli/settings.json, and the
+  //   system-defaults.json beside each system file.
+  [/(^|[/\\])(\.gemini|gemini-cli|GeminiCli)[/\\](settings|system-defaults)\.json$/i, "gemini-settings", false],
+  // Kiro hooks run shell commands at session events (kiro.dev/docs/hooks): "Each hook file is a standalone
+  //   JSON file at `.kiro/hooks/<id>.json`."
+  [/(^|[/\\])\.kiro[/\\]hooks[/\\].+$/i, "kiro-hook", false],
 
   // ---- MCP server configuration (which tools and data sources the agent can reach at all) ----
   [/(^|[/\\])managed-mcp\.json$/i, "managed-mcp", false],
   [/(^|[/\\])\.mcp\.json$/i, ".mcp.json", false],
   [/(^|[/\\])\.claude\.json$/i, "claude-user-config", true],
   [/(^|[/\\])claude_desktop_config\.json$/i, "claude-desktop-config", false],
+  // Amp (ampcode.com/docs/customize/mcp): `amp.mcpServers` in ~/.config/amp/settings.json or .amp/settings.json.
+  [/(^|[/\\])(\.amp|\.config[/\\]amp)[/\\]settings\.json$/i, "amp-settings", false],
+  // OpenCode (opencode.ai/docs/rules): opencode.json / ~/.config/opencode/opencode.json name extra
+  //   instruction files in its `instructions` field.
+  [/(^|[/\\])opencode\.json$/i, "opencode-config", false],
 
   // ---- the skill surface proper: skills, subagents, slash commands ----
   [/(^|[/\\])\.claude[/\\]skills([/\\].+)?$/i, "claude-skill", true],
   [/(^|[/\\])\.claude[/\\]agents([/\\].+)?\.md$/i, "claude-agent", true],
   [/(^|[/\\])\.claude[/\\]commands([/\\].+)?$/i, "claude-command", true],
   [/(^|[/\\])plugins[/\\].+[/\\]agents[/\\][^/\\]+\.md$/i, "plugin-agent", false],
+  // Other agents' slash commands / workflows / prompt files / subagents — injected verbatim when invoked.
+  // Cursor (cursor.com/changelog/1-6): "Commands are stored in `.cursor/commands/[command].md`".
+  [/(^|[/\\])\.cursor[/\\]commands[/\\].+\.md$/i, "cursor-command", false],
+  // Windsurf / Devin Desktop (docs.devin.ai/desktop/cascade/workflows): .devin/workflows/*.md,
+  //   .windsurf/workflows/*.md, ~/.codeium/windsurf/global_workflows/*.md, and the system dirs
+  //   /Library/Application Support/{Devin,Windsurf}/workflows, /etc/{devin,windsurf}/workflows,
+  //   C:\ProgramData\{Devin,Windsurf}\workflows.
+  [/(^|[/\\])\.?(windsurf|devin)[/\\](global_)?workflows[/\\].+\.md$/i, "windsurf-workflow", false],
+  // Cline workflows: .clinerules/workflows/ and ~/Documents/Cline/Workflows (cline.bot blog; see report).
+  [/(^|[/\\])(\.clinerules[/\\]workflows|Cline[/\\]Workflows)[/\\].+\.md$/i, "cline-workflow", false],
+  // GitHub Copilot in VS Code (code.visualstudio.com/docs/copilot/customization/{prompt-files,custom-agents}):
+  //   prompt files in the ".github/prompts folder"; custom agents = "any `.md` files in the `.github/agents`
+  //   folder", user level "~/.copilot/agents".
+  [/(^|[/\\])\.github[/\\]prompts[/\\].+\.prompt\.md$/i, "copilot-prompt", false],
+  [/(^|[/\\])\.(github|copilot)[/\\]agents[/\\][^/\\]+\.md$/i, "copilot-agent", false],
+  // Codex custom prompts (learn.chatgpt.com/docs/custom-prompts, deprecated but still loaded): ~/.codex/prompts/*.md.
+  [/(^|[/\\])\.codex[/\\]prompts[/\\][^/\\]+\.md$/i, "codex-prompt", false],
+  // Gemini CLI custom commands (geminicli.com/docs/cli/custom-commands): ~/.gemini/commands/ and
+  //   <project>/.gemini/commands/, TOML, subdirectories namespace the command.
+  [/(^|[/\\])\.gemini[/\\]commands[/\\].+\.toml$/i, "gemini-command", false],
+  // OpenCode (opencode.ai/docs/{commands,agents}): ~/.config/opencode/{commands,agents}/ and .opencode/{commands,agents}/.
+  [/(^|[/\\])(\.opencode|\.config[/\\]opencode)[/\\]commands[/\\].+\.md$/i, "opencode-command", false],
+  [/(^|[/\\])(\.opencode|\.config[/\\]opencode)[/\\]agents[/\\].+\.md$/i, "opencode-agent", false],
   [/(^|[/\\])SKILL\.md$/i, "claude-skill", true],
 
   // ---- plugin manifests and the background work they can declare ----
@@ -54,7 +90,20 @@ const SURFACE = [
   [/(^|[/\\])\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$/i, "claude-memory", true],
   [/(^|[/\\])CLAUDE\.local\.md$/i, "CLAUDE.local.md", false],
   [/(^|[/\\])CLAUDE\.md$/i, "CLAUDE.md", true],
+  // AGENTS.md also covers Amp's AGENT.md fallback (ampcode.com/docs/customize/agents-md).
   [/(^|[/\\])AGENTS?\.md$/i, "AGENTS.md", false],
+  // Codex (learn.chatgpt.com/docs/agent-configuration/agents-md): AGENTS.override.md wins over AGENTS.md.
+  [/(^|[/\\])AGENTS\.override\.md$/i, "AGENTS.override.md", false],
+  // Gemini CLI (geminicli.com/docs/cli/gemini-md): ~/.gemini/GEMINI.md and GEMINI.md in workspace dirs/parents.
+  [/(^|[/\\])GEMINI\.md$/i, "GEMINI.md", false],
+  // Copilot targeted instructions (code.visualstudio.com/docs/copilot/customization/custom-instructions):
+  //   `.github/instructions`, searched "recursively", and "~/.copilot/instructions" at user scope.
+  [/(^|[/\\])\.(github|copilot)[/\\]instructions[/\\].+\.instructions\.md$/i, "copilot-path-instructions", false],
+  // Kiro: steering in `.kiro/steering/` and `~/.kiro/steering/` (kiro.dev/docs/steering); specs in
+  //   .kiro/specs/<name>/, and "Kiro automatically includes all spec files ... in the conversation context"
+  //   (kiro.dev/docs/specs/best-practices).
+  [/(^|[/\\])\.kiro[/\\]steering[/\\].+\.md$/i, "kiro-steering", false],
+  [/(^|[/\\])\.kiro[/\\]specs[/\\].+\.md$/i, "kiro-spec", false],
 
   // ---- other vendors' equivalents ----
   [/(^|[/\\])\.cursorrules$/i, ".cursorrules", false],
@@ -81,7 +130,14 @@ const SURFACE = [
   [/(^|[/\\])\.kiro[/\\]settings[/\\]mcp\.json$/i, "kiro-mcp", false],
 
   [/(^|[/\\])\.windsurfrules$/i, ".windsurfrules", false],
-  [/(^|[/\\])\.clinerules$/i, ".clinerules", false],
+  // Windsurf rules (docs.devin.ai/desktop/cascade/memories): .devin/rules/*.md, .windsurf/rules/*.md, the
+  //   system dirs {Devin,Windsurf}/rules, and ~/.codeium/windsurf/memories/global_rules.md.
+  [/(^|[/\\])\.?(windsurf|devin)[/\\]rules[/\\].+\.md$/i, "windsurf-rule", false],
+  [/(^|[/\\])windsurf[/\\]memories[/\\]global_rules\.md$/i, "windsurf-global", false],
+  // Cline (docs.cline.bot/features/cline-rules): `.clinerules/` is a DIRECTORY of rules (or a legacy single
+  //   file), plus .cline/rules/, ~/Documents/Cline/Rules, ~/.cline/rules, ~/Cline/Rules.
+  [/(^|[/\\])\.clinerules([/\\].+)?$/i, ".clinerules", false],
+  [/(^|[/\\])(\.cline[/\\]rules|Cline[/\\]Rules)[/\\].+\.md$/i, "cline-rule", false],
   [/(^|[/\\])\.github[/\\]copilot-instructions\.md$/i, "copilot-instructions", false],
   [/(^|[/\\])\.codex[/\\]config\.toml$/i, "codex-config", false]
 ];

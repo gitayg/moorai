@@ -31,6 +31,7 @@ async function main() {
   let payload;
   try { payload = JSON.parse((await readStdin()) || "{}"); } catch { process.exit(0); }
   const claude = a.toClaude(payload);
+  process.env.MOORAI_HOOK_AGENT = id; // which host this is, for the core hook's coverage heartbeat
   const verdict = claude ? evaluate(claude) : { decision: "allow", reason: "" };
   const o = a.fromVerdict(verdict, payload);
   if (o.stdout) process.stdout.write(o.stdout);

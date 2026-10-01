@@ -214,6 +214,26 @@ export async function reportDevice() {
   } catch { return null; }
 }
 
+// Coverage integrity: when each agent host was last used (session-log mtimes, hour-rounded), posted to
+// /api/agent-posture on its own and independent of every hook, so the console can compare agent use
+// with the MoorAI hooks' daily heartbeats. Host ids and timestamps only.
+export async function reportActivity() {
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (!invoke || !enrolled()) return;
+  try {
+    const r = await invoke("device_agent_activity");
+    const activity = (r.activity || []).map((a) => ({ host: a.host, lastActive: new Date(a.lastActiveEpoch * 1000).toISOString() }));
+    if (!activity.length) return;
+    const { user, device, platform } = reported();
+    fetch(`${BASE}/api/agent-posture`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
+      body: JSON.stringify({ user, device, platform, activity }),
+      keepalive: true
+    }).catch(() => {});
+  } catch { /* evidence, never enforcement */ }
+}
+
 // Slower OS-patch posture check, sent as a follow-up device report (keeps tools+os from `dev`).
 export async function reportPatches(dev) {
   const invoke = window.__TAURI__?.core?.invoke;

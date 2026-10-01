@@ -95,7 +95,7 @@ test("SURFACE: ordinary project files are NOT the skill surface", () => {
     "/u/.continue/config.yaml",                        // Continue: the config.yaml block is the shape-trap, NOT matched
     "/u/.config/zed/keymap.json",                      // Zed: keymap.json is not settings.json
     "/u/.aws/amazonq/cli-agents/foo.json",             // Amazon Q: an agent file, not mcp.json
-    "/repo/.kiro/steering/product.md"]) {              // Kiro: a steering file, not settings/mcp.json
+    "/repo/.kiro/settings/other.json"]) {              // Kiro: not settings/mcp.json (steering is its own kind now — test/skill-surface-vendors.test.mjs)
     assert.equal(skillSurfaceKind(p), null, p);
     assert.equal(isSkillSurface(p), false, p);
   }

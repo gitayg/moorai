@@ -520,6 +520,51 @@ fn device_ai_shadow() -> serde_json::Value { platform::ai_shadow() }
 #[tauri::command]
 fn os_patch_status() -> serde_json::Value { platform::patch_status() }
 
+// Coverage integrity — when each agent host was last used, from that host's own session logs: the
+// newest mtime, rounded down to the hour. The Rust mirror of cli/agent-posture.mjs lastActive(), same
+// directories and the same bounded walk (only the 8 newest entries per level are opened). Timestamps
+// only — never a path, a file name or a byte of a log. src/api.js posts it on its own to
+// /api/agent-posture, so the console sees agent use even when every MoorAI hook is switched off.
+fn newest_mtime(dir: &std::path::Path, depth: u32) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    let mut ents: Vec<(std::path::PathBuf, bool, u64)> = rd
+        .flatten()
+        .take(2000)
+        .filter_map(|e| {
+            let md = e.metadata().ok()?;
+            let m = md.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+            Some((e.path(), md.is_dir(), m))
+        })
+        .collect();
+    ents.sort_by(|a, b| b.2.cmp(&a.2));
+    let mut best = 0;
+    for (p, is_dir, m) in ents.into_iter().take(8) {
+        let v = if is_dir { if depth > 1 { newest_mtime(&p, depth - 1) } else { 0 } } else { m };
+        if v > best { best = v; }
+    }
+    best
+}
+#[tauri::command(async)]
+fn device_agent_activity() -> serde_json::Value {
+    let home = platform::home_dir();
+    let env_or = |k: &str, d: String| std::env::var(k).ok().filter(|s| !s.is_empty()).unwrap_or(d);
+    let codex = env_or("CODEX_HOME", format!("{home}/.codex"));
+    let copilot = env_or("COPILOT_HOME", format!("{home}/.copilot"));
+    let hosts = [
+        ("claude-code", format!("{home}/.claude/projects"), 2),
+        ("codex", format!("{codex}/sessions"), 4),
+        ("gemini", format!("{home}/.gemini/tmp"), 3),
+        ("cursor", format!("{home}/.cursor/chats"), 3),
+        ("copilot", format!("{copilot}/session-state"), 2),
+    ];
+    let mut out = vec![];
+    for (host, dir, depth) in hosts {
+        let m = newest_mtime(std::path::Path::new(&dir), depth);
+        if m > 0 { out.push(serde_json::json!({ "host": host, "lastActiveEpoch": m - m % 3600 })); }
+    }
+    serde_json::json!({ "activity": out })
+}
+
 // Native security posture — AV health, firewall state, disk encryption (Windows-native).
 #[tauri::command]
 fn device_posture() -> serde_json::Value { platform::security_posture() }
@@ -588,7 +633,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![native_log, app_version, identity, save_provision, set_agent_auth, open_url, open_login_terminal, restart_app, check_and_install_update, about_info, term_open, term_input, term_resize, term_kill, device_ai_tools, device_ai_assets, device_mcp, os_patch_status, device_browsers, device_ai_shadow, device_posture, device_accounts, dir_sensitive, ocr::ocr_capability, ocr::ocr_image])
+        .invoke_handler(tauri::generate_handler![native_log, app_version, identity, save_provision, set_agent_auth, open_url, open_login_terminal, restart_app, check_and_install_update, about_info, term_open, term_input, term_resize, term_kill, device_ai_tools, device_ai_assets, device_mcp, os_patch_status, device_browsers, device_ai_shadow, device_posture, device_accounts, device_agent_activity, dir_sensitive, ocr::ocr_capability, ocr::ocr_image])
         .run(tauri::generate_context!())
         .expect("error while running MoorAI");
 }

@@ -49,9 +49,9 @@ export function discoverInstructionFiles(cwd, { home = os.homedir(), env = proce
   // Project scope: cwd and every directory above it (Claude Code, Codex, Gemini CLI all walk up).
   let dir = resolve(cwd || process.cwd());
   for (let depth = 0; depth < 32; depth++) {
-    for (const n of ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md", "AGENTS.md", "AGENTS.override.md", "GEMINI.md",
+    for (const n of ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md", "AGENTS.md", "AGENTS.override.md", "AGENT.md", "GEMINI.md",
       ".cursorrules", ".windsurfrules", ".clinerules", ".github/copilot-instructions.md"]) add(join(dir, n));
-    for (const d of [".claude/rules", ".cursor/rules", ".windsurf/rules", ".devin/rules", ".clinerules", ".cline/rules"]) for (const p of listRuleDir(join(dir, d))) add(p);
+    for (const d of [".claude/rules", ".cursor/rules", ".windsurf/rules", ".devin/rules", ".clinerules", ".cline/rules", ".kiro/steering"]) for (const p of listRuleDir(join(dir, d))) add(p);
     for (const p of listRuleDir(join(dir, ".github/instructions"), /\.instructions\.md$/i)) add(p);
     const up = dirname(dir);
     if (up === dir) break;
@@ -61,7 +61,8 @@ export function discoverInstructionFiles(cwd, { home = os.homedir(), env = proce
   const codexHome = env.CODEX_HOME || join(home, ".codex");
   for (const p of [join(home, ".claude", "CLAUDE.md"), join(codexHome, "AGENTS.md"), join(codexHome, "AGENTS.override.md"),
     join(home, ".gemini", "GEMINI.md"), join(home, ".codeium", "windsurf", "memories", "global_rules.md"), join(home, ".agents", "AGENTS.md")]) add(p);
-  for (const d of [join(home, ".claude", "rules"), join(home, ".cline", "rules"), join(home, "Documents", "Cline", "Rules")]) for (const p of listRuleDir(d)) add(p);
+  for (const d of [join(home, ".claude", "rules"), join(home, ".cline", "rules"), join(home, "Documents", "Cline", "Rules"), join(home, ".kiro", "steering")]) for (const p of listRuleDir(d)) add(p);
+  for (const p of listRuleDir(join(home, ".copilot", "instructions"), /\.instructions\.md$/i)) add(p);
   // Managed (organization) policy.
   if (managed) for (const p of ["/Library/Application Support/ClaudeCode/CLAUDE.md", "/etc/claude-code/CLAUDE.md", "C:\\Program Files\\ClaudeCode\\CLAUDE.md"]) add(p);
   return [...found];
