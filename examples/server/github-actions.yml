@@ -1,0 +1,33 @@
+# Copy to .github/workflows/ in the repository the agent works on.
+# Runs Claude Code headless on a GitHub-hosted runner with MoorAI in server mode. Without MOORAI_SERVICE_ID
+# the workload is named github:<repository>:<workflow>:<job> from GitHub's own variables, so every run of this job
+# reports as the same workload.
+name: claude-with-moorai
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    env:
+      MOORAI_MODE: server
+      MOORAI_SERVER_URL: ${{ secrets.MOORAI_SERVER_URL }}
+      MOORAI_TENANT: ${{ secrets.MOORAI_TENANT }}
+      MOORAI_INSTALL_TOKEN: ${{ secrets.MOORAI_INSTALL_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Claude Code and MoorAI
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          git clone --depth 1 https://github.com/gitayg/moorai.git "$RUNNER_TEMP/moorai"
+          sudo "$(command -v node)" "$RUNNER_TEMP/moorai/examples/server/managed-settings.mjs" /etc/claude-code/managed-settings.json
+      - name: Check MoorAI is in place
+        run: node "$RUNNER_TEMP/moorai/cli/moorai-doctor.mjs" --no-selftest
+      - name: Run the agent
+        run: claude -p "Summarise the open TODOs in this repository"

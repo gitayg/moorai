@@ -7,6 +7,7 @@
 //     cli/moorai-hook.mjs line for line, using the same exported primitives. The two values that are
 //     private to moorai-hook.mjs (NO_POLICY_BASELINE and the break-glass anchor path) are READ out of
 //     its source text — the file runs main() at import, so it cannot be imported.
+import { trustedEnv } from "./server-mode.mjs";
 import { readFileSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -17,6 +18,7 @@ import { ratchetPosture, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, 
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { readState } from "./state-dirs.mjs";
 import { makeSandbox, DEAD_SERVER } from "./doctor-sandbox.mjs";
+import { serverMode, serviceWho } from "./server-mode.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const HOOK_FILE = join(HERE, "moorai-hook.mjs");
@@ -44,8 +46,10 @@ export function breakGlassState(config) {
   const raw = readState("break-glass");
   if (!raw) return { active: false, status: "absent" };
   let keys = [];
-  try { keys = parseTrustedKeys(`${readRootOwned(breakGlassAnchorPath())}\n${process.env.MOORAI_BREAKGLASS_PUBKEY || ""}`); } catch { /* none */ }
-  const v = verifyBreakGlass(raw, { keys, tenant: config.tenant, device: os.hostname() });
+  try { keys = parseTrustedKeys(`${readRootOwned(breakGlassAnchorPath())}\n${trustedEnv("MOORAI_BREAKGLASS_PUBKEY") || ""}`); } catch { /* none */ }
+  // The hook scopes a marker to IDENTITY.device: the hostname, or in server mode the workload (svc:<id>).
+  const sm = serverMode();
+  const v = verifyBreakGlass(raw, { keys, tenant: config.tenant, device: sm.active ? serviceWho(sm).device : os.hostname() });
   return { active: !!v.active, status: v.status, expires: v.expires || "" };
 }
 
@@ -55,7 +59,7 @@ export function durablePosture() {
     state: readText(POSTURE_STATE),
     latch: readText(POSTURE_LATCH),
     legacy: readText(POSTURE_LEGACY),
-    env: process.env.MOORAI_OFFLINE_MODE
+    env: trustedEnv("MOORAI_OFFLINE_MODE")
   });
 }
 
@@ -100,6 +104,7 @@ export function resolveEffective(loaded, config) {
   } else if (offlineMode(policy) === "fail-closed" && bg.active) {
     allowAll = true; basis = "break-glass active: the hook allows every call";
   }
-  const coach = !enforcementAllowed(config, { managed: posture.posture === "fail-closed" });
-  return { policy, basis, allowAll, coach, posture, breakGlass: bg };
+  const server = serverMode();
+  const coach = !enforcementAllowed(config, { managed: posture.posture === "fail-closed" || server.active });
+  return { policy, basis, allowAll, coach, posture, breakGlass: bg, server };
 }

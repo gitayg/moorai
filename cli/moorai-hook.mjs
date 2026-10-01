@@ -29,6 +29,7 @@ import { skillIntents } from "./skill-analysis.mjs";
 import { extractHosts } from "../data/model-endpoints.js";
 import { registerInstructionFingerprints } from "./instruction-fingerprints.mjs";
 import { hookReputation } from "./mcp-reputation.mjs";
+import { scanMcpFileArgs } from "./mcp-file-args.mjs";
 import { OUTBOUND_UPLOAD } from "../data/outbound-upload.js";
 import { isNewDestination } from "../data/destination-map.js";
 import { signApproval, argsHash } from "../data/agency-sign.mjs";
@@ -49,6 +50,7 @@ import { observeDrift, driftConfig, cloudProfiles, normalizeRemote } from "../da
 import { deletionTally, assessDeletionVolume, deletionConfig } from "../data/deletion-volume.js";
 import { readStateJson, writeStateJson, repoIdentity, LEARNED_DRIFT_FILE, DELETION_VOLUME_FILE } from "./drift-state.mjs";
 import { captureTask, judgeAction, CLASS_TEXT } from "./intent-alignment.mjs";
+import { serverMode, serviceWho, settleHeadlessAsk, tamperAlert, trustedEnv, refusedTrustEnv } from "./server-mode.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -239,6 +241,8 @@ function uninstallHooks() {
 // implementation, two entrypoints, no second door. Everything below is the part that is genuinely
 // hook-only: break-glass, the posture ratchet, and the content-free reports for both.
 const CONFIG = loadConfig();
+// Server mode (cli/server-mode.mjs): a headless workload. Off unless /etc/moorai/config.json or MOORAI_MODE asks.
+const SERVER = serverMode();
 // #2 — the baseline an ENROLLED device gets when its org has published no policy yet. Deliberately EMPTY
 // of threat configuration: with no threatPolicy and no tierPolicy, threatActionFor() falls straight
 // through to BUILTIN_DEFAULT_ACTIONS (cli/hook-core.mjs) — the reviewable, evidence-bound prevention tier
@@ -299,7 +303,7 @@ function durablePosture() {
     state: readText(POSTURE_STATE),
     latch: readText(POSTURE_LATCH),
     legacy: readText(POSTURE_LEGACY),
-    env: process.env.MOORAI_OFFLINE_MODE
+    env: trustedEnv("MOORAI_OFFLINE_MODE")
   });
 }
 // A refused downgrade is one of the strongest tamper signals this hook can produce: something in the
@@ -346,7 +350,8 @@ const BG_ANCHOR = process.platform === "win32"
 // A user-writable "system" anchor is no better than ~/.curaiq — readRootOwned rejects it rather than pretend.
 function anchorText() { return readRootOwned(BG_ANCHOR); }
 function trustedKeys() {
-  try { return parseTrustedKeys(`${anchorText()}\n${process.env.MOORAI_BREAKGLASS_PUBKEY || ""}`); } catch { return []; }
+  // The env anchor counts only when no user/project/local settings file set it (cli/server-mode.mjs trustedEnv).
+  try { return parseTrustedKeys(`${anchorText()}\n${trustedEnv("MOORAI_BREAKGLASS_PUBKEY") || ""}`); } catch { return []; }
 }
 // A cached/served policy that failed verification on an anchored device is one of the strongest signals
 // this hook produces: something put material in MoorAI's own policy file that no console signed, and
@@ -392,7 +397,7 @@ function reportPinAbsence(absence) {
 function breakGlassVerdict() {
   const raw = readState("break-glass"); // ~/.moorai, falling back to the pre-rebrand ~/.curaiq
   if (!raw) return { active: false, status: "absent", raw: "" };
-  return { ...verifyBreakGlass(raw, { keys: trustedKeys(), tenant: CONFIG.tenant, device: os.hostname() }), raw };
+  return { ...verifyBreakGlass(raw, { keys: trustedKeys(), tenant: CONFIG.tenant, device: IDENTITY.device }), raw };
 }
 // #33 defense-in-depth — a break-glass marker that does not verify is itself a strong tamper signal:
 // something wrote MoorAI's own operator-override file with material no operator signed. Reported in
@@ -412,7 +417,9 @@ function djb2(s) { let h = 5381; for (let i = 0; i < String(s).length; i++) h = 
 // of user@device (actorHash), so the console can tie actions to an operator without the pair being
 // recoverable from it. `user`/`device` still travel so per-device policy resolves; the console
 // replaces both with keyed pseudonyms on ingest and never stores them in the clear.
-const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: actorHash(os.userInfo().username, os.hostname()) };
+// Server mode: a workload name instead of user@host (serviceWho), hashed into the actor the same way.
+const WHO = SERVER.active ? serviceWho(SERVER) : { user: os.userInfo().username, device: os.hostname() };
+const IDENTITY = { user: WHO.user, device: WHO.device, platform: os.platform(), tenant: CONFIG.tenant, actor: actorHash(WHO.user, WHO.device) };
 // Content-free lineage for the per-agent baseline / forensic detections (data/agent-detections.js).
 // SESSION is the current trace/session id (Claude Code's session_id, one-way hashed), set in main().
 // It groups an actor's events for trace-gap detection and is the source id for cross-agent handoffs.
@@ -481,6 +488,8 @@ const PENDING = [];
 // COACH — set once in main() from data/enforcement.js: an unenrolled device detects and tells the user
 // and the agent what it caught, but never blocks, asks, kills or posts. See emit() / emitPost().
 let COACH = false;
+// The tool and the host's permission_mode, for the content-free record of a headless ask (emit).
+let HEADLESS_CTX = { tool: "", permissionMode: "" };
 function post(alert) {
   // An unenrolled device has no console, so nothing is posted to one — not even to a server that
   // answers at the configured URL. The OTLP mirror below is the user's own collector, not a console.
@@ -1189,6 +1198,13 @@ function coachOut(hookEventName, reason, alternatives) {
 // flow on the rewritten input. On an ask it rides with "ask", which the reference describes as "show the
 // modified input to the user". On a deny it is never sent — "For `"deny"`" nothing runs.
 async function emit(decision, reason, alternatives = [], rewrite = null) {
+  // Server mode: nobody can answer an "ask" (cli/server-mode.mjs settleHeadlessAsk) — deny by default.
+  if (SERVER.active && decision === "ask" && !COACH) {
+    const h = settleHeadlessAsk(SERVER, POLICY, { decision, reason, ...HEADLESS_CTX });
+    if (h.alert) post({ ...h.alert, ts: new Date().toISOString(), ...IDENTITY });
+    decision = h.decision; reason = h.reason;
+    if (decision === "deny") rewrite = null;
+  }
   const note = rewrite ? maskNote("this tool call's input", rewrite.count, rewrite.ids) : "";
   if (COACH && decision !== "allow") process.stdout.write(coachOut("PreToolUse", reason, alternatives));
   else if (COACH && LEAK_COACH) process.stdout.write(coachOut("PreToolUse", LEAK_COACH.reason, LEAK_COACH.alts));
@@ -1577,6 +1593,7 @@ async function main() {
   if (input.hook_event_name === "PostToolUse" && (!postDispatched(tool) || !responseField(input, tool))) return exitHook();
   SESSION = contentHash(input.session_id || ""); // content-free trace/session id for baseline + lineage
   SESSION_ID = typeof input.session_id === "string" ? input.session_id : "";
+  HEADLESS_CTX = { tool, permissionMode: typeof input.permission_mode === "string" ? input.permission_mode : "" };
   // Subagent lineage: a subagent's own tool-call payloads carry agent_id/agent_type (see ACTOR above).
   // Attribute those events to the subagent (a distinct actor) with the spawning session as its parent;
   // top-level events stay attributed to the session. All ids are one-way hashed — content-free.
@@ -1608,6 +1625,12 @@ async function main() {
     // Awaited for the same reason as the reports above: this is a Critical signal and the fail-open
     // exit below would otherwise race the POST and lose it.
     await reportPinAbsence(absence);
+    // A settings file set MOORAI_* for this hook: refused (cli/server-mode.mjs) and reported, awaited like the rest.
+    const sta = tamperAlert(SERVER);
+    if (sta) await post({ ...sta, ts: new Date().toISOString(), ...IDENTITY });
+    // Off server mode too: a trust anchor or export endpoint a settings file set was ignored. Names only.
+    const envRefused = SERVER.active ? [] : refusedTrustEnv();
+    if (envRefused.length) await post({ threatId: 0, category: "Policy: environment set by a settings file refused", riskLevel: "Critical", stage: "policy", tool: "hook:policy", ts: new Date().toISOString(), contentHash: `envtrust:${envRefused.join(",")}`, ...IDENTITY });
     if (!policy) {
       if (posture.posture !== "fail-closed") {
         // #2 — "no policy" is NOT the same state as "not enrolled", and conflating them is what made the
@@ -1661,7 +1684,9 @@ async function main() {
   // Coach vs enforce, decided once by the shared rule every surface uses (data/enforcement.js). A durable
   // fail-closed posture (MDM latch, MOORAI_OFFLINE_MODE, or one a verified org policy recorded) is
   // management evidence that outlives the token, so deleting the token does not turn enforcement off.
-  COACH = !enforcementAllowed(CONFIG, { managed: posture.posture === "fail-closed" });
+  // Server mode is management evidence too: an operator deployed MoorAI to govern a workload, and there
+  // is no developer to coach.
+  COACH = !enforcementAllowed(CONFIG, { managed: posture.posture === "fail-closed" || SERVER.active });
   POLICY = policy; // read by logBehavior's agent-detection hand-off (maybeAgentScan)
   const engine = buildEngine(policy);
   // Instruction-leak fingerprints of the rules files this agent runs under (lazy: nothing is read until a
@@ -1908,14 +1933,31 @@ async function main() {
     if (epD.decision === "deny") { post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); audit("deny"); return emit("deny", epD.reason, saferAlternativesFor([63])); }
     // Tier-2 / #65 — a local secret value shipped as an MCP tool argument.
     if (checkSecretEgress(policy, args, tool, "egress")) { audit("deny"); return emit("deny", `${tool} — local secret egress`, saferAlternativesFor([65])); }
+    // Files the arguments NAME. An upload / attach / send / filesystem tool that takes a path reads the
+    // file itself, so the argument scan above sees only the path — `{"path":"customers.csv"}` shipped a
+    // file of keys and SSNs unscanned while `cat customers.csv` raised #39. Each local regular file gets
+    // what the Bash branch gives a path a command reads: content at "file", #72 metadata, #55 on its
+    // location (cli/mcp-file-args.mjs). Merged by rank, never downgrading; reported at stage "file" like
+    // the Bash branch, with the path only under a capture tier that allows filePath (as the Read branch).
+    const fsr = scanMcpFileArgs(engine, policy, { tool, args: ti, bases: [typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd()], argIds: g.findings.map((f) => f.threatId) });
+    if (RANK[fsr.decision] > RANK[g.decision]) { g.decision = fsr.decision; g.reason = fsr.reasons.join(", "); g.alternatives = fsr.alternatives; }
+    else if (fsr.decision !== "allow" && fsr.decision === g.decision) g.reason = [g.reason, ...fsr.reasons].filter(Boolean).join(", ");
+    if (fsr.kill) { g.kill = true; g.killIds = [...(g.killIds || []), ...fsr.killIds]; }
     // #33 — fail-closed MCP floor: raise an otherwise-allowed MCP call to "ask" (justify). Inert unless
     // policy.mcpFloor is set (only the offline fail-closed default sets it), so normal policies are unaffected.
     const floored = mcpFloor(policy, g.decision);
     if (floored !== g.decision) { g.decision = floored; g.reason = g.reason || "fail-closed default: MCP requires justification"; }
     report(g.findings, "egress", `hook:${tool}`, g.decision === "deny", policy.captureTier, { toolName: tool, argText: args }, signApproval(tool, argsH, g.decision === "deny" ? "deny" : "allow"));
-    logBehavior(tool, tool, args, { decision: g.decision, findings: g.findings }, "egress");
+    for (const f of fsr.files) report(f.findings, "file", `hook:${tool}`, g.decision === "deny", policy.captureTier, { filePath: f.arg, toolName: tool }, signApproval(tool, argsH, g.decision === "deny" ? "deny" : "allow"));
+    const allFindings = [...g.findings, ...fsr.findings];
+    // The behaviour ledger gets the file's findings only when the tool SENDS it. Every mcp__* call is
+    // already a trifecta "callout" leg, so a read_file of a file with a secret and an injected line would
+    // otherwise close the whole trifecta (#59) in one call — measured: it did, where a Read of the same
+    // file raises two legs and no #59. A read_file is logged as before; an upload of that file is not.
+    const sent = fsr.sends ? { findings: allFindings, text: fsr.text ? `${args}\n${fsr.text}` : args } : { findings: g.findings, text: args };
+    logBehavior(tool, tool, sent.text, { decision: g.decision, findings: sent.findings }, "egress");
     if (g.kill) killSession(tool, g.killIds, "egress");
-    const it = intentStep(policy, tool, ti, g.findings, g.decision, g.reason ? [g.reason] : [], g.alternatives);
+    const it = intentStep(policy, tool, ti, allFindings, g.decision, g.reason ? [g.reason] : [], g.alternatives);
     // mask: every string leaf of the arguments is rewritable; the serialized form is what was scanned.
     const mm = settleMask(engine, policy, { tool, stage: "prompt", ctx: { egress: true }, ids: g.maskIds, value: ti, scanOf: (v) => JSON.stringify(v), dec: it.dec, reasons: it.reasons, alts: it.alts, text: args });
     audit(mm.dec);

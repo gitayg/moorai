@@ -69,7 +69,10 @@ export function makeSandbox({ realHome = homedir(), config = null } = {}) {
   const env = (extra = {}) => {
     const e = { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdgConfig, XDG_STATE_HOME: xdgState, APPDATA: appData, LOCALAPPDATA: localAppData, ...extra };
     // Telemetry mirrors and other hosts' homes must not follow the child into the sandbox.
-    for (const k of ["MOORAI_OTLP_ENDPOINT", "MOORAI_OTLP_HEADERS", "CODEX_HOME", "COPILOT_HOME", "MoorAI_SERVER", "MoorAI_TENANT"]) delete e[k];
+    // Server mode's env binding too (cli/server-mode.mjs): the child reads the placeholder config.json
+    // instead, so the real console URL and install token never reach it. MOORAI_MODE and
+    // MOORAI_SERVICE_ID stay, so the self-test runs the hook in the same mode as the device.
+    for (const k of ["MOORAI_OTLP_ENDPOINT", "MOORAI_OTLP_HEADERS", "CODEX_HOME", "COPILOT_HOME", "MoorAI_SERVER", "MoorAI_TENANT", "MOORAI_SERVER_URL", "MOORAI_TENANT", "MOORAI_INSTALL_TOKEN"]) delete e[k];
     return e;
   };
   const cleanup = () => { try { rmSync(home, { recursive: true, force: true, maxRetries: 3 }); } catch { /* tmp */ } };

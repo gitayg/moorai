@@ -1,7 +1,7 @@
 {
   "name": "moorai",
   "displayName": "MoorAI",
-  "version": "0.99.0",
+  "version": "1.0.0",
   "description": "On-device guardrails for AI coding agents: scans tool calls, tool results and prompts for secrets, PII, prompt injection and exfiltration before they reach the model or leave the machine. Content-free reporting, no account needed. Requires Node 18+.",
   "author": {
     "name": "Itay Glick",

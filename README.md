@@ -25,7 +25,7 @@ That's the exact trade MoorAI refuses.
 ## What it does
 
 - **Context interception** — stops a secret or PII being *read into the agent's context* (e.g. an agent slurping a `.env`), not just typed in a prompt. Via the agent's PreToolUse hooks, on-device. An enrolled device enforces the policy (block, or hold for sign-off); a device that isn't enrolled coaches: the agent is told what it touched and the read goes ahead. What comes back into the agent — command output, MCP results, sub-agent reports, fetched pages — is scanned after the tool runs as untrusted inbound content.
-- **Agency Enforcement** — bounds what an agent is *allowed to do*: inspects `mcp__*` tool-call arguments for secrets/policy violations and blocks them, and enforces an approved-MCP-server allow-list at call time — with a **discovered → approved/denied approval-gating lifecycle** in the console. The direct control for **OWASP LLM06: Excessive Agency**.
+- **Agency Enforcement** — bounds what an agent is *allowed to do*: inspects `mcp__*` tool-call arguments for secrets/policy violations and blocks them, and enforces an approved-MCP-server allow-list at call time — with a **discovered → approved/denied approval-gating lifecycle** in the console. An argument that names a local file (`{"path": "customers.csv"}`, `~/…`, `file://…`) gets that file checked the way a `Bash` command's read path is: its content at the `file` stage, its metadata (#72) and its location against the credential list (#55), in the Claude Code hook and in the MCP proxy, which refuses a blocked call before the real server sees it. At most 12 files, 256 KB each, 1 MB and 1 s per call; anything past the caps is skipped silently, and a file named by path cannot be masked, so `mask` resolves to its fallback. The direct control for **OWASP LLM06: Excessive Agency**. Details and limits: [`docs/DETECTION_ENGINE.md`](docs/DETECTION_ENGINE.md) §6, §13.
 - **AI output review** — reviews what the agent says *back*, not just what's typed. On-device output screening flags **secrets, PII, and insecure code the agent generates** (SQL injection, XSS, command injection, `eval`/dynamic exec, weak crypto, unsafe deserialization) and masks secret spans on the `-p` path — emitting only a content-free verdict, never the reply. An intra-file **taint-lite** check (dependency-free source→sink proximity) raises a high-confidence *confirmed tainted-flow* signal when untrusted input actually reaches one of those sinks, so the console can prioritize real flows over hardcoded-literal matches.
 - **Provider-anchored secrets engine** — ~14 provider families (GitHub, AWS, Stripe, Slack, GCP, OpenAI/Anthropic, DB connection strings, …) plus Shannon-entropy scoring with an allowlist (UUIDs, git SHAs, base64) so it doesn't false-positive on the things that aren't secrets.
 - **Model-endpoint allow-listing** — bounds *which LLM endpoints* an agent may talk to. A base-URL override (`ANTHROPIC_BASE_URL=…`) or a direct call to a non-approved provider is flagged/blocked at the endpoint — the exfil-via-rogue-endpoint defense, host-level and content-free (loopback / local models always allowed).
@@ -305,9 +305,60 @@ fabricating a path is worse than missing one.
   killed, and nothing is posted. The rule lives in one place, `data/enforcement.js`, used by the hook,
   the Codex / Copilot / Gemini / Cursor adapters, the `claude -p` guard, the Claude Desktop MCP proxy
   and the desktop app. A device under a fail-closed posture (MDM latch or `MOORAI_OFFLINE_MODE`) keeps
-  enforcing without a token, so removing the token is not a way out of an org's policy.
+  enforcing without a token, so removing the token is not a way out of an org's policy. So does a
+  hook in server mode (below).
 - **Enrolled** — an org policy wins in both directions: a tenant can soften any built-in default or
   harden a threat the map omits.
+
+### Server mode (CI, containers, Agent SDK)
+
+For agents that run without a developer's laptop: `claude -p` in CI, the Claude Code GitHub Action, an
+Agent SDK service in a container. The Agent SDK runs shell command hooks from settings files under its
+default `settingSources`, so the same hook runs there. Server mode is on when the root-owned
+`/etc/moorai/config.json` (Windows: `%ProgramData%\MoorAI\config.json`) says `"mode": "server"` or the
+environment sets `MOORAI_MODE=server`; with it off, the hook behaves exactly as on a laptop. The module is
+[`cli/server-mode.mjs`](cli/server-mode.mjs); a Dockerfile, a GitHub Actions workflow and a managed-settings
+writer are in [`examples/server/`](examples/server/README.md).
+
+- **Where the binding comes from.** Per key, highest first: the system file (read only when root-owned
+  and not group- or world-writable), the environment (`MOORAI_SERVER_URL`, `MOORAI_TENANT`,
+  `MOORAI_INSTALL_TOKEN`, `MOORAI_SERVICE_ID`), `~/.moorai/config.json`, then the defaults
+  (`http://localhost:8787`, tenant `unprovisioned`, no token).
+- **A settings file cannot set it.** Claude Code applies a settings file's `env` block to the hook's
+  environment, and in a `-p` run it does so with no trust dialog, so a pull request's
+  `.claude/settings.json` could otherwise point the hook at another console. A `MOORAI_*` name (or one of
+  `GITHUB_ACTIONS`, `GITHUB_REPOSITORY`, `GITHUB_WORKFLOW`, `GITHUB_JOB`) that a user, project or local
+  settings file sets in its `env` block is refused for server mode's own settings and reported as
+  tampering: a Critical content-free alert, `Server-mode configuration refused (set by a settings file)`,
+  carrying the names only. A managed settings `env` block is trusted.
+- **"Ask" has no one to answer it.** A verdict that would hold for sign-off is denied, with a reason saying
+  this is a headless run and no approver exists, and one content-free alert records it
+  (`Headless approval denied (no approver)`). `"headlessAsk": "allow-with-report"` in the system file or
+  the org policy lets the call through and reports it instead; `MOORAI_HEADLESS_ASK` can only say `deny`.
+- **The actor is the workload.** `MOORAI_SERVICE_ID` names it; on GitHub Actions without it the name is
+  `github:<repository>:<workflow>:<job>` (the run id is left out, so every run of a job is one workload);
+  otherwise `unnamed`. `service` / `svc:<name>` is hashed into the actor exactly as `user@host` is on a
+  laptop, so a redeployed container keeps its console pseudonym.
+- **It enforces without a token.** Server mode counts as management, like a fail-closed posture, so
+  nothing coaches. With no token the built-in defaults enforce, but nothing is reported and no org policy
+  is fetched.
+- **`moorai-doctor`** shows where each part of the binding came from (the token as a sha256 fingerprint),
+  what a "justify" verdict becomes, the workload identity and any refused name, and its self-test adds a
+  credential read to show the headless answer. It warns when there is no token, no workload name, no
+  policy trust anchor (a container discards the TOFU key pin between runs, so ship
+  `/etc/moorai/policy.pub` or `MOORAI_POLICY_PUBKEY`), or an `http` console that is not loopback.
+
+The example [`Dockerfile`](examples/server/Dockerfile) registers the hooks in Claude Code's managed
+settings (`/etc/claude-code/managed-settings.json`), which a repository the agent works on cannot switch
+off. The desktop app, the AI bill of materials, the shadow-AI inventory and OS posture do not apply on a
+server. Proof: one live run of Claude Code 2.1.284 (`claude -p`, the hooks added with `--settings`, server mode from the environment) showed UserPromptSubmit (117 ms) and PreToolUse (224 ms) firing, a `.env` read denied as a headless ask, and the console receiving content-free reports under the workload identity. An Agent SDK service and a GitHub Actions run have not been watched end to end. Agent
+SDK in-process hook callbacks are not provided; an SDK service runs the same shell hook.
+
+**Settings files cannot set MoorAI's trust anchors.** Claude Code applies a settings file's `env` block to the
+hook's environment, so a repository's `.claude/settings.json` could otherwise supply `MOORAI_BREAKGLASS_PUBKEY`,
+`MOORAI_POLICY_PUBKEY`, `MOORAI_OFFLINE_MODE` or the OTLP export endpoint. On every device, laptop or server, a
+value that a user, project or local settings file sets for one of those is ignored and reported to the console
+(names only); a managed settings value, the launching environment and the root-owned anchor files are trusted.
 
 ### Skill Analysis — what is your agent actually being told to do?
 

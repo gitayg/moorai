@@ -1,10 +1,15 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { serverMode } from "./server-mode.mjs";
 
 // Resolves the agent's management binding: the provision file dropped by the unique
 // installer (~/.moorai/config.json), with env overrides and a localhost fallback.
+// In server mode (cli/server-mode.mjs) the binding comes from the root-owned system file and the
+// environment first; with server mode off, nothing below changes.
 export function loadConfig() {
+  const sm = serverMode();
+  if (sm.active) return { ...sm.config };
   const fallback = {
     serverUrl: process.env.MoorAI_SERVER || "http://localhost:8787",
     tenant: process.env.MoorAI_TENANT || "unprovisioned"

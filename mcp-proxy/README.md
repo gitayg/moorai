@@ -30,10 +30,22 @@ MCP host  ⇄  moorai-mcp-guard  ⇄  real MCP server
 ### agent → server: the tool CALL
 
 - Every JSON-RPC message with `method === "tools/call"` is gated through `mcpGateway()`
-  (from `cli/hook-core.mjs`), in this order, short-circuiting on the first deny:
+  (from `cli/hook-core.mjs`), in this order, steps 1–3 short-circuiting on the first deny:
   1. **server allow-list** (#3) — is this MCP server allowed at all?
   2. **per-tool argument rules** (#18) — deny/allow regexes for this tool's arguments.
   3. **argument content scan** (#2) — the shared MoorAI detectors over the serialized arguments.
+  4. **files the arguments name** — unless step 1 or 2 refused the call, every local file an argument
+     names (absolute, `~`, `file://`, or relative to the proxy's cwd and then to the client's MCP roots,
+     kept from its `roots/list` answer, at most 16) gets what the Claude Code hook gives a file a `Bash`
+     command reads: its content at the `file` stage, its metadata (#72) and its location against the
+     credential list (#55). Same helper as the hook's `mcp__*` branch
+     ([`../cli/mcp-file-args.mjs`](../cli/mcp-file-args.mjs)). A relative path is left alone when the call
+     names a remote `owner` / `repo` / `repository` / `project_id` / `bucket` and the tool's name does
+     not send. Only regular files are read (a symlink to a regular file is judged by its target; never
+     `/dev`, `/proc`, `/sys`, FIFOs, sockets or UNC paths); at most 12 files, 256 KB each, 1 MB and 1 s per
+     call, and anything past a cap is skipped silently. A file verdict that outranks the gateway's
+     refuses the call with category `MCP: blocked file argument`; each file's findings are reported at
+     stage `file`. Not tested against a live MCP server or on Windows.
 - **Block** → the call is **not** forwarded; the proxy returns a JSON-RPC *result* to the host that
   is an MCP tool error (`isError: true`, using the request's `id`), so the model sees a clean refusal
   instead of a hang. The real server never receives the call.

@@ -48,6 +48,7 @@
 
 import { spawn } from "node:child_process";
 import { basename } from "node:path";
+import { fileURLToPath } from "node:url";
 import os from "node:os";
 import { loadConfig } from "../cli/config.mjs";
 import { buildEngine, mcpGateway, decideText, literacyTouchpoint, loadVerifiedPolicy, ratchetPosture, isEnrolled, enforcementAllowed, coachMessage, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "../cli/hook-core.mjs";
@@ -60,6 +61,7 @@ import { contentHash, actorHash } from "../cli/content-hash.mjs";
 import { emitOtel } from "../cli/otel.mjs";
 import { assessServer, addToolSignals } from "../cli/mcp-reputation.mjs";
 import { reputationAction, reputationAlert, reputationSummary } from "../data/mcp-reputation.js";
+import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
 
 // ---- argv parsing: [--server label] -- realcmd args... ----
 function parseArgv(argv) {
@@ -203,14 +205,14 @@ function auditCall(tool, decision, argsHash) {
   } catch { /* ledger is best-effort; never affects the decision */ }
 }
 function alertBlock(tool, gate, reason, argsHash) {
-  const category = gate === "server" ? "MCP: unapproved server" : gate === "args" ? "MCP: denied tool argument" : "MCP: blocked tool argument";
+  const category = gate === "server" ? "MCP: unapproved server" : gate === "args" ? "MCP: denied tool argument" : gate === "file" ? "MCP: blocked file argument" : "MCP: blocked tool argument";
   post({ threatId: 0, category, riskLevel: "Blocked", stage: "mcp", tool: `desktop:${tool}`, decision: "deny", mcpServer: SERVER, ts: new Date().toISOString(), contentHash: argsHash, ...IDENTITY });
   // Coach-as-literacy: the blocked-call message Claude Desktop shows the user is a literacy touchpoint.
   try { post({ ...literacyTouchpoint({ threatId: 0, category, tool: `desktop:${tool}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
 }
-function alertFindings(tool, findings, blocked, argsHash) {
+function alertFindings(tool, findings, blocked, argsHash, stage = "mcp") {
   for (const f of findings || []) {
-    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage: "mcp", tool: `desktop:${tool}`, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: contentHash(f.match || ""), ...IDENTITY });
+    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool: `desktop:${tool}`, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: contentHash(f.match || ""), ...IDENTITY });
     if (blocked || f.riskLevel === "High" || f.riskLevel === "Critical") {
       try { post({ ...literacyTouchpoint({ threatId: f.threatId, category: f.category, tool: `desktop:${tool}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
     }
@@ -324,6 +326,19 @@ function toolForId(id) {
   return v;
 }
 
+// ---- the client's MCP roots, from its answer to the server's roots/list request (client → server,
+// so it passes through handleLine). Only local file:// roots are kept; they are extra bases for a
+// relative path argument after this process's cwd. Bounded; a malformed root is skipped. ----
+const RANK = { allow: 1, ask: 2, deny: 3 };
+let ROOTS = [];
+function rememberRoots(roots) {
+  const out = [];
+  for (const r of roots.slice(0, 16)) {
+    try { if (r && typeof r.uri === "string" && /^file:/i.test(r.uri)) out.push(fileURLToPath(r.uri)); } catch { /* not a local root */ }
+  }
+  ROOTS = out;
+}
+
 // ---- gate one JSON-RPC message. tools/call is inspected; everything else is forwarded verbatim. ----
 async function handleLine(rawLine) {
   const trimmed = rawLine.replace(/\r$/, "");
@@ -331,6 +346,7 @@ async function handleLine(rawLine) {
   let msg;
   try { msg = JSON.parse(trimmed); } catch { forward(rawLine); return; } // not JSON we understand → pass through
 
+  if (msg && msg.result && Array.isArray(msg.result.roots)) rememberRoots(msg.result.roots);
   if (!msg || msg.method !== "tools/call" || !msg.params || typeof msg.params !== "object") { forward(rawLine); return; }
 
   // This is a tool-call — the surface we gate.
@@ -355,6 +371,14 @@ async function handleLine(rawLine) {
     if (!ENGINE) { auditCall(tool, "allow", argsHash); rememberCall(msg.id, tool); forward(rawLine); return; } // fail open: no engine
 
     const g = mcpGateway(ENGINE, POLICY, { tool, server: SERVER, args });
+    // Files the arguments NAME — the same helper and the same checks as the hook's mcp__* branch
+    // (cli/mcp-file-args.mjs). A relative path resolves against this process's cwd first — the real
+    // server is spawned with no cwd option, so it inherits it and resolves the same way — then against
+    // the client's MCP roots. Skipped when a server/argument-rule gate already refused the call.
+    const fsr = g.gate === "server" || g.gate === "args" ? null : scanMcpFileArgs(ENGINE, POLICY, { tool, args: msg.params.arguments, bases: [process.cwd(), ...ROOTS], argIds: (g.findings || []).map((f) => f.threatId) });
+    if (fsr && RANK[fsr.decision] > RANK[g.decision]) { g.decision = fsr.decision; g.gate = "file"; g.reason = fsr.reasons.join(", "); g.alternatives = fsr.alternatives; }
+    else if (fsr && fsr.decision !== "allow" && fsr.decision === g.decision) g.reason = [g.reason, ...fsr.reasons].filter(Boolean).join(", ");
+    const fileFindings = fsr ? fsr.findings : [];
 
     if (COACH && g.decision === "deny") {
       coachNote(`MCP tool call ${tool}`, g.reason, g.alternatives);
@@ -368,12 +392,14 @@ async function handleLine(rawLine) {
       // Blocked: do NOT forward. The real server never receives the call. Return a clean tool error.
       alertBlock(tool, g.gate, g.reason, argsHash);
       alertFindings(tool, g.findings, true, argsHash);
+      alertFindings(tool, fileFindings, true, argsHash, "file");
       auditCall(tool, "deny", argsHash);
       writeBlock(msg.id, g.reason || "policy");
       return;
     }
     // allow OR coach ("ask"): Claude Desktop has no interactive banner, so coach = allow + record.
     alertFindings(tool, g.findings, false, argsHash);
+    alertFindings(tool, fileFindings, false, argsHash, "file");
     auditCall(tool, g.decision, argsHash);
     rememberCall(msg.id, tool);
     forward(rawLine);

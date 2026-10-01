@@ -435,3 +435,58 @@ hooks for every user, with the runtime bundled so no separate Node install is ne
 Code's docs: the default `"first-wins"` source behaviour ignores the drop-in when an org already delivers
 policy by MDM or claude.ai, unless `managedSourcesBehavior: "merge"` is set. Also needs per-user config
 (`~/.moorai/config.json`) moved to a machine-wide location. Not started.
+
+## Backlog — server mode: agents running on servers, in CI and through the Agent SDK (2026-09-30)
+
+Agents increasingly run without a developer's laptop: `claude -p` in CI, the Claude Code GitHub Action,
+Agent SDK services in containers. The Agent SDK docs state that SDK agents run "shell command hooks from
+settings files when the corresponding `settingSources` … entry is enabled, which it is for default
+`query()` options" (code.claude.com/docs/en/agent-sdk/hooks), so MoorAI's hook already fires there. The
+positioning carries over as "in your process, in your VPC: content never leaves your infrastructure".
+
+- **Tier 1 (shipped in v1.0.0):** the existing hook fits a container (`cli/server-mode.mjs`,
+  [`examples/server/`](../examples/server/README.md)). On when the root-owned `/etc/moorai/config.json`
+  says `"mode": "server"` or `MOORAI_MODE=server`.
+  - Configuration per key from the root-owned system file, then the environment (`MOORAI_SERVER_URL`,
+    `MOORAI_TENANT`, `MOORAI_INSTALL_TOKEN`, `MOORAI_SERVICE_ID`), then `~/.moorai/config.json`. A
+    `MOORAI_*` name a user, project or local settings file's `env` block sets is refused and reported as
+    tampering; managed settings are trusted.
+  - A headless answer for "justify/ask": deny, with a reason saying no approver exists;
+    `allow-with-report` only from the system file or the org policy.
+  - A workload identity instead of `user@host`: `MOORAI_SERVICE_ID`, else on GitHub Actions
+    `github:<repository>:<workflow>:<job>`, hashed into the actor the same way.
+  - Enforcement without a token; a Dockerfile that registers the hooks in managed settings, a GitHub
+    Actions workflow; `moorai-doctor` shows the sources, the headless-ask mapping, the identity and any
+    refused name.
+  - Live proof (2026-10-01): one live run of Claude Code 2.1.284 (`claude -p`, the hooks added with `--settings`, server mode from the environment) showed UserPromptSubmit (117 ms) and PreToolUse (224 ms) firing, a `.env` read denied as a headless ask, and the console receiving content-free reports under the workload identity.
+  - Trust anchors from settings files: on every device, `MOORAI_BREAKGLASS_PUBKEY`, `MOORAI_POLICY_PUBKEY`,
+    `MOORAI_OFFLINE_MODE` and the OTLP endpoint set by a user, project or local settings file are ignored
+    and reported.
+- **Still open from Tier 1:** watch an Agent SDK service and a GitHub Actions run end to end.
+- **Tier 2 (on customer demand):** `@moorai/agent-sdk`, the engine as in-process Agent SDK hook callbacks
+  (no process start per tool call; `data/*.js` is already dependency-free), plus a Python client.
+- **Tier 3 (on customer demand):** `moorai serve`, a localhost / Kubernetes sidecar exposing
+  `scan(text, stage, ctx)` for OpenAI Agents SDK, LangGraph and custom loops; and an HTTP MCP gateway for
+  remote MCP servers (the proxy handles local stdio servers only). The gateway is where Lasso, Prompt
+  Security and CrowdStrike AIDR compete.
+- **Not applicable on a server:** the desktop app, AIBOM, shadow-AI inventory and OS posture.
+
+## Backlog — coverage for cloud AI platforms and custom-built agents (2026-10-01)
+
+Buyers evaluating "AI application security" expect coverage of the AI services their teams build on, not
+only of coding agents on endpoints: Amazon Bedrock (Agents, Guardrails, AgentCore), Google Vertex AI (Agent
+Builder), Microsoft AI Foundry and Copilot Studio. MoorAI today governs coding agents through their hooks on
+the developer's machine and, in server mode, in CI and containers. It has no integration with any of those
+platforms, and its scope does not cover custom-built AI applications. Options, smallest first:
+
+- **Inventory:** read-only discovery of the agents, knowledge bases, guardrails and model endpoints a tenant
+  has defined on one platform (start with Bedrock), into the console's AI inventory; content-free.
+- **Runtime:** apply MoorAI's detection engine where the platform offers a hook point (for example a Bedrock
+  agent action group / Lambda in the tool path, or a Copilot Studio connector), reusing server mode's
+  identity and headless rules.
+- **Framework integrations:** server mode tier 3 (`moorai serve`, `scan(text, stage, ctx)`) as callbacks for
+  LangGraph and CrewAI agents, so custom-built agents get the same checks.
+- **Security testing for custom apps:** run the open benchmark's adversarial corpora against a customer's own
+  agent endpoint, not only against MoorAI.
+
+Not started. Pick the first platform from customer demand.

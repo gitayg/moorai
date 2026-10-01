@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { contentHash } from "./content-hash.mjs";
+import { trustedEnv } from "./server-mode.mjs";
 import { nextLink } from "./record-chain.mjs";
 import { buildAttestation as buildAttestationCore } from "./moorai-attest.mjs";
 
@@ -24,14 +25,14 @@ try { VERSION = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.u
 
 // The OTLP endpoint base (no path). Env wins over config; empty string means "disabled".
 export function otlpEndpoint(config = {}) {
-  const e = process.env.MOORAI_OTLP_ENDPOINT || config.otlpEndpoint || "";
+  const e = trustedEnv("MOORAI_OTLP_ENDPOINT") || config.otlpEndpoint || "";
   return e.trim().replace(/\/+$/, "");
 }
 
 // Optional extra headers (e.g. an ingest key), as "k=v,k2=v2" in env or an object in config.
 function otlpHeaders(config = {}) {
   const h = {};
-  const raw = process.env.MOORAI_OTLP_HEADERS;
+  const raw = trustedEnv("MOORAI_OTLP_HEADERS");
   if (raw) for (const pair of raw.split(",")) { const i = pair.indexOf("="); if (i > 0) h[pair.slice(0, i).trim()] = pair.slice(i + 1).trim(); }
   if (config.otlpHeaders && typeof config.otlpHeaders === "object") Object.assign(h, config.otlpHeaders);
   return h;

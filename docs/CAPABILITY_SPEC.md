@@ -115,7 +115,8 @@ to the cloud for its own reasoning.
   the security-team dashboard. The client's default endpoint is `http://localhost:8787`, overridable
   via the `MoorAI_SERVER` env var or `serverUrl` in the config ([`cli/config.mjs`](../cli/config.mjs)).
   The server does not enforce directly — it distributes the **policy** that drives client-side
-  enforcement.
+  enforcement. In server mode (below) the binding comes from a root-owned system file and the
+  environment first.
 
 ### Client form factor — native Managed AI Host
 - Native desktop app (cross-platform from one codebase). All AI tools are reached through the host.
@@ -125,6 +126,36 @@ to the cloud for its own reasoning.
   that guards prompts across 8 GenAI web apps (ChatGPT, Claude, Copilot, Gemini, Perplexity, Mistral,
   DeepSeek, Grok) to **detect** AI use *outside* the host, and an MCP middleware layer
   ([`mcp-proxy/`](../mcp-proxy/)) that guardrails agentic tool-calls.
+
+### Server mode — headless deployments
+The Claude Code hook also runs where there is no employee and no desktop app: `claude -p` in CI, the
+Claude Code GitHub Action, an Agent SDK service in a container
+([`cli/server-mode.mjs`](../cli/server-mode.mjs); examples in
+[`examples/server/`](../examples/server/README.md)). On only when the root-owned
+`/etc/moorai/config.json` (Windows `%ProgramData%\MoorAI\config.json`) says `"mode": "server"` or
+`MOORAI_MODE=server`; off, nothing changes.
+
+- **Binding**, per key: root-owned system file → environment (`MOORAI_SERVER_URL`, `MOORAI_TENANT`,
+  `MOORAI_INSTALL_TOKEN`, `MOORAI_SERVICE_ID`) → `~/.moorai/config.json` → defaults. A `MOORAI_*` (or
+  `MoorAI_*`, or GitHub workload) name that a user, project or local Claude Code settings file sets in its
+  `env` block is refused for these settings and reported as tampering (content-free, names only), because
+  a repository's `.claude/settings.json` sets the hook's environment; a managed settings `env` block is
+  trusted.
+- **Identity**: a workload, not `user@host`. `MOORAI_SERVICE_ID`, else on GitHub Actions
+  `github:<repository>:<workflow>:<job>`, else `unnamed`; `service` / `svc:<name>` is hashed into the
+  actor as `user@host` is, so one workload keeps one console pseudonym across deploys and runs.
+- **Enforcement**: server mode counts as management, so the hook enforces without a token (with no token
+  it reports nothing and fetches no org policy). A `justify` verdict has no approver, so it is denied
+  with a reason saying so and a content-free alert; `headlessAsk: "allow-with-report"` in the system file
+  or the org policy allows and reports it instead, and the environment can only say `deny`.
+- **Not applicable on a server:** the desktop app, the AIBOM, the shadow-AI inventory and OS posture.
+- **Proof and limits.** Observed live: one live run of Claude Code 2.1.284 (`claude -p`, the hooks added with `--settings`, server mode from the environment) showed UserPromptSubmit (117 ms) and PreToolUse (224 ms) firing, a `.env` read denied as a headless ask, and the console receiving content-free reports under the workload identity. An Agent SDK service and a GitHub Actions run have not
+  been watched end to end. Agent SDK in-process hook callbacks are not provided; an SDK service runs the
+  shell hook.
+- **Trust anchors from settings files are ignored on every device.** `MOORAI_BREAKGLASS_PUBKEY`,
+  `MOORAI_POLICY_PUBKEY`, `MOORAI_OFFLINE_MODE` and the OTLP endpoint set by a user, project or local
+  settings file's `env` block do not take effect and are reported (names only); managed settings, the
+  launching environment and the root-owned anchor files are trusted.
 
 ### Detection brain — tiered escalation cascade
 Cheapest-and-most-private first; the escalation order *is* the privacy order.
@@ -433,6 +464,9 @@ is validated against.
     force-enabled `moorai@moorai` plugin under `allowManagedHooksOnly`), enrollment, console reachability, which policy is enforced and whether its signature
     verifies, posture, break-glass and state-file modes, and runs the real hook on a benign and a
     known-bad `Bash` command in a temporary copy of the state; read-only, exit 1 on any failed check.
+    In server mode it also shows each setting's source (the token as a fingerprint), the headless-ask
+    mapping, the workload identity and any refused settings-file name, and the self-test adds a
+    credential read to check the headless answer.
     `moorai-explain` runs one string through the hook's engine and policy and shows each finding, the
     detectors dropped by their `refine` gate or by policy, the decision and the safer alternative; local
     only, engine and policy only. **Limits.** Claude.ai server-managed settings and Windows registry
@@ -475,7 +509,7 @@ per-threat → data-tier → **built-in prevention tier** → approval-set → `
   `WebFetch` url and prompt, MCP argument strings and the `Task` prompt through `PreToolUse`
   `updatedInput` (with no permission decision, so it never auto-approves), and the seven post-tool results
   through `PostToolUse` `updatedToolOutput`. Anywhere it cannot rewrite — `Read`, files a shell command
-  reads, the other agents' adapters, Cursor's renamed tools, an unenrolled device, a failed re-scan, a
+  reads, files an MCP call's arguments name, the other agents' adapters, Cursor's renamed tools, an unenrolled device, a failed re-scan, a
   value over 256 KB, and the MCP proxy and `claude -p` guard — the threat
   resolves to `policy.maskFallback` (`notify`/`justify`/`block`), else to its action without the mask
   entry. Each mask posts a content-free `Sensitive span masked` alert. **Limits.** Not yet observed in a
@@ -519,6 +553,19 @@ before this tier: a tenant can soften any entry to `notify`/`disabled` or harden
   installer covers Claude Desktop, project `.mcp.json`, Cursor and VS Code / Copilot; Codex's TOML MCP
   config is not written by it. Codex, Copilot CLI, Gemini CLI and Cursor tool calls are covered by
   pre-tool hooks instead (`cli/moorai-agent-hook.mjs`; README, *Other agents*).
+- **Files an MCP call names by path.** An argument that names a local file (absolute, `~`, `file://`,
+  or relative to the agent's cwd; in the proxy, its cwd and then the client's MCP roots) gets the file's
+  content scanned at `file`, its metadata (#72) and its location (#55), in both the Claude Code hook and
+  the proxy ([`cli/mcp-file-args.mjs`](../cli/mcp-file-args.mjs)). Only regular files; at most 12 files,
+  256 KB each, 1 MB and 1 s per call. **Blind spots:** files past the caps are skipped silently; a
+  relative path in a call that names a remote `owner`/`repo`/`repository`/`project_id`/`bucket` is not
+  resolved unless the tool's name sends; a relative argument that is really a destination name is
+  scanned if a local file by that name exists; whether a tool sends is read from its name; #65 runs on
+  the arguments, not on file content; `mask` cannot rewrite a file, so it falls back. Not tested against
+  a live MCP server or on Windows.
+- **Headless agents** (CI, containers, Agent SDK services) are covered by the same hook in server mode
+  (above), observed in one live `claude -p` run. **Blind spot:** an Agent SDK service and a CI run have not
+  been watched end to end.
 - **Blind spot:** AI use on surfaces with no tap at all — native AI desktop apps without an
   integration, other devices, phones — plus anything on a machine where the user never installed
   MoorAI. Adoption remains voluntary, so the security dashboard reflects *opt-in population* risk,

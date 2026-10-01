@@ -1,6 +1,6 @@
 # MoorAI — Detection Engine
 
-**Describes:** the engine as shipped in **v0.99.0**. Companion to
+**Describes:** the engine as shipped in **v1.0.0**. Companion to
 [CAPABILITY_SPEC.md](CAPABILITY_SPEC.md) (v0.6) and [BENCHMARK.md](BENCHMARK.md).
 
 This file was a v0.1 design document for a system that was designed and then not built that way. It
@@ -61,7 +61,7 @@ Counts below were produced by running `_wantStages` / `_inStage` over the shippe
 | Stage | Detectors it runs | Fed in production by |
 |---|--:|---|
 | `prompt` | 71 | `cli/moorai-hook.mjs`: the `Bash` / `PowerShell` **command** itself, the `Task` delegated prompt, the `WebFetch` url + prompt; `mcpGateway`'s argument scan; `cli/moorai-guard.mjs`; the Tauri app (`src/app.js`) |
-| `file` | 77 (71 prompt + 6) | `cli/moorai-hook.mjs` on `Read`, and on every path `extractReadPaths` finds in a `Bash` or `PowerShell` command; `mcp-proxy/moorai-mcp-guard.mjs` on every `tools/call` **result** |
+| `file` | 77 (71 prompt + 6) | `cli/moorai-hook.mjs` on `Read`, on every path `extractReadPaths` finds in a `Bash` or `PowerShell` command, and on every local file an `mcp__*` call's arguments name (`cli/mcp-file-args.mjs`, §6); `mcp-proxy/moorai-mcp-guard.mjs` on every `tools/call` **result** and on every local file a `tools/call`'s arguments name (§8) |
 | `output` | 60 | `cli/moorai-hook.mjs` on the write family (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`) and on `PostToolUse` results (`WebFetch`, `WebSearch`, `Bash`, `PowerShell`, `Agent`/`Task`, `mcp__*`; §6, §7); `cli/moorai-guard.mjs`; `src/app.js` |
 | `index` | 77 (71 prompt + 6) | the detached `moorai-hook.mjs indexscan` worker, over the agent's auto-loaded context files |
 | `tool` | 5 | `mcp-proxy/moorai-mcp-guard.mjs`, on a copy of every `tools/list` response |
@@ -73,7 +73,8 @@ from it: the user's prompt goes to intent alignment only (§6) and is never scan
 
 **Scan context.** The hook hands `decideText` a context object that some `refine` predicates read:
 `egress: true` when the text is leaving the device (the `WebFetch` url + prompt, `mcpGateway`'s
-arguments, a `Bash` command that uploads or names a host, and a file an uploading command reads),
+arguments, a `Bash` command that uploads or names a host, a file an uploading command reads, and a
+file named in the arguments of an MCP tool whose name sends),
 `inbound: true` on `PostToolUse` ingested content, and `targetPath` on the write family. Only the
 `instr-leak-*` detectors (§6) read the last three today.
 
@@ -456,6 +457,61 @@ the call. Threats that do fire on benign text — 39, 15, 43 — are deliberatel
   floors every MCP call to `ask`. A device that merely has no policy has not opted into fail-closed.
 - **Enrolled, fail-closed posture, no policy** — `OFFLINE_DEFAULT_POLICY`, unless an operator-signed,
   unexpired break-glass marker forces fail-open.
+- **Server mode** — counts as management, like a fail-closed posture: the hook enforces without a token
+  (`enforcementAllowed(CONFIG, { managed: … || SERVER.active })`). With no token the built-in defaults
+  enforce, nothing is posted and no org policy is fetched.
+
+### Server mode — the hook with no laptop
+
+[`cli/server-mode.mjs`](../cli/server-mode.mjs) (its header comment is the spec) adapts the hook to
+`claude -p` in CI, the Claude Code GitHub Action and an Agent SDK service in a container. It is on only
+when the root-owned system file (`/etc/moorai/config.json`; Windows `%ProgramData%\MoorAI\config.json`)
+says `"mode": "server"` or `MOORAI_MODE=server`. Off, `serverMode()` checks that one file and
+`loadConfig()` returns what it always did. On, three things change, all in the hook (`cli/moorai-hook.mjs`
+calls `serverMode`, `serviceWho`, `settleHeadlessAsk` and `tamperAlert`):
+
+- **Binding.** `loadConfig()` returns the server-mode binding. Per key, highest first: the system file
+  (read with `readRootOwned`: root-owned, not group- or world-writable), the environment
+  (`MOORAI_SERVER_URL`, `MOORAI_TENANT`, `MOORAI_INSTALL_TOKEN`, `MOORAI_SERVICE_ID`), the user file
+  (`~/.moorai/config.json`, then the legacy `~/.curaiq` and `~/.raiseme`), then the legacy
+  `MoorAI_SERVER` / `MoorAI_TENANT`, then the defaults (`http://localhost:8787`, `unprovisioned`, no
+  token). A console URL must be `http:` or `https:`.
+- **Settings-file `env` is refused.** Claude Code applies a settings file's `env` block to the hook's
+  environment, at startup in `-p` mode with no trust dialog, so a repository's `.claude/settings.json`
+  could plant a console URL that receives the install token, or a `MOORAI_SERVICE_ID` that claims another
+  workload's JIT grants. `settingsEnvHits` reads the user (`$CLAUDE_CONFIG_DIR` or `~/.claude`) and
+  project (`$CLAUDE_PROJECT_DIR` or the cwd) `settings.json` and `settings.local.json`; any `MOORAI_*`,
+  `MoorAI_*`, `GITHUB_ACTIONS`, `GITHUB_REPOSITORY`, `GITHUB_WORKFLOW` or `GITHUB_JOB` name one of them
+  sets is refused, unless the root-owned managed settings `env` block sets it too. Server mode then
+  ignores that name's value, so a settings file that sets `MOORAI_MODE` cannot turn server mode on. The
+  hook posts `Server-mode configuration refused (set by a settings file)` (Critical, `refusedEnv` names
+  and a file count, never a value), awaited like the other tamper reports.
+- **Headless ask** (`settleHeadlessAsk`, in `emit()`). A host's "ask" has no one to answer it: `claude -p`
+  with no permission host denies it without MoorAI's reason, and an Agent SDK service hands it to
+  application code. So an `ask` becomes `deny`, with a reason ending "held for approval, but this is a
+  headless run (MoorAI server mode) and no approver exists", and the hook posts `Headless approval denied
+  (no approver)` (Blocked) with the host's `permission_mode`. `"headlessAsk": "allow-with-report"` in
+  the system file or the org policy allows the call and posts `Headless approval released
+  (allow-with-report)` (High) instead. Resolution order: `MOORAI_HEADLESS_ASK=deny`, the system file, the
+  org policy, `deny`. The environment can only say `deny`; any other value is ignored and the doctor
+  warns.
+- **Service identity** (`serviceWho`). The pair is `service` / `svc:<name>`, hashed into the actor with
+  `actorHash` exactly as `user@host` is, so all workloads share one `usr-` pseudonym and each workload
+  keeps one `dev-` pseudonym across deploys. The name is `MOORAI_SERVICE_ID` (or `serviceId` in the
+  system or user file), else on GitHub Actions `github:<GITHUB_REPOSITORY>:<GITHUB_WORKFLOW>:<GITHUB_JOB>`
+  (`GITHUB_RUN_ID` is left out: one actor per run is the flood a per-deploy hostname causes), else
+  `unnamed`. Printable, whitespace collapsed, at most 128 characters. A break-glass marker is scoped to
+  `svc:<name>`.
+
+`moorai-doctor` adds a server-mode check (`cli/doctor-server.mjs`): each setting's source, the token as a
+sha256 fingerprint, the headless-ask mode and its source, the identity and any refused name. It fails on
+a refused name and warns on no token, an `unnamed` workload, an ignored `MOORAI_HEADLESS_ASK`, a token
+with no policy trust anchor (container state is discarded between runs, so the TOFU pin never forms and
+an unsigned policy is accepted; ship `/etc/moorai/policy.pub` or `MOORAI_POLICY_PUBKEY`), and a token
+sent to a non-loopback `http` console. The self-test adds `cat ~/.aws/credentials` (#55, `justify`) and
+checks the headless answer; it is skipped when the system file binds the console, because the sandboxed
+child would post to it. The desktop app, AIBOM, the shadow-AI inventory and OS posture do not apply on a
+server. Examples: [`examples/server/`](../examples/server/README.md). Limits are in §13.
 
 ---
 
@@ -490,7 +546,7 @@ label `Task` for both.
 | `Bash` / `PowerShell` | every path `extractReadPaths` finds, **and** the command text itself | `file`, then `prompt` |
 | Write family | what the agent is about to **commit** — `content` / `new_string` / `new_source`, never `old_string` | `output` |
 | `WebFetch` | url + prompt (the page does not exist yet) | `prompt` |
-| `mcp__*` | serialized arguments, through `mcpGateway` | `prompt` |
+| `mcp__*` | serialized arguments, through `mcpGateway`; then every local file the arguments name (below) | `prompt`, then `file` |
 | `Task` | the delegated sub-agent prompt | `prompt` |
 
 The write family routes to `output` rather than `file` deliberately: `file` expands to the 71 prompt
@@ -524,6 +580,41 @@ uploads `OUTBOUND_UPLOAD` does not name: `Start-BitsTransfer -TransferType Uploa
 localhost and `wsl.localhost` excluded). Existing installs converge on the new matcher. Whole-hook p50 on
 a benign command was 121 ms for both `Bash` and `PowerShell` (30 calls each, no reachable policy server).
 Limits are in §13.
+
+**Files named by MCP arguments.** An MCP tool that takes a path reads the file itself, so `mcpGateway`
+sees only the path: `upload_file {"path": "customers.csv"}` names a harmless string. After the argument
+scan, `scanMcpFileArgs` ([`cli/mcp-file-args.mjs`](../cli/mcp-file-args.mjs)) walks the arguments
+(objects and arrays, keys ignored; depth 8, 512 string leaves, 32 candidate paths stat'ed) and resolves
+each leaf that denotes a local path: absolute, `~` and `~/…`, `file://` with an empty or `localhost` host,
+and a relative name containing `/`, `\` or `.`, resolved against the payload `cwd` (else the hook's own).
+Other URL schemes and `~user` are not paths. On Windows only drive-absolute and `\\?\C:\` forms resolve;
+UNC paths, `\\.\` devices, drive- or root-relative paths and device names are never touched, because a
+`stat` on `\\host\share` authenticates to that host. A call that names a remote location at its top level
+(`owner`, `repo`, `repository`, `project_id`, `projectId` or `bucket`) gets no relative leaf resolved
+unless the tool sends, because github's `get_file_contents {owner, repo, path: "README.md"}` names a file
+in the remote repository; absolute, `~` and `file://` leaves are always resolved. Only regular files are
+opened: a symlink is followed only to a regular file and the target is what gets checked, nothing under
+`/dev`, `/proc` or `/sys` is read, FIFOs and sockets are skipped, and the open is non-blocking with an
+`fstat` re-check. Caps: 12 files, 256 KB read per file, 1 MB and 1 s per call (the budget is checked
+before each stat and each read); anything past a cap is skipped without a signal, and any error leaves
+the verdict as it stood.
+
+Each file gets what the `Bash` branch gives a path a command reads: the content scan at `file` (with
+`template` set for `.env.example`, `.env.sample` and `.env.template`), `decideFileMetadata` (#72), and `decideCredFileRead`
+(#55) on the path as resolved and on its real path. The #55 check is skipped when the argument scan
+already raised #55, because the path text is in the arguments. The file verdict merges by rank and never
+lowers the argument verdict; a `kill` kills the session. Each file's findings are reported at stage
+`file`, with the argument as `filePath` only under a capture tier that allows it, as on a `Read`.
+`ctx.egress` is set when the tool's name has a sending verb (`upload`, `attach`, `send`, `post`, `share`,
+`publish`, `mail`/`email`, `submit`, `transmit`, `forward`, `gist`, matched on the name's segments and
+camel case), which arms only #52's `instr-leak-egress`, so an `upload_file` of `CLAUDE.md` raises #52 and
+a `read_file` of it does not, as with `Read`. The behaviour ledger gets a file's findings only when the
+tool sends: every `mcp__*` call is already a trifecta callout leg, and a `read_file` of a file holding a
+secret and an injected line would otherwise close #59 in one call where a `Read` of it does not. Intent
+alignment sees the argument and file findings together. A file named by path cannot be rewritten, so
+`mask` resolves to its fallback. An unenrolled device coaches. Measured: for 60 repository files, an MCP
+`read_file` naming each got the same verdict as a `Read` of it, 60/60. The proxy runs the same helper
+(§8). Limits are in §13.
 
 ### The `mask` action — rewrite the span, let the call proceed
 
@@ -567,7 +658,7 @@ the threat would have had without the mask entry:
 
 | Case | Why |
 |---|---|
-| `Read`, and the files a `Bash` or `PowerShell` command reads | the secret is in the file, not in the tool input |
+| `Read`, the files a `Bash` or `PowerShell` command reads, and the files an `mcp__*` call's arguments name | the secret is in the file, not in the tool input |
 | the Codex, Copilot, Gemini and Cursor adapters (`MOORAI_HOOK_HOST=shim`) | the shim reduces the answer to allow/ask/deny and would drop the rewrite |
 | a tool name that arrived under an alias (Cursor's `Shell`) | whether that host applies `updatedInput` is unmeasured |
 | an unenrolled device | coaching changes nothing |
@@ -615,7 +706,8 @@ of that file. Quoting a line or two, and repeating template boilerplate, stay un
 file (editing `CLAUDE.md`, mirroring it into `AGENTS.md`) is silent. `PostToolUse` content passes
 `inbound: true` and is silent, because a page the agent fetched is not a leak by the agent. `ctx.egress`
 is set on the `WebFetch` url + prompt, on `mcpGateway`'s arguments, on a `Bash` command that uploads or
-names a host, and on a file an uploading command reads. On an unenrolled device, a finding from any of
+names a host, on a file an uploading command reads, and on a file named in the arguments of an MCP tool
+whose name sends (§6, *Files named by MCP arguments*). On an unenrolled device, a finding from any of
 the three adds a coaching note even though #52 does not ask.
 
 **Measured.** With one real 3,881-shingle `CLAUDE.md` fingerprinted, the fingerprint detectors fire on
@@ -875,6 +967,15 @@ call is **never forwarded**; the real server never receives it, and the agent ge
 a retry loop. Policy-supplied regexes pass a ReDoS gate (`safeRegex` / `redosReason`) and quantifier-
 bearing patterns see at most 16 KB of text, because V8 cannot interrupt a running regex.
 
+Unless the server allow-list or an argument rule already refused the call, the local files the
+arguments name are then checked by the hook's helper, `scanMcpFileArgs` (§6, *Files named by MCP
+arguments*), with the same caps. A relative path resolves against the proxy's cwd first (the real server
+is spawned without a `cwd` option, so it inherits the same one), then against the client's MCP roots:
+the proxy keeps up to 16 local `file://` roots from the client's answer to the server's `roots/list`. A
+file verdict that outranks the gateway's refuses the call before the real server sees it, with category
+`MCP: blocked file argument`; each file's findings are posted at stage `file`. An `ask` forwards, as
+everywhere in the proxy.
+
 **2. `tools/list` responses (server → agent) — observation only.** Scanned at the `tool` stage, on a
 **copy**, after the bytes have already been forwarded; there is no path from that code back to stdout or
 to the child's stdin. Byte-identity of the listing is a hard contract asserted on the wire
@@ -997,6 +1098,7 @@ Where it is enforced:
 | `src/safe-regex.js` | a policy-supplied pattern that fails the ReDoS gate is **dropped**, not executed. |
 | `src/semantic.js` | policy off, no model, timeout, or throw → `null` → the regex verdict stands. |
 | MCP proxy, call side | any gate error forwards the call unchanged. No engine → forward. |
+| MCP file arguments (`cli/mcp-file-args.mjs`) | the whole walk, every `stat` and every read is inside `try/catch`; on an error, or past a cap or the 1 s budget, the verdict stands on whatever was checked so far. |
 | MCP proxy, result side | fail-open survives parse-then-forward as four explicit properties rather than one accident of ordering: an exactly-once `pass()` latch that forwards the **original** bytes from every early return, catch and `finally`; a hard per-message deadline (`resultDeadlineMs: 750`) the decision races; a size cap instead of a timer for synchronous work (`maxResultBytes: 64 KB`; over `maxLineBytes: 1 MB` a line is never parsed at all); and nothing but an explicit `deny` resolution may replace a message. |
 | detached workers | `indexscan`, `agentscan` and `escalate` never read stdin and never write a decision — the hook that spawned them has already emitted its verdict. |
 
@@ -1034,6 +1136,11 @@ machine with no reachable policy server. The semantic tier, when on, adds up to 
 The `Bash`, `Agent`/`Task` and `mcp__*` `PostToolUse` matchers add one hook process after each such call,
 about 82 ms at p50 on one machine. A call with no output to judge exits before the policy load. A mask
 adds a second scan of the rewritten text, bounded by the 256 KB rewrite budget.
+
+Files named by MCP arguments (§6) cost whole-hook p50 133 → 216 ms for an `mcp__*` call naming one small
+file and 132 → 293 ms for one naming a 256 KB file; a call whose arguments name no local path is
+unchanged (one machine). The walk stops at its 1 s per-call budget; a read already started, and the scan
+of what it read, finish first.
 
 Independently, `mcp-proxy/tool-scan.mjs` records `decideText` at stage `file` measuring 3.8–4.2 ms warm
 on 64 KB of composed text, which is why `maxResultBytes` is set where it is. These are single-run figures
@@ -1186,6 +1293,20 @@ Stated rather than papered over.
 - **`decideFileMetadata` reads only uncompressed metadata.** PNG `zTXt`, a compressed XMP stream and a
   PDF whose `Info` dictionary lives in an object stream are skipped rather than inflated. A directive
   planted in a compressed field is not seen.
+- **Files named by MCP arguments are found by shape, not by meaning.** A relative argument that is
+  really a destination name (`upload_file {"path": "report.csv", "dest": "notes.md"}`) is resolved and
+  scanned if a local file by that name exists. Whether a tool sends is read from its name, a heuristic: a
+  tool that ships a file under a name with no sending verb gets no `ctx.egress`, which moves only #52.
+  The remote-location rule looks at the top-level argument names only. #65 (local secret value egress)
+  runs on the arguments, not on file content. Files past the caps (12 files, 256 KB each, 1 MB, 1 s) are
+  skipped without a signal. Not tested against a live MCP server or on Windows.
+- **Server mode is observed in one live headless run only:** one live run of Claude Code 2.1.284 (`claude -p`, the hooks added with `--settings`, server mode from the environment) showed UserPromptSubmit (117 ms) and PreToolUse (224 ms) firing, a `.env` read denied as a headless ask, and the console receiving content-free reports under the workload identity. No GitHub Actions run or Agent SDK
+  service has been watched end to end. Trust anchors are protected on every device: `MOORAI_BREAKGLASS_PUBKEY`,
+  `MOORAI_POLICY_PUBKEY`, `MOORAI_OFFLINE_MODE` and the OTLP endpoint set by a user, project or local settings
+  file are ignored (`trustedEnv` in `cli/server-mode.mjs`) and reported; other `MOORAI_*` tuning variables
+  (for example `MOORAI_LOCAL_MODEL`) are still read from the environment. A container with no `/etc/moorai/policy.pub` or `MOORAI_POLICY_PUBKEY` starts every run
+  unpinned, so it trusts the first policy it fetches. Agent SDK in-process hook callbacks are not
+  provided; an SDK service runs the shell hook, one process per tool call.
 - **Codex is not covered by the MCP proxy installer** (its config is TOML, the installer writes JSON) —
   recorded in [CAPABILITY_SPEC.md](CAPABILITY_SPEC.md) and repeated here because it bounds where any of
   this applies at all.

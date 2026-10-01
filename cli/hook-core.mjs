@@ -6,6 +6,7 @@
 // Everything down to the "Policy TRUST + LOAD" banner near the bottom is pure. That last section owns
 // the policy-trust I/O, and it is here rather than in one entrypoint precisely because BOTH need it.
 
+import { trustedEnv } from "./server-mode.mjs";
 import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createPublicKey, verify as cryptoVerify, createHash } from "node:crypto";
@@ -1704,7 +1705,8 @@ const POLICY_ANCHOR = process.platform === "win32"
   : "/etc/moorai/policy.pub";
 
 function policyKeys() {
-  try { return parseTrustedKeys(`${readRootOwned(POLICY_ANCHOR)}\n${process.env.MOORAI_POLICY_PUBKEY || ""}`); } catch { return []; }
+  // The env anchor counts only when no user/project/local settings file set it (cli/server-mode.mjs trustedEnv).
+  try { return parseTrustedKeys(`${readRootOwned(POLICY_ANCHOR)}\n${trustedEnv("MOORAI_POLICY_PUBKEY") || ""}`); } catch { return []; }
 }
 
 // ---- policy-key pin I/O (the pure logic lives in hook-core.mjs) ----

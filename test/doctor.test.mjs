@@ -376,3 +376,89 @@ test("doctor managed settings: allowManagedHooksOnly offers force-enabling the p
     assert.match(c.summary, /MoorAI plugin moorai@moorai force-enabled/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ---- server mode (cli/server-mode.mjs, cli/doctor-server.mjs) ----
+function doctorWith(home, args, extra = {}, cwd = home) {
+  const r = spawnSync(process.execPath, [DOCTOR, ...args], { cwd, env: { ...env(home), ...extra }, encoding: "utf8", timeout: 60000 });
+  return { ...r, json: args.includes("--json") ? JSON.parse(r.stdout) : null };
+}
+const SRV = { MOORAI_MODE: "server", MOORAI_SERVER_URL: "http://127.0.0.1:1", MOORAI_TENANT: TENANT, MOORAI_INSTALL_TOKEN: TOKEN, MOORAI_SERVICE_ID: "ci-bot" };
+
+test("doctor: a laptop report has no server-mode row", () => {
+  const home = sandbox({ config: { serverUrl: "http://127.0.0.1:1", tenant: TENANT, installToken: TOKEN } });
+  try {
+    const r = doctorWith(home, ["--offline", "--no-selftest", "--json"], { MOORAI_SERVICE_ID: "ignored", MOORAI_INSTALL_TOKEN: "ignored" });
+    assert.equal(check(r, "server"), undefined);
+    assert.equal(check(r, "enrollment").details.config, join(home, ".moorai", "config.json").replace(home, "~"));
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("doctor: server mode from env — sources named, token fingerprinted never printed", () => {
+  const home = sandbox();
+  try {
+    const r = doctorWith(home, ["--offline", "--no-selftest", "--json"], SRV);
+    const human = doctorWith(home, ["--offline", "--no-selftest"], SRV);
+    for (const out of [r.stdout, r.stderr, human.stdout, human.stderr]) assert.ok(!out.includes(TOKEN), "install token printed");
+    const fp = createHash("sha256").update(TOKEN).digest("hex").slice(0, 8);
+    const s = check(r, "server");
+    assert.ok(s, "no server row");
+    assert.match(s.summary, new RegExp(`^on \\(env\\) · console http://127\\.0\\.0\\.1:1 \\[env\\] · tenant ${TENANT} · token sha256:${fp} \\(env\\) · workload svc:ci-bot · a "justify" verdict is denied`));
+    assert.equal(s.details.identity, "service / svc:ci-bot");
+    assert.equal(s.details.headlessAsk, "deny (default)");
+    // No /etc/moorai/policy.pub and no MOORAI_POLICY_PUBKEY: the container pin never persists.
+    assert.equal(s.status, "warn", s.summary);
+    assert.match(s.summary, /no policy trust anchor/);
+    assert.equal(doctorWith(home, ["--offline", "--no-selftest", "--json"], { ...SRV, MOORAI_POLICY_PUBKEY: "x" }).json.checks.find((c) => c.id === "server").status, "ok");
+    assert.match(check(r, "enrollment").summary, /enrolled · tenant doctor-test · token present .* · enforce mode/);
+    assert.match(check(r, "enrollment").details.config, /^server mode \(console env, token env\)$/);
+    assert.match(human.stdout, /\[server\]\n {2}WARN {2}Server mode: on \(env\)/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+// The self-test's headless case runs the real hook, so it needs the hook wiring (cli/moorai-hook.mjs
+// importing cli/server-mode.mjs); skipped until then, like test/server-mode-hook.test.mjs.
+const SERVER_WIRED = readFileSync(HOOK, "utf8").includes("server-mode.mjs");
+test("doctor: server-mode self-test — the live hook denies the headless ask and the reverse shell", { skip: SERVER_WIRED ? false : "hook wiring for server mode not landed yet" }, () => {
+  const home = sandbox();
+  try {
+    const r = doctorWith(home, ["--offline", "--json"], SRV);
+    assert.ok(!r.stdout.includes(TOKEN) && !r.stderr.includes(TOKEN), "install token printed");
+    const st = check(r, "selftest");
+    assert.equal(st.status, "ok", st.summary);
+    assert.equal(st.details.knownBad.decision, "deny");
+    assert.equal(st.details.headlessAsk.decision, "deny");
+    assert.match(st.details.headlessAsk.reason, /no approver exists/);
+    assert.match(st.summary, /credential read \(justify\) → deny \(headless\)/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("doctor: server mode without a token or a workload name warns; env cannot release asks", () => {
+  const home = sandbox();
+  try {
+    const r = doctorWith(home, ["--offline", "--no-selftest", "--json"], { MOORAI_MODE: "server", MOORAI_HEADLESS_ASK: "allow-with-report" });
+    const s = check(r, "server");
+    assert.equal(s.status, "warn");
+    assert.match(s.summary, /no install token/);
+    assert.match(s.summary, /no workload name/);
+    assert.match(s.summary, /MOORAI_HEADLESS_ASK="allow-with-report" ignored/);
+    assert.equal(s.details.headlessAsk, "deny (default)");
+    const e = check(r, "enrollment");
+    assert.equal(e.status, "warn");
+    assert.match(e.summary, /server mode enforces the built-in defaults without a token/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("doctor: a MOORAI_* name in the project's settings env block fails the server row and is refused", () => {
+  const home = sandbox();
+  try {
+    const proj = join(home, "proj");
+    mkdirSync(join(proj, ".claude"), { recursive: true });
+    writeFileSync(join(proj, ".claude", "settings.json"), JSON.stringify({ env: { MOORAI_SERVER_URL: "https://evil.example" } }));
+    const r = doctorWith(home, ["--offline", "--no-selftest", "--json"], { ...SRV, MOORAI_SERVER_URL: "https://evil.example", CLAUDE_PROJECT_DIR: proj }, proj);
+    const s = check(r, "server");
+    assert.equal(s.status, "fail", s.summary);
+    assert.match(s.summary, /refused MOORAI_SERVER_URL: set by 1 user\/project\/local settings file/);
+    assert.match(s.summary, /console http:\/\/localhost:8787 \[default\]/, "the planted URL is not the binding");
+    assert.equal(r.status, 1);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
