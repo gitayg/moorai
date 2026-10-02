@@ -44,7 +44,7 @@ function userDir(platform, home, app) {
 
 export const HOSTS = [
   {
-    id: "claude-desktop", label: "Claude Desktop", key: "mcpServers",
+    id: "claude-desktop", label: "Claude Desktop", key: "mcpServers", usageHost: "claude-desktop",
     path: (platform = process.platform, home = os.homedir()) => {
       if (platform === "win32") return join(appData(home), "Claude", "claude_desktop_config.json");
       if (platform === "darwin") return join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
@@ -54,21 +54,26 @@ export const HOSTS = [
   {
     // Project-scoped MCP servers, read by Claude Code and by several other `.mcp.json` consumers.
     // Relative to the CWD by design — it is a per-repo file, not a per-user one.
-    id: "mcp-json", label: "Project .mcp.json", key: "mcpServers",
+    id: "mcp-json", label: "Project .mcp.json", key: "mcpServers", usageHost: "claude-code",
     path: () => join(process.cwd(), ".mcp.json")
   },
   {
-    id: "cursor", label: "Cursor", key: "mcpServers",
+    id: "cursor", label: "Cursor", key: "mcpServers", usageHost: "cursor",
     path: (platform = process.platform, home = os.homedir()) => join(home, ".cursor", "mcp.json")
   },
   {
     // VS Code / GitHub Copilot. This is the shape that motivated the `key` field: its server map is
     // under `servers`, not `mcpServers`.
-    id: "vscode", label: "VS Code / Copilot", key: "servers",
+    id: "vscode", label: "VS Code / Copilot", key: "servers", usageHost: "vscode",
     path: (platform = process.platform, home = os.homedir()) => join(userDir(platform, home, "Code"), "mcp.json")
   }
 ];
 
+// `usageHost` is the host id the guard reports in the MCP usage cross-check (cli/mcp-usage-beat.mjs,
+// POST /api/mcp-usage), stamped into the wrapped args as `--host <id>`. `.mcp.json` maps to
+// "claude-code": it is Claude Code's project MCP file, and the same calls also pass Claude Code's hook,
+// which is exactly the pair the console compares. A bare `--config` install carries no stamp, and the
+// guard reports "unknown".
 export function hostById(id) { return HOSTS.find((h) => h.id === id) || null; }
 
 // Which key holds this config's server map. Detected from the config itself so a file found via
@@ -95,15 +100,22 @@ export function isWrapped(entry, guardPath = GUARD_PATH) {
 }
 
 // Wrap a single entry. stdio servers (those with a `command`) are wrapped; url/transport-only entries are
-// returned unchanged. Already-wrapped entries are returned unchanged (idempotent).
-export function wrapEntry(name, entry, guardPath = GUARD_PATH, nodeBin = "node") {
+// returned unchanged. Already-wrapped entries are returned unchanged (idempotent) — except that an entry
+// wrapped before the host stamp existed gains `--host <id>` when a host is known, so re-running the
+// installer upgrades it. The stamp sits before the `--`, so unwrapEntry is unaffected.
+export function wrapEntry(name, entry, guardPath = GUARD_PATH, nodeBin = "node", host = "") {
   if (!entry || typeof entry !== "object") return entry;
   if (!entry.command) return entry;          // not a stdio server (e.g. { url } SSE/HTTP) — leave alone
-  if (isWrapped(entry, guardPath)) return entry;
+  const stamp = host ? ["--host", host] : [];
+  if (isWrapped(entry, guardPath)) {
+    const sep = entry.args.indexOf("--");
+    if (!host || sep < 0 || entry.args.slice(0, sep).includes("--host")) return entry;
+    return { ...entry, args: [...entry.args.slice(0, sep), ...stamp, ...entry.args.slice(sep)] };
+  }
   const wrapped = {
     ...entry,
     command: nodeBin,
-    args: [guardPath, "--server", name, "--", entry.command, ...(Array.isArray(entry.args) ? entry.args : [])]
+    args: [guardPath, "--server", name, ...stamp, "--", entry.command, ...(Array.isArray(entry.args) ? entry.args : [])]
   };
   return wrapped;
 }
@@ -131,8 +143,8 @@ function mapConfig(config, guardPath, key, fn) {
   return out;
 }
 
-export function wrapConfig(config, guardPath = GUARD_PATH, key = null) {
-  return mapConfig(config, guardPath, key, (name, entry, gp) => wrapEntry(name, entry, gp));
+export function wrapConfig(config, guardPath = GUARD_PATH, key = null, host = "") {
+  return mapConfig(config, guardPath, key, (name, entry, gp) => wrapEntry(name, entry, gp, "node", host));
 }
 
 export function unwrapConfig(config, guardPath = GUARD_PATH, key = null) {
@@ -216,7 +228,7 @@ function runTarget({ host, path }, action, dryRun, soft) {
     return;
   }
 
-  const next = (action === "uninstall") ? unwrapConfig(config, GUARD_PATH, key) : wrapConfig(config, GUARD_PATH, key);
+  const next = (action === "uninstall") ? unwrapConfig(config, GUARD_PATH, key) : wrapConfig(config, GUARD_PATH, key, host?.usageHost || "");
   const verb = action === "uninstall" ? "uninstall (restore originals)" : "wrap through MoorAI guard";
   process.stdout.write(`\n${label}\n  config: ${path}\n  action: ${verb}\n  key:    ${key}\n${summarize(config, next, key) || "  (no MCP servers)"}\n`);
 

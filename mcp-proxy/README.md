@@ -165,6 +165,18 @@ content-free contract as the hook. **Tool-call content is never emitted.** Each 
 content-free audit line in the local ledger (`~/.moorai/action-audit.jsonl`) and a content-free alert to
 the console `/api/alerts`, using the config/token resolved by `cli/config.mjs`.
 
+### Usage counts for the proxy-vs-hook cross-check
+
+Every `tools/call` is also counted, content-free, in `~/.moorai/mcp-usage.json` (0600) per UTC day,
+path `"proxy"`, host and server label (`cli/mcp-usage-beat.mjs`). Once a day is over it is posted once to
+`POST /api/mcp-usage` with the install token: `{ user, device, platform, actor, day, path, host,
+servers: [{ label, calls }] }` — at most 64 servers, labels at most 64 characters, no tool names and no
+arguments. The Claude Code hook counts its `mcp__*` calls the same way under path `"hook"`, so the console
+can show a server that one path saw and the other did not. The post runs off the stdio path (at start-up
+and every 30 minutes, on an unref'd timer); a failed post is retried after ten minutes; an unenrolled
+device posts nothing. The host comes from the `--host` stamp the installer writes (below); an entry
+wrapped before the stamp existed reports `"unknown"` until the installer is re-run.
+
 ## Governance, not a sandbox — fail OPEN
 
 On **any** error (unreadable/absent policy, engine build failure, an unparseable line, a network timeout)
@@ -204,8 +216,11 @@ The installer:
 - **backs the file up** (`…​.moorai-backup-<timestamp>`) before any write;
 - rewrites each entry in that host's server map that has a `command` so it launches through the guard,
   **preserving the original command/args** as the wrapped target
-  (`node <guard> --server <name> -- <orig-cmd> <args…>`);
-- is **idempotent** — a re-wrap of an already-wrapped entry is a no-op;
+  (`node <guard> --server <name> --host <id> -- <orig-cmd> <args…>`);
+- stamps **which host** the server belongs to (`--host`, for the usage cross-check): `claude-desktop`,
+  `claude-code` for `.mcp.json`, `cursor`, `vscode`. A bare `--config <path>` writes no stamp;
+- is **idempotent** — a re-wrap of an already-wrapped entry is a no-op, except that an entry wrapped
+  before the host stamp existed gains it;
 - leaves transport-only entries (e.g. `{ "url": … }` SSE/HTTP servers, which have no `command`) untouched;
 - `uninstall` reconstructs each original from the wrapped args (no sidecar keys are added to your config).
 
@@ -214,11 +229,13 @@ The installer:
 ## Run the guard directly
 
 ```bash
-node mcp-proxy/moorai-mcp-guard.mjs [--server <label>] -- <real-server-cmd> [args…]
+node mcp-proxy/moorai-mcp-guard.mjs [--server <label>] [--host <id>] -- <real-server-cmd> [args…]
 ```
 
 `--server <label>` is the MCP server name used for the gateway (allow-list, audit, alerts). It defaults to
-the basename of the real command; the installer passes the configured server key.
+the basename of the real command; the installer passes the configured server key. `--host <id>` names the
+MCP host for the usage counts (`claude-desktop`, `vscode`, `cursor`, `claude-code`, …); anything else, or
+nothing, is `unknown`.
 
 ## Verify
 
@@ -235,6 +252,10 @@ echoed; a policy-denied call is blocked (the real server never receives it — c
 received-log — and the host gets an error result with the matching id); and `initialize`/`tools/list`
 pass through untouched. It also validates the `install.mjs` rewrite against a fixture
 (wrap → idempotent re-wrap → uninstall restores the original).
+
+The usage counts have their own tests: `test/mcp-usage-beat.test.mjs` (tally, once a day, retry, the exact
+post shape) and `test/mcp-usage-proxy.test.mjs` (the installer's host stamp driven through the real guard
+to a stand-in console).
 
 ## Measured coverage
 

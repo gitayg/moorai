@@ -1,0 +1,24 @@
+{
+    "modelSummaries": [
+        {
+            "baseModelArn": "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-text-express-v1:0:8k",
+            "baseModelName": "amazon.titan-text-express-v1",
+            "creationTime": "2026-08-15T12:34:56.123456+00:00",
+            "customizationType": "FINE_TUNING",
+            "modelArn": "arn:aws:bedrock:us-east-1:210987654321:custom-model/amazon.titan-text-express-v1:0:8k/abcdefghij12",
+            "modelName": "CANARY_MODEL_hr_tuned",
+            "modelStatus": "Active",
+            "ownerAccountId": "210987654321"
+        },
+        {
+            "baseModelArn": "arn:aws:bedrock:us-east-1::foundation-model/meta.llama3-1-8b-instruct-v1:0",
+            "baseModelName": "meta.llama3-1-8b-instruct-v1",
+            "creationTime": "2026-09-05T12:34:56.123456+00:00",
+            "customizationType": "IMPORTED",
+            "modelArn": "arn:aws:bedrock:us-east-1:999988887777:custom-model/imported/zyxwvutsrq98",
+            "modelName": "CANARY_MODEL_shared",
+            "modelStatus": "Active",
+            "ownerAccountId": "999988887777"
+        }
+    ]
+}

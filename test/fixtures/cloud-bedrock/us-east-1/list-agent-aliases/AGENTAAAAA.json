@@ -1,0 +1,31 @@
+{
+    "agentAliasSummaries": [
+        {
+            "agentAliasId": "TSTALIASID",
+            "agentAliasName": "AgentTestAlias",
+            "agentAliasStatus": "PREPARED",
+            "createdAt": "2026-08-01T12:34:56.123456+00:00",
+            "description": "Test Alias for Agent",
+            "routingConfiguration": [
+                {
+                    "agentVersion": "DRAFT"
+                }
+            ],
+            "updatedAt": "2026-09-14T12:34:56.123456+00:00"
+        },
+        {
+            "agentAliasId": "ALIASAAAA1",
+            "agentAliasName": "CANARY_ALIAS_prod",
+            "agentAliasStatus": "PREPARED",
+            "aliasInvocationState": "ACCEPT_INVOCATIONS",
+            "createdAt": "2026-09-01T12:34:56.123456+00:00",
+            "description": "CANARY production alias",
+            "routingConfiguration": [
+                {
+                    "agentVersion": "1"
+                }
+            ],
+            "updatedAt": "2026-09-14T12:34:56.123456+00:00"
+        }
+    ]
+}

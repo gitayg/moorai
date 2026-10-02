@@ -1,0 +1,12 @@
+{
+    "agentActionGroup": {
+        "actionGroupId": "ACTGRPAAA2",
+        "actionGroupName": "CANARY_AG_code",
+        "actionGroupState": "ENABLED",
+        "agentId": "AGENTAAAAA",
+        "agentVersion": "DRAFT",
+        "createdAt": "2026-09-01T12:34:56.123456+00:00",
+        "parentActionSignature": "AMAZON.CodeInterpreter",
+        "updatedAt": "2026-09-11T12:34:56.123456+00:00"
+    }
+}

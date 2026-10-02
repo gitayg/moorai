@@ -1,0 +1,15 @@
+{
+    "agentSummaries": [
+        {
+            "agentId": "AGENTCCCCC",
+            "agentName": "CANARY_AGENT_eu",
+            "agentStatus": "NOT_PREPARED",
+            "guardrailConfiguration": {
+                "guardrailIdentifier": "arn:aws:bedrock:eu-west-1:210987654321:guardrail/gr0eu0000001",
+                "guardrailVersion": "1"
+            },
+            "latestAgentVersion": "DRAFT",
+            "updatedAt": "2026-09-28T12:34:56.123456+00:00"
+        }
+    ]
+}

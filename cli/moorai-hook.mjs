@@ -17,7 +17,7 @@ import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideCredFileRead, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision } from "./hook-core.mjs";
+import { buildEngine, decideText, decideCredFileRead, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision } from "./hook-core.mjs";
 import { maskValue, maskNote } from "./mask.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
@@ -51,7 +51,9 @@ import { deletionTally, assessDeletionVolume, deletionConfig } from "../data/del
 import { readStateJson, writeStateJson, repoIdentity, LEARNED_DRIFT_FILE, DELETION_VOLUME_FILE } from "./drift-state.mjs";
 import { sessionRiskStep, circuitStep, circuitOutcome } from "./session-state.mjs";
 import { captureTask, judgeAction, CLASS_TEXT } from "./intent-alignment.mjs";
+import { promptScanPlan, promptBlockers } from "./prompt-scan.mjs";
 import { serverMode, serviceWho, settleHeadlessAsk, tamperAlert, trustedEnv, refusedTrustEnv } from "./server-mode.mjs";
+import { recordMcpCall, scheduleMcpUsageFlush } from "./mcp-usage-beat.mjs";
 import { REASON, ENFORCEMENT, policyIdOf, stampAlert } from "./provenance.mjs";
 import { recordRow, readSessionRows, localHash } from "./session-ledger.mjs";
 import { commandClass, normalizeCommand, verifyFamily, outcomeOfResponse, outcomeOfFailure, assessTurn } from "./claim-check.mjs";
@@ -1730,6 +1732,38 @@ async function emitPost(decision, reason, alternatives = [], rewrite = null, too
   return exitHook();
 }
 
+// ---- UserPromptSubmit: the task for intent alignment, and the prompt as inbound content ----
+//
+// The task is captured first, exactly as before. Then a prompt that is not a person's (cli/prompt-scan.mjs:
+// a non-"user" `source`, or MoorAI server mode) is scanned as inbound content (stage "file", reported as "prompt"), because
+// in an event-triggered or headless run it is a third party's text. Reports are content-free whatever
+// the capture tier: the prompt is the one input here that no policy opted into exporting.
+// Output, per code.claude.com/docs/en/hooks.md: plain stdout on this event "is added to Claude's
+// context", so report mode prints nothing. promptScanAction "block" uses the top-level
+// `{"decision":"block","reason":…}` ("Blocks the prompt, so it never reaches Claude"). An unenrolled
+// device never blocks; it shows the user a systemMessage.
+async function handlePrompt(input, policy, engine) {
+  await captureTask(input, policy);
+  const plan = promptScanPlan(policy, input, { server: !!SERVER.active });
+  if (!plan.scan) { settleRow(unevaluated(REASON.OBSERVATION_ONLY)); return exitHook(); }
+  let text = input.prompt;
+  if (text.length > CAPS.maxResultBytes) { text = text.slice(0, CAPS.maxResultBytes); VERDICT.capped = true; }
+  // Stage "file": ingested content (the prompt detectors plus #40 / #60); reported at stage "prompt".
+  const d = decideText(engine, policy, text, "file", { ctx: { inbound: true } });
+  const blockers = plan.action === "block" ? promptBlockers(d.findings, (id) => threatActionFor(policy, id)) : [];
+  const block = blockers.length > 0;
+  if (d.findings.length) why(detectorReason(d.findings));
+  report(d.findings, "prompt", "hook:UserPromptSubmit", block, "content-free", {}, { promptOrigin: plan.origin, promptSource: plan.source });
+  settleRow(verdictFields(block ? "deny" : "allow"));
+  if (block) {
+    const names = [...new Set(blockers.map((f) => `#${f.threatId} ${f.category}`))].slice(0, 3).join(", ");
+    const why2 = `${plan.origin === "server" ? "a headless (server-mode) prompt" : `an event-triggered prompt (source: ${plan.source})`} carries ${names}`;
+    if (COACH) process.stdout.write(JSON.stringify({ systemMessage: coachMessage(`flagged ${why2}`) }));
+    else process.stdout.write(JSON.stringify({ decision: "block", reason: `MoorAI: blocked ${why2}` }));
+  }
+  return exitHook();
+}
+
 // ---- Stop / SubagentStop: session summary + claimed success vs reality ----
 //
 // Inputs, per code.claude.com/docs/en/hooks: Stop receives "stop_hook_active, last_assistant_message,
@@ -1829,6 +1863,8 @@ async function main() {
   if (process.env.MOORAI_HOOK_HOST !== "shim" && !AS_PLUGIN) convergeHooks();
   if (AS_PLUGIN && settingsCovers(input.hook_event_name)) return exitHook();
   maybePostureBeat(input);
+  // MCP usage cross-check (cli/mcp-usage-beat.mjs): completed days go to a detached worker, at most once a day.
+  scheduleMcpUsageFlush({ config: CONFIG, path: "hook", host: beatHost() || "unknown" });
   const tool = TOOL_ALIASES[input.tool_name] || input.tool_name || "";
   const ti = input.tool_input || {};
   HOST_REWRITES = !TOOL_ALIASES[input.tool_name];
@@ -1965,7 +2001,7 @@ async function main() {
   if (input.hook_event_name === "PostToolUse") return handlePostToolUse(input, tool, policy, engine);
   // The user's task, captured as keyed hashes of what it mentions. Never a decision, never output.
   // Its ledger row is the turn boundary the Stop check reads.
-  if (input.hook_event_name === "UserPromptSubmit") { settleRow(unevaluated(REASON.OBSERVATION_ONLY)); await captureTask(input, policy); return exitHook(); }
+  if (input.hook_event_name === "UserPromptSubmit") return handlePrompt(input, policy, engine);
   if (EVENT === "Stop" || EVENT === "SubagentStop") return handleStop(input);
   // Learned per-agent drift — one observation per PreToolUse call, before any branch can return.
   observeLearnedDrift(policy, tool, ti, input.cwd);
@@ -2010,10 +2046,15 @@ async function main() {
     let dec = "allow", reasons = [], alts = [], finds = [], btext = "", killIds = [];
     // PowerShell runs this same branch; only the grammar of the parsers differs (see SHELL_TOOLS).
     const ps = tool === "PowerShell";
-    const readPaths = extractReadPaths(ti.command, ps ? { shell: "powershell" } : undefined);
+    // `$env:VAR`, `$HOME` and `~` in a PowerShell path expand from this process's environment, which is
+    // the one the agent's shell inherited.
+    const readPaths = extractReadPaths(ti.command, { ...(ps ? { shell: "powershell" } : {}), env: process.env, home: os.homedir(), insensitive: process.platform === "win32" });
+    // Scripts the command carries (-EncodedCommand, an Invoke-Expression string): scanned as commands too.
+    const scripts = embeddedScripts(ti.command, ps ? { shell: "powershell" } : undefined);
+    const shellText = [ti.command || "", ...scripts].join("\n");
     // A file an UPLOAD command reads is leaving the device; the command text itself is outbound when it
     // uploads or names a host. Only these carry ctx.egress (instr-leak-egress is opt-in on it).
-    const uploading = OUTBOUND_UPLOAD.some((r) => r.test(ti.command || "")) || (ps && PS_OUTBOUND_UPLOAD.some((r) => r.test(ti.command || "")));
+    const uploading = OUTBOUND_UPLOAD.some((r) => r.test(shellText)) || (ps && PS_OUTBOUND_UPLOAD.some((r) => r.test(shellText)));
     const cmdEgress = uploading || extractHosts(ti.command || "").length > 0;
     for (const p of readPaths) {
       const t = readFileCapped(agentPath(p, input.cwd)); btext += t + "\n";
@@ -2047,6 +2088,13 @@ async function main() {
     finds.push(...cmdD.findings);
     if (cmdD.kill) killIds.push(...cmdD.killIds);
     if (RANK[cmdD.decision] > RANK[dec]) { dec = cmdD.decision; reasons = cmdD.reasons; alts = cmdD.alternatives; }
+    // The decoded scripts get the same command scan. Not maskable: the text is not in the input as written.
+    for (const script of scripts) {
+      const sd = decideText(engine, policy, script, "prompt", { ctx: { egress: cmdEgress } });
+      finds.push(...sd.findings);
+      if (sd.kill) killIds.push(...sd.killIds);
+      if (RANK[sd.decision] > RANK[dec]) { dec = sd.decision; reasons = sd.reasons; alts = sd.alternatives; }
+    }
     if (dec !== "allow") why(detectorReason(finds));
     // T1-1 — model-endpoint allow-list: a base-URL override / direct call to a non-approved LLM host.
     const epD = decideEndpoints(policy, ti.command);
@@ -2173,6 +2221,7 @@ async function main() {
   }
   if (tool.startsWith("mcp__")) {
     const server = tool.split("__")[1] || "";
+    recordMcpCall({ path: "hook", host: beatHost() || "unknown", label: server }); // content-free count for the console's proxy-vs-hook cross-check
     const args = JSON.stringify(ti);
     const argsH = argsHash(args); // #20 — content-free hash of the args (never the args themselves)
     // On-device AI Agent Gateway: one named chokepoint for every MCP tool-call — server allow-list (#3)

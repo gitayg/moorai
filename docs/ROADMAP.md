@@ -463,21 +463,41 @@ positioning carries over as "in your process, in your VPC: content never leaves 
     `MOORAI_OFFLINE_MODE` and the OTLP endpoint set by a user, project or local settings file are ignored
     and reported.
 - **Still open from Tier 1:** watch an Agent SDK service and a GitHub Actions run end to end.
-- **Tier 2 (on customer demand):** `@moorai/agent-sdk`, the engine as in-process Agent SDK hook callbacks
-  (no process start per tool call; `data/*.js` is already dependency-free), plus a Python client.
-- **Tier 3 (on customer demand):** `moorai serve`, a localhost / Kubernetes sidecar exposing
-  `scan(text, stage, ctx)` for OpenAI Agents SDK, LangGraph and custom loops; and an HTTP MCP gateway for
-  remote MCP servers (the proxy handles local stdio servers only). The gateway is where Lasso, Prompt
-  Security and CrowdStrike AIDR compete.
+- **Tier 2 (shipped in v1.2.0):** `@moorai/agent-sdk` (`packages/agent-sdk`). `moorAIHooks(options)`
+  returns the `hooks` record for `query({ options: { hooks } })`; one in-process runtime, no process per
+  tool call. `PreToolUse` returns the hook's own decision and reason (parity test: 214 payloads, two policy
+  states, 0 mismatches). Server-mode semantics: headless ask denied, workload identity, content-free
+  reports. Prompts and tool results are observe-only by default (`prompts: "enforce"`,
+  `toolResults: "advise"`). Not in process, and listed in each result's `notEvaluated`: circuit breaker,
+  session risk, deletion volume, intent alignment, learned drift, MCP reputation, escalation, honeytokens,
+  mask rewrite. `PostToolUse` does not apply the hook's inbound gates (it observes only). p50 per
+  `PreToolUse` on 2 KB: 1.99 ms, against 164–309 ms for a shell hook process.
+- **Tier 3 (shipped in v1.2.0):**
+  - `moorai-serve` (`cli/moorai-serve.mjs`), a localhost sidecar on the same runtime: `POST /v1/scan`,
+    `POST /v1/tool-call`, `GET /healthz`, content-free verdicts. Loopback only unless `--allow-remote` plus a
+    16+ character bearer token (constant-time compare); a non-loopback `Host` is refused (421), non-JSON
+    (415), bodies over 1 MiB (413, after draining); 5 s header timeout, 256 connections. p50 for
+    `/v1/scan` on 2 KB: 6.4–11 ms. Python client in `clients/python` (stdlib only) with LangGraph and
+    CrewAI examples, which have not been executed. Caveats: `/v1/tool-call` reads paths on the sidecar's
+    own filesystem, so an authenticated client can learn whether a file holds secrets; the secret-egress
+    fingerprint cache is filled once per directory in the long-lived process.
+  - The HTTP MCP gateway (`mcp-gateway/`, `moorai-mcp-gateway --route /name=https://remote.example/mcp` or
+    `--config gateway.json`): a reverse proxy in front of remote (Streamable HTTP / SSE) MCP servers with
+    the stdio proxy's tool-call and tool-result checks. Refusals are an MCP tool result with
+    `isError: true` (HTTP 200). Both MCP spec eras' headers pass through (revision 2026-07-28 removed
+    sessions and GET streams). Added p50 about 10–13 ms, dominated by the engine; 16 integration and 4 SSE
+    tests. The gateway is where Lasso, Prompt Security and CrowdStrike AIDR compete.
+- **Still open from Tiers 2 and 3:** an Agent SDK service watched end to end with `@moorai/agent-sdk`; the
+  gateway against real MCP clients, OAuth discovery through it, and its server-mode paths.
 - **Not applicable on a server:** the desktop app, AIBOM, shadow-AI inventory and OS posture.
 
 ## Backlog — coverage for cloud AI platforms and custom-built agents (2026-10-01)
 
 Buyers evaluating "AI application security" expect coverage of the AI services their teams build on, not
 only of coding agents on endpoints: Amazon Bedrock (Agents, Guardrails, AgentCore), Google Vertex AI (Agent
-Builder), Microsoft AI Foundry and Copilot Studio. MoorAI today governs coding agents through their hooks on
-the developer's machine and, in server mode, in CI and containers. It has no integration with any of those
-platforms, and its scope does not cover custom-built AI applications. Options, smallest first:
+Builder), Microsoft AI Foundry and Copilot Studio. MoorAI governs coding agents through their hooks on
+the developer's machine and, in server mode, in CI and containers. Of those platforms it reads only
+Bedrock's inventory, and it does not enforce at runtime on any of them. Options, smallest first:
 
 - **Inventory:** read-only discovery of the agents, knowledge bases, guardrails and model endpoints a tenant
   has defined on one platform (start with Bedrock), into the console's AI inventory; content-free.
@@ -489,7 +509,13 @@ platforms, and its scope does not cover custom-built AI applications. Options, s
 - **Security testing for custom apps:** run the open benchmark's adversarial corpora against a customer's own
   agent endpoint, not only against MoorAI.
 
-Not started. Pick the first platform from customer demand.
+Inventory for Amazon Bedrock shipped (`cloud/`, console `POST /api/cloud-inventory`):
+`moorai-cloud-inventory bedrock --run --regions … --post` reads, read-only, the agents, knowledge bases,
+guardrails, custom models, provisioned throughput, application inference profiles and AgentCore runtimes,
+with the customer's own AWS CLI, into content-free records with risk flags. It has been tested against the
+documented response shapes and a fake AWS CLI only, not yet against a real AWS account. Runtime, framework
+integrations (beyond the `moorai-serve` Python client's unexecuted LangGraph and CrewAI examples) and
+security testing not started.
 
 ## Shipped from the 2026-10-01 competitive review (v1.1.0)
 
@@ -519,11 +545,24 @@ content-free design. Shipped in v1.1.0:
   Cline, Kiro, Amp and OpenCode: rules, instruction files, settings that carry hooks or MCP servers, and
   on-demand commands, workflows, prompt files, custom agents and specs.
 
-**Not built: an MCP proxy-versus-hook cross-check** (does the proxy see calls to the same MCP server the
-hook sees, so a server routed around the proxy shows up). The console stores no MCP server name, and the
-proxy does not know which agent host launched it, so there is nothing to join on. It needs both before it
-can be computed.
-
 **Still open from this list:** watch the lifecycle events and the claim check in a live Claude Code session
-(today they are driven through the real hook with scripted input); widen the claim check's held-out set,
-which is 37 cases written by the rules' author.
+(today they are driven through the real hook with scripted input).
+
+## Shipped in v1.2.0
+
+- **MCP proxy-versus-hook cross-check** — `cli/mcp-usage-beat.mjs`: the hook and the stdio MCP proxy each
+  tally MCP calls per server label per day and post completed days once to the console
+  (`POST /api/mcp-usage`, path `hook` or `proxy`). The console compares the two paths per device, day, host
+  and server: MCP traffic the proxy sees and the hook does not (or the reverse) shows a bypass or a gap.
+  Server labels are sent in clear, as the action audit already stores them; `mcp-proxy/install.mjs`
+  stamps the host (`--host`).
+- **Event-triggered and headless prompts are scanned** — `cli/prompt-scan.mjs`: `policy.promptScan`
+  (`"untrusted"` default, `"all"`, `"off"`) and `policy.promptScanAction` (`"report"` default, `"block"`
+  for instruction-carrying threats). Not yet: prompt findings feeding session risk, the lethal trifecta,
+  behaviour logging or model escalation; a live Claude Code session.
+- **PowerShell parsing** — `cli/ps-params.mjs`: `$env:` / `$HOME` / `~` expansion, PowerShell 7.5
+  parameter-abbreviation tables, `-EncodedCommand` and `iex` literal decoding to three levels; #54 and #57
+  cover the PowerShell-tool forms (0 hits on 10,030 benign strings across 14 corpora).
+- **Claim check, blind corpus** — a 181-case corpus labelled by agents that never read the detector,
+  split 60/40 into tune and locked by a fixed seed; locked split scored once: precision 100% (17 of 17),
+  recall 54.8% (17 of 31). Still open: recall, and a live session.

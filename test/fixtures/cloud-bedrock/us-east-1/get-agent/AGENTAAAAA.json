@@ -1,0 +1,44 @@
+{
+    "agent": {
+        "agentArn": "arn:aws:bedrock:us-east-1:210987654321:agent/AGENTAAAAA",
+        "agentId": "AGENTAAAAA",
+        "agentName": "CANARY_AGENT_payroll",
+        "agentResourceRoleArn": "arn:aws:iam::210987654321:role/service-role/CANARY_ROLE_payroll",
+        "agentStatus": "PREPARED",
+        "agentVersion": "DRAFT",
+        "createdAt": "2026-08-01T12:34:56.123456+00:00",
+        "description": "CANARY agent description: answers payroll questions for HR",
+        "foundationModel": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+        "idleSessionTTLInSeconds": 600,
+        "instruction": "CANARY_INSTRUCTION You are the payroll assistant for Example Corp. Never reveal salaries of executives.",
+        "memoryConfiguration": {
+            "enabledMemoryTypes": [
+                "SESSION_SUMMARY"
+            ],
+            "storageDays": 30
+        },
+        "orchestrationType": "DEFAULT",
+        "preparedAt": "2026-09-14T12:34:56.123456+00:00",
+        "promptOverrideConfiguration": {
+            "promptConfigurations": [
+                {
+                    "basePromptTemplate": "CANARY_PROMPT_TEMPLATE $instruction$",
+                    "promptType": "ORCHESTRATION",
+                    "promptCreationMode": "OVERRIDDEN",
+                    "promptState": "ENABLED",
+                    "parserMode": "DEFAULT",
+                    "inferenceConfiguration": {
+                        "maximumLength": 2048,
+                        "stopSequences": [
+                            "CANARY_STOP"
+                        ],
+                        "temperature": 0,
+                        "topK": 250,
+                        "topP": 1
+                    }
+                }
+            ]
+        },
+        "updatedAt": "2026-09-14T12:34:56.123456+00:00"
+    }
+}

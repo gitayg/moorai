@@ -1,0 +1,12 @@
+{
+    "agentActionGroup": {
+        "actionGroupId": "ACTGRPAAA3",
+        "actionGroupName": "CANARY_AG_ask",
+        "actionGroupState": "ENABLED",
+        "agentId": "AGENTAAAAA",
+        "agentVersion": "DRAFT",
+        "createdAt": "2026-09-01T12:34:56.123456+00:00",
+        "parentActionSignature": "AMAZON.UserInput",
+        "updatedAt": "2026-09-12T12:34:56.123456+00:00"
+    }
+}

@@ -1,0 +1,17 @@
+{
+    "actionGroupSummaries": [
+        {
+            "actionGroupId": "ACTGRPBBB1",
+            "actionGroupName": "CANARY_AG_computer",
+            "actionGroupState": "ENABLED",
+            "updatedAt": "2026-09-18T12:34:56.123456+00:00"
+        },
+        {
+            "actionGroupId": "ACTGRPBBB2",
+            "actionGroupName": "CANARY_AG_ticket",
+            "actionGroupState": "DISABLED",
+            "description": "CANARY files tickets",
+            "updatedAt": "2026-09-18T12:34:56.123456+00:00"
+        }
+    ]
+}

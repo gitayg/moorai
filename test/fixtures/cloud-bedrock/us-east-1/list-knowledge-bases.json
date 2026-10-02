@@ -1,0 +1,23 @@
+{
+    "knowledgeBaseSummaries": [
+        {
+            "description": "CANARY HR policies",
+            "knowledgeBaseId": "KBAAAAAAAA",
+            "name": "CANARY_KB_hr",
+            "status": "ACTIVE",
+            "updatedAt": "2026-09-09T12:34:56.123456+00:00"
+        },
+        {
+            "knowledgeBaseId": "KBBBBBBBBB",
+            "name": "CANARY_KB_runbooks",
+            "status": "ACTIVE",
+            "updatedAt": "2026-09-19T12:34:56.123456+00:00"
+        },
+        {
+            "knowledgeBaseId": "KBCCCCCCCC",
+            "name": "CANARY_KB_old",
+            "status": "UPDATE_UNSUCCESSFUL",
+            "updatedAt": "2026-07-01T12:34:56.123456+00:00"
+        }
+    ]
+}

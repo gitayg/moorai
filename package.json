@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "license": "MIT",
   "description": "MoorAI agent — on-device guardrails for AI coding agents (community edition, MIT)",
   "type": "module",
@@ -27,7 +27,10 @@
     "moorai-scan": "cli/moorai-scan.mjs",
     "moorai-agent-hook": "cli/moorai-agent-hook.mjs",
     "moorai-doctor": "cli/moorai-doctor.mjs",
-    "moorai-explain": "cli/moorai-explain.mjs"
+    "moorai-explain": "cli/moorai-explain.mjs",
+    "moorai-serve": "cli/moorai-serve.mjs",
+    "moorai-mcp-gateway": "mcp-gateway/moorai-mcp-gateway.mjs",
+    "moorai-cloud-inventory": "cloud/moorai-cloud-inventory.mjs"
   },
   "files": [
     "scan.mjs",
@@ -36,7 +39,12 @@
     "data/",
     "scripts/redteam.mjs",
     "scripts/accepted-failures.mjs",
-    "test/redteam/corpus.json"
+    "test/redteam/corpus.json",
+    "mcp-gateway/",
+    "mcp-proxy/tool-scan.mjs",
+    "mcp-proxy/tool-baseline.mjs",
+    "cloud/",
+    "packages/agent-sdk/src/"
   ],
   "scripts": {
     "client": "python3 -m http.server 8000",

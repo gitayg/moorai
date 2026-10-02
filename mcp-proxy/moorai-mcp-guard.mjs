@@ -41,10 +41,16 @@
 // the device. Tool-call CONTENT is NEVER emitted. Governance, not a sandbox: on ANY error (bad policy,
 // engine failure, unparseable line) we FAIL OPEN — the message is forwarded unchanged.
 //
-//   node moorai-mcp-guard.mjs [--server <label>] -- <real-server-cmd> [args...]
+//   node moorai-mcp-guard.mjs [--server <label>] [--host <id>] -- <real-server-cmd> [args...]
 //
 //   --server <label>   the MCP server name used for the gateway (allow-list / audit). Defaults to the
 //                      basename of the real command. install.mjs passes the configured server key here.
+//   --host <id>        which MCP host launched this server (claude-desktop, vscode, cursor, claude-code),
+//                      stamped by install.mjs. Used only for the MCP usage cross-check
+//                      (cli/mcp-usage-beat.mjs): every tools/call is counted under path "proxy", this
+//                      host and the server label, and completed days are posted content-free to
+//                      /api/mcp-usage. Absent (an install from before the stamp) or not a known id →
+//                      "unknown".
 
 import { spawn } from "node:child_process";
 import { basename } from "node:path";
@@ -62,8 +68,9 @@ import { emitOtel } from "../cli/otel.mjs";
 import { assessServer, addToolSignals } from "../cli/mcp-reputation.mjs";
 import { reputationAction, reputationAlert, reputationSummary } from "../data/mcp-reputation.js";
 import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
+import { recordMcpCall, flushMcpUsage, usageHost, usageIdentity } from "../cli/mcp-usage-beat.mjs";
 
-// ---- argv parsing: [--server label] -- realcmd args... ----
+// ---- argv parsing: [--server label] [--host id] -- realcmd args... ----
 function parseArgv(argv) {
   const sep = argv.indexOf("--");
   if (sep < 0 || sep === argv.length - 1) {
@@ -72,17 +79,18 @@ function parseArgv(argv) {
   }
   const pre = argv.slice(0, sep);
   const rest = argv.slice(sep + 1);
-  let label = "";
+  let label = "", host = "";
   for (let i = 0; i < pre.length; i++) {
     if (pre[i] === "--server" || pre[i] === "-s") { label = pre[i + 1] || ""; i++; }
+    else if (pre[i] === "--host") { host = pre[i + 1] || ""; i++; }
   }
   const cmd = rest[0];
   const args = rest.slice(1);
   if (!label) label = basename(cmd || "mcp").replace(/\.(mjs|js|cjs|exe|sh|py)$/i, "") || "mcp";
-  return { label, cmd, args };
+  return { label, host: usageHost(host), cmd, args };
 }
 
-const { label: SERVER, cmd: REAL_CMD, args: REAL_ARGS } = parseArgv(process.argv.slice(2));
+const { label: SERVER, host: HOST, cmd: REAL_CMD, args: REAL_ARGS } = parseArgv(process.argv.slice(2));
 
 // ---- config / identity / content-free reporting (same shape as the Claude Code hook) ----
 const CONFIG = loadConfig();
@@ -349,7 +357,9 @@ async function handleLine(rawLine) {
   if (msg && msg.result && Array.isArray(msg.result.roots)) rememberRoots(msg.result.roots);
   if (!msg || msg.method !== "tools/call" || !msg.params || typeof msg.params !== "object") { forward(rawLine); return; }
 
-  // This is a tool-call — the surface we gate.
+  // This is a tool-call — the surface we gate. Counted for the usage cross-check first, blocked or not
+  // (the hook counts at the top of its mcp__ branch the same way). Synchronous, content-free, fail-open.
+  recordMcpCall({ path: "proxy", host: HOST, label: SERVER });
   try {
     await ensurePolicy();
     const tool = msg.params.name || "";
@@ -756,3 +766,15 @@ process.stdin.on("end", () => {
 // Best-effort warm-up so the first tool-call is not delayed by the initial policy fetch; the server's
 // first-seen reputation rides on the same promise.
 startReputation();
+
+// ---- MCP usage cross-check (cli/mcp-usage-beat.mjs) ----
+// This process is long-lived (a desktop host keeps it for days), so completed days are flushed at
+// start-up and then every USAGE_FLUSH_MS, in-process and off the stdio path: an async post on an
+// unref'd timer, never awaited by a message, never keeping the process alive. flushMcpUsage itself
+// posts a day at most once, holds a ten-minute pause after a failure, and shares that pending mark with
+// the other guard processes of the same host, so N wrapped servers post one body, not N.
+const USAGE_FLUSH_MS = 30 * 60 * 1000;
+const USAGE_IDENTITY = (() => { try { return usageIdentity(); } catch { return IDENTITY; } })();
+function flushUsage() { flushMcpUsage({ config: CONFIG, identity: USAGE_IDENTITY, path: "proxy", host: HOST }).catch(() => {}); }
+flushUsage();
+{ const t = setInterval(flushUsage, USAGE_FLUSH_MS); if (t.unref) t.unref(); }

@@ -1,0 +1,16 @@
+{
+    "agentActionGroup": {
+        "actionGroupId": "ACTGRPBBB1",
+        "actionGroupName": "CANARY_AG_computer",
+        "actionGroupState": "ENABLED",
+        "agentId": "AGENTBBBBB",
+        "agentVersion": "DRAFT",
+        "createdAt": "2026-09-17T12:34:56.123456+00:00",
+        "parentActionSignature": "ANTHROPIC.Computer",
+        "parentActionGroupSignatureParams": {
+            "display_width_px": "1024",
+            "display_height_px": "768"
+        },
+        "updatedAt": "2026-09-18T12:34:56.123456+00:00"
+    }
+}

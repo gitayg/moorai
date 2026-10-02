@@ -1,0 +1,13 @@
+{
+    "guardrails": [
+        {
+            "arn": "arn:aws:bedrock:eu-west-1:210987654321:guardrail/gr0eu0000001",
+            "createdAt": "2026-09-27T12:34:56.123456+00:00",
+            "id": "gr0eu0000001",
+            "name": "CANARY_GR_eu",
+            "status": "READY",
+            "updatedAt": "2026-09-27T12:34:56.123456+00:00",
+            "version": "DRAFT"
+        }
+    ]
+}

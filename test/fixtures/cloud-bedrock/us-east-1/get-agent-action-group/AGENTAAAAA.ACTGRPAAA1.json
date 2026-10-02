@@ -1,0 +1,18 @@
+{
+    "agentActionGroup": {
+        "actionGroupExecutor": {
+            "lambda": "arn:aws:lambda:us-east-1:210987654321:function:CANARY_FN_lookup"
+        },
+        "actionGroupId": "ACTGRPAAA1",
+        "actionGroupName": "CANARY_AG_lookup",
+        "actionGroupState": "ENABLED",
+        "agentId": "AGENTAAAAA",
+        "agentVersion": "DRAFT",
+        "apiSchema": {
+            "payload": "openapi: 3.0.0\ninfo:\n  title: CANARY_OPENAPI employee lookup\n"
+        },
+        "createdAt": "2026-09-01T12:34:56.123456+00:00",
+        "description": "CANARY looks up employees",
+        "updatedAt": "2026-09-10T12:34:56.123456+00:00"
+    }
+}

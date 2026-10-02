@@ -1,0 +1,30 @@
+{
+    "agentActionGroup": {
+        "actionGroupExecutor": {
+            "customControl": "RETURN_CONTROL"
+        },
+        "actionGroupId": "ACTGRPBBB2",
+        "actionGroupName": "CANARY_AG_ticket",
+        "actionGroupState": "DISABLED",
+        "agentId": "AGENTBBBBB",
+        "agentVersion": "DRAFT",
+        "createdAt": "2026-09-17T12:34:56.123456+00:00",
+        "description": "CANARY files tickets",
+        "functionSchema": {
+            "functions": [
+                {
+                    "name": "CANARY_FUNCTION_open_ticket",
+                    "description": "CANARY opens a ticket",
+                    "parameters": {
+                        "summary": {
+                            "type": "string",
+                            "description": "CANARY param",
+                            "required": true
+                        }
+                    }
+                }
+            ]
+        },
+        "updatedAt": "2026-09-18T12:34:56.123456+00:00"
+    }
+}

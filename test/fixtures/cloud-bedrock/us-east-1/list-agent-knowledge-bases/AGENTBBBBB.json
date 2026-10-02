@@ -1,0 +1,15 @@
+{
+    "agentKnowledgeBaseSummaries": [
+        {
+            "description": "CANARY runbooks",
+            "knowledgeBaseId": "KBBBBBBBBB",
+            "knowledgeBaseState": "ENABLED",
+            "updatedAt": "2026-09-19T12:34:56.123456+00:00"
+        },
+        {
+            "knowledgeBaseId": "KBCCCCCCCC",
+            "knowledgeBaseState": "DISABLED",
+            "updatedAt": "2026-09-19T12:34:56.123456+00:00"
+        }
+    ]
+}

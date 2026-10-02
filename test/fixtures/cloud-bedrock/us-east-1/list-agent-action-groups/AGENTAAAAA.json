@@ -1,0 +1,23 @@
+{
+    "actionGroupSummaries": [
+        {
+            "actionGroupId": "ACTGRPAAA1",
+            "actionGroupName": "CANARY_AG_lookup",
+            "actionGroupState": "ENABLED",
+            "description": "CANARY looks up employees",
+            "updatedAt": "2026-09-10T12:34:56.123456+00:00"
+        },
+        {
+            "actionGroupId": "ACTGRPAAA2",
+            "actionGroupName": "CANARY_AG_code",
+            "actionGroupState": "ENABLED",
+            "updatedAt": "2026-09-11T12:34:56.123456+00:00"
+        },
+        {
+            "actionGroupId": "ACTGRPAAA3",
+            "actionGroupName": "CANARY_AG_ask",
+            "actionGroupState": "ENABLED",
+            "updatedAt": "2026-09-12T12:34:56.123456+00:00"
+        }
+    ]
+}

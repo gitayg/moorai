@@ -26,6 +26,7 @@ import { credAlternative } from "../data/cred-alternatives.js";
 import { redosReason, safeRegex, unboundedQuantifiers } from "../src/safe-regex.js";
 import { DetectionEngine } from "../src/engine.js";
 import { isMaskable } from "./mask.mjs";
+import { psCmdlet, psIsParam, psResolveParam, psExpand, psScriptText, psIsHost, psIsEncodedFlag, psDecodeEncoded, PS_LIT, PS_READER_TYPE, PS_READER_CTOR } from "./ps-params.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -1303,17 +1304,70 @@ function xpFlagPaths(toks) {
 }
 
 // `shell: "powershell"` selects the PowerShell grammar below; anything else is POSIX.
-export function extractReadPaths(command, { shell } = {}) {
+// `env` / `home` (PowerShell only): expand `$env:NAME`, `${env:NAME}`, `$HOME` and `~` from them — the
+// hook passes its own process environment, which is the agent's. Without them nothing is expanded.
+// `insensitive`: environment names ignore case (Windows). Scripts a command carries — an -EncodedCommand
+// payload, an Invoke-Expression string — are parsed as PowerShell too, up to XP_EMBED_DEPTH deep.
+export function extractReadPaths(command, { shell, env, home, insensitive } = {}, depth = 0) {
   const cmd = String(command || "").trim();
   if (!cmd || cmd.length > XP_CMD_MAX) return [];
   const ps = shell === "powershell";
   const segs = ps ? psSegments(cmd) : xpSegments(cmd);
   if (!segs) return [];
   const out = [];
-  for (const seg of segs) {
-    for (const p of (ps ? psSegmentPaths(seg) : xpSegmentPaths(seg))) { if (!out.includes(p)) out.push(p); if (out.length >= XP_PATH_MAX) return out; }
+  const add = (p) => { if (!out.includes(p)) out.push(p); return out.length >= XP_PATH_MAX; };
+  const xo = { env, home, insensitive };
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
+    for (const p of (ps ? psSegmentPaths(seg, xo) : xpSegmentPaths(seg))) if (add(p)) return out;
+    if (depth >= XP_EMBED_DEPTH) continue;
+    for (const script of (ps ? psSegmentScripts(seg, segs[i - 1]) : xpSegmentScripts(seg))) {
+      for (const p of extractReadPaths(script, { shell: "powershell", env, home, insensitive }, depth + 1)) if (add(p)) return out;
+    }
   }
   return out;
+}
+
+// The scripts a command carries, decoded: -EncodedCommand payloads (under either grammar, since the Bash
+// tool can start powershell.exe too) and Invoke-Expression string literals, recursively. The hook scans
+// each as command text, so `powershell -enc <base64 reverse shell>` meets the command detectors. Bounded:
+// a longer command than the path parser takes (an encoded script is 2.67x its text), XP_EMBED_DEPTH
+// levels, XP_EMBED_MAX scripts. Never throws.
+const XP_EMBED_CMD_MAX = 65536;
+const XP_EMBED_DEPTH = 3;
+const XP_EMBED_MAX = 8;
+export function embeddedScripts(command, { shell } = {}, depth = 0, acc = []) {
+  try {
+    const cmd = String(command || "").trim();
+    if (!cmd || cmd.length > XP_EMBED_CMD_MAX || depth >= XP_EMBED_DEPTH) return acc;
+    const ps = shell === "powershell";
+    const segs = ps ? psSegments(cmd) : xpSegments(cmd);
+    if (!segs) return acc;
+    for (let i = 0; i < segs.length && acc.length < XP_EMBED_MAX; i++) {
+      for (const s of (ps ? psSegmentScripts(segs[i], segs[i - 1], XP_EMBED_CMD_MAX) : xpSegmentScripts(segs[i], XP_EMBED_CMD_MAX))) {
+        if (acc.length >= XP_EMBED_MAX) break;
+        if (!acc.includes(s)) acc.push(s);
+        embeddedScripts(s, { shell: "powershell" }, depth + 1, acc);
+      }
+    }
+    return acc;
+  } catch { return acc; }
+}
+
+// POSIX grammar: `powershell.exe -enc <base64>` started from the Bash tool.
+function xpSegmentScripts(seg, max = XP_CMD_MAX) {
+  if (!seg.ok) return [];
+  const cw = xpCommandWord(seg.tokens);
+  if (!cw || !psIsHost(cw.word)) return [];
+  return encodedPayloads(seg.tokens.slice(cw.at + 1), max);
+}
+function encodedPayloads(args, max) {
+  for (let i = 0; i + 1 < args.length; i++) {
+    if (!psIsEncodedFlag(args[i])) continue;
+    const s = psDecodeEncoded(args[i + 1], max);
+    return s ? [s] : [];
+  }
+  return [];
 }
 
 // ---- the same extraction for Claude Code's PowerShell tool ----
@@ -1343,7 +1397,7 @@ const PS_NET_READ = /::(?:ReadAll(?:Text|Bytes|Lines)|ReadLines|OpenRead|OpenTex
 
 function psSegments(cmd) {
   const segs = [];
-  let cur = { tokens: [], dotnet: false };
+  let cur = { tokens: [], dotnet: false, piped: false };
   let tok = "", building = false, target = false, nextDotnet = false;
   const endTok = () => {
     if (!building) return;
@@ -1351,14 +1405,16 @@ function psSegments(cmd) {
     if (target) { target = false; return; } // a redirect TARGET is written, never read
     if (cur.tokens.length < XP_TOK_MAX) cur.tokens.push(t);
   };
-  const endSeg = () => { endTok(); if (cur.tokens.length) segs.push(cur); cur = { tokens: [], dotnet: nextDotnet }; nextDotnet = false; target = false; };
+  const endSeg = () => { endTok(); if (cur.tokens.length) segs.push(cur); cur = { tokens: [], dotnet: nextDotnet, piped: false }; nextDotnet = false; target = false; };
+  // A `$` PowerShell will not expand ('…', or escaped as `$) is carried as PS_LIT + "$" (cli/ps-params.mjs).
+  const lit = (ch) => (ch === "$" ? PS_LIT + "$" : ch);
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i];
-    if (c === "`") { if (i + 1 < cmd.length) { tok += cmd[i + 1]; building = true; i++; } continue; }
+    if (c === "`") { if (i + 1 < cmd.length) { tok += lit(cmd[i + 1]); building = true; i++; } continue; }
     if (c === "'") { // verbatim string; '' is a literal quote
       building = true;
       let j = i + 1;
-      for (; j < cmd.length; j++) { if (cmd[j] === "'") { if (cmd[j + 1] === "'") { tok += "'"; j++; continue; } break; } tok += cmd[j]; }
+      for (; j < cmd.length; j++) { if (cmd[j] === "'") { if (cmd[j + 1] === "'") { tok += "'"; j++; continue; } break; } tok += lit(cmd[j]); }
       if (j >= cmd.length) return null;
       i = j; continue;
     }
@@ -1366,7 +1422,7 @@ function psSegments(cmd) {
       building = true;
       let j = i + 1;
       for (; j < cmd.length; j++) {
-        if (cmd[j] === "`") { tok += cmd[j + 1] ?? ""; j++; continue; }
+        if (cmd[j] === "`") { tok += lit(cmd[j + 1] ?? ""); j++; continue; }
         if (cmd[j] === '"') { if (cmd[j + 1] === '"') { tok += '"'; j++; continue; } break; }
         tok += cmd[j];
       }
@@ -1381,11 +1437,11 @@ function psSegments(cmd) {
       tok += cmd.slice(i, e + 1); building = true; i = e; continue;
     }
     if ((c === "$" || c === "@") && (cmd[i + 1] === "(" || cmd[i + 1] === "{")) { endSeg(); i++; continue; }
-    if (c === "(") { if (building && PS_NET_READ.test(tok)) nextDotnet = true; endSeg(); continue; }
+    if (c === "(") { if (building && (PS_NET_READ.test(tok) || PS_READER_CTOR.test(tok) || psNewReader(cur.tokens, tok))) nextDotnet = true; endSeg(); continue; }
     if (c === ")" || c === "{" || c === "}") { endSeg(); continue; }
     if (c === ",") { endTok(); if (cur.tokens.length < XP_TOK_MAX) cur.tokens.push(","); continue; }
     if (c === " " || c === "\t" || c === "\r") { endTok(); continue; }
-    if (c === "\n" || c === ";" || c === "|" || c === "&" || c === "<") { endSeg(); if ((c === "|" || c === "&") && cmd[i + 1] === c) i++; continue; }
+    if (c === "\n" || c === ";" || c === "|" || c === "&" || c === "<") { const pipe = c === "|" && cmd[i + 1] !== "|"; endSeg(); cur.piped = pipe; if ((c === "|" || c === "&") && cmd[i + 1] === c) i++; continue; }
     if (c === ">") { // >  >>  2>  *>  2>&1
       if (building && /^[0-9*]$/.test(tok)) { tok = ""; building = false; }
       endTok();
@@ -1399,43 +1455,105 @@ function psSegments(cmd) {
   return segs.slice(0, XP_SEG_MAX);
 }
 
-function psSegmentPaths(seg) {
-  const toks = seg.tokens;
-  if (seg.dotnet) return toks[0] && toks[0] !== "," && xpUsablePath(toks[0]) ? [toks[0]] : [];
-  // `$x = Get-Content .env` / `$x += …`: the command starts after the assignment.
+// The command word of a PowerShell segment, lowercased, without its directory or `.exe`, and where it
+// sits (`$x = Get-Content .env` / `$x += …`: the command starts after the assignment).
+function psWord(toks) {
   let at = 0;
   if (toks.length > 2 && /^\$[\w:]+$/.test(toks[0]) && /^[+\-*/]?=$/.test(toks[1])) at = 2;
   const raw = toks[at];
-  if (!raw) return [];
+  if (!raw) return null;
   const cut = Math.max(raw.lastIndexOf("/"), raw.lastIndexOf("\\"));
-  const word = (cut >= 0 ? raw.slice(cut + 1) : raw).toLowerCase().replace(/\.exe$/, "");
-  const rest = toks.slice(at + 1);
-  const named = [], positional = [];
-  let pathParam = false, destination = false, pattern = false;
+  return { word: (cut >= 0 ? raw.slice(cut + 1) : raw).toLowerCase().replace(/\.exe$/, ""), at };
+}
+
+// Parameters and positional arguments of one segment. A parameter name is resolved the way PowerShell
+// binds it (cli/ps-params.mjs psResolveParam): `-Pa` is `-Path` for Get-Content, `-InF` is `-InFile` for
+// Invoke-WebRequest. `ambiguous` means PowerShell would throw and nothing in the segment runs.
+function psArgs(word, rest) {
+  const params = [], positional = [];
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i];
     if (t === ",") continue;
-    if (/^-[A-Za-z]/.test(t)) {
+    if (psIsParam(t)) {
       const colon = t.indexOf(":");
-      const name = (colon > 0 ? t.slice(0, colon) : t).toLowerCase();
+      const r = psResolveParam(word, colon > 0 ? t.slice(0, colon) : t);
+      if (r.ambiguous) return { ambiguous: true };
+      const name = r.name;
       const bits = word === "start-bitstransfer" && name === "-source";
+      const takes = r.unknown ? PS_PATH_PARAMS.has(name) || PS_FILE_PARAMS.has(name) || PS_VALUED.has(name) || bits : !r.switch;
       const vals = [];
       if (colon > 0) vals.push(t.slice(colon + 1));
-      else if ((PS_PATH_PARAMS.has(name) || PS_FILE_PARAMS.has(name) || PS_VALUED.has(name) || bits) && i + 1 < rest.length) vals.push(rest[++i]);
+      else if (takes && i + 1 < rest.length) vals.push(rest[++i]);
       while (vals.length && rest[i + 1] === "," && i + 2 < rest.length) { vals.push(rest[i + 2]); i += 2; }
-      if (name === "-destination") destination = true;
-      if (name === "-pattern") pattern = true;
-      if (PS_PATH_PARAMS.has(name) && (PS_READERS.has(word) || PS_COPY.has(word))) { pathParam = true; named.push(...vals); }
-      else if (PS_FILE_PARAMS.has(name) || bits) named.push(...vals);
+      params.push({ name, vals, bits });
       continue;
     }
     positional.push(t);
   }
+  return { params, positional };
+}
+
+function psSegmentPaths(seg, xo = {}) {
+  const toks = seg.tokens;
+  const expand = (list, tilde) => list.map((p) => (p === "," ? p : psExpand(p, { ...xo, tilde }))).filter((p) => p !== "," && xpUsablePath(p));
+  // .NET receives `~` verbatim; only a cmdlet's provider path resolves it.
+  if (seg.dotnet) return toks[0] ? expand([toks[0]], false) : [];
+  const cw = psWord(toks);
+  if (!cw) return [];
+  const { word } = cw;
+  const a = psArgs(word, toks.slice(cw.at + 1));
+  if (a.ambiguous) return [];
+  const { params, positional } = a;
+  const named = [];
+  let pathParam = false, destination = false, pattern = false;
+  for (const { name, vals, bits } of params) {
+    if (name === "-destination") destination = true;
+    if (name === "-pattern") pattern = true;
+    if (PS_PATH_PARAMS.has(name) && (PS_READERS.has(word) || PS_COPY.has(word))) { pathParam = true; named.push(...vals); }
+    else if (PS_FILE_PARAMS.has(name) || bits) named.push(...vals);
+  }
   const out = [];
   if (PS_READERS.has(word)) out.push(...((word === "select-string" || word === "sls") && !pattern ? positional.slice(1) : positional));
   else if (PS_COPY.has(word) && !pathParam) out.push(...(destination ? positional : positional.slice(0, -1))); // sources only
+  else if (psCmdlet(word) === "new-object") { // New-Object IO.StreamReader <path> / -ArgumentList <path>
+    const tn = params.find((p) => p.name === "-typename");
+    const type = tn ? tn.vals[0] : positional[0];
+    const al = params.find((p) => p.name === "-argumentlist");
+    const arg = al ? al.vals[0] : positional[tn ? 0 : 1];
+    if (type && PS_READER_TYPE.test(type) && arg) out.push(arg);
+  }
   out.push(...named, ...xpFlagPaths(toks));
-  return out.filter((p) => p !== "," && xpUsablePath(p));
+  return expand(out, true);
+}
+
+// The scripts one PowerShell segment carries: an -EncodedCommand payload of a powershell/pwsh child, or
+// the string an Invoke-Expression evaluates — its -Command / first argument, or a lone string piped into
+// it (`'gc .env' | iex`). A variable or sub-expression is not a literal and is never guessed at.
+function psSegmentScripts(seg, prev, max = XP_CMD_MAX) {
+  if (seg.dotnet) return [];
+  const cw = psWord(seg.tokens);
+  if (!cw) return [];
+  const rest = seg.tokens.slice(cw.at + 1);
+  if (psIsHost(cw.word)) return encodedPayloads(rest, max);
+  if (psCmdlet(cw.word) !== "invoke-expression") return [];
+  const a = psArgs(cw.word, rest);
+  if (a.ambiguous) return [];
+  const c = a.params.find((p) => p.name === "-command");
+  let v = c ? c.vals[0] : a.positional[0];
+  if (v === undefined && !a.params.length && seg.piped && prev && !prev.dotnet && prev.tokens.length === 1) v = prev.tokens[0];
+  if (typeof v !== "string" || !v || v[0] === "$" || v.length > max) return [];
+  const script = psScriptText(v).trim();
+  return script ? [script] : [];
+}
+
+// `New-Object IO.StreamReader(` / `New-Object -TypeName System.IO.StreamReader(`: the parenthesised
+// argument list that follows is the path.
+function psNewReader(toks, type) {
+  if (!PS_READER_TYPE.test(type)) return false;
+  const n = toks.length;
+  const last = String(toks[n - 1] || "").toLowerCase();
+  if (last === "new-object") return true;
+  return n >= 2 && String(toks[n - 2]).toLowerCase() === "new-object" && psIsParam(last) && psResolveParam("new-object", last).name === "-typename";
 }
 
 // PowerShell uploads that data/detectors.js OUTBOUND_UPLOAD (curl/wget/nc/Invoke-WebRequest/-RestMethod)

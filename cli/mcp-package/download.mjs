@@ -45,6 +45,7 @@ export async function downloadToFile(fetchImpl, url, dest, { cap, algorithm = nu
 
   const h = algorithm && algorithm !== "none" ? createHash(algorithm) : null;
   let bytes = 0;
+  const out = createWriteStream(dest, { flags: "wx", mode: 0o600 });
   // `pipeline` owns backpressure and teardown: when the source throws (cap breached, body aborted) it
   // destroys the file stream and propagates, instead of leaving a half-written file and a late write.
   try {
@@ -57,9 +58,15 @@ export async function downloadToFile(fetchImpl, url, dest, { cap, algorithm = nu
           yield chunk;
         }
       })(),
-      createWriteStream(dest, { flags: "wx", mode: 0o600 })
+      out
     );
   } catch (e) {
+    // pipeline() rejects as soon as the source throws, WITHOUT waiting for the file stream's async
+    // open. A cap breach in the first chunks therefore lands before the file exists: an immediate
+    // rmSync removes nothing, and the open then creates the partial file behind it (measured: 195 of
+    // 200 breaches left the file; under load the late open also races the caller's recursive rmSync
+    // of the work dir into ENOTEMPTY). Wait until the stream has closed before removing the file.
+    if (!out.closed) await new Promise((r) => out.once("close", r));
     try { rmSync(dest, { force: true }); } catch {}
     throw e instanceof RegistryError ? e : new RegistryError("write-error");
   }

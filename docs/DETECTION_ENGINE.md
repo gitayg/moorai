@@ -61,15 +61,16 @@ Counts below were produced by running `_wantStages` / `_inStage` over the shippe
 | Stage | Detectors it runs | Fed in production by |
 |---|--:|---|
 | `prompt` | 71 | `cli/moorai-hook.mjs`: the `Bash` / `PowerShell` **command** itself, the `Task` delegated prompt, the `WebFetch` url + prompt; `mcpGateway`'s argument scan; `cli/moorai-guard.mjs`; the Tauri app (`src/app.js`) |
-| `file` | 77 (71 prompt + 6) | `cli/moorai-hook.mjs` on `Read`, on every path `extractReadPaths` finds in a `Bash` or `PowerShell` command, and on every local file an `mcp__*` call's arguments name (`cli/mcp-file-args.mjs`, §6); `mcp-proxy/moorai-mcp-guard.mjs` on every `tools/call` **result** and on every local file a `tools/call`'s arguments name (§8) |
+| `file` | 77 (71 prompt + 6) | `cli/moorai-hook.mjs` on `Read`, on an event-triggered or server-mode `UserPromptSubmit` prompt (`cli/prompt-scan.mjs`, §6), on every path `extractReadPaths` finds in a `Bash` or `PowerShell` command, and on every local file an `mcp__*` call's arguments name (`cli/mcp-file-args.mjs`, §6); `mcp-proxy/moorai-mcp-guard.mjs` on every `tools/call` **result** and on every local file a `tools/call`'s arguments name (§8) |
 | `output` | 60 | `cli/moorai-hook.mjs` on the write family (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`) and on `PostToolUse` results (`WebFetch`, `WebSearch`, `Bash`, `PowerShell`, `Agent`/`Task`, `mcp__*`; §6, §7); `cli/moorai-guard.mjs`; `src/app.js` |
 | `index` | 77 (71 prompt + 6) | the detached `moorai-hook.mjs indexscan` worker, over the agent's auto-loaded context files |
 | `tool` | 5 | `mcp-proxy/moorai-mcp-guard.mjs`, on a copy of every `tools/list` response |
 | `session` | 1 | **no enforcement caller** — see below |
 
 `prompt`, `file` and `output` are the load-bearing stages; `index` and `tool` exist for two narrow
-surfaces that no other stage can see. The hook also registers `UserPromptSubmit`, but no stage is fed
-from it: the user's prompt goes to intent alignment only (§6) and is never scanned by the engine.
+surfaces that no other stage can see. The hook also registers `UserPromptSubmit`: a prompt a person typed
+goes to intent alignment only, while event-triggered and server-mode prompts are scanned at `file` as
+inbound content and reported at stage `prompt` (§6).
 
 **Scan context.** The hook hands `decideText` a context object that some `refine` predicates read:
 `egress: true` when the text is leaving the device (the `WebFetch` url + prompt, `mcpGateway`'s
@@ -621,12 +622,28 @@ the escape; the readers `Get-Content`/`gc`/`cat`/`type`/`Select-String`/`Format-
 `Import-Clixml`, `Copy-Item` sources, the parameters `-Path`/`-LiteralPath`/`-PSPath`, `-InFile` and
 `-Attachments`, `( )` / `$( )` / `@( )` sub-expressions parsed as segments of their own, and the .NET
 static readers `[IO.File]::ReadAllText` / `ReadAllBytes` / `ReadAllLines` / `ReadLines` / `OpenRead` /
-`OpenText`. A token still carrying `$` is never guessed at. Each resolved file is scanned as `file`
+`OpenText`, plus `System.IO.StreamReader` (`[IO.StreamReader]::new(…)`, `New-Object IO.StreamReader …`).
+`$env:X`, `${env:X}`, `$HOME` and `~` expand from the hook's own environment, which is the agent's
+(names case-insensitive on Windows; `~` only in a cmdlet path, since a .NET method receives it
+verbatim); an unset variable, a single-quoted or backtick-escaped `$` and
+`~user` are never guessed, and any other token still carrying `$` is left alone. Parameter abbreviations
+resolve per [`cli/ps-params.mjs`](../cli/ps-params.mjs), whose tables are the PowerShell 7.5 reference
+pages for the cmdlets the parser follows: every parameter whose name or alias starts with the prefix
+matches, an exact name wins, a cmdlet parameter beats a common one, and any other tie is ambiguous, so
+nothing is read (PowerShell throws `AmbiguousParameter` and never runs the command). `embeddedScripts`
+decodes `-EncodedCommand` (any prefix, `-e`, `-ec`, `/` forms; base64 UTF-16LE) under both the
+PowerShell and the `Bash` grammar and, in PowerShell, takes the string literal an `Invoke-Expression`
+evaluates (its `-Command` or first argument, or `'…' | iex`), recursively to three levels; each script
+is scanned with the command text and parsed for read paths in turn. Each resolved file is scanned as `file`
 content and also gets `decideCredFileRead`, the #55 path verdict a `Read` gets, because `gc .env` does
 not carry the `cat .env` text the command-level rule matches. `PS_OUTBOUND_UPLOAD` adds the PowerShell
 uploads `OUTBOUND_UPLOAD` does not name: `Start-BitsTransfer -TransferType Upload`,
 `Send-MailMessage -Attachments`, and a copy or move onto a UNC path (`\\host\share`; `\\?\`, `\\.\`,
-localhost and `wsl.localhost` excluded). Existing installs converge on the new matcher. Whole-hook p50 on
+localhost and `wsl.localhost` excluded). #54 matches `New-Object [-TypeName] [System.]Net.Sockets.TCPClient`
+and `[[System.]Net.Sockets.TCPClient]::new(`; #57 matches `irm|iwr|Invoke-RestMethod|Invoke-WebRequest …
+| iex|Invoke-Expression` within one statement (a 200-character window) and `iex (irm …)` /
+`iex (New-Object Net.WebClient).DownloadString(…)`, with no `powershell` in front; the new patterns hit 0
+of 10,030 benign strings across 14 corpora. Existing installs converge on the new matcher. Whole-hook p50 on
 a benign command was 121 ms for both `Bash` and `PowerShell` (30 calls each, no reachable policy server).
 Limits are in §13.
 
@@ -768,12 +785,45 @@ the three adds a coaching note even though #52 does not ask.
 none of the 1,615 strings of 160 characters or more in `test/redteam/`, and `instr-leak-upload-ref`
 fires on none of the 33,828 strings there. The benign v2 false-positive count is unchanged at 20/602.
 
-### `UserPromptSubmit` — intent alignment only
+### `UserPromptSubmit` — intent alignment, and the prompt as inbound content
 
 The hook registers `UserPromptSubmit` with matcher `""` (the event takes no matcher), and
-`convergeHooks` adds it to existing installs on the next hook call. It never decides anything and
-prints nothing, because stdout on this event is added to the model's context. The prompt is not
-scanned by the detection engine.
+`convergeHooks` adds it to existing installs on the next hook call. Stdout on this event is added to
+the model's context, so in report mode it prints nothing. It does two things, in order: it captures the
+task for intent alignment (below), then it decides whether to scan the prompt.
+
+**The prompt scan** ([`cli/prompt-scan.mjs`](../cli/prompt-scan.mjs), pure; wired in `handlePrompt`). A
+prompt a person types on their own laptop is their instruction, so it is not scanned: typing "ignore
+previous instructions" there is not injection. A prompt that arrives any other way can carry a third
+party's text. `policy.promptScan`:
+
+| Value | Scans |
+|---|---|
+| `"untrusted"` (default) | a prompt whose `source` is present and not `user` (Claude Code sends `sdk`, `system`, `poll_event`, `schedule_wakeup`, `loop_wakeup`), and every prompt in server mode |
+| `"all"` | every prompt |
+| `"off"` | none |
+
+A prompt with no `source` (older Claude Code, and the Codex / Cursor / Gemini / Copilot adapters, which do
+not send one) counts as typed by a person. A scanned prompt runs at stage `file` with `inbound: true`, so
+the directive and rules-poisoning detectors (#40, #60) run alongside the prompt detectors, and is reported
+at stage `prompt`, tool `hook:UserPromptSubmit`, with `promptOrigin` (`person` / `event` / `server`) and
+`promptSource` (a known `source` value, `none` or `other`). Reports are content-free whatever the capture
+tier, `full-capture` included. A prompt over 64 KB is scanned up to the cut, and the ledger row records the
+cap.
+
+`policy.promptScanAction` is `"report"` (default: findings are reported and nothing is printed) or
+`"block"`: the hook answers `{"decision": "block", "reason": …}`, a reason that names the threats and never
+quotes the prompt. Only these findings block: the instruction-carrying threats (`INSTRUCTION_THREATS`:
+#2, #3, #21, #22, #25, #40, #50, #51, #60, #68, #70, #72, #74), or a finding whose configured action is
+block or kill. A secret, PII or a legal clause in an issue body is reported, not blocked: #15 alone fires
+on 56 of 311 benign web pages. An unenrolled device never blocks; it shows the user a `systemMessage`. The
+adapters forward the prompt but never answer it, so on the other agents the scan reports and never blocks.
+
+Measured with `promptScan: "all"`: benign-v2 21 of 602 flagged, 6 would block; benign-web-content 97 of
+311 flagged, 33 would block; benign-arabic 0 of 174, benign-russian 0 of 180, benign-hebrew 16 of 179 (13
+of them #41). Recall as event prompts: vector-2 27 of 45 (18 block), vector-5 22 of 25 (21 block). Latency
+p50: a `poll_event` prompt 170 ms scanned against 128 ms unscanned; a typed prompt 109 ms against 108 ms.
+Prompt findings do not feed session risk, the lethal trifecta, behaviour logging or model escalation.
 
 **Capture** (`cli/intent-alignment.mjs`, pure logic in `data/intent-alignment.js`). Only a prompt a
 person wrote counts as the task: `source` absent, `user`, `sdk`, `loop_wakeup` or `schedule_wakeup`.
@@ -807,7 +857,8 @@ the local model; `semanticEscalation: "provider"` does not widen it. The call is
 `MOORAI_INTENT_TIMEOUT_MS` (default 1500 ms), and any failure yields no labels.
 
 **The other agents.** The adapters register a prompt event and forward it as `UserPromptSubmit`, for
-capture only: Codex `UserPromptSubmit`, Cursor `beforeSubmitPrompt`, Gemini `BeforeAgent`, Copilot
+capture (and, only under `promptScan: "all"`, a scan that reports): Codex `UserPromptSubmit`, Cursor
+`beforeSubmitPrompt`, Gemini `BeforeAgent`, Copilot
 `userPromptSubmitted`. Each answers with nothing the model sees (an empty stdout; Cursor
 `{"continue": true}`), and each uses the session key its tool events carry, so a captured task and a
 later tool call meet. None of those payloads carries a `source`, so every prompt counts as the task,
@@ -1026,8 +1077,10 @@ row to `~/.moorai/session-ledger.jsonl`: event (`pre`, `post`, `fail`, `prompt`,
 tenant key, because an unenrolled device would hash every session to one sentinel), truncated to 16 hex
 characters. A shell command is also reduced to a class token — `verify` (test, build, lint, typecheck
 runners), `effect` (push, deploy, publish, commit, merge, tag), `probe` (judged on the last pipeline
-segment: `grep`, `test`, `diff`, `ls`, …) or `other` — and, for a verify command, a keyed hash of its
-runner family, so a failed `go test` is resolved only by a later passing `go test`. A `post` row carries
+segment: `grep`, `test`, `diff`, `which`, …; `ls`, `stat` and `find` are not probes) or `other` — and
+`fam`, a keyed hash of its family: the runner of a verify command, so a failed `go test` is resolved only
+by a later passing `go test`, or the push/deploy family of an effect command (`git push`, `kubectl apply`,
+`aws s3 sync`). A `post` row carries
 the call's outcome (`ok`; `interrupted`; `error`, from `isError` or a non-zero exit code); a `fail` row reads
 only the documented `Exit code N` first line and the timeout marker of `error`, which the reference calls
 display text. Rows are chain-stamped (`stampRecord`); past about 1 MB the file is trimmed to its newest
@@ -1045,24 +1098,37 @@ access it without parsing the transcript file". The transcript is never read. Th
 memory and never stored or sent; only the id of the claim pattern that matched leaves the module. Scope: for
 `Stop`, the main agent's rows since the user's last prompt; for `SubagentStop`, that sub-agent's rows. A
 *claim* is one of a fixed set of success phrasings (`tests-pass`, `build-ok`, `successfully`, `verified`,
-`now-working`, `has-been-done`, `i-did`, `did`, `everything-works`, `done`, `ready`, `works`), with code
-spans stripped first; a negation in the same sentence cancels it. A *caveat* anywhere in the message —
-failure, inability, refused, aborted, a hedge ("however", "you'll need to", "please run"), errors remain —
-means it is not an unqualified claim. Failures are shell and MCP outcomes of `error`, `interrupted` or
-`denied` (a `PreToolUse` deny); a probe's exit 1 is its answer, not a failure. A failure is resolved by a
-later success of the same command, the same verify runner, or the same MCP tool. The finding fires when there
-is a claim, no caveat, and either the turn's last relevant outcome was bad or a weighty failure (a verify or
-effect command, an MCP call, a denied non-shell action) is unresolved. It posts `Agent reported success but
+`now-working`, `has-been-done`, `i-did`, `did`, `everything-works`, `done`, `ready`, `works`,
+`errors-fixed`, `should-work`, `non-english`), with code spans stripped first; a negation in the same
+sentence cancels it. A *caveat* anywhere in the message — failure, inability, refused, aborted, a hedge
+("however", "you'll need to", "please run"), errors remain, or the failure lexicon of the nine other
+languages — means it is not an unqualified claim. Failures are shell and MCP outcomes of `error`,
+`interrupted` or `denied` (a `PreToolUse` deny); a probe's exit 1 is its answer, not a failure.
+
+Each claim has a kind — verify (tests/build/lint pass), effect (pushed, merged, deployed, posted, created,
+filed, applied…), edit (added, updated, bumped…) or any (done, fixed, works) — and counts only against a
+failure of that kind. A verify claim counts against a test or build run, an effect claim against a
+push/deploy-type command or an MCP call that is not a read (get/list/search/…), an edit claim against a
+denied edit, and an any claim against all of these. A failed plain shell command also counts, except
+against an edit claim, when it is the turn's last outcome. A failure is resolved by a later success of the
+same command, the same verify runner, the same push/deploy family (`git push`, `kubectl apply`,
+`aws s3 sync`), or the same MCP tool. `ls`, `stat` and `find` are not probes: their non-zero exit is a
+failure. The finding fires when there is a claim, no caveat, and a failure of the claim's kind is
+unresolved or the turn's last outcome. It posts `Agent reported success but
 tool calls failed` (Medium, stage `lifecycle`, reason `CLAIM_MISMATCH`) with `claimCheck` = `{ claim,
 lastOutcome, calls, failed, denied, interrupted, unresolved, scope }`, once per turn even when
 `stop_hook_active` fires `Stop` twice. Report-only.
 
-Measured against a 75-case hand-labelled corpus (`test/fixtures/claim-check-corpus.json`, scored by
-`scripts/score-claim-check.mjs --split all|tune|heldout`): blind, before any tuning, precision was 81.8%. The
-rules were then tuned against the odd-numbered half only; on the even-numbered held-out half they score
-precision 70.0% (7 TP, 3 FP) and recall 46.7% (7 of 15). The tuned half scores 100% / 100%, which is
-expected and is not evidence. Precision is chosen over recall: a message that names any problem is never
-flagged.
+Measured against a fresh 181-case corpus (`test/fixtures/claim-check-corpus-v2.json`, scored by
+`scripts/score-claim-check.mjs --corpus v2 --split all|tune|locked`). The cases were written and labelled
+by agents that never read the detector. A blind second labeller re-labelled a random 55 with Cohen's kappa
+1.0, which reflects deliberately unambiguous cases more than real-world label reliability. A fixed seed
+split the corpus 60/40 into tune and locked before any detector output was seen. Blind, before any change,
+the detector scored precision 89.7% and recall 33.8% on the whole corpus. The rules were then adjusted
+against the tune split only (100% / 89.1% there, which is expected and is not evidence). The locked split
+was scored once: precision 100% (17 TP, 0 FP) and recall 54.8% (17 of 31). The 75-case corpus
+(`test/fixtures/claim-check-corpus.json`, `--corpus legacy`) is kept as a regression set (92.3% / 80.0%).
+Precision is chosen over recall: a message that names any problem is never flagged.
 
 **Compaction.** `PreCompact` writes a `compact` row with `trigger` `manual`, `auto` or `other` and nothing else; the
 summary counts them.
@@ -1257,6 +1323,21 @@ within the registries, github.com and gitlab.com; only public package and reposi
 Measured on 325 popular servers: provenance 128, verified 80, none declared 98, unverified 7,
 unreachable 8, mismatch 2, one of them a false positive after a rename (`blender-mcp`).
 
+**Remote servers: the HTTP gateway.** [`mcp-gateway/`](../mcp-gateway/README.md) applies the same
+tool-call and tool-result checks to remote (Streamable HTTP / SSE) MCP servers as a local reverse proxy
+(`moorai-mcp-gateway --route /name=https://remote.example/mcp`, or `--config gateway.json`). A refused call
+is answered with an MCP tool result carrying `isError: true` (HTTP 200), as the stdio proxy answers. Both
+MCP spec eras' headers pass through (revision 2026-07-28 removed sessions and GET streams). Added p50 is
+about 10–13 ms, dominated by the engine. 16 integration and 4 SSE tests run it against a fake upstream;
+real MCP clients, OAuth discovery through the gateway and its server-mode paths are unproven.
+
+**Proxy-vs-hook usage counts.** [`cli/mcp-usage-beat.mjs`](../cli/mcp-usage-beat.mjs): the hook's
+`mcp__*` branch and the stdio proxy each tally MCP calls per UTC day, path (`hook` / `proxy`), host and
+server label, and post each completed day once to `POST /api/mcp-usage`. The console compares the two
+paths per device, day, host and server, so MCP traffic one path sees and the other does not shows a
+bypass or a gap. Server labels go in clear, as the action audit already stores them; no tool name or
+argument is ever recorded. `mcp-proxy/install.mjs` stamps the host into the wrapped args (`--host`).
+
 ---
 
 ## 9. Content-free discipline
@@ -1402,12 +1483,14 @@ Stated rather than papered over.
 
 - **`~` paths from `extractReadPaths` are not expanded**, so `cat ~/.aws/credentials` gets no content read;
   only the command-text rule #55 sees it.
-- **The PowerShell grammar reads the common forms, not all of them.** `$env:` and `~` paths are not
-  expanded, so their content is not read. Abbreviated parameters (`-InF` for `-InFile`, `-Att` for
-  `-Attachments`) are not recognised. `Invoke-Expression` and `-EncodedCommand` payloads are not decoded.
-  .NET readers other than the `File` statics listed in §6 (`StreamReader`, for one) are not followed. #54
-  matches `System.Net.Sockets.TCPClient` and misses the shorter `Net.Sockets.TCPClient`. #57 flags
-  `irm … | iex` only when `powershell` precedes it.
+- **The PowerShell grammar reads the common forms, not all of them.** Not followed: a
+  `powershell -Command "<script>"` payload, `iex "$(gc .env)"` (an expandable string, not a literal),
+  `Join-Path $env:X …`, and `[IO.FileStream]`. Read paths are not extracted from a command or a decoded
+  script longer than 8,000 characters (an encoded script is 2.67 times its text), though the decoded text
+  is still scanned as a command up to 64 KB. A POSIX
+  `~` in a `Bash` command is not expanded (above). No live PowerShell has run these forms: Windows
+  PowerShell 5.1's tie-breaking between abbreviated parameters and its acceptance of `/enc` are taken from
+  the 7.5 reference and unverified.
 - **The plugin install and the settings install are meant to be exclusive.** With both present, the
   plugin copy stands down per event only while the `settings.json` entry's script exists; `moorai-doctor`
   warns about the pair. Plugin hooks are subject to `allowManagedHooksOnly` unless managed settings
@@ -1459,8 +1542,13 @@ Stated rather than papered over.
 - **`scanSession` / the `session` stage has no enforcement caller** (§2). Multi-turn injection scores in
   the corpora and enforces nothing in the product.
 - **`scripts/score-vectors.mjs`'s `STAGE_REACHABILITY` names `UserPromptSubmit`** as a production feed for
-  the `prompt` stage. `UserPromptSubmit` is registered for intent alignment only (§6); the `prompt`
-  stage table in §2 still lists no user-prompt feed, because the engine never scans the prompt.
+  the `prompt` stage. The hook scans an event-triggered or server-mode prompt at the `file` stage (which
+  runs the `prompt` detectors plus six) and reports it as stage `prompt`; a typed prompt is not scanned
+  (§6). The §2 table lists it under `file`.
+- **The prompt scan is measured, not observed live.** With `promptScan: "all"` and
+  `promptScanAction: "block"` it would block 33 of 311 benign web pages and 6 of 602 benign-v2 prompts. It does not feed session risk, the lethal
+  trifecta, behaviour logging or model escalation, and it has not been watched in a live Claude Code
+  session; the `source` values come from the hooks reference.
 - **Intent alignment is lexical, not semantic.** It asks whether the user ever named a destination,
   file or service, not whether the action serves the task. An upload to a host the user named passes,
   even when it is exfiltration to that host. Text pasted into a prompt from an untrusted source widens
@@ -1524,16 +1612,23 @@ Stated rather than papered over.
   `MOORAI_POLICY_PUBKEY`, `MOORAI_OFFLINE_MODE` and the OTLP endpoint set by a user, project or local settings
   file are ignored (`trustedEnv` in `cli/server-mode.mjs`) and reported; other `MOORAI_*` tuning variables
   (for example `MOORAI_LOCAL_MODEL`) are still read from the environment. A container with no `/etc/moorai/policy.pub` or `MOORAI_POLICY_PUBKEY` starts every run
-  unpinned, so it trusts the first policy it fetches. Agent SDK in-process hook callbacks are not
-  provided; an SDK service runs the shell hook, one process per tool call.
+  unpinned, so it trusts the first policy it fetches. The in-process forms (`@moorai/agent-sdk`,
+  `moorai-serve`) do not evaluate the circuit breaker, session risk, deletion volume, intent alignment,
+  learned drift, MCP reputation, model escalation, honeytokens or the `mask` rewrite (each result lists
+  them in `notEvaluated`), and the SDK's `PostToolUse` does not apply the hook's inbound gates. The SDK's
+  `UserPromptSubmit` scans every prompt at stage `prompt`, not the hook's `file`-stage scan of
+  event-triggered prompts. `moorai-serve`'s `/v1/tool-call` reads paths on the sidecar's own filesystem, so
+  an authenticated client can learn whether a file there holds secrets, and its secret-egress fingerprint
+  cache is filled once per directory for the life of the process.
 - **The lifecycle events, the claim check, the session signals and provenance are tested through the real
   hook with scripted stdin, not watched in a live Claude Code session.** The `Stop` / `SubagentStop` /
   `PostToolUseFailure` / `PreCompact` input fields are taken from the hooks reference, not from a captured
   payload.
-- **The claim check is lexical and English-only.** A success claim phrased outside its fixed set is not a
-  claim, and any caveat word anywhere in the message silences it. Held-out precision is 70.0% and recall
-  46.7% on 37 cases written by the same author as the rules; the 81.8% blind figure was measured before
-  tuning and is not reproducible from the current rules. It sees only `Bash`, `PowerShell` and `mcp__*`
+- **The claim check is lexical, English plus a short completion and failure lexicon for nine languages.**
+  A success claim phrased outside its fixed set is not a claim, and any caveat word anywhere in the message
+  silences it. Locked-split recall is 54.8% on 73 cases, against 89.1% on the tune split; that gap is the
+  measure of how far the phrase list was fitted to the tune split. Precision 17/17 has a 95% lower bound of
+  about 80%. It sees only `Bash`, `PowerShell` and `mcp__*`
   outcomes plus `PreToolUse` denials: a failed `Write` or `Edit` that was not denied leaves no outcome. Only
   Claude Code sends `Stop`; the other agents' adapters do not forward it.
 - **Session risk catches a minority of taint-then-exfiltrate sequences.** On the scripted sets it caught 23

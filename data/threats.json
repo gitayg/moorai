@@ -1134,7 +1134,7 @@
       "id": 57,
       "category": "Add-ons & Tools",
       "threat": "Unsanctioned or malicious package install",
-      "example": "The agent installs software from an untrusted source — piping a remote script to a shell (curl … | bash), pip/npm/cargo/go install from a URL, git, or an alternate index, or an auto-yes npx of an unvetted package.",
+      "example": "The agent installs software from an untrusted source — piping a remote script to a shell (curl … | bash), pip/npm/cargo/go install from a URL, git, or an alternate index, or an auto-yes npx of an unvetted package, or a PowerShell download run through Invoke-Expression (`irm … | iex`, `iex (New-Object Net.WebClient).DownloadString(…)`).",
       "response": "This installs code from an untrusted source (remote install script, alternate package index, or unvetted package). Warn before it runs — a malicious or typosquatted package is a supply-chain compromise vector.",
       "saferAlternative": "Download the script, read it, check its checksum, then run the local copy.",
       "severity": 4,

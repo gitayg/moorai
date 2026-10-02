@@ -1,0 +1,22 @@
+{
+    "inferenceProfileSummaries": [
+        {
+            "createdAt": "2026-09-01T12:34:56.123456+00:00",
+            "description": "CANARY cost tracking for team blue",
+            "inferenceProfileArn": "arn:aws:bedrock:us-east-1:210987654321:application-inference-profile/ip0canary001",
+            "inferenceProfileId": "ip0canary001",
+            "inferenceProfileName": "CANARY_PROFILE_blue",
+            "models": [
+                {
+                    "modelArn": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
+                },
+                {
+                    "modelArn": "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
+                }
+            ],
+            "status": "ACTIVE",
+            "type": "APPLICATION",
+            "updatedAt": "2026-09-03T12:34:56.123456+00:00"
+        }
+    ]
+}

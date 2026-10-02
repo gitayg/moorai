@@ -1,0 +1,18 @@
+{
+    "provisionedModelSummaries": [
+        {
+            "commitmentDuration": "OneMonth",
+            "commitmentExpirationTime": "2026-10-15T12:34:56.123456+00:00",
+            "creationTime": "2026-09-15T12:34:56.123456+00:00",
+            "desiredModelArn": "arn:aws:bedrock:us-east-1:210987654321:custom-model/amazon.titan-text-express-v1:0:8k/abcdefghij12",
+            "desiredModelUnits": 1,
+            "foundationModelArn": "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-text-express-v1:0:8k",
+            "lastModifiedTime": "2026-09-16T12:34:56.123456+00:00",
+            "modelArn": "arn:aws:bedrock:us-east-1:210987654321:custom-model/amazon.titan-text-express-v1:0:8k/abcdefghij12",
+            "modelUnits": 1,
+            "provisionedModelArn": "arn:aws:bedrock:us-east-1:210987654321:provisioned-model/pt0canary01",
+            "provisionedModelName": "CANARY_PT_hr",
+            "status": "InService"
+        }
+    ]
+}

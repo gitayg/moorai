@@ -1,0 +1,27 @@
+{
+    "guardrails": [
+        {
+            "arn": "arn:aws:bedrock:us-east-1:210987654321:guardrail/gr0abc12def3",
+            "createdAt": "2026-08-01T12:34:56.123456+00:00",
+            "description": "CANARY blocks PII",
+            "id": "gr0abc12def3",
+            "name": "CANARY_GR_pii",
+            "status": "READY",
+            "updatedAt": "2026-09-01T12:34:56.123456+00:00",
+            "version": "DRAFT"
+        },
+        {
+            "arn": "arn:aws:bedrock:us-east-1:210987654321:guardrail/gr0zzz99yy88",
+            "createdAt": "2026-08-03T12:34:56.123456+00:00",
+            "crossRegionDetails": {
+                "guardrailProfileArn": "arn:aws:bedrock:us-east-1:210987654321:guardrail-profile/us.guardrail.v1:0",
+                "guardrailProfileId": "us.guardrail.v1:0"
+            },
+            "id": "gr0zzz99yy88",
+            "name": "CANARY_GR_unused",
+            "status": "READY",
+            "updatedAt": "2026-09-02T12:34:56.123456+00:00",
+            "version": "DRAFT"
+        }
+    ]
+}

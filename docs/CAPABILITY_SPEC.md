@@ -117,6 +117,14 @@ to the cloud for its own reasoning.
   The server does not enforce directly — it distributes the **policy** that drives client-side
   enforcement. In server mode (below) the binding comes from a root-owned system file and the
   environment first.
+- **In-process and sidecar forms** — `@moorai/agent-sdk` ([`packages/agent-sdk`](../packages/agent-sdk/))
+  returns Claude Agent SDK hook callbacks, and `moorai-serve` ([`cli/moorai-serve.mjs`](../cli/moorai-serve.mjs))
+  serves the same runtime on localhost for other agent loops; both run the hook's engine and policy in
+  one long-lived process (server mode, below).
+- **MCP HTTP gateway** — `moorai-mcp-gateway` ([`mcp-gateway/`](../mcp-gateway/README.md)), a local
+  reverse proxy that applies the stdio proxy's checks to remote (Streamable HTTP / SSE) MCP servers.
+- **Cloud inventory** — `moorai-cloud-inventory` ([`cloud/`](../cloud/README.md)), a read-only,
+  content-free inventory of an AWS account's Amazon Bedrock resources, posted to the console.
 
 ### Client form factor — native Managed AI Host
 - Native desktop app (cross-platform from one codebase). All AI tools are reached through the host.
@@ -150,8 +158,23 @@ Claude Code GitHub Action, an Agent SDK service in a container
   or the org policy allows and reports it instead, and the environment can only say `deny`.
 - **Not applicable on a server:** the desktop app, the AIBOM, the shadow-AI inventory and OS posture.
 - **Proof and limits.** Observed live: one live run of Claude Code 2.1.284 (`claude -p`, the hooks added with `--settings`, server mode from the environment) showed UserPromptSubmit (117 ms) and PreToolUse (224 ms) firing, a `.env` read denied as a headless ask, and the console receiving content-free reports under the workload identity. An Agent SDK service and a GitHub Actions run have not
-  been watched end to end. Agent SDK in-process hook callbacks are not provided; an SDK service runs the
-  shell hook.
+  been watched end to end.
+- **In process.** `moorAIHooks(options)` from `@moorai/agent-sdk` returns the `hooks` record for
+  `query({ options: { hooks } })`: one runtime, no process per tool call. `PreToolUse` returns the hook's
+  own decision and reason (parity test: 214 payloads, two policy states, 0 mismatches). Prompts and tool
+  results are observed by default (`prompts: "enforce"`, `toolResults: "advise"` to act on them).
+  `moorai-serve` is the same runtime as a localhost sidecar: `POST /v1/scan`, `POST /v1/tool-call`,
+  `GET /healthz`, content-free verdicts, loopback only unless `--allow-remote` plus a 16+ character
+  bearer token (compared in constant time); it rejects a non-loopback `Host` (421), non-JSON (415) and a
+  body over 1 MiB (413, after draining), with a 5 s header timeout and 256 connections. A stdlib-only
+  Python client with LangGraph / CrewAI examples (not executed) is in
+  [`clients/python`](../clients/python/README.md). p50 on 2 KB: SDK `PreToolUse` 1.99 ms, sidecar
+  `/v1/scan` 6.4–11 ms, shell hook process 164–309 ms. **Limits.** Not evaluated in process (listed in
+  each result's `notEvaluated`): circuit breaker, session risk, deletion volume, intent alignment,
+  learned drift, MCP reputation, escalation, honeytokens, the `mask` rewrite. The SDK's `PostToolUse`
+  observes only and does not apply the hook's inbound gates. `/v1/tool-call` reads paths on the
+  sidecar's own filesystem, so an authenticated client can learn whether a file holds secrets; the
+  secret-egress fingerprint cache is filled once per directory in the long-lived process.
 - **Trust anchors from settings files are ignored on every device.** `MOORAI_BREAKGLASS_PUBKEY`,
   `MOORAI_POLICY_PUBKEY`, `MOORAI_OFFLINE_MODE` and the OTLP endpoint set by a user, project or local
   settings file's `env` block do not take effect and are reported (names only); managed settings, the
@@ -193,7 +216,11 @@ and digest, and enum codes — §C 17d), the session summary (`summary` — coun
 (`claimCheck` — a claim-pattern id, an outcome word and counts — §C 17b), the session-risk and
 circuit-breaker signatures (`signature`, `sessionRisk` — rule names, counts, scores, windows — §C 17c), and
 the agent-posture body sent to `POST /api/agent-posture` (host ids, flag names, scope names, a hook-state
-word, an hour-rounded timestamp — §C 17e). All are names, categories and counts, never content. The invariant is asserted empirically rather than
+word, an hour-rounded timestamp — §C 17e), the prompt-scan origin (`promptOrigin`, `promptSource` — enum
+words — §B3 11h), the MCP usage counts sent to `POST /api/mcp-usage` (a day, a path, a host id, server
+labels and call counts — Coverage & blind spots) and the cloud inventory records (keyed-hash ids, closed-list
+statuses, coarse attributes, risk-flag names — Coverage & blind spots). All are names, categories and
+counts, never content. The invariant is asserted empirically rather than
 declared: `test/skill-analysis.test.mjs` and `test/destinations.test.mjs` each plant a unique canary in
 a fixture, capture every byte the hook POSTs plus the on-device ledgers, and fail if the canary, a
 matched span, a verbatim source line, a URL path, a query string or a request header appears in either.
@@ -372,8 +399,8 @@ is validated against.
 ### B3. Task, instruction-file and MCP-server context (client)
 
 11c. **Intent alignment** — does a risky agent action fit the task the user gave in this session?
-   *Threat 64.* The hook registers `UserPromptSubmit` for this alone; the prompt is not scanned by the
-   detection engine. From prompts a person wrote (`system` and `poll_event` turns skipped), it keeps
+   *Threat 64.* The hook registers `UserPromptSubmit` for this and for the prompt scan (11h); a prompt
+   a person typed is not scanned by the detection engine. From prompts a person wrote (`system` and `poll_event` turns skipped), it keeps
    device-keyed HMACs (`~/.moorai/intent.key`, 0600) of the sites, paths, fixed-list service names and
    up to three labels (`credentials`, `destructive`, `mcp-write`) the prompt mentions, in
    `~/.moorai/intent-alignment.json` (0600; 64 sessions, 24 h TTL, 512 features). The prompt is never
@@ -391,7 +418,7 @@ is validated against.
    time, only when `modelEscalation` and `semanticEscalation` are both on, bounded by
    `MOORAI_INTENT_TIMEOUT_MS` (default 1500). The Codex (`UserPromptSubmit`), Cursor
    (`beforeSubmitPrompt`), Gemini (`BeforeAgent`) and Copilot (`userPromptSubmitted`) adapters forward
-   the prompt for capture only and answer with nothing the model sees.
+   the prompt for capture and answer with nothing the model sees.
 
    **Limits.** Lexical, not semantic: an upload to a host the user named passes. Pasted text widens the
    task. The agent can read the key and rewrite the state file, as it can every file under `~/`.
@@ -463,6 +490,25 @@ is validated against.
    destination, and public keys or certificate PEMs. Its #60 finding feeds the server's existing
    `tool-poisoning` reputation signal.
 
+11h. **Event-triggered and headless prompts** — [`cli/prompt-scan.mjs`](../cli/prompt-scan.mjs). A
+   prompt a person typed is their instruction and is not scanned; one that arrives any other way can
+   carry a third party's text. `policy.promptScan`: `"untrusted"` (default) scans a prompt whose `source`
+   is present and not `user` (`sdk`, `system`, `poll_event`, `schedule_wakeup`, `loop_wakeup`) and every
+   prompt in server mode; `"all"`; `"off"`. A prompt with no `source` (older Claude Code, the other
+   agents' adapters) counts as typed. Scanned at stage `file` with `inbound: true`, reported at stage
+   `prompt`, tool `hook:UserPromptSubmit`, with `promptOrigin` (`person` / `event` / `server`) and
+   `promptSource`; always content-free, even under `full-capture`; cut at 64 KB (the ledger records the
+   cut). `policy.promptScanAction`: `"report"` (default; prints nothing, because stdout on this event
+   enters the model's context) or `"block"`, which blocks with a reason naming the threats, never quoting
+   the prompt. Only instruction-carrying threats (2, 3, 21, 22, 25, 40, 50, 51, 60, 68, 70, 72, 74) or a
+   finding whose configured action is block / kill block; PII and secrets report only. An unenrolled
+   device never blocks; it shows a `systemMessage`. **Measured** (`promptScan: "all"`): benign-v2 21/602
+   flagged, 6 would block; benign web content 97/311 flagged, 33 would block; Arabic 0/174, Russian
+   0/180, Hebrew 16/179 (13 are #41). As event prompts: vector-2 27/45 (18 block), vector-5 22/25 (21
+   block). p50: a `poll_event` prompt 170 ms scanned, 128 ms unscanned; a typed prompt 109 ms. **Limits.**
+   Prompt findings do not feed session risk, the lethal trifecta, behaviour logging or model escalation.
+   Not observed in a live Claude Code session.
+
 ### C. Runtime (client)
 12. **Risk-prioritized alerting** — ranks findings by `riskLevel`, then `riskScore` as the tiebreak.
 13. **In-context guidance** — surfaces the matching `response` + a source link.
@@ -495,8 +541,11 @@ is validated against.
     compares `last_assistant_message` (read in memory, never stored or sent) with the turn's recorded
     outcomes and posts `Agent reported success but tool calls failed` (Medium, `CLAIM_MISMATCH`) when the
     message claims success while tool calls failed, were denied or were interrupted and were not redone.
-    Report-only. **Measured:** 81.8% precision blind; after tuning on half of a 75-case labelled corpus,
-    70.0% precision and 46.7% recall on the held-out half. `PreCompact` records that compaction happened.
+    A claim counts only against a failure of its own kind (verify, effect, edit or any). Report-only.
+    **Measured** on a 181-case corpus labelled by agents that never read the detector, split 60/40 by a
+    fixed seed before any detector output was seen: on the locked split, scored once, 100% precision (17
+    of 17) and 54.8% recall (17 of 31); the v1.1.0 75-case corpus is kept as a regression set (92.3% /
+    80.0%). `PreCompact` records that compaction happened.
 17c. **Session-level escalation and the runaway circuit breaker** —
     [`data/session-risk.js`](../data/session-risk.js): taint (an injection-class finding on ingested content,
     then an outbound action or credential-file read within `windowMin` → #59 `Agent behavior: outbound
@@ -625,13 +674,26 @@ before this tier: a tenant can soften any entry to `notify`/`disabled` or harden
   the arguments, not on file content; `mask` cannot rewrite a file, so it falls back. Not tested against
   a live MCP server or on Windows.
 - **Headless agents** (CI, containers, Agent SDK services) are covered by the same hook in server mode
-  (above), observed in one live `claude -p` run. **Blind spot:** an Agent SDK service and a CI run have not
-  been watched end to end.
+  (above), observed in one live `claude -p` run, or in process by `@moorai/agent-sdk` and the
+  `moorai-serve` sidecar. **Blind spot:** an Agent SDK service and a CI run have not been watched end to
+  end, and the in-process forms leave the session-level controls unevaluated.
+- **Remote MCP servers** go through the HTTP gateway ([`mcp-gateway/`](../mcp-gateway/README.md)): the
+  stdio proxy's call and result checks, a refusal returned as an `isError: true` tool result (HTTP 200),
+  both MCP spec eras' headers passed through, about 10–13 ms added at p50. **Blind spot:** not run with
+  real MCP clients; OAuth discovery through the gateway and its server-mode paths are unproven.
+- **Cloud AI platforms.** `moorai-cloud-inventory bedrock` reads an AWS account's Bedrock agents,
+  knowledge bases, guardrails, custom models, provisioned throughput, application inference profiles and
+  AgentCore runtimes, read-only, with the customer's own AWS CLI, and posts content-free records to the
+  console's Inventory view ([`cloud/`](../cloud/README.md)). **Blind spot:** inventory only, no runtime
+  enforcement on Bedrock; tested against documented response shapes and a fake AWS CLI, not a real
+  account.
 - **Whether MoorAI is in the path at all** is reported per host (17e, 19b): a daily heartbeat with the
   weakened settings, and the desktop app's hourly activity report independent of every hook. **Blind
   spots:** a host disabled after the day's heartbeat shows the next day; a device without the desktop app
-  has no hook-independent activity source; the proxy-versus-hook comparison for the same MCP server is not
-  computed (the console stores no MCP server name and the proxy does not know its host).
+  has no hook-independent activity source. The hook and the stdio proxy each post per-day MCP call counts
+  per host and server label (`POST /api/mcp-usage`), and the console compares the two paths, so MCP
+  traffic one path sees and the other does not shows a bypass or a gap; a proxy entry wrapped before the
+  installer's `--host` stamp reports host `unknown` until the installer is re-run.
 - **Across a session** (17b, 17c): the claim check and the session summary need `Stop`, which only Claude
   Code sends (the other agents' adapters forward no stop event). The claim check, session risk and the
   circuit breaker are report-only by default, and have been driven through the real hook with scripted

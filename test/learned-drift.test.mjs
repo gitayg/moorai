@@ -192,9 +192,12 @@ const bash = (command, extra = {}) => ({ tool_name: "Bash", tool_input: { comman
 
 const CATEGORY = "Agent drift: first seen";
 const driftAlerts = (alerts) => alerts.filter((a) => a.category === CATEGORY);
+// The MCP usage tally (mcp-usage*.json, cli/mcp-usage-beat.mjs) is excluded: it holds server labels in
+// clear by design — the same label every alert carries as mcpServer, posted to /api/mcp-usage — so
+// it is not learned-drift state, whose names must only ever be keyed hashes.
 function stateText(home) {
   const dir = join(home, ".moorai");
-  return readdirSync(dir).filter((f) => f.endsWith(".json") && f !== "config.json").map((f) => readFileSync(join(dir, f), "utf8")).join("\n");
+  return readdirSync(dir).filter((f) => f.endsWith(".json") && f !== "config.json" && !f.startsWith("mcp-usage")).map((f) => readFileSync(join(dir, f), "utf8")).join("\n");
 }
 
 test("hook e2e: silent during learning, one alert for a new host, silent on repeat, rate-limited per type", async () => {

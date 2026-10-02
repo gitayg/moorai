@@ -1,0 +1,21 @@
+{
+    "agent": {
+        "agentArn": "arn:aws:bedrock:us-east-1:210987654321:agent/AGENTBBBBB",
+        "agentId": "AGENTBBBBB",
+        "agentName": "CANARY_AGENT_ops",
+        "agentResourceRoleArn": "arn:aws:iam::210987654321:role/CANARY_ROLE_ops",
+        "agentStatus": "PREPARED",
+        "agentVersion": "DRAFT",
+        "createdAt": "2026-08-02T12:34:56.123456+00:00",
+        "customerEncryptionKeyArn": "arn:aws:kms:us-east-1:210987654321:key/0000aaaa-CANARY",
+        "foundationModel": "arn:aws:bedrock:us-east-1:210987654321:custom-model/amazon.titan-text-express-v1:0:8k/abcdefghij12",
+        "guardrailConfiguration": {
+            "guardrailIdentifier": "gr0abc12def3",
+            "guardrailVersion": "DRAFT"
+        },
+        "idleSessionTTLInSeconds": 900,
+        "instruction": "CANARY_INSTRUCTION ops runbook",
+        "orchestrationType": "DEFAULT",
+        "updatedAt": "2026-09-20T12:34:56.123456+00:00"
+    }
+}

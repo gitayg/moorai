@@ -1,0 +1,18 @@
+{
+    "agentAliasSummaries": [
+        {
+            "agentAliasId": "ALIASBBBB1",
+            "agentAliasName": "CANARY_ALIAS_ops",
+            "agentAliasStatus": "PREPARED",
+            "aliasInvocationState": "REJECT_INVOCATIONS",
+            "createdAt": "2026-09-02T12:34:56.123456+00:00",
+            "routingConfiguration": [
+                {
+                    "agentVersion": "2",
+                    "provisionedThroughput": "arn:aws:bedrock:us-east-1:210987654321:provisioned-model/pt0canary01"
+                }
+            ],
+            "updatedAt": "2026-09-20T12:34:56.123456+00:00"
+        }
+    ]
+}

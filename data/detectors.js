@@ -829,7 +829,10 @@ export const DETECTORS = [
       /\bsocat\b[^\n]{0,60}\bexec:/i,
       /\bpython[23]?\b[^\n]{0,80}\b(socket|pty\.spawn)\b[\s\S]{0,80}\b(sh|bash)\b/i,
       /\bperl\b[^\n]{0,40}-e\b[^\n]{0,80}\b(socket|Socket)\b/i,
-      /New-Object\s+System\.Net\.Sockets\.TCPClient/i,
+      // PowerShell prepends `System.` to a type name it cannot resolve, so `Net.Sockets.TCPClient` is the
+      // same type; `[…]::new(` is the same construction as New-Object. A type name alone (docs, C#) is not.
+      /New-Object\s+(?:-TypeName\s+)?(?:System\.)?Net\.Sockets\.TCPClient\b/i,
+      /\[(?:System\.)?Net\.Sockets\.TCPClient\]::new\s*\(/i,
       /\bmkfifo\b[^\n]{0,40}\|[^\n]{0,40}\b(sh|bash)\b/i
     ]
   },
@@ -896,7 +899,12 @@ export const DETECTORS = [
       /\b(cargo|go)\s+install\b[^\n]{0,80}(git|https?:\/\/)/i,
       /\bgem\s+install\b[^\n]{0,80}--source\b[^\n]{0,40}https?:\/\//i,
       /\bnpx\s+(-y|--yes)\b/i,
-      /\bpowershell\b[^\n]{0,80}\b(iwr|Invoke-WebRequest|irm)\b[^\n]{0,60}\|\s*(iex|Invoke-Expression)\b/i
+      /\bpowershell\b[^\n]{0,80}\b(iwr|Invoke-WebRequest|irm)\b[^\n]{0,60}\|\s*(iex|Invoke-Expression)\b/i,
+      // The same install inside the PowerShell tool, where no `powershell` precedes it: a download piped
+      // into iex, or iex over a download (irm/iwr, or WebClient.DownloadString). The pipe must follow the
+      // download within one statement (no `;` or newline between them).
+      /(?<![\w-])(irm|iwr|Invoke-RestMethod|Invoke-WebRequest)(?![\w-])[^\n;|]{0,200}\|\s*(iex|Invoke-Expression)(?![\w-])/i,
+      /(?<![\w-])(iex|Invoke-Expression)\s*\(+\s*(?:(irm|iwr|Invoke-RestMethod|Invoke-WebRequest)(?![\w-])|New-Object\s+(?:System\.)?Net\.WebClient\s*\)\s*\.\s*DownloadString\b)/i
     ]
   },
   // #4 / #61 (LLM05) — on-device output screening for INSECURE CODE the agent generates. Distinct from

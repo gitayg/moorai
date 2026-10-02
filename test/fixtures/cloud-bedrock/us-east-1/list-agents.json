@@ -1,0 +1,24 @@
+{
+    "agentSummaries": [
+        {
+            "agentId": "AGENTAAAAA",
+            "agentName": "CANARY_AGENT_payroll",
+            "agentStatus": "PREPARED",
+            "description": "CANARY agent description: answers payroll questions for HR",
+            "latestAgentVersion": "1",
+            "updatedAt": "2026-09-14T12:34:56.123456+00:00"
+        },
+        {
+            "agentId": "AGENTBBBBB",
+            "agentName": "CANARY_AGENT_ops",
+            "agentStatus": "PREPARED",
+            "description": "CANARY ops bot",
+            "guardrailConfiguration": {
+                "guardrailIdentifier": "gr0abc12def3",
+                "guardrailVersion": "DRAFT"
+            },
+            "latestAgentVersion": "DRAFT",
+            "updatedAt": "2026-09-20T12:34:56.123456+00:00"
+        }
+    ]
+}

@@ -12,7 +12,7 @@
 //   node --test test/mcp-package.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -22,6 +22,7 @@ import { analyzePackage, scanPathWithPackages, packagesEnabled } from "../cli/mc
 import { resolveMcpPackages as barrelResolve, analyzePackage as barrelAnalyze } from "../scan.mjs";
 import { buildEngine } from "../cli/hook-core.mjs";
 import { LIMITS } from "../cli/mcp-package/archive.mjs";
+import { downloadToFile } from "../cli/mcp-package/download.mjs";
 import { makeTgz, NPM_FIXTURES, PYPI_FIXTURES, registryStub, makeZip } from "./fixtures/mcp-package/build.mjs";
 
 const CLI = fileURLToPath(new URL("../cli/moorai-scan.mjs", import.meta.url));
@@ -267,15 +268,63 @@ test("STREAMED: an artifact over the extracted-size cap reports archive-limits-e
   assert.deepEqual(readdirSync(workDir), []);
 });
 
+// Resolves once a `moorai-pkg-*/artifact` under workDir holds at least `bytes` bytes on disk.
+async function partialOnDisk(workDir, bytes) {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    for (const d of readdirSync(workDir)) {
+      try { if (statSync(join(workDir, d, "artifact")).size >= bytes) return; } catch {}
+    }
+    if (Date.now() > deadline) throw new Error("the downloader never wrote the first chunk to disk");
+    await new Promise((r) => setTimeout(r, 2));
+  }
+}
+
+// The over-cap bytes are held back until the first chunk is ON DISK, so the breach happens mid-download
+// with a real partial file to delete — the order a network download always has. Served as one burst, the
+// breach landed before the temp file's async open: the file usually did not exist yet (so "the partial
+// download is deleted" proved nothing), and under load the late open raced analyzePackage's recursive
+// cleanup into ENOTEMPTY. That race is pinned on its own by the downloadToFile test below.
 test("STREAMED: a body over the download cap fails closed before anything is extracted", async () => {
   const workDir = mkdtempSync(join(tmpdir(), "moorai-stream-"));
-  const { fetchImpl } = registryStub({ "clean-mcp-server": npm("clean-mcp-server") }, { chunkBytes: 64 });
-  const r = await analyzePackage({ ecosystem: "npm", name: "clean-mcp-server", version: null }, { fetchImpl, engine, workDir, downloadCap: 128 });
+  const artifact = makeTgz(NPM_FIXTURES["clean-mcp-server"]);
+  const stub = registryStub({ "clean-mcp-server": { ecosystem: "npm", artifact } });
+  const HEAD = 64, CAP = 128;
+  let partialWritten = false;
+  const fetchImpl = async (url, opts) => {
+    if (!url.endsWith(".tgz")) return stub.fetchImpl(url, opts);
+    let sent = 0;
+    return new Response(new ReadableStream({
+      async pull(c) {
+        if (sent === 0) { c.enqueue(new Uint8Array(artifact.subarray(0, HEAD))); sent = HEAD; return; }
+        await partialOnDisk(workDir, HEAD);
+        partialWritten = true;
+        for (let i = HEAD; i < artifact.length; i += 64) c.enqueue(new Uint8Array(artifact.subarray(i, Math.min(i + 64, artifact.length))));
+        c.close();
+      }
+    }), { status: 200 });
+  };
+  assert.ok(artifact.length > CAP, "the artifact must exceed the cap");
+  const r = await analyzePackage({ ecosystem: "npm", name: "clean-mcp-server", version: null }, { fetchImpl, engine, workDir, downloadCap: CAP });
+  assert.ok(partialWritten, "the cap was breached after a partial download reached disk");
   assert.equal(r.verdict, "REVIEW");
   assert.equal(r.analysed, false);
   assert.deepEqual(r.notes, [{ id: "download-too-large" }]);
   assert.deepEqual(readdirSync(workDir), [], "the partial download is deleted");
 });
+
+// pipeline() rejects as soon as the source throws, without waiting for the destination WriteStream's
+// async open; download.mjs therefore awaits the stream's 'close' before removing the file. Measured on
+// the code without that wait: 193-196 of 200 cap breaches left the file 20ms after the rejection.
+test("downloadToFile: a cap breach before the temp file is open leaves no partial file behind", async () => {
+    for (let i = 0; i < 20; i++) {
+      const dest = join(mkdtempSync(join(tmpdir(), "moorai-dl-")), "artifact");
+      const body = new ReadableStream({ start(c) { for (let k = 0; k < 4; k++) c.enqueue(new Uint8Array(64)); c.close(); } });
+      await assert.rejects(downloadToFile(async () => new Response(body, { status: 200 }), "https://registry.npmjs.org/x.tgz", dest, { cap: 128 }), { code: "too-large" });
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(existsSync(dest), false, `iteration ${i}: the partial file exists after the rejection`);
+    }
+  });
 
 test("STREAMED: a PyPI wheel (zip) is read by offset from the temp file, with the same guards", async () => {
   const whl = makeZip([

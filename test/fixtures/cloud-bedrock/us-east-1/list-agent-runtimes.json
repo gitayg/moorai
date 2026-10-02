@@ -1,0 +1,13 @@
+{
+    "agentRuntimes": [
+        {
+            "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:210987654321:runtime/CANARY_runtime-abcde12345",
+            "agentRuntimeId": "CANARY_runtime-abcde12345",
+            "agentRuntimeName": "CANARY_runtime",
+            "agentRuntimeVersion": "3",
+            "description": "CANARY strands agent for support",
+            "lastUpdatedAt": "2026-09-25T12:34:56.123456+00:00",
+            "status": "READY"
+        }
+    ]
+}
