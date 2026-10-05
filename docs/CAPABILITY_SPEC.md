@@ -152,6 +152,22 @@ Claude Code GitHub Action, an Agent SDK service in a container
 - **Identity**: a workload, not `user@host`. `MOORAI_SERVICE_ID`, else on GitHub Actions
   `github:<repository>:<workflow>:<job>`, else `unnamed`; `service` / `svc:<name>` is hashed into the
   actor as `user@host` is, so one workload keeps one console pseudonym across deploys and runs.
+- **Workload identity on alerts.** Alerts from the hook in server mode, `@moorai/agent-sdk`, `moorai-serve`
+  and `moorai-mcp-gateway` carry an optional `workload` object (`containerId`, `pod`, `namespace`, `node`,
+  `pid`) ([`cli/server-mode.mjs`](../cli/server-mode.mjs) `workloadIdentity`). `containerId` is the
+  container the verdict is about: a 64-hex id from the container's cgroup name (Docker, containerd, CRI-O,
+  podman), else from the source path of the `/etc/hostname`, `/etc/hosts` or `/etc/resolv.conf` bind mount
+  in `/proc/self/mountinfo` (cgroup v2 with a private cgroup namespace reads `0::/`); a containerd
+  `sandboxes/` path is the pod sandbox and never matches. Those mounts belong to the network namespace, so
+  a sidecar sharing the agent's namespace reports the agent's container. `pod` / `namespace` / `node` come
+  only from `MOORAI_K8S_POD` / `_NAMESPACE` / `_NODE` and must match `[a-z0-9.-]{1,253}`; a settings file
+  setting one is refused like every other `MOORAI_*` name. `pid` is the agent process: the hook's parent
+  pid, or the SDK's own pid in process; the sidecar and the gateway send none. Every field is optional and
+  dropped on its own when malformed; the hook outside server mode sends none. The console stores these
+  infrastructure ids as-is so a SIEM can join MoorAI verdicts with host and container sensor events.
+  **Limits.** Observed under Docker only (cgroup v2, via `mountinfo`); containerd and CRI-O detection on
+  cgroup v2 is unobserved, and under Kubernetes on cgroup v2 `containerId` may be absent, leaving
+  `pod` / `namespace` / `node` as the join keys.
 - **Enforcement**: server mode counts as management, so the hook enforces without a token (with no token
   it reports nothing and fetches no org policy). A `justify` verdict has no approver, so it is denied
   with a reason saying so and a content-free alert; `headlessAsk: "allow-with-report"` in the system file
@@ -172,9 +188,21 @@ Claude Code GitHub Action, an Agent SDK service in a container
   `/v1/scan` 6.4–11 ms, shell hook process 164–309 ms. **Limits.** Not evaluated in process (listed in
   each result's `notEvaluated`): circuit breaker, session risk, deletion volume, intent alignment,
   learned drift, MCP reputation, escalation, honeytokens, the `mask` rewrite. The SDK's `PostToolUse`
-  observes only and does not apply the hook's inbound gates. `/v1/tool-call` reads paths on the
+  observes only and does not apply the hook's inbound gates. Declared workload profiles (17f) are evaluated in
+  process. `/v1/tool-call` reads paths on the
   sidecar's own filesystem, so an authenticated client can learn whether a file holds secrets; the
   secret-egress fingerprint cache is filled once per directory in the long-lived process.
+- **Container image.** `ghcr.io/gitayg/moorai-server` ([`docker/server/Dockerfile`](../docker/server/Dockerfile);
+  `node:22-slim` plus the npm package's files, about 350 MB, no npm dependencies, uid 1000,
+  `MOORAI_MODE=server`): `moorai-serve` on 127.0.0.1:8790 by default, `moorai-mcp-gateway` as an
+  alternative command. `.github/workflows/publish-server-image.yml` builds it for amd64 and arm64 on each
+  `v*` tag and fails on a secret file in the image or a root user. It runs in the agent's network
+  namespace (a second container in the pod, or compose `network_mode: "service:<agent>"`) with exec
+  probes (`node /opt/moorai/docker/healthcheck.mjs`, a loopback GET), because the kubelet's `httpGet` goes to the pod IP and
+  `moorai-serve` answers 421 to a non-loopback `Host`. Kubernetes and compose examples in
+  [`examples/serve/`](../examples/serve/README.md). **Limits.** Built and run on arm64 and the compose demo
+  run end to end; the publish workflow has not run yet, the amd64 build has not been run, and the
+  Kubernetes manifest has been neither schema-validated against a cluster nor run.
 - **Trust anchors from settings files are ignored on every device.** `MOORAI_BREAKGLASS_PUBKEY`,
   `MOORAI_POLICY_PUBKEY`, `MOORAI_OFFLINE_MODE` and the OTLP endpoint set by a user, project or local
   settings file's `env` block do not take effect and are reported (names only); managed settings, the
@@ -576,6 +604,23 @@ is validated against.
     sends a content-free heartbeat with this posture to `POST /api/agent-posture` at most once per host per
     UTC day (retried after 10 minutes on failure); enrolled devices only. The desktop app reports each
     host's last activity hourly (`device_agent_activity`), independent of every hook.
+17f. **Declared workload profiles** — [`cli/workload-profile.mjs`](../cli/workload-profile.mjs). The signed
+    policy may carry `workloadProfiles`: per workload (`match.serviceId`) or repository (`match.repo`, the
+    normalised git remote of the call's cwd), the expected `tools`, `mcpServers` and `hosts` as allow-lists
+    with `*` globs (an omitted list does not constrain; an empty one allows nothing; loopback is always in
+    profile). On `PreToolUse`, a call outside the first matching profile raises a content-free
+    `PROFILE_DRIFT` alert (`driftKind` tool | mcpServer | host, `driftItem`, `profileId`); `action: "block"`
+    denies it, with a reason that names only the profile id and the kinds. Unenrolled devices coach and
+    never block. Profiles come only from the verified console policy and the root-owned machine-wide
+    config; a repository file, a settings-file `env` block, `~/.moorai/config.json` or the environment
+    cannot supply one. Malformed profiles are ignored and reported once a day (the SDK: once per policy
+    object). Evaluation never throws; an error allows. The hook, `@moorai/agent-sdk` and `moorai-serve`
+    evaluate the same profile (parity test: 3 cases × 214 payloads, 0 mismatches). **Limits.** A repo match
+    follows `.git/config`, which the agent can edit, and a hook `serviceId` taken from
+    `~/.moorai/config.json` is agent-writable too; a `serviceId` from the system file or the launching
+    environment is the match to rely on for a block. Hosts built at runtime are not seen. `PostToolUse`,
+    prompts and `Stop` are not compared. The HTTP MCP gateway does not evaluate profiles. Tested on macOS
+    only.
 
 ### D. Central server
 18. **Policy & rule-base distribution** — central allowlist, thresholds, per-threat/per-tier

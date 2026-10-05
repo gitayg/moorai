@@ -136,7 +136,7 @@ export async function createMoorAI(options = {}) {
   // The verdict the hook reaches for one tool call (src/decide.mjs), settled for a headless run.
   async function toolCall({ tool, input, cwd, permissionMode = "" } = {}) {
     const s = await ready();
-    const v = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor });
+    const v = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId });
     report(s, v.findings, { tool: v.tool, decision: v.decision });
     reportSignals(s, v.signals, v.tool);
     const st = settle(s, v, { tool: v.tool, permissionMode });

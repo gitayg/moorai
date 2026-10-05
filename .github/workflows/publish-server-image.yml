@@ -1,0 +1,69 @@
+name: Publish server image
+
+# Builds the sidecar image (moorai-serve, and moorai-mcp-gateway as an alternative command) from
+# docker/server/Dockerfile and pushes it to GitHub Container Registry on every version tag:
+# ghcr.io/gitayg/moorai-server:<version>, :latest and :sha-<short>.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          v=$(node -p "require('./package.json').version")
+          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != package.json v$v"; exit 1; }
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/gitayg/moorai-server
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=sha
+          # Set explicitly: metadata-action otherwise copies the repository description into the labels.
+          labels: |
+            org.opencontainers.image.title=MoorAI server
+            org.opencontainers.image.description=MoorAI engine as a sidecar: moorai-serve (localhost HTTP decision API for agent loops) and moorai-mcp-gateway (guard for remote MCP servers). MIT.
+            org.opencontainers.image.licenses=MIT
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/server/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=moorai-server
+          cache-to: type=gha,mode=max,scope=moorai-server
+
+      # A clean-checkout image must never contain local secrets, and must start as a non-root user.
+      - name: Check the image holds no secrets
+        run: |
+          img=ghcr.io/gitayg/moorai-server:sha-${GITHUB_SHA::7}
+          docker pull --platform linux/amd64 "$img"
+          if docker run --rm --entrypoint sh "$img" -c 'find / -xdev \( -name .session-secret -o -name "*.local" -o -name ".env" -o -name ".env.*" -o -name .appcrane-key.local \) -not -path "/proc/*" 2>/dev/null' | grep .; then
+            echo "secret file found in image"; exit 1
+          fi
+          [ "$(docker run --rm --entrypoint id "$img" -u)" != "0" ] || { echo "image runs as root"; exit 1; }

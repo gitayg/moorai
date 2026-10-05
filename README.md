@@ -35,6 +35,7 @@ That's the exact trade MoorAI refuses.
 - **Skill Analysis** — an inventory + *intent* view of the whole **skill surface** an agent auto-loads, not just its rules file: `SKILL.md` and `.claude/skills/**`, subagent definitions (`.claude/agents/*.md`), slash commands (`.claude/commands/**`), MCP server configs (`.mcp.json`, `~/.claude.json`, `managed-mcp.json`, `claude_desktop_config.json`), the settings files that can carry **hooks** (`.claude/settings.json`, `settings.local.json`, `managed-settings.json`), plugin manifests and their hook/monitor declarations, path-scoped rules and memory files, plus the other vendors' equivalents: rules and instruction files (`.cursorrules`, `.windsurfrules`, Windsurf and Cline rule folders, Copilot `.github/instructions`, Codex `AGENTS.override.md`, `GEMINI.md`, Amp `AGENT.md`, Kiro steering), the settings files that carry hooks or MCP servers (`.gemini/settings.json`, `.amp/settings.json`, `opencode.json`, Kiro hooks), and the commands, workflows, prompt files, custom agents and specs an agent injects when invoked (Cursor, Windsurf, Cline, Copilot, Codex, Gemini, OpenCode, Kiro). Every file gets its **kind**, a set of **intent category labels** — *hidden-instructions*, *instruction-override*, *external-network-egress*, *security-control-or-privilege-change*, *references-credentials*, *invisible-characters*, … — and a **drift fingerprint** per file. The labels are renames of findings the existing detection engine already produced; **no text, matched span, or excerpt is ever attached**, so a poisoned skill can be triaged without reading it off the device.
 - **Per-agent destination map** — the observed counterpart to your allow-lists: for each agent/tool, *which external destinations it actually reached*. **Hosts** (never a URL path or query string — they are not captured in the first place) and **MCP server names**, with call counts, first/last-seen, and the allow/ask/deny verdict each call actually got. Kept in an on-device ledger; the console gets one content-free alert the first time an agent touches a new destination, over the existing alert path. View it with `moorai-destinations`.
 - **Agent entitlement envelope** — declare each agent's authorized tools / path-prefixes / MCP servers; an action outside the envelope is flagged as **entitlement drift** and alerted or blocked — least-privilege for coding agents, content-free.
+- **Declared workload profiles** — write down what a workload is expected to use: tools, MCP servers and destination hosts, per service (`serviceId`) or per repository (`github:owner/name`). A call outside the profile is reported as `PROFILE_DRIFT` (the kind, the out-of-profile tool, server or host, and the profile id; never a path, command or argument), or denied when the profile says `"action": "block"`; an unenrolled device coaches instead. Profiles live in the signed console policy or the root-owned machine-wide config, never in the repository. A repository match follows the git remote, which the agent can change, so block on `serviceId`. The hook, `@moorai/agent-sdk` and `moorai-serve` evaluate them; the HTTP MCP gateway does not. Details: [DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md#declared-workload-profiles).
 - **Intent alignment** — flags a risky agent action aimed at something the user's own request never mentioned: an upload to a host the prompt never named, a destructive command or credential read on paths it never named, an MCP write to a service it never named. The `UserPromptSubmit` hook keeps only keyed, device-local hashes of the sites, paths, service names and three labels (*credentials*, *destructive*, *mcp-write*) a prompt mentions — never the prompt. Report-only by default (`policy.intentAlignment: "ask"` raises the call to ask, `"off"` disables it). Lexical; the prompt is captured in Claude Code, Codex, Cursor, Gemini and Copilot — limits below.
 - **Session-level escalation** — what one call cannot show, the session can. An injection-class finding on content the agent ingested (a fetched page, a command's output, an MCP result, a file it read) taints the session for 30 minutes, and an outbound action or credential-file read inside that window raises `Agent behavior: outbound action after untrusted content` (#59). Also across calls: a credential read that was staged (copied, written, encoded or archived) and then sent out; an archive then sent out; a mass read (30 distinct files) then an upload of 4 KB or more to a destination new to the session; and slow exfiltration (5 or more transfers of up to 8 KB each to one destination, summing 16 KB or more). A decaying per-session score posts one alert when it crosses its threshold. Report-only by default (`policy.sessionRisk.mode: "ask"` raises the outbound call to ask, `"off"` disables it). The state on disk is keyed hashes and counts only.
 - **Runaway circuit breaker** — an agent stuck in a loop: the same call 15 times in 5 minutes with an unchanged result, or a 2–4 call cycle repeated 5 times with unchanged results, raises `Agent behavior: runaway loop` (#38). A result that changes is progress, so `npm test` re-run while the agent fixes the code never trips it. Report-only by default; `policy.circuitBreaker.mode: "deny"` pauses the session's tool calls for 15 minutes. Token spend is not measured: no hook event carries usage.
@@ -433,6 +434,59 @@ deletion volume, intent alignment, learned drift, MCP reputation, model escalati
 `/v1/tool-call` reads paths on the sidecar's own filesystem, so an authenticated client can learn whether
 a file there holds secrets; run it where the agent's files are. The secret-egress fingerprint cache is
 filled once per directory for the life of the process. The Python examples have not been executed.
+Declared workload profiles are evaluated in process, with the `serviceId` option (else the server-mode
+workload name) as the name a profile matches.
+
+#### Container image and sidecars
+
+`ghcr.io/gitayg/moorai-server` runs `moorai-serve` by default and `moorai-mcp-gateway` as an alternative
+command ([`docker/server/Dockerfile`](docker/server/Dockerfile)). It is `node:22-slim` plus the files the
+npm package ships (about 350 MB), runs as uid 1000 (`node`), installs no npm dependencies and sets
+`MOORAI_MODE=server`. [`.github/workflows/publish-server-image.yml`](.github/workflows/publish-server-image.yml)
+builds it for amd64 and arm64 on each release tag and pushes `:<version>`, `:latest` and `:sha-<short>`,
+after checking that the tag matches `package.json`; it then fails the run if the image holds a secret file
+or runs as root.
+
+    docker run --rm ghcr.io/gitayg/moorai-server:<version>                       # moorai-serve, 127.0.0.1:8790
+    docker run --rm ghcr.io/gitayg/moorai-server:<version> moorai-mcp-gateway --route /github=https://api.githubcopilot.com/mcp/
+
+Both bind loopback, so run the sidecar in the agent's network namespace: a second container in the same
+Kubernetes pod, or a compose service with `network_mode: "service:<agent>"`. Use exec probes
+(`node /opt/moorai/docker/healthcheck.mjs`, which the image's `HEALTHCHECK` also runs), not `httpGet`: the
+kubelet probes the pod IP, where nothing listens, and `moorai-serve` answers 421 to a non-loopback `Host`
+(the gateway answers 403). For the gateway, set `MOORAI_HEALTH_PORT=8848` and `MOORAI_HEALTH_PATH=/`. Console
+binding (`MOORAI_SERVER_URL`, `MOORAI_TENANT`, `MOORAI_INSTALL_TOKEN` from a Secret) and the workload name
+(`MOORAI_SERVICE_ID`) come from the environment, never from the image. With a read-only root filesystem,
+give `/home/node` (the policy cache) and `/tmp` a writable `emptyDir` or `tmpfs`.
+[`examples/serve/`](examples/serve/README.md) has a Kubernetes manifest with both sidecars and a compose
+demo.
+
+**Workload identity on alerts.** Alerts from the sidecar, the gateway, `@moorai/agent-sdk` and the hook in
+server mode carry a `workload` object ([`cli/server-mode.mjs`](cli/server-mode.mjs) `workloadIdentity`):
+
+    "workload": { "containerId": "<64 hex>", "pod": "billing-agent-7d9f", "namespace": "prod", "node": "node-a", "pid": 4242 }
+
+- `containerId` is the container the verdict is about, from `/proc/self/cgroup`, else from the
+  `/etc/hostname`, `/etc/hosts` or `/etc/resolv.conf` bind mount in `/proc/self/mountinfo`. Those mounts
+  belong to the network namespace, so a sidecar that shares the agent's namespace reports the agent's
+  container (measured with the compose demo: the alert's id is the agent container's, not the sidecar's).
+- `pod`, `namespace` and `node` come only from `MOORAI_K8S_POD`, `MOORAI_K8S_NAMESPACE` and
+  `MOORAI_K8S_NODE`, set by the downward API. A settings file that sets one for the hook is refused like
+  every other `MOORAI_*` name.
+- `pid` is the agent process: the hook's parent pid, or the SDK's own pid in process. The sidecar and the
+  gateway send none.
+
+A field that cannot be detected or fails its format check is left out; the hook outside server mode (a
+developer laptop) never sends the object.
+These are infrastructure identifiers, so the console stores them as-is and a SIEM can join MoorAI verdicts
+with host and container sensor events on the same container, pod or process.
+
+The image has been built and run on arm64 (Docker 29.6.1) and the compose demo run end to end. The publish
+workflow has not run yet, the amd64 build has not been run, and the Kubernetes manifest has been neither
+schema-validated against a cluster nor run. `containerId` under Kubernetes has not been observed: on
+cgroup v2 with a private cgroup namespace neither file is expected to name the container, so the field may
+be absent there and `pod` / `namespace` / `node` are the join keys. containerd and CRI-O detection on
+cgroup v2 is unobserved.
 
 ### Across the session — lifecycle hooks, session risk, runaway loops
 

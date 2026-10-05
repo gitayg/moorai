@@ -23,6 +23,9 @@ import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { compilePacks } from "../data/detector-packs.js";
 import { fileMetadataText } from "../data/file-metadata.js";
 import { credAlternative } from "../data/cred-alternatives.js";
+// Declared workload profiles (cli/workload-profile.mjs), re-exported so every surface that composes this
+// core — the hook, @moorai/agent-sdk, its vendored copy — reaches the same evaluation.
+export { evaluateProfile, profilesFrom, rejectedAlert, normalizeRepo, PROFILE_DRIFT } from "./workload-profile.mjs";
 import { redosReason, safeRegex, unboundedQuantifiers } from "../src/safe-regex.js";
 import { DetectionEngine } from "../src/engine.js";
 import { isMaskable } from "./mask.mjs";

@@ -1,0 +1,169 @@
+# MoorAI as a Kubernetes sidecar. Two Deployments:
+#   1. agent + moorai-serve        — the agent loop asks http://127.0.0.1:8790 before each tool call.
+#   2. agent + moorai-mcp-gateway  — the agent's MCP client talks to http://127.0.0.1:8848/github, and the
+#                                    gateway forwards to the remote MCP server after MoorAI's checks.
+#
+# Containers in one pod share its network namespace, so the sidecar listens on loopback only: no Service,
+# no --allow-remote, no token, nothing reachable from another pod.
+#
+# PROBES ARE exec, NOT httpGet. Kubernetes' probe reference: "`host`: Host name to connect to, defaults to
+# the pod IP." (https://kubernetes.io/docs/concepts/workloads/pods/probes/). The kubelet would connect to
+# the pod IP, where nothing listens (the sidecar binds 127.0.0.1), and moorai-serve also answers 421 to a
+# Host header that is not a loopback name. An exec probe runs inside the container: "the kubelet executes
+# the command ... in the target container. If the command succeeds, it returns 0, and the kubelet considers
+# the container to be alive and healthy" (https://kubernetes.io/docs/tasks/configure-pod-container/
+# configure-liveness-readiness-startup-probes/). The image's healthcheck.mjs GETs 127.0.0.1 from inside.
+#
+# WORKLOAD IDENTITY on alerts comes from the downward API (https://kubernetes.io/docs/concepts/workloads/
+# pods/downward-api/): metadata.name "the pod's name", metadata.namespace "the pod's namespace",
+# spec.nodeName "the name of the node where the Pod is executing".
+#
+# Pin the image to a release version (ghcr.io/gitayg/moorai-server:<version>) in production.
+#
+#   kubectl create secret generic moorai-install --from-literal=token=<install token from the console>
+#   kubectl apply -f examples/serve/k8s-sidecar.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-agent
+  labels: { app: billing-agent }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: billing-agent }
+  template:
+    metadata:
+      labels: { app: billing-agent }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: agent
+          image: ghcr.io/example/billing-agent:1.0.0   # your agent loop (OpenAI Agents SDK, LangGraph, ...)
+          env:
+            - name: MOORAI_SERVE_URL
+              value: http://127.0.0.1:8790
+        - name: moorai
+          image: ghcr.io/gitayg/moorai-server:latest
+          args: ["moorai-serve", "--port", "8790"]
+          env:
+            - name: MOORAI_SERVICE_ID
+              value: billing-agent
+            - name: MOORAI_SERVER_URL
+              value: https://moorai-console.example.com
+            - name: MOORAI_TENANT
+              value: acme
+            - name: MOORAI_INSTALL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: moorai-install, key: token, optional: true }
+            - name: MOORAI_K8S_POD
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
+            - name: MOORAI_K8S_NAMESPACE
+              valueFrom:
+                fieldRef: { fieldPath: metadata.namespace }
+            - name: MOORAI_K8S_NODE
+              valueFrom:
+                fieldRef: { fieldPath: spec.nodeName }
+          readinessProbe:
+            exec:
+              command: ["node", "/opt/moorai/docker/healthcheck.mjs"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["node", "/opt/moorai/docker/healthcheck.mjs"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            # The policy cache and key pin live in the user's home; /tmp for anything transient.
+            - { name: moorai-home, mountPath: /home/node }
+            - { name: moorai-tmp, mountPath: /tmp }
+      volumes:
+        - { name: moorai-home, emptyDir: {} }
+        - { name: moorai-tmp, emptyDir: {} }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: triage-agent
+  labels: { app: triage-agent }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: triage-agent }
+  template:
+    metadata:
+      labels: { app: triage-agent }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: agent
+          image: ghcr.io/example/triage-agent:1.0.0   # an MCP client; point its GitHub MCP URL at the gateway
+          env:
+            - name: GITHUB_MCP_URL
+              value: http://127.0.0.1:8848/github
+        - name: moorai-gateway
+          image: ghcr.io/gitayg/moorai-server:latest
+          args: ["moorai-mcp-gateway", "--port", "8848", "--route", "/github=https://api.githubcopilot.com/mcp/"]
+          env:
+            - name: MOORAI_SERVICE_ID
+              value: triage-agent
+            - name: MOORAI_SERVER_URL
+              value: https://moorai-console.example.com
+            - name: MOORAI_TENANT
+              value: acme
+            - name: MOORAI_INSTALL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: moorai-install, key: token, optional: true }
+            - name: MOORAI_K8S_POD
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
+            - name: MOORAI_K8S_NAMESPACE
+              valueFrom:
+                fieldRef: { fieldPath: metadata.namespace }
+            - name: MOORAI_K8S_NODE
+              valueFrom:
+                fieldRef: { fieldPath: spec.nodeName }
+            # The gateway has no /healthz: any answer below 500 on loopback means it is listening.
+            - { name: MOORAI_HEALTH_PORT, value: "8848" }
+            - { name: MOORAI_HEALTH_PATH, value: "/" }
+          readinessProbe:
+            exec:
+              command: ["node", "/opt/moorai/docker/healthcheck.mjs"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["node", "/opt/moorai/docker/healthcheck.mjs"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: moorai-home, mountPath: /home/node }
+            - { name: moorai-tmp, mountPath: /tmp }
+      volumes:
+        - { name: moorai-home, emptyDir: {} }
+        - { name: moorai-tmp, emptyDir: {} }

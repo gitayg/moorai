@@ -400,6 +400,10 @@ Pairs naturally with #1: the streamed history is the training/evaluation substra
   many subagents) — wired into `agentBaselineReport`. This is the first cut of the "flag deviation from an
   actor's own norm" bar; thresholds are chosen for explainability and still need tuning against a real
   recorded distribution.
+- **DONE (v1.3.0) — the declared counterpart:** declared workload profiles (`cli/workload-profile.mjs`).
+  An operator writes down a workload's or repository's expected tools, MCP servers and hosts in the
+  signed policy; a call outside it is `PROFILE_DRIFT`, reported or blocked. Learned drift still answers
+  "has this agent done that before"; a profile answers "was this workload declared to do that".
 - **TODO — orphan detector + tune:** orphan-agent detection stays inert for real subagents — a subagent
   self-attests its own session (= parent id) and the payload exposes no parent-*agent* chain (only the
   leaf `agent_id`/`agent_type` + root session), so `missing-parent` cannot fire without fabrication; left
@@ -487,8 +491,14 @@ positioning carries over as "in your process, in your VPC: content never leaves 
     `isError: true` (HTTP 200). Both MCP spec eras' headers pass through (revision 2026-07-28 removed
     sessions and GET streams). Added p50 about 10–13 ms, dominated by the engine; 16 integration and 4 SSE
     tests. The gateway is where Lasso, Prompt Security and CrowdStrike AIDR compete.
+- **Packaging and the host-sensor join (shipped in v1.3.0):** the `ghcr.io/gitayg/moorai-server` image
+  with compose and Kubernetes sidecar examples, and a `workload` object on server-mode, sidecar, SDK and
+  gateway alerts so a SIEM can join verdicts with host and container sensor events. See *Shipped in
+  v1.3.0*.
 - **Still open from Tiers 2 and 3:** an Agent SDK service watched end to end with `@moorai/agent-sdk`; the
-  gateway against real MCP clients, OAuth discovery through it, and its server-mode paths.
+  gateway against real MCP clients, OAuth discovery through it, and its server-mode paths; the first run of
+  the image publish workflow and the amd64 image; the Kubernetes manifest on a real cluster, with
+  `containerId` observed under containerd or CRI-O; declared workload profiles in the HTTP MCP gateway.
 - **Not applicable on a server:** the desktop app, AIBOM, shadow-AI inventory and OS posture.
 
 ## Backlog — coverage for cloud AI platforms and custom-built agents (2026-10-01)
@@ -566,3 +576,29 @@ content-free design. Shipped in v1.1.0:
 - **Claim check, blind corpus** — a 181-case corpus labelled by agents that never read the detector,
   split 60/40 into tune and locked by a fixed seed; locked split scored once: precision 100% (17 of 17),
   recall 54.8% (17 of 31). Still open: recall, and a live session.
+
+## Shipped in v1.3.0
+
+- **Container image and sidecar examples** — `ghcr.io/gitayg/moorai-server` (`docker/server/Dockerfile`):
+  `node:22-slim` plus the npm package's files, about 350 MB, uid 1000, no npm dependencies.
+  `moorai-serve` on 127.0.0.1:8790 by default, `moorai-mcp-gateway` as an alternative command; a foreign
+  `Host` gets 421 from `moorai-serve`. `.github/workflows/publish-server-image.yml` builds amd64 and arm64
+  on each release tag. [`examples/serve/`](../examples/serve/README.md) has a Kubernetes manifest (both
+  sidecars, exec probes, downward-API workload names, read-only root filesystem) and a compose demo.
+  Built and run on arm64 and the compose demo run end to end. Not yet: the workflow's first run, the
+  amd64 build, and the Kubernetes manifest, which has not been validated against a cluster or run.
+- **Workload identity on verdicts** — alerts from the hook in server mode, `@moorai/agent-sdk`,
+  `moorai-serve` and `moorai-mcp-gateway` carry a `workload` object (`containerId`, `pod`, `namespace`,
+  `node`, and the agent's `pid` from the hook and the in-process SDK), stored as-is by the console so a
+  SIEM can join MoorAI verdicts with host and container sensor events. In a shared-network sidecar
+  `containerId` is the agent's container, the one the verdict is about. Not yet observed: `containerId`
+  under Kubernetes, and containerd / CRI-O detection on cgroup v2.
+- **Declared workload profiles** — `policy.workloadProfiles` (`cli/workload-profile.mjs`): per
+  `serviceId` or repository, the expected tools, MCP servers and hosts; a `PreToolUse` call outside the
+  first matching profile is `PROFILE_DRIFT` (`cli/provenance.mjs` `REASON`), reported, or denied with
+  `action: "block"`; unenrolled devices coach. Profiles come only from the verified console policy and
+  the root-owned machine-wide config. The hook, the SDK and `moorai-serve` evaluate them (parity: 3 cases
+  × 214 payloads, 0 mismatches; benign v2 false positives unchanged at 20 of 602). Limits: the HTTP MCP
+  gateway does not check profiles; a repo match reads `.git/config`, which the agent can edit; a
+  `serviceId` from the user config file is agent-reachable; hosts built at runtime are not seen; only
+  `PreToolUse` is checked; tested on macOS only.

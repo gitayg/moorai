@@ -298,3 +298,89 @@ export function tamperAlert(sm) {
   const names = [...new Set(sm.tamper.flatMap((t) => t.keys))].sort();
   return { threatId: 0, category: "Server-mode configuration refused (set by a settings file)", riskLevel: "Critical", stage: "policy", tool: "hook:policy", contentHash: `server-env-tamper:${names.join(".")}`, refusedEnv: names, settingsFiles: sm.tamper.length };
 }
+
+// ---- workload identity (the `workload` object on alerts) ----
+//
+// Infrastructure identifiers a SIEM joins MoorAI verdicts with host-sensor events on: the container id,
+// the Kubernetes pod / namespace / node, and the pid of the agent process the verdict is about. Every
+// field is optional and omitted when unknown: nothing is guessed, and a value that fails its format check
+// is dropped, not truncated. Sent only in server mode (the hook) or by the sidecar and the gateway; a
+// laptop never sends it.
+//
+// CONTAINER ID. /proc/self/cgroup first. proc(5): "Each line in the file has the form
+// hierarchy-ID:controller-list:cgroup-path" and, for cgroup v2, "the hierarchy-ID is 0 and the
+// controller-list is empty". The runtime names the container's cgroup after its id: docker
+// (`/docker/<id>`, systemd driver `docker-<id>.scope`), containerd under Kubernetes
+// (`cri-containerd-<id>.scope`, cgroupfs driver `/kubepods/<qos>/pod<uid>/<id>`), CRI-O
+// (`crio-<id>.scope`), podman (`libpod-<id>.scope`). On cgroup v2 a container usually gets a private
+// cgroup namespace and the file reads `0::/` (MEASURED: Docker 29.6.1, node:22-slim), so the fallback
+// is /proc/self/mountinfo, whose fourth field is the mount's root within its filesystem: docker
+// bind-mounts /etc/hostname, /etc/hosts and /etc/resolv.conf from `.../containers/<id>/` (MEASURED:
+// `/docker/containers/<id>/hostname /etc/hostname`), CRI-O from `.../overlay-containers/<id>/userdata/`.
+// Only those three mount points are read, and a containerd `sandboxes/<id>` path is the pod's pause
+// sandbox, not this container, so it never matches. Only a full 64-hex id is taken from either file.
+// Those three files belong to the network namespace, so a container that joins another's
+// (compose `network_mode: "service:agent"`) reads the AGENT container's id there (MEASURED: compose demo,
+// alert containerId == `docker inspect` id of the agent, not of the sidecar) — the container the verdict
+// is about. Under Kubernetes on cgroup v2 with a private cgroup namespace neither file is expected to
+// name a container (kubelet's /etc/hosts, the sandbox's hostname; not measured on a cluster), so the
+// pod / namespace / node below are the join keys there.
+//
+// KUBERNETES. MOORAI_K8S_POD / MOORAI_K8S_NAMESPACE / MOORAI_K8S_NODE, set by the pod spec from the
+// downward API (metadata.name, metadata.namespace, spec.nodeName; examples/serve/k8s-sidecar.yaml).
+// They are MOORAI_* names, so a settings file setting one for the hook is refused like every other
+// (pass the resolved server mode's `refused` list).
+export const WORKLOAD_ENV = { pod: "MOORAI_K8S_POD", namespace: "MOORAI_K8S_NAMESPACE", node: "MOORAI_K8S_NODE" };
+const HEX64 = /^[0-9a-f]{64}$/;
+const CGROUP_LEAF = /^(?:(?:docker|cri-containerd|crio|libpod)-)?([0-9a-f]{64})(?:\.scope)?$/;
+const MOUNT_ID = /(?:^|\/)(?:containers\/([0-9a-f]{64})\/|overlay-containers\/([0-9a-f]{64})\/userdata\/)/;
+const ID_MOUNTPOINTS = new Set(["/etc/hostname", "/etc/hosts", "/etc/resolv.conf"]);
+const K8S_NAME = /^[a-z0-9.-]{1,253}$/;
+const MAX_PID = 2 ** 32;
+
+export function containerIdFromCgroup(text) {
+  for (const line of String(text || "").split("\n")) {
+    const parts = line.split(":");
+    if (parts.length < 3) continue;
+    const segs = parts.slice(2).join(":").split("/").filter(Boolean);
+    for (let i = segs.length - 1; i >= 0; i--) {
+      const m = CGROUP_LEAF.exec(segs[i]);
+      if (m) return m[1];
+    }
+  }
+  return "";
+}
+export function containerIdFromMountinfo(text) {
+  for (const line of String(text || "").split("\n")) {
+    const f = line.split(" ");
+    if (f.length < 5 || !ID_MOUNTPOINTS.has(f[4])) continue;
+    const m = MOUNT_ID.exec(f[3]);
+    if (m) return m[1] || m[2];
+  }
+  return "";
+}
+
+// Keeps the contract's keys whose values pass the format check; returns null when none is left.
+export function cleanWorkload(w) {
+  if (!w || typeof w !== "object" || Array.isArray(w)) return null;
+  const out = {};
+  if (typeof w.containerId === "string" && /^[0-9a-f]{12,64}$/.test(w.containerId)) out.containerId = w.containerId;
+  for (const k of ["pod", "namespace", "node"]) if (typeof w[k] === "string" && K8S_NAME.test(w[k])) out[k] = w[k];
+  if (Number.isSafeInteger(w.pid) && w.pid > 0 && w.pid < MAX_PID) out.pid = w.pid;
+  return Object.keys(out).length ? out : null;
+}
+
+// pid: the agent process the verdict is about (the hook passes process.ppid); the sidecar and the gateway
+// pass none. refused: env names a settings file set (resolveServerMode().refused) — never read.
+export function workloadIdentity({ env = process.env, procRoot = "/proc", pid, refused = [], read = readPlain } = {}) {
+  const deny = new Set(refused);
+  const val = (name) => (deny.has(name) ? "" : clean(env[name]));
+  const containerId = containerIdFromCgroup(read(join(procRoot, "self", "cgroup"))) || containerIdFromMountinfo(read(join(procRoot, "self", "mountinfo")));
+  return cleanWorkload({
+    containerId: HEX64.test(containerId) ? containerId : "",
+    pod: val(WORKLOAD_ENV.pod),
+    namespace: val(WORKLOAD_ENV.namespace),
+    node: val(WORKLOAD_ENV.node),
+    pid
+  });
+}

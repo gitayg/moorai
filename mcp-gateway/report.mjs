@@ -1,6 +1,9 @@
 // Content-free reporting for the gateway — the stdio proxy's alert and ledger shapes, with the tool
 // labelled "gateway:<tool>" and mcpServer set to the route's server label. Only category / risk /
-// one-way hash / server / tool / decision leave; never an argument, a result, a header or a URL.
+// one-way hash / server / tool / decision leave; never an argument, a result, a header or a URL. A
+// console alert also carries the `workload` object (container id, Kubernetes pod / namespace / node:
+// cli/server-mode.mjs workloadIdentity) when one is detected — no pid, since the gateway is not the
+// agent process the verdict is about. The local ledger does not get it.
 import os from "node:os";
 import { loadConfig } from "../cli/config.mjs";
 import { isEnrolled, literacyTouchpoint, coachMessage } from "../cli/hook-core.mjs";
@@ -8,12 +11,13 @@ import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
 import { contentHash, actorHash } from "../cli/content-hash.mjs";
 import { emitOtel } from "../cli/otel.mjs";
-import { serverMode, serviceWho } from "../cli/server-mode.mjs";
+import { serverMode, serviceWho, workloadIdentity } from "../cli/server-mode.mjs";
 
 export const CONFIG = loadConfig();
 export const SERVER_MODE = serverMode();
 const WHO = SERVER_MODE.active ? serviceWho(SERVER_MODE) : { user: os.userInfo().username, device: os.hostname() };
 export const IDENTITY = { user: WHO.user, device: WHO.device, platform: os.platform(), tenant: CONFIG.tenant, actor: actorHash(WHO.user, WHO.device) };
+export const WORKLOAD = workloadIdentity();
 
 let tierOf = () => "content-free";
 export function setTierSource(fn) { tierOf = fn; }
@@ -25,7 +29,7 @@ export function post(alert) {
     return fetch(`${CONFIG.serverUrl}/api/alerts`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) },
-      body: JSON.stringify(alert),
+      body: JSON.stringify(WORKLOAD ? { ...alert, workload: WORKLOAD } : alert),
       signal: AbortSignal.timeout(1500)
     }).catch(() => {});
   } catch { /* never let a network error touch the request path */ }

@@ -17,7 +17,7 @@ import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideCredFileRead, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision } from "./hook-core.mjs";
+import { buildEngine, decideText, decideCredFileRead, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision, evaluateProfile, rejectedAlert, PROFILE_DRIFT } from "./hook-core.mjs";
 import { maskValue, maskNote } from "./mask.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
@@ -52,7 +52,7 @@ import { readStateJson, writeStateJson, repoIdentity, LEARNED_DRIFT_FILE, DELETI
 import { sessionRiskStep, circuitStep, circuitOutcome } from "./session-state.mjs";
 import { captureTask, judgeAction, CLASS_TEXT } from "./intent-alignment.mjs";
 import { promptScanPlan, promptBlockers } from "./prompt-scan.mjs";
-import { serverMode, serviceWho, settleHeadlessAsk, tamperAlert, trustedEnv, refusedTrustEnv } from "./server-mode.mjs";
+import { serverMode, serviceWho, settleHeadlessAsk, tamperAlert, trustedEnv, refusedTrustEnv, systemConfigPath, workloadIdentity } from "./server-mode.mjs";
 import { recordMcpCall, scheduleMcpUsageFlush } from "./mcp-usage-beat.mjs";
 import { REASON, ENFORCEMENT, policyIdOf, stampAlert } from "./provenance.mjs";
 import { recordRow, readSessionRows, localHash } from "./session-ledger.mjs";
@@ -441,6 +441,10 @@ function djb2(s) { let h = 5381; for (let i = 0; i < String(s).length; i++) h = 
 // Server mode: a workload name instead of user@host (serviceWho), hashed into the actor the same way.
 const WHO = SERVER.active ? serviceWho(SERVER) : { user: os.userInfo().username, device: os.hostname() };
 const IDENTITY = { user: WHO.user, device: WHO.device, platform: os.platform(), tenant: CONFIG.tenant, actor: actorHash(WHO.user, WHO.device) };
+// CONTRACT C1 — infrastructure identifiers (container id, k8s pod / namespace / node, and the pid of the agent
+// process the verdict is about: this hook's parent) on server-mode alerts only (cli/server-mode.mjs
+// workloadIdentity). A laptop never sends it. Added in post(), so it rides on alerts but not on local rows.
+const WORKLOAD = SERVER.active ? (() => { try { return workloadIdentity({ pid: process.ppid, refused: SERVER.refused || [] }); } catch { return null; } })() : null;
 // Content-free lineage for the per-agent baseline / forensic detections (data/agent-detections.js).
 // SESSION is the current trace/session id (Claude Code's session_id, one-way hashed), set in main().
 // It groups an actor's events for trace-gap detection and is the source id for cross-agent handoffs.
@@ -582,6 +586,7 @@ function settleRow(fields) {
   recordRow(r);
 }
 function post(alert) {
+  if (WORKLOAD && alert && !alert.workload) alert.workload = WORKLOAD;
   stampAlert(alert, { ...PROV, coach: COACH, event: EVENT });
   // An unenrolled device has no console, so nothing is posted to one — not even to a server that
   // answers at the configured URL. The OTLP mirror below is the user's own collector, not a console.
@@ -1236,6 +1241,35 @@ function observeLearnedDrift(policy, tool, ti, cwd) {
   } catch { /* drift is a signal, never enforcement */ }
 }
 
+// Declared workload profile (cli/workload-profile.mjs). Profiles come only from the verified policy and the
+// root-owned machine-wide config; the serviceId is server mode's workload name (none on a laptop). Posts one
+// content-free PROFILE_DRIFT alert per drift kind; returns the evaluation when it denies, else null. An
+// unenrolled device is coached instead (PROFILE_COACH). Malformed profiles are reported at most once a day
+// per policy. Fail-open: any error allows.
+const PROFILE_STATE_FILE = "workload-profile.json";
+let PROFILE_COACH = null;
+function profileStep(policy, tool, ti, cwd) {
+  try {
+    const r = evaluateProfile({ policy, system: parseRootOwnedJson(systemConfigPath()), serviceId: SERVER.active ? SERVER.serviceId : "", cwd, tool, toolInput: ti, coach: COACH });
+    const ts = new Date().toISOString();
+    for (const a of r.alerts) post({ ...a, tool: `hook:${tool}`, ts, ...IDENTITY });
+    if (r.coach && !PROFILE_COACH) PROFILE_COACH = { reason: r.coach, alts: [] };
+    const ra = rejectedAlert(r.rejected);
+    if (ra) {
+      const st = readStateJson(PROFILE_STATE_FILE) || {};
+      const seen = st.rejected && typeof st.rejected === "object" ? st.rejected : {};
+      if (!(Date.now() - (Number(seen[PROV.policyId]) || 0) < 86400000)) {
+        post({ ...ra, tool: `hook:${tool}`, ts, ...IDENTITY });
+        writeStateJson(PROFILE_STATE_FILE, { rejected: { [PROV.policyId]: Date.now() } });
+      }
+    }
+    return r.decision === "deny" ? r : null;
+  } catch { return null; }
+}
+function parseRootOwnedJson(p) {
+  try { const v = JSON.parse(readRootOwned(p) || "null"); return v && typeof v === "object" && !Array.isArray(v) ? v : null; } catch { return null; }
+}
+
 // Cumulative destructive volume (data/deletion-volume.js) for one Bash call, keyed on SESSION. Posts one
 // content-free alert the first time the session crosses the threshold, and returns true when this call
 // is the first deletion after the crossing and policy mode is "ask" (the default) — the caller raises
@@ -1370,7 +1404,7 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
   settleRow(verdictFields(decision, { rewrite: Boolean(rewrite) }));
   const note = rewrite ? maskNote("this tool call's input", rewrite.count, rewrite.ids) : "";
   if (COACH && decision !== "allow") process.stdout.write(coachOut("PreToolUse", reason, alternatives));
-  else if (COACH && LEAK_COACH) process.stdout.write(coachOut("PreToolUse", LEAK_COACH.reason, LEAK_COACH.alts));
+  else if (COACH && (LEAK_COACH || PROFILE_COACH)) process.stdout.write(coachOut("PreToolUse", (LEAK_COACH || PROFILE_COACH).reason, (LEAK_COACH || PROFILE_COACH).alts));
   else if (decision !== "allow") {
     const upd = rewrite && decision === "ask" ? { updatedInput: rewrite.value, additionalContext: note } : {};
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision === "deny" ? "deny" : "ask", permissionDecisionReason: `MoorAI: ${withSafer(reason, alternatives)}`, ...upd } }));
@@ -2010,6 +2044,9 @@ async function main() {
   const cb = circuitStep({ policy, sessionId: SESSION_ID, agentId: input.agent_id, tool, toolInput: ti, coach: COACH });
   for (const a of cb.alerts) post({ ...a, tool: `hook:${tool}`, ts: new Date().toISOString(), ...IDENTITY });
   if (cb.deny) { why(REASON.BEHAVIOR_SIGNAL); return emit("deny", cb.deny.reason); }
+  // Declared workload profile (cli/workload-profile.mjs): a tool, MCP server or host outside it is drift.
+  const wp = profileStep(policy, tool, ti, input.cwd);
+  if (wp) { why(PROFILE_DRIFT); return emit("deny", wp.reason); }
 
   if (tool === "Read") {
     const text = readFileCapped(agentPath(ti.file_path, input.cwd));

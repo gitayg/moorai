@@ -522,6 +522,22 @@ checks the headless answer; it is skipped when the system file binds the console
 child would post to it. The desktop app, AIBOM, the shadow-AI inventory and OS posture do not apply on a
 server. Examples: [`examples/server/`](../examples/server/README.md). Limits are in §13.
 
+**Workload identity.** In server mode the hook adds a `workload` object to every alert it posts (not to
+local rows): `containerId`, `pod`, `namespace`, `node` and `pid`
+([`cli/server-mode.mjs`](../cli/server-mode.mjs) `workloadIdentity`). `@moorai/agent-sdk`,
+`moorai-serve` and `moorai-mcp-gateway` add the same object. `containerId` is a 64-hex id from the
+container's cgroup name in `/proc/self/cgroup` (Docker, containerd, CRI-O, podman), else from the source
+path of the `/etc/hostname`, `/etc/hosts` or `/etc/resolv.conf` bind mount in `/proc/self/mountinfo`
+(cgroup v2 with a private cgroup namespace reads `0::/`); a containerd `sandboxes/` path is the pod
+sandbox and never matches. Those mounts belong to the network namespace, so a sidecar sharing the agent's
+namespace reports the agent's container, the one the verdict is about. `pod` / `namespace` / `node` come
+only from `MOORAI_K8S_POD` / `_NAMESPACE` / `_NODE` and must match `[a-z0-9.-]{1,253}`; a settings file
+setting one is refused like every other `MOORAI_*` name. `pid` is the hook's parent pid (the agent), or
+the SDK's own pid in process; `moorai-serve` and the gateway send none. Each field is optional and dropped
+on its own when undetected or malformed. Outside server mode the hook sends none. Under Kubernetes on
+cgroup v2 neither file is expected to name the container (not observed on a cluster), so `containerId`
+may be absent there.
+
 ### Verdict provenance — which policy, which branch, enforced or not
 
 [`cli/provenance.mjs`](../cli/provenance.mjs) stamps every alert the hook posts (`stampAlert`, in `post()`)
@@ -537,7 +553,7 @@ by the org's rule" from "blocked by a fail-closed floor nobody configured".
   `policySource` says where it came from (the loader's source, `builtin` or `offline-default`).
 - **`reasonCode`** — the branch that produced the verdict, not the threat (the threat is already in
   `threatId` / `category`): `NO_MATCH`, `DETECTOR_MATCH`, `CONTENT_RULE`, `MCP_SERVER_NOT_ALLOWED`,
-  `MCP_ARG_RULE`, `MCP_REPUTATION`, `MCP_FLOOR`, `ENVELOPE`, `JIT_ELEVATION`, `ENDPOINT_NOT_ALLOWED`,
+  `MCP_ARG_RULE`, `MCP_REPUTATION`, `MCP_FLOOR`, `ENVELOPE`, `PROFILE_DRIFT`, `JIT_ELEVATION`, `ENDPOINT_NOT_ALLOWED`,
   `SECRET_EGRESS`, `INTENT_MISMATCH`, `DELETION_VOLUME`, `SUBAGENT_POLICY`, `SESSION_KILL`, `HEADLESS_ASK`,
   `MASK_APPLIED`, `MASK_FALLBACK`, `COACH_UNENROLLED`, `BREAK_GLASS`, `POSTURE_FAIL_CLOSED`, `POLICY_OFFLINE`,
   `POLICY_TAMPER`, `BEHAVIOR_SIGNAL`, `HONEYTOKEN`, `SKILL_FILE`, `MODEL_ESCALATION`, `DESTINATION`,
@@ -929,6 +945,120 @@ baseline would be meaningless. This is the same guard the honeytoken canary and 
 scanner use. The deletion counter still runs, but `SESSION` is the sentinel for every session, so all
 sessions share one counter. That is the same limit as the trifecta and clipboard alerts. The time window
 still bounds it.
+
+### Declared workload profiles
+
+Learned drift learns a baseline. A workload profile is one an operator writes down: the tools, MCP servers
+and destination hosts a workload or repository is expected to use. Each `PreToolUse` call is compared with
+it, and anything outside it is `PROFILE_DRIFT`. The module is
+[`cli/workload-profile.mjs`](../cli/workload-profile.mjs); the hook, `@moorai/agent-sdk`
+(`decideToolCall`) and `moorai-serve` all run the same `evaluateProfile()`.
+
+**Policy shape.** The signed policy carries
+
+```json
+"workloadProfiles": [
+  { "id": "ci-bot",
+    "match": { "serviceId": "github:acme/app:release:build", "repo": "github:acme/app" },
+    "tools": ["Read", "Bash", "mcp__github__*"],
+    "mcpServers": ["github"],
+    "hosts": ["api.github.com", "*.internal.example"],
+    "action": "report" }
+]
+```
+
+- `id` is a slug of up to 64 characters (`[A-Za-z0-9][A-Za-z0-9._-]*`). `description` and `name` are
+  accepted and not used.
+- `match` needs at least one key. With both keys, both must match. The first matching profile wins; later
+  profiles are not consulted.
+- `tools`, `mcpServers` and `hosts` are allow-lists (at most 512 entries each). `*` is a glob. A list that
+  is left out does not constrain that kind. A list that is present and empty allows nothing.
+- `hosts` entries are host names, `*.suffix` or `*`. `*.internal.example` matches `a.internal.example` and
+  `b.a.internal.example`, not `internal.example` or `evilinternal.example`. Loopback (`localhost`,
+  `127.0.0.1`, `[::1]`) is always in profile.
+- `action` is `report` (the default) or `block`.
+- At most 256 profiles per source are read; the rest are listed as malformed.
+
+**Matching.**
+- `serviceId` is compared exactly with the server-mode workload name: in the hook, `MOORAI_SERVICE_ID`
+  or `serviceId` in the system or user file, else `github:<repo>:<workflow>:<job>` on GitHub Actions,
+  else `unnamed`. In the SDK and `moorai-serve` it is the `serviceId` option (`--service-id`), else the
+  same resolution without the user file. The hook outside server mode has no serviceId, so a serviceId
+  profile never matches on a laptop.
+- `repo` is compared with the git remote of the call's `cwd` (the hook's payload `cwd`; the `cwd` of an
+  SDK call or of a `/v1/tool-call` request; it must be absolute). The module walks up from it (at most 64
+  levels), reads `.git/config` directly (at most 64 KB; no git binary), takes remote `origin`, else the
+  first remote, and normalises it. `https://github.com/Acme/App.git`, `git@github.com:acme/app.git` and
+  `ssh://git@github.com:22/acme/app` all become `github:acme/app`. GitLab and Bitbucket become
+  `gitlab:group/name` and `bitbucket:owner/name`; any other host becomes `<host>:<path>`. Credentials,
+  ports, case and `.git` are dropped. A local-path remote, or no remote, matches nothing. The remote is
+  read only when a profile has a `repo` key, and is cached per cwd for the life of the process.
+
+**What is compared.**
+- `tool`: the tool name, after the `Shell` → `Bash` alias.
+- `mcpServer`: the `<server>` of `mcp__<server>__<tool>`.
+- `host`: the hosts `extractHosts` ([`data/model-endpoints.js`](../data/model-endpoints.js)) finds in a
+  Bash or PowerShell command, a WebFetch URL, or an MCP call's serialised arguments. This is the same text
+  the destination map reads.
+
+**Outcome.** One alert per drift kind per call: category `Workload profile drift`, `reasonCode`
+`PROFILE_DRIFT`, `driftKind` (`tool` | `mcpServer` | `host`), `driftItem` (the first out-of-profile value
+of that kind), `profileId`, `profileAction`, `profileSource` (`policy` | `system`), stage `behavior`, risk
+Medium. The item is a tool name, an MCP server label or a host, as the destination map already reports
+them. No path, query, command text or argument value is sent. With `action: "report"` the call goes on to
+the other checks. With `action: "block"` the call is denied with the reason
+`outside the declared workload profile "<id>" (<kinds> not in the profile)`, which names only the profile
+id and the kinds; the alert's risk is `Blocked` and its `decision` is `deny`. The SDK's result also carries
+`profileId` and `driftKinds`.
+
+On an unenrolled device a `block` profile coaches: the call is allowed, the coach message carries the same
+reason, and the alert (which an unenrolled device does not post) is marked `decision: "coach"`,
+`enforcement: "LIMITED"`. Server mode and the SDK enforce, as they do for every other control.
+
+**Where a profile can come from.** Only the verified console policy and the root-owned machine-wide config
+(`/etc/moorai/config.json`, `%ProgramData%\MoorAI\config.json`; root-owned and not group- or
+world-writable, read with `readRootOwned`; the SDK re-reads it at most once a minute). The console policy
+is read first, and a duplicate id in the machine-wide config is dropped. A `workloadProfiles` key in a
+repository's `.claude/settings.json` (top level or `env`), a repo-local `.moorai/config.json`,
+`~/.moorai/config.json` or any environment variable is ignored. A repository cannot declare its own
+baseline, for the same reason a settings file cannot plant a trust anchor.
+
+**Malformed profiles.** A profile with an unknown key, an unknown `match` key, no `match` key, a bad id, a
+bad `action`, a list that is not a list of names, a host that is a URL, a `repo` that is not a remote, or
+a duplicate id is ignored. The rest still apply. An unknown `match` key drops the whole profile rather than
+the key, because ignoring the key would widen the match beyond what the operator wrote. The hook posts one
+`Workload profile ignored (malformed)` alert (`reasonCode` `OBSERVATION_ONLY`) listing source, index, id
+and reason for each (at most 16), never the value, at most once a day per policy. The SDK signals it once
+per policy object.
+
+**Failure.** Evaluation never throws. Any error allows the call with no drift alert.
+
+**Order.** In the hook the profile check runs after learned drift and the circuit breaker and before the
+per-tool branches, so a blocked call is denied before any detector runs. The SDK runs it first in
+`decideToolCall`.
+
+**Measured.** The SDK parity test has a third case, a blocking repo profile over the full parity payload
+set: 3 cases × 214 payloads, 0 mismatches between the hook and the SDK. The benign v2 corpus false-positive
+count is unchanged (20 of 602).
+
+**Limits.**
+- A `repo` match is a convenience, not an identity. The remote is in the agent's write scope: it can edit
+  `.git/config`, or work from a directory with no remote, and the profile no longer matches. Use
+  `serviceId` for a block.
+- In the hook `serviceId` resolves in the order machine-wide config, then the launching environment, then
+  `~/.moorai/config.json`. A serviceId taken from the user config file is in the agent's write scope as
+  well. Changing it also changes the workload identity on every alert (`svc:<id>`), so the console sees a
+  new workload rather than silence.
+- Hosts are what `extractHosts` finds in the call's text. A host built at runtime (a variable, a script
+  file, a DNS name inside an encoded blob) is not seen.
+- Only `PreToolUse` is compared with the profile. `PostToolUse`, `UserPromptSubmit` and `Stop` are not.
+- The HTTP MCP gateway (`moorai-mcp-gateway`) does not evaluate workload profiles.
+- Tested on macOS only.
+
+Tests: `test/workload-profile.test.mjs` (validation, matching, every drift kind, report / block / coach,
+malformed, sources, fail-open), `test/workload-profile-hook.test.mjs` (the real hook in server mode and on
+an enrolled and an unenrolled laptop, the trust test, the SDK), and the third case in
+`test/agent-sdk-parity.test.mjs`.
 
 ### Across the session: session risk and the runaway circuit breaker
 
@@ -1620,6 +1750,16 @@ Stated rather than papered over.
   event-triggered prompts. `moorai-serve`'s `/v1/tool-call` reads paths on the sidecar's own filesystem, so
   an authenticated client can learn whether a file there holds secrets, and its secret-egress fingerprint
   cache is filled once per directory for the life of the process.
+- **The container image and the sidecar examples are partly run.** `ghcr.io/gitayg/moorai-server` has been
+  built and run on arm64 and the compose demo run end to end; the publish workflow has not run yet, the
+  amd64 build has not been run, and `examples/serve/k8s-sidecar.yaml` has been neither schema-validated
+  against a cluster nor run. `containerId` has been observed only under Docker (cgroup v2, read from
+  `/proc/self/mountinfo`); containerd and CRI-O detection on cgroup v2 is unobserved, and under Kubernetes
+  the field may be absent.
+- **Declared workload profiles** (above) are checked on `PreToolUse` only, see hosts only in the call's
+  text, and are not evaluated by the HTTP MCP gateway. A `repo` match follows `.git/config`, and in the hook
+  a `serviceId` can come from `~/.moorai/config.json`; both are in the agent's write scope. Tested on
+  macOS only.
 - **The lifecycle events, the claim check, the session signals and provenance are tested through the real
   hook with scripted stdin, not watched in a live Claude Code session.** The `Stop` / `SubagentStop` /
   `PostToolUseFailure` / `PreCompact` input fields are taken from the hooks reference, not from a captured

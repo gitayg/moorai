@@ -130,8 +130,9 @@ function consoleServer(policy) {
   return new Promise((r) => srv.listen(0, "127.0.0.1", () => r({ url: `http://127.0.0.1:${srv.address().port}`, close: () => srv.close() })));
 }
 
-async function parity(t, policy) {
+async function parity(t, policy, { setup } = {}) {
   const sb = sandbox();
+  if (setup) setup(sb);
   const c = policy ? await consoleServer(policy) : null;
   try {
     const env = envFor(sb, c ? c.url : "http://127.0.0.1:1");
@@ -154,4 +155,18 @@ test("parity, no org policy (built-in defaults, server mode): the SDK callback r
 
 test("parity, enforcing org policy from the console: same decision and reason for every payload", async (t) => {
   await parity(t, POLICY);
+});
+
+// Declared workload profile (cli/workload-profile.mjs, CONTRACT C3) matched on the session cwd's git remote,
+// action block: tool, MCP server and host drift across the whole payload set must deny with the same reason
+// on both surfaces, and in-profile calls must fall through to the same detector verdicts.
+const PROFILE_POLICY = {
+  ...POLICY,
+  workloadProfiles: [{ id: "parity-repo", match: { repo: "github:acme/parity" }, tools: ["Read", "Bash", "PowerShell", "WebFetch", "Glob", "mcp__notes__*", "mcp__github__*"], mcpServers: ["notes", "github"], hosts: ["nodejs.org", "*.github.com"], action: "block" }]
+};
+test("parity, enforcing org policy with a blocking repo workload profile: same decision and reason for every payload", async (t) => {
+  const { hook } = await parity(t, PROFILE_POLICY, { setup: (sb) => { mkdirSync(join(sb.proj, ".git"), { recursive: true }); writeFileSync(join(sb.proj, ".git", "config"), '[remote "origin"]\n\turl = git@github.com:Acme/Parity.git\n'); } });
+  const kinds = ["tool", "mcpServer", "host"].filter((k) => hook.some((r) => r.reason.includes(`"parity-repo" (${k}`) || r.reason.includes(`, ${k} not in`)));
+  t.diagnostic(`profile denials: ${hook.filter((r) => r.reason.includes('"parity-repo"')).length} · kinds ${kinds.join(",")}`);
+  assert.deepEqual(kinds, ["tool", "mcpServer", "host"], "the sample must exercise every drift kind");
 });

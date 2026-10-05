@@ -1,0 +1,41 @@
+# moorai-serve as a compose sidecar. The sidecar joins the agent's network namespace
+# (network_mode: "service:agent"), so the agent reaches it on 127.0.0.1:8790 — loopback, no --allow-remote,
+# no token, no published port. Compose reference: "`service:{name}`: Gives the container access to the
+# specified container by referring to its service name"
+# (https://docs.docker.com/reference/compose-file/services/#network_mode).
+#
+#   docker compose -f examples/serve/docker-compose.yml up --build --abort-on-container-exit --exit-code-from agent
+#
+# The demo agent (demo-agent.mjs) sends a reverse shell, a benign command, a prompt injection and a
+# foreign Host header, prints the verdicts, and also plays the console on 127.0.0.1:8787 to show the alerts
+# the sidecar posts. For a real deployment replace `agent` with your agent loop and point MOORAI_SERVER_URL /
+# MOORAI_TENANT / MOORAI_INSTALL_TOKEN at your MoorAI console (use a secret, never a literal).
+name: moorai-serve-demo
+services:
+  agent:
+    image: node:22-slim
+    command: ["node", "/demo/demo-agent.mjs"]
+    environment:
+      MOORAI_SERVE_URL: http://127.0.0.1:8790
+    volumes:
+      - ./demo-agent.mjs:/demo/demo-agent.mjs:ro
+    user: "1000:1000"
+  moorai:
+    build:
+      context: ../..
+      dockerfile: docker/server/Dockerfile
+    image: ghcr.io/gitayg/moorai-server:dev
+    command: ["moorai-serve", "--port", "8790"]
+    network_mode: "service:agent"
+    environment:
+      MOORAI_SERVICE_ID: moorai-serve-demo
+      MOORAI_SERVER_URL: http://127.0.0.1:8787
+      MOORAI_TENANT: demo
+      # A throwaway value for the demo console in demo-agent.mjs; a real one comes from a secret.
+      MOORAI_INSTALL_TOKEN: demo-install-token
+    read_only: true
+    tmpfs:
+      - /home/node:uid=1000,gid=1000
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]

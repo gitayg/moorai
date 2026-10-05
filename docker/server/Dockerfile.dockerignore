@@ -1,0 +1,26 @@
+# Build context allow-list for docker/server/Dockerfile (Docker reads <Dockerfile>.dockerignore next to the
+# Dockerfile in preference to a root .dockerignore). Everything is excluded except what the image copies.
+*
+!package.json
+!LICENSE
+!scan.mjs
+!cli/
+!src/
+!data/
+!scripts/redteam.mjs
+!scripts/accepted-failures.mjs
+!test/redteam/corpus.json
+!mcp-gateway/
+!mcp-proxy/tool-scan.mjs
+!mcp-proxy/tool-baseline.mjs
+!cloud/
+!packages/agent-sdk/src/
+!docker/server/entrypoint.sh
+!docker/server/healthcheck.mjs
+# Never, even inside an included directory.
+**/.env
+**/.env.*
+**/*.local
+**/.session-secret
+**/node_modules
+**/.DS_Store

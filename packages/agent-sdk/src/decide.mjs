@@ -19,13 +19,14 @@
 // the hook can be stricter than this function.
 import { readFileSync } from "node:fs";
 import { basename, isAbsolute, resolve } from "node:path";
-import { hookCore, mcpFileArgs, secretEgress, modelEndpoints, outboundUpload } from "./core.mjs";
+import { hookCore, mcpFileArgs, secretEgress, modelEndpoints, outboundUpload, serverModeLib } from "./core.mjs";
 
 const {
   decideText, decideCredFileRead, decideFileMetadata, decideAgentStateWrite, isEnvTemplate, fileScanText,
   decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, mcpFloor,
-  saferAlternativesFor, PS_OUTBOUND_UPLOAD
+  saferAlternativesFor, PS_OUTBOUND_UPLOAD, evaluateProfile, rejectedAlert, readRootOwned
 } = hookCore;
+const { systemConfigPath } = serverModeLib;
 const { scanMcpFileArgs } = mcpFileArgs;
 const { egressHits } = secretEgress;
 const { extractHosts } = modelEndpoints;
@@ -80,14 +81,41 @@ function endpointSignal(epD, signals) {
   signals.push({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", key: `endpoint:${epD.hosts.join(",")}` });
 }
 
+// The declared workload profile step (cli/workload-profile.mjs), as the hook's profileStep runs it right
+// after the circuit breaker: profiles from the verified policy and the root-owned machine-wide config only.
+// Malformed profiles are signalled once per policy object for the life of the process.
+const REJECT_SIGNALLED = new WeakSet();
+// Re-read at most once a minute: a long-lived service keeps one parsed object, so the profile cache
+// (keyed on the object) compiles its globs once per read rather than once per call.
+const SYSTEM_TTL_MS = 60000;
+let SYSTEM = { at: -Infinity, value: null };
+function readSystemConfig() {
+  if (Date.now() - SYSTEM.at < SYSTEM_TTL_MS) return SYSTEM.value;
+  let value = null;
+  try { const v = JSON.parse(readRootOwned(systemConfigPath()) || "null"); value = v && typeof v === "object" && !Array.isArray(v) ? v : null; } catch { value = null; }
+  SYSTEM = { at: Date.now(), value };
+  return value;
+}
+function profileGate(policy, { tool, ti, cwd, serviceId, systemConfig }, signals) {
+  const r = evaluateProfile({ policy, system: systemConfig !== undefined ? systemConfig : readSystemConfig(), serviceId, cwd, tool, toolInput: ti });
+  for (const a of r.alerts) { const { contentHash: key, ...rest } = a; signals.push({ ...rest, key }); }
+  const ra = rejectedAlert(r.rejected);
+  if (ra && policy && typeof policy === "object" && !REJECT_SIGNALLED.has(policy)) { REJECT_SIGNALLED.add(policy); const { contentHash: key, ...rest } = ra; signals.push({ ...rest, key }); }
+  return r;
+}
+
 // tool: the host's tool name. toolInput: its arguments. cwd: the agent's working directory (relative
 // paths resolve against it, as in the hook). actor: the workload's actor hash (entitlement JIT grants).
-export function decideToolCall(engine, policy, { tool: rawTool = "", toolInput, cwd, actor = "" } = {}) {
+// serviceId: the workload name a profile's match.serviceId is compared with. systemConfig: the parsed
+// machine-wide config (tests); omitted, the root-owned /etc/moorai/config.json is read.
+export function decideToolCall(engine, policy, { tool: rawTool = "", toolInput, cwd, actor = "", serviceId = "", systemConfig } = {}) {
   const tool = TOOL_ALIASES[rawTool] || String(rawTool || "");
   const ti = toolInput && typeof toolInput === "object" ? toolInput : {};
   const base = cwd || process.cwd();
   const signals = [];
   const out = (decision, reason, alternatives, findings, extra = {}) => ({ tool, decision, reason, alternatives: alternatives || [], findings, signals, kill: false, killIds: [], evaluated: true, notEvaluated: NOT_EVALUATED, ...extra });
+  const wp = profileGate(policy, { tool, ti, cwd, serviceId, systemConfig }, signals);
+  if (wp.decision === "deny") return out("deny", wp.reason, [], [], { profileId: wp.profile.id, driftKinds: wp.kinds });
 
   if (tool === "Read") {
     const text = readFileCapped(agentPath(ti.file_path, cwd));
