@@ -10,6 +10,7 @@ import { agentReconHit } from "./agent-recon.js";
 import { aiTargetedCloakingHit } from "./cloaking.js";
 import { visuallyHiddenInstruction } from "./visual-hiding.js";
 import { renderedExfilHit } from "./render-exfil.js";
+import { agentDirected, zeroWidthInterleave } from "./agent-directed.js";
 import { AGENT_STATE_DETECTORS } from "./detectors-agent-state.js";
 import { ARTIFACT_DETECTORS } from "./detectors-artifacts.js";
 import { INSTRUCTION_LEAK_DETECTORS } from "./detectors-instruction-leak.js";
@@ -1172,6 +1173,38 @@ export const DETECTORS = [
       /\b(?:new|updated|revised)\s+(?:instructions?|directives?|system\s+prompt|task|objective)\b\s*[:=\-]/i,
       /\b(?:system|assistant|developer)\s+(?:prompt|message|instruction|note|directive)s?\s*[:=]/i
     ]
+  },
+  {
+    // #40 (LLM01) — an instruction AIMED AT THE AGENT inside ingested content: a carrier (the text
+    // addresses the assistant, claims system / administrator authority, or sets a standing rule) within
+    // reach of a payload the user did not ask for (reach for a local secret, send data out, hide it from
+    // the user, fetch-and-run, override, sabotage). Either half alone is ordinary English; the pair is
+    // the injection. Logic and measurements: data/agent-directed.js. Inbound stages only — on a prompt
+    // the user is the one addressing the assistant. The pattern only hands the whole text to refine()
+    // once; refine() decides. Deliberately NOT "inj"-prefixed: the decoded-variant pass would re-run it
+    // over every rot13 / reversed / leetspeak copy of the whole text (53 copies of an 18 KB README, +20 ms
+    // measured), and an encoded instruction already raises #50 (obf-encoded-payload) and the inj-*
+    // override detectors on its decoded form.
+    detectorId: "ingest-agent-directed",
+    threatId: 40,
+    stages: ["file", "index", "output"],
+    mode: "warn",
+    hint: "Ingested content carries an instruction addressed to the agent with an unrequested action (indirect prompt injection).",
+    patterns: [/^[\s\S]/],
+    refine: (_m, text) => agentDirected(text).fire
+  },
+  {
+    // #50 (LLM08) — zero-width characters interleaved between words: the sentence reads normally to the
+    // model and breaks every pattern written for it (data/agent-directed.js zeroWidthInterleave). The
+    // runs of two or more that mcp-hidden-canary already catches are a different shape; this is one
+    // character after each word. Inbound stages only.
+    detectorId: "hidden-zero-width-interleave",
+    threatId: 50,
+    stages: ["file", "index", "output"],
+    mode: "warn",
+    hint: "Zero-width characters interleaved between words hide a sentence from review (hidden text).",
+    patterns: [/^[\s\S]/],
+    refine: (_m, text) => zeroWidthInterleave(text)
   },
   {
     // NEW / #60 (LLM03/LLM01) — MCP tool-poisoning / description-drift. Injected directives hidden in a

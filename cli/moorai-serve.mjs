@@ -31,6 +31,7 @@ import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { createMoorAI, STAGES } from "../packages/agent-sdk/src/runtime.mjs";
+import { inboundLib } from "../packages/agent-sdk/src/core.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({ host: "127.0.0.1", port: 8790, maxBody: 1048576, timeoutMs: 10000 });
@@ -143,13 +144,19 @@ export async function createServer(opts = {}) {
     const body = await readJson(req, o.maxBody);
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "body must be a JSON object");
     if (path === "/v1/scan") {
-      if (typeof body.text !== "string") throw new HttpError(400, "text must be a string");
-      if (body.text.length > MAX_TEXT) throw new HttpError(413, "text too long");
-      const stage = body.stage === undefined ? "prompt" : body.stage;
-      if (!STAGES.includes(stage)) throw new HttpError(400, `stage must be one of ${STAGES.join(", ")}`);
       const ctx = cleanCtx(body.ctx);
       const { tool, ...engineCtx } = ctx;
-      return withTimeout(rt.scan(body.text, stage, engineCtx, { tool: tool || "scan", event: "Scan" }), o.timeoutMs);
+      // Inbound content (ctx.inbound) may arrive as the tool's raw `result` (any JSON) instead of `text`;
+      // either way it is reduced to the same decoded text the hook, the SDK and the MCP gateway scan
+      // (cli/inbound.mjs inboundText), so a client that sends JSON.stringify(result) is not scanning
+      // escaped text.
+      const raw = engineCtx.inbound === true && body.result !== undefined ? body.result : body.text;
+      if (typeof raw !== "string" && !(engineCtx.inbound === true && raw && typeof raw === "object")) throw new HttpError(400, engineCtx.inbound === true ? "text must be a string, or result a JSON value" : "text must be a string");
+      if (typeof raw === "string" && raw.length > MAX_TEXT) throw new HttpError(413, "text too long");
+      const stage = body.stage === undefined ? "prompt" : body.stage;
+      if (!STAGES.includes(stage)) throw new HttpError(400, `stage must be one of ${STAGES.join(", ")}`);
+      const text = engineCtx.inbound === true ? inboundLib.inboundText(raw, MAX_TEXT) : raw;
+      return withTimeout(rt.scan(text, stage, engineCtx, { tool: tool || "scan", event: "Scan", decoded: true }), o.timeoutMs);
     }
     if (typeof body.tool !== "string" || !body.tool || body.tool.length > 256) throw new HttpError(400, "tool must be a non-empty string");
     if (body.input != null && (typeof body.input !== "object" || Array.isArray(body.input))) throw new HttpError(400, "input must be an object");

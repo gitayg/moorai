@@ -440,6 +440,12 @@ Code's docs: the default `"first-wins"` source behaviour ignores the drop-in whe
 policy by MDM or claude.ai, unless `managedSourcesBehavior: "merge"` is set. Also needs per-user config
 (`~/.moorai/config.json`) moved to a machine-wide location. Not started.
 
+Why it matters for tamper resistance (2026-10-06): on laptops today the hook registration lives in the
+user's own settings file, so disabling it is **detected** (the daily coverage heartbeat and the console's
+"agent active, no MoorAI hook traffic" alert), not **prevented**. Pushing the hooks through system-wide
+managed settings by MDM moves the hook config itself from "detected" to "prevented": Claude Code's docs say
+only managed settings can disable managed hooks. Designed, not started.
+
 ## Backlog — server mode: agents running on servers, in CI and through the Agent SDK (2026-09-30)
 
 Agents increasingly run without a developer's laptop: `claude -p` in CI, the Claude Code GitHub Action,
@@ -495,10 +501,16 @@ positioning carries over as "in your process, in your VPC: content never leaves 
   with compose and Kubernetes sidecar examples, and a `workload` object on server-mode, sidecar, SDK and
   gateway alerts so a SIEM can join verdicts with host and container sensor events. See *Shipped in
   v1.3.0*.
+- **Gateway hardening and the model proxy (shipped in v1.4.0):** per-tool usage, staged validation, a
+  response cap, a client cool-down and workload profiles in the HTTP MCP gateway, and `moorai-model-proxy`
+  between an agent's model SDK and the provider. See *Shipped in v1.4.0*.
 - **Still open from Tiers 2 and 3:** an Agent SDK service watched end to end with `@moorai/agent-sdk`; the
-  gateway against real MCP clients, OAuth discovery through it, and its server-mode paths; the first run of
-  the amd64 image run on a host; the Kubernetes manifest on a managed cloud cluster and under CRI-O;
-  declared workload profiles in the HTTP MCP gateway.
+  gateway with a real client against a real remote server in one run (each half is done separately: real
+  clients against the fake upstream, measured 2026-10-06, and a real remote server with a scripted client),
+  a live model call with a denied argument through it, OAuth discovery through it, and its server-mode
+  headless-ask rule (server-mode identity and profile blocks are tested); the model proxy with the real
+  Anthropic and OpenAI SDKs and a real provider; the amd64 image run on a host; the Kubernetes manifest on
+  a managed cloud cluster and under CRI-O.
 - **Not applicable on a server:** the desktop app, AIBOM, shadow-AI inventory and OS posture.
 
 ## Backlog — coverage for cloud AI platforms and custom-built agents (2026-10-01)
@@ -599,7 +611,35 @@ content-free design. Shipped in v1.1.0:
   first matching profile is `PROFILE_DRIFT` (`cli/provenance.mjs` `REASON`), reported, or denied with
   `action: "block"`; unenrolled devices coach. Profiles come only from the verified console policy and
   the root-owned machine-wide config. The hook, the SDK and `moorai-serve` evaluate them (parity: 3 cases
-  × 214 payloads, 0 mismatches; benign v2 false positives unchanged at 20 of 602). Limits: the HTTP MCP
-  gateway does not check profiles; a repo match reads `.git/config`, which the agent can edit; a
+  × 214 payloads, 0 mismatches; benign v2 false positives unchanged at 20 of 602); v1.4.0 adds them to
+  the HTTP MCP gateway. Limits: a repo match reads `.git/config`, which the agent can edit; a
   `serviceId` from the user config file is agent-reachable; hosts built at runtime are not seen; only
   `PreToolUse` is checked; tested on macOS only.
+
+## Shipped in v1.4.0
+
+- **MCP gateway usage reporting** — `mcp-gateway/usage.mjs` on `cli/mcp-usage-beat.mjs`: every
+  `tools/call` that reaches the gate is counted per server label and per tool name (names only), and each
+  completed UTC day is posted once to `POST /api/mcp-usage` with path `gateway`, host `gateway` and the
+  64 busiest tools per server (`toolsTruncated` past that). Server-mode identity is user `service`, device
+  `svc:<serviceId>`. The consumer is the console's MCP map (console v0.73.0). Run end to end against a real
+  local console: six calls arrived with exact per-tool counts and complete tool detail in the MCP map, and
+  no argument text reached the console.
+- **MCP gateway hardening** — staged JSON-RPC / MCP validation of every message in both directions
+  (`--schema enforce|report|off`, enforce by default; `SCHEMA_INVALID` with the stage and a JSON path, no
+  values); a response size cap (`--max-response-bytes`, 4 MiB by default; `RESPONSE_TOO_LARGE`); and a
+  per-client cool-down after repeated refusals (`CLIENT_COOLDOWN`), off by default because loopback
+  clients share one address. The three reason codes are new in `cli/provenance.mjs`.
+- **Declared workload profiles in the gateway** — `mcp-gateway/profile.mjs` evaluates `workloadProfiles`
+  on every `tools/call`, naming the tool `mcp__<route>__<tool>` as the hook does, so one profile means the
+  same on both surfaces (`PROFILE_DRIFT`, kinds `tool` and `mcpServer`; hosts are not compared there).
+  Gateway tests: 98 of 98 pass. Added p50 latency is unchanged at about 4.7–5 ms.
+- **Model proxy** — `moorai-model-proxy` (`model-proxy/`), a third command in
+  `ghcr.io/gitayg/moorai-server`: loopback on 8791, routes `/anthropic` (Messages) and `/openai` (Chat
+  Completions), the client's own credentials passed through untouched and never logged. It scans prompts
+  and fed-back tool results and decides the tool calls the model returns. Report-only by default
+  (byte-identical pass-through, checks after delivery, about 0 ms added at p50 on one event loop that
+  scans about 2 KB of new content in 10 ms); enforce mode refuses a denied request with a provider-shaped
+  403, refuses unscannable requests and withholds denied tool calls. Response-side enforcement (withholding a denied tool call, streaming and non-streaming, Anthropic and OpenAI shapes, including truncated streams, arguments that are not a JSON object and a dropped upstream connection) is tested against a fake provider; it has not been run with the real SDKs or a real provider. In Anthropic streams a tool call is held one block at a time, so an allowed call that comes before a denied one in the same turn has already been released when the turn is refused. Limits:
+  no TLS interception, so the SDK must use the proxy's `http://127.0.0.1` base URL; only Messages and Chat
+  Completions are parsed; not exercised with the real SDKs or a real provider.

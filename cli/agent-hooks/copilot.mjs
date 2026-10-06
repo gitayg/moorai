@@ -1,5 +1,7 @@
 // GitHub Copilot CLI adapter (@github/copilot; verified against the 1.0.63 JS bundle, the last npm
 // release that ships readable JS, and docs.github.com/en/copilot/reference/hooks-configuration).
+// Last-tested version: data/host-versions.json (single source of truth; scripts/host-drift.mjs checks
+// the latest release against it nightly). Versions named below are the ones these notes were read from.
 //
 // Hook API: user-level hook files are <COPILOT_HOME or ~/.copilot>/hooks/*.json, each
 // { version: 1, hooks: { <event>: [{ type: "command", bash, powershell, timeoutSec }] } }. Repo-level

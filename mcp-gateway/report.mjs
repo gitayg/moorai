@@ -112,3 +112,35 @@ export function alertHeadless(server, tool, alert) {
 }
 
 export function recordLedger(entry) { ledger(entry); }
+
+// ---- C5 hardening verdicts (content-free: a stage, a schema-built JSON path, a limit, a duration) ----
+// Each carries its provenance reasonCode (cli/provenance.mjs REASON). A refusal is riskLevel "Blocked" /
+// decision "deny"; a report-only finding is "Medium" / "allow". The tool is "gateway:<tool>" when the
+// message named a valid one, else "gateway:mcp". Repeats of the same finding are posted once per process
+// (seenOnce) so a client sending a flood of bad messages cannot flood the console; the ledger keeps each.
+export function alertSchema(server, { stage, path, header }, { direction, refused, tool = "mcp" }) {
+  const a = { threatId: 0, category: "MCP gateway: invalid message", riskLevel: refused ? "Blocked" : "Medium", stage: "mcp", tool: t(tool), decision: refused ? "deny" : "allow", reasonCode: "SCHEMA_INVALID", schemaStage: stage, schemaPath: path, schemaDirection: direction, ...(header ? { schemaHeader: header } : {}), mcpServer: server, ts: now(), contentHash: `schema:${direction}:${stage}:${path}`, ...IDENTITY };
+  if (seenOnce(`schema|${server}|${direction}|${stage}|${path}|${refused}`)) post(a);
+  ledger(a);
+}
+
+export function alertTooLarge(server, tool, limitBytes) {
+  const a = { threatId: 0, category: "MCP gateway: response too large", riskLevel: "Blocked", stage: "result", tool: t(tool), decision: "deny", reasonCode: "RESPONSE_TOO_LARGE", limitBytes, mcpServer: server, ts: now(), contentHash: `response-too-large:${limitBytes}`, ...IDENTITY };
+  if (seenOnce(`too-large|${server}|${tool}`)) post(a);
+  ledger(a);
+}
+
+// A workload-profile alert from cli/workload-profile.mjs (PROFILE_DRIFT with driftKind / driftItem /
+// profileId, or the malformed-profile notice), as the hook posts it, with the gateway's tool and server.
+export function alertProfile(server, tool, alert) {
+  const a = { ...alert, tool: t(tool), mcpServer: server, ts: now(), ...IDENTITY };
+  post(a);
+  ledger(a);
+}
+
+// Posted once when a client ENTERS a cool-down, not for every request refused during it.
+export function alertCooldown(server, cooldownSeconds) {
+  const a = { threatId: 0, category: "MCP gateway: client cool-down", riskLevel: "Blocked", stage: "mcp", tool: t("mcp"), decision: "deny", reasonCode: "CLIENT_COOLDOWN", cooldownSeconds, mcpServer: server, ts: now(), contentHash: `client-cooldown:${server}`, ...IDENTITY };
+  post(a);
+  ledger(a);
+}

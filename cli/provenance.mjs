@@ -44,6 +44,9 @@ export const REASON = Object.freeze({
   LITERACY: "LITERACY",
   SESSION_SUMMARY: "SESSION_SUMMARY",
   CLAIM_MISMATCH: "CLAIM_MISMATCH",               // agent reported success, the recorded outcomes disagree
+  SCHEMA_INVALID: "SCHEMA_INVALID",               // MCP gateway: a JSON-RPC / MCP message failed validation (schemaStage, schemaPath)
+  RESPONSE_TOO_LARGE: "RESPONSE_TOO_LARGE",       // MCP gateway: an upstream response exceeded the configured cap (limitBytes)
+  CLIENT_COOLDOWN: "CLIENT_COOLDOWN",             // MCP gateway: a client in a cool-down after repeated refusals (cooldownSeconds)
   OBSERVATION_ONLY: "OBSERVATION_ONLY",           // an event this hook records but does not judge
   // A control that never ran for this call. Never a pass.
   UNEVALUATED_NO_POLICY: "UNEVALUATED_NO_POLICY",
@@ -105,6 +108,9 @@ const CATEGORY_REASON = [
   [/^(Model-flagged: |Escalation outcome)/, REASON.MODEL_ESCALATION],
   [/^Literacy: /, REASON.LITERACY],
   [/^Content: /, REASON.CONTENT_RULE],
+  [/^MCP gateway: invalid message$/, REASON.SCHEMA_INVALID],
+  [/^MCP gateway: response too large$/, REASON.RESPONSE_TOO_LARGE],
+  [/^MCP gateway: client cool-down$/, REASON.CLIENT_COOLDOWN],
   [/^MCP tool call$/, REASON.NO_MATCH]
 ];
 export function reasonCodeOf(alert) {

@@ -6,7 +6,8 @@
 //   gateResult(msg,tool) any other RESULT     → null (forward the original) or a replacement message
 //
 // Order for a call, same as the proxy and the hook's mcp__* branch: quarantine (a tool whose metadata
-// policy blocked) → reputation threshold → mcpGateway (server allow-list → per-tool argument rules →
+// policy blocked) → reputation threshold → declared workload profile (./profile.mjs; the hook runs it
+// before its tool branches) → mcpGateway (server allow-list → per-tool argument rules →
 // argument content scan) → local secret egress (#65, the hook's check; the stdio proxy has none) →
 // files the arguments name (opt-in per route: only meaningful when the gateway shares a disk with them).
 //
@@ -16,7 +17,8 @@
 // allow-with-report).
 import { fileURLToPath } from "node:url";
 import { mcpGateway, decideText, threatActionFor } from "../cli/hook-core.mjs";
-import { CAPS, toolScanText, toolIdentity, resultOfResponse, resultScanText } from "../mcp-proxy/tool-scan.mjs";
+import { CAPS, toolScanText, toolIdentity, resultOfResponse } from "../mcp-proxy/tool-scan.mjs";
+import { decideInbound, inboundText } from "../cli/inbound.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "../mcp-proxy/tool-baseline.mjs";
 import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
 import { egressHits } from "../cli/secret-egress.mjs";
@@ -25,7 +27,8 @@ import { reputationAction, reputationAlert, reputationSummary } from "../data/mc
 import { settleHeadlessAsk } from "../cli/server-mode.mjs";
 import { contentHash } from "../cli/content-hash.mjs";
 import { state, ensurePolicy } from "./policy.mjs";
-import { IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, recordLedger } from "./report.mjs";
+import { profileCheck } from "./profile.mjs";
+import { IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, alertProfile, recordLedger } from "./report.mjs";
 
 const RANK = { allow: 1, ask: 2, deny: 3 };
 
@@ -113,6 +116,13 @@ export function createGuard(route) {
     }
     const rep = await reputationBlocks();
     if (rep) { auditCall(SERVER, tool, "deny", argsHash); return { block: rep }; }
+
+    // Declared workload profile: report or block per the profile's action; coached when unenrolled.
+    const wp = profileCheck({ policy: state.POLICY, server: SERVER, tool, serviceId: SERVER_MODE.active ? SERVER_MODE.serviceId : "", coach: state.COACH });
+    for (const a of wp.alerts) alertProfile(SERVER, tool, a);
+    if (wp.rejectedAlert && seenOnce(`profile-rejected:${wp.rejectedAlert.contentHash}`)) alertProfile(SERVER, tool, wp.rejectedAlert);
+    if (wp.coach) coachNote(`MCP tool call ${tool} (server ${SERVER})`, wp.coach);
+    if (wp.decision === "deny") { auditCall(SERVER, tool, "deny", argsHash); return { block: wp.reason }; }
     if (!state.ENGINE) { auditCall(SERVER, tool, "allow", argsHash); return { block: null }; }
 
     const { POLICY, ENGINE } = state;
@@ -228,10 +238,10 @@ export function createGuard(route) {
       if (!winSaid) { winSaid = true; reportOnce("Result scanning throttled (overload window)", "result:budget:throttled", "Info"); }
       return null;
     }
-    const text = resultScanText(result);
+    const text = inboundText(result);
     if (!text) return null;
     const t0 = Date.now();
-    const d = decideText(state.ENGINE, state.POLICY, text, "file");
+    const d = decideInbound(state.ENGINE, state.POLICY, text, { surface: "door", stage: "file" });
     winSpent += Date.now() - t0;
     return d;
   }

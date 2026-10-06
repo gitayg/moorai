@@ -1,6 +1,8 @@
 // Cursor adapter (the IDE agent and the `cursor-agent` CLI). Sources, checked 2026-09-16:
 //   docs  https://cursor.com/docs/hooks.md
 //   CLI   cursor-agent 2026.05.27-fe9a6e2, bundled 3880.index.js / index.js ("../hooks/dist/index.js")
+// Last-tested version: data/host-versions.json (single source of truth; scripts/host-drift.mjs checks
+// the latest release against it nightly). Versions named below are the ones these notes were read from.
 //
 // Cursor's hooks are keyed by EVENT, not by tool, so toClaude branches on hook_event_name:
 //   beforeShellExecution {command, cwd, sandbox}                  -> Bash {command}

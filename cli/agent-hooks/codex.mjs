@@ -1,4 +1,6 @@
 // OpenAI Codex CLI adapter (github.com/openai/codex, verified against tag rust-v0.154.0).
+// Last-tested version: data/host-versions.json (single source of truth; scripts/host-drift.mjs checks
+// the latest release against it nightly). Versions named below are the ones these notes were read from.
 //
 // Codex runs Claude-style lifecycle hooks (feature key `hooks`, stable, on by default —
 // codex-rs/features/src/lib.rs). A PreToolUse command hook gets JSON on stdin and blocks the call with

@@ -15,7 +15,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DOCKERFILE = join(ROOT, "docker", "server", "Dockerfile");
 const IGNORE = join(ROOT, "docker", "server", "Dockerfile.dockerignore");
 const WORKFLOW = join(ROOT, ".github", "workflows", "publish-server-image.yml");
-const ENTRYPOINTS = ["cli/moorai-serve.mjs", "mcp-gateway/moorai-mcp-gateway.mjs"];
+const ENTRYPOINTS = ["cli/moorai-serve.mjs", "mcp-gateway/moorai-mcp-gateway.mjs", "model-proxy/moorai-model-proxy.mjs"];
 const PKG = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 const rel = (p) => relative(ROOT, p).split(sep).join("/");
 
@@ -62,11 +62,11 @@ const DF = readFileSync(DOCKERFILE, "utf8");
 const SOURCES = copySources(DF);
 const IMAGE_ONLY = ["docker/server/entrypoint.sh", "docker/server/healthcheck.mjs"];
 
-test("IMAGE: both entrypoints' import closure is covered by a COPY line", () => {
+test("IMAGE: every entrypoint's import closure is covered by a COPY line", () => {
   const { files, bare, missing } = closure(ENTRYPOINTS);
   assert.deepEqual(missing, [], "an import that does not resolve in the repo");
   assert.ok(files.length > 50, `closure walk found only ${files.length} files — the walker is broken, not the image`);
-  for (const e of [...ENTRYPOINTS, "packages/agent-sdk/src/runtime.mjs", "cli/hook-core.mjs", "data/capture-tiers.js", "mcp-proxy/tool-scan.mjs"]) assert.ok(files.includes(e), `closure lacks ${e}`);
+  for (const e of [...ENTRYPOINTS, "packages/agent-sdk/src/runtime.mjs", "cli/hook-core.mjs", "data/capture-tiers.js", "mcp-proxy/tool-scan.mjs", "model-proxy/server.mjs", "model-proxy/anthropic.mjs", "model-proxy/openai.mjs"]) assert.ok(files.includes(e), `closure lacks ${e}`);
   const uncovered = files.filter((f) => !SOURCES.some((s) => covers(s, f)));
   assert.deepEqual(uncovered, [], "imported at runtime but not copied into the image");
   assert.deepEqual(bare, [], "an npm package import: the image has no node_modules (no npm install step)");

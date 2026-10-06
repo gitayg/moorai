@@ -11,7 +11,7 @@ cask "moorai" do
   url "https://moorai.glick.run/download/app",
       verified: "moorai.glick.run/"
   name "MoorAI"
-  desc "On-device guardrails for AI coding agents"
+  desc "Runtime guardrails for AI agents, apps and APIs"
   homepage "https://moorai.dev/"
 
   auto_updates true

@@ -1,7 +1,10 @@
-# MoorAI as a Kubernetes sidecar. Two Deployments:
+# MoorAI as a Kubernetes sidecar. Three Deployments:
 #   1. agent + moorai-serve        — the agent loop asks http://127.0.0.1:8790 before each tool call.
 #   2. agent + moorai-mcp-gateway  — the agent's MCP client talks to http://127.0.0.1:8848/github, and the
 #                                    gateway forwards to the remote MCP server after MoorAI's checks.
+#   3. agent + moorai-model-proxy  — the agent's model SDK base URL is http://127.0.0.1:8791/anthropic (or
+#                                    /openai); the proxy forwards to the provider and checks prompts, tool
+#                                    results and the tool calls the model asks for.
 #
 # Containers in one pod share its network namespace, so the sidecar listens on loopback only: no Service,
 # no --allow-remote, no token, nothing reachable from another pod.
@@ -21,6 +24,7 @@
 # Pin the image to a release version (ghcr.io/gitayg/moorai-server:<version>) in production.
 #
 #   kubectl create secret generic moorai-install --from-literal=token=<install token from the console>
+#   kubectl create secret generic research-agent-provider --from-literal=anthropic-api-key=<your provider key>
 #   kubectl apply -f examples/serve/k8s-sidecar.yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -155,6 +159,93 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 96Mi }
             limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: moorai-home, mountPath: /home/node }
+            - { name: moorai-tmp, mountPath: /tmp }
+      volumes:
+        - { name: moorai-home, emptyDir: {} }
+        - { name: moorai-tmp, emptyDir: {} }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: research-agent
+  labels: { app: research-agent }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: research-agent }
+  template:
+    metadata:
+      labels: { app: research-agent }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: agent
+          image: ghcr.io/example/research-agent:1.0.0   # your agent loop on the Anthropic or OpenAI SDK
+          env:
+            # The SDKs read these base URLs; plain http on loopback, the proxy speaks TLS to the provider.
+            - name: ANTHROPIC_BASE_URL
+              value: http://127.0.0.1:8791/anthropic
+            - name: OPENAI_BASE_URL
+              value: http://127.0.0.1:8791/openai
+            # The provider key stays with the agent. The proxy forwards it upstream untouched and never
+            # reads, stores, logs or reports it, so the moorai container gets no key at all.
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef: { name: research-agent-provider, key: anthropic-api-key, optional: true }
+        - name: moorai-model-proxy
+          image: ghcr.io/gitayg/moorai-server:latest
+          # Report mode (the default) forwards every byte unchanged, streaming included, and alerts. To refuse
+          # a denied request or tool call, add "--mode", "enforce" (HTTP 403 in the provider's error shape).
+          # The upstreams must be the real provider URLs in production; these are the proxy's defaults.
+          args: ["moorai-model-proxy", "--port", "8791", "--mode", "report",
+                 "--route", "/anthropic=https://api.anthropic.com", "--route", "/openai=https://api.openai.com/v1"]
+          env:
+            - name: MOORAI_SERVICE_ID
+              value: research-agent
+            - name: MOORAI_SERVER_URL
+              value: https://moorai-console.example.com
+            - name: MOORAI_TENANT
+              value: acme
+            - name: MOORAI_INSTALL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: moorai-install, key: token, optional: true }
+            - name: MOORAI_K8S_POD
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
+            - name: MOORAI_K8S_NAMESPACE
+              valueFrom:
+                fieldRef: { fieldPath: metadata.namespace }
+            - name: MOORAI_K8S_NODE
+              valueFrom:
+                fieldRef: { fieldPath: spec.nodeName }
+            # The model proxy's /healthz is on 8791 (healthcheck.mjs defaults to moorai-serve's 8790).
+            - { name: MOORAI_HEALTH_PORT, value: "8791" }
+          readinessProbe:
+            exec:
+              command: ["node", "/opt/moorai/docker/healthcheck.mjs"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["node", "/opt/moorai/docker/healthcheck.mjs"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          # Buffering is bounded by --max-inflight (default 256 MiB, over it a retryable 529/503); keep the
+          # memory limit above it.
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 1000m, memory: 512Mi }
           securityContext:
             runAsNonRoot: true
             runAsUser: 1000

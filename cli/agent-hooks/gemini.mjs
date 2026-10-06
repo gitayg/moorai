@@ -1,4 +1,6 @@
 // Gemini CLI adapter (@google/gemini-cli, verified against 0.60.0 source).
+// Last-tested version: data/host-versions.json (single source of truth; scripts/host-drift.mjs checks
+// the latest release against it nightly). Versions named below are the ones these notes were read from.
 //
 // Hook API: ~/.gemini/settings.json → hooks.{BeforeTool,AfterTool}[] = { matcher (regex on tool name),
 // hooks: [{ type:"command", command, name, timeout }] }. The command gets the event JSON on stdin and

@@ -45,7 +45,8 @@ import { loadHoneytokens, checkHoneytokens } from "./moorai-honeytokens.mjs";
 // shaped tool result before scanning it" — a node/depth/byte-budgeted walk with the cap applied to the
 // COMPOSED text (its own comment records the measured off-by-N-newlines bug that taught it to clip
 // after the join). A fetched page is the same problem with a more hostile author.
-import { resultScanText, CAPS } from "../mcp-proxy/tool-scan.mjs";
+import { CAPS } from "../mcp-proxy/tool-scan.mjs";
+import { decideInbound, surfaceOf, inboundText } from "./inbound.mjs";
 import { observeDrift, driftConfig, cloudProfiles, normalizeRemote } from "../data/learned-drift.js";
 import { deletionTally, assessDeletionVolume, deletionConfig } from "../data/deletion-volume.js";
 import { readStateJson, writeStateJson, repoIdentity, LEARNED_DRIFT_FILE, DELETION_VOLUME_FILE } from "./drift-state.mjs";
@@ -1465,11 +1466,7 @@ const RESPONSE_FIELDS = ["tool_response", "tool_result", "tool_output", "respons
 // A tool_response is typed `unknown`: a bare string on one host, {type:"text", text}, a content array,
 // or an object with the page under some other key. Take the string as-is and hand anything else to the
 // budgeted walk; both paths end at the same cap, so the scan is bounded no matter the shape.
-function scanTextOf(v) {
-  if (typeof v === "string") return v.length > CAPS.maxResultBytes ? v.slice(0, CAPS.maxResultBytes) : v;
-  if (v && typeof v === "object") return resultScanText(v);
-  return "";
-}
+function scanTextOf(v) { return inboundText(v); }
 // The field the result came from is returned with its text, because a mask rewrites THAT value and
 // hands it back as updatedToolOutput. A sub-agent's result is judged on its `content` (its report) only:
 // the rest is telemetry, and a background launch (`status: "async_launched"`) has no report yet — its
@@ -1547,16 +1544,7 @@ function responseText(input, tool) { const f = responseField(input, tool); retur
 // benign side is clean — measured on the tune half only. The verbs are principled rather than sample
 // -matched (migrate/retry/install/registry-flag/image-embed are how a link becomes an instruction), but
 // the honest read is that this needs fresh attacks to confirm, not another pass over these.
-const INBOUND_GATES = {
-  15: (t) => /^[ \t]{0,3}(?:from|to|cc|bcc|reply-to|organizer|sender)[ \t]*:[^\n]{0,120}@/im.test(t)
-          || /\b(?:send|email|e-mail|forward|cc|bcc|report|deliver|mail|exfiltrate|transmit)\b[^\n]{0,80}@/i.test(t),
-  17: (t) => /\b(?:send|post|upload|exfiltrate|transmit|deliver|report|submit|forward|curl|wget|fetch)\b[^\n]{0,80}https?:\/\//i.test(t)
-          || /https?:\/\/[^\s]{0,120}\?[^\s]{0,80}=(?:\$|\{\{|%7B)/i.test(t)
-          || /\b(?:migrate|switch|point|redirect|repoint|move)\b[^\n]{0,40}\bto\b[^\n]{0,40}https?:\/\//i.test(t)
-          || /\b(?:retry|re-?run|reissue|authenticate|register|install|download|pull|clone)\b[^\n]{0,60}https?:\/\//i.test(t)
-          || /--?(?:registry|index-url|repo|remote|endpoint|host|url)[ =]https?:\/\//i.test(t)
-          || /!\[[^\]]{0,60}\]\(https?:\/\//i.test(t)
-};
+// INBOUND_GATES: cli/inbound.mjs (moved unchanged).
 
 // THE SAME TWO GATES, NARROWED FOR THE COMMAND / MCP / SUB-AGENT DOORS. What those doors return is
 // mostly a developer's own tree and its dependencies — READMEs, package.json, source, git log — not
@@ -1577,41 +1565,10 @@ const INBOUND_GATES = {
 // CAVEAT, as for the web gates: the 87 attacks are the in-sample set, and the data-carrying-pixel rule
 // was written after reading the one pixel attack (v2-api-005, `px?d=CONVERSATION_B64`). The benign side
 // is where these narrowings came from; the attack side is a no-regression check, not fresh recall.
-const DOOR_GATES = {
-  15: (t) => /^[ \t]{0,3}(?:from|to|cc|bcc|reply-to|organizer|sender)[ \t]*:[^\n]{0,120}@/im.test(t)
-          || /\b(?:send|email|e-mail|forward|cc|bcc|report|deliver|mail|exfiltrate|transmit)\b(?!["']?[ \t]*[:=])[^\n]{0,80}@/i.test(t),
-  17: (t) => /\b(?:send|post|upload|exfiltrate|transmit|deliver|report|submit|forward|curl|wget|fetch)\b[^\n]{0,80}https?:\/\//i.test(t)
-          || /https?:\/\/[^\s]{0,120}\?[^\s]{0,80}=(?:\$|\{\{|%7B)/i.test(t)
-          || /\b(?:migrate|switch|point|redirect|repoint|move)\b[^\n]{0,40}\bto\b[^\n]{0,40}https?:\/\//i.test(t)
-          || /\b(?:retry|re-?run|reissue|authenticate|register)\b[^\n]{0,60}https?:\/\//i.test(t)
-          || /--?(?:registry|index-url|repo|remote|endpoint|host|url)[ =]https?:\/\//i.test(t)
-          || /!\[[^\]]{0,60}\]\(https?:\/\/[^)\s?]{0,200}\?(?:[^)\s]{0,200}&)?[\w.-]{1,24}=(?:[A-Za-z0-9_+\/=-]{16,}|\$\{|\{\{|%7B)/i.test(t)
-};
+// DOOR_GATES: cli/inbound.mjs (moved unchanged).
 
-// Rebuild a decideText result with some threats removed. The decision is RECOMPUTED from what survives
-// rather than carried over — dropping the only finding that caused a deny must drop the deny with it,
-// or the suppression would be cosmetic. Reasons and kill signals are rebuilt the same way. Content-rule
-// findings (threatId 0) are never candidates for removal.
-function dropOutboundOnly(res, threatIds, policy, text, mask = false, gates = INBOUND_GATES) {
-  const kept = res.findings.filter((f) => {
-    if (threatIds.has(f.threatId)) return false;
-    const gate = gates[f.threatId];
-    return gate ? gate(text || "") : true;
-  });
-  if (kept.length === res.findings.length) return res;
-  const RANKED = { allow: 0, ask: 1, deny: 2 };
-  const out = { decision: "allow", reasons: [], findings: kept, kill: false, killIds: [], alternatives: [], maskIds: [] };
-  const driving = [];
-  for (const f of kept) {
-    const act = f.threatId === 0 ? (f.riskLevel === "Blocked" ? "block" : "justify") : threatActionFor(policy, f.threatId, { mask });
-    if (act === "mask") { if (!out.maskIds.includes(f.threatId)) out.maskIds.push(f.threatId); continue; }
-    if (act === "block" || act === "kill") { if (RANKED.deny > RANKED[out.decision]) out.decision = "deny"; out.reasons.push(`#${f.threatId} ${f.category}`); driving.push(f.threatId); }
-    else if (act === "justify") { if (RANKED.ask > RANKED[out.decision]) out.decision = "ask"; out.reasons.push(`#${f.threatId} ${f.category} (needs sign-off)`); driving.push(f.threatId); }
-    if (act === "kill" && res.killIds.includes(f.threatId)) { out.kill = true; out.killIds.push(f.threatId); }
-  }
-  out.alternatives = saferAlternativesFor(driving, text);
-  return out;
-}
+// dropOutboundOnly lives on as cli/inbound.mjs applyInbound(): the same recompute-from-survivors rule,
+// plus the inbound data-class and action rules every inbound surface now shares.
 
 // WHAT THE HOST LETS A PostToolUse HOOK DO, per tool (code.claude.com/docs/en/hooks, fetched 2026-09-29),
 // stated because "block" here does not mean what it means before a call:
@@ -1643,8 +1600,8 @@ function dropOutboundOnly(res, threatIds, policy, text, mask = false, gates = IN
 // of 1,041 (node_modules files 234 → 52 of 510), benign advisories 55 → 0, benign blocks 5 → 0; attacks
 // alerting 48 → 45 of 87 (the three above). Kept although measured free to drop: #50 hidden/invisible text (4/0/10), because hiding IS the
 // indirect-injection technique this door exists for, and 10 fires in 1,041 benign is its price.
-const DOOR_DROP = [29, 44, 45, 52, 54, 55, 57, 61, 62, 63, 69, 76];
-const INGEST_ONLY_DROP = { Bash: DOOR_DROP, PowerShell: DOOR_DROP, Agent: DOOR_DROP, Task: DOOR_DROP, mcp: DOOR_DROP };
+// DOOR_DROP and the per-door drop table live in cli/inbound.mjs (DOOR_ONLY_DROP, ACTION_THREATS,
+// OUTPUT_ONLY_THREATS), shared with the SDK, the MCP proxy and the HTTP gateway.
 const INGEST_NOUN = { WebFetch: "fetched content", WebSearch: "fetched content", Bash: "command output", PowerShell: "command output", Agent: "sub-agent report", Task: "sub-agent report" };
 const ingestNoun = (tool) => INGEST_NOUN[tool] || "MCP tool result";
 
@@ -1718,10 +1675,9 @@ async function handlePostToolUse(input, tool, policy, engine) {
   // the out-* prefix. It catches 15 attacks NOTHING else catches. Dropping both on the naming pattern
   // would have cost 15 real detections to save 40 alerts — the measurement is what separates them, and
   // the prefix is not evidence.
-  const OUTBOUND_ONLY_THREATS = new Set([65, 32, ...((tool.startsWith("mcp__") ? INGEST_ONLY_DROP.mcp : INGEST_ONLY_DROP[tool]) || [])]);
+  // The drop sets, the gates and the data-class rule are cli/inbound.mjs's, shared by every inbound surface.
   const rewrite = canRewrite();
-  const raw = decideText(engine, policy, text, "output", { ctx: { inbound: true }, mask: rewrite });
-  const d = dropOutboundOnly(raw, OUTBOUND_ONLY_THREATS, policy, text, rewrite, tool === "WebFetch" || tool === "WebSearch" ? INBOUND_GATES : DOOR_GATES);
+  const d = decideInbound(engine, policy, text, { surface: surfaceOf(tool), stage: "output", mask: rewrite });
   if (d.decision !== "allow") why(detectorReason(d.findings));
   // The composed scan text reached the result budget: the tail past it was never scanned (the walk's
   // per-node and per-field caps can also drop text below this length; those are not detected here).

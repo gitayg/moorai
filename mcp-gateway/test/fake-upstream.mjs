@@ -10,6 +10,9 @@
 //                        notification event first, then the response event, then the stream closes.
 //                        `splitBytes` writes the SSE body in slices of that size, one per tick, so one
 //                        event provably crosses many chunks.
+// `callReply(msg)`      → the raw JSON text of the tools/call response (JSON mode) or of its SSE data line,
+//                        for malformed / oversized / 2026-era results; `listReply(msg)` the same for
+//                        tools/list. `chunked` writes a JSON body without a Content-Length.
 // GET                  → a standalone SSE stream carrying one server notification, then closes
 //                        (the legacy server-initiated stream); `noGet` → 405 as the 2026-07-28 spec says.
 // DELETE               → 200 (session terminated)
@@ -44,6 +47,11 @@ export async function startUpstream(opts = {}) {
         return;
       }
       if (m.method === "tools/list") {
+        if (opts.listReply) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(opts.listReply(m));
+          return;
+        }
         if (opts.rawList) {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(opts.rawList.replace("__ID__", String(m.id)));
@@ -54,7 +62,7 @@ export async function startUpstream(opts = {}) {
         const text = opts.resultText != null ? opts.resultText : JSON.stringify({ echoed: m.params && m.params.arguments });
         result = { content: [{ type: "text", text }], isError: false };
       } else result = {};
-      const reply = JSON.stringify({ jsonrpc: "2.0", id: m.id, result });
+      const reply = m.method === "tools/call" && opts.callReply ? opts.callReply(m) : JSON.stringify({ jsonrpc: "2.0", id: m.id, result });
       if (mode === "sse" && m.method === "tools/call") {
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no" });
         const progress = JSON.stringify({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "p1", progress: 1, total: 2 } });
@@ -71,7 +79,8 @@ export async function startUpstream(opts = {}) {
         step();
         return;
       }
-      res.writeHead(200, { "Content-Type": "application/json" });
+      if (opts.chunked) { res.writeHead(200, { "Content-Type": "application/json", "Transfer-Encoding": "chunked" }); res.write(reply.slice(0, 10)); res.end(reply.slice(10)); return; }
+      res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(reply) });
       res.end(reply);
     });
   });

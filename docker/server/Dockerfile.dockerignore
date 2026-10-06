@@ -11,6 +11,7 @@
 !scripts/accepted-failures.mjs
 !test/redteam/corpus.json
 !mcp-gateway/
+!model-proxy/
 !mcp-proxy/tool-scan.mjs
 !mcp-proxy/tool-baseline.mjs
 !cloud/

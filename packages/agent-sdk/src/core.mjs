@@ -29,6 +29,7 @@ export const serverModeLib = await load("cli/server-mode.mjs");
 export const mcpFileArgs = await load("cli/mcp-file-args.mjs");
 export const secretEgress = await load("cli/secret-egress.mjs");
 export const contentHashLib = await load("cli/content-hash.mjs");
+export const inboundLib = await load("cli/inbound.mjs");
 export const provenance = await load("cli/provenance.mjs");
 export const captureTiers = await load("data/capture-tiers.js");
 export const modelEndpoints = await load("data/model-endpoints.js");

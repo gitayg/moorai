@@ -4,8 +4,10 @@
 // finding when a flag turns on (server/coverage.js in the console repo).
 //
 // What leaves the device: host ids, flag names, scope names from a fixed vocabulary ("user",
-// "project", "local", "managed", "system", "profile", "session"), a hook state word, and an
-// hour-rounded last-used timestamp. Never a path, a file's contents, a setting's value beyond the
+// "project", "local", "managed", "system", "profile", "session"), a hook state word, an
+// hour-rounded last-used timestamp, the host's version (digits, dots and a short build suffix only,
+// or null) and whether that version is the one data/host-versions.json says the adapter was tested
+// against (cli/agent-hooks/host-version.mjs). Never a path, a file's contents, a setting's value beyond the
 // enumerated weak values, a project name or a session id.
 //
 // Hook registration reuses cli/doctor-hosts.mjs (hostTable, checkHost, checkManaged), so "registered"
@@ -45,6 +47,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import { hostTable, readJson, checkHost, checkManaged, readManagedSettings, diffSurface } from "./doctor-hosts.mjs";
+import { hostVersion } from "./agent-hooks/host-version.mjs";
 
 export const POSTURE_VERSION = 1;
 // Every flag the module can emit. The console accepts only these names.
@@ -207,7 +210,9 @@ const SETTINGS = { "claude-code": claudeFlags, codex: codexFlags, gemini: gemini
 
 // The whole posture. `caller` is the host whose hook is asking (always reported: it is running), and
 // `permissionMode` that hook's permission_mode (Claude Code only).
-export function agentPosture({ home = os.homedir(), env = process.env, cwd = null, caller = "", permissionMode = "", managedSources, systemFiles = {}, hookCheck = true } = {}) {
+// `versions` turns on host-version detection (env for the caller, then a cached PATH probe that may run
+// `<bin> --version` once); `stateDir` holds that cache.
+export function agentPosture({ home = os.homedir(), env = process.env, cwd = null, caller = "", permissionMode = "", managedSources, systemFiles = {}, hookCheck = true, versions = true, stateDir = join(home, ".moorai") } = {}) {
   const sources = managedSources ?? readManagedSettings();
   const managed = checkManaged(sources);
   const hosts = [];
@@ -220,7 +225,9 @@ export function agentPosture({ home = os.homedir(), env = process.env, cwd = nul
     for (const k of Object.keys(flags)) flags[k].sort();
     const last = lastActive(h.id, { home, env });
     if (!present && !last) continue; // host not on this device
-    hosts.push({ host: h.id, present, hook, lastActive: last, flags });
+    let v = { version: null, tested: false };
+    if (versions) { try { v = hostVersion(h.id, { caller, env, stateDir }); } catch { /* report-only: unknown */ } }
+    hosts.push({ host: h.id, present, hook, lastActive: last, flags, version: v.version, tested: v.tested });
   }
   return { v: POSTURE_VERSION, hosts };
 }

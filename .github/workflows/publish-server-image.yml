@@ -44,7 +44,7 @@ jobs:
           # Set explicitly: metadata-action otherwise copies the repository description into the labels.
           labels: |
             org.opencontainers.image.title=MoorAI server
-            org.opencontainers.image.description=MoorAI engine as a sidecar: moorai-serve (localhost HTTP decision API for agent loops) and moorai-mcp-gateway (guard for remote MCP servers). MIT.
+            org.opencontainers.image.description=MoorAI engine as a sidecar: moorai-serve (localhost HTTP decision API for agent loops), moorai-mcp-gateway (guard for remote MCP servers) and moorai-model-proxy (guard between an agent and its model provider). MIT.
             org.opencontainers.image.licenses=MIT
 
       - uses: docker/build-push-action@v6

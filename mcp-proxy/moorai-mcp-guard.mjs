@@ -58,7 +58,8 @@ import { fileURLToPath } from "node:url";
 import os from "node:os";
 import { loadConfig } from "../cli/config.mjs";
 import { buildEngine, mcpGateway, decideText, literacyTouchpoint, loadVerifiedPolicy, ratchetPosture, isEnrolled, enforcementAllowed, coachMessage, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "../cli/hook-core.mjs";
-import { CAPS, toolsOfResponse, toolScanText, toolIdentity, resultOfResponse, resultScanText } from "./tool-scan.mjs";
+import { CAPS, toolsOfResponse, toolScanText, toolIdentity, resultOfResponse } from "./tool-scan.mjs";
+import { decideInbound, inboundText } from "../cli/inbound.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "./tool-baseline.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { applyCaptureTier } from "../data/capture-tiers.js";
@@ -664,10 +665,12 @@ async function scanResult(result) {
     if (!winSaid) { winSaid = true; reportOnce("Result scanning throttled (overload window)", "result:budget:throttled", "Info"); }
     return null;
   }
-  const text = resultScanText(result);
+  const text = inboundText(result);
   if (!text) return null;
   const t0 = Date.now();
-  const d = decideText(ENGINE, POLICY, text, "file");
+  // The inbound rules (cli/inbound.mjs) at this surface's "file" stage: action and output-only threats
+  // dropped, data-class findings at Info — the same resolution the hook and the SDK give a result.
+  const d = decideInbound(ENGINE, POLICY, text, { surface: "door", stage: "file" });
   winSpent += Date.now() - t0;
   return d;
 }

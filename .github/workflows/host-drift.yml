@@ -1,0 +1,188 @@
+name: host-drift
+
+# Keeps MoorAI's hook adapters honest about the hosts they hook into. Nightly, each host's LATEST
+# release is installed fresh and scripts/host-drift.mjs compares it with the version its adapter was
+# tested against (data/host-versions.json), runs that adapter's conformance tests, and runs the host's
+# no-model smoke check (Codex: published hook schemas; Gemini: MoorAI's settings against the published
+# settings schema; Cursor: hook events in the installed bundle; Claude Code: one headless start against
+# a dead model endpoint to see MoorAI's registration load and AI_AGENT still carry the version).
+#
+# One GitHub issue per host, deduplicated by exact title "Host drift: <host>": opened when the latest
+# version differs from the tested one or a check fails, updated in place on later nights. Bumping
+# `tested` in data/host-versions.json (after the checks pass) is what makes a host quiet again; the
+# issue is then closed by hand.
+#
+# OPTIONAL LIVE TIER (job `live`): one real agent turn per host, only when that host's API key secret
+# exists. With no secret the job logs "skipped" and succeeds. It makes a real, billed model call.
+
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: host-drift
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Install commands are the hosts' own documented ones (sources in the report that added this
+          # file): npm for Claude Code, Codex, Copilot CLI and Gemini CLI; Cursor's install script.
+          - host: claude-code
+            install: npm install -g @anthropic-ai/claude-code@latest
+          - host: codex
+            install: npm install -g @openai/codex@latest
+          - host: copilot
+            install: npm install -g @github/copilot@latest
+          - host: gemini
+            install: npm install -g @google/gemini-cli@latest
+          - host: cursor
+            install: curl https://cursor.com/install -fsS | bash
+    env:
+      HOST: ${{ matrix.host }}
+      DISABLE_AUTOUPDATER: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install latest ${{ matrix.host }}
+        run: |
+          set -euo pipefail
+          ${{ matrix.install }}
+          # Cursor's script installs into ~/.local/bin; npm's global bin is already on PATH.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Drift check
+        id: drift
+        continue-on-error: true
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node scripts/host-drift.mjs --host "$HOST" --latest --out "drift-$HOST.json" --issue-body issue-body.md --run-url "$RUN_URL"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: host-drift-${{ matrix.host }}
+          path: drift-${{ matrix.host }}.json
+          if-no-files-found: warn
+
+      - name: Open or update this host's drift issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          report="drift-$HOST.json"
+          if [ -s "$report" ] && [ -s issue-body.md ]; then
+            attention=$(jq -r '.hosts[0].attention' "$report")
+          else
+            # The install (or the script itself) failed before a report existed: a renamed package or a
+            # broken installer is drift too.
+            attention=true
+            printf 'Nightly host-drift check for **%s** could not produce a report: installing the latest release or running scripts/host-drift.mjs failed. See %s\n' "$HOST" "$RUN_URL" > issue-body.md
+          fi
+          if [ "$attention" != "true" ]; then
+            echo "$HOST: on the tested version and every check passed; no issue."
+            exit 0
+          fi
+          title="Host drift: $HOST"
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number,title --limit 50 \
+            | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file issue-body.md
+            echo "updated #$number"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file issue-body.md
+          fi
+
+      # The drift step is continue-on-error so the report and issue steps always run; this re-raises
+      # its failure so a failed check still shows as a red job.
+      - name: Fail on failed checks
+        if: steps.drift.outcome == 'failure'
+        run: |
+          echo "::error::host-drift checks failed for $HOST (see the report artifact / issue)"
+          exit 1
+
+  # No Codex entry: Codex runs user-layer hooks only after the user trusts them in its own hook review,
+  # which MoorAI does not forge, so a fresh CI home would never run MoorAI's hook.
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: claude-code
+            install: npm install -g @anthropic-ai/claude-code@latest
+            secret: ANTHROPIC_API_KEY
+          - host: copilot
+            install: npm install -g @github/copilot@latest
+            secret: COPILOT_GITHUB_TOKEN
+          - host: gemini
+            install: npm install -g @google/gemini-cli@latest
+            secret: GEMINI_API_KEY
+          - host: cursor
+            install: curl https://cursor.com/install -fsS | bash
+            secret: CURSOR_API_KEY
+    env:
+      HOST: ${{ matrix.host }}
+      DISABLE_AUTOUPDATER: "1"
+      # secrets[...] of a secret that does not exist is the empty string, which the gate step reads as
+      # "skip". No secret is required for this workflow to pass.
+      LIVE_KEY: ${{ secrets[matrix.secret] }}
+    steps:
+      - name: Gate on ${{ matrix.secret }}
+        id: gate
+        run: |
+          if [ -z "$LIVE_KEY" ]; then
+            echo "skipped: secret ${{ matrix.secret }} is not set, so no live turn for $HOST"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v5
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install latest ${{ matrix.host }}
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          ${{ matrix.install }}
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # env keys cannot be expressions, so the key is exported under the host's own variable name here.
+      - name: One live agent turn
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          export ${{ matrix.secret }}="$LIVE_KEY"
+          node scripts/host-drift.mjs --host "$HOST" --skip-tests --offline --live --out "live-$HOST.json"
+
+      - name: Upload live report
+        if: always() && steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: host-drift-live-${{ matrix.host }}
+          path: live-${{ matrix.host }}.json

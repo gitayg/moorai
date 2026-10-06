@@ -17,7 +17,7 @@
 //   * enforcement without a token — server mode is management evidence; this surface never coaches.
 import { readFileSync } from "node:fs";
 import os from "node:os";
-import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault } from "./core.mjs";
+import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib } from "./core.mjs";
 import { decideToolCall } from "./decide.mjs";
 import { createReporter } from "./report.mjs";
 
@@ -26,6 +26,7 @@ const { resolveServerMode, systemConfigPath, settleHeadlessAsk, serviceWho, norm
 const { hashWithKey, deriveKey } = contentHashLib;
 const { policyIdOf, REASON } = provenance;
 const { OFFLINE_DEFAULT_POLICY } = offlineDefault;
+const { decideInbound, surfaceOf, inboundText } = inboundLib;
 
 // The hook's NO_POLICY_BASELINE, byte for byte: no threat configuration, so threatActionFor falls through
 // to BUILTIN_DEFAULT_ACTIONS (cli/moorai-hook.mjs explains why this differs from the offline default).
@@ -121,13 +122,22 @@ export async function createMoorAI(options = {}) {
   // category"), safer alternatives (static hints from data/threats.json). The text is never returned.
   // meta (callers inside this package): { event, tool, settle } — the event the alert is filed under, the
   // tool label, and whether the headless rule applies (false for a PostToolUse observation).
+  // ctx.inbound: the text arrived INTO the agent (a tool result, a fetched page), so it is resolved under
+  // the inbound rules every inbound surface shares (cli/inbound.mjs) — the web rule set for WebFetch /
+  // WebSearch (ctx.tool or meta.tool), the door rule set for anything else — and its JSON escapes are
+  // decoded as every inbound surface decodes them, unless the caller already did (meta.decoded: the SDK's
+  // PostToolUse and moorai-serve pass text from inboundText; the model proxy passes its blocks' text).
   async function scan(text, stage = "prompt", ctx = {}, meta = {}) {
     if (!STAGES.includes(stage)) throw new RangeError(`stage must be one of ${STAGES.join(", ")}`);
     const s = await ready();
-    const t = typeof text === "string" ? text : "";
-    const d = decideText(s.engine, s.policy, t, stage, { ctx: ctx && typeof ctx === "object" ? ctx : {} });
-    const findings = d.findings.map((f) => ({ ...f, stage }));
+    const c = ctx && typeof ctx === "object" ? ctx : {};
+    const raw = typeof text === "string" ? text : "";
+    const t = c.inbound === true && meta.decoded !== true ? inboundText(raw, Math.max(1, raw.length)) : raw;
     const tool = typeof meta.tool === "string" ? meta.tool.slice(0, 64) : "scan";
+    const d = c.inbound === true
+      ? decideInbound(s.engine, s.policy, t, { surface: surfaceOf(typeof c.tool === "string" ? c.tool : tool), stage })
+      : decideText(s.engine, s.policy, t, stage, { ctx: c });
+    const findings = d.findings.map((f) => ({ ...f, stage }));
     report(s, findings, { tool, decision: d.decision, event: meta.event || "Scan" });
     const st = meta.settle === false ? { decision: d.decision, headlessAsk: null } : settle(s, { decision: d.decision, reason: d.reasons.join(", ") }, { tool });
     return { decision: st.decision, configuredDecision: d.decision, ...summary(findings), reasons: d.reasons, alternatives: d.alternatives, kill: d.kill, findings: contentFree(findings), ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };

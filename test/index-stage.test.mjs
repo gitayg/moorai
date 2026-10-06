@@ -149,18 +149,19 @@ test("DetectionEngine.scanForIndex is the choke-point and covers the corpus inde
   // request, an AI-addressed block or rendering-hidden steering text would be planted. inj-self-replication
   // (#74) joined for the same reason: a rules file is where a self-copying instruction persists.
   const scoped = DETECTORS.filter((d) => (d.stages || [d.stage]).includes("index")).map((d) => d.detectorId);
+  // ingest-agent-directed (#40) and hidden-zero-width-interleave (#50) joined in v1.4.0: an instruction
+  // addressed to the agent and a word-by-word zero-width interleave are inbound shapes a rules file carries.
   assert.deepEqual(scoped.sort(), [
-    "cloak-ai-audience", "inj-self-replication", "inj-untrusted-directive", "link-assistant-prefill",
+    "cloak-ai-audience", "hidden-zero-width-interleave", "ingest-agent-directed", "inj-self-replication", "inj-untrusted-directive", "link-assistant-prefill",
     "mcp-hidden-canary", "mcp-tool-poisoning", "obf-rendered-hidden", "recon-agent-capabilities"
   ]);
 });
 
 // The headline number, pinned so it cannot rot: how many of the corpus's index-stage attacks are
-// reachable THROUGH THE SHIPPED HOOK, not just through the library API. 4/5 — identical to the
-// library ceiling above, i.e. ZERO wiring loss. (v3-delay-007 is a rules-level miss at both the index
-// and the file stage and was one before this wiring; v3-benign-020 is a rules-level FP at both stages
-// for the same reason. Neither is introduced here.)
-test("E2E: 4 of the 5 corpus index-stage attacks are reachable through the shipped hook", async () => {
+// reachable THROUGH THE SHIPPED HOOK, not just through the library API. 5/5 since v1.4.0: v3-delay-007,
+// a rules-level miss at both the index and the file stage until then, is caught by ingest-agent-directed.
+// v3-benign-020 remains a rules-level FP at both stages; it is not introduced here.
+test("E2E: 5 of the 5 corpus index-stage attacks are reachable through the shipped hook", async () => {
   const attacks = (V3.attacks || []).filter((s) => s.stage === "index");
   let reachable = 0;
   for (const s of attacks) {
@@ -169,7 +170,7 @@ test("E2E: 4 of the 5 corpus index-stage attacks are reachable through the shipp
     if (!hit) hit = (await hookRun(ON, { mcpJson: s.text })).alerts.filter((a) => a.stage === "index").length;
     if (hit) reachable++;
   }
-  assert.equal(reachable, 4, `index-stage attacks reachable end-to-end: ${reachable}/${attacks.length}`);
+  assert.equal(reachable, 5, `index-stage attacks reachable end-to-end: ${reachable}/${attacks.length}`);
 });
 
 // ================================================================================================

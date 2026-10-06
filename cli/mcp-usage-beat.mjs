@@ -1,15 +1,21 @@
 // MCP usage tally — the SENDER side of the console's proxy-vs-hook cross-check.
 //
-// Two surfaces can see an MCP tools/call: the agent hook's mcp__ branch (cli/moorai-hook.mjs, path
-// "hook") and the stdio proxy (mcp-proxy/moorai-mcp-guard.mjs, path "proxy"). Each counts its calls
-// here, per UTC day / path / host / server label, and a COMPLETED day is posted once to
+// Three surfaces can see an MCP tools/call: the agent hook's mcp__ branch (cli/moorai-hook.mjs, path
+// "hook"), the stdio proxy (mcp-proxy/moorai-mcp-guard.mjs, path "proxy") and the HTTP MCP gateway
+// (mcp-gateway/, path "gateway", host always "gateway"). Each counts its calls here, per UTC day / path /
+// host / server label, and a COMPLETED day is posted once to
 //
 //   POST <serverUrl>/api/mcp-usage   (X-Install-Token, as /api/agent-posture)
-//   { user, device, platform, actor?, day: "YYYY-MM-DD", path: "hook"|"proxy", host, servers: [{ label, calls }] }
+//   { user, device, platform, actor?, day: "YYYY-MM-DD", path: "hook"|"proxy"|"gateway", host,
+//     servers: [{ label, calls, tools?: [{ name, calls }], toolsTruncated?: true }] }
 //
 // so the console can compare what each path saw for the same server and day. Content-free: a server
-// label (the same string alerts carry as mcpServer) and a count. No tool name and no argument is ever
-// accepted by recordMcpCall, so neither can reach the file or the post.
+// label (the same string alerts carry as mcpServer), a count, and — only on the paths in TOOL_PATHS
+// (the gateway today; CONTRACT C4) — the MCP tool NAME as called with its own count. A tool name is
+// accepted only if it matches TOOL_NAME_RE; arguments and results are never accepted by recordMcpCall,
+// so neither can reach the file or the post. On the hook and proxy paths a tool name passed in is
+// ignored, exactly as before. At most MAX_TOOLS tools per server go in a post (the busiest), with
+// `toolsTruncated: true` when more were seen; at most MAX_TOOLS_STORED are kept per server and day.
 //
 // WHY COMPLETED DAYS ONLY. A day's tally is posted once, after the day is over (day < today, UTC), so
 // each (device, day, path, host) is sent exactly once and the console never has to decide whether a
@@ -24,7 +30,8 @@
 // hook hands it to a detached worker (scheduleMcpUsageFlush), the proxy runs it off its stdio path.
 //
 // Files (STATE_DIR = ~/.moorai, all 0600):
-//   mcp-usage.json                          { v, days: { day: { "path|host": { label: calls } } } }
+//   mcp-usage.json                          { v, days: { day: { "path|host": { label: calls } } },
+//                                             tools: { day: { "path|host": { label: { c: { name: calls }, x?: 1 } } } } }
 //   mcp-usage-<path>-<host>.sent.json       { day }  the last day posted for that path/host
 //   mcp-usage-<path>-<host>.lock            claim time (ms); present = a post is pending or failed
 //
@@ -40,8 +47,15 @@ import { serverMode, serviceWho } from "./server-mode.mjs";
 import { actorHash } from "./content-hash.mjs";
 import { loadConfig } from "./config.mjs";
 
-export const USAGE_PATHS = ["hook", "proxy"];
+export const USAGE_PATHS = ["hook", "proxy", "gateway"];
 export const USAGE_HOSTS = ["claude-code", "codex", "cursor", "gemini", "copilot", "claude-desktop", "vscode", "unknown"];
+// The gateway is its own host: it is not inside any one MCP client (CONTRACT C4: host "gateway").
+export const GATEWAY_HOST = "gateway";
+// The paths whose tally carries per-tool counts. The hook and the proxy may join later (C4).
+export const TOOL_PATHS = ["gateway"];
+export const TOOL_NAME_RE = /^[A-Za-z0-9_.:\/-]{1,128}$/;
+export const MAX_TOOLS = 64;
+export const MAX_TOOLS_STORED = 256;
 export const MAX_SERVERS = 64;
 export const MAX_LABEL = 64;
 export const MAX_DAYS = 14;
@@ -57,6 +71,10 @@ const sentFile = (dir, path, host) => join(dir, `mcp-usage-${path}-${host}.sent.
 const lockFile = (dir, path, host) => join(dir, `mcp-usage-${path}-${host}.lock`);
 
 export function usageHost(v) { return USAGE_HOSTS.includes(v) ? v : "unknown"; }
+// The host a path reports: the gateway path always reports "gateway"; the others the client vocabulary.
+export function hostForPath(path, v) { return path === "gateway" ? GATEWAY_HOST : usageHost(v); }
+const validKey = (path, host) => USAGE_PATHS.includes(path) && (path === "gateway" ? host === GATEWAY_HOST : USAGE_HOSTS.includes(host));
+export function validToolName(v) { return typeof v === "string" && TOOL_NAME_RE.test(v); }
 export function sanitizeLabel(v) {
   return typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, MAX_LABEL) : "";
 }
@@ -65,14 +83,15 @@ export function sanitizeLabel(v) {
 // a key like any other and a hand-edited or corrupt file can only shrink to valid entries.
 export function readTally(dir = STATE_DIR) {
   const days = Object.create(null);
+  const tools = Object.create(null);
   let raw;
-  try { raw = JSON.parse(readFileSync(join(dir, TALLY_FILE), "utf8")); } catch { return { v: 1, days }; }
+  try { raw = JSON.parse(readFileSync(join(dir, TALLY_FILE), "utf8")); } catch { return { v: 1, days, tools }; }
   const src = raw && typeof raw.days === "object" && raw.days ? raw.days : {};
   for (const day of Object.keys(src)) {
     if (!DAY_RE.test(day) || !src[day] || typeof src[day] !== "object") continue;
     for (const key of Object.keys(src[day])) {
       const [path, host, extra] = key.split("|");
-      if (extra !== undefined || !USAGE_PATHS.includes(path) || !USAGE_HOSTS.includes(host)) continue;
+      if (extra !== undefined || !validKey(path, host)) continue;
       const m = src[day][key];
       if (!m || typeof m !== "object") continue;
       for (const label of Object.keys(m).slice(0, MAX_SERVERS)) {
@@ -82,7 +101,34 @@ export function readTally(dir = STATE_DIR) {
       }
     }
   }
-  return { v: 1, days };
+  // Per-tool counts: only for a day/key/label the server tally holds, only on a TOOL_PATHS key, only
+  // names that pass TOOL_NAME_RE, at most MAX_TOOLS_STORED per server.
+  const tsrc = raw && typeof raw.tools === "object" && raw.tools ? raw.tools : {};
+  for (const day of Object.keys(tsrc)) {
+    if (!days[day] || !tsrc[day] || typeof tsrc[day] !== "object") continue;
+    for (const key of Object.keys(tsrc[day])) {
+      if (!days[day][key] || !TOOL_PATHS.includes(key.split("|")[0])) continue;
+      const bySrv = tsrc[day][key];
+      if (!bySrv || typeof bySrv !== "object") continue;
+      for (const label of Object.keys(bySrv)) {
+        if (days[day][key][label] === undefined) continue;
+        const e = bySrv[label];
+        if (!e || typeof e !== "object" || !e.c || typeof e.c !== "object") continue;
+        const c = Object.create(null);
+        let k = 0;
+        for (const name of Object.keys(e.c)) {
+          const n = e.c[name];
+          if (!validToolName(name) || !Number.isInteger(n) || n < 1) continue;
+          if (k >= MAX_TOOLS_STORED) break;
+          c[name] = Math.min(n, MAX_CALLS); k++;
+        }
+        const entry = { c };
+        if (e.x === 1 || Object.keys(e.c).length > MAX_TOOLS_STORED) entry.x = 1;
+        ((tools[day] ||= Object.create(null))[key] ||= Object.create(null))[label] = entry;
+      }
+    }
+  }
+  return { v: 1, days, tools };
 }
 
 function writeAtomic(file, text) {
@@ -91,20 +137,28 @@ function writeAtomic(file, text) {
   try { renameSync(tmp, file); } catch (e) { try { unlinkSync(tmp); } catch { /* gone */ } throw e; }
 }
 
-// One call seen. Synchronous, cheap, and never throws. Extra fields (a tool name, arguments) are
-// ignored by construction. → true when counted.
-export function recordMcpCall({ path, host, label } = {}, { dir = STATE_DIR, now = Date.now() } = {}) {
+// One call seen. Synchronous, cheap, and never throws. Extra fields (arguments, results) are ignored by
+// construction; `tool` (the MCP tool name) is counted only on a TOOL_PATHS path and only when it passes
+// TOOL_NAME_RE — elsewhere it is ignored, as it always was. → true when the server call was counted.
+export function recordMcpCall({ path, host, label, tool } = {}, { dir = STATE_DIR, now = Date.now() } = {}) {
   try {
     if (!USAGE_PATHS.includes(path)) return false;
     const l = sanitizeLabel(label);
     if (!l) return false;
-    const key = keyOf(path, usageHost(host));
+    const key = keyOf(path, hostForPath(path, host));
     const day = dayOf(now);
     const tally = readTally(dir);
     const m = ((tally.days[day] ||= Object.create(null))[key] ||= Object.create(null));
     if (m[l] === undefined && Object.keys(m).length >= MAX_SERVERS) return false;
     m[l] = Math.min((m[l] || 0) + 1, MAX_CALLS);
+    if (TOOL_PATHS.includes(path) && validToolName(tool)) {
+      const e = (((tally.tools[day] ||= Object.create(null))[key] ||= Object.create(null))[l] ||= { c: Object.create(null) });
+      if (e.c[tool] !== undefined || Object.keys(e.c).length < MAX_TOOLS_STORED) e.c[tool] = Math.min((e.c[tool] || 0) + 1, MAX_CALLS);
+      else e.x = 1;
+    }
     for (const old of Object.keys(tally.days).sort().reverse().slice(MAX_DAYS)) delete tally.days[old];
+    for (const old of Object.keys(tally.tools)) if (!tally.days[old]) delete tally.tools[old];
+    if (!Object.keys(tally.tools).length) delete tally.tools;
     mkdirSync(dir, { recursive: true });
     writeAtomic(join(dir, TALLY_FILE), JSON.stringify(tally));
     return true;
@@ -116,7 +170,8 @@ function readSent(dir, path, host) {
 }
 
 // The completed, not-yet-posted days for one path/host, oldest first, each with its servers ranked
-// busiest first and capped at MAX_SERVERS.
+// busiest first and capped at MAX_SERVERS. A server with per-tool counts carries `tools` (busiest
+// first, then by name; at most MAX_TOOLS) and `toolsTruncated: true` when any were left out.
 export function dueDays({ path, host }, { dir = STATE_DIR, now = Date.now() } = {}) {
   const key = keyOf(path, host);
   const today = dayOf(now);
@@ -127,9 +182,18 @@ export function dueDays({ path, host }, { dir = STATE_DIR, now = Date.now() } = 
     if (day >= today || (sent && day <= sent)) continue;
     const m = tally.days[day][key];
     if (!m) continue;
+    const tm = tally.tools[day] && tally.tools[day][key];
     const servers = Object.keys(m).map((label) => ({ label, calls: m[label] }))
       .sort((a, b) => b.calls - a.calls || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0))
-      .slice(0, MAX_SERVERS);
+      .slice(0, MAX_SERVERS)
+      .map((s) => {
+        const e = tm && tm[s.label];
+        if (!e) return s;
+        const all = Object.keys(e.c).map((name) => ({ name, calls: e.c[name] }))
+          .sort((a, b) => b.calls - a.calls || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        if (!all.length) return s;
+        return { ...s, tools: all.slice(0, MAX_TOOLS), ...(all.length > MAX_TOOLS || e.x === 1 ? { toolsTruncated: true } : {}) };
+      });
     if (servers.length) out.push({ day, servers });
   }
   return out;
@@ -173,8 +237,8 @@ export function usageBody({ identity = {}, day, path, host, servers }) {
 export async function flushMcpUsage({ config, identity, path, host, dir = STATE_DIR, now = Date.now(), fetchImpl = fetch, claimed = false, timeoutMs = 5000 } = {}) {
   const res = { posted: [], failed: false, skipped: "" };
   try {
-    if (!isEnrolled(config)) { if (claimed && path) release(dir, path, usageHost(host)); res.skipped = "unenrolled"; return res; }
-    const targets = path ? [{ path, host: usageHost(host) }] : keysIn(dir);
+    if (!isEnrolled(config)) { if (claimed && path) release(dir, path, hostForPath(path, host)); res.skipped = "unenrolled"; return res; }
+    const targets = path ? [{ path, host: hostForPath(path, host) }] : keysIn(dir);
     for (const t of targets) {
       if (!USAGE_PATHS.includes(t.path)) continue;
       const due = dueDays(t, { dir, now });
@@ -206,7 +270,7 @@ export async function flushMcpUsage({ config, identity, path, host, dir = STATE_
 // spawn, so a burst of tool calls cannot spawn a burst of workers.
 export function scheduleMcpUsageFlush({ config, path, host, dir = STATE_DIR, now = Date.now() } = {}) {
   try {
-    const h = usageHost(host);
+    const h = hostForPath(path, host);
     if (!isEnrolled(config) || !USAGE_PATHS.includes(path)) return false;
     if (!dueDays({ path, host: h }, { dir, now }).length) return false;
     if (!claim(dir, path, h, now)) return false;

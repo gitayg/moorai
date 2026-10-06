@@ -1,0 +1,111 @@
+{
+  "v": 1,
+  "_comment": "Single source of truth for the host version each MoorAI hook adapter was last verified against. Read by cli/agent-hooks/host-version.mjs (posture report: tested true|false) and scripts/host-drift.mjs (nightly drift job, .github/workflows/host-drift.yml). Bump `tested` only after the host's adapter conformance tests and smoke checks pass on that version.",
+  "hosts": {
+    "claude-code": {
+      "label": "Claude Code",
+      "tested": "2.1.284",
+      "verifiedAgainst": "native build 2.1.284 (hook env + input schema read from the binary, 2026-10-06)",
+      "bin": "claude",
+      "npm": "@anthropic-ai/claude-code",
+      "adapter": "cli/moorai-hook.mjs",
+      "tests": [
+        "test/agent-posture-beat.test.mjs",
+        "test/hook-tool-coverage.test.mjs"
+      ],
+      "live": {
+        "args": [
+          "-p",
+          "{prompt}",
+          "--allowedTools",
+          "Bash",
+          "--max-turns",
+          "3"
+        ],
+        "env": [
+          "ANTHROPIC_API_KEY"
+        ],
+        "source": "code.claude.com/docs/en/cli-reference (-p, --allowedTools, --max-turns)"
+      }
+    },
+    "codex": {
+      "label": "OpenAI Codex CLI",
+      "tested": "0.154.0",
+      "verifiedAgainst": "github.com/openai/codex tag rust-v0.154.0",
+      "tagPrefix": "rust-v",
+      "bin": "codex",
+      "npm": "@openai/codex",
+      "adapter": "cli/agent-hooks/codex.mjs",
+      "tests": [
+        "test/agent-hook-codex.test.mjs"
+      ],
+      "liveNote": "no live tier: Codex runs user-layer hooks only after the user trusts them in its hook review (cli/agent-hooks/codex.mjs), which MoorAI deliberately does not forge"
+    },
+    "copilot": {
+      "label": "GitHub Copilot CLI",
+      "tested": "1.0.63",
+      "verifiedAgainst": "@github/copilot 1.0.63 JS bundle + docs.github.com/en/copilot/reference/hooks-configuration",
+      "bin": "copilot",
+      "npm": "@github/copilot",
+      "adapter": "cli/agent-hooks/copilot.mjs",
+      "tests": [
+        "test/agent-hook-copilot.test.mjs"
+      ],
+      "live": {
+        "args": [
+          "-p",
+          "{prompt}",
+          "--allow-all-tools"
+        ],
+        "env": [
+          "COPILOT_GITHUB_TOKEN"
+        ],
+        "source": "docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference (-p, --allow-all-tools; COPILOT_GITHUB_TOKEN)"
+      }
+    },
+    "cursor": {
+      "label": "Cursor (cursor-agent CLI)",
+      "tested": "2026.05.27-fe9a6e2",
+      "verifiedAgainst": "cursor-agent 2026.05.27-fe9a6e2 bundle (3880.index.js) + cursor.com/docs/hooks.md",
+      "bin": "cursor-agent",
+      "adapter": "cli/agent-hooks/cursor.mjs",
+      "tests": [
+        "test/agent-hook-cursor.test.mjs",
+        "test/hook-gaps-cursor-shell.test.mjs"
+      ],
+      "live": {
+        "args": [
+          "-p",
+          "{prompt}",
+          "--force"
+        ],
+        "env": [
+          "CURSOR_API_KEY"
+        ],
+        "source": "cursor.com/docs/cli/reference/parameters (-p/--print, -f/--force, CURSOR_API_KEY)"
+      }
+    },
+    "gemini": {
+      "label": "Gemini CLI",
+      "tested": "0.60.0",
+      "verifiedAgainst": "@google/gemini-cli 0.60.0 source",
+      "bin": "gemini",
+      "npm": "@google/gemini-cli",
+      "adapter": "cli/agent-hooks/gemini.mjs",
+      "tests": [
+        "test/agent-hook-gemini.test.mjs"
+      ],
+      "live": {
+        "args": [
+          "-p",
+          "{prompt}",
+          "--yolo"
+        ],
+        "env": [
+          "GEMINI_API_KEY"
+        ],
+        "source": "gemini-cli v0.63.0 docs/cli/headless.md (-p), packages/cli/src/config/config.ts (--yolo), README (GEMINI_API_KEY)"
+      }
+    }
+  }
+}

@@ -48,6 +48,7 @@ out.foreignHostStatus = await foreignHost();
 await sleep(1500);
 out.consoleAlerts = alerts.map((a) => ({ threatId: a.threatId, category: a.category, riskLevel: a.riskLevel, surface: a.surface, device: a.device, workload: a.workload }));
 process.stdout.write(JSON.stringify(out, null, 2) + "\n");
-consoleServer.close();
 const ok = shell.decision === "deny" && (shell.threatIds || []).includes(54) && (inj.categories || []).includes("Prompt Injection") && out.foreignHostStatus === 421 && benign.decision === "allow";
-process.exit(ok ? 0 : 1);
+// DEMO_KEEP_ALIVE=1 keeps the process (and its console) running, so a Kubernetes container does not restart.
+if (process.env.DEMO_KEEP_ALIVE === "1") process.on("SIGTERM", () => process.exit(ok ? 0 : 1));
+else { consoleServer.close(); process.exit(ok ? 0 : 1); }

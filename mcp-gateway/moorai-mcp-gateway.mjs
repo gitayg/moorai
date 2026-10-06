@@ -13,6 +13,7 @@ if (cfg.help) { process.stdout.write(USAGE + "\n"); process.exit(0); }
 // Imported after the config is valid: these load the device config and policy state.
 const { createGatewayServer } = await import("./server.mjs");
 const { ensurePolicy } = await import("./policy.mjs");
+const { startUsageFlush } = await import("./usage.mjs");
 
 const server = createGatewayServer(cfg);
 server.on("error", (e) => { process.stderr.write(`moorai-mcp-gateway: ${e.code || e.message}\n`); process.exit(1); });
@@ -29,6 +30,8 @@ server.listen(cfg.port, cfg.host, () => {
 // (keyed on the remote URL, offline unless the policy opts in) rides on the same promise.
 ensurePolicy().catch(() => {});
 for (const g of server.guards) g.startReputation();
+// C4: completed days of per-server / per-tool usage go to the console, once each, off the request path.
+startUsageFlush();
 
 const stop = () => { server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 2000).unref(); };
 process.on("SIGTERM", stop);

@@ -13,6 +13,16 @@ import { readFileSync } from "node:fs";
 export const DEFAULT_PORT = 8848;
 export const TOKEN_HEADER = "x-moorai-gateway-token";
 export const MIN_TOKEN_LEN = 16;
+// C5 hardening defaults. 4 MiB: four times the 1 MB the result scan reads (CAPS.maxLineBytes), so every
+// response the scan can cover — and the next tier, forwarded unscanned as before — still passes; past it
+// a response is refused rather than relayed. 0 turns the cap off.
+export const DEFAULT_MAX_RESPONSE_BYTES = 4 * 1048576;
+export const SCHEMA_MODES = ["enforce", "report", "off"];
+// The cool-down is OFF unless configured: on the default loopback bind every local client shares one
+// TCP peer (127.0.0.1), so a client without its own Authorization header would share one key with every
+// other local agent, and one misbehaving (or prompt-injected) agent could lock all of them out. When an
+// operator turns it on, these are the window and duration it gets unless they say otherwise.
+export const COOLDOWN_DEFAULTS = { refusals: 0, windowSeconds: 60, seconds: 120 };
 
 export function isLoopbackHost(h) {
   const s = String(h || "").toLowerCase().replace(/^\[|\]$/g, "");
@@ -54,7 +64,7 @@ function routeFrom(path, spec) {
 // Throws an Error with a user-facing message on anything invalid.
 export function parseConfig(argv, env = process.env, read = (p) => readFileSync(p, "utf8")) {
   let file = {};
-  const flags = { routes: [], allowOrigins: [] };
+  const flags = { routes: [], allowOrigins: [], allowMethods: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => { if (i + 1 >= argv.length) throw new Error(`${a} needs a value`); return argv[++i]; };
@@ -68,6 +78,12 @@ export function parseConfig(argv, env = process.env, read = (p) => readFileSync(
     else if (a === "--allow-origin") flags.allowOrigins.push(next());
     else if (a === "--local-files") flags.localFiles = true;
     else if (a === "--server" || a === "-s") flags.server = next();
+    else if (a === "--max-response-bytes") flags.maxResponseBytes = Number(next());
+    else if (a === "--schema") flags.schemaValidation = next();
+    else if (a === "--allow-method") flags.allowMethods.push(next());
+    else if (a === "--cooldown-refusals") flags.cooldownRefusals = Number(next());
+    else if (a === "--cooldown-window") flags.cooldownWindow = Number(next());
+    else if (a === "--cooldown-seconds") flags.cooldownSeconds = Number(next());
     else if (a === "--help" || a === "-h") return { help: true };
     else throw new Error(`unknown argument '${a}'`);
   }
@@ -106,7 +122,22 @@ export function parseConfig(argv, env = process.env, read = (p) => readFileSync(
   }
 
   const allowOrigins = [...(Array.isArray(file.allowOrigins) ? file.allowOrigins : []), ...flags.allowOrigins].map(String);
-  return { host, port, routes, allowRemote, allowInsecureUpstream, token, allowOrigins };
+
+  const maxResponseBytes = flags.maxResponseBytes != null ? flags.maxResponseBytes : file.maxResponseBytes != null ? Number(file.maxResponseBytes) : DEFAULT_MAX_RESPONSE_BYTES;
+  if (!Number.isInteger(maxResponseBytes) || maxResponseBytes < 0) throw new Error(`invalid max response bytes '${maxResponseBytes}' (a whole number of bytes; 0 = no cap)`);
+  const schemaValidation = String(flags.schemaValidation || file.schemaValidation || "enforce");
+  if (!SCHEMA_MODES.includes(schemaValidation)) throw new Error(`--schema must be one of ${SCHEMA_MODES.join(", ")}`);
+  const methods = [...(Array.isArray(file.allowedMethods) ? file.allowedMethods : []), ...flags.allowMethods].map(String);
+  const allowedMethods = methods.length ? methods : null;
+  const fc = file.cooldown && typeof file.cooldown === "object" ? file.cooldown : {};
+  const num = (f, j, d) => (f != null ? f : j != null ? Number(j) : d);
+  const cooldown = {
+    refusals: num(flags.cooldownRefusals, fc.refusals, COOLDOWN_DEFAULTS.refusals),
+    windowSeconds: num(flags.cooldownWindow, fc.windowSeconds, COOLDOWN_DEFAULTS.windowSeconds),
+    seconds: num(flags.cooldownSeconds, fc.seconds, COOLDOWN_DEFAULTS.seconds)
+  };
+  for (const [k, v] of Object.entries(cooldown)) if (!Number.isInteger(v) || v < 0 || v > 86400) throw new Error(`invalid cooldown ${k} '${v}' (a whole number, 0-86400)`);
+  return { host, port, routes, allowRemote, allowInsecureUpstream, token, allowOrigins, maxResponseBytes, schemaValidation, allowedMethods, cooldown };
 }
 
 // What an upstream URL is safe to print: origin + path. Never the query string (some servers take an API
@@ -122,7 +153,9 @@ export const USAGE = `usage: moorai-mcp-gateway --route /name=https://remote.exa
                              label (allow-list, alerts) is the path's name unless --server is given
   --server <label>           label for a single --route
   --config <file>            JSON: { "host", "port", "routes": { "/path": { "url", "server",
-                             "localFiles", "roots" } }, "allowOrigins": [] }
+                             "localFiles", "roots" } }, "allowOrigins": [], "maxResponseBytes",
+                             "schemaValidation", "allowedMethods": [], "cooldown": { "refusals",
+                             "windowSeconds", "seconds" } }
   --host <addr>              bind address (default 127.0.0.1)
   --port <n>                 port (default ${DEFAULT_PORT}; 0 = any free port)
   --allow-remote             permit a non-loopback bind; requires a gateway token
@@ -131,4 +164,14 @@ export const USAGE = `usage: moorai-mcp-gateway --route /name=https://remote.exa
   --local-files              scan local files named in tool arguments (only when the gateway runs on
                              the same machine as those files)
   --allow-origin <origin>    accept a browser Origin besides loopback ones (repeatable)
-  --allow-insecure-upstream  permit plain http:// to a non-loopback upstream`;
+  --allow-insecure-upstream  permit plain http:// to a non-loopback upstream
+  --max-response-bytes <n>   refuse an upstream JSON response, or one SSE event, larger than n bytes
+                             (default ${DEFAULT_MAX_RESPONSE_BYTES}; 0 = no cap)
+  --schema <mode>            JSON-RPC / MCP message validation: enforce (default: refuse an invalid
+                             client message, replace an invalid tools/call result), report, off
+  --allow-method <method>    only these client request methods are forwarded (repeatable); without
+                             it an unknown method is forwarded and reported
+  --cooldown-refusals <n>    after n refusals of one client within the window, refuse that client for
+                             --cooldown-seconds (default off; window ${COOLDOWN_DEFAULTS.windowSeconds} s, cool-down ${COOLDOWN_DEFAULTS.seconds} s)
+  --cooldown-window <s>      the refusal-counting window in seconds
+  --cooldown-seconds <s>     how long a client is refused once it trips the cool-down`;

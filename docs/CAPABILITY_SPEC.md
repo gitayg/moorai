@@ -122,7 +122,13 @@ to the cloud for its own reasoning.
   serves the same runtime on localhost for other agent loops; both run the hook's engine and policy in
   one long-lived process (server mode, below).
 - **MCP HTTP gateway** — `moorai-mcp-gateway` ([`mcp-gateway/`](../mcp-gateway/README.md)), a local
-  reverse proxy that applies the stdio proxy's checks to remote (Streamable HTTP / SSE) MCP servers.
+  reverse proxy that applies the stdio proxy's checks to remote (Streamable HTTP / SSE) MCP servers, plus
+  staged JSON-RPC / MCP validation, a response size cap, an opt-in per-client cool-down and declared
+  workload profiles, and reports per-server and per-tool daily call counts to the console.
+- **Model proxy** — `moorai-model-proxy` ([`model-proxy/`](../model-proxy/README.md)), a loopback proxy
+  between an agent's model SDK and the provider (Anthropic Messages, OpenAI Chat Completions) that scans
+  what the agent sends and the tool calls the model returns. Report-only by default; `--mode enforce`
+  refuses in the provider's own error shape.
 - **Cloud inventory** — `moorai-cloud-inventory` ([`cloud/`](../cloud/README.md)), a read-only,
   content-free inventory of an AWS account's Amazon Bedrock resources, posted to the console.
 
@@ -152,8 +158,8 @@ Claude Code GitHub Action, an Agent SDK service in a container
 - **Identity**: a workload, not `user@host`. `MOORAI_SERVICE_ID`, else on GitHub Actions
   `github:<repository>:<workflow>:<job>`, else `unnamed`; `service` / `svc:<name>` is hashed into the
   actor as `user@host` is, so one workload keeps one console pseudonym across deploys and runs.
-- **Workload identity on alerts.** Alerts from the hook in server mode, `@moorai/agent-sdk`, `moorai-serve`
-  and `moorai-mcp-gateway` carry an optional `workload` object (`containerId`, `pod`, `namespace`, `node`,
+- **Workload identity on alerts.** Alerts from the hook in server mode, `@moorai/agent-sdk`, `moorai-serve`,
+  `moorai-mcp-gateway` and `moorai-model-proxy` carry an optional `workload` object (`containerId`, `pod`, `namespace`, `node`,
   `pid`) ([`cli/server-mode.mjs`](../cli/server-mode.mjs) `workloadIdentity`). `containerId` is the
   container the verdict is about: a 64-hex id from the container's cgroup name (Docker, containerd, CRI-O,
   podman), else from the source path of the `/etc/hostname`, `/etc/hosts` or `/etc/resolv.conf` bind mount
@@ -162,7 +168,7 @@ Claude Code GitHub Action, an Agent SDK service in a container
   a sidecar sharing the agent's namespace reports the agent's container. `pod` / `namespace` / `node` come
   only from `MOORAI_K8S_POD` / `_NAMESPACE` / `_NODE` and must match `[a-z0-9.-]{1,253}`; a settings file
   setting one is refused like every other `MOORAI_*` name. `pid` is the agent process: the hook's parent
-  pid, or the SDK's own pid in process; the sidecar and the gateway send none. Every field is optional and
+  pid, or the SDK's own pid in process; the sidecar, the gateway and the model proxy send none. Every field is optional and
   dropped on its own when malformed; the hook outside server mode sends none. The console stores these
   infrastructure ids as-is so a SIEM can join MoorAI verdicts with host and container sensor events.
   **Limits.** `containerId` is detected under Docker (cgroup v2, via `mountinfo`) and absent under
@@ -191,21 +197,23 @@ Claude Code GitHub Action, an Agent SDK service in a container
   `/v1/scan` 6.4–11 ms, shell hook process 164–309 ms. **Limits.** Not evaluated in process (listed in
   each result's `notEvaluated`): circuit breaker, session risk, deletion volume, intent alignment,
   learned drift, MCP reputation, escalation, honeytokens, the `mask` rewrite. The SDK's `PostToolUse`
-  observes only and does not apply the hook's inbound gates. Declared workload profiles (17f) are evaluated in
+  observes by default and resolves results under the same inbound rules as the hook
+  ([DETECTION_ENGINE.md](DETECTION_ENGINE.md) §7). Declared workload profiles (17f) are evaluated in
   process. `/v1/tool-call` reads paths on the
   sidecar's own filesystem, so an authenticated client can learn whether a file holds secrets; the
   secret-egress fingerprint cache is filled once per directory in the long-lived process.
 - **Container image.** `ghcr.io/gitayg/moorai-server` ([`docker/server/Dockerfile`](../docker/server/Dockerfile);
   `node:22-slim` plus the npm package's files, about 350 MB, no npm dependencies, uid 1000,
-  `MOORAI_MODE=server`): `moorai-serve` on 127.0.0.1:8790 by default, `moorai-mcp-gateway` as an
-  alternative command. `.github/workflows/publish-server-image.yml` builds it for amd64 and arm64 on each
+  `MOORAI_MODE=server`): `moorai-serve` on 127.0.0.1:8790 by default, `moorai-mcp-gateway` and
+  `moorai-model-proxy` (127.0.0.1:8791; probe it with `MOORAI_HEALTH_PORT=8791`) as alternative commands. `.github/workflows/publish-server-image.yml` builds it for amd64 and arm64 on each
   `v*` tag and fails on a secret file in the image or a root user. It runs in the agent's network
   namespace (a second container in the pod, or compose `network_mode: "service:<agent>"`) with exec
   probes (`node /opt/moorai/docker/healthcheck.mjs`, a loopback GET), because the kubelet's `httpGet` goes to the pod IP and
-  `moorai-serve` answers 421 to a non-loopback `Host`. Kubernetes and compose examples in
-  [`examples/serve/`](../examples/serve/README.md). **Limits.** Built and run on arm64 and the compose demo
-  run end to end; the publish workflow has not run yet, the amd64 build has not been run, and the
-  Kubernetes manifest has been neither schema-validated against a cluster nor run.
+  `moorai-serve` and the model proxy answer 421 to a non-loopback `Host` (the gateway 403). Kubernetes and compose examples in
+  [`examples/serve/`](../examples/serve/README.md). **Limits.** Published for amd64 and arm64 by the
+  workflow (first run: v1.3.0), run on arm64, the compose demo run end to end, and the Kubernetes manifest
+  validated and run on a local cluster (kind, Kubernetes v1.37.0, containerd 2.3.4); the amd64 image has
+  not been run on a host, and CRI-O and managed cloud clusters are unobserved.
 - **Trust anchors from settings files are ignored on every device.** `MOORAI_BREAKGLASS_PUBKEY`,
   `MOORAI_POLICY_PUBKEY`, `MOORAI_OFFLINE_MODE` and the OTLP endpoint set by a user, project or local
   settings file's `env` block do not take effect and are reported (names only); managed settings, the
@@ -247,9 +255,10 @@ and digest, and enum codes — §C 17d), the session summary (`summary` — coun
 (`claimCheck` — a claim-pattern id, an outcome word and counts — §C 17b), the session-risk and
 circuit-breaker signatures (`signature`, `sessionRisk` — rule names, counts, scores, windows — §C 17c), and
 the agent-posture body sent to `POST /api/agent-posture` (host ids, flag names, scope names, a hook-state
-word, an hour-rounded timestamp — §C 17e), the prompt-scan origin (`promptOrigin`, `promptSource` — enum
+word, an hour-rounded timestamp, a host version string and a tested boolean — §C 17e), the prompt-scan origin (`promptOrigin`, `promptSource` — enum
 words — §B3 11h), the MCP usage counts sent to `POST /api/mcp-usage` (a day, a path, a host id, server
-labels and call counts — Coverage & blind spots) and the cloud inventory records (keyed-hash ids, closed-list
+labels and call counts, and from the HTTP gateway MCP tool names with their counts — Coverage & blind
+spots) and the cloud inventory records (keyed-hash ids, closed-list
 statuses, coarse attributes, risk-flag names — Coverage & blind spots). All are names, categories and
 counts, never content. The invariant is asserted empirically rather than
 declared: `test/skill-analysis.test.mjs` and `test/destinations.test.mjs` each plant a unique canary in
@@ -506,10 +515,13 @@ is validated against.
    `PostToolUse` matchers are `WebFetch`, `WebSearch`, `Bash`, `PowerShell`, `Agent`, `Task` and `mcp__.*`; the result
    (first 64 KB) is scanned at the `output` stage as inbound content. The tool has already run: a block
    only adds a reason next to the result, and the model still sees the original output. Default
-   report-only; `ask` becomes advisory `additionalContext`; unenrolled devices coach. On `Bash`/`PowerShell`, MCP and
-   sub-agent results, the action and generated-code threats (#29, #44, #45, #52, #54, #55, #57, #61,
-   #62, #63, #69, #76) are dropped, because `PreToolUse` enforces them when attempted, and the #15/#17
-   gates are narrowed. Sub-agent results are judged on their report only. **Limits.** Output past 64 KB
+   report-only, except an injection finding (#3, #40, #60), which asks; `ask` becomes advisory
+   `additionalContext`; unenrolled devices coach. Results are resolved by `cli/inbound.mjs`, shared with the
+   SDK, `moorai-serve`, the model proxy, the MCP proxy and the gateway: sign-off acts and output- or
+   prompt-only threats are dropped, data-class findings are reported at `Info`, `ingest-agent-directed` (#40)
+   flags an instruction aimed at the agent, and on `Bash`/`PowerShell`, MCP and sub-agent results the
+   generated-code threats (#44, #52, #54, #61, #62, #76) are dropped too and the #15/#17 gates are
+   narrowed. Sub-agent results are judged on their report only. **Limits.** Output past 64 KB
    is unscanned; `cat .env` reports at both `PreToolUse` and `PostToolUse`;
    the Codex, Copilot, Gemini and Cursor adapters forward only web results; recall figures are
    in-sample. [DETECTION_ENGINE.md](DETECTION_ENGINE.md) §6–7.
@@ -595,15 +607,26 @@ is validated against.
 17d. **Verdict provenance** — [`cli/provenance.mjs`](../cli/provenance.mjs) stamps every alert and ledger
     row with `policyId` (`pol:<tenant>:<iat>:<digest12>`, `pol:unsigned:<digest12>`, `builtin-defaults`,
     `offline-fail-closed-default`, `none`, `not-loaded`), `policySource`, `reasonCode` (the branch that
-    decided; enum in the module), `basisCode` when an override decided, and `enforcement`
+    decided; enum in the module, including the MCP gateway's `SCHEMA_INVALID`, `RESPONSE_TOO_LARGE` and
+    `CLIENT_COOLDOWN`), `basisCode` when an override decided, and `enforcement`
     `AS_CONFIGURED` | `STRENGTHENED` | `LIMITED` | `UNEVALUATED`. A control that never ran — bad stdin, a
     hook error, no policy after an error, break-glass, an unsupported tool, an empty result, a size cap —
     is `UNEVALUATED`, never a pass.
 17e. **Coverage integrity, agent side** — [`cli/agent-posture.mjs`](../cli/agent-posture.mjs) (read-only,
     built on `cli/doctor-hosts.mjs`) reports per host — Claude Code, Codex, Gemini, Cursor, Copilot — the
-    hook state, `lastActive` (hour-rounded), and weakened-setting flags: `hooksDisabled`,
-    `mooraiHookDisabled`, `managedHooksOnly`, `bypassPermissionsDefault`, `sessionBypassPermissions`,
-    `approvalNever`, `approvalUnrestricted`, `autoEditDefault`, `sandboxFullAccess`, `sandboxOff`. The hook
+    hook state, `lastActive` (hour-rounded), the host's `version` and whether it is `tested`, and
+    weakened-setting flags: `hooksDisabled`, `mooraiHookDisabled`, `managedHooksOnly`, `bypassPermissionsDefault`, `sessionBypassPermissions`,
+    `approvalNever`, `approvalUnrestricted`, `autoEditDefault`, `sandboxFullAccess`, `sandboxOff`.
+    **Version:** [`cli/agent-hooks/host-version.mjs`](../cli/agent-hooks/host-version.mjs) compares it with
+    [`data/host-versions.json`](../data/host-versions.json); `tested` is true only when the numeric version
+    matches the tested one exactly (a build suffix such as Cursor's `-fe9a6e2` is ignored), so older, newer
+    and unknown versions are all untested. The version
+    comes from the first source that gives one: (1) the calling host's hook env — Claude Code `AI_AGENT` =
+    `claude-code_<v with dashes>_<source>` (undocumented; measured on 2.1.284), Cursor `CURSOR_VERSION` —
+    read only for the host that is calling, because hook env is inherited by child processes; (2) a PATH
+    probe that does not run the binary; (3) one cached `<bin> --version` with a 3-second timeout, run only
+    in the heartbeat worker. None of this runs on the verdict path. The console drops `version` and
+    `tested` on ingest (`sanitizePosture` whitelists host fields) until console v0.73.0, in progress. The hook
     sends a content-free heartbeat with this posture to `POST /api/agent-posture` at most once per host per
     UTC day (retried after 10 minutes on failure); enrolled devices only. The desktop app reports each
     host's last activity hourly (`device_agent_activity`), independent of every hook.
@@ -618,11 +641,13 @@ is validated against.
     config; a repository file, a settings-file `env` block, `~/.moorai/config.json` or the environment
     cannot supply one. Malformed profiles are ignored and reported once a day (the SDK: once per policy
     object). Evaluation never throws; an error allows. The hook, `@moorai/agent-sdk` and `moorai-serve`
-    evaluate the same profile (parity test: 3 cases × 214 payloads, 0 mismatches). **Limits.** A repo match
+    evaluate the same profile (parity test: 3 cases × 214 payloads, 0 mismatches), and so does the HTTP MCP
+    gateway on every `tools/call`, naming the tool `mcp__<route>__<tool>` as the hook does (kinds `tool` and
+    `mcpServer`). **Limits.** A repo match
     follows `.git/config`, which the agent can edit, and a hook `serviceId` taken from
     `~/.moorai/config.json` is agent-writable too; a `serviceId` from the system file or the launching
     environment is the match to rely on for a block. Hosts built at runtime are not seen. `PostToolUse`,
-    prompts and `Stop` are not compared. The HTTP MCP gateway does not evaluate profiles. Tested on macOS
+    prompts and `Stop` are not compared. The HTTP MCP gateway does not compare hosts. Tested on macOS
     only.
 
 ### D. Central server
@@ -727,8 +752,30 @@ before this tier: a tenant can soften any entry to `notify`/`disabled` or harden
   end, and the in-process forms leave the session-level controls unevaluated.
 - **Remote MCP servers** go through the HTTP gateway ([`mcp-gateway/`](../mcp-gateway/README.md)): the
   stdio proxy's call and result checks, a refusal returned as an `isError: true` tool result (HTTP 200),
-  both MCP spec eras' headers passed through, about 10–13 ms added at p50. **Blind spot:** not run with
-  real MCP clients; OAuth discovery through the gateway and its server-mode paths are unproven.
+  both MCP spec eras' headers passed through, staged JSON-RPC / MCP validation (`SCHEMA_INVALID`, refused
+  by default), a 4 MiB response cap (`RESPONSE_TOO_LARGE`), a per-client cool-down (`CLIENT_COOLDOWN`, off
+  by default because loopback clients share one address) and declared workload profiles on `tools/call`
+  (`PROFILE_DRIFT`); about 4.7–5 ms added at p50, 98 tests against a fake upstream and a fake console.
+  Run against a real remote MCP server (an AppCrane MCP endpoint over Streamable HTTP: initialize, tools/list with 62 tools and a read-only tools/call passed through intact; a malformed message and an over-cap response were refused).
+  Real clients (2026-10-06, macOS): Claude Code 2.1.284, cursor-agent, the MCP TypeScript SDK 1.32.1 and the
+  MCP Inspector 2.9.0 completed the handshake and listed tools through the gateway and the stdio proxy,
+  and each showed a gateway method allow-list refusal; with no model, the SDK and the Inspector made a
+  benign `tools/call` (forwarded) and a policy-denied one (refused, never reached the server) through
+  both; three live `claude -p` runs passed (benign through each, denied through the stdio proxy)
+  (`scripts/mcp-client-matrix.mjs`, opt-in `test/mcp-live-client.test.mjs`, `scripts/mcp-live-toolcall.mjs`).
+  **Blind spot:** real clients have been run only against the fake upstream, so a real client and a real
+  remote server in the same run, a session id from a real remote server, OAuth discovery through the
+  gateway, a completed 2026-07-28 session with a real client and a live denied call through the gateway
+  are unproven; so are Claude Desktop, VS Code, Cursor's desktop app, Windows and Linux.
+- **Model calls** go through the model proxy ([`model-proxy/`](../model-proxy/README.md)) when the agent's
+  SDK base URL points at it: prompts and fed-back tool results are scanned, and the tool calls the model
+  returns are decided as the sidecar decides them. Report-only by default (byte-identical pass-through,
+  checks after delivery, about 0 ms added at p50); enforce mode refuses a denied request with a
+  provider-shaped 403, refuses what it could not scan, and withholds a denied tool call.
+  Response-side enforcement (withholding a denied tool call, streaming and non-streaming, Anthropic and OpenAI shapes, including truncated streams, arguments that are not a JSON object and a dropped upstream connection) is tested against a fake provider; it has not been run with the real SDKs or a real provider. In Anthropic streams a tool call is held one block at a time, so an allowed call that comes before a denied one in the same turn has already been released when the turn is refused. **Blind spots:** an SDK that talks HTTPS to the provider directly bypasses
+  it (no TLS interception); only Anthropic Messages and OpenAI Chat Completions are parsed (the Responses
+  API, embeddings, Bedrock and Vertex pass unchecked); assistant turns, images, PDFs, tool definitions and
+  server-side tools are not scanned; not exercised with the real SDKs or a real provider.
 - **Cloud AI platforms.** `moorai-cloud-inventory bedrock` reads an AWS account's Bedrock agents,
   knowledge bases, guardrails, custom models, provisioned throughput, application inference profiles and
   AgentCore runtimes, read-only, with the customer's own AWS CLI, and posts content-free records to the
@@ -739,9 +786,22 @@ before this tier: a tenant can soften any entry to `notify`/`disabled` or harden
   weakened settings, and the desktop app's hourly activity report independent of every hook. **Blind
   spots:** a host disabled after the day's heartbeat shows the next day; a device without the desktop app
   has no hook-independent activity source. The hook and the stdio proxy each post per-day MCP call counts
-  per host and server label (`POST /api/mcp-usage`), and the console compares the two paths, so MCP
+  per host and server label (`POST /api/mcp-usage`; the HTTP gateway posts them too, per tool as well, for
+  the console's MCP map), and the console compares the hook and proxy paths, so MCP
   traffic one path sees and the other does not shows a bypass or a gap; a proxy entry wrapped before the
   installer's `--host` stamp reports host `unknown` until the installer is re-run.
+- **Host format drift.** Each pre-tool hook depends on its host's hook format. `scripts/host-drift.mjs`,
+  run nightly by `.github/workflows/host-drift.yml`, installs each host's latest release, compares it with
+  `data/host-versions.json`, runs the adapter's conformance tests and a no-model smoke check (Codex: the
+  published hook schemas; Gemini: MoorAI's settings against the published settings schema; Cursor: bundle
+  markers; Claude Code: a headless start against a dead model endpoint; Copilot: none, conformance tests
+  only), and opens or updates one issue per host when the version moves or a check fails. At runtime the
+  posture heartbeat reports each host's `version` and `tested` (17e), so a device on an untested host
+  version is visible before a format change is confirmed. The MCP gateway, the stdio proxy and the model
+  proxy depend on no hook format, so MCP and model traffic stay covered while an adapter catches up
+  (README, *Coverage layers*). **Blind spots:** the workflow has not run on GitHub yet; its live tier (one
+  real agent turn per host) skips because no API-key secret exists, and Codex has no live tier; the
+  console shows neither field until console v0.73.0.
 - **Across a session** (17b, 17c): the claim check and the session summary need `Stop`, which only Claude
   Code sends (the other agents' adapters forward no stop event). The claim check, session risk and the
   circuit breaker are report-only by default, and have been driven through the real hook with scripted

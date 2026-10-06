@@ -5,18 +5,32 @@
 // joined with "\n"; a line starting with ":" is a comment. Bounded: an event whose text grows past
 // `maxEventBytes` is declared unscannable — what was buffered is released as raw text and the rest of
 // that event streams straight through until its blank line. Less scanning, never a stuck stream.
+//
+// With `onOverflow` (the gateway's response size cap, C5 RESPONSE_TOO_LARGE) an oversized event is
+// DROPPED instead: nothing of it is released, the rest of it is discarded up to its blank line, and
+// onOverflow({ id }) is called once. Size is counted in UTF-8 bytes for complete lines; an unterminated
+// line is checked by its length in characters (a lower bound), so memory stays within ~3x the cap.
 import { StringDecoder } from "node:string_decoder";
 
-export function createSseFramer({ maxEventBytes, onEvent, onRaw }) {
+export function createSseFramer({ maxEventBytes, onEvent, onRaw, onOverflow = null }) {
   const decoder = new StringDecoder("utf8");
   let pending = "";      // undecided text: an incomplete line
   let evRaw = "";        // the current event's text so far
   let evData = [];       // its data lines
   let evId = null;       // its last `id:` value
+  let evType = null;     // its `event:` value
+  let evBytes = 0;       // its size so far in UTF-8 bytes
   let rawMode = false;   // the current event overflowed: stream it through
+  let dropMode = false;  // the current event overflowed with onOverflow set: discard it
+  const reset = () => { evRaw = ""; evData = []; evId = null; evType = null; evBytes = 0; };
+  function overflow(extra) {
+    if (onOverflow) { const id = evId; reset(); dropMode = true; onOverflow({ id }); }
+    else { onRaw(evRaw + extra); reset(); rawMode = true; }
+  }
 
   function line(text, term) {
     const whole = text + term;
+    if (dropMode) { if (text === "") dropMode = false; return; }
     if (rawMode) {
       onRaw(whole);
       if (text === "") rawMode = false;
@@ -24,23 +38,24 @@ export function createSseFramer({ maxEventBytes, onEvent, onRaw }) {
     }
     if (text === "") {
       evRaw += whole;
-      const ev = { raw: evRaw, data: evData.length ? evData.join("\n") : null, id: evId };
-      evRaw = ""; evData = []; evId = null;
+      const ev = { raw: evRaw, data: evData.length ? evData.join("\n") : null, id: evId, type: evType, bytes: evBytes + term.length };
+      reset();
       onEvent(ev);
       return;
     }
     evRaw += whole;
+    evBytes += Buffer.byteLength(text) + term.length;
     if (text.startsWith("data")) {
       const m = /^data(?::\s?(.*))?$/.exec(text);
       if (m) evData.push(m[1] || "");
     } else if (text.startsWith("id")) {
       const m = /^id(?::\s?(.*))?$/.exec(text);
       if (m) evId = m[1] || "";
+    } else if (text.startsWith("event")) {
+      const m = /^event(?::\s?(.*))?$/.exec(text);
+      if (m) evType = m[1] || "";
     }
-    if (evRaw.length > maxEventBytes) {
-      onRaw(evRaw);
-      evRaw = ""; evData = []; evId = null; rawMode = true;
-    }
+    if (evBytes > maxEventBytes) overflow("");
   }
 
   function drain(final) {
@@ -58,12 +73,14 @@ export function createSseFramer({ maxEventBytes, onEvent, onRaw }) {
       i = end + termLen;
     }
     pending = pending.slice(i);
-    if (!rawMode && evRaw.length + pending.length > maxEventBytes && pending.length) {
+    if (!rawMode && !dropMode && evBytes + pending.length > maxEventBytes && pending.length) {
       // one enormous line with no terminator yet
-      onRaw(evRaw + pending);
-      evRaw = ""; evData = []; evId = null; pending = ""; rawMode = true;
+      const p = pending; pending = "";
+      overflow(p);
     } else if (rawMode && pending.length > 65536) {
       onRaw(pending); pending = "";
+    } else if (dropMode && pending.length > 65536) {
+      pending = "";
     }
   }
 
@@ -73,8 +90,8 @@ export function createSseFramer({ maxEventBytes, onEvent, onRaw }) {
       pending += decoder.end();
       drain(true);
       // A stream that ends mid-event: what is left is not a complete event; forward it as it was.
-      const rest = evRaw + pending;
-      evRaw = ""; pending = ""; evData = [];
+      const rest = dropMode ? "" : evRaw + pending;
+      reset(); pending = "";
       if (rest) onRaw(rest);
     }
   };

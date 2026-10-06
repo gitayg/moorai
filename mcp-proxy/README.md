@@ -239,7 +239,7 @@ nothing, is `unknown`.
 
 ## Verify
 
-No real MCP host needed:
+`test-proxy.mjs` needs no MCP host:
 
 ```bash
 node mcp-proxy/moorai-mcp-guard.mjs --check   # (use: node --check on each .mjs)
@@ -256,6 +256,47 @@ pass through untouched. It also validates the `install.mjs` rewrite against a fi
 The usage counts have their own tests: `test/mcp-usage-beat.test.mjs` (tally, once a day, retry, the exact
 post shape) and `test/mcp-usage-proxy.test.mjs` (the installer's host stamp driven through the real guard
 to a stand-in console).
+
+### With real MCP clients (measured 2026-10-06, macOS, Node 22.22.0)
+
+```bash
+node scripts/mcp-client-matrix.mjs            # every installed client × the guard and the HTTP gateway; no model call
+MOORAI_LIVE_MCP=1 node --test --import ./test/hermetic-env.mjs test/mcp-live-client.test.mjs   # the same, as 17 opt-in tests
+node scripts/mcp-live-toolcall.mjs            # live tier: prints the plan; --run spends 3 `claude -p` turns
+```
+
+`scripts/mcp-client-matrix.mjs` runs each installed client against the guard, which wraps
+`test-fake-mcp-server.mjs`. The clients are Claude Code 2.1.284 (`claude mcp list`), cursor-agent
+2026.05.27-fe9a6e2 (`cursor-agent mcp list-tools`), the official TypeScript SDK 1.32.1 `Client` over
+`StdioClientTransport`, and the MCP Inspector 2.9.0 CLI. No model is called. A small tap
+([`test/live/tee-server.mjs`](test/live/tee-server.mjs)) records what the guard forwarded. Measured:
+
+- every client's own `initialize` (its `clientInfo`), `notifications/initialized` and `tools/list` reached
+  the server through the guard, and the client received the tool list. Claude Code prints
+  "✔ Connected" only when `tools/list` succeeded (a failing `tools/list` prints
+  "! Connected · tools fetch failed"); cursor-agent, the SDK and the Inspector print the tool names.
+- the guard recorded the `tools/list` it relayed: an entry for `echo` in `~/.moorai/mcp-tool-baseline.json`,
+  under the route's server label.
+- the SDK and the Inspector each make two `tools/call`s. A benign one is forwarded and echoed. One whose
+  argument matches the policy's deny rule comes back as `MoorAI blocked this MCP tool call: …`, and the
+  server never receives it. Both calls are counted in `~/.moorai/mcp-usage.json` and appear in
+  `action-audit.jsonl` as `allow` and `deny`; the console receives a `Blocked` alert.
+- in a live Claude Code run (`claude -p`, Haiku, `--mcp-config … --strict-mcp-config`), the model called
+  `mcp__moorai-stdio__echo`. A benign call was forwarded and recorded as `allow`. A call with a denied
+  argument reached the model as an error result carrying MoorAI's refusal, the server never received it,
+  and it was recorded as `deny` with a `Blocked` alert.
+
+Each client in the matrix runs with a throwaway HOME and project, without its credentials. On macOS it
+runs under `sandbox-exec`, which denies writes to `~/.claude.json`, `~/.claude` and `~/.cursor` and denies
+all non-localhost egress. `MOORAI_LIVE_BREAK=bypass|dead|toolscan|no-refusal|no-policy|list-error` makes
+the run fail; this is the check that the assertions can fail. A wrapped command cannot be given to the
+Inspector on its command line, because it splits its target at the first `--`; use its `--config` session
+file instead, as the matrix does.
+
+Not tested: Claude Desktop, VS Code, Cursor's desktop app, Windows, Linux, and the `install.mjs` rewrite
+applied to a real host config. The proxy refuses nothing at handshake time (`initialize` and `tools/list`
+always pass), so a client can see a proxy refusal only on a `tools/call`; and only the call stage was
+exercised with real clients, not a result-stage block.
 
 ## Measured coverage
 
@@ -282,4 +323,5 @@ proxy sees nothing.
 | `install.mjs`              | Wrap / uninstall / status a host's MCP config, per the `HOSTS` table (pure transforms exported for tests). |
 | `test-proxy.mjs`           | Self-verification (proxy behavior + install rewrite). |
 | `test-fake-mcp-server.mjs` | Tiny fake MCP server used by the test. |
+| `test/live/tee-server.mjs` | Tap in front of the fake server that records what the guard forwarded, for the real-client runs. |
 | `measure-mcp-coverage.mjs` | Drives malicious/benign actions through the proxy to produce the coverage table above. |

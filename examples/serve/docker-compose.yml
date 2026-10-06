@@ -6,19 +6,29 @@
 #
 #   docker compose -f examples/serve/docker-compose.yml up --build --abort-on-container-exit --exit-code-from agent
 #
-# The demo agent (demo-agent.mjs) sends a reverse shell, a benign command, a prompt injection and a
-# foreign Host header, prints the verdicts, and also plays the console on 127.0.0.1:8787 to show the alerts
-# the sidecar posts. For a real deployment replace `agent` with your agent loop and point MOORAI_SERVER_URL /
-# MOORAI_TENANT / MOORAI_INSTALL_TOKEN at your MoorAI console (use a secret, never a literal).
+# Two sidecars share the agent's network namespace: moorai-serve (127.0.0.1:8790) and moorai-model-proxy
+# (127.0.0.1:8791). The agent runs two demos in turn, each playing the console on 127.0.0.1:8787 to show
+# the alerts its sidecar posts:
+#   demo-agent.mjs        sends a reverse shell, a benign command, a prompt injection and a foreign Host
+#                         header to moorai-serve and prints the verdicts;
+#   demo-model-proxy.mjs  plays a fake Anthropic provider on 127.0.0.1:9100 (no real model, no real key) and
+#                         makes three model calls through the proxy: a plain answer and a streamed tool call
+#                         come back byte-identical, and the tool call plus an injected tool result are alerted.
+# For a real deployment replace `agent` with your agent loop, set its SDK base URL to
+# http://127.0.0.1:8791/anthropic (or /openai), drop the proxy's demo --route so the real provider URLs
+# apply, and point MOORAI_SERVER_URL / MOORAI_TENANT / MOORAI_INSTALL_TOKEN at your MoorAI console (use a
+# secret, never a literal).
 name: moorai-serve-demo
 services:
   agent:
     image: node:22-slim
-    command: ["node", "/demo/demo-agent.mjs"]
+    command: ["sh", "-c", "node /demo/demo-agent.mjs && node /demo/demo-model-proxy.mjs"]
     environment:
       MOORAI_SERVE_URL: http://127.0.0.1:8790
+      MOORAI_MODEL_PROXY_URL: http://127.0.0.1:8791
     volumes:
       - ./demo-agent.mjs:/demo/demo-agent.mjs:ro
+      - ./demo-model-proxy.mjs:/demo/demo-model-proxy.mjs:ro
     user: "1000:1000"
   moorai:
     build:
@@ -33,6 +43,28 @@ services:
       MOORAI_TENANT: demo
       # A throwaway value for the demo console in demo-agent.mjs; a real one comes from a secret.
       MOORAI_INSTALL_TOKEN: demo-install-token
+    read_only: true
+    tmpfs:
+      - /home/node:uid=1000,gid=1000
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+  model-proxy:
+    image: ghcr.io/gitayg/moorai-server:dev
+    pull_policy: never   # the `moorai` service builds this tag
+    # Report mode (the default): every byte is forwarded unchanged and findings are alerted. Add
+    # "--mode", "enforce" to refuse instead. The route points at the demo's fake provider on loopback; in
+    # production leave --route out (https://api.anthropic.com and https://api.openai.com/v1) or name the
+    # real provider URL.
+    command: ["moorai-model-proxy", "--port", "8791", "--route", "/anthropic=http://127.0.0.1:9100"]
+    network_mode: "service:agent"
+    depends_on: [moorai]
+    environment:
+      MOORAI_SERVICE_ID: model-proxy-demo
+      MOORAI_SERVER_URL: http://127.0.0.1:8787
+      MOORAI_TENANT: demo
+      MOORAI_INSTALL_TOKEN: demo-install-token
+      MOORAI_HEALTH_PORT: "8791"
     read_only: true
     tmpfs:
       - /home/node:uid=1000,gid=1000
