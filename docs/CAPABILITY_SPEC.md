@@ -172,6 +172,9 @@ Claude Code GitHub Action, an Agent SDK service in a container
   it reports nothing and fetches no org policy). A `justify` verdict has no approver, so it is denied
   with a reason saying so and a content-free alert; `headlessAsk: "allow-with-report"` in the system file
   or the org policy allows and reports it instead, and the environment can only say `deny`.
+- **Bypass mode** (any enrolled device, not only server mode): under Claude Code's
+  `--dangerously-skip-permissions`, a `justify` verdict is denied (`BYPASS_ASK`) instead of asking a prompt
+  nobody sees, with a content-free alert; hard denies hold in every mode; unenrolled devices coach.
 - **Not applicable on a server:** the desktop app, the AIBOM, the shadow-AI inventory and OS posture.
 - **Proof and limits.** Observed live: one live run of Claude Code 2.1.284 (`claude -p`, the hooks added with `--settings`, server mode from the environment) showed UserPromptSubmit (117 ms) and PreToolUse (224 ms) firing, a `.env` read denied as a headless ask, and the console receiving content-free reports under the workload identity. An Agent SDK service and a GitHub Actions run have not
   been watched end to end.

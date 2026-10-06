@@ -495,6 +495,14 @@ calls `serverMode`, `serviceWho`, `settleHeadlessAsk` and `tamperAlert`):
   ignores that name's value, so a settings file that sets `MOORAI_MODE` cannot turn server mode on. The
   hook posts `Server-mode configuration refused (set by a settings file)` (Critical, `refusedEnv` names
   and a file count, never a value), awaited like the other tamper reports.
+- **Bypass ask** (`settleBypassAsk`, in `emit()`, after the headless step). On an enrolled, enforcing
+  device, when the host reports `permission_mode: "bypassPermissions"` (Claude Code's
+  `--dangerously-skip-permissions`), an `ask` becomes `deny` with a reason ending "held for approval, but
+  permission prompts are bypassed (bypassPermissions) so no one would see it", reason code `BYPASS_ASK`,
+  enforcement `STRENGTHENED`, and the hook posts `Approval denied (permission prompts bypassed)` (Blocked).
+  A hard deny is unchanged; an unenrolled device (coach) is unchanged. Measured live with Claude Code
+  2.1.284: `claude -p --dangerously-skip-permissions` already refuses a hook's `ask` (v1.3.1 left the call
+  unrun); interactive bypass sessions are not documented and were not observed.
 - **Headless ask** (`settleHeadlessAsk`, in `emit()`). A host's "ask" has no one to answer it: `claude -p`
   with no permission host denies it without MoorAI's reason, and an Agent SDK service hands it to
   application code. So an `ask` becomes `deny`, with a reason ending "held for approval, but this is a

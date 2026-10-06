@@ -371,6 +371,13 @@ writer are in [`examples/server/`](examples/server/README.md).
   this is a headless run and no approver exists, and one content-free alert records it
   (`Headless approval denied (no approver)`). `"headlessAsk": "allow-with-report"` in the system file or
   the org policy lets the call through and reports it instead; `MOORAI_HEADLESS_ASK` can only say `deny`.
+- **Bypass mode, on any enrolled device.** When Claude Code runs with `--dangerously-skip-permissions`
+  (`permission_mode: "bypassPermissions"`), a verdict that would hold for sign-off is denied with a reason
+  saying permission prompts are bypassed, and one content-free alert records it (`Approval denied
+  (permission prompts bypassed)`, reason code `BYPASS_ASK`). A hard deny holds in every mode; an unenrolled
+  device still coaches. Measured: `claude -p` in bypass mode already refuses a hook's ask; the deny makes
+  the outcome MoorAI's own in interactive bypass sessions too, where Claude Code's handling of a hook ask is
+  not documented.
 - **The actor is the workload.** `MOORAI_SERVICE_ID` names it; on GitHub Actions without it the name is
   `github:<repository>:<workflow>:<job>` (the run id is left out, so every run of a job is one workload);
   otherwise `unnamed`. `service` / `svc:<name>` is hashed into the actor exactly as `user@host` is on a

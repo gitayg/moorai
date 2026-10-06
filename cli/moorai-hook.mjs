@@ -52,7 +52,7 @@ import { readStateJson, writeStateJson, repoIdentity, LEARNED_DRIFT_FILE, DELETI
 import { sessionRiskStep, circuitStep, circuitOutcome } from "./session-state.mjs";
 import { captureTask, judgeAction, CLASS_TEXT } from "./intent-alignment.mjs";
 import { promptScanPlan, promptBlockers } from "./prompt-scan.mjs";
-import { serverMode, serviceWho, settleHeadlessAsk, tamperAlert, trustedEnv, refusedTrustEnv, systemConfigPath, workloadIdentity } from "./server-mode.mjs";
+import { serverMode, serviceWho, settleHeadlessAsk, settleBypassAsk, tamperAlert, trustedEnv, refusedTrustEnv, systemConfigPath, workloadIdentity } from "./server-mode.mjs";
 import { recordMcpCall, scheduleMcpUsageFlush } from "./mcp-usage-beat.mjs";
 import { REASON, ENFORCEMENT, policyIdOf, stampAlert } from "./provenance.mjs";
 import { recordRow, readSessionRows, localHash } from "./session-ledger.mjs";
@@ -1400,6 +1400,16 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
     if (h.alert) post({ ...h.alert, reasonCode: REASON.HEADLESS_ASK, enforcement: VERDICT.enforcement, ts: new Date().toISOString(), ...IDENTITY });
     decision = h.decision; reason = h.reason;
     if (decision === "deny") rewrite = null;
+  }
+  // Bypass mode: Claude Code would skip the prompt and run the call, so an "ask" is settled as a deny
+  // (cli/server-mode.mjs settleBypassAsk). An unenrolled device (COACH) still only coaches.
+  if (decision === "ask" && !COACH && HEADLESS_CTX.permissionMode === "bypassPermissions") {
+    const b = settleBypassAsk({ decision, reason, ...HEADLESS_CTX });
+    VERDICT.basis = VERDICT.reason || REASON.DETECTOR_MATCH;
+    why(REASON.BYPASS_ASK);
+    VERDICT.enforcement = ENFORCEMENT.STRENGTHENED;
+    if (b.alert) post({ ...b.alert, reasonCode: REASON.BYPASS_ASK, enforcement: VERDICT.enforcement, ts: new Date().toISOString(), ...IDENTITY });
+    decision = b.decision; reason = b.reason; rewrite = null;
   }
   settleRow(verdictFields(decision, { rewrite: Boolean(rewrite) }));
   const note = rewrite ? maskNote("this tool call's input", rewrite.count, rewrite.ids) : "";

@@ -279,6 +279,21 @@ export function settleHeadlessAsk(sm, policy, { decision, reason, tool = "", per
   };
 }
 
+// Claude Code's bypass mode (--dangerously-skip-permissions, permission_mode "bypassPermissions") skips
+// every permission prompt, so a PreToolUse "ask" is never shown and the call simply runs (measured live:
+// a #55 "ask" on a credentials read let the read through). Like a headless ask, nobody will approve it:
+// the caller (an enrolled, enforcing device; server mode settles its own asks first) denies instead.
+export const BYPASS_NOTE = "held for approval, but permission prompts are bypassed (bypassPermissions) so no one would see it";
+export function settleBypassAsk({ decision, reason, tool = "", permissionMode = "" }) {
+  if (decision !== "ask" || permissionMode !== "bypassPermissions") return { decision, reason, alert: null };
+  const rest = String(reason || "").replace(/^(?:needs justification|blocked)\s*/, "").replace(/ \(needs sign-off\)/g, "").trim();
+  return {
+    decision: "deny",
+    reason: `denied ${rest ? `${rest} — ` : ""}${BYPASS_NOTE}. Do not retry; run without bypass mode to approve it, or an operator can allow it in the MoorAI policy`,
+    alert: { threatId: 0, stage: "policy", tool: `hook:${tool}`, permissionMode: "bypassPermissions", category: "Approval denied (permission prompts bypassed)", riskLevel: "Blocked", contentHash: "bypass-ask:deny" }
+  };
+}
+
 // ---- service identity ----
 //
 // The console-facing pair. `user` is one constant for every workload, so all of a tenant's workloads

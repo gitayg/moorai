@@ -1,6 +1,6 @@
 {
   "name": "@moorai/agent-sdk",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "MoorAI guardrails as in-process Claude Agent SDK hook callbacks: the MoorAI hook's engine and policy decisions without a process per tool call",
   "license": "MIT",
   "type": "module",

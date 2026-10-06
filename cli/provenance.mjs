@@ -28,6 +28,7 @@ export const REASON = Object.freeze({
   SUBAGENT_POLICY: "SUBAGENT_POLICY",             // #66 delegation resolved by policy
   SESSION_KILL: "SESSION_KILL",
   HEADLESS_ASK: "HEADLESS_ASK",                   // server mode settled an "ask" with no approver
+  BYPASS_ASK: "BYPASS_ASK",                       // bypass mode would skip the prompt: an "ask" settled as a deny
   MASK_APPLIED: "MASK_APPLIED",
   MASK_FALLBACK: "MASK_FALLBACK",                 // a mask could not be applied; the fallback decided
   COACH_UNENROLLED: "COACH_UNENROLLED",           // unenrolled device: coached instead of enforced

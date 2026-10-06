@@ -90,10 +90,17 @@ test("laptop control: the same call with the same token in ~/.moorai/config.json
   const c = await consoleServer();
   const home = sandbox({ serverUrl: c.url, tenant: TENANT, installToken: TOKEN });
   try {
-    const r = await run(home, CRED, { MOORAI_SERVICE_ID: "ignored-when-off", MOORAI_SERVER_URL: "http://127.0.0.1:1" });
+    // Default permission mode: the laptop asks, as user@host.
+    const r = await run(home, CRED, { MOORAI_SERVICE_ID: "ignored-when-off", MOORAI_SERVER_URL: "http://127.0.0.1:1" }, { permission_mode: "default" });
     assert.equal(decision(r.out), "ask");
     const f = c.alerts.find((a) => a.threatId === 55);
     assert.deepEqual({ user: f.user, device: f.device, actor: f.actor }, { user: userInfo().username, device: hostname(), actor: actorOf(userInfo().username, hostname()) });
+    // Bypass mode (the run() default): nobody would see the prompt, so the enrolled laptop denies through
+    // the bypass step, never the headless (server-mode) one.
+    const b = await run(home, CRED, { MOORAI_SERVICE_ID: "ignored-when-off", MOORAI_SERVER_URL: "http://127.0.0.1:1" });
+    assert.equal(decision(b.out), "deny");
+    assert.match(b.out.hookSpecificOutput.permissionDecisionReason, /permission prompts are bypassed/);
+    assert.ok(c.alerts.some((a) => a.contentHash === "bypass-ask:deny" && a.reasonCode === "BYPASS_ASK"));
     assert.ok(!c.alerts.some((a) => String(a.contentHash).startsWith("headless-ask")));
   } finally { c.close(); rmSync(home, { recursive: true, force: true }); }
 });

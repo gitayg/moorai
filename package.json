@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "license": "MIT",
   "description": "MoorAI agent — on-device guardrails for AI coding agents (community edition, MIT)",
   "type": "module",
