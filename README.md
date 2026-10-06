@@ -481,12 +481,13 @@ developer laptop) never sends the object.
 These are infrastructure identifiers, so the console stores them as-is and a SIEM can join MoorAI verdicts
 with host and container sensor events on the same container, pod or process.
 
-The image has been built and run on arm64 (Docker 29.6.1) and the compose demo run end to end. The publish
-workflow has not run yet, the amd64 build has not been run, and the Kubernetes manifest has been neither
-schema-validated against a cluster nor run. `containerId` under Kubernetes has not been observed: on
-cgroup v2 with a private cgroup namespace neither file is expected to name the container, so the field may
-be absent there and `pod` / `namespace` / `node` are the join keys. containerd and CRI-O detection on
-cgroup v2 is unobserved.
+The publish workflow builds and publishes the image for amd64 and arm64 (first run: v1.3.0); it has been
+run on arm64 and the compose demo run end to end. `examples/serve/k8s-sidecar.yaml` passes strict
+server-side validation and runs on a local cluster (kind v0.33.0, Kubernetes v1.37.0, containerd 2.3.4, cgroup v2): both Deployments reach 2/2 Ready on
+their exec probes, and the demo agent's verdicts (reverse shell denied, injection flagged, foreign Host
+421) and alerts carry `pod`, `namespace` and `node`. Under containerd `containerId` is absent: the container
+sees only its pod's sandbox id, not its own id, so `namespace` + `pod` are the join key. Not observed:
+CRI-O, a managed cloud cluster, and the amd64 image run on a host.
 
 ### Across the session — lifecycle hooks, session risk, runaway loops
 

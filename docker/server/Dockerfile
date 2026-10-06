@@ -44,9 +44,10 @@ RUN printf '#!/bin/sh\nexec node /opt/moorai/cli/moorai-serve.mjs "$@"\n' > /usr
 ENV NODE_ENV=production \
     MOORAI_MODE=server
 
-# The image's own non-root user (uid 1000). Its home holds the policy cache / pin; give it a writable
+# The image's own non-root user `node`, by number (uid/gid 1000) so Kubernetes can verify
+# `runAsNonRoot: true` without a `runAsUser`. Its home holds the policy cache / pin; give it a writable
 # emptyDir when the root filesystem is read-only.
-USER node
+USER 1000:1000
 EXPOSE 8790
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

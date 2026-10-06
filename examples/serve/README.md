@@ -59,8 +59,10 @@ Every alert the sidecar or gateway posts to the console carries a `workload` obj
   cgroup v2 with a private cgroup namespace that file reads `0::/`, so the fallback is
   `/proc/self/mountinfo`, where Docker bind-mounts `/etc/hostname` from a path containing the id. Those
   files belong to the network namespace, so with compose `network_mode: "service:agent"` the id is the
-  agent container's, the container the verdict is about. Under Kubernetes on cgroup v2 neither file is
-  expected to name a container, so the field may be absent; `pod`, `namespace` and `node` identify the workload.
+  agent container's, the container the verdict is about. Under Kubernetes with containerd the container
+  sees only its pod's sandbox id and pod UID, never its own container id, so `containerId` is absent
+  (measured on kind v0.33.0, Kubernetes v1.37.0, containerd 2.3.4, cgroup v2; the sandbox id is not reported as a container id); `namespace` + `pod`
+  are the join key there.
 - `pod`, `namespace` and `node` come from the `MOORAI_K8S_*` variables.
 - There is no `pid`: the sidecar is not the agent process.
 

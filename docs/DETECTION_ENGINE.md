@@ -534,9 +534,9 @@ namespace reports the agent's container, the one the verdict is about. `pod` / `
 only from `MOORAI_K8S_POD` / `_NAMESPACE` / `_NODE` and must match `[a-z0-9.-]{1,253}`; a settings file
 setting one is refused like every other `MOORAI_*` name. `pid` is the hook's parent pid (the agent), or
 the SDK's own pid in process; `moorai-serve` and the gateway send none. Each field is optional and dropped
-on its own when undetected or malformed. Outside server mode the hook sends none. Under Kubernetes on
-cgroup v2 neither file is expected to name the container (not observed on a cluster), so `containerId`
-may be absent there.
+on its own when undetected or malformed. Outside server mode the hook sends none. Under Kubernetes with
+containerd the container sees only its pod's sandbox id and pod UID, never its own container id, so
+`containerId` is absent (measured on kind v0.33.0, Kubernetes v1.37.0, containerd 2.3.4, cgroup v2; the sandbox id is deliberately not reported).
 
 ### Verdict provenance — which policy, which branch, enforced or not
 
@@ -1751,11 +1751,11 @@ Stated rather than papered over.
   an authenticated client can learn whether a file there holds secrets, and its secret-egress fingerprint
   cache is filled once per directory for the life of the process.
 - **The container image and the sidecar examples are partly run.** `ghcr.io/gitayg/moorai-server` has been
-  built and run on arm64 and the compose demo run end to end; the publish workflow has not run yet, the
-  amd64 build has not been run, and `examples/serve/k8s-sidecar.yaml` has been neither schema-validated
-  against a cluster nor run. `containerId` has been observed only under Docker (cgroup v2, read from
-  `/proc/self/mountinfo`); containerd and CRI-O detection on cgroup v2 is unobserved, and under Kubernetes
-  the field may be absent.
+  published for amd64 and arm64 (first workflow run: v1.3.0), run on arm64, the compose demo run end to
+  end, and `examples/serve/k8s-sidecar.yaml` validated and run on a local cluster (kind v0.33.0, Kubernetes v1.37.0, containerd 2.3.4, cgroup v2). The
+  amd64 image has not been run on a host; CRI-O and managed cloud clusters are unobserved. `containerId`
+  is detected under Docker (cgroup v2, via `/proc/self/mountinfo`) and is absent under containerd, where
+  the container cannot see its own id.
 - **Declared workload profiles** (above) are checked on `PreToolUse` only, see hosts only in the call's
   text, and are not evaluated by the HTTP MCP gateway. A `repo` match follows `.git/config`, and in the hook
   a `serviceId` can come from `~/.moorai/config.json`; both are in the agent's write scope. Tested on

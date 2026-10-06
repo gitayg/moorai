@@ -497,8 +497,8 @@ positioning carries over as "in your process, in your VPC: content never leaves 
   v1.3.0*.
 - **Still open from Tiers 2 and 3:** an Agent SDK service watched end to end with `@moorai/agent-sdk`; the
   gateway against real MCP clients, OAuth discovery through it, and its server-mode paths; the first run of
-  the image publish workflow and the amd64 image; the Kubernetes manifest on a real cluster, with
-  `containerId` observed under containerd or CRI-O; declared workload profiles in the HTTP MCP gateway.
+  the amd64 image run on a host; the Kubernetes manifest on a managed cloud cluster and under CRI-O;
+  declared workload profiles in the HTTP MCP gateway.
 - **Not applicable on a server:** the desktop app, AIBOM, shadow-AI inventory and OS posture.
 
 ## Backlog — coverage for cloud AI platforms and custom-built agents (2026-10-01)
@@ -585,14 +585,15 @@ content-free design. Shipped in v1.1.0:
   `Host` gets 421 from `moorai-serve`. `.github/workflows/publish-server-image.yml` builds amd64 and arm64
   on each release tag. [`examples/serve/`](../examples/serve/README.md) has a Kubernetes manifest (both
   sidecars, exec probes, downward-API workload names, read-only root filesystem) and a compose demo.
-  Built and run on arm64 and the compose demo run end to end. Not yet: the workflow's first run, the
-  amd64 build, and the Kubernetes manifest, which has not been validated against a cluster or run.
+  Published for amd64 and arm64 by the workflow (first run: v1.3.0), run on arm64, the compose demo run
+  end to end, and the Kubernetes manifest validated and run on a local cluster (kind v0.33.0, Kubernetes v1.37.0, containerd 2.3.4, cgroup v2).
 - **Workload identity on verdicts** — alerts from the hook in server mode, `@moorai/agent-sdk`,
   `moorai-serve` and `moorai-mcp-gateway` carry a `workload` object (`containerId`, `pod`, `namespace`,
   `node`, and the agent's `pid` from the hook and the in-process SDK), stored as-is by the console so a
   SIEM can join MoorAI verdicts with host and container sensor events. In a shared-network sidecar
-  `containerId` is the agent's container, the one the verdict is about. Not yet observed: `containerId`
-  under Kubernetes, and containerd / CRI-O detection on cgroup v2.
+  `containerId` is the agent's container, the one the verdict is about. Under Kubernetes with containerd
+  the container cannot see its own id, so `containerId` is absent and `namespace` + `pod` join instead
+  (measured on kind); CRI-O not observed.
 - **Declared workload profiles** — `policy.workloadProfiles` (`cli/workload-profile.mjs`): per
   `serviceId` or repository, the expected tools, MCP servers and hosts; a `PreToolUse` call outside the
   first matching profile is `PROFILE_DRIFT` (`cli/provenance.mjs` `REASON`), reported, or denied with

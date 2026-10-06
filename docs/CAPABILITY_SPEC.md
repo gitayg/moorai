@@ -165,9 +165,9 @@ Claude Code GitHub Action, an Agent SDK service in a container
   pid, or the SDK's own pid in process; the sidecar and the gateway send none. Every field is optional and
   dropped on its own when malformed; the hook outside server mode sends none. The console stores these
   infrastructure ids as-is so a SIEM can join MoorAI verdicts with host and container sensor events.
-  **Limits.** Observed under Docker only (cgroup v2, via `mountinfo`); containerd and CRI-O detection on
-  cgroup v2 is unobserved, and under Kubernetes on cgroup v2 `containerId` may be absent, leaving
-  `pod` / `namespace` / `node` as the join keys.
+  **Limits.** `containerId` is detected under Docker (cgroup v2, via `mountinfo`) and absent under
+  Kubernetes with containerd, where the container sees only its pod's sandbox id (measured on kind,
+  Kubernetes v1.37.0, containerd 2.3.4); there `namespace` + `pod` are the join key. CRI-O unobserved.
 - **Enforcement**: server mode counts as management, so the hook enforces without a token (with no token
   it reports nothing and fetches no org policy). A `justify` verdict has no approver, so it is denied
   with a reason saying so and a content-free alert; `headlessAsk: "allow-with-report"` in the system file

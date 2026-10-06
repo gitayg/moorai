@@ -96,7 +96,10 @@ test("IMAGE: base image matches CI's node, runs as non-root, labelled MIT, healt
   assert.match(from, new RegExp(`^node:${ciNode}-slim$`), `FROM ${from} vs CI node ${ciNode}`);
   const users = [...DF.matchAll(/^USER\s+(\S+)/gm)].map((m) => m[1]);
   assert.ok(users.length && !["root", "0", "0:0"].includes(users.at(-1)), `final USER is ${users.at(-1)}`);
-  assert.ok(DF.indexOf("USER node") < DF.indexOf("ENTRYPOINT"), "USER must precede the entrypoint");
+  // Numeric, so Kubernetes can verify `runAsNonRoot: true` on its own: with a user NAME the kubelet refuses
+  // the container ("image has non-numeric user (node), cannot verify user is non-root"), measured on kind.
+  assert.match(users.at(-1), /^[1-9]\d*(:\d+)?$/, `final USER must be a numeric uid, is ${users.at(-1)}`);
+  assert.ok(DF.lastIndexOf(`USER ${users.at(-1)}`) < DF.indexOf("ENTRYPOINT"), "USER must precede the entrypoint");
   assert.match(DF, new RegExp(`org\\.opencontainers\\.image\\.licenses="${PKG.license}"`));
   assert.match(readFileSync(join(ROOT, "LICENSE"), "utf8"), /^MIT License/);
   assert.match(DF, /^HEALTHCHECK .*\n?.*healthcheck\.mjs/m);
