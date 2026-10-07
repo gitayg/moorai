@@ -9,10 +9,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, statSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { rmTree } from "./fs-cleanup.mjs";
 import {
   recordMcpCall, flushMcpUsage, dueDays, usageHost, sanitizeLabel, readTally,
   USAGE_HOSTS, MAX_SERVERS, MAX_DAYS, RETRY_MS, TALLY_FILE
@@ -24,7 +25,7 @@ const T0 = Date.parse("2026-10-01T12:00:00Z");
 const ID = { user: "alice", device: "box-1", platform: "darwin", actor: "h2:actor" };
 const CFG = (url) => ({ serverUrl: url, tenant: "acme", installToken: "tok-usage" });
 
-function dir(t) { const d = mkdtempSync(join(tmpdir(), "moorai-usage-")); t.after(() => rmSync(d, { recursive: true, force: true })); return d; }
+function dir(t) { const d = mkdtempSync(join(tmpdir(), "moorai-usage-")); t.after(() => rmTree(d)); return d; }
 async function consoleStub(t, statuses = [201]) {
   const posts = [];
   let i = 0;

@@ -12,12 +12,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 import { isEnrolled, enforcementAllowed, coachMessage, coachReason } from "../data/enforcement.js";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -90,7 +91,7 @@ test("HOOK unenrolled: each case is coached — no permissionDecision, user + ag
       assert.equal(h.hookEventName, "PreToolUse");
       assert.equal(h.additionalContext, o.systemMessage, `${c.name}: the agent is told the same thing`);
     }
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("HOOK enrolled: the same four cases keep today's deny/ask verdicts, unchanged", () => {
@@ -104,7 +105,7 @@ test("HOOK enrolled: the same four cases keep today's deny/ask verdicts, unchang
       assert.ok(h.permissionDecisionReason.includes(c.id) && h.permissionDecisionReason.includes(`Safer: ${c.safer}`));
       assert.equal(o.systemMessage, undefined, "an enforced verdict is not also a coach note");
     }
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("HOOK unenrolled: a local policy that says kill still only coaches — no deny, no kill sentinel", () => {
@@ -114,7 +115,7 @@ test("HOOK unenrolled: a local policy that says kill still only coaches — no d
     assert.equal(o.hookSpecificOutput?.permissionDecision, undefined, JSON.stringify(o));
     assert.match(o.systemMessage || "", /^MoorAI coach: flagged via Bash — #54 /);
     assert.equal(existsSync(join(home, ".moorai", "kill-session")), false, "a coach never asks the host to kill the session");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("HOOK enrolled: the same kill policy still denies and drops the kill sentinel (control)", () => {
@@ -123,7 +124,7 @@ test("HOOK enrolled: the same kill policy still denies and drops the kill sentin
     const o = runHook(home, { tool_name: "Bash", tool_input: { command: REVERSE_SHELL } });
     assert.equal(o.hookSpecificOutput?.permissionDecision, "deny");
     assert.ok(existsSync(join(home, ".moorai", "kill-session")));
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("HOOK unenrolled but fail-closed (MDM / env posture): management evidence keeps enforcement", () => {
@@ -131,13 +132,13 @@ test("HOOK unenrolled but fail-closed (MDM / env posture): management evidence k
   try {
     const o = runHook(home, { tool_name: "Bash", tool_input: { command: REVERSE_SHELL } }, { MOORAI_OFFLINE_MODE: "fail-closed" });
     assert.equal(o.hookSpecificOutput?.permissionDecision, "deny", JSON.stringify(o));
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("HOOK unenrolled: a clean call still says nothing", () => {
   const home = sandbox({ enrolled: false });
   try { assert.deepEqual(runHook(home, { tool_name: "Bash", tool_input: { command: "ls -la" } }), {}); }
-  finally { rmSync(home, { recursive: true, force: true }); }
+  finally { rmTree(home); }
 });
 
 test("HOOK unenrolled: PostToolUse never blocks the result — a would-be block becomes advisory context", () => {
@@ -148,7 +149,7 @@ test("HOOK unenrolled: PostToolUse never blocks the result — a would-be block 
     assert.match(o.systemMessage || "", /^MoorAI coach: flagged ingested WebFetch content — .*#54/);
     assert.equal(o.hookSpecificOutput?.hookEventName, "PostToolUse");
     assert.ok(o.hookSpecificOutput?.additionalContext);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 async function listener(policy = { captureTier: "content-free" }) {
@@ -187,7 +188,7 @@ test("HOOK unenrolled: posts nothing to a server, even one that answers; enrolle
     await runAsync([HOOK], en, payload);
     await new Promise((r) => setTimeout(r, 800));
     assert.ok(L.alerts.some((a) => a.threatId === 54), "the enrolled control does reach the server");
-  } finally { L.close(); rmSync(un, { recursive: true, force: true }); rmSync(en, { recursive: true, force: true }); }
+  } finally { L.close(); rmTree(un); rmTree(en); }
 });
 
 // ---- the other agents, through cli/moorai-agent-hook.mjs ----
@@ -226,7 +227,7 @@ test("AGENTS unenrolled: Codex / Gemini / Copilot / Cursor coach a reverse shell
     assert.match(k.user_message, /^MoorAI coach: flagged via Bash — #54 /);
     assert.equal(k.agent_message, k.user_message);
     assert.equal(JSON.parse(runAgent("cursor", en, { ...cur, cwd: en }).out).permission, "deny", "cursor enrolled control");
-  } finally { rmSync(un, { recursive: true, force: true }); rmSync(en, { recursive: true, force: true }); }
+  } finally { rmTree(un); rmTree(en); }
 });
 
 // ---- the claude -p guard ----
@@ -254,7 +255,7 @@ test("GUARD unenrolled: a prompt with a key is coached and sent — exit 0, neve
     assert.equal(readFileSync(join(home, "claude-received.txt"), "utf8"), prompt, "the prompt went through unchanged");
     await new Promise((res) => setTimeout(res, 500));
     assert.deepEqual(L.alerts, [], "an unenrolled guard posts nothing");
-  } finally { L.close(); rmSync(home, { recursive: true, force: true }); }
+  } finally { L.close(); rmTree(home); }
 });
 
 test("GUARD unenrolled: a local-server policy that says block is still only coached", async () => {
@@ -264,7 +265,7 @@ test("GUARD unenrolled: a local-server policy that says block is still only coac
     const r = await runAsync([GUARD, `key ${FAKE_KEY}`], home, "", { PATH: fakeClaude(home) });
     assert.equal(r.code, 0, r.err);
     assert.ok(existsSync(join(home, "claude-received.txt")));
-  } finally { L.close(); rmSync(home, { recursive: true, force: true }); }
+  } finally { L.close(); rmTree(home); }
 });
 
 test("GUARD enrolled: unchanged — non-interactive abort (exit 1), and a block policy exits 3", async () => {
@@ -279,7 +280,7 @@ test("GUARD enrolled: unchanged — non-interactive abort (exit 1), and a block 
     assert.equal(existsSync(join(home, "claude-received.txt")), false);
     const b = await runAsync([GUARD, `key ${FAKE_KEY}`], home2, "", { PATH: fakeClaude(home2) });
     assert.equal(b.code, 3, b.err);
-  } finally { L.close(); L2.close(); rmSync(home, { recursive: true, force: true }); rmSync(home2, { recursive: true, force: true }); }
+  } finally { L.close(); L2.close(); rmTree(home); rmTree(home2); }
 });
 
 // ---- the Claude Desktop MCP proxy ----
@@ -308,7 +309,7 @@ test("MCP PROXY unenrolled: a reverse-shell argument is forwarded with a coach n
     assert.equal(e.forwarded, false, "enrolled: the call never reaches the server");
     assert.equal(e.res.result?.isError, true);
     assert.match(e.res.result.content[0].text, /^MoorAI blocked this MCP tool call/);
-  } finally { rmSync(un, { recursive: true, force: true }); rmSync(en, { recursive: true, force: true }); }
+  } finally { rmTree(un); rmTree(en); }
 });
 
 // ---- the desktop app's renderer bridge (src/api.js) ----

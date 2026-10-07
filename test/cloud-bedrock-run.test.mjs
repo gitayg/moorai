@@ -5,7 +5,7 @@
 // instruction and ARN. The records must still be content-free, and identical to the export path's.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,7 @@ import { deriveKey } from "../cli/content-hash.mjs";
 import { readExport } from "../cloud/bedrock/read-export.mjs";
 import { buildInventory } from "../cloud/inventory.mjs";
 import { COMMANDS } from "../cloud/bedrock/commands.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FIX = join(ROOT, "test", "fixtures", "cloud-bedrock");
@@ -85,7 +86,7 @@ test("--run: same records as the export path, from the worst-case (unprojected) 
     const inv = JSON.parse(r.stdout);
     assert.deepEqual(inv.records, exportInv().inventory.records);
     assert.ok(!/CANARY|arn:|AKIA/.test(r.stdout + r.stderr), "content, an ARN or a key reached our output");
-  } finally { rmSync(s.home, { recursive: true, force: true }); }
+  } finally { rmTree(s.home); }
 });
 
 test("--run: every call is a table-driven read-only List/Get with --region, JSON output, no pager and a projection", () => {
@@ -107,7 +108,7 @@ test("--run: every call is a table-driven read-only List/Get with --region, JSON
     const ip = cs.find((c) => c.argv[1] === "list-inference-profiles");
     assert.equal(ip.argv[ip.argv.indexOf("--type-equals") + 1], "APPLICATION");
     assert.deepEqual([...new Set(cs.filter((c) => c.argv[0] !== "sts").map((c) => c.argv[c.argv.indexOf("--region") + 1]))].sort(), ["eu-west-1", "us-east-1"]);
-  } finally { rmSync(s.home, { recursive: true, force: true }); }
+  } finally { rmTree(s.home); }
 });
 
 test("--run honours AWS_PROFILE and AWS_REGION from the environment, and --profile when given", () => {
@@ -122,7 +123,7 @@ test("--run honours AWS_PROFILE and AWS_REGION from the environment, and --profi
     writeFileSync(s.log, "");
     assert.equal(run(s, ["bedrock", "--run", "--regions", "eu-west-1", "--profile", "audit"]).status, 0);
     assert.ok(calls(s).every((c) => c.argv[c.argv.indexOf("--profile") + 1] === "audit"));
-  } finally { rmSync(s.home, { recursive: true, force: true }); }
+  } finally { rmTree(s.home); }
 });
 
 test("--run with no region from flag or environment is a usage error and calls nothing", () => {
@@ -132,7 +133,7 @@ test("--run with no region from flag or environment is a usage error and calls n
     assert.equal(r.status, 2);
     assert.match(r.stderr, /region/i);
     assert.deepEqual(calls(s), []);
-  } finally { rmSync(s.home, { recursive: true, force: true }); }
+  } finally { rmTree(s.home); }
 });
 
 test("--run: a failed call is classified, and its stderr (caller ARN, a key-shaped string) is never relayed", () => {
@@ -142,7 +143,7 @@ test("--run: a failed call is classified, and its stderr (caller ARN, a key-shap
     assert.equal(r.status, 0, r.stderr);
     assert.ok(!/CANARY|AKIA|arn:|210987654321/.test(r.stderr + r.stdout));
     assert.match(r.stderr, /eu-west-1 list-agent-runtimes: access-denied/);
-  } finally { rmSync(s.home, { recursive: true, force: true }); }
+  } finally { rmTree(s.home); }
 });
 
 test("--run follows a NextToken page by page and merges the pages", () => {
@@ -154,7 +155,7 @@ test("--run follows a NextToken page by page and merges the pages", () => {
     const g = calls(s).filter((c) => c.argv[1] === "list-guardrails");
     assert.equal(g.length, 2);
     assert.equal(g[1].argv[g[1].argv.indexOf("--starting-token") + 1], "page2");
-  } finally { rmSync(s.home, { recursive: true, force: true }); }
+  } finally { rmTree(s.home); }
 });
 
 test("--run --export writes the export layout; --from on it gives the same records", () => {
@@ -168,7 +169,7 @@ test("--run --export writes the export layout; --from on it gives the same recor
     const b = run(s, ["bedrock", "--from", dir]);
     assert.equal(b.status, 0, b.stderr);
     assert.deepEqual(JSON.parse(b.stdout).records, JSON.parse(a.stdout).records);
-  } finally { rmSync(s.home, { recursive: true, force: true }); }
+  } finally { rmTree(s.home); }
 });
 
 test("--run refuses before calling AWS when the device is not enrolled", () => {
@@ -177,7 +178,7 @@ test("--run refuses before calling AWS when the device is not enrolled", () => {
     const r = run(s, ["bedrock", "--run", "--regions", "us-east-1"]);
     assert.equal(r.status, 2);
     assert.deepEqual(calls(s), []);
-  } finally { rmSync(s.home, { recursive: true, force: true }); }
+  } finally { rmTree(s.home); }
 });
 
 test("--post sends exactly {platform, account, regions, records} with the install token header", async () => {
@@ -203,5 +204,5 @@ test("--post sends exactly {platform, account, regions, records} with the instal
     assert.deepEqual(Object.keys(got.body).sort(), ["account", "platform", "records", "regions"]);
     assert.deepEqual(got.body.records, exportInv().inventory.records);
     assert.match(err, /posted 22 records/);
-  } finally { srv.close(); rmSync(s.home, { recursive: true, force: true }); }
+  } finally { srv.close(); rmTree(s.home); }
 });

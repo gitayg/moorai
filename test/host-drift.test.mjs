@@ -8,11 +8,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { driftOf, validate, checkCodexSchemas, checkGeminiSettings, checkCursorBundle, CURSOR_MARKERS, run } from "../scripts/host-drift.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE = JSON.parse(readFileSync(join(ROOT, "test", "fixtures", "agent-hooks", "codex", "pre-tool-use-bash.json"), "utf8"));
@@ -49,7 +50,7 @@ const GEMINI_SCHEMA = {
 
 function geminiSettings(t) {
   const home = mkdtempSync(join(tmpdir(), "moorai-drift-gem-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
+  t.after(() => rmTree(home));
   const r = spawnSync(process.execPath, [join(ROOT, "cli", "moorai-agent-hook.mjs"), "gemini", "install"], { env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: "utf8", input: "", timeout: 20000 });
   assert.equal(r.status, 0, r.stderr);
   return JSON.parse(readFileSync(join(home, ".gemini", "settings.json"), "utf8"));
@@ -151,7 +152,7 @@ test("LIVE: a host that runs MoorAI's hook passes and reports the version detect
   const { writeFileSync: w, chmodSync, mkdtempSync: mk } = await import("node:fs");
   const { liveTurn } = await import("../scripts/host-drift.mjs");
   const dir = mk(join(tmpdir(), "moorai-live-fake-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.after(() => rmTree(dir));
   const fake = join(dir, "claude");
   w(fake, `#!${process.execPath}
 const fs = require("fs"), path = require("path"), { spawnSync } = require("child_process");

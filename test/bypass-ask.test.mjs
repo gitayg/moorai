@@ -8,10 +8,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -46,7 +47,7 @@ test("enrolled, bypass mode: an ask (#55 credential read) is settled as a deny",
     assert.equal(r.decision, "deny", r.raw);
     assert.match(r.reason, /#55 Identity & Access/);
     assert.match(r.reason, /permission prompts are bypassed/);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("enrolled, normal mode: the same read still asks (unchanged)", () => {
@@ -56,7 +57,7 @@ test("enrolled, normal mode: the same read still asks (unchanged)", () => {
       const r = runHook(home, { tool_name: "Read", tool_input: { file_path: cred }, ...(permission_mode ? { permission_mode } : {}) });
       assert.equal(r.decision, "ask", `${permission_mode}: ${r.raw}`);
     }
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("enrolled, bypass mode: a hard deny (#54) stays a deny with its own reason", () => {
@@ -66,7 +67,7 @@ test("enrolled, bypass mode: a hard deny (#54) stays a deny with its own reason"
     assert.equal(r.decision, "deny", r.raw);
     assert.match(r.reason, /#54/);
     assert.doesNotMatch(r.reason, /permission prompts are bypassed/);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("unenrolled, bypass mode: coached, never blocked", () => {
@@ -74,5 +75,5 @@ test("unenrolled, bypass mode: coached, never blocked", () => {
   try {
     const r = runHook(home, { tool_name: "Read", tool_input: { file_path: cred }, permission_mode: "bypassPermissions" });
     assert.notEqual(r.decision, "deny", r.raw);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

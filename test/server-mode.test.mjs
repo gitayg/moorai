@@ -4,11 +4,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveServerMode, settingsEnvHits, headlessAskMode, settleHeadlessAsk, serviceWho, githubServiceId, normalizeServiceId, tamperAlert, readUserConfig, isGuarded, HEADLESS_NOTE } from "../cli/server-mode.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TOKEN = "tok-srv-SECRET-91c2";
@@ -82,7 +83,7 @@ test("a MOORAI_* name set by a user/project/local settings file is refused and r
     assert.equal(flip.active, false);
     assert.deepEqual(tamperAlert(flip).refusedEnv, ["MOORAI_MODE"]);
     assert.ok(isGuarded("MoorAI_SERVER") && isGuarded("MOORAI_POLICY_PUBKEY") && !isGuarded("PATH"));
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("service identity: MOORAI_SERVICE_ID, else the GitHub Actions job, else 'unnamed' — never the hostname", () => {
@@ -181,7 +182,7 @@ test("loadConfig with server mode off is byte-identical to the pre-change implem
     try {
       if (file != null) { mkdirSync(join(home, ".moorai")); writeFileSync(join(home, ".moorai", "config.json"), typeof file === "string" ? file : JSON.stringify(file)); }
       assert.equal(loadIn(join(ROOT, "cli", "config.mjs"), home, env), loadIn(HEAD_CONFIG, home, env), JSON.stringify({ file, env }));
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   }
 });
 
@@ -193,5 +194,5 @@ test("loadConfig in server mode reads the environment first, and readUserConfig 
     assert.equal(readUserConfig(home).path, join(home, ".curaiq", "config.json"));
     const out = JSON.parse(loadIn(join(ROOT, "cli", "config.mjs"), home, { MOORAI_MODE: "server", MOORAI_SERVER_URL: "https://env.example", MOORAI_INSTALL_TOKEN: TOKEN }));
     assert.deepEqual(out, { serverUrl: "https://env.example", tenant: "old", installToken: TOKEN });
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

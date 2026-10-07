@@ -9,8 +9,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { rmSync } from "node:fs";
 import { scenario, rpc, call, settle, sign, startConsole, makeHome, startGateway, stopGateway, H } from "../mcp-gateway/test/harness.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const POLICY = { captureTier: "content-free", threatPolicy: { 39: "block" } };
 const AWS = "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYzEXAMPLEKEY1\n";
@@ -53,7 +53,7 @@ async function withRaw({ policy = POLICY, gatewayArgs = [], reply }, fn) {
     await stopGateway(gw);
     await up.close();
     await con.close();
-    rmSync(home, { recursive: true, force: true });
+    rmTree(home);
   }
 }
 // A POST of raw bytes; the answer read as the SDK client reads it (fetch: BOM dropped, lenient UTF-8).

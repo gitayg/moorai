@@ -7,11 +7,12 @@
 // reporting), the prompt / tool-result modes, kill, fail-open, and the vendored (published) layout.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, cpSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { rmTree } from "./fs-cleanup.mjs";
 
 // Hermetic: the engine reads ~/.aws/credentials and project .env files for secret-egress fingerprints.
 const HOME = mkdtempSync(join(tmpdir(), "moorai-sdk-"));
@@ -183,7 +184,7 @@ console.log(JSON.stringify({ layout: ENGINE_LAYOUT, root: ENGINE_ROOT, decision:
     assert.equal(out.layout, "vendored");
     assert.ok(!out.root.startsWith(ROOT), `engine loaded from the repo: ${out.root}`);
     assert.equal(out.decision, "deny");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { rmTree(dir); }
 });
 
-test.after(() => rmSync(HOME, { recursive: true, force: true }));
+test.after(() => rmTree(HOME));

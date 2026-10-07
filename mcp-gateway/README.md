@@ -57,13 +57,14 @@ Same engine, detectors, policy and alert shapes as the stdio proxy; the call ord
 | client → server | every POST body | **staged JSON-RPC / MCP validation** (below) | refused with `SCHEMA_INVALID` (`--schema enforce`, the default) |
 | | any request | client in a **cool-down** (below; off by default) | refused with `CLIENT_COOLDOWN` |
 | | `tools/call` | tool quarantined at list time (policy blocked its metadata) | refused |
+| | | `mcpToolDrift: "block"`: the tool changed, was added, or shadows another server's tool since the approved baseline; or it was never in a listing the gateway checked | refused, `MCP_TOOL_DRIFT`; released when the console re-approves |
 | | | server reputation below `mcpReputation.blockBelow` (identity: the upstream URL) | refused on an enforcing device |
 | | | **declared workload profile** (`workloadProfiles`, below) | report or block per profile; `PROFILE_DRIFT` |
 | | | `mcpGateway`: server allow-list (#3) → per-tool argument rules (#18) → argument content scan (#2) | per policy |
 | | | **local secret egress (#65)** — a value from this machine's `.env*` (gateway cwd), `~/.aws/credentials`, `~/.npmrc`, `~/.netrc`, `.git-credentials` appearing verbatim in the arguments. The hook's check; the stdio proxy does not run it | per policy; the default resolves #65 to block |
 | | | **files the arguments name** — only with `--local-files` (or `"localFiles": true` on a route) | per policy |
 | | `Mcp-Name` / `Mcp-Method` header ≠ body | header–body consistency | HTTP 400, `-32020` |
-| server → client | `tools/list` result | tool stage: #60 poisoning (incl. credential-path descriptions), #50; drift against the shared tool baseline (rug-pull, capability expansion, shadowing) | **never altered**; alert; a blocking policy quarantines the tool |
+| server → client | `tools/list` result | tool stage: #60 poisoning (incl. credential-path descriptions), #50; drift against the shared tool baseline (rug-pull, capability expansion, shadowing) | alert; a blocking policy quarantines the tool. Never altered, except under `mcpToolDrift: "block"`, where a quarantined tool is left out of the list (JSON body or SSE event) |
 | | any other result (JSON or each SSE event) | result scan at stage `file` | alert; replaced by a tool error when policy resolves to block |
 | | any response | staged validation | reported; an invalid **`tools/call` result** is replaced by a tool error (`--schema enforce`); a listing is never altered |
 | | a JSON response / one SSE event over `--max-response-bytes` (4 MiB) | size cap | refused with `RESPONSE_TOO_LARGE` |
@@ -81,6 +82,18 @@ replacement event keeps the original's `id:` line, and the notifications before 
 
 A (2025-03-26) **batch** with one refused call is refused whole, every request in it answered with a
 tool error; forwarding part of a batch would answer some ids and not others.
+
+**Tool drift, block until re-approved.** The policy key `mcpToolDrift: "block"` works here exactly as
+in the stdio proxy, through the same module ([`../mcp-proxy/tool-drift.mjs`](../mcp-proxy/tool-drift.mjs)),
+one tracker per route: the approved baseline from the signed policy (`mcpToolBaselines[<route server
+label>]`) or else the first-seen baseline, quarantine on description / schema drift, an added tool and
+shadowing (across routes of one gateway too), an alert only for a removed tool, the baseline held until
+re-approval, the per-server version mark, the fingerprint report to `POST /api/mcp/tools`, and the same
+failure directions. See "Tool drift: block until re-approved" in
+[`../mcp-proxy/README.md`](../mcp-proxy/README.md). One gateway-specific line: a JSON response between
+1 MB and the response cap is forwarded unscanned, so its tools are not filtered and calls to them are
+refused as not checked. A `tools/list` whose request carried a `cursor` is a page: it is judged, but a
+missing tool is not reported as removed.
 
 ## Usage reporting (CONTRACT C4)
 

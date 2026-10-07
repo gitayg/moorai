@@ -14,10 +14,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -78,7 +79,7 @@ async function withPolicy(policy, fn, { enrolled = true } = {}) {
   const proj = mkdtempSync(join(tmpdir(), "moorai-gapprompt-proj-"));
   mkdirSync(join(home, ".moorai"), { recursive: true });
   writeFileSync(join(home, ".moorai", "config.json"), JSON.stringify({ serverUrl: `http://127.0.0.1:${port}`, tenant: "acme", ...(enrolled ? { installToken: "tok-gap-prompt" } : {}) }));
-  try { return await fn({ home, proj }, alerts); } finally { srv.close(); rmSync(home, { recursive: true, force: true }); rmSync(proj, { recursive: true, force: true }); }
+  try { return await fn({ home, proj }, alerts); } finally { srv.close(); rmTree(home); rmTree(proj); }
 }
 const promptAlerts = (alerts) => alerts.filter((a) => a.stage === "prompt" && a.tool === "hook:UserPromptSubmit");
 

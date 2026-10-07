@@ -8,12 +8,13 @@
 //   node --test test/stix.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { buildStixBundle, collectFindings, stixFromEvidence, uuidv5, SPEC_VERSION } from "../cli/moorai-stix.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = join(ROOT, "cli", "moorai-compliance.mjs");
@@ -138,5 +139,5 @@ test("E2E: moorai-compliance --format stix emits a valid, content-free bundle", 
     assertStructural(bundle);
     assert.ok(bundle.objects.some((o) => o.type === "x-moorai-finding"));
     assert.ok(!out.includes(SENTINEL), "sentinel leaked through the compliance --format stix path");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

@@ -10,11 +10,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import http from "node:http";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -63,7 +64,7 @@ const drift = (alerts) => alerts.filter((a) => a.reasonCode === "PROFILE_DRIFT")
 async function withConsole(policy, fn) {
   const sb = sandbox();
   const c = await consoleServer(policy);
-  try { return await fn(sb, c); } finally { c.close(); rmSync(sb.home, { recursive: true, force: true }); }
+  try { return await fn(sb, c); } finally { c.close(); rmTree(sb.home); }
 }
 
 test("server mode, serviceId profile with action block: an out-of-profile tool is denied and a PROFILE_DRIFT alert names only the profile and kind", async () => {

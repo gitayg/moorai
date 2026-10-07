@@ -12,13 +12,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir, hostname } from "node:os";
 import { join, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 import http from "node:http";
 import { ratchetPosture, breakGlassCanonical, BREAK_GLASS_VERSION } from "../cli/hook-core.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -126,7 +127,7 @@ async function runHook({ state, latch, legacy, env, policy, marker, anchorPub } 
     return { alerts, stdout, code, hashes: alerts.map((a) => a.contentHash), categories: alerts.map((a) => a.category) };
   } finally {
     await new Promise((r) => server.close(r));
-    rmSync(home, { recursive: true, force: true });
+    rmTree(home);
   }
 }
 const enforced = (r) => /"permissionDecision":"ask"/.test(r.stdout);
@@ -240,7 +241,7 @@ test("E2E: a policy load writes BOTH posture copies, so one erasure still leaves
     assert.ok(existsSync(join(home, ".config", "moorai", "posture")), "second copy must be written in a DIFFERENT dir (~/.config/moorai)");
   } finally {
     await new Promise((r) => server.close(r));
-    rmSync(home, { recursive: true, force: true });
+    rmTree(home);
   }
 });
 
@@ -274,7 +275,7 @@ test("XDG: a RELATIVE XDG_CONFIG_HOME is invalid and must be ignored, not resolv
     assert.ok(!got.startsWith(ROOT), "the latch must never land inside the directory the agent is working in");
     // ...and any other relative form is equally invalid.
     assert.equal(latchDirUnder({ HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: "cfg" }), join(home, ".config", "moorai"));
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("XDG: an ABSOLUTE XDG_CONFIG_HOME is still honoured (the fix must not break XDG support)", { skip: process.platform === "win32" ? "POSIX legs" : false }, () => {
@@ -282,5 +283,5 @@ test("XDG: an ABSOLUTE XDG_CONFIG_HOME is still honoured (the fix must not break
   const cfg = mkdtempSync(join(tmpdir(), "moorai-cfg-"));
   try {
     assert.equal(latchDirUnder({ HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: cfg }), join(cfg, "moorai"));
-  } finally { rmSync(home, { recursive: true, force: true }); rmSync(cfg, { recursive: true, force: true }); }
+  } finally { rmTree(home); rmTree(cfg); }
 });

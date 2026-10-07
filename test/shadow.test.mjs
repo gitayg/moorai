@@ -6,11 +6,12 @@
 //   node --test test/shadow.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SHADOW = join(ROOT, "cli", "moorai-shadow.mjs");
@@ -81,7 +82,7 @@ test("sanctioned items are excluded; only the unsanctioned ones are reported", (
     assert.ok(names.includes("github.copilot"), "unsanctioned extension reported");
     assert.equal(d.summary.shadow, 3);
     assert.deepEqual(d.summary.byKind, { model: 1, "mcp-server": 1, extension: 1 });
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("MCP server with network+credential scope ranks 'high' and carries a scope note", () => {
@@ -98,14 +99,14 @@ test("MCP server with network+credential scope ranks 'high' and carries a scope 
     assert.match(gh.note, /credential/);
     // note is metadata only — no token value anywhere
     assert.ok(!/GITHUB_TOKEN|[=]\s*x\b/.test(JSON.stringify(gh)), "no env value leaks");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("--strict exits 1 when a shadow item exists, 0 when the device is clean", () => {
   const dirty = seedHome({ ...BASE, sanctioned: { models: ["llama3"], mcpServers: ["github"], extensions: ["anthropic.claude-code"] } });
   try {
     assert.equal(run(dirty, ["--strict"]).code, 1, "shadow present → non-zero");
-  } finally { rmSync(dirty, { recursive: true, force: true }); }
+  } finally { rmTree(dirty); }
 
   const clean = seedHome({
     ollama: ["llama3"], mcp: { github: { command: "x" } }, extensions: ["github.copilot-1.0.0"],
@@ -115,7 +116,7 @@ test("--strict exits 1 when a shadow item exists, 0 when the device is clean", (
     const r = run(clean, ["--strict", "--json"]);
     assert.equal(r.code, 0, "all sanctioned → zero exit");
     assert.equal(json(r).summary.shadow, 0);
-  } finally { rmSync(clean, { recursive: true, force: true }); }
+  } finally { rmTree(clean); }
 });
 
 test("no allow-list configured: everything is 'unclassified', nothing implied sanctioned", () => {
@@ -137,7 +138,7 @@ test("no allow-list configured: everything is 'unclassified', nothing implied sa
     assert.match(run(home).stdout, /No allow-list configured/);
     // --strict must still fail: a device we cannot classify is not attestable
     assert.equal(run(home, ["--strict"]).code, 1);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("MOORAI_SANCTIONED env overrides config (inline JSON) and wins", () => {
@@ -148,7 +149,7 @@ test("MOORAI_SANCTIONED env overrides config (inline JSON) and wins", () => {
     const d = json(run(home, ["--json"], env));
     assert.equal(d.allowlistSource, "env");
     assert.equal(d.summary.shadow, 0);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("fail-open: a broken AIBOM snapshot yields a clean partial result, not a crash", () => {
@@ -159,7 +160,7 @@ test("fail-open: a broken AIBOM snapshot yields a clean partial result, not a cr
     const d = json(r);
     assert.equal(d.inventoryDegraded, true);
     assert.equal(d.shadow.length, 0);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("output is content-free: only names/metadata, never prompts/tokens/args", () => {
@@ -173,5 +174,5 @@ test("output is content-free: only names/metadata, never prompts/tokens/args", (
     assert.ok(!out.includes("tok_LEAKME"), "no token value in output");
     assert.ok(!out.includes("GITHUB_TOKEN"), "no env var NAME/value in output");
     assert.ok(out.includes("github"), "server name is present (that IS the content-free datum)");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

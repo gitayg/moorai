@@ -28,6 +28,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import http from "node:http";
+import { rmTree } from "./fs-cleanup.mjs";
 import {
   policyCanonical, policyDigest, POLICY_SIG_VERSION, verifyPolicySignature,
   POLICY_PIN_VERSION, parsePolicyPin, reconcilePolicyPins, policyTrust, parsePublishedKeys, publicKeyId
@@ -231,7 +232,7 @@ async function run(home, { serve = null, pubkey = null, anchorPub = null, tenant
 const bypassed = (r) => r.stdout === "";
 const refused = (r) => /"permissionDecision":"ask"/.test(r.stdout);   // offline fail-closed default
 const enforced = (r) => /"permissionDecision":"deny"/.test(r.stdout); // a signed policy's own rule
-const withHome = async (fn) => { const home = newHome(); try { return await fn(home); } finally { rmSync(home, { recursive: true, force: true }); } };
+const withHome = async (fn) => { const home = newHome(); try { return await fn(home); } finally { rmTree(home); } };
 
 // ---- the gap this change closes ----
 

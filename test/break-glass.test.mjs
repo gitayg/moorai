@@ -9,13 +9,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { verifyBreakGlass, breakGlassCanonical, parseTrustedKeys, BREAK_GLASS_VERSION } from "../cli/hook-core.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -201,7 +202,7 @@ async function runHook({ marker, anchorPub, tenant = TENANT }) {
     return { alerts, stdout, code, categories: alerts.map((a) => a.category), hashes: alerts.map((a) => a.contentHash) };
   } finally {
     await new Promise((r) => server.close(r));
-    rmSync(home, { recursive: true, force: true });
+    rmTree(home);
   }
 }
 

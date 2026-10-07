@@ -87,8 +87,8 @@ export function alertEgress(server, tool, hits, blocked) {
   post({ threatId: 65, category: "Local secret value egress", riskLevel: blocked ? "Blocked" : "Critical", stage: "egress", tool: t(tool), mcpServer: server, ts: now(), contentHash: "egress:" + hits.join("."), ...IDENTITY });
 }
 
-export function alertTool(server, toolName, { category, riskLevel, threatId = 0, hash, decision = "notify" }) {
-  const a = { threatId, category, riskLevel, stage: "tool", tool: t(toolName), decision, mcpServer: server, ts: now(), contentHash: hash, ...IDENTITY };
+export function alertTool(server, toolName, { category, riskLevel, threatId = 0, hash, decision = "notify", reasonCode }) {
+  const a = { threatId, category, riskLevel, stage: "tool", tool: t(toolName), decision, ...(reasonCode ? { reasonCode } : {}), mcpServer: server, ts: now(), contentHash: hash, ...IDENTITY };
   post(a);
   if (riskLevel === "High" || riskLevel === "Critical" || riskLevel === "Blocked") {
     try { post({ ...literacyTouchpoint({ threatId, category, tool: t(toolName) }), ...IDENTITY }); } catch { /* evidence */ }
@@ -105,6 +105,13 @@ export function alertResult(server, toolName, findings, blocked) {
     }
     ledger(a);
   }
+}
+
+// A tools/call refused because block-mode tool drift quarantined the tool (mcp-proxy/tool-drift.mjs).
+export function alertDriftCall(server, tool, category, argsHash) {
+  const a = { threatId: 0, category, riskLevel: "Blocked", stage: "mcp", tool: t(tool), decision: "deny", reasonCode: "MCP_TOOL_DRIFT", mcpServer: server, ts: now(), contentHash: argsHash, ...IDENTITY };
+  post(a);
+  ledger(a);
 }
 
 export function alertHeadless(server, tool, alert) {

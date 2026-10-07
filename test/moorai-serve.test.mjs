@@ -6,11 +6,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import http from "node:http";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SERVE = join(ROOT, "cli", "moorai-serve.mjs");
@@ -123,7 +124,7 @@ test("scan: content-free verdicts; the text is never echoed; health and route li
     assert.ok(/^(ECONNRESET|EPIPE|status 413)$/.test(dropped), dropped);
     // DNS rebinding: a browser reaching 127.0.0.1 under an attacker's hostname.
     assert.equal((await req(s.listening, { body: { text: "x" }, headers: { host: "attacker.example:80" } })).status, 421);
-  } finally { await s.stop(); rmSync(home, { recursive: true, force: true }); }
+  } finally { await s.stop(); rmTree(home); }
 });
 
 test("tool-call: the same decision and message the shell hook returns for the same call (server mode)", async () => {
@@ -151,7 +152,7 @@ test("tool-call: the same decision and message the shell hook returns for the sa
     }
     assert.equal((await req(s.listening, { path: "/v1/tool-call", body: { input: {} } })).status, 400);
     assert.equal((await req(s.listening, { path: "/v1/tool-call", body: { tool: "Bash", input: [] } })).status, 400);
-  } finally { await s.stop(); rmSync(home, { recursive: true, force: true }); }
+  } finally { await s.stop(); rmTree(home); }
 });
 
 test("auth: with a token every /v1 call needs the bearer; /healthz stays open for probes", async () => {
@@ -163,7 +164,7 @@ test("auth: with a token every /v1 call needs the bearer; /healthz stays open fo
     assert.equal((await req(s.listening, { body: { text: "x" }, headers: { authorization: "Bearer wrong-token-wrong-token" } })).status, 401);
     assert.equal((await req(s.listening, { body: { text: "x" }, headers: { authorization: `Bearer ${SERVE_TOKEN}` } })).status, 200);
     assert.equal((await req(s.listening, { method: "GET", path: "/healthz" })).status, 200);
-  } finally { await s.stop(); rmSync(home, { recursive: true, force: true }); }
+  } finally { await s.stop(); rmTree(home); }
 });
 
 test("reporting: content-free alerts under the workload identity; nothing about the content is written to disk", async () => {
@@ -184,7 +185,7 @@ test("reporting: content-free alerts under the workload identity; nothing about 
     }
     const walk = (d) => readdirSync(d).flatMap((f) => { const p = join(d, f); return statSync(p).isDirectory() ? walk(p) : [p]; });
     for (const f of walk(home)) assert.ok(!readFileSync(f, "utf8").includes(GH), `content persisted in ${f}`);
-  } finally { srv.close(); rmSync(home, { recursive: true, force: true }); }
+  } finally { srv.close(); rmTree(home); }
 });
 
 test("latency: sidecar p50 for a 2 KB scan vs the hook's per-call process", async (t) => {
@@ -204,5 +205,5 @@ test("latency: sidecar p50 for a 2 KB scan vs the hook's per-call process", asyn
     }
     t.diagnostic(`sidecar 2KB scan p50 ${p50(side).toFixed(2)} ms (n=200) · hook process per call p50 ${p50(hook).toFixed(1)} ms (n=15, same 2KB as a Write)`);
     assert.ok(p50(side) < p50(hook), "the sidecar must be cheaper than a process per call");
-  } finally { await s.stop(); rmSync(home, { recursive: true, force: true }); }
+  } finally { await s.stop(); rmTree(home); }
 });

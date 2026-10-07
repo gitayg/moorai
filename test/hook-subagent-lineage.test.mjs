@@ -11,7 +11,7 @@
 //   node --test test/hook-subagent-lineage.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,7 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import { deriveKey, hashWithKey } from "../cli/content-hash.mjs";
 import { buildBaseline } from "../data/agent-baseline.js";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -95,6 +96,6 @@ test("a top-level Read is attributed to the session; a subagent's Read is a dist
     assert.equal(base.actorCount, 2, "the session and the subagent must be distinct baseline actors");
     assert.ok(base.actors[SESSION] && base.actors[CHILD]);
 
-    rmSync(home, { recursive: true, force: true });
+    rmTree(home);
   });
 });

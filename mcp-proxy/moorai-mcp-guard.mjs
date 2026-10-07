@@ -16,10 +16,11 @@
 // the caps, mcp-proxy/tool-baseline.mjs for the cross-call (shadowing / capability-expansion) half.
 //
 // ENFORCEMENT POSTURE AT THE tools/list STAGE — REPORT-FIRST, and never a mutation:
-//   * A tools/list response is NEVER altered, delayed, reordered, or dropped. Byte-identity is a
-//     hard contract (test/mcp-tool-stage.test.mjs asserts it on the wire), because "block" here
-//     could only mean deleting a tool from the agent's list, which is a lie about what the server
-//     offers and breaks clients that cache the list.
+//   * A tools/list response is NEVER altered, delayed, reordered, or dropped under the default policy.
+//     Byte-identity is a hard contract there (test/mcp-tool-stage.test.mjs asserts it on the wire).
+//     The one opt-in exception is `mcpToolDrift: "block"` (tool-drift.mjs, "BLOCK-MODE TOOL DRIFT"
+//     below): the org asked for a tool that changed since approval to disappear until re-approved, so
+//     the listing is judged before it is forwarded and a quarantined tool is left out of it.
 //   * A finding therefore ALERTS. Every vector-3 threat resolves through threatActionFor, whose
 //     default for #60/#50 is "notify" — the house default; nothing here invents a new blocking one.
 //   * Only when an org policy explicitly resolves a finding to block/kill does anything stronger
@@ -61,6 +62,7 @@ import { buildEngine, mcpGateway, decideText, literacyTouchpoint, loadVerifiedPo
 import { CAPS, toolsOfResponse, toolScanText, toolIdentity, resultOfResponse } from "./tool-scan.mjs";
 import { decideInbound, inboundText } from "../cli/inbound.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "./tool-baseline.mjs";
+import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON } from "./tool-drift.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
@@ -177,8 +179,10 @@ function durablePosture() {
   });
 }
 
+// MOORAI_TEST_POLICY_REFRESH_MS: a test hook that shortens the 60 s refresh (more fetching, never less).
+const POLICY_REFRESH_MS = process.env.MOORAI_TEST_POLICY_REFRESH_MS != null ? Math.max(0, Number(process.env.MOORAI_TEST_POLICY_REFRESH_MS) || 0) : 60000;
 async function ensurePolicy() {
-  if (Date.now() - LAST_POLICY_LOAD < 60000 && ENGINE) return;
+  if (Date.now() - LAST_POLICY_LOAD < POLICY_REFRESH_MS && ENGINE) return;
   try {
     const v = await loadVerifiedPolicy(CONFIG);
     COACH = !enforcementAllowed(CONFIG, { managed: durablePosture().posture === "fail-closed" });
@@ -356,6 +360,7 @@ async function handleLine(rawLine) {
   try { msg = JSON.parse(trimmed); } catch { forward(rawLine); return; } // not JSON we understand → pass through
 
   if (msg && msg.result && Array.isArray(msg.result.roots)) rememberRoots(msg.result.roots);
+  if (msg && msg.method === "tools/list") rememberList(msg);
   if (!msg || msg.method !== "tools/call" || !msg.params || typeof msg.params !== "object") { forward(rawLine); return; }
 
   // This is a tool-call — the surface we gate. Counted for the usage cross-check first, blocked or not
@@ -375,6 +380,20 @@ async function handleLine(rawLine) {
       auditCall(tool, "deny", argsHash);
       writeBlock(msg.id, "this tool's advertised metadata was blocked by policy (MCP tool poisoning)");
       return;
+    }
+
+    // Block-mode tool drift (tool-drift.mjs): a tool that changed since approval, was added after it, or
+    // shadows another server's tool is refused until an admin re-approves it. Re-judged against the
+    // policy in force now, so a re-approval releases it without a fresh tools/list.
+    if (driftBlocking()) {
+      if (!DRIFT.has(tool) && obsInFlight) await withDeadline(obsQueue, CAPS.resultDeadlineMs);
+      const q = DRIFT.checkCall(tool, { policy: POLICY });
+      if (q) {
+        alertDriftCall(tool, q, argsHash);
+        auditCall(tool, "deny", argsHash);
+        writeBlock(msg.id, q.reason);
+        return;
+      }
     }
 
     if (await reputationGate(msg, tool, argsHash)) return;
@@ -443,14 +462,14 @@ function seenOnce(token) {
   return true;
 }
 
-function alertTool(toolName, { category, riskLevel, threatId = 0, hash, decision = "notify" }) {
-  post({ threatId, category, riskLevel, stage: "tool", tool: `desktop:${toolName}`, decision, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: hash, ...IDENTITY });
+function alertTool(toolName, { category, riskLevel, threatId = 0, hash, decision = "notify", reasonCode }) {
+  post({ threatId, category, riskLevel, stage: "tool", tool: `desktop:${toolName}`, decision, ...(reasonCode ? { reasonCode } : {}), mcpServer: SERVER, ts: new Date().toISOString(), contentHash: hash, ...IDENTITY });
   if (riskLevel === "High" || riskLevel === "Critical" || riskLevel === "Blocked") {
     try { post({ ...literacyTouchpoint({ threatId, category, tool: `desktop:${toolName}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
   }
   try {
     recordAction(applyCaptureTier({
-      threatId, category, riskLevel, stage: "tool", tool: `desktop:${toolName}`, decision,
+      threatId, category, riskLevel, stage: "tool", tool: `desktop:${toolName}`, decision, ...(reasonCode ? { reasonCode } : {}),
       mcpServer: SERVER, ts: new Date().toISOString(), contentHash: hash, ...IDENTITY
     }, {}, (POLICY && POLICY.captureTier) || "content-free"));
   } catch { /* ledger is best-effort */ }
@@ -459,9 +478,12 @@ function alertTool(toolName, { category, riskLevel, threatId = 0, hash, decision
 // One tools/list response. Bounded by CAPS.maxTools and by a wall-clock budget checked BETWEEN tools
 // — regex execution in V8 is synchronous and cannot be interrupted mid-match, so the honest bound is
 // "stop starting new work", plus the per-tool byte cap that keeps any single match small.
-async function observeTools(tools) {
+async function observeTools(tools, { driftDone = false, complete = false } = {}) {
   if (process.env.MOORAI_TEST_TOOLSCAN_THROW) throw new Error("injected tool-scan fault (test hook)");
   await ensurePolicy();
+  // Block mode judged this listing inline (before forwarding it). If the policy only became known
+  // now, it is judged here instead: the list has already gone, so the call gate is the enforcement.
+  if (!driftDone && driftBlocking()) { judgeListing(tools, complete); driftDone = true; }
   const deadline = Date.now() + CAPS.scanBudgetMs;
   const baseline = loadBaseline();
   let counter = 0;
@@ -494,7 +516,10 @@ async function observeTools(tools) {
     }
 
     // (b) cross-call drift — shadowing across servers, capability expansion / rug-pull on one server.
+    // Alert mode only: block mode judged it above and never re-baselines a drifted tool.
+    if (driftDone) continue;
     const cur = toolIdentity(tool, SERVER);
+    DRIFT.observe(name, cur);
     for (const sig of driftSignals(baseline[cur.key], cur)) {
       if (!seenOnce(sig.token)) continue;
       alertTool(name, { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token });
@@ -709,11 +734,28 @@ async function gateResult(lineBuf) {
     let msg;
     try { msg = JSON.parse(s); } catch { return pass(); }
 
-    // The tool stage is unchanged and stays FORWARD-FIRST: a tools/list response is never altered,
-    // delayed or reordered (test/mcp-tool-stage.test.mjs asserts byte-identity on the wire), so it is
-    // written before the observation is queued and the observation is structurally unable to block.
+    // The tool stage stays FORWARD-FIRST by default: a tools/list response is never altered, delayed
+    // or reordered (test/mcp-tool-stage.test.mjs asserts byte-identity on the wire), so it is written
+    // before the observation is queued and the observation is structurally unable to block. Only
+    // `mcpToolDrift: "block"` judges it first (test/mcp-tool-drift-proxy.test.mjs).
     const tools = toolsOfResponse(msg);
-    if (tools) { pass(); queueToolObservation(tools); return; }
+    if (tools) {
+      // Alert mode (the default): unchanged — forwarded byte-for-byte first, observed off the path.
+      // Block mode: judged BEFORE forwarding; a quarantined tool is left out of the list the client
+      // gets. The original bytes still go whenever nothing is quarantined.
+      const complete = listComplete(msg);
+      if (await listBlocking()) {
+        const ev = judgeListing(tools, complete);
+        if (ev && ev.changed) {
+          const out = { ...msg, result: { ...msg.result, tools: msg.result.tools.filter((t) => !(t && typeof t === "object" && typeof t.name === "string" && ev.names.has(t.name))) } };
+          done = true;
+          process.stdout.write(JSON.stringify(out) + "\n");
+        } else pass();
+        queueToolObservation(tools, { driftDone: true, complete });
+        return;
+      }
+      pass(); queueToolObservation(tools, { complete }); return;
+    }
 
     const result = resultOfResponse(msg);
     if (!result) return pass();
@@ -741,10 +783,64 @@ async function gateResult(lineBuf) {
 // ---- tools/list observation backlog. This one is OFF the transport (the bytes are already gone), so
 // it is the one queue where a backlog may be DROPPED rather than allowed to grow without bound. ----
 let obsInFlight = 0;
-function queueToolObservation(tools) {
+function queueToolObservation(tools, opts) {
   if (obsInFlight >= CAPS.maxQueuedObs) return; // skip a LISTING, never a result
   obsInFlight++;
-  obsQueue = obsQueue.then(() => observeTools(tools)).catch(() => {}).finally(() => { obsInFlight--; });
+  obsQueue = obsQueue.then(() => observeTools(tools, opts)).catch(() => {}).finally(() => { obsInFlight--; });
+}
+
+// ============================================================================================
+// BLOCK-MODE TOOL DRIFT — policy `mcpToolDrift: "block"` (tool-drift.mjs). Inert in alert mode.
+// ============================================================================================
+const DRIFT = createDriftTracker({ server: SERVER });
+// Coach (unenrolled, unmanaged) never blocks, so block mode degrades to today's alert path there.
+function driftBlocking() { return !COACH && toolDriftMode(POLICY) === "block"; }
+
+// The mode for a tools/list about to be forwarded. Never loaded yet (this process just started): if
+// the device's last policy said "block", wait for the policy up to DRIFT_POLICY_WAIT_MS; otherwise, or
+// past the wait, forward unjudged and let the off-path observation judge it once the policy arrives
+// (the call gate enforces; the list is not filtered).
+const DRIFT_POLICY_WAIT_MS = 2000;
+async function listBlocking() {
+  if (!LAST_POLICY_LOAD) { if (!policyMayBlock()) return false; await withDeadline(ensurePolicy(), DRIFT_POLICY_WAIT_MS); }
+  else ensurePolicy(); // a refresh, not awaited: never a remote server's latency on the transport
+  return Boolean(LAST_POLICY_LOAD) && driftBlocking();
+}
+
+// tools/list requests that asked for a later page. Only a whole listing can show a REMOVED tool.
+const LIST_PAGED = new Set();
+function rememberList(msg) {
+  if (msg.id == null) return;
+  if (LIST_PAGED.size >= 512) LIST_PAGED.clear();
+  if (msg.params && typeof msg.params === "object" && msg.params.cursor != null) LIST_PAGED.add(String(msg.id));
+  else LIST_PAGED.delete(String(msg.id));
+}
+function listComplete(msg) {
+  const paged = msg.id != null && LIST_PAGED.delete(String(msg.id));
+  return !paged && msg.result.nextCursor == null;
+}
+
+// Judge one listing in block mode: quarantine verdicts, alerts, and the content-free fingerprint
+// report the console pins on approval. → { changed, names } or null when it could not run.
+function judgeListing(tools, complete) {
+  try {
+    const ev = DRIFT.evaluateListing(tools, { policy: POLICY, complete });
+    for (const q of ev.quarantined) {
+      for (const sig of q.signals) {
+        if (!seenOnce(`quarantine|${sig.token}`)) continue;
+        alertTool(q.name, { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "quarantine", reasonCode: TOOL_DRIFT_REASON });
+      }
+    }
+    for (const sig of ev.removed) {
+      if (seenOnce(sig.token)) alertTool("mcp", { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "notify", reasonCode: TOOL_DRIFT_REASON });
+    }
+    reportFingerprints({ config: CONFIG, server: SERVER, fingerprints: ev.fingerprints, enrolled: isEnrolled(CONFIG) });
+    return { changed: ev.changed, names: new Set(ev.quarantined.map((q) => q.name)) };
+  } catch { return null; } // governance, not a sandbox: a failed judgement forwards the list
+}
+
+function alertDriftCall(tool, q, argsHash) {
+  post({ threatId: 0, category: q.category, riskLevel: "Blocked", stage: "mcp", tool: `desktop:${tool}`, decision: "deny", reasonCode: TOOL_DRIFT_REASON, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: argsHash, ...IDENTITY });
 }
 
 // ---- newline-delimited framing of Claude Desktop → proxy stdin. Buffer partial lines; a tool-call must

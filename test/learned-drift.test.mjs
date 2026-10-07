@@ -4,7 +4,7 @@
 //   node --test --import ./test/hermetic-env.mjs test/learned-drift.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import { observeDrift, driftConfig, normalizeRemote, cloudProfiles } from "../data/learned-drift.js";
 import { repoIdentity, remoteFromConfig } from "../cli/drift-state.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -150,7 +151,7 @@ test("repoIdentity: origin remote, first-remote fallback, no remote, worktree .g
     assert.equal(repoIdentity(wt).remote, "git@github.com:acme/app.git");
     assert.equal(repoIdentity("relative/path"), null);
     assert.equal(remoteFromConfig(""), "");
-  } finally { rmSync(base, { recursive: true, force: true }); }
+  } finally { rmTree(base); }
 });
 
 // ---- end to end through the real hook ----
@@ -231,7 +232,7 @@ test("hook e2e: silent during learning, one alert for a new host, silent on repe
         assert.ok(!blob.includes(raw), `raw value ${raw} leaked into state or alert`);
       }
       assert.ok(existsSync(join(home, ".moorai", "learned-drift.json")));
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -251,7 +252,7 @@ test("hook e2e: a new git repository and a new MCP server after learning alert w
       assert.deepEqual(types, ["mcp", "repo", "tool"], `got ${JSON.stringify(types)}`);
       const blob = stateText(home) + JSON.stringify(driftAlerts(alerts));
       for (const raw of ["secret-merger-repo", "ghp_rawtoken123", "zz_payroll_srv", "mcp__zz"]) assert.ok(!blob.includes(raw), `raw ${raw} leaked`);
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -264,7 +265,7 @@ test("hook e2e: a corrupted state file never breaks the call and never alerts", 
       assert.equal(await runHook(home, bash("curl -s https://after-corrupt.example.com")), "allow");
       assert.equal(driftAlerts(alerts).length, 0, "a reset baseline starts in learning");
       JSON.parse(readFileSync(join(home, ".moorai", "learned-drift.json"), "utf8"));
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -275,6 +276,6 @@ test("hook e2e: mode off records and posts nothing", async () => {
       await runHook(home, bash("curl -s https://off-mode.example.com"));
       assert.equal(driftAlerts(alerts).length, 0);
       assert.ok(!existsSync(join(home, ".moorai", "learned-drift.json")));
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });

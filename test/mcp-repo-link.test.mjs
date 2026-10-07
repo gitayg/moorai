@@ -8,7 +8,7 @@
 // rather than a silent trip to the network.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,7 @@ import { checkRepoLink } from "../cli/mcp-repo-link.mjs";
 import { parseRepoUrl, npmDeclaredRepo, pypiDeclaredRepo, manifestInfo, candidateDirs, sameName } from "../data/repo-link.js";
 import { assessServer, assessServerSync } from "../cli/mcp-reputation.mjs";
 import { REASON_WEIGHTS, scoreReputation } from "../data/mcp-reputation.js";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const REC = JSON.parse(readFileSync(join(ROOT, "test/fixtures/mcp-repo-link/recorded.json"), "utf8"));
@@ -154,7 +155,7 @@ test("reputation: repo codes arrive only through the opt-in registry lookup, cac
 
     const sync = assessServerSync(decl, { home, stateDir });
     assert.ok(sync.reasons.includes("repo-mismatch"), "the hook's offline read reuses what the proxy cached");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { rmTree(root); }
 });
 
 test("weights: a borrowed link alone drops a server to fair; with a typosquat it is bad", () => {

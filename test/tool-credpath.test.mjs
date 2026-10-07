@@ -20,6 +20,7 @@ import { toolScanText } from "../mcp-proxy/tool-scan.mjs";
 import { addToolSignals } from "../cli/mcp-reputation.mjs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const threats = JSON.parse(readFileSync(join(ROOT, "data/threats.json"), "utf8"));
@@ -118,7 +119,7 @@ test("reputation: the finding lands in the existing tool-poisoning signal", () =
     assert.ok(f.length, "v3-desc-005's shape is a #60 finding");
     const rep = addToolSignals({ command: "npx", args: ["-y", "some-mcp-server@1.0.0"] }, f.map((x) => ({ threatId: x.threat.id, riskLevel: x.threat.riskLevel })), { stateDir, home: stateDir });
     assert.ok(rep.reasons.includes("tool-poisoning"));
-  } finally { rmSync(stateDir, { recursive: true, force: true }); }
+  } finally { rmTree(stateDir); }
 });
 
 test("bounded: 60 KB of path-dense text decides quickly", () => {

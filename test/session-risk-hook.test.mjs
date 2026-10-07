@@ -6,12 +6,13 @@
 //   node --test --import ./test/hermetic-env.mjs test/session-risk-hook.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import http from "node:http";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -84,7 +85,7 @@ test("hook e2e: untrusted content then an upload alerts in report mode and chang
       assert.equal(statSync(join(home, ".moorai", "session.key")).mode & 0o777, 0o600);
       const blob = readFileSync(p, "utf8") + readFileSync(join(home, ".moorai", "circuit-breaker.json"), "utf8") + JSON.stringify(cat(alerts, TAINT));
       for (const raw of ["partner-example", "curl", "status=ok", "vendor", "t1"]) assert.ok(!blob.includes(raw), `raw ${raw} leaked`);
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -98,7 +99,7 @@ test("hook e2e: sessionRisk mode ask raises the tainted upload to ask; another s
       assert.match(r.reason, /session risk — outbound action after untrusted content/);
       assert.equal((await runHook(home, pre("a1", "Bash", { command: "npm test" }))).decision, "allow", "an ordinary call is not escalated");
       assert.equal((await runHook(home, pre("a2", "Bash", UPLOAD))).decision, "allow", "a fresh session is not tainted");
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -111,7 +112,7 @@ test("hook e2e: the same call repeated trips the circuit breaker once; report mo
       assert.equal(hits.length, 1);
       assert.equal(hits[0].threatId, 38);
       assert.equal(hits[0].signature.count, 4);
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -124,7 +125,7 @@ test("hook e2e: a repeated call whose result changes (PostToolUse) is progress, 
         await runHook(home, { hook_event_name: "PostToolUse", session_id: "p1", tool_name: "Bash", tool_input: { command: "npm test" }, tool_response: { stdout: `tests 40\npass ${30 + i}\nfail ${10 - i}`, stderr: "" } });
       }
       assert.equal(cat(alerts, LOOP).length, 0);
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -144,7 +145,7 @@ test("hook e2e: circuitBreaker mode deny denies the tripping call and the rest o
       assert.equal((await runHook(home, pre("d2", "Bash", { command: "ls -la" }))).decision, "allow", "other sessions run");
       assert.equal(cat(alerts, LOOP).length, 1);
       assert.equal(cat(alerts, LOOP)[0].riskLevel, "Blocked");
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -157,6 +158,6 @@ test("hook e2e: an unenrolled device coaches on the trip and never denies", asyn
       assert.ok(outs.every((o) => o.decision !== "deny"), "never a deny");
       assert.match(outs[2].raw, /circuit breaker/, "the tripping call is coached");
       assert.doesNotMatch(outs[3].raw, /circuit breaker/, "report mode: coached once");
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });

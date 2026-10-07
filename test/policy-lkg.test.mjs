@@ -27,6 +27,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import http from "node:http";
+import { rmTree } from "./fs-cleanup.mjs";
 import {
   policyCanonical, policyDigest, POLICY_SIG_VERSION, POLICY_PIN_VERSION,
   selectLastKnownGood, assessPinAbsence, publicKeyId
@@ -183,7 +184,7 @@ async function run(home, { serve = null, pubkey = null, tenant = TENANT, offline
 const bypassed = (r) => r.stdout === "";
 const refused = (r) => /"permissionDecision":"ask"/.test(r.stdout);
 const enforced = (r) => /"permissionDecision":"deny"/.test(r.stdout);
-const withHome = async (fn) => { const home = newHome(); try { return await fn(home); } finally { rmSync(home, { recursive: true, force: true }); } };
+const withHome = async (fn) => { const home = newHome(); try { return await fn(home); } finally { rmTree(home); } };
 
 // ---- ITEM 1: the gap ----
 

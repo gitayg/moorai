@@ -5,11 +5,12 @@
 //   node --test test/scan-export.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import * as barrel from "../scan.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 import {
   scanPath,
   scanFileText,
@@ -72,6 +73,6 @@ test("scanPath works through the barrel: benign CLEAN, reverse-shell DO-NOT-INST
     // Belt-and-braces: the serialized result must not contain the payload substring.
     assert.ok(!JSON.stringify(evil).includes("/dev/tcp/"), "serialized scan output must not leak the payload");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTree(root);
   }
 });

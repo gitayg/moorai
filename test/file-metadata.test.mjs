@@ -12,13 +12,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import http from "node:http";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fileMetadataText } from "../data/file-metadata.js";
 import { exifTextFields } from "../data/exif.js";
 import { buildEngine, decideFileMetadata } from "../cli/hook-core.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -184,7 +185,7 @@ async function runHook(payload) {
     return { status: r.status, stdout: r.stdout, stderr: r.stderr, alerts };
   } finally {
     srv.close();
-    rmSync(home, { recursive: true, force: true });
+    rmTree(home);
   }
 }
 

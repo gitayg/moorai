@@ -5,11 +5,12 @@
 //   node --test --import ./test/hermetic-env.mjs test/mcp-reputation-inventory.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const AIBOM = join(ROOT, "cli", "moorai-aibom.mjs");
@@ -49,7 +50,7 @@ test("AIBOM: every MCP server carries its reputation (score, band, codes), score
     for (const leak of [SECRET, LOCAL]) assert.equal(out.includes(leak), false, `AIBOM leaked ${leak}`);
     const md = run(AIBOM, home, ["--format", "md"]);
     assert.match(md, /\| squat \| claude \| stdio \| .* \| \d+\/100 (poor|bad) \(.*mcp-typosquat.*\) \|/);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("shadow: an MCP server's reputation is shown, and a poor one ranks high risk", () => {
@@ -65,5 +66,5 @@ test("shadow: an MCP server's reputation is shown, and a poor one ranks high ris
     assert.match(human, /squat .*reputation \d+\/100 (poor|bad)/);
     assert.equal(human.includes(SECRET), false);
     assert.equal(readFileSync(join(home, ".claude.json"), "utf8").includes(SECRET), true, "sanity: the secret was in the config");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

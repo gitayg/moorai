@@ -2,7 +2,9 @@
 // message, minus the stdio transport. One guard per route (= one remote MCP server label).
 //
 //   gateCall(msg)        a tools/call REQUEST → { block: null } (forward) or { block: "<reason>" }
-//   observeTools(tools)  a tools/list RESULT  → never alters it; alerts, baseline drift, quarantine
+//   observeTools(tools)  a tools/list RESULT  → alerts, baseline drift, quarantine; alters the list only
+//                        under policy mcpToolDrift "block" (../mcp-proxy/tool-drift.mjs), and then only
+//                        to leave out a quarantined tool
 //   gateResult(msg,tool) any other RESULT     → null (forward the original) or a replacement message
 //
 // Order for a call, same as the proxy and the hook's mcp__* branch: quarantine (a tool whose metadata
@@ -20,6 +22,8 @@ import { mcpGateway, decideText, threatActionFor } from "../cli/hook-core.mjs";
 import { CAPS, toolScanText, toolIdentity, resultOfResponse } from "../mcp-proxy/tool-scan.mjs";
 import { decideInbound, inboundText } from "../cli/inbound.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "../mcp-proxy/tool-baseline.mjs";
+import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON } from "../mcp-proxy/tool-drift.mjs";
+import { isEnrolled } from "../data/enforcement.js";
 import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
 import { egressHits } from "../cli/secret-egress.mjs";
 import { assessServer, addToolSignals } from "../cli/mcp-reputation.mjs";
@@ -28,7 +32,7 @@ import { settleHeadlessAsk } from "../cli/server-mode.mjs";
 import { contentHash } from "../cli/content-hash.mjs";
 import { state, ensurePolicy } from "./policy.mjs";
 import { profileCheck } from "./profile.mjs";
-import { IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, alertProfile, recordLedger } from "./report.mjs";
+import { CONFIG, IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, alertProfile, alertDriftCall, recordLedger } from "./report.mjs";
 
 const RANK = { allow: 1, ask: 2, deny: 3 };
 
@@ -52,6 +56,7 @@ function budgetOk() {
 // tools/list observations run off the request path, serialized (the baseline file is shared).
 let obsQueue = Promise.resolve();
 let obsInFlight = 0;
+const DRIFT_POLICY_WAIT_MS = 2000;
 
 function toPath(r) {
   try { return /^file:/i.test(r) ? fileURLToPath(r) : r; } catch { return null; }
@@ -63,6 +68,9 @@ export function createGuard(route) {
   const cfgRoots = route.roots.map(toPath).filter(Boolean);
   let clientRoots = [];
   const REP_DECL = { url: route.url };
+  const DRIFT = createDriftTracker({ server: SERVER });
+  // Coach (unenrolled, unmanaged) never blocks, so block mode degrades to today's alert path there.
+  const driftBlocking = () => !state.COACH && toolDriftMode(state.POLICY) === "block";
   let REP = null;
   let REP_READY = null;
 
@@ -113,6 +121,17 @@ export function createGuard(route) {
       alertBlock(SERVER, tool, "content", argsHash);
       auditCall(SERVER, tool, "deny", argsHash);
       return { block: "this tool's advertised metadata was blocked by policy (MCP tool poisoning)" };
+    }
+    // Block-mode tool drift: re-judged against the policy in force now, so a console re-approval
+    // releases the tool without the client listing again.
+    if (driftBlocking()) {
+      if (!DRIFT.has(tool) && obsInFlight) await withDeadline(obsQueue, CAPS.resultDeadlineMs);
+      const q = DRIFT.checkCall(tool, { policy: state.POLICY });
+      if (q) {
+        alertDriftCall(SERVER, tool, q.category, argsHash);
+        auditCall(SERVER, tool, "deny", argsHash);
+        return { block: q.reason };
+      }
     }
     const rep = await reputationBlocks();
     if (rep) { auditCall(SERVER, tool, "deny", argsHash); return { block: rep }; }
@@ -179,8 +198,37 @@ export function createGuard(route) {
     return { block: null };
   }
 
-  async function observeTools(tools) {
+  // Judge one listing in block mode → { changed, names } or null when it could not run.
+  function judgeListing(tools, complete) {
+    try {
+      const ev = DRIFT.evaluateListing(tools, { policy: state.POLICY, complete });
+      for (const q of ev.quarantined) {
+        for (const sig of q.signals) {
+          if (!seenOnce(`${SERVER}|quarantine|${sig.token}`)) continue;
+          alertTool(SERVER, q.name, { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "quarantine", reasonCode: TOOL_DRIFT_REASON });
+        }
+      }
+      for (const sig of ev.removed) {
+        if (seenOnce(`${SERVER}|${sig.token}`)) alertTool(SERVER, "mcp", { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "notify", reasonCode: TOOL_DRIFT_REASON });
+      }
+      reportFingerprints({ config: CONFIG, server: SERVER, fingerprints: ev.fingerprints, enrolled: isEnrolled(CONFIG) });
+      return { changed: ev.changed, names: new Set(ev.quarantined.map((q) => q.name)) };
+    } catch { return null; }
+  }
+
+  // Block mode for a listing about to be forwarded. A gateway that has not loaded a policy yet waits
+  // for one up to DRIFT_POLICY_WAIT_MS when its last policy said "block" (tool-drift.mjs
+  // policyMayBlock); otherwise, or past the wait, the listing goes unjudged and the off-path
+  // observation judges it when the policy arrives (the call gate enforces; the list is not filtered).
+  async function listBlocking() {
+    if (!state.loadedAt) { if (!policyMayBlock()) return false; await withDeadline(ensurePolicy(), DRIFT_POLICY_WAIT_MS); }
+    else ensurePolicy();
+    return Boolean(state.loadedAt) && driftBlocking();
+  }
+
+  async function observeTools(tools, { driftDone = false, complete = false } = {}) {
     await ensurePolicy();
+    if (!driftDone && driftBlocking()) { judgeListing(tools, complete); driftDone = true; }
     const { POLICY, ENGINE } = state;
     const deadline = Date.now() + CAPS.scanBudgetMs;
     const baseline = loadBaseline();
@@ -208,7 +256,10 @@ export function createGuard(route) {
         if (d.decision === "deny") { if (state.COACH) coachNote(`advertised metadata of MCP tool ${name} (server ${SERVER})`, d.reasons.join(", "), d.alternatives); else QUARANTINE.add(name); }
       }
       // Rug-pull / capability expansion / shadowing against the shared tool baseline, as the proxy does.
+      // Alert mode only: block mode judged it above and never re-baselines a drifted tool.
+      if (driftDone) continue;
       const cur = toolIdentity(tool, SERVER);
+      DRIFT.observe(name, cur);
       for (const sig of driftSignals(baseline[cur.key], cur)) {
         if (!seenOnce(`${SERVER}|${sig.token}`)) continue;
         alertTool(SERVER, name, { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token });
@@ -226,10 +277,10 @@ export function createGuard(route) {
     }
   }
 
-  function queueToolObservation(tools) {
+  function queueToolObservation(tools, opts) {
     if (obsInFlight >= CAPS.maxQueuedObs) return;
     obsInFlight++;
-    obsQueue = obsQueue.then(() => observeTools(tools)).catch(() => {}).finally(() => { obsInFlight--; });
+    obsQueue = obsQueue.then(() => observeTools(tools, opts)).catch(() => {}).finally(() => { obsInFlight--; });
   }
 
   async function scanResult(result) {
@@ -247,13 +298,24 @@ export function createGuard(route) {
   }
 
   // One server→client message. Returns a replacement message object, or null to forward the original.
-  async function gateResult(msg, toolName) {
+  // `paged`: the request asked for a later page, so an absent tool is not a removed one.
+  async function gateResult(msg, toolName, { paged = false } = {}) {
     try {
       const r = msg && msg.result;
       if (r && typeof r === "object" && Array.isArray(r.tools)) {
         const tools = r.tools.filter((x) => x && typeof x === "object" && !Array.isArray(x) && typeof x.name === "string");
-        if (tools.length) queueToolObservation(tools);
-        return null; // a listing is never altered
+        if (!tools.length) return null;
+        const complete = !paged && r.nextCursor == null;
+        // Alert mode (the default): a listing is never altered. Block mode: a quarantined tool is left
+        // out of it; with nothing quarantined the original still goes.
+        if (await listBlocking()) {
+          const ev = judgeListing(tools, complete);
+          queueToolObservation(tools, { driftDone: true, complete });
+          if (!ev || !ev.changed) return null;
+          return { ...msg, result: { ...r, tools: r.tools.filter((x) => !(x && typeof x === "object" && typeof x.name === "string" && ev.names.has(x.name))) } };
+        }
+        queueToolObservation(tools, { complete });
+        return null;
       }
       const result = resultOfResponse(msg);
       if (!result) return null;

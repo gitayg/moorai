@@ -17,10 +17,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -83,7 +84,7 @@ test("Layer A: installHooks registers the write family and WebFetch, not just Re
     for (const m of ["Read", "Bash", "mcp__.*", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"]) {
       assert.ok(matchers.includes(m), `PreToolUse matcher "${m}" must be registered; got ${matchers.join(", ")}`);
     }
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 // Read, do not import: cli/moorai-hook.mjs calls main() at module scope and main() awaits stdin, so an
@@ -115,7 +116,7 @@ test("Layer A: the install is idempotent and uninstall removes every MoorAI entr
     spawnSync("node", [HOOK, "uninstall"], { env: env(home), encoding: "utf8", timeout: 30000 });
     const s2 = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8"));
     assert.equal(s2.hooks.PreToolUse.length, 0);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 // An existing install already holds a 4-matcher settings.json. A code change alone never rewrites it,
@@ -132,7 +133,7 @@ test("Layer A upgrade path: a stale 4-matcher settings.json converges on an ordi
     for (const want of ["Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"]) {
       assert.ok(m.includes(want), `stale install must self-converge; "${want}" missing from ${m.join(", ")}`);
     }
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("Layer A upgrade path: convergence never re-adds matchers the operator uninstalled", () => {
@@ -143,7 +144,7 @@ test("Layer A upgrade path: convergence never re-adds matchers the operator unin
     runHook(home, { tool_name: "Read", tool_input: { file_path: join(home, "src", "math.js") }, session_id: "conv-2" });
     const pre = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8")).hooks.PreToolUse;
     assert.deepEqual(pre, [], "an uninstalled device must stay uninstalled");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -165,7 +166,7 @@ test("Layer B: the same payload text is stopped as Write/Edit/MultiEdit/Notebook
       const r = runHook(home, { tool_name: tool, tool_input, session_id: `p-${tool}` });
       assert.equal(r.decision, "deny", `${tool} must deny the same text Bash denies; got ${r.decision} ${r.reason}`);
     }
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("Layer B: a write that plants an untrusted installer halts for sign-off (justify → ask)", () => {
@@ -173,7 +174,7 @@ test("Layer B: a write that plants an untrusted installer halts for sign-off (ju
   try {
     const r = runHook(home, { tool_name: "Write", tool_input: { file_path: join(home, ".bashrc"), content: `export PATH=$PATH\n${UNTRUSTED_INSTALL}\n` }, session_id: "w-rc" });
     assert.equal(r.decision, "ask", `got ${r.decision} ${r.reason}`);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("Layer B: ordinary source writes and edits stay ALLOWED (the negative control)", () => {
@@ -191,7 +192,7 @@ test("Layer B: ordinary source writes and edits stay ALLOWED (the negative contr
       const r = runHook(home, { tool_name: tool, tool_input, session_id: `b-${tool}` });
       assert.equal(r.decision, "allow", `benign ${tool} must stay allowed; got ${r.decision} ${r.reason}`);
     }
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 // The write family's stage is a decision, not an accident, so it is pinned in BOTH directions. The two
@@ -212,8 +213,8 @@ test("Layer B: the write family is scanned at the OUTPUT stage, not the FILE sta
     const b = runHook(isOutput, { tool_name: "Write", tool_input: { file_path: join(isOutput, "README.md"), content: readme }, session_id: "st-2" });
     assert.equal(b.decision, "deny", `writes must be scanned at the output stage; got ${b.decision} ${b.reason}`);
   } finally {
-    rmSync(notFile, { recursive: true, force: true });
-    rmSync(isOutput, { recursive: true, force: true });
+    rmTree(notFile);
+    rmTree(isOutput);
   }
 });
 
@@ -228,7 +229,7 @@ test("Layer B: WebFetch is dispatched — an injected fetch instruction is stopp
     assert.equal(bad.decision, "deny", `got ${bad.decision} ${bad.reason}`);
     const ok = runHook(home, { tool_name: "WebFetch", tool_input: { url: "https://nodejs.org/api/fs.html", prompt: "summarise the fs promises API" }, session_id: "wf-ok" });
     assert.equal(ok.decision, "allow", `benign WebFetch must stay allowed; got ${ok.decision} ${ok.reason}`);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("Layer B: WebFetch honours the model-endpoint allow-list on the URL it is about to call", () => {
@@ -236,7 +237,7 @@ test("Layer B: WebFetch honours the model-endpoint allow-list on the URL it is a
   try {
     const r = runHook(home, { tool_name: "WebFetch", tool_input: { url: "https://api.openai.com/v1/chat/completions", prompt: "relay this" }, session_id: "wf-ep" });
     assert.equal(r.decision, "deny", `got ${r.decision} ${r.reason}`);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("fail-open discipline: junk input and still-unknown tools always allow and always exit 0", () => {
@@ -248,7 +249,7 @@ test("fail-open discipline: junk input and still-unknown tools always allow and 
       }
     }
     assert.equal(runHook(home, { tool_name: "Glob", tool_input: { pattern: "**/*.js" }, session_id: "unk" }).decision, "allow");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -262,7 +263,7 @@ test("DEFECT 2: an ENROLLED device with no policy at all reaches the built-in pr
     assert.equal(shell.decision, "deny", `threat 54 resolves to "block" with no policy; got ${shell.decision} ${shell.reason}`);
     const install = runHook(home, { tool_name: "Bash", tool_input: { command: UNTRUSTED_INSTALL }, session_id: "d2-inst" });
     assert.equal(install.decision, "ask", `threat 57 resolves to "justify"; got ${install.decision} ${install.reason}`);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("DEFECT 2: the no-policy baseline does NOT harden like the offline fail-closed default", () => {
@@ -277,7 +278,7 @@ test("DEFECT 2: the no-policy baseline does NOT harden like the offline fail-clo
     writeFileSync(secretFile, "AKIAIOSFODNN7EXAMPLE\n");
     const read = runHook(home, { tool_name: "Read", tool_input: { file_path: secretFile }, session_id: "d2-read" });
     assert.equal(read.decision, "allow", `threat 39 stays report-only with no policy; got ${read.decision} ${read.reason}`);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 // CHANGED DELIBERATELY (owner decision). This test used to pin "an unenrolled device stays inert — no
@@ -300,7 +301,7 @@ test("DEFECT 2: an UNENROLLED device never enforces — it coaches instead (no p
     }
     const w = raw({ tool_name: "Write", tool_input: { file_path: join(home, "src", "s.sh"), content: REVERSE_SHELL }, session_id: "d2-unenrolled-w" });
     assert.equal(w.hookSpecificOutput?.permissionDecision, undefined, JSON.stringify(w));
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("DEFECT 2: an explicit org policy still overrides the no-policy baseline in BOTH directions", () => {
@@ -310,7 +311,7 @@ test("DEFECT 2: an explicit org policy still overrides the no-policy baseline in
     assert.equal(runHook(soften, { tool_name: "Bash", tool_input: { command: REVERSE_SHELL }, session_id: "d2-soft" }).decision, "allow");
     assert.equal(runHook(harden, { tool_name: "Bash", tool_input: { command: UNTRUSTED_INSTALL }, session_id: "d2-hard" }).decision, "deny");
   } finally {
-    rmSync(soften, { recursive: true, force: true });
-    rmSync(harden, { recursive: true, force: true });
+    rmTree(soften);
+    rmTree(harden);
   }
 });

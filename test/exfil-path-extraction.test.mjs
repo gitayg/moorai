@@ -33,12 +33,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { extractReadPaths } from "../cli/hook-core.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -133,7 +134,7 @@ test("compound / argument-borne credential reads are denied by the content scan 
       assert.match(r.reason, /#39/, `${name}: the deny must come from the file-content scan, got: ${r.reason}`);
     }
   } finally {
-    rmSync(sb.home, { recursive: true, force: true });
+    rmTree(sb.home);
   }
 });
 
@@ -158,7 +159,7 @@ test("the same shapes over a benign file stay allowed (false-positive guard)", (
       assert.equal(r.decision, "allow", `${name}: must stay allowed, got ${r.decision} (${r.reason || "no reason"})`);
     }
   } finally {
-    rmSync(sb.home, { recursive: true, force: true });
+    rmTree(sb.home);
   }
 });
 

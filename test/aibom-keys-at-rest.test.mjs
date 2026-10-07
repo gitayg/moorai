@@ -9,13 +9,14 @@
 //   node --test test/aibom-keys-at-rest.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { hashWithKey, deriveKey, NO_KEY } from "../cli/content-hash.mjs";
 import { findAiKeys } from "../data/ai-key-shapes.js";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const AIBOM = join(ROOT, "cli", "moorai-aibom.mjs");
@@ -70,7 +71,7 @@ function run(cli, { home, fixture }, args = []) {
   delete env.MOORAI_SANCTIONED; delete env.MOORAI_AIBOM_JSON;
   return execFileSync(process.execPath, [cli, ...args], { env, encoding: "utf8" });
 }
-const cleanup = (h) => { try { chmodSync(join(h.home, ".bashrc"), 0o600); } catch {} rmSync(h.home, { recursive: true, force: true }); };
+const cleanup = (h) => { try { chmodSync(join(h.home, ".bashrc"), 0o600); } catch {} rmTree(h.home); };
 
 function assertNoLeak(out, label) {
   for (const [name, k] of Object.entries(KEYS)) {

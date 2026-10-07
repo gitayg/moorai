@@ -9,12 +9,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir, hostname } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeSandbox } from "../cli/doctor-sandbox.mjs";
 import { TALLY_FILE } from "../cli/mcp-usage-beat.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -40,7 +41,7 @@ async function consoleStub(t) {
 function box(t, url, token = "tok-hook") {
   const empty = mkdtempSync(join(tmpdir(), "moorai-usage-real-"));
   const sb = makeSandbox({ realHome: empty, config: { serverUrl: url, tenant: "acme", ...(token ? { installToken: token } : {}) } });
-  t.after(() => { sb.cleanup(); rmSync(empty, { recursive: true, force: true }); });
+  t.after(() => { sb.cleanup(); rmTree(empty); });
   const run = (tool = "mcp__github__create_issue", file = HOOK, args = []) => spawnSync(process.execPath, [file, ...args], {
     input: JSON.stringify({ hook_event_name: "PreToolUse", tool_name: tool, tool_input: { title: "ARG-SECRET-TITLE" }, session_id: "s-1", cwd: sb.proj }),
     env: sb.env(), encoding: "utf8", timeout: 20000

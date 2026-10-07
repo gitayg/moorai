@@ -8,10 +8,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync, spawn } from "node:child_process";
 import http from "node:http";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ENTRY = join(ROOT, "cli", "moorai-agent-hook.mjs");
@@ -72,7 +73,7 @@ test("benign run_shell_command is allowed silently", () => {
     const r = before(home, "run_shell_command", { command: "ls -la", description: "list" });
     assert.equal(r.status, 0);
     assert.equal(r.out, "");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("reverse shell in run_shell_command is denied in Gemini's block format", () => {
@@ -82,7 +83,7 @@ test("reverse shell in run_shell_command is denied in Gemini's block format", ()
     assert.equal(r.status, 0, r.stderr);
     assert.equal(r.json?.decision, "deny", r.out);
     assert.match(r.json.reason, /^MoorAI: /);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("curl | bash in run_shell_command asks (Gemini forces its confirmation dialog)", () => {
@@ -92,7 +93,7 @@ test("curl | bash in run_shell_command asks (Gemini forces its confirmation dial
     assert.equal(r.status, 0, r.stderr);
     assert.equal(r.json?.decision, "ask", r.out);
     assert.match(r.json.systemMessage, /^MoorAI: /);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 // A secret in a READ file is report-only by default (cli/hook-core.mjs: "a secret in a read file
@@ -135,7 +136,7 @@ test("read_file / read_many_files of a planted .env with an AWS secret are denie
     assert.equal(m.json?.decision, "deny", m.out);
     const ok = await runAsync(home, url, payload(home, "BeforeTool", "read_file", { file_path: "README.md" }));
     assert.equal(ok.out, "", "an ordinary file stays allowed under the same policy");
-  } finally { srv.close(); rmSync(home, { recursive: true, force: true }); }
+  } finally { srv.close(); rmTree(home); }
 });
 
 test("with no policy, read_file of the .env gets the same verdict as Claude Code's own Read hook", () => {
@@ -150,7 +151,7 @@ test("with no policy, read_file of the .env gets the same verdict as Claude Code
     const g = before(home, "read_file", { file_path: ".env" });
     const cd = claude.stdout.trim() ? JSON.parse(claude.stdout).hookSpecificOutput?.permissionDecision : "allow";
     assert.equal(g.json?.decision || "allow", cd);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("MCP tool call carrying a reverse shell is judged under its mcp__server__tool name", () => {
@@ -163,7 +164,7 @@ test("MCP tool call carrying a reverse shell is judged under its mcp__server__to
     assert.equal(r.json?.decision, "deny", r.out);
     const benign = before(home, "mcp_shellbox_exec", { cmd: "echo hi" }, { mcp_context: { server_name: "shellbox", tool_name: "exec" } });
     assert.notEqual(benign.json?.decision, "deny", benign.out);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("unmapped tool and non-tool events are allowed silently", () => {
@@ -173,7 +174,7 @@ test("unmapped tool and non-tool events are allowed silently", () => {
     const r = run(home, { ...payload(home, "SessionStart", undefined, undefined), source: "startup" });
     assert.equal(r.status, 0);
     assert.equal(r.out, "");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("malformed stdin exits 0 with no decision", () => {
@@ -182,7 +183,7 @@ test("malformed stdin exits 0 with no decision", () => {
     const r = run(home, "{not json");
     assert.equal(r.status, 0);
     assert.equal(r.out, "");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("install/uninstall keep an unrelated hook, are idempotent, and leave no MoorAI entry", () => {
@@ -215,5 +216,5 @@ test("install/uninstall keep an unrelated hook, are idempotent, and leave no Moo
     assert.equal(s.theme, "Dracula");
     assert.deepEqual(s.hooks, { BeforeTool: [theirs] });
     assert.equal(ours(s, "BeforeTool").length + ours(s, "AfterTool").length, 0);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

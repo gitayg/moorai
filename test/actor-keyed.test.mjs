@@ -12,13 +12,14 @@
 //   (bare `node --test` walks src-tauri/target/ and hangs — always pass the glob.)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import os, { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { hashWithKey, deriveKey, NO_KEY, actorHash } from "../cli/content-hash.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TOKEN = "it_test_actor_keyed_token";
@@ -85,7 +86,7 @@ test("HOOK (enrolled): every posted alert carries the keyed actor, never djb2", 
   try {
     await run([join(ROOT, "cli", "moorai-hook.mjs")], h, JSON.stringify({ tool_name: "Bash", tool_input: { command: `echo ${AWS}` } }));
     assertKeyed(L.alerts, KEYED, "hook");
-  } finally { L.close(); rmSync(h, { recursive: true, force: true }); }
+  } finally { L.close(); rmTree(h); }
 });
 
 // CHANGED DELIBERATELY (owner decision: an unenrolled device coaches and posts nothing — there is no
@@ -101,7 +102,7 @@ test("HOOK (unenrolled): posts nothing; the local ledger carries the NO_KEY acto
     const ledger = readFileSync(join(h, ".moorai", "action-audit.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
     assert.ok(ledger.some((a) => a.category === "Information & Privacy"), "the finding is still recorded locally");
     for (const a of ledger) { assert.equal(a.actor, NO_KEY); assert.notEqual(a.actor, LEGACY); }
-  } finally { L.close(); rmSync(h, { recursive: true, force: true }); }
+  } finally { L.close(); rmTree(h); }
 });
 
 test("GUARD (enrolled): the moorai-guard CLI posts the keyed actor", async () => {
@@ -109,7 +110,7 @@ test("GUARD (enrolled): the moorai-guard CLI posts the keyed actor", async () =>
   try {
     await run([join(ROOT, "cli", "moorai-guard.mjs"), "--decide", "abort", `deploy with ${AWS}`], h);
     assertKeyed(L.alerts, KEYED, "guard");
-  } finally { L.close(); rmSync(h, { recursive: true, force: true }); }
+  } finally { L.close(); rmTree(h); }
 });
 
 test("MCP PROXY (enrolled): Claude Desktop's guard posts the keyed actor", async () => {
@@ -127,7 +128,7 @@ test("MCP PROXY (enrolled): Claude Desktop's guard posts the keyed actor", async
     await new Promise((r) => setTimeout(r, 1500));
     child.stdin.end(); child.kill();
     assertKeyed(L.alerts, KEYED, "mcp-proxy");
-  } finally { L.close(); rmSync(h, { recursive: true, force: true }); }
+  } finally { L.close(); rmTree(h); }
 });
 
 test("DESKTOP (src/api.js): alerts, prompt events and the identity beacon carry the keyed actor", async () => {

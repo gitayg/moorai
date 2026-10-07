@@ -9,11 +9,12 @@
 //   node --test test/trace.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = join(ROOT, "cli", "moorai-trace.mjs");
@@ -31,7 +32,7 @@ function withHome(rows, run) {
     delete env.XDG_CONFIG_HOME; delete env.XDG_STATE_HOME; // resolve state dirs under the throwaway HOME
     return run((args = []) => spawnSync(process.execPath, [CLI, ...args], { env, encoding: "utf8" }));
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    rmTree(home);
   }
 }
 

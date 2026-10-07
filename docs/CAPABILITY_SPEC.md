@@ -533,6 +533,24 @@ is validated against.
    destination, and public keys or certificate PEMs. Its #60 finding feeds the server's existing
    `tool-poisoning` reputation signal.
 
+11g2. **MCP tool drift: block until re-approved** — policy `mcpToolDrift: "alert" | "block"`
+   ([`mcp-proxy/tool-drift.mjs`](../mcp-proxy/tool-drift.mjs)), in both the stdio proxy and the HTTP
+   gateway. `"alert"` (default) is the earlier behaviour: description / schema drift and shadowing alert,
+   and the tool baseline moves to the new value. `"block"` quarantines a tool whose description or schema
+   changed, a tool added to a server that already has a baseline, and a tool name owned by another
+   server: the tool is left out of the `tools/list` the client receives and its calls are refused
+   (`reasonCode: "MCP_TOOL_DRIFT"`, alerts with `decision: "quarantine"`). A removed tool only alerts.
+   The baseline does not move until an admin re-approves the server in the console, which pins the
+   tools' content-free fingerprints (`fp2:` hashes in the `toolIdentity` shape, reported by the agent to
+   `POST /api/mcp/tools`) and ships them inside the signed policy as `mcpToolBaselines[<server>] =
+   { version, tools }`. The device prefers an approved baseline, else its first-seen one, and refuses an
+   approved baseline older than the highest version it has accepted for that server. A quarantined tool
+   is re-judged at call time, so a re-approval releases it without a re-list. **Fails open** when there is
+   no verified policy or no approved baseline (the first listing of a new server is accepted);
+   **fails closed** on a call to a tool from a listing it could not check (over 1 MB, never listed).
+   Paginated servers are judged page by page and cannot be pinned. The full failure table is in
+   [`mcp-proxy/README.md`](../mcp-proxy/README.md).
+
 11h. **Event-triggered and headless prompts** — [`cli/prompt-scan.mjs`](../cli/prompt-scan.mjs). A
    prompt a person typed is their instruction and is not scanned; one that arrives any other way can
    carry a third party's text. `policy.promptScan`: `"untrusted"` (default) scans a prompt whose `source`
@@ -608,7 +626,7 @@ is validated against.
     row with `policyId` (`pol:<tenant>:<iat>:<digest12>`, `pol:unsigned:<digest12>`, `builtin-defaults`,
     `offline-fail-closed-default`, `none`, `not-loaded`), `policySource`, `reasonCode` (the branch that
     decided; enum in the module, including the MCP gateway's `SCHEMA_INVALID`, `RESPONSE_TOO_LARGE` and
-    `CLIENT_COOLDOWN`), `basisCode` when an override decided, and `enforcement`
+    `CLIENT_COOLDOWN`, and `MCP_TOOL_DRIFT` for a tool quarantined under `mcpToolDrift: "block"`), `basisCode` when an override decided, and `enforcement`
     `AS_CONFIGURED` | `STRENGTHENED` | `LIMITED` | `UNEVALUATED`. A control that never ran — bad stdin, a
     hook error, no policy after an error, break-glass, an unsupported tool, an empty result, a size cap —
     is `UNEVALUATED`, never a pass.
@@ -728,7 +746,8 @@ before this tier: a tenant can soften any entry to `notify`/`disabled` or harden
   and **browser AI** by the companion extension ([`browser-ext/`](../browser-ext/)) — both are the
   taps the "one brain, many eyes" model calls for, and both can deny, not merely observe. The proxy
   now watches **both directions**: `tools/call` arguments agent→server, and — new — `tools/list`
-  metadata (report-first, the listing is never mutated) and `tools/call` **results** server→agent,
+  metadata (report-first; the listing is altered only under `mcpToolDrift: "block"`, to leave out a
+  tool that changed since approval) and `tools/call` **results** server→agent,
   where an explicit `deny` replaces the result with a tool error.
 - **The reach of that, measured rather than asserted.** Against a 12-action malicious set the proxy
   refused **12/12** while enforcing (8 by the argument scan, 2 by the result scan) and forwarded

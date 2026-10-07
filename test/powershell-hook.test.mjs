@@ -18,12 +18,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as core from "../cli/hook-core.mjs";
 import { actionTargets } from "../data/intent-alignment.js";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -133,7 +134,7 @@ const pre = (tool_name, command, extra = {}) => ({ hook_event_name: "PreToolUse"
 async function withPolicy(policy, fn) {
   const { srv, port, alerts } = await startServer(policy);
   const sb = sandbox(port);
-  try { return await fn(sb, alerts); } finally { srv.close(); rmSync(sb.home, { recursive: true, force: true }); rmSync(sb.proj, { recursive: true, force: true }); }
+  try { return await fn(sb, alerts); } finally { srv.close(); rmTree(sb.home); rmTree(sb.proj); }
 }
 
 test("PreToolUse PowerShell reaches the Bash branch: a reverse shell is denied exactly as under Bash", async () => {
@@ -224,7 +225,7 @@ test("install registers PowerShell on PreToolUse and PostToolUse", () => {
     for (const ev of ["PreToolUse", "PostToolUse"]) {
       assert.ok(s.hooks[ev].filter(ours).some((e) => e.matcher === "PowerShell"), `${ev} must register PowerShell`);
     }
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("upgrade: an install holding the pre-PowerShell matcher lists converges on an ordinary call; other hooks survive", async () => {
@@ -252,5 +253,5 @@ test("upgrade: an install holding the pre-PowerShell matcher lists converges on 
       const m = s.hooks[ev].filter(ours).map((e) => e.matcher);
       assert.equal(m.length, new Set(m).size, `${ev}: no duplicate MoorAI matchers`);
     }
-  } finally { rmSync(home, { recursive: true, force: true }); rmSync(proj, { recursive: true, force: true }); }
+  } finally { rmTree(home); rmTree(proj); }
 });

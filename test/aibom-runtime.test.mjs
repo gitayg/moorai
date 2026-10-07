@@ -9,12 +9,13 @@
 //   node --test test/aibom-runtime.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { probeListeners, probeProcesses, localRuntimes, localMcpListeners } from "../cli/aibom-runtime.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const AIBOM = join(ROOT, "cli", "moorai-aibom.mjs");
@@ -176,5 +177,5 @@ test("CLI end-to-end: running runtimes + local MCP listeners reach the AIBOM and
     assert.equal(sh.shadow.find((x) => x.name === "llama.cpp").risk, "high", "network-bound unapproved runtime ranks high");
     const mcp = sh.shadow.find((x) => x.kind === "mcp-server" && x.name === "local-http");
     assert.equal(mcp.running, true);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

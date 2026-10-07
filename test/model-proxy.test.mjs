@@ -8,13 +8,14 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync, rmSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import http from "node:http";
 import { startFakeProvider, sendJson, sendSse, anthropicMessage, anthropicStream, openaiCompletion, openaiStream } from "../model-proxy/test/fake-provider.mjs";
 import { CLI, sandbox, startConsole, startProxy, request, waitFor } from "../model-proxy/test/harness.mjs";
 import { ABS_SKIP, median, pairedRounds } from "./timing.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const NULL_HOP = fileURLToPath(new URL("./fixtures/null-hop-proxy.mjs", import.meta.url));
 
@@ -35,7 +36,7 @@ before(async () => {
   home = sandbox();
   px = await startProxy(home, ["--route", `/anthropic=${fp.url}`, "--route", `/openai=${fp.url}/v1`, "--log", "--max-body", "65536"], { MOORAI_SERVER_URL: con.url, MOORAI_INSTALL_TOKEN: "tok-model-proxy-1", MOORAI_TENANT: "t-mp" });
 });
-after(async () => { await px.stop(); await fp.close(); await con.close(); rmSync(home, { recursive: true, force: true }); });
+after(async () => { await px.stop(); await fp.close(); await con.close(); rmTree(home); });
 
 const newAlerts = (n0) => con.parsed().slice(n0);
 
@@ -194,7 +195,7 @@ test("Origin: a browser Origin that is not loopback is refused 403 and never for
   try {
     assert.equal((await request(p.listening, "/anthropic/v1/messages", { body, headers: { ...A_HDR, origin: "https://app.example" } })).status, 200);
     assert.equal((await request(p.listening, "/anthropic/v1/messages", { body, headers: { ...A_HDR, origin: "https://evil.example" } })).status, 403);
-  } finally { await p.stop(); rmSync(h2, { recursive: true, force: true }); }
+  } finally { await p.stop(); rmTree(h2); }
 });
 
 test("scan caps: report mode forwards content past the caps and reports it unevaluated; enforce refuses it (provider-shaped, content-free)", async () => {
@@ -226,7 +227,7 @@ test("scan caps: report mode forwards content past the caps and reports it uneva
     assert.equal(fp.requests.length, n, "unevaluated content reached the provider in enforce mode");
     // under the caps, enforce forwards
     assert.equal((await request(enf.listening, "/anthropic/v1/messages", { body: { ...many, messages: many.messages.slice(0, 3) }, headers: A_HDR })).status, 200);
-  } finally { await rep?.stop(); await enf?.stop(); await c2.close(); rmSync(hr, { recursive: true, force: true }); rmSync(he, { recursive: true, force: true }); }
+  } finally { await rep?.stop(); await enf?.stop(); await c2.close(); rmTree(hr); rmTree(he); }
 });
 
 test("unenrolled (no install token): every request item is scanned on its own â€” the dedup cache does not collapse them", async () => {
@@ -239,7 +240,7 @@ test("unenrolled (no install token): every request item is scanned on its own â€
     assert.equal((await request(p.listening, "/anthropic/v1/messages", { body: { model: "m", max_tokens: 8, messages: [{ role: "user", content: "hello there" }] }, headers: A_HDR })).status, 200);
     const r = await request(p.listening, "/anthropic/v1/messages", { body: { model: "m", max_tokens: 8, messages: [{ role: "user", content: "what is the weather" }, { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "get_weather", input: {} }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: INJ }] }] }, headers: A_HDR });
     assert.equal(r.status, 403, "the flagged tool result was taken as a cache hit of an earlier item");
-  } finally { await p.stop(); rmSync(h3, { recursive: true, force: true }); }
+  } finally { await p.stop(); rmTree(h3); }
 });
 
 test("token: with a proxy token, a request without it is 401 and never forwarded; the token is stripped upstream", async () => {
@@ -254,7 +255,7 @@ test("token: with a proxy token, a request without it is 401 and never forwarded
     assert.equal((await request(p.listening, "/anthropic/v1/messages", { body: { messages: [] }, headers: { ...A_HDR, "x-moorai-proxy-token": PROXY_TOKEN } })).status, 200);
     assert.equal(fp.requests.at(-1).headers["x-moorai-proxy-token"], undefined);
     assert.equal(fp.requests.at(-1).headers["x-api-key"], KEY_A);
-  } finally { await p.stop(); rmSync(h2, { recursive: true, force: true }); }
+  } finally { await p.stop(); rmTree(h2); }
 });
 
 test("content-free: no alert, log line or file carries a key, prompt, tool result or argument", async () => {

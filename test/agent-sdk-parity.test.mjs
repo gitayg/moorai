@@ -13,11 +13,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import http from "node:http";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -146,7 +147,7 @@ async function parity(t, policy, { setup } = {}) {
     // A parity run where nothing fires proves nothing: both outcomes must be exercised.
     assert.ok(hook.some((r) => r.decision === "deny") && hook.some((r) => r.decision === "allow"), "the sample must exercise deny and allow");
     return { hook, sdk, payloads };
-  } finally { if (c) c.close(); rmSync(sb.home, { recursive: true, force: true }); }
+  } finally { if (c) c.close(); rmTree(sb.home); }
 }
 
 test("parity, no org policy (built-in defaults, server mode): the SDK callback returns the hook's decision and reason for every payload", async (t) => {

@@ -6,11 +6,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { toClaude, fromVerdict, parsePatch } from "../cli/agent-hooks/codex.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ENTRY = join(ROOT, "cli", "moorai-agent-hook.mjs");
@@ -74,7 +75,7 @@ test("benign shell (ls -la) is allowed", () => {
   try {
     const v = codexVerdict(run(home, JSON.stringify({ ...FIXTURE, cwd: join(home, "proj") })));
     assert.equal(v.blocked, false);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("reverse shell via Bash is blocked in Codex's deny format", () => {
@@ -83,7 +84,7 @@ test("reverse shell via Bash is blocked in Codex's deny format", () => {
     const v = hook(home, "Bash", { command: REVERSE_SHELL });
     assert.equal(v.blocked, true);
     assert.match(v.reason, /^MoorAI: /);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("curl | bash (MoorAI ask) is held as a deny that asks for user confirmation", () => {
@@ -93,7 +94,7 @@ test("curl | bash (MoorAI ask) is held as a deny that asks for user confirmation
     assert.equal(v.blocked, true);
     assert.match(v.reason, /confirm/);
     assert.equal(v.systemMessage, v.reason);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("reading a planted .env through the shell is blocked", () => {
@@ -103,7 +104,7 @@ test("reading a planted .env through the shell is blocked", () => {
     assert.equal(hook(home, "Bash", { command: "cat .env" }).blocked, true);
     assert.equal(hook(home, "Bash", { command: "cat ./.env" }).blocked, true);
     assert.equal(hook(home, "Bash", { command: "cat README.md" }).blocked, false);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("apply_patch that adds a reverse shell is blocked; a benign patch passes", () => {
@@ -113,7 +114,7 @@ test("apply_patch that adds a reverse shell is blocked; a benign patch passes", 
     assert.equal(hook(home, "apply_patch", { command: bad }).blocked, true);
     const ok = "*** Begin Patch\n*** Update File: src/math.js\n@@\n-export const a = 1;\n+export const a = 2;\n*** End Patch\n";
     assert.equal(hook(home, "apply_patch", { command: ok }).blocked, false);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("MCP tool calls map to mcp__server__tool: benign passes, reverse-shell argument is blocked", () => {
@@ -121,7 +122,7 @@ test("MCP tool calls map to mcp__server__tool: benign passes, reverse-shell argu
   try {
     assert.equal(hook(home, "mcp__docs__search", { query: "array sort" }).blocked, false);
     assert.equal(hook(home, "mcp__shell__run", { command: REVERSE_SHELL }).blocked, true);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("malformed stdin exits 0 with no decision", () => {
@@ -132,7 +133,7 @@ test("malformed stdin exits 0 with no decision", () => {
       assert.equal(res.status, 0, `input ${JSON.stringify(input)}: ${res.stderr}`);
       assert.equal((res.stdout || "").trim(), "");
     }
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("toClaude: mapping table", () => {
@@ -192,5 +193,5 @@ test("install/uninstall: user hooks survive, install is idempotent, uninstall le
     doc = JSON.parse(readFileSync(file, "utf8"));
     assert.equal(own(doc).length, 0);
     assert.deepEqual(doc, theirs);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

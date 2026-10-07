@@ -6,9 +6,10 @@
 //   node --test --import ./test/hermetic-env.mjs test/mcp-gateway-usage.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { scenario, startConsole, makeHome, sign, serverModeEnv, rpc, call, settle } from "../mcp-gateway/test/harness.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const SECRET_ARG = "ARG-VALUE-must-not-leave-7f3a";
 const POLICY = { captureTier: "content-free", threatPolicy: { 39: "block" } };
@@ -67,7 +68,7 @@ test("GATEWAY USAGE: per-server + per-tool counts, posted once after the day end
     assert.equal(con.usage.length, 1, "a completed day was posted twice");
   } finally {
     await con.close();
-    rmSync(home, { recursive: true, force: true });
+    rmTree(home);
   }
 });
 
@@ -92,7 +93,7 @@ test("GATEWAY USAGE: more than 64 tools on one server post the 64 busiest with t
     assert.equal(s.toolsTruncated, true);
   } finally {
     await con.close();
-    rmSync(home, { recursive: true, force: true });
+    rmTree(home);
   }
 });
 

@@ -16,13 +16,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { policyCanonical, policyDigest, POLICY_SIG_VERSION, publicKeyId } from "../cli/hook-core.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const GUARD = join(ROOT, "mcp-proxy", "moorai-mcp-guard.mjs");
@@ -131,7 +132,7 @@ test("PROXY: a poisoned policy cache does NOT disarm the Claude Desktop gate", a
     `no content-free tamper alert for the poisoned cache: ${JSON.stringify(alerts.map((a) => a.contentHash))}`);
 
   await new Promise((r) => server.close(r));
-  rmSync(home, { recursive: true, force: true });
+  rmTree(home);
 });
 
 // A permissive cache with NO deny rule at all: if the proxy trusted it, an AWS key in a tool argument
@@ -164,7 +165,7 @@ test("PROXY: an unverifiable cache is NO policy — a fail-closed device falls t
   assert.equal(readFileSync(join(home, ".moorai", "hook-policy.json"), "utf8"), PLANTED,
     "a refused cache must be left exactly as planted, never promoted");
 
-  rmSync(home, { recursive: true, force: true });
+  rmTree(home);
 });
 
 test("PROXY: with the SAME planted cache trusted, the call would have passed (the bypass, shown)", async () => {
@@ -178,5 +179,5 @@ test("PROXY: with the SAME planted cache trusted, the call would have passed (th
 
   const r = await driveProxy(home, join(home, "recv.log"), { serverUrl: "http://127.0.0.1:1", payload: AWS_ARG });
   assert.ok(!isBlocked(r.byId.get(2)), "an unanchored, unpinned device is expected to keep trusting its cache");
-  rmSync(home, { recursive: true, force: true });
+  rmTree(home);
 });

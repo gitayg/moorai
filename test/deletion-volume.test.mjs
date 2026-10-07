@@ -5,13 +5,14 @@
 //   node --test --import ./test/hermetic-env.mjs test/deletion-volume.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { deletionTally, assessDeletionVolume, deletionConfig } from "../data/deletion-volume.js";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -171,7 +172,7 @@ test("hook e2e: threshold alerts once, escalates the next deletion to ask, reset
       assert.ok(existsSync(p));
       const blob = readFileSync(p, "utf8") + JSON.stringify(volAlerts(alerts));
       for (const raw of ["payroll", "salaries", "merger", "notes-final", "one-more", "rm "]) assert.ok(!blob.includes(raw), `raw ${raw} leaked`);
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -183,7 +184,7 @@ test("hook e2e: with #43 set to notify, a recursive delete after the threshold i
       assert.equal((await runHook(home, "r1", "rm -rf dist")).decision, "allow");
       assert.equal(volAlerts(alerts).length, 1);
       assert.equal((await runHook(home, "r1", "rm -rf coverage")).decision, "ask");
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -194,6 +195,6 @@ test("hook e2e: mode alert reports without ever asking", async () => {
       await runHook(home, "m1", "rm a b");
       assert.equal(volAlerts(alerts).length, 1);
       assert.equal((await runHook(home, "m1", "rm c")).decision, "allow");
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });

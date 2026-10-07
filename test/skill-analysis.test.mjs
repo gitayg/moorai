@@ -11,7 +11,7 @@
 //   (bare `node --test` walks src-tauri/target/ and hangs — always pass the glob.)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,7 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import { skillSurfaceKind, isSkillSurface, SKILL_SURFACE_KINDS } from "../data/skill-surface.js";
 import { skillIntents, INTENT_LABELS } from "../cli/skill-analysis.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -202,8 +203,8 @@ test("E2E: a poisoned skill file is reported with its kind and its intent labels
   const dir = mkdtempSync(join(tmpdir(), "moorai-skillsrc-"));
   const f = poisonedSkill(dir);
   const r = await runHook({ tool_name: "Read", tool_input: { file_path: f } });
-  rmSync(dir, { recursive: true, force: true });
-  rmSync(r.home, { recursive: true, force: true });
+  rmTree(dir);
+  rmTree(r.home);
 
   const skill = r.alerts.find((a) => a.category === "Skill-file poisoning");
   assert.ok(skill, `no skill-file alert; got ${JSON.stringify(r.alerts.map((a) => a.category))}`);
@@ -222,7 +223,7 @@ test("CANARY: nothing the agent transmits about a skill file contains one byte o
   const f = poisonedSkill(dir);
   const body = readFileSync(f, "utf8");
   const r = await runHook({ tool_name: "Read", tool_input: { file_path: f } });
-  rmSync(dir, { recursive: true, force: true });
+  rmTree(dir);
 
   assert.ok(r.bodies.length > 0, "nothing was transmitted at all — the canary grep would prove nothing");
   const wire = r.bodies.join("\n");
@@ -236,7 +237,7 @@ test("CANARY: nothing the agent transmits about a skill file contains one byte o
       assert.ok(!hay.includes(line.trim()), `a verbatim line of the skill file reached ${label}: ${line.slice(0, 40)}`);
     }
   }
-  rmSync(r.home, { recursive: true, force: true });
+  rmTree(r.home);
 });
 
 test("DRIFT: the baseline is per FILE, so two sibling subagent definitions are not drift", async () => {
@@ -259,6 +260,6 @@ test("DRIFT: the baseline is per FILE, so two sibling subagent definitions are n
   assert.ok(drift, `alpha changed and no drift fired: ${JSON.stringify(third.alerts.map((x) => x.category))}`);
   assert.equal(drift.skillKind, "claude-agent");
 
-  rmSync(dir, { recursive: true, force: true });
-  rmSync(home, { recursive: true, force: true });
+  rmTree(dir);
+  rmTree(home);
 });

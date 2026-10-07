@@ -15,11 +15,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as core from "../cli/hook-core.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -166,7 +167,7 @@ async function withPolicy(policy, fn) {
   writeFileSync(join(home, ".moorai", "config.json"), JSON.stringify({ serverUrl: `http://127.0.0.1:${port}`, tenant: "acme", installToken: "tok-gap-ps" }));
   mkdirSync(join(home, "creds"), { recursive: true });
   writeFileSync(join(home, "creds", "notes.txt"), SECRET_FILE); // a harmless NAME: only a content read can see it
-  try { return await fn({ home, proj }, alerts); } finally { srv.close(); rmSync(home, { recursive: true, force: true }); rmSync(proj, { recursive: true, force: true }); }
+  try { return await fn({ home, proj }, alerts); } finally { srv.close(); rmTree(home); rmTree(proj); }
 }
 
 test("hook: $env:, ~ and -EncodedCommand reads get their CONTENT scanned (#39 block)", async () => {

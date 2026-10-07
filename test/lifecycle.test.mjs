@@ -6,10 +6,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startConsole, sandbox, runHook, ledger, rawLedger, settle, HOOK } from "./lifecycle-harness.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const POLICY = { captureTier: "content-free", threatPolicy: {} };
 const CLAIM = "Agent reported success but tool calls failed";
@@ -33,7 +34,7 @@ async function session(steps, { enrolled = true } = {}) {
 
 function withHome(fn) {
   const home = mkdtempSync(join(tmpdir(), "moorai-life-reg-"));
-  try { return fn(home); } finally { rmSync(home, { recursive: true, force: true }); }
+  try { return fn(home); } finally { rmTree(home); }
 }
 const settingsOf = (home) => JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8"));
 const ours = (entries) => (entries || []).filter((e) => JSON.stringify(e).includes("moorai-hook")).map((e) => e.matcher).sort();

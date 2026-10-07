@@ -12,7 +12,7 @@
 // archive wrappers, weights_only=True and safetensors, downloads and cache listings.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -22,6 +22,7 @@ import { DETECTORS } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
 import { ARTIFACT_DETECTORS } from "../data/detectors-artifacts.js";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -324,7 +325,7 @@ for (const [name, payload, threatId, tool] of E2E) {
         assert.equal(hit.category, threatCategory(threatId));
         const raw = JSON.stringify(hit);
         assert.ok(!raw.includes("sk-live") && !raw.includes("drop.example") && !raw.includes("someuser"), "alert must be content-free");
-      } finally { rmSync(home, { recursive: true, force: true }); }
+      } finally { rmTree(home); }
     });
   });
 }
@@ -338,6 +339,6 @@ test("hook e2e: benign twins stay silent on the same surfaces", async () => {
       const mine = new Set(ARTIFACT_DETECTORS.map((d) => d.threatId));
       const got = alerts.filter((a) => mine.has(a.threatId));
       assert.deepEqual(got.map((a) => [a.threatId, a.category, a.tool]), []);
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });

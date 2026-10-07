@@ -29,9 +29,11 @@ function reportPolicyTrust({ rejected, pin, trust, absence }) {
   if (absence && absence.suspicious) reportOnce("Policy key pin absent on a device with prior operation", "policy:pin:absent-operational", "Critical");
 }
 
+// MOORAI_TEST_POLICY_REFRESH_MS: a test hook that shortens the 60 s refresh (more fetching, never less).
+const REFRESH_MS = process.env.MOORAI_TEST_POLICY_REFRESH_MS != null ? Math.max(0, Number(process.env.MOORAI_TEST_POLICY_REFRESH_MS) || 0) : 60000;
 let inflight = null;
 export async function ensurePolicy() {
-  if (Date.now() - state.loadedAt < 60000 && state.ENGINE) return;
+  if (Date.now() - state.loadedAt < REFRESH_MS && state.ENGINE) return;
   if (inflight) return inflight; // concurrent requests share one refresh
   inflight = (async () => {
     try {

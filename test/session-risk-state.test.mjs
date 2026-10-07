@@ -5,11 +5,12 @@
 //   node --test --import ./test/hermetic-env.mjs test/session-risk-state.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, statSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const MOD = join(ROOT, "cli", "session-state.mjs");
@@ -35,7 +36,7 @@ test("session state: taint then upload alerts; files are 0600 and hold no raw va
     for (const f of ["session.key", "session-risk.json"]) assert.equal(statSync(join(home, ".moorai", f)).mode & 0o777, 0o600, f);
     const blob = readFileSync(join(home, ".moorai", "session-risk.json"), "utf8");
     for (const raw of ["exfil-host", "vendor", "sess-A", "curl", "k=v"]) assert.ok(!blob.includes(raw), `raw ${raw} stored`);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("session state: report mode does not escalate, but a coached device does", () => {
@@ -49,7 +50,7 @@ test("session state: report mode does not escalate, but a coached device does", 
     assert.equal(r.report.alerts.length, 1);
     assert.equal(r.coach.escalate.kind, "taint");
     assert.equal(r.coach.alerts[0].sessionRisk.mode, "report", "the alert states the configured mode");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("circuit state: outcome hashes make a changing result progress; sub-agents are keyed apart; deny mode pauses", () => {
@@ -75,7 +76,7 @@ test("circuit state: outcome hashes make a changing result progress; sub-agents 
     assert.equal(statSync(join(home, ".moorai", "circuit-breaker.json")).mode & 0o777, 0o600);
     const blob = readFileSync(join(home, ".moorai", "circuit-breaker.json"), "utf8");
     for (const raw of ["npm test", "fail 3", "/x"]) assert.ok(!blob.includes(raw), `raw ${raw} stored`);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("fail-open: corrupted state files and mode off change nothing and throw nothing", () => {
@@ -96,5 +97,5 @@ test("fail-open: corrupted state files and mode off change nothing and throw not
     assert.deepEqual(r.off, { alerts: [], escalate: null, score: 0 });
     assert.deepEqual(r.coff, { alerts: [], deny: null });
     assert.deepEqual(r.bad.alerts, []);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

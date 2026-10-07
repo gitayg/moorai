@@ -17,7 +17,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,7 @@ import * as codex from "../cli/agent-hooks/codex.mjs";
 import * as cursor from "../cli/agent-hooks/cursor.mjs";
 import * as gemini from "../cli/agent-hooks/gemini.mjs";
 import * as copilot from "../cli/agent-hooks/copilot.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ENTRY = join(ROOT, "cli", "moorai-agent-hook.mjs");
@@ -138,7 +139,7 @@ for (const [id, h] of Object.entries(HOSTS)) {
         // A different session never saw the task: never judged against nothing.
         await runEntry(home, id, h.shell(`${id}-other`, cwd, EXFIL.replace("/u", "/v")));
         assert.equal(intentAlerts(alerts).length, 1, `${id}: a session with no captured task stays silent`);
-      } finally { rmSync(home, { recursive: true, force: true }); }
+      } finally { rmTree(home); }
     });
   });
 }
@@ -155,7 +156,7 @@ test("codex e2e: intentAlignment \"ask\" holds the misaligned call (Codex can on
       assert.match(hso.permissionDecisionReason, /outside the stated task/);
       const ok = await runEntry(home, "codex", HOSTS.codex.shell("c-ask", cwd, ALIGNED));
       assert.equal(ok.out, "");
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -190,7 +191,7 @@ test("install: every adapter registers its prompt event exactly once; uninstall 
     assert.ok(!own(JSON.parse(readFileSync(join(home, ".cursor", "hooks.json"), "utf8")).hooks.beforeSubmitPrompt));
     assert.ok(!own(JSON.parse(readFileSync(join(home, ".gemini", "settings.json"), "utf8")).hooks?.BeforeAgent));
     assert.ok(!existsSync(join(home, ".copilot", "hooks", "moorai.json")) || !own(JSON.parse(readFileSync(join(home, ".copilot", "hooks", "moorai.json"), "utf8"))));
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("copilot: the powershell tool is judged as Claude Code's PowerShell, not as Bash", () => {

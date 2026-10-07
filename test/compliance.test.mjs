@@ -10,11 +10,12 @@
 //   node --test test/compliance.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = join(ROOT, "cli", "moorai-compliance.mjs");
@@ -69,7 +70,7 @@ const ctrl = (pack, fw, id) => pack.frameworks.find((f) => f.framework === fw).c
 
 function withHome(fn) {
   const home = mkdtempSync(join(tmpdir(), "moorai-compliance-"));
-  try { seed(home); return fn(home); } finally { rmSync(home, { recursive: true, force: true }); }
+  try { seed(home); return fn(home); } finally { rmTree(home); }
 }
 
 test("EU AI Act: seeded signals drive coverage; unbacked controls read not-covered", () => {

@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import { policyCanonical, policyDigest, POLICY_SIG_VERSION, publicKeyId } from "../cli/hook-core.mjs";
 import { startUpstream } from "../mcp-gateway/test/fake-upstream.mjs";
+import { rmTree, stopChild } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const GATEWAY = join(ROOT, "mcp-gateway", "moorai-mcp-gateway.mjs");
@@ -84,9 +85,9 @@ async function scenario({ policy = null, upstream = {}, gatewayArgs = [], env = 
     assert.ok(gw.url, `gateway did not start: exit=${gw.exitCode} stderr=${gw.stderr}`);
     await fn({ con, up, gw, base: `${gw.url}/remote`, home });
   } finally {
-    try { gw.child.kill(); } catch { /* ignore */ }
+    await stopChild(gw.child);
     await up.close(); await con.close();
-    rmSync(home, { recursive: true, force: true });
+    rmTree(home);
   }
 }
 
@@ -285,8 +286,8 @@ test("GATEWAY: a non-loopback bind is refused without --allow-remote and a token
       const port = new URL(c.url).port;
       const r = await fetch(`http://127.0.0.1:${port}/r`, { method: "POST", headers: H, body: JSON.stringify(call(1, "echo", {})) });
       assert.equal(r.status, 401, "a request without the gateway token must be refused");
-    } finally { try { c.child.kill(); } catch { /* ignore */ } }
-  } finally { await con.close(); rmSync(home, { recursive: true, force: true }); }
+    } finally { await stopChild(c.child); }
+  } finally { await con.close(); rmTree(home); }
 });
 
 test("GATEWAY: a batch carrying one secret-bearing call is refused whole; nothing reaches the upstream", async () => {

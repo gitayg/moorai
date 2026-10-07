@@ -6,7 +6,7 @@
 //   node --test --import ./test/hermetic-env.mjs test/workload-identity.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import { workloadIdentity, containerIdFromCgroup, containerIdFromMountinfo, cleanWorkload } from "../cli/server-mode.mjs";
 import { createReporter } from "../packages/agent-sdk/src/report.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ID = "58c64e0e177490c196203d3a1ab8a0a3fa5aa1a3448885b8c61d472fbc1fc0ba";
@@ -73,7 +74,7 @@ for (const [name, f] of Object.entries(FIXTURES)) {
       const w = workloadIdentity({ env: {}, procRoot: dir });
       if (f.want) assert.deepEqual(w, { containerId: f.want });
       else assert.equal(w, null, `no container id may be guessed, got ${JSON.stringify(w)}`);
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+    } finally { rmTree(dir); }
   });
 }
 
@@ -81,7 +82,7 @@ test("WORKLOAD containerId: cgroup wins over mountinfo, and a missing proc root 
   assert.equal(containerIdFromCgroup(`0::/system.slice/docker-${ID2}.scope`), ID2);
   assert.equal(containerIdFromMountinfo(`1 1 1:1 /docker/containers/${ID}/hosts /etc/hosts rw - ext4 x rw`), ID);
   const dir = procRoot({ cgroup: `0::/system.slice/docker-${ID2}.scope\n`, mountinfo: `1 1 1:1 /docker/containers/${ID}/hosts /etc/hosts rw - ext4 x rw\n` });
-  try { assert.equal(workloadIdentity({ env: {}, procRoot: dir }).containerId, ID2); } finally { rmSync(dir, { recursive: true, force: true }); }
+  try { assert.equal(workloadIdentity({ env: {}, procRoot: dir }).containerId, ID2); } finally { rmTree(dir); }
   assert.equal(workloadIdentity({ env: {}, procRoot: join(tmpdir(), "moorai-no-such-proc-root") }), null);
 });
 
@@ -123,7 +124,7 @@ test("WORKLOAD SDK reporter: the sidecar surface attaches containerId + k8s name
     const r = createReporter({ config: CONFIG, identity: { user: "service", device: "svc:x", surface: "serve" }, fetchImpl, env: { MOORAI_K8S_POD: "agent-0", MOORAI_K8S_NAMESPACE: "agents" }, procRoot: dir });
     await r.post({ threatId: 54, category: "Reverse shell", riskLevel: "Blocked", stage: "tool", tool: "hook:Bash", contentHash: "h" });
     assert.deepEqual(bodies[0].workload, { containerId: ID2, pod: "agent-0", namespace: "agents" });
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { rmTree(dir); }
 });
 
 test("WORKLOAD SDK reporter: in-process (agent-sdk) adds this process's pid; nothing detected -> no key at all", async () => {
@@ -192,6 +193,6 @@ test("WORKLOAD gateway: mcp-gateway/report.mjs post() attaches the workload to t
     assert.equal("workload" in JSON.parse(out), false, "IDENTITY (also spread into ledger entries) is unchanged");
   } finally {
     await new Promise((r) => { con.closeAllConnections?.(); con.close(r); });
-    rmSync(home, { recursive: true, force: true });
+    rmTree(home);
   }
 });

@@ -5,12 +5,13 @@
 //   node --test --import ./test/hermetic-env.mjs test/mcp-reputation.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { scoreReputation, bandOf, classifyMcpName, reputationAction, reputationAlert, REPUTATION_CATEGORY } from "../data/mcp-reputation.js";
 import { serverIdentity, assessServer, assessServerSync, addToolSignals, findServerDecl, DEFAULT_FEED_URL } from "../cli/mcp-reputation.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const SECRET_ENV = "sekrit-env-value-7Q2";
 const LOCAL_PATH = "/Users/alice/clients/acme-merger";
@@ -19,7 +20,7 @@ function sandbox() {
   const root = mkdtempSync(join(tmpdir(), "moorai-rep-"));
   const home = join(root, "home"), stateDir = join(root, "state");
   mkdirSync(home, { recursive: true }); mkdirSync(stateDir, { recursive: true });
-  return { root, home, stateDir, done: () => rmSync(root, { recursive: true, force: true }) };
+  return { root, home, stateDir, done: () => rmTree(root) };
 }
 
 // A fetch stub that records every request and answers from a table; anything unexpected is a 599 so a

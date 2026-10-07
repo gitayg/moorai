@@ -6,12 +6,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildEngine, decideText, withSafer, BUILTIN_DEFAULT_ACTIONS } from "../cli/hook-core.mjs";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -98,7 +99,7 @@ test("hook: a reverse-shell Bash call is denied with the threat's safer alternat
     assert.ok(r.reason.includes("Safer:"), r.reason);
     assert.ok(r.reason.includes(byId.get(54).saferAlternative), r.reason);
     assert.ok(!r.reason.includes("198.51.100.7"), "the reason must not echo the matched command");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("hook: a secret in a Read of a planted .env gets the alternative and never the secret value", () => {
@@ -112,7 +113,7 @@ test("hook: a secret in a Read of a planted .env gets the alternative and never 
     assert.ok(r.reason.includes("Safer:"), r.reason);
     assert.ok(r.reason.includes(byId.get(39).saferAlternative), r.reason);
     for (const leak of [AWS_ID, AWS_SECRET, "wJalrXUtnFEMI"]) assert.ok(!r.raw.includes(leak), `hook output leaked ${leak}`);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("hook: a PostToolUse deny carries the alternative in both reason and additionalContext", () => {
@@ -130,5 +131,5 @@ test("hook: a PostToolUse deny carries the alternative in both reason and additi
     assert.ok(o.reason.includes(`Safer: ${alt}`), o.reason);
     assert.ok(o.hookSpecificOutput.additionalContext.includes(`Safer: ${alt}`));
     assert.ok(!o.reason.includes("198.51.100.7"));
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

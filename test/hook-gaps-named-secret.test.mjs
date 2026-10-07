@@ -11,13 +11,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildEngine } from "../cli/hook-core.mjs";
 import { SECRET_DETECTORS } from "../data/secrets-patterns.js";
 import { redosReason } from "../src/safe-regex.js";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -101,5 +102,5 @@ test("GAP 3 (hook): with #39 enforced, a live .env with only the secret line is 
     assert.equal(run({ tool_name: "Read", tool_input: { file_path: join(proj, "settings.env") } }), "deny");
     assert.equal(run({ tool_name: "Read", tool_input: { file_path: join(proj, ".env.example") } }), "allow");
     assert.equal(run({ tool_name: "Bash", tool_input: { command: `cat ${join(proj, ".env.example")}` } }), "allow");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

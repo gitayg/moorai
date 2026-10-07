@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import { policyCanonical, policyDigest, POLICY_SIG_VERSION, publicKeyId } from "../cli/hook-core.mjs";
 import { REPUTATION_CATEGORY } from "../data/mcp-reputation.js";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const GUARD = join(ROOT, "mcp-proxy", "moorai-mcp-guard.mjs");
@@ -92,7 +93,7 @@ async function driveGuard({ home, url, env = {}, requests, recvLog = null, waitM
 async function scenario({ policyBody = null, enrolled = true } = {}, fn) {
   const con = await startConsole({ policyBody });
   const home = makeHome(con.url, { enrolled });
-  try { await fn({ con, home }); } finally { await con.close(); rmSync(home, { recursive: true, force: true }); }
+  try { await fn({ con, home }); } finally { await con.close(); rmTree(home); }
 }
 
 const LIST = { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} };

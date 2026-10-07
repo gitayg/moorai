@@ -5,19 +5,20 @@
 //   node --test test/agent-posture.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, utimesSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { agentPosture, tomlKeys, lastActive, POSTURE_FLAGS, HOOK_STATES } from "../cli/agent-posture.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const NO_SYSTEM = { gemini: "/nonexistent/moorai-test/gemini-system.json" };
 
 function sandbox(t) {
   const base = mkdtempSync(join(tmpdir(), "moorai-posture-"));
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => rmTree(base));
   const home = join(base, "home"), proj = join(base, "proj");
   mkdirSync(home, { recursive: true }); mkdirSync(proj, { recursive: true });
   const env = { HOME: home };

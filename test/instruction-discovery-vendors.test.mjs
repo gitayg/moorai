@@ -5,11 +5,12 @@
 //   node --test test/instruction-discovery-vendors.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverInstructionFiles } from "../cli/instruction-fingerprints.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -26,7 +27,7 @@ test("fingerprint discovery finds Kiro steering, Amp AGENT.md and Copilot user i
     for (const f of files) { mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, "# rules\n"); }
     const found = new Set(discoverInstructionFiles(proj, { home, env: {}, managed: false }));
     for (const f of files) assert.ok(found.has(resolve(f)), `not discovered: ${f.replace(home, "~").replace(proj, "<proj>")}`);
-  } finally { rmSync(home, { recursive: true, force: true }); rmSync(proj, { recursive: true, force: true }); }
+  } finally { rmTree(home); rmTree(proj); }
 });
 
 test("session-start scan list includes the documented single-file instruction and settings files", () => {

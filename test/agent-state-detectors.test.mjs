@@ -11,7 +11,7 @@
 //   node --test --import ./test/hermetic-env.mjs test/agent-state-detectors.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -22,6 +22,7 @@ import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
 import { decideText } from "../cli/hook-core.mjs";
 import { agentStateWriteProbe } from "../data/agent-state-paths.js";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -300,7 +301,7 @@ test("hook e2e: a Bash command truncating the agent's transcript asks, a read of
       alerts.length = 0;
       assert.equal((await runHook(home, { tool_name: "Bash", tool_input: { command: "tail -n 20 ~/.claude/projects/-Users-me-app/abc.jsonl" } })).decision, "allow");
       assert.equal(alerts.filter((a) => a.threatId === TAMPER_THREAT).length, 0, "a read must not raise the tamper finding");
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -314,7 +315,7 @@ test("hook e2e: an MCP filesystem write into the transcript store asks; the same
       for (const a of alerts) assert.ok(!JSON.stringify(a).includes(CANARY), "an alert carried the write's content");
       const r = await runHook(home, { tool_name: "mcp__filesystem__read_file", tool_input: { path: "/Users/me/.codex/history.jsonl" } });
       assert.equal(r.decision, "allow");
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -331,7 +332,7 @@ test("hook e2e: a fetched page carrying a self-replicating instruction is flagge
       const benign = `<html><body><h2>License</h2><p>${MIT}</p></body></html>`;
       const b = await runHook(home, { hook_event_name: "PostToolUse", tool_name: "WebFetch", tool_input: { url: "https://example.com/license", prompt: "summarise" }, tool_response: benign });
       assert.equal(b.decision, "allow", b.raw);
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -345,7 +346,7 @@ test("hook e2e: a repository file carrying the instruction is flagged on Read", 
       assert.equal(r.decision, "ask", r.raw);
       assert.ok(alerts.some((a) => a.threatId === REPL_THREAT && a.tool === "hook:Read"));
       for (const a of alerts) assert.ok(!JSON.stringify(a).includes(CANARY), "an alert carried file content");
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -364,7 +365,7 @@ test("hook e2e: a Write into the transcript store asks, a Write into the project
       const p = await runHook(home, { tool_name: "Write", tool_input: { file_path: join(home, "app", "history.jsonl"), content: "{}" } });
       assert.equal(p.decision, "allow", p.raw);
       assert.equal(alerts.filter((a) => a.threatId === TAMPER_THREAT).length, 0);
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -379,7 +380,7 @@ test("hook e2e: unenrolled, a Write into the transcript store coaches instead of
     assert.equal(j.hookSpecificOutput?.permissionDecision, undefined, r.raw);
     assert.match(j.systemMessage || "", /^MoorAI coach: .*#73 Agents & Permissions.*Not blocked/, r.raw);
     assert.match(j.hookSpecificOutput?.additionalContext || "", /Safer: Leave the transcripts in place/, r.raw);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("decideText: with no org policy #73 halts for sign-off and #74 is report-only", () => {

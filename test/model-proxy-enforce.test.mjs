@@ -9,10 +9,11 @@
 // No real provider and no real key is involved anywhere.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync, rmSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { startFakeProvider, sendJson, sendSse, anthropicMessage, anthropicStream, openaiCompletion, openaiStream } from "../model-proxy/test/fake-provider.mjs";
 import { sandbox, startConsole, startProxy, request, waitFor, sseEvents } from "../model-proxy/test/harness.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const SERVICE = "model-bot";
 const PROFILE_ID = "model-bot-readonly";
@@ -118,7 +119,7 @@ before(async () => {
   px = await startProxy(home, ["--mode", "enforce", "--route", `/anthropic=${fp.url}`, "--route", `/openai=${fp.url}/v1`, "--policy-file", pf, "--service-id", SERVICE],
     { MOORAI_SERVER_URL: con.url, MOORAI_INSTALL_TOKEN: "tok-model-proxy-enforce-1", MOORAI_TENANT: "t-mp-enf" });
 });
-after(async () => { await px.stop(); await fp.close(); await con.close(); rmSync(home, { recursive: true, force: true }); });
+after(async () => { await px.stop(); await fp.close(); await con.close(); rmTree(home); });
 
 test("profile trigger: the proxy runs enforce, as the declared service, and the profile is what decides", async () => {
   assert.equal(px.mode, "enforce"); assert.equal(px.serviceId, SERVICE);
@@ -340,7 +341,7 @@ test("report mode: a tool call whose arguments are not valid JSON is forwarded u
       const n1 = await request(rep.listening, api.path, { body: api.body(false), headers: api.headers });
       assert.equal(n1.status, 200); assert.ok(n1.raw.equals(sent), `${name}: report mode changed the response`);
     }
-  } finally { await rep.stop(); rmSync(hr, { recursive: true, force: true }); }
+  } finally { await rep.stop(); rmTree(hr); }
 });
 
 test("alerts in enforce mode: posted to the console, content-free, enforcement as configured (not LIMITED), surface model-proxy", async () => {
@@ -415,5 +416,5 @@ test("a tool call with no hook branch whose arguments are past --max-scan-chars:
     assert.ok(await waitFor(() => unev().length >= 2), JSON.stringify(c2.parsed().map((x) => [x.tool, x.reasonCode])));
     for (const x of unev()) { assert.equal(x.enforcement, "UNEVALUATED"); assert.equal(x.stage, "tool"); assert.equal(x.surface, "model-proxy"); }
     for (const b of c2.alerts) assertContentFree(b, ["Paris"]);
-  } finally { await enf?.stop(); await rep?.stop(); await c2.close(); rmSync(he, { recursive: true, force: true }); rmSync(hr, { recursive: true, force: true }); }
+  } finally { await enf?.stop(); await rep?.stop(); await c2.close(); rmTree(he); rmTree(hr); }
 });

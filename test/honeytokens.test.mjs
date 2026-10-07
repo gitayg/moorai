@@ -8,13 +8,14 @@
 //   node --test test/honeytokens.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { checkHoneytokens } from "../cli/moorai-honeytokens.mjs";
 import { deriveKey, hashWithKey, NO_KEY } from "../cli/content-hash.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = join(ROOT, "cli", "moorai-honeytokens.mjs");
@@ -31,7 +32,7 @@ function withHome(fn) {
   const env = { ...process.env, HOME: home, USERPROFILE: home };
   delete env.XDG_CONFIG_HOME; delete env.XDG_STATE_HOME;
   const run = (...args) => execFileSync(process.execPath, [CLI, ...args], { encoding: "utf8", env, maxBuffer: 8 * 1024 * 1024 });
-  try { return fn(run, dir); } finally { rmSync(home, { recursive: true, force: true }); }
+  try { return fn(run, dir); } finally { rmTree(home); }
 }
 
 test("register persists ONLY the hash — the token value never reaches disk", () => {

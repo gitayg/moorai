@@ -182,7 +182,7 @@ export function createGatewayServer(cfg) {
     catch (e) { if (e.tooLarge) return sendJson(res, 413, rpcError(null, -32600, "Request too large for the gateway to inspect")); return; }
 
     // ---- the CALL side: validate the body (C5), then gate every tools/call in it ----
-    const ctx = { idTool: new Map(), idMethod: new Map(), requestIds: [], route, guard, cfg };
+    const ctx = { idTool: new Map(), idMethod: new Map(), paged: new Set(), requestIds: [], route, guard, cfg };
     const ckey = clientKey(route, req);
     if (req.method === "POST" && body.length) {
       const enforce = cfg.schemaValidation === "enforce";
@@ -227,6 +227,7 @@ export function createGatewayServer(cfg) {
           if (m && typeof m === "object" && typeof m.method === "string" && isId(m.id)) {
             ctx.requestIds.push(m.id);
             ctx.idMethod.set(String(m.id), m.method);
+            if (m.method === "tools/list" && m.params && typeof m.params === "object" && m.params.cursor != null) ctx.paged.add(String(m.id));
           }
         }
         // C5 cool-down: a client that tripped it is refused for its duration, every request in the body.
@@ -306,6 +307,7 @@ function onUpstream(ur, res, ctx) {
     ...ctx,
     toolOf: (id) => (id != null && ctx.idTool.get(String(id))) || "mcp",
     methodOf: (id) => (id != null && ctx.idMethod.get(String(id))) || "",
+    pagedOf: (id) => ({ paged: id != null && ctx.paged.has(String(id)) }),
     cap: ctx.cfg.maxResponseBytes,
     validating: ctx.cfg.schemaValidation !== "off",
     enforce: ctx.cfg.schemaValidation === "enforce"
@@ -392,14 +394,14 @@ function onJson(ur, res, x) {
           const next = [];
           for (let i = 0; i < value.length; i++) {
             const m = value[i];
-            const r = checkServerMessage(m, x, `$[${i}]`) || await guard.gateResult(m, x.toolOf(m && m.id));
+            const r = checkServerMessage(m, x, `$[${i}]`) || await guard.gateResult(m, x.toolOf(m && m.id), x.pagedOf(m && m.id));
             if (r) changed = true;
             next.push(r || m);
           }
           if (changed) out = Buffer.from(JSON.stringify(next));
         } else {
           const m = value;
-          const r = checkServerMessage(m, x) || await guard.gateResult(m, x.toolOf(m && m.id));
+          const r = checkServerMessage(m, x) || await guard.gateResult(m, x.toolOf(m && m.id), x.pagedOf(m && m.id));
           if (r) out = Buffer.from(JSON.stringify(r));
         }
       } catch { /* a failed scan: the original goes */ }
@@ -454,7 +456,7 @@ function onSse(ur, res, x) {
       // Validated as a message only when it is one ("message" or no event: type); scanned whatever its
       // type, every element of an array, on the parsed value (a "\u0072esult" key is still a result).
       let rep = null;
-      const scan = async (m) => { try { return await guard.gateResult(m, x.toolOf(m && m.id)); } catch { return null; } };
+      const scan = async (m) => { try { return await guard.gateResult(m, x.toolOf(m && m.id), x.pagedOf(m && m.id)); } catch { return null; } };
       if (ev.data != null) {
         const isMessage = ev.type == null || ev.type === "" || ev.type === "message";
         let m, ok = true;

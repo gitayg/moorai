@@ -32,7 +32,7 @@ COPY scripts/redteam.mjs scripts/accepted-failures.mjs scripts/
 COPY test/redteam/corpus.json test/redteam/
 COPY mcp-gateway/ mcp-gateway/
 COPY model-proxy/ model-proxy/
-COPY mcp-proxy/tool-scan.mjs mcp-proxy/tool-baseline.mjs mcp-proxy/
+COPY mcp-proxy/tool-scan.mjs mcp-proxy/tool-baseline.mjs mcp-proxy/tool-drift.mjs mcp-proxy/
 COPY cloud/ cloud/
 COPY packages/agent-sdk/src/ packages/agent-sdk/src/
 COPY --chmod=755 docker/server/entrypoint.sh /usr/local/bin/moorai-entrypoint

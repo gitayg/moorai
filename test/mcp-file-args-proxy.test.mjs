@@ -7,12 +7,13 @@
 // the call. Synthetic secrets only, in temp dirs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import http from "node:http";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const GUARD = join(ROOT, "mcp-proxy", "moorai-mcp-guard.mjs");
@@ -92,7 +93,7 @@ test("PROXY: a path argument gets the named file's content scanned and reported 
       assert.ok(a.length >= 1, `expected a #39 alert at stage file, got ${JSON.stringify(alerts.map((x) => [x.threatId, x.stage, x.category]))}`);
       assert.equal(a[0].tool, "desktop:upload_file");
       assert.ok(!JSON.stringify(alerts).includes(AWS) && !JSON.stringify(alerts).includes("123-45-6789"), "content-free");
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -106,7 +107,7 @@ test("PROXY: a policy block on #39 refuses the call before the real server sees 
       assert.match(r.byId.get(2).result.content[0].text, /file customers\.csv/);
       assert.ok(!r.received.includes("customers.csv"), "the real server received a blocked call");
       assert.ok(alerts.some((a) => a.category === "MCP: blocked file argument"), "block alert");
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -126,7 +127,7 @@ test("PROXY: relative paths resolve against the proxy's cwd, then the client's M
       assert.ok(isBlocked(r.byId.get(1)), "cwd-relative");
       assert.ok(!isBlocked(r.byId.get(2)), "not under cwd and no roots yet: nothing to read");
       assert.ok(isBlocked(r.byId.get(3)), "root-relative, once the client announced its roots");
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });
 
@@ -137,6 +138,6 @@ test("PROXY: /dev/zero and a directory are never read; the call is forwarded pro
       const r = await drive(home, proj, url, [call(1, { path: "/dev/zero", dir: proj, u: "/dev/urandom" })]);
       assert.ok(r.byId.has(1) && !isBlocked(r.byId.get(1)));
       assert.ok(r.ms < 8000, `took ${r.ms} ms`);
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 });

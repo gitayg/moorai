@@ -16,13 +16,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir, hostname } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { breakGlassCanonical, BREAK_GLASS_VERSION } from "../cli/hook-core.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -70,8 +71,8 @@ async function runHook({ settingsEnv = null, userSettingsEnv = null, launcherEnv
     return { stdout, code, alerts, hashes: alerts.map((a) => String(a.contentHash || "")) };
   } finally {
     await new Promise((r) => server.close(r));
-    rmSync(home, { recursive: true, force: true });
-    rmSync(proj, { recursive: true, force: true });
+    rmTree(home);
+    rmTree(proj);
   }
 }
 const enforced = (r) => /"permissionDecision":"ask"/.test(r.stdout);
@@ -115,5 +116,5 @@ test("unit: trustedEnv refuses a name a user/project/local settings file sets, k
     assert.equal(trustedEnv("MOORAI_OTLP_ENDPOINT", { env, home, cwd: proj }), "https://collector.example");
     _resetEnvTrustForTests();
     assert.equal(trustedEnv("MOORAI_BREAKGLASS_PUBKEY", { env, home, cwd: proj }), undefined, "unset stays unset");
-  } finally { rmSync(home, { recursive: true, force: true }); rmSync(proj, { recursive: true, force: true }); _resetEnvTrustForTests(); }
+  } finally { rmTree(home); rmTree(proj); _resetEnvTrustForTests(); }
 });

@@ -8,11 +8,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir, hostname } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeSandbox } from "../cli/doctor-sandbox.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -36,7 +37,7 @@ async function consoleStub(t, status = 201) {
 function box(t, url, token = "tok-test") {
   const empty = mkdtempSync(join(tmpdir(), "moorai-beat-real-"));
   const sb = makeSandbox({ realHome: empty, config: { serverUrl: url, tenant: "acme", ...(token ? { installToken: token } : {}) } });
-  t.after(() => { sb.cleanup(); rmSync(empty, { recursive: true, force: true }); });
+  t.after(() => { sb.cleanup(); rmTree(empty); });
   const run = (extra = {}, file = HOOK, args = []) => spawnSync(process.execPath, [file, ...args], {
     input: JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "ls -la" }, session_id: "s-1", cwd: sb.proj, ...extra }),
     env: sb.env(), encoding: "utf8", timeout: 20000

@@ -13,10 +13,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -72,7 +73,7 @@ test("hooks.json matches what `moorai-hook.mjs install` writes into settings.jso
     const installed = shape(settings.hooks, (e) => JSON.stringify(e).includes("moorai-hook"));
     assert.ok(Object.keys(installed).length, "install wrote no MoorAI entries");
     assert.deepEqual(shape(readJson("hooks/hooks.json").hooks, () => true), installed);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("every hooks.json entry runs the bundled hook, resolved from the plugin root", () => {
@@ -124,5 +125,5 @@ test("the --plugin argument the plugin passes does not change today's hook decis
     assert.match(a.stdout, /#54/, "the fixture no longer produces a decision to compare");
     assert.equal(b.status, a.status);
     assert.equal(b.stdout, a.stdout);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

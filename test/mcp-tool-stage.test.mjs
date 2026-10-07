@@ -28,13 +28,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { policyCanonical, policyDigest, POLICY_SIG_VERSION, publicKeyId } from "../cli/hook-core.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const GUARD = join(ROOT, "mcp-proxy", "moorai-mcp-guard.mjs");
@@ -86,7 +87,7 @@ async function scenario(opts, fn) {
   try { await fn({ con, home }); }
   finally {
     await con.close();
-    rmSync(home, { recursive: true, force: true });
+    rmTree(home);
   }
 }
 

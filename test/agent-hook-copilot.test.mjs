@@ -9,11 +9,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync, spawn } from "node:child_process";
 import http from "node:http";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { toClaude } from "../cli/agent-hooks/copilot.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ENTRY = join(ROOT, "cli", "moorai-agent-hook.mjs");
@@ -62,14 +63,14 @@ function run(home, stdin, args = []) {
 }
 
 test("benign shell (ls -la) is allowed: exit 0, no decision", (t) => {
-  const home = sandbox(); t.after(() => rmSync(home, { recursive: true, force: true }));
+  const home = sandbox(); t.after(() => rmTree(home));
   const r = run(home, pre(home, "bash", { command: "ls -la", description: "list files" }));
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.out, "");
 });
 
 test("reverse shell is denied in Copilot's preToolUse format", (t) => {
-  const home = sandbox(); t.after(() => rmSync(home, { recursive: true, force: true }));
+  const home = sandbox(); t.after(() => rmTree(home));
   const r = run(home, pre(home, "bash", { command: REVERSE_SHELL, description: "connect" }));
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.json?.permissionDecision, "deny", r.out);
@@ -77,7 +78,7 @@ test("reverse shell is denied in Copilot's preToolUse format", (t) => {
 });
 
 test("untrusted curl|bash install is ask (Copilot prompts the user; non-interactive treats it as deny)", (t) => {
-  const home = sandbox(); t.after(() => rmSync(home, { recursive: true, force: true }));
+  const home = sandbox(); t.after(() => rmTree(home));
   const r = run(home, pre(home, "bash", { command: UNTRUSTED_INSTALL, description: "install" }));
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.json?.permissionDecision, "ask", r.out);
@@ -111,7 +112,7 @@ function runAsync(home, server, stdin) {
 test("view of a planted .env with an AWS secret is denied under a #39 block policy", async (t) => {
   const { srv, url } = await policyServer({ threatPolicy: { 39: "block" } });
   const home = sandbox(url);
-  t.after(() => { srv.close(); rmSync(home, { recursive: true, force: true }); });
+  t.after(() => { srv.close(); rmTree(home); });
   const envFile = join(home, "proj", ".env");
   writeFileSync(envFile, AWS_ENV);
   const r = await runAsync(home, url, pre(home, "view", { path: envFile }));
@@ -124,13 +125,13 @@ test("view of a planted .env with an AWS secret is denied under a #39 block poli
 });
 
 test("PascalCase (VS Code compat) payload with parsed tool_input is handled too", (t) => {
-  const home = sandbox(); t.after(() => rmSync(home, { recursive: true, force: true }));
+  const home = sandbox(); t.after(() => rmTree(home));
   const r = run(home, { hook_event_name: "PreToolUse", session_id: "s", timestamp: new Date().toISOString(), cwd: join(home, "proj"), tool_name: "Bash", tool_input: { command: REVERSE_SHELL } });
   assert.equal(r.json?.permissionDecision, "deny", r.out);
 });
 
 test("MCP tool name server-tool maps to mcp__server__tool, honouring hyphenated server names", (t) => {
-  const home = sandbox(); t.after(() => rmSync(home, { recursive: true, force: true }));
+  const home = sandbox(); t.after(() => rmTree(home));
   const prev = process.env.COPILOT_HOME;
   process.env.COPILOT_HOME = join(home, ".copilot");
   t.after(() => { if (prev === undefined) delete process.env.COPILOT_HOME; else process.env.COPILOT_HOME = prev; });
@@ -143,7 +144,7 @@ test("MCP tool name server-tool maps to mcp__server__tool, honouring hyphenated 
 });
 
 test("MCP call carrying a reverse shell is denied end-to-end", (t) => {
-  const home = sandbox(); t.after(() => rmSync(home, { recursive: true, force: true }));
+  const home = sandbox(); t.after(() => rmTree(home));
   const r = run(home, pre(home, "shell-exec", { cmd: REVERSE_SHELL }));
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.json?.permissionDecision, "deny", r.out);
@@ -165,7 +166,7 @@ test("create/edit/apply_patch/web_fetch map onto Claude's write and fetch tools"
 });
 
 test("malformed stdin exits 0 and allows", (t) => {
-  const home = sandbox(); t.after(() => rmSync(home, { recursive: true, force: true }));
+  const home = sandbox(); t.after(() => rmTree(home));
   for (const bad of ["{not json", '{"toolName":"bash","toolArgs":"{broken"}', "[]", ""]) {
     const r = run(home, bad);
     assert.equal(r.status, 0, `${bad}: ${r.stderr}`);
@@ -174,7 +175,7 @@ test("malformed stdin exits 0 and allows", (t) => {
 });
 
 test("install/uninstall touch only MoorAI's entries in ~/.copilot/hooks", (t) => {
-  const home = sandbox(); t.after(() => rmSync(home, { recursive: true, force: true }));
+  const home = sandbox(); t.after(() => rmTree(home));
   const dir = join(home, ".copilot", "hooks");
   mkdirSync(dir, { recursive: true });
   const other = { version: 1, hooks: { preToolUse: [{ type: "command", bash: "./audit.sh" }] } };
@@ -202,7 +203,7 @@ test("install/uninstall touch only MoorAI's entries in ~/.copilot/hooks", (t) =>
 });
 
 test("uninstall removes the file it created when nothing else is in it", (t) => {
-  const home = sandbox(); t.after(() => rmSync(home, { recursive: true, force: true }));
+  const home = sandbox(); t.after(() => rmTree(home));
   assert.equal(run(home, "", ["install"]).status, 0);
   assert.ok(existsSync(join(home, ".copilot", "hooks", "moorai.json")));
   assert.equal(run(home, "", ["uninstall"]).status, 0);

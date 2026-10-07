@@ -18,12 +18,13 @@
 //   (bare `node --test` walks src-tauri/target/ and hangs — always pass the glob.)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import http from "node:http";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -71,7 +72,7 @@ async function runHook(input, { policy = { captureTier: "content-free" } } = {})
   const auditPath = join(home, ".moorai", "action-audit.jsonl");
   const audit = existsSync(auditPath) ? readFileSync(auditPath, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
   server.close();
-  rmSync(home, { recursive: true, force: true });
+  rmTree(home);
   return { code, stdout, alerts, audit };
 }
 
@@ -91,7 +92,7 @@ test("DELIVERY: a Read finding reaches the server", async () => {
   const f = join(dir, "creds.txt");
   writeFileSync(f, AWS);
   const r = await runHook({ tool_name: "Read", tool_input: { file_path: f } });
-  rmSync(dir, { recursive: true, force: true });
+  rmTree(dir);
   assert.equal(r.code, 0);
   assert.ok(r.alerts.some((a) => a.category === "Information & Privacy"),
     `finding never reached the server: ${JSON.stringify(r.alerts.map((a) => a.category))}`);
@@ -136,7 +137,7 @@ test("DELIVERY: an unreachable server cannot hang or change the decision", async
   child.stdin.end(JSON.stringify({ tool_name: "mcp__rogue__doThing", tool_input: { x: 1 } }));
   const code = await new Promise((r) => child.on("exit", r));
   const ms = Date.now() - t0;
-  rmSync(home, { recursive: true, force: true });
+  rmTree(home);
 
   assert.equal(code, 0);
   assert.match(stdout, /"permissionDecision":"deny"/, "the decision must be unaffected by a dead server");

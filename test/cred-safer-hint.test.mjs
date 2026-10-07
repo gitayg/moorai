@@ -8,11 +8,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildEngine, decideText, decideCredFileRead } from "../cli/hook-core.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -98,7 +99,7 @@ test("hook end to end: each Bash read gets its kind's hint, and the hint never e
       assert.equal(saferPart(r.reason), HINT[kind], `${cmd}: ${r.reason}`);
       noPath(saferPart(r.reason), path);
     }
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("hook end to end: a Read of ~/.aws/credentials gets the AWS hint", () => {
@@ -111,5 +112,5 @@ test("hook end to end: a Read of ~/.aws/credentials gets the AWS hint", () => {
     assert.notEqual(r.decision, "allow");
     assert.equal(saferPart(r.reason), HINT.aws, r.reason);
     noPath(saferPart(r.reason), f);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

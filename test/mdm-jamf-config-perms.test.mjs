@@ -10,10 +10,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, statSync, lstatSync, symlinkSync, mkdirSync, chmodSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, statSync, lstatSync, symlinkSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "packaging", "mdm", "jamf", "moorai-jamf-deploy.sh");
 const TOKEN = "it_live_TESTTOKEN0123456789";
@@ -77,7 +78,7 @@ test("JAMF-CONFIG: dir and token file are created private, not made private afte
     assert.match(calls, new RegExp(`chown -R ${userInfo().username} ${s.dir}`));
     assert.match(calls, new RegExp(`chmod 700 ${s.dir}`));
     assert.match(calls, new RegExp(`chmod 600 ${s.file}`));
-  } finally { rmSync(s.root, { recursive: true, force: true }); }
+  } finally { rmTree(s.root); }
 });
 
 test("JAMF-CONFIG: a pre-existing world-readable config.json is not rewritten in place", { skip: process.platform === "win32" }, () => {
@@ -89,7 +90,7 @@ test("JAMF-CONFIG: a pre-existing world-readable config.json is not rewritten in
     runWrite(s.home);
     assert.equal(mode(s.file) & 0o077, 0, `token written into a file with mode ${mode(s.file).toString(8)}`);
     assert.equal(JSON.parse(readFileSync(s.file, "utf8")).installToken, TOKEN);
-  } finally { rmSync(s.root, { recursive: true, force: true }); }
+  } finally { rmTree(s.root); }
 });
 
 test("JAMF-CONFIG: a config.json symlink is replaced, never written through", { skip: process.platform === "win32" }, () => {
@@ -103,5 +104,5 @@ test("JAMF-CONFIG: a config.json symlink is replaced, never written through", { 
     assert.equal(readFileSync(target, "utf8"), "untouched", "the script wrote through a symlink the user planted");
     assert.ok(lstatSync(s.file).isFile(), "config.json should now be a regular file");
     assert.equal(mode(s.file) & 0o077, 0);
-  } finally { rmSync(s.root, { recursive: true, force: true }); }
+  } finally { rmTree(s.root); }
 });

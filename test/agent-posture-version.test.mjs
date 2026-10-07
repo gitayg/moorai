@@ -9,13 +9,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, chmodSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { agentPosture } from "../cli/agent-posture.mjs";
 import { parseVersion, versionFromEnv, isTested, probeVersion, loadManifest, compareVersions } from "../cli/agent-hooks/host-version.mjs";
 import { makeSandbox } from "../cli/doctor-sandbox.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const MANIFEST = loadManifest();
@@ -26,7 +27,7 @@ const posix = process.platform !== "win32";
 
 function sandbox(t) {
   const base = mkdtempSync(join(tmpdir(), "moorai-posture-ver-"));
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => rmTree(base));
   const home = join(base, "home"), proj = join(base, "proj"), bin = join(base, "bin");
   for (const d of [home, proj, bin]) mkdirSync(d, { recursive: true });
   const write = (p, body) => { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, typeof body === "string" ? body : JSON.stringify(body)); };
@@ -150,7 +151,7 @@ test("BEAT: the heartbeat carries version + tested for the calling host, and the
   const c = await consoleStub(t);
   const empty = mkdtempSync(join(tmpdir(), "moorai-beat-ver-"));
   const sb = makeSandbox({ realHome: empty, config: { serverUrl: c.url, tenant: "acme", installToken: "tok" } });
-  t.after(() => { sb.cleanup(); rmSync(empty, { recursive: true, force: true }); });
+  t.after(() => { sb.cleanup(); rmTree(empty); });
   const run = (file, args, extra, cmd) => spawnSync(process.execPath, [file, ...args], {
     input: JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: cmd }, session_id: "s-1", cwd: sb.proj }),
     env: sb.env({ PATH: "/usr/bin:/bin", AI_AGENT: "", CURSOR_VERSION: "", ...extra }), encoding: "utf8", timeout: 20000

@@ -10,7 +10,7 @@
 //   (bare `node --test` walks src-tauri/target/ and hangs — always pass the glob.)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,7 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import { rollupDestinations, isNewDestination, destinationKey } from "../data/destination-map.js";
 import { extractHosts } from "../data/model-endpoints.js";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -160,7 +161,7 @@ test("E2E: a Bash command's destination is recorded on-device and alerted once, 
   assert.equal(second.destinations.length, 2, "the second observation must still be counted");
   assert.equal(second.alerts.filter((a) => a.category === "Agent destination: first seen").length, 0,
     "a known destination must not re-alert — that is what makes this a map and not a firehose");
-  rmSync(home, { recursive: true, force: true });
+  rmTree(home);
 });
 
 test("E2E: an MCP call records the SERVER as a destination, with the verdict it actually got", async () => {
@@ -175,7 +176,7 @@ test("E2E: an MCP call records the SERVER as a destination, with the verdict it 
   assert.equal(server.decision, "deny", "a denied call must be recorded as denied, not as reach");
   // The host named in the denied argument is a destination too — the agent tried to reach it.
   assert.ok(r.destinations.some((d) => d.kind === "host" && d.name === CANARY_HOST), JSON.stringify(r.destinations));
-  rmSync(r.home, { recursive: true, force: true });
+  rmTree(r.home);
 });
 
 test("CANARY: the destination map carries the host and NOT the path, query, token or argument", async () => {
@@ -193,5 +194,5 @@ test("CANARY: the destination map carries the host and NOT the path, query, toke
     assert.ok(!hay.includes("Authorization"), `a request header reached ${label}`);
     assert.ok(!hay.includes(CANARY_CMD), `the whole command reached ${label}`);
   }
-  rmSync(r.home, { recursive: true, force: true });
+  rmTree(r.home);
 });

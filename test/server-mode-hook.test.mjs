@@ -10,13 +10,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo, hostname } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import http from "node:http";
 import { hashWithKey, deriveKey } from "../cli/content-hash.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -83,7 +84,7 @@ test("server mode from env alone: a justify call is denied (no approver), report
     assert.equal(h.permissionMode, "bypassPermissions");
     assert.deepEqual(h.headlessAsk, { mode: "deny", source: "default" });
     for (const a of c.alerts) assert.ok(a.user === "service" && a.device === "svc:ci-bot", `an alert carried a laptop identity: ${a.category}`);
-  } finally { c.close(); rmSync(home, { recursive: true, force: true }); }
+  } finally { c.close(); rmTree(home); }
 });
 
 test("laptop control: the same call with the same token in ~/.moorai/config.json still asks, as user@host", { skip }, async () => {
@@ -102,7 +103,7 @@ test("laptop control: the same call with the same token in ~/.moorai/config.json
     assert.match(b.out.hookSpecificOutput.permissionDecisionReason, /permission prompts are bypassed/);
     assert.ok(c.alerts.some((a) => a.contentHash === "bypass-ask:deny" && a.reasonCode === "BYPASS_ASK"));
     assert.ok(!c.alerts.some((a) => String(a.contentHash).startsWith("headless-ask")));
-  } finally { c.close(); rmSync(home, { recursive: true, force: true }); }
+  } finally { c.close(); rmTree(home); }
 });
 
 test("server mode enforces without a token (a laptop without one only coaches)", { skip }, async () => {
@@ -114,7 +115,7 @@ test("server mode enforces without a token (a laptop without one only coaches)",
     assert.equal(decision(cred.out), "deny");
     const lap = await run(home, SHELL, { MoorAI_SERVER: "http://127.0.0.1:1" });
     assert.equal(decision(lap.out), "coach", JSON.stringify(lap.out));
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("allow-with-report comes from the org policy, never from the environment", { skip }, async () => {
@@ -127,13 +128,13 @@ test("allow-with-report comes from the org policy, never from the environment", 
     assert.ok(rel && rel.riskLevel === "High" && rel.headlessAsk.source === "policy");
     r = await run(home, CRED, srvEnv(c.url, { MOORAI_HEADLESS_ASK: "deny" }));
     assert.equal(decision(r.out), "deny", "env may harden the policy's release");
-  } finally { c.close(); rmSync(home, { recursive: true, force: true }); }
+  } finally { c.close(); rmTree(home); }
   const c2 = await consoleServer();
   const home2 = sandbox(null);
   try {
     const r = await run(home2, CRED, srvEnv(c2.url, { MOORAI_HEADLESS_ASK: "allow-with-report" }));
     assert.equal(decision(r.out), "deny", "env cannot release an ask");
-  } finally { c2.close(); rmSync(home2, { recursive: true, force: true }); }
+  } finally { c2.close(); rmTree(home2); }
 });
 
 test("a project settings file that sets MOORAI_SERVER_URL is refused: the planted console gets nothing, the real one gets a tamper alert", { skip }, async () => {
@@ -151,7 +152,7 @@ test("a project settings file that sets MOORAI_SERVER_URL is refused: the plante
     assert.ok(t, `no tamper alert: ${JSON.stringify(real.alerts.map((a) => a.category))}`);
     assert.deepEqual(t.refusedEnv, ["MOORAI_SERVER_URL"]);
     assert.ok(!JSON.stringify(t).includes(evil.url), "tamper alert leaked the planted value");
-  } finally { real.close(); evil.close(); rmSync(home, { recursive: true, force: true }); }
+  } finally { real.close(); evil.close(); rmTree(home); }
 });
 
 test("GitHub Actions fallback names the workload repo:workflow:job; the run id is not part of it", { skip }, async () => {
@@ -164,5 +165,5 @@ test("GitHub Actions fallback names the workload repo:workflow:job; the run id i
     const f = c.alerts.find((a) => a.threatId === 55);
     assert.equal(f.device, "svc:github:acme/api:claude:review");
     assert.equal(f.actor, actorOf("service", "svc:github:acme/api:claude:review"));
-  } finally { c.close(); rmSync(home, { recursive: true, force: true }); }
+  } finally { c.close(); rmTree(home); }
 });

@@ -8,10 +8,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -49,7 +50,7 @@ test("GAP 1: a Cursor Shell call carrying a reverse shell is denied exactly like
     assert.equal(full.decision, "deny", `got ${full.decision} ${full.reason}`);
     const bash = runHook(home, { tool_name: "Bash", tool_input: { command: REVERSE_SHELL }, session_id: "g1" });
     assert.equal(shell.decision, bash.decision);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("GAP 1: Shell parity with Bash on an ask verdict and on a benign command", () => {
@@ -62,5 +63,5 @@ test("GAP 1: Shell parity with Bash on an ask verdict and on a benign command", 
     }
     assert.equal(runHook(home, { tool_name: "Shell", tool_input: { command: "ls -la" }, session_id: "g1b" }).decision, "allow");
     assert.equal(runHook(home, { tool_name: "Shell", tool_input: { command: "cat .env" }, session_id: "g1b" }).decision, "ask");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

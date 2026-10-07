@@ -41,7 +41,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,6 +49,7 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import { policyCanonical, policyDigest, POLICY_SIG_VERSION, publicKeyId } from "../cli/hook-core.mjs";
 import { resultOfResponse, resultScanText, CAPS } from "../mcp-proxy/tool-scan.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const GUARD = join(ROOT, "mcp-proxy", "moorai-mcp-guard.mjs");
@@ -93,7 +94,7 @@ async function scenario(opts, fn) {
   const con = await startConsole(opts);
   const home = makeHome(con.url);
   try { await fn({ con, home }); }
-  finally { await con.close(); rmSync(home, { recursive: true, force: true }); }
+  finally { await con.close(); rmTree(home); }
 }
 
 function makeHome(url) {

@@ -11,10 +11,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -68,7 +69,7 @@ for (const [label, policy] of [["no policy", null], ["default policy", { capture
         assert.equal(runHook(home, proj, bash(`cat ${tilde}/${f}`)), rel, `cat ~/…/${f}`);
         assert.equal(runHook(home, proj, read(join(proj, f))), rel, `Read <abs>/${f}`);
       }
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 
   test(`GAP 2 (${label}): env TEMPLATES stay unflagged in every path form`, () => {
@@ -82,7 +83,7 @@ for (const [label, policy] of [["no policy", null], ["default policy", { capture
         assert.equal(runHook(home, proj, bash(`cat ${join(proj, f)}`)), "allow", `cat <abs>/${f}`);
         assert.equal(runHook(home, proj, read(join(proj, f))), "allow", `Read <abs>/${f}`);
       }
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   });
 }
 
@@ -95,5 +96,5 @@ test("GAP 2: no stricter than relative — a live .env is ask, never deny, under
     writeFileSync(join(proj, "README.md"), "# billing api\n");
     assert.equal(runHook(home, proj, read(join(proj, "README.md"))), "allow");
     assert.equal(runHook(home, proj, bash(`cat ${join(proj, "README.md")}`)), "allow");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

@@ -20,6 +20,7 @@ import { modelFamily } from "../cloud/bedrock/model-family.mjs";
 import { FLAGS, flagsFor } from "../cloud/bedrock/risk.mjs";
 import { recordProblems, assertContentFree } from "../cloud/record-schema.mjs";
 import { iamPolicy, COMMANDS } from "../cloud/bedrock/commands.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FIX = join(ROOT, "test", "fixtures", "cloud-bedrock");
@@ -245,7 +246,7 @@ test("an unknown status from AWS is OTHER, never the raw string", () => {
     assert.equal(a.attrs.guardrailAttached, false);
     assert.equal(a.attrs.modelFamily, null);
     assert.ok(inv.errors.some((e) => e.region === "us-east-1" && e.command === "get-agent" && e.class === "missing"));
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { rmTree(dir); }
 });
 
 test("a command missing from the export is reported per region, not guessed", () => {
@@ -288,7 +289,7 @@ test("CLI --from: prints the inventory as JSON; stderr carries counts only", () 
     assert.equal(inv.account, H(ACCT));
     assert.ok(!/CANARY|arn:/.test(r.stdout + r.stderr));
     assert.match(r.stderr, /22 records/);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("CLI --from --regions keeps only the named regions", () => {
@@ -299,7 +300,7 @@ test("CLI --from --regions keeps only the named regions", () => {
     const inv = JSON.parse(r.stdout);
     assert.deepEqual(inv.regions, ["eu-west-1"]);
     assert.ok(inv.records.every((x) => x.region === "eu-west-1"));
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("CLI: not enrolled exits 2 and prints no inventory", () => {
@@ -309,7 +310,7 @@ test("CLI: not enrolled exits 2 and prints no inventory", () => {
     assert.equal(r.status, 2);
     assert.equal(r.stdout, "");
     assert.match(r.stderr, /enrol/i);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("CLI --policy prints the minimum IAM policy and touches nothing else", () => {
@@ -318,7 +319,7 @@ test("CLI --policy prints the minimum IAM policy and touches nothing else", () =
     const r = run(["bedrock", "--policy"], home);
     assert.equal(r.status, 0, r.stderr);
     assert.deepEqual(JSON.parse(r.stdout), iamPolicy());
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("CLI: no mode is a usage error; --run is never implied", () => {
@@ -328,5 +329,5 @@ test("CLI: no mode is a usage error; --run is never implied", () => {
     assert.equal(r.status, 2);
     assert.match(r.stderr, /--from|--run/);
     assert.ok(!existsSync(join(home, "no-such-aws")));
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

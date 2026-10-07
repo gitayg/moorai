@@ -9,12 +9,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir, hostname, userInfo } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HOSTS, wrapConfig, unwrapConfig, wrapEntry, isWrapped, GUARD_PATH } from "../mcp-proxy/install.mjs";
 import { TALLY_FILE } from "../cli/mcp-usage-beat.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FAKE = join(ROOT, "mcp-proxy", "test-fake-mcp-server.mjs");
@@ -93,7 +94,7 @@ async function drive(t, { url, entry, home, calls = 2 }) {
 
 function home(t, url) {
   const h = mkdtempSync(join(tmpdir(), "moorai-usage-proxy-"));
-  t.after(() => rmSync(h, { recursive: true, force: true }));
+  t.after(() => rmTree(h));
   mkdirSync(join(h, ".moorai"), { recursive: true });
   writeFileSync(join(h, ".moorai", "config.json"), JSON.stringify({ serverUrl: url, tenant: "acme", installToken: "tok-proxy" }));
   return h;

@@ -66,11 +66,10 @@ them can block.
   `mcp-tool-poisoning` (#60), `mcp-hidden-canary` (#50) and `mcp-tool-cred-path` (#60: a description that
   tells the model to read a credential file such as `~/.ssh/id_rsa`, `~/.aws/credentials`, `.env`,
   `.netrc`, a browser cookie store or a keychain, and pass its contents into a call; silent when the text
-  only names the file, negates the read, or describes what the server itself does). **Report-first, and never a mutation:** the
-  listing is forwarded byte-identical, always. "Block" here could only mean deleting a tool from the
-  agent's list — a lie about what the server offers. A blocking policy instead **quarantines** the tool,
-  and the already-existing `tools/call` gate refuses calls to it. Observation at list time, enforcement
-  at call time.
+  only names the file, negates the read, or describes what the server itself does). **Report-first:** the
+  listing is forwarded byte-identical. A blocking policy for a content finding **quarantines** the tool,
+  and the already-existing `tools/call` gate refuses calls to it. The one exception is the opt-in
+  `mcpToolDrift: "block"` (below): a tool that changed since approval is left out of the listing.
 - **`tools/call` results** — the content the agent actually ingests — are scanned at the **`file`** stage
   and *can* be blocked. Before this, a child server returning a secret reached the agent verbatim with
   zero alerts. A result that resolves to `deny` is replaced by an MCP tool error (`isError: true`, same
@@ -98,6 +97,76 @@ wrong-tenant `~/.moorai/hook-policy.json` is treated as **no policy at all** —
 last verified policy, then to the offline default per the posture ratchet — and emits a content-free
 tamper alert. Writing `{}` into the cache therefore cannot disarm the gate. Because the proxy is a
 long-lived process, verification re-runs on every lazy refresh, not once at startup.
+
+### Tool drift: block until re-approved (`mcpToolDrift`)
+
+Tool descriptions and schemas can change after a server was approved, and a changed description is
+where a quiet prompt injection lands. [`tool-baseline.mjs`](tool-baseline.mjs) has always noticed:
+description drift (Medium, High if the schema changed too), schema drift (High) and a tool name taken
+over by a second server (shadowing, High). In the default mode that is all it does: it alerts and
+re-baselines at once, so the change is accepted after one alert. The policy key `mcpToolDrift` makes
+that a gate:
+
+| `mcpToolDrift` | What happens to a drifted tool |
+|---|---|
+| `"alert"` (default; also any value other than `"block"`) | Today's behaviour, unchanged: the listing is forwarded byte-identical, an alert is raised, the baseline moves to the new value. A tool added later and a removed tool raise nothing. |
+| `"block"` | The tool is **quarantined**: it is left out of the `tools/list` the client receives, and a `tools/call` to it is refused with the usual refusal shape (an MCP tool result with `isError: true`). The baseline does **not** move. |
+
+In block mode, four things quarantine a tool: a changed description, a changed schema, a tool **added**
+to a server that already has a baseline, and **shadowing**. A **removed** tool only alerts (`MCP: tool
+removed after approval`, Medium, `decision: "notify"`); there is nothing to quarantine. The alerts keep
+their categories and add `decision: "quarantine"` and `reasonCode: "MCP_TOOL_DRIFT"`
+([`../cli/provenance.mjs`](../cli/provenance.mjs)). The new categories are `MCP: tool added after
+approval`, `MCP: tool removed after approval`, and, for a refused call, `MCP: quarantined tool (changed
+since approval)` and `MCP: tool not in a checked listing`. A listing in which nothing is quarantined is
+still forwarded with its original bytes.
+
+**What the tool is compared with.** When an admin approves the server in the console, the console pins
+that server's tool fingerprints as the **approved baseline**: content-free hashes in the `toolIdentity`
+shape (`{ key, srv, desc, schema }`, each `fp2:` + 16 hex of an unkeyed SHA-256). The baseline reaches
+the device inside the **signed policy** it already fetches (`GET /api/policy`), as
+`mcpToolBaselines[<server label>] = { version, tools: [...] }`. A server with an approved baseline is
+judged against it; a server without one is judged against the device's own first-seen baseline
+(`~/.moorai/mcp-tool-baseline.json`). Against an approved baseline, any tool not in it is "added" (or
+"shadow" when another approved server, or the local baseline, gives the name to a different server).
+
+**Where the console gets the fingerprints.** In block mode the proxy posts the fingerprints of every
+complete listing (not a page of a paginated one) to `POST /api/mcp/tools` (install token, `{ server,
+tools }`), once per distinct set per process. Nothing else: no tool name, description or schema. The
+console stores them on the server's registry entry. Approving the server pins them at the next version.
+A later report that differs shows "tools changed since approval — awaiting re-approval"; re-approving
+accepts the new fingerprints. So the order of operations for an org is: set `mcpToolDrift` to `block`,
+let devices report, then approve (or re-approve) the server to pin its tools.
+
+**Re-approval releases the tool without a re-list.** A quarantined tool is re-judged on every call
+against the policy in force at that moment (refreshed every 60 s), so the first call after the new policy
+arrives goes through. A released tool is recorded in the local baseline.
+
+**A stale policy cannot unblock.** Each approved baseline carries a per-server `version` that the
+console increments on every approval. The device keeps the highest version it has accepted for each
+server (`~/.moorai/mcp-tool-approved.json`; the server label is stored as a fingerprint) and ignores an
+approved baseline below it. This sits under the policy envelope's own rollback refusal (`policySig.iat`
+against the pin's high-water mark), not in place of it: the version file is in the agent's write scope,
+so deleting it removes this second layer and leaves the first.
+
+**Which way each failure goes.**
+
+| Situation | Result |
+|---|---|
+| No verified policy (unenrolled, console never reached, unverifiable cache, the fail-closed offline default) | alert mode (open): the default policy does not set `mcpToolDrift` |
+| A coach device (unenrolled or unmanaged) | alert mode (open); coach never blocks |
+| Policy says `block`, console unreachable | the cached or last-known-good policy still says `block`, and its approved baselines still apply |
+| No approved baseline for this server | the local first-seen baseline; the first listing of a server new to the device is accepted (open) |
+| Approved baseline malformed (a non-integer version, a non-`fp2` hash, more than 2,048 tools) | ignored; the local baseline decides |
+| Approved baseline older than the version this device already accepted | ignored; the local baseline decides (a stale cache cannot unblock) |
+| Local baseline file missing, corrupt or unwritable | treated as empty: the next listing is a first sighting and is accepted (open). It does not matter for a server with an approved baseline |
+| A `tools/list` arrives before this process has loaded any policy | held up to 2 s for the policy only when the device's cached or last-known-good policy says `block` (an unverified hint, used for nothing else); otherwise, or after the wait, forwarded unfiltered and judged when the policy arrives. Calls are enforced either way (list open, call closed). A device in alert mode never waits |
+| A `tools/list` line over 1 MB (`CAPS.maxLineBytes`) | never parsed, so not filtered; every call to a tool from it is refused as `MCP: tool not in a checked listing` (closed) |
+| A call to a tool that was never in a listing | refused (closed) |
+| The policy switches from `alert` to `block` during a session | tools listed under `alert` are judged on their first call, against the approved baseline if there is one; a tool that passes keeps working without a re-list |
+| The judgement throws | the listing is forwarded unfiltered; calls to the tools it did not judge are refused (closed) |
+| The fingerprint post to the console fails | nothing changes on the device; the console has nothing new to pin until the next report |
+| A paginated listing | each page is judged; a removal is not reported and fingerprints are not posted, so a paginated server cannot be pinned and stays on the local baseline |
 
 ### first sight: the server's REPUTATION
 
@@ -320,6 +389,7 @@ proxy sees nothing.
 | `moorai-mcp-guard.mjs`     | The stdio proxy / gateway. |
 | `tool-scan.mjs`            | Caps, and the composition of the scan text for a `tools/list` entry and a `tools/call` result. |
 | `tool-baseline.mjs`        | Cross-call tool baseline — shadowing / capability-expansion drift. |
+| `tool-drift.mjs`           | `mcpToolDrift: "block"`: approved-baseline precedence, quarantine verdicts, the version mark, the fingerprint report. Shared with the HTTP gateway. |
 | `install.mjs`              | Wrap / uninstall / status a host's MCP config, per the `HOSTS` table (pure transforms exported for tests). |
 | `test-proxy.mjs`           | Self-verification (proxy behavior + install rewrite). |
 | `test-fake-mcp-server.mjs` | Tiny fake MCP server used by the test. |

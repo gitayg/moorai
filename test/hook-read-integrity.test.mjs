@@ -23,12 +23,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildEngine } from "../cli/hook-core.mjs";
 import { fileMetadataText } from "../data/file-metadata.js";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -165,7 +166,7 @@ function sandbox(port) {
   writeFileSync(files.pdf, PDF);
   writeFileSync(files.blob, BLOB);
   writeFileSync(join(decoy, "notes.md"), DECOY);
-  return { home, proj, decoy, files, cleanup: () => { for (const d of [home, proj, decoy]) rmSync(d, { recursive: true, force: true }); } };
+  return { home, proj, decoy, files, cleanup: () => { for (const d of [home, proj, decoy]) rmTree(d); } };
 }
 
 function spawnHook(sb, port, payload, cwd) {

@@ -12,6 +12,7 @@ import http from "node:http";
 import { policyCanonical, policyDigest } from "../cli/hook-core.mjs";
 import { checkManaged, readManagedSettings, diffSurface } from "../cli/doctor-hosts.mjs";
 import { noPolicyBaseline, breakGlassAnchorPath } from "../cli/doctor-policy.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DOCTOR = join(ROOT, "cli", "moorai-doctor.mjs");
@@ -90,7 +91,7 @@ test("doctor: unenrolled device with no host registration fails, coaches, and th
     const human = doctorSync(home, ["--offline"]);
     assert.match(human.stdout, /FAIL {2}Any host: MoorAI is not registered in any agent host/);
     assert.match(human.stdout, /fix: node .*moorai-hook\.mjs" install/);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("doctor: Claude Code registration is compared with what the real installer writes — current is ok, a stale surface fails", () => {
@@ -122,7 +123,7 @@ test("doctor: Claude Code registration is compared with what the real installer 
     writeFileSync(p, t);
     r = doctorSync(home, ["--offline", "--no-selftest", "--json"]);
     assert.match(check(r, "host:claude-code").summary, /hook file missing: .*gone\/moorai-hook\.mjs/);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("doctor: adapter hosts are checked against their own installers (codex, cursor)", () => {
@@ -144,7 +145,7 @@ test("doctor: adapter hosts are checked against their own installers (codex, cur
     r = doctorSync(home, ["--offline", "--no-selftest", "--json"]);
     assert.equal(check(r, "host:cursor").status, "fail");
     assert.match(check(r, "host:cursor").summary, /missing event\(s\) postToolUse/);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("doctor: enrolled device against a local console — GET only, token never printed, self-test enforces", async () => {
@@ -178,7 +179,7 @@ test("doctor: enrolled device against a local console — GET only, token never 
     assert.ok(seen.length > 0, "console was never contacted");
     assert.deepEqual(seen.filter((s) => !s.startsWith("GET ")), [], `non-GET requests reached the console: ${seen}`);
     assert.ok(!seen.some((s) => s.includes("/api/alerts")), "doctor posted an alert");
-  } finally { srv.close(); rmSync(home, { recursive: true, force: true }); }
+  } finally { srv.close(); rmTree(home); }
 });
 
 test("doctor: pinned device — a planted unsigned cache fails, a signed one verifies, a signed policy that softens #54 is caught by the self-test", () => {
@@ -203,7 +204,7 @@ test("doctor: pinned device — a planted unsigned cache fails, a signed one ver
     assert.equal(st.status, "warn", st.summary);
     assert.match(st.summary, /policy sets #54 to "notify": a reverse shell is allowed/);
     assert.equal(st.details.knownBad.decision, "allow");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("doctor: key files looser than 0600 fail, an unsigned break-glass marker fails, a malformed cache warns", { skip: process.platform === "win32" }, () => {
@@ -223,7 +224,7 @@ test("doctor: key files looser than 0600 fail, an unsigned break-glass marker fa
     r = doctorSync(home, ["--offline", "--no-selftest", "--json"]);
     assert.equal(check(r, "state").status, "warn", check(r, "state").summary);
     assert.equal(check(r, "break-glass").status, "ok");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("doctor is read-only: every file under HOME is byte-, mtime- and mode-identical after a full run", async () => {
@@ -248,7 +249,7 @@ test("doctor is read-only: every file under HOME is byte-, mtime- and mode-ident
     }
     assert.ok(hits.some((u) => u.startsWith("/api/policy?")), "the loader never fetched; the test proves nothing");
     assert.deepEqual(snapshot(home), before);
-  } finally { srv.close(); rmSync(home, { recursive: true, force: true }); }
+  } finally { srv.close(); rmTree(home); }
 });
 
 test("doctor managed settings: allowManagedHooksOnly without MoorAI fails, with MoorAI passes, disableAllHooks fails (read from a managed dir)", () => {
@@ -268,7 +269,7 @@ test("doctor managed settings: allowManagedHooksOnly without MoorAI fails, with 
     assert.equal(c.status, "fail");
     assert.match(c.summary, /disableAllHooks is true/);
     assert.equal(checkManaged([]).status, "ok");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { rmTree(dir); }
 });
 
 test("doctor mirrors the hook's private constants by reading them, so they cannot drift silently", () => {
@@ -314,7 +315,7 @@ test("doctor: a plugin-only device is registered via the plugin, its hooks.json 
     assert.equal(check(r, "hosts:any"), undefined);
     assert.deepEqual(c.details.events, c.details.expected);
     assert.equal(r.status, 0, JSON.stringify(r.json.checks.filter((x) => x.status === "fail")));
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("doctor: plugin and settings install together warn — the plugin stands down where the settings copy covers an event", () => {
@@ -327,7 +328,7 @@ test("doctor: plugin and settings install together warn — the plugin stands do
     assert.equal(c.status, "warn", c.summary);
     assert.match(c.summary, /both installed; the plugin stands down where the settings copy covers an event — keep one/);
     assert.match(c.fix, /claude plugin uninstall moorai@moorai/);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("doctor: a plugin that is disabled, or enabled with no install record, does not count as registered", () => {
@@ -339,7 +340,7 @@ test("doctor: a plugin that is disabled, or enabled with no install record, does
       assert.equal(check(r, "host:claude-code").status, "warn", JSON.stringify(opts));
       assert.equal(check(r, "hosts:any").status, "fail", JSON.stringify(opts));
       assert.equal(r.status, 1);
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   }
 });
 
@@ -360,7 +361,7 @@ test("doctor: the plugin copy's hooks.json missing a current matcher, or its hoo
     c = check(r, "host:claude-code");
     assert.equal(c.status, "fail", c.summary);
     assert.match(c.summary, /hook file missing: .*cli\/moorai-hook\.mjs/);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("doctor managed settings: allowManagedHooksOnly offers force-enabling the plugin, and a force-enabled moorai plugin passes", () => {
@@ -374,7 +375,7 @@ test("doctor managed settings: allowManagedHooksOnly offers force-enabling the p
     c = checkManaged(readManagedSettings(dir));
     assert.equal(c.status, "ok", c.summary);
     assert.match(c.summary, /MoorAI plugin moorai@moorai force-enabled/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { rmTree(dir); }
 });
 
 // ---- server mode (cli/server-mode.mjs, cli/doctor-server.mjs) ----
@@ -390,7 +391,7 @@ test("doctor: a laptop report has no server-mode row", () => {
     const r = doctorWith(home, ["--offline", "--no-selftest", "--json"], { MOORAI_SERVICE_ID: "ignored", MOORAI_INSTALL_TOKEN: "ignored" });
     assert.equal(check(r, "server"), undefined);
     assert.equal(check(r, "enrollment").details.config, join(home, ".moorai", "config.json").replace(home, "~"));
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("doctor: server mode from env — sources named, token fingerprinted never printed", () => {
@@ -412,7 +413,7 @@ test("doctor: server mode from env — sources named, token fingerprinted never 
     assert.match(check(r, "enrollment").summary, /enrolled · tenant doctor-test · token present .* · enforce mode/);
     assert.match(check(r, "enrollment").details.config, /^server mode \(console env, token env\)$/);
     assert.match(human.stdout, /\[server\]\n {2}WARN {2}Server mode: on \(env\)/);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 // The self-test's headless case runs the real hook, so it needs the hook wiring (cli/moorai-hook.mjs
@@ -429,7 +430,7 @@ test("doctor: server-mode self-test — the live hook denies the headless ask an
     assert.equal(st.details.headlessAsk.decision, "deny");
     assert.match(st.details.headlessAsk.reason, /no approver exists/);
     assert.match(st.summary, /credential read \(justify\) → deny \(headless\)/);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("doctor: server mode without a token or a workload name warns; env cannot release asks", () => {
@@ -445,7 +446,7 @@ test("doctor: server mode without a token or a workload name warns; env cannot r
     const e = check(r, "enrollment");
     assert.equal(e.status, "warn");
     assert.match(e.summary, /server mode enforces the built-in defaults without a token/);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });
 
 test("doctor: a MOORAI_* name in the project's settings env block fails the server row and is refused", () => {
@@ -460,5 +461,5 @@ test("doctor: a MOORAI_* name in the project's settings env block fails the serv
     assert.match(s.summary, /refused MOORAI_SERVER_URL: set by 1 user\/project\/local settings file/);
     assert.match(s.summary, /console http:\/\/localhost:8787 \[default\]/, "the planted URL is not the binding");
     assert.equal(r.status, 1);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally { rmTree(home); }
 });

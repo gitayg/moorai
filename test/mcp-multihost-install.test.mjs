@@ -29,12 +29,13 @@
 //   (bare `node --test` walks src-tauri/target/ and hangs — always name the file.)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { HOSTS, hostById, serversKeyOf, wrapConfig, unwrapConfig, isWrapped, GUARD_PATH } from "../mcp-proxy/install.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const GUARD = join(ROOT, "mcp-proxy", "moorai-mcp-guard.mjs");
@@ -141,7 +142,7 @@ function driveHost({ server, tool, args, policy, env = {}, extraSends = [] }, ti
       const received = existsSync(recv) ? readFileSync(recv, "utf8") : "";
       try { child.stdin.end(); } catch { /* ignore */ }
       try { child.kill(); } catch { /* ignore */ }
-      rmSync(home, { recursive: true, force: true });
+      rmTree(home);
       resolve({ byId, lines, received });
     }
 

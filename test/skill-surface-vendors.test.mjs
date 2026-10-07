@@ -11,13 +11,14 @@
 //   node --test --test-reporter=spec "test/**/*.test.mjs"
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { skillSurfaceKind, isSkillSurface, SKILL_SURFACE_KINDS } from "../data/skill-surface.js";
 import { scanPath } from "../cli/scan-core.mjs";
 import { fileClass } from "../cli/mcp-package/scope.mjs";
 import { buildEngine } from "../cli/hook-core.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 // [relative path, kind]. Paths are relative so the same row drives the classifier and the on-disk scan.
 const CASES = [
@@ -112,7 +113,7 @@ function scanOne(rel, evil, engine) {
     const row = r.files.find((f) => f.relativePath.split("\\").join("/") === rel);
     assert.ok(row, `scan did not see ${rel}`);
     return row;
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { rmTree(root); }
 }
 
 test("VENDOR SURFACE: every documented location classifies to its kind", () => {

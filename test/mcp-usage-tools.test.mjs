@@ -7,10 +7,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recordMcpCall, flushMcpUsage, dueDays, readTally, TALLY_FILE, MAX_TOOLS, MAX_TOOLS_STORED, GATEWAY_HOST } from "../cli/mcp-usage-beat.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const DAY = 24 * 3600 * 1000;
 const T0 = Date.parse("2026-10-01T12:00:00Z");
@@ -18,7 +19,7 @@ const ID = { user: "service", device: "svc:gw-1", platform: "linux", actor: "h2:
 const CFG = (url) => ({ serverUrl: url, tenant: "acme", installToken: "tok-usage" });
 const G = (label, tool, extra = {}) => ({ path: "gateway", host: "gateway", label, tool, ...extra });
 
-function dir(t) { const d = mkdtempSync(join(tmpdir(), "moorai-usage-tools-")); t.after(() => rmSync(d, { recursive: true, force: true })); return d; }
+function dir(t) { const d = mkdtempSync(join(tmpdir(), "moorai-usage-tools-")); t.after(() => rmTree(d)); return d; }
 async function consoleStub(t) {
   const posts = [];
   const srv = createServer((req, res) => {
