@@ -5,7 +5,8 @@
 //
 // Stages, in order (C5 schemaStage):
 //   json            the body is UTF-8 and parses as JSON ("JSON-RPC messages MUST be UTF-8 encoded",
-//                   MCP 2025-06-18 transports); a client body repeats no key (repeatedKey)
+//                   MCP 2025-06-18 transports); a client body repeats no key, spells no MCP field it
+//                   carries in another case, and nests no deeper than MAX_DEPTH (scanKeys)
 //   jsonrpc         the JSON-RPC 2.0 envelope: an object, `jsonrpc` "MUST be exactly "2.0"", `method` "A
 //                   String", a batch is a non-empty array (jsonrpc.org/specification)
 //   structure       MCP's tightening of the envelope: request ids are "a string or integer ID" that "MUST
@@ -47,35 +48,64 @@ const fail = (stage, path) => ({ stage, path });
 
 // Raw bytes → { value } or { error } at the json stage. Strict UTF-8 (a lenient decode would let the
 // gateway and the upstream read different text) and no BOM (JSON.parse rejects it; some parsers do not).
-// opts.uniqueKeys: a repeated key (repeatedKey below) also fails the json stage; the parsed value is still
-// returned with the error, so a refusal can answer the request's id.
+// opts.uniqueKeys: a repeated key (repeatedKey below) also fails the json stage. opts.maxDepth: so does
+// nesting deeper than that many objects / arrays combined, as { ..., tooDeep: true }, which the caller
+// refuses in every --schema mode. The parsed value is still returned with either error, so a refusal can
+// answer the request's id.
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-export function parseBody(buf, { uniqueKeys = false } = {}) {
+export function parseBody(buf, { uniqueKeys = false, maxDepth = 0 } = {}) {
   let text, value;
   try { text = UTF8.decode(buf); } catch { return { error: fail("json", "$") }; }
   try { value = JSON.parse(text); } catch { return { error: fail("json", "$") }; }
-  if (uniqueKeys && repeatedKey(text)) return { value, error: fail("json", "$") };
+  return checked(text, value, uniqueKeys, maxDepth);
+}
+function checked(text, value, uniqueKeys, maxDepth) {
+  if (!uniqueKeys && !maxDepth) return { value };
+  const r = scanKeys(text, maxDepth || Infinity);
+  if (r.deep) return { value, error: { ...fail("json", "$"), tooDeep: true } };
+  if (uniqueKeys && r.repeated) return { value, error: fail("json", "$") };
   return { value };
 }
+
+// A client message nested deeper than this (objects and arrays combined, the envelope counting as 1) is
+// refused at the json stage in every --schema mode. The gate serialises the arguments with JSON.stringify,
+// which throws past a few thousand levels, and a failing check forwards: ~100000 levels of `[` carried a
+// call to the upstream unscanned.
+export const MAX_DEPTH = 64;
 
 // What a lenient peer reads from the same bytes: the WHATWG UTF-8 decode (a BOM dropped, invalid sequences
 // replaced) that fetch().json() and the MCP SDK's TextDecoder use. Only for gating or scanning a body the
 // strict stage rejected and the gateway forwards anyway (report/off modes, every response), never to
 // accept one.
 const LENIENT = new TextDecoder("utf-8");
-export function parseLenient(buf) {
-  try { return { value: JSON.parse(LENIENT.decode(buf)) }; } catch { return { error: fail("json", "$") }; }
+export function parseLenient(buf, { maxDepth = 0 } = {}) {
+  let text, value;
+  try { text = LENIENT.decode(buf); value = JSON.parse(text); } catch { return { error: fail("json", "$") }; }
+  return checked(text, value, false, maxDepth);
 }
 
 // A key repeated in one object: exactly anywhere, or up to case in a message envelope and its params (the
 // objects MCP's own field names live in). JSON.parse keeps the LAST of two equal keys; a first-wins parser
 // keeps the first, and a case-insensitive struct decoder (Go's encoding/json) the last of `name` /
-// `Name` — so the gateway would gate one value and forward bytes the upstream reads as another. `text`
-// has already parsed as JSON, so a string followed by ':' inside an object is a key.
+// `Name` — so the gateway would gate one value and forward bytes the upstream reads as another. In those
+// two objects a key that differs only in case from a field the gateway reads (GATED) is refused even
+// alone: `Arguments` is no field to JSON.parse, so the gate would scan no arguments, and it IS the
+// arguments to such a decoder. `text` has already parsed as JSON, so a string followed by ':' inside an
+// object is a key.
 const foldKey = (k) => k.toUpperCase().toLowerCase();
+const GATED = {
+  envelope: ["jsonrpc", "id", "method", "params", "result", "error"],
+  params: ["name", "arguments", "uri", "cursor", "_meta", "protocolVersion", "capabilities", "clientInfo"]
+};
+const GATED_FOLD = Object.fromEntries(Object.entries(GATED).map(([role, ks]) => [role, new Map(ks.map((k) => [foldKey(k), k]))]));
 const isWs = (c) => c === 0x20 || c === 0x09 || c === 0x0a || c === 0x0d;
-export function repeatedKey(text) {
+export function repeatedKey(text) { return scanKeys(text, Infinity).repeated; }
+
+// One linear pass over text that has parsed as JSON: { repeated } per repeatedKey above, and { deep } when
+// more than maxDepth containers are open at once (it stops there).
+function scanKeys(text, maxDepth) {
   const stack = []; // per open container: null for an array, else { keys, role, last }
+  let repeated = false;
   const n = text.length;
   for (let i = 0; i < n; i++) {
     const c = text.charCodeAt(i);
@@ -84,8 +114,11 @@ export function repeatedKey(text) {
       const role = stack.length === 0 || (stack.length === 1 && parent === null) ? "envelope"
         : parent && parent.role === "envelope" && parent.last === "params" ? "params" : null;
       stack.push({ keys: new Set(), role, last: null });
-    } else if (c === 0x5b) stack.push(null);
-    else if (c === 0x7d || c === 0x5d) stack.pop();
+      if (stack.length > maxDepth) return { repeated, deep: true };
+    } else if (c === 0x5b) {
+      stack.push(null);
+      if (stack.length > maxDepth) return { repeated, deep: true };
+    } else if (c === 0x7d || c === 0x5d) stack.pop();
     else if (c === 0x22) {
       const s = i;
       let esc = false;
@@ -97,12 +130,13 @@ export function repeatedKey(text) {
       if (text.charCodeAt(j) !== 0x3a) continue;
       const k = esc ? JSON.parse(text.slice(s, i + 1)) : text.slice(s + 1, i);
       const kk = top.role ? foldKey(k) : k;
-      if (top.keys.has(kk)) return true;
+      if (top.keys.has(kk)) { repeated = true; continue; }
+      if (top.role) { const want = GATED_FOLD[top.role].get(kk); if (want !== undefined && want !== k) { repeated = true; continue; } }
       top.keys.add(kk);
       top.last = k;
     }
   }
-  return false;
+  return { repeated, deep: false };
 }
 
 function metaPv(p, path) {

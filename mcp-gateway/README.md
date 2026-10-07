@@ -114,7 +114,7 @@ schema's own field names and array indices, never from a key or value the peer s
 
 | Stage | What is checked | Source |
 |---|---|---|
-| `json` | strict UTF-8 that parses as JSON; no BOM; no repeated key (anywhere), and no envelope or `params` keys that differ only in case | MCP 2025-06-18 transports: "JSON-RPC messages **MUST** be UTF-8 encoded" |
+| `json` | strict UTF-8 that parses as JSON; no BOM; no repeated key (anywhere); in an envelope or its `params`, no keys that differ only in case, and no key that differs only in case from a field the gateway reads (`Arguments`, `PARAMS`); nested no deeper than 64 objects / arrays combined (refused in every `--schema` mode) | MCP 2025-06-18 transports: "JSON-RPC messages **MUST** be UTF-8 encoded" |
 | `jsonrpc` | an object; `jsonrpc` exactly `"2.0"`; `method` a string; a batch is non-empty | jsonrpc.org/specification: "MUST be exactly "2.0"" |
 | `structure` | request id a string or integer, never null; no id on a `notifications/*`; `params` an object; a response has exactly one of `result` / `error`; error code an integer | MCP basic (2025-06-18, 2026-07-28): "Requests **MUST** include a string or integer ID", "the ID **MUST NOT** be `null`", "A response **MUST NOT** set both" |
 | `method` | a known request method (either era plus the tasks extension); with `--allow-method`, one on the list | none (gateway policy) |
@@ -160,7 +160,9 @@ UTF-8 bytes per complete line; an unterminated line is bounded by its length in 
 After N refusals of one client (policy block, invalid message, profile block) within S seconds (default
 60), every JSON-RPC request that client POSTs is refused for M seconds (default 120); notifications,
 GET streams and DELETE still pass. `CLIENT_COOLDOWN` carries
-`cooldownSeconds` and is posted once per cool-down. Refusals during a cool-down do not extend it.
+`cooldownSeconds` and is posted once per cool-down. Refusals during a cool-down do not extend it, and are
+not counted under any key: a client in a cool-down cannot fill the bounded tables (4,096 entries each, the
+oldest dropped) with fresh credentials until its own entry is dropped.
 
 It is **off by default**. A client is the route plus a one-way hash of its `Authorization` header when it
 sends one (the credential it presents upstream), otherwise the TCP peer address. Because the gateway refuses
@@ -205,7 +207,13 @@ or large bodies.
   token and reports under the workload identity, as the hook does.
 - The tool listing is report-first and byte-identical, always.
 - Not fail-open: a request body over 16 MB is refused (413) rather than forwarded unscanned, because
-  forwarding it would let an agent pad its arguments past the scan.
+  forwarding it would let an agent pad its arguments past the scan. So is a batch of more than 64
+  messages (413, `-32600`, in every `--schema` mode): its calls are gated one after another without
+  yielding to other clients (~3.7 ms each, measured), and a 5,000-call batch held the gateway for 23 s.
+  So is a client message nested deeper than 64 objects / arrays combined (`SCHEMA_INVALID`, stage `json`,
+  path `$`, in every `--schema` mode, before any scan): the gate serialises the arguments with
+  `JSON.stringify`, which throws on deep nesting, and a failing check forwards, so arguments nested
+  100,000 levels deep reached the upstream unscanned. Other internal errors still forward.
 
 ## Network posture
 
@@ -312,10 +320,17 @@ must turn the run red.
 - **Parser differentials.** The gateway forwards the client's bytes, not a re-serialisation, so it refuses
   (`SCHEMA_INVALID`, stage `json`, path `$`) a client body that repeats a key in any object, or repeats one
   up to case in a message envelope or its `params`. `JSON.parse` keeps the last of two equal keys; a
-  first-wins parser or Go's case-insensitive `encoding/json` would read another. Keys inside `arguments`
-  may differ in case. Under `--schema report|off`, a body that fails the json stage is still forwarded,
+  first-wins parser or Go's case-insensitive `encoding/json` would read another. In those two objects a
+  key that only differs in case from a field the gateway reads (`jsonrpc`, `id`, `method`, `params`,
+  `result`, `error`; `name`, `arguments`, `uri`, `cursor`, `_meta`, `protocolVersion`, `capabilities`,
+  `clientInfo`) is refused even alone: to `JSON.parse` a lone `Arguments` is no field, so the gate would
+  scan no arguments, while Go's `encoding/json` (measured, go1.26) reads it, `argument\u017f` too, as the
+  arguments. Other envelope and `params` fields are not compared. Keys inside `arguments` may differ in
+  case; a per-tool argument allow-rule (#18) that names one key can still be satisfied by `path` while a
+  case-insensitive tool decoder reads `PATH`. Under `--schema report|off`, a body that fails the json stage is still forwarded,
   and is gated as a lenient decoder reads it (BOM dropped, invalid UTF-8 replaced, the last of repeated
-  keys). A body no UTF-8 decoder can read, for example UTF-16 that Python's `json.loads(bytes)` detects
+  keys, no case-variant field), so a first-wins or case-insensitive upstream can run what the gate did not
+  read. Nesting past 64 levels is refused in these modes too, on the strict reading and the lenient one. A body no UTF-8 decoder can read, for example UTF-16 that Python's `json.loads(bytes)` detects
   on its own, is forwarded ungated in those modes. Every message of a batch must agree with
   `Mcp-Method` / `Mcp-Name` when they are sent. `Mcp-Param-*` headers are not compared with the body, and
   a body on a GET or DELETE is forwarded ungated (the TypeScript SDK 1.32.1 server reads neither).
@@ -328,7 +343,11 @@ must turn the run red.
   that builds its own requests can send a new one every time. Each distinct value is therefore also counted
   once at the TCP peer. N distinct refused credentials from one address within the window cool the whole
   address down, including the clients without `Authorization` there. N refusals of one credential still
-  cool only that credential. `X-Forwarded-For` and `Mcp-Session-Id` are never part of the key.
+  cool only that credential. So one client at an address, with no credential the upstream would accept,
+  can cool down every client at that address, credentialed ones included; behind a proxy or NAT that is
+  every client. `X-Forwarded-For` and `Mcp-Session-Id` are never part of the key. The tables hold 4,096
+  entries each: a client with that many addresses (an IPv6 prefix) can still push other clients' live
+  cool-downs out.
   `Mcp-Method` / `Mcp-Name` header-mismatch refusals count as refusals.
 
 ## Files

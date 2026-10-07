@@ -16,11 +16,15 @@ import { isLoopbackHost, TOKEN_HEADER, DEFAULT_MAX_RESPONSE_BYTES } from "./conf
 import { createGuard, blockedCall } from "./guard.mjs";
 import { createSseFramer, sseEvent } from "./sse.mjs";
 import { reportOnce, alertSchema, alertTooLarge, alertCooldown } from "./report.mjs";
-import { parseBody, parseLenient, validateClientBody, validateHeaderPv, validateServerMessage } from "./validate.mjs";
+import { parseBody, parseLenient, validateClientBody, validateHeaderPv, validateServerMessage, MAX_DEPTH } from "./validate.mjs";
 import { createCooldown } from "./cooldown.mjs";
 import { countCall } from "./usage.mjs";
 
 export const MAX_REQUEST_BYTES = 16 * 1048576;
+// Messages in one client batch. Each tools/call in a batch is gated in turn without yielding to other
+// clients (~3.7 ms each, measured, most of it the ledger write), so an uncapped 16 MB batch held the
+// gateway for minutes. Refused like an oversized body, in every --schema mode.
+export const MAX_BATCH_MESSAGES = 64;
 const HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER]);
 const RESP_HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-connection", "transfer-encoding", "trailer", "upgrade", "content-length"]);
 const AGENTS = { "http:": new http.Agent({ keepAlive: true }), "https:": new https.Agent({ keepAlive: true }) };
@@ -152,8 +156,11 @@ export function createGatewayServer(cfg) {
   if (cfg.maxResponseBytes === undefined) cfg = { ...cfg, maxResponseBytes: DEFAULT_MAX_RESPONSE_BYTES };
   const cooldown = createCooldown(cfg.cooldown || {});
   // A refusal the gateway made for this client (policy block, invalid message, profile block). Starting a
-  // cool-down is reported once; requests refused DURING it are not counted again.
+  // cool-down is reported once; requests refused DURING it are not counted again, at any key: counting
+  // them let a cooled-down client fill the bounded tables with fresh credentials until its own entry was
+  // evicted.
   function noteRefusal(ck, route) {
+    if (cooldown.remaining(ck.key) || cooldown.remaining(ck.peer)) return;
     const started = cooldown.refused(ck.key);
     if ((ck.cred && cooldown.refusedOnce(ck.peer, ck.cred)) || started) alertCooldown(route.server, cooldown.seconds);
   }
@@ -182,7 +189,18 @@ export function createGatewayServer(cfg) {
       const validating = cfg.schemaValidation !== "off";
       const hpv = req.headers["mcp-protocol-version"];
       let parsed = null;
-      const pb = parseBody(body, { uniqueKeys: true });
+      const pb = parseBody(body, { uniqueKeys: true, maxDepth: MAX_DEPTH });
+      // report|off read a body the strict stage rejected as a lenient upstream would (below), so its depth
+      // is checked on that reading too.
+      const lp = pb.value === undefined && !enforce ? parseLenient(body, { maxDepth: MAX_DEPTH }) : null;
+      // Nesting past MAX_DEPTH is refused in every --schema mode, before any scan: the gate cannot read it.
+      const deep = [pb.error, lp && lp.error].find((e) => e && e.tooDeep);
+      if (deep) {
+        const v = pb.value !== undefined ? pb.value : lp.value;
+        alertSchema(route.server, deep, { direction: "client", refused: true, tool: toolOfBad(v, deep) });
+        noteRefusal(ckey, route);
+        return refuseInvalid(res, v, deep);
+      }
       let bad = null;
       if (validating) {
         bad = pb.error || validateHeaderPv(hpv);
@@ -200,7 +218,8 @@ export function createGatewayServer(cfg) {
       }
       // --schema report|off forward a body that failed the json stage; it is still gated as a lenient
       // upstream (the MCP SDK's TextDecoder: BOM dropped, invalid UTF-8 replaced) would read it.
-      if (pb.value === undefined) { const lp = parseLenient(body); if (!lp.error) parsed = lp.value; }
+      if (lp && !lp.error) parsed = lp.value;
+      if (Array.isArray(parsed) && parsed.length > MAX_BATCH_MESSAGES) return sendJson(res, 413, rpcError(null, -32600, `Batch too large for the gateway to inspect (more than ${MAX_BATCH_MESSAGES} messages)`));
       if (parsed && typeof parsed === "object") {
         const msgs = Array.isArray(parsed) ? parsed : [parsed];
         ctx.batch = Array.isArray(parsed);
