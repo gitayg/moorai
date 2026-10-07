@@ -1,4 +1,5 @@
 import { safeRegex } from "./safe-regex.js";
+import { globalMatches, replaceWithRestart } from "./regex-restart.js";
 import { normalizeVariants } from "../data/normalize.js";
 import { aggregateRisk, resolveScoring, scoreLabel } from "../data/risk-score.js";
 
@@ -257,7 +258,8 @@ export class DetectionEngine {
         const g = new RegExp(p.source, p.flags.includes("g") ? p.flags : p.flags + "g");
         // Honor refine so an entropy-gated detector never over-redacts a benign long string — scan
         // and redact must agree on what's a secret.
-        out = out.replace(g, (m) => (d.refine && !d.refine(m, text)) ? m : `[REDACTED:#${d.threatId}]`);
+        const fn = (m) => (d.refine && !d.refine(m, text)) ? m : `[REDACTED:#${d.threatId}]`;
+        out = p.restart ? replaceWithRestart(out, p, g, fn) : out.replace(g, fn);
       }
     }
     return out;
@@ -281,11 +283,7 @@ export class DetectionEngine {
     for (const p of d.patterns) {
       const g = safeRegex(p.source, p.flags.includes("g") ? p.flags : p.flags + "g");
       if (!g) continue;
-      let m;
-      while ((m = g.exec(text)) !== null) {
-        if (d.refine(m[0], text, ctx)) return m[0];
-        if (m.index === g.lastIndex) g.lastIndex++; // guard against zero-width matches
-      }
+      for (const m of globalMatches(p, g, text)) if (d.refine(m[0], text, ctx)) return m[0];
     }
     return null;
   }

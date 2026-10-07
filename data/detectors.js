@@ -15,6 +15,7 @@ import { AGENT_STATE_DETECTORS } from "./detectors-agent-state.js";
 import { ARTIFACT_DETECTORS } from "./detectors-artifacts.js";
 import { INSTRUCTION_LEAK_DETECTORS } from "./detectors-instruction-leak.js";
 import { TOOL_CREDPATH_DETECTORS } from "./detectors-tool-credpaths.js";
+import { withRestart } from "../src/regex-restart.js";
 
 // ---------------------------------------------------------------------------------------------------
 // Content-free helpers for the additive detectors appended at the end of DETECTORS. All pure,
@@ -482,8 +483,10 @@ export const DETECTORS = [
     hint: "Looks like an email address (personal data).",
     // `(?<!\w[.+-]*)`: start only at the first word character of a [\w.+-] run, the one start that could
     // ever win. Without it, "a.a.a…" with no "@" was retried from every boundary (60k chars: 1.7s, now
-    // 0.2ms). Same first match as before; see test/dlp-email-redos.test.mjs.
-    patterns: [/\b(?<!\w[.+-]*)[\w.+-]+@[\w-]+\.[\w.-]{2,}\b/]
+    // 0.2ms). Same first match as before; see test/dlp-email-redos.test.mjs. `restart` is the pre-fix
+    // pattern, tried sticky at each /g match's end (src/regex-restart.js): an address glued to the previous
+    // one by [.+-] ("a@b.com+c@d.com") starts inside a run the lookbehind refuses, and redact must mask it.
+    patterns: [withRestart(/\b(?<!\w[.+-]*)[\w.+-]+@[\w-]+\.[\w.-]{2,}\b/, /\b[\w.+-]+@[\w-]+\.[\w.-]{2,}\b/)]
   },
   {
     detectorId: "dlp-national-id",

@@ -14,6 +14,9 @@
 // back to the run's start from every "/" and is quadratic again: 423ms at 60k.)
 // MEASURED: no difference, first match or /g, against the old pattern over every tracked file, every JSON
 // string leaf, the inbound corpus and the node_modules texts (192 /g matches), nor on 400k fuzzed strings.
+// So, unlike dlp-email, it carries no `restart` (src/regex-restart.js): the greedy body already ends at the
+// last ".aws/credentials" of its run, so no later match can start inside a run a previous match began.
+// MEASURED: 0 /g differences on 1M seeded strings of glued credential paths (204,517 with several matches).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

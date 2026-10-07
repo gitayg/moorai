@@ -28,6 +28,7 @@
 // falls back to the configured action rather than letting a half-masked payload through as "masked".
 import { TIER_OF } from "../data/data-tiers.js";
 import { safeRegex } from "../src/safe-regex.js";
+import { globalMatches } from "../src/regex-restart.js";
 
 export const MASKABLE_TIERS = new Set(["pii", "secret", "regulated"]);
 export function isMaskable(threatId) { return MASKABLE_TIERS.has(TIER_OF[threatId]); }
@@ -59,9 +60,8 @@ function maskString(s, dets, ctx, hash) {
     for (const p of d.patterns || []) {
       const g = safeRegex(p.source, p.flags.includes("g") ? p.flags : p.flags + "g");
       if (!g) continue;
-      let m;
-      while ((m = g.exec(s)) !== null) {
-        if (!m[0]) { g.lastIndex++; continue; }
+      for (const m of globalMatches(p, g, s)) {
+        if (!m[0]) continue;
         if (!d.refine || d.refine(m[0], s, ctx)) spans.push([m.index, m.index + m[0].length, d.threatId]);
       }
     }

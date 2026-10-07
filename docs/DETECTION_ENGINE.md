@@ -248,6 +248,13 @@ a match start only where an earlier start could not already have failed. `test/d
 `cred-file-access-redos`, `detector-redos-sweep` and `data-regex-redos` check each as a CPU-time scaling
 ratio plus old/new match equivalence. Twelve patterns are still super-linear and listed in ROADMAP.md.
 
+A run-start lookbehind keeps the first match but not always the `/g` matches: a global search resumes at
+the previous match's end, where the old pattern could start inside a run the lookbehind refuses. A pattern
+then carries `restart` (`withRestart(re, oldRe)`, `src/regex-restart.js`), which `engine.redact`,
+`_matchDetector` and `cli/mask.mjs` try sticky at each match's end before resuming. Only `dlp-email` needs
+one (`a@b.com+c@d.com` left `+c@d.com` visible in v1.4.3); the other v1.4.3 patterns measured 0 `/g`
+differences against their old forms.
+
 **A refine-gated pattern must pass the ReDoS gate.** `_matchDetector` recompiles it through
 `safeRegex`, which refuses more than one unbounded quantifier — and a refused pattern is skipped
 silently, not reported. `secret-generic-assignment` and `secret-aws-secret` were dead this way from

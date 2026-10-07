@@ -13,17 +13,22 @@
 // lookbehind is evaluated only at boundaries, and each run of [.+-] is walked back over once: linear.
 //   now: 0.05ms at 15k, 0.23ms at 60k, 0.46ms at 120k.
 //
-// THE ONE KNOWN DIFFERENCE, /g only (engine.redact): when an address is glued to the previous match by
-// [.+-] ("a@b.com+c@d.com"), the old pattern restarted AT lastIndex, on the "+", and redacted "+c@d.com";
-// the new one cannot start inside a run that began before lastIndex, so it leaves "+c@d.com" in place. A
-// first match (every scan) is identical. MEASURED: no difference, first match or /g, over every tracked
-// file, every JSON string leaf, the inbound corpus and the node_modules texts (2049 /g matches).
+// THE /g GAP, AND ITS FIX. Under /g (engine.redact) the lookbehind alone was not equivalent: a global search
+// resumes at the previous match's end, and when the next address is glued to it by [.+-]
+// ("a@b.com+c@d.com") the old pattern restarted right there, on the "+", and redacted "+c@d.com"; the
+// lookbehind refuses every start of that run, so "+c@d.com" stayed visible (in a triple chain it even
+// matched "d.com+e@f.org" instead). The pattern now carries `restart`, the pre-fix pattern, which
+// engine.redact tries STICKY at each match's end before resuming the main search (src/regex-restart.js) —
+// the one position the old pattern could use and the lookbehind refuses. MEASURED: 0 differences in /g
+// matches against the old pattern over every tracked file and line, every JSON string leaf and the inbound
+// corpus, and over 1M seeded glued strings (312,921 of them differed before the fix).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DETECTORS } from "../data/detectors.js";
 import { DetectionEngine } from "../src/engine.js";
 import { scalingRatio } from "./timing.mjs";
+import { globalMatches } from "../src/regex-restart.js";
 
 const threats = JSON.parse(readFileSync(new URL("../data/threats.json", import.meta.url), "utf8"));
 const DET = DETECTORS.find((d) => d.detectorId === "dlp-email");
@@ -33,6 +38,9 @@ const OLD = /\b[\w.+-]+@[\w-]+\.[\w.-]{2,}\b/;
 
 const first = (re, s) => { const m = new RegExp(re.source, re.flags.replace("g", "")).exec(s); return m ? `${m.index}:${m[0]}` : null; };
 const all = (re, s) => [...s.matchAll(new RegExp(re.source, re.flags.replace("g", "") + "g"))].map((m) => [m.index, m[0]]);
+// The /g matches engine.redact walks: the main pattern plus its sticky restart.
+const redactAll = (re, s) => [...globalMatches(re, new RegExp(re.source, re.flags.replace("g", "") + "g"), s)].map((m) => [m.index, m[0]]);
+const oldEngine = () => new DetectionEngine(threats, [{ ...DET, patterns: [OLD] }], []);
 
 // 8x the input. MEASURED (CPU time, scalingRatio): new 7.18-7.81x across the three shapes; the old pattern
 // read 61.00x on "a." (26.61ms → 1623.35ms). Linear is ~8x and quadratic ~64x; the bound sits between.
@@ -87,22 +95,83 @@ test("dlp-email: realistic addresses, handles, no-TLD and no-@ text match exactl
   }
 });
 
-test("dlp-email: same first match as the pre-fix pattern on 200k seeded strings; /g differs only on glued addresses", () => {
-  const toks = ["a", "b1", "_", ".", "+", "-", "@", " ", "com", "x.y", "é", ":", "..", "@x.io", ",", "<"];
-  let x = 0x2545f491;
-  const rnd = (n) => { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; return (x >>> 0) % n; };
-  let diffs = 0, glued = 0;
-  for (let i = 0; i < 200000; i++) {
-    let s = "";
-    while (s.length < 1 + (i % 34)) s += toks[rnd(toks.length)];
-    assert.equal(first(RE, s), first(OLD, s), `first match differs on ${JSON.stringify(s)}`);
-    const a = all(OLD, s), b = all(RE, s);
-    if (JSON.stringify(a) === JSON.stringify(b)) continue;
-    diffs++;
-    // The documented /g difference: OLD restarted at lastIndex on a [.+-] glued to the previous match.
-    const isGlued = a.some(([idx, t], k) => k > 0 && idx === a[k - 1][0] + a[k - 1][1].length && /^[.+-]/.test(t));
-    assert.ok(isGlued, `/g differs on ${JSON.stringify(s)} without a glued address: ${JSON.stringify(a)} vs ${JSON.stringify(b)}`);
-    glued++;
+test("dlp-email: engine.redact masks every address glued to the previous one by . + or -", () => {
+  // Each expected output is what the pre-fix pattern's redact produced. Before the restart, the second (and
+  // third) address stayed visible: "[REDACTED:#15]+c@d.com", and "[REDACTED:#15]+c@[REDACTED:#15]".
+  const T = "[REDACTED:#15]";
+  const e = new DetectionEngine(threats, [DET], []), o = oldEngine();
+  const GLUED = [
+    ["a@b.com+c@d.com", T + T],
+    ["a@b.com+.c@d.com", T + T],
+    ["a@b.com+-c@d.com", T + T],
+    ["a@b.com.-+c@d.io", T + T],          // the domain gives back ".-": the old match restarted on the "."
+    ["a@b.com-+c@d.io", T + T],           // ... and on the "-"
+    ["a@b.com+c@d.com+e@f.org", T + T + T],
+    ["x a@b.com.+c@d.io-+e@f.org y", `x ${T}${T}${T} y`],
+    ["mail a@b.com+c@d.com, then x.y@z.io", `mail ${T}${T}, then ${T}`]
+  ];
+  for (const [s, want] of GLUED) {
+    assert.equal(o.redact(s, "prompt"), want, `fixture drift: the OLD pattern's redact on ${JSON.stringify(s)}`);
+    for (const st of ["prompt", "output"]) assert.equal(e.redact(s, st), want, `redact(${st}) on ${JSON.stringify(s)}`);
   }
-  assert.equal(diffs, glued);
+});
+
+// Seeded strings built from whole addresses glued by [.+-_@] runs (3 in 4) and from random tokens (1 in 4).
+function seededEmails(n, seed, fn) {
+  const inst = ["a@b.com", "x.y+z@d-e.co.uk", "c@d.io", "q_1@x.org", "b@c.de", "a.b@c.d.e", "A1@B2.CC", "a+@b.co", "-a@b.cd", "z@y.x-w.v"];
+  const glue = [".", "+", "-", "_", "..", "+.", ".-", "@", "a", "1", " ", ",", "é", "", "", "", "-.+", "@x", ".com"];
+  const toks = [...inst, ...glue];
+  let x = seed;
+  const rnd = (m) => { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; return (x >>> 0) % m; };
+  for (let i = 0; i < n; i++) {
+    let s = "";
+    if (i % 4 === 3) while (s.length < 1 + (i % 40)) s += toks[rnd(toks.length)];
+    else {
+      const k = 2 + rnd(3);
+      if (rnd(3) === 0) s += glue[rnd(glue.length)];
+      for (let j = 0; j < k; j++) {
+        if (j) { const g = rnd(4); for (let q = 0; q < (g === 3 ? 2 : g ? 1 : 0); q++) s += glue[rnd(glue.length)]; }
+        s += inst[rnd(inst.length)];
+      }
+      if (rnd(3) === 0) s += glue[rnd(glue.length)];
+    }
+    fn(s);
+  }
+}
+
+test("dlp-email: same first match and same /g matches as the pre-fix pattern on 200k seeded strings, glued addresses included", () => {
+  let glued = 0;
+  seededEmails(200000, 0x2545f491, (s) => {
+    assert.equal(first(RE, s), first(OLD, s), `first match differs on ${JSON.stringify(s)}`);
+    const a = all(OLD, s);
+    if (a.some(([idx], k) => k > 0 && idx === a[k - 1][0] + a[k - 1][1].length)) glued++;
+    assert.deepEqual(redactAll(RE, s), a, `/g matches differ on ${JSON.stringify(s)}`);
+  });
+  // MEASURED: 62,321 of the 200k carry an address the old pattern started right at the previous match's end,
+  // and the /g matches of every one of them differed before the restart.
+  assert.ok(glued > 10000, `the seeded strings must exercise glued addresses (got ${glued})`);
+});
+
+test("dlp-email: engine.redact output equals the pre-fix pattern's on 50k seeded glued strings", () => {
+  const e = new DetectionEngine(threats, [DET], []), o = oldEngine();
+  seededEmails(50000, 0x1b873593, (s) => {
+    assert.equal(e.redact(s, "prompt"), o.redact(s, "prompt"), `redact differs on ${JSON.stringify(s)}`);
+  });
+});
+
+test("REDOS: engine.redact stays linear on glued-address chains and on a long [.+-] tail after an address", () => {
+  // The restart is one anchored attempt per match. MEASURED (CPU time, scalingRatio): 7.55-8.02x on these four
+  // shapes (and 6.97-7.51x on the three above). Made unanchored (/g instead of sticky), it read 48.10x on "a@b.co+a.a.a…".
+  const e = new DetectionEngine(threats, [DET], []);
+  const SHAPES2 = {
+    "a@b.com+": (n) => "a@b.com+".repeat(n / 8),
+    "a@b.co+a.a.a…": (n) => "a@b.co+" + "a.".repeat(n / 2),
+    "a@b.co+a+a+a…": (n) => "a@b.co+" + "a+".repeat(n / 2),
+    "x@y.z.-+": (n) => "x@y.zz.-+".repeat(n / 9)
+  };
+  for (const [name, mk] of Object.entries(SHAPES2)) {
+    const small = mk(7500), large = mk(60000);
+    const r = scalingRatio(() => e.redact(small, "prompt"), () => e.redact(large, "prompt"));
+    assert.ok(r.ratio < 20, `"${name}": 8x the input cost ${r.ratio.toFixed(2)}x (${r.small.toFixed(2)}ms → ${r.large.toFixed(2)}ms)`);
+  }
 });
