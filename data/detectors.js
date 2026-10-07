@@ -480,7 +480,10 @@ export const DETECTORS = [
     stages: ["prompt", "output"], // #4 — screen PII in agent output too, content-free
     mode: "warn",
     hint: "Looks like an email address (personal data).",
-    patterns: [/\b[\w.+-]+@[\w-]+\.[\w.-]{2,}\b/]
+    // `(?<!\w[.+-]*)`: start only at the first word character of a [\w.+-] run, the one start that could
+    // ever win. Without it, "a.a.a…" with no "@" was retried from every boundary (60k chars: 1.7s, now
+    // 0.2ms). Same first match as before; see test/dlp-email-redos.test.mjs.
+    patterns: [/\b(?<!\w[.+-]*)[\w.+-]+@[\w-]+\.[\w.-]{2,}\b/]
   },
   {
     detectorId: "dlp-national-id",
@@ -631,7 +634,12 @@ export const DETECTORS = [
     patterns: [
       /```/,
       /\b(powershell|invoke-webrequest|set-executionpolicy|cmd\.exe|reg add|schtasks)\b/i,
-      /curl\s+[^\n]*\|\s*(ba)?sh/i,
+      // A curl whose whitespace stays on its line may not start where an earlier `curl\s` on that same stretch
+      // already failed (the lookbehind, lazy, walks back only to the nearest one): it can reach no "| sh" the
+      // earlier one could not. One whose whitespace crosses a newline is always tried. `[^\S\n]|\s*\n` is
+      // `\s+` split so it cannot overlap `[^\n]*`. Was quadratic ("curl x " x 8.5k: 182ms at 60k, now 0.1ms);
+      // same first and /g matches. See test/detector-redos-sweep.test.mjs.
+      /curl(?:[^\S\n](?<!curl(?:[^\S\n]|\s*\n)[^\n]*?curl[^\S\n])|\s*\n)[^\n]*\|\s*(ba)?sh/i,
       ...RECURSIVE_FORCE_DELETE,
       /\b(macro|vba|autoopen|enablemacros)\b/i
     ]
@@ -858,7 +866,9 @@ export const DETECTORS = [
     hint: "Reads a credential / secret file (.env, cloud creds, SSH key, /etc/shadow).",
     patterns: [
       /(?<=\b(?:cat|less|more|head|tail|type|Get-Content|xxd|base64|strings|nano|vi|vim|open)\b[^\n]{0,50}[\s"'`;|&<>()])[^\s"'`;|&<>()]{0,512}?(?:\.env\b(?!\.(?:example|sample|template)\b)|\.aws[\/\\]credentials|\.ssh[\/\\]id_[a-z0-9]+|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.pgpass\b|\.docker[\/\\]config\.json|\.kube[\/\\]config)/i,
-      /[~\/][^\s"']*\.aws[\/\\]credentials\b/i,
+      // Lookbehind: start only at the first ~ or / of a run, the one start that could win. Without it each
+      // "/" of "a/a/a…" was a start (60k: 1.5s, now 0.2ms). See test/cred-file-access-redos.test.mjs.
+      /(?<![~\/][^\s"']*?)[~\/][^\s"']*\.aws[\/\\]credentials\b/i,
       /\.ssh[\/\\]id_(rsa|ed25519|ecdsa|dsa)\b/i,
       /(^|[\s"'=])\/etc\/shadow\b/,
       /\.git-credentials\b/i,
@@ -922,7 +932,12 @@ export const DETECTORS = [
       /\b(execute|executemany|executescript|query|prepare|raw)\s*\(\s*f["'][^"']*\b(SELECT|INSERT|UPDATE|DELETE|DROP|MERGE)\b/i,
       /["'`]\s*(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\b[^"'`]*["'`]\s*\+\s*[\w.$([]/i,
       /`[^`]*\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\b[^`]*\$\{/i,
-      /\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\b[^"'`;\n]*["']\s*%\s*\(?\s*[\w.$]/i
+      // The lookbehind: a keyword may not start a match when an earlier keyword sits before it with no
+      // quote, backtick, ";" or newline between (both stop at the same quote, so the earlier one already
+      // failed). An earlier keyword glued to a `"%` (the last character of a previous /g match) is not
+      // counted. Was quadratic ("SELECT/": 222ms at 60k, now 0.2ms); same first and /g matches. See
+      // test/detector-redos-sweep.test.mjs.
+      /\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\b(?<!(?<!["']\s*%(?:\s*\()?\s*)\b(?:SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\b[^"'`;\n]*?(?:SELECT|INSERT[^\S\n]+INTO|UPDATE|DELETE[^\S\n]+FROM))[^"'`;\n]*["']\s*%\s*\(?\s*[\w.$]/i
     ]
   },
   {
@@ -1110,8 +1125,13 @@ export const DETECTORS = [
       /ssl\._create_unverified_context\b|_create_unverified_https_context\b|ssl\.CERT_NONE\b/,
       /Access-Control-Allow-Origin["']?\s*[:,]\s*["']\*["']/,
       /cors\s*\(\s*\{[^}]*\borigin\s*:\s*(?:["']\*["']|true)/,
-      /(?<!#[^\n]*)(?<!\/\/[^\n]*)\.run\s*\([^)]*\bdebug\s*=\s*True/,
-      /(?<!#[^\n]*)(?<!\/\/[^\n]*)\bDEBUG\s*=\s*True\b/,
+      // "Not in a comment" means a # or // at most 256 characters earlier on the line (it was anywhere on
+      // the line: a lookbehind run at every position, back to the line start, quadratic: "run." 747ms and
+      // "DEBUG/" 452ms at 60k, now under 0.1ms). The check runs after `.run(` / after the whole DEBUG match.
+      // The second lookbehind: no `.run(` starts where an earlier uncommented `.run(` with no ")" between
+      // already failed. See test/detector-redos-sweep.test.mjs.
+      /\.run\s*\((?<!(?:#|\/\/)[^\n]{0,256}\.run\s*\()(?<!(?<!(?:#|\/\/)[^\n]{0,256})\.run\s*\([^)]*?\.run\s*\()[^)]*\bdebug\s*=\s*True/,
+      /\bDEBUG\s*=\s*True\b(?<!(?:#|\/\/)[^\n]{0,256}DEBUG\s*=\s*True)/,
       /ALLOWED_HOSTS\s*=\s*\[\s*["']\*["']\s*\]/,
       /\b(?:token|secret|otp|nonce|salt|password|passwd|apiKey|api_key|sessionId|session_id|resetToken|csrf|verificationCode)\w*\s*[:=][^;\n]{0,60}\bMath\.random\s*\(/i,
       /\b(?:token|secret|otp|nonce|salt|password|passwd|api_key|session|reset_token|csrf|verification_code)\w*\s*=\s*[^#\n]{0,80}\brandom\.(?:random|randint|choice|randrange|getrandbits|sample|shuffle)\s*\(/i,

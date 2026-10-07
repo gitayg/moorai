@@ -643,3 +643,14 @@ content-free design. Shipped in v1.1.0:
   403, refuses unscannable requests and withholds denied tool calls. Response-side enforcement (withholding a denied tool call, streaming and non-streaming, Anthropic and OpenAI shapes, including truncated streams, arguments that are not a JSON object and a dropped upstream connection) is tested against a fake provider; it has not been run with the real SDKs or a real provider. In Anthropic streams a tool call is held one block at a time, so an allowed call that comes before a denied one in the same turn has already been released when the turn is refused. Limits:
   no TLS interception, so the SDK must use the proxy's `http://127.0.0.1` base URL; only Messages and Chat
   Completions are parsed; not exercised with the real SDKs or a real provider.
+
+## Backlog — remaining super-linear regexes (2026-10-07)
+
+v1.4.3 made 16 built-in patterns linear (see DETECTION_ENGINE.md, "Built-in patterns must scale linearly").
+A sweep of 1,064 regexes in `data/` and `src/` still finds 12 quadratic ones (CPU ms at 15k / 60k / 120k):
+`intent-alignment.js` DOTTED (`._`, 97 / 1606 / 6182; prompt cut to 20k), NC_HOST (`-nc `, 94 / 1511 / 6098;
+commands are not cut), UNC_COPY (`mv(`), wget (`wget/`), irm (`irm.`), Start-BitsTransfer; `detectors.js`
+exec/eval (`exec(`), netsh (`netsh advfirewall `), insertAdjacentHTML; `tool-credpaths.js:34` (`Brave`);
+`skill-surface.js:57` (`plugins/`); vendored `src/vendor/xterm.js` (`{`). UPLOAD's siblings and NC_HOST have
+the same shape as the curl/scp fix. Each needs the same treatment: CPU-time scaling test seen red, old/new
+match equivalence over the corpora and a seeded corpus.

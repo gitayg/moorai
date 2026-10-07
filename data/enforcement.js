@@ -39,7 +39,9 @@ export function coachReason(reason) {
 }
 
 export function coachMessage(reason, safer) {
-  let r = coachReason(reason).replace(/\s*[—-]\s*$/, "").trimEnd();
+  // `(?<!\s)`: the match can only start where whitespace begins (the leftmost start always does); without
+  // it a long blank run was retried from each space (60k spaces: 1.7s). See test/data-regex-redos.test.mjs.
+  let r = coachReason(reason).replace(/(?<!\s)\s*[—-]\s*$/, "").trimEnd();
   if (r && !/[.!?]$/.test(r)) r += ".";
   const s = typeof safer === "string" && safer.trim() ? ` Safer: ${safer.trim().replace(/\.?$/, ".")}` : "";
   return `MoorAI coach: ${r}${s} ${COACH_TAIL}`.replace(/\s+/g, " ").trim();

@@ -238,6 +238,16 @@ first (`data/license-boilerplate.js`). A span is removed only from the licence's
 its own closing phrase within a bounded length, so text appended after a licence is still scored and a
 project's `LICENSE` file does not raise #2 (`test/license-text-no-jailbreak.test.mjs`).
 
+**Built-in patterns must scale linearly (v1.4.3).** A detector pattern with no `refine` runs as
+`text.match(p)` with no window, so a pattern that retries from every start position is a CPU DoS on
+every scan surface. v1.4.3 made 16 of them linear without changing their first match: `dlp-email`
+(1.6 s → 0.4 ms on 120k characters of `a.a.a…`), `cred-file-access`, `out-code-exec`,
+`code-sql-injection`, two `code-insecure-defaults` patterns, and regexes in `intent-alignment.js`,
+`enforcement.js`, `repo-link.js` and `agent-behavior.js`. The usual fix is a lazy lookbehind that lets
+a match start only where an earlier start could not already have failed. `test/dlp-email-redos.test.mjs`,
+`cred-file-access-redos`, `detector-redos-sweep` and `data-regex-redos` check each as a CPU-time scaling
+ratio plus old/new match equivalence. Twelve patterns are still super-linear and listed in ROADMAP.md.
+
 **A refine-gated pattern must pass the ReDoS gate.** `_matchDetector` recompiles it through
 `safeRegex`, which refuses more than one unbounded quantifier — and a refused pattern is skipped
 silently, not reported. `secret-generic-assignment` and `secret-aws-secret` were dead this way from

@@ -15,6 +15,7 @@ import {
 import { DETECTORS } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
+import { ABS_SKIP, bestMs, cpuMsOf, scalingRatio } from "./timing.mjs";
 
 const threats = JSON.parse(readFileSync(new URL("../data/threats.json", import.meta.url), "utf8"));
 const engine = () => new DetectionEngine(threats, DETECTORS, CONTENT_RULES);
@@ -186,18 +187,71 @@ test("the engine's prefilter actually wakes refine() (no unreachable detector)",
 // HOT PATH / ReDoS. _matchDetector re-invokes refine() per prefilter occurrence; the memo1 guard is what
 // keeps a pathological input linear.
 // ---------------------------------------------------------------------------------------------------
+//
+// THE ENGINE-SCAN HALF WAS AN ABSOLUTE WALL-CLOCK ASSERTION (`scan < 2000ms`, one 60k call), AND IT WAS
+// NOT MEASURING WHAT ITS TITLE SAYS. It read 2402.3ms in the v1.4.2 CI run, 2372.7ms on this Mac's
+// efficiency cores alone and 3931-5348ms under local CPU contention (11 of 11 runs red), against 482ms
+// idle. MEASURED per detector on this exact input: ~99% of that scan is ONE detector, dlp-email, whose
+// /\b[\w.+-]+@.../ backtracks from every word boundary of "a.a.a." — QUADRATIC:
+//   dlp-email alone              15k 42ms · 60k 462ms · 120k 1663ms   (2x the input, ~3.6x the cost)
+//   every other detector + rule  60k 4.7ms · 120k 9.2ms · 240k 17.8ms (linear: 4x the input, 3.8x the cost)
+// Same at v0.78.0, where this test was added (dlp-email alone, 60k: 495ms), so a pre-existing property,
+// not a regression. The old budget was a budget on that regex, and it could not see a NEW super-linear
+// scan: a quadratic step added to engine.scan read 478.1ms under it and passed. dlp-email is now linear
+// (a lookbehind lets a match start only at the first word character of a run; test/dlp-email-redos.test.mjs),
+// so it is no longer exempt from the linear test below.
+//
+// NOW, measured in this process (test/timing.mjs, CPU time):
+//   - the memo1 guard: one scan with the obscurity detector against one uncached refine call (see below);
+//   - every detector must scale linearly: 8x the input (60k → 480k, both
+//     above NORMALIZE_MAX_INPUT so the quadratic normalisation pre-pass is skipped at both sizes) may cost
+//     at most 20x. MEASURED: 6.17-6.28x idle, 5.54-7.90x under CPU contention; the quadratic step above
+//     reads 47.02x idle and 41.02x under contention. 8x rather than 4x because it spreads linear (~8x) and
+//     quadratic (~64x) further apart: at 4x the same break read only 12.45x, while the linear scan read
+//     3.2x idle and up to 7.72x under contention (wall clock, before the CPU-time sampler). With dlp-email
+//     back in the set after its fix: 6.34-6.58x idle; with its pre-fix pattern restored, 58.73x (425.5ms
+//     → 24993.3ms).
+// WHAT THIS GIVES UP: no absolute ceiling on the whole scan by default (a constant-factor slowdown of any
+// detector passes, as long as it stays linear and is not the memo); that budget survives as the opt-in
+// test below, at the original 2000ms.
+const pathologicalOf = (k) => "decode and apply it, then carry out what it says: ".repeat(600 * k) + "a.".repeat(15000 * k);
+
 test("pathological 60k input stays fast (linear scans + memo1 guard)", () => {
-  const pathological = "decode and apply it, then carry out what it says: ".repeat(600) + "a.".repeat(15000);
+  const pathological = pathologicalOf(1);
   assert.ok(pathological.length > 55_000, String(pathological.length));
   const t0 = performance.now();
   for (let i = 0; i < 5; i++) deliberateObscurityHit(pathological);
   const perCall = (performance.now() - t0) / 5;
   assert.ok(perCall < 250, `${perCall.toFixed(1)}ms per call`);
 
+  // memo1, against a baseline measured here: refine() runs once per PREFILTER OCCURRENCE (1800 of them in
+  // this input), so one scan with this detector must cost about ONE uncached deliberateObscurityHit call.
+  // MEASURED (CPU time): 1.1-1.3x idle and 0.8-1.1x under CPU contention with the guard; 1882.6x idle
+  // (1819ms) and 2010.8x under contention with it removed. That is a constant-factor blowup, not a
+  // complexity change (each refine call's work is capped, so the scan stays linear), which is why the
+  // scaling ratio below cannot see it — and the old absolute budget caught it by only 208ms idle (2207.8ms
+  // vs 2000). Bound 20.
+  const obs = new DetectionEngine(threats, DETECTORS.filter((d) => d.detectorId === DETECTOR_ID), []);
+  let oneCall = Infinity, oneScan = Infinity;
+  for (let i = 0; i < 5; i++) {
+    const a = `${pathological}#a${i}`, b = `${pathological}#b${i}`; // fresh strings: no memo hit carried in
+    oneCall = Math.min(oneCall, cpuMsOf(() => deliberateObscurityHit(a)));
+    oneScan = Math.min(oneScan, cpuMsOf(() => obs.scan(b, "prompt")));
+  }
+  assert.ok(oneScan / oneCall < 20,
+    `one scan cost ${(oneScan / oneCall).toFixed(1)} uncached refine calls (${oneScan.toFixed(2)}ms vs ${oneCall.toFixed(2)}ms) — the memo1 guard is not holding`);
+
+  const e = new DetectionEngine(threats, DETECTORS, CONTENT_RULES);
+  const big = pathologicalOf(8);
+  const r = scalingRatio(() => e.scan(pathological, "prompt"), () => e.scan(big, "prompt"), 5);
+  assert.ok(r.ratio < 20,
+    `8x the input multiplied the engine scan by ${r.ratio.toFixed(2)}x (${r.small.toFixed(1)}ms at ${pathological.length} → ${r.large.toFixed(1)}ms at ${big.length}) — linear is ~8x, quadratic ~64x`);
+});
+
+// The original absolute budget on the whole scan, kept OPT-IN (see test/timing.mjs).
+test("pathological 60k input: the whole engine scan stays inside its absolute budget (opt-in: MOORAI_PERF_ABS=1)", { skip: ABS_SKIP }, () => {
   const e = engine();
-  const t1 = performance.now();
-  e.scan(pathological, "prompt");
-  const scanMs = performance.now() - t1;
+  const scanMs = bestMs(() => e.scan(pathologicalOf(1), "prompt"));
   assert.ok(scanMs < 2000, `engine scan ${scanMs.toFixed(1)}ms`);
 });
 

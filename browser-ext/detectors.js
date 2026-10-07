@@ -101,7 +101,7 @@
 
     // === PII — threat #15 "Information & Privacy" / High (from data/detectors.js) ===
     { detectorId: "dlp-email", threatId: 15, category: "Information & Privacy", riskLevel: "High",
-      label: "an email address", patterns: [/\b[\w.+-]+@[\w-]+\.[\w.-]{2,}\b/] },
+      label: "an email address", patterns: [/\b(?<!\w[.+-]*)[\w.+-]+@[\w-]+\.[\w.-]{2,}\b/] }, // linear; see test/dlp-email-redos.test.mjs
     { detectorId: "dlp-national-id", threatId: 15, category: "Information & Privacy", riskLevel: "High",
       label: "a 9-digit national ID", patterns: [/(?<!\d)\d{9}(?!\d)/] },
     // SSN-shaped (ddd-dd-dddd). Not a distinct detector in the agent (its dlp-national-id catches the

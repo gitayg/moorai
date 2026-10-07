@@ -123,9 +123,11 @@ function tomlSection(text, header) {
   }
   return out.join("\n");
 }
-const tomlString = (sec, key) => { const m = new RegExp(`^\\s*${key}\\s*=\\s*["']([^"'\\n]+)["']`, "m").exec(sec); return m ? m[1].trim() : null; };
+// `(?<!^\s*?\n)` as in manifestInfo below: a line start reached from an earlier one through blank lines alone
+// is not a new start (quadratic on a run of blank lines without it).
+const tomlString = (sec, key) => { const m = new RegExp(`^(?<!^\\s*?\\n)\\s*${key}\\s*=\\s*["']([^"'\\n]+)["']`, "m").exec(sec); return m ? m[1].trim() : null; };
 function tomlArray(sec, key) {
-  const m = new RegExp(`^\\s*${key}\\s*=\\s*\\[([\\s\\S]*?)\\]`, "m").exec(sec);
+  const m = new RegExp(`^(?<!^\\s*?\\n)\\s*${key}\\s*=\\s*\\[([\\s\\S]*?)\\]`, "m").exec(sec);
   return m ? [...m[1].matchAll(/["']([^"'\n]+)["']/g)].map((x) => x[1]) : [];
 }
 
@@ -143,11 +145,14 @@ export function manifestInfo(file, text) {
     const project = tomlSection(text, "project");
     const name = tomlString(project, "name") || tomlString(tomlSection(text, "tool.poetry"), "name");
     const ws = tomlArray(tomlSection(text, "tool.uv.workspace"), "members");
-    const dynamic = !name && /^\s*dynamic\s*=.*\bname\b/m.test(project);
+    // `(?<!^\s*?\n)`: skip a line start that an earlier line start reaches through blank lines alone (that
+    // one was tried first and sees the same text). Without it each line of a blank run was a start whose `\s*`
+    // ran to the end of the run: quadratic. Same for setup.cfg below. See test/data-regex-redos.test.mjs.
+    const dynamic = !name && /^(?<!^\s*?\n)\s*dynamic\s*=.*\bname\b/m.test(project);
     return { name, workspaces: ws, dynamic };
   }
   if (f === "setup.cfg") {
-    const m = /^\s*name\s*=\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*$/m.exec(tomlSection(text, "metadata"));
+    const m = /^(?<!^\s*?\n)\s*name\s*=\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*$/m.exec(tomlSection(text, "metadata"));
     return { name: m ? m[1] : null, workspaces: [], dynamic: !m };
   }
   if (f === "setup.py") {

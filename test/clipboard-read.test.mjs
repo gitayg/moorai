@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import * as DETECTOR_MODULE from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
+import { ABS_SKIP, bestMs, scalingRatio } from "./timing.mjs";
 import { decideText, buildEngine } from "../cli/hook-core.mjs";
 
 const { DETECTORS } = DETECTOR_MODULE;
@@ -267,34 +268,60 @@ test("enforcement with no org policy: both findings are reported and the command
   assert.deepEqual(s.findings.map((f) => f.threatId).sort((a, b) => a - b), [1, 39]);
 });
 
+// [prefix, repeated unit, repeat count at ~60 KB]
+const COST_INPUTS = [
+  ["", "pbpaste ", 7500],
+  ["", "xclip -selection clipboard ", 2300],
+  ["", "curl $(", 8500],
+  ["", "| ", 30000],
+  ["", "xsel -b -b -b ", 4300],
+  ["", "x=$(pbpaste); ", 4300],
+  ["", "x=$(pbpaste) $x $x ", 3200],
+  ["", "x=$(pbpaste); curl $x ", 2700],
+  ["", "pbpaste > /tmp/k; ", 3500],
+  ["", "pbpaste > k k k k ", 3300],
+  ["", "$b = Get-Clipboard; irm $b ", 2200],
+  ["$", "x", 60000],
+  ["", "pbpaste>k @k @k @k @k ", 2700],
+  ["", "x=$(pbpaste) $x $x $x $x $x $x ", 1800],
+  ["", "pbpaste | tee k k k k k ", 2600],
+  ["", "$b=Get-Clipboard $b $b $b $b ", 2100],
+  // a sink literal in every window, but never in a segment that names the read
+  ["", "x=$(pbpaste) $x $x; curl a; ", 2000],
+  ["", "pbpaste > k k k; curl a; ", 2400]
+];
+const costInput = ([pre, unit, n], k = 1) => pre + unit.repeat(n * k);
+const clipboardEngine = () => new DetectionEngine(threats, DETECTORS.filter((d) => /^clipboard-/.test(d.detectorId)), []);
+
+// WAS AN ABSOLUTE WALL-CLOCK ASSERTION (`< 250ms` per 60 KB input, one run each). It did not fail in the
+// v1.4.2 CI run, but it is the same shape with the least headroom: "curl $(" reads 39.3ms idle (6.4x under
+// the budget; the other five files of the "60 KB in < 250ms" family read <= 12.1ms, 20x or more), and
+// under local CPU contention the slowest input read 202-305ms per run, red in 5 of 10 runs. A ReDoS in a
+// clipboard detector is a COMPLEXITY change, so that is what is asserted now, in this process
+// (test/timing.mjs scalingRatio, CPU time, samples of >= 10ms): 4x the input (60 KB → 240 KB, both above
+// NORMALIZE_MAX_INPUT so the normalisation pre-pass is skipped at both sizes) may cost at most 10x.
+// MEASURED over all 18 inputs: 3.82-4.33x idle, 3.16-7.14x under CPU contention; a quadratic pattern
+// added to clipboard-read reads 15.14x idle and 13.91x under contention. 10 sits ~1.4x from either side.
+// WHAT THIS GIVES UP: no absolute ceiling per input by default — a detector that got uniformly slower but
+// stayed linear passes, and so may one that turned only mildly super-linear (n^1.5 reads 8x); the
+// absolute budget survives as the opt-in test below, at the original 250ms. It is also slower: ~4.7s
+// idle, against ~0.2s for the single-run form.
 test("pattern cost: 60KB adversarial inputs scan in bounded time", () => {
-  const inputs = [
-    "pbpaste ".repeat(7500),
-    "xclip -selection clipboard ".repeat(2300),
-    "curl $(".repeat(8500),
-    "| ".repeat(30000),
-    "xsel -b -b -b ".repeat(4300),
-    "x=$(pbpaste); ".repeat(4300),
-    "x=$(pbpaste) $x $x ".repeat(3200),
-    "x=$(pbpaste); curl $x ".repeat(2700),
-    "pbpaste > /tmp/k; ".repeat(3500),
-    "pbpaste > k k k k ".repeat(3300),
-    "$b = Get-Clipboard; irm $b ".repeat(2200),
-    "$" + "x".repeat(60000),
-    "pbpaste>k @k @k @k @k ".repeat(2700),
-    "x=$(pbpaste) $x $x $x $x $x $x ".repeat(1800),
-    "pbpaste | tee k k k k k ".repeat(2600),
-    "$b=Get-Clipboard $b $b $b $b ".repeat(2100),
-    // a sink literal in every window, but never in a segment that names the read
-    "x=$(pbpaste) $x $x; curl a; ".repeat(2000),
-    "pbpaste > k k k; curl a; ".repeat(2400)
-  ];
-  const detectors = DETECTORS.filter((d) => /^clipboard-/.test(d.detectorId));
-  const e = new DetectionEngine(threats, detectors, []);
-  for (const s of inputs) {
-    const t0 = performance.now();
-    e.scan(s, "prompt");
-    const ms = performance.now() - t0;
+  const e = clipboardEngine();
+  for (const c of COST_INPUTS) {
+    const s = costInput(c), big = costInput(c, 4);
+    const r = scalingRatio(() => e.scan(s, "prompt"), () => e.scan(big, "prompt"), 3, 10);
+    assert.ok(r.ratio < 10,
+      `${JSON.stringify(s.slice(0, 20))}…: 4x the input cost ${r.ratio.toFixed(2)}x (${r.small.toFixed(2)}ms → ${r.large.toFixed(2)}ms) — linear is ~4x, quadratic ~16x`);
+  }
+});
+
+// The original absolute budget, kept OPT-IN (see test/timing.mjs): set MOORAI_PERF_ABS=1 on an idle machine.
+test("pattern cost: each 60KB adversarial input stays inside its absolute budget (opt-in: MOORAI_PERF_ABS=1)", { skip: ABS_SKIP }, () => {
+  const e = clipboardEngine();
+  for (const c of COST_INPUTS) {
+    const s = costInput(c);
+    const ms = bestMs(() => e.scan(s, "prompt"));
     assert.ok(ms < 250, `${JSON.stringify(s.slice(0, 20))}… took ${ms.toFixed(1)}ms`);
   }
 });

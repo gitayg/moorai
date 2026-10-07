@@ -19,7 +19,11 @@
 const DOTTED = /(?<![\w@-])(?:[a-z][a-z0-9+.-]{0,15}:\/\/)?(?:[^\s\/@'"`<>()]{1,64}@)?((?:[a-z0-9_](?:[a-z0-9_-]{0,62}[a-z0-9_])?\.)+[a-z0-9][a-z0-9-]{0,62})(?![\w-])/gi;
 // `\` separates too, so a Windows path a user types ("clean C:\repo\build") yields features the
 // PowerShell tool's Remove-Item operands can match.
-const PATHISH = /(?:^|[\s"'`(=:@])((?:~|\.{1,2})?[\\/]?(?:[\w.@+-]+[\\/])+[\w.@+-]*|\.[\w][\w.-]*|[\w-]+\.[a-z0-9]{1,8})(?=$|[\s"'`),;:])/gi;
+// The lookbehind: an "@" inside a path-shaped run does not restart the path alternative when the run
+// already had a start with no slash since (that start failed, and so would this one), unless a "~"
+// follows. Was quadratic ("@" x 15k: 169ms; prompts are cut to 20k); same /g matches. See
+// test/data-regex-redos.test.mjs.
+const PATHISH = /(?:^|[\s"'`(=:@])((?:(?=~)|(?!~)(?<!(?:^|[\s"'`(=:@])~?[\w.@+-]*?@))(?:~|\.{1,2})?[\\/]?(?:[\w.@+-]+[\\/])+[\w.@+-]*|\.[\w][\w.-]*|[\w-]+\.[a-z0-9]{1,8})(?=$|[\s"'`),;:])/gi;
 
 // Service names worth recognising in prose (they are also common MCP server names). A fixed vocabulary:
 // hashing an arbitrary word of the prompt would amount to storing a hashed bag of words.
@@ -84,12 +88,18 @@ const UNC_COPY = /\b(?:Copy-Item|cpi|copy|cp|Move-Item|mi|move|mv|robocopy|xcopy
 const UNC_HOST = /(?:^|[\s:"'])\\\\([a-z0-9][\w.-]{0,252})\\/gi;
 // A payload leaving the device. Same shape family as cli/hook-core.mjs OUTBOUND_UPLOAD (clipboard
 // session rule), restricted to the forms that carry an explicit destination this module can read.
+// The curl and scp lookbehinds: a command word may not start a match where the same word already
+// started one earlier in the segment (no newline ; | & between) — that one failed, and this one can see
+// no more. Was quadratic on "curl x " / "scp x " (170ms / 816ms at 60k, now under 0.3ms). Used with
+// .test() only: same verdict. See test/data-regex-redos.test.mjs.
 const UPLOAD = [
-  /\bcurl\b[^\n;|&]*?(?:\s-(?:[a-zA-Z]*d|F|T)\b|\s--(?:data(?:-binary|-raw|-urlencode|-ascii)?|form|upload-file|json)\b|\s-X\s*(?:POST|PUT|PATCH)\b|\s--request\s+(?:POST|PUT|PATCH)\b)/i,
+  /\bcurl\b(?<!\bcurl\b[^\n;|&]*?\bcurl)[^\n;|&]*?(?:\s-(?:[a-zA-Z]*d|F|T)\b|\s--(?:data(?:-binary|-raw|-urlencode|-ascii)?|form|upload-file|json)\b|\s-X\s*(?:POST|PUT|PATCH)\b|\s--request\s+(?:POST|PUT|PATCH)\b)/i,
   /\bwget\b[^\n;|&]*?--(?:post-data|post-file|body-data|body-file|method=(?:POST|PUT))/i,
   /\b(?:Invoke-RestMethod|Invoke-WebRequest|irm|iwr)\b[^\n;|&]*?(?:-Method\s+(?:Post|Put|Patch)|-InFile|-Body)\b/i,
   /\b(?:nc|ncat|netcat|socat|telnet)\b/i,
-  /\b(?:scp|rsync|sftp)\b[^\n;|&]*?\s[\w.-]+@?[\w.-]+:/i,
+  // `[\w.-](?:[\w.-]*@)?[\w.-]+` is `[\w.-]+@?[\w.-]+` without the two runs overlapping ("scp a.a.a…"
+  // was quadratic from a single start).
+  /\b(?:scp|rsync|sftp)\b(?<!\b(?:scp|rsync|sftp)\b[^\n;|&]*?\b(?:scp|rsync|sftp))[^\n;|&]*?\s[\w.-](?:[\w.-]*@)?[\w.-]+:/i,
   // PowerShell: BITS in upload mode, and a copy/move onto a UNC share (SMB egress). Same shapes as
   // cli/hook-core.mjs PS_OUTBOUND_UPLOAD.
   /\bStart-BitsTransfer\b[^\n;|&]*?\s-TransferType\s{1,4}["']?Upload/i,

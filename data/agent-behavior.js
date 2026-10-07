@@ -19,7 +19,10 @@
 
 // ---- per-event content tells (#5–#8). Input is raw text; output is boolean flags only. ----
 const BENCHMARK_RE = /\b(exploit\s?gym|cyber\s?gym|capture[-\s]the[-\s]flag|\bctf\b|benchmark|leaderboard|flag\{)/i;
-const OBFUSCATION_RE = /\b(eval\s*\(\s*atob|atob\s*\(|base64\s+-d|FromBase64String|[A-Za-z0-9+/]{160,}={0,2})\b|curl\s[^|]*\|\s*(ba)?sh/i;
+// The lookbehind: a `curl\s` with an earlier `curl\s` before it and no "|" between reaches the same first
+// "|" that one already failed on. Was quadratic ("curl x " x 8.5k: 182ms at 60k). See
+// test/data-regex-redos.test.mjs.
+const OBFUSCATION_RE = /\b(eval\s*\(\s*atob|atob\s*\(|base64\s+-d|FromBase64String|[A-Za-z0-9+/]{160,}={0,2})\b|curl\s(?<!curl\s[^|]*?curl\s)[^|]*\|\s*(ba)?sh/i;
 const OPSEC_KEY_RE = /-----BEGIN\s[A-Z ]*PRIVATE KEY-----|\b(aes|iv|nonce|enc(ryption)?[_-]?key)\b[^\n]{0,40}\b[0-9a-f]{32,}\b/i;
 
 // #6 — hallucinated / incoherent input: over a non-trivial length, the ratio of dictionary-shaped
