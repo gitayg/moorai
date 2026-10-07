@@ -3,7 +3,9 @@
 //
 // What a "client" is, decided by the caller (server.mjs clientKey): the route plus a one-way hash of the
 // request's Authorization header when it carries one (the credential the agent presents upstream: one
-// per agent or user, and not something it can rotate at will), else the TCP peer address. On a loopback
+// per agent or user), else the TCP peer address. A credential on a refused call is never checked by the
+// upstream, so a client crafting its own requests could rotate it; each distinct one is therefore also
+// counted once at the peer address (refusedOnce), which cools the whole address down. On a loopback
 // bind every local client shares 127.0.0.1, which is why the cool-down is off by default. Keys stay in
 // this process's memory; nothing about them is reported.
 //
@@ -42,5 +44,20 @@ export function createCooldown({ refusals = 0, windowSeconds = 60, seconds = 0, 
     return false;
   }
 
-  return { enabled, remaining, refused, seconds };
+  // One refusal under `key`, counted once per distinct `sub` within the window. The caller keys a peer
+  // address with the credential as `sub`: a client that presents a new Authorization value with every
+  // refused call (nothing upstream ever checks one the gateway refuses) still adds up at its peer, while N
+  // refusals of ONE credential only cool down that credential. → true when it starts a cool-down.
+  const seen = new Map();   // key + sub → when it was last counted
+  function refusedOnce(key, sub) {
+    if (!enabled) return false;
+    const t = now();
+    const k = `${key}\u0000${sub}`;
+    const at = seen.get(k);
+    if (at !== undefined && t - at < windowSeconds * 1000) return false;
+    touch(seen, k, t);
+    return refused(key);
+  }
+
+  return { enabled, remaining, refused, refusedOnce, seconds };
 }

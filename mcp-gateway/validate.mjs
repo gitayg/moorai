@@ -5,7 +5,7 @@
 //
 // Stages, in order (C5 schemaStage):
 //   json            the body is UTF-8 and parses as JSON ("JSON-RPC messages MUST be UTF-8 encoded",
-//                   MCP 2025-06-18 transports)
+//                   MCP 2025-06-18 transports); a client body repeats no key (repeatedKey)
 //   jsonrpc         the JSON-RPC 2.0 envelope: an object, `jsonrpc` "MUST be exactly "2.0"", `method` "A
 //                   String", a batch is a non-empty array (jsonrpc.org/specification)
 //   structure       MCP's tightening of the envelope: request ids are "a string or integer ID" that "MUST
@@ -47,11 +47,62 @@ const fail = (stage, path) => ({ stage, path });
 
 // Raw bytes → { value } or { error } at the json stage. Strict UTF-8 (a lenient decode would let the
 // gateway and the upstream read different text) and no BOM (JSON.parse rejects it; some parsers do not).
+// opts.uniqueKeys: a repeated key (repeatedKey below) also fails the json stage; the parsed value is still
+// returned with the error, so a refusal can answer the request's id.
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-export function parseBody(buf) {
-  let text;
+export function parseBody(buf, { uniqueKeys = false } = {}) {
+  let text, value;
   try { text = UTF8.decode(buf); } catch { return { error: fail("json", "$") }; }
-  try { return { value: JSON.parse(text) }; } catch { return { error: fail("json", "$") }; }
+  try { value = JSON.parse(text); } catch { return { error: fail("json", "$") }; }
+  if (uniqueKeys && repeatedKey(text)) return { value, error: fail("json", "$") };
+  return { value };
+}
+
+// What a lenient peer reads from the same bytes: the WHATWG UTF-8 decode (a BOM dropped, invalid sequences
+// replaced) that fetch().json() and the MCP SDK's TextDecoder use. Only for gating or scanning a body the
+// strict stage rejected and the gateway forwards anyway (report/off modes, every response), never to
+// accept one.
+const LENIENT = new TextDecoder("utf-8");
+export function parseLenient(buf) {
+  try { return { value: JSON.parse(LENIENT.decode(buf)) }; } catch { return { error: fail("json", "$") }; }
+}
+
+// A key repeated in one object: exactly anywhere, or up to case in a message envelope and its params (the
+// objects MCP's own field names live in). JSON.parse keeps the LAST of two equal keys; a first-wins parser
+// keeps the first, and a case-insensitive struct decoder (Go's encoding/json) the last of `name` /
+// `Name` — so the gateway would gate one value and forward bytes the upstream reads as another. `text`
+// has already parsed as JSON, so a string followed by ':' inside an object is a key.
+const foldKey = (k) => k.toUpperCase().toLowerCase();
+const isWs = (c) => c === 0x20 || c === 0x09 || c === 0x0a || c === 0x0d;
+export function repeatedKey(text) {
+  const stack = []; // per open container: null for an array, else { keys, role, last }
+  const n = text.length;
+  for (let i = 0; i < n; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 0x7b) {
+      const parent = stack[stack.length - 1];
+      const role = stack.length === 0 || (stack.length === 1 && parent === null) ? "envelope"
+        : parent && parent.role === "envelope" && parent.last === "params" ? "params" : null;
+      stack.push({ keys: new Set(), role, last: null });
+    } else if (c === 0x5b) stack.push(null);
+    else if (c === 0x7d || c === 0x5d) stack.pop();
+    else if (c === 0x22) {
+      const s = i;
+      let esc = false;
+      for (i++; i < n; i++) { const d = text.charCodeAt(i); if (d === 0x5c) { esc = true; i++; } else if (d === 0x22) break; }
+      const top = stack[stack.length - 1];
+      if (!top) continue;
+      let j = i + 1;
+      while (j < n && isWs(text.charCodeAt(j))) j++;
+      if (text.charCodeAt(j) !== 0x3a) continue;
+      const k = esc ? JSON.parse(text.slice(s, i + 1)) : text.slice(s + 1, i);
+      const kk = top.role ? foldKey(k) : k;
+      if (top.keys.has(kk)) return true;
+      top.keys.add(kk);
+      top.last = k;
+    }
+  }
+  return false;
 }
 
 function metaPv(p, path) {

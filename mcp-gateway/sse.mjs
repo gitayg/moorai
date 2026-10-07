@@ -22,14 +22,18 @@ export function createSseFramer({ maxEventBytes, onEvent, onRaw, onOverflow = nu
   let evBytes = 0;       // its size so far in UTF-8 bytes
   let rawMode = false;   // the current event overflowed: stream it through
   let dropMode = false;  // the current event overflowed with onOverflow set: discard it
+  let first = true;      // the stream's first line, whose one leading BOM a client's decoder drops
   const reset = () => { evRaw = ""; evData = []; evId = null; evType = null; evBytes = 0; };
   function overflow(extra) {
     if (onOverflow) { const id = evId; reset(); dropMode = true; onOverflow({ id }); }
     else { onRaw(evRaw + extra); reset(); rawMode = true; }
   }
 
+  // Fields are matched with the `s` flag: a line ends only at CR / LF (above), so a U+2028 / U+2029 inside a
+  // data line is part of it, as it is to the client's parser.
   function line(text, term) {
     const whole = text + term;
+    if (first) { first = false; if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); }
     if (dropMode) { if (text === "") dropMode = false; return; }
     if (rawMode) {
       onRaw(whole);
@@ -46,13 +50,13 @@ export function createSseFramer({ maxEventBytes, onEvent, onRaw, onOverflow = nu
     evRaw += whole;
     evBytes += Buffer.byteLength(text) + term.length;
     if (text.startsWith("data")) {
-      const m = /^data(?::\s?(.*))?$/.exec(text);
+      const m = /^data(?::\s?(.*))?$/s.exec(text);
       if (m) evData.push(m[1] || "");
     } else if (text.startsWith("id")) {
-      const m = /^id(?::\s?(.*))?$/.exec(text);
+      const m = /^id(?::\s?(.*))?$/s.exec(text);
       if (m) evId = m[1] || "";
     } else if (text.startsWith("event")) {
-      const m = /^event(?::\s?(.*))?$/.exec(text);
+      const m = /^event(?::\s?(.*))?$/s.exec(text);
       if (m) evType = m[1] || "";
     }
     if (evBytes > maxEventBytes) overflow("");

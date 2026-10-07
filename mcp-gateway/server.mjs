@@ -16,7 +16,7 @@ import { isLoopbackHost, TOKEN_HEADER, DEFAULT_MAX_RESPONSE_BYTES } from "./conf
 import { createGuard, blockedCall } from "./guard.mjs";
 import { createSseFramer, sseEvent } from "./sse.mjs";
 import { reportOnce, alertSchema, alertTooLarge, alertCooldown } from "./report.mjs";
-import { parseBody, validateClientBody, validateHeaderPv, validateServerMessage } from "./validate.mjs";
+import { parseBody, parseLenient, validateClientBody, validateHeaderPv, validateServerMessage } from "./validate.mjs";
 import { createCooldown } from "./cooldown.mjs";
 import { countCall } from "./usage.mjs";
 
@@ -87,10 +87,15 @@ function refuseCooldown(res, parsed, left) {
   return sendJson(res, 200, Array.isArray(parsed) ? reqs.map(one) : one(reqs[0]));
 }
 // The client a cool-down is kept for: the route plus a one-way hash of its Authorization header when it
-// sends one, else the TCP peer. Never leaves the process.
+// sends one, else the TCP peer (`key`). An Authorization value on a refused call is never checked by
+// anyone, so it is also counted at its peer once per distinct value (`peer`, cooldown.refusedOnce): a
+// client that rotates it is cooled down at its address. Never leaves the process.
 function clientKey(route, req) {
   const auth = req.headers.authorization;
-  return `${route.path}|${auth ? "a:" + createHash("sha256").update(String(auth)).digest("hex").slice(0, 32) : "p:" + (req.socket && req.socket.remoteAddress)}`;
+  const peer = `${route.path}|r:${req.socket && req.socket.remoteAddress}`;
+  if (!auth) return { key: `${route.path}|p:${req.socket && req.socket.remoteAddress}`, peer, cred: null };
+  const cred = createHash("sha256").update(String(auth)).digest("hex").slice(0, 32);
+  return { key: `${route.path}|a:${cred}`, peer, cred };
 }
 
 // The request's mirrored metadata headers against its body (2026-07-28 "Server Validation"). An
@@ -148,8 +153,9 @@ export function createGatewayServer(cfg) {
   const cooldown = createCooldown(cfg.cooldown || {});
   // A refusal the gateway made for this client (policy block, invalid message, profile block). Starting a
   // cool-down is reported once; requests refused DURING it are not counted again.
-  function noteRefusal(key, route) {
-    if (cooldown.refused(key)) alertCooldown(route.server, cooldown.seconds);
+  function noteRefusal(ck, route) {
+    const started = cooldown.refused(ck.key);
+    if ((ck.cred && cooldown.refusedOnce(ck.peer, ck.cred)) || started) alertCooldown(route.server, cooldown.seconds);
   }
 
   async function handle(req, res) {
@@ -176,7 +182,7 @@ export function createGatewayServer(cfg) {
       const validating = cfg.schemaValidation !== "off";
       const hpv = req.headers["mcp-protocol-version"];
       let parsed = null;
-      const pb = parseBody(body);
+      const pb = parseBody(body, { uniqueKeys: true });
       let bad = null;
       if (validating) {
         bad = pb.error || validateHeaderPv(hpv);
@@ -187,11 +193,14 @@ export function createGatewayServer(cfg) {
           else if (v && v.unknownMethods) reportUnknownMethod(route.server);
         }
       }
-      if (!pb.error) parsed = pb.value;
+      if (pb.value !== undefined) parsed = pb.value;
       if (bad) {
         alertSchema(route.server, bad, { direction: "client", refused: enforce, tool: toolOfBad(parsed, bad) });
         if (enforce) { noteRefusal(ckey, route); return refuseInvalid(res, parsed, bad); }
       }
+      // --schema report|off forward a body that failed the json stage; it is still gated as a lenient
+      // upstream (the MCP SDK's TextDecoder: BOM dropped, invalid UTF-8 replaced) would read it.
+      if (pb.value === undefined) { const lp = parseLenient(body); if (!lp.error) parsed = lp.value; }
       if (parsed && typeof parsed === "object") {
         const msgs = Array.isArray(parsed) ? parsed : [parsed];
         ctx.batch = Array.isArray(parsed);
@@ -202,11 +211,12 @@ export function createGatewayServer(cfg) {
           }
         }
         // C5 cool-down: a client that tripped it is refused for its duration, every request in the body.
-        const left = cooldown.remaining(ckey);
+        const left = Math.max(cooldown.remaining(ckey.key), cooldown.remaining(ckey.peer));
         if (left && ctx.requestIds.length) return refuseCooldown(res, parsed, left);
-        if (!Array.isArray(parsed)) {
-          const mm = headerMismatch(req, parsed);
-          if (mm) return sendJson(res, 400, rpcError(parsed.id, -32020, `Header mismatch: ${mm}`));
+        // Every message of a batch must agree with the mirrored headers too (a header names one message).
+        for (const m of msgs) {
+          const mm = headerMismatch(req, m);
+          if (mm) { noteRefusal(ckey, route); return sendJson(res, 400, rpcError(Array.isArray(parsed) ? null : parsed.id, -32020, `Header mismatch: ${mm}`)); }
         }
         const blocked = new Map();
         for (const m of msgs) {
@@ -349,19 +359,27 @@ function onJson(ur, res, x) {
     else {
       try {
         const pb = parseBody(raw);
-        if (pb.error) { if (x.validating && raw.length) alertSchema(x.route.server, pb.error, { direction: "server", refused: false }); }
-        else if (Array.isArray(pb.value)) {
+        let value = pb.value;
+        // A body that fails the strict json stage is reported, and still scanned as the client will read
+        // it (fetch().json(): BOM dropped, invalid UTF-8 replaced), as the gateway scanned it before C5.
+        if (pb.error) {
+          if (x.validating && raw.length) alertSchema(x.route.server, pb.error, { direction: "server", refused: false });
+          const lp = parseLenient(raw);
+          value = lp.error ? undefined : lp.value;
+        }
+        if (value === undefined) { /* nothing a client can parse either: forwarded as it came */ }
+        else if (Array.isArray(value)) {
           let changed = false;
           const next = [];
-          for (let i = 0; i < pb.value.length; i++) {
-            const m = pb.value[i];
+          for (let i = 0; i < value.length; i++) {
+            const m = value[i];
             const r = checkServerMessage(m, x, `$[${i}]`) || await guard.gateResult(m, x.toolOf(m && m.id));
             if (r) changed = true;
             next.push(r || m);
           }
           if (changed) out = Buffer.from(JSON.stringify(next));
         } else {
-          const m = pb.value;
+          const m = value;
           const r = checkServerMessage(m, x) || await guard.gateResult(m, x.toolOf(m && m.id));
           if (r) out = Buffer.from(JSON.stringify(r));
         }
@@ -414,16 +432,27 @@ function onSse(ur, res, x) {
         reportOnce("MCP gateway: oversized SSE event forwarded unscanned", "gateway:unscanned:sse-size", "Info");
         return write(ev.raw);
       }
+      // Validated as a message only when it is one ("message" or no event: type); scanned whatever its
+      // type, every element of an array, on the parsed value (a "\u0072esult" key is still a result).
       let rep = null;
-      if (ev.data != null && (ev.type == null || ev.type === "" || ev.type === "message")) {
+      const scan = async (m) => { try { return await guard.gateResult(m, x.toolOf(m && m.id)); } catch { return null; } };
+      if (ev.data != null) {
+        const isMessage = ev.type == null || ev.type === "" || ev.type === "message";
         let m, ok = true;
         try { m = JSON.parse(ev.data); } catch { ok = false; }
-        if (!ok) { if (x.validating) alertSchema(x.route.server, { stage: "json", path: "$" }, { direction: "server", refused: false }); }
-        else if (Array.isArray(m)) { for (let i = 0; i < m.length; i++) { const v = x.validating && validateServerMessage(m[i], { path: `$[${i}]`, methodOf: x.methodOf }); if (v) alertSchema(x.route.server, v, { direction: "server", refused: false }); } }
-        else {
-          rep = checkServerMessage(m, x);
-          if (!rep && ev.data.indexOf("\"result\"") >= 0) { try { rep = await guard.gateResult(m, x.toolOf(m && m.id)); } catch { rep = null; } }
-        }
+        if (!ok) { if (x.validating && isMessage) alertSchema(x.route.server, { stage: "json", path: "$" }, { direction: "server", refused: false }); }
+        else if (Array.isArray(m)) {
+          let changed = false;
+          const next = [];
+          for (let i = 0; i < m.length; i++) {
+            const v = x.validating && isMessage && validateServerMessage(m[i], { path: `$[${i}]`, methodOf: x.methodOf });
+            if (v) alertSchema(x.route.server, v, { direction: "server", refused: false });
+            const r = await scan(m[i]);
+            if (r) changed = true;
+            next.push(r || m[i]);
+          }
+          if (changed) rep = next;
+        } else rep = (isMessage && checkServerMessage(m, x)) || await scan(m);
       }
       await write(rep ? sseEvent(rep, ev.id) : ev.raw);
     })

@@ -114,7 +114,7 @@ schema's own field names and array indices, never from a key or value the peer s
 
 | Stage | What is checked | Source |
 |---|---|---|
-| `json` | strict UTF-8 that parses as JSON; no BOM | MCP 2025-06-18 transports: "JSON-RPC messages **MUST** be UTF-8 encoded" |
+| `json` | strict UTF-8 that parses as JSON; no BOM; no repeated key (anywhere), and no envelope or `params` keys that differ only in case | MCP 2025-06-18 transports: "JSON-RPC messages **MUST** be UTF-8 encoded" |
 | `jsonrpc` | an object; `jsonrpc` exactly `"2.0"`; `method` a string; a batch is non-empty | jsonrpc.org/specification: "MUST be exactly "2.0"" |
 | `structure` | request id a string or integer, never null; no id on a `notifications/*`; `params` an object; a response has exactly one of `result` / `error`; error code an integer | MCP basic (2025-06-18, 2026-07-28): "Requests **MUST** include a string or integer ID", "the ID **MUST NOT** be `null`", "A response **MUST NOT** set both" |
 | `method` | a known request method (either era plus the tasks extension); with `--allow-method`, one on the list | none (gateway policy) |
@@ -163,8 +163,10 @@ GET streams and DELETE still pass. `CLIENT_COOLDOWN` carries
 `cooldownSeconds` and is posted once per cool-down. Refusals during a cool-down do not extend it.
 
 It is **off by default**. A client is the route plus a one-way hash of its `Authorization` header when it
-sends one (the credential it presents upstream: per agent or user, and not freely rotated), otherwise the
-TCP peer address. On the default loopback bind every local client shares 127.0.0.1, so one misbehaving or
+sends one (the credential it presents upstream), otherwise the TCP peer address. Because the gateway refuses
+before the upstream ever checks that credential, a client could send a new junk `Authorization` on each refused
+call; so each distinct refused credential is also counted once against its peer address, and `refusals`
+distinct refused credentials from one address cool the whole address down. On the default loopback bind every local client shares 127.0.0.1, so one misbehaving or
 prompt-injected agent would cool down every agent on the machine. Turn it on where clients carry their own
 `Authorization`, or on a remote bind. The key stays in memory and nothing about it is reported.
 
@@ -307,6 +309,27 @@ must turn the run red.
   deny case was run live only through the stdio proxy); a result-stage block seen by a real client;
   Claude Desktop, VS Code and Cursor's desktop app; Windows and Linux.
 - Blocking a result cannot undo what the remote tool already did; it keeps the content out of the agent.
+- **Parser differentials.** The gateway forwards the client's bytes, not a re-serialisation, so it refuses
+  (`SCHEMA_INVALID`, stage `json`, path `$`) a client body that repeats a key in any object, or repeats one
+  up to case in a message envelope or its `params`. `JSON.parse` keeps the last of two equal keys; a
+  first-wins parser or Go's case-insensitive `encoding/json` would read another. Keys inside `arguments`
+  may differ in case. Under `--schema report|off`, a body that fails the json stage is still forwarded,
+  and is gated as a lenient decoder reads it (BOM dropped, invalid UTF-8 replaced, the last of repeated
+  keys). A body no UTF-8 decoder can read, for example UTF-16 that Python's `json.loads(bytes)` detects
+  on its own, is forwarded ungated in those modes. Every message of a batch must agree with
+  `Mcp-Method` / `Mcp-Name` when they are sent. `Mcp-Param-*` headers are not compared with the body, and
+  a body on a GET or DELETE is forwarded ungated (the TypeScript SDK 1.32.1 server reads neither).
+- **Responses are scanned as the client reads them.** A JSON body that fails strict UTF-8 (a BOM, an
+  invalid byte) is reported and scanned as `fetch().json()` decodes it. An SSE event is scanned whatever
+  its `event:` type, every message of an array event too. A U+2028 inside a data line and a BOM before
+  the first line no longer hide an event from the scan. A UTF-16 response body is not scanned. Of
+  repeated or case-variant response keys, the scan reads what `JSON.parse` keeps.
+- **Cool-down keys.** No `Authorization` value on a refused call is ever checked upstream, so a client
+  that builds its own requests can send a new one every time. Each distinct value is therefore also counted
+  once at the TCP peer. N distinct refused credentials from one address within the window cool the whole
+  address down, including the clients without `Authorization` there. N refusals of one credential still
+  cool only that credential. `X-Forwarded-For` and `Mcp-Session-Id` are never part of the key.
+  `Mcp-Method` / `Mcp-Name` header-mismatch refusals count as refusals.
 
 ## Files
 
