@@ -27,8 +27,16 @@
 //                     — including a slice boundary that falls mid-key and mid-multi-byte-character.
 //                     Relying on "a big payload will probably be chunked" tests the OS pipe, not the
 //                     proxy's reassembly; this makes it deterministic.
-import { appendFileSync, readFileSync } from "node:fs";
+//
+// And three for PROCESS LIFECYCLE (test/mcp-guard-lifecycle.test.mjs). Some real servers — chroma-mcp
+// 0.2.6 measured — keep running after their stdin closes, so the proxy has to end them itself:
+//   FAKE_PID_FILE        write this process's pid here at start-up, so a test can check for an orphan.
+//   FAKE_IGNORE_EOF      do NOT exit when stdin closes; stay alive until signalled.
+//   FAKE_IGNORE_SIGTERM  also ignore SIGTERM, so only SIGKILL ends it.
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 const LOG = process.argv[2];
+if (process.env.FAKE_PID_FILE) writeFileSync(process.env.FAKE_PID_FILE, String(process.pid));
+if (process.env.FAKE_IGNORE_SIGTERM) process.on("SIGTERM", () => {});
 const SPLIT = Number(process.env.FAKE_SPLIT_BYTES || 0);
 
 // Slicing is done on BYTES, not characters, precisely so a multi-byte character can straddle a slice.
@@ -83,4 +91,7 @@ process.stdin.on("data", (c) => {
     } else if (m.id != null) send({ jsonrpc: "2.0", id: m.id, result: {} });
   }
 });
-process.stdin.on("end", () => process.exit(0));
+process.stdin.on("end", () => {
+  if (process.env.FAKE_IGNORE_EOF) setInterval(() => {}, 60000);
+  else process.exit(0);
+});

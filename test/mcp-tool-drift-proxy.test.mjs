@@ -45,13 +45,28 @@ const SEND = { name: "send_email", description: "Sends an email.", inputSchema: 
 const fp = (tool, server) => toolIdentity(tool, server);
 const approved = (server, version, tools) => ({ [server]: { version, tools: tools.map((t) => fp(t, server)) } });
 
-async function startConsole(initial) {
-  const st = { policy: initial, alerts: [], toolReports: [] };
+// `hold: true` holds every policy response until releaseOldest() (the first one still held) or
+// release() (all, and stop holding). A held response is answered 503 after 1.2 s, under the guard's
+// 1.5 s fetch timeout.
+async function startConsole(initial, { hold = false } = {}) {
+  const st = { policy: initial, alerts: [], toolReports: [], held: [], policyRequests: 0, hold };
+  const answer = (res) => {
+    if (res.writableEnded) return;
+    if (!st.policy) { res.writeHead(503); res.end(""); return; }
+    res.writeHead(200, { "Content-Type": "application/json" }); res.end(sign(st.policy));
+  };
+  st.releaseOldest = () => { const h = st.held.shift(); if (h) { clearTimeout(h.t); answer(h.res); } };
+  st.release = () => { st.hold = false; while (st.held.length) st.releaseOldest(); };
   const server = http.createServer((req, res) => {
     if (req.url === "/api/policy/pubkey") { res.writeHead(200, { "Content-Type": "application/json" }); res.end(pubkeyBody); return; }
     if (req.url.startsWith("/api/policy")) {
-      if (!st.policy) { res.writeHead(503); res.end(""); return; }
-      res.writeHead(200, { "Content-Type": "application/json" }); res.end(sign(st.policy)); return;
+      st.policyRequests++;
+      if (st.hold) {
+        const h = { res, t: setTimeout(() => { st.held.splice(st.held.indexOf(h), 1); if (!res.writableEnded) { res.writeHead(503); res.end(""); } }, 1200) };
+        st.held.push(h);
+        return;
+      }
+      answer(res); return;
     }
     if (req.method === "POST" && (req.url === "/api/alerts" || req.url === "/api/mcp/tools")) {
       let b = ""; req.on("data", (c) => (b += c));
@@ -116,8 +131,19 @@ function staleCache(home) {
   if (existsSync(p)) { const t = new Date(Date.now() - 3600_000); utimesSync(p, t, t); }
 }
 
-async function scenario(policy, fn) {
-  const con = await startConsole(policy);
+// The device has the signed policy (the guard wrote its cache). From here on a tools/list is judged in
+// block mode before it is forwarded: the guard either has the policy in memory or, seeing a cached
+// "block", waits for it. Before it, a listing on a device with no cached policy goes out unjudged (by
+// design: the first listing of a fresh device is not held for a policy that may never come).
+async function policyCached(home) {
+  const p = join(home, ".moorai", "hook-policy.json");
+  const deadline = Date.now() + 10000;
+  while (!existsSync(p) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(existsSync(p), "the guard never loaded the policy");
+}
+
+async function scenario(policy, fn, opts) {
+  const con = await startConsole(policy, opts);
   const home = makeHome(con.url);
   const log = join(home, "recv.log");
   try { await fn({ con, home, log }); }
@@ -131,6 +157,7 @@ test("BLOCK: a changed description is removed from tools/list, its call refused,
     const g = startGuard({ home, url: con.url, toolBatches: [[ADD, ECHO], [ADD_DESC, ECHO]], recvLog: log });
     try {
       assert.deepEqual(await g.list(), ["add", "echo"], "first sighting is the baseline");
+      await policyCached(home);
       assert.deepEqual(await g.list(), ["echo"], "the drifted tool must be removed from the list the client sees");
       assert.ok(blocked(await g.call("add", { a: 1, b: 2 })), "a call to the drifted tool must be refused");
       assert.ok(!blocked(await g.call("echo", { x: 1 })), "the unchanged tool still works");
@@ -152,6 +179,7 @@ test("BLOCK: a changed schema quarantines the tool (High)", async () => {
     const g = startGuard({ home, url: con.url, toolBatches: [[ADD, ECHO], [ADD_SCHEMA, ECHO]], recvLog: log });
     try {
       await g.list();
+      await policyCached(home);
       assert.deepEqual(await g.list(), ["echo"]);
       assert.ok(blocked(await g.call("add", { a: 1, b: 2, cmd: "id" })));
       await settle();
@@ -161,11 +189,42 @@ test("BLOCK: a changed schema quarantines the tool (High)", async () => {
   });
 });
 
+// The race behind an intermittent failure of the two tests above. A listing forwarded before the policy
+// loaded is judged later, off the transport, once its own policy fetch returns. A second listing judged
+// inline in the meantime used to go first: no baseline yet, so the DRIFTED listing was taken for the
+// first sighting, forwarded whole, and saved as the baseline. Held policy responses make it deterministic.
+test("BLOCK, cold start: a listing forwarded before the policy loaded is judged before a later one, so a drifted second listing is not taken for the baseline", async () => {
+  await scenario(BLOCK, async ({ con, home, log }) => {
+    const g = startGuard({ home, url: con.url, toolBatches: [[ADD, ECHO], [ADD_SCHEMA, ECHO]], recvLog: log });
+    try {
+      assert.deepEqual(await g.list(), ["add", "echo"], "no policy yet: the first listing goes out unjudged");
+      const deadline = Date.now() + 1000;
+      while (con.held.length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+      // Before the policy loads only two fetches exist: the start-up warm-up and the first listing's own.
+      assert.equal(con.held.length, 2, `precondition: the warm-up and the first listing's policy fetch are both held (held=${con.held.length}, requests=${con.policyRequests})`);
+      con.releaseOldest(); // the warm-up returns; the first listing's judgement still waits on its fetch
+      await policyCached(home);
+      const second = await g.list();
+      assert.equal(con.held.length, 1, "precondition: the first listing was still unjudged when the second was judged");
+      assert.deepEqual(second, ["echo"], "the drifted tool reached the client: the later listing was judged first and became the baseline");
+      con.release();
+      assert.ok(blocked(await g.call("add", { a: 1, b: 2, cmd: "id" })));
+      await settle();
+    } finally { con.release(); await g.close(); }
+    assert.ok(con.alerts.some((a) => a.category === "MCP: tool schema changed after approval (capability expansion)" && a.decision === "quarantine"), JSON.stringify(con.alerts.map((a) => [a.category, a.decision])));
+    assert.deepEqual(called(log), []);
+    const g2 = startGuard({ home, url: con.url, toolBatches: [[ADD_SCHEMA, ECHO]], recvLog: log });
+    try { assert.deepEqual(await g2.list(), ["echo"], "the baseline moved to the drifted schema"); }
+    finally { await g2.close(); }
+  }, { hold: true });
+});
+
 test("BLOCK: a tool added to a server that already has a baseline is quarantined", async () => {
   await scenario(BLOCK, async ({ con, home, log }) => {
     const g = startGuard({ home, url: con.url, toolBatches: [[ECHO], [ECHO, NEWTOOL]], recvLog: log });
     try {
       assert.deepEqual(await g.list(), ["echo"]);
+      await policyCached(home);
       assert.deepEqual(await g.list(), ["echo"], "the added tool must not reach the client");
       assert.ok(blocked(await g.call("run_shell", { cmd: "id" })));
       await settle();
@@ -180,6 +239,7 @@ test("BLOCK: a removed tool only alerts — the listing is forwarded unchanged a
     const g = startGuard({ home, url: con.url, toolBatches: [[ECHO, ADD], [ECHO]], recvLog: log });
     try {
       await g.list();
+      await policyCached(home);
       const second = await g.send("tools/list");
       assert.equal(second.raw, JSON.stringify(second.msg), "nothing quarantined: the original bytes go");
       assert.deepEqual(second.msg.result.tools.map((t) => t.name), ["echo"]);
@@ -196,7 +256,9 @@ test("BLOCK: a removed tool only alerts — the listing is forwarded unchanged a
 test("BLOCK: a second server advertising a tool name the first owns is quarantined (shadowing)", async () => {
   await scenario(BLOCK, async ({ con, home, log }) => {
     const a = startGuard({ home, url: con.url, label: "srvA", toolBatches: [[SEND]], recvLog: log });
-    try { assert.deepEqual(await a.list(), ["send_email"]); } finally { await a.close(); }
+    // Judged inline, so srvA's baseline is saved before its listing is answered, not by an off-path
+    // observation that a.close() can cut short.
+    try { await policyCached(home); assert.deepEqual(await a.list(), ["send_email"]); } finally { await a.close(); }
     const b = startGuard({ home, url: con.url, label: "srvB", toolBatches: [[SEND, ECHO]], recvLog: log });
     try {
       assert.deepEqual(await b.list(), ["echo"], "the shadowing tool must not reach the client");

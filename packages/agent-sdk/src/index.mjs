@@ -20,6 +20,7 @@ import { inboundLib } from "./core.mjs";
 
 export { createMoorAI, resolveSettings, NO_POLICY_BASELINE, STAGES } from "./runtime.mjs";
 export { decideToolCall, NOT_EVALUATED } from "./decide.mjs";
+export { scanBeforeEmbed, guardEmbed } from "./embed.mjs";
 
 // The text of a tool result: the shared inbound harvest (cli/inbound.mjs inboundText), the one the hook,
 // the MCP proxy and the gateway use — every model-visible string value of an object result (64 KB, the

@@ -8,7 +8,9 @@
 // launch config + env var KEYS only — never token values, never the contents of any credential file.
 // Two collectors look further and still emit nothing but metadata: AI-provider keys AT REST
 // (cli/aibom-keys.mjs — provider + location class + a KEYED one-way hash, never the key or the file)
-// and RUNNING local model / MCP servers (cli/aibom-runtime.mjs — process names + ports only).
+// and RUNNING local model / MCP servers (cli/aibom-runtime.mjs + cli/local-ai-inventory.mjs — process
+// names + ports only), INSTALLED local runtimes (existence checks, no execution) and, on Windows, the
+// Windows AI platform (cli/local-ai-windows.mjs — package names + versions, NPU / GPU class).
 //
 //   node cli/moorai-aibom.mjs                 # JSON (default)
 //   node cli/moorai-aibom.mjs --format md     # Markdown for a report
@@ -22,7 +24,8 @@ import { fileURLToPath } from "node:url";
 import { readAgentEvents } from "./signals.mjs";
 import { toCycloneDX, toSpdx } from "../data/sbom.js";
 import { scanKeysAtRest } from "./aibom-keys.mjs";
-import { defaultRunner, fixtureRunner, probeListeners, probeProcesses, localRuntimes, localMcpListeners } from "./aibom-runtime.mjs";
+import { fixtureRunner, localMcpListeners } from "./aibom-runtime.mjs";
+import { localAiInventory, runCmd } from "./local-ai-inventory.mjs";
 import { assessServerSync } from "./mcp-reputation.mjs";
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
@@ -156,12 +159,13 @@ function usage(prov) {
   };
 }
 
-// Running-server probe. MOORAI_AIBOM_PROBE_FIXTURE (a JSON file of canned lsof/ps/netstat/tasklist
-// output) replaces the real commands — the tests' seam, so they never depend on this machine's processes.
-function runtimeProbe() {
-  const runner = process.env.MOORAI_AIBOM_PROBE_FIXTURE ? fixtureRunner(process.env.MOORAI_AIBOM_PROBE_FIXTURE) : defaultRunner;
-  const listeners = probeListeners(runner), processes = probeProcesses(runner);
-  return { listeners, processes, status: listeners == null && processes == null ? "unavailable" : "ok" };
+// Local AI probe. MOORAI_AIBOM_PROBE_FIXTURE (a JSON file of canned lsof/ps/ss/netstat/tasklist/
+// powershell output) replaces the real commands — the tests' seam, so they never depend on this
+// machine's processes. MOORAI_AIBOM_PLATFORM overrides the platform for the same reason.
+function localAi() {
+  const runner = process.env.MOORAI_AIBOM_PROBE_FIXTURE ? fixtureRunner(process.env.MOORAI_AIBOM_PROBE_FIXTURE) : runCmd;
+  const platform = process.env.MOORAI_AIBOM_PROBE_FIXTURE && process.env.MOORAI_AIBOM_PLATFORM ? process.env.MOORAI_AIBOM_PLATFORM : process.platform;
+  return localAiInventory({ runner, platform, home: HOME });
 }
 
 function buildAibom() {
@@ -170,8 +174,8 @@ function buildAibom() {
   const ext = editorExtensions(), skills = agentSkills();
   const use = usage(prov);
   const keys = scanKeysAtRest().findings;
-  const probe = runtimeProbe();
-  const runtimes = localRuntimes(probe), mcpLive = localMcpListeners(decls, probe.listeners);
+  const ai = localAi();
+  const runtimes = ai.runtimes, mcpLive = localMcpListeners(decls, ai.listeners);
   const models = [...prov.filter((p) => p.model).map((p) => ({ name: p.model, provider: p.provider, local: false })),
     ...local.map((m) => ({ name: m.name, provider: m.runtime, local: true }))];
   const components = [
@@ -184,9 +188,11 @@ function buildAibom() {
   return {
     bomFormat: "MoorAI-AIBOM", specVersion: "1.0", scope: "device", device: hostname(), generatedAt: new Date().toISOString(),
     summary: { providers: new Set(prov.map((p) => p.provider)).size, models: models.length, localModels: local.length, agents: new Set(prov.map((p) => p.agent)).size, mcpServers: mcp.length, mcpHighRisk: mcp.filter((s) => s.level === "high").length, mcpLowReputation: mcp.filter((s) => s.reputation && (s.reputation.band === "poor" || s.reputation.band === "bad")).length, editorAiExtensions: ext.length, skills: skills.length, calls: use ? use.events : 0, roughSpendUsd: use ? use.roughSpendUsd : null,
-      apiKeysAtRest: keys.length, runningLocalRuntimes: runtimes.length, localMcpRunning: mcpLive.filter((m) => m.running === true).length },
+      apiKeysAtRest: keys.length, runningLocalRuntimes: runtimes.length, localMcpRunning: mcpLive.filter((m) => m.running === true).length,
+      networkLocalRuntimes: runtimes.filter((r) => r.listening === "network").length, installedLocalRuntimes: ai.installed.length },
     providers: prov, localModels: local, mcpServers: mcp, editorExtensions: ext, skills, usage: use,
-    apiKeysAtRest: keys, localRuntimes: runtimes, localMcpListeners: mcpLive, runtimeProbe: probe.status, components
+    apiKeysAtRest: keys, localRuntimes: runtimes, localRuntimesInstalled: ai.installed, ...(ai.windowsAi ? { windowsAi: ai.windowsAi } : {}),
+    localMcpListeners: mcpLive, runtimeProbe: ai.status, components
   };
 }
 
@@ -207,6 +213,13 @@ function toMarkdown(d) {
     + (d.mcpServers.map((m) => `| ${m.name} | ${m.scope} | ${m.transport} | ${cap(m.caps)} | ${m.level} | ${rep(m.reputation)} |`).join("\n") || "| — | — | — | — | — | — |")
     + (d.apiKeysAtRest.length ? `\n\n## AI provider keys at rest (keyed hash only — never the key)\n\n| Provider | Location class | Location | Key hash |\n|---|---|---|---|\n` + d.apiKeysAtRest.map((k) => `| ${k.provider} | ${k.locationClass} | ${k.location || "(project .env — path withheld)"} | ${k.keyHash} |`).join("\n") : "")
     + (d.localRuntimes.length ? `\n\n## Running local model servers\n\n| Runtime | Ports | Bind | Detected by |\n|---|---|---|---|\n` + d.localRuntimes.map((r) => `| ${r.runtime} | ${r.ports.join(", ") || "—"} | ${r.bind} | ${r.detectedBy.join(" + ")} |`).join("\n") : "")
+    + (d.localRuntimesInstalled.length ? `\n\n## Installed local model runtimes\n\n| Runtime | Found via | Version |\n|---|---|---|\n` + d.localRuntimesInstalled.map((r) => `| ${r.runtime} | ${r.via.join(", ")} | ${r.version || "—"} |`).join("\n") : "")
+    + (d.windowsAi ? `\n\n## Windows AI platform\n\n| Item | Value |\n|---|---|\n`
+        + `| Windows App SDK runtime | ${d.windowsAi.appSdkRuntime.map((p) => `${p.name} ${p.version || ""}`.trim()).join(", ") || "—"} |\n`
+        + `| Windows ML execution providers | ${d.windowsAi.windowsMlEps.map((p) => `${p.ep} (${p.name} ${p.version || ""})`.trim()).join(", ") || "—"} |\n`
+        + `| Aion Instruct preview | ${d.windowsAi.aionPreview.map((p) => p.name).join(", ") || "—"} |\n`
+        + `| NPU | ${d.windowsAi.npu.present ? `yes (${d.windowsAi.npu.vendors.join(", ")})` : "no"} |\n`
+        + `| GPU classes | ${d.windowsAi.gpus.map((g) => g.tier).join(", ") || "—"} |` : "")
     + (d.localMcpListeners.length ? `\n\n## Local MCP servers over HTTP/SSE\n\n| Server | Scope | Transport | Port | Running |\n|---|---|---|---|---|\n` + d.localMcpListeners.map((m) => `| ${m.name} | ${m.scope} | ${m.transport} | ${m.port} | ${m.running == null ? "unknown" : m.running ? "yes" : "no"} |`).join("\n") : "")
     + (d.editorExtensions.length ? `\n\n## Editor AI extensions (harness + version)\n\n| Editor | Extension | Version |\n|---|---|---|\n` + d.editorExtensions.map((x) => `| ${x.editor} | ${x.id} | ${x.version || "—"} |`).join("\n") : "")
     + (d.skills.length ? `\n\n## Agent skills & plugins\n\n| Kind | Name |\n|---|---|\n` + d.skills.map((x) => `| ${x.kind} | ${x.name} |`).join("\n") : "")
@@ -263,11 +276,27 @@ AI-provider keys at rest (reads in memory, emits provider + location class + key
   when unenrolled) — the key value, any part of it, and the file contents are never output.
 
 Running local model servers and local MCP servers (names + ports only; never args or environment):
-  macOS/Linux  lsof +c 0 -iTCP -sTCP:LISTEN -nP   and   ps -A -o comm=
+  macOS/Linux  lsof +c 0 -iTCP -sTCP:LISTEN -nP   and   ps -A -o pid=,comm=
   Windows      netstat -ano                       and   tasklist /FO CSV /NH
-  Runtimes: ollama (process, or a listener on 11434), lmstudio (process "LM Studio"/lms),
-  llama.cpp (process llama-server), vllm (process vllm). MCP servers declared with a localhost
-  http(s) URL in the configs above are matched to a listener on their port (running yes/no/unknown).
+  Linux falls back to ss -ltnp, then /proc/net/tcp{,6}, when lsof is missing. Each running runtime
+  reports listening: loopback | network | none (null when sockets could not be read) and its ports.
+  Runtimes: ollama (process, or a listener on 11434), lmstudio (process "LM Studio"/lms/llmster),
+  llama.cpp (llama-server), llamafile (llamafile or *.llamafile), vllm, localai (local-ai), jan,
+  gpt4all (process, or a listener on 4891), koboldcpp*, foundry-local (Inference.Service.Agent/foundry),
+  docker-model-runner (a listener on 12434), winml-server (WinMLServer). MCP servers declared with a
+  localhost http(s) URL in the configs above are matched to a listener on their port.
+
+Installed local runtimes (existence checks only — nothing is executed; the path is never output):
+  PATH + /opt/homebrew/bin /usr/local/bin /usr/bin ~/.local/bin ~/bin for ollama lms llama-server
+  llama-cli llamafile vllm local-ai koboldcpp foundry (WinMLServer on Windows); /Applications and
+  ~/Applications for Ollama, LM Studio, Jan, gpt4all; ~/.lmstudio/bin/lms; the docker-model CLI
+  plugin; ~/text-generation-webui/server.py. A macOS app's version comes from its Info.plist.
+
+Windows AI platform (Windows only; one PowerShell call, no admin):
+  Get-AppxPackage names + versions for Microsoft.WindowsAppRuntime.* / MicrosoftCorporationII.WinAppRuntime.*
+  / Microsoft.WinAppRuntime.DDLM.* (Windows App SDK), MicrosoftCorporationII.WinML.* / Microsoft.WinML.*
+  (Windows ML execution providers), Microsoft.AionInstructPreview.*; NPU presence + vendor
+  (Get-PnpDevice -Class ComputeAccelerator); a GPU class per adapter (Win32_VideoController), never its name.
 
 For each MCP server it also reports a first-seen REPUTATION (score 0-100, band good/fair/poor/bad,
 and category codes such as mcp-typosquat or pkg-install-script-remote), scored OFFLINE from the

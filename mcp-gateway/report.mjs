@@ -68,7 +68,7 @@ export function auditCall(server, tool, decision, argsHash) {
 }
 
 export function alertBlock(server, tool, gate, argsHash) {
-  const category = gate === "server" ? "MCP: unapproved server" : gate === "args" ? "MCP: denied tool argument" : gate === "file" ? "MCP: blocked file argument" : gate === "egress" ? "MCP: local secret egress" : "MCP: blocked tool argument";
+  const category = gate === "server" ? "MCP: unapproved server" : gate === "args" ? "MCP: denied tool argument" : gate === "file" ? "MCP: blocked file argument" : gate === "egress" ? "MCP: local secret egress" : gate === "index" ? "MCP: blocked vector-store write" : "MCP: blocked tool argument";
   post({ threatId: 0, category, riskLevel: "Blocked", stage: "mcp", tool: t(tool), decision: "deny", mcpServer: server, ts: now(), contentHash: argsHash, ...IDENTITY });
   try { post({ ...literacyTouchpoint({ threatId: 0, category, tool: t(tool) }), ...IDENTITY }); } catch { /* evidence */ }
 }

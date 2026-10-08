@@ -67,8 +67,10 @@ pub fn recognize(image_b64: &str, mime: &str) -> Result<String, String> {
             ]
         }]
     });
+    // The provider key rides this request: never follow a redirect with it.
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())?;
     let resp = client

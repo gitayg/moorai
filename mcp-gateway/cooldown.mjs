@@ -59,5 +59,15 @@ export function createCooldown({ refusals = 0, windowSeconds = 60, seconds = 0, 
     return refused(key);
   }
 
-  return { enabled, remaining, refused, refusedOnce, seconds };
+  // One refusal the gateway made for client `ck` ({ key, peer, cred }, server.mjs clientKey): counted at
+  // its key, and once per credential at its peer. → true when it starts a cool-down. A refusal made while
+  // the key or the peer is already cooling down is not counted again, at any key: counting it let a
+  // cooled-down client fill the bounded tables with fresh credentials until its own entry was evicted.
+  function noteRefusal(ck) {
+    if (remaining(ck.key) || remaining(ck.peer)) return false;
+    const started = refused(ck.key);
+    return Boolean(ck.cred && refusedOnce(ck.peer, ck.cred)) || started;
+  }
+
+  return { enabled, remaining, refused, refusedOnce, noteRefusal, seconds };
 }

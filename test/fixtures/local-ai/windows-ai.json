@@ -1,0 +1,281 @@
+{
+  "_note": "Shared by cli/local-ai-windows.mjs parseWindowsAi/gpuTier and src-tauri/src/local_ai_windows.rs. Captured-shape PowerShell JSON (Get-AppxPackage / Win32_VideoController / Get-PnpDevice), not captured from a device.",
+  "leaks": [
+    "Contoso",
+    "ALICE",
+    "AI Boost",
+    "4090",
+    "script",
+    "X1E78100",
+    "Adreno"
+  ],
+  "cases": [
+    {
+      "name": "Copilot+ PC: packages grouped, duplicates collapsed, EP named, Qualcomm NPU",
+      "stdout": "{\"p\":[{\"n\":\"Microsoft.WindowsAppRuntime.1.8\",\"v\":\"8000.616.304.0\"},{\"n\":\"Microsoft.WindowsAppRuntime.1.8\",\"v\":\"8000.616.304.0\"},{\"n\":\"MicrosoftCorporationII.WinAppRuntime.Main.1.8\",\"v\":\"8000.616.304.0\"},{\"n\":\"MicrosoftCorporationII.WinAppRuntime.Singleton\",\"v\":\"8000.616.304.0\"},{\"n\":\"Microsoft.WinAppRuntime.DDLM.8000.616.304.0-a6\",\"v\":\"8000.616.304.0\"},{\"n\":\"MicrosoftCorporationII.WinML.Qualcomm.QNN.EP.1.8\",\"v\":\"1.8.27.0\"},{\"n\":\"Microsoft.WinML.ONNX.WebGPU.EP.2\",\"v\":\"0.4.0.0\"},{\"n\":\"Microsoft.AionInstructPreview.Framework.1.0\",\"v\":\"1.0.12.0\"}],\"g\":[{\"n\":\"Qualcomm(R) Adreno(TM) X1-85 GPU\",\"m\":\"Qualcomm Incorporated\"}],\"a\":[{\"n\":\"Snapdragon(R) X Elite - X1E78100 - Qualcomm(R) Hexagon(TM) NPU\",\"m\":\"Qualcomm Technologies, Inc.\"}]}",
+      "expect": {
+        "appSdkRuntime": [
+          {
+            "name": "Microsoft.WindowsAppRuntime.1.8",
+            "version": "8000.616.304.0"
+          },
+          {
+            "name": "MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+            "version": "8000.616.304.0"
+          },
+          {
+            "name": "MicrosoftCorporationII.WinAppRuntime.Singleton",
+            "version": "8000.616.304.0"
+          },
+          {
+            "name": "Microsoft.WinAppRuntime.DDLM.8000.616.304.0-a6",
+            "version": "8000.616.304.0"
+          }
+        ],
+        "windowsMlEps": [
+          {
+            "name": "MicrosoftCorporationII.WinML.Qualcomm.QNN.EP.1.8",
+            "version": "1.8.27.0",
+            "ep": "QNN"
+          },
+          {
+            "name": "Microsoft.WinML.ONNX.WebGPU.EP.2",
+            "version": "0.4.0.0",
+            "ep": "WebGPU"
+          }
+        ],
+        "aionPreview": [
+          {
+            "name": "Microsoft.AionInstructPreview.Framework.1.0",
+            "version": "1.0.12.0"
+          }
+        ],
+        "npu": {
+          "present": true,
+          "count": 1,
+          "vendors": [
+            "qualcomm"
+          ]
+        },
+        "gpus": [
+          {
+            "vendor": "qualcomm",
+            "tier": "qualcomm"
+          }
+        ],
+        "localInference": {
+          "npu": true,
+          "suitedGpu": false
+        }
+      }
+    },
+    {
+      "name": "single PowerShell object (not an array) still counts",
+      "stdout": "{\"p\":[],\"g\":[],\"a\":{\"n\":\"Intel(R) AI Boost\",\"m\":\"Intel Corporation\"}}",
+      "expect": {
+        "appSdkRuntime": [],
+        "windowsMlEps": [],
+        "aionPreview": [],
+        "npu": {
+          "present": true,
+          "count": 1,
+          "vendors": [
+            "intel"
+          ]
+        },
+        "gpus": [],
+        "localInference": {
+          "npu": true,
+          "suitedGpu": false
+        }
+      }
+    },
+    {
+      "name": "nothing present",
+      "stdout": "{\"p\":[],\"g\":[],\"a\":[]}",
+      "expect": {
+        "appSdkRuntime": [],
+        "windowsMlEps": [],
+        "aionPreview": [],
+        "npu": {
+          "present": false,
+          "count": 0,
+          "vendors": []
+        },
+        "gpus": [],
+        "localInference": {
+          "npu": false,
+          "suitedGpu": false
+        }
+      }
+    },
+    {
+      "name": "discrete RTX + virtual adapter dropped",
+      "stdout": "{\"p\":[],\"a\":[],\"g\":[{\"n\":\"NVIDIA GeForce RTX 4070\",\"m\":\"NVIDIA\"},{\"n\":\"Microsoft Basic Display Adapter\",\"m\":\"(Standard display types)\"}]}",
+      "expect": {
+        "appSdkRuntime": [],
+        "windowsMlEps": [],
+        "aionPreview": [],
+        "npu": {
+          "present": false,
+          "count": 0,
+          "vendors": []
+        },
+        "gpus": [
+          {
+            "vendor": "nvidia",
+            "tier": "nvidia-rtx30plus"
+          }
+        ],
+        "localInference": {
+          "npu": false,
+          "suitedGpu": true
+        }
+      }
+    },
+    {
+      "name": "malformed versions and unrelated packages dropped; device names never emitted",
+      "stdout": "{\"p\":[{\"n\":\"Microsoft.WindowsAppRuntime.1.8\",\"v\":\"not-a-version\"},{\"n\":\"Contoso.SecretApp\",\"v\":\"1.0.0.0\"},{\"n\":\"Microsoft.WinML.<script>\",\"v\":\"1.0\"},{\"n\":\"MicrosoftCorporationII.WinML.AMD.NPU.EP.1.2\",\"v\":\"1.2.0.0\"},{\"n\":\"MicrosoftCorporationII.WinML.Intel.OpenVINO.EP.1.8\",\"v\":\"1.8.0\"},{\"n\":\"MicrosoftCorporationII.WinML.NVIDIA.TRT.EP.1\",\"v\":\"1.0.0.0\"},{\"n\":\"MicrosoftCorporationII.WinML.Mystery.EP\",\"v\":\"1\"}],\"g\":[{\"n\":\"NVIDIA GeForce RTX 4090 (asset-tag DEV-ALICE-01)\",\"m\":\"NVIDIA\"}],\"a\":[{\"n\":\"Intel(R) AI Boost\",\"m\":\"Intel Corporation\"}]}",
+      "expect": {
+        "appSdkRuntime": [
+          {
+            "name": "Microsoft.WindowsAppRuntime.1.8",
+            "version": null
+          }
+        ],
+        "windowsMlEps": [
+          {
+            "name": "MicrosoftCorporationII.WinML.AMD.NPU.EP.1.2",
+            "version": "1.2.0.0",
+            "ep": "VitisAI"
+          },
+          {
+            "name": "MicrosoftCorporationII.WinML.Intel.OpenVINO.EP.1.8",
+            "version": "1.8.0",
+            "ep": "OpenVINO"
+          },
+          {
+            "name": "MicrosoftCorporationII.WinML.NVIDIA.TRT.EP.1",
+            "version": "1.0.0.0",
+            "ep": "NvTensorRtRtx"
+          },
+          {
+            "name": "MicrosoftCorporationII.WinML.Mystery.EP",
+            "version": "1",
+            "ep": "unknown"
+          }
+        ],
+        "aionPreview": [],
+        "npu": {
+          "present": true,
+          "count": 1,
+          "vendors": [
+            "intel"
+          ]
+        },
+        "gpus": [
+          {
+            "vendor": "nvidia",
+            "tier": "nvidia-rtx30plus"
+          }
+        ],
+        "localInference": {
+          "npu": true,
+          "suitedGpu": true
+        }
+      }
+    },
+    {
+      "name": "not JSON",
+      "stdout": "WARNING: not json",
+      "expect": null
+    },
+    {
+      "name": "JSON null",
+      "stdout": "null",
+      "expect": null
+    }
+  ],
+  "tiers": [
+    [
+      "NVIDIA GeForce RTX 4070 Laptop GPU",
+      "NVIDIA",
+      "nvidia-rtx30plus"
+    ],
+    [
+      "NVIDIA GeForce RTX 3050 Ti",
+      "NVIDIA",
+      "nvidia-rtx30plus"
+    ],
+    [
+      "NVIDIA RTX A4000",
+      "NVIDIA",
+      "nvidia-rtx30plus"
+    ],
+    [
+      "NVIDIA RTX 2000 Ada Generation",
+      "NVIDIA",
+      "nvidia-rtx30plus"
+    ],
+    [
+      "NVIDIA GeForce RTX 2080",
+      "NVIDIA",
+      "nvidia-other"
+    ],
+    [
+      "NVIDIA GeForce GTX 1660",
+      "NVIDIA",
+      "nvidia-other"
+    ],
+    [
+      "AMD Radeon RX 7900 XTX",
+      "Advanced Micro Devices, Inc.",
+      "amd-rdna3plus"
+    ],
+    [
+      "AMD Radeon RX 9070",
+      "Advanced Micro Devices, Inc.",
+      "amd-rdna3plus"
+    ],
+    [
+      "AMD Radeon 780M Graphics",
+      "Advanced Micro Devices, Inc.",
+      "amd-rdna3plus"
+    ],
+    [
+      "AMD Radeon RX 6800",
+      "Advanced Micro Devices, Inc.",
+      "amd-other"
+    ],
+    [
+      "Intel(R) Arc(TM) A770 Graphics",
+      "Intel Corporation",
+      "intel-arc"
+    ],
+    [
+      "Intel(R) UHD Graphics 620",
+      "Intel Corporation",
+      "intel-other"
+    ],
+    [
+      "Qualcomm(R) Adreno(TM) X1-85 GPU",
+      "Qualcomm",
+      "qualcomm"
+    ],
+    [
+      "Microsoft Basic Display Adapter",
+      "(Standard display types)",
+      "virtual"
+    ],
+    [
+      "Parallels Display Adapter (WDDM)",
+      "Parallels",
+      "virtual"
+    ],
+    [
+      "Matrox G200eR2",
+      "Matrox Graphics, Inc.",
+      "other"
+    ]
+  ]
+}

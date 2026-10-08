@@ -160,9 +160,7 @@ export function createGatewayServer(cfg) {
   // them let a cooled-down client fill the bounded tables with fresh credentials until its own entry was
   // evicted.
   function noteRefusal(ck, route) {
-    if (cooldown.remaining(ck.key) || cooldown.remaining(ck.peer)) return;
-    const started = cooldown.refused(ck.key);
-    if ((ck.cred && cooldown.refusedOnce(ck.peer, ck.cred)) || started) alertCooldown(route.server, cooldown.seconds);
+    if (cooldown.noteRefusal(ck)) alertCooldown(route.server, cooldown.seconds);
   }
 
   async function handle(req, res) {
@@ -327,6 +325,8 @@ function tooLargeReply(x) {
   return x.batch ? x.requestIds.map(one) : one(x.requestIds[0]);
 }
 const tooLargeTool = (x) => (!x.batch && x.requestIds.length === 1 ? x.toolOf(x.requestIds[0]) : "mcp");
+// A response forwarded unscanned to a POST that carried a tools/list: the listing went unjudged.
+const listUnjudged = (x) => { if (x.requestIds.some((id) => x.methodOf(id) === "tools/list")) x.guard.listingUnjudged(); };
 
 // One server → client message (C5 schema stage): report an invalid one; in enforce mode, an invalid
 // response to a tools/call is replaced by a tool error (a malformed result could otherwise carry text past
@@ -366,6 +366,7 @@ function onJson(ur, res, x) {
     chunks.push(c);
     if (!x.cap && n > CAPS.maxLineBytes) {
       streaming = true;
+      listUnjudged(x);
       reportOnce("MCP gateway: oversized response forwarded unscanned", "gateway:unscanned:size", "Info");
       res.writeHead(ur.statusCode, ur.statusMessage, respHeaders(ur));
       res.write(Buffer.concat(chunks));
@@ -376,7 +377,7 @@ function onJson(ur, res, x) {
     if (streaming || refused) return;
     const raw = Buffer.concat(chunks);
     let out = raw;
-    if (raw.length > CAPS.maxLineBytes) reportOnce("MCP gateway: oversized response forwarded unscanned", "gateway:unscanned:size", "Info");
+    if (raw.length > CAPS.maxLineBytes) { listUnjudged(x); reportOnce("MCP gateway: oversized response forwarded unscanned", "gateway:unscanned:size", "Info"); }
     else {
       try {
         const pb = parseBody(raw);
@@ -450,6 +451,7 @@ function onSse(ur, res, x) {
     }) : null,
     onEvent: (ev) => enqueue(async () => {
       if (ev.bytes > CAPS.maxLineBytes) {
+        listUnjudged(x);
         reportOnce("MCP gateway: oversized SSE event forwarded unscanned", "gateway:unscanned:sse-size", "Info");
         return write(ev.raw);
       }

@@ -15,7 +15,9 @@ import { AGENT_STATE_DETECTORS } from "./detectors-agent-state.js";
 import { ARTIFACT_DETECTORS } from "./detectors-artifacts.js";
 import { INSTRUCTION_LEAK_DETECTORS } from "./detectors-instruction-leak.js";
 import { TOOL_CREDPATH_DETECTORS } from "./detectors-tool-credpaths.js";
+import { poisoningDetectors } from "./detectors-poisoning.js";
 import { withRestart } from "../src/regex-restart.js";
+import { TAG_SMUGGLING, SUPPLEMENT_VS_SMUGGLING, BASIC_VS_SMUGGLING, BIDI_MARK_RUN, wellFormedSelectorSequence } from "./invisible-selectors.js";
 
 // ---------------------------------------------------------------------------------------------------
 // Content-free helpers for the additive detectors appended at the end of DETECTORS. All pure,
@@ -785,7 +787,9 @@ export const DETECTORS = [
       // scalars or one leading BOM never matches. Bidi is limited to the two OVERRIDES (Trojan Source);
       // plain RTL embeddings/isolates are legitimate and no longer flagged.
       /[\u200B-\u200D\u2060\uFEFF]{2,}/,
-      /[\u202D\u202E]/
+      /[\u202D\u202E]/,
+      // A dense run of direction marks / invisible operators (binary or padding); one or a few are ordinary.
+      BIDI_MARK_RUN
     ]
   },
   {
@@ -1029,18 +1033,24 @@ export const DETECTORS = [
   {
     // T1-3 / #50 (LLM08) - net-new invisible-text coverage beyond idx-invisible-text: Unicode Tag block
     // (ASCII smuggling), ANSI/OSC terminal escapes, and the variation-selector supplement (byte
-    // smuggling). Near-certainly malicious in prompts/files/output, so they flag on presence.
+    // smuggling), plus runs of two or more basic variation selectors FE00-FE0F. Flags on presence,
+    // EXCEPT the well-formed sequences ordinary text uses: the England/Scotland/Wales flags and one
+    // ideographic variation selector after a CJK ideograph (data/invisible-selectors.js; the patterns
+    // match those whole and refine drops them). A single basic selector never fires.
     // Content-free - matches the control chars themselves, never surrounding content.
     detectorId: "obf-invisible-instructions",
     threatId: 50,
     stages: ["prompt", "output"],
     mode: "warn",
-    hint: "Hidden/invisible text (Unicode tag block, ANSI escape, or variation-selector smuggling).",
+    hint: "Hidden/invisible text (Unicode tag block, ANSI escape, variation-selector smuggling, or a dense run of direction marks).",
     patterns: [
-      /[\u{E0000}-\u{E007F}]/u,
+      TAG_SMUGGLING,
       /\x1b[\[\]P^_]/,
-      /[\u{E0100}-\u{E01EF}]/u
-    ]
+      SUPPLEMENT_VS_SMUGGLING,
+      BASIC_VS_SMUGGLING,
+      BIDI_MARK_RUN
+    ],
+    refine: (m) => !wellFormedSelectorSequence(m)
   },
   {
     // T1-4 / #2 (LLM01) — direct jailbreak / persona-bypass phrasings, a curated high-precision subset
@@ -1261,11 +1271,18 @@ export const DETECTORS = [
     patterns: [
       /[​-‍⁠﻿]{2,}/,
       /[‭‮]/,
-      /[\u{E0000}-\u{E007F}]/u,
-      /[\u{E0100}-\u{E01EF}]/u,
+      TAG_SMUGGLING,
+      SUPPLEMENT_VS_SMUGGLING,
+      BASIC_VS_SMUGGLING,
+      BIDI_MARK_RUN,
       /\x1b[\[\]P^_]/,
-      /(?:\/\*|<!--|#|\/\/)\s{0,4}(?:system|assistant|instruction|prompt|directive|note\s+to\s+ai)\b[^\n]{0,80}?\b(?:ignore|exfiltrat\w*|send|forward|reveal|run|execute|read|secret|credential|leak)\b/i
-    ]
+      // `\s{1,16}` / `\w{0,24}` were `\s+` / `\w*`: the refine below sends every pattern through safeRegex,
+      // which skips (silently) a pattern with more than one unbounded quantifier.
+      /(?:\/\*|<!--|#|\/\/)\s{0,4}(?:system|assistant|instruction|prompt|directive|note\s{1,16}to\s{1,16}ai)\b[^\n]{0,80}?\b(?:ignore|exfiltrat\w{0,24}|send|forward|reveal|run|execute|read|secret|credential|leak)\b/i
+    ],
+    // Drops only the well-formed flag / variation sequences the tag and supplement patterns match whole
+    // (data/invisible-selectors.js); every other pattern's match passes.
+    refine: (m) => !wellFormedSelectorSequence(m)
   },
   {
     // NEW / #65 (LLM02) — credential-shaped egress heuristic. A high-entropy, credential-shaped token
@@ -1552,3 +1569,7 @@ export const DETECTORS = [
   ...INSTRUCTION_LEAK_DETECTORS,
   ...TOOL_CREDPATH_DETECTORS
 ];
+
+// #22 memory poisoning and #21 RAG poisoning reuse detectors from the array above, so they are appended
+// once it exists (data/detectors-poisoning.js).
+DETECTORS.push(...poisoningDetectors(DETECTORS));

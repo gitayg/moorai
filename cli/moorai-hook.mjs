@@ -25,6 +25,7 @@ import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesB
 import { readState, STATE_DIR } from "./state-dirs.mjs";
 import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
 import { isSkillSurface, skillSurfaceKind } from "../data/skill-surface.js";
+import { shellMemoryWrites } from "../data/poisoning-tells.js";
 import { skillIntents } from "./skill-analysis.mjs";
 import { extractHosts } from "../data/model-endpoints.js";
 import { registerInstructionFingerprints } from "./instruction-fingerprints.mjs";
@@ -1006,7 +1007,9 @@ async function runIndexScanWorker(projectDir) {
       const findings = [];
       // scanForIndex, NOT scan(text, "file"): this is the choke-point the engine documents for ingested
       // content, and routing through it is what makes the stage reachable rather than merely declared.
-      for (const f of engine.scanForIndex(text)) {
+      // ctx.targetPath: these are auto-loaded instruction / memory files, so a poisoned one raises #22
+      // (memory poisoning) and never #21, which is for knowledge-base content (data/detectors-poisoning.js).
+      for (const f of engine.scanForIndex(text, { targetPath: p })) {
         if (threatActionFor(policy, f.threat.id) === "disabled") continue;
         findings.push({ threatId: f.threat.id, category: f.threat.category, riskLevel: f.threat.riskLevel, match: f.match });
       }
@@ -2091,6 +2094,16 @@ async function main() {
     finds.push(...cmdD.findings);
     if (cmdD.kill) killIds.push(...cmdD.killIds);
     if (RANK[cmdD.decision] > RANK[dec]) { dec = cmdD.decision; reasons = cmdD.reasons; alts = cmdD.alternatives; }
+    // #22 — a shell write INTO a memory / auto-loaded instruction file (echo/printf >> CLAUDE.md, tee -a
+    // AGENTS.md, a heredoc into .cursorrules, Add-Content): the written text gets the verdict a Write of the
+    // same text to the same path gets, and only #22 is consulted (the command scan above already ran the
+    // rest of the catalogue over the same text). data/poisoning-tells.js shellMemoryWrites.
+    for (const w of shellMemoryWrites(shellText)) {
+      const md = decideText(engine, policy, w.text, "output", { ctx: { targetPath: agentPath(w.path, input.cwd) }, only: [22] });
+      finds.push(...md.findings);
+      if (md.kill) killIds.push(...md.killIds);
+      if (RANK[md.decision] > RANK[dec]) { dec = md.decision; reasons = md.reasons; alts = md.alternatives; }
+    }
     // The decoded scripts get the same command scan. Not maskable: the text is not in the input as written.
     for (const script of scripts) {
       const sd = decideText(engine, policy, script, "prompt", { ctx: { egress: cmdEgress } });

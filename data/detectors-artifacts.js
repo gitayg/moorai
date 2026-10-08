@@ -12,14 +12,22 @@ import { unsafeModelLoadHit } from "./model-load.js";
 import { modelCollectionHit } from "./model-collection.js";
 import { renderedExfilHit } from "./render-exfil.js";
 import { visuallyHiddenInstruction } from "./visual-hiding.js";
+import { selectorSmuggling } from "./invisible-selectors.js";
 
 // The engine keeps ONE finding per threat and the last "warn" detector to match wins it, so a detector
 // appended here that shares a threat with an older one would silently take over that finding — its id
 // and hint — whenever both match. The two that extend an existing threat therefore YIELD: they fire only
 // where the older detector for the same threat and stage is silent, so they add coverage and never
 // relabel it. The other three own their threats and share with no older detector.
-// obf-invisible-instructions' three patterns, restated: tag block, ANSI/OSC escape, variation selectors.
-const OLDER_INVISIBLE_OUTPUT = [/[\u{E0000}-\u{E007F}]/u, /\x1b[\[\]P^_]/, /[\u{E0100}-\u{E01EF}]/u];
+// Whether obf-invisible-instructions fires: an ANSI/OSC escape, or a tag / variation selector outside
+// the well-formed flag and variation sequences (data/invisible-selectors.js). Memoised on the last text:
+// the refine below runs once per zero-width run or override, and this scans the whole text.
+const ANSI_ESCAPE = /\x1b[\[\]P^_]/;
+let lastText = null, lastHit = false;
+function olderInvisibleOutput(text) {
+  if (text !== lastText) { lastText = text; lastHit = ANSI_ESCAPE.test(text) || selectorSmuggling(text); }
+  return lastHit;
+}
 
 export const ARTIFACT_DETECTORS = [
   {
@@ -74,7 +82,7 @@ export const ARTIFACT_DETECTORS = [
       /[\u200B-\u200D\u2060\uFEFF]{2,}/,
       /[\u202D\u202E]/
     ],
-    refine: (_m, text) => !OLDER_INVISIBLE_OUTPUT.some((r) => r.test(text)) && !visuallyHiddenInstruction(text)
+    refine: (_m, text) => !olderInvisibleOutput(text) && !visuallyHiddenInstruction(text)
   },
   {
     // AML.T0011.000 / #76 (LLM03) — a model file deserialized in a way that runs its code:

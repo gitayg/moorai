@@ -7,6 +7,8 @@
 //
 //   POST /v1/scan       { text, stage?, ctx? }     -> content-free verdict on one string
 //   POST /v1/tool-call  { tool, input, cwd? }      -> the decision the hook makes for that tool call
+//   POST /v1/index-scan { chunks, source? }        -> one content-free verdict per chunk about to be
+//                                                     embedded (allow / flag / deny), index stage
 //   GET  /healthz                                  -> { status, version, policyId }
 //
 // Responses never contain the submitted text: decision, threat ids, categories, the hook's reasons
@@ -31,7 +33,7 @@ import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { createMoorAI, STAGES } from "../packages/agent-sdk/src/runtime.mjs";
-import { inboundLib } from "../packages/agent-sdk/src/core.mjs";
+import { inboundLib, indexScanLib } from "../packages/agent-sdk/src/core.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({ host: "127.0.0.1", port: 8790, maxBody: 1048576, timeoutMs: 10000 });
@@ -138,7 +140,7 @@ export async function createServer(opts = {}) {
       const s = await rt.ready();
       return { status: "ok", version, policyId: s.policyId };
     }
-    if (path !== "/v1/scan" && path !== "/v1/tool-call") throw new HttpError(404, "not found");
+    if (path !== "/v1/scan" && path !== "/v1/tool-call" && path !== "/v1/index-scan") throw new HttpError(404, "not found");
     if (req.method !== "POST") throw new HttpError(405, "use POST");
     if (!authorized(req, o.token)) throw new HttpError(401, "missing or wrong bearer token");
     const body = await readJson(req, o.maxBody);
@@ -157,6 +159,20 @@ export async function createServer(opts = {}) {
       if (!STAGES.includes(stage)) throw new HttpError(400, `stage must be one of ${STAGES.join(", ")}`);
       const text = engineCtx.inbound === true ? inboundLib.inboundText(raw, MAX_TEXT) : raw;
       return withTimeout(rt.scan(text, stage, engineCtx, { tool: tool || "scan", event: "Scan", decoded: true }), o.timeoutMs);
+    }
+    if (path === "/v1/index-scan") {
+      // Chunks an application is about to embed (cli/index-scan.mjs). Strings, or objects whose string
+      // values are scanned (a LangChain Document's pageContent and metadata). The verdicts carry indexes,
+      // never chunk text; `source` only ever leaves as a keyed hash.
+      const { chunks, source } = body;
+      if (!Array.isArray(chunks)) throw new HttpError(400, "chunks must be an array");
+      if (chunks.length > indexScanLib.INDEX_MAX_CHUNKS) throw new HttpError(413, `at most ${indexScanLib.INDEX_MAX_CHUNKS} chunks`);
+      for (const c of chunks) {
+        if (typeof c === "string") { if (c.length > MAX_TEXT) throw new HttpError(413, "chunk too long"); }
+        else if (!c || typeof c !== "object") throw new HttpError(400, "each chunk must be a string or an object");
+      }
+      if (source != null && (typeof source !== "string" || source.length > 1024)) throw new HttpError(400, "source must be a string of at most 1024 characters");
+      return withTimeout(rt.scanForIndex(chunks, { source }), o.timeoutMs);
     }
     if (typeof body.tool !== "string" || !body.tool || body.tool.length > 256) throw new HttpError(400, "tool must be a non-empty string");
     if (body.input != null && (typeof body.input !== "object" || Array.isArray(body.input))) throw new HttpError(400, "input must be an object");

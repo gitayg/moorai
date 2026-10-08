@@ -320,6 +320,7 @@ mod tests {
         fs::create_dir_all(h.0.join(".moorai")).unwrap();
         fs::write(h.0.join(".moorai/config.json"), format!(r#"{{"tenant":"t","installToken":"{TOKEN}"}}"#)).unwrap();
         fs::write(h.0.join(".claude.json"), r#"{"mcpServers":{"local-http":{"type":"http","url":"http://localhost:3333/mcp?token=SECRETMCPTOKEN"}}}"#).unwrap();
+        let _g = crate::console_binding::TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
         let prev = std::env::var(var).ok();
         std::env::set_var(var, &home);
@@ -331,6 +332,12 @@ mod tests {
         let want = hash_with_key(derive_key(TOKEN).as_ref(), &k("anthropic"));
         assert!(keys.iter().any(|x| x["provider"] == "Anthropic" && x["locationClass"] == "shell-rc" && x["location"] == "~/.zshrc" && x["keyHash"] == want.as_str()), "{json}");
         assert!(report["localRuntimes"].is_array(), "localRuntimes array");
+        // local-AI inventory (local_ai.rs): the additive fields ride the same report
+        assert!(report["localRuntimesInstalled"].is_array(), "localRuntimesInstalled array: {json}");
+        for k in ["runningLocalRuntimes", "networkLocalRuntimes", "installedLocalRuntimes"] { assert!(report["summary"][k].is_u64(), "summary.{k}: {json}"); }
+        assert_eq!(report["summary"]["installedLocalRuntimes"].as_u64(), Some(report["localRuntimesInstalled"].as_array().unwrap().len() as u64));
+        assert!(report["localRuntimes"].as_array().unwrap().iter().all(|r| r.get("listening").is_some()), "every running runtime carries listening");
+        if !cfg!(windows) { assert!(report.get("windowsAi").is_none() && report.get("agentConnectors").is_none(), "Windows-only blocks absent elsewhere"); }
         let mcp = report["localMcpListeners"].as_array().expect("localMcpListeners array");
         assert_eq!(mcp[0]["name"], "local-http");
         assert_eq!(mcp[0]["port"], 3333);

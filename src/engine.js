@@ -55,7 +55,13 @@ export class DetectionEngine {
   // AUTO-LOADED SKILL SURFACE (CLAUDE.md, AGENTS.md, .mcp.json, .claude/settings.json, .cursorrules —
   // see data/skill-surface.js, "instruction / memory files loaded into context at session start").
   // Those files enter the model at session start with no tool call, so no other stage ever saw them.
-  scanForIndex(text) { return this.scan(text, "index"); }
+  // It is also the embedding-pipeline choke-point it was written as, for pipelines that call MoorAI:
+  // cli/index-scan.mjs routes @moorai/agent-sdk scanBeforeEmbed / guardEmbed, moorai-serve's
+  // POST /v1/index-scan and MCP vector-store writes (cli/index-tools.mjs) through it.
+  // `ctx` is optional and handed to refine() like scan()'s: the hook's ingest worker passes
+  // { targetPath } so a skill-surface file read at session start is judged as memory (#22) rather than
+  // as a knowledge-base document (#21). Embedding pipelines pass nothing.
+  scanForIndex(text, ctx) { return this.scan(text, "index", ctx); }
 
   // #21 — optional, policy-gated semantic escalation. Regex/entropy above stays the fast path and OWNS
   // enforcement; this awaits a bounded, fail-open second opinion from an on-device model ONLY when the

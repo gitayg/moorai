@@ -1,0 +1,212 @@
+{
+  "_note": "Shared by cli/listen-sockets.mjs (test/local-ai-shared-fixtures.test.mjs) and src-tauri/src/listen_sockets.rs. Captured-shape samples; netstat lines are joined with CRLF by both tests.",
+  "bind": {
+    "loopback": [
+      "127.0.0.1",
+      "127.1.2.3",
+      "[::1]",
+      "::1",
+      "::ffff:127.0.0.1",
+      "[::ffff:127.0.0.1]",
+      "127.0.0.53%lo",
+      "localhost",
+      "[fe80::1%lo0]"
+    ],
+    "network": [
+      "*",
+      "0.0.0.0",
+      "[::]",
+      "::",
+      "192.168.1.20",
+      "[fe80::1%en0]",
+      "10.0.0.5"
+    ]
+  },
+  "lsof": [
+    "COMMAND                       PID       USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME",
+    "ollama                       2463 dev    4u  IPv4 0x544abbf993f4877f      0t0  TCP 127.0.0.1:11434 (LISTEN)",
+    "llama-server                 7100 dev    3u  IPv4 0x0000000000000002      0t0  TCP *:8080 (LISTEN)",
+    "Jan                          7300 dev    9u  IPv6 0x0000000000000003      0t0  TCP [::1]:1337 (LISTEN)",
+    "koboldcpp-mac-a              7400 dev    5u  IPv4 0x0000000000000004      0t0  TCP 192.168.1.20:5001 (LISTEN)",
+    "Qwen3.5-0.8B-Q8_             7500 dev    6u  IPv4 0x0000000000000005      0t0  TCP 127.0.0.1:8080 (LISTEN)",
+    "LM\\x20Studio                 7001 dev   40u  IPv4 0x0000000000000001      0t0  TCP 127.0.0.1:1234 (LISTEN)",
+    "ollama                       2463 dev    5u  IPv4 0x0000000000000006      0t0  TCP 127.0.0.1:50000->127.0.0.1:11434 (ESTABLISHED)",
+    ""
+  ],
+  "ss": [
+    "State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process",
+    "LISTEN 0      4096       127.0.0.1:11434      0.0.0.0:*    users:((\"ollama\",pid=812,fd=3))",
+    "LISTEN 0      511          0.0.0.0:8080       0.0.0.0:*    users:((\"llama-server\",pid=900,fd=7))",
+    "LISTEN 0      128             [::]:8000          [::]:*    users:((\"vllm\",pid=901,fd=12))",
+    "LISTEN 0      128   [::ffff:127.0.0.1]:1234        *:*    users:((\"lms\",pid=902,fd=4))",
+    "LISTEN 0      4096   127.0.0.53%lo:53         0.0.0.0:*",
+    "LISTEN 0      4096               *:12434            *:*",
+    "ESTAB  0      0          127.0.0.1:41000  127.0.0.1:11434 users:((\"curl\",pid=5,fd=3))",
+    ""
+  ],
+  "procTcp": [
+    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
+    "   0: 0100007F:2CAA 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 11111 1",
+    "   1: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 22222 1",
+    "   2: 0100007F:A028 0100007F:2CAA 01 00000000:00000000 00:00000000 00000000  1000        0 33333 1",
+    ""
+  ],
+  "procTcp6": [
+    "  sl  local_address                         remote_address                        st",
+    "   0: 00000000000000000000000001000000:0539 00000000000000000000000000000000:0000 0A 00000000:00000000",
+    "   1: 00000000000000000000000000000000:1F40 00000000000000000000000000000000:0000 0A 00000000:00000000",
+    "   2: 0000000000000000FFFF00000100007F:131B 00000000000000000000000000000000:0000 0A 00000000:00000000",
+    ""
+  ],
+  "netstat": [
+    "",
+    "Active Connections",
+    "",
+    "  Proto  Local Address          Foreign Address        State           PID",
+    "  TCP    127.0.0.1:11434        0.0.0.0:0              LISTENING       4100",
+    "  TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       4200",
+    "  TCP    [::1]:1234             [::]:0                 ABHÖREN         4300",
+    "  TCP    [::]:4891              [::]:0                 LISTENING       4400",
+    "  TCP    127.0.0.1:50000        127.0.0.1:11434        ESTABLISHED     9999",
+    "  UDP    0.0.0.0:5353           *:*                                    4500",
+    ""
+  ],
+  "expect": {
+    "lsof": [
+      {
+        "pid": "2463",
+        "proc": "ollama",
+        "port": 11434,
+        "bind": "loopback"
+      },
+      {
+        "pid": "7100",
+        "proc": "llama-server",
+        "port": 8080,
+        "bind": "network"
+      },
+      {
+        "pid": "7300",
+        "proc": "jan",
+        "port": 1337,
+        "bind": "loopback"
+      },
+      {
+        "pid": "7400",
+        "proc": "koboldcpp-mac-a",
+        "port": 5001,
+        "bind": "network"
+      },
+      {
+        "pid": "7500",
+        "proc": "qwen3.5-0.8b-q8_",
+        "port": 8080,
+        "bind": "loopback"
+      },
+      {
+        "pid": "7001",
+        "proc": "lm studio",
+        "port": 1234,
+        "bind": "loopback"
+      }
+    ],
+    "ss": [
+      {
+        "pid": "812",
+        "proc": "ollama",
+        "port": 11434,
+        "bind": "loopback"
+      },
+      {
+        "pid": "900",
+        "proc": "llama-server",
+        "port": 8080,
+        "bind": "network"
+      },
+      {
+        "pid": "901",
+        "proc": "vllm",
+        "port": 8000,
+        "bind": "network"
+      },
+      {
+        "pid": "902",
+        "proc": "lms",
+        "port": 1234,
+        "bind": "loopback"
+      },
+      {
+        "pid": null,
+        "proc": "",
+        "port": 53,
+        "bind": "loopback"
+      },
+      {
+        "pid": null,
+        "proc": "",
+        "port": 12434,
+        "bind": "network"
+      }
+    ],
+    "procTcp": [
+      {
+        "pid": null,
+        "proc": "",
+        "port": 11434,
+        "bind": "loopback"
+      },
+      {
+        "pid": null,
+        "proc": "",
+        "port": 8080,
+        "bind": "network"
+      }
+    ],
+    "procTcp6": [
+      {
+        "pid": null,
+        "proc": "",
+        "port": 1337,
+        "bind": "loopback"
+      },
+      {
+        "pid": null,
+        "proc": "",
+        "port": 8000,
+        "bind": "network"
+      },
+      {
+        "pid": null,
+        "proc": "",
+        "port": 4891,
+        "bind": "loopback"
+      }
+    ],
+    "netstat": [
+      {
+        "pid": "4100",
+        "proc": "",
+        "port": 11434,
+        "bind": "loopback"
+      },
+      {
+        "pid": "4200",
+        "proc": "",
+        "port": 8080,
+        "bind": "network"
+      },
+      {
+        "pid": "4300",
+        "proc": "",
+        "port": 1234,
+        "bind": "loopback"
+      },
+      {
+        "pid": "4400",
+        "proc": "",
+        "port": 4891,
+        "bind": "network"
+      }
+    ]
+  }
+}

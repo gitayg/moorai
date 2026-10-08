@@ -151,9 +151,11 @@ test("DetectionEngine.scanForIndex is the choke-point and covers the corpus inde
   const scoped = DETECTORS.filter((d) => (d.stages || [d.stage]).includes("index")).map((d) => d.detectorId);
   // ingest-agent-directed (#40) and hidden-zero-width-interleave (#50) joined in v1.4.0: an instruction
   // addressed to the agent and a word-by-word zero-width interleave are inbound shapes a rules file carries.
+  // memory-poisoning (#22) and rag-poisoning (#21) joined in v1.6.0 (data/detectors-poisoning.js): a memory
+  // file read at session start, and content headed into a knowledge base, are what those two threats name.
   assert.deepEqual(scoped.sort(), [
     "cloak-ai-audience", "hidden-zero-width-interleave", "ingest-agent-directed", "inj-self-replication", "inj-untrusted-directive", "link-assistant-prefill",
-    "mcp-hidden-canary", "mcp-tool-poisoning", "obf-rendered-hidden", "recon-agent-capabilities"
+    "mcp-hidden-canary", "mcp-tool-poisoning", "memory-poisoning", "obf-rendered-hidden", "rag-poisoning", "recon-agent-capabilities"
   ]);
 });
 

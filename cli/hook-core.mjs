@@ -16,6 +16,7 @@ import os from "node:os";
 import { DETECTORS, CLIPBOARD_READ, OUTBOUND_UPLOAD } from "../data/detectors.js";
 import { agentStateWriteProbe } from "../data/agent-state-paths.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
+import { effectiveContentPolicy } from "../data/content-defaults.js";
 import { extractEndpointHosts, endpointApproved, extractTransitOverrides, proxyApproved } from "../data/model-endpoints.js";
 import { statePath, latchPath, breadcrumbPath } from "./state-dirs.mjs";
 import { TIER_OF } from "../data/data-tiers.js";
@@ -209,7 +210,8 @@ export function decideText(engine, policy, text, stage, opts = {}) {
   }
   out.alternatives = orderedAlternatives(driving, text);
   if (opts.only) return out;
-  const cp = policy?.contentPolicy || {};
+  // The built-in NSFW default (notify) under the org's explicit entries — data/content-defaults.js.
+  const cp = effectiveContentPolicy(policy);
   const enabled = Object.keys(cp).filter((id) => cp[id] && cp[id] !== "disabled");
   if (enabled.length) for (const c of engine.scanContent(text, enabled)) {
     const act = cp[c.ruleId] || "disabled";

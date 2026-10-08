@@ -42,12 +42,18 @@
 //     "unrestricted"; sandbox.mode — documented key, values not documented ("disabled" is what the CLI
 //     writes; observed on disk). Hooks: ~/.cursor/hooks.json, <project>/.cursor/hooks.json.
 //   GitHub Copilot CLI: hook registration only; no weakening setting is read.
+//
+// CONTAINMENT (Windows only, cli/mxc-detect.mjs): on win32 each Claude Code, Codex and Copilot entry
+// also carries `containment: { kind, scope, source }` (is the agent's command execution inside a
+// Microsoft Execution Container), and the report carries the device's `mxcCapable`. Other platforms
+// get neither field: there the sandbox story is the existing sandboxOff / sandboxFullAccess flags.
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import { hostTable, readJson, checkHost, checkManaged, readManagedSettings, diffSurface } from "./doctor-hosts.mjs";
 import { hostVersion } from "./agent-hooks/host-version.mjs";
+import { hostContainment, mxcCapable } from "./mxc-detect.mjs";
 
 export const POSTURE_VERSION = 1;
 // Every flag the module can emit. The console accepts only these names.
@@ -212,7 +218,11 @@ const SETTINGS = { "claude-code": claudeFlags, codex: codexFlags, gemini: gemini
 // `permissionMode` that hook's permission_mode (Claude Code only).
 // `versions` turns on host-version detection (env for the caller, then a cached PATH probe that may run
 // `<bin> --version` once); `stateDir` holds that cache.
-export function agentPosture({ home = os.homedir(), env = process.env, cwd = null, caller = "", permissionMode = "", managedSources, systemFiles = {}, hookCheck = true, versions = true, stateDir = join(home, ".moorai") } = {}) {
+// `containment` turns on MXC detection on win32 (`platform`, `release` and `readUbr` are injectable for
+// tests); the registry read behind mxcCapable is cached in `stateDir`.
+export function agentPosture({ home = os.homedir(), env = process.env, cwd = null, caller = "", permissionMode = "", managedSources, systemFiles = {}, hookCheck = true, versions = true, stateDir = join(home, ".moorai"),
+  containment = true, platform = process.platform, release = os.release(), readUbr } = {}) {
+  const win = containment && platform === "win32";
   const sources = managedSources ?? readManagedSettings();
   const managed = checkManaged(sources);
   const hosts = [];
@@ -227,9 +237,12 @@ export function agentPosture({ home = os.homedir(), env = process.env, cwd = nul
     if (!present && !last) continue; // host not on this device
     let v = { version: null, tested: false };
     if (versions) { try { v = hostVersion(h.id, { caller, env, stateDir }); } catch { /* report-only: unknown */ } }
-    hosts.push({ host: h.id, present, hook, lastActive: last, flags, version: v.version, tested: v.tested });
+    const entry = { host: h.id, present, hook, lastActive: last, flags, version: v.version, tested: v.tested };
+    if (win) { const c = hostContainment(h.id, { home, env, cwd }); if (c) entry.containment = c; }
+    hosts.push(entry);
   }
-  return { v: POSTURE_VERSION, hosts };
+  if (!win) return { v: POSTURE_VERSION, hosts };
+  return { v: POSTURE_VERSION, hosts, mxcCapable: mxcCapable({ release, stateDir, ...(readUbr ? { readUbr } : {}) }) };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

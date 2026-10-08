@@ -17,7 +17,7 @@
 //   * enforcement without a token — server mode is management evidence; this surface never coaches.
 import { readFileSync } from "node:fs";
 import os from "node:os";
-import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib } from "./core.mjs";
+import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib } from "./core.mjs";
 import { decideToolCall } from "./decide.mjs";
 import { createReporter } from "./report.mjs";
 
@@ -27,6 +27,7 @@ const { hashWithKey, deriveKey } = contentHashLib;
 const { policyIdOf, REASON } = provenance;
 const { OFFLINE_DEFAULT_POLICY } = offlineDefault;
 const { decideInbound, surfaceOf, inboundText } = inboundLib;
+const { decideIndexChunk, indexScanAction, INDEX_MAX_CHUNKS } = indexScanLib;
 
 // The hook's NO_POLICY_BASELINE, byte for byte: no threat configuration, so threatActionFor falls through
 // to BUILTIN_DEFAULT_ACTIONS (cli/moorai-hook.mjs explains why this differs from the offline default).
@@ -154,5 +155,28 @@ export async function createMoorAI(options = {}) {
     return { decision: st.decision, configuredDecision: v.decision, ...summary(v.findings), reasons: v.decision === "allow" ? [] : [st.reason], alternatives: v.alternatives, kill: v.kill, message, findings: contentFree(v.findings), evaluated: v.evaluated, notEvaluated: v.notEvaluated, ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };
   }
 
-  return { identity, config: { serverUrl: config.serverUrl, tenant: config.tenant, enrolled: reporter.enrolled }, settings: { serviceId: sm.serviceId, serviceIdSource: options.serviceId ? "options" : sm.serviceIdSource, headless: sm.headless, passThrough: settings.passThrough }, ready, scan, toolCall, flush: () => reporter.flush(), reporter, hash, RANK };
+  // The index stage (cli/index-scan.mjs): chunks an application is about to embed, one verdict each —
+  // "allow" (no finding), "flag" (reported, kept) or "deny" (policy.indexScanAction "block" and an
+  // instruction-carrying or blocked threat). Report-first: no policy, no deny. Never settled by the
+  // headless rule — nothing here asks. Content-free: one alert per finding (threat, category, risk,
+  // stage "index", a keyed hash of the matched span, and a keyed hash of `source` — never the source
+  // name itself, which is often a path or a URL). The verdicts never carry chunk text.
+  async function scanForIndex(chunks, { source } = {}) {
+    if (!Array.isArray(chunks)) throw new TypeError("chunks must be an array");
+    if (chunks.length > INDEX_MAX_CHUNKS) throw new RangeError(`at most ${INDEX_MAX_CHUNKS} chunks per call`);
+    const s = await ready();
+    const sourceHash = typeof source === "string" && source ? hash(`index-source:${source}`) : undefined;
+    const results = [], allowed = [], flagged = [], denied = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const r = decideIndexChunk(s.engine, s.policy, chunks[i]);
+      for (const f of r.findings) {
+        reporter.post({ threatId: f.threatId, category: f.category, riskLevel: r.verdict === "deny" ? "Blocked" : f.riskLevel, stage: "index", tool: "index:embed", decision: r.verdict === "deny" ? "deny" : "notify", contentHash: hash(f.match || ""), ...(sourceHash ? { indexSource: sourceHash } : {}) }, { prov: prov(s, "IndexScan") });
+      }
+      (r.verdict === "deny" ? denied : r.verdict === "flag" ? flagged : allowed).push(i);
+      results.push({ index: i, verdict: r.verdict, ...summary(r.findings), reasons: r.reasons, findings: contentFree(r.findings) });
+    }
+    return { action: indexScanAction(s.policy), policyId: s.policyId, results, allowed, flagged, denied };
+  }
+
+  return { identity, config: { serverUrl: config.serverUrl, tenant: config.tenant, enrolled: reporter.enrolled }, settings: { serviceId: sm.serviceId, serviceIdSource: options.serviceId ? "options" : sm.serviceIdSource, headless: sm.headless, passThrough: settings.passThrough }, ready, scan, toolCall, scanForIndex, flush: () => reporter.flush(), reporter, hash, RANK };
 }

@@ -441,7 +441,7 @@
       "category": "Data & Knowledge",
       "threat": "Knowledge-base poisoning / RAG Poisoning",
       "example": "A SharePoint or Drive file looks innocent but contains misleading information or malicious instructions the AI will later retrieve.",
-      "response": "Do not rely on an AI answer without checking the source. If the source is new, unfamiliar, or unofficial, do not use the answer and report it.",
+      "response": "MoorAI scans content headed into a knowledge base or index before it is embedded and flags passages that address the AI, tell it to ignore other sources, force an answer or carry hidden instructions. Do not rely on an AI answer without checking the source. If the source is new, unfamiliar, or unofficial, do not use the answer and report it.",
       "saferAlternative": "Ask the AI to cite its sources, and use only answers backed by official, verified documents.",
       "severity": 5,
       "likelihood": 3,
@@ -460,7 +460,7 @@
       "category": "Data & Knowledge",
       "threat": "Memory Poisoning",
       "example": "Saving incorrect details, unapproved instructions, or externally-sourced information into an AI tool's memory.",
-      "response": "Do not store organizational or personal information in AI memory without approval. Review what the tool remembers and delete incorrect or sensitive information.",
+      "response": "MoorAI flags an agent writing instructions into its own memory or auto-loaded instruction files (CLAUDE.md, AGENTS.md, rules, skills) when they would send data out, hide something from you, skip a check, or override its rules in future sessions. Do not store organizational or personal information in AI memory without approval. Review what the tool remembers and delete incorrect or sensitive information.",
       "saferAlternative": "Keep this out of AI memory: paste the context per conversation, and review saved memories regularly.",
       "severity": 4,
       "likelihood": 3,
@@ -473,7 +473,7 @@
       "owasp": "LLM04",
       "atlas": "AML.T0080",
       "atlasPartial": {
-        "AML.T0080": "guidance only — no memory read or diff"
+        "AML.T0080": "instructions an agent writes into its own memory and instruction files, through its file tools or a shell redirect; memory held on a provider's servers is not read"
       },
       "stride": "Tampering"
     },
@@ -1275,7 +1275,7 @@
       "category": "Data Exposure",
       "threat": "Transit interception (proxy / CA environment injection)",
       "example": "An attacker with no special privileges sets HTTPS_PROXY and NODE_EXTRA_CA_CERTS (or SSL_CERT_FILE / REQUESTS_CA_BUNDLE) on the agent process. The destination is unchanged — the agent still connects to its approved provider — but every request now transits an interceptor that reads the prompt, the generated code, and the API key in cleartext. Because the injected CA makes the forged certificate legitimately trusted, the client reports the connection as verified and nothing appears wrong.",
-      "response": "Treat proxy and CA-trust environment overrides as egress-affecting configuration, not developer convenience. MoorAI reports any proxy or CA override on an agent launch and denies an unsanctioned proxy when an allow-list is configured (policy.transitAllow) — host and variable NAME only, content-free. Distinct from #63, which checks the destination and passes this by design.",
+      "response": "Treat proxy and CA-trust environment overrides as egress-affecting configuration, not developer convenience. MoorAI's decision function for this (decideTransit) is built and tested but not yet wired into a shipped hook, so MoorAI does not report proxy or CA overrides today; when wired it reports by host and variable NAME only, content-free, and denies an unsanctioned proxy when policy.transitAllow is set. Distinct from #63, which checks the destination and passes this by design.",
       "saferAlternative": "Use the organization's sanctioned proxy, or ask IT to add this proxy to the approved list.",
       "severity": 5,
       "likelihood": 3,
@@ -1290,7 +1290,7 @@
         "AML.T0081"
       ],
       "atlasPartial": {
-        "AML.T0081": "proxy and CA-trust overrides only"
+        "AML.T0081": "not wired: decideTransit is built and tested but no shipped hook calls it"
       },
       "stride": "Information Disclosure"
     },

@@ -56,14 +56,14 @@ _wantStages(stage) { return (stage === "file" || stage === "index") ? ["prompt",
 ```
 
 Counts below were produced by running `_wantStages` / `_inStage` over the shipped `DETECTORS` array
-(re-run for v1.4.0, node v22.22.0):
+(re-run for v1.6.0, node v22.22.0):
 
 | Stage | Detectors it runs | Fed in production by |
 |---|--:|---|
 | `prompt` | 71 | `cli/moorai-hook.mjs`: the `Bash` / `PowerShell` **command** itself, the `Task` delegated prompt, the `WebFetch` url + prompt; `mcpGateway`'s argument scan; `cli/moorai-guard.mjs`; the Tauri app (`src/app.js`) |
 | `file` | 79 (71 prompt + 8) | `cli/moorai-hook.mjs` on `Read`, on an event-triggered or server-mode `UserPromptSubmit` prompt (`cli/prompt-scan.mjs`, §6), on every path `extractReadPaths` finds in a `Bash` or `PowerShell` command, and on every local file an `mcp__*` call's arguments name (`cli/mcp-file-args.mjs`, §6); `mcp-proxy/moorai-mcp-guard.mjs` on every `tools/call` **result** and on every local file a `tools/call`'s arguments name (§8) |
-| `output` | 62 | `cli/moorai-hook.mjs` on the write family (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`) and on `PostToolUse` results (`WebFetch`, `WebSearch`, `Bash`, `PowerShell`, `Agent`/`Task`, `mcp__*`; §6, §7); `cli/moorai-guard.mjs`; `src/app.js` |
-| `index` | 79 (71 prompt + 8) | the detached `moorai-hook.mjs indexscan` worker, over the agent's auto-loaded context files |
+| `output` | 63 | `cli/moorai-hook.mjs` on the write family (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`) and on `PostToolUse` results (`WebFetch`, `WebSearch`, `Bash`, `PowerShell`, `Agent`/`Task`, `mcp__*`; §6, §7); `cli/moorai-guard.mjs`; `src/app.js` |
+| `index` | 81 (71 prompt + 10) | the detached `moorai-hook.mjs indexscan` worker, over the agent's auto-loaded context files; chunks an app is about to embed, through `@moorai/agent-sdk` `scanBeforeEmbed` / `guardEmbed` and `moorai-serve` `POST /v1/index-scan`; MCP vector-store write arguments in the stdio proxy and the gateway (`cli/index-scan.mjs`, `cli/index-tools.mjs`; report-first, `policy.indexScanAction`) |
 | `tool` | 5 | `mcp-proxy/moorai-mcp-guard.mjs`, on a copy of every `tools/list` response |
 | `session` | 1 | **no enforcement caller** — see below |
 
@@ -78,8 +78,9 @@ arguments, a `Bash` command that uploads or names a host, a file an uploading co
 file named in the arguments of an MCP tool whose name sends),
 `inbound: true` on ingested content (the hook's `PostToolUse`, the MCP proxy's and the HTTP gateway's
 `tools/call` results, the SDK's `PostToolUse`, `moorai-serve`'s `/v1/scan` with `ctx.inbound`, the model
-proxy's tool results), and `targetPath` on the write family. Only the `instr-leak-*` detectors (§6) read
-the last three. Content scanned with `inbound: true` is resolved by `cli/inbound.mjs` rather than by
+proxy's tool results), and `targetPath` on the write family, on a `Bash` / `PowerShell` write into a memory
+file, and on the `index` worker's auto-loaded files. Only the `instr-leak-*` detectors (§6) and the two
+poisoning detectors (`memory-poisoning`, `rag-poisoning`, below) read the last three. Content scanned with `inbound: true` is resolved by `cli/inbound.mjs` rather than by
 `decideText` alone (§7).
 
 **Non-English overrides on the inbound stages.** Because `file` and `index` inherit every `prompt`
@@ -218,20 +219,59 @@ then runs a bounded-Levenshtein fuzzy match against 4-token phrase templates and
 `egress-credential-shaped`'s first pattern is a bare `curl|wget|…` alternation; its decision is
 `credentialShapedEgress()`, which requires an outbound sink **and** a Shannon-entropy-qualified,
 credential-shaped token in a sink-bearing position, with UUIDs, git SHAs, SHA-256 digests, ISO
-timestamps and placeholder words explicitly excluded. Twenty-eight detectors ship a `refine`:
+timestamps and placeholder words explicitly excluded. Thirty-two detectors ship a `refine`:
 `secret-generic-assignment`, `secret-aws-secret`, `secret-named-assignment`, `dep-typosquat`, `code-tainted-flow`,
 `egress-credential-shaped`, `inj-perturbed`, `inj-override-structural`, `inj-prefix-forcing`,
 `inj-persona-bypass`, `persuasion-jailbreak`, `obf-deliberate-obscurity`, the five ATLAS v2026.09
 detectors in §14 (`link-assistant-prefill`, `recon-agent-capabilities`, `cloak-ai-audience`,
 `obf-rendered-hidden`, `egress-rendered-image`), the seven added with them (`agent-history-tamper`,
 `inj-self-replication`, `egress-rendered-extended`, `out-link-deceptive`, `obf-invisible-output`,
-`model-unsafe-load`, `model-artifact-collection`), the three `instr-leak-*` detectors (§6) and
-`mcp-tool-cred-path` (§8). The five
+`model-unsafe-load`, `model-artifact-collection`), the three `instr-leak-*` detectors (§6),
+`mcp-tool-cred-path` (§8), `ingest-agent-directed`, `hidden-zero-width-interleave`, and the two
+invisible-code-point detectors `obf-invisible-instructions` and `mcp-hidden-canary` (below). The five
 ATLAS detectors memoise their predicate on the last text, as `obf-deliberate-obscurity` does, because
 their prefilters are broad enough to match many times in one document and `_matchDetector` re-invokes
 `refine` per occurrence. The `instr-leak-*` fingerprint detectors and `mcp-tool-cred-path` avoid the same
 cost differently: their only pattern is an anchored single-character match, so `refine` runs once per
 text.
+
+**Flags and variation sequences are not smuggling (v1.6).** `obf-invisible-instructions` and
+`mcp-hidden-canary` used to fire on any Unicode tag character or supplement variation selector. That
+flagged the England, Scotland and Wales flags (U+1F3F4, tag letters, U+E007F), 45 of 21,061 Bluesky
+profiles against 0 real tag-smuggling cases, and Japanese names written with an ideographic variation
+selector. The basic selectors U+FE00-FE0F were not screened at all. The tag and supplement patterns in
+`data/invisible-selectors.js` now match the well-formed sequence whole before the bare code point: an
+RGI subdivision flag (only `gbeng`, `gbsct`, `gbwls`: any other tag sequence renders as a bare black
+flag, so a flag wrapper alone would hide any text), or one U+E0100-E01EF selector after a unified
+ideograph. The shared `refine` drops those whole matches and passes every other match, so ANSI escapes,
+zero-width runs, comment smuggling, runs of supplement selectors and a supplement selector after a
+non-ideograph still fire. Basic selectors U+FE00-FE0F fire only as a run of two or more in a row: on
+104,336 real GitHub fields a lone or misordered U+FE0F (a `####` heading with U+FE0F before its emoji,
+a streamed `{'text': '<U+FE0F>'}` chunk) was common benign noise, so a single one never fires, whatever
+its base, and a run fires only when it holds at least one of U+FE00-FE0D: a run made only of the
+presentation selectors U+FE0E / U+FE0F carries no bytes, and on the MCP / npm scan (178,058 records) an
+anchor slug generated from an emoji heading left two U+FE0F in a row (`@ibm/ibmi-mcp-server`'s README,
+`(#<U+FE0F><U+FE0F>-mcp-inspector)`). The patterns have no lookaround and no unbounded quantifier, and
+`refine` reads only its match, so the cost is linear (`test/invisible-selector-sequences.test.mjs`).
+
+**Dense runs of direction marks and invisible operators (v1.6).** A binary payload written in U+200E /
+U+200F (LRM / RLM), the invisible operators U+2061-2064, or the bidi embeddings and isolates U+202A-202C /
+U+2066-2069 raised nothing on any stage: `idx-invisible-text` and `mcp-hidden-canary` screened only
+U+200B-200D, U+2060, U+FEFF and the overrides U+202D/202E. `BIDI_MARK_RUN` (`data/invisible-selectors.js`)
+fires on eight of these marks, each within three code points of the next, and is in `idx-invisible-text`
+(prompt, so file and index), `mcp-hidden-canary` (tool, file, index) and `obf-invisible-instructions`
+(output). Real text uses them singly or in short runs (a Windows "Installed on <LRM>3/<LRM>5/<LRM>2026", an
+RLM after a Latin handle in RTL text, MathML's invisible times): on 8,552,013 MCP-registry fields and
+104,336 GitHub fields no benign field holds more than 3 within 64 code points, and the pattern matches none
+of the repository's benign corpora or 213,089 local files. Before / after on those two caches: 8 → 8 MCP
+fields and 8 → 8 GitHub fields alerted; the `@ibm/ibmi-mcp-server` slug left, and the one Smithery
+description that hides a keyword list behind 910 U+200E (`AgentOps-AI/agentops-mcp`) joined. The synthetic
+LRM/RLM, U+2062/2063 and U+202A/202C controls went from 0/15 to 15/15 each at both the tool and prompt
+stages (`test/invisible-mark-runs.test.mjs`). The gap class excludes the marks, so the pattern is
+deterministic and linear. The refine also put
+`mcp-hidden-canary`'s comment pattern through `safeRegex`, so its `\s+` and `\w*` are now bounded
+(`\s{1,16}`, `\w{0,24}`); without that the guard would have skipped the pattern silently.
+`obf-invisible-output` yields through the same check (`selectorSmuggling`), memoised per text.
 
 `persuasion-jailbreak` scores text with standard MIT, ISC, BSD and Apache-2.0 licence spans removed
 first (`data/license-boilerplate.js`). A span is removed only from the licence's own opening phrase to
@@ -429,6 +469,56 @@ Anything else under #55 (`.pgpass`, `.netrc`, `/etc/shadow`, the keychain) gets 
 let the tool that owns the credential load it, and check the active identity with that tool's command.
 The scanned text only chooses among these fixed lines; none of it is copied into the message.
 
+**Memory poisoning (#22) and knowledge-base / RAG poisoning (#21).** Both were guidance-only rules until
+v1.6.0; `data/detectors-poisoning.js` makes them detectors, with the phrasing in `data/poisoning-tells.js`.
+
+- `memory-poisoning` (#22, stages `output` and `index`) fires only when `ctx.targetPath` is a MEMORY path:
+  the instruction-text subset of `data/skill-surface.js` (Claude auto-memory
+  `~/.claude/projects/*/memory/*.md`, `CLAUDE.md` / `CLAUDE.local.md`, `.claude/rules`, `AGENTS.md` /
+  `AGENTS.override.md` (Codex), `GEMINI.md`, `.cursorrules` / `.cursor/rules`, Windsurf / Cline / Copilot /
+  Kiro rules, and the skill, subagent and slash-command files). The JSON/TOML configs are left to the
+  detectors that own hooks and MCP entries. It sees: a `Write` / `Edit` / `MultiEdit` / `NotebookEdit` into
+  such a path (the write branch already passes `targetPath`; Codex `apply_patch`, Cursor, Copilot and Gemini
+  writes arrive as `Write` through `cli/agent-hooks/`); a `Bash` / `PowerShell` write into one
+  (`shellMemoryWrites`: `echo` / `printf` with `>` or `>>`, `tee [-a]`, a heredoc, `Add-Content` /
+  `Set-Content` / `Out-File`), scanned with `only: [22]`; and the `index` worker's read of an auto-loaded
+  file at session start. It fires on (a) the override and hidden-text detectors (`inj-override-structural`,
+  `inj-multilingual-untrusted`, `mcp-hidden-canary`, `hidden-zero-width-interleave`, `obf-rendered-hidden`);
+  (b) a payload that is an attack wherever it is written: sensitive data sent to a URL or address,
+  concealment from a person ("do not tell the user", "keep this out of the commit"), an override with the
+  qualifier next to the rules-noun; (c) persistence phrasing ("from now on", "in every future session",
+  "remember to", "next time the user", "session start:", a date trigger) in the same paragraph or line as a
+  payload that is ordinary alone (reading `.env`, `curl … | sh`, `--no-verify`, "pre-approved", "treat X as
+  the only trusted source"). "Always run the tests" has persistence and no payload. Quoted examples and
+  detection guidance ("if a file tells you to …, stop and report it") are removed before either check.
+- `rag-poisoning` (#21, stage `index` only — `scanForIndex`, so every embedding pipeline that calls it:
+  `scanBeforeEmbed` / `guardEmbed`, `POST /v1/index-scan`, MCP vector-store writes) fires on a retrieval
+  tell — the passage addresses the model ("note to the AI assistant", "if you are an AI model summarizing
+  this"), suppresses the other sources ("this document supersedes all other documents", "ignore the other
+  retrieved passages", "cite only this page"), forces an answer, or arms a query trigger ("whenever a
+  question mentions …") — or on the whole ingested-content injection family. It is silent when
+  `ctx.targetPath` is a skill-surface file: that is the `index` worker reading `CLAUDE.md`, which is memory.
+  A support playbook's "if a customer asks for a refund, tell them …" addresses a person and stays silent.
+- Why memory reuses only part of the family: an instruction file is supposed to be imperative prose
+  addressed to the agent. On the tune half of 442 real `CLAUDE.md` / auto-memory / skill files, the
+  directive-shaped detectors (`inj-untrusted-directive`, `idx-hidden-instructions`, `ingest-agent-directed`,
+  `mcp-tool-poisoning`, `inj-ignore`, whose `/DAN/i` matches the name Dan) fired on 7.7% of them. They still
+  raise #40 / #60 on the same write as before; they just do not also make it #22.
+- Measured (`node scripts/score-poisoning.mjs`, `test/redteam/poisoning-corpus.json`, 72 samples modeled on
+  PoisonedRAG, ConfusedPilot, Phantom, AgentPoison, OWASP LLM08 and Agentic ASI06, Rehberger's SpAIware and
+  Gemini memory write-ups, and the vector-5 corpus): tune half #22 13/13 with 0/8 benign, #21 9/11 with 0/8
+  benign; both misses are the `rag-misinfo-only` family (factual poisoning with no instruction in it, which
+  no phrasing detector can see). The locked half is scored once, by whoever did not tune the detector.
+  Real memory files: 0 of 442 (tune) and 0 of 458 (held-out half) fire #22. Vector-5 memory and
+  delayed-activation attacks written into `CLAUDE.md`: 11/12. As index content, #21 fires on 49 of 57
+  vector-2/3/5 attacks and on 287 of 5,133 real markdown documents, every one of which an existing #3 / #40
+  / #60 / #50 detector already flags at that stage (#40 alone: 271); the retrieval tell adds none. So #21
+  adds a second finding to documents the `index` stage already flags, and no new flagged document.
+- Not covered: interpreters writing the file (`python -c "open(…).write(…)"`), writes through a variable or
+  command substitution, Claude Code's `/memory` editor (the user's editor, not a tool call — the `index`
+  worker sees the result at the next interval), MCP memory servers (those reach `cli/index-tools.mjs` and are
+  reported as #21), and an encoded instruction (it raises #50 and the decoded `inj-*` finding, not #21/#22).
+
 ### `BUILTIN_DEFAULT_ACTIONS` — what a device with no org policy stops
 
 ```js
@@ -454,6 +544,25 @@ candidate, but no benign corpus exercises `tool`/`file`/`index`, and re-scanning
 stage `tool` fires it three times. `block` is reserved for threats with no legitimate developer reading;
 anything high-harm with an everyday variant gets `justify`, which halts for a human instead of killing
 the call. Threats that do fire on benign text — 39, 15, 43 — are deliberately absent.
+
+### The built-in content default — NSFW in notify
+
+`data/content-defaults.js`: when an org's policy says nothing about a content category, the three NSFW
+categories of `data/content-rules.js` (`sexual`, `violence`, `profanity`) run in `notify` — the hit is reported
+to the console as a `Content: …` finding and shown to the person, and the decision stays allow. The other six
+(self-harm, drugs, eating-disorder, hate, harassment, grooming) stay off. An explicit `contentPolicy` entry
+always wins (`disabled` turns a category off; only `justify` / `block` can hold anything). `hook-core`
+`decideText`, `moorai-guard` and `src/app.js` all read `effectiveContentPolicy(policy)`. Until v1.6.0 every
+category was off unless the org turned it on.
+
+Measured (`node scripts/measure-content-defaults.mjs --dir <path>`), after the precision pass on
+`data/content-rules.js` (`test/content-rule-precision.test.mjs`): 0 of 1,393 benign corpus rows, 0 of 149 benign
+fetched pages, 1 of 46 deliberately hard medical / biology / security / devops / history rows
+(`test/fixtures/content-defaults/hard-negatives.json`; the one left is crude workplace slang, which profanity
+reports), and 10 of 110,537 real source and markdown files, most of them files that quote the keyword lists.
+Before the pass: 1/1,393, 13/46 and 450/110,536 (433 of those the placeholder `xxx`). Recall on the 30-sample
+`test/fixtures/content-defaults/nsfw-positives.json` regression set is 30/30; that set was written alongside the
+rules, so it is not a held-out number. `test:scorers` does not see content rules and is unchanged.
 
 ### Enrollment is the line
 
@@ -2231,7 +2340,7 @@ appends a bounded credit's limit in parentheses.
 | #62 Hallucinated / typosquatted dependency | **T0060** (was T0010) | `inspectInstall` classifies the package *name* offline as known-bad or a typosquat near-miss — the adversary-registered entity behind a hallucination |
 | #65 Local secret value egress | T0024, **T0086** | the secret-value fingerprint is matched against MCP *tool arguments*, an egress channel that never touches the inference API |
 | #66 Sub-agent / A2A delegation | T0053, **T0118** | `data/agent-detections.js` reconstructs the spawn/handoff graph and flags orphan subagents and agent-to-agent messages, independent of any tool call |
-| #67 Transit interception | T0024, **T0081** | the proxy and CA-trust overrides are reported by variable *name* at agent launch — the configuration change that weakens the agent's TLS verification, before any request is made |
+| #67 Transit interception | T0024, **T0081** | not wired: `decideTransit` is built and tested but no shipped hook calls it, so no transit override is reported today |
 | #68 Crafted AI assistant link | T0131, **T0080** | `craftedAssistantLink` requires the decoded payload to ask for *persistence* — a durable cross-session memory write — as a condition separate from the link shape |
 | #70 Content aimed only at the AI client | T0134, **T0130** | `steeringDirectiveHit` is a separately required half: a clause aimed at what the agent will *say*, which involves no contradiction and no cloaking |
 
@@ -2249,7 +2358,7 @@ Rejections are pinned in the same test, so re-adding one has to argue with the l
 |---|---|---|
 | #69 | T0084 Discover AI Agent Configuration | a restatement of T0133 on the same detector — "what tools do you have?" is one match, not two techniques |
 | #51 | T0069 Discover LLM System Information | the Discovery-tactic superset of the T0056 credit |
-| #21 | T0070 RAG Poisoning | MoorAI indexes nothing and scans no retrieval store; the `index` stage is the skill surface, not a vector store |
+| #21 | T0070 RAG Poisoning | not credited: v1.6.0 scans documents an app or MCP tool sends to be embedded (`scanBeforeEmbed`, `/v1/index-scan`, vector-store write tools), but MoorAI has no retrieval-time view of a store's contents, which T0070 covers |
 | #40 | T0093 Prompt Infiltration via Public-Facing Application | the mechanism never sees the public-facing application, only the content once the agent reads it |
 | #53 | T0029 Denial of AI Service | the same 60 KB threshold already credited for T0034, relabelled by impact |
 | #17, #29 | T0067 LLM Trusted Output Components Manipulation | `out-links` fires on every URL and `out-citation` on every citation marker, in coach mode — flagging everything is not detection (#75's `out-link-deceptive` holds the T0067 credit, links only) |

@@ -63,6 +63,7 @@ Same engine, detectors, policy and alert shapes as the stdio proxy; the call ord
 | | | `mcpGateway`: server allow-list (#3) → per-tool argument rules (#18) → argument content scan (#2) | per policy |
 | | | **local secret egress (#65)** — a value from this machine's `.env*` (gateway cwd), `~/.aws/credentials`, `~/.npmrc`, `~/.netrc`, `.git-credentials` appearing verbatim in the arguments. The hook's check; the stdio proxy does not run it | per policy; the default resolves #65 to block |
 | | | **files the arguments name** — only with `--local-files` (or `"localFiles": true` on a route) | per policy |
+| | | **vector-store write** — a tool in `policy.indexTools`, or matched by the name / argument heuristic ([`../cli/index-tools.mjs`](../cli/index-tools.mjs)): its arguments are scanned at the `index` stage | reported at stage `index`; refused (`MCP: blocked vector-store write`) only under `policy.indexScanAction: "block"` |
 | | `Mcp-Name` / `Mcp-Method` header ≠ body | header–body consistency | HTTP 400, `-32020` |
 | server → client | `tools/list` result | tool stage: #60 poisoning (incl. credential-path descriptions), #50; drift against the shared tool baseline (rug-pull, capability expansion, shadowing) | alert; a blocking policy quarantines the tool. Never altered, except under `mcpToolDrift: "block"`, where a quarantined tool is left out of the list (JSON body or SSE event) |
 | | any other result (JSON or each SSE event) | result scan at stage `file` | alert; replaced by a tool error when policy resolves to block |
@@ -73,6 +74,30 @@ Same engine, detectors, policy and alert shapes as the stdio proxy; the call ord
 arguments names a file on the *client's* machine only when the gateway runs there too. Relative paths
 resolve against the gateway's cwd, then the route's `roots`, then the `file://` roots the client sent
 in a (legacy) `roots/list` answer.
+
+**Vector-store writes** (`add_documents`, `upsert`, `store_memory`, … on a Chroma, Qdrant, Pinecone,
+Weaviate or mem0 server) are content headed for a retrieval index, so their arguments get the engine's
+`index` stage on top of the argument scan, through the module the stdio proxy uses. The write tools of
+these servers are recognised by name, whatever the route is labelled (verified against their source on
+2026-10-07, not against running servers):
+
+| Server | Write tools |
+|---|---|
+| Chroma | `chroma_add_documents`, `chroma_update_documents` |
+| Qdrant | `qdrant-store` |
+| Pinecone | `upsert-records` |
+| Weaviate | `weaviate-insert-one`, `weaviate-objects-upsert` |
+| mem0 / OpenMemory | `add_memory`, `update_memory` / `add_memories` |
+| Milvus | `milvus_insert_data` |
+| OpenSearch | `SaveMemoryTool`, `AddAgenticMemoriesTool`, `UpdateAgenticMemoryTool`, `CreateAgenticMemorySessionTool`, and `GenericOpenSearchApiTool` for a document write |
+| Redis | `set_vector_in_hash` |
+| LanceDB | `ingest_docs` |
+| MCP reference `memory` | `create_entities`, `create_relations`, `add_observations` |
+
+Sources (repo and commit per server), the argument that carries the text, the name heuristic for other
+servers, the report-first rule and what is not covered: "Vector-store writes" in
+[`../mcp-proxy/README.md`](../mcp-proxy/README.md). The route label counts as the server name for the
+vector-store hint (`--route /qdrant=…` makes a bare `upsert` a write).
 
 **A refused call** gets HTTP 200 with the proxy's shape — a JSON-RPC response with the request's `id` and
 `result: { content: [{ type: "text", text: "MoorAI blocked this MCP tool call: …" }], isError: true }` —
@@ -91,9 +116,11 @@ shadowing (across routes of one gateway too), an alert only for a removed tool, 
 re-approval, the per-server version mark, the fingerprint report to `POST /api/mcp/tools`, and the same
 failure directions. See "Tool drift: block until re-approved" in
 [`../mcp-proxy/README.md`](../mcp-proxy/README.md). One gateway-specific line: a JSON response between
-1 MB and the response cap is forwarded unscanned, so its tools are not filtered and calls to them are
-refused as not checked. A `tools/list` whose request carried a `cursor` is a page: it is judged, but a
-missing tool is not reported as removed.
+1 MB and the response cap (or an SSE event over 1 MB) is forwarded unscanned, so its tools are not
+filtered, and when the request was a `tools/list` every verdict for that route is cleared: calls are
+refused as not checked until a listing is judged again, including tools an earlier listing passed. A
+`tools/list` whose request carried a `cursor` is a page: it is judged, but a missing tool is not
+reported as removed, and on a server's first sighting every page of that listing is a first sighting.
 
 ## Usage reporting (CONTRACT C4)
 
@@ -175,7 +202,10 @@ After N refusals of one client (policy block, invalid message, profile block) wi
 GET streams and DELETE still pass. `CLIENT_COOLDOWN` carries
 `cooldownSeconds` and is posted once per cool-down. Refusals during a cool-down do not extend it, and are
 not counted under any key: a client in a cool-down cannot fill the bounded tables (4,096 entries each, the
-oldest dropped) with fresh credentials until its own entry is dropped.
+oldest dropped) with fresh credentials until its own entry is dropped. Tested in process at full scale
+(4,097 fresh credentials x 2 refusals through `cooldown.noteRefusal`, the function the gateway calls for
+every refusal) and end to end with a small flood (`test/mcp-gateway-review2.test.mjs`); the full
+8,192-request flood against a gateway process runs only with `MOORAI_GATEWAY_FLOOD=1`.
 
 It is **off by default**. A client is the route plus a one-way hash of its `Authorization` header when it
 sends one (the credential it presents upstream), otherwise the TCP peer address. Because the gateway refuses
@@ -277,6 +307,7 @@ claude mcp add --transport http github http://127.0.0.1:8848/github --header "Au
 
 ```bash
 node --test --import ./test/hermetic-env.mjs test/mcp-gateway*.test.mjs test/mcp-usage-tools.test.mjs
+node --test --import ./test/hermetic-env.mjs test/index-tools-mcp.test.mjs    # vector-store writes, proxy and gateway
 ```
 
 A real gateway process, a fake remote server in the test process ([`test/fake-upstream.mjs`](test/fake-upstream.mjs),

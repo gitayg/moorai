@@ -23,6 +23,26 @@ let identity = { user: "(browser)", device: navigator.platform || "web", platfor
 function reported() { return { ...identity, actor: contentHash(`${identity.user}@${identity.device}`) }; }
 // The install token authenticates the client to the server for policy + event reporting only.
 function installTok() { return identity.installToken || localStorage.getItem("raiseme.installToken") || ""; }
+// Where the install token may go. Inside the desktop host that is identity.console: the origin the host
+// recorded at enrolment (src-tauri/src/console_binding.rs) — null when it refused one, and then nothing
+// credentialed is sent. localStorage ("raiseme.server") and ~/.moorai/config.json are writable by other
+// software running as the user, so neither decides it. A host too old to report the field, and the
+// plain-browser build, keep BASE.
+let hostConsole, hostConsoleWarning = null;
+function credBase() { return hostConsole === undefined ? BASE : hostConsole; }
+export function consoleWarning() { return hostConsoleWarning; }
+export function consoleBound() { return credBase() != null; }
+// Every request that carries a credential: never follow a redirect with it.
+const CRED = { redirect: "error" };
+// https, or http to localhost only — the same rule the host applies (normalize_origin).
+export function safeConsoleOrigin(u) {
+  try {
+    const x = new URL(u);
+    if (x.username || x.password) return null;
+    if (x.protocol === "https:" || (x.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(x.hostname))) return x.origin;
+  } catch {}
+  return null;
+}
 // Coach vs enforce, and post vs stay local — the shared rule (data/enforcement.js). An unenrolled app
 // has no console: it coaches in the UI and posts nothing.
 export function enrolled() { return enforcementAllowed({ installToken: installTok() }); }
@@ -31,6 +51,7 @@ export async function loadIdentity() {
   if (invoke) {
     try {
       identity = await invoke("identity");
+      if ("console" in identity) { hostConsole = identity.console || null; hostConsoleWarning = identity.consoleWarning || null; }
       // Mirror the native provision into localStorage the same way enroll() does. An MDM-provisioned
       // install (Jamf/Intune writes ~/.moorai/config.json directly) never runs enroll(), and the
       // content-hash key is derived from these two values — without them the renderer would emit the
@@ -127,6 +148,7 @@ async function callAnthropic(prompt, token, method) {
   else headers["x-api-key"] = token;
 
   const r = await fetch("https://api.anthropic.com/v1/messages", {
+    ...CRED,
     method: "POST",
     headers,
     body: JSON.stringify({ model, max_tokens: 1024, messages: [{ role: "user", content: prompt }] })
@@ -139,8 +161,9 @@ export function currentTenant() { return identity.tenant; }
 
 // Enroll the device by pasting an installation token: fetch its provision and persist it.
 export async function enroll(token, serverUrl) {
-  const base = (serverUrl || BASE).replace(/\/+$/, "");
-  const prov = await fetch(`${base}/d/${encodeURIComponent(token)}`).then((r) => (r.ok ? r.json() : Promise.reject(new Error("invalid or unknown token"))));
+  const base = safeConsoleOrigin((serverUrl || BASE).replace(/\/+$/, ""));
+  if (!base) throw new Error("the console must be an https URL");
+  const prov = await fetch(`${base}/d/${encodeURIComponent(token)}`, CRED).then((r) => (r.ok ? r.json() : Promise.reject(new Error("invalid or unknown token"))));
   const invoke = window.__TAURI__?.core?.invoke;
   // Persist the install token alongside the provision — the client uses it to authenticate
   // policy fetches and event reports to the server.
@@ -157,7 +180,7 @@ export async function enroll(token, serverUrl) {
 // In-app signup: create the management account and get back the claim token used to wait for the
 // verification click. The protocol lives in ./signup.js; this only binds the real fetch + BASE.
 export function signUp(name, email) {
-  return startSignup({ base: BASE, name, email, fetchImpl: (u, o) => fetch(u, o) });
+  return startSignup({ base: BASE, name, email, fetchImpl: (u, o) => fetch(u, { ...o, ...CRED }) });
 }
 
 // Wait for the verification click, then provision through the SAME enroll() the paste-a-token path
@@ -166,7 +189,7 @@ export async function awaitClaim(claimToken, onPending) {
   const ready = await pollClaim({
     base: BASE,
     claimToken,
-    fetchImpl: (u, o) => fetch(u, o),
+    fetchImpl: (u, o) => fetch(u, { ...o, ...CRED }),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     onPending
   });
@@ -176,8 +199,10 @@ export async function awaitClaim(claimToken, onPending) {
 // Lightweight, scan-independent beacon: lands identity + agent version on the server immediately at
 // boot, without waiting for the slower device/browser scans (which can be slow or hang).
 export function reportIdentity() {
-  if (!enrolled()) return;
-  fetch(`${BASE}/api/device-report`, {
+  const base = credBase();
+  if (!enrolled() || !base) return;
+  fetch(`${base}/api/device-report`, {
+    ...CRED,
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
     body: JSON.stringify(reported()),
@@ -204,7 +229,9 @@ export async function reportDevice() {
     let aiShadow = null; // Feature 2 — shadow-AI: catalog-matched AI apps + AI browser extensions (names/ids/flags only)
     try { aiShadow = await invoke("device_ai_shadow"); } catch {}
     const full = { ...dev, browsers, mcp, posture, accounts, aiAssets, aiShadow };
-    if (enrolled()) fetch(`${BASE}/api/device-report`, {
+    const base = credBase();
+    if (enrolled() && base) fetch(`${base}/api/device-report`, {
+      ...CRED,
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
       body: JSON.stringify({ ...reported(), ...full }),
@@ -219,13 +246,15 @@ export async function reportDevice() {
 // with the MoorAI hooks' daily heartbeats. Host ids and timestamps only.
 export async function reportActivity() {
   const invoke = window.__TAURI__?.core?.invoke;
-  if (!invoke || !enrolled()) return;
+  const base = credBase();
+  if (!invoke || !enrolled() || !base) return;
   try {
     const r = await invoke("device_agent_activity");
     const activity = (r.activity || []).map((a) => ({ host: a.host, lastActive: new Date(a.lastActiveEpoch * 1000).toISOString() }));
     if (!activity.length) return;
     const { user, device, platform } = reported();
-    fetch(`${BASE}/api/agent-posture`, {
+    fetch(`${base}/api/agent-posture`, {
+      ...CRED,
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
       body: JSON.stringify({ user, device, platform, activity }),
@@ -240,7 +269,9 @@ export async function reportPatches(dev) {
   if (!invoke) return null;
   try {
     const patches = await invoke("os_patch_status");
-    if (enrolled()) fetch(`${BASE}/api/device-report`, {
+    const base = credBase();
+    if (enrolled() && base) fetch(`${base}/api/device-report`, {
+      ...CRED,
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
       body: JSON.stringify({ ...reported(), ...(dev || {}), patches }),
@@ -251,9 +282,12 @@ export async function reportPatches(dev) {
 }
 
 export async function getPolicy() {
+  // Unenrolled, nothing credentialed rides this request, so the default base serves the default policy.
+  const base = installTok() ? credBase() : BASE;
+  if (!base) return null;
   try {
     const q = `tenant=${encodeURIComponent(identity.tenant)}&user=${encodeURIComponent(identity.user)}&device=${encodeURIComponent(identity.device)}`;
-    const r = await fetch(`${BASE}/api/policy?${q}`, { headers: { "X-Install-Token": installTok() }, signal: AbortSignal.timeout(8000) });
+    const r = await fetch(`${base}/api/policy?${q}`, { ...CRED, headers: { "X-Install-Token": installTok() }, signal: AbortSignal.timeout(8000) });
     return r.ok ? await r.json() : null;
   } catch {
     return null;
@@ -273,8 +307,10 @@ export function nativeLog(entry) {
 
 // Fire-and-forget: sends only the redacted alert metadata + who/what generated it.
 export function postAlert(alert) {
-  if (!alert || !enrolled()) return;
-  fetch(`${BASE}/api/alerts`, {
+  const base = credBase();
+  if (!alert || !enrolled() || !base) return;
+  fetch(`${base}/api/alerts`, {
+    ...CRED,
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
     body: JSON.stringify({ ...alert, ...reported() }),
@@ -285,8 +321,10 @@ export function postAlert(alert) {
 // Counts a prompt the user pushed to the agent. Metadata only — no prompt content.
 // outcome: "sent" (reached the agent) | "blocked" (stopped by policy).
 export function reportPrompt(outcome, findings = 0) {
-  if (!enrolled()) return;
-  fetch(`${BASE}/api/prompt-event`, {
+  const base = credBase();
+  if (!enrolled() || !base) return;
+  fetch(`${base}/api/prompt-event`, {
+    ...CRED,
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID, "X-Install-Token": installTok() },
     body: JSON.stringify({ outcome, findings, ts: new Date().toISOString(), ...reported() }),

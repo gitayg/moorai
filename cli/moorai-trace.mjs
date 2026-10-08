@@ -21,7 +21,7 @@
 //   node cli/moorai-trace.mjs --help
 
 import { readFileSync } from "node:fs";
-import { AGENT_EVENTS_PATH } from "./signals.mjs";
+import { AGENT_EVENTS_PATH, ACTION_AUDIT_CAP } from "./signals.mjs";
 import { statePath } from "./state-dirs.mjs";
 import { boundedParseJsonl } from "./sanitize.mjs";
 
@@ -108,8 +108,11 @@ function readBounded(path, norm, source) {
   let text = "";
   try { text = readFileSync(path, "utf8"); } catch { return { steps: [], gaps: [] }; }
   const { records, gaps } = boundedParseJsonl(text, { maxBytes: 16 * 1024 * 1024, maxLines: 20000, maxLineBytes: 65536 });
+  // signals.mjs compacts the action audit to its cap only now and then, so the file can briefly hold
+  // more rows than that; keep the newest ACTION_AUDIT_CAP, as readActions() does.
+  const objs = records.filter((r) => r && typeof r === "object");
   return {
-    steps: records.filter((r) => r && typeof r === "object").map(norm),
+    steps: (path === ACTION_AUDIT_PATH ? objs.slice(-ACTION_AUDIT_CAP) : objs).map(norm),
     gaps: gaps.map((g) => ({ reason: g.reason, index: g.index, source })),
   };
 }

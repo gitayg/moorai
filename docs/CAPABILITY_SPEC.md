@@ -189,7 +189,7 @@ Claude Code GitHub Action, an Agent SDK service in a container
   own decision and reason (parity test: 214 payloads, two policy states, 0 mismatches). Prompts and tool
   results are observed by default (`prompts: "enforce"`, `toolResults: "advise"` to act on them).
   `moorai-serve` is the same runtime as a localhost sidecar: `POST /v1/scan`, `POST /v1/tool-call`,
-  `GET /healthz`, content-free verdicts, loopback only unless `--allow-remote` plus a 16+ character
+  `POST /v1/index-scan` (chunks about to be embedded; B.12), `GET /healthz`, content-free verdicts, loopback only unless `--allow-remote` plus a 16+ character
   bearer token (compared in constant time); it rejects a non-loopback `Host` (421), non-JSON (415) and a
   body over 1 MiB (413, after draining), with a 5 s header timeout and 256 connections. A stdlib-only
   Python client with LangGraph / CrewAI examples (not executed) is in
@@ -349,6 +349,24 @@ is validated against.
 9. **Permissions-exposure watch** — over-broad / role-irrelevant results. *Threat 6.*
 10. **Ethics check** — human-review nudge on AI-assisted screening. *Threat 16.*
 11. **Output-sharing check** — scans summaries/screenshots before sharing. *Threats 20, 37.*
+12. **Index / RAG payload inspection** — content headed for a vector store or retrieval index is scanned
+    at the engine's `index` stage (`DetectionEngine.scanForIndex`: the prompt detectors plus the
+    ingested-content ones that declare `index`) before it is embedded. *Threats 21, 22, 40, 50, 60, 70.*
+    Shared decision in [`cli/index-scan.mjs`](../cli/index-scan.mjs); three integration points:
+    `scanBeforeEmbed(chunks, { source })` and `guardEmbed(embedFn)` in `@moorai/agent-sdk`
+    ([`packages/agent-sdk/src/embed.mjs`](../packages/agent-sdk/src/embed.mjs)); `POST /v1/index-scan`
+    `{ chunks, source? }` on `moorai-serve`; and vector-store write tools in the MCP stdio proxy and the
+    HTTP gateway ([`cli/index-tools.mjs`](../cli/index-tools.mjs): `policy.indexTools` names, or a
+    write verb plus a store noun, a vector-store hint in the tool or server name, or a document-array
+    argument; `policy.indexToolHeuristic: false` turns the heuristic off). Each chunk is `allow`,
+    `flag` (reported, kept) or `deny`. **Report-first:** `policy.indexScanAction` is `"report"` by default;
+    `"block"` denies a chunk carrying an instruction threat (the `promptScanAction` list) or a threat whose
+    action is block / kill — `guardEmbed` drops it, the MCP surfaces refuse the call before the server
+    sees it. Fail-open. Content-free alerts at stage `index`; `source` leaves only as a keyed hash.
+    **Covered:** apps that call the SDK helper or the sidecar, and MCP vector-store tools that match.
+    **Not covered:** an app that embeds without calling MoorAI, an in-process vector library with no MCP
+    or API hook, a store tool whose name and arguments match nothing (until named in `indexTools`), and
+    documents a store ingests on its own. MoorAI has no vector store or embedding writer of its own.
 
 ### B2. Skill-surface analysis (client)
 
@@ -648,6 +666,30 @@ is validated against.
     sends a content-free heartbeat with this posture to `POST /api/agent-posture` at most once per host per
     UTC day (retried after 10 minutes on failure); enrolled devices only. The desktop app reports each
     host's last activity hourly (`device_agent_activity`), independent of every hook.
+    **Containment (Windows only):** [`cli/mxc-detect.mjs`](../cli/mxc-detect.mjs) adds
+    `containment: { kind: "mxc"|"other"|"none"|"unknown", scope: "commands"|"agent"|null, source }` to the
+    Claude Code, Codex and Copilot entries, and `mxcCapable: true|false|null` to the report. Sources are
+    a fixed list of tokens, such as `codex:windows.sandbox` and `copilot:unset`.
+    - Codex: `windows.sandbox`, read from the user and project `config.toml`, with the project file
+      winning. `"mxc"` gives `"mxc"`; `elevated`/`unelevated` and the legacy features give `"other"`;
+      `danger-full-access`, `allow_mxc = false` or nothing set give `"none"`; `features.prefer_mxc` gives
+      `"unknown"`.
+    - Copilot CLI: `sandbox.enabled` in `~/.copilot/settings.json`. `true` gives `"mxc"`, `false` gives
+      `"none"`, and unset or unreadable gives `"unknown"`.
+    - Claude Code on win32: `"none"`.
+    - Gemini and Cursor: no field. Non-Windows: neither field.
+
+    `mxcCapable` is the build (`os.release()`) plus the registry `UBR`, compared with 26100/26200.9278,
+    26300.9550 and 28000.2804. It is read with `reg.exe` in the heartbeat worker only and cached about a
+    day per release. It is `null` for unlisted builds or a missing value.
+
+    Detected vs assumed:
+    - The values come from config. Nothing observes a running container, and MXC documents no way to.
+    - CLI flags, Codex profiles and enterprise-managed settings can override the config.
+    - A capable build may still have MXC switched off by Microsoft's gradual rollout.
+    - Codex and Copilot contain only the commands the agent runs, not the agent.
+
+    Report-only, fail-open, and changes no verdict. Not run on a real Windows host yet.
 17f. **Declared workload profiles** — [`cli/workload-profile.mjs`](../cli/workload-profile.mjs). The signed
     policy may carry `workloadProfiles`: per workload (`match.serviceId`) or repository (`match.repo`, the
     normalised git remote of the call's cwd), the expected `tools`, `mcpServers` and `hosts` as allow-lists
@@ -739,6 +781,105 @@ justified the hard deny elsewhere does not exist here.
 An org policy still wins in **both** directions, because `threatPolicy` / `tierPolicy` are consulted
 before this tier: a tenant can soften any entry to `notify`/`disabled` or harden one the map omits.
 
+## Windows: launching agents inside MXC (wxc-exec)
+
+**Status: code and unit tests only. Nothing here has run on Windows.** Opt-in, default off. Contract:
+microsoft/mxc @ 7cd00d1 (schema `1.0.0`). Files: [`src-tauri/src/mxc_launch.rs`](../src-tauri/src/mxc_launch.rs)
+(detection, probe, spawn, denials → alerts), [`src-tauri/src/mxc.rs`](../src-tauri/src/mxc.rs) and
+[`cli/mxc-policy.mjs`](../cli/mxc-policy.mjs) (policy builder, Rust and Node), [`src-tauri/src/mxc_denials.rs`](../src-tauri/src/mxc_denials.rs)
+and [`cli/mxc-denials.mjs`](../cli/mxc-denials.mjs) (denial parser). The Rust and Node copies replay the same
+golden files in `test/fixtures/mxc/`.
+
+**Why wxc-exec.** BaseContainer starts a process through `PROC_THREAD_ATTRIBUTE_SECURITY_ENVIRONMENT`.
+portable_pty 0.8 holds one proc-thread attribute (the pseudoconsole), so MoorAI cannot pass it. Instead the
+PTY runs `wxc-exec.exe`, and wxc-exec creates the contained child. This is how macOS `sandbox-exec` works,
+and how MXC's own Node `spawnWithPty` handles ProcessContainer (mxc PR #1400). The real flags, from the mxc docs:
+`--config <file>`, `--log-file <file>` (content-free audit records) and `--probe`. There is no `--policy` flag.
+The agent command goes in `process.commandLine`, built and quoted by MoorAI using MSVC argv rules. It is not
+passed after `--`, because how wxc-exec joins that tail is not in the published docs.
+
+**Launch sequence (term_open).**
+1. Read `%LOCALAPPDATA%\MoorAI Host\mxc.json`. If it is missing, MXC is off.
+2. Build check: process isolation needs build 26100.9278, 26200.9278, 26300.9550 or 28000.2804. A build the
+   table does not list is left to the probe.
+3. Find `wxc-exec.exe`. It must be under Program Files or the MoorAI install directory, and Authenticode-signed
+   with `O=Microsoft Corporation`.
+4. Check that moorai-model-proxy answers on loopback. This applies to claude and codex. Copilot instead needs a
+   numeric `egressAllow`.
+5. Write the policy and run `wxc-exec --probe --config`. The tier must be `base-container`, and host-loopback
+   allow must be supported. If the host lacks native FS deny or native denial capture, MoorAI rebuilds the
+   policy without them and probes once more.
+6. Spawn `wxc-exec --log-file <run>\audit.log --config <run>\policy.json` in the PTY. Then assign it to a Job
+   Object that does not set `UILIMIT_HANDLES`/`GLOBALATOMS`, because nested job UI limits add up and would
+   undo the PowerShell relaxation.
+
+If any step fails, the terminal shows the reason and the agent launches with today's Job Object instead.
+Turning MXC on also turns that fallback on.
+
+**Policy.**
+
+| Part | Value | Why |
+|---|---|---|
+| read-write | The workspace, the agent's own state (`~/.claude` + `~/.claude.json`, `~/.codex`, `~/.copilot`) and the hook's three state legs (`~/.moorai`, `%APPDATA%\MoorAI`, `%LOCALAPPDATA%\MoorAI`) | The agent and MoorAI's in-container hook can't run without them. The profile root is never granted. |
+| read-only | Agent binary dir, `~/.local/share/claude`, node dir, `Program Files\{nodejs,Git,PowerShell\7}`, `~/.gitconfig`, `%ProgramData%\MoorAI`, verified hook roots, CA files | The toolchain the agent shells out to. Windows' own directories are already readable through ALL APPLICATION PACKAGES ACEs. |
+| denied | Startup folders, scheduled tasks, shell profiles, DPAPI/credential stores, `.ssh`, cloud and package credentials, browser profiles, `%LOCALAPPDATA%\MoorAI Host`, the host install dir | Mirrors the macOS Seatbelt deny-list (persistence and credentials). Every path is listed when the probe reports native FS deny. Otherwise only paths under a grant are listed: an explicit deny would push MXC to the DACL tier, which `allowDaclMutation:false` refuses. |
+| network | `egress.default: deny`, `ingress: {default: deny, hostLoopback: allow}`, optional numeric `egressAllow` on tcp/443 | `moorai-model-proxy` is a base-URL reverse proxy, not a CONNECT proxy, so it cannot be `runtimeConfig.networkProxy`. The agent reaches it on loopback through `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`. MXC rules are numeric only, so a hostname needs a CONNECT proxy. In direct mode, host loopback is not port-scoped. |
+| UI | `ui.disable:false`, clipboard `none`, injection off; `processContainer.ui.isolation: "desktop"`, the rest at default-deny | PowerShell 5.1 and 7 fail with `STATUS_DLL_INIT_FAILED` under the default limits. `isolation: "desktop"` is the documented fix (playground-limitations.md). AppContainer's low integrity level still keeps UIPI between it and medium-IL windows. |
+| fallback | `allowDaclMutation: false` | MoorAI never rewrites host ACLs. A host without BaseContainer fails the launch instead of degrading. |
+| env | `TEMP`/`TMP` → `~/.moorai/agent-tmp`; `GIT_CONFIG_COUNT/KEY/VALUE` = `safe.directory` for the workspace only; `NODE_EXTRA_CA_CERTS` if configured | git rejects repos created while elevated, and command-scope config counts as protected config. BaseContainer does not inherit the CurrentUser Root store. `NODE_EXTRA_CA_CERTS` adds roots. `SSL_CERT_FILE` would replace OpenSSL's bundle, so it is only passed through when it is already set. |
+
+**Denials → alerts.** `captureDenials.mode: "block"` keeps enforcement on. After the session exits, MXC writes
+`denials.<run-id>.json` into the host-only run dir. The host parses only the documented fields
+(`resource`, `resourceType`, `accessType`, `summary.deniedResourcesTruncated`) and deletes the file. It then posts
+one content-free `/api/alerts` record per group: category `MXC: access denied`, `pathClass` (never a path),
+`reasonCode` (`<class>-<access>`), `count`. `pid`, `filetime` and file names are dropped. Capability denials keep
+the well-known capability name, or `custom-sid` for a SID. Denials arrive only after exit; MXC has no live feed
+for the launcher.
+
+**Trust boundary.** Nothing the host reads to *build* a launch may come from inside a read-write grant.
+Otherwise a contained agent could choose the policy of its own next launch.
+- **Launch settings** live in `%LOCALAPPDATA%\MoorAI Host\mxc.json`: `enabled`, `workspace`, `wxcExec`,
+  `egressAllow`, `extraCaCerts`, `modelProxyPort`, `keepRuns`, `hookRoots`, `consoleUrl`, `installToken`,
+  `tenant`. They are not in
+  `~/.moorai/config.json`, which sits in the hook's read-write leg. `MoorAI Host` is a protected path class: it
+  is never granted, it is denied explicitly where the host can, and a workspace inside it or containing it is
+  refused. Run dirs and denial reports live there too, so the agent cannot plant a denial file.
+- **The host's install directory** is never granted. It is denied explicitly with native FS deny, and a
+  workspace that overlaps it is refused. A per-user NSIS install may sit at `%LOCALAPPDATA%\MoorAI`, the hook's
+  breadcrumb leg. In that case the leg is not granted, and the terminal says so.
+- **wxc-exec** runs with full user rights, so only Program Files or the install dir qualify, plus a Microsoft
+  signature.
+- **Hook roots** come from host-only `hookRoots`, or are discovered in agent-writable hook configs. A root is
+  granted read-only only if it holds `cli\moorai-hook.mjs` (or `moorai-agent-hook.mjs`) and a `package.json`
+  named `moorai`, and is not the profile, its parent, `AppData`, or `%APPDATA%`/`%LOCALAPPDATA%`.
+- **The console binding for the host's denial alerts** comes only from `mxc.json` (`consoleUrl`,
+  `installToken`, `tenant`), never from `config.json`. The host posts to the https origin rebuilt from
+  `consoleUrl` plus `/api/alerts`. It rejects a URL that is not https, has no host, or carries credentials,
+  and it does not follow redirects. With no host-only binding, the host posts nothing and only prints the
+  path-free summary in the terminal.
+
+Known gaps:
+- `~/.moorai` stays read-write, `config.json` included, because the hook writes its ledger, latch and
+  kill-session sentinel there.
+- The host still reads `config.json` for non-MXC settings (`isolateAgent`, `allowedTools`, `serverUrl`), as it
+  does without MXC. For example, `tool_allowed` sends `installToken` to `serverUrl` from `config.json`.
+- Whether a nested read-only grant on `config.json` takes effect under a read-write `~/.moorai` is untested.
+- An agent launched **without** MXC has the user's full rights, so it can write `mxc.json` like any other file.
+
+**Not proven (all runtime-on-Windows).** None of the following has been run:
+- ConPTY → wxc-exec → contained child: I/O, resize, Ctrl-C.
+- Kill-on-close reaching the contained child. The Job Object is assigned after spawn, so wxc-exec may already
+  have created the child.
+- The `--probe --config` argument form and its stdout shape.
+- Whether the backend's default env is the launcher's (tokens are passed only on the launcher env).
+- Claude Code under a `.claude.json` file grant (atomic rename in the profile root).
+- `safe.directory` via `GIT_CONFIG_*`.
+- PowerShell with `isolation: "desktop"`.
+- The MXC binaries' signer subject.
+- The per-user install path.
+
+The plan is in the MXC test plan (scratchpad `mxc/TEST-PLAN.md`).
+
 ## Coverage & blind spots
 
 - **Strong, native, in-band** for AI work done *inside* the host.
@@ -765,6 +906,12 @@ before this tier: a tenant can soften any entry to `notify`/`disabled` or harden
   scanned if a local file by that name exists; whether a tool sends is read from its name; #65 runs on
   the arguments, not on file content; `mask` cannot rewrite a file, so it falls back. Not tested against
   a live MCP server or on Windows.
+- **Content headed for an index** (B.12) is inspected only where something calls MoorAI first: an app
+  using `scanBeforeEmbed` / `guardEmbed` or `/v1/index-scan`, or a vector-store write over MCP whose
+  tool matches `policy.indexTools` or the name / argument heuristic. **Blind spots:** ingestion that
+  never calls MoorAI, an in-process vector library, an unrecognised store tool, and bulk imports a store
+  runs itself. Not tested against a real Chroma, Qdrant, Pinecone, Weaviate or mem0 MCP server; tested
+  against the fake MCP server and fake remote upstream with tool names modelled on theirs.
 - **Headless agents** (CI, containers, Agent SDK services) are covered by the same hook in server mode
   (above), observed in one live `claude -p` run, or in process by `@moorai/agent-sdk` and the
   `moorai-serve` sidecar. **Blind spot:** an Agent SDK service and a CI run have not been watched end to

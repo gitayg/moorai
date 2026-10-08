@@ -1,0 +1,114 @@
+{
+  "_note": "Shared by cli/local-ai-windows.mjs parseOdrList and src-tauri/src/local_ai_windows.rs parse_odr_list. CONSTRUCTED from the two documented shapes (learn.microsoft.com/windows/ai/mcp/quickstart-mcp-host; github.com/microsoft/mcp-on-windows-samples @ 70e11f7 mcp-client-js/app.js) — not captured from a device.",
+  "leaks": [
+    "SECRET",
+    "C:",
+    "\\",
+    "mcp.example.com",
+    "8wekyb3d8bbwe",
+    "1234567890abc",
+    "server.exe",
+    "manifest.json"
+  ],
+  "cases": [
+    {
+      "name": "sample-repo shape: structuredContent.servers, PFN identifiers, an MCP bundle, a remote",
+      "stdout": "{\"structuredContent\":{\"servers\":[{\"server\":{\"name\":\"contoso-file-tools\",\"version\":\"1.0.0\",\"packages\":[{\"identifier\":\"Contoso.FileTools_8wekyb3d8bbwe\"}]}},{\"server\":{\"name\":\"weather-bundle\",\"packages\":[{\"registryType\":\"mcpb\",\"identifier\":\"C:\\\\Users\\\\dev\\\\AppData\\\\Local\\\\Weather\\\\manifest.json\"}]}},{\"server\":{\"name\":\"remote-crm\",\"remotes\":[{\"type\":\"streamable-http\",\"url\":\"https://mcp.example.com/mcp?token=SECRETREMOTE\"}],\"packages\":[{\"identifier\":\"Fabrikam.Crm_8wekyb3d8bbwe\"}]}},{\"server\":{\"name\":\"msix-by-type\",\"packages\":[{\"registryType\":\"msix\",\"identifier\":\"Fabrikam.Notes\"}]}}]}}",
+      "expect": {
+        "count": 4,
+        "items": [
+          {
+            "name": "contoso-file-tools",
+            "packaged": true,
+            "contained": true
+          },
+          {
+            "name": "weather-bundle",
+            "packaged": false,
+            "contained": false
+          },
+          {
+            "name": "remote-crm",
+            "packaged": true,
+            "contained": false
+          },
+          {
+            "name": "msix-by-type",
+            "packaged": true,
+            "contained": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "Learn quickstart shape: a bare array of { manifest }; command, args and path-like names withheld",
+      "stdout": "[{\"manifest\":{\"manifest_version\":\"0.3\",\"name\":\"Sample-dotnet-MSIX-server\",\"server\":{\"type\":\"binary\",\"entry_point\":\"SampleDotNetMCPServer.McpServer.exe\",\"mcp_config\":{\"command\":\"C:\\\\Users\\\\dev\\\\secret\\\\server.exe\",\"args\":[\"--token\",\"SECRETARG\"]}},\"_meta\":{\"com.microsoft.windows\":{\"static_responses\":{}}}}},{\"manifest\":{\"name\":\"C:\\\\Users\\\\dev\\\\evil-path-name\",\"server\":{\"mcp_config\":{\"command\":\"x.exe\"}}}},{\"name\":\"  ctl\\u0007name\\u0000  \"},\"not-an-object\"]",
+      "expect": {
+        "count": 3,
+        "items": [
+          {
+            "name": "Sample-dotnet-MSIX-server",
+            "packaged": false,
+            "contained": false
+          },
+          {
+            "name": null,
+            "packaged": false,
+            "contained": false
+          },
+          {
+            "name": "ctlname",
+            "packaged": false,
+            "contained": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "{ servers: [] } shape",
+      "stdout": "{\"servers\":[{\"name\":\"plain\",\"packages\":[{\"identifier\":\"Plain.App_1234567890abc\"}]}]}",
+      "expect": {
+        "count": 1,
+        "items": [
+          {
+            "name": "plain",
+            "packaged": true,
+            "contained": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "an empty registry",
+      "stdout": "{\"structuredContent\":{\"servers\":[]}}",
+      "expect": {
+        "count": 0,
+        "items": []
+      }
+    },
+    {
+      "name": "a URL as the name is withheld",
+      "stdout": "[{\"server\":{\"name\":\"https://mcp.example.com/x\"}}]",
+      "expect": {
+        "count": 1,
+        "items": [
+          {
+            "name": null,
+            "packaged": false,
+            "contained": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "not JSON (an older build printing usage text)",
+      "stdout": "'odr.exe' is not recognized as an internal or external command",
+      "expect": null
+    },
+    {
+      "name": "JSON with no server list",
+      "stdout": "{\"structuredContent\":{\"text\":\"hello\"}}",
+      "expect": null
+    }
+  ]
+}

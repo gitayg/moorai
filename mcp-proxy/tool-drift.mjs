@@ -28,7 +28,8 @@
 // listed while the policy was still "alert" is remembered unjudged (observe) and judged on its first
 // call after a switch to "block", so the switch does not strand a live session. In block mode a call to
 // a tool that was never in a listing MoorAI could check (an over-cap response, a client that never
-// listed) is refused: block mode fails closed on what it could not see.
+// listed) is refused: block mode fails closed on what it could not see. That includes a tool an EARLIER
+// listing passed: a listing that goes unjudged clears every verdict for that server (invalidate()).
 import { mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { STATE_DIR } from "../cli/state-dirs.mjs";
@@ -156,10 +157,16 @@ export function createDriftTracker({ server, dir = STATE_DIR }) {
     verdicts.set(name, v);
   };
 
+  // A paged first sighting: the server had no baseline when page 1 of this listing arrived, so every
+  // later page of the same listing is a first sighting too, not "added after" page 1. It ends with the
+  // listing's last page (no nextCursor) or the next listing that starts again from page 1.
+  let pagedFirstSighting = false;
+
   // A block-mode tools/list. `complete` = this listing is the server's whole list (not a page), the
   // only case where an absent tool means a removed one and the fingerprints are worth reporting.
+  // `continued` = the request carried a cursor (a later page); `last` = the response has no nextCursor.
   // → { keep, quarantined: [{ name, signals }], removed: [signal], fingerprints | null, changed }.
-  function evaluateListing(tools, { policy, complete }) {
+  function evaluateListing(tools, { policy, complete, continued = false, last = true }) {
     const approved = approvedBaselines(policy, dir);
     const local = loadBaseline(dir);
     let counter = 0;
@@ -168,6 +175,9 @@ export function createDriftTracker({ server, dir = STATE_DIR }) {
       if ((t.n || 0) > counter) counter = t.n || 0;
       if (t.srv === srv) serverHasLocal = true;
     }
+    if (!continued) pagedFirstSighting = !serverHasLocal && !last;
+    else if (pagedFirstSighting) serverHasLocal = false;
+    if (last) pagedFirstSighting = false;
     const ctx = { server, approved, local, serverHasLocal };
     const keep = [], quarantined = [], seen = new Set(), fingerprints = [];
     for (const tool of tools) {
@@ -215,13 +225,20 @@ export function createDriftTracker({ server, dir = STATE_DIR }) {
   // An alert-mode listing: remember the identity, unjudged (signals: null), for a later switch to block.
   function observe(name, cur) { remember(String(name), { cur, signals: null }); }
 
-  return { evaluateListing, checkCall, observe, has: (name) => verdicts.has(name) };
+  // A tools/list this server sent that could not be judged (over the line cap, unparseable, a judgement
+  // that threw). What it advertised is unknown, so no earlier verdict may vouch for any tool: every call
+  // is refused as not in a checked listing until a listing is judged again.
+  function invalidate() { verdicts.clear(); }
+
+  return { evaluateListing, checkCall, observe, invalidate, has: (name) => verdicts.has(name) };
 }
 
 // The content-free fingerprints of a complete listing, posted so the console can pin them on approval
 // and show "tools changed since approval". Deduped per process on the set's digest; fire-and-forget.
+// `actor` is the reporting device's content-free actor hash (the one every alert carries): the install
+// token is per tenant, so it is how the console tells one device's report from another's.
 const REPORTED = new Set();
-export function reportFingerprints({ config, server, fingerprints, enrolled }) {
+export function reportFingerprints({ config, server, fingerprints, enrolled, actor }) {
   if (!enrolled || !fingerprints || !config || !config.serverUrl) return;
   try {
     const tools = fingerprints.map((f) => ({ key: f.key, srv: f.srv, desc: f.desc, schema: f.schema })).sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
@@ -232,7 +249,7 @@ export function reportFingerprints({ config, server, fingerprints, enrolled }) {
     fetch(`${config.serverUrl}/api/mcp/tools`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(config.installToken ? { "X-Install-Token": config.installToken } : {}) },
-      body: JSON.stringify({ server, tools }),
+      body: JSON.stringify({ server, tools, ...(actor ? { actor } : {}) }),
       signal: AbortSignal.timeout(1500)
     }).catch(() => {});
   } catch { /* evidence for the console, never enforcement */ }

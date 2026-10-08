@@ -1,36 +1,26 @@
-// RUNNING local model servers and local HTTP/SSE MCP servers — the Rust host's mirror of
-// cli/aibom-runtime.mjs (read that file for the sources behind each runtime rule). Same probes, same
-// 5 s timeout each, same fail-open, same output shapes; test/aibom-rust-parity.test.mjs pins RUNTIMES
-// to the JS table.
-//   macOS / Linux  lsof +c 0 -iTCP -sTCP:LISTEN -nP   → command NAME + port
-//                  ps -A -o comm=                       → command NAMES (never args / environ)
-//   Windows        netstat -ano                         → PID + port
-//                  tasklist /FO CSV /NH                 → image NAME per PID
-// Only process names and port numbers are kept.
-use regex::Regex;
+// RUNNING local model servers and local HTTP/SSE MCP servers, and the shared probe runner. The local-AI
+// half lives in listen_sockets.rs (sockets + process names), local_ai.rs (runtime table, installed
+// runtimes) and local_ai_windows.rs (Windows AI platform, ODR agent connectors) — the Rust mirrors of
+// cli/listen-sockets.mjs, cli/local-ai-inventory.mjs and cli/local-ai-windows.mjs. This file keeps the
+// runner (execFileSync twin), the MCP-listener match (cli/aibom-runtime.mjs localMcpListeners) and
+// collect(), the one probe pass the device report runs. Only process names and port numbers are kept.
+use crate::listen_sockets::{probe_sockets, Listener};
+use crate::local_ai::{installed_runtimes, running_runtimes, InstallEnv, InstalledRuntime};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::io::Read;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-
-// (runtime, process names, default ports, a listener on the port counts on its own)
-pub const RUNTIMES: &[(&str, &[&str], &[u16], bool)] = &[
-    ("ollama", &["ollama", "ollama app"], &[11434], true),
-    ("lmstudio", &["lm studio", "lms"], &[], false),
-    ("llama.cpp", &["llama-server"], &[8080], false),
-    ("vllm", &["vllm"], &[8000], false),
-];
 
 pub const TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_BUFFER: usize = 8 * 1024 * 1024;
 
-// The probe seam: (command, args) → stdout, or None when it could not run. Tests pass canned output.
-pub type Runner<'a> = &'a dyn Fn(&str, &[&str]) -> Option<String>;
+// The probe seam: (command, args, timeout) → stdout, or None when it could not run. Tests pass canned output.
+pub type Runner<'a> = &'a dyn Fn(&str, &[&str], Duration) -> Option<String>;
 
-// execFileSync twin: stdin/stderr ignored, 5 s timeout (child killed), 8 MB cap. A non-zero exit that
+// execFileSync twin: stdin/stderr ignored, timeout (child killed), 8 MB cap. A non-zero exit that
 // still printed something returns what it printed (lsof exits 1 when it has nothing more to list).
-pub fn default_runner(cmd: &str, args: &[&str]) -> Option<String> {
+pub fn default_runner(cmd: &str, args: &[&str], timeout: Duration) -> Option<String> {
     use std::process::{Command, Stdio};
     let mut c = Command::new(cmd);
     c.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
@@ -52,7 +42,7 @@ pub fn default_runner(cmd: &str, args: &[&str]) -> Option<String> {
             b.extend_from_slice(&chunk[..n]);
         }
     });
-    let deadline = Instant::now() + TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break Some(s),
@@ -70,115 +60,14 @@ pub fn default_runner(cmd: &str, args: &[&str]) -> Option<String> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Listener { pub proc_name: String, pub port: u16, pub bind: &'static str }
-
-// basename, no .exe, lsof's \x20 escapes decoded, lower-case (normName)
-pub fn norm_name(s: &str) -> String {
-    static HEX: OnceLock<Regex> = OnceLock::new();
-    let hex = HEX.get_or_init(|| Regex::new(r"\\x([0-9a-fA-F]{2})").unwrap());
-    let decoded = hex.replace_all(s, |c: &regex::Captures| char::from(u8::from_str_radix(&c[1], 16).unwrap()).to_string());
-    let base = decoded.trim().rsplit(['/', '\\']).next().unwrap_or("").to_string();
-    let base = if base.len() >= 4 && base[base.len() - 4..].eq_ignore_ascii_case(".exe") { base[..base.len() - 4].to_string() } else { base };
-    base.to_lowercase()
-}
-
-fn bind_of(host: &str) -> &'static str {
-    let h = host.strip_prefix('[').unwrap_or(host);
-    let h = h.strip_suffix(']').unwrap_or(h).to_lowercase();
-    if h.starts_with("127.") || h == "::1" || h == "localhost" { "loopback" } else { "network" }
-}
-
-// "127.0.0.1:11434" / "*:8080" / "[::1]:8000" → (host, port)
-fn split_addr(a: &str) -> Option<(&str, u16)> {
-    let i = a.rfind(':')?;
-    let port: u32 = a[i + 1..].parse().ok()?;
-    if port > 0 && port < 65536 { Some((&a[..i], port as u16)) } else { None }
-}
-
-fn pid_names(csv: Option<&str>) -> Vec<(String, String)> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r#"^"([^"]*)","(\d+)""#).unwrap());
-    let mut out: Vec<(String, String)> = vec![];
-    for line in csv.unwrap_or("").split('\n') {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if let Some(m) = re.captures(line) {
-            let (name, pid) = (m[1].to_string(), m[2].to_string());
-            // Map.set: a repeated pid keeps its insertion slot, takes the latest name
-            if let Some(e) = out.iter_mut().find(|(p, _)| *p == pid) { e.1 = name; } else { out.push((pid, name)); }
-        }
-    }
-    out
-}
-
-// → listeners, or None when the probe could not run.
-pub fn probe_listeners(runner: Runner, windows: bool) -> Option<Vec<Listener>> {
-    let mut out: Vec<Listener> = vec![];
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut add = |proc_name: &str, addr: &str| {
-        let Some((host, port)) = split_addr(addr) else { return };
-        let rec = Listener { proc_name: norm_name(proc_name), port, bind: bind_of(host) };
-        if seen.insert(format!("{}|{}|{}", rec.proc_name, rec.port, rec.bind)) { out.push(rec); }
-    };
-    if windows {
-        let ns = runner("netstat", &["-ano"])?;
-        let names = pid_names(runner("tasklist", &["/FO", "CSV", "/NH"]).as_deref());
-        static FOREIGN: OnceLock<Regex> = OnceLock::new();
-        let foreign = FOREIGN.get_or_init(|| Regex::new(r"^(0\.0\.0\.0|\[::\]):0$").unwrap());
-        for line in ns.split('\n') {
-            let t: Vec<&str> = line.split_whitespace().collect();
-            // TCP <local> <foreign> <state> <pid>. Listening = all-zero foreign address (state word is localised).
-            if t.len() < 5 || t[0] != "TCP" || !foreign.is_match(t[2]) { continue; }
-            let pid = t[t.len() - 1];
-            let name = names.iter().find(|(p, _)| p == pid).map(|(_, n)| n.as_str()).unwrap_or("");
-            add(name, t[1]);
-        }
-        return Some(out);
-    }
-    let txt = runner("lsof", &["+c", "0", "-iTCP", "-sTCP:LISTEN", "-nP"])?;
-    static LSOF: OnceLock<Regex> = OnceLock::new();
-    let re = LSOF.get_or_init(|| Regex::new(r"^(\S+)\s+\d+\s.*(?-u:\b)TCP\s+(\S+)\s+\(LISTEN\)\s*$").unwrap());
-    for line in txt.split('\n') {
-        if let Some(m) = re.captures(line) { add(&m[1], &m[2]); }
-    }
-    Some(out)
-}
-
-// → normalised process names, or None when the probe could not run. Command NAME only.
-pub fn probe_processes(runner: Runner, windows: bool) -> Option<Vec<String>> {
-    let names: Vec<String> = if windows {
-        pid_names(Some(&runner("tasklist", &["/FO", "CSV", "/NH"])?)).into_iter().map(|(_, n)| norm_name(&n)).collect()
-    } else {
-        runner("ps", &["-A", "-o", "comm="])?.split('\n').map(norm_name).filter(|n| !n.is_empty()).collect()
-    };
-    let mut seen = HashSet::new();
-    Some(names.into_iter().filter(|n| seen.insert(n.clone())).collect())
+// The process probe's platform name, spelled like Node's process.platform.
+pub fn platform_name() -> &'static str {
+    if cfg!(windows) { "win32" } else if cfg!(target_os = "macos") { "darwin" } else { "linux" }
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct LocalRuntime { pub runtime: String, pub running: bool, pub ports: Vec<u16>, pub bind: String, pub detected_by: Vec<String> }
-
-pub fn local_runtimes(listeners: Option<&[Listener]>, processes: Option<&[String]>) -> Vec<LocalRuntime> {
-    let l = listeners.unwrap_or(&[]);
-    let p: HashSet<&str> = processes.unwrap_or(&[]).iter().map(|s| s.as_str()).collect();
-    let mut out = vec![];
-    for (runtime, names, ports, port_alone) in RUNTIMES {
-        let by_name: Vec<&Listener> = l.iter().filter(|x| names.contains(&x.proc_name.as_str())).collect();
-        let by_port: Vec<&Listener> = if *port_alone { l.iter().filter(|x| ports.contains(&x.port)).collect() } else { vec![] };
-        let proc_seen = names.iter().any(|n| p.contains(n)) || !by_name.is_empty();
-        if !proc_seen && by_port.is_empty() { continue; }
-        let ls: Vec<&Listener> = by_name.iter().chain(by_port.iter()).copied().collect();
-        let mut ps: Vec<u16> = ls.iter().map(|x| x.port).collect::<HashSet<_>>().into_iter().collect();
-        ps.sort_unstable();
-        let bind = if ls.is_empty() { "unknown" } else if ls.iter().any(|x| x.bind == "network") { "network" } else { "loopback" };
-        let mut detected_by = vec![];
-        if proc_seen { detected_by.push("process".to_string()); }
-        if !by_port.is_empty() { detected_by.push("port".to_string()); }
-        out.push(LocalRuntime { runtime: runtime.to_string(), running: true, ports: ps, bind: bind.into(), detected_by });
-    }
-    out
-}
+pub struct LocalRuntime { pub runtime: String, pub running: bool, pub ports: Vec<u16>, pub bind: String, pub listening: Option<String>, pub detected_by: Vec<String> }
 
 // An MCP server declared with a URL in the configs the AIBOM reads — in memory only.
 pub struct McpDecl { pub name: String, pub scope: String, pub url: String, pub typ: Option<String>, pub transport: Option<String> }
@@ -229,22 +118,49 @@ pub fn local_mcp_listeners(decls: &[McpDecl], listeners: Option<&[Listener]>) ->
     out
 }
 
-// The device-report entry point: one probe pass, both signals.
-pub fn collect(home: &str) -> (Vec<LocalRuntime>, Vec<McpListener>) {
-    let windows = cfg!(windows);
-    let listeners = probe_listeners(&default_runner, windows);
-    let processes = probe_processes(&default_runner, windows);
-    let runtimes = local_runtimes(listeners.as_deref(), processes.as_deref());
-    let mcp = local_mcp_listeners(&mcp_decls(home), listeners.as_deref());
-    (runtimes, mcp)
+// The device-report entry point: one probe pass for every local-AI signal. The two Windows probes
+// (PowerShell up to 10 s, odr.exe up to 5 s) run on their own threads beside the socket probe, so the
+// report waits for the slowest probe, not their sum. device_ai_assets is an async command, so none of
+// this runs on the UI thread or delays app start.
+pub struct LocalAiReport {
+    pub runtimes: Vec<LocalRuntime>,
+    pub mcp: Vec<McpListener>,
+    pub installed: Vec<InstalledRuntime>,
+    pub windows_ai: Option<serde_json::Value>,
+    pub agent_connectors: Option<serde_json::Value>,
+    // "unavailable" when neither sockets nor process names could be read (the JS AIBOM's runtimeProbe)
+    pub runtime_probe: &'static str,
+}
+
+pub fn collect(home: &str) -> LocalAiReport {
+    let platform = platform_name();
+    let windows = platform == "win32";
+    std::thread::scope(|sc| {
+        let win_ai = windows.then(|| sc.spawn(|| crate::local_ai_windows::windows_ai_platform(&default_runner)));
+        let odr = windows.then(|| sc.spawn(|| crate::local_ai_windows::odr_agent_connectors(&default_runner)));
+        let sockets = probe_sockets(&default_runner, platform, &|p| std::fs::read_to_string(p).ok());
+        let env = |k: &str| std::env::var(k).ok();
+        let exists = |p: &str| std::path::Path::new(p).exists();
+        let read = |p: &str| std::fs::read_to_string(p).ok();
+        let installed = installed_runtimes(&InstallEnv { platform, home, env: &env, exists: &exists, read_file: &read });
+        let runtime_probe = if sockets.listeners.is_none() && sockets.processes.is_none() { "unavailable" } else { "ok" };
+        LocalAiReport {
+            runtime_probe,
+            runtimes: running_runtimes(sockets.listeners.as_deref(), sockets.processes.as_deref()),
+            mcp: local_mcp_listeners(&mcp_decls(home), sockets.listeners.as_deref()),
+            installed,
+            windows_ai: win_ai.and_then(|h| h.join().ok().flatten()),
+            agent_connectors: odr.and_then(|h| h.join().ok().flatten()),
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use crate::local_ai::running_runtimes;
 
-    // Same canned output as test/aibom-runtime.test.mjs.
+    // Same canned output as test/aibom-runtime.test.mjs, now with the pid-carrying ps the new probe asks for.
     const LSOF: &str = "COMMAND                       PID       USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
 ollama                      64889 dev    4u  IPv4 0xd74f2b7e8dff72c6      0t0  TCP 127.0.0.1:11434 (LISTEN)
 LM\\x20Studio                 7001 dev   40u  IPv4 0x0000000000000001      0t0  TCP 127.0.0.1:1234 (LISTEN)
@@ -252,103 +168,78 @@ llama-server                7100 dev    3u  IPv4 0x0000000000000002      0t0  TC
 node                        7200 dev   17u  IPv6 0x0000000000000003      0t0  TCP [::1]:8000 (LISTEN)
 node                        7201 dev   18u  IPv4 0x0000000000000004      0t0  TCP 127.0.0.1:3333 (LISTEN)
 ";
-    const PS: &str = "/Applications/Ollama.app/Contents/Resources/ollama
-/Applications/LM Studio.app/Contents/MacOS/LM Studio
-/usr/local/bin/llama-server
-/usr/local/bin/node
-/bin/zsh
+    const PS: &str = "64889 /Applications/Ollama.app/Contents/Resources/ollama
+ 7001 /Applications/LM Studio.app/Contents/MacOS/LM Studio
+ 7100 /usr/local/bin/llama-server
+ 7200 /usr/local/bin/node
+  900 /bin/zsh
 ";
-    const NETSTAT: &str = "\r\nActive Connections\r\n\r\n  Proto  Local Address          Foreign Address        State           PID\r\n  TCP    127.0.0.1:11434        0.0.0.0:0              LISTENING       4100\r\n  TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       4200\r\n  TCP    [::1]:1234             [::]:0                 ABH\u{d6}REN         4300\r\n  TCP    127.0.0.1:50000        127.0.0.1:11434        ESTABLISHED     9999\r\n  UDP    0.0.0.0:5353           *:*                                    4400\r\n";
-    const TASKLIST: &str = "\"ollama.exe\",\"4100\",\"Console\",\"1\",\"45,000 K\"\r\n\"llama-server.exe\",\"4200\",\"Console\",\"1\",\"90,000 K\"\r\n\"LM Studio.exe\",\"4300\",\"Console\",\"1\",\"300,000 K\"\r\n\"svchost.exe\",\"4400\",\"Services\",\"0\",\"9,000 K\"\r\n";
 
-    fn canned(outputs: &'static [(&'static str, &'static str)]) -> (impl Fn(&str, &[&str]) -> Option<String>, std::rc::Rc<RefCell<Vec<Vec<String>>>>) {
-        let calls = std::rc::Rc::new(RefCell::new(vec![]));
-        let c = calls.clone();
-        (move |cmd: &str, args: &[&str]| {
-            c.borrow_mut().push(std::iter::once(cmd.to_string()).chain(args.iter().map(|a| a.to_string())).collect());
-            outputs.iter().find(|(k, _)| *k == cmd).map(|(_, v)| v.to_string())
-        }, calls)
+    fn canned(outputs: &'static [(&'static str, &'static str)]) -> impl Fn(&str, &[&str], Duration) -> Option<String> {
+        move |cmd: &str, _: &[&str], _: Duration| outputs.iter().find(|(k, _)| *k == cmd).map(|(_, v)| v.to_string())
     }
-    fn lis(p: &str, port: u16, bind: &'static str) -> Listener { Listener { proc_name: p.into(), port, bind } }
+    fn lis(p: &str, port: u16, bind: &'static str) -> Listener { Listener { pid: None, proc_name: p.into(), port, bind } }
     fn rt(runtime: &str, ports: &[u16], bind: &str, by: &[&str]) -> LocalRuntime {
-        LocalRuntime { runtime: runtime.into(), running: true, ports: ports.to_vec(), bind: bind.into(), detected_by: by.iter().map(|s| s.to_string()).collect() }
-    }
-
-    #[test]
-    fn posix_lsof_listeners_parsed_names_decoded() {
-        let (r, _) = canned(&[("lsof", LSOF)]);
-        let l = probe_listeners(&r, false).unwrap();
-        let at = |port| l.iter().find(|x| x.port == port).cloned().unwrap();
-        assert_eq!(at(11434), lis("ollama", 11434, "loopback"));
-        assert_eq!(at(1234), lis("lm studio", 1234, "loopback"));
-        assert_eq!(at(8080), lis("llama-server", 8080, "network"));
-        assert_eq!(at(8000), lis("node", 8000, "loopback"));
-    }
-
-    #[test]
-    fn posix_process_probe_asks_for_the_command_name_only() {
-        let (r, calls) = canned(&[("ps", PS)]);
-        let names = probe_processes(&r, false).unwrap();
-        for n in ["ollama", "lm studio", "llama-server"] { assert!(names.contains(&n.to_string()), "{n}"); }
-        assert_eq!(calls.borrow()[0], ["ps", "-A", "-o", "comm="]);
+        LocalRuntime { runtime: runtime.into(), running: true, ports: ports.to_vec(), bind: bind.into(), listening: Some(bind.into()), detected_by: by.iter().map(|s| s.to_string()).collect() }
     }
 
     #[test]
     fn runtimes_process_plus_distinctive_port_generic_ports_need_the_name() {
-        let (r1, _) = canned(&[("lsof", LSOF)]);
-        let (r2, _) = canned(&[("ps", PS)]);
-        let l = probe_listeners(&r1, false).unwrap();
-        let p = probe_processes(&r2, false).unwrap();
-        let out = local_runtimes(Some(&l), Some(&p));
+        let r = canned(&[("lsof", LSOF), ("ps", PS)]);
+        let s = probe_sockets(&r, "darwin", &|_| None);
+        let out = running_runtimes(s.listeners.as_deref(), s.processes.as_deref());
         assert_eq!(out, vec![
             rt("ollama", &[11434], "loopback", &["process", "port"]),
             rt("lmstudio", &[1234], "loopback", &["process"]),
             rt("llama.cpp", &[8080], "network", &["process"]),
         ], "a node dev server on :8000 is NOT vLLM");
         let json = serde_json::to_string(&out[0]).unwrap();
-        assert_eq!(json, r#"{"runtime":"ollama","running":true,"ports":[11434],"bind":"loopback","detectedBy":["process","port"]}"#);
+        assert_eq!(json, r#"{"runtime":"ollama","running":true,"ports":[11434],"bind":"loopback","listening":"loopback","detectedBy":["process","port"]}"#);
     }
 
     #[test]
     fn ollama_default_port_counts_alone_generic_port_never_does() {
-        assert_eq!(local_runtimes(Some(&[lis("com.docker.backend", 11434, "loopback")]), Some(&[])),
+        assert_eq!(running_runtimes(Some(&[lis("com.docker.backend", 11434, "loopback")]), Some(&[])),
             vec![rt("ollama", &[11434], "loopback", &["port"])]);
-        assert!(local_runtimes(Some(&[lis("python3", 8000, "loopback")]), Some(&["python3".into()])).is_empty());
+        assert!(running_runtimes(Some(&[lis("python3", 8000, "loopback")]), Some(&["python3".into()])).is_empty());
     }
 
     #[test]
     fn windows_netstat_and_tasklist_joined_by_pid() {
-        let (r, calls) = canned(&[("netstat", NETSTAT), ("tasklist", TASKLIST)]);
-        let l = probe_listeners(&r, true).unwrap();
-        assert_eq!(l.iter().find(|x| x.port == 11434).cloned().unwrap(), lis("ollama", 11434, "loopback"));
-        assert_eq!(l.iter().find(|x| x.port == 1234).cloned().unwrap(), lis("lm studio", 1234, "loopback"));
+        const NETSTAT: &str = "\r\nActive Connections\r\n\r\n  Proto  Local Address          Foreign Address        State           PID\r\n  TCP    127.0.0.1:11434        0.0.0.0:0              LISTENING       4100\r\n  TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       4200\r\n  TCP    [::1]:1234             [::]:0                 ABH\u{d6}REN         4300\r\n  TCP    127.0.0.1:50000        127.0.0.1:11434        ESTABLISHED     9999\r\n  UDP    0.0.0.0:5353           *:*                                    4400\r\n";
+        const TASKLIST: &str = "\"ollama.exe\",\"4100\",\"Console\",\"1\",\"45,000 K\"\r\n\"llama-server.exe\",\"4200\",\"Console\",\"1\",\"90,000 K\"\r\n\"LM Studio.exe\",\"4300\",\"Console\",\"1\",\"300,000 K\"\r\n\"svchost.exe\",\"4400\",\"Services\",\"0\",\"9,000 K\"\r\n";
+        let r = canned(&[("netstat", NETSTAT), ("tasklist", TASKLIST)]);
+        let s = probe_sockets(&r, "win32", &|_| None);
+        let l = s.listeners.clone().unwrap();
         assert!(!l.iter().any(|x| x.port == 50000), "established connection is not a listener");
         assert!(!l.iter().any(|x| x.port == 5353), "UDP ignored");
-        let p = probe_processes(&r, true).unwrap();
-        let mut names: Vec<String> = local_runtimes(Some(&l), Some(&p)).into_iter().map(|x| x.runtime).collect();
+        let mut names: Vec<String> = running_runtimes(Some(&l), s.processes.as_deref()).into_iter().map(|x| x.runtime).collect();
         names.sort();
         assert_eq!(names, ["llama.cpp", "lmstudio", "ollama"]);
-        for c in calls.borrow().iter() { assert!(!c.iter().any(|a| a == "/V" || a == "/v" || a.contains("args")), "no verbose/args flags: {c:?}"); }
     }
 
     #[test]
     fn fail_open_missing_tool_yields_none_and_no_runtimes() {
-        let (r, _) = canned(&[]);
-        assert_eq!(probe_listeners(&r, false), None);
-        assert_eq!(probe_processes(&r, false), None);
-        assert_eq!(probe_listeners(&r, true), None);
-        assert!(local_runtimes(None, None).is_empty());
+        let r = canned(&[]);
+        for p in ["darwin", "linux", "win32"] {
+            let s = probe_sockets(&r, p, &|_| None);
+            assert!(s.listeners.is_none() && s.processes.is_none(), "{p}");
+        }
+        assert!(running_runtimes(None, None).is_empty());
     }
 
     #[test]
     fn default_runner_missing_binary_is_none_and_timeout_is_bounded() {
-        assert_eq!(default_runner("moorai-definitely-not-a-command", &[]), None);
+        assert_eq!(default_runner("moorai-definitely-not-a-command", &[], TIMEOUT), None);
         #[cfg(unix)]
         {
             let t = Instant::now();
-            let out = default_runner("sh", &["-c", "echo partial; sleep 30"]);
+            let out = default_runner("sh", &["-c", "echo partial; sleep 30"], TIMEOUT);
             assert!(t.elapsed() < Duration::from_secs(7), "5 s timeout enforced, took {:?}", t.elapsed());
             assert_eq!(out.as_deref(), Some("partial\n"), "partial output kept, like execFileSync's e.stdout");
+            let t = Instant::now();
+            let _ = default_runner("sh", &["-c", "sleep 30"], Duration::from_millis(300));
+            assert!(t.elapsed() < Duration::from_secs(2), "per-call timeout honoured, took {:?}", t.elapsed());
         }
     }
 
@@ -394,10 +285,4 @@ node                        7201 dev   18u  IPv4 0x0000000000000004      0t0  TC
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn norm_name_rules() {
-        assert_eq!(norm_name("LM\\x20Studio"), "lm studio");
-        assert_eq!(norm_name("C:\\Program Files\\Ollama\\ollama.EXE"), "ollama");
-        assert_eq!(norm_name("  /usr/bin/llama-server \n"), "llama-server");
-    }
 }

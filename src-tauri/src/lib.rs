@@ -1,6 +1,13 @@
 mod ai_keys;
 mod ai_runtime;
+mod console_binding;
 mod content_hash;
+mod listen_sockets;
+mod local_ai;
+mod local_ai_windows;
+mod mxc;
+mod mxc_denials;
+mod mxc_launch;
 mod ocr;
 mod ocr_provider;
 #[cfg(target_os = "macos")]
@@ -51,9 +58,14 @@ fn term_open(app: tauri::AppHandle, state: tauri::State<Term>, cols: u16, rows: 
     // UI a devtools user could invoke around). Claude is the always-available baseline; codex/
     // copilot require an allow confirmed with the server. This can't stop a user running the CLI
     // entirely outside MoorAI — that's inherent to their own machine — it's governance, not a sandbox.
-    if tool != "claude" && !tool_allowed(tool) {
-        let _ = app.emit("term-data", format!("\x1b[31m[MoorAI] {tool} is not permitted by your organization's policy.\x1b[0m\r\n"));
-        return Err(format!("{tool} not permitted by policy"));
+    if tool != "claude" {
+        let decision = tool_allowed(tool);
+        // A refused or ignored console binding is shown, not swallowed (console_binding.rs).
+        if let Some(w) = &decision.warning { let _ = app.emit("term-data", format!("\x1b[33m[MoorAI] {w}\x1b[0m\r\n")); }
+        if !decision.allowed {
+            let _ = app.emit("term-data", format!("\x1b[31m[MoorAI] {tool} is not permitted by your organization's policy.\x1b[0m\r\n"));
+            return Err(format!("{tool} not permitted by policy"));
+        }
     }
     let pair = native_pty_system()
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
@@ -62,20 +74,53 @@ fn term_open(app: tauri::AppHandle, state: tauri::State<Term>, cols: u16, rows: 
     let _ = app.emit("term-data", format!("\x1b[2m[MoorAI] launching {tool}…\x1b[0m\r\n"));
 
     let bin = find_tool(tool).ok_or(format!("{tool} CLI not found"))?;
+    let cfg = read_config();
+    // Opt-in Windows containment through Microsoft Execution Containers (mxc_launch.rs). Default off;
+    // turning it on also turns on the Job Object launch, which is what runs when MXC is unavailable.
+    // Its settings are read from the host-only %LOCALAPPDATA%\MoorAI Host\mxc.json, NOT config.json:
+    // ~/.moorai is writable from inside the container, and the agent must not choose its next launch.
+    #[cfg(windows)]
+    let mxc_settings = mxc_host_settings();
+    #[cfg(windows)]
+    let want_mxc = mxc_settings.enabled;
+    #[cfg(not(windows))]
+    let want_mxc = false;
     // Experimental opt-in host isolation: launch the agent inside a sandbox when enabled in config.
-    let isolate = read_config().get("isolateAgent").and_then(|v| v.as_bool()).unwrap_or(false);
-    let mut cmd = platform::agent_command(&bin, isolate);
+    let isolate = want_mxc || cfg.get("isolateAgent").and_then(|v| v.as_bool()).unwrap_or(false);
     // Claude resumes the previous conversation across app restarts (only once a first session exists,
     // so a fresh install doesn't `--continue` into nothing). Codex/Copilot start a fresh session.
-    if tool == "claude" && read_config().get("hadSession").and_then(|v| v.as_bool()).unwrap_or(false) { cmd.arg("--continue"); }
+    let mut agent_args: Vec<String> = vec![];
+    if tool == "claude" && cfg.get("hadSession").and_then(|v| v.as_bool()).unwrap_or(false) { agent_args.push("--continue".into()); }
+    #[cfg(windows)]
+    let mxc_session = if want_mxc { mxc_prepare(&app, &mxc_settings, tool, &bin, &agent_args) } else { None };
+    #[cfg(not(windows))]
+    let mxc_session: Option<mxc_launch::MxcSession> = { let _ = want_mxc; None };
+    let mut cmd = match &mxc_session {
+        Some(s) => {
+            // The PTY runs wxc-exec; wxc-exec creates the contained agent (command line is in the policy).
+            let mut c = portable_pty::CommandBuilder::new(&s.plan.wxc_exec);
+            for a in &s.plan.args { c.arg(a); }
+            c
+        }
+        None => {
+            let mut c = platform::agent_command(&bin, isolate);
+            for a in &agent_args { c.arg(a); }
+            c
+        }
+    };
     // Inherit the full environment (HOME, etc.) so the agent finds its config; augment PATH.
     for (k, v) in std::env::vars() { cmd.env(k, v); }
     let home = platform::home_dir();
-    cmd.cwd(if home.is_empty() { ".".into() } else { home });
+    match &mxc_session {
+        Some(s) => cmd.cwd(&s.plan.cwd),
+        None => cmd.cwd(if home.is_empty() { ".".into() } else { home }),
+    }
     cmd.env("TERM", "xterm-256color");
     cmd.env("PATH", platform::augmented_path());
+    // The policy's own env block (TEMP, model-proxy base URL, git safe.directory) is also set on
+    // wxc-exec, so the container gets it whether MXC layers it or inherits the launcher's environment.
+    if let Some(s) = &mxc_session { for (k, v) in &s.plan.env { cmd.env(k, v); } }
     // Per-agent auth: each CLI uses its own login; we only inject a token the user explicitly saved.
-    let cfg = read_config();
     match tool {
         "claude" => {
             if let Some(tok) = cfg.get("agentToken").and_then(|v| v.as_str()) {
@@ -106,7 +151,8 @@ fn term_open(app: tauri::AppHandle, state: tauri::State<Term>, cols: u16, rows: 
     {
         if let Some(old) = state.job.lock().unwrap().take() { winsec::close_job(old); }
         if isolate {
-            if let (Some(pid), Some(job)) = (child.process_id(), winsec::create_agent_job()) {
+            let job = if mxc_session.is_some() { winsec::create_mxc_job() } else { winsec::create_agent_job() };
+            if let (Some(pid), Some(job)) = (child.process_id(), job) {
                 winsec::assign_process(job, pid);
                 *state.job.lock().unwrap() = Some(job);
             }
@@ -118,6 +164,8 @@ fn term_open(app: tauri::AppHandle, state: tauri::State<Term>, cols: u16, rows: 
     *state.master.lock().unwrap() = Some(pair.master);
 
     let app2 = app.clone();
+    #[cfg(windows)]
+    let app3 = app.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
         loop {
@@ -130,8 +178,88 @@ fn term_open(app: tauri::AppHandle, state: tauri::State<Term>, cols: u16, rows: 
     });
     // #3 — hold a killer for the new session so a "kill" verdict can terminate it out-of-band.
     *state.killer.lock().unwrap() = Some(child.clone_killer());
-    std::thread::spawn(move || { let _ = child.wait(); });
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        // MXC writes its denial report only after the contained process exits (logging-access-denied.md).
+        #[cfg(windows)]
+        if let Some(s) = mxc_session {
+            if s.plan.capture_denials {
+                if let Some(line) = mxc_launch::after_exit(&s) {
+                    let _ = app3.emit("term-data", format!("\x1b[33m[MoorAI] {line}\x1b[0m\r\n"));
+                }
+            } else if !s.keep_run {
+                let _ = std::fs::remove_dir_all(&s.run_dir);
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = mxc_session;
+    });
     Ok(())
+}
+
+// Build and probe the MXC launch for this session (Windows only). None = launch the usual way; the
+// reason is printed in the terminal so a user who turned MXC on can see why it was not used.
+#[cfg(windows)]
+fn mxc_host_settings() -> mxc_launch::MxcSettings {
+    let env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let path = mxc::expand(mxc_launch::HOST_SETTINGS_FILE, &mxc::tokens(&env, ""));
+    mxc_launch::parse_settings(std::fs::read_to_string(path).ok().as_deref())
+}
+
+#[cfg(windows)]
+fn mxc_prepare(app: &tauri::AppHandle, settings: &mxc_launch::MxcSettings, tool: &str, bin: &str, agent_args: &[String]) -> Option<mxc_launch::MxcSession> {
+    use std::collections::BTreeMap;
+    let env: BTreeMap<String, String> = std::env::vars().collect();
+    let home = platform::home_dir();
+    let local = std::env::var("LOCALAPPDATA").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| format!("{home}\\AppData\\Local"));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    // Host-only: outside every grant in the policy, so the contained agent cannot plant a denials file.
+    let run_dir = format!("{local}\\MoorAI Host\\mxc-runs\\{now}-{}", std::process::id());
+    let mut hook_texts: Vec<String> = vec![];
+    let codex_home = std::env::var("CODEX_HOME").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| format!("{home}\\.codex"));
+    let copilot_home = std::env::var("COPILOT_HOME").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| format!("{home}\\.copilot"));
+    for f in [format!("{home}\\.claude\\settings.json"), format!("{codex_home}\\hooks.json"), format!("{codex_home}\\config.toml")] {
+        if let Ok(t) = std::fs::read_to_string(&f) { hook_texts.push(t); }
+    }
+    if let Ok(rd) = std::fs::read_dir(format!("{copilot_home}\\hooks")) {
+        for e in rd.flatten() { if let Ok(t) = std::fs::read_to_string(e.path()) { hook_texts.push(t); } }
+    }
+    // Discovered from agent-writable hook configs, so plan_launch only grants a root that passes
+    // valid_hook_root (a real moorai package, not a profile root). Host-only roots come first.
+    let mut hook_roots: Vec<String> = settings.hook_roots.clone();
+    for t in &hook_texts { for r in mxc_launch::hook_roots_from_text(t) { if !hook_roots.iter().any(|x: &String| x.eq_ignore_ascii_case(&r)) { hook_roots.push(r); } } }
+    let req = mxc_launch::LaunchRequest {
+        agent: tool.to_string(),
+        agent_bin: bin.to_string(),
+        agent_args: agent_args.to_vec(),
+        workspace: settings.workspace.clone(),
+        env: env.clone(),
+        node_dir: platform::which("node").map(|p| mxc::win_dirname(&p)).unwrap_or_default(),
+        hook_roots,
+        model_proxy_port: settings.model_proxy_port.filter(|p| *p > 0).unwrap_or(mxc::DEFAULT_MODEL_PROXY_PORT),
+        egress_allow: settings.egress_allow.clone(),
+        extra_ca_certs: settings.extra_ca_certs.clone(),
+        run_dir: run_dir.clone(),
+    };
+    let host = mxc_launch::WinHost { wxc_override: Some(settings.wxc_exec.clone()).filter(|p| !p.is_empty()) };
+    match mxc_launch::plan_launch(&host, &req) {
+        Ok(plan) => {
+            let _ = app.emit("term-data", format!("\x1b[2m[MoorAI] {tool} runs inside Microsoft Execution Containers (BaseContainer).\x1b[0m\r\n"));
+            for n in &plan.notes { let _ = app.emit("term-data", format!("\x1b[2m[MoorAI] MXC: {n}\x1b[0m\r\n")); }
+            // Console binding for the host's denial alerts: host-only settings or none. config.json is
+            // agent-writable, so its serverUrl/installToken are never used for this post.
+            let (alert_endpoint, install_token, tenant) = match mxc_launch::session_console(settings) {
+                Some((e, t, n)) => (Some(e), t, n),
+                None => (None, String::new(), String::new()),
+            };
+            Some(mxc_launch::MxcSession { plan, run_dir, alert_endpoint, install_token, tenant, agent: tool.to_string(), workspace: req.workspace, env, keep_run: settings.keep_runs })
+        }
+        Err(reason) => {
+            let _ = app.emit("term-data", format!("\x1b[33m[MoorAI] MXC isolation not used: {reason}. Launching with the Job Object instead.\x1b[0m\r\n"));
+            if !settings.keep_runs { let _ = std::fs::remove_dir_all(&run_dir); }
+            None
+        }
+    }
 }
 
 // #3 — terminate the live agent PTY on a policy "kill" verdict. Callable directly by the frontend, and
@@ -189,40 +317,21 @@ fn find_tool(tool: &str) -> Option<String> { platform::find_tool(tool) }
 
 fn find_claude() -> Option<String> { find_tool("claude") }
 
-// #3 — is this agent permitted for our tenant/device? Asks the server (authoritative), falling
-// back to the frontend-cached allow-list on a network error, else deny. Unprovisioned installs
-// (no server binding) are not restricted.
-fn tool_allowed(tool: &str) -> bool {
-    let cfg = read_config();
-    let server = cfg.get("serverUrl").and_then(|v| v.as_str()).unwrap_or("");
-    let token = cfg.get("installToken").and_then(|v| v.as_str()).unwrap_or("");
-    if server.is_empty() || token.is_empty() { return true; }
-    // Offline fallback: the allow-list the frontend persists to config on each policy poll.
-    let cached = cfg.get("allowedTools").and_then(|v| v.as_array())
-        .map(|a| a.iter().any(|x| x.as_str() == Some(tool)));
-    let user = platform::username();
-    let device = platform::hostname();
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(4))
-        .build() { Ok(c) => c, Err(_) => return cached.unwrap_or(false) };
-    let resp = client
-        .get(format!("{server}/api/policy"))
-        .query(&[("user", user.as_str()), ("device", device.as_str())])
-        .header("X-Install-Token", token)
-        .send()
-        .and_then(|r| r.json::<serde_json::Value>());
-    match resp {
-        Ok(j) => j.get("allowedTools").and_then(|v| v.as_array())
-            .map(|a| a.iter().any(|x| x.as_str() == Some(tool)))
-            .unwrap_or(true), // policy without an allow-list → not restricted
-        Err(_) => cached.unwrap_or(false), // network/parse failure → last-known, else deny
-    }
+// #3 — is this agent permitted for our tenant/device? Asks the console recorded host-side at
+// enrolment (console_binding.rs — never config.json's serverUrl, which the agent can rewrite), falling
+// back to the frontend-cached allow-list on a network error, else deny. Unprovisioned installs are
+// not restricted.
+fn tool_allowed(tool: &str) -> console_binding::Decision {
+    console_binding::policy_allows(&read_config(), &console_binding::host_dir(), tool, &platform::username(), &platform::hostname(), &console_binding::real_fetch)
 }
 
 // Writes the provision config (serverUrl + tenant) to ~/.moorai/config.json — used when the
 // user enrolls by pasting an installation token in the app.
 #[tauri::command]
 fn save_provision(config: serde_json::Value) -> Result<(), String> {
+    // An enrolment (the provision carries an install token) records its console host-side first; an
+    // unsafe serverUrl refuses the enrolment before anything is written.
+    console_binding::record_enrolment(&console_binding::host_dir(), &config)?;
     let dir = platform::config_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     // Merge into the existing config so enrolling doesn't clobber agent auth / other keys.
@@ -325,9 +434,11 @@ fn cfg_val(txt: &str, key: &str, sep: char) -> Option<String> {
 // #7 — AI asset inventory: which models/providers each agent is configured for, plus local models on
 // disk. Config metadata only (default-model strings; local-model directory NAMES) — never token/auth
 // files. Feeds the console's per-device + fleet AI-asset catalog. Also AI-provider keys AT REST
-// (provider + location class + keyed hash only) and RUNNING local model / localhost MCP servers (process
-// names + ports only) — the Rust mirrors of cli/aibom-keys.mjs and cli/aibom-runtime.mjs. `async` so the
-// up-to-5 s OS probes run off the main thread.
+// (provider + location class + keyed hash only), RUNNING local model / localhost MCP servers (process
+// names + ports + loopback-vs-network only), INSTALLED local runtimes (class + version only) and, on
+// Windows, the Windows AI platform and the ODR agent connectors (names + booleans only) — the Rust
+// mirrors of cli/aibom-keys.mjs, cli/aibom-runtime.mjs and cli/local-ai-*.mjs. `async` so the OS
+// probes (5 s each, PowerShell 10 s, run in parallel) stay off the main thread.
 #[tauri::command(async)]
 fn device_ai_assets() -> serde_json::Value {
     let home = platform::home_dir();
@@ -360,8 +471,19 @@ fn device_ai_assets() -> serde_json::Value {
     }
     let key = content_hash::tenant_key();
     let keys = ai_keys::scan_keys_at_rest(&home, &|v| content_hash::hash_with_key(key.as_ref(), v));
-    let (runtimes, mcp_live) = ai_runtime::collect(&home);
-    serde_json::json!({ "providers": providers, "localModels": local, "apiKeysAtRest": keys, "localRuntimes": runtimes, "localMcpListeners": mcp_live })
+    let ai = ai_runtime::collect(&home);
+    let mut summary = serde_json::json!({
+        "runningLocalRuntimes": ai.runtimes.len(),
+        "networkLocalRuntimes": ai.runtimes.iter().filter(|r| r.listening.as_deref() == Some("network")).count(),
+        "installedLocalRuntimes": ai.installed.len(),
+    });
+    let mut out = serde_json::json!({ "providers": providers, "localModels": local, "apiKeysAtRest": keys, "localRuntimes": ai.runtimes, "localRuntimesInstalled": ai.installed, "localMcpListeners": ai.mcp, "runtimeProbe": ai.runtime_probe });
+    // Windows only, and only when the probe produced something: an absent block means "not probed or
+    // not available" (odr.exe ships from build 26220.7262), never "nothing there".
+    if let Some(w) = ai.windows_ai { out["windowsAi"] = w; }
+    if let Some(c) = ai.agent_connectors { summary["agentConnectors"] = c["count"].clone(); out["agentConnectors"] = c; }
+    out["summary"] = summary;
+    out
 }
 
 // Inventories the MCP servers each coding agent has configured (the agent "posture/config" layer).
@@ -597,7 +719,9 @@ fn identity() -> serde_json::Value {
     let cfg = read_config();
     let tenant = cfg.get("tenant").and_then(|t| t.as_str()).unwrap_or("unprovisioned").to_string();
     let install_token = cfg.get("installToken").and_then(|t| t.as_str()).unwrap_or("").to_string();
-    serde_json::json!({ "user": user, "device": device, "platform": std::env::consts::OS, "tenant": tenant, "installToken": install_token, "appVersion": env!("CARGO_PKG_VERSION") })
+    // The only origin the renderer may send the install token to (null = none), and why not, if so.
+    let console = console_binding::resolve(&console_binding::host_dir(), &cfg);
+    serde_json::json!({ "user": user, "device": device, "platform": std::env::consts::OS, "tenant": tenant, "installToken": install_token, "appVersion": env!("CARGO_PKG_VERSION"), "console": console.origin, "consoleWarning": console.warning })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

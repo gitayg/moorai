@@ -1,12 +1,13 @@
 import { DETECTORS } from "../data/detectors.js";
 import { compilePacks } from "../data/detector-packs.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
+import { effectiveContentPolicy } from "../data/content-defaults.js";
 import { TIER_OF } from "../data/data-tiers.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { DetectionEngine } from "./engine.js";
 import { Audit } from "./audit.js";
 import { COACH_TAIL } from "../data/enforcement.js";
-import { enrolled, getPolicy, postAlert, nativeLog, loadIdentity, enroll, signUp, awaitClaim, serverBase, currentTenant, setAgentAuth, getAuthMethod, setAuthMethod, openUrl, reportDevice, reportPatches, reportPrompt, reportActivity, appVersion, checkUpdate, restartApp, checkAndInstallUpdate, reportIdentity, aboutInfo } from "./api.js";
+import { consoleBound, consoleWarning, enrolled, getPolicy, postAlert, nativeLog, loadIdentity, enroll, signUp, awaitClaim, serverBase, currentTenant, setAgentAuth, getAuthMethod, setAuthMethod, openUrl, reportDevice, reportPatches, reportPrompt, reportActivity, appVersion, checkUpdate, restartApp, checkAndInstallUpdate, reportIdentity, aboutInfo } from "./api.js";
 import { ocrCapability, ocrImage, engineLabel, decideImageInspection } from "./ocr.js";
 import { BUILD } from "./buildinfo.js";
 
@@ -137,6 +138,10 @@ function updateStatusbar(reachable) {
   const srv = $("sb-server");
   srv.className = "sb-item " + (ok ? "ok" : "off");
   srv.innerHTML = `<span class="dot"></span> ${ok ? "server connected" : "server offline"}`;
+  // The host refused or ignored a console (console_binding.rs) — say so; the reason is the tooltip.
+  const cw = consoleWarning();
+  srv.title = cw || "";
+  if (cw) { srv.className = "sb-item off"; srv.innerHTML = `<span class="dot"></span> ${consoleBound() ? "console change ignored" : "console refused — install token withheld"}`; }
   $("sb-posture").textContent = policy ? (policy.posture || "warn + override") : "bundled policy";
   $("bb-policy").textContent = policy ? (policy.policyName || "Default") : "—";
   // #5 — consent-visible capture indicator. Persistent and un-dismissable while the tier is elevated,
@@ -400,7 +405,7 @@ function threatAction(id) {
 let lastFound = 0; // detections (incl. silent) from the most recent review — for prompt stats.
 
 function reviewContent(text, reviewStage, mount) {
-  const cp = policy?.contentPolicy || {};
+  const cp = effectiveContentPolicy(policy); // built-in NSFW notify default under the org's entries
   const enabled = Object.keys(cp).filter((id) => cp[id] && cp[id] !== "disabled");
   if (!enabled.length) return false;
   let blocked = false;
@@ -466,7 +471,7 @@ function reviewOutput(chunk) {
 // Used to decide whether a blocked prompt can be salvaged by redaction.
 function blocksIn(text) {
   const out = [];
-  const cp = policy?.contentPolicy || {};
+  const cp = effectiveContentPolicy(policy); // built-in NSFW notify default under the org's entries
   const enabled = Object.keys(cp).filter((id) => cp[id] && cp[id] !== "disabled");
   for (const c of engine.scanContent(text, enabled)) { const a = cp[c.ruleId] || "disabled"; if (a === "block" || a === "justify") out.push({ match: c.match, label: c.label }); }
   for (const f of engine.scan(text, "prompt")) { const a = threatAction(f.threat.id); if (a === "block" || a === "justify") out.push({ match: f.match, label: f.threat.category }); }

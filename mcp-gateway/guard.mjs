@@ -11,7 +11,8 @@
 // policy blocked) → reputation threshold → declared workload profile (./profile.mjs; the hook runs it
 // before its tool branches) → mcpGateway (server allow-list → per-tool argument rules →
 // argument content scan) → local secret egress (#65, the hook's check; the stdio proxy has none) →
-// files the arguments name (opt-in per route: only meaningful when the gateway shares a disk with them).
+// files the arguments name (opt-in per route: only meaningful when the gateway shares a disk with them) →
+// a vector-store write's documents at the "index" stage (../cli/index-tools.mjs; report-first).
 //
 // Fail-open, like the proxy: no engine, a thrown check, or a result scan past its deadline forwards the
 // original. Only an explicit deny under an enforcing device refuses; "ask" forwards (no banner exists)
@@ -25,6 +26,7 @@ import { loadBaseline, saveBaseline, driftSignals, recordTool } from "../mcp-pro
 import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON } from "../mcp-proxy/tool-drift.mjs";
 import { isEnrolled } from "../data/enforcement.js";
 import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
+import { indexWriteScan } from "../cli/index-tools.mjs";
 import { egressHits } from "../cli/secret-egress.mjs";
 import { assessServer, addToolSignals } from "../cli/mcp-reputation.mjs";
 import { reputationAction, reputationAlert, reputationSummary } from "../data/mcp-reputation.js";
@@ -167,6 +169,15 @@ export function createGuard(route) {
     else if (fsr && fsr.decision !== "allow" && fsr.decision === g.decision) g.reason = [g.reason, ...fsr.reasons].filter(Boolean).join(", ");
     const fileFindings = fsr ? fsr.findings : [];
 
+    // A vector-store write (cli/index-tools.mjs: policy.indexTools or the name / argument heuristic):
+    // its document arguments are content headed for an index, scanned at the "index" stage. Report-first;
+    // only policy.indexScanAction "block" refuses the call. Findings the argument scan already reported
+    // are not reported twice.
+    const ix = !early && g.decision !== "deny" ? indexWriteScan(ENGINE, POLICY, { tool, server: SERVER, args: rawArgs }) : null;
+    if (ix && ix.verdict === "deny") { g.decision = "deny"; g.gate = "index"; g.reason = `${tool} — vector-store write: ${ix.reasons.join(", ")}`; g.alternatives = []; }
+    const seenIds = new Set((g.findings || []).map((f) => f.threatId));
+    const indexFindings = ix ? ix.findings.filter((f) => !seenIds.has(f.threatId)) : [];
+
     // Server mode: no human will answer an "ask". The hook's rule decides it (deny by default).
     if (g.decision === "ask" && SERVER_MODE.active) {
       const s = settleHeadlessAsk(SERVER_MODE, POLICY, { decision: "ask", reason: g.reason, tool });
@@ -180,6 +191,7 @@ export function createGuard(route) {
       if (egress) alertEgress(SERVER, tool, egress.hits, false);
       alertFindings(SERVER, tool, g.findings, false);
       alertFindings(SERVER, tool, fileFindings, false, "file");
+      alertFindings(SERVER, tool, indexFindings, false, "index");
       auditCall(SERVER, tool, "coach", argsHash);
       return { block: null };
     }
@@ -188,20 +200,22 @@ export function createGuard(route) {
       if (egress) alertEgress(SERVER, tool, egress.hits, egress.block);
       alertFindings(SERVER, tool, g.findings, true);
       alertFindings(SERVER, tool, fileFindings, true, "file");
+      alertFindings(SERVER, tool, indexFindings, g.gate === "index", "index");
       auditCall(SERVER, tool, "deny", argsHash);
       return { block: g.reason || "policy" };
     }
     if (egress) alertEgress(SERVER, tool, egress.hits, false);
     alertFindings(SERVER, tool, g.findings, false);
     alertFindings(SERVER, tool, fileFindings, false, "file");
+    alertFindings(SERVER, tool, indexFindings, false, "index");
     auditCall(SERVER, tool, g.decision, argsHash);
     return { block: null };
   }
 
   // Judge one listing in block mode → { changed, names } or null when it could not run.
-  function judgeListing(tools, complete) {
+  function judgeListing(tools, shape) {
     try {
-      const ev = DRIFT.evaluateListing(tools, { policy: state.POLICY, complete });
+      const ev = DRIFT.evaluateListing(tools, { policy: state.POLICY, ...shape });
       for (const q of ev.quarantined) {
         for (const sig of q.signals) {
           if (!seenOnce(`${SERVER}|quarantine|${sig.token}`)) continue;
@@ -211,9 +225,9 @@ export function createGuard(route) {
       for (const sig of ev.removed) {
         if (seenOnce(`${SERVER}|${sig.token}`)) alertTool(SERVER, "mcp", { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "notify", reasonCode: TOOL_DRIFT_REASON });
       }
-      reportFingerprints({ config: CONFIG, server: SERVER, fingerprints: ev.fingerprints, enrolled: isEnrolled(CONFIG) });
+      reportFingerprints({ config: CONFIG, server: SERVER, fingerprints: ev.fingerprints, enrolled: isEnrolled(CONFIG), actor: IDENTITY.actor });
       return { changed: ev.changed, names: new Set(ev.quarantined.map((q) => q.name)) };
-    } catch { return null; }
+    } catch { try { DRIFT.invalidate(); } catch { /* nothing to clear */ } return null; }
   }
 
   // Block mode for a listing about to be forwarded. A gateway that has not loaded a policy yet waits
@@ -226,9 +240,9 @@ export function createGuard(route) {
     return Boolean(state.loadedAt) && driftBlocking();
   }
 
-  async function observeTools(tools, { driftDone = false, complete = false } = {}) {
+  async function observeTools(tools, { driftDone = false, shape = { complete: false } } = {}) {
     await ensurePolicy();
-    if (!driftDone && driftBlocking()) { judgeListing(tools, complete); driftDone = true; }
+    if (!driftDone && driftBlocking()) { judgeListing(tools, shape); driftDone = true; }
     const { POLICY, ENGINE } = state;
     const deadline = Date.now() + CAPS.scanBudgetMs;
     const baseline = loadBaseline();
@@ -305,16 +319,17 @@ export function createGuard(route) {
       if (r && typeof r === "object" && Array.isArray(r.tools)) {
         const tools = r.tools.filter((x) => x && typeof x === "object" && !Array.isArray(x) && typeof x.name === "string");
         if (!tools.length) return null;
-        const complete = !paged && r.nextCursor == null;
+        const last = r.nextCursor == null;
+        const shape = { complete: !paged && last, continued: paged, last };
         // Alert mode (the default): a listing is never altered. Block mode: a quarantined tool is left
         // out of it; with nothing quarantined the original still goes.
         if (await listBlocking()) {
-          const ev = judgeListing(tools, complete);
-          queueToolObservation(tools, { driftDone: true, complete });
+          const ev = judgeListing(tools, shape);
+          queueToolObservation(tools, { driftDone: true, shape });
           if (!ev || !ev.changed) return null;
           return { ...msg, result: { ...r, tools: r.tools.filter((x) => !(x && typeof x === "object" && typeof x.name === "string" && ev.names.has(x.name))) } };
         }
-        queueToolObservation(tools, { complete });
+        queueToolObservation(tools, { shape });
         return null;
       }
       const result = resultOfResponse(msg);
@@ -330,7 +345,12 @@ export function createGuard(route) {
     } catch { return null; }
   }
 
-  return { server: SERVER, gateCall, gateResult, rememberRoots, startReputation };
+  // A tools/list response this route forwarded without judging it (over CAPS.maxLineBytes, JSON or SSE):
+  // no earlier verdict may vouch for a tool it advertised, so calls are refused as not in a checked
+  // listing until a listing is judged again (../mcp-proxy/tool-drift.mjs invalidate).
+  function listingUnjudged() { try { DRIFT.invalidate(); } catch { /* governance, not a sandbox */ } }
+
+  return { server: SERVER, gateCall, gateResult, rememberRoots, startReputation, listingUnjudged };
 }
 
 // The refusal for a CALL: the proxy's shape, an MCP tool result with isError and the request's id —

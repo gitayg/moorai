@@ -17,7 +17,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { scenario, rpc, call, settle, H } from "../mcp-gateway/test/harness.mjs";
 import { repeatedKey, MAX_DEPTH } from "../mcp-gateway/validate.mjs";
-import { MAX_KEYS } from "../mcp-gateway/cooldown.mjs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { MAX_KEYS, createCooldown } from "../mcp-gateway/cooldown.mjs";
 import { MAX_BATCH_MESSAGES } from "../mcp-gateway/server.mjs";
 
 const POLICY = { captureTier: "content-free", threatPolicy: { 39: "block" } };
@@ -78,7 +80,70 @@ test("REVIEW2 dos: a batch longer than MAX_BATCH_MESSAGES is refused before it i
   });
 });
 
-test("REVIEW2 dos: a client in a cool-down cannot evict its own cool-down by feeding the tables refusals", { timeout: 240000 }, async () => {
+// WAS ONE END-TO-END FLOOD (MAX_KEYS fresh credentials x 2 invalid bodies = 8192 requests, 240 s timeout),
+// AND IT FAILED UNDER LOAD, NOT BECAUSE THE GATEWAY LET THE CLIENT BACK IN. MEASURED: every refused body
+// costs the gateway ~31 ms of synchronous ledger I/O (cli/signals.mjs recordAction reads and rewrites the
+// whole action-audit file, up to 1000 rows, on every write), and the gateway is one event loop, so the
+// 32-way concurrency bought nothing: 234 s alone on an idle M-series Mac, past 240 s under CPU load, and
+// `fetch failed` once in a full `npm run test:unit`. (v1.6.0 made recordAction append-only with occasional
+// compaction, so the opt-in flood below now runs in about 4 s idle; it stays opt-in because the two halves
+// prove the property without depending on the host's disk.) The property is now proven in two halves, neither of
+// which depends on the host's speed:
+//   1. in process, at full scale: cooldown.noteRefusal — the exact function the gateway calls for every
+//      refusal — given MAX_KEYS + 1 fresh credentials x 2 refusals while the peer cools down, still
+//      reports the peer cooling down; and the same flood fed to the tables directly (the v1.4.1 code
+//      path) does evict it, so the flood is big enough to matter;
+//   2. end to end, small: the gateway routes refused requests through that guard — while the peer cools
+//      down, fresh credentials' refusals start no cool-down of their own (the gateway ledgers
+//      CLIENT_COOLDOWN synchronously, before it answers, so the count is exact).
+// The original flood still runs with MOORAI_GATEWAY_FLOOD=1, on an idle machine.
+const FLOOD_SKIP = process.env.MOORAI_GATEWAY_FLOOD ? false : "8192-request flood — set MOORAI_GATEWAY_FLOOD=1 on an idle machine";
+const PEER = "/remote|r:127.0.0.1";
+const client = (cred) => ({ key: `/remote|a:${cred}`, peer: PEER, cred });
+
+test("REVIEW2 dos (unit): a cooled-down peer survives MAX_KEYS + 1 fresh credentials x 2 refusals through noteRefusal", () => {
+  let t = 1_000_000;
+  const cd = createCooldown({ refusals: 2, windowSeconds: 60, seconds: 120, now: () => t });
+  assert.equal(cd.noteRefusal(client("junk-0")), false);
+  assert.equal(cd.noteRefusal(client("junk-1")), true, "two refused credentials at one address cool the address down");
+  assert.ok(cd.remaining(PEER) > 0);
+  for (let i = 0; i <= MAX_KEYS; i++) {
+    t += 1;
+    for (let r = 0; r < 2; r++) assert.equal(cd.noteRefusal(client(`flush-${i}`)), false, `flush-${i} started a cool-down during the peer's`);
+  }
+  assert.ok(cd.remaining(PEER) > 0, "the peer's cool-down was evicted");
+  assert.equal(cd.remaining(client("flush-0").key), 0, "a refusal during the cool-down was counted");
+
+  // Control: the same flood counted at the tables (what noteRefusal did before the v1.4.2 guard) evicts
+  // the peer, so the loop above is a flood that would have worked.
+  t = 1_000_000;
+  const open = createCooldown({ refusals: 2, windowSeconds: 60, seconds: 120, now: () => t });
+  open.noteRefusal(client("junk-0")); open.noteRefusal(client("junk-1"));
+  assert.ok(open.remaining(PEER) > 0);
+  for (let i = 0; i <= MAX_KEYS; i++) { t += 1; for (let r = 0; r < 2; r++) { open.refused(client(`flush-${i}`).key); open.refusedOnce(PEER, `flush-${i}`); } }
+  assert.equal(open.remaining(PEER), 0, "control: the unguarded flood should have evicted the peer");
+});
+
+test("REVIEW2 dos: while a peer cools down, the gateway counts no refusal of a fresh credential (it starts no cool-down)", async () => {
+  await scenario({ policy: POLICY, gatewayArgs: COOL }, async ({ up, base, home }) => {
+    const cooldowns = () => {
+      const f = join(home, ".moorai", "action-audit.jsonl");
+      return existsSync(f) ? readFileSync(f, "utf8").split("\n").filter((l) => l.includes('"CLIENT_COOLDOWN"')).length : 0;
+    };
+    for (let i = 0; i < 2; i++) await rpc(base, "{}", { Authorization: `Bearer junk-${i}` });
+    assert.equal(cooldowns(), 1, "the peer's cool-down was not ledgered");
+    const before = await rpc(base, call(1, "echo", { a: 1 }));
+    assert.match(before.json.result.content[0].text, /cool-down/);
+    // Unguarded, each of these would start its credential's cool-down at its second refusal.
+    for (let i = 0; i < 8; i++) for (let r = 0; r < 2; r++) await rpc(base, "{}", { Authorization: `Bearer flush-${i}` });
+    assert.equal(cooldowns(), 1, "a refusal during the peer's cool-down was counted");
+    const after = await rpc(base, call(2, "echo", { a: 1 }));
+    assert.equal(after.json && after.json.result && after.json.result.isError, true, `the cool-down was lifted: ${after.text}`);
+    assert.equal(up.received.length, 0, "a cooled-down peer reached the upstream");
+  });
+});
+
+test("REVIEW2 dos: a client in a cool-down cannot evict its own cool-down by feeding the tables refusals", { timeout: 240000, skip: FLOOD_SKIP }, async () => {
   await scenario({ policy: POLICY, gatewayArgs: COOL }, async ({ up, base }) => {
     for (let i = 0; i < 2; i++) await rpc(base, "{}", { Authorization: `Bearer junk-${i}` });
     const before = await rpc(base, call(1, "echo", { a: 1 }));

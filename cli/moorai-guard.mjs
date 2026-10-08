@@ -7,6 +7,7 @@ import { createInterface } from "node:readline/promises";
 import os from "node:os";
 import { DETECTORS } from "../data/detectors.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
+import { effectiveContentPolicy } from "../data/content-defaults.js";
 import { DetectionEngine } from "../src/engine.js";
 import { loadConfig } from "./config.mjs";
 import { calibrateRisk, decideEndpoints, enforcementAllowed, coachMessage } from "./hook-core.mjs";
@@ -219,7 +220,7 @@ async function main() {
     process.stderr.write(`\x1b[33m⚠ MoorAI capture: ${policy.captureTier} — this policy records ${policy.captureTier === "full-capture" ? "prompt / argument text" : "metadata (file paths, tool names, command shape)"}.\x1b[0m\n`);
   }
   const tp = policy?.threatPolicy || {};
-  const cp = policy?.contentPolicy || {};
+  const cp = effectiveContentPolicy(policy); // built-in NSFW notify default under the org's entries
   const action = (f) => tp[f.threat.id] || "notify";
   const allFindings = engine.scan(prompt, "prompt").filter((f) => action(f) !== "disabled");
   const contentOn = Object.keys(cp).filter((id) => cp[id] && cp[id] !== "disabled");

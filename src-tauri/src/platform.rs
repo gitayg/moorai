@@ -238,16 +238,12 @@ pub fn which(tool: &str) -> Option<String> {
     None
 }
 
-// Host-based isolation (experimental, opt-in). On macOS, write a conservative Seatbelt profile that
-// lets the agent operate normally in the user's home working area but blocks writes to system, app,
-// and boot locations — so a compromised or tricked agent can't modify the OS, install persistence,
-// or tamper with other apps. Network and normal file work stay available. Returns the profile path.
+// The Seatbelt profile text. `host_only` (console_binding.rs: where the console the install token may
+// go to is recorded) is denied too, so an isolated agent cannot re-point it.
 #[cfg(target_os = "macos")]
-fn sandbox_profile_path() -> Option<String> {
-    let dir = config_dir();
-    std::fs::create_dir_all(&dir).ok()?;
-    let path = format!("{dir}/agent-sandbox.sb");
-    let profile = "(version 1)\n\
+fn sandbox_profile(host_only: &str) -> String {
+    let host_only = host_only.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("(version 1)\n\
 ;; MoorAI agent isolation (experimental) — governance sandbox. Allow normal operation; deny writes\n\
 ;; to system / app / boot locations so the agent cannot modify the OS or install persistence.\n\
 (allow default)\n\
@@ -260,7 +256,20 @@ fn sandbox_profile_path() -> Option<String> {
   (subpath \"/Library\")\n\
   (subpath \"/Applications\")\n\
   (subpath \"/etc\")\n\
-  (subpath \"/private/etc\"))\n";
+  (subpath \"/private/etc\")\n\
+  (subpath \"{host_only}\"))\n")
+}
+
+// Host-based isolation (experimental, opt-in). On macOS, write a conservative Seatbelt profile that
+// lets the agent operate normally in the user's home working area but blocks writes to system, app,
+// and boot locations — so a compromised or tricked agent can't modify the OS, install persistence,
+// or tamper with other apps. Network and normal file work stay available. Returns the profile path.
+#[cfg(target_os = "macos")]
+fn sandbox_profile_path() -> Option<String> {
+    let dir = config_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = format!("{dir}/agent-sandbox.sb");
+    let profile = sandbox_profile(&crate::console_binding::host_dir());
     std::fs::write(&path, profile).ok()?;
     Some(path)
 }
@@ -784,5 +793,29 @@ mod discovery_smoke {
         assert!(!tools.is_null(), "ai_tools returned null");
         assert!(shadow.get("apps").map(|v| v.is_array()).unwrap_or(false), "ai_shadow.apps missing/!array");
         assert!(shadow.get("extensions").map(|v| v.is_array()).unwrap_or(false), "ai_shadow.extensions missing/!array");
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod sandbox_tests {
+    // Measured, not assumed: run sandbox-exec with the real profile text and try the write.
+    #[test]
+    fn isolated_agent_cannot_write_the_host_only_console_record() {
+        let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("moorai-sb-{}-{n}", std::process::id()));
+        let host = root.join("MoorAI Host");
+        let free = root.join("work");
+        std::fs::create_dir_all(&host).unwrap();
+        std::fs::create_dir_all(&free).unwrap();
+        // sandbox-exec matches the resolved path; /var/folders is a symlink to /private/var/folders
+        let host_real = std::fs::canonicalize(&host).unwrap();
+        let profile = root.join("p.sb");
+        std::fs::write(&profile, super::sandbox_profile(host_real.to_str().unwrap())).unwrap();
+        let run = |target: &std::path::Path| std::process::Command::new("sandbox-exec").arg("-f").arg(&profile)
+            .arg("/bin/sh").arg("-c").arg(format!("echo '{{\"origin\":\"https://evil.example\"}}' > '{}'", target.display())).status().unwrap();
+        assert!(!run(&host_real.join("console.json")).success(), "the sandboxed agent wrote the console record");
+        assert!(!host_real.join("console.json").exists());
+        assert!(run(&std::fs::canonicalize(&free).unwrap().join("ok.txt")).success(), "control: ordinary writes still work");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

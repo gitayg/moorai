@@ -46,6 +46,9 @@ MCP host  ⇄  moorai-mcp-guard  ⇄  real MCP server
      call, and anything past a cap is skipped silently. A file verdict that outranks the gateway's
      refuses the call with category `MCP: blocked file argument`; each file's findings are reported at
      stage `file`. Not tested against a live MCP server or on Windows.
+  5. **vector-store writes** — when the tool writes documents into a vector store or memory (below),
+     its arguments are scanned at the `index` stage too. Report-first; refused only under
+     `policy.indexScanAction: "block"`.
 - **Block** → the call is **not** forwarded; the proxy returns a JSON-RPC *result* to the host that
   is an MCP tool error (`isError: true`, using the request's `id`), so the model sees a clean refusal
   instead of a hang. The real server never receives the call.
@@ -54,6 +57,64 @@ MCP host  ⇄  moorai-mcp-guard  ⇄  real MCP server
 - **Mask** → not applied here. The proxy never rewrites a call or a result, so a threat an org set to
   `mask` resolves to `policy.maskFallback` (`notify` / `justify` / `block`), else to the action it would
   have without the mask entry. The Claude Code hook is the surface that masks.
+
+### agent → server: VECTOR-STORE WRITES (the index stage)
+
+A document an agent writes into a vector store or a memory server is read back later into some other
+context, with no tool call and nobody typing it. So a `tools/call` that writes documents gets the engine's
+`index` stage (`DetectionEngine.scanForIndex`: the prompt detectors plus untrusted directives,
+agent-addressed text, hidden canaries, tool poisoning and AI-only cloaking) over every string value of its
+arguments, through [`../cli/index-tools.mjs`](../cli/index-tools.mjs) — the same module the HTTP gateway
+uses, and the same decision as `scanBeforeEmbed` in `@moorai/agent-sdk` and `POST /v1/index-scan`.
+
+A tool is a vector-store write when:
+- `policy.indexTools` names it (`"add_documents"`, or `"<server>/<tool>"` for one server), always; or
+- unless `policy.indexToolHeuristic: false`, it is one of the write tools of the servers below, by exact
+  name (case-insensitive) and whatever the server is labelled; or
+- unless `policy.indexToolHeuristic: false`, its name has a write verb (`add`, `upsert`, `insert`,
+  `index`, `store`, `ingest`, `embed`, `save`, `remember`) and no read or delete verb (`get`, `list`,
+  `query`, `search`, `delete`, …), plus one of: a store noun in the name (`documents`, `memory`,
+  `memories`, `vectors`, `embeddings`, `chunks`, `passages`, `knowledge`), a vector-store hint in the
+  tool or server name (`chroma`, `qdrant`, `pinecone`, `weaviate`, `milvus`, `mem0`, `openmemory`,
+  `lancedb`, `pgvector`, `vector`, `memory`, `rag`, …), or a non-empty `documents` / `texts` / `chunks` /
+  `passages` / `memories` array argument.
+
+So `chroma_add_documents`, `qdrant-store`, `upsert` on a server labelled `pinecone`, `add_memory` and
+`store_memory` match; `insert` on a server labelled `postgres`, `query_documents`, `get_index_stats` and
+an index-creating call (`create-index-for-model`, `create_vector_index_hash`) do not. `update` and
+`create` are not write verbs to the heuristic (`update_collection`, `create_document` on a docs server);
+the real update and create writes are named below.
+
+**Verified servers.** Tool names read from each server's source on 2026-10-07. Chroma (chroma-mcp 0.2.6) and Qdrant (mcp-server-qdrant 0.8.1) were also run live behind the proxy, and Qdrant behind the gateway (`test/index-real-vector-mcp.test.mjs`, opt-in): a poisoned document was refused and never stored; the others were not run. Every
+write tool listed matches under its own label and under a neutral one; every other tool of these servers
+(their read, search, delete and admin tools) matches under neither (`test/index-tools-mcp.test.mjs`).
+
+| Server (repo @ commit) | Write tools recognised | Argument carrying the text |
+|---|---|---|
+| Chroma (`chroma-core/chroma-mcp` @ `98ff675`) | `chroma_add_documents`, `chroma_update_documents` | `documents` (string array) |
+| Qdrant (`qdrant/mcp-server-qdrant` @ `c56ae5a`) | `qdrant-store` | `information` (string) |
+| Pinecone (`pinecone-io/pinecone-mcp` @ `a15d4b9`) | `upsert-records` | `records[]`, in the field the index's `fieldMap` names |
+| Weaviate (`weaviate/mcp-server-weaviate` @ `4db6a8f`, now deprecated; built into `weaviate/weaviate` @ `519a9ba`) | `weaviate-insert-one`, `weaviate-objects-upsert` | `properties`; `objects[].properties` |
+| mem0 (`mem0ai/mem0-mcp` @ `624024d`, archived for the hosted server) | `add_memory`, `update_memory` | `text`, `messages` |
+| OpenMemory (`mem0ai/mem0` @ `13c7f84`, removed from the repo since) | `add_memories` | `text` |
+| Milvus (`zilliztech/mcp-server-milvus` @ `6a2bff9`) | `milvus_insert_data` | `data` (row objects) |
+| OpenSearch (`opensearch-project/opensearch-mcp-server-py` @ `cd287e8`) | `SaveMemoryTool`, `AddAgenticMemoriesTool`, `UpdateAgenticMemoryTool`, `CreateAgenticMemorySessionTool`; `GenericOpenSearchApiTool` only for `POST` / `PUT` / `PATCH` to `_doc`, `_create`, `_update` or `_bulk` | `memory`; `messages[].content[].text`, `memory`, `summary`; `body` |
+| Redis (`redis/mcp-redis` @ `e89cff9`) | `set_vector_in_hash` | `vector` (numbers only) |
+| LanceDB (`lancedb/lancedb-mcp-server` @ `91a064e`) | `ingest_docs` | `docs` |
+| MCP reference `memory` (`modelcontextprotocol/servers` @ `5abed86`) | `create_entities`, `create_relations`, `add_observations` | `entities[].observations[]`; `relations[]`; `observations[].contents[]` |
+| Elasticsearch (`elastic/mcp-server-elasticsearch` @ `9e64b84`, deprecated) | none: every tool is read-only | |
+
+Every string value of a matched call's arguments is scanned, so the argument name only matters to the
+heuristic. Redis's plain key-value writes (`hset`, `json_set`, `set`, …) are not treated as index writes:
+name them in `indexTools` when that Redis backs a vector index. Findings are reported at stage `index` (one per threat the argument scan did not already
+report). `policy.indexScanAction: "block"` refuses the call before the server sees it
+(`MCP: blocked vector-store write`) when a finding is an instruction-carrying threat or one whose action
+is block / kill; the default `"report"` forwards it. An unenrolled device coaches. **Not covered:** a
+store tool whose name and arguments match nothing (name it in `indexTools`), documents a store ingests
+on its own, and an agent that embeds through an in-process library instead of MCP. Not tested against a
+running Chroma, Qdrant, Pinecone, Weaviate, mem0, Milvus, OpenSearch, Redis, LanceDB or memory server: the
+names above come from their source, and the end-to-end tests use the fake server
+(`test/index-tools-mcp.test.mjs`).
 
 ### server → agent: the tool LISTING and the tool RESULT
 
@@ -132,8 +193,11 @@ judged against it; a server without one is judged against the device's own first
 
 **Where the console gets the fingerprints.** In block mode the proxy posts the fingerprints of every
 complete listing (not a page of a paginated one) to `POST /api/mcp/tools` (install token, `{ server,
-tools }`), once per distinct set per process. Nothing else: no tool name, description or schema. The
-console stores them on the server's registry entry. Approving the server pins them at the next version.
+tools, actor }`), once per distinct set per process. `actor` is the device's content-free actor hash, the
+one every alert carries: the install token is per tenant, so it is how the console tells one device's
+report from another's. Nothing else: no tool name, description or schema. The console keeps the reports
+per reporting device. Approving the server pins the set every current reporter agrees on (or the set the
+admin names by digest) at the next version; while devices disagree, an approval pins nothing.
 A later report that differs shows "tools changed since approval — awaiting re-approval"; re-approving
 accepts the new fingerprints. So the order of operations for an org is: set `mcpToolDrift` to `block`,
 let devices report, then approve (or re-approve) the server to pin its tools.
@@ -161,12 +225,13 @@ so deleting it removes this second layer and leaves the first.
 | Approved baseline older than the version this device already accepted | ignored; the local baseline decides (a stale cache cannot unblock) |
 | Local baseline file missing, corrupt or unwritable | treated as empty: the next listing is a first sighting and is accepted (open). It does not matter for a server with an approved baseline |
 | A `tools/list` arrives before this process has loaded any policy | held up to 2 s for the policy only when the device's cached or last-known-good policy says `block` (an unverified hint, used for nothing else); otherwise, or after the wait, forwarded unfiltered and judged when the policy arrives. Calls are enforced either way (list open, call closed). A device in alert mode never waits |
-| A `tools/list` line over 1 MB (`CAPS.maxLineBytes`) | never parsed, so not filtered; every call to a tool from it is refused as `MCP: tool not in a checked listing` (closed) |
+| A `tools/list` line over 1 MB (`CAPS.maxLineBytes`), or one that is not JSON | never parsed, so not filtered; every call is refused as `MCP: tool not in a checked listing` (closed) until a listing is judged again — including tools an earlier listing passed: an unjudged listing clears every verdict for that server. (An over-cap or unparseable line while a `tools/list` is outstanding counts as that listing.) |
+| A `tools/list` whose `result` key is spelled with a `\u` escape (`"\u0072esult"`) | parsed and judged like any other (any line with a `\u` escape is parsed) |
 | A call to a tool that was never in a listing | refused (closed) |
 | The policy switches from `alert` to `block` during a session | tools listed under `alert` are judged on their first call, against the approved baseline if there is one; a tool that passes keeps working without a re-list |
-| The judgement throws | the listing is forwarded unfiltered; calls to the tools it did not judge are refused (closed) |
+| The judgement throws | the listing is forwarded unfiltered; every verdict for that server is cleared, so calls are refused (closed) until a listing is judged again |
 | The fingerprint post to the console fails | nothing changes on the device; the console has nothing new to pin until the next report |
-| A paginated listing | each page is judged; a removal is not reported and fingerprints are not posted, so a paginated server cannot be pinned and stays on the local baseline |
+| A paginated listing | each page is judged; a removal is not reported and fingerprints are not posted, so a paginated server cannot be pinned and stays on the local baseline. On a server's first sighting every page of that first listing is a first sighting (a page-2 tool is not "added after" page 1); a page over 1 MB clears the server's verdicts as above |
 
 ### first sight: the server's REPUTATION
 
@@ -305,6 +370,15 @@ node mcp-proxy/moorai-mcp-guard.mjs [--server <label>] [--host <id>] -- <real-se
 the basename of the real command; the installer passes the configured server key. `--host <id>` names the
 MCP host for the usage counts (`claude-desktop`, `vscode`, `cursor`, `claude-code`, …); anything else, or
 nothing, is `unknown`.
+
+**Shutdown.** The guard ends its child the way an MCP client ends a stdio server. On stdin EOF it closes
+the child's stdin; a child still running 2 s later gets SIGTERM, and SIGKILL 2 s after that. SIGTERM,
+SIGINT and SIGHUP to the guard are forwarded to the child at once, with the same SIGKILL fallback. The
+guard exits when the child does, after every response already read from the child has been written out;
+its exit code is the child's (0 when the guard ended it after EOF). Some real servers never exit on stdin
+EOF (chroma-mcp 0.2.6, measured), and before this they were left running with ppid 1. On Windows
+`child.kill()` terminates only the direct child, so a server launched through a wrapper (`cmd /c npx …`)
+can still leave its grandchild running there.
 
 ## Verify
 

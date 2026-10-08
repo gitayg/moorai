@@ -1,0 +1,1583 @@
+[
+  {
+    "name": "claude-native-everything-exists-fs-deny",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": true,
+      "policy": {
+        "version": "1.0.0",
+        "containment": "processcontainer",
+        "process": {
+          "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+          "cwd": "C:\\src\\proj",
+          "env": [
+            "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+            "DISABLE_AUTOUPDATER=1",
+            "GIT_CONFIG_COUNT=1",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=C:/src/proj"
+          ],
+          "inheritDefaultEnv": true
+        },
+        "filesystem": {
+          "readwritePaths": [
+            "C:\\src\\proj",
+            "C:\\Users\\dev\\.claude",
+            "C:\\Users\\dev\\.claude.json",
+            "C:\\Users\\dev\\.moorai",
+            "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI"
+          ],
+          "readonlyPaths": [
+            "C:\\Users\\dev\\.local\\bin",
+            "C:\\Users\\dev\\.local\\share\\claude",
+            "C:\\Program Files\\nodejs",
+            "C:\\Program Files\\Git",
+            "C:\\Program Files\\PowerShell\\7",
+            "C:\\Users\\dev\\.gitconfig",
+            "C:\\ProgramData\\MoorAI"
+          ],
+          "deniedPaths": [
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI Host",
+            "C:\\Users\\dev\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+            "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\StartUp",
+            "C:\\Windows\\System32\\Tasks",
+            "C:\\Windows\\Tasks",
+            "C:\\Users\\dev\\Documents\\WindowsPowerShell",
+            "C:\\Users\\dev\\Documents\\PowerShell",
+            "C:\\Users\\dev\\.bashrc",
+            "C:\\Users\\dev\\.bash_profile",
+            "C:\\Users\\dev\\.profile",
+            "C:\\Users\\dev\\AppData\\Roaming\\Microsoft\\Credentials",
+            "C:\\Users\\dev\\AppData\\Local\\Microsoft\\Credentials",
+            "C:\\Users\\dev\\AppData\\Roaming\\Microsoft\\Protect",
+            "C:\\Users\\dev\\AppData\\Roaming\\Microsoft\\Crypto",
+            "C:\\Users\\dev\\AppData\\Local\\Microsoft\\Vault",
+            "C:\\ProgramData\\Microsoft\\Vault",
+            "C:\\Users\\dev\\.ssh",
+            "C:\\Users\\dev\\.aws",
+            "C:\\Users\\dev\\.azure",
+            "C:\\Users\\dev\\.kube",
+            "C:\\Users\\dev\\.docker",
+            "C:\\Users\\dev\\AppData\\Roaming\\gcloud",
+            "C:\\Users\\dev\\.config\\gcloud",
+            "C:\\Users\\dev\\.npmrc",
+            "C:\\Users\\dev\\.pypirc",
+            "C:\\Users\\dev\\.netrc",
+            "C:\\Users\\dev\\_netrc",
+            "C:\\Users\\dev\\.git-credentials",
+            "C:\\Users\\dev\\.config\\gh",
+            "C:\\Users\\dev\\AppData\\Roaming\\GitHub CLI",
+            "C:\\Users\\dev\\AppData\\Local\\Google\\Chrome\\User Data",
+            "C:\\Users\\dev\\AppData\\Local\\Microsoft\\Edge\\User Data",
+            "C:\\Users\\dev\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data",
+            "C:\\Users\\dev\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles",
+            "C:\\Program Files\\MoorAI"
+          ]
+        },
+        "fallback": {
+          "allowDaclMutation": false
+        },
+        "network": {
+          "egress": {
+            "default": "deny"
+          },
+          "ingress": {
+            "default": "deny",
+            "hostLoopback": "allow"
+          }
+        },
+        "ui": {
+          "disable": false,
+          "clipboard": "none",
+          "injection": false
+        },
+        "processContainer": {
+          "leastPrivilege": false,
+          "ui": {
+            "isolation": "desktop",
+            "desktopSystemControl": false,
+            "systemSettings": "none",
+            "ime": false
+          },
+          "captureDenials": {
+            "mode": "block",
+            "outputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json"
+          }
+        }
+      },
+      "ensureDirs": [
+        "C:\\Users\\dev\\.moorai",
+        "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+        "C:\\Users\\dev\\AppData\\Local\\MoorAI",
+        "C:\\Users\\dev\\.moorai\\agent-tmp",
+        "C:\\Users\\dev\\.claude"
+      ]
+    }
+  },
+  {
+    "name": "claude-npm-shim-no-fs-deny-no-capture",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [
+        "C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\moorai"
+      ],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Windows\\System32\\cmd.exe /d /s /c \"C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd\"",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": false,
+      "fsDenySupported": false,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": true,
+      "policy": {
+        "version": "1.0.0",
+        "containment": "processcontainer",
+        "process": {
+          "commandLine": "C:\\Windows\\System32\\cmd.exe /d /s /c \"C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd\"",
+          "cwd": "C:\\src\\proj",
+          "env": [
+            "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+            "DISABLE_AUTOUPDATER=1",
+            "GIT_CONFIG_COUNT=1",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=C:/src/proj"
+          ],
+          "inheritDefaultEnv": true
+        },
+        "filesystem": {
+          "readwritePaths": [
+            "C:\\src\\proj",
+            "C:\\Users\\dev\\.claude",
+            "C:\\Users\\dev\\.claude.json",
+            "C:\\Users\\dev\\.moorai",
+            "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI"
+          ],
+          "readonlyPaths": [
+            "C:\\Users\\dev\\AppData\\Roaming\\npm",
+            "C:\\Users\\dev\\.local\\share\\claude",
+            "C:\\Program Files\\nodejs",
+            "C:\\Program Files\\Git",
+            "C:\\Program Files\\PowerShell\\7",
+            "C:\\Users\\dev\\.gitconfig",
+            "C:\\ProgramData\\MoorAI",
+            "C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\moorai"
+          ],
+          "deniedPaths": []
+        },
+        "fallback": {
+          "allowDaclMutation": false
+        },
+        "network": {
+          "egress": {
+            "default": "deny"
+          },
+          "ingress": {
+            "default": "deny",
+            "hostLoopback": "allow"
+          }
+        },
+        "ui": {
+          "disable": false,
+          "clipboard": "none",
+          "injection": false
+        },
+        "processContainer": {
+          "leastPrivilege": false,
+          "ui": {
+            "isolation": "desktop",
+            "desktopSystemControl": false,
+            "systemSettings": "none",
+            "ime": false
+          }
+        }
+      },
+      "ensureDirs": [
+        "C:\\Users\\dev\\.moorai",
+        "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+        "C:\\Users\\dev\\AppData\\Local\\MoorAI",
+        "C:\\Users\\dev\\.moorai\\agent-tmp",
+        "C:\\Users\\dev\\.claude"
+      ]
+    }
+  },
+  {
+    "name": "codex-egress-allow-extra-ca",
+    "input": {
+      "agent": "codex",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows",
+        "NODE_EXTRA_CA_CERTS": "C:\\corp\\roots.pem",
+        "SSL_CERT_FILE": "C:\\corp\\full-bundle.pem"
+      },
+      "agentBin": "C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.cmd",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [
+        "140.82.112.0/20",
+        " 2606:50c0::/32 "
+      ],
+      "extraCaCerts": "C:\\corp\\roots.pem",
+      "commandLine": "codex",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": false,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": true,
+      "policy": {
+        "version": "1.0.0",
+        "containment": "processcontainer",
+        "process": {
+          "commandLine": "codex",
+          "cwd": "C:\\src\\proj",
+          "env": [
+            "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "OPENAI_BASE_URL=http://127.0.0.1:8791/openai",
+            "GIT_CONFIG_COUNT=1",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=C:/src/proj",
+            "NODE_EXTRA_CA_CERTS=C:\\corp\\roots.pem"
+          ],
+          "inheritDefaultEnv": true
+        },
+        "filesystem": {
+          "readwritePaths": [
+            "C:\\src\\proj",
+            "C:\\Users\\dev\\.codex",
+            "C:\\Users\\dev\\.moorai",
+            "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI"
+          ],
+          "readonlyPaths": [
+            "C:\\Users\\dev\\AppData\\Roaming\\npm",
+            "C:\\Program Files\\nodejs",
+            "C:\\Program Files\\Git",
+            "C:\\Program Files\\PowerShell\\7",
+            "C:\\Users\\dev\\.gitconfig",
+            "C:\\ProgramData\\MoorAI",
+            "C:\\corp\\roots.pem",
+            "C:\\corp\\full-bundle.pem"
+          ],
+          "deniedPaths": []
+        },
+        "fallback": {
+          "allowDaclMutation": false
+        },
+        "network": {
+          "egress": {
+            "default": "deny",
+            "allow": [
+              {
+                "to": [
+                  {
+                    "cidr": "140.82.112.0/20"
+                  },
+                  {
+                    "cidr": "2606:50c0::/32"
+                  }
+                ],
+                "ports": [
+                  {
+                    "protocol": "tcp",
+                    "port": 443
+                  }
+                ]
+              }
+            ]
+          },
+          "ingress": {
+            "default": "deny",
+            "hostLoopback": "allow"
+          }
+        },
+        "ui": {
+          "disable": false,
+          "clipboard": "none",
+          "injection": false
+        },
+        "processContainer": {
+          "leastPrivilege": false,
+          "ui": {
+            "isolation": "desktop",
+            "desktopSystemControl": false,
+            "systemSettings": "none",
+            "ime": false
+          },
+          "captureDenials": {
+            "mode": "block",
+            "outputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json"
+          }
+        }
+      },
+      "ensureDirs": [
+        "C:\\Users\\dev\\.moorai",
+        "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+        "C:\\Users\\dev\\AppData\\Local\\MoorAI",
+        "C:\\Users\\dev\\.moorai\\agent-tmp",
+        "C:\\Users\\dev\\.codex"
+      ]
+    }
+  },
+  {
+    "name": "copilot-sparse-host",
+    "input": {
+      "agent": "copilot",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\AppData\\Roaming\\npm\\copilot.cmd",
+      "nodeDir": "",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "copilot",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": false,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": [
+      "C:\\src\\proj",
+      "C:\\Users\\dev\\AppData\\Roaming\\npm",
+      "C:\\Program Files\\nodejs",
+      "C:\\Users\\dev\\.ssh"
+    ],
+    "expected": {
+      "ok": true,
+      "policy": {
+        "version": "1.0.0",
+        "containment": "processcontainer",
+        "process": {
+          "commandLine": "copilot",
+          "cwd": "C:\\src\\proj",
+          "env": [
+            "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "GIT_CONFIG_COUNT=1",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=C:/src/proj"
+          ],
+          "inheritDefaultEnv": true
+        },
+        "filesystem": {
+          "readwritePaths": [
+            "C:\\src\\proj",
+            "C:\\Users\\dev\\.copilot",
+            "C:\\Users\\dev\\.moorai",
+            "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI"
+          ],
+          "readonlyPaths": [
+            "C:\\Users\\dev\\AppData\\Roaming\\npm",
+            "C:\\Program Files\\nodejs"
+          ],
+          "deniedPaths": []
+        },
+        "fallback": {
+          "allowDaclMutation": false
+        },
+        "network": {
+          "egress": {
+            "default": "deny"
+          },
+          "ingress": {
+            "default": "deny",
+            "hostLoopback": "allow"
+          }
+        },
+        "ui": {
+          "disable": false,
+          "clipboard": "none",
+          "injection": false
+        },
+        "processContainer": {
+          "leastPrivilege": false,
+          "ui": {
+            "isolation": "desktop",
+            "desktopSystemControl": false,
+            "systemSettings": "none",
+            "ime": false
+          },
+          "captureDenials": {
+            "mode": "block",
+            "outputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json"
+          }
+        }
+      },
+      "ensureDirs": [
+        "C:\\Users\\dev\\.moorai",
+        "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+        "C:\\Users\\dev\\AppData\\Local\\MoorAI",
+        "C:\\Users\\dev\\.moorai\\agent-tmp",
+        "C:\\Users\\dev\\.copilot"
+      ]
+    }
+  },
+  {
+    "name": "grant-over-documents-keeps-powershell-profile-carve-outs",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [
+        "C:\\Users\\dev\\Documents"
+      ],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": false,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": true,
+      "policy": {
+        "version": "1.0.0",
+        "containment": "processcontainer",
+        "process": {
+          "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+          "cwd": "C:\\src\\proj",
+          "env": [
+            "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+            "DISABLE_AUTOUPDATER=1",
+            "GIT_CONFIG_COUNT=1",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=C:/src/proj"
+          ],
+          "inheritDefaultEnv": true
+        },
+        "filesystem": {
+          "readwritePaths": [
+            "C:\\src\\proj",
+            "C:\\Users\\dev\\.claude",
+            "C:\\Users\\dev\\.claude.json",
+            "C:\\Users\\dev\\.moorai",
+            "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI"
+          ],
+          "readonlyPaths": [
+            "C:\\Users\\dev\\.local\\bin",
+            "C:\\Users\\dev\\.local\\share\\claude",
+            "C:\\Program Files\\nodejs",
+            "C:\\Program Files\\Git",
+            "C:\\Program Files\\PowerShell\\7",
+            "C:\\Users\\dev\\.gitconfig",
+            "C:\\ProgramData\\MoorAI",
+            "C:\\Users\\dev\\Documents"
+          ],
+          "deniedPaths": [
+            "C:\\Users\\dev\\Documents\\WindowsPowerShell",
+            "C:\\Users\\dev\\Documents\\PowerShell"
+          ]
+        },
+        "fallback": {
+          "allowDaclMutation": false
+        },
+        "network": {
+          "egress": {
+            "default": "deny"
+          },
+          "ingress": {
+            "default": "deny",
+            "hostLoopback": "allow"
+          }
+        },
+        "ui": {
+          "disable": false,
+          "clipboard": "none",
+          "injection": false
+        },
+        "processContainer": {
+          "leastPrivilege": false,
+          "ui": {
+            "isolation": "desktop",
+            "desktopSystemControl": false,
+            "systemSettings": "none",
+            "ime": false
+          },
+          "captureDenials": {
+            "mode": "block",
+            "outputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json"
+          }
+        }
+      },
+      "ensureDirs": [
+        "C:\\Users\\dev\\.moorai",
+        "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+        "C:\\Users\\dev\\AppData\\Local\\MoorAI",
+        "C:\\Users\\dev\\.moorai\\agent-tmp",
+        "C:\\Users\\dev\\.claude"
+      ]
+    }
+  },
+  {
+    "name": "hook-root-inside-ssh-is-dropped",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [
+        "C:\\Users\\dev\\.ssh\\tools"
+      ],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": false,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": true,
+      "policy": {
+        "version": "1.0.0",
+        "containment": "processcontainer",
+        "process": {
+          "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+          "cwd": "C:\\src\\proj",
+          "env": [
+            "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+            "DISABLE_AUTOUPDATER=1",
+            "GIT_CONFIG_COUNT=1",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=C:/src/proj"
+          ],
+          "inheritDefaultEnv": true
+        },
+        "filesystem": {
+          "readwritePaths": [
+            "C:\\src\\proj",
+            "C:\\Users\\dev\\.claude",
+            "C:\\Users\\dev\\.claude.json",
+            "C:\\Users\\dev\\.moorai",
+            "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI"
+          ],
+          "readonlyPaths": [
+            "C:\\Users\\dev\\.local\\bin",
+            "C:\\Users\\dev\\.local\\share\\claude",
+            "C:\\Program Files\\nodejs",
+            "C:\\Program Files\\Git",
+            "C:\\Program Files\\PowerShell\\7",
+            "C:\\Users\\dev\\.gitconfig",
+            "C:\\ProgramData\\MoorAI"
+          ],
+          "deniedPaths": []
+        },
+        "fallback": {
+          "allowDaclMutation": false
+        },
+        "network": {
+          "egress": {
+            "default": "deny"
+          },
+          "ingress": {
+            "default": "deny",
+            "hostLoopback": "allow"
+          }
+        },
+        "ui": {
+          "disable": false,
+          "clipboard": "none",
+          "injection": false
+        },
+        "processContainer": {
+          "leastPrivilege": false,
+          "ui": {
+            "isolation": "desktop",
+            "desktopSystemControl": false,
+            "systemSettings": "none",
+            "ime": false
+          },
+          "captureDenials": {
+            "mode": "block",
+            "outputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json"
+          }
+        }
+      },
+      "ensureDirs": [
+        "C:\\Users\\dev\\.moorai",
+        "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+        "C:\\Users\\dev\\AppData\\Local\\MoorAI",
+        "C:\\Users\\dev\\.moorai\\agent-tmp",
+        "C:\\Users\\dev\\.claude"
+      ]
+    }
+  },
+  {
+    "name": "normalizes-slashes-and-env-key-case",
+    "input": {
+      "agent": "claude",
+      "workspace": "c:/src//proj/",
+      "env": {
+        "userprofile": "C:/Users/dev/",
+        "systemroot": "C:\\Windows",
+        "programfiles": "C:\\Program Files"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": false,
+      "fsDenySupported": false,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": true,
+      "policy": {
+        "version": "1.0.0",
+        "containment": "processcontainer",
+        "process": {
+          "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+          "cwd": "c:\\src\\proj",
+          "env": [
+            "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+            "DISABLE_AUTOUPDATER=1",
+            "GIT_CONFIG_COUNT=1",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=c:/src/proj"
+          ],
+          "inheritDefaultEnv": true
+        },
+        "filesystem": {
+          "readwritePaths": [
+            "c:\\src\\proj",
+            "C:\\Users\\dev\\.claude",
+            "C:\\Users\\dev\\.claude.json",
+            "C:\\Users\\dev\\.moorai",
+            "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI"
+          ],
+          "readonlyPaths": [
+            "C:\\Users\\dev\\.local\\bin",
+            "C:\\Users\\dev\\.local\\share\\claude",
+            "C:\\Program Files\\nodejs",
+            "C:\\Program Files\\Git",
+            "C:\\Program Files\\PowerShell\\7",
+            "C:\\Users\\dev\\.gitconfig"
+          ],
+          "deniedPaths": []
+        },
+        "fallback": {
+          "allowDaclMutation": false
+        },
+        "network": {
+          "egress": {
+            "default": "deny"
+          },
+          "ingress": {
+            "default": "deny",
+            "hostLoopback": "allow"
+          }
+        },
+        "ui": {
+          "disable": false,
+          "clipboard": "none",
+          "injection": false
+        },
+        "processContainer": {
+          "leastPrivilege": false,
+          "ui": {
+            "isolation": "desktop",
+            "desktopSystemControl": false,
+            "systemSettings": "none",
+            "ime": false
+          }
+        }
+      },
+      "ensureDirs": [
+        "C:\\Users\\dev\\.moorai",
+        "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+        "C:\\Users\\dev\\AppData\\Local\\MoorAI",
+        "C:\\Users\\dev\\.moorai\\agent-tmp",
+        "C:\\Users\\dev\\.claude"
+      ]
+    }
+  },
+  {
+    "name": "per-user-install-in-breadcrumb-leg-is-never-granted",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Users\\dev\\AppData\\Local\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": true,
+      "policy": {
+        "version": "1.0.0",
+        "containment": "processcontainer",
+        "process": {
+          "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+          "cwd": "C:\\src\\proj",
+          "env": [
+            "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+            "DISABLE_AUTOUPDATER=1",
+            "GIT_CONFIG_COUNT=1",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=C:/src/proj"
+          ],
+          "inheritDefaultEnv": true
+        },
+        "filesystem": {
+          "readwritePaths": [
+            "C:\\src\\proj",
+            "C:\\Users\\dev\\.claude",
+            "C:\\Users\\dev\\.claude.json",
+            "C:\\Users\\dev\\.moorai",
+            "C:\\Users\\dev\\AppData\\Roaming\\MoorAI"
+          ],
+          "readonlyPaths": [
+            "C:\\Users\\dev\\.local\\bin",
+            "C:\\Users\\dev\\.local\\share\\claude",
+            "C:\\Program Files\\nodejs",
+            "C:\\Program Files\\Git",
+            "C:\\Program Files\\PowerShell\\7",
+            "C:\\Users\\dev\\.gitconfig",
+            "C:\\ProgramData\\MoorAI"
+          ],
+          "deniedPaths": [
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI Host",
+            "C:\\Users\\dev\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+            "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\StartUp",
+            "C:\\Windows\\System32\\Tasks",
+            "C:\\Windows\\Tasks",
+            "C:\\Users\\dev\\Documents\\WindowsPowerShell",
+            "C:\\Users\\dev\\Documents\\PowerShell",
+            "C:\\Users\\dev\\.bashrc",
+            "C:\\Users\\dev\\.bash_profile",
+            "C:\\Users\\dev\\.profile",
+            "C:\\Users\\dev\\AppData\\Roaming\\Microsoft\\Credentials",
+            "C:\\Users\\dev\\AppData\\Local\\Microsoft\\Credentials",
+            "C:\\Users\\dev\\AppData\\Roaming\\Microsoft\\Protect",
+            "C:\\Users\\dev\\AppData\\Roaming\\Microsoft\\Crypto",
+            "C:\\Users\\dev\\AppData\\Local\\Microsoft\\Vault",
+            "C:\\ProgramData\\Microsoft\\Vault",
+            "C:\\Users\\dev\\.ssh",
+            "C:\\Users\\dev\\.aws",
+            "C:\\Users\\dev\\.azure",
+            "C:\\Users\\dev\\.kube",
+            "C:\\Users\\dev\\.docker",
+            "C:\\Users\\dev\\AppData\\Roaming\\gcloud",
+            "C:\\Users\\dev\\.config\\gcloud",
+            "C:\\Users\\dev\\.npmrc",
+            "C:\\Users\\dev\\.pypirc",
+            "C:\\Users\\dev\\.netrc",
+            "C:\\Users\\dev\\_netrc",
+            "C:\\Users\\dev\\.git-credentials",
+            "C:\\Users\\dev\\.config\\gh",
+            "C:\\Users\\dev\\AppData\\Roaming\\GitHub CLI",
+            "C:\\Users\\dev\\AppData\\Local\\Google\\Chrome\\User Data",
+            "C:\\Users\\dev\\AppData\\Local\\Microsoft\\Edge\\User Data",
+            "C:\\Users\\dev\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data",
+            "C:\\Users\\dev\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles",
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI"
+          ]
+        },
+        "fallback": {
+          "allowDaclMutation": false
+        },
+        "network": {
+          "egress": {
+            "default": "deny"
+          },
+          "ingress": {
+            "default": "deny",
+            "hostLoopback": "allow"
+          }
+        },
+        "ui": {
+          "disable": false,
+          "clipboard": "none",
+          "injection": false
+        },
+        "processContainer": {
+          "leastPrivilege": false,
+          "ui": {
+            "isolation": "desktop",
+            "desktopSystemControl": false,
+            "systemSettings": "none",
+            "ime": false
+          },
+          "captureDenials": {
+            "mode": "block",
+            "outputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json"
+          }
+        }
+      },
+      "ensureDirs": [
+        "C:\\Users\\dev\\.moorai",
+        "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+        "C:\\Users\\dev\\AppData\\Local\\MoorAI",
+        "C:\\Users\\dev\\.moorai\\agent-tmp",
+        "C:\\Users\\dev\\.claude"
+      ]
+    }
+  },
+  {
+    "name": "broad-hook-roots-are-dropped",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [
+        "C:\\Users",
+        "C:\\Users\\dev\\AppData\\Roaming",
+        "C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\moorai"
+      ],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": false,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": true,
+      "policy": {
+        "version": "1.0.0",
+        "containment": "processcontainer",
+        "process": {
+          "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+          "cwd": "C:\\src\\proj",
+          "env": [
+            "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+            "DISABLE_AUTOUPDATER=1",
+            "GIT_CONFIG_COUNT=1",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=C:/src/proj"
+          ],
+          "inheritDefaultEnv": true
+        },
+        "filesystem": {
+          "readwritePaths": [
+            "C:\\src\\proj",
+            "C:\\Users\\dev\\.claude",
+            "C:\\Users\\dev\\.claude.json",
+            "C:\\Users\\dev\\.moorai",
+            "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI"
+          ],
+          "readonlyPaths": [
+            "C:\\Users\\dev\\.local\\bin",
+            "C:\\Users\\dev\\.local\\share\\claude",
+            "C:\\Program Files\\nodejs",
+            "C:\\Program Files\\Git",
+            "C:\\Program Files\\PowerShell\\7",
+            "C:\\Users\\dev\\.gitconfig",
+            "C:\\ProgramData\\MoorAI",
+            "C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\moorai"
+          ],
+          "deniedPaths": []
+        },
+        "fallback": {
+          "allowDaclMutation": false
+        },
+        "network": {
+          "egress": {
+            "default": "deny"
+          },
+          "ingress": {
+            "default": "deny",
+            "hostLoopback": "allow"
+          }
+        },
+        "ui": {
+          "disable": false,
+          "clipboard": "none",
+          "injection": false
+        },
+        "processContainer": {
+          "leastPrivilege": false,
+          "ui": {
+            "isolation": "desktop",
+            "desktopSystemControl": false,
+            "systemSettings": "none",
+            "ime": false
+          },
+          "captureDenials": {
+            "mode": "block",
+            "outputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json"
+          }
+        }
+      },
+      "ensureDirs": [
+        "C:\\Users\\dev\\.moorai",
+        "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+        "C:\\Users\\dev\\AppData\\Local\\MoorAI",
+        "C:\\Users\\dev\\.moorai\\agent-tmp",
+        "C:\\Users\\dev\\.claude"
+      ]
+    }
+  },
+  {
+    "name": "err-workspace-overlaps-host-app",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\src\\proj\\target\\release"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": false,
+      "reasonCode": "workspace-overlaps-host-app",
+      "reason": "the workspace overlaps the MoorAI desktop host's install directory"
+    }
+  },
+  {
+    "name": "err-workspace-contains-protected",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\Users\\dev\\AppData\\Local",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": false,
+      "reasonCode": "workspace-contains-protected",
+      "reason": "the workspace contains a protected location (moorai-host)"
+    }
+  },
+  {
+    "name": "err-workspace-in-host-state",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\x",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": false,
+      "reasonCode": "workspace-in-protected",
+      "reason": "the workspace is inside a protected location (moorai-host)"
+    }
+  },
+  {
+    "name": "err-workspace-is-profile",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\Users\\dev",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": false,
+      "reasonCode": "workspace-is-profile",
+      "reason": "the workspace contains the user profile; pick a project directory"
+    }
+  },
+  {
+    "name": "err-workspace-contains-profile",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\Users",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": false,
+      "reasonCode": "workspace-is-profile",
+      "reason": "the workspace contains the user profile; pick a project directory"
+    }
+  },
+  {
+    "name": "err-workspace-volume-root",
+    "input": {
+      "agent": "claude",
+      "workspace": "D:\\",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": false,
+      "reasonCode": "workspace-volume-root",
+      "reason": "a volume root cannot be the workspace (BaseContainer grants on a root do not cascade; docs/schema.md)"
+    }
+  },
+  {
+    "name": "err-workspace-in-ssh",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\Users\\dev\\.ssh\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": false,
+      "reasonCode": "workspace-in-protected",
+      "reason": "the workspace is inside a protected location (ssh-keys)"
+    }
+  },
+  {
+    "name": "err-workspace-in-program-files",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\Program Files\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": false,
+      "reasonCode": "workspace-in-system",
+      "reason": "the workspace is inside a system directory"
+    }
+  },
+  {
+    "name": "err-workspace-missing",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": [
+      "C:\\Users\\dev\\.claude"
+    ],
+    "expected": {
+      "ok": false,
+      "reasonCode": "workspace-missing",
+      "reason": "the workspace directory does not exist"
+    }
+  },
+  {
+    "name": "err-workspace-relative",
+    "input": {
+      "agent": "claude",
+      "workspace": "src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": false,
+      "reasonCode": "workspace-not-absolute",
+      "reason": "the agent workspace must be an absolute Windows path"
+    }
+  },
+  {
+    "name": "err-workspace-unset",
+    "input": {
+      "agent": "claude",
+      "workspace": "  ",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": false,
+      "reasonCode": "workspace-unset",
+      "reason": "no agent workspace is configured; MXC grants one project directory, never the whole profile"
+    }
+  },
+  {
+    "name": "err-hostname-egress",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [
+        "api.anthropic.com"
+      ],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": false,
+      "reasonCode": "egress-not-numeric",
+      "reason": "egress allow entries must be numeric CIDRs; MXC rules cannot name hosts (networking.md, 1.1 Out of GA scope)"
+    }
+  },
+  {
+    "name": "err-unsupported-agent",
+    "input": {
+      "agent": "cursor",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": false,
+      "reasonCode": "unsupported-agent",
+      "reason": "agent must be one of claude, codex, copilot"
+    }
+  },
+  {
+    "name": "err-no-command",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": " ",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": false,
+      "reasonCode": "no-command",
+      "reason": "no agent command line"
+    }
+  },
+  {
+    "name": "err-bad-proxy-port",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 0,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": false,
+      "reasonCode": "bad-proxy-port",
+      "reason": "modelProxyPort must be 1-65535"
+    }
+  },
+  {
+    "name": "err-no-profile",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": false,
+      "reasonCode": "no-profile",
+      "reason": "USERPROFILE is not an absolute path"
+    }
+  }
+]

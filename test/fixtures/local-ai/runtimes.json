@@ -1,0 +1,757 @@
+{
+  "_note": "Shared by cli/local-ai-inventory.mjs (test/local-ai-shared-fixtures.test.mjs) and src-tauri/src/local_ai.rs. Paths use forward slashes; both sides normalise backslashes before the existence lookup.",
+  "running": [
+    {
+      "name": "ollama",
+      "listeners": [
+        {
+          "pid": null,
+          "proc": "ollama",
+          "port": 11434,
+          "bind": "loopback"
+        }
+      ],
+      "processes": [
+        "ollama"
+      ],
+      "expect": [
+        {
+          "runtime": "ollama",
+          "running": true,
+          "ports": [
+            11434
+          ],
+          "bind": "loopback",
+          "listening": "loopback",
+          "detectedBy": [
+            "process",
+            "port"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "lmstudio llmster",
+      "listeners": [
+        {
+          "pid": null,
+          "proc": "llmster",
+          "port": 1234,
+          "bind": "network"
+        }
+      ],
+      "processes": [],
+      "expect": [
+        {
+          "runtime": "lmstudio",
+          "running": true,
+          "ports": [
+            1234
+          ],
+          "bind": "network",
+          "listening": "network",
+          "detectedBy": [
+            "process"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "llama.cpp",
+      "listeners": [
+        {
+          "pid": null,
+          "proc": "llama-server",
+          "port": 8080,
+          "bind": "network"
+        }
+      ],
+      "processes": [],
+      "expect": [
+        {
+          "runtime": "llama.cpp",
+          "running": true,
+          "ports": [
+            8080
+          ],
+          "bind": "network",
+          "listening": "network",
+          "detectedBy": [
+            "process"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "llamafile by suffix",
+      "listeners": [
+        {
+          "pid": null,
+          "proc": "qwen3.5-0.8b-q8_0.llamafile",
+          "port": 8080,
+          "bind": "loopback"
+        }
+      ],
+      "processes": [],
+      "expect": [
+        {
+          "runtime": "llamafile",
+          "running": true,
+          "ports": [
+            8080
+          ],
+          "bind": "loopback",
+          "listening": "loopback",
+          "detectedBy": [
+            "process"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "vllm",
+      "listeners": [
+        {
+          "pid": null,
+          "proc": "vllm",
+          "port": 8000,
+          "bind": "network"
+        }
+      ],
+      "processes": [
+        "vllm"
+      ],
+      "expect": [
+        {
+          "runtime": "vllm",
+          "running": true,
+          "ports": [
+            8000
+          ],
+          "bind": "network",
+          "listening": "network",
+          "detectedBy": [
+            "process"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "localai",
+      "listeners": [
+        {
+          "pid": null,
+          "proc": "local-ai",
+          "port": 8080,
+          "bind": "loopback"
+        }
+      ],
+      "processes": [],
+      "expect": [
+        {
+          "runtime": "localai",
+          "running": true,
+          "ports": [
+            8080
+          ],
+          "bind": "loopback",
+          "listening": "loopback",
+          "detectedBy": [
+            "process"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "jan",
+      "listeners": [
+        {
+          "pid": null,
+          "proc": "jan",
+          "port": 1337,
+          "bind": "loopback"
+        }
+      ],
+      "processes": [
+        "jan"
+      ],
+      "expect": [
+        {
+          "runtime": "jan",
+          "running": true,
+          "ports": [
+            1337
+          ],
+          "bind": "loopback",
+          "listening": "loopback",
+          "detectedBy": [
+            "process"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "gpt4all port alone",
+      "listeners": [
+        {
+          "pid": null,
+          "proc": "",
+          "port": 4891,
+          "bind": "loopback"
+        }
+      ],
+      "processes": [],
+      "expect": [
+        {
+          "runtime": "gpt4all",
+          "running": true,
+          "ports": [
+            4891
+          ],
+          "bind": "loopback",
+          "listening": "loopback",
+          "detectedBy": [
+            "port"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "koboldcpp prefix",
+      "listeners": [
+        {
+          "pid": null,
+          "proc": "koboldcpp-linux-x64",
+          "port": 5001,
+          "bind": "network"
+        }
+      ],
+      "processes": [],
+      "expect": [
+        {
+          "runtime": "koboldcpp",
+          "running": true,
+          "ports": [
+            5001
+          ],
+          "bind": "network",
+          "listening": "network",
+          "detectedBy": [
+            "process"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "foundry-local dynamic port",
+      "listeners": [
+        {
+          "pid": null,
+          "proc": "inference.service.agent",
+          "port": 5273,
+          "bind": "loopback"
+        }
+      ],
+      "processes": [],
+      "expect": [
+        {
+          "runtime": "foundry-local",
+          "running": true,
+          "ports": [
+            5273
+          ],
+          "bind": "loopback",
+          "listening": "loopback",
+          "detectedBy": [
+            "process"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "docker-model-runner port alone",
+      "listeners": [
+        {
+          "pid": null,
+          "proc": "com.docker.backend",
+          "port": 12434,
+          "bind": "network"
+        }
+      ],
+      "processes": [],
+      "expect": [
+        {
+          "runtime": "docker-model-runner",
+          "running": true,
+          "ports": [
+            12434
+          ],
+          "bind": "network",
+          "listening": "network",
+          "detectedBy": [
+            "port"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "winml-server",
+      "listeners": [
+        {
+          "pid": null,
+          "proc": "winmlserver",
+          "port": 8080,
+          "bind": "loopback"
+        }
+      ],
+      "processes": [],
+      "expect": [
+        {
+          "runtime": "winml-server",
+          "running": true,
+          "ports": [
+            8080
+          ],
+          "bind": "loopback",
+          "listening": "loopback",
+          "detectedBy": [
+            "process"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "generic ports never count without the name",
+      "listeners": [
+        {
+          "pid": null,
+          "proc": "node",
+          "port": 8080,
+          "bind": "network"
+        },
+        {
+          "pid": null,
+          "proc": "python3",
+          "port": 8000,
+          "bind": "loopback"
+        },
+        {
+          "pid": null,
+          "proc": "python3",
+          "port": 5001,
+          "bind": "loopback"
+        },
+        {
+          "pid": null,
+          "proc": "node",
+          "port": 1337,
+          "bind": "loopback"
+        },
+        {
+          "pid": null,
+          "proc": "node",
+          "port": 1234,
+          "bind": "loopback"
+        },
+        {
+          "pid": null,
+          "proc": "python",
+          "port": 7860,
+          "bind": "loopback"
+        },
+        {
+          "pid": null,
+          "proc": "python",
+          "port": 5000,
+          "bind": "loopback"
+        }
+      ],
+      "processes": [
+        "node",
+        "python3",
+        "python"
+      ],
+      "expect": []
+    },
+    {
+      "name": "process with no socket is listening none",
+      "listeners": [],
+      "processes": [
+        "lms"
+      ],
+      "expect": [
+        {
+          "runtime": "lmstudio",
+          "running": true,
+          "ports": [],
+          "bind": "unknown",
+          "listening": "none",
+          "detectedBy": [
+            "process"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sockets unreadable is listening null",
+      "listeners": null,
+      "processes": [
+        "ollama"
+      ],
+      "expect": [
+        {
+          "runtime": "ollama",
+          "running": true,
+          "ports": [],
+          "bind": "unknown",
+          "listening": null,
+          "detectedBy": [
+            "process"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "one network listener makes the runtime network",
+      "listeners": [
+        {
+          "pid": null,
+          "proc": "ollama",
+          "port": 11434,
+          "bind": "loopback"
+        },
+        {
+          "pid": null,
+          "proc": "ollama",
+          "port": 11435,
+          "bind": "network"
+        }
+      ],
+      "processes": [],
+      "expect": [
+        {
+          "runtime": "ollama",
+          "running": true,
+          "ports": [
+            11434,
+            11435
+          ],
+          "bind": "network",
+          "listening": "network",
+          "detectedBy": [
+            "process",
+            "port"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "backward compatible with the four aibom-runtime runtimes",
+      "listeners": [
+        {
+          "pid": null,
+          "proc": "ollama",
+          "port": 11434,
+          "bind": "loopback"
+        },
+        {
+          "pid": null,
+          "proc": "lm studio",
+          "port": 1234,
+          "bind": "loopback"
+        },
+        {
+          "pid": null,
+          "proc": "llama-server",
+          "port": 8080,
+          "bind": "network"
+        },
+        {
+          "pid": null,
+          "proc": "node",
+          "port": 8000,
+          "bind": "loopback"
+        },
+        {
+          "pid": null,
+          "proc": "com.docker.backend",
+          "port": 11434,
+          "bind": "loopback"
+        }
+      ],
+      "processes": [
+        "ollama",
+        "lm studio",
+        "llama-server",
+        "node"
+      ],
+      "expect": [
+        {
+          "runtime": "ollama",
+          "running": true,
+          "ports": [
+            11434
+          ],
+          "bind": "loopback",
+          "listening": "loopback",
+          "detectedBy": [
+            "process",
+            "port"
+          ]
+        },
+        {
+          "runtime": "lmstudio",
+          "running": true,
+          "ports": [
+            1234
+          ],
+          "bind": "loopback",
+          "listening": "loopback",
+          "detectedBy": [
+            "process"
+          ]
+        },
+        {
+          "runtime": "llama.cpp",
+          "running": true,
+          "ports": [
+            8080
+          ],
+          "bind": "network",
+          "listening": "network",
+          "detectedBy": [
+            "process"
+          ]
+        }
+      ]
+    }
+  ],
+  "installed": [
+    {
+      "name": "darwin: PATH + brew dir, apps with Info.plist version, binary plist, CLI plugin, install dir",
+      "platform": "darwin",
+      "home": "/Users/dev",
+      "env": {
+        "PATH": "/custom/bin:/usr/bin"
+      },
+      "exists": [
+        "/opt/homebrew/bin/llama-server",
+        "/custom/bin/llamafile",
+        "/custom/bin/local-ai",
+        "/custom/bin/vllm",
+        "/custom/bin/koboldcpp",
+        "/custom/bin/foundry",
+        "/Applications/LM Studio.app",
+        "/Users/dev/Applications/Jan.app",
+        "/Applications/Ollama.app",
+        "/Applications/gpt4all/bin/gpt4all.app",
+        "/Users/dev/.docker/cli-plugins/docker-model",
+        "/Users/dev/text-generation-webui/server.py",
+        "/custom/bin/WinMLServer"
+      ],
+      "plists": {
+        "/Applications/LM Studio.app/Contents/Info.plist": "<?xml version=\"1.0\"?><plist><dict><key>CFBundleShortVersionString</key>\n<string>0.3.30</string></dict></plist>",
+        "/Applications/Ollama.app/Contents/Info.plist": "bplist00\u0000binary"
+      },
+      "expect": [
+        {
+          "runtime": "ollama",
+          "via": [
+            "app"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "lmstudio",
+          "via": [
+            "app"
+          ],
+          "version": "0.3.30"
+        },
+        {
+          "runtime": "llama.cpp",
+          "via": [
+            "path"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "llamafile",
+          "via": [
+            "path"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "vllm",
+          "via": [
+            "path"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "localai",
+          "via": [
+            "path"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "jan",
+          "via": [
+            "app"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "gpt4all",
+          "via": [
+            "app"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "koboldcpp",
+          "via": [
+            "path"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "text-generation-webui",
+          "via": [
+            "install-dir"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "foundry-local",
+          "via": [
+            "path"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "docker-model-runner",
+          "via": [
+            "cli-plugin"
+          ],
+          "version": null
+        }
+      ]
+    },
+    {
+      "name": "win32: .exe on PATH, per-user install dirs, WinMLServer, LOCALAPPDATA fallback",
+      "platform": "win32",
+      "home": "C:/Users/dev",
+      "env": {
+        "Path": "C:/tools;C:/Windows"
+      },
+      "exists": [
+        "C:/tools/llama-server.exe",
+        "C:/tools/WinMLServer.exe",
+        "C:/Users/dev/AppData/Local/Programs/Ollama/ollama.exe",
+        "C:/Users/dev/.lmstudio/bin/lms.exe",
+        "C:/Program Files/Docker/Docker/resources/cli-plugins/docker-model.exe",
+        "C:/Users/dev/gpt4all/bin/chat.exe"
+      ],
+      "plists": {},
+      "expect": [
+        {
+          "runtime": "ollama",
+          "via": [
+            "app"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "lmstudio",
+          "via": [
+            "path"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "llama.cpp",
+          "via": [
+            "path"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "gpt4all",
+          "via": [
+            "app"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "docker-model-runner",
+          "via": [
+            "cli-plugin"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "winml-server",
+          "via": [
+            "path"
+          ],
+          "version": null
+        }
+      ]
+    },
+    {
+      "name": "win32: LOCALAPPDATA honoured when set",
+      "platform": "win32",
+      "home": "C:/Users/dev",
+      "env": {
+        "Path": "C:/tools",
+        "LOCALAPPDATA": "D:/LocalData"
+      },
+      "exists": [
+        "D:/LocalData/Programs/LM Studio/LM Studio.exe"
+      ],
+      "plists": {},
+      "expect": [
+        {
+          "runtime": "lmstudio",
+          "via": [
+            "app"
+          ],
+          "version": null
+        }
+      ]
+    },
+    {
+      "name": "linux: ~/.local/bin and ~/bin searched, apps never",
+      "platform": "linux",
+      "home": "/home/dev",
+      "env": {
+        "PATH": ""
+      },
+      "exists": [
+        "/home/dev/.local/bin/ollama",
+        "/home/dev/bin/lms",
+        "/Applications/Jan.app"
+      ],
+      "plists": {},
+      "expect": [
+        {
+          "runtime": "ollama",
+          "via": [
+            "path"
+          ],
+          "version": null
+        },
+        {
+          "runtime": "lmstudio",
+          "via": [
+            "path"
+          ],
+          "version": null
+        }
+      ]
+    }
+  ]
+}

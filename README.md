@@ -27,9 +27,10 @@ That's the exact trade MoorAI refuses.
 - **Context interception** — stops a secret or PII being *read into the agent's context* (e.g. an agent slurping a `.env`), not just typed in a prompt. Via the agent's PreToolUse hooks, on-device. An enrolled device enforces the policy (block, or hold for sign-off); a device that isn't enrolled coaches: the agent is told what it touched and the read goes ahead. What comes back into the agent — command output, MCP results, sub-agent reports, fetched pages — is scanned after the tool runs as untrusted inbound content.
 - **Agency Enforcement** — bounds what an agent is *allowed to do*: inspects `mcp__*` tool-call arguments for secrets/policy violations and blocks them, and enforces an approved-MCP-server allow-list at call time — with a **discovered → approved/denied approval-gating lifecycle** in the console. An argument that names a local file (`{"path": "customers.csv"}`, `~/…`, `file://…`) gets that file checked the way a `Bash` command's read path is: its content at the `file` stage, its metadata (#72) and its location against the credential list (#55), in the Claude Code hook and in the MCP proxy, which refuses a blocked call before the real server sees it. At most 12 files, 256 KB each, 1 MB and 1 s per call; anything past the caps is skipped silently, and a file named by path cannot be masked, so `mask` resolves to its fallback. The direct control for **OWASP LLM06: Excessive Agency**. Details and limits: [`docs/DETECTION_ENGINE.md`](docs/DETECTION_ENGINE.md) §6, §13.
 - **AI output review** — reviews what the agent says *back*, not just what's typed. On-device output screening flags **secrets, PII, and insecure code the agent generates** (SQL injection, XSS, command injection, `eval`/dynamic exec, weak crypto, unsafe deserialization) and masks secret spans on the `-p` path — emitting only a content-free verdict, never the reply. An intra-file **taint-lite** check (dependency-free source→sink proximity) raises a high-confidence *confirmed tainted-flow* signal when untrusted input actually reaches one of those sinks, so the console can prioritize real flows over hardcoded-literal matches.
+- **Index / RAG payload inspection** — content headed for a vector store or retrieval index is scanned at the engine's `index` stage before it is embedded, so a poisoned chunk is caught before it can be retrieved into someone's context. Three integration points: `scanBeforeEmbed` / `guardEmbed` in `@moorai/agent-sdk` for an app that runs its own ingestion, `POST /v1/index-scan` on `moorai-serve` for any framework, and vector-store write tools (`add_documents`, `upsert`, `store_memory`, … on Chroma, Qdrant, Pinecone, Weaviate, mem0 and the like) seen by the MCP proxy and gateway. Report-first; `policy.indexScanAction: "block"` drops or refuses an instruction-carrying chunk. MoorAI has no vector store of its own: an app that embeds without calling one of these is not covered. Details: [*Content headed for an index*](#content-headed-for-an-index-rag-ingestion).
 - **Provider-anchored secrets engine** — ~14 provider families (GitHub, AWS, Stripe, Slack, GCP, OpenAI/Anthropic, DB connection strings, …) plus Shannon-entropy scoring with an allowlist (UUIDs, git SHAs, base64) so it doesn't false-positive on the things that aren't secrets.
 - **Model-endpoint allow-listing** — bounds *which LLM endpoints* an agent may talk to. A base-URL override (`ANTHROPIC_BASE_URL=…`) or a direct call to a non-approved provider is flagged/blocked at the endpoint — the exfil-via-rogue-endpoint defense, host-level and content-free (loopback / local models always allowed).
-- **Transit-override detection (#67)** — the allow-list above asks *where* the agent is sending; this asks *what the traffic passes through on the way*. Setting `HTTPS_PROXY` plus a CA override (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, …) on an agent leaves the destination untouched — so the endpoint allow-list still passes it — while every request transits an interceptor that reads the prompt, the generated code and the API key in cleartext. Measured, not theorised: with those two variables set, a real Claude Code session decrypted at the proxy with the client reporting the TLS as **authorized**, because the injected CA makes the forged chain legitimately trusted. It needs no privileges. MoorAI reports any proxy or CA override and denies an unsanctioned proxy when `policy.transitAllow` is set — proxy **host** and variable **name** only, never the CA path or its contents. Report-first by default, because a corporate egress proxy is legitimate; loopback is deliberately *not* auto-approved, since a loopback proxy is what an on-device interceptor looks like.
+- **Transit-override detection (#67)** — the allow-list above asks *where* the agent is sending; this asks *what the traffic passes through on the way*. Setting `HTTPS_PROXY` plus a CA override (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, …) on an agent leaves the destination untouched — so the endpoint allow-list still passes it — while every request transits an interceptor that reads the prompt, the generated code and the API key in cleartext. Measured, not theorised: with those two variables set, a real Claude Code session decrypted at the proxy with the client reporting the TLS as **authorized**, because the injected CA makes the forged chain legitimately trusted. It needs no privileges. **Status: not wired yet.** The decision function (`decideTransit` in `cli/hook-core.mjs`) is built and unit-tested — it reports a proxy or CA override and denies an unsanctioned proxy when `policy.transitAllow` is set, by proxy **host** and variable **name** only, never the CA path or its contents — but no shipped hook calls it, so MoorAI does not report transit overrides today.
 - **Slopsquatting firewall** — an offline typosquat / hallucinated-package classifier (Damerau-Levenshtein against a curated popular-package list + a known-bad set) gates `npm/pip/cargo install` of near-miss names (`reqeusts`, `lodahs`) and documented hallucinations, checked entirely on-device (name only).
 - **MCP hardening** — an approval-gating lifecycle for MCP servers, **rug-pull detection** (a server whose config changes after approval is knocked back to pending), **tool drift blocking** (policy `mcpToolDrift: "block"`: a tool whose description or schema changed since an admin approved the server, a tool added after approval, or a tool name another server owns is removed from the agent's tool list and its calls are refused until re-approval; the approved tool fingerprints ride in the signed policy; see [`mcp-proxy/README.md`](mcp-proxy/README.md)), an **invisible-payload scanner** (Unicode tag-block / ANSI escapes / bidi-override / variation-selector smuggling) that catches instructions hidden from human review, and a tool-description check that reports a tool telling the model to read a credential file (`~/.ssh/id_rsa`, `~/.aws/credentials`, `.env`, a browser or keychain store) and pass its contents into a call.
 - **Skill Analysis** — an inventory + *intent* view of the whole **skill surface** an agent auto-loads, not just its rules file: `SKILL.md` and `.claude/skills/**`, subagent definitions (`.claude/agents/*.md`), slash commands (`.claude/commands/**`), MCP server configs (`.mcp.json`, `~/.claude.json`, `managed-mcp.json`, `claude_desktop_config.json`), the settings files that can carry **hooks** (`.claude/settings.json`, `settings.local.json`, `managed-settings.json`), plugin manifests and their hook/monitor declarations, path-scoped rules and memory files, plus the other vendors' equivalents: rules and instruction files (`.cursorrules`, `.windsurfrules`, Windsurf and Cline rule folders, Copilot `.github/instructions`, Codex `AGENTS.override.md`, `GEMINI.md`, Amp `AGENT.md`, Kiro steering), the settings files that carry hooks or MCP servers (`.gemini/settings.json`, `.amp/settings.json`, `opencode.json`, Kiro hooks), and the commands, workflows, prompt files, custom agents and specs an agent injects when invoked (Cursor, Windsurf, Cline, Copilot, Codex, Gemini, OpenCode, Kiro). Every file gets its **kind**, a set of **intent category labels** — *hidden-instructions*, *instruction-override*, *external-network-egress*, *security-control-or-privilege-change*, *references-credentials*, *invisible-characters*, … — and a **drift fingerprint** per file. The labels are renames of findings the existing detection engine already produced; **no text, matched span, or excerpt is ever attached**, so a poisoned skill can be triaged without reading it off the device.
@@ -443,7 +444,8 @@ content-free) in one process:
 - **`moorai-serve`** ([`cli/moorai-serve.mjs`](cli/moorai-serve.mjs)) is a localhost sidecar for agent
   loops that are not Claude Code or the Agent SDK (OpenAI Agents SDK, LangGraph, CrewAI, a custom loop):
   `POST /v1/scan` (`{text, stage?, ctx?}`), `POST /v1/tool-call` (`{tool, input, cwd?}`, the decision the hook
-  makes for that call) and `GET /healthz`. Verdicts never contain the submitted text, though a
+  makes for that call), `POST /v1/index-scan` (`{chunks, source?}`, one verdict per chunk about to be
+  embedded; see below) and `GET /healthz`. Verdicts never contain the submitted text, though a
   `tool-call` verdict's `message`, the sentence the hook shows the agent, can name a file or a host from
   the call. It binds loopback
   only unless `--allow-remote` is given with a token of 16+ characters (`--token-file` or
@@ -463,6 +465,68 @@ a file there holds secrets; run it where the agent's files are. The secret-egres
 filled once per directory for the life of the process. The Python examples have not been executed.
 Declared workload profiles are evaluated in process, with the `serviceId` option (else the server-mode
 workload name) as the name a profile matches.
+
+#### Content headed for an index (RAG ingestion)
+
+A poisoned document in a retrieval index is read back into some later user's context with no tool call
+and nobody typing it. MoorAI scans a chunk at the engine's `index` stage (the prompt detectors plus the
+ingested-content ones: untrusted directives, agent-addressed text, hidden canaries, tool poisoning,
+AI-only cloaking) before it is embedded, through `DetectionEngine.scanForIndex` and the same policy as
+every other surface (`cli/index-scan.mjs`).
+
+```js
+import { scanBeforeEmbed, guardEmbed } from "@moorai/agent-sdk";
+const report = await scanBeforeEmbed(chunks, { source: "kb/handbook" });  // { action, results: [{ index, verdict, threatIds, reasons }], allowed, flagged, denied }
+const addDocs = guardEmbed((docs) => vectorStore.addDocuments(docs), { source: "kb/handbook" });
+await addDocs(docs);   // under policy "block", denied documents never reach addDocuments
+```
+
+```bash
+curl -s localhost:8790/v1/index-scan -H 'content-type: application/json' -d '{"chunks":["…","…"],"source":"kb/handbook"}'
+```
+
+Each chunk gets `allow` (no finding), `flag` (reported, kept) or `deny`. `policy.indexScanAction` is
+`"report"` (default: nothing is dropped) or `"block"`: a chunk is denied when a finding is an
+instruction-carrying threat (the `promptScanAction` list) or one whose configured action is block or kill.
+A chunk is a string or an object whose string values are scanned (a LangChain `Document`'s `pageContent`
+and `metadata`), up to 256 KB each and 4,096 per call. Alerts are content-free (stage `index`, tool
+`index:embed`, a keyed hash of the matched span, and the `source` only as a keyed hash); the verdicts never
+carry chunk text. Fail-open: an internal error keeps every chunk unless `failClosed: true`.
+
+The MCP proxy and gateway recognise **vector-store write tools** and scan their arguments at the same stage
+before forwarding the call: a tool named in `policy.indexTools` (`"add_documents"`, or `"chroma/upsert"`
+for one server), or, unless `policy.indexToolHeuristic: false`, the write tool of a verified server (below)
+or a name with a write verb (`add`, `upsert`,
+`insert`, `index`, `store`, `ingest`, `embed`, `save`, `remember`) plus a store noun (`documents`,
+`memory`, `vectors`, `chunks`, …), a vector-store hint in the tool or server name (`chroma`, `qdrant`,
+`pinecone`, `weaviate`, `milvus`, `mem0`, …) or a `documents` / `texts` / `chunks` array argument. A name
+that also says get, list, query, search or delete is not a write, nor is one that creates an index. Under
+`"block"` the call is refused before the server sees it (`MCP: blocked vector-store write`).
+
+The write tools of these MCP servers are recognised by exact name, whatever the server is labelled. The
+names were read from each server's source on 2026-10-07; none was run. Repos, commits and the argument
+that carries the text: "Vector-store writes" in [`mcp-proxy/README.md`](mcp-proxy/README.md).
+
+| Server | Write tools |
+|---|---|
+| Chroma | `chroma_add_documents`, `chroma_update_documents` |
+| Qdrant | `qdrant-store` |
+| Pinecone | `upsert-records` |
+| Weaviate | `weaviate-insert-one`, `weaviate-objects-upsert` |
+| mem0 / OpenMemory | `add_memory`, `update_memory` / `add_memories` |
+| Milvus | `milvus_insert_data` |
+| OpenSearch | `SaveMemoryTool`, `AddAgenticMemoriesTool`, `UpdateAgenticMemoryTool`, `CreateAgenticMemorySessionTool`, and `GenericOpenSearchApiTool` for a document write (`POST` / `PUT` / `PATCH` to `_doc`, `_create`, `_update`, `_bulk`) |
+| Redis | `set_vector_in_hash` (plain key-value writes are not index writes) |
+| LanceDB | `ingest_docs` |
+| MCP reference `memory` (knowledge graph) | `create_entities`, `create_relations`, `add_observations` |
+| Elasticsearch | none: its MCP server has no write tool |
+
+**Covered:** an application that calls `scanBeforeEmbed` / `guardEmbed` or `/v1/index-scan`, and MCP
+vector-store write tools that match the rule above. **Not covered:** an application that embeds without
+calling MoorAI, an in-process vector library (a FAISS or Chroma client inside the app) with no MCP or API
+hook, a vector-store tool whose name and arguments match nothing (name it in `policy.indexTools`), and
+documents a vector store ingests on its own (a crawler, a bulk import). Dropping a chunk changes the array
+the embed function receives; use `onReport` to drop the same ids.
 
 #### Model proxy
 
@@ -617,6 +681,47 @@ its scope. The desktop app reports each host's last activity hourly on its own, 
 every hook is switched off. The console (v0.70.0) raises `Coverage: agent active, no MoorAI hook traffic`,
 `Coverage: agent setting weakened` and `Coverage: MoorAI hook removed or stale`. Only enrolled devices send. Never a path, a value outside the listed flags, a project
 name or a session id, and never more of a version than digits, dots and a short build suffix.
+
+**Containment on Windows (MXC).** On a Windows device the same heartbeat also says, for Claude Code, Codex
+and Copilot, whether the commands that agent runs are inside a Microsoft Execution Container (MXC), and
+whether the device's Windows build is new enough for MXC
+([`cli/mxc-detect.mjs`](cli/mxc-detect.mjs)). Each of those hosts carries
+`containment: { kind, scope, source }`, and the report carries `mxcCapable`:
+
+- **Codex:** `windows.sandbox = "mxc"` in `~/.codex/config.toml` (or `CODEX_HOME`) or the project's
+  `.codex/config.toml` gives `kind: "mxc"`, `scope: "commands"`. `"elevated"` or `"unelevated"` gives
+  `"other"` (Codex's own sandbox, not MXC). Nothing set gives `"none"`, and so does
+  `sandbox_mode = "danger-full-access"`. `features.prefer_mxc` gives `"unknown"`, because Codex picks MXC
+  only if it is available when it runs.
+- **Copilot CLI:** `sandbox.enabled` in `~/.copilot/settings.json` (or `COPILOT_HOME`). `true` gives
+  `"mxc"`, `"commands"` (on Windows that sandbox is MXC). `false` gives `"none"`. Not set, or an unreadable
+  file, gives `"unknown"`. The CLI's default is not documented, and enterprise-managed settings can require
+  the sandbox in a way MoorAI cannot read.
+- **Claude Code:** always `"none"` on native Windows. Claude Code runs commands unsandboxed there and has
+  no MXC support yet.
+- **Other hosts and platforms:** Gemini and Cursor have no documented MXC support, so they get no
+  `containment` field. macOS and Linux get neither field; there, the sandbox is covered by the existing
+  `sandboxOff` and `sandboxFullAccess` flags.
+
+`mxcCapable` compares `os.release()` and the registry's `UBR`
+(`HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion`, read with `reg.exe`, no admin needed) with
+MXC's documented minimums: 26100.9278 and 26200.9278 (24H2/25H2, KB5120998), 26300.9550 and 28000.2804.
+It is `false` on older builds and `null` when the build is not listed or the value cannot be read. The
+registry is read only in the heartbeat worker, at most once a day per Windows release (cached in
+`~/.moorai/mxc-capable.json`).
+
+What this detects and what it assumes:
+- **Detected:** what each agent's config file says.
+- **Not detected:** whether a running process is actually in a container. MXC documents no way to tell.
+- **Can override the config:** a command-line flag (`codex -c …`, `copilot --sandbox` / `--no-sandbox`),
+  a Codex profile, or enterprise-managed settings.
+- **Build check:** `mxcCapable: true` means the build allows MXC, not that it is switched on. Microsoft
+  rolls it out gradually.
+- **Scope:** Codex and Copilot contain **only the commands the agent runs**, not the agent process itself.
+  `scope: "agent"` is reserved and no host reports it today.
+
+The console raises `Coverage: agent running without containment` for a Windows host whose kind is
+`"none"`, or `"unknown"` on an MXC-capable device. It is report-only and changes no verdict.
 
 ### Skill Analysis — what is your agent actually being told to do?
 
@@ -794,9 +899,23 @@ shapes and a fake AWS CLI only, not yet against a real AWS account. See [`cloud/
 | | |
 |---|---|
 | **Agents** | Claude Code (full hook enforcement) · **Codex CLI, GitHub Copilot CLI, Gemini CLI and Cursor: pre-tool hook enforcement** through `cli/moorai-agent-hook.mjs` (see *Other agents* below) · Claude Desktop · VS Code / Copilot · any project `.mcp.json` consumer (MCP stdio proxy — **enforcement, host-independently**, but only over MCP; see the bound below) · remote MCP servers (HTTP gateway) · Claude Agent SDK services in process and other agent loops through a localhost sidecar (*Server mode: Agent SDK and sidecar*) · any agent that calls the Anthropic Messages or OpenAI Chat Completions API through an SDK with a configurable base URL (model proxy) |
-| **Surfaces** | prompts · AI outputs · files read into context · **files the agent writes or edits** · MCP tool calls · **MCP tool listings and tool results** · **outbound `WebFetch` requests** · **what comes back from `Bash`, `PowerShell`, MCP tools and sub-agents (Claude Code)** · pasted images (on-device OCR) · the agent's auto-loaded context files (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`, …) · the agent's auto-loaded skill surface (skills, subagents, commands, MCP configs, hook-bearing settings) · **the session as a whole: failed tool calls, the agent's end-of-turn claim, compactions (Claude Code)** · **model calls: what an agent sends to the provider and the tool calls the model returns (model proxy)** |
+| **Surfaces** | prompts · AI outputs · files read into context · **files the agent writes or edits** · MCP tool calls · **MCP tool listings and tool results** · **outbound `WebFetch` requests** · **what comes back from `Bash`, `PowerShell`, MCP tools and sub-agents (Claude Code)** · pasted images (on-device OCR) · the agent's auto-loaded context files (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`, …) · **content an app is about to embed into a vector store (SDK, sidecar) and MCP vector-store writes** · the agent's auto-loaded skill surface (skills, subagents, commands, MCP configs, hook-bearing settings) · **the session as a whole: failed tool calls, the agent's end-of-turn claim, compactions (Claude Code)** · **model calls: what an agent sends to the provider and the tool calls the model returns (model proxy)** |
 | **Platforms** | macOS · Windows · Linux (on-device OCR is a second-class tier — see below) |
 | **Detects** | secrets · PII / PHI · source-code leakage · prompt injection · destructive commands · second-order/hidden-instruction injection · skill-surface poisoning & drift · the agent's rules files leaving the device · risky actions outside the user's stated task · low-reputation MCP servers · MCP tool descriptions that ask for a credential file · outbound actions after untrusted content, multi-step and slow exfiltration · runaway loops · success claims over failed tool calls · agents running without MoorAI's hook or with weakened settings · agents running a host version MoorAI's adapter was not tested against |
+
+**Memory and knowledge-base poisoning (#22, #21).** An agent writing an instruction into its own memory —
+Claude Code auto-memory, `CLAUDE.md`, Codex `AGENTS.md`, Cursor / Windsurf / Cline / Copilot rules, skills —
+through `Write` / `Edit` or a shell `echo >>` / `tee` / heredoc raises #22 when the text would send data out,
+hide something from you, skip a check or override its rules in future sessions; the same check runs on those
+files when they are auto-loaded at session start. Content headed into a knowledge base or vector index
+(`scanBeforeEmbed`, `POST /v1/index-scan`, MCP vector-store writes) raises #21 when it addresses the model that
+will retrieve it, suppresses the other sources or carries hidden instructions. Factual poisoning with no
+instruction in it is not detected. Design and measurements: [`docs/DETECTION_ENGINE.md`](docs/DETECTION_ENGINE.md) §2.
+
+**NSFW content is reported and coached by default.** With no org setting, the sexual, violence and profanity
+content categories run in `notify`: the console gets the finding and the person sees it, and nothing is
+blocked. An org can turn each off, or make it `justify` / `block`, from the console. The other content
+categories (self-harm, drugs, eating disorders, hate, harassment, grooming) stay off until an org turns them on.
 
 **Coverage layers.** MoorAI sees agent activity through three layers, each independent of the others.
 

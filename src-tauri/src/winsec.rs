@@ -212,6 +212,19 @@ pub fn patch_status() -> serde_json::Value {
 const AGENT_ACTIVE_PROCESS_LIMIT: u32 = 256;
 
 pub fn create_agent_job() -> Option<isize> {
+    create_job(false)
+}
+
+/// The job for an agent launched through wxc-exec (mxc_launch.rs). UI limits of every job in a
+/// nesting chain apply together, so this job must not re-impose the two limits the MXC policy relaxes
+/// for PowerShell — UILIMIT_HANDLES and UILIMIT_GLOBALATOMS (microsoft/mxc
+/// tests/playground/playground-limitations.md, "PowerShell in BaseContainer": DLL_INIT_FAILED under
+/// 0x03FF). Clipboard and the rest stay denied here as well as in the container's own `ui` policy.
+pub fn create_mxc_job() -> Option<isize> {
+    create_job(true)
+}
+
+fn create_job(relax_desktop_handles: bool) -> Option<isize> {
     use windows::core::PCWSTR;
     use windows::Win32::System::JobObjects::{
         CreateJobObjectW, SetInformationJobObject, JobObjectBasicUIRestrictions,
@@ -245,16 +258,16 @@ pub fn create_agent_job() -> Option<isize> {
         // and tokens, and an agent that can read it has a silent exfil channel that never touches
         // the filesystem or a prompt we scan. The rest deny the job a route to the wider desktop
         // session. Safe for a console agent, which uses pipes rather than USER handles.
-        let ui = JOBOBJECT_BASIC_UI_RESTRICTIONS {
-            UIRestrictionsClass: JOB_OBJECT_UILIMIT_READCLIPBOARD
-                | JOB_OBJECT_UILIMIT_WRITECLIPBOARD
-                | JOB_OBJECT_UILIMIT_HANDLES
-                | JOB_OBJECT_UILIMIT_DESKTOP
-                | JOB_OBJECT_UILIMIT_EXITWINDOWS
-                | JOB_OBJECT_UILIMIT_GLOBALATOMS
-                | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS
-                | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS,
-        };
+        let mut flags = JOB_OBJECT_UILIMIT_READCLIPBOARD
+            | JOB_OBJECT_UILIMIT_WRITECLIPBOARD
+            | JOB_OBJECT_UILIMIT_DESKTOP
+            | JOB_OBJECT_UILIMIT_EXITWINDOWS
+            | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS
+            | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS;
+        if !relax_desktop_handles {
+            flags = flags | JOB_OBJECT_UILIMIT_HANDLES | JOB_OBJECT_UILIMIT_GLOBALATOMS;
+        }
+        let ui = JOBOBJECT_BASIC_UI_RESTRICTIONS { UIRestrictionsClass: flags };
         let _ = SetInformationJobObject(
             job,
             JobObjectBasicUIRestrictions,

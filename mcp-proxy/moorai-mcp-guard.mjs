@@ -71,6 +71,7 @@ import { emitOtel } from "../cli/otel.mjs";
 import { assessServer, addToolSignals } from "../cli/mcp-reputation.mjs";
 import { reputationAction, reputationAlert, reputationSummary } from "../data/mcp-reputation.js";
 import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
+import { indexWriteScan } from "../cli/index-tools.mjs";
 import { recordMcpCall, flushMcpUsage, usageHost, usageIdentity } from "../cli/mcp-usage-beat.mjs";
 
 // ---- argv parsing: [--server label] [--host id] -- realcmd args... ----
@@ -218,7 +219,7 @@ function auditCall(tool, decision, argsHash) {
   } catch { /* ledger is best-effort; never affects the decision */ }
 }
 function alertBlock(tool, gate, reason, argsHash) {
-  const category = gate === "server" ? "MCP: unapproved server" : gate === "args" ? "MCP: denied tool argument" : gate === "file" ? "MCP: blocked file argument" : "MCP: blocked tool argument";
+  const category = gate === "server" ? "MCP: unapproved server" : gate === "args" ? "MCP: denied tool argument" : gate === "file" ? "MCP: blocked file argument" : gate === "index" ? "MCP: blocked vector-store write" : "MCP: blocked tool argument";
   post({ threatId: 0, category, riskLevel: "Blocked", stage: "mcp", tool: `desktop:${tool}`, decision: "deny", mcpServer: SERVER, ts: new Date().toISOString(), contentHash: argsHash, ...IDENTITY });
   // Coach-as-literacy: the blocked-call message Claude Desktop shows the user is a literacy touchpoint.
   try { post({ ...literacyTouchpoint({ threatId: 0, category, tool: `desktop:${tool}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
@@ -286,7 +287,59 @@ child.on("error", (e) => {
   process.stderr.write(`moorai-mcp-guard: failed to spawn '${REAL_CMD}': ${e && e.message}\n`);
   process.exit(1);
 });
-child.on("exit", (code, signal) => { process.exit(code == null ? (signal ? 1 : 0) : code); });
+
+// ---- process lifecycle: the guard ends when its child does, and never leaves the child behind ----
+// An MCP client ends a stdio server by closing its stdin, then SIGTERM, then SIGKILL. The guard stands
+// in for that server, so it runs the same sequence against its child: some real servers never exit on
+// stdin EOF (MEASURED: chroma-mcp 0.2.6), and the guard used to wait on them forever, or — on its own
+// SIGTERM — die alone and leave the child running with ppid 1. On Windows child.kill() is
+// TerminateProcess whatever the signal, so the SIGTERM step is already final there.
+const GRACE_MS = 2000;
+let stopping = null;   // null, "eof", or the signal the guard itself received
+let exiting = false;
+function escalate() {
+  setTimeout(() => {
+    try { child.kill("SIGTERM"); } catch { /* gone */ }
+    setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* gone */ }
+      // A child that survives SIGKILL is not ours to wait for.
+      setTimeout(() => finish(stopping === "eof" ? 0 : 1), GRACE_MS);
+    }, GRACE_MS);
+  }, GRACE_MS);
+}
+function stopChild(reason) {
+  if (stopping) return;
+  stopping = reason;
+  try { child.stdin.end(); } catch { /* already closed */ }
+  if (reason !== "eof") { try { child.kill(reason); } catch { /* gone */ } }
+  escalate();
+}
+for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(sig, () => stopChild(sig));
+
+// Exit only once every byte the child wrote has been through the result stage and handed to stdout:
+// 'close' (not 'exit') is when the child's stdout has ended, and outQueue is the one ordered write queue.
+function finish(code) {
+  if (exiting) return;
+  exiting = true;
+  flushPending();
+  const done = () => process.stdout.write("", () => process.exit(code));
+  outQueue.then(done, done);
+  setTimeout(() => process.exit(code), GRACE_MS); // a client that stopped reading cannot hold us
+}
+function exitCodeOf(code, signal) {
+  if (code != null) return code;
+  if (!signal) return 0;
+  if (stopping === "eof") return 0;                       // we ended it because the client asked to stop
+  if (stopping) return 128 + (os.constants.signals[stopping] || 0);
+  return 1;
+}
+let childGone = null;
+child.on("exit", (code, signal) => {
+  childGone = exitCodeOf(code, signal);
+  // A grandchild holding the stdout pipe open would delay 'close' indefinitely; do not wait on it long.
+  setTimeout(() => finish(childGone), 500);
+});
+child.on("close", (code, signal) => { finish(childGone != null ? childGone : exitCodeOf(code, signal)); });
 
 // Responses from the real server → Claude Desktop. See "THE RESULT STAGE" below for why this is now a
 // parse-THEN-forward framer rather than the write-first copy it used to be, and for the deadline that
@@ -410,6 +463,15 @@ async function handleLine(rawLine) {
     else if (fsr && fsr.decision !== "allow" && fsr.decision === g.decision) g.reason = [g.reason, ...fsr.reasons].filter(Boolean).join(", ");
     const fileFindings = fsr ? fsr.findings : [];
 
+    // A vector-store write (cli/index-tools.mjs: policy.indexTools or the name / argument heuristic):
+    // its document arguments are content headed for an index, scanned at the "index" stage. Report-first;
+    // only policy.indexScanAction "block" refuses the call. Findings the argument scan already reported
+    // are not reported twice.
+    const ix = g.gate === "server" || g.gate === "args" || g.decision === "deny" ? null : indexWriteScan(ENGINE, POLICY, { tool, server: SERVER, args: msg.params.arguments });
+    if (ix && ix.verdict === "deny") { g.decision = "deny"; g.gate = "index"; g.reason = `${tool} — vector-store write: ${ix.reasons.join(", ")}`; g.alternatives = []; }
+    const seenIds = new Set((g.findings || []).map((f) => f.threatId));
+    const indexFindings = ix ? ix.findings.filter((f) => !seenIds.has(f.threatId)) : [];
+
     if (COACH && g.decision === "deny") {
       coachNote(`MCP tool call ${tool}`, g.reason, g.alternatives);
       auditCall(tool, "coach", argsHash);
@@ -423,6 +485,7 @@ async function handleLine(rawLine) {
       alertBlock(tool, g.gate, g.reason, argsHash);
       alertFindings(tool, g.findings, true, argsHash);
       alertFindings(tool, fileFindings, true, argsHash, "file");
+      alertFindings(tool, indexFindings, g.gate === "index", argsHash, "index");
       auditCall(tool, "deny", argsHash);
       writeBlock(msg.id, g.reason || "policy");
       return;
@@ -430,6 +493,7 @@ async function handleLine(rawLine) {
     // allow OR coach ("ask"): Claude Desktop has no interactive banner, so coach = allow + record.
     alertFindings(tool, g.findings, false, argsHash);
     alertFindings(tool, fileFindings, false, argsHash, "file");
+    alertFindings(tool, indexFindings, false, argsHash, "index");
     auditCall(tool, g.decision, argsHash);
     rememberCall(msg.id, tool);
     forward(rawLine);
@@ -478,12 +542,14 @@ function alertTool(toolName, { category, riskLevel, threatId = 0, hash, decision
 // One tools/list response. Bounded by CAPS.maxTools and by a wall-clock budget checked BETWEEN tools
 // — regex execution in V8 is synchronous and cannot be interrupted mid-match, so the honest bound is
 // "stop starting new work", plus the per-tool byte cap that keeps any single match small.
-async function observeTools(tools, { driftDone = false, complete = false } = {}) {
+async function observeTools(tools, { driftDone = false, shape = { complete: false }, owed = null } = {}) {
   if (process.env.MOORAI_TEST_TOOLSCAN_THROW) throw new Error("injected tool-scan fault (test hook)");
   await ensurePolicy();
   // Block mode judged this listing inline (before forwarding it). If the policy only became known
   // now, it is judged here instead: the list has already gone, so the call gate is the enforcement.
-  if (!driftDone && driftBlocking()) { judgeListing(tools, complete); driftDone = true; }
+  // A later block-mode listing may already have judged it (judgeOwed), in order, while this waited.
+  if (owed) { settleOwed(owed); if (owed.judged) driftDone = true; }
+  if (!driftDone && driftBlocking()) { judgeListing(tools, shape); driftDone = true; }
   const deadline = Date.now() + CAPS.scanBudgetMs;
   const baseline = loadBaseline();
   let counter = 0;
@@ -639,9 +705,10 @@ function onServerChunk(chunk) {
     if (rest.length > CAPS.maxLineBytes) {
       // A line with no newline in sight, past the cap. Buffering further is exactly what a hostile
       // server wants; forward what we have and pass the remainder through raw. Unscanned, never stuck.
-      outRaw = true; outPending = EMPTY; emitted = true; emitRaw(Buffer.from(rest));
+      outRaw = true; outPending = EMPTY; emitted = true; listingUnjudged(); emitRaw(Buffer.from(rest));
     } else outPending = rest.length ? Buffer.from(rest) : EMPTY;
   } catch {
+    listingUnjudged();
     if (!emitted) emitRaw(chunk);
     outPending = EMPTY; outRaw = false;
   }
@@ -728,11 +795,14 @@ async function gateResult(lineBuf) {
   const pass = () => { if (!done) { done = true; process.stdout.write(lineBuf); } };
   try {
     // Over the line cap: never parsed, never buffered further — forwarded and declared unscanned.
-    if (lineBuf.length > CAPS.maxLineBytes) return pass();
+    if (lineBuf.length > CAPS.maxLineBytes) { listingUnjudged(); return pass(); }
     const s = lineBuf.toString("utf8");
-    if (!s.trim() || s.indexOf("\"result\"") < 0) return pass(); // only a RESPONSE can carry either stage's payload
+    // Only a RESPONSE can carry either stage's payload. A "\u0072esult" key is the same key to every
+    // JSON parser, so a line with any \u escape is parsed too rather than skipped.
+    if (!s.trim() || (s.indexOf("\"result\"") < 0 && s.indexOf("\\u") < 0)) return pass();
     let msg;
-    try { msg = JSON.parse(s); } catch { return pass(); }
+    try { msg = JSON.parse(s); } catch { listingUnjudged(); return pass(); }
+    if (msg && msg.id != null) LIST_OPEN.delete(String(msg.id));
 
     // The tool stage stays FORWARD-FIRST by default: a tools/list response is never altered, delayed
     // or reordered (test/mcp-tool-stage.test.mjs asserts byte-identity on the wire), so it is written
@@ -743,18 +813,19 @@ async function gateResult(lineBuf) {
       // Alert mode (the default): unchanged — forwarded byte-for-byte first, observed off the path.
       // Block mode: judged BEFORE forwarding; a quarantined tool is left out of the list the client
       // gets. The original bytes still go whenever nothing is quarantined.
-      const complete = listComplete(msg);
+      const shape = listShape(msg);
       if (await listBlocking()) {
-        const ev = judgeListing(tools, complete);
+        judgeOwed();
+        const ev = judgeListing(tools, shape);
         if (ev && ev.changed) {
           const out = { ...msg, result: { ...msg.result, tools: msg.result.tools.filter((t) => !(t && typeof t === "object" && typeof t.name === "string" && ev.names.has(t.name))) } };
           done = true;
           process.stdout.write(JSON.stringify(out) + "\n");
         } else pass();
-        queueToolObservation(tools, { driftDone: true, complete });
+        queueToolObservation(tools, { driftDone: true, shape });
         return;
       }
-      pass(); queueToolObservation(tools, { complete }); return;
+      pass(); queueToolObservation(tools, { shape, owed: true }); return;
     }
 
     const result = resultOfResponse(msg);
@@ -785,8 +856,9 @@ async function gateResult(lineBuf) {
 let obsInFlight = 0;
 function queueToolObservation(tools, opts) {
   if (obsInFlight >= CAPS.maxQueuedObs) return; // skip a LISTING, never a result
+  if (opts.owed) { opts = { ...opts, owed: { tools, shape: opts.shape, judged: false } }; DRIFT_OWED.push(opts.owed); }
   obsInFlight++;
-  obsQueue = obsQueue.then(() => observeTools(tools, opts)).catch(() => {}).finally(() => { obsInFlight--; });
+  obsQueue = obsQueue.then(() => observeTools(tools, opts)).catch(() => {}).finally(() => { obsInFlight--; if (opts.owed) settleOwed(opts.owed); });
 }
 
 // ============================================================================================
@@ -809,22 +881,52 @@ async function listBlocking() {
 
 // tools/list requests that asked for a later page. Only a whole listing can show a REMOVED tool.
 const LIST_PAGED = new Set();
+// tools/list requests not yet answered by a line this process parsed. A server line that could not be
+// judged (over CAPS.maxLineBytes, not JSON, a framer fault) while one is open may BE that listing, so
+// no earlier verdict can vouch for a tool any more: block mode refuses every call until a listing is
+// judged again (tool-drift.mjs invalidate). A line for another request while a listing is open costs
+// the same re-list, never an unrefused call.
+const LIST_OPEN = new Set();
+function listingUnjudged() {
+  try { if (LIST_OPEN.size) DRIFT.invalidate(); } catch { /* governance, not a sandbox */ }
+}
 function rememberList(msg) {
   if (msg.id == null) return;
+  if (LIST_OPEN.size >= 512) LIST_OPEN.delete(LIST_OPEN.values().next().value);
+  LIST_OPEN.add(String(msg.id));
   if (LIST_PAGED.size >= 512) LIST_PAGED.clear();
   if (msg.params && typeof msg.params === "object" && msg.params.cursor != null) LIST_PAGED.add(String(msg.id));
   else LIST_PAGED.delete(String(msg.id));
 }
-function listComplete(msg) {
-  const paged = msg.id != null && LIST_PAGED.delete(String(msg.id));
-  return !paged && msg.result.nextCursor == null;
+function listShape(msg) {
+  const continued = msg.id != null && LIST_PAGED.delete(String(msg.id));
+  const last = msg.result.nextCursor == null;
+  return { complete: !continued && last, continued, last };
+}
+
+// Listings forwarded unjudged (block mode was not known yet), in arrival order, whose off-path
+// observation has not run. Each is judged by its observation — or, if a later listing reaches the inline
+// block-mode judge first, by judgeOwed just before it. Judged out of order, the later listing found no
+// baseline, so a DRIFTED listing was taken for the first sighting, forwarded whole and saved as the
+// baseline (test/mcp-tool-drift-proxy.test.mjs "cold start"). Bounded by CAPS.maxQueuedObs.
+const DRIFT_OWED = [];
+function settleOwed(o) {
+  const i = DRIFT_OWED.indexOf(o);
+  if (i >= 0) DRIFT_OWED.splice(i, 1);
+}
+function judgeOwed() {
+  while (DRIFT_OWED.length) {
+    const o = DRIFT_OWED.shift();
+    o.judged = true;
+    judgeListing(o.tools, o.shape);
+  }
 }
 
 // Judge one listing in block mode: quarantine verdicts, alerts, and the content-free fingerprint
 // report the console pins on approval. → { changed, names } or null when it could not run.
-function judgeListing(tools, complete) {
+function judgeListing(tools, shape) {
   try {
-    const ev = DRIFT.evaluateListing(tools, { policy: POLICY, complete });
+    const ev = DRIFT.evaluateListing(tools, { policy: POLICY, ...shape });
     for (const q of ev.quarantined) {
       for (const sig of q.signals) {
         if (!seenOnce(`quarantine|${sig.token}`)) continue;
@@ -834,9 +936,9 @@ function judgeListing(tools, complete) {
     for (const sig of ev.removed) {
       if (seenOnce(sig.token)) alertTool("mcp", { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "notify", reasonCode: TOOL_DRIFT_REASON });
     }
-    reportFingerprints({ config: CONFIG, server: SERVER, fingerprints: ev.fingerprints, enrolled: isEnrolled(CONFIG) });
+    reportFingerprints({ config: CONFIG, server: SERVER, fingerprints: ev.fingerprints, enrolled: isEnrolled(CONFIG), actor: IDENTITY.actor });
     return { changed: ev.changed, names: new Set(ev.quarantined.map((q) => q.name)) };
-  } catch { return null; } // governance, not a sandbox: a failed judgement forwards the list
+  } catch { try { DRIFT.invalidate(); } catch { /* nothing to clear */ } return null; } // a failed judgement forwards the list; its calls are refused
 }
 
 function alertDriftCall(tool, q, argsHash) {
@@ -859,7 +961,7 @@ process.stdin.on("data", (chunk) => {
   }
 });
 process.stdin.on("end", () => {
-  queue = queue.then(() => { if (buf.length) return handleLine(buf); }).then(() => { try { child.stdin.end(); } catch {} });
+  queue = queue.then(() => { if (buf.length) return handleLine(buf); }).then(() => stopChild("eof"), () => stopChild("eof"));
 });
 
 // Best-effort warm-up so the first tool-call is not delayed by the initial policy fetch; the server's
