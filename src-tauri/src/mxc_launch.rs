@@ -224,7 +224,12 @@ pub struct MxcSettings {
     pub console_url: String,
     pub install_token: String,
     pub tenant: String,
+    // What happens when MXC is enabled but cannot be set up. Only FALLBACK_JOB_OBJECT launches the agent
+    // without MXC; anything else, including unset, refuses the launch (decide_launch).
+    pub fallback: String,
 }
+
+pub const FALLBACK_JOB_OBJECT: &str = "job-object";
 
 // A missing or unreadable file is "MXC off", never an error that changes how the agent launches.
 pub fn parse_settings(text: Option<&str>) -> MxcSettings {
@@ -315,6 +320,17 @@ pub fn session_console(settings: &MxcSettings) -> Option<(String, String, String
 
 // ---- planning ----
 
+// What is at a path the host is about to create as a directory, without following a final link.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DirState {
+    Missing,
+    Dir,
+    NotDir,
+    // a symlink, junction or any other reparse point
+    Reparse,
+    Unreadable,
+}
+
 pub trait Host {
     fn os_build(&self) -> Option<(u32, u32)>;
     fn exists(&self, path: &str) -> bool;
@@ -325,6 +341,7 @@ pub trait Host {
     fn app_dir(&self) -> String;
     fn proxy_healthy(&self, port: u16) -> bool;
     fn create_dir_all(&self, path: &str) -> Result<(), String>;
+    fn dir_state(&self, path: &str) -> DirState;
     fn write_file(&self, path: &str, text: &str) -> Result<(), String>;
     // stdout + stderr of `wxc-exec <args>`
     fn run(&self, exe: &str, args: &[String]) -> Result<String, String>;
@@ -359,8 +376,28 @@ fn sys_root(env: &BTreeMap<String, String>) -> String {
     env.iter().find(|(k, _)| k.eq_ignore_ascii_case("SystemRoot")).map(|(_, v)| v.clone()).unwrap_or_default()
 }
 
-// Every reason MoorAI will NOT launch inside MXC ends up as Err(reason); the caller then keeps today's
-// Job Object launch and prints the reason in the terminal.
+// The ensureDirs sit inside read-write grants, so a contained agent could have put a file, a symlink or a
+// junction where one goes. Each must be a plain directory before and after the host creates it.
+fn ensure_dir(host: &dyn Host, d: &str) -> Result<(), String> {
+    let why = |s: DirState| match s {
+        DirState::Dir | DirState::Missing => None,
+        DirState::NotDir => Some("exists but is not a directory"),
+        DirState::Reparse => Some("is a symbolic link, junction or other reparse point"),
+        DirState::Unreadable => Some("could not be inspected"),
+    };
+    let refuse = |w: &str| Err(format!("{d} {w}; the contained agent can write there, so it is not used for the container (remove it and relaunch)"));
+    if let Some(w) = why(host.dir_state(d)) {
+        return refuse(w);
+    }
+    host.create_dir_all(d)?;
+    match host.dir_state(d) {
+        DirState::Dir => Ok(()),
+        s => refuse(why(s).unwrap_or("was not created")),
+    }
+}
+
+// Every reason MoorAI will NOT launch inside MXC ends up as Err(reason); decide_launch then refuses the
+// launch, or keeps today's Job Object launch when the host-only settings allow it.
 pub fn plan_launch(host: &dyn Host, req: &LaunchRequest) -> Result<LaunchPlan, String> {
     match host.os_build() {
         None => return Err("could not read the Windows build number".into()),
@@ -430,7 +467,7 @@ pub fn plan_launch(host: &dyn Host, req: &LaunchRequest) -> Result<LaunchPlan, S
             return Err(format!("MXC policy refused: {}", plan["reason"].as_str().unwrap_or("unknown")));
         }
         for d in plan["ensureDirs"].as_array().into_iter().flatten().filter_map(|d| d.as_str()) {
-            host.create_dir_all(d)?;
+            ensure_dir(host, d)?;
         }
         let text = serde_json::to_string_pretty(&plan["policy"]).map_err(|e| e.to_string())?;
         host.write_file(&policy_path, &text)?;
@@ -480,6 +517,26 @@ pub fn plan_launch(host: &dyn Host, req: &LaunchRequest) -> Result<LaunchPlan, S
         });
     }
     Err("wxc-exec --probe did not settle on a policy".into())
+}
+
+// What term_open does with a plan when MXC is enabled in the host-only settings.
+#[derive(Debug, PartialEq)]
+pub enum LaunchDecision {
+    Contained(LaunchPlan),
+    // launch without MXC (Job Object), printing the reason
+    Fallback(String),
+    // do not launch the agent at all, printing the reason
+    Refuse(String),
+}
+
+// Fail-closed: some reasons a plan fails are under the contained agent's control (a file planted where
+// an ensured dir goes), so a failure only downgrades to the Job Object when the host-only settings say so.
+pub fn decide_launch(settings: &MxcSettings, planned: Result<LaunchPlan, String>) -> LaunchDecision {
+    match planned {
+        Ok(p) => LaunchDecision::Contained(p),
+        Err(r) if settings.fallback == FALLBACK_JOB_OBJECT => LaunchDecision::Fallback(r),
+        Err(r) => LaunchDecision::Refuse(r),
+    }
 }
 
 // denials.<run-id>.json in the run dir, never its .verbose.json sibling (logging-access-denied.md:
@@ -590,6 +647,17 @@ impl Host for WinHost {
     fn create_dir_all(&self, path: &str) -> Result<(), String> {
         std::fs::create_dir_all(path).map_err(|e| format!("{path}: {e}"))
     }
+    fn dir_state(&self, path: &str) -> DirState {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        match std::fs::symlink_metadata(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => DirState::Missing,
+            Err(_) => DirState::Unreadable,
+            Ok(m) if m.file_type().is_symlink() || m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => DirState::Reparse,
+            Ok(m) if m.is_dir() => DirState::Dir,
+            Ok(_) => DirState::NotDir,
+        }
+    }
     fn write_file(&self, path: &str, text: &str) -> Result<(), String> {
         crate::private_file::write_private(path, text).map_err(|e| format!("{path}: {e}"))
     }
@@ -667,6 +735,8 @@ mod tests {
         app: String,
         files: Vec<(String, String)>,
         proxy: bool,
+        // paths that are not plain directories; anything else that exists() is one
+        dir_states: Vec<(String, DirState)>,
         probes: RefCell<Vec<String>>,
         writes: RefCell<Vec<(String, String)>>,
         runs: RefCell<Vec<Vec<String>>>,
@@ -687,6 +757,7 @@ mod tests {
                 app: "C:\\Program Files\\MoorAI".into(),
                 files: vec![("C:\\tools\\moorai\\package.json".into(), r#"{"name":"moorai","version":"1.5.0"}"#.into())],
                 proxy: true,
+                dir_states: vec![],
                 probes: RefCell::new(vec![probe_json("base-container", true, true, true)]),
                 writes: RefCell::new(vec![]),
                 runs: RefCell::new(vec![]),
@@ -716,8 +787,19 @@ mod tests {
         fn proxy_healthy(&self, _port: u16) -> bool {
             self.proxy
         }
-        fn create_dir_all(&self, _p: &str) -> Result<(), String> {
-            Ok(())
+        fn create_dir_all(&self, p: &str) -> Result<(), String> {
+            // as std::fs::create_dir_all: a file in the way fails, a link to a directory succeeds
+            match self.dir_states.iter().find(|(k, _)| k.eq_ignore_ascii_case(p)) {
+                Some((_, DirState::NotDir)) => Err(format!("{p}: Cannot create a file when that file already exists. (os error 183)")),
+                _ => Ok(()),
+            }
+        }
+        fn dir_state(&self, p: &str) -> DirState {
+            match self.dir_states.iter().find(|(k, _)| k.eq_ignore_ascii_case(p)) {
+                Some((_, s)) => *s,
+                None if self.exists(p) => DirState::Dir,
+                None => DirState::Missing,
+            }
         }
         fn write_file(&self, p: &str, t: &str) -> Result<(), String> {
             self.writes.borrow_mut().push((p.into(), t.into()));
@@ -980,6 +1062,57 @@ mod tests {
         // no host-only binding -> the host posts nothing (it never falls back to ~/.moorai/config.json)
         assert_eq!(session_console(&parse_settings(Some(r#"{"enabled":true}"#))), None);
         assert_eq!(session_console(&parse_settings(Some(r#"{"consoleUrl":"https://app.moorai.dev","installToken":"  "}"#))), None);
+    }
+
+    const AGENT_TMP_DIR: &str = "C:\\Users\\dev\\.moorai\\agent-tmp";
+
+    #[test]
+    fn mxc_on_and_a_failed_plan_refuses_the_launch_unless_host_settings_allow_the_job_object() {
+        let on = parse_settings(Some(r#"{"enabled":true}"#));
+        assert_eq!(on.fallback, "");
+        assert_eq!(decide_launch(&on, Err("no wxc-exec".into())), LaunchDecision::Refuse("no wxc-exec".into()));
+        for other in ["", "none", "JOB-OBJECT", " job-object", "jobobject", "true"] {
+            let s = MxcSettings { enabled: true, fallback: other.into(), ..Default::default() };
+            assert!(matches!(decide_launch(&s, Err("x".into())), LaunchDecision::Refuse(_)), "fallback {other:?} must not allow an unisolated launch");
+        }
+        let allow = parse_settings(Some(r#"{"enabled":true,"fallback":"job-object"}"#));
+        assert_eq!(decide_launch(&allow, Err("no wxc-exec".into())), LaunchDecision::Fallback("no wxc-exec".into()));
+        let m = Mock::ok();
+        assert!(matches!(decide_launch(&on, plan_launch(&m, &req("claude"))), LaunchDecision::Contained(_)));
+    }
+
+    #[test]
+    fn an_agent_planted_file_at_agent_tmp_refuses_the_launch_instead_of_dropping_isolation() {
+        // ~/.moorai is read-write inside the container, so the agent can put a FILE where agent-tmp goes
+        let mut m = Mock::ok();
+        m.dir_states = vec![(AGENT_TMP_DIR.into(), DirState::NotDir)];
+        let err = plan_launch(&m, &req("claude")).unwrap_err();
+        assert!(err.contains("agent-tmp") && err.contains("not a directory"), "{err}");
+        assert!(m.runs.borrow().is_empty(), "wxc-exec was probed on a policy whose TEMP is not a directory");
+        let on = parse_settings(Some(r#"{"enabled":true}"#));
+        assert!(matches!(decide_launch(&on, plan_launch(&m, &req("claude"))), LaunchDecision::Refuse(_)));
+    }
+
+    #[test]
+    fn an_ensured_dir_that_is_a_link_or_reparse_point_refuses_the_launch() {
+        // create_dir_all succeeds on a junction to a directory, so only the reparse check catches it
+        for (path, state) in [
+            (AGENT_TMP_DIR, DirState::Reparse),
+            ("C:\\Users\\dev\\.moorai", DirState::Reparse),
+            ("C:\\Users\\dev\\.claude", DirState::Reparse),
+            (AGENT_TMP_DIR, DirState::Unreadable),
+        ] {
+            let mut m = Mock::ok();
+            m.dir_states = vec![(path.into(), state)];
+            let err = plan_launch(&m, &req("claude")).expect_err(&format!("{path} as {state:?} was accepted"));
+            let why = if state == DirState::Reparse { "reparse point" } else { "could not be inspected" };
+            assert!(err.contains(path) && err.contains(why), "{err}");
+            assert!(m.runs.borrow().is_empty() && m.writes.borrow().is_empty(), "{path} as {state:?}: a policy was written or probed");
+        }
+        // plain directories, or missing ones the host creates, still plan
+        let mut m = Mock::ok();
+        m.dir_states = vec![(AGENT_TMP_DIR.into(), DirState::Dir)];
+        plan_launch(&m, &req("claude")).expect("plan");
     }
 
     #[test]

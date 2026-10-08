@@ -118,7 +118,12 @@ failure directions. See "Tool drift: block until re-approved" in
 [`../mcp-proxy/README.md`](../mcp-proxy/README.md). One gateway-specific line: a JSON response between
 1 MB and the response cap (or an SSE event over 1 MB) is forwarded unscanned, so its tools are not
 filtered, and when the request was a `tools/list` every verdict for that route is cleared: calls are
-refused as not checked until a listing is judged again, including tools an earlier listing passed. A
+refused as not checked until a listing is judged again, including tools an earlier listing passed. The
+same clearing happens for every other `tools/list` answer the gateway forwards unjudged: a content type
+it does not scan, a content-coding it cannot decode, an unparseable body or SSE event, and a listing
+whose scan threw. A `tools/list` answer in `gzip`, `deflate` or `br` (the gateway asks upstream for
+`identity`; a server can ignore that) is decoded, judged like any other, and sent to the client decoded;
+the response cap counts decoded bytes. Other compressed responses are still forwarded unscanned. A
 `tools/list` whose request carried a `cursor` is a page: it is judged, but a missing tool is not
 reported as removed, and on a server's first sighting every page of that listing is a first sighting.
 
@@ -239,7 +244,8 @@ or large bodies.
 ## Policy semantics: fail-open, report-first (the proxy's)
 
 - **Fail-open** on the gateway's own failure: no engine (no policy and no posture), a thrown check, a
-  result scan past `CAPS.resultDeadlineMs` (750 ms), a compressed upstream response, a JSON response or
+  result scan past `CAPS.resultDeadlineMs` (750 ms), a compressed upstream response other than a
+  `tools/list` answer in `gzip`/`deflate`/`br` (decoded and scanned), a JSON response or
   SSE event between `CAPS.maxLineBytes` (1 MB) and the size cap → forwarded unchanged and unscanned. An
   unparseable client body is refused (`SCHEMA_INVALID`, stage `json`) unless `--schema report|off`. A device whose durable posture is fail-closed gets `OFFLINE_DEFAULT_POLICY` when no policy
   verifies, exactly as in the proxy.

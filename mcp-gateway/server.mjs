@@ -10,6 +10,8 @@
 // gated, and only responses are scanned — the JSON body, or each SSE event before it is forwarded.
 import http from "node:http";
 import https from "node:https";
+import { pipeline } from "node:stream";
+import { createGunzip, createInflate, createBrotliDecompress } from "node:zlib";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { CAPS } from "../mcp-proxy/tool-scan.mjs";
 import { isLoopbackHost, TOKEN_HEADER, DEFAULT_MAX_RESPONSE_BYTES } from "./config.mjs";
@@ -292,14 +294,40 @@ function respHeaders(ur) {
   return h;
 }
 
+// The content-codings the gateway decodes (RFC 9110 8.4.1: "deflate" is the zlib format).
+const DECODERS = { gzip: createGunzip, "x-gzip": createGunzip, deflate: createInflate, br: createBrotliDecompress };
+
+// The upstream response with its body decoded: the same status and headers minus Content-Encoding, read
+// through the decoder. pipeline() destroys the upstream response when the decoder is destroyed (an
+// over-cap body) and the decoder when the response fails, so both callers' error paths still run.
+function decoded(ur, enc) {
+  const dec = DECODERS[enc]();
+  pipeline(ur, dec, () => {});
+  const headers = { ...ur.headers };
+  delete headers["content-encoding"];
+  delete headers["content-length"];
+  return Object.assign(dec, { statusCode: ur.statusCode, statusMessage: ur.statusMessage, headers });
+}
+
 function onUpstream(ur, res, ctx) {
   const ctype = String(ur.headers["content-type"] || "").toLowerCase();
-  const enc = String(ur.headers["content-encoding"] || "identity").toLowerCase();
+  const enc = String(ur.headers["content-encoding"] || "identity").trim().toLowerCase();
   const passthrough = () => { res.writeHead(ur.statusCode, ur.statusMessage, { ...respHeaders(ur), ...(ur.headers["content-length"] ? { "content-length": ur.headers["content-length"] } : {}) }); ur.pipe(res); };
+  const lists = ctx.requestIds.some((id) => ctx.idMethod.get(String(id)) === "tools/list");
+  // Every path below that forwards a tools/list answer without judging it clears the route's drift
+  // verdicts (guard.listingUnjudged): no earlier verdict may vouch for a tool the client was just told about.
+  const unjudged = () => { if (lists) ctx.guard.listingUnjudged(); };
 
   if (enc !== "identity" && (ctype.includes("json") || ctype.includes("event-stream"))) {
-    reportOnce("MCP gateway: compressed upstream response forwarded unscanned", `gateway:unscanned:encoding:${enc}`, "Info");
-    return passthrough();
+    // A compressed answer to a tools/list (the gateway asked for identity; the server ignored it) is
+    // decoded and judged like any other, and the client gets the decoded body. Anything else compressed
+    // is forwarded unscanned, as before.
+    if (lists && Object.hasOwn(DECODERS, enc)) ur = decoded(ur, enc);
+    else {
+      unjudged();
+      reportOnce("MCP gateway: compressed upstream response forwarded unscanned", `gateway:unscanned:encoding:${enc}`, "Info");
+      return passthrough();
+    }
   }
   const x = {
     ...ctx,
@@ -312,6 +340,7 @@ function onUpstream(ur, res, ctx) {
   };
   if (ctype.startsWith("text/event-stream")) return onSse(ur, res, x);
   if (ctype.startsWith("application/json")) return onJson(ur, res, x);
+  unjudged();
   return passthrough();
 }
 
@@ -389,7 +418,7 @@ function onJson(ur, res, x) {
           const lp = parseLenient(raw);
           value = lp.error ? undefined : lp.value;
         }
-        if (value === undefined) { /* nothing a client can parse either: forwarded as it came */ }
+        if (value === undefined) { if (raw.length) listUnjudged(x); /* nothing a client can parse either: forwarded as it came */ }
         else if (Array.isArray(value)) {
           let changed = false;
           const next = [];
@@ -405,7 +434,7 @@ function onJson(ur, res, x) {
           const r = checkServerMessage(m, x) || await guard.gateResult(m, x.toolOf(m && m.id), x.pagedOf(m && m.id));
           if (r) out = Buffer.from(JSON.stringify(r));
         }
-      } catch { /* a failed scan: the original goes */ }
+      } catch { listUnjudged(x); /* a failed scan: the original goes, unjudged */ }
     }
     if (res.destroyed) return;
     res.writeHead(ur.statusCode, ur.statusMessage, { ...respHeaders(ur), "content-length": out.length });
@@ -458,12 +487,12 @@ function onSse(ur, res, x) {
       // Validated as a message only when it is one ("message" or no event: type); scanned whatever its
       // type, every element of an array, on the parsed value (a "\u0072esult" key is still a result).
       let rep = null;
-      const scan = async (m) => { try { return await guard.gateResult(m, x.toolOf(m && m.id), x.pagedOf(m && m.id)); } catch { return null; } };
+      const scan = async (m) => { try { return await guard.gateResult(m, x.toolOf(m && m.id), x.pagedOf(m && m.id)); } catch { listUnjudged(x); return null; } };
       if (ev.data != null) {
         const isMessage = ev.type == null || ev.type === "" || ev.type === "message";
         let m, ok = true;
         try { m = JSON.parse(ev.data); } catch { ok = false; }
-        if (!ok) { if (x.validating && isMessage) alertSchema(x.route.server, { stage: "json", path: "$" }, { direction: "server", refused: false }); }
+        if (!ok) { listUnjudged(x); if (x.validating && isMessage) alertSchema(x.route.server, { stage: "json", path: "$" }, { direction: "server", refused: false }); }
         else if (Array.isArray(m)) {
           let changed = false;
           const next = [];

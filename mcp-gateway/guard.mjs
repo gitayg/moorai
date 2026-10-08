@@ -59,6 +59,9 @@ function budgetOk() {
 let obsQueue = Promise.resolve();
 let obsInFlight = 0;
 const DRIFT_POLICY_WAIT_MS = 2000;
+// MOORAI_TEST_TOOLSCAN_THROW=N: a test hook (the stdio guard's name) that makes judging a tools/list
+// throw from this route's N-th listing on ("1" = every listing, as in the proxy).
+const TOOLSCAN_THROW_FROM = Number(process.env.MOORAI_TEST_TOOLSCAN_THROW || 0);
 
 function toPath(r) {
   try { return /^file:/i.test(r) ? fileURLToPath(r) : r; } catch { return null; }
@@ -75,6 +78,7 @@ export function createGuard(route) {
   const driftBlocking = () => !state.COACH && toolDriftMode(state.POLICY) === "block";
   let REP = null;
   let REP_READY = null;
+  let listingsSeen = 0;
 
   const repPolicy = () => { const p = state.POLICY && state.POLICY.mcpReputation; return p && typeof p === "object" ? p : {}; };
   function reportReputation(rep) {
@@ -321,6 +325,7 @@ export function createGuard(route) {
         if (!tools.length) return null;
         const last = r.nextCursor == null;
         const shape = { complete: !paged && last, continued: paged, last };
+        if (TOOLSCAN_THROW_FROM && ++listingsSeen >= TOOLSCAN_THROW_FROM) throw new Error("injected tool-scan fault (test hook)");
         // Alert mode (the default): a listing is never altered. Block mode: a quarantined tool is left
         // out of it; with nothing quarantined the original still goes.
         if (await listBlocking()) {
@@ -342,10 +347,15 @@ export function createGuard(route) {
       alertResult(SERVER, label, verdict.findings, blocked);
       if (!blocked) return null;
       return { jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: `MoorAI blocked this MCP tool result: ${verdict.reasons.join(", ") || "policy"}` }], isError: true } };
-    } catch { return null; }
+    } catch {
+      // A listing whose judgement threw goes out as the server sent it, unjudged.
+      if (msg && msg.result && typeof msg.result === "object" && Array.isArray(msg.result.tools)) listingUnjudged();
+      return null;
+    }
   }
 
-  // A tools/list response this route forwarded without judging it (over CAPS.maxLineBytes, JSON or SSE):
+  // A tools/list response this route forwarded without judging it (over CAPS.maxLineBytes, JSON or SSE; a
+  // content type or content-coding the gateway does not scan; unparseable; a scan that threw):
   // no earlier verdict may vouch for a tool it advertised, so calls are refused as not in a checked
   // listing until a listing is judged again (../mcp-proxy/tool-drift.mjs invalidate).
   function listingUnjudged() { try { DRIFT.invalidate(); } catch { /* governance, not a sandbox */ } }

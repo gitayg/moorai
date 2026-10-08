@@ -813,8 +813,16 @@ passed after `--`, because how wxc-exec joins that tail is not in the published 
    Object that does not set `UILIMIT_HANDLES`/`GLOBALATOMS`, because nested job UI limits add up and would
    undo the PowerShell relaxation.
 
-If any step fails, the terminal shows the reason and the agent launches with today's Job Object instead.
-Turning MXC on also turns that fallback on.
+If any step fails, the agent is **not launched**: the terminal shows the reason in red and how to allow a
+fallback. Some failures are under the contained agent's control (for example a file it planted where
+`~/.moorai/agent-tmp` goes), so a failed plan never quietly drops isolation. Only `"fallback": "job-object"`
+in `mxc.json` (default off, exact string) launches the agent with today's Job Object instead, with the
+reason printed in yellow. Turning MXC on also turns the Job Object on for that fallback. With MXC off,
+nothing changes.
+
+Each `ensureDirs` entry (`~/.moorai`, `%APPDATA%\MoorAI`, `%LOCALAPPDATA%\MoorAI`, `~/.moorai/agent-tmp`, the
+agent's state dir) must be a plain directory before and after the host creates it. A file, a symlink, a
+junction or any other reparse point there, or a path the host cannot inspect, fails the plan.
 
 **Policy.**
 
@@ -840,7 +848,7 @@ for the launcher.
 Otherwise a contained agent could choose the policy of its own next launch.
 - **Launch settings** live in `%LOCALAPPDATA%\MoorAI Host\mxc.json`: `enabled`, `workspace`, `wxcExec`,
   `egressAllow`, `extraCaCerts`, `modelProxyPort`, `keepRuns`, `hookRoots`, `consoleUrl`, `installToken`,
-  `tenant`. They are not in
+  `tenant`, `fallback`. They are not in
   `~/.moorai/config.json`, which sits in the hook's read-write leg. `MoorAI Host` is a protected path class: it
   is never granted, it is denied explicitly where the host can, and a workspace inside it or containing it is
   refused. Run dirs and denial reports live there too, so the agent cannot plant a denial file.

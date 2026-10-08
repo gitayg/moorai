@@ -92,7 +92,7 @@ fn term_open(app: tauri::AppHandle, state: tauri::State<Term>, cols: u16, rows: 
     let mut agent_args: Vec<String> = vec![];
     if tool == "claude" && cfg.get("hadSession").and_then(|v| v.as_bool()).unwrap_or(false) { agent_args.push("--continue".into()); }
     #[cfg(windows)]
-    let mxc_session = if want_mxc { mxc_prepare(&app, &mxc_settings, tool, &bin, &agent_args) } else { None };
+    let mxc_session = if want_mxc { mxc_prepare(&app, &mxc_settings, tool, &bin, &agent_args)? } else { None };
     #[cfg(not(windows))]
     let mxc_session: Option<mxc_launch::MxcSession> = { let _ = want_mxc; None };
     let mut cmd = match &mxc_session {
@@ -197,8 +197,9 @@ fn term_open(app: tauri::AppHandle, state: tauri::State<Term>, cols: u16, rows: 
     Ok(())
 }
 
-// Build and probe the MXC launch for this session (Windows only). None = launch the usual way; the
-// reason is printed in the terminal so a user who turned MXC on can see why it was not used.
+// Build and probe the MXC launch for this session (Windows only). Ok(None) = launch the usual way, only
+// when mxc.json sets "fallback": "job-object"; otherwise a failed plan is Err and the agent is not
+// launched. Either way the reason is printed in the terminal.
 #[cfg(windows)]
 fn mxc_host_settings() -> mxc_launch::MxcSettings {
     let env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
@@ -207,7 +208,7 @@ fn mxc_host_settings() -> mxc_launch::MxcSettings {
 }
 
 #[cfg(windows)]
-fn mxc_prepare(app: &tauri::AppHandle, settings: &mxc_launch::MxcSettings, tool: &str, bin: &str, agent_args: &[String]) -> Option<mxc_launch::MxcSession> {
+fn mxc_prepare(app: &tauri::AppHandle, settings: &mxc_launch::MxcSettings, tool: &str, bin: &str, agent_args: &[String]) -> Result<Option<mxc_launch::MxcSession>, String> {
     use std::collections::BTreeMap;
     let env: BTreeMap<String, String> = std::env::vars().collect();
     let home = platform::home_dir();
@@ -242,8 +243,8 @@ fn mxc_prepare(app: &tauri::AppHandle, settings: &mxc_launch::MxcSettings, tool:
         run_dir: run_dir.clone(),
     };
     let host = mxc_launch::WinHost { wxc_override: Some(settings.wxc_exec.clone()).filter(|p| !p.is_empty()) };
-    match mxc_launch::plan_launch(&host, &req) {
-        Ok(plan) => {
+    match mxc_launch::decide_launch(settings, mxc_launch::plan_launch(&host, &req)) {
+        mxc_launch::LaunchDecision::Contained(plan) => {
             let _ = app.emit("term-data", format!("\x1b[2m[MoorAI] {tool} runs inside Microsoft Execution Containers (BaseContainer).\x1b[0m\r\n"));
             for n in &plan.notes { let _ = app.emit("term-data", format!("\x1b[2m[MoorAI] MXC: {n}\x1b[0m\r\n")); }
             // Console binding for the host's denial alerts: host-only settings or none. config.json is
@@ -252,12 +253,17 @@ fn mxc_prepare(app: &tauri::AppHandle, settings: &mxc_launch::MxcSettings, tool:
                 Some((e, t, n)) => (Some(e), t, n),
                 None => (None, String::new(), String::new()),
             };
-            Some(mxc_launch::MxcSession { plan, run_dir, alert_endpoint, install_token, tenant, agent: tool.to_string(), workspace: req.workspace, env, keep_run: settings.keep_runs })
+            Ok(Some(mxc_launch::MxcSession { plan, run_dir, alert_endpoint, install_token, tenant, agent: tool.to_string(), workspace: req.workspace, env, keep_run: settings.keep_runs }))
         }
-        Err(reason) => {
-            let _ = app.emit("term-data", format!("\x1b[33m[MoorAI] MXC isolation not used: {reason}. Launching with the Job Object instead.\x1b[0m\r\n"));
+        mxc_launch::LaunchDecision::Fallback(reason) => {
+            let _ = app.emit("term-data", format!("\x1b[33m[MoorAI] MXC isolation not used: {reason}. Launching with the Job Object instead (\"fallback\": \"job-object\" in %LOCALAPPDATA%\\MoorAI Host\\mxc.json).\x1b[0m\r\n"));
             if !settings.keep_runs { let _ = std::fs::remove_dir_all(&run_dir); }
-            None
+            Ok(None)
+        }
+        mxc_launch::LaunchDecision::Refuse(reason) => {
+            let _ = app.emit("term-data", format!("\x1b[31m[MoorAI] {tool} was not launched: MXC isolation is on in %LOCALAPPDATA%\\MoorAI Host\\mxc.json but could not be set up: {reason}. Fix the cause, or set \"fallback\": \"job-object\" in that file to launch without MXC.\x1b[0m\r\n"));
+            if !settings.keep_runs { let _ = std::fs::remove_dir_all(&run_dir); }
+            Err(format!("MXC isolation could not be set up: {reason}"))
         }
     }
 }
