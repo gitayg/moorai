@@ -8,13 +8,19 @@
 // Every end-to-end header goes upstream as the client sent it (Authorization included, never logged);
 // every response header comes back (Mcp-Session-Id, WWW-Authenticate included). Only POST bodies are
 // gated, and only responses are scanned — the JSON body, or each SSE event before it is forwarded.
+// With placeholder credentials configured (cfg.credentials, ../model-proxy/credentials.mjs), a header
+// holding `moorai-ph:<name>` has its value replaced by the bound secret on the bound route only, any other
+// placeholder use is refused before the body is read, and every upstream response is masked for the bound
+// secrets (../model-proxy/credential-mask.mjs) before anything reads it. Without them, nothing changes.
 import http from "node:http";
 import https from "node:https";
 import { pipeline } from "node:stream";
 import { createGunzip, createInflate, createBrotliDecompress } from "node:zlib";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { CAPS } from "../mcp-proxy/tool-scan.mjs";
-import { isLoopbackHost, TOKEN_HEADER, DEFAULT_MAX_RESPONSE_BYTES } from "./config.mjs";
+import { isLoopbackHost, TOKEN_HEADER, DEFAULT_MAX_RESPONSE_BYTES, HOP } from "./config.mjs";
+import { createGate } from "../model-proxy/credentials.mjs";
+import { maskResponse } from "../model-proxy/credential-mask.mjs";
 import { createGuard, blockedCall } from "./guard.mjs";
 import { createSseFramer, sseEvent } from "./sse.mjs";
 import { reportOnce, alertSchema, alertTooLarge, alertCooldown } from "./report.mjs";
@@ -28,7 +34,6 @@ export const MAX_REQUEST_BYTES = 16 * 1048576;
 // clients (~3.7 ms each, measured, most of it the ledger write), so an uncapped 16 MB batch held the
 // gateway for minutes. Refused like an oversized body, in every --schema mode.
 export const MAX_BATCH_MESSAGES = 64;
-const HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER]);
 const RESP_HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-connection", "transfer-encoding", "trailer", "upgrade", "content-length"]);
 const AGENTS = { "http:": new http.Agent({ keepAlive: true }), "https:": new https.Agent({ keepAlive: true }) };
 // MOORAI_TEST_PENDING_LIST_TTL_MS / MOORAI_TEST_PENDING_LIST_MAX: test hooks that shorten the outstanding
@@ -184,6 +189,8 @@ export function createGatewayServer(cfg) {
   if (cfg.schemaValidation === undefined) cfg = { ...cfg, schemaValidation: "enforce" };
   if (cfg.maxResponseBytes === undefined) cfg = { ...cfg, maxResponseBytes: DEFAULT_MAX_RESPONSE_BYTES };
   const cooldown = createCooldown(cfg.cooldown || {});
+  const creds = cfg.credentials || null;
+  const gate = creds ? createGate(creds, { requirePlaceholders: cfg.requirePlaceholders === true }) : null;
   // A refusal the gateway made for this client (policy block, invalid message, profile block). Starting a
   // cool-down is reported once; requests refused DURING it are not counted again, at any key: counting
   // them let a cooled-down client fill the bounded tables with fresh credentials until its own entry was
@@ -203,6 +210,18 @@ export function createGatewayServer(cfg) {
     const entry = routes.get(path);
     if (!entry) return sendJson(res, 404, rpcError(null, -32601, "No MCP route at this path"));
     const { route, guard, pending } = entry;
+    // Placeholder credentials: refused here, before the body is read or anything is gated or counted.
+    let swaps = null;
+    if (gate) {
+      const c = gate(req.rawHeaders, new URL(req.url, "http://x").search, route.path, upstreamUrl(route, req.url));
+      if (c.error || c.raw) {
+        const refused = !!(c.error && c.error.raw);
+        // content-free, once per route: the route label only, never a header, a value or a hash of one
+        if (refused || c.raw) reportOnce(refused ? "MCP gateway: raw credential refused (placeholders required)" : "MCP gateway: raw credential sent where placeholders are configured", `gateway:credential:raw:${refused ? "refused" : "sent"}:${route.server}`, refused ? "Blocked" : "Medium");
+      }
+      if (c.error) return sendJson(res, c.error.status, rpcError(null, -32600, `MoorAI MCP gateway: ${c.error.message}`));
+      swaps = c.swaps;
+    }
     pending.sweep(); // an entry past its TTL clears the verdicts before any call on the route is gated
 
     let body;
@@ -296,6 +315,7 @@ export function createGatewayServer(cfg) {
     const target = upstreamUrl(route, req.url);
     const headers = {};
     for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k)) headers[k] = v;
+    if (swaps) for (const [k, v] of swaps) headers[k] = v; // after the hop-by-hop strip; keys lower-case, as Node's
     headers["accept-encoding"] = "identity"; // a compressed body could not be scanned
     if (body.length || req.method === "POST") headers["content-length"] = String(body.length);
     const lib = target.protocol === "https:" ? https : http;
@@ -306,7 +326,16 @@ export function createGatewayServer(cfg) {
       if (!res.headersSent) sendJson(res, 502, rpcError(null, -32603, "Upstream MCP server unreachable"));
       else res.destroy();
     });
-    up.on("response", (ur) => onUpstream(ur, res, ctx));
+    up.on("response", (raw) => {
+      const ur = creds ? maskResponse(raw, creds.secrets) : raw;
+      if (ur.refuse) {
+        // Not forwarded, and not judged either: a listing it may carry clears the drift verdicts, as onUpstream's
+        // unjudged() does for a body it cannot read.
+        if (!ctx.requestIds.length || pending.any() || ctx.requestIds.some((id) => ctx.idMethod.get(idKey(id)) === "tools/list")) guard.listingUnjudged();
+        return sendJson(res, 502, rpcError(null, -32603, "MoorAI MCP gateway: the upstream answered with a content coding the gateway cannot check for an echoed credential"));
+      }
+      onUpstream(ur, res, ctx);
+    });
     // Each tools/list forwarded is outstanding until a message answering it is judged (pending-lists.mjs).
     for (const id of ctx.requestIds) if (ctx.idMethod.get(idKey(id)) === "tools/list") pending.add(id, { paged: ctx.paged.has(idKey(id)) });
     up.end(body);

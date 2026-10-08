@@ -115,7 +115,7 @@ export function decideToolCall(engine, policy, { tool: rawTool = "", toolInput, 
   const signals = [];
   const out = (decision, reason, alternatives, findings, extra = {}) => ({ tool, decision, reason, alternatives: alternatives || [], findings, signals, kill: false, killIds: [], evaluated: true, notEvaluated: NOT_EVALUATED, ...extra });
   const wp = profileGate(policy, { tool, ti, cwd, serviceId, systemConfig }, signals);
-  if (wp.decision === "deny") return out("deny", wp.reason, [], [], { profileId: wp.profile.id, driftKinds: wp.kinds });
+  if (wp.decision === "deny") return out("deny", wp.reason, [], [], { ...(wp.profile ? { profileId: wp.profile.id } : {}), driftKinds: wp.kinds, reasonCode: wp.reasonCode });
 
   if (tool === "Read") {
     const text = readFileCapped(agentPath(ti.file_path, cwd));

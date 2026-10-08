@@ -5,7 +5,8 @@ import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { isLoopback } from "../cli/moorai-serve.mjs";
-import { createProxy, DEFAULTS, TOKEN_HEADER } from "./server.mjs";
+import { createProxy, DEFAULTS, TOKEN_HEADER, HOP } from "./server.mjs";
+import { loadBindings } from "./credentials.mjs";
 
 export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK and the provider (Anthropic Messages, OpenAI Chat Completions)
 
@@ -13,11 +14,14 @@ export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK 
                      [--token-file <path>] [--allow-origin <origin>]... [--allow-remote] [--allow-insecure-upstream] [--max-body <bytes>]
                      [--max-response <bytes>] [--max-inflight <bytes>] [--max-scan-items <n>] [--max-scan-chars <n>] [--timeout-ms <ms>] [--upstream-timeout-ms <ms>]
                      [--policy-file <path>] [--service-id <name>] [--headless-ask deny|allow-with-report] [--cwd <dir>] [--log]
+                     [--credentials <file>] [--require-placeholders]
 
   Point the SDK at it (plain http on loopback; the proxy speaks TLS to the provider):
     ANTHROPIC_BASE_URL=http://127.0.0.1:${DEFAULTS.port}/anthropic      (upstream https://api.anthropic.com)
     OPENAI_BASE_URL=http://127.0.0.1:${DEFAULTS.port}/openai            (upstream https://api.openai.com/v1)
-  The client's own API key goes upstream untouched and is never logged, stored or reported.
+  The client's own API key goes upstream untouched and is never logged, stored or reported — unless
+  --credentials is given: then the agent holds a placeholder (moorai-ph:<name>) and the proxy swaps in the
+  real key on the one route it is bound to (see README "Placeholder credentials").
 
   --mode report     (default) check and alert; traffic is forwarded unchanged, streaming fully pass-through
   --mode enforce    refuse a request whose content is denied, and withhold a tool call that is denied
@@ -33,6 +37,9 @@ export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK 
                     reported unevaluated (report) or refused (enforce)
   --timeout-ms      evaluation budget per request, default ${DEFAULTS.timeoutMs}
   --cwd             directory relative tool-call paths resolve against (default: the proxy's cwd)
+  --credentials     placeholder bindings file (also MOORAI_MODEL_PROXY_CREDENTIALS); refused if group- or
+                    world-writable or owned by another non-root user
+  --require-placeholders  with --credentials: refuse (401) a raw credential instead of reporting it
   GET /healthz      { status, version, policyId, mode }
 `;
 
@@ -65,6 +72,8 @@ export function parseArgs(argv, env = process.env) {
     else if (a === "--headless-ask") o.headlessAsk = v();
     else if (a === "--cwd") o.cwd = resolve(v());
     else if (a === "--log") o.log = true;
+    else if (a === "--credentials") o.credentialsFile = v();
+    else if (a === "--require-placeholders") o.requirePlaceholders = true;
     else throw new Error(`unknown argument ${a}`);
   }
   if (o.help) return o;
@@ -88,6 +97,12 @@ export function parseArgs(argv, env = process.env) {
     if (!o.token) throw new Error(`refusing to listen on ${o.host} without a token (--token-file or MOORAI_MODEL_PROXY_TOKEN)`);
   }
   if (o.token && o.token.length < 16) throw new Error("the token must be at least 16 characters");
+  if (!o.credentialsFile && env.MOORAI_MODEL_PROXY_CREDENTIALS) o.credentialsFile = String(env.MOORAI_MODEL_PROXY_CREDENTIALS);
+  if (o.requirePlaceholders && !o.credentialsFile) throw new Error("--require-placeholders needs --credentials (or MOORAI_MODEL_PROXY_CREDENTIALS)");
+  if (o.credentialsFile) {
+    const routes = Object.entries(o.routes).map(([prefix, base]) => ({ prefix, base }));
+    o.credentials = loadBindings(resolve(o.credentialsFile), { env, routes, reserved: HOP });
+  }
   return o;
 }
 
@@ -98,7 +113,9 @@ async function main() {
   const s = await createProxy(o);
   // One machine-readable line (a supervisor or a test using --port 0 finds the port). Routes print as
   // origin + path only.
-  process.stdout.write(JSON.stringify({ listening: s.url, mode: o.mode, auth: o.token ? "token" : "none", serviceId: s.runtime.settings.serviceId, routes: Object.fromEntries(Object.entries(o.routes).map(([p, b]) => { const u = new URL(b); return [p, `${u.origin}${u.pathname}`]; })) }) + "\n");
+  // Placeholder names only: never a secret, a secret's source or its length.
+  const credentials = o.credentials ? { placeholders: [...o.credentials.bindings.keys()], requirePlaceholders: o.requirePlaceholders === true } : undefined;
+  process.stdout.write(JSON.stringify({ listening: s.url, mode: o.mode, auth: o.token ? "token" : "none", credentials, serviceId: s.runtime.settings.serviceId, routes: Object.fromEntries(Object.entries(o.routes).map(([p, b]) => { const u = new URL(b); return [p, `${u.origin}${u.pathname}`]; })) }) + "\n");
   const stop = async () => { await s.close(); process.exit(0); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);

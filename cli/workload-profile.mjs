@@ -34,6 +34,12 @@
 //              destination map reads (Bash/PowerShell command, WebFetch url, MCP arguments) — host only,
 //              never a path or query, as the destination map reports it. Loopback is always in profile.
 //
+// EGRESS RULES (cli/egress-rules.mjs) are evaluated in the same call. A profile may carry `egressRules` and
+// `egressDefault`; the console policy and the machine-wide config may carry them at the top level too,
+// where they apply to every call whether or not a profile matches. `hosts` stays what it was: a coarse
+// allow-list whose miss is PROFILE_DRIFT. `egressRules` is the fine-grained policy (binary, host, port,
+// method, path; allow / alert / block) whose verdict is EGRESS_RULE.
+//
 // Pure: every input (policy, system config, serviceId, cwd, tool call) and every lookup (repo discovery,
 // host extraction) is injectable. evaluateProfile() never throws: any error is fail-open (allow, no
 // alert) and comes back as `error` so a caller can count it.
@@ -41,6 +47,7 @@ import { extractHosts as defaultExtractHosts } from "../data/model-endpoints.js"
 import { normalizeRemote } from "../data/learned-drift.js";
 import { serverOf } from "../data/agent-behavior.js";
 import { repoIdentity as defaultRepoIdentity } from "./drift-state.mjs";
+import { validateEgressRules, validEgressDefault, cachedEgress, egressChain, egressTargets, judgeTargets, egressAlerts, egressReason, EGRESS_RULE } from "./egress-rules.mjs";
 
 export const PROFILE_DRIFT = "PROFILE_DRIFT";
 export const DRIFT_KINDS = Object.freeze(["tool", "mcpServer", "host"]);
@@ -48,7 +55,7 @@ export const PROFILE_ACTIONS = Object.freeze(["report", "block"]);
 export const DRIFT_CATEGORY = "Workload profile drift";
 export const REJECT_CATEGORY = "Workload profile ignored (malformed)";
 const LIST_KEYS = { tools: "tool", mcpServers: "mcpServer", hosts: "host" };
-const KNOWN_KEYS = new Set(["id", "match", "tools", "mcpServers", "hosts", "action", "description", "name"]);
+const KNOWN_KEYS = new Set(["id", "match", "tools", "mcpServers", "hosts", "action", "description", "name", "egressRules", "egressDefault"]);
 const MATCH_KEYS = new Set(["serviceId", "repo"]);
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const TOOL_RE = /^[A-Za-z0-9_*.:-]{1,256}$/;
@@ -144,6 +151,13 @@ export function validateProfile(p) {
     const l = list(p[key], key);
     if (l.error) return { error: l.error };
     profile.allow[kind] = { entries: l.value, res: l.value.map(globRe) };
+  }
+  // A malformed egress rule drops the whole profile, as a malformed list entry does.
+  if (p.egressRules !== undefined || p.egressDefault !== undefined) {
+    const e = p.egressRules === undefined ? { rules: [], errors: [] } : validateEgressRules(p.egressRules);
+    if (e.errors.length) return { error: e.errors[0].index >= 0 ? `${e.errors[0].reason} (rule ${e.errors[0].index})` : e.errors[0].reason };
+    if (p.egressDefault !== undefined && !validEgressDefault(p.egressDefault)) return { error: "egressDefault is not allow, alert or block" };
+    profile.egress = { rules: e.rules, default: p.egressDefault };
   }
   return { profile };
 }
@@ -261,25 +275,53 @@ export function driftAlerts(profile, drifts, { decision }) {
 //   tool, toolInput  the call
 //   coach            unenrolled device: a block becomes a coach-only report
 //   deps             { repoIdentity, extractHosts, cache } for tests
-// Returns { decision: "allow"|"deny", reason, profile, drifts, alerts, rejected, error? }.
+// Returns { decision: "allow"|"deny", reason, reasonCode?, profile, drifts, alerts, rejected, egress?, error? }.
+// reasonCode on a deny is PROFILE_DRIFT or EGRESS_RULE (cli/egress-rules.mjs); profile drift wins when both deny.
 export function evaluateProfile({ policy = null, system = null, serviceId = "", cwd = "", tool = "", toolInput = {}, coach = false, deps = {} } = {}) {
   const none = { decision: "allow", reason: "", profile: null, drifts: [], alerts: [], rejected: [] };
   try {
-    const hasAny = (d) => d && typeof d === "object" && d.workloadProfiles !== undefined && d.workloadProfiles !== null;
+    const set = (d, k) => d && typeof d === "object" && d[k] !== undefined && d[k] !== null;
+    const hasAny = (d) => set(d, "workloadProfiles") || set(d, "egressRules") || set(d, "egressDefault");
     if (!hasAny(policy) && !hasAny(system)) return none;
-    const { profiles, rejected } = cachedProfiles(policy, system);
+    const { profiles, rejected: profileRejected } = cachedProfiles(policy, system);
+    const eg = cachedEgress(policy, system);
+    const rejected = eg.rejected.length ? [...profileRejected, ...eg.rejected] : profileRejected;
     const profile = matchProfile(profiles, { serviceId: typeof serviceId === "string" ? serviceId : "", repo: () => repoOf(cwd, deps) });
-    if (!profile) return { ...none, rejected };
-    const drifts = driftOf(profile, profileSubject(tool, toolInput, deps));
-    if (!drifts.length) return { ...none, profile, rejected };
+    const drifts = profile ? driftOf(profile, profileSubject(tool, toolInput, deps)) : [];
+    const egress = judgeEgress(profile, eg, tool, toolInput, coach);
+    if (!drifts.length && !egress) return { ...none, profile, rejected };
     const kinds = [...new Set(drifts.map((d) => d.kind))];
-    const block = profile.action === "block";
-    const decision = block && !coach ? "deny" : "allow";
-    const alerts = driftAlerts(profile, drifts, { decision: block ? (coach ? "coach" : "deny") : "allow" });
-    return { decision, reason: block ? blockReason(profile.id, kinds) : "", profile, drifts, kinds, alerts, rejected, ...(block && coach ? { coach: blockReason(profile.id, kinds) } : {}) };
+    const block = drifts.length > 0 && profile.action === "block";
+    const alerts = drifts.length ? driftAlerts(profile, drifts, { decision: block ? (coach ? "coach" : "deny") : "allow" }) : [];
+    if (egress) alerts.push(...egress.alerts);
+    const egressBlock = !!egress && egress.worst === "block";
+    if (egressBlock) kinds.push("egress");
+    const reason = block ? blockReason(profile.id, kinds.filter((k) => k !== "egress")) : egressBlock ? egress.reason : "";
+    const denies = block || egressBlock;
+    return {
+      decision: denies && !coach ? "deny" : "allow",
+      reason: denies ? reason : "",
+      ...(denies && !coach ? { reasonCode: block ? PROFILE_DRIFT : EGRESS_RULE } : {}),
+      profile, drifts, kinds, alerts, rejected,
+      ...(egress ? { egress: { worst: egress.worst, verdicts: egress.verdicts.length } } : {}),
+      ...(denies && coach ? { coach: reason } : {})
+    };
   } catch (e) {
     return { ...none, error: String((e && e.message) || e).slice(0, 200) };
   }
+}
+
+// The egress verdict for one call, or null when no rule and no non-allow default is in force, or when
+// every destination the call names is allowed (allow verdicts raise no alert).
+function judgeEgress(profile, eg, tool, toolInput, coach) {
+  const ch = egressChain(profile, eg);
+  if (!ch.chain.length && ch.dflt === "allow") return null;
+  const targets = egressTargets(tool, toolInput);
+  if (!targets.length) return null;
+  const { verdicts, worst } = judgeTargets(targets, ch);
+  if (worst === "allow") return null;
+  const firstBlock = verdicts.find((v) => v.action === "block");
+  return { worst, verdicts, alerts: egressAlerts(verdicts, { coach, profileId: profile ? profile.id : undefined }), reason: firstBlock ? egressReason(firstBlock) : "" };
 }
 
 // The content-free alert for malformed profiles: where, which index and id, and why — never a value.

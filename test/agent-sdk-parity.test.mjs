@@ -171,3 +171,17 @@ test("parity, enforcing org policy with a blocking repo workload profile: same d
   t.diagnostic(`profile denials: ${hook.filter((r) => r.reason.includes('"parity-repo"')).length} · kinds ${kinds.join(",")}`);
   assert.deepEqual(kinds, ["tool", "mcpServer", "host"], "the sample must exercise every drift kind");
 });
+
+// Egress rules (cli/egress-rules.mjs) at the top level of the policy, no profile: a default of block with a
+// few allow and alert rules across the whole payload set must deny with the same reason on both surfaces.
+const EGRESS_POLICY = {
+  ...POLICY,
+  egressRules: [{ binary: "curl", host: "nodejs.org", method: "GET", action: "allow" }, { host: "*.github.com", action: "allow" }, { host: "registry.npmjs.org", action: "alert" }],
+  egressDefault: "block"
+};
+test("parity, enforcing org policy with egress rules and egressDefault block: same decision and reason for every payload", async (t) => {
+  const { hook } = await parity(t, EGRESS_POLICY);
+  const n = hook.filter((r) => r.reason.includes("egress to ")).length;
+  t.diagnostic(`egress denials: ${n}`);
+  assert.ok(n > 0, "the sample must exercise an egress denial");
+});

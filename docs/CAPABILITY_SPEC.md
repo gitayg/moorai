@@ -719,6 +719,26 @@ is validated against.
     environment is the match to rely on for a block. Hosts built at runtime are not seen. `PostToolUse`,
     prompts and `Stop` are not compared. The HTTP MCP gateway does not compare hosts. Tested on macOS
     only.
+17g. **Egress rules** — [`cli/egress-rules.mjs`](../cli/egress-rules.mjs), evaluated inside
+    `evaluateProfile()`. `egressRules: [{ id?, binary?, host, port?, method?, path?, action }]` and
+    `egressDefault`, with `action` one of `allow`, `alert` or `block`. They can sit at the top level of the
+    verified console policy or the root-owned machine-wide config, where they apply to every call, or
+    inside a workload profile, where they apply when it matches and are read first. `host` is an exact
+    name or `*.suffix`. `binary` is the command word, or for a non-shell call the tool name. `path` is
+    `/exact` or `/prefix*`. The first matching rule decides. With no match, the default applies, and
+    loopback is allowed. An `allow` rule never matches a key the destination does not know, such as the
+    method of `git clone` or the path of `ssh`. An `alert` or `block` rule does. On `PreToolUse`, the hook,
+    `@moorai/agent-sdk` and `moorai-serve` read the destinations a Bash or PowerShell command, a WebFetch
+    or an MCP call names. For a command, that means its URLs, the scheme-less hosts given to HTTP clients,
+    and ssh, scp, rsync, git and nc hosts, along with the method curl, wget, httpie and Invoke-WebRequest
+    would use. Nested scripts are read too: `sh -c`, `-EncodedCommand`, `$( … )` and `find -exec`.
+    `alert` and `block` post a content-free `EGRESS_RULE` alert with the binary, host, port, method and
+    deciding rule, never a path or query. `block` denies the call, and an unenrolled device coaches
+    instead. Where curl and WHATWG URL disagree on a host, both hosts are judged. A call that names more
+    destinations than can be judged gets the strictest action in force. Hook/SDK parity is 214 payloads
+    with 0 mismatches. **Limits.** Only destinations written in the call are judged. The binary is the
+    command word, not the socket's process. A URL that is only printed still counts. The HTTP MCP gateway
+    and the MCP stdio proxy do not judge egress rules. Tested on macOS only.
 
 ### D. Central server
 18. **Policy & rule-base distribution** — central allowlist, thresholds, per-threat/per-tier
@@ -914,6 +934,65 @@ Known gaps:
 - The per-user install path.
 
 The plan is in the MXC test plan (scratchpad `mxc/TEST-PLAN.md`).
+
+## Placeholder credentials (model proxy and MCP gateway)
+
+**Status: built and unit-tested (`test/model-proxy-credentials.test.mjs`,
+`test/mcp-gateway-credentials.test.mjs`). Opt-in; without a bindings file both components behave exactly as
+before.**
+
+The agent process holds a placeholder (`moorai-ph:<name>`) instead of an API key or MCP token. The two
+network components hold the real secret and swap it in only when a request goes to the upstream it is
+bound to:
+
+- `moorai-model-proxy --credentials <file>` (or `MOORAI_MODEL_PROXY_CREDENTIALS`);
+- `moorai-mcp-gateway --credentials <file>` (or `MOORAI_GATEWAY_CREDENTIALS`, or `"credentials"` in
+  `--config`).
+
+Both run as another user or in another container. The code is shared:
+[`model-proxy/credentials.mjs`](../model-proxy/credentials.mjs) (bindings file and request gate) and
+[`model-proxy/credential-mask.mjs`](../model-proxy/credential-mask.mjs) (response masking).
+
+- **Bindings.** A host-only JSON file maps each placeholder to `{ secret, route, upstream, header, scheme? }`.
+  - `secret` is `{ env }` or `{ file }`. A literal is refused, so the bindings file is never a second copy
+    of the key.
+  - `upstream` must equal the route's configured upstream exactly.
+  - `header` cannot be one the component strips or owns.
+  - Startup fails (exit 2) when the bindings file or a secret file is group- or world-writable, or on
+    POSIX is owned by another non-root user. It also fails on a malformed binding, an unset env var, or a
+    secret under 8 or over 4096 characters or with a control character.
+  - No error, log line or alert carries a secret value.
+- **Requests.** Checked before the body is read, content-free:
+  - A placeholder in its bound header on its bound route (prefix **and** upstream origin + path) has the
+    whole header value replaced by `[scheme ]secret`, after the hop-by-hop strip.
+  - Another route (even one to the same host): 403. Another header: 403. Unknown, malformed, or the wrong
+    scheme: 401. In the query string: 400.
+  - A credential header (or any header carrying a placeholder) sent twice in any letter case: 400. This
+    is checked on the raw headers, because Node keeps the first `Authorization` and drops the rest.
+  - A raw, non-placeholder credential is forwarded and reported once per route (content-free). With
+    `--require-placeholders` it is refused with 401.
+- **Responses.** Every upstream response is masked for every bound secret before anything reads it:
+  - a verbatim copy in a header, the status line or the body becomes `*` of the same length;
+  - this holds across chunk boundaries;
+  - gzip, deflate and br bodies are decoded first, and any other content coding is answered 502.
+
+**Limits, stated plainly:**
+
+- It only protects keys used **through these two components**. A direct HTTPS call, an SDK pinned to the
+  provider, a stdio MCP server with its own environment, or an OAuth flow the client completes itself is
+  not covered.
+- A key the agent can **read itself** is not protected. That includes `.env`, its environment, a config
+  file, or the component's secret file or environment when both run as the same user
+  (`/proc/<pid>/environ`).
+- The agent can still **use** the placeholder through the component. Whatever the key allows on that
+  route, the agent can do; policy decides what goes through.
+- Masking catches a **verbatim** echo only. A key split across SSE events, JSON-escaped, encoded, or
+  partly echoed passes. The bound upstream is trusted with the key.
+- No secret-derived comparison is made, so none needs to be constant-time. A placeholder is a map lookup on
+  its name. The masking hold-back, where a chunk tail that matches a secret's prefix waits for the next
+  chunk, is an unmeasured timing signal.
+- Secrets are read once, at startup, so rotating one needs a restart.
+- Windows file ACLs are not checked.
 
 ## Coverage & blind spots
 

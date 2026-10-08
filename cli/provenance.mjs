@@ -20,6 +20,7 @@ export const REASON = Object.freeze({
   MCP_FLOOR: "MCP_FLOOR",                         // fail-closed default: MCP raised to "ask"
   ENVELOPE: "ENVELOPE",                           // entitlement drift (#64)
   PROFILE_DRIFT: "PROFILE_DRIFT",                 // a declared workload/repo profile (policy.workloadProfiles) was left
+  EGRESS_RULE: "EGRESS_RULE",                     // an egress rule or egressDefault (policy / profile egressRules) alerted or blocked
   JIT_ELEVATION: "JIT_ELEVATION",
   ENDPOINT_NOT_ALLOWED: "ENDPOINT_NOT_ALLOWED",   // model-endpoint allow-list (#63)
   SECRET_EGRESS: "SECRET_EGRESS",                 // local secret value egress (#65)

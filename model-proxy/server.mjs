@@ -7,6 +7,11 @@
 // never read, stored, logged or reported. Accept-Encoding is replaced by "identity" so a response can be
 // parsed. Every response header except hop-by-hop ones comes back.
 //
+// With placeholder credentials configured (opts.credentials, credentials.mjs) a header carrying a
+// `moorai-ph:<name>` placeholder has its whole value replaced by the bound secret, on the bound route only;
+// any other placeholder use is refused before the body is read, and every response is masked for the bound
+// secrets (credential-mask.mjs) before anything reads it. Without them, nothing here changes.
+//
 // Only POST …/messages (Anthropic) and POST …/chat/completions (OpenAI) are parsed; any other path or
 // method is forwarded unparsed.
 import http from "node:http";
@@ -17,12 +22,15 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { timingSafeEqual, createHash } from "node:crypto";
 import { createMoorAI } from "../packages/agent-sdk/src/runtime.mjs";
+import { REASON } from "../cli/provenance.mjs";
 import { isLoopback } from "../cli/moorai-serve.mjs";
 import * as anthropic from "./anthropic.mjs";
 import * as openai from "./openai.mjs";
 import { createSplitter } from "./sse.mjs";
 import { createChecker } from "./check.mjs";
 import { wrapReporter, unevaluatedReporter, refusalMessage } from "./report.mjs";
+import { createGate } from "./credentials.mjs";
+import { maskResponse } from "./credential-mask.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({
@@ -31,7 +39,7 @@ export const DEFAULTS = Object.freeze({
   routes: Object.freeze({ "/anthropic": "https://api.anthropic.com", "/openai": "https://api.openai.com/v1" })
 });
 export const TOKEN_HEADER = "x-moorai-proxy-token";
-const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER]);
+export const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER]);
 const HOP_RES = new Set(["connection", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"]);
 
 // Report-only work runs after the response is complete, so a scan (≈10 ms for 2 KB, measured) never
@@ -97,6 +105,21 @@ export async function createProxy(opts = {}) {
   const loopbackBind = isLoopback(o.host);
   let inflight = 0;
   const stats = { refused: 0, forwarded: 0 };
+  const creds = o.credentials || null;
+  const gate = creds ? createGate(creds, { requirePlaceholders: o.requirePlaceholders === true }) : null;
+  const rawReported = new Set();
+  // A raw credential where placeholders are configured: one content-free alert per route (the route prefix
+  // only — never the header, its value or a hash of it).
+  function reportRaw(prefix, refused) {
+    const k = `${prefix}:${refused}`;
+    if (rawReported.has(k)) return;
+    rawReported.add(k);
+    rt.ready().then((s) => rt.reporter.post({
+      threatId: 0, category: refused ? "Model proxy: raw credential refused (placeholders required)" : "Model proxy: raw credential sent where placeholders are configured",
+      riskLevel: refused ? "Blocked" : "Medium", stage: "prompt", tool: `model-proxy:credential:${prefix.replace(/^\//, "").replace(/[^A-Za-z0-9_.\-]/g, "_").slice(0, 48)}`,
+      decision: refused ? "deny" : "notify", ...(refused ? {} : { reasonCode: REASON.OBSERVATION_ONLY }), contentHash: rt.hash(`credential-raw:${k}`)
+    }, { prov: { policyId: s.policyId, policySource: s.source, event: "ModelRequest" } })).catch(() => {});
+  }
 
   function reserve(n, api) {
     if (inflight + n > o.maxInflight) throw new HttpError(api === openai ? 503 : 529, "the proxy is at its in-flight memory budget; retry");
@@ -132,9 +155,11 @@ export async function createProxy(opts = {}) {
     });
   }
 
-  function upstreamHeaders(req, length) {
+  function upstreamHeaders(req, length, swaps) {
     const h = {};
     for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k)) h[k] = v;
+    // After the hop-by-hop strip, so a swapped value is never dropped; the keys are lower-case, as Node's.
+    if (swaps) for (const [k, v] of swaps) h[k] = v;
     h["accept-encoding"] = "identity";
     h["content-length"] = String(length);
     return h;
@@ -256,6 +281,17 @@ export async function createProxy(opts = {}) {
     if (!route) throw new HttpError(404, "no model-proxy route at this path");
     const rest = path.slice(route.prefix.length) || "/";
     const api = apiFor(req.method, rest);
+    const url = new URL(route.base + rest + query);
+    let swaps = null;
+    if (gate) {
+      const c = gate(req.rawHeaders, query, route.prefix || "/", url);
+      if (c.error) {
+        if (c.error.raw) reportRaw(route.prefix || "/", true);
+        throw Object.assign(new HttpError(c.error.status, c.error.message), { api });
+      }
+      if (c.raw) reportRaw(route.prefix || "/", false);
+      swaps = c.swaps;
+    }
     const held = { n: 0 };
     const later = deferrer();
     res.on("close", () => { inflight -= held.n; held.n = 0; later.close(); });
@@ -272,11 +308,12 @@ export async function createProxy(opts = {}) {
       } else if (items.length) later.push(() => checker.checkRequest(items));
     }
 
-    const url = new URL(route.base + rest + query);
     const lib = url.protocol === "https:" ? https : http;
     stats.forwarded++;
     await new Promise((resolve) => {
-      const up = lib.request(url, { method: req.method, headers: upstreamHeaders(req, body.length), agent: agents[url.protocol] }, (ur) => {
+      const up = lib.request(url, { method: req.method, headers: upstreamHeaders(req, body.length, swaps), agent: agents[url.protocol] }, (raw) => {
+        const ur = creds ? maskResponse(raw, creds.secrets) : raw;
+        if (ur.refuse) { send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: the upstream answered with a content coding the proxy cannot check for an echoed credential"), NO_RETRY); return resolve(); }
         onResponse(ur, res, api, held, later).catch(() => { if (!res.headersSent) send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: upstream response failed")); else res.destroy(); }).finally(resolve);
       });
       up.setTimeout(o.upstreamTimeoutMs, () => up.destroy(new Error("upstream timeout")));

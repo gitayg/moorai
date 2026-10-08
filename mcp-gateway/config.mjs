@@ -9,10 +9,14 @@
 //     client's Authorization header is passed through, and a bearer token must not cross a network in
 //     clear because a gateway was put in front of it.
 import { readFileSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
+import { loadBindings } from "../model-proxy/credentials.mjs";
 
 export const DEFAULT_PORT = 8848;
 export const TOKEN_HEADER = "x-moorai-gateway-token";
 export const MIN_TOKEN_LEN = 16;
+// Request headers never forwarded upstream (server.mjs strips them); a placeholder binding may not name one.
+export const HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER]);
 // C5 hardening defaults. 4 MiB: four times the 1 MB the result scan reads (CAPS.maxLineBytes), so every
 // response the scan can cover — and the next tier, forwarded unscanned as before — still passes; past it
 // a response is refused rather than relayed. 0 turns the cap off.
@@ -84,6 +88,8 @@ export function parseConfig(argv, env = process.env, read = (p) => readFileSync(
     else if (a === "--cooldown-refusals") flags.cooldownRefusals = Number(next());
     else if (a === "--cooldown-window") flags.cooldownWindow = Number(next());
     else if (a === "--cooldown-seconds") flags.cooldownSeconds = Number(next());
+    else if (a === "--credentials") flags.credentials = next();
+    else if (a === "--require-placeholders") flags.requirePlaceholders = true;
     else if (a === "--help" || a === "-h") return { help: true };
     else throw new Error(`unknown argument '${a}'`);
   }
@@ -137,7 +143,13 @@ export function parseConfig(argv, env = process.env, read = (p) => readFileSync(
     seconds: num(flags.cooldownSeconds, fc.seconds, COOLDOWN_DEFAULTS.seconds)
   };
   for (const [k, v] of Object.entries(cooldown)) if (!Number.isInteger(v) || v < 0 || v > 86400) throw new Error(`invalid cooldown ${k} '${v}' (a whole number, 0-86400)`);
-  return { host, port, routes, allowRemote, allowInsecureUpstream, token, allowOrigins, maxResponseBytes, schemaValidation, allowedMethods, cooldown };
+  // Placeholder credentials (../model-proxy/credentials.mjs): loaded here so a bad file, an unsafe mode or a
+  // missing secret stops the gateway before it listens. The loaded object holds the secrets: never print it.
+  const credentialsFile = flags.credentials || file.credentials || env.MOORAI_GATEWAY_CREDENTIALS || "";
+  const requirePlaceholders = flags.requirePlaceholders === true || file.requirePlaceholders === true;
+  if (requirePlaceholders && !credentialsFile) throw new Error("--require-placeholders needs --credentials (or MOORAI_GATEWAY_CREDENTIALS)");
+  const credentials = credentialsFile ? loadBindings(resolvePath(String(credentialsFile)), { env, routes: routes.map((r) => ({ prefix: r.path, base: r.url })), reserved: HOP }) : null;
+  return { host, port, routes, allowRemote, allowInsecureUpstream, token, allowOrigins, maxResponseBytes, schemaValidation, allowedMethods, cooldown, credentials, requirePlaceholders };
 }
 
 // What an upstream URL is safe to print: origin + path. Never the query string (some servers take an API
@@ -155,7 +167,8 @@ export const USAGE = `usage: moorai-mcp-gateway --route /name=https://remote.exa
   --config <file>            JSON: { "host", "port", "routes": { "/path": { "url", "server",
                              "localFiles", "roots" } }, "allowOrigins": [], "maxResponseBytes",
                              "schemaValidation", "allowedMethods": [], "cooldown": { "refusals",
-                             "windowSeconds", "seconds" } }
+                             "windowSeconds", "seconds" }, "credentials": "<file>",
+                             "requirePlaceholders": false }
   --host <addr>              bind address (default 127.0.0.1)
   --port <n>                 port (default ${DEFAULT_PORT}; 0 = any free port)
   --allow-remote             permit a non-loopback bind; requires a gateway token
@@ -174,4 +187,8 @@ export const USAGE = `usage: moorai-mcp-gateway --route /name=https://remote.exa
   --cooldown-refusals <n>    after n refusals of one client within the window, refuse that client for
                              --cooldown-seconds (default off; window ${COOLDOWN_DEFAULTS.windowSeconds} s, cool-down ${COOLDOWN_DEFAULTS.seconds} s)
   --cooldown-window <s>      the refusal-counting window in seconds
-  --cooldown-seconds <s>     how long a client is refused once it trips the cool-down`;
+  --cooldown-seconds <s>     how long a client is refused once it trips the cool-down
+  --credentials <file>       placeholder credential bindings (or MOORAI_GATEWAY_CREDENTIALS): a header
+                             holding moorai-ph:<name> gets the bound secret on its bound route only;
+                             refused if group- or world-writable or owned by another non-root user
+  --require-placeholders     with --credentials: refuse (401) a raw credential instead of reporting it`;

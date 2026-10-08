@@ -19,7 +19,8 @@ OPENAI_BASE_URL=http://127.0.0.1:8791/openai        your-agent
 
 The client's own API key goes upstream untouched. That covers `x-api-key`, `Authorization`,
 `anthropic-version`, `anthropic-beta` and `OpenAI-Organization`. The proxy never reads, stores, logs or
-reports them.
+reports them. The exception is `--credentials`: the agent then holds a placeholder instead of the key, and
+the proxy swaps the real key in (see [Placeholder credentials](#placeholder-credentials)).
 
 ## Provider APIs it parses
 
@@ -164,10 +165,119 @@ These follow moorai-serve and the MCP gateway:
   with existing reason codes (`DETECTOR_MATCH`, `UNEVALUATED_SIZE_CAP`, `HEADLESS_ASK` …). No text,
   argument, header or URL is included. The `--log` line is method, path without query, status and time.
 
+## Placeholder credentials
+
+With `--credentials <file>` (or `MOORAI_MODEL_PROXY_CREDENTIALS`), the agent never holds the real key. It
+holds a placeholder such as `moorai-ph:anthropic-prod`. The proxy, running as another user or in its own
+container, swaps in the real key only when the request goes to the route the placeholder is bound to. The
+same mechanism is in the MCP gateway; the code is [`credentials.mjs`](credentials.mjs) and
+[`credential-mask.mjs`](credential-mask.mjs).
+
+```json
+{
+  "bindings": {
+    "moorai-ph:anthropic-prod": { "secret": { "env": "ANTHROPIC_API_KEY" }, "route": "/anthropic",
+                                  "upstream": "https://api.anthropic.com", "header": "x-api-key" },
+    "moorai-ph:openai-prod":    { "secret": { "file": "/run/secrets/openai" }, "route": "/openai",
+                                  "upstream": "https://api.openai.com/v1", "header": "authorization", "scheme": "Bearer" }
+  }
+}
+```
+
+```bash
+moorai-model-proxy --credentials /etc/moorai/model-proxy-credentials.json     # proxy side, holds the keys
+ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic ANTHROPIC_API_KEY=moorai-ph:anthropic-prod  your-agent
+OPENAI_BASE_URL=http://127.0.0.1:8791/openai       OPENAI_API_KEY=moorai-ph:openai-prod        your-agent
+```
+
+**Bindings file.** Each key is a placeholder name, `moorai-ph:` plus up to 64 of `A-Z a-z 0-9 . _ -`.
+
+- `secret` is where the key is read, at startup: `{ "env": NAME }` (the proxy's environment) or
+  `{ "file": PATH }` (for example, a Kubernetes secret mount; surrounding whitespace is trimmed).
+- A literal value (`"secret": "sk-…"` or `{ "value": … }`) is refused. The bindings file would then be a
+  second copy of the key, and this is the file that ends up in config management and gets printed when
+  debugging. A secret file of its own, mode 0600, does the same job.
+- `route` must be one of the proxy's routes. `upstream` must equal that route's upstream exactly (origin
+  and path, trailing slash ignored).
+- `header` is the header the key goes in. It cannot be one the proxy strips or owns: hop-by-hop headers,
+  `Host`, `Content-Length`, `Accept-Encoding`, `X-MoorAI-Proxy-Token`.
+- `scheme` (optional), for example `Bearer`: the header is then `<scheme> <key>`.
+
+**The proxy refuses to start** (exit 2) when:
+
+- the bindings file or a secret file is group- or world-writable;
+- on POSIX, either file is owned by a user other than the proxy's own or root;
+- a binding is malformed or has an unknown key;
+- an env var is unset;
+- a secret is shorter than 8 or longer than 4096 characters, has a control or non-ASCII character, or is
+  itself a placeholder.
+
+Every error names the binding, the env var or the path, never the value. Windows is not checked: its mode
+bits come from the read-only attribute, not the ACL.
+
+**Requests.** A header carries a placeholder when its value contains `moorai-ph:` (any letter case).
+Refusals happen before the body is read, in the provider's error shape. They are content-free: neither the
+placeholder name nor any value is echoed.
+
+| The request | Result |
+|---|---|
+| `[scheme ]placeholder` in its bound header, on its bound route and upstream | the whole header value is replaced by `[scheme ]key`; forwarded |
+| a bound placeholder on another route, even one to the same host | 403 |
+| a placeholder in a header it is not bound to | 403 |
+| an unknown placeholder, extra text around it, or the wrong scheme | 401 |
+| `moorai-ph:` (or `moorai-ph%3A`) in the query string | 400 |
+| a credential header sent twice in any letter case (`Authorization` and `authorization`) | 400 |
+| a raw key in `Authorization`, `x-api-key`, `api-key`, `x-goog-api-key` or a bound header | forwarded unchanged, one content-free alert per route; **401** with `--require-placeholders` |
+| no credential at all | forwarded |
+
+The duplicate rule is enforced on raw headers, the only place it can be seen. Node keeps the first
+`Authorization` and silently drops the rest, and joins two `x-api-key` values with `, `. The rule covers
+the four header names above, every bound header, and any header that carries a placeholder. The swap is
+applied after the hop-by-hop strip, so a swapped value is never dropped.
+
+**Responses.** Every upstream response is masked for every bound secret, on every route, whether or not
+this request was swapped:
+
+- A verbatim copy of a secret in a header, the status line or the body becomes `*` of the same length,
+  so `Content-Length` stays right.
+- The body is masked across chunk boundaries. At the end of a chunk, only a tail that is a prefix of a
+  secret is held back, so an SSE event ending in `\n\n` is not delayed.
+- A gzip, deflate or br body is decoded first, and `Content-Encoding` is dropped. Any other content coding
+  is answered 502: it cannot be checked for an echo.
+- The proxy follows no redirect. A `Location` is masked like any other header.
+
+**Alerts.** A raw key is reported once per route as `Model proxy: raw credential sent where placeholders
+are configured` (`notify`), or `… refused (placeholders required)` (`deny`). The tool is
+`model-proxy:credential:<route>`. No header name, value or hash is included.
+
+**What this does not protect. These limits are exact:**
+
+- **Only keys used through this proxy (and the MCP gateway).** A key the agent can use on any other path
+  is not protected. That includes a direct HTTPS call, an SDK pinned to the provider URL, or another tool
+  holding its own key. Pair this with egress control.
+- **A key the agent can read itself is not protected.** That includes a `.env` file, its own environment,
+  a config file, or this proxy's secret file or environment. If the proxy runs as the agent's user, the
+  agent can read `/proc/<pid>/environ` or the secret file, and placeholders give no isolation at all. Run
+  the proxy as another user or in another container, with secret sources the agent cannot read.
+- **The agent can still use the placeholder through the proxy.** Whatever the key allows on its bound
+  route, the agent can do. The placeholder only stops the key itself from leaving. Policy (`--mode
+  enforce`) decides what requests go through; nothing here limits cost or rate.
+- **Masking only catches a verbatim echo.** A secret that is split across SSE events, JSON-escaped,
+  encoded, or echoed in part (an `sk-…abcd` hint) passes. The bound upstream is trusted with the key by
+  definition. A model never receives the request headers, so it has no key to echo.
+- **The masking hold-back is a timing signal.** The tail of a chunk that matches a secret's prefix is held
+  until the next chunk. An observer who controls chunking could, in principle, time it. Not measured.
+- **No constant-time compare is needed, because none is made.** A placeholder is resolved by a map lookup
+  on its name, which is not derived from a secret. Client input is never compared with a secret. Masking
+  searches upstream response bytes.
+- **Secrets are read once, at startup.** Rotating one means restarting the proxy.
+- **A placeholder in a request body** (a prompt) is neither swapped nor refused: it is not a credential
+  there.
+
 ## Tests
 
 ```bash
-node --test --import ./test/hermetic-env.mjs test/model-proxy.test.mjs test/model-proxy-enforce.test.mjs
+node --test --import ./test/hermetic-env.mjs test/model-proxy.test.mjs test/model-proxy-enforce.test.mjs test/model-proxy-credentials.test.mjs
 ```
 
 The tests run the real CLI against a fake provider (`model-proxy/test/fake-provider.mjs`, SSE written in

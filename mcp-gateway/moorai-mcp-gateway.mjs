@@ -25,6 +25,11 @@ server.listen(cfg.port, cfg.host, () => {
   for (const r of cfg.routes) {
     process.stderr.write(`moorai-mcp-gateway:   ${base}${r.path} -> ${displayUrl(r.url)} (server "${r.server}"${r.localFiles ? ", local file arguments scanned" : ""})\n`);
   }
+  // Placeholder names, routes and headers only: never a secret, its source or its length.
+  if (cfg.credentials) {
+    for (const b of cfg.credentials.bindings.values()) process.stderr.write(`moorai-mcp-gateway:   credential placeholder ${b.name} -> ${b.prefix} header ${b.header}\n`);
+    if (cfg.requirePlaceholders) process.stderr.write("moorai-mcp-gateway:   raw credentials are refused (--require-placeholders)\n");
+  }
 });
 // Warm the policy so the first call is not delayed by the fetch; each route's first-sight reputation
 // (keyed on the remote URL, offline unless the policy opts in) rides on the same promise.

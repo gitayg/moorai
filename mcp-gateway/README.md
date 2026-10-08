@@ -310,13 +310,97 @@ or large bodies.
 - On a loopback bind, a request whose `Host` is not a loopback name is refused (403), and so is any
   browser `Origin` that is not loopback or listed with `--allow-origin` — the spec's DNS-rebinding rule.
 - `Authorization` is passed through unchanged and never logged; the gateway mints, swaps or stores no
-  token. Plain `http://` to a non-loopback upstream is refused unless `--allow-insecure-upstream`, so a
+  token, unless `--credentials` binds placeholders (below). Plain `http://` to a non-loopback upstream is refused unless `--allow-insecure-upstream`, so a
   bearer token does not cross a network in clear because a gateway was put in front of it.
 - Upstream URLs are printed as origin + path only — never a query string or userinfo.
 - `Accept-Encoding: identity` is sent upstream so the body can be scanned.
 - Content-free: alerts go to the console's `/api/alerts` with `tool: "gateway:<tool>"` and
   `mcpServer: "<route label>"`; one audit line per call goes to the local ledger. No argument, result,
   header or URL leaves.
+
+## Placeholder credentials
+
+With `--credentials <file>` (or `MOORAI_GATEWAY_CREDENTIALS`, or `"credentials"` in `--config`), the MCP
+client never holds the real token. It holds a placeholder such as `moorai-ph:github`. The gateway, running
+as another user or in its own container, swaps the real token in only on the route the placeholder is
+bound to. The mechanism and file format are shared with the model proxy:
+[`../model-proxy/credentials.mjs`](../model-proxy/credentials.mjs) and
+[`../model-proxy/credential-mask.mjs`](../model-proxy/credential-mask.mjs).
+
+```json
+{ "bindings": { "moorai-ph:github": { "secret": { "env": "GITHUB_PAT" }, "route": "/github",
+                                       "upstream": "https://api.githubcopilot.com/mcp/", "header": "authorization", "scheme": "Bearer" } } }
+```
+
+```bash
+GITHUB_PAT=… moorai-mcp-gateway --route /github=https://api.githubcopilot.com/mcp/ --credentials /etc/moorai/gateway-credentials.json
+claude mcp add --transport http github http://127.0.0.1:8848/github --header "Authorization: Bearer moorai-ph:github"
+```
+
+**Bindings file.**
+
+- `secret` is `{ "env": NAME }` or `{ "file": PATH }`, read at startup. A literal value is refused, so that
+  the bindings file never becomes a second copy of the token.
+- `route` must be a gateway route. `upstream` must equal that route's URL exactly (origin and path).
+- `header` cannot be a header the gateway strips or owns (hop-by-hop, `Host`, `Content-Length`,
+  `Accept-Encoding`, `X-MoorAI-Gateway-Token`).
+- `scheme` is optional.
+
+**The gateway exits 2 before listening** when:
+
+- the bindings file or a secret file is group- or world-writable;
+- on POSIX, either file is owned by another non-root user;
+- a binding is malformed;
+- an env var is unset;
+- a secret is under 8 or over 4096 characters, or not printable ASCII.
+
+Errors name the binding, the env var or the path, never the value. The startup log lists each placeholder
+name, its route and header, and nothing else.
+
+**Requests.** These checks run on every method (POST, GET stream, DELETE), before the body is read, gated
+or counted. A refusal is a JSON-RPC error with `id: null`, and it never echoes the placeholder or a value.
+
+| The request | Result |
+|---|---|
+| `[scheme ]placeholder` in its bound header, on its bound route | the whole value becomes `[scheme ]token`; forwarded |
+| a bound placeholder on another route, even one to the same remote URL | 403 |
+| a placeholder in a header it is not bound to | 403 |
+| unknown placeholder, extra text, or the wrong scheme | 401 |
+| `moorai-ph:` / `moorai-ph%3A` in the query string | 400 |
+| `Authorization` and `authorization` (or any credential or placeholder header) twice | 400 (Node would keep the first, silently) |
+| a raw token in `Authorization`, `X-Api-Key`, `Api-Key`, `X-Goog-Api-Key` or a bound header | forwarded, one content-free alert per route; **401** with `--require-placeholders` |
+
+**Responses.** Every upstream response, on every route, is masked for every bound secret:
+
+- A verbatim copy in a header, the status line or the body, JSON or SSE, becomes `*` of the same length.
+  This holds across chunk boundaries.
+- gzip, deflate and br bodies are decoded first; any other content coding is answered 502.
+- This replaces the "compressed response forwarded unscanned" path while bindings are configured: no
+  compressed body reaches the client. A refused body that may have carried a `tools/list` answer clears
+  the drift verdicts, as an unjudged listing does.
+
+**Alerts.** A raw token is reported once per route as `MCP gateway: raw credential sent where
+placeholders are configured`, or `… refused (placeholders required)`. No header, value or hash is
+included.
+
+**What this does not protect. These limits are exact:**
+
+- **Only tokens used through this gateway (and the model proxy).** A token the agent uses on any other
+  path is not protected. That includes a direct HTTPS call, a stdio MCP server with its own environment,
+  or an OAuth flow the client completes itself.
+- **A token the agent can read itself is not protected.** That includes a `.env` file, its own
+  environment, an MCP config file, or this gateway's secret file or environment. A gateway running as the
+  agent's user gives no isolation. Run it as another user or in another container.
+- **The agent can still use the placeholder through the gateway.** Every tool the token reaches on the
+  bound route is callable. Policy (the tool gate, allow-lists, drift blocking) decides what goes through.
+- **Masking only catches a verbatim echo.** A token split across SSE events, JSON-escaped, encoded, or
+  echoed in part passes. The bound remote server is trusted with the token by definition.
+- **No constant-time compare is needed, because none is made.** A placeholder is resolved by a map lookup
+  on its name, and client input is never compared with a secret. The masking hold-back (a chunk tail that
+  matches a secret's prefix waits for the next chunk) is a timing signal that has not been measured.
+- **`--require-placeholders` also refuses OAuth bearer tokens** an MCP client obtained itself. Every route
+  then needs a placeholder.
+- **Secrets are read once.** Rotating one means restarting the gateway.
 
 ## Run
 
@@ -349,7 +433,7 @@ claude mcp add --transport http github http://127.0.0.1:8848/github --header "Au
 ## Tests
 
 ```bash
-node --test --import ./test/hermetic-env.mjs test/mcp-gateway*.test.mjs test/mcp-usage-tools.test.mjs
+node --test --import ./test/hermetic-env.mjs test/mcp-gateway*.test.mjs test/mcp-usage-tools.test.mjs   # incl. mcp-gateway-credentials
 node --test --import ./test/hermetic-env.mjs test/index-tools-mcp.test.mjs    # vector-store writes, proxy and gateway
 ```
 
@@ -453,6 +537,7 @@ must turn the run red.
 | `cooldown.mjs` | Per-client cool-down (C5 `CLIENT_COOLDOWN`). |
 | `profile.mjs` | Declared workload profiles at the gateway (C5 `PROFILE_DRIFT`). |
 | `usage.mjs` | Per-server / per-tool usage counts and the completed-day post (C4). |
+| `../model-proxy/credentials.mjs`, `../model-proxy/credential-mask.mjs` | Placeholder credentials, shared with the model proxy: bindings file, request gate, response masking. |
 | `test/fake-upstream.mjs` | Fake remote MCP server for the tests. |
 | `test/harness.mjs` | Fake console (alerts and usage posts), throwaway HOME, gateway process, for the newer tests. |
 | `test/live/live-clients.mjs` | Real MCP client drivers (Claude Code, cursor-agent, SDK, Inspector), sandbox and judges for the opt-in real-client runs. |
