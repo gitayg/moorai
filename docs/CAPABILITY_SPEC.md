@@ -566,6 +566,16 @@ is validated against.
    is re-judged at call time, so a re-approval releases it without a re-list. **Fails open** when there is
    no verified policy or no approved baseline (the first listing of a new server is accepted);
    **fails closed** on a call to a tool from a listing it could not check (over 1 MB, never listed).
+   In the gateway a response with no request ids (a GET or resumed SSE stream) can answer an earlier
+   `tools/list`, and so can the response to any other POST while a `tools/list` the route forwarded is
+   still outstanding (tracked per route, at most 1,024 for 5 minutes; one that expires or is evicted
+   unanswered clears the route's verdicts). Such a response is decoded (`gzip`/`deflate`/`br`) and each
+   message judged, and one that goes out unscanned clears the route's verdicts. Any message with a
+   `result.tools` array is judged as a listing whatever its id. Ids are matched as the MCP SDK client
+   matches them (`Number(id)`), and only a well-formed response the client would dispatch takes an
+   outstanding `tools/list`; every other listing, a late duplicate for an id already answered included,
+   is judged tighten-only: it can quarantine a tool but never clear one
+   ([`mcp-gateway/README.md`](../mcp-gateway/README.md)).
    Paginated servers are judged page by page and cannot be pinned. The full failure table is in
    [`mcp-proxy/README.md`](../mcp-proxy/README.md).
 
@@ -811,7 +821,21 @@ passed after `--`, because how wxc-exec joins that tail is not in the published 
    policy without them and probes once more.
 6. Spawn `wxc-exec --log-file <run>\audit.log --config <run>\policy.json` in the PTY. Then assign it to a Job
    Object that does not set `UILIMIT_HANDLES`/`GLOBALATOMS`, because nested job UI limits add up and would
-   undo the PowerShell relaxation.
+   undo the PowerShell relaxation. The job is kept only if the assignment succeeded; otherwise it is closed
+   and the session has no job.
+
+Before step 2, the previous session in the terminal is stopped: its PTY child is killed and its Job Object
+terminated (`TerminateJobObject`). The launch waits up to 5 s for the child to exit and the job to report
+no active processes. If either is still running, the launch is refused. An MXC-contained previous session
+with no job (not created, or wxc-exec not assigned to it) or a job whose process count cannot be read counts
+as still running: wxc-exec can exit while the contained agent lives on, so nothing proves it gone. The
+launch is then refused after the wait, saying the previous contained session cannot be confirmed stopped
+(`mxc_launch::prior_running`). That lasts until MoorAI restarts, because the record of the previous
+session is in memory only. A contained agent from that
+session could otherwise swap a checked `ensureDirs` entry for a junction between the check and the spawn.
+Right before step 6, every `ensureDirs` entry is checked again (`recheck_dirs`). If one is no longer a
+plain directory, the launch is refused; this is never downgraded to the Job Object fallback. With MXC
+off, neither step runs.
 
 If any step fails, the agent is **not launched**: the terminal shows the reason in red and how to allow a
 fallback. Some failures are under the contained agent's control (for example a file it planted where
@@ -877,7 +901,10 @@ Known gaps:
 **Not proven (all runtime-on-Windows).** None of the following has been run:
 - ConPTY → wxc-exec → contained child: I/O, resize, Ctrl-C.
 - Kill-on-close reaching the contained child. The Job Object is assigned after spawn, so wxc-exec may already
-  have created the child.
+  have created the child. `portable_pty` 0.8 hardcodes the creation flags (no `CREATE_SUSPENDED`) and a
+  one-slot attribute list (no `PROC_THREAD_ATTRIBUTE_JOB_LIST`), so assigning first needs a fork. Putting
+  the MoorAI host in the job, so children inherit it, does not work: the host would count as an active
+  process forever, `TerminateJobObject` would kill MoorAI, and the job's UI limits would apply to the app.
 - The `--probe --config` argument form and its stdout shape.
 - Whether the backend's default env is the launcher's (tokens are passed only on the launcher env).
 - Claude Code under a `.claude.json` file grant (atomic rename in the profile root).

@@ -296,6 +296,36 @@ pub fn assign_process(job: isize, pid: u32) -> bool {
     }
 }
 
+/// Terminate every process in the job now, keeping the handle open (job_active_processes still works).
+pub fn terminate_job(job: isize) {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::TerminateJobObject;
+    unsafe {
+        let _ = TerminateJobObject(HANDLE(job as *mut core::ffi::c_void), 1);
+    }
+}
+
+/// How many processes are still in the job; None if the job cannot be queried.
+pub fn job_active_processes(job: isize) -> Option<u32> {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{
+        JobObjectBasicAccountingInformation, QueryInformationJobObject,
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    };
+    let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+    unsafe {
+        QueryInformationJobObject(
+            Some(HANDLE(job as *mut core::ffi::c_void)),
+            JobObjectBasicAccountingInformation,
+            &mut info as *mut _ as *mut core::ffi::c_void,
+            core::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+            None,
+        )
+        .ok()?;
+    }
+    Some(info.ActiveProcesses)
+}
+
 /// Close a job handle. With kill-on-close set, this terminates every process still in the job.
 pub fn close_job(job: isize) {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};

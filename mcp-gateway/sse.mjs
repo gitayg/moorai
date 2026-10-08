@@ -8,11 +8,12 @@
 //
 // With `onOverflow` (the gateway's response size cap, C5 RESPONSE_TOO_LARGE) an oversized event is
 // DROPPED instead: nothing of it is released, the rest of it is discarded up to its blank line, and
-// onOverflow({ id }) is called once. Size is counted in UTF-8 bytes for complete lines; an unterminated
+// onOverflow({ id }) is called once. Without it, onUnscanned() (when given) is called once per event
+// that overflows into raw text. Size is counted in UTF-8 bytes for complete lines; an unterminated
 // line is checked by its length in characters (a lower bound), so memory stays within ~3x the cap.
 import { StringDecoder } from "node:string_decoder";
 
-export function createSseFramer({ maxEventBytes, onEvent, onRaw, onOverflow = null }) {
+export function createSseFramer({ maxEventBytes, onEvent, onRaw, onOverflow = null, onUnscanned = null }) {
   const decoder = new StringDecoder("utf8");
   let pending = "";      // undecided text: an incomplete line
   let evRaw = "";        // the current event's text so far
@@ -26,7 +27,7 @@ export function createSseFramer({ maxEventBytes, onEvent, onRaw, onOverflow = nu
   const reset = () => { evRaw = ""; evData = []; evId = null; evType = null; evBytes = 0; };
   function overflow(extra) {
     if (onOverflow) { const id = evId; reset(); dropMode = true; onOverflow({ id }); }
-    else { onRaw(evRaw + extra); reset(); rawMode = true; }
+    else { if (onUnscanned) onUnscanned(); onRaw(evRaw + extra); reset(); rawMode = true; }
   }
 
   // Fields are matched with the `s` flag: a line ends only at CR / LF (above), so a U+2028 / U+2029 inside a

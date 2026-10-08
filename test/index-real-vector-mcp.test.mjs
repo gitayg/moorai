@@ -27,9 +27,6 @@ import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 import http from "node:http";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { rmTree } from "./fs-cleanup.mjs";
 import { indexToolMatch } from "../cli/index-tools.mjs";
 import { startConsole, makeHome, startGateway, stopGateway, sign } from "../mcp-gateway/test/harness.mjs";
@@ -47,6 +44,10 @@ const BREAK = process.env.MOORAI_LIVE_VECTOR_BREAK || "";
 const SKIP = process.env.MOORAI_LIVE_VECTOR !== "1" ? "set MOORAI_LIVE_VECTOR=1 (and MOORAI_REALVEC_DIR) to run against real vector-store MCP servers"
   : !DIR ? "MOORAI_REALVEC_DIR is not set"
   : false;
+// The MCP SDK is a devDependency; CI runs without `npm ci`, so it is loaded only when this file will run.
+const { Client } = SKIP ? {} : await import("@modelcontextprotocol/sdk/client/index.js");
+const { StdioClientTransport } = SKIP ? {} : await import("@modelcontextprotocol/sdk/client/stdio.js");
+const { StreamableHTTPClientTransport } = SKIP ? {} : await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
 const SKIP_CHROMA = SKIP || (!existsSync(CHROMA_BIN) || !existsSync(CHROMA_MODEL) ? `chroma-mcp or its model not found under ${DIR}` : false);
 const SKIP_QDRANT = SKIP || (!existsSync(QDRANT_BIN) || !existsSync(FASTEMBED) ? `mcp-server-qdrant or its model not found under ${DIR}` : false);
 

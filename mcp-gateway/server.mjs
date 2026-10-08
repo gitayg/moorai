@@ -21,6 +21,7 @@ import { reportOnce, alertSchema, alertTooLarge, alertCooldown } from "./report.
 import { parseBody, parseLenient, validateClientBody, validateHeaderPv, validateServerMessage, MAX_DEPTH } from "./validate.mjs";
 import { createCooldown } from "./cooldown.mjs";
 import { countCall } from "./usage.mjs";
+import { createPendingLists, idKey, PENDING_LIST_MAX, PENDING_LIST_TTL_MS } from "./pending-lists.mjs";
 
 export const MAX_REQUEST_BYTES = 16 * 1048576;
 // Messages in one client batch. Each tools/call in a batch is gated in turn without yielding to other
@@ -30,6 +31,10 @@ export const MAX_BATCH_MESSAGES = 64;
 const HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER]);
 const RESP_HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-connection", "transfer-encoding", "trailer", "upgrade", "content-length"]);
 const AGENTS = { "http:": new http.Agent({ keepAlive: true }), "https:": new https.Agent({ keepAlive: true }) };
+// MOORAI_TEST_PENDING_LIST_TTL_MS / MOORAI_TEST_PENDING_LIST_MAX: test hooks that shorten the outstanding
+// tools/list TTL and lower its bound (an entry dropped unanswered clears the verdicts: more clearing, never less).
+const lowered = (v, dflt) => { const n = Math.floor(Number(v)); return v != null && n > 0 ? Math.min(n, dflt) : dflt; };
+const PENDING_OPTS = { ttlMs: lowered(process.env.MOORAI_TEST_PENDING_LIST_TTL_MS, PENDING_LIST_TTL_MS), max: lowered(process.env.MOORAI_TEST_PENDING_LIST_MAX, PENDING_LIST_MAX) };
 
 function digest(s) { return createHash("sha256").update(String(s)).digest(); }
 function tokenOk(given, want) { return typeof given === "string" && timingSafeEqual(digest(given), digest(want)); }
@@ -47,6 +52,23 @@ function sendJson(res, status, obj, extra = {}) {
 }
 const rpcError = (id, code, message) => ({ jsonrpc: "2.0", id: id == null ? null : id, error: { code, message } });
 const isId = (v) => typeof v === "string" || (typeof v === "number" && Number.isInteger(v));
+// What the MCP SDK client makes of one parsed message (types.js JSONRPCMessageSchema: strict request,
+// notification, result and error schemas; anything else it refuses, unparsed): "request",
+// "notification", "result", "error", or null.
+const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+function sdkKind(m) {
+  if (!isObj(m) || m.jsonrpc !== "2.0") return null;
+  const has = (k) => Object.hasOwn(m, k);
+  const only = (...keys) => Object.keys(m).every((k) => keys.includes(k));
+  if (has("method")) {
+    if (typeof m.method !== "string" || (has("params") && !isObj(m.params))) return null;
+    if (has("id")) return isId(m.id) && only("jsonrpc", "id", "method", "params") ? "request" : null;
+    return only("jsonrpc", "method", "params") ? "notification" : null;
+  }
+  if (has("result")) return isId(m.id) && isObj(m.result) && only("jsonrpc", "id", "result") ? "result" : null;
+  if (has("error")) return (!has("id") || isId(m.id)) && isObj(m.error) && Number.isInteger(m.error.code) && typeof m.error.message === "string" && only("jsonrpc", "id", "error") ? "error" : null;
+  return null;
+}
 const TOOL_NAME_RE = /^[A-Za-z0-9_.:\/-]{1,128}$/;
 // A refused RESULT: the proxy's shape (an MCP tool result with isError), as guard.gateResult builds it.
 const blockedResult = (id, reason) => ({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `MoorAI blocked this MCP tool result: ${reason}` }], isError: true } });
@@ -153,7 +175,12 @@ function readBody(req, limit) {
 }
 
 export function createGatewayServer(cfg) {
-  const routes = new Map(cfg.routes.map((r) => [r.path, { route: r, guard: createGuard(r) }]));
+  // A tools/list whose outstanding entry expires or is evicted unanswered may still be answered, unseen:
+  // the route's drift verdicts are cleared then (fail closed), as for a listing forwarded unjudged.
+  const routes = new Map(cfg.routes.map((r) => {
+    const guard = createGuard(r);
+    return [r.path, { route: r, guard, pending: createPendingLists({ ...PENDING_OPTS, onDrop: () => guard.listingUnjudged() }) }];
+  }));
   if (cfg.schemaValidation === undefined) cfg = { ...cfg, schemaValidation: "enforce" };
   if (cfg.maxResponseBytes === undefined) cfg = { ...cfg, maxResponseBytes: DEFAULT_MAX_RESPONSE_BYTES };
   const cooldown = createCooldown(cfg.cooldown || {});
@@ -175,14 +202,16 @@ export function createGatewayServer(cfg) {
     const path = new URL(req.url, "http://x").pathname.replace(/\/+$/, "") || "/";
     const entry = routes.get(path);
     if (!entry) return sendJson(res, 404, rpcError(null, -32601, "No MCP route at this path"));
-    const { route, guard } = entry;
+    const { route, guard, pending } = entry;
+    pending.sweep(); // an entry past its TTL clears the verdicts before any call on the route is gated
 
     let body;
     try { body = await readBody(req, MAX_REQUEST_BYTES); }
     catch (e) { if (e.tooLarge) return sendJson(res, 413, rpcError(null, -32600, "Request too large for the gateway to inspect")); return; }
 
     // ---- the CALL side: validate the body (C5), then gate every tools/call in it ----
-    const ctx = { idTool: new Map(), idMethod: new Map(), paged: new Set(), requestIds: [], route, guard, cfg };
+    // Keyed by idKey(id): the id as the MCP SDK client matches a response to it (Number(id)).
+    const ctx = { idTool: new Map(), idMethod: new Map(), paged: new Set(), requestIds: [], route, guard, pending, cfg, httpMethod: req.method };
     const ckey = clientKey(route, req);
     if (req.method === "POST" && body.length) {
       const enforce = cfg.schemaValidation === "enforce";
@@ -226,8 +255,8 @@ export function createGatewayServer(cfg) {
         for (const m of msgs) {
           if (m && typeof m === "object" && typeof m.method === "string" && isId(m.id)) {
             ctx.requestIds.push(m.id);
-            ctx.idMethod.set(String(m.id), m.method);
-            if (m.method === "tools/list" && m.params && typeof m.params === "object" && m.params.cursor != null) ctx.paged.add(String(m.id));
+            ctx.idMethod.set(idKey(m.id), m.method);
+            if (m.method === "tools/list" && m.params && typeof m.params === "object" && m.params.cursor != null) ctx.paged.add(idKey(m.id));
           }
         }
         // C5 cool-down: a client that tripped it is refused for its duration, every request in the body.
@@ -243,7 +272,7 @@ export function createGatewayServer(cfg) {
           if (!m || typeof m !== "object") continue;
           if (m.result && Array.isArray(m.result.roots)) { try { guard.rememberRoots(m.result.roots); } catch { /* roots are a hint */ } }
           if (m.method !== "tools/call" || !m.params || typeof m.params !== "object") continue;
-          if (m.id != null) ctx.idTool.set(String(m.id), String(m.params.name || "mcp"));
+          if (m.id != null) ctx.idTool.set(idKey(m.id), String(m.params.name || "mcp"));
           // C4 usage: per server and per tool name, blocked or not (mcp-gateway/usage.mjs). The tally
           // write is synchronous, so it runs after this request's own work is under way.
           { const tool = m.params.name; setImmediate(() => countCall(route.server, tool)); }
@@ -278,6 +307,8 @@ export function createGatewayServer(cfg) {
       else res.destroy();
     });
     up.on("response", (ur) => onUpstream(ur, res, ctx));
+    // Each tools/list forwarded is outstanding until a message answering it is judged (pending-lists.mjs).
+    for (const id of ctx.requestIds) if (ctx.idMethod.get(idKey(id)) === "tools/list") pending.add(id, { paged: ctx.paged.has(idKey(id)) });
     up.end(body);
   }
 
@@ -313,16 +344,30 @@ function onUpstream(ur, res, ctx) {
   const ctype = String(ur.headers["content-type"] || "").toLowerCase();
   const enc = String(ur.headers["content-encoding"] || "identity").trim().toLowerCase();
   const passthrough = () => { res.writeHead(ur.statusCode, ur.statusMessage, { ...respHeaders(ur), ...(ur.headers["content-length"] ? { "content-length": ur.headers["content-length"] } : {}) }); ur.pipe(res); };
-  const lists = ctx.requestIds.some((id) => ctx.idMethod.get(String(id)) === "tools/list");
+  const lists = ctx.requestIds.some((id) => ctx.idMethod.get(idKey(id)) === "tools/list");
+  // A response with no request ids (a GET stream, a resumed one, the answer to a POST of notifications)
+  // can carry the answer to ANY earlier tools/list: the client dispatches each message by its id, and the
+  // MCP SDK reads any 2xx GET body as SSE whatever its Content-Type. It is decoded and scanned like a
+  // tools/list answer; one forwarded unscanned clears the verdicts once a byte of it goes out.
+  const idless = !ctx.requestIds.length;
+  // So can the response to any other POST while a tools/list the route forwarded is still unanswered
+  // (pending-lists.mjs): a hostile server answers it inside a compressed tools/call result.
+  const outstanding = ctx.pending.any();
   // Every path below that forwards a tools/list answer without judging it clears the route's drift
   // verdicts (guard.listingUnjudged): no earlier verdict may vouch for a tool the client was just told about.
-  const unjudged = () => { if (lists) ctx.guard.listingUnjudged(); };
+  // Any other response clears them once a byte of it goes out while a tools/list is outstanding, also one
+  // sent after this response started (answered on a long compressed stream already passing through).
+  const unjudged = () => {
+    if (lists) return ctx.guard.listingUnjudged();
+    ur.on("data", function watch(c) { if (c.length && (idless || ctx.pending.any())) { ur.off("data", watch); ctx.guard.listingUnjudged(); } });
+  };
 
   if (enc !== "identity" && (ctype.includes("json") || ctype.includes("event-stream"))) {
-    // A compressed answer to a tools/list (the gateway asked for identity; the server ignored it) is
-    // decoded and judged like any other, and the client gets the decoded body. Anything else compressed
-    // is forwarded unscanned, as before.
-    if (lists && Object.hasOwn(DECODERS, enc)) ur = decoded(ur, enc);
+    // A compressed answer to a tools/list (the gateway asked for identity; the server ignored it), a
+    // compressed response with no request ids, or any compressed response while a tools/list is
+    // outstanding, is decoded and judged like any other, and the client gets the decoded body. Anything
+    // else compressed is forwarded unscanned, as before.
+    if ((lists || idless || outstanding) && Object.hasOwn(DECODERS, enc)) ur = decoded(ur, enc);
     else {
       unjudged();
       reportOnce("MCP gateway: compressed upstream response forwarded unscanned", `gateway:unscanned:encoding:${enc}`, "Info");
@@ -331,9 +376,14 @@ function onUpstream(ur, res, ctx) {
   }
   const x = {
     ...ctx,
-    toolOf: (id) => (id != null && ctx.idTool.get(String(id))) || "mcp",
-    methodOf: (id) => (id != null && ctx.idMethod.get(String(id))) || "",
-    pagedOf: (id) => ({ paged: id != null && ctx.paged.has(String(id)) }),
+    idless,
+    toolOf: (id) => (id != null && ctx.idTool.get(idKey(id))) || "mcp",
+    // an id this POST did not send may answer an outstanding tools/list
+    methodOf: (id) => (id != null && (ctx.idMethod.get(idKey(id)) || (ctx.pending.get(id) ? "tools/list" : ""))) || "",
+    pagedOf: (id) => id != null && (ctx.idMethod.has(idKey(id)) ? ctx.paged.has(idKey(id)) : !!(ctx.pending.get(id) || {}).paged),
+    // The MCP SDK client reads messages from the response to a POST that carried a request, and from a
+    // GET stream (SSE only); the body of any other POST it cancels unread.
+    sdkReads: ctx.httpMethod === "GET" || ctx.requestIds.length > 0,
     cap: ctx.cfg.maxResponseBytes,
     validating: ctx.cfg.schemaValidation !== "off",
     enforce: ctx.cfg.schemaValidation === "enforce"
@@ -354,8 +404,33 @@ function tooLargeReply(x) {
   return x.batch ? x.requestIds.map(one) : one(x.requestIds[0]);
 }
 const tooLargeTool = (x) => (!x.batch && x.requestIds.length === 1 ? x.toolOf(x.requestIds[0]) : "mcp");
-// A response forwarded unscanned to a POST that carried a tools/list: the listing went unjudged.
-const listUnjudged = (x) => { if (x.requestIds.some((id) => x.methodOf(id) === "tools/list")) x.guard.listingUnjudged(); };
+// A response forwarded unscanned to a POST that carried a tools/list, with no request ids at all, or
+// while any tools/list on the route is outstanding (it may answer an earlier one): the listing went unjudged.
+const listUnjudged = (x) => { if (x.idless || x.pending.any() || x.requestIds.some((id) => x.methodOf(id) === "tools/list")) x.guard.listingUnjudged(); };
+// A message answers an outstanding tools/list, and takes its entry as it is judged, only when the MCP
+// SDK client would dispatch it as that answer: read at all (x.sdkReads, `dispatchable`: a JSON batch the
+// SDK refuses whole, an SSE event that is not a single "message", is not), a well-formed response
+// (sdkKind) that is an error or a result with a `tools` array, whose id (as the SDK reads it) this POST
+// did not send for another method, while an entry for that id is outstanding. → { paged } or null.
+// Every other listing is judged tighten-only (guard.gateResult): a late duplicate for an id already
+// answered, which the SDK drops (it keeps the first answer), can quarantine a tool but never clear one.
+function claim(x, m, dispatchable) {
+  if (!x.sdkReads || !dispatchable) return null;
+  const kind = sdkKind(m);
+  if (!(kind === "error" && isId(m.id)) && !(kind === "result" && Array.isArray(m.result.tools))) return null;
+  const own = x.idMethod.get(idKey(m.id));
+  if (own !== undefined && own !== "tools/list") return null;
+  return x.pending.take(m.id);
+}
+// A claimed answer that did not reach the client (it went away first) is outstanding again.
+const unclaim = (x, claims) => { for (const [m, c] of claims) x.pending.add(m.id, c); };
+// One server → client message, judged: schema stage, then the result / listing gate.
+async function judge(x, m, path, claims, dispatchable) {
+  const rep = checkServerMessage(m, x, path);
+  const c = claim(x, m, dispatchable);
+  if (c) claims.push([m, c]);
+  return rep || await x.guard.gateResult(m, x.toolOf(m && m.id), { paged: c ? c.paged : x.pagedOf(m && m.id), tightenOnly: !c });
+}
 
 // One server → client message (C5 schema stage): report an invalid one; in enforce mode, an invalid
 // response to a tools/call is replaced by a tool error (a malformed result could otherwise carry text past
@@ -375,7 +450,6 @@ function checkServerMessage(m, x, path = "$") {
 // CAPS.maxLineBytes (1 MB) and the cap is forwarded unscanned, as before. Without a cap (0) a body past
 // 1 MB streams through unscanned, the gateway's original behaviour.
 function onJson(ur, res, x) {
-  const { guard } = x;
   const chunks = [];
   let n = 0;
   let streaming = false, refused = false;
@@ -406,6 +480,7 @@ function onJson(ur, res, x) {
     if (streaming || refused) return;
     const raw = Buffer.concat(chunks);
     let out = raw;
+    const claims = [];
     if (raw.length > CAPS.maxLineBytes) { listUnjudged(x); reportOnce("MCP gateway: oversized response forwarded unscanned", "gateway:unscanned:size", "Info"); }
     else {
       try {
@@ -420,23 +495,24 @@ function onJson(ur, res, x) {
         }
         if (value === undefined) { if (raw.length) listUnjudged(x); /* nothing a client can parse either: forwarded as it came */ }
         else if (Array.isArray(value)) {
+          // the SDK parses every message of a JSON body before dispatching any: one it refuses, none go
+          const dispatchable = value.every((m) => sdkKind(m) !== null);
           let changed = false;
           const next = [];
           for (let i = 0; i < value.length; i++) {
             const m = value[i];
-            const r = checkServerMessage(m, x, `$[${i}]`) || await guard.gateResult(m, x.toolOf(m && m.id), x.pagedOf(m && m.id));
+            const r = await judge(x, m, `$[${i}]`, claims, dispatchable);
             if (r) changed = true;
             next.push(r || m);
           }
           if (changed) out = Buffer.from(JSON.stringify(next));
         } else {
-          const m = value;
-          const r = checkServerMessage(m, x) || await guard.gateResult(m, x.toolOf(m && m.id), x.pagedOf(m && m.id));
+          const r = await judge(x, value, "$", claims, true);
           if (r) out = Buffer.from(JSON.stringify(r));
         }
       } catch { listUnjudged(x); /* a failed scan: the original goes, unjudged */ }
     }
-    if (res.destroyed) return;
+    if (res.destroyed) return unclaim(x, claims);
     res.writeHead(ur.statusCode, ur.statusMessage, { ...respHeaders(ur), "content-length": out.length });
     res.end(out);
   });
@@ -471,6 +547,8 @@ function onSse(ur, res, x) {
   const framer = createSseFramer({
     maxEventBytes: x.cap || CAPS.maxLineBytes,
     onRaw: (text) => enqueue(() => write(text)),
+    // No cap (0): an event past CAPS.maxLineBytes streams through as raw text, never parsed or scanned.
+    onUnscanned: () => enqueue(() => listUnjudged(x)),
     onOverflow: x.cap ? ({ id }) => enqueue(async () => {
       alertTooLarge(x.route.server, tooLargeTool(x), x.cap);
       if (x.batch || x.requestIds.length !== 1) return;
@@ -487,26 +565,35 @@ function onSse(ur, res, x) {
       // Validated as a message only when it is one ("message" or no event: type); scanned whatever its
       // type, every element of an array, on the parsed value (a "\u0072esult" key is still a result).
       let rep = null;
-      const scan = async (m) => { try { return await guard.gateResult(m, x.toolOf(m && m.id), x.pagedOf(m && m.id)); } catch { listUnjudged(x); return null; } };
+      const claims = [];
+      // the SDK dispatches a "message" event holding one message; an array or another type, never
+      const scan = async (m, dispatchable) => {
+        const c = claim(x, m, dispatchable);
+        if (c) claims.push([m, c]);
+        try { return await guard.gateResult(m, x.toolOf(m && m.id), { paged: c ? c.paged : x.pagedOf(m && m.id), tightenOnly: !c }); } catch { listUnjudged(x); return null; }
+      };
       if (ev.data != null) {
         const isMessage = ev.type == null || ev.type === "" || ev.type === "message";
         let m, ok = true;
         try { m = JSON.parse(ev.data); } catch { ok = false; }
-        if (!ok) { listUnjudged(x); if (x.validating && isMessage) alertSchema(x.route.server, { stage: "json", path: "$" }, { direction: "server", refused: false }); }
+        // On a stream with no request ids only a "message" event can be a listing the client reads (the
+        // SDK parses no other type), so an unparseable keep-alive there does not clear the verdicts.
+        if (!ok) { if (isMessage || !x.idless) listUnjudged(x); if (x.validating && isMessage) alertSchema(x.route.server, { stage: "json", path: "$" }, { direction: "server", refused: false }); }
         else if (Array.isArray(m)) {
           let changed = false;
           const next = [];
           for (let i = 0; i < m.length; i++) {
             const v = x.validating && isMessage && validateServerMessage(m[i], { path: `$[${i}]`, methodOf: x.methodOf });
             if (v) alertSchema(x.route.server, v, { direction: "server", refused: false });
-            const r = await scan(m[i]);
+            const r = await scan(m[i], false);
             if (r) changed = true;
             next.push(r || m[i]);
           }
           if (changed) rep = next;
-        } else rep = (isMessage && checkServerMessage(m, x)) || await scan(m);
+        } else rep = (isMessage && checkServerMessage(m, x)) || await scan(m, isMessage);
       }
       await write(rep ? sseEvent(rep, ev.id) : ev.raw);
+      if (res.destroyed) unclaim(x, claims);
     })
   });
   ur.on("data", (c) => { try { framer.push(c); } catch { enqueue(() => write(c.toString("utf8"))); } });

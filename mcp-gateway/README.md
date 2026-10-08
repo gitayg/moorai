@@ -123,7 +123,43 @@ same clearing happens for every other `tools/list` answer the gateway forwards u
 it does not scan, a content-coding it cannot decode, an unparseable body or SSE event, and a listing
 whose scan threw. A `tools/list` answer in `gzip`, `deflate` or `br` (the gateway asks upstream for
 `identity`; a server can ignore that) is decoded, judged like any other, and sent to the client decoded;
-the response cap counts decoded bytes. Other compressed responses are still forwarded unscanned. A
+the response cap counts decoded bytes. A response with no request ids (a GET stream, a resumed stream,
+the answer to a POST of only notifications or responses) can carry the answer to any earlier
+`tools/list`, so it is treated the same way: decoded when it is `gzip`/`deflate`/`br`, each SSE event
+scanned and any listing in it judged. When such a response goes out unscanned anyway (a content-coding
+the gateway cannot decode, a content type it does not scan, an unparseable `message` event, an event too
+large to scan), the route's verdicts are cleared once its first byte is forwarded. The MCP SDK client
+reads any 2xx GET body as SSE whatever its Content-Type, which is why a content type the gateway does not
+scan counts. An empty body (a `405` to the GET, a `202`) and a non-`message` event with unparseable data
+(a keep-alive `ping`) leave the verdicts alone, because the client reads no listing from them. With no
+response cap (`--max-response-bytes 0`) an SSE event over 1 MB streams through unframed; that also
+clears the verdicts. The response to any other POST can carry the answer to a `tools/list` that is still
+outstanding (a hostile server holds it open and answers it inside a compressed or oversized `tools/call`
+result), so the gateway tracks, per route, every `tools/list` it forwarded until a message answering
+that id is judged ([`pending-lists.mjs`](pending-lists.mjs): at most 1,024, each for at most 5 minutes,
+oldest dropped first). An entry that expires or is evicted unanswered clears the route's verdicts: the
+gateway can no longer see that listing's answer. While any is outstanding, a compressed JSON or SSE
+response is decoded and judged like a listing answer, and every unscanned path clears the verdicts. A
+response that started passing through unscanned clears them once a byte of it goes out while one is
+outstanding. When none is outstanding, other compressed responses (to a POST whose requests include no
+`tools/list`) are still forwarded unscanned, verdicts untouched.
+
+Every message with a `result.tools` array is judged as a listing, whatever its id and whatever the POST
+carried. Ids are matched the way the MCP SDK client matches them, `Number(id)` (so `"1"`, `"1.0"`, `1.0`
+and `"01"` all answer request `1`; an id that is not a finite number is matched as its string). A message
+answers an outstanding `tools/list`, and takes its entry, only when the SDK would dispatch it as that
+answer: a response read by the client (the body of a POST that carried a request, or a GET stream), a
+single `message` event or a JSON body whose every message parses (the SDK refuses a JSON body with one bad
+message whole), with no `method`, exactly `jsonrpc`/`id` plus one of `result`/`error`, an integer
+`error.code` and string `error.message` for an error, and a `tools` array for a result. Any other listing
+(a late duplicate for an id already answered, which the SDK drops because it keeps the first answer; a
+malformed message; an id no outstanding `tools/list` carried, such as an unsolicited listing on a GET
+stream) is judged **tighten-only**: a drifted tool in it is quarantined and left out, but it never clears a
+verdict, never moves the baseline, and is never taken for the server's complete listing (no removed-tool
+alert, no fingerprint report). A clean answer that is not attributable, such as a listing on a resumed
+stream (where the SDK rewrites the id to the replayed request's), therefore leaves tools it did not
+already vouch for refused until the client lists again, and the outstanding entry it did not take expires
+and clears the verdicts. A
 `tools/list` whose request carried a `cursor` is a page: it is judged, but a missing tool is not
 reported as removed, and on a server's first sighting every page of that listing is a first sighting.
 
@@ -245,7 +281,8 @@ or large bodies.
 
 - **Fail-open** on the gateway's own failure: no engine (no policy and no posture), a thrown check, a
   result scan past `CAPS.resultDeadlineMs` (750 ms), a compressed upstream response other than a
-  `tools/list` answer in `gzip`/`deflate`/`br` (decoded and scanned), a JSON response or
+  `tools/list` answer, a response with no request ids, or any response while a `tools/list` is
+  outstanding, in `gzip`/`deflate`/`br` (decoded and scanned), a JSON response or
   SSE event between `CAPS.maxLineBytes` (1 MB) and the size cap → forwarded unchanged and unscanned. An
   unparseable client body is refused (`SCHEMA_INVALID`, stage `json`) unless `--schema report|off`. A device whose durable posture is fail-closed gets `OFFLINE_DEFAULT_POLICY` when no policy
   verifies, exactly as in the proxy.
@@ -409,6 +446,7 @@ must turn the run red.
 | `server.mjs` | HTTP reverse proxy: Host / Origin / token checks, header handling, JSON and SSE responses. |
 | `guard.mjs` | Per-route gate: call checks, tool-list observation, result scan. |
 | `sse.mjs` | Incremental SSE framing that keeps each event's original text. |
+| `pending-lists.mjs` | Per-route table of forwarded `tools/list` requests not yet answered, keyed as the SDK matches ids (bounded, with a TTL; an entry dropped unanswered clears the verdicts). |
 | `policy.mjs` | Verified policy + engine + coach/enforce, as the proxy loads them. |
 | `report.mjs` | Content-free alerts and ledger lines (`gateway:<tool>`). |
 | `validate.mjs` | Staged JSON-RPC / MCP validation (C5 `SCHEMA_INVALID`). |

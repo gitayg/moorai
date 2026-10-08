@@ -370,6 +370,8 @@ pub struct LaunchPlan {
     pub policy_path: String,
     pub capture_denials: bool,
     pub notes: Vec<String>,
+    // the policy's ensureDirs, checked again by recheck_dirs right before wxc-exec is spawned
+    pub ensure_dirs: Vec<String>,
 }
 
 fn sys_root(env: &BTreeMap<String, String>) -> String {
@@ -514,9 +516,97 @@ pub fn plan_launch(host: &dyn Host, req: &LaunchRequest) -> Result<LaunchPlan, S
             policy_path,
             capture_denials: input.capture_denials,
             notes,
+            ensure_dirs: plan["ensureDirs"].as_array().into_iter().flatten().filter_map(|d| d.as_str().map(String::from)).collect(),
         });
     }
     Err("wxc-exec --probe did not settle on a policy".into())
+}
+
+// The ensureDirs again, immediately before wxc-exec is spawned: plan_launch checked them, then probed,
+// so a contained process could have swapped one for a junction since. Each must still be a plain
+// directory. With no contained session left running (stop_prior_session) nothing inside a grant
+// should be able to change them; this catches one that survived anyway.
+pub fn recheck_dirs(host: &dyn Host, plan: &LaunchPlan) -> Result<(), String> {
+    for d in &plan.ensure_dirs {
+        let s = host.dir_state(d);
+        if s != DirState::Dir {
+            return Err(format!("{d} changed after it was checked ({s:?}); the contained agent can write there, so wxc-exec was not started (relaunch)"));
+        }
+    }
+    Ok(())
+}
+
+// The session a new MXC launch replaces (lib.rs: its PTY child and its Job Object). The ensureDirs sit
+// inside read-write grants, so a contained agent still running from it could swap a directory for a
+// junction between plan_launch's checks and wxc-exec's spawn.
+pub trait PriorSession {
+    // anything of it still alive: the PTY child, or a process in its Job Object
+    fn running(&self) -> bool;
+    // kill the PTY child and terminate its Job Object
+    fn stop(&mut self);
+    // Some(why) when running() is true only because nothing proves the session gone
+    fn unproven(&self) -> Option<String> {
+        None
+    }
+}
+
+// What MoorAI holds about the previous session, as running() reads it (lib.rs TermPrior).
+#[derive(Clone, Copy, Debug)]
+pub struct PriorState {
+    // it was launched through wxc-exec (MXC-contained)
+    pub was_contained: bool,
+    // None: no Job Object handle for it; Some(None): the job's process count could not be read
+    pub job: Option<Option<u32>>,
+    // its PTY child has not exited
+    pub child_live: bool,
+}
+
+// Whether the previous session may still be running. Fails closed: a contained session counts as
+// running unless its Job Object says it is empty (wxc-exec, the PTY child, can exit while the contained
+// agent lives on), and so does any job whose count cannot be read.
+pub fn prior_running(s: PriorState) -> bool {
+    if s.child_live {
+        return true;
+    }
+    match s.job {
+        Some(Some(n)) => n > 0,
+        Some(None) => true,
+        None => s.was_contained,
+    }
+}
+
+// Why prior_running said "running" without anything seen running: Some when nothing could be checked.
+pub fn prior_unproven(s: PriorState) -> Option<&'static str> {
+    if s.child_live {
+        return None;
+    }
+    match s.job {
+        Some(None) => Some("its Job Object could not be queried"),
+        None if s.was_contained => Some("it has no Job Object MoorAI can check (the job could not be created or the process not assigned to it)"),
+        _ => None,
+    }
+}
+
+// Before planning a new MXC launch: stop the previous session and wait, up to `tries` pauses, for it
+// to be gone. Err = refuse the launch; it is never planned next to a live contained agent.
+pub fn stop_prior_session(prior: &mut dyn PriorSession, tries: u32, pause: &dyn Fn()) -> Result<(), String> {
+    if !prior.running() {
+        return Ok(());
+    }
+    prior.stop();
+    for _ in 0..tries {
+        if !prior.running() {
+            return Ok(());
+        }
+        pause();
+    }
+    if prior.running() {
+        if let Some(why) = prior.unproven() {
+            return Err(format!("the previous MXC-contained session cannot be confirmed stopped: {why}; MXC is not set up next to a contained agent that may still be running (end it, then restart MoorAI)"));
+        }
+        return Err("the previous agent session is still running and did not stop; MXC is not set up next to it (close it and relaunch)".into());
+    }
+    Ok(())
 }
 
 // What term_open does with a plan when MXC is enabled in the host-only settings.
@@ -1113,6 +1203,117 @@ mod tests {
         let mut m = Mock::ok();
         m.dir_states = vec![(AGENT_TMP_DIR.into(), DirState::Dir)];
         plan_launch(&m, &req("claude")).expect("plan");
+    }
+
+    #[test]
+    fn an_ensured_dir_swapped_between_plan_and_spawn_refuses_the_spawn() {
+        let mut m = Mock::ok();
+        let plan = plan_launch(&m, &req("claude")).expect("plan");
+        assert!(plan.ensure_dirs.iter().any(|d| d == AGENT_TMP_DIR), "{:?}", plan.ensure_dirs);
+        recheck_dirs(&m, &plan).expect("nothing changed since the plan");
+        // a contained agent still running from the last session turns a checked dir into a junction,
+        // removes it, or puts a file there after plan_launch looked
+        for state in [DirState::Reparse, DirState::NotDir, DirState::Missing, DirState::Unreadable] {
+            for path in [AGENT_TMP_DIR, "C:\\Users\\dev\\.moorai", "C:\\Users\\dev\\.claude"] {
+                m.dir_states = vec![(path.into(), state)];
+                let err = recheck_dirs(&m, &plan).expect_err(&format!("{path} became {state:?} after the plan and wxc-exec would still be spawned"));
+                assert!(err.contains(path), "{err}");
+            }
+        }
+    }
+
+    struct Prior {
+        alive: std::cell::Cell<u32>,
+        stops: u32,
+        // running() reports true this many more times after stop()
+        dies_after: Option<u32>,
+    }
+
+    impl PriorSession for Prior {
+        fn running(&self) -> bool {
+            self.alive.get() > 0
+        }
+        fn stop(&mut self) {
+            self.stops += 1;
+            if let Some(n) = self.dies_after {
+                self.alive.set(n);
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_mxc_launch_stops_the_previous_session_first_and_refuses_if_it_will_not_stop() {
+        let pauses = std::cell::Cell::new(0u32);
+        let pause = || pauses.set(pauses.get() + 1);
+        // nothing running: no stop, no wait
+        let mut p = Prior { alive: 0.into(), stops: 0, dies_after: None };
+        stop_prior_session(&mut p, 5, &pause).expect("nothing to stop");
+        assert_eq!((p.stops, pauses.get()), (0, 0));
+        // running, then gone after the stop: the launch goes ahead only once it has exited
+        let mut p = Prior { alive: 1.into(), stops: 0, dies_after: Some(0) };
+        stop_prior_session(&mut p, 5, &pause).expect("stopped");
+        assert_eq!(p.stops, 1);
+        // still running a few polls after the stop: waited for, then fine
+        struct Slow(std::cell::Cell<u32>);
+        impl PriorSession for Slow {
+            fn running(&self) -> bool {
+                let n = self.0.get();
+                self.0.set(n.saturating_sub(1));
+                n > 0
+            }
+            fn stop(&mut self) {}
+        }
+        pauses.set(0);
+        stop_prior_session(&mut Slow(3.into()), 5, &pause).expect("exited within the wait");
+        assert!(pauses.get() >= 2, "did not wait for the previous session to exit");
+        // never stops: the launch is refused rather than planned next to a live contained agent
+        pauses.set(0);
+        let mut p = Prior { alive: 1.into(), stops: 0, dies_after: None };
+        let err = stop_prior_session(&mut p, 5, &pause).expect_err("planned while the previous session was still running");
+        assert!(err.contains("still running"), "{err}");
+        assert_eq!((p.stops, pauses.get()), (1, 5));
+    }
+
+    #[test]
+    fn a_contained_prior_session_that_cannot_be_checked_counts_as_running() {
+        let st = |was_contained, job, child_live| PriorState { was_contained, job, child_live };
+        // a contained session with no Job Object to ask, its PTY child gone: wxc-exec exited, the
+        // contained agent may not have; nothing proves it gone
+        assert!(prior_running(st(true, None, false)), "a contained session with no job handle was taken as stopped");
+        // its job's process count could not be read
+        assert!(prior_running(st(true, Some(None), false)));
+        // proven gone: the job reports no process and the child exited
+        assert!(!prior_running(st(true, Some(Some(0)), false)));
+        assert!(prior_running(st(true, Some(Some(2)), false)));
+        assert!(prior_running(st(true, Some(Some(0)), true)), "the PTY child is still live");
+        // an uncontained session (or none at all) has no job to prove anything with: its child decides
+        assert!(!prior_running(st(false, None, false)));
+        assert!(prior_running(st(false, None, true)));
+        assert!(prior_running(st(false, Some(None), false)));
+        // said why only when nothing could be checked
+        assert!(prior_unproven(st(true, None, false)).is_some());
+        assert!(prior_unproven(st(true, Some(None), false)).is_some());
+        assert!(prior_unproven(st(true, Some(Some(2)), false)).is_none());
+        assert!(prior_unproven(st(true, None, true)).is_none());
+
+        // through stop_prior_session: stopped, waited for, then refused with the reason
+        struct Unchecked(u32);
+        impl PriorSession for Unchecked {
+            fn running(&self) -> bool {
+                prior_running(PriorState { was_contained: true, job: None, child_live: false })
+            }
+            fn stop(&mut self) {
+                self.0 += 1;
+            }
+            fn unproven(&self) -> Option<String> {
+                prior_unproven(PriorState { was_contained: true, job: None, child_live: false }).map(String::from)
+            }
+        }
+        let pauses = std::cell::Cell::new(0u32);
+        let mut p = Unchecked(0);
+        let err = stop_prior_session(&mut p, 5, &|| pauses.set(pauses.get() + 1)).expect_err("launched next to a contained session nothing proved gone");
+        assert!(err.contains("cannot be confirmed stopped") && err.contains("no Job Object"), "{err}");
+        assert_eq!((p.0, pauses.get()), (1, 5), "refused only after the stop and the wait");
     }
 
     #[test]

@@ -165,8 +165,11 @@ export function createDriftTracker({ server, dir = STATE_DIR }) {
   // A block-mode tools/list. `complete` = this listing is the server's whole list (not a page), the
   // only case where an absent tool means a removed one and the fingerprints are worth reporting.
   // `continued` = the request carried a cursor (a later page); `last` = the response has no nextCursor.
+  // `tightenOnly` = a listing the client may not have kept (the HTTP gateway: a late duplicate for an id
+  // already answered, a message the MCP SDK would not dispatch, an id no outstanding tools/list carried):
+  // it can quarantine a tool, never pass one, and moves neither the baseline nor the paging state.
   // → { keep, quarantined: [{ name, signals }], removed: [signal], fingerprints | null, changed }.
-  function evaluateListing(tools, { policy, complete, continued = false, last = true }) {
+  function evaluateListing(tools, { policy, complete, continued = false, last = true, tightenOnly = false }) {
     const approved = approvedBaselines(policy, dir);
     const local = loadBaseline(dir);
     let counter = 0;
@@ -175,9 +178,12 @@ export function createDriftTracker({ server, dir = STATE_DIR }) {
       if ((t.n || 0) > counter) counter = t.n || 0;
       if (t.srv === srv) serverHasLocal = true;
     }
-    if (!continued) pagedFirstSighting = !serverHasLocal && !last;
-    else if (pagedFirstSighting) serverHasLocal = false;
-    if (last) pagedFirstSighting = false;
+    if (tightenOnly) { complete = false; if (continued && pagedFirstSighting) serverHasLocal = false; }
+    else {
+      if (!continued) pagedFirstSighting = !serverHasLocal && !last;
+      else if (pagedFirstSighting) serverHasLocal = false;
+      if (last) pagedFirstSighting = false;
+    }
     const ctx = { server, approved, local, serverHasLocal };
     const keep = [], quarantined = [], seen = new Set(), fingerprints = [];
     for (const tool of tools) {
@@ -186,6 +192,7 @@ export function createDriftTracker({ server, dir = STATE_DIR }) {
       seen.add(cur.key);
       fingerprints.push(cur);
       const signals = judgeTool(cur, ctx);
+      if (tightenOnly && !signals.length) { keep.push(tool); continue; }
       remember(name, { cur, signals });
       if (signals.length) { quarantined.push({ name, signals }); continue; }
       keep.push(tool);

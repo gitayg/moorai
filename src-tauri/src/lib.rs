@@ -39,10 +39,46 @@ struct Term {
     // Unused on non-Windows targets, where isolation goes through the Seatbelt profile instead.
     #[allow(dead_code)]
     job: Mutex<Option<isize>>,
+    // Windows: whether the live (or last) session was launched through wxc-exec (MXC-contained). Such a
+    // session with no job to check is never taken as stopped (mxc_launch::prior_running).
+    #[allow(dead_code)]
+    contained: Mutex<bool>,
     // #3 — a killer for the live agent process so a "kill" verdict (from the guard's PreToolUse hook,
     // delivered out-of-band via the kill-session sentinel) can terminate the whole session, not just
     // deny one call. Replaced on each launch; taken when a kill fires so it can't double-kill.
     killer: Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>,
+    // true while the live session's PTY child has not exited (its wait thread clears it). Read before an
+    // MXC launch, which must not be planned while the previous session is still running.
+    live: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+}
+
+// The previous session, as an MXC launch sees it (mxc_launch::stop_prior_session).
+#[cfg(windows)]
+struct TermPrior<'a>(&'a Term);
+
+#[cfg(windows)]
+impl TermPrior<'_> {
+    fn state(&self) -> mxc_launch::PriorState {
+        mxc_launch::PriorState {
+            was_contained: *self.0.contained.lock().unwrap(),
+            job: self.0.job.lock().unwrap().map(winsec::job_active_processes),
+            child_live: self.0.live.lock().unwrap().as_ref().map(|l| l.load(std::sync::atomic::Ordering::SeqCst)).unwrap_or(false),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl mxc_launch::PriorSession for TermPrior<'_> {
+    fn running(&self) -> bool {
+        mxc_launch::prior_running(self.state())
+    }
+    fn unproven(&self) -> Option<String> {
+        mxc_launch::prior_unproven(self.state()).map(String::from)
+    }
+    fn stop(&mut self) {
+        if let Some(mut k) = self.0.killer.lock().unwrap().take() { let _ = k.kill(); }
+        if let Some(j) = *self.0.job.lock().unwrap() { winsec::terminate_job(j); }
+    }
 }
 
 #[tauri::command]
@@ -91,6 +127,15 @@ fn term_open(app: tauri::AppHandle, state: tauri::State<Term>, cols: u16, rows: 
     // so a fresh install doesn't `--continue` into nothing). Codex/Copilot start a fresh session.
     let mut agent_args: Vec<String> = vec![];
     if tool == "claude" && cfg.get("hadSession").and_then(|v| v.as_bool()).unwrap_or(false) { agent_args.push("--continue".into()); }
+    // The ensureDirs are checked in mxc_prepare and the agent can write to them, so the previous session
+    // (possibly a contained agent) is stopped, and seen to be gone, before anything is planned.
+    #[cfg(windows)]
+    if want_mxc {
+        if let Err(reason) = mxc_launch::stop_prior_session(&mut TermPrior(&state), 50, &|| std::thread::sleep(std::time::Duration::from_millis(100))) {
+            let _ = app.emit("term-data", format!("\x1b[31m[MoorAI] {tool} was not launched: {reason}.\x1b[0m\r\n"));
+            return Err(reason);
+        }
+    }
     #[cfg(windows)]
     let mxc_session = if want_mxc { mxc_prepare(&app, &mxc_settings, tool, &bin, &agent_args)? } else { None };
     #[cfg(not(windows))]
@@ -141,6 +186,16 @@ fn term_open(app: tauri::AppHandle, state: tauri::State<Term>, cols: u16, rows: 
         _ => {}
     }
 
+    // Re-check the ensureDirs immediately before wxc-exec starts (mxc_launch::recheck_dirs). A change
+    // since the plan refuses the launch; it is never downgraded to the Job Object.
+    #[cfg(windows)]
+    if let Some(s) = &mxc_session {
+        if let Err(reason) = mxc_launch::recheck_dirs(&mxc_launch::WinHost { wxc_override: None }, &s.plan) {
+            let _ = app.emit("term-data", format!("\x1b[31m[MoorAI] {tool} was not launched: {reason}.\x1b[0m\r\n"));
+            if !s.keep_run { let _ = std::fs::remove_dir_all(&s.run_dir); }
+            return Err(reason);
+        }
+    }
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     set_config_bool("hadSession", true);
     drop(pair.slave);
@@ -150,11 +205,14 @@ fn term_open(app: tauri::AppHandle, state: tauri::State<Term>, cols: u16, rows: 
     #[cfg(windows)]
     {
         if let Some(old) = state.job.lock().unwrap().take() { winsec::close_job(old); }
+        *state.contained.lock().unwrap() = mxc_session.is_some();
         if isolate {
             let job = if mxc_session.is_some() { winsec::create_mxc_job() } else { winsec::create_agent_job() };
             if let (Some(pid), Some(job)) = (child.process_id(), job) {
-                winsec::assign_process(job, pid);
-                *state.job.lock().unwrap() = Some(job);
+                // Kept only when the process is in it: an empty job would report a contained session gone.
+                if winsec::assign_process(job, pid) { *state.job.lock().unwrap() = Some(job); } else { winsec::close_job(job); }
+            } else if let Some(job) = job {
+                winsec::close_job(job);
             }
         }
     }
@@ -178,8 +236,11 @@ fn term_open(app: tauri::AppHandle, state: tauri::State<Term>, cols: u16, rows: 
     });
     // #3 — hold a killer for the new session so a "kill" verdict can terminate it out-of-band.
     *state.killer.lock().unwrap() = Some(child.clone_killer());
+    let live = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    *state.live.lock().unwrap() = Some(live.clone());
     std::thread::spawn(move || {
         let _ = child.wait();
+        live.store(false, std::sync::atomic::Ordering::SeqCst);
         // MXC writes its denial report only after the contained process exits (logging-access-denied.md).
         #[cfg(windows)]
         if let Some(s) = mxc_session {

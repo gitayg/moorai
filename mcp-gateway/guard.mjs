@@ -317,14 +317,16 @@ export function createGuard(route) {
 
   // One server→client message. Returns a replacement message object, or null to forward the original.
   // `paged`: the request asked for a later page, so an absent tool is not a removed one.
-  async function gateResult(msg, toolName, { paged = false } = {}) {
+  // `tightenOnly`: a listing that answers no outstanding tools/list (server.mjs): judged, and filtered,
+  // but it can only quarantine a tool, never clear one (tool-drift.mjs evaluateListing).
+  async function gateResult(msg, toolName, { paged = false, tightenOnly = false } = {}) {
     try {
       const r = msg && msg.result;
       if (r && typeof r === "object" && Array.isArray(r.tools)) {
         const tools = r.tools.filter((x) => x && typeof x === "object" && !Array.isArray(x) && typeof x.name === "string");
         if (!tools.length) return null;
         const last = r.nextCursor == null;
-        const shape = { complete: !paged && last, continued: paged, last };
+        const shape = { complete: !paged && last, continued: paged, last, tightenOnly };
         if (TOOLSCAN_THROW_FROM && ++listingsSeen >= TOOLSCAN_THROW_FROM) throw new Error("injected tool-scan fault (test hook)");
         // Alert mode (the default): a listing is never altered. Block mode: a quarantined tool is left
         // out of it; with nothing quarantined the original still goes.
