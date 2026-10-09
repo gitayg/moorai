@@ -73,6 +73,7 @@ import { reputationAction, reputationAlert, reputationSummary } from "../data/mc
 import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
 import { indexWriteScan } from "../cli/index-tools.mjs";
 import { recordMcpCall, flushMcpUsage, usageHost, usageIdentity } from "../cli/mcp-usage-beat.mjs";
+import { exitWhenDrained } from "../cli/exit-drain.mjs";
 
 // ---- argv parsing: [--server label] [--host id] -- realcmd args... ----
 function parseArgv(argv) {
@@ -285,7 +286,7 @@ child.on("error", (e) => {
   // The real server could not be spawned. Fail loudly to Claude Desktop's stderr (visible in its logs)
   // and exit — there is nothing to proxy. This is a startup/config error, not a gated tool-call.
   process.stderr.write(`moorai-mcp-guard: failed to spawn '${REAL_CMD}': ${e && e.message}\n`);
-  process.exit(1);
+  finish(1); // the start-up fetches are already in flight, so not process.exit() (see finish)
 });
 
 // ---- process lifecycle: the guard ends when its child does, and never leaves the child behind ----
@@ -297,13 +298,15 @@ child.on("error", (e) => {
 const GRACE_MS = 2000;
 let stopping = null;   // null, "eof", or the signal the guard itself received
 let exiting = false;
+const TIMERS = new Set(); // the stop sequence's timers, cleared at exit so they cannot hold the drained loop
+function later(fn, ms) { const t = setTimeout(() => { TIMERS.delete(t); fn(); }, ms); TIMERS.add(t); return t; }
 function escalate() {
-  setTimeout(() => {
+  later(() => {
     try { child.kill("SIGTERM"); } catch { /* gone */ }
-    setTimeout(() => {
+    later(() => {
       try { child.kill("SIGKILL"); } catch { /* gone */ }
       // A child that survives SIGKILL is not ours to wait for.
-      setTimeout(() => finish(stopping === "eof" ? 0 : 1), GRACE_MS);
+      later(() => finish(stopping === "eof" ? 0 : 1), GRACE_MS);
     }, GRACE_MS);
   }, GRACE_MS);
 }
@@ -318,13 +321,24 @@ for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(sig, () => stopChi
 
 // Exit only once every byte the child wrote has been through the result stage and handed to stdout:
 // 'close' (not 'exit') is when the child's stdout has ended, and outQueue is the one ordered write queue.
+//
+// Not process.exit() once stdout has drained: on Windows that aborts the process (0xC0000409) when it
+// comes soon after fetch() (the policy, reputation and usage posts) — see cli/exit-drain.mjs. The loop is
+// emptied instead: the stop sequence's timers are cleared and the client's stdin is let go, so the
+// process ends as soon as the last post has settled. The GRACE_MS hard exit stays for a client that
+// stopped reading our stdout, the one case the drain cannot finish.
 function finish(code) {
   if (exiting) return;
   exiting = true;
   flushPending();
-  const done = () => process.stdout.write("", () => process.exit(code));
+  later(() => process.exit(code), GRACE_MS); // a client that stopped reading cannot hold us
+  const done = () => process.stdout.write("", () => {
+    for (const t of TIMERS) clearTimeout(t);
+    TIMERS.clear();
+    try { process.stdin.destroy(); } catch { /* already closed */ }
+    exitWhenDrained(code);
+  });
   outQueue.then(done, done);
-  setTimeout(() => process.exit(code), GRACE_MS); // a client that stopped reading cannot hold us
 }
 function exitCodeOf(code, signal) {
   if (code != null) return code;
@@ -337,7 +351,7 @@ let childGone = null;
 child.on("exit", (code, signal) => {
   childGone = exitCodeOf(code, signal);
   // A grandchild holding the stdout pipe open would delay 'close' indefinitely; do not wait on it long.
-  setTimeout(() => finish(childGone), 500);
+  later(() => finish(childGone), 500);
 });
 child.on("close", (code, signal) => { finish(childGone != null ? childGone : exitCodeOf(code, signal)); });
 

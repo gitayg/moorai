@@ -20,9 +20,11 @@ import { collectViaCli, FatalCollectError } from "./bedrock/collect-cli.mjs";
 import { iamPolicy } from "./bedrock/commands.mjs";
 import { buildInventory, postBody } from "./inventory.mjs";
 import { postInventory } from "./post.mjs";
+import { exitWhenDrained } from "../cli/exit-drain.mjs";
 
 const USAGE = "usage: moorai-cloud-inventory bedrock (--from DIR | --run [--profile NAME] [--export DIR] | --policy) [--regions r1,r2] [--out FILE] [--post]";
-const die = (code, msg) => { process.stderr.write(`moorai-cloud-inventory: ${msg}\n`); process.exit(code); };
+const fail = (code, msg) => { process.stderr.write(`moorai-cloud-inventory: ${msg}\n`); return code; };
+const die = (code, msg) => process.exit(fail(code, msg));
 
 function parse(argv) {
   const o = { flags: new Set() };
@@ -82,13 +84,15 @@ async function main() {
   for (const e of errors) process.stderr.write(`  not read: ${e.region ?? "-"} ${e.command}: ${e.class}\n`);
 
   if (o.flags.has("--post")) {
-    try {
-      const r = await postInventory(postBody(inventory), { serverUrl: config.serverUrl, installToken: config.installToken });
-      if (r.status < 200 || r.status >= 300) die(1, `console refused the inventory (HTTP ${r.status})`);
-      process.stderr.write(`posted ${inventory.records.length} records to the console\n`);
-    } catch (e) { die(1, `could not reach the console (${e.name})`); }
+    // Past this fetch a failure returns its code rather than calling die(): process.exit() right after
+    // fetch() aborts the process on Windows (0xC0000409) — see cli/exit-drain.mjs.
+    let r;
+    try { r = await postInventory(postBody(inventory), { serverUrl: config.serverUrl, installToken: config.installToken }); }
+    catch (e) { return fail(1, `could not reach the console (${e.name})`); }
+    if (r.status < 200 || r.status >= 300) return fail(1, `console refused the inventory (HTTP ${r.status})`);
+    process.stderr.write(`posted ${inventory.records.length} records to the console\n`);
   }
   return 0;
 }
 
-main().then((c) => process.exit(c), (e) => die(1, e.message));
+main().then((c) => exitWhenDrained(c), (e) => exitWhenDrained(fail(1, e.message)));

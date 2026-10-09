@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { threatActionFor } from "./hook-core.mjs";
 import { readActions, readIntent, INTENT_PATH } from "./signals.mjs";
 import { loadConfig } from "./config.mjs";
+import { exitWhenDrained } from "./exit-drain.mjs";
 
 // Display only — signals.mjs owns the writer and does not export this path. readActions() is the
 // single reader; this constant exists so --help can name the file the user should expect.
@@ -195,5 +196,6 @@ if (isMain) {
   const res = backtestLocal(candidate, live, days);
   if (asJson) process.stdout.write(JSON.stringify({ policyFile, currentPolicyLoaded: !!live, ...res }, null, 2) + "\n");
   else process.stdout.write(toText(res, { policyFile, live: !!live }));
-  process.exit(res.summary.wouldBlock || res.summary.wouldCoach ? 1 : 0);
+  // Not process.exit(): on Windows that aborts the process (0xC0000409) after fetch() — see cli/exit-drain.mjs.
+  exitWhenDrained(res.summary.wouldBlock || res.summary.wouldCoach ? 1 : 0); // not awaited: a top-level await that never settles exits with code 13
 }

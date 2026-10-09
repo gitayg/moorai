@@ -46,6 +46,7 @@ import { isEnrolled } from "../data/enforcement.js";
 import { serverMode, serviceWho } from "./server-mode.mjs";
 import { actorHash } from "./content-hash.mjs";
 import { loadConfig } from "./config.mjs";
+import { exitWhenDrained } from "./exit-drain.mjs";
 
 export const USAGE_PATHS = ["hook", "proxy", "gateway"];
 export const USAGE_HOSTS = ["claude-code", "codex", "cursor", "gemini", "copilot", "claude-desktop", "vscode", "unknown"];
@@ -291,5 +292,5 @@ if (process.argv[1] === SELF && process.argv[2] === "flush") {
   try {
     await flushMcpUsage({ config: loadConfig(), identity: usageIdentity(), path: process.argv[3], host: process.argv[4], claimed: process.argv[5] === "claimed" });
   } catch { /* evidence, never enforcement */ }
-  process.exit(0);
+  exitWhenDrained(0); // not awaited: a top-level await that never settles exits with code 13
 }

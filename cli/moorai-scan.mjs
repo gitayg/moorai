@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import { VERDICT_RANK } from "./scan-core.mjs";
 import { scanPathWithPackages, scanPackageArg, packagesEnabled } from "./mcp-package.mjs";
 import { renderPackagesMarkdown } from "./mcp-package/report.mjs";
+import { exitWhenDrained } from "./exit-drain.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = (() => { try { return JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version; } catch { return "0"; } })();
@@ -128,7 +129,7 @@ async function main() {
   if (argv.includes("--package")) {
     const spec = argValue(argv, "--package");
     const entry = await scanPackageArg(spec, { cacheDir });
-    if (!entry) { process.stderr.write(`moorai-scan: bad --package '${spec}' (use npm:<name>[@version], pypi:<name>[==version] or github:<owner>/<repo>[/<path>][@ref])\n`); process.exit(64); }
+    if (!entry) { process.stderr.write(`moorai-scan: bad --package '${spec}' (use npm:<name>[@version], pypi:<name>[==version] or github:<owner>/<repo>[/<path>][@ref])\n`); return exitWhenDrained(64); }
     report = { mode: "package", verdict: entry.verdict, packages: [entry] };
     doc = { ...head, ...report };
     md = `# MoorAI — pre-install package scan\n\n` + renderPackagesMarkdown(report.packages) + `\n---\nGenerated on-device by MoorAI (v${VERSION}). ${entry.ecosystem === "github" ? "Only the repository owner/name and ref were sent, to codeload.github.com." : "Only the package name and version were sent, to the public registry."}\n`;
@@ -139,7 +140,7 @@ async function main() {
       report = await scanPathWithPackages(path, { policy: {}, packages: packagesEnabled(argv, process.env), cacheDir });
     } catch (e) {
       process.stderr.write(`moorai-scan: cannot scan '${path}': ${e && e.message ? e.message : e}\n`);
-      process.exit(66);
+      return exitWhenDrained(66);
     }
     doc = { ...head, ...report };
     md = toMarkdown(report);
@@ -148,7 +149,8 @@ async function main() {
   process.stdout.write(fmt === "md" ? md : JSON.stringify(doc, null, 2) + "\n");
 
   const fail = VERDICT_RANK[report.verdict] >= failRank;
-  process.exit(fail ? (report.verdict === "DO-NOT-INSTALL" ? 2 : 1) : 0);
+  // Not process.exit(): on Windows that aborts the process (0xC0000409) after fetch() — see cli/exit-drain.mjs.
+  return exitWhenDrained(fail ? (report.verdict === "DO-NOT-INSTALL" ? 2 : 1) : 0);
 }
 
 main();

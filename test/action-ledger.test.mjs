@@ -11,7 +11,7 @@
 //   node --test --import ./test/hermetic-env.mjs test/action-ledger.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import os from "node:os";
 import { join, dirname } from "node:path";
@@ -110,13 +110,15 @@ test("ledger: concurrent writers in several processes do not corrupt the file or
 
 // Preload for a child: SIGKILL the process half-way through the compaction's rewrite of the log, i.e.
 // after writing half of the rows to whichever file the rewrite goes to (the log itself, or a temp file
-// beside it). Appends (flag "a") and small writes are let through.
+// beside it). Appends (flag "a") and small writes are let through. It drops a marker file first, so the
+// test can tell the crash point was reached on Windows too, where SIGKILL is TerminateProcess with exit
+// code 1 and no signal is reported.
 const CRASH_PRELOAD = `
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 const { openSync, writeSync, writeFileSync } = fs;
 const target = (p) => typeof p === "string" && /action-audit\\.jsonl(\\.tmp-\\d+)?$/.test(p);
-const die = () => process.kill(process.pid, "SIGKILL");
+const die = () => { writeFileSync.call(fs, process.env.CRASH_MARK, "crashed"); process.kill(process.pid, "SIGKILL"); };
 const rewrites = new Set();
 fs.openSync = function (p, flags, ...rest) { const fd = openSync.call(fs, p, flags, ...rest); if (target(p) && flags === "w") rewrites.add(fd); return fd; };
 fs.writeSync = function (fd, buf, ...rest) {
@@ -138,8 +140,11 @@ test("ledger: a crash in the middle of a compaction leaves a log every reader ca
     writeFileSync(preload, CRASH_PRELOAD);
     writeFileSync(live, Array.from({ length: CAP }, (_, i) => seedLine(i)).join("\n") + "\n");
     // This write takes the ledger past the cap, so it compacts, and the preload kills it mid-rewrite.
-    const r = runChild(env, `s.recordAction(${JSON.stringify(row(CAP))});`, ["--import", pathToFileURL(preload).href]);
-    assert.equal(r.signal, "SIGKILL", `the crash point was not reached (status ${r.status}): ${r.stderr}`);
+    const mark = join(home, "crash-mark");
+    const r = runChild({ ...env, CRASH_MARK: mark }, `s.recordAction(${JSON.stringify(row(CAP))});`, ["--import", pathToFileURL(preload).href]);
+    assert.ok(existsSync(mark), `the crash point was not reached (status ${r.status}, signal ${r.signal}): ${r.stderr}`);
+    if (process.platform === "win32") assert.deepEqual([r.status, r.signal], [1, null], r.stderr);
+    else assert.equal(r.signal, "SIGKILL", `status ${r.status}: ${r.stderr}`);
     const lines = rawLines(live);
     assert.ok(allParse(lines), "the crash left a torn line in the log");
     const read = runChild(env, `process.stdout.write(JSON.stringify(s.readActions().map((x) => x.n)));`);
@@ -159,6 +164,99 @@ test("ledger: a crash in the middle of a compaction leaves a log every reader ca
     assert.equal(JSON.parse(after.at(-1)).n, CAP + 2);
     const left = readdirSync(join(home, ".moorai")).filter((n) => /\.tmp-|\.lock$/.test(n));
     assert.deepEqual(left, [], "the crash's temp file or lock was left behind");
+  } finally { rmTree(home); }
+});
+
+// A compaction reads the log, closes it and only then renames the compacted copy over it: Windows refuses
+// a rename over a file that is open, even by the compactor itself (EPERM, MEASURED on Node 24, so up to
+// v1.9.0 the log was never trimmed there). A row appended past the point the compactor read would be lost
+// with the old file, so its writer waits for the compaction to end and writes it again if the log was
+// replaced and the new log does not hold it. These tests play the compaction by hand around a real
+// writer: the lock file names the compactor (pid.start.random), and the rename replaces the log with
+// what the compactor read.
+const COMPACTED = (n) => Array.from({ length: n }, (_, i) => seedLine(i)).join("\n") + "\n";
+const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+async function untilTrue(fn, ms = 20000) {
+  const end = Date.now() + ms;
+  while (!fn()) { if (Date.now() > end) throw new Error("timed out"); await sleep(10); }
+}
+async function renameRetry(from, to) {
+  for (let i = 0; ; i++) {
+    try { return renameSync(from, to); } catch (e) { if (e.code !== "EPERM" || i > 200) throw e; await sleep(10); }
+  }
+}
+function lateWriter(env) {
+  const t0 = Date.now();
+  const c = spawn(process.execPath, ["--input-type=module", "-e", childSrc(`s.recordAction(${JSON.stringify(row(500, { late: true }))});`)], { env, stdio: ["ignore", "ignore", "pipe"] });
+  let stderr = "";
+  c.stderr.on("data", (d) => (stderr += d));
+  return new Promise((ok) => c.on("exit", (code) => ok({ code, ms: Date.now() - t0, stderr })));
+}
+const lates = (live) => rawLines(live).filter((l) => l.includes('"late":true')).length;
+// A compaction in flight, held by this (live) process, with ten rows read: the state a writer sees
+// between the compactor's read and its rename.
+function compactionInFlight(live, pid = process.pid) {
+  writeFileSync(live, COMPACTED(10));
+  writeFileSync(live + ".lock", `${pid}.${Date.now()}.test`);
+  return statSync(live).size; // what the compactor has read
+}
+// The compactor's rename. `upTo` is how much of the old log it read and carried over.
+async function finishCompaction(live, upTo) {
+  writeFileSync(live + ".tmp-test", readFileSync(live).subarray(0, upTo));
+  await renameRetry(live + ".tmp-test", live);
+  rmSync(live + ".lock");
+}
+
+test("ledger: a row appended past what a compaction read is written again once the compaction renames", async () => {
+  const { home, env, live } = freshHome();
+  try {
+    const read = compactionInFlight(live);
+    const done = lateWriter(env);
+    await untilTrue(() => lates(live) === 1); // the row is in the old log, past what the compactor read
+    await finishCompaction(live, read);
+    const r = await done;
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(lates(live), 1, "the row appended during the compaction was lost with the old log");
+    assert.ok(allParse(rawLines(live)));
+  } finally { rmTree(home); }
+});
+
+test("ledger: a row the compaction carried over is not written twice", async () => {
+  const { home, env, live } = freshHome();
+  try {
+    compactionInFlight(live);
+    const done = lateWriter(env);
+    await untilTrue(() => lates(live) === 1);
+    await finishCompaction(live, statSync(live).size); // this compactor read the row too
+    const r = await done;
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(lates(live), 1, "the row was written twice");
+  } finally { rmTree(home); }
+});
+
+test("ledger: when the compaction fails instead, the row stays where it landed, once", async () => {
+  const { home, env, live } = freshHome();
+  try {
+    compactionInFlight(live);
+    const done = lateWriter(env);
+    await untilTrue(() => lates(live) === 1);
+    rmSync(live + ".lock"); // the compactor gave up: no rename, no marker
+    const r = await done;
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(lates(live), 1, "the row was written twice");
+    assert.ok(allParse(rawLines(live)), "a failed compaction left a line that is not a row");
+  } finally { rmTree(home); }
+});
+
+test("ledger: a lock left by a compactor that died does not hold a writer", async () => {
+  const { home, env, live } = freshHome();
+  try {
+    const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
+    compactionInFlight(live, Number(dead.stdout));
+    const r = await lateWriter(env);
+    assert.equal(r.code, 0, r.stderr);
+    assert.ok(r.ms < 4000, `the writer waited ${r.ms} ms on the lock of a dead compactor`);
+    assert.equal(lates(live), 1);
   } finally { rmTree(home); }
 });
 
@@ -216,7 +314,8 @@ test("ledger: the cost of a write does not grow with the ledger (empty vs at the
   };
   // minMs is sized so one sample is several hundred writes: every sample of the large side then spans at
   // least one compaction (one per ~250 rows at this row size), so the best-of cannot pick around it.
-  const r = scalingRatio(write(small, true), write(large, false), 3, 1000);
+  // minReps holds that where a write costs more CPU: on a loaded Windows runner minMs alone left 63 reps.
+  const r = scalingRatio(write(small, true), write(large, false), 3, 1000, 500);
   t.diagnostic(`at-cap / empty write cost: ${r.ratio.toFixed(2)}x (${r.small.toFixed(3)} ms vs ${r.large.toFixed(3)} ms CPU, ${r.reps} reps)`);
   assert.ok(r.ratio < 1.5, `a write at the cap costs ${r.ratio.toFixed(2)}x a write to an empty ledger (${r.small.toFixed(3)} ms vs ${r.large.toFixed(3)} ms CPU, ${r.reps} reps)`);
   assert.ok(inodes.size > 3, `the large ledger compacted ${inodes.size - 1} times; the samples did not include the amortised compaction`);

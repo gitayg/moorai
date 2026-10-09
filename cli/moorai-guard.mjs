@@ -17,6 +17,7 @@ import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
 import { takeEscalationOutcomes } from "../data/model-escalation.mjs";
 import { atlasIds } from "../data/atlas.js";
 import { credAlternative } from "../data/cred-alternatives.js";
+import { exitWhenDrained } from "./exit-drain.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = loadConfig();
@@ -245,7 +246,7 @@ async function main() {
 
   if (!findings.length && !content.length) {
     console.error(`${C.green}✓ MoorAI: clean — forwarding to claude -p${C.off}\n`);
-    process.exit(await runClaude(prompt, policy, action));
+    return exitWhenDrained(await runClaude(prompt, policy, action));
   }
 
   if (findings.length) { printFindings(findings); await Promise.allSettled(findings.map((f) => reportTouchpoint(f))); }
@@ -265,7 +266,7 @@ async function main() {
     const verb = killFindings.length ? "killed" : "blocked";
     console.error(`${C.red}✗ ${verb} by ${parts.join(" + ")} — nothing sent to claude -p${C.off}`);
     if (killFindings.length) await reportSessionKill("prompt", killFindings);
-    process.exit(3);
+    return exitWhenDrained(3);
   }
 
   // Unenrolled: coach and send. The findings above already carry the why and the safer way; this line
@@ -277,7 +278,7 @@ async function main() {
     console.error(`${C.org}${coachMessage(`flagged ${ids.length} issue(s) in this prompt — ${ids.join(", ")}`, safer)}${C.off}\n`);
   }
   const choice = ENFORCE ? await decide(decideFlag) : "coach";
-  if (choice === "abort") { console.error(`${C.red}✗ aborted — nothing sent to claude -p${C.off}`); process.exit(1); }
+  if (choice === "abort") { console.error(`${C.red}✗ aborted — nothing sent to claude -p${C.off}`); return exitWhenDrained(1); }
 
   let final = prompt;
   if (choice === "redact") {
@@ -310,7 +311,8 @@ async function main() {
   const escalation = maybeEscalate(policy, final, allFindings);
   const code = await runClaude(final, policy, action);
   await escalation;
-  process.exit(code);
+  // Not process.exit(): on Windows that aborts the process (0xC0000409) after fetch() — see cli/exit-drain.mjs.
+  return exitWhenDrained(code);
 }
 
 main();

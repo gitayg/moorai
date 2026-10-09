@@ -23,6 +23,7 @@ import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
 import { loadConfig } from "./config.mjs";
 import { threatActionFor } from "./hook-core.mjs";
+import { exitWhenDrained } from "./exit-drain.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HELP = `moorai-redteam — run the adversarial corpus against YOUR active policy, on this machine.
@@ -104,4 +105,5 @@ const res = evaluate(policy);
 const s = summarize(res);
 if (fmt === "json") process.stdout.write(JSON.stringify({ tenant: CONFIG.tenant, policyLoaded: !!policy, summary: s, attacks: res.attacks }, null, 2) + "\n");
 else process.stdout.write(toText(res));
-process.exit(s.gaps ? 1 : 0);
+// Not process.exit(): on Windows that aborts the process (0xC0000409) after fetch() — see cli/exit-drain.mjs.
+exitWhenDrained(s.gaps ? 1 : 0); // not awaited: a top-level await that never settles exits with code 13

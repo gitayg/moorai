@@ -10,6 +10,7 @@
 //
 // Exit 0 when no check failed, 1 otherwise.
 import { runDoctor, formatHuman } from "./doctor-report.mjs";
+import { exitWhenDrained } from "./exit-drain.mjs";
 
 const HELP = `usage: moorai-doctor [--json] [--offline] [--no-selftest]
 
@@ -27,4 +28,5 @@ async function main() {
   return r.exitCode;
 }
 
-main().then((code) => process.exit(code), (e) => { console.error(`moorai-doctor: ${e && e.stack || e}`); process.exit(1); });
+// Not process.exit(): on Windows that aborts the process (0xC0000409) after fetch() — see cli/exit-drain.mjs.
+main().then((code) => exitWhenDrained(code), (e) => { console.error(`moorai-doctor: ${e && e.stack || e}`); exitWhenDrained(1); });

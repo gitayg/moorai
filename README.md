@@ -1261,6 +1261,26 @@ image. When the two passes disagree, one image can show two finding cards for th
 > validated end-to-end but **second-class**: accuracy on dense secret strings is below the macOS/Windows
 > OS engines, so treat it as opportunistic, not parity.
 
+### Windows: the JS agent
+
+- **Exit after a console call.** On Windows (Node 24), `process.exit()` right after `fetch()` aborted the
+  process with `0xC0000409` and the libuv assert `src\win\async.c, line 76`. Up to v1.9.0 that hit the
+  hook on every flagged call of an enrolled device, and the `claude -p` guard when it aborted an enrolled
+  prompt. The decision was already made, but the host saw a crash. The hook, the guard, the MCP proxy
+  (`moorai-mcp-guard`) and the CLIs that call the console (`moorai-agentwatch`, `moorai-redteam`,
+  `moorai-backtest`, `moorai-scan`, `moorai-doctor`, `moorai-cloud-inventory`) now set the exit code and
+  let the event loop drain ([`cli/exit-drain.mjs`](cli/exit-drain.mjs)). Leftover TCP sockets are destroyed,
+  and a one-second hard exit stays as a backstop for anything else left open. Exit codes are unchanged.
+- **Action-audit log compaction.** Windows refuses to rename a file over one that is still open. The
+  compaction of `~/.moorai/action-audit.jsonl` renamed over the log while it still had the log open, so
+  up to v1.9.0 the log was never trimmed on Windows and `MOORAI_RETENTION_DAYS` never applied there. The
+  compactor now closes the log before the rename, retries a refused rename, and gives up two seconds
+  after it started. A row appended while a compaction runs is still kept: its writer waits for the
+  compaction to finish, then writes the row again if the new log does not have it.
+- **CI.** [`windows-js.yml`](.github/workflows/windows-js.yml) runs the hook, MCP gateway, egress, exit
+  and ledger tests on `windows-latest` with Node 22 and 24. A file is added to that list only after it
+  has passed on a real Windows 11 machine.
+
 ## Using the engine as a library
 
 The scan engine is importable as a stable API from the `moorai/scan` entry point, so

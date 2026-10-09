@@ -935,6 +935,39 @@ Known gaps:
 
 The plan is in the MXC test plan (scratchpad `mxc/TEST-PLAN.md`).
 
+## Windows: JS agent exit and action-audit compaction
+
+**Status: fixed in v1.9.1 and tested on Windows 11 (Node 24.15.0).** Two Windows-only bugs:
+
+- **Process exit.** `process.exit()` soon after `fetch()` aborts a Windows process with `0xC0000409`
+  (`Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 76`). V8 compiles
+  fetch's WebAssembly HTTP parser on a background thread, and `process.exit()` closes the libuv handle
+  that job posts to. Measured: with two or more fetches before the exit it crashed 5 of 5 runs. A
+  short-lived process now calls `exitWhenDrained(code)` ([`cli/exit-drain.mjs`](../cli/exit-drain.mjs))
+  instead. It sets `process.exitCode`, destroys leftover TCP sockets and returns a promise that never
+  settles, so the caller runs nothing more. The process ends when its event loop is empty, with an unref'd
+  one-second `process.exit` as a backstop. Callers: `moorai-hook`, `mcp-usage-beat flush`,
+  `moorai-guard`, `moorai-mcp-guard` (after its stdout drains; it also clears its stop timers and releases
+  stdin), `moorai-agentwatch`, `moorai-redteam`, `moorai-backtest`, `moorai-scan`, `moorai-doctor` and
+  `moorai-cloud-inventory`. Exit codes are unchanged.
+- **Action-audit compaction** ([`cli/signals.mjs`](../cli/signals.mjs)). The compactor renamed its temp
+  file over `action-audit.jsonl` while it still had the log open. Windows refuses that rename (EPERM), so
+  the log was never trimmed on Windows and `MOORAI_RETENTION_DAYS` never applied there. The compactor now
+  closes the log before the rename. It retries a refused rename (EPERM, EACCES or EBUSY) until two
+  seconds after it took its lock, and after that it does not rename at all. The lock file names the
+  compactor (`<pid>.<start ms>.<random>`). A writer that finds a lock, or finds its file replaced, right
+  after its append closes its handle and waits for the compaction to end. It does not wait on a dead pid
+  or on a lock more than five seconds old. If the log was replaced and the new log does not hold the
+  writer's line, the writer writes the line again. Nothing is written into the log to mark a compaction,
+  so a compaction that fails leaves the log unchanged.
+
+`.github/workflows/windows-js.yml` runs the hook, gateway, egress, exit and ledger tests on
+`windows-latest`, one file at a time: with four at once, MCP gateway tests failed now and then on
+Windows (connection resets, and a gateway that exited `0xC0000409` before it listened), in v1.9.0 too.
+**Not proven:** Node 22 on Windows (only Node 24 was run on the test machine); that the other CLIs
+crashed before the fix (only the guard was seen to, as each makes a single fetch); and
+`moorai-scan --package` (no test drives its registry fetch).
+
 ## Sandbox egress policies from egressRules
 
 **Status: built and unit-tested (`test/sandbox-policy.test.mjs`, `cargo test` `mxc::egress`,

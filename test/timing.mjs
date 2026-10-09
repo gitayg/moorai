@@ -38,16 +38,36 @@ export function median(xs) {
 // CPU cost of `large` over CPU cost of `small` (cpuMsOf — both are in-process, CPU-bound calls): the best
 // of `samples` samples, each sample the mean of `reps` calls of each, the two alternating call by call (so
 // a memo keyed on the last input never hits, and a burst lands on both). `reps` is sized so one sample of
-// `small` lasts at least `minMs`.
+// `small` lasts at least `minMs`, and is at least `minReps` (for a test whose sample must span some event
+// that happens once every so many calls).
 //
 // WHY NOT A PLAIN BEST-OF-N OF SINGLE WALL-CLOCK CALLS: under heavy contention it is biased against the
 // larger input, because the longer call is the one more likely to contain a stretch spent waiting for a
 // core. MEASURED, 240 KB vs 60 KB clipboard scans whose idle ratio is 4.0x: single calls read 9.99x and
 // 15.87x; wall-clock samples of >= 5ms read up to 22.86x, and of >= 20ms up to 6.73x. CPU time does not
 // count the wait, and short samples are averaged over several calls.
-export function scalingRatio(small, large, samples = 3, minMs = 20) {
-  const est = Math.max(cpuMsOf(small), 0.001); cpuMsOf(large); // warm both; estimate the small side
-  const reps = Math.max(1, Math.ceil(minMs / est));
+//
+// On Windows, and wherever one call reads as zero CPU, the estimate is taken over a run of calls instead.
+// Windows counts process CPU time in clock ticks: MEASURED (Windows 11, Node 24), 1999 of 2000
+// sub-millisecond calls read 0 ms and the rest 15 ms. With the 0.001 ms floor, reps came out as
+// minMs / 0.001 and a timing test never ended; a call that straddled a tick read 15 ms and left too few
+// reps for the sample to mean anything. The run lasts until it has used 100 ms of CPU (several ticks), or
+// 2 s of wall clock if CPU time still reads zero.
+export function scalingRatio(small, large, samples = 3, minMs = 20, minReps = 1) {
+  let est = cpuMsOf(small); cpuMsOf(large); // warm both; estimate the small side
+  if (process.platform === "win32" || !(est > 0)) {
+    const c = process.cpuUsage(), t = process.hrtime.bigint();
+    let n = 0, cpu = 0, wall = 0;
+    while (cpu < 100 && wall < 2000) {
+      small(); n++;
+      const d = process.cpuUsage(c);
+      cpu = (d.user + d.system) / 1000;
+      wall = Number(process.hrtime.bigint() - t) / 1e6;
+    }
+    est = (cpu > 0 ? cpu : wall) / n;
+  }
+  est = Math.max(est, 0.001);
+  const reps = Math.max(minReps, Math.ceil(minMs / est));
   let a = Infinity, b = Infinity;
   for (let s = 0; s < samples; s++) {
     let ta = 0, tb = 0;

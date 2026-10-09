@@ -18,6 +18,7 @@ import { assessSession, TELL_DEFS } from "../data/agent-behavior.js";
 import { agentBaselineReport } from "../data/agent-baseline.js";
 import { readAgentEvents, AGENT_EVENTS_PATH } from "./signals.mjs";
 import { loadConfig } from "./config.mjs";
+import { exitWhenDrained } from "./exit-drain.mjs";
 
 const HELP = `moorai-agentwatch — is a local agent behaving like an autonomous attack?
 
@@ -133,4 +134,5 @@ if (emit && (res.level !== "clean" || detectionCount > 0)) {
   const ok = await emitAlert();
   if (fmt !== "json") process.stderr.write(ok ? "  → alert sent to server (→ SIEM/SOC + timeline)\n" : "  → emit failed (server unreachable; verdict stands locally)\n");
 }
-process.exit(res.level === "autonomous-signature" ? 2 : 0);
+// Not process.exit(): on Windows that aborts the process (0xC0000409) after fetch() — see cli/exit-drain.mjs.
+exitWhenDrained(res.level === "autonomous-signature" ? 2 : 0); // not awaited: a top-level await that never settles exits with code 13

@@ -43,6 +43,7 @@ import { takeEscalationOutcomes } from "../data/model-escalation.mjs";
 import { semanticEnabled } from "../data/semantic-escalation.js";
 import { contentHash, fileFingerprint, NO_KEY, actorHash } from "./content-hash.mjs";
 import { emitOtel } from "./otel.mjs";
+import { exitWhenDrained } from "./exit-drain.mjs";
 import { loadHoneytokens, checkHoneytokens } from "./moorai-honeytokens.mjs";
 // Reused, not reinvented: mcp-proxy/tool-scan.mjs already solved "bound an untrusted, arbitrarily
 // shaped tool result before scanning it" — a node/depth/byte-budgeted walk with the cap applied to the
@@ -613,7 +614,8 @@ async function flushAlerts() {
 async function exitHook() {
   settleRow(unevaluated(VERDICT.uneval || REASON.UNEVALUATED_EARLY_EXIT));
   await flushAlerts();
-  process.exit(0);
+  // Not process.exit(): on Windows that aborts the process (0xC0000409) after fetch() — see cli/exit-drain.mjs.
+  return exitWhenDrained(0);
 }
 let LEAK_COACH = null; // set by report() when an unenrolled device sees an instr-leak-* finding
 function report(findings, stage, tool, blocked, tier, extras, agency) {
@@ -984,7 +986,7 @@ async function runPostureBeatWorker(host, mode, cwd) {
     // On failure the pending mark stays, so the next try is BEAT_RETRY_MS away rather than one per tool call.
     if (r.ok) writeBeat(host, { day, bypass: (st.day === day && !!st.bypass) || mode === "bypassPermissions" });
   } catch { /* console unreachable: retried after BEAT_RETRY_MS */ }
-  process.exit(0);
+  return exitWhenDrained(0);
 }
 
 // The detached worker: `moorai-hook.mjs indexscan`. Reads the auto-loaded context surface itself

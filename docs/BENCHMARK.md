@@ -1,7 +1,7 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-09T03:14:42.665Z
+> Generated: 2026-10-09T16:32:08.705Z
 
 - **Detectors:** 107
 - **Threats:** 79

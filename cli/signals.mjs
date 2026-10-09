@@ -16,7 +16,7 @@
 //
 // Both fail open and silent: a logging error must never affect the enforcement decision.
 
-import { appendFileSync, closeSync, fstatSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, fstatSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { join, basename } from "node:path";
 import { isSecretCategory } from "./hook-core.mjs";
 import { STATE_DIR } from "./state-dirs.mjs";
@@ -51,28 +51,62 @@ function append(file, obj) {
     const buf = Buffer.from(JSON.stringify(line) + "\n");
     for (let tries = 0; tries < 3; tries++) {
       const fd = openSync(file, "a+");
+      let st, race;
       try {
         writeAll(fd, buf);
-        const st = fstatSync(fd);
-        if (!strandedAfterSeal(file, fd, st, buf)) return st;
+        st = fstatSync(fd);
+        race = raced(file, st);
       } finally { closeSync(fd); }
+      if (!race) return st;
+      // Closed first: on Windows a compaction cannot rename over a file this process still has open.
+      // The caller's compaction trigger gets the log as it is now, not the file a compaction replaced:
+      // that stale inode would read as "no marker for this file" and start another compaction at once.
+      if (!lostToCompaction(file, st.ino, buf, race)) { try { return statSync(file); } catch { return st; } }
     }
   } catch { /* never block enforcement on a log write */ }
   return null;
 }
 function writeAll(fd, buf) { let o = 0; while (o < buf.length) o += writeSync(fd, buf, o); }
-// A compaction (recordAction) renames a new log over the one this writer opened. A line that reached the
-// old file before the compactor SEALED it is carried over by the compactor; a line that landed after the
-// seal would be lost with the old file, so the writer writes it again. One stat per write when nothing
-// was replaced; the read of the old file happens only on the rare write that raced a compaction.
-const SEAL = Buffer.from("\n#sealed\n");
-function strandedAfterSeal(file, fd, st, buf) {
+// A compaction (recordAction) reads the log, writes what it keeps to a temp file and renames that over
+// the log. A line appended after the compactor's last read and before the rename would be lost with the
+// old file, so its writer writes it again.
+//
+// A writer checks, right after its append and with its handle still open: no compaction lock and the
+// same inode means no compaction can have read past its line without it (one that starts later reads it,
+// and on Windows the rename cannot happen while the handle is open). Otherwise it closes the handle,
+// waits for that compaction to end (bounded, and not on a compactor that is dead), and if the log was
+// replaced, writes the line again unless the new log already holds it (the compactor carried it over).
+// The line is unique (its chain stamp and timestamp), so the check cannot match another row. Nothing is
+// ever written into the log to mark a compaction, so one that fails leaves the log exactly as it was. The
+// common write costs one stat and one failed read of the lock file; the log is read only by a write that
+// raced a compaction.
+function lockOf(file) {
+  if (file !== ACTION_AUDIT) return null;
+  try { return { token: readFileSync(ACTION_LOCK, "utf8"), mtimeMs: statSync(ACTION_LOCK).mtimeMs }; } catch { return null; }
+}
+function raced(file, st) {
+  const lock = lockOf(file); // before the stat: a compaction that ends in between shows as a new inode
   let cur = null;
-  try { cur = statSync(file); } catch { /* deleted under us: nothing to rejoin */ }
-  if (!cur || cur.ino === st.ino) return false;
-  const old = readLines(fd, 0).buf;
-  const seal = old.indexOf(SEAL);
-  return seal >= 0 && old.indexOf(buf, seal) > seal;
+  try { cur = statSync(file); } catch { return null; } // deleted under us: nothing to rejoin
+  return !lock && cur.ino === st.ino ? null : { lock };
+}
+const nap = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function alive(pid) {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
+}
+function lostToCompaction(file, ino, buf, { lock }) {
+  if (lock) {
+    const pid = Number(String(lock.token).split(".")[0]);
+    while (Date.now() - lock.mtimeMs < COMPACT_WAIT_MS && (!pid || alive(pid))) {
+      const now = lockOf(file);
+      if (!now || now.token !== lock.token) break;
+      nap(5);
+    }
+  }
+  try {
+    if (statSync(file).ino === ino) return false; // not replaced: the line is where it landed
+    return !readFileSync(file).includes(buf);
+  } catch { return false; } // deleted under us: nothing to rejoin
 }
 // An unparseable line (torn by a crash, or edited) drops only itself. It used to make the whole file
 // read as empty, and pruneByAge then wrote that empty result over the log.
@@ -142,12 +176,14 @@ export function readAgentEvents() { return readJsonl(AGENT_EVENTS); }
 // at any point leaves the old log or the new one, never a torn one. (The old writeFileSync truncated the
 // log in place, so a crash mid-write left half a file, which readJsonl then read as EMPTY.) One
 // compactor at a time across processes, via an O_EXCL lock file that is taken over after 30 s (a
-// compactor that died holding it). Rows other processes append while a compaction runs are not lost:
-// those that reach the old file before the rename are re-read just before it; a writer that opened the
-// old file and writes after the rename either lands before the compactor's seal (carried over by the
-// compactor) or after it (the writer sees the seal and writes its line again). Such a straggler can land
-// after rows written later. The old code lost rows outright: every write read the log and then truncated
-// and rewrote it over whatever other processes had appended in between.
+// compactor that died holding it). The compactor closes the old log before the rename: Windows refuses
+// a rename over a file that is open, even by the process renaming (EPERM, MEASURED on Node 24), so up to
+// v1.9.0 the log was never trimmed there and MOORAI_RETENTION_DAYS never applied. Rows other processes
+// append while a compaction runs are not lost: those the compactor read are carried over, and the writer
+// of a row that landed past that point writes it again once the rename is done (raced /
+// lostToCompaction). Such a straggler can land after rows written later. The old code lost rows outright:
+// every write read the log and then truncated and rewrote it over whatever other processes had appended
+// in between.
 //
 // READERS: between compactions the file holds up to ~25 % more than ACTION_CAP rows. readActions() and
 // cli/moorai-trace.mjs (the only readers of this file's rows) keep the newest ACTION_CAP, so they return
@@ -158,6 +194,8 @@ const ACTION_LOCK = ACTION_AUDIT + ".lock";
 const ACTION_TMP = ACTION_AUDIT + ".tmp-";
 const COMPACT_SLACK_MIN = 64 * 1024;
 const LOCK_STALE_MS = 30000;
+const COMPACT_DEADLINE_MS = 2000; // the compactor does not rename later than this after taking the lock
+const COMPACT_WAIT_MS = 5000;     // a writer waits on a compaction lock at most this old
 
 export function recordAction(entry) {
   const st = append(ACTION_AUDIT, entry);
@@ -189,24 +227,43 @@ function readLines(fd, from) {
   return { buf: buf.subarray(0, last + 1), end: from + last + 1 };
 }
 
-function takeLock() {
-  try { closeSync(openSync(ACTION_LOCK, "wx")); return true; } catch (e) { if (e.code !== "EEXIST") return false; }
+// The lock file holds this compaction's token: "<pid>.<start ms>.<random>". A writer that sees it waits
+// for the compaction to end (see lostToCompaction), but never on a dead pid and never past
+// COMPACT_WAIT_MS of lock age; the compactor gives up rather than rename after COMPACT_DEADLINE_MS, so a
+// writer that stopped waiting can no longer lose its line to a late rename.
+function takeLock(token) {
+  try { writeFileSync(ACTION_LOCK, token, { flag: "wx" }); return true; } catch (e) { if (e.code !== "EEXIST") return false; }
   try {
     if (Date.now() - statSync(ACTION_LOCK).mtimeMs < LOCK_STALE_MS) return false;
     unlinkSync(ACTION_LOCK);
-    closeSync(openSync(ACTION_LOCK, "wx"));
+    writeFileSync(ACTION_LOCK, token, { flag: "wx" });
     return true;
   } catch { return false; }
 }
 
+// Windows refuses a rename over a file any process has open (EPERM; MEASURED, Node 24). The compactor has
+// closed its own handle by now; a writer or reader holds one for well under a millisecond, so retry, up
+// to the deadline.
+function renameOver(from, to, deadline) {
+  for (;;) {
+    if (Date.now() > deadline) throw new Error("compaction deadline passed before the rename");
+    try { renameSync(from, to); return; } catch (e) {
+      if (!["EPERM", "EACCES", "EBUSY"].includes(e.code)) throw e;
+    }
+    nap(5);
+  }
+}
+
 function compactActions(st) {
-  if (!takeLock()) return;
+  const t0 = Date.now();
+  const token = `${process.pid}.${t0}.${Math.random().toString(36).slice(2, 10)}`;
+  if (!takeLock(token)) return;
   const tmp = ACTION_TMP + process.pid;
   let src = -1, out = -1;
   try {
     // A compactor that crashed left its temp file; it may hold rows past retention.
     for (const n of readdirSync(DIR)) { const p = join(DIR, n); if (p.startsWith(ACTION_TMP) && p !== tmp) try { unlinkSync(p); } catch { /* gone */ } }
-    src = openSync(ACTION_AUDIT, "a+");
+    src = openSync(ACTION_AUDIT, "r");
     const head = readLines(src, 0);
     const cut = RETENTION_DAYS > 0 ? Date.now() - RETENTION_DAYS * 86400000 : -Infinity;
     let kept = [];
@@ -226,17 +283,14 @@ function compactActions(st) {
     writeAll(out, late.buf);
     const ino = fstatSync(out).ino;
     closeSync(out); out = -1;
-    renameSync(tmp, ACTION_AUDIT);
-    // Seal the old file, then carry over every line that reached it before the seal. A writer that
-    // lands after the seal sees it and writes its line again (strandedAfterSeal).
-    writeAll(src, SEAL);
-    const rest = readLines(src, late.end).buf;
-    const at = rest.indexOf(SEAL);
-    if (at > 0) appendFileSync(ACTION_AUDIT, rest.subarray(0, rest.lastIndexOf(10, at - 1) + 1));
+    // Closed before the rename: Windows refuses to rename over a file that is still open, even by us.
+    // A line that lands in the old file from here on is not carried over; its writer writes it again.
+    closeSync(src); src = -1;
+    renameOver(tmp, ACTION_AUDIT, t0 + COMPACT_DEADLINE_MS);
     writeMeta({ bytes: statSync(ACTION_AUDIT).size, ino, oldest });
   } catch {
-    // Retry only after more growth, so a compaction that keeps failing (say a Windows rename refused
-    // while another process holds the log open) cannot turn every write back into a full read.
+    // Retry only after more growth, so a compaction that keeps failing (say a Windows rename still
+    // refused at the deadline) cannot turn every write back into a full read.
     writeMeta({ bytes: st.size, ino: st.ino, oldest: null });
   } finally {
     if (out >= 0) try { closeSync(out); } catch { /* closed */ }

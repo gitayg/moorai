@@ -1,0 +1,62 @@
+name: windows-js
+
+# The JS agent's own tests on a real windows-latest runner. ci.yml runs the whole suite on Ubuntu only,
+# and two v1.9.0 bugs were Windows-only: process.exit() right after fetch() aborted the hook and the
+# claude -p guard with 0xC0000409 (a libuv assert, src\win\async.c:76; see cli/exit-drain.mjs), and the
+# action-audit compaction renamed over a file it still had open, which Windows refuses (EPERM), so the
+# log was never trimmed there. Every file listed here was run and passed on Windows 11 with Node 24
+# before it was added; a file is added only after that, not because it passes on macOS.
+#
+# No `npm ci`: none of these files imports a dependency (MEASURED: they pass on a checkout with no
+# node_modules). core.autocrlf is off so fixtures compared byte for byte keep their LF line endings.
+#
+# One file at a time. MEASURED on the Windows 11 box (Node 24): with --test-concurrency=4, 7 of 8 runs of
+# this list (v1.9.0 and v1.9.1 alike) failed 1-3 tests that pass alone, MCP gateway tests and once the
+# Agent SDK egress-rules test: "fetch failed" (ECONNRESET, "bad port") and a gateway that exited
+# 0xC0000409 before it listened. With --test-concurrency=1 it passed twice, 328 of 328 (2 skipped,
+# 1 todo), in 206 s each.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  hook-gateway-egress:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "${{ matrix.node }}"
+
+      # TEMP/TMP outside the user profile: test/home-guard.mjs treats the profile as the real home and
+      # fails a file that writes under it, and the default %TEMP% is inside the profile.
+      - name: Hook, gateway, egress, exit and ledger tests
+        shell: bash
+        env:
+          TEMP: "${{ runner.temp }}"
+          TMP: "${{ runner.temp }}"
+        run: >
+          node --test --test-concurrency=1 --import ./test/hermetic-env.mjs
+          test/action-ledger.test.mjs test/agent-hook-cursor.test.mjs test/agent-hook-gemini.test.mjs
+          test/cli-exit-drain.test.mjs test/egress-proxy-address.test.mjs test/egress-proxy-harden.test.mjs
+          test/egress-proxy-limits.test.mjs test/egress-proxy.test.mjs test/egress-rules-hook.test.mjs
+          test/egress-rules.test.mjs test/hook-escalation.test.mjs test/hook-exit-drain.test.mjs
+          test/hook-gaps-cursor-shell.test.mjs test/hook-gaps-env-path.test.mjs test/hook-gaps-named-secret.test.mjs
+          test/hook-lineage.test.mjs test/hook-subagent-lineage.test.mjs test/hook-tool-coverage.test.mjs
+          test/instruction-leak-hook.test.mjs test/mcp-gateway-credentials.test.mjs test/mcp-gateway-hardening.test.mjs
+          test/mcp-gateway-profile.test.mjs test/mcp-gateway-review.test.mjs test/mcp-gateway-review2.test.mjs
+          test/mcp-gateway-sse.test.mjs test/mcp-gateway-usage.test.mjs test/mcp-gateway-validate.test.mjs
+          test/mcp-gateway.test.mjs test/mcp-reputation-hook.test.mjs test/mcp-tool-drift-gateway-unscanned.test.mjs
+          test/mcp-tool-drift-gateway.test.mjs test/mcp-usage-hook.test.mjs test/powershell-hook.test.mjs
+          test/server-mode-hook.test.mjs test/workload-profile-hook.test.mjs
