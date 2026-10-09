@@ -1,6 +1,6 @@
 {
   "name": "MoorAI Agent Security Benchmark",
-  "generatedAt": "2026-10-09T01:22:17.230Z",
+  "generatedAt": "2026-10-09T03:14:42.665Z",
   "engine": {
     "detectors": 107,
     "threats": 79,
@@ -54,6 +54,146 @@
       "LLM10": {
         "threats": 2,
         "detectors": 1
+      }
+    }
+  },
+  "owaspAgenticTop10": {
+    "edition": "2026",
+    "source": "https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/",
+    "covered": 1,
+    "partial": 6,
+    "uncovered": 3,
+    "total": 10,
+    "byItem": {
+      "ASI01": {
+        "threats": 9,
+        "partialThreats": 7,
+        "detectors": 27,
+        "status": "covered"
+      },
+      "ASI02": {
+        "threats": 9,
+        "partialThreats": 9,
+        "detectors": 7,
+        "status": "partial"
+      },
+      "ASI03": {
+        "threats": 4,
+        "partialThreats": 4,
+        "detectors": 4,
+        "status": "partial"
+      },
+      "ASI04": {
+        "threats": 3,
+        "partialThreats": 3,
+        "detectors": 10,
+        "status": "partial"
+      },
+      "ASI05": {
+        "threats": 5,
+        "partialThreats": 5,
+        "detectors": 13,
+        "status": "partial"
+      },
+      "ASI06": {
+        "threats": 4,
+        "partialThreats": 4,
+        "detectors": 4,
+        "status": "partial"
+      },
+      "ASI07": {
+        "threats": 1,
+        "partialThreats": 1,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "ASI08": {
+        "threats": 0,
+        "partialThreats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "ASI09": {
+        "threats": 1,
+        "partialThreats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "ASI10": {
+        "threats": 1,
+        "partialThreats": 1,
+        "detectors": 0,
+        "status": "uncovered"
+      }
+    }
+  },
+  "owaspMcpTop10": {
+    "edition": "2025, beta",
+    "source": "https://github.com/OWASP/www-project-mcp-top-10",
+    "covered": 1,
+    "partial": 5,
+    "uncovered": 4,
+    "total": 10,
+    "byItem": {
+      "MCP01": {
+        "threats": 3,
+        "partialThreats": 3,
+        "detectors": 23,
+        "status": "partial"
+      },
+      "MCP02": {
+        "threats": 3,
+        "partialThreats": 3,
+        "detectors": 2,
+        "status": "partial"
+      },
+      "MCP03": {
+        "threats": 2,
+        "partialThreats": 2,
+        "detectors": 10,
+        "status": "partial"
+      },
+      "MCP04": {
+        "threats": 0,
+        "partialThreats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "MCP05": {
+        "threats": 2,
+        "partialThreats": 2,
+        "detectors": 3,
+        "status": "partial"
+      },
+      "MCP06": {
+        "threats": 8,
+        "partialThreats": 6,
+        "detectors": 18,
+        "status": "covered"
+      },
+      "MCP07": {
+        "threats": 0,
+        "partialThreats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "MCP08": {
+        "threats": 1,
+        "partialThreats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "MCP09": {
+        "threats": 1,
+        "partialThreats": 1,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "MCP10": {
+        "threats": 0,
+        "partialThreats": 0,
+        "detectors": 0,
+        "status": "uncovered"
       }
     }
   }

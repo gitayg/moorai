@@ -16,7 +16,11 @@
     },
     "schema": {
       "atlas": "string | string[] — every MITRE ATLAS (v2026.09) technique the rule genuinely implements. A technique is credited only when the rule describes a distinct implemented mechanism that addresses that technique definition; never for a restatement, superset, subset, or downstream consequence of an id already credited on the same rule. Read it through data/atlas.js atlasIds() — never `t.atlas === id` and never a bare interpolation.",
-      "atlasPartial": "optional { techniqueId: limit } — a credit that is bounded. The technique is implemented, but only over part of what its ATLAS definition covers, and the short limit phrase is the one the public comparison page prints. Every key must also appear in `atlas`."
+      "atlasPartial": "optional { techniqueId: limit } — a credit that is bounded. The technique is implemented, but only over part of what its ATLAS definition covers, and the short limit phrase is the one the public comparison page prints. Every key must also appear in `atlas`.",
+      "owaspAgentic": "string[] — every OWASP Top 10 for Agentic Applications (2026) risk, ASI01–ASI10, the rule's own mechanism addresses. Always an array; [] is a reviewed \"no credit\". Ids and titles: data/owasp-frameworks.js.",
+      "owaspAgenticPartial": "optional { ASIxx: limit } — a bounded credit, as atlasPartial: the risk is addressed only over part of what the OWASP entry covers. Every key must also appear in owaspAgentic.",
+      "owaspMcp": "string[] — every OWASP MCP Top 10 (2025, beta) risk, MCP01–MCP10, the rule's own mechanism addresses. Always an array; [] is a reviewed \"no credit\". Ids and titles: data/owasp-frameworks.js.",
+      "owaspMcpPartial": "optional { MCPxx: limit } — a bounded credit, as atlasPartial. Every key must also appear in owaspMcp."
     }
   },
   "sources": {
@@ -66,6 +70,8 @@
       ],
       "owasp": "LLM02",
       "atlas": "AML.T0057",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -88,6 +94,13 @@
         "AML.T0051",
         "AML.T0054"
       ],
+      "owaspAgentic": [
+        "ASI01"
+      ],
+      "owaspAgenticPartial": {
+        "ASI01": "jailbreak and override phrasing typed into the prompt only"
+      },
+      "owaspMcp": [],
       "stride": "Tampering"
     },
     {
@@ -115,6 +128,12 @@
       "atlasPartial": {
         "AML.T0068": "separator/typo-perturbed phrasings only"
       },
+      "owaspAgentic": [
+        "ASI01"
+      ],
+      "owaspMcp": [
+        "MCP06"
+      ],
       "stride": "Tampering"
     },
     {
@@ -134,6 +153,8 @@
       ],
       "owasp": "LLM03",
       "atlas": "AML.T0053",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Elevation of Privilege"
     },
     {
@@ -153,6 +174,8 @@
       ],
       "owasp": "LLM06",
       "atlas": "AML.T0053",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Elevation of Privilege"
     },
     {
@@ -171,6 +194,8 @@
       ],
       "owasp": "LLM06",
       "atlas": "AML.T0053",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -190,6 +215,8 @@
       ],
       "owasp": "LLM03",
       "atlas": "AML.T0010",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -208,6 +235,8 @@
       ],
       "owasp": "LLM09",
       "atlas": "AML.T0048",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Repudiation"
     },
     {
@@ -227,6 +256,8 @@
       ],
       "owasp": "LLM02",
       "atlas": "AML.T0057",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -246,6 +277,8 @@
       ],
       "owasp": "LLM09",
       "atlas": "AML.T0048",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Spoofing"
     },
     {
@@ -265,6 +298,8 @@
       ],
       "owasp": "LLM09",
       "atlas": "AML.T0048",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Spoofing"
     },
     {
@@ -284,6 +319,8 @@
       ],
       "owasp": "LLM09",
       "atlas": "AML.T0048",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Spoofing"
     },
     {
@@ -303,6 +340,8 @@
       ],
       "owasp": "LLM09",
       "atlas": "AML.T0048",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Spoofing"
     },
     {
@@ -322,6 +361,8 @@
       ],
       "owasp": "LLM06",
       "atlas": "AML.T0053",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Elevation of Privilege"
     },
     {
@@ -341,6 +382,8 @@
       ],
       "owasp": "LLM02",
       "atlas": "AML.T0057",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -359,6 +402,8 @@
       ],
       "owasp": "LLM09",
       "atlas": "AML.T0048",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Repudiation"
     },
     {
@@ -377,6 +422,8 @@
       ],
       "owasp": "LLM05",
       "atlas": "AML.T0011",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Tampering"
     },
     {
@@ -396,6 +443,8 @@
       ],
       "owasp": "LLM02",
       "atlas": "AML.T0057",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -415,6 +464,8 @@
       ],
       "owasp": "LLM02",
       "atlas": "AML.T0057",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -434,6 +485,8 @@
       ],
       "owasp": "LLM02",
       "atlas": "AML.T0057",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -453,6 +506,13 @@
       ],
       "owasp": "LLM08",
       "atlas": "AML.T0020",
+      "owaspAgentic": [
+        "ASI06"
+      ],
+      "owaspAgenticPartial": {
+        "ASI06": "content scanned before it is embedded; the store is not read at retrieval"
+      },
+      "owaspMcp": [],
       "stride": "Tampering"
     },
     {
@@ -475,6 +535,13 @@
       "atlasPartial": {
         "AML.T0080": "instructions an agent writes into its own memory and instruction files, through its file tools or a shell redirect; memory held on a provider's servers is not read"
       },
+      "owaspAgentic": [
+        "ASI06"
+      ],
+      "owaspAgenticPartial": {
+        "ASI06": "instructions an agent writes into its own memory and instruction files"
+      },
+      "owaspMcp": [],
       "stride": "Tampering"
     },
     {
@@ -494,6 +561,8 @@
       ],
       "owasp": "LLM06",
       "atlas": "AML.T0053",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Elevation of Privilege"
     },
     {
@@ -512,6 +581,8 @@
       ],
       "owasp": "LLM06",
       "atlas": "AML.T0053",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Elevation of Privilege"
     },
     {
@@ -534,6 +605,18 @@
       "atlasPartial": {
         "AML.T0110": "approved-connector allow-list only"
       },
+      "owaspAgentic": [
+        "ASI04"
+      ],
+      "owaspAgenticPartial": {
+        "ASI04": "approved-connector allow-list only"
+      },
+      "owaspMcp": [
+        "MCP09"
+      ],
+      "owaspMcpPartial": {
+        "MCP09": "calls to servers off the approved allow-list; no discovery of deployed servers"
+      },
       "stride": "Elevation of Privilege"
     },
     {
@@ -553,6 +636,8 @@
       ],
       "owasp": "LLM06",
       "atlas": "AML.T0012",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Spoofing"
     },
     {
@@ -572,6 +657,8 @@
       ],
       "owasp": "LLM02",
       "atlas": "AML.T0057",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -591,6 +678,8 @@
       ],
       "owasp": "LLM03",
       "atlas": "AML.T0053",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -609,6 +698,8 @@
       ],
       "owasp": "LLM09",
       "atlas": "AML.T0048",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Repudiation"
     },
     {
@@ -628,6 +719,8 @@
       ],
       "owasp": "LLM09",
       "atlas": "AML.T0048",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Spoofing"
     },
     {
@@ -647,6 +740,8 @@
       ],
       "owasp": "LLM09",
       "atlas": "AML.T0048",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Spoofing"
     },
     {
@@ -666,6 +761,8 @@
       ],
       "owasp": "LLM05",
       "atlas": "AML.T0011",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Elevation of Privilege"
     },
     {
@@ -685,6 +782,8 @@
       ],
       "owasp": "LLM02",
       "atlas": "AML.T0057",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -703,6 +802,8 @@
       ],
       "owasp": "LLM09",
       "atlas": "AML.T0048",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Repudiation"
     },
     {
@@ -721,6 +822,8 @@
       ],
       "owasp": "LLM09",
       "atlas": "AML.T0048",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Repudiation"
     },
     {
@@ -739,6 +842,8 @@
       ],
       "owasp": "LLM02",
       "atlas": "AML.T0057",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -758,6 +863,8 @@
       ],
       "owasp": "LLM02",
       "atlas": "AML.T0057",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -777,6 +884,13 @@
       ],
       "owasp": "LLM10",
       "atlas": "AML.T0034",
+      "owaspAgentic": [
+        "ASI02"
+      ],
+      "owaspAgenticPartial": {
+        "ASI02": "runaway loops, call rate and session call budget only"
+      },
+      "owaspMcp": [],
       "stride": "Denial of Service"
     },
     {
@@ -796,6 +910,13 @@
       ],
       "owasp": "LLM02",
       "atlas": "AML.T0057",
+      "owaspAgentic": [],
+      "owaspMcp": [
+        "MCP01"
+      ],
+      "owaspMcpPartial": {
+        "MCP01": "secret values in prompts and output; token lifetime and storage are not assessed"
+      },
       "stride": "Information Disclosure"
     },
     {
@@ -821,6 +942,12 @@
       "atlasPartial": {
         "AML.T0099": "detected on read, not at rest in the data source"
       },
+      "owaspAgentic": [
+        "ASI01"
+      ],
+      "owaspMcp": [
+        "MCP06"
+      ],
       "stride": "Tampering"
     },
     {
@@ -839,6 +966,8 @@
       ],
       "owasp": "LLM09",
       "atlas": "AML.T0048",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Repudiation"
     },
     {
@@ -857,6 +986,8 @@
       ],
       "owasp": "LLM09",
       "atlas": "AML.T0048",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Repudiation"
     },
     {
@@ -875,6 +1006,13 @@
       ],
       "owasp": "LLM05",
       "atlas": "AML.T0101",
+      "owaspAgentic": [
+        "ASI02"
+      ],
+      "owaspAgenticPartial": {
+        "ASI02": "irreversible shell commands only"
+      },
+      "owaspMcp": [],
       "stride": "Elevation of Privilege"
     },
     {
@@ -894,6 +1032,8 @@
       ],
       "owasp": "LLM02",
       "atlas": "AML.T0057",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -912,6 +1052,8 @@
       ],
       "owasp": "LLM05",
       "atlas": "AML.T0048",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Repudiation"
     },
     {
@@ -930,6 +1072,18 @@
       ],
       "owasp": "LLM06",
       "atlas": "AML.T0048",
+      "owaspAgentic": [
+        "ASI03"
+      ],
+      "owaspAgenticPartial": {
+        "ASI03": "IAM, sudo and security-setting changes, gated on human approval"
+      },
+      "owaspMcp": [
+        "MCP02"
+      ],
+      "owaspMcpPartial": {
+        "MCP02": "IAM, sudo and security-setting changes, gated on human approval"
+      },
       "stride": "Elevation of Privilege"
     },
     {
@@ -954,6 +1108,13 @@
       "atlasPartial": {
         "AML.T0086": "send-message tool families only"
       },
+      "owaspAgentic": [
+        "ASI02"
+      ],
+      "owaspAgenticPartial": {
+        "ASI02": "send-message tool families, gated on human approval"
+      },
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -972,6 +1133,18 @@
       ],
       "owasp": "LLM06",
       "atlas": "AML.T0048",
+      "owaspAgentic": [
+        "ASI03"
+      ],
+      "owaspAgenticPartial": {
+        "ASI03": "identity and credential creation, gated on human approval"
+      },
+      "owaspMcp": [
+        "MCP02"
+      ],
+      "owaspMcpPartial": {
+        "MCP02": "identity and credential creation, gated on human approval"
+      },
       "stride": "Elevation of Privilege"
     },
     {
@@ -990,6 +1163,13 @@
       ],
       "owasp": "LLM06",
       "atlas": "AML.T0048",
+      "owaspAgentic": [
+        "ASI02"
+      ],
+      "owaspAgenticPartial": {
+        "ASI02": "production deploy commands, gated on human approval"
+      },
+      "owaspMcp": [],
       "stride": "Tampering"
     },
     {
@@ -1011,6 +1191,22 @@
       "atlasPartial": {
         "AML.T0068": "text/markup only"
       },
+      "owaspAgentic": [
+        "ASI01",
+        "ASI04"
+      ],
+      "owaspAgenticPartial": {
+        "ASI01": "hidden-text channel only",
+        "ASI04": "hidden characters in MCP tool metadata only"
+      },
+      "owaspMcp": [
+        "MCP03",
+        "MCP06"
+      ],
+      "owaspMcpPartial": {
+        "MCP03": "hidden characters in MCP tool metadata only",
+        "MCP06": "hidden-text channel only"
+      },
       "stride": "Tampering"
     },
     {
@@ -1029,6 +1225,8 @@
       ],
       "owasp": "LLM07",
       "atlas": "AML.T0056",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -1047,6 +1245,8 @@
       ],
       "owasp": "LLM07",
       "atlas": "AML.T0056",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -1065,6 +1265,8 @@
       ],
       "owasp": "LLM10",
       "atlas": "AML.T0034",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Denial of Service"
     },
     {
@@ -1086,6 +1288,18 @@
       "atlas": "AML.T0112",
       "atlasPartial": {
         "AML.T0112": "reverse-shell / remote-exec payloads only"
+      },
+      "owaspAgentic": [
+        "ASI05"
+      ],
+      "owaspAgenticPartial": {
+        "ASI05": "reverse-shell / remote-exec payloads only"
+      },
+      "owaspMcp": [
+        "MCP05"
+      ],
+      "owaspMcpPartial": {
+        "MCP05": "reverse-shell / remote-exec payloads only"
       },
       "stride": "Elevation of Privilege"
     },
@@ -1109,6 +1323,18 @@
       "atlasPartial": {
         "AML.T0098": "local credential files and keychain only"
       },
+      "owaspAgentic": [
+        "ASI03"
+      ],
+      "owaspAgenticPartial": {
+        "ASI03": "local credential files and keychain only"
+      },
+      "owaspMcp": [
+        "MCP01"
+      ],
+      "owaspMcpPartial": {
+        "MCP01": "local credential files and keychain only"
+      },
       "stride": "Information Disclosure"
     },
     {
@@ -1128,6 +1354,13 @@
       ],
       "owasp": "LLM06",
       "atlas": "AML.T0101",
+      "owaspAgentic": [
+        "ASI02"
+      ],
+      "owaspAgenticPartial": {
+        "ASI02": "irreversible tool and MCP operations only"
+      },
+      "owaspMcp": [],
       "stride": "Tampering"
     },
     {
@@ -1147,6 +1380,18 @@
       ],
       "owasp": "LLM03",
       "atlas": "AML.T0010",
+      "owaspAgentic": [
+        "ASI05"
+      ],
+      "owaspAgenticPartial": {
+        "ASI05": "remote scripts piped to a shell and installs from untrusted sources"
+      },
+      "owaspMcp": [
+        "MCP05"
+      ],
+      "owaspMcpPartial": {
+        "MCP05": "remote scripts piped to a shell and installs from untrusted sources"
+      },
       "stride": "Tampering"
     },
     {
@@ -1164,6 +1409,8 @@
       ],
       "owasp": "LLM01",
       "atlas": "AML.T0051",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Tampering"
     },
     {
@@ -1183,6 +1430,18 @@
       ],
       "owasp": "LLM06",
       "atlas": "AML.T0057",
+      "owaspAgentic": [
+        "ASI02"
+      ],
+      "owaspAgenticPartial": {
+        "ASI02": "outbound calls after untrusted content, and exfiltration sequences, within one session"
+      },
+      "owaspMcp": [
+        "MCP06"
+      ],
+      "owaspMcpPartial": {
+        "MCP06": "outbound calls after injection-class content, within one session"
+      },
       "stride": "Information Disclosure"
     },
     {
@@ -1210,6 +1469,18 @@
         "AML.T0081": "auto-loaded agent-config paths only",
         "AML.T0110": "tool definition and schema only"
       },
+      "owaspAgentic": [
+        "ASI04"
+      ],
+      "owaspAgenticPartial": {
+        "ASI04": "MCP tool descriptors and auto-loaded agent config; no provenance check"
+      },
+      "owaspMcp": [
+        "MCP03"
+      ],
+      "owaspMcpPartial": {
+        "MCP03": "description and schema text only"
+      },
       "stride": "Tampering"
     },
     {
@@ -1228,6 +1499,13 @@
       ],
       "owasp": "LLM05",
       "atlas": "AML.T0011",
+      "owaspAgentic": [
+        "ASI05"
+      ],
+      "owaspAgenticPartial": {
+        "ASI05": "exploitable constructs in code the agent writes; nothing is executed"
+      },
+      "owaspMcp": [],
       "stride": "Tampering"
     },
     {
@@ -1250,6 +1528,13 @@
       "atlasPartial": {
         "AML.T0060": "package names only"
       },
+      "owaspAgentic": [
+        "ASI05"
+      ],
+      "owaspAgenticPartial": {
+        "ASI05": "package names in install commands only"
+      },
+      "owaspMcp": [],
       "stride": "Tampering"
     },
     {
@@ -1268,6 +1553,8 @@
       ],
       "owasp": "LLM02",
       "atlas": "AML.T0024",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -1292,6 +1579,8 @@
       "atlasPartial": {
         "AML.T0081": "not wired: decideTransit is built and tested but no shipped hook calls it"
       },
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -1311,6 +1600,22 @@
       ],
       "owasp": "LLM06",
       "atlas": "AML.T0053",
+      "owaspAgentic": [
+        "ASI01",
+        "ASI10"
+      ],
+      "owaspAgenticPartial": {
+        "ASI01": "lexical check that a risky call's targets were named in the task",
+        "ASI10": "actions outside a declared envelope or a learned baseline, by name and path"
+      },
+      "owaspMcp": [
+        "MCP02",
+        "MCP06"
+      ],
+      "owaspMcpPartial": {
+        "MCP02": "actions checked against a declared envelope; granted scopes are not reviewed",
+        "MCP06": "lexical check that a risky call's targets were named in the task"
+      },
       "stride": "Elevation of Privilege"
     },
     {
@@ -1334,6 +1639,18 @@
       ],
       "atlasPartial": {
         "AML.T0086": "known local secret values only"
+      },
+      "owaspAgentic": [
+        "ASI02"
+      ],
+      "owaspAgenticPartial": {
+        "ASI02": "known local secret values only"
+      },
+      "owaspMcp": [
+        "MCP01"
+      ],
+      "owaspMcpPartial": {
+        "MCP01": "known local secret values in egress, MCP tool arguments included"
       },
       "stride": "Information Disclosure"
     },
@@ -1360,6 +1677,15 @@
       "atlasPartial": {
         "AML.T0118": "requires lineage metadata on agent events"
       },
+      "owaspAgentic": [
+        "ASI03",
+        "ASI07"
+      ],
+      "owaspAgenticPartial": {
+        "ASI03": "the parent's entitlement envelope applied to a delegated sub-agent",
+        "ASI07": "sub-agent handoffs on one host, logged and scanned for injection; no message authentication"
+      },
+      "owaspMcp": [],
       "stride": "Elevation of Privilege"
     },
     {
@@ -1385,6 +1711,15 @@
       "atlasPartial": {
         "AML.T0080": "memory writes carried in a crafted assistant link only"
       },
+      "owaspAgentic": [
+        "ASI01",
+        "ASI06"
+      ],
+      "owaspAgenticPartial": {
+        "ASI01": "prefilled assistant links only",
+        "ASI06": "memory writes carried in a crafted assistant link only"
+      },
+      "owaspMcp": [],
       "stride": "Tampering"
     },
     {
@@ -1404,6 +1739,8 @@
       ],
       "owasp": "LLM07",
       "atlas": "AML.T0133",
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -1425,6 +1762,18 @@
       "atlas": "AML.T0134",
       "atlasPartial": {
         "AML.T0134": "endpoint artefact only"
+      },
+      "owaspAgentic": [
+        "ASI01"
+      ],
+      "owaspAgenticPartial": {
+        "ASI01": "content addressed only to AI readers"
+      },
+      "owaspMcp": [
+        "MCP06"
+      ],
+      "owaspMcpPartial": {
+        "MCP06": "content addressed only to AI readers"
       },
       "stride": "Spoofing"
     },
@@ -1448,6 +1797,8 @@
       "atlasPartial": {
         "AML.T0077": "no egress OCR"
       },
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -1469,6 +1820,18 @@
       "atlas": "AML.T0129",
       "atlasPartial": {
         "AML.T0129": "file-metadata channel only"
+      },
+      "owaspAgentic": [
+        "ASI01"
+      ],
+      "owaspAgenticPartial": {
+        "ASI01": "file-metadata channel only"
+      },
+      "owaspMcp": [
+        "MCP06"
+      ],
+      "owaspMcpPartial": {
+        "MCP06": "file-metadata channel only"
       },
       "stride": "Tampering"
     },
@@ -1492,6 +1855,18 @@
       "atlasPartial": {
         "AML.T0092": "local agent transcript files only"
       },
+      "owaspAgentic": [
+        "ASI06"
+      ],
+      "owaspAgenticPartial": {
+        "ASI06": "local agent transcript files only"
+      },
+      "owaspMcp": [
+        "MCP08"
+      ],
+      "owaspMcpPartial": {
+        "MCP08": "tampering with local agent transcript files only"
+      },
       "stride": "Repudiation"
     },
     {
@@ -1511,6 +1886,18 @@
       ],
       "owasp": "LLM01",
       "atlas": "AML.T0061",
+      "owaspAgentic": [
+        "ASI01"
+      ],
+      "owaspAgenticPartial": {
+        "ASI01": "self-replication directives only"
+      },
+      "owaspMcp": [
+        "MCP06"
+      ],
+      "owaspMcpPartial": {
+        "MCP06": "self-replication directives only"
+      },
       "stride": "Tampering"
     },
     {
@@ -1533,6 +1920,13 @@
       "atlasPartial": {
         "AML.T0067": "links only"
       },
+      "owaspAgentic": [
+        "ASI09"
+      ],
+      "owaspAgenticPartial": {
+        "ASI09": "deceptive links in output only"
+      },
+      "owaspMcp": [],
       "stride": "Spoofing"
     },
     {
@@ -1555,6 +1949,13 @@
       "atlasPartial": {
         "AML.T0011.000": "load calls only"
       },
+      "owaspAgentic": [
+        "ASI05"
+      ],
+      "owaspAgenticPartial": {
+        "ASI05": "load calls only"
+      },
+      "owaspMcp": [],
       "stride": "Elevation of Privilege"
     },
     {
@@ -1577,6 +1978,13 @@
       "atlasPartial": {
         "AML.T0035": "model files and caches, one command"
       },
+      "owaspAgentic": [
+        "ASI02"
+      ],
+      "owaspAgenticPartial": {
+        "ASI02": "model files and caches, one command"
+      },
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -1599,6 +2007,13 @@
       "atlasPartial": {
         "AML.T0086": "listed collection hosts only"
       },
+      "owaspAgentic": [
+        "ASI02"
+      ],
+      "owaspAgenticPartial": {
+        "ASI02": "listed collection hosts only"
+      },
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     },
     {
@@ -1621,6 +2036,8 @@
       "atlasPartial": {
         "AML.T0086": "listed collection hosts, contact without a payload"
       },
+      "owaspAgentic": [],
+      "owaspMcp": [],
       "stride": "Information Disclosure"
     }
   ]
