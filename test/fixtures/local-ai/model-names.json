@@ -1,0 +1,3397 @@
+{
+ "_comment": "Shared by test/aibom-rust-parity.test.mjs (JS, cli/local-model-names.mjs) and src-tauri/src/local_model_names.rs (Rust cargo test). Each expectation is the JS reference's output; both sides must reproduce it. Paths ending in '/' are directories, a '!' segment is an entry whose read fails, {gen,count} expands {i}. HTTP cases are served as raw bytes from 127.0.0.1.",
+ "names": [
+  {
+   "name": "huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF",
+   "words": [
+    "huihui",
+    "ai",
+    "huihui",
+    "qwen",
+    "3",
+    "8",
+    "27",
+    "b",
+    "abliterated",
+    "gguf"
+   ],
+   "match": true
+  },
+  {
+   "name": "failspy/llama-3-70B-Instruct-abliterated",
+   "words": [
+    "failspy",
+    "llama",
+    "3",
+    "70",
+    "b",
+    "instruct",
+    "abliterated"
+   ],
+   "match": true
+  },
+  {
+   "name": "Meta-Llama-3.1-8B-Instruct-ABLITERATED",
+   "words": [
+    "meta",
+    "llama",
+    "3",
+    "1",
+    "8",
+    "b",
+    "instruct",
+    "abliterated"
+   ],
+   "match": true
+  },
+  {
+   "name": "huihui_ai/qwen3-abliterated:8b",
+   "words": [
+    "huihui",
+    "ai",
+    "qwen",
+    "3",
+    "abliterated",
+    "8",
+    "b"
+   ],
+   "match": true
+  },
+  {
+   "name": "OBLITERATUS/Qwen3.8-27B-OBLITERATED",
+   "words": [
+    "obliteratus",
+    "qwen",
+    "3",
+    "8",
+    "27",
+    "b",
+    "obliterated"
+   ],
+   "match": true
+  },
+  {
+   "name": "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF",
+   "words": [
+    "jonathan",
+    "coletti",
+    "qwen",
+    "3",
+    "8",
+    "27",
+    "b",
+    "uncensored",
+    "gguf"
+   ],
+   "match": true
+  },
+  {
+   "name": "llama2-uncensored:7b",
+   "words": [
+    "llama",
+    "2",
+    "uncensored",
+    "7",
+    "b"
+   ],
+   "match": true
+  },
+  {
+   "name": "Orenguteng/Llama-3.1-8B-Lexi-Uncensored-V2",
+   "words": [
+    "orenguteng",
+    "llama",
+    "3",
+    "1",
+    "8",
+    "b",
+    "lexi",
+    "uncensored",
+    "v",
+    "2"
+   ],
+   "match": true
+  },
+  {
+   "name": "mradermacher/gemma-4-12B-it-heretic_decensored-i1-GGUF",
+   "words": [
+    "mradermacher",
+    "gemma",
+    "4",
+    "12",
+    "b",
+    "it",
+    "heretic",
+    "decensored",
+    "i",
+    "1",
+    "gguf"
+   ],
+   "match": true
+  },
+  {
+   "name": "bartowski/LLAMA-3_8B_Unaligned_BETA-GGUF",
+   "words": [
+    "bartowski",
+    "llama",
+    "3",
+    "8",
+    "b",
+    "unaligned",
+    "beta",
+    "gguf"
+   ],
+   "match": true
+  },
+  {
+   "name": "mradermacher/Unaligned-Thinker-PHI-4-i1-GGUF",
+   "words": [
+    "mradermacher",
+    "unaligned",
+    "thinker",
+    "phi",
+    "4",
+    "i",
+    "1",
+    "gguf"
+   ],
+   "match": true
+  },
+  {
+   "name": "cooperleong00/Meta-Llama-3-8B-Instruct-Jailbroken",
+   "words": [
+    "cooperleong",
+    "00",
+    "meta",
+    "llama",
+    "3",
+    "8",
+    "b",
+    "instruct",
+    "jailbroken"
+   ],
+   "match": true
+  },
+  {
+   "name": "CCSU-ML/Qwen3-8B-Jailbroken.Q6_K.gguf",
+   "words": [
+    "ccsu",
+    "ml",
+    "qwen",
+    "3",
+    "8",
+    "b",
+    "jailbroken",
+    "q",
+    "6",
+    "k",
+    "gguf"
+   ],
+   "match": true
+  },
+  {
+   "name": "AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4",
+   "words": [
+    "aeon",
+    "7",
+    "qwen",
+    "3",
+    "6",
+    "35",
+    "b",
+    "a",
+    "3",
+    "b",
+    "heretic",
+    "nvfp",
+    "4"
+   ],
+   "match": true
+  },
+  {
+   "name": "hf.co/mradermacher/Qwen3-8B-Jailbroken-GGUF:Q4_K_M",
+   "words": [
+    "hf",
+    "co",
+    "mradermacher",
+    "qwen",
+    "3",
+    "8",
+    "b",
+    "jailbroken",
+    "gguf",
+    "q",
+    "4",
+    "k",
+    "m"
+   ],
+   "match": true
+  },
+  {
+   "name": "Qwen3-8B Uncensored Q4_K_M.gguf",
+   "words": [
+    "qwen",
+    "3",
+    "8",
+    "b",
+    "uncensored",
+    "q",
+    "4",
+    "k",
+    "m",
+    "gguf"
+   ],
+   "match": true
+  },
+  {
+   "name": "jackhhao/jailbreak-classifier",
+   "words": [
+    "jackhhao",
+    "jailbreak",
+    "classifier"
+   ],
+   "match": false
+  },
+  {
+   "name": "madhurjindal/Jailbreak-Detector-Large",
+   "words": [
+    "madhurjindal",
+    "jailbreak",
+    "detector",
+    "large"
+   ],
+   "match": false
+  },
+  {
+   "name": "meta-llama/Llama-Guard-3-8B",
+   "words": [
+    "meta",
+    "llama",
+    "llama",
+    "guard",
+    "3",
+    "8",
+    "b"
+   ],
+   "match": false
+  },
+  {
+   "name": "GuardrailsAI/prompt-saturation-attack-detector",
+   "words": [
+    "guardrails",
+    "ai",
+    "prompt",
+    "saturation",
+    "attack",
+    "detector"
+   ],
+   "match": false
+  },
+  {
+   "name": "reallexi/lexi-coder-v4.3",
+   "words": [
+    "reallexi",
+    "lexi",
+    "coder",
+    "v",
+    "4",
+    "3"
+   ],
+   "match": false
+  },
+  {
+   "name": "EleutherAI/deep-ignorance-unfiltered",
+   "words": [
+    "eleuther",
+    "ai",
+    "deep",
+    "ignorance",
+    "unfiltered"
+   ],
+   "match": false
+  },
+  {
+   "name": "Falconsai/nsfw_image_detection",
+   "words": [
+    "falconsai",
+    "nsfw",
+    "image",
+    "detection"
+   ],
+   "match": false
+  },
+  {
+   "name": "sentence-transformers/all-MiniLM-L6-v2",
+   "words": [
+    "sentence",
+    "transformers",
+    "all",
+    "mini",
+    "lm",
+    "l",
+    "6",
+    "v",
+    "2"
+   ],
+   "match": false
+  },
+  {
+   "name": "llama3:latest",
+   "words": [
+    "llama",
+    "3",
+    "latest"
+   ],
+   "match": false
+  },
+  {
+   "name": "qwen2.5-coder:32b",
+   "words": [
+    "qwen",
+    "2",
+    "5",
+    "coder",
+    "32",
+    "b"
+   ],
+   "match": false
+  },
+  {
+   "name": "deepseek-r1:8b",
+   "words": [
+    "deepseek",
+    "r",
+    "1",
+    "8",
+    "b"
+   ],
+   "match": false
+  },
+  {
+   "name": "WizardLMUncensored",
+   "words": [
+    "wizard",
+    "lm",
+    "uncensored"
+   ],
+   "match": true
+  },
+  {
+   "name": "LMUncensored",
+   "words": [
+    "lm",
+    "uncensored"
+   ],
+   "match": true
+  },
+  {
+   "name": "ABCUncensored7B",
+   "words": [
+    "abc",
+    "uncensored",
+    "7",
+    "b"
+   ],
+   "match": true
+  },
+  {
+   "name": "UNCENSOREDModel",
+   "words": [
+    "uncensored",
+    "model"
+   ],
+   "match": true
+  },
+  {
+   "name": "DPOUncensored",
+   "words": [
+    "dpo",
+    "uncensored"
+   ],
+   "match": true
+  },
+  {
+   "name": "HereticAI",
+   "words": [
+    "heretic",
+    "ai"
+   ],
+   "match": true
+  },
+  {
+   "name": "AIHeretic",
+   "words": [
+    "ai",
+    "heretic"
+   ],
+   "match": true
+  },
+  {
+   "name": "unCensored",
+   "words": [
+    "un",
+    "censored"
+   ],
+   "match": false
+  },
+  {
+   "name": "JailBroken",
+   "words": [
+    "jail",
+    "broken"
+   ],
+   "match": false
+  },
+  {
+   "name": "UnAligned",
+   "words": [
+    "un",
+    "aligned"
+   ],
+   "match": false
+  },
+  {
+   "name": "Uncensored2",
+   "words": [
+    "uncensored",
+    "2"
+   ],
+   "match": true
+  },
+  {
+   "name": "v2uncensored",
+   "words": [
+    "v",
+    "2",
+    "uncensored"
+   ],
+   "match": true
+  },
+  {
+   "name": "7bUncensored",
+   "words": [
+    "7",
+    "b",
+    "uncensored"
+   ],
+   "match": true
+  },
+  {
+   "name": "qwen3abliterated-8b",
+   "words": [
+    "qwen",
+    "3",
+    "abliterated",
+    "8",
+    "b"
+   ],
+   "match": true
+  },
+  {
+   "name": "OBLITERATEDv3",
+   "words": [
+    "obliterate",
+    "dv",
+    "3"
+   ],
+   "match": false
+  },
+  {
+   "name": "abliterated3b",
+   "words": [
+    "abliterated",
+    "3",
+    "b"
+   ],
+   "match": true
+  },
+  {
+   "name": "uncensored_v2",
+   "words": [
+    "uncensored",
+    "v",
+    "2"
+   ],
+   "match": true
+  },
+  {
+   "name": "uncensored.Q4_K_M",
+   "words": [
+    "uncensored",
+    "q",
+    "4",
+    "k",
+    "m"
+   ],
+   "match": true
+  },
+  {
+   "name": "HERETIC",
+   "words": [
+    "heretic"
+   ],
+   "match": true
+  },
+  {
+   "name": "Heretic",
+   "words": [
+    "heretic"
+   ],
+   "match": true
+  },
+  {
+   "name": "AbLiTeRaTeD",
+   "words": [
+    "ab",
+    "li",
+    "te",
+    "ra",
+    "te",
+    "d"
+   ],
+   "match": false
+  },
+  {
+   "name": "aBLITERATED",
+   "words": [
+    "a",
+    "bliterated"
+   ],
+   "match": false
+  },
+  {
+   "name": "XMLHttpRequest",
+   "words": [
+    "xml",
+    "http",
+    "request"
+   ],
+   "match": false
+  },
+  {
+   "name": "ABC",
+   "words": [
+    "abc"
+   ],
+   "match": false
+  },
+  {
+   "name": "aB",
+   "words": [
+    "a",
+    "b"
+   ],
+   "match": false
+  },
+  {
+   "name": "Ab",
+   "words": [
+    "ab"
+   ],
+   "match": false
+  },
+  {
+   "name": "A1b2C3d",
+   "words": [
+    "a",
+    "1",
+    "b",
+    "2",
+    "c",
+    "3",
+    "d"
+   ],
+   "match": false
+  },
+  {
+   "name": "3DUncensored",
+   "words": [
+    "3",
+    "d",
+    "uncensored"
+   ],
+   "match": true
+  },
+  {
+   "name": "acme/heretical-poetry-7b",
+   "words": [
+    "acme",
+    "heretical",
+    "poetry",
+    "7",
+    "b"
+   ],
+   "match": false
+  },
+  {
+   "name": "x/Realigned-Llama-8B",
+   "words": [
+    "x",
+    "realigned",
+    "llama",
+    "8",
+    "b"
+   ],
+   "match": false
+  },
+  {
+   "name": "x/aligned-7b",
+   "words": [
+    "x",
+    "aligned",
+    "7",
+    "b"
+   ],
+   "match": false
+  },
+  {
+   "name": "x/censored-filter-v1",
+   "words": [
+    "x",
+    "censored",
+    "filter",
+    "v",
+    "1"
+   ],
+   "match": false
+  },
+  {
+   "name": "x/ablit-test",
+   "words": [
+    "x",
+    "ablit",
+    "test"
+   ],
+   "match": false
+  },
+  {
+   "name": "x/obliteratedness-probe",
+   "words": [
+    "x",
+    "obliteratedness",
+    "probe"
+   ],
+   "match": false
+  },
+  {
+   "name": "x/uncensoredx",
+   "words": [
+    "x",
+    "uncensoredx"
+   ],
+   "match": false
+  },
+  {
+   "name": "llamauncensored",
+   "words": [
+    "llamauncensored"
+   ],
+   "match": false
+  },
+  {
+   "name": "theheretic",
+   "words": [
+    "theheretic"
+   ],
+   "match": false
+  },
+  {
+   "name": "un-aligned",
+   "words": [
+    "un",
+    "aligned"
+   ],
+   "match": false
+  },
+  {
+   "name": "jail_broken",
+   "words": [
+    "jail",
+    "broken"
+   ],
+   "match": false
+  },
+  {
+   "name": "UNALİGNED-7b",
+   "words": [
+    "unali",
+    "gned",
+    "7",
+    "b"
+   ],
+   "match": false
+  },
+  {
+   "name": "unaligned-K-7b",
+   "words": [
+    "unaligned",
+    "k",
+    "7",
+    "b"
+   ],
+   "match": true
+  },
+  {
+   "name": "ｕｎｃｅｎｓｏｒｅｄ",
+   "words": [],
+   "match": false
+  },
+  {
+   "name": "café-uncensored",
+   "words": [
+    "caf",
+    "uncensored"
+   ],
+   "match": true
+  },
+  {
+   "name": "🦙-uncensored",
+   "words": [
+    "uncensored"
+   ],
+   "match": true
+  },
+  {
+   "name": "uncensored\u0000x",
+   "words": [
+    "uncensored",
+    "x"
+   ],
+   "match": true
+  },
+  {
+   "name": "uncensored\nmodel",
+   "words": [
+    "uncensored",
+    "model"
+   ],
+   "match": true
+  },
+  {
+   "name": "ÜNCENSORED",
+   "words": [
+    "ncensored"
+   ],
+   "match": false
+  },
+  {
+   "name": "Straße-Uncensored",
+   "words": [
+    "stra",
+    "e",
+    "uncensored"
+   ],
+   "match": true
+  },
+  {
+   "name": "ΣUNCENSORED",
+   "words": [
+    "uncensored"
+   ],
+   "match": true
+  },
+  {
+   "name": "İ",
+   "words": [
+    "i"
+   ],
+   "match": false
+  },
+  {
+   "name": "K",
+   "words": [
+    "k"
+   ],
+   "match": false
+  },
+  {
+   "name": "x uncensored",
+   "words": [
+    "x",
+    "uncensored"
+   ],
+   "match": true
+  },
+  {
+   "name": "uncensoredé",
+   "words": [
+    "uncensored"
+   ],
+   "match": true
+  },
+  {
+   "name": {
+    "repeat": "a",
+    "times": 245,
+    "prefix": "",
+    "suffix": "-uncensored"
+   },
+   "words": [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "uncensored"
+   ],
+   "match": true
+  },
+  {
+   "name": {
+    "repeat": "a",
+    "times": 246,
+    "prefix": "",
+    "suffix": "-uncensored"
+   },
+   "words": [],
+   "match": false
+  },
+  {
+   "name": {
+    "repeat": "🦙",
+    "times": 122,
+    "prefix": "",
+    "suffix": "x-uncensored"
+   },
+   "words": [
+    "x",
+    "uncensored"
+   ],
+   "match": true
+  },
+  {
+   "name": {
+    "repeat": "🦙",
+    "times": 123,
+    "prefix": "",
+    "suffix": "-uncensored"
+   },
+   "words": [],
+   "match": false
+  },
+  {
+   "name": {
+    "repeat": "é",
+    "times": 245,
+    "prefix": "",
+    "suffix": "-uncensored"
+   },
+   "words": [
+    "uncensored"
+   ],
+   "match": true
+  },
+  {
+   "name": {
+    "repeat": "é",
+    "times": 246,
+    "prefix": "",
+    "suffix": "-uncensored"
+   },
+   "words": [],
+   "match": false
+  },
+  {
+   "name": "",
+   "words": [],
+   "match": false
+  },
+  {
+   "name": "-",
+   "words": [],
+   "match": false
+  },
+  {
+   "name": "--uncensored--",
+   "words": [
+    "uncensored"
+   ],
+   "match": true
+  }
+ ],
+ "dirs": [
+  {
+   "platform": "linux",
+   "env": {},
+   "home": "/home/dev",
+   "expect": [
+    "ollama|ollama-manifests|/home/dev/.ollama/models/manifests",
+    "ollama|ollama-manifests|/usr/share/ollama/.ollama/models/manifests",
+    "lmstudio|publisher-repo|/home/dev/.lmstudio/models",
+    "lmstudio|publisher-repo|/home/dev/.cache/lm-studio/models",
+    "jan|publisher-repo|/home/dev/.local/share/Jan/data/llamacpp/models",
+    "jan|publisher-repo|/home/dev/.local/share/Jan/data/mlx/models",
+    "gpt4all|model-files|/home/dev/.local/share/nomic.ai/GPT4All",
+    "llama.cpp|files-and-hf|/home/dev/.cache/llama.cpp",
+    "huggingface|hf-cache|/home/dev/.cache/huggingface/hub"
+   ]
+  },
+  {
+   "platform": "darwin",
+   "env": {},
+   "home": "/Users/dev",
+   "expect": [
+    "ollama|ollama-manifests|/Users/dev/.ollama/models/manifests",
+    "lmstudio|publisher-repo|/Users/dev/.lmstudio/models",
+    "lmstudio|publisher-repo|/Users/dev/.cache/lm-studio/models",
+    "jan|publisher-repo|/Users/dev/Library/Application Support/Jan/data/llamacpp/models",
+    "jan|publisher-repo|/Users/dev/Library/Application Support/Jan/data/mlx/models",
+    "gpt4all|model-files|/Users/dev/Library/Application Support/nomic.ai/GPT4All",
+    "llama.cpp|files-and-hf|/Users/dev/Library/Caches/llama.cpp",
+    "huggingface|hf-cache|/Users/dev/.cache/huggingface/hub"
+   ]
+  },
+  {
+   "platform": "win32",
+   "env": {},
+   "home": "C:/Users/dev",
+   "expect": [
+    "ollama|ollama-manifests|C:/Users/dev/.ollama/models/manifests",
+    "lmstudio|publisher-repo|C:/Users/dev/.lmstudio/models",
+    "lmstudio|publisher-repo|C:/Users/dev/.cache/lm-studio/models",
+    "jan|publisher-repo|C:/Users/dev/AppData/Roaming/Jan/data/llamacpp/models",
+    "jan|publisher-repo|C:/Users/dev/AppData/Roaming/Jan/data/mlx/models",
+    "gpt4all|model-files|C:/Users/dev/AppData/Local/nomic.ai/GPT4All",
+    "llama.cpp|files-and-hf|C:/Users/dev/AppData/Local/llama.cpp",
+    "huggingface|hf-cache|C:/Users/dev/.cache/huggingface/hub"
+   ]
+  },
+  {
+   "platform": "win32",
+   "env": {
+    "APPDATA": "D:/roam",
+    "LOCALAPPDATA": "D:/local",
+    "LLAMA_CACHE": "E:/llama"
+   },
+   "home": "C:/Users/dev",
+   "expect": [
+    "ollama|ollama-manifests|C:/Users/dev/.ollama/models/manifests",
+    "lmstudio|publisher-repo|C:/Users/dev/.lmstudio/models",
+    "lmstudio|publisher-repo|C:/Users/dev/.cache/lm-studio/models",
+    "jan|publisher-repo|D:/roam/Jan/data/llamacpp/models",
+    "jan|publisher-repo|D:/roam/Jan/data/mlx/models",
+    "gpt4all|model-files|D:/local/nomic.ai/GPT4All",
+    "llama.cpp|files-and-hf|E:/llama",
+    "huggingface|hf-cache|C:/Users/dev/.cache/huggingface/hub"
+   ]
+  },
+  {
+   "platform": "linux",
+   "env": {
+    "OLLAMA_MODELS": "/srv/ollama",
+    "HF_HUB_CACHE": "/srv/hf",
+    "LLAMA_CACHE": "/srv/llama/"
+   },
+   "home": "/home/dev",
+   "expect": [
+    "ollama|ollama-manifests|/srv/ollama/manifests",
+    "ollama|ollama-manifests|/home/dev/.ollama/models/manifests",
+    "ollama|ollama-manifests|/usr/share/ollama/.ollama/models/manifests",
+    "lmstudio|publisher-repo|/home/dev/.lmstudio/models",
+    "lmstudio|publisher-repo|/home/dev/.cache/lm-studio/models",
+    "jan|publisher-repo|/home/dev/.local/share/Jan/data/llamacpp/models",
+    "jan|publisher-repo|/home/dev/.local/share/Jan/data/mlx/models",
+    "gpt4all|model-files|/home/dev/.local/share/nomic.ai/GPT4All",
+    "llama.cpp|files-and-hf|/srv/llama/",
+    "huggingface|hf-cache|/srv/hf"
+   ]
+  },
+  {
+   "platform": "linux",
+   "env": {
+    "OLLAMA_MODELS": "",
+    "HF_HUB_CACHE": "",
+    "HF_HOME": "/srv/hfhome/",
+    "XDG_CACHE_HOME": "/xdg",
+    "LLAMA_CACHE": ""
+   },
+   "home": "/home/dev",
+   "expect": [
+    "ollama|ollama-manifests|/home/dev/.ollama/models/manifests",
+    "ollama|ollama-manifests|/usr/share/ollama/.ollama/models/manifests",
+    "lmstudio|publisher-repo|/home/dev/.lmstudio/models",
+    "lmstudio|publisher-repo|/home/dev/.cache/lm-studio/models",
+    "jan|publisher-repo|/home/dev/.local/share/Jan/data/llamacpp/models",
+    "jan|publisher-repo|/home/dev/.local/share/Jan/data/mlx/models",
+    "gpt4all|model-files|/home/dev/.local/share/nomic.ai/GPT4All",
+    "llama.cpp|files-and-hf|/xdg/llama.cpp",
+    "huggingface|hf-cache|/srv/hfhome/hub"
+   ]
+  },
+  {
+   "platform": "linux",
+   "env": {
+    "OLLAMA_MODELS": "/home/dev/.ollama/models/",
+    "XDG_CACHE_HOME": "/home/dev/.cache"
+   },
+   "home": "/home/dev",
+   "expect": [
+    "ollama|ollama-manifests|/home/dev/.ollama/models/manifests",
+    "ollama|ollama-manifests|/usr/share/ollama/.ollama/models/manifests",
+    "lmstudio|publisher-repo|/home/dev/.lmstudio/models",
+    "lmstudio|publisher-repo|/home/dev/.cache/lm-studio/models",
+    "jan|publisher-repo|/home/dev/.local/share/Jan/data/llamacpp/models",
+    "jan|publisher-repo|/home/dev/.local/share/Jan/data/mlx/models",
+    "gpt4all|model-files|/home/dev/.local/share/nomic.ai/GPT4All",
+    "llama.cpp|files-and-hf|/home/dev/.cache/llama.cpp",
+    "huggingface|hf-cache|/home/dev/.cache/huggingface/hub"
+   ]
+  },
+  {
+   "platform": "darwin",
+   "env": {
+    "OLLAMA_MODELS": "/srv/x/../ollama/./models//",
+    "HF_HOME": "rel/hf",
+    "XDG_CACHE_HOME": "../c"
+   },
+   "home": "/Users/dev",
+   "expect": [
+    "ollama|ollama-manifests|/srv/ollama/models/manifests",
+    "ollama|ollama-manifests|/Users/dev/.ollama/models/manifests",
+    "lmstudio|publisher-repo|/Users/dev/.lmstudio/models",
+    "lmstudio|publisher-repo|/Users/dev/.cache/lm-studio/models",
+    "jan|publisher-repo|/Users/dev/Library/Application Support/Jan/data/llamacpp/models",
+    "jan|publisher-repo|/Users/dev/Library/Application Support/Jan/data/mlx/models",
+    "gpt4all|model-files|/Users/dev/Library/Application Support/nomic.ai/GPT4All",
+    "llama.cpp|files-and-hf|/Users/dev/Library/Caches/llama.cpp",
+    "huggingface|hf-cache|rel/hf/hub"
+   ]
+  },
+  {
+   "platform": "linux",
+   "env": {
+    "OLLAMA_MODELS": "/../..",
+    "HF_HOME": "/"
+   },
+   "home": "/",
+   "expect": [
+    "ollama|ollama-manifests|/manifests",
+    "ollama|ollama-manifests|/.ollama/models/manifests",
+    "ollama|ollama-manifests|/usr/share/ollama/.ollama/models/manifests",
+    "lmstudio|publisher-repo|/.lmstudio/models",
+    "lmstudio|publisher-repo|/.cache/lm-studio/models",
+    "jan|publisher-repo|/.local/share/Jan/data/llamacpp/models",
+    "jan|publisher-repo|/.local/share/Jan/data/mlx/models",
+    "gpt4all|model-files|/.local/share/nomic.ai/GPT4All",
+    "llama.cpp|files-and-hf|/.cache/llama.cpp",
+    "huggingface|hf-cache|/hub"
+   ]
+  },
+  {
+   "platform": "linux",
+   "env": {
+    "OLLAMA_MODELS": "models"
+   },
+   "home": "",
+   "expect": [
+    "ollama|ollama-manifests|models/manifests",
+    "ollama|ollama-manifests|.ollama/models/manifests",
+    "ollama|ollama-manifests|/usr/share/ollama/.ollama/models/manifests",
+    "lmstudio|publisher-repo|.lmstudio/models",
+    "lmstudio|publisher-repo|.cache/lm-studio/models",
+    "jan|publisher-repo|.local/share/Jan/data/llamacpp/models",
+    "jan|publisher-repo|.local/share/Jan/data/mlx/models",
+    "gpt4all|model-files|.local/share/nomic.ai/GPT4All",
+    "llama.cpp|files-and-hf|.cache/llama.cpp",
+    "huggingface|hf-cache|.cache/huggingface/hub"
+   ]
+  }
+ ],
+ "trees": [
+  {
+   "name": "full tree plus /api/tags",
+   "paths": [
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/llama3/latest",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/llama2-uncensored/7b",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/huihui_ai/qwen3-abliterated/8b",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/huihui_ai/qwen3-abliterated/14b",
+    "/home/dev/.ollama/models/manifests/hf.co/mradermacher/Qwen3-8B-Jailbroken-GGUF/Q4_K_M",
+    "/home/dev/.lmstudio/models/lmstudio-community/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf",
+    "/home/dev/.lmstudio/models/bartowski/LLAMA-3_8B_Unaligned_BETA-GGUF/LLAMA-3_8B_Unaligned_BETA-Q4_K_M.gguf",
+    "/home/dev/.lmstudio/models/secret-team/acme-internal-7b-GGUF/acme-internal-7b-uncensored-q4.gguf",
+    "/home/dev/.local/share/Jan/data/llamacpp/models/huihui-ai/Huihui-Qwen3.5-27B-abliterated/model.gguf",
+    "/home/dev/.local/share/Jan/data/llamacpp/models/huihui-ai/Huihui-Qwen3.5-27B-abliterated/model.yml",
+    "/home/dev/.local/share/Jan/data/llamacpp/models/Menlo/Jan-nano-gguf/model.gguf",
+    "/home/dev/.local/share/nomic.ai/GPT4All/Meta-Llama-3-8B-Instruct.Q4_0.gguf",
+    "/home/dev/.local/share/nomic.ai/GPT4All/localdocs_v2.db",
+    "/home/dev/.cache/llama.cpp/bartowski_Llama-3.2-1B-Instruct-GGUF_Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+    "/home/dev/.cache/llama.cpp/models--OBLITERATUS--Qwen3.8-27B-OBLITERATED/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--huihui-ai--Huihui-Qwen3.8-27B-abliterated-GGUF/blobs/",
+    "/home/dev/.cache/huggingface/hub/models--huihui-ai--Huihui-Qwen3.8-27B-abliterated-GGUF/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--meta-llama--Llama-Guard-3-8B/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--jackhhao--jailbreak-classifier/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--gpt2/snapshots/",
+    "/home/dev/.cache/huggingface/hub/datasets--unalignment--toxic-dpo-v0.2/",
+    "/home/dev/.cache/huggingface/hub/blobs/",
+    "/home/dev/.cache/huggingface/hub/CACHEDIR.TAG"
+   ],
+   "tags": {
+    "names": [
+     "llama3:latest",
+     "huihui_ai/qwen3-abliterated:8b",
+     "dolphin-mixtral:8x7b",
+     "nidumai/nidum-gemma-3-4b-it-uncensored:q4_k_m"
+    ],
+    "truncated": false
+   },
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": true,
+     "count": 10,
+     "sources": [
+      {
+       "runtime": "ollama",
+       "models": 7,
+       "safetyRemovedByName": 5
+      },
+      {
+       "runtime": "lmstudio",
+       "models": 3,
+       "safetyRemovedByName": 2
+      },
+      {
+       "runtime": "jan",
+       "models": 2,
+       "safetyRemovedByName": 1
+      },
+      {
+       "runtime": "gpt4all",
+       "models": 1,
+       "safetyRemovedByName": 0
+      },
+      {
+       "runtime": "llama.cpp",
+       "models": 2,
+       "safetyRemovedByName": 1
+      },
+      {
+       "runtime": "huggingface",
+       "models": 4,
+       "safetyRemovedByName": 1
+      }
+     ],
+     "truncated": false,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 1000
+   }
+  },
+  {
+   "name": "full tree, /api/tags unreachable",
+   "paths": [
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/llama3/latest",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/llama2-uncensored/7b",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/huihui_ai/qwen3-abliterated/8b",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/huihui_ai/qwen3-abliterated/14b",
+    "/home/dev/.ollama/models/manifests/hf.co/mradermacher/Qwen3-8B-Jailbroken-GGUF/Q4_K_M",
+    "/home/dev/.lmstudio/models/lmstudio-community/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf",
+    "/home/dev/.lmstudio/models/bartowski/LLAMA-3_8B_Unaligned_BETA-GGUF/LLAMA-3_8B_Unaligned_BETA-Q4_K_M.gguf",
+    "/home/dev/.lmstudio/models/secret-team/acme-internal-7b-GGUF/acme-internal-7b-uncensored-q4.gguf",
+    "/home/dev/.local/share/Jan/data/llamacpp/models/huihui-ai/Huihui-Qwen3.5-27B-abliterated/model.gguf",
+    "/home/dev/.local/share/Jan/data/llamacpp/models/huihui-ai/Huihui-Qwen3.5-27B-abliterated/model.yml",
+    "/home/dev/.local/share/Jan/data/llamacpp/models/Menlo/Jan-nano-gguf/model.gguf",
+    "/home/dev/.local/share/nomic.ai/GPT4All/Meta-Llama-3-8B-Instruct.Q4_0.gguf",
+    "/home/dev/.local/share/nomic.ai/GPT4All/localdocs_v2.db",
+    "/home/dev/.cache/llama.cpp/bartowski_Llama-3.2-1B-Instruct-GGUF_Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+    "/home/dev/.cache/llama.cpp/models--OBLITERATUS--Qwen3.8-27B-OBLITERATED/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--huihui-ai--Huihui-Qwen3.8-27B-abliterated-GGUF/blobs/",
+    "/home/dev/.cache/huggingface/hub/models--huihui-ai--Huihui-Qwen3.8-27B-abliterated-GGUF/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--meta-llama--Llama-Guard-3-8B/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--jackhhao--jailbreak-classifier/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--gpt2/snapshots/",
+    "/home/dev/.cache/huggingface/hub/datasets--unalignment--toxic-dpo-v0.2/",
+    "/home/dev/.cache/huggingface/hub/blobs/",
+    "/home/dev/.cache/huggingface/hub/CACHEDIR.TAG"
+   ],
+   "tags": null,
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": true,
+     "count": 9,
+     "sources": [
+      {
+       "runtime": "ollama",
+       "models": 5,
+       "safetyRemovedByName": 4
+      },
+      {
+       "runtime": "lmstudio",
+       "models": 3,
+       "safetyRemovedByName": 2
+      },
+      {
+       "runtime": "jan",
+       "models": 2,
+       "safetyRemovedByName": 1
+      },
+      {
+       "runtime": "gpt4all",
+       "models": 1,
+       "safetyRemovedByName": 0
+      },
+      {
+       "runtime": "llama.cpp",
+       "models": 2,
+       "safetyRemovedByName": 1
+      },
+      {
+       "runtime": "huggingface",
+       "models": 4,
+       "safetyRemovedByName": 1
+      }
+     ],
+     "truncated": false,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 1000
+   }
+  },
+  {
+   "name": "nothing installed",
+   "paths": [],
+   "tags": null,
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": false,
+     "count": 0,
+     "sources": [],
+     "truncated": false,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 1000
+   }
+  },
+  {
+   "name": "tricky layouts, hidden entries, read errors and names",
+   "paths": [
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/.hidden-uncensored/latest",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/7/14",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/mistral/7b-uncensored",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/mistral/.uncensored-tag",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/mistral/dir-tag-uncensored/",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/file-model-uncensored",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/file-ns-uncensored",
+    "/home/dev/.ollama/models/manifests/file-registry-uncensored",
+    "/home/dev/.ollama/models/manifests/example.com:5000/team/Heretic/latest",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/llama3/latest",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/empty-model/",
+    "/home/dev/.lmstudio/models/pub/clean-repo/clean.gguf",
+    "/home/dev/.lmstudio/models/pub/clean-repo/sub-uncensored/",
+    "/home/dev/.lmstudio/models/pub/file-match-repo/model-Uncensored.gguf",
+    "/home/dev/.lmstudio/models/pub/file-match-repo/!",
+    "/home/dev/.lmstudio/models/pub/file-match-repo/after-error-uncensored.gguf",
+    "/home/dev/.lmstudio/models/pub/error-first-repo/!",
+    "/home/dev/.lmstudio/models/pub/error-first-repo/x-uncensored.gguf",
+    "/home/dev/.lmstudio/models/pub/.hidden-repo-uncensored/a.gguf",
+    "/home/dev/.lmstudio/models/pub/repo-file-uncensored",
+    "/home/dev/.lmstudio/models/file-publisher-uncensored",
+    "/home/dev/.cache/lm-studio/models/pub/clean-repo/x-abliterated.gguf",
+    "/home/dev/.cache/lm-studio/models/pub/file-match-repo/clean.gguf",
+    "/home/dev/.cache/lm-studio/models/pub2/Uncensored-Repo/clean.gguf",
+    "/home/dev/.local/share/Jan/data/mlx/models/mlx-community/Qwen3-4B-abliterated-4bit/config.json",
+    "/home/dev/.local/share/Jan/data/mlx/models/mlx-community/plain-4bit/weights-heretic.safetensors",
+    "/home/dev/.local/share/nomic.ai/GPT4All/UPPER-UNCENSORED.GGUF",
+    "/home/dev/.local/share/nomic.ai/GPT4All/x-jailbroken.llamafile",
+    "/home/dev/.local/share/nomic.ai/GPT4All/x-jailbroken.LlamaFile",
+    "/home/dev/.local/share/nomic.ai/GPT4All/x-jailbroken.bin",
+    "/home/dev/.local/share/nomic.ai/GPT4All/x-jailbroken.gguf.part",
+    "/home/dev/.local/share/nomic.ai/GPT4All/dir-uncensored.gguf/",
+    "/home/dev/.local/share/nomic.ai/GPT4All/.gguf",
+    "/home/dev/.local/share/nomic.ai/GPT4All/gguf",
+    "/home/dev/.local/share/nomic.ai/GPT4All/!",
+    "/home/dev/.local/share/nomic.ai/GPT4All/after-error.gguf",
+    "/home/dev/.cache/llama.cpp/models--/",
+    "/home/dev/.cache/llama.cpp/models--a--b--c-uncensored/",
+    "/home/dev/.cache/llama.cpp/models--a----b/",
+    "/home/dev/.cache/llama.cpp/models--file-uncensored",
+    "/home/dev/.cache/llama.cpp/flat-heretic.gguf",
+    "/home/dev/.cache/llama.cpp/dir-heretic.gguf/",
+    "/home/dev/.cache/huggingface/hub/models--x\nuncensored/",
+    "/home/dev/.cache/huggingface/hub/models--x uncensored/",
+    "/home/dev/.cache/huggingface/hub/models--x\tuncensored/",
+    "/home/dev/.cache/huggingface/hub/Models--x--Uncensored/",
+    "/home/dev/.cache/huggingface/hub/models--file--uncensored",
+    "/home/dev/.cache/huggingface/hub/models--aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa--uncensored/",
+    "/home/dev/.cache/huggingface/hub/models--aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa--uncensored/",
+    "/home/dev/.cache/huggingface/hub/models--Org--UNALİGNED/",
+    "/home/dev/.cache/huggingface/hub/models--Org--Model-K-Unaligned/",
+    "/usr/share/ollama/.ollama/models/manifests/registry.ollama.ai/library/llama3/latest",
+    "/usr/share/ollama/.ollama/models/manifests/registry.ollama.ai/library/wizard-vicuna-uncensored/13b"
+   ],
+   "tags": {
+    "names": [
+     "mistral:7b-uncensored",
+     "",
+     "x/y-UNCENSORED:latest",
+     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-uncensored:1b"
+    ],
+    "truncated": false
+   },
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": true,
+     "count": 18,
+     "sources": [
+      {
+       "runtime": "ollama",
+       "models": 6,
+       "safetyRemovedByName": 4
+      },
+      {
+       "runtime": "lmstudio",
+       "models": 4,
+       "safetyRemovedByName": 3
+      },
+      {
+       "runtime": "jan",
+       "models": 2,
+       "safetyRemovedByName": 2
+      },
+      {
+       "runtime": "gpt4all",
+       "models": 3,
+       "safetyRemovedByName": 3
+      },
+      {
+       "runtime": "llama.cpp",
+       "models": 3,
+       "safetyRemovedByName": 2
+      },
+      {
+       "runtime": "huggingface",
+       "models": 5,
+       "safetyRemovedByName": 4
+      }
+     ],
+     "truncated": false,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 1000
+   }
+  },
+  {
+   "name": "/api/tags truncated marks the record truncated",
+   "paths": [],
+   "tags": {
+    "names": [
+     "m-uncensored:1b"
+    ],
+    "truncated": true
+   },
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": true,
+     "count": 1,
+     "sources": [
+      {
+       "runtime": "ollama",
+       "models": 1,
+       "safetyRemovedByName": 1
+      }
+     ],
+     "truncated": true,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 1000
+   }
+  },
+  {
+   "name": "deadline during the walk (5 ms per clock read, 40 ms)",
+   "paths": [
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/llama3/latest",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/llama2-uncensored/7b",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/huihui_ai/qwen3-abliterated/8b",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/huihui_ai/qwen3-abliterated/14b",
+    "/home/dev/.ollama/models/manifests/hf.co/mradermacher/Qwen3-8B-Jailbroken-GGUF/Q4_K_M",
+    "/home/dev/.lmstudio/models/lmstudio-community/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf",
+    "/home/dev/.lmstudio/models/bartowski/LLAMA-3_8B_Unaligned_BETA-GGUF/LLAMA-3_8B_Unaligned_BETA-Q4_K_M.gguf",
+    "/home/dev/.lmstudio/models/secret-team/acme-internal-7b-GGUF/acme-internal-7b-uncensored-q4.gguf",
+    "/home/dev/.local/share/Jan/data/llamacpp/models/huihui-ai/Huihui-Qwen3.5-27B-abliterated/model.gguf",
+    "/home/dev/.local/share/Jan/data/llamacpp/models/huihui-ai/Huihui-Qwen3.5-27B-abliterated/model.yml",
+    "/home/dev/.local/share/Jan/data/llamacpp/models/Menlo/Jan-nano-gguf/model.gguf",
+    "/home/dev/.local/share/nomic.ai/GPT4All/Meta-Llama-3-8B-Instruct.Q4_0.gguf",
+    "/home/dev/.local/share/nomic.ai/GPT4All/localdocs_v2.db",
+    "/home/dev/.cache/llama.cpp/bartowski_Llama-3.2-1B-Instruct-GGUF_Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+    "/home/dev/.cache/llama.cpp/models--OBLITERATUS--Qwen3.8-27B-OBLITERATED/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--huihui-ai--Huihui-Qwen3.8-27B-abliterated-GGUF/blobs/",
+    "/home/dev/.cache/huggingface/hub/models--huihui-ai--Huihui-Qwen3.8-27B-abliterated-GGUF/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--meta-llama--Llama-Guard-3-8B/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--jackhhao--jailbreak-classifier/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--gpt2/snapshots/",
+    "/home/dev/.cache/huggingface/hub/datasets--unalignment--toxic-dpo-v0.2/",
+    "/home/dev/.cache/huggingface/hub/blobs/",
+    "/home/dev/.cache/huggingface/hub/CACHEDIR.TAG"
+   ],
+   "tags": {
+    "names": [
+     "x-uncensored:1b"
+    ],
+    "truncated": false
+   },
+   "clock": {
+    "tick": 5,
+    "deadlineMs": 40
+   },
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": false,
+     "count": 0,
+     "sources": [],
+     "truncated": false,
+     "timedOut": true
+    },
+    "tagsTimeoutMs": null
+   }
+  },
+  {
+   "name": "deadline exactly at the end of the walk",
+   "paths": [
+    "/home/dev/.cache/huggingface/hub/models--a--b-uncensored/"
+   ],
+   "tags": {
+    "names": [
+     "x-uncensored:1b"
+    ],
+    "truncated": false
+   },
+   "clock": {
+    "tick": 1,
+    "deadlineMs": 40
+   },
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": true,
+     "count": 2,
+     "sources": [
+      {
+       "runtime": "ollama",
+       "models": 1,
+       "safetyRemovedByName": 1
+      },
+      {
+       "runtime": "huggingface",
+       "models": 1,
+       "safetyRemovedByName": 1
+      }
+     ],
+     "truncated": false,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 37
+   }
+  },
+  {
+   "name": "a clock read equal to the deadline still reads (the JS check is now() > deadline)",
+   "paths": [
+    {
+     "gen": "/home/dev/.local/share/nomic.ai/GPT4All/f{i}-uncensored.gguf",
+     "count": 5
+    }
+   ],
+   "tags": null,
+   "clock": {
+    "tick": 1,
+    "deadlineMs": 3
+   },
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": true,
+     "count": 3,
+     "sources": [
+      {
+       "runtime": "gpt4all",
+       "models": 3,
+       "safetyRemovedByName": 3
+      }
+     ],
+     "truncated": false,
+     "timedOut": true
+    },
+    "tagsTimeoutMs": null
+   }
+  },
+  {
+   "name": "/api/tags gets only the time left",
+   "paths": [],
+   "tags": {
+    "names": [
+     "x-uncensored:1b"
+    ],
+    "truncated": false
+   },
+   "clock": {
+    "tick": 1,
+    "deadlineMs": 300
+   },
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": true,
+     "count": 1,
+     "sources": [
+      {
+       "runtime": "ollama",
+       "models": 1,
+       "safetyRemovedByName": 1
+      }
+     ],
+     "truncated": false,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 299
+   }
+  },
+  {
+   "name": "/api/tags capped at httpTimeoutMs",
+   "paths": [],
+   "tags": null,
+   "clock": {
+    "tick": 1,
+    "deadlineMs": 5000
+   },
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": false,
+     "count": 0,
+     "sources": [],
+     "truncated": false,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 1000
+   }
+  },
+  {
+   "name": "maxEntries across directories",
+   "paths": [
+    {
+     "gen": "/home/dev/.cache/huggingface/hub/models--org{i}--m{i}-uncensored/",
+     "count": 20000
+    }
+   ],
+   "tags": null,
+   "limits": {
+    "maxPerDir": 100000
+   },
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": true,
+     "count": 5000,
+     "sources": [
+      {
+       "runtime": "huggingface",
+       "models": 5000,
+       "safetyRemovedByName": 5000
+      }
+     ],
+     "truncated": true,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 1000
+   }
+  },
+  {
+   "name": "maxPerDir in one directory",
+   "paths": [
+    {
+     "gen": "/home/dev/.local/share/nomic.ai/GPT4All/model-{i}.gguf",
+     "count": 3000
+    },
+    "/home/dev/.cache/huggingface/hub/models--a--uncensored/"
+   ],
+   "tags": null,
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": true,
+     "count": 1,
+     "sources": [
+      {
+       "runtime": "gpt4all",
+       "models": 1000,
+       "safetyRemovedByName": 0
+      },
+      {
+       "runtime": "huggingface",
+       "models": 1,
+       "safetyRemovedByName": 1
+      }
+     ],
+     "truncated": true,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 1000
+   }
+  },
+  {
+   "name": "a directory of exactly maxPerDir entries is flagged truncated",
+   "paths": [
+    {
+     "gen": "/home/dev/.local/share/nomic.ai/GPT4All/m{i}-uncensored.gguf",
+     "count": 3
+    }
+   ],
+   "tags": null,
+   "limits": {
+    "maxPerDir": 3
+   },
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": true,
+     "count": 3,
+     "sources": [
+      {
+       "runtime": "gpt4all",
+       "models": 3,
+       "safetyRemovedByName": 3
+      }
+     ],
+     "truncated": true,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 1000
+   }
+  },
+  {
+   "name": "maxEntries reached on the end-of-directory read",
+   "paths": [
+    {
+     "gen": "/home/dev/.ollama/models/manifests/r/n/m/t{i}",
+     "count": 2
+    }
+   ],
+   "tags": null,
+   "limits": {
+    "maxEntries": 5
+   },
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": false,
+     "count": 0,
+     "sources": [],
+     "truncated": true,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 1000
+   }
+  },
+  {
+   "name": "maxEntries hit exactly by an end-of-directory read stops later runtimes without flagging truncated",
+   "paths": [
+    "/home/dev/.ollama/models/manifests/file-only",
+    "/home/dev/.cache/huggingface/hub/models--a--uncensored/"
+   ],
+   "tags": null,
+   "limits": {
+    "maxEntries": 2
+   },
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": false,
+     "count": 0,
+     "sources": [],
+     "truncated": false,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 1000
+   }
+  },
+  {
+   "name": "small maxEntries over the full tree",
+   "paths": [
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/llama3/latest",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/library/llama2-uncensored/7b",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/huihui_ai/qwen3-abliterated/8b",
+    "/home/dev/.ollama/models/manifests/registry.ollama.ai/huihui_ai/qwen3-abliterated/14b",
+    "/home/dev/.ollama/models/manifests/hf.co/mradermacher/Qwen3-8B-Jailbroken-GGUF/Q4_K_M",
+    "/home/dev/.lmstudio/models/lmstudio-community/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf",
+    "/home/dev/.lmstudio/models/bartowski/LLAMA-3_8B_Unaligned_BETA-GGUF/LLAMA-3_8B_Unaligned_BETA-Q4_K_M.gguf",
+    "/home/dev/.lmstudio/models/secret-team/acme-internal-7b-GGUF/acme-internal-7b-uncensored-q4.gguf",
+    "/home/dev/.local/share/Jan/data/llamacpp/models/huihui-ai/Huihui-Qwen3.5-27B-abliterated/model.gguf",
+    "/home/dev/.local/share/Jan/data/llamacpp/models/huihui-ai/Huihui-Qwen3.5-27B-abliterated/model.yml",
+    "/home/dev/.local/share/Jan/data/llamacpp/models/Menlo/Jan-nano-gguf/model.gguf",
+    "/home/dev/.local/share/nomic.ai/GPT4All/Meta-Llama-3-8B-Instruct.Q4_0.gguf",
+    "/home/dev/.local/share/nomic.ai/GPT4All/localdocs_v2.db",
+    "/home/dev/.cache/llama.cpp/bartowski_Llama-3.2-1B-Instruct-GGUF_Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+    "/home/dev/.cache/llama.cpp/models--OBLITERATUS--Qwen3.8-27B-OBLITERATED/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--huihui-ai--Huihui-Qwen3.8-27B-abliterated-GGUF/blobs/",
+    "/home/dev/.cache/huggingface/hub/models--huihui-ai--Huihui-Qwen3.8-27B-abliterated-GGUF/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--meta-llama--Llama-Guard-3-8B/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--jackhhao--jailbreak-classifier/snapshots/",
+    "/home/dev/.cache/huggingface/hub/models--gpt2/snapshots/",
+    "/home/dev/.cache/huggingface/hub/datasets--unalignment--toxic-dpo-v0.2/",
+    "/home/dev/.cache/huggingface/hub/blobs/",
+    "/home/dev/.cache/huggingface/hub/CACHEDIR.TAG"
+   ],
+   "tags": {
+    "names": [
+     "x-uncensored:1b"
+    ],
+    "truncated": false
+   },
+   "limits": {
+    "maxEntries": 12
+   },
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": true,
+     "count": 2,
+     "sources": [
+      {
+       "runtime": "ollama",
+       "models": 3,
+       "safetyRemovedByName": 2
+      }
+     ],
+     "truncated": true,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 1000
+   }
+  },
+  {
+   "name": "env overrides move the roots",
+   "paths": [
+    "/srv/ollama/manifests/registry.ollama.ai/library/a-uncensored/1b",
+    "/srv/hf/models--o--Heretic-7B/",
+    "/srv/llama/x-abliterated.gguf",
+    "/home/dev/.cache/huggingface/hub/models--o--ignored-uncensored/"
+   ],
+   "env": {
+    "OLLAMA_MODELS": "/srv/ollama",
+    "HF_HUB_CACHE": "/srv/hf",
+    "LLAMA_CACHE": "/srv/llama"
+   },
+   "tags": null,
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": true,
+     "count": 3,
+     "sources": [
+      {
+       "runtime": "ollama",
+       "models": 1,
+       "safetyRemovedByName": 1
+      },
+      {
+       "runtime": "llama.cpp",
+       "models": 1,
+       "safetyRemovedByName": 1
+      },
+      {
+       "runtime": "huggingface",
+       "models": 1,
+       "safetyRemovedByName": 1
+      }
+     ],
+     "truncated": false,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 1000
+   }
+  },
+  {
+   "name": "darwin layout",
+   "platform": "darwin",
+   "home": "/Users/dev",
+   "paths": [
+    "/Users/dev/Library/Application Support/Jan/data/llamacpp/models/o/r-uncensored/m.gguf",
+    "/Users/dev/Library/Caches/llama.cpp/a-heretic.gguf",
+    "/Users/dev/Library/Application Support/nomic.ai/GPT4All/b-unaligned.gguf",
+    "/usr/share/ollama/.ollama/models/manifests/registry.ollama.ai/library/x-uncensored/1b"
+   ],
+   "tags": null,
+   "expect": {
+    "record": {
+     "basis": "name",
+     "safetyRemovedByName": true,
+     "count": 3,
+     "sources": [
+      {
+       "runtime": "jan",
+       "models": 1,
+       "safetyRemovedByName": 1
+      },
+      {
+       "runtime": "gpt4all",
+       "models": 1,
+       "safetyRemovedByName": 1
+      },
+      {
+       "runtime": "llama.cpp",
+       "models": 1,
+       "safetyRemovedByName": 1
+      }
+     ],
+     "truncated": false,
+     "timedOut": false
+    },
+    "tagsTimeoutMs": 1000
+   }
+  }
+ ],
+ "tags": [
+  {
+   "body": "{\"models\":[{\"name\":\"llama3:latest\",\"digest\":\"sha256:aa\"},{\"name\":\"huihui_ai/qwen3-abliterated:8b\"},{\"name\":7},{\"model\":\"x\"}]}",
+   "expect": {
+    "names": [
+     "llama3:latest",
+     "huihui_ai/qwen3-abliterated:8b"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "body": "{\"models\":[{\"name\":\"\"},{\"name\":\"a-uncensored:1b\"},null,{\"name\":7},\"str\",[],{\"name\":{\"x\":1}},{\"name\":\"b:latest\"}]}",
+   "expect": {
+    "names": [
+     "a-uncensored:1b",
+     "b:latest"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "body": "{\"models\":[]}",
+   "expect": {
+    "names": [],
+    "truncated": false
+   }
+  },
+  {
+   "body": "{\"models\":{}}",
+   "expect": null
+  },
+  {
+   "body": "[]",
+   "expect": null
+  },
+  {
+   "body": "null",
+   "expect": null
+  },
+  {
+   "body": "\"models\"",
+   "expect": null
+  },
+  {
+   "body": "7",
+   "expect": null
+  },
+  {
+   "body": "",
+   "expect": null
+  },
+  {
+   "body": "not json",
+   "expect": null
+  },
+  {
+   "body": "{\"models\":[{\"name\":\"a\"}]} trailing",
+   "expect": null
+  },
+  {
+   "body": " \n\t{\"models\":[{\"name\":\"a\"}]}\r\n ",
+   "expect": {
+    "names": [
+     "a"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "body": "﻿{\"models\":[{\"name\":\"a\"}]}",
+   "expect": null
+  },
+  {
+   "body": "{\"models\":[{\"name\":\"x\"}],\"models\":[{\"name\":\"y\"},{\"name\":\"z\"}]}",
+   "expect": {
+    "names": [
+     "y",
+     "z"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "body": "{\"models\":[{\"name\":\"x\",\"name\":\"y\"}]}",
+   "expect": {
+    "names": [
+     "y"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "body": "{\"models\":[{\"name\":\"a\\u0000b\"},{\"name\":\"caf\\u00e9\"},{\"name\":\"\\ud83e\\udd99-uncensored\"}]}",
+   "expect": {
+    "names": [
+     "a\u0000b",
+     "café",
+     "🦙-uncensored"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "body": "{\"models\":[{\"name\":\"a\"},{\"name\":\"b\"},{\"name\":\"c\"}]}",
+   "maxModels": 2,
+   "expect": {
+    "names": [
+     "a",
+     "b"
+    ],
+    "truncated": true
+   }
+  },
+  {
+   "body": "{\"models\":[{\"name\":\"a\"},{\"name\":\"\"},{\"name\":\"c\"}]}",
+   "maxModels": 2,
+   "expect": {
+    "names": [
+     "a",
+     "c"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "body": "{\"models\":[{\"name\":\"a\"},{\"name\":\"b\"}]}",
+   "maxModels": 2,
+   "expect": {
+    "names": [
+     "a",
+     "b"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "body": "{\"models\":[{\"name\":\"a\"}],\"size\":12345678901234567890}",
+   "expect": {
+    "names": [
+     "a"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "body": "{\"models\":[{\"name\":\"a\"}],\"x\":-0.0e-5}",
+   "expect": {
+    "names": [
+     "a"
+    ],
+    "truncated": false
+   }
+  }
+ ],
+ "http": [
+  {
+   "name": "200 with Content-Length",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [
+    "Content-Type: application/json"
+   ],
+   "body": {
+    "text": "{\"models\":[{\"name\":\"llama3:latest\"},{\"name\":\"huihui_ai/qwen3-abliterated:8b\"}]}"
+   },
+   "transfer": "length",
+   "expect": {
+    "names": [
+     "llama3:latest",
+     "huihui_ai/qwen3-abliterated:8b"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "name": "200 chunked",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [
+    "Content-Type: application/json"
+   ],
+   "body": {
+    "text": "{\"models\":[{\"name\":\"llama3:latest\"},{\"name\":\"huihui_ai/qwen3-abliterated:8b\"}]}"
+   },
+   "transfer": "chunked",
+   "expect": {
+    "names": [
+     "llama3:latest",
+     "huihui_ai/qwen3-abliterated:8b"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "name": "200 chunked with a trailer",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [],
+   "body": {
+    "text": "{\"models\":[{\"name\":\"llama3:latest\"},{\"name\":\"huihui_ai/qwen3-abliterated:8b\"}]}"
+   },
+   "transfer": "chunked",
+   "trailer": "X-Checksum: 1",
+   "expect": {
+    "names": [
+     "llama3:latest",
+     "huihui_ai/qwen3-abliterated:8b"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "name": "HTTP/1.0 200 delimited by close",
+   "status": "HTTP/1.0 200 OK",
+   "headers": [],
+   "body": {
+    "text": "{\"models\":[{\"name\":\"llama3:latest\"},{\"name\":\"huihui_ai/qwen3-abliterated:8b\"}]}"
+   },
+   "transfer": "close",
+   "expect": {
+    "names": [
+     "llama3:latest",
+     "huihui_ai/qwen3-abliterated:8b"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "name": "HTTP/1.1 200 delimited by close",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [],
+   "body": {
+    "text": "{\"models\":[{\"name\":\"llama3:latest\"},{\"name\":\"huihui_ai/qwen3-abliterated:8b\"}]}"
+   },
+   "transfer": "close",
+   "expect": {
+    "names": [
+     "llama3:latest",
+     "huihui_ai/qwen3-abliterated:8b"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "name": "200 with no reason phrase",
+   "status": "HTTP/1.1 200",
+   "headers": [],
+   "body": {
+    "text": "{\"models\":[{\"name\":\"llama3:latest\"},{\"name\":\"huihui_ai/qwen3-abliterated:8b\"}]}"
+   },
+   "transfer": "length",
+   "expect": {
+    "names": [
+     "llama3:latest",
+     "huihui_ai/qwen3-abliterated:8b"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "name": "lower-case header names",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [
+    "content-type: application/json"
+   ],
+   "body": {
+    "text": "{\"models\":[{\"name\":\"llama3:latest\"},{\"name\":\"huihui_ai/qwen3-abliterated:8b\"}]}"
+   },
+   "transfer": "lowerlength",
+   "expect": {
+    "names": [
+     "llama3:latest",
+     "huihui_ai/qwen3-abliterated:8b"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "name": "404",
+   "status": "HTTP/1.1 404 Not Found",
+   "headers": [],
+   "body": {
+    "text": "{}"
+   },
+   "transfer": "length",
+   "expect": null
+  },
+  {
+   "name": "500",
+   "status": "HTTP/1.1 500 Internal Server Error",
+   "headers": [],
+   "body": {
+    "text": "{\"models\":[{\"name\":\"llama3:latest\"},{\"name\":\"huihui_ai/qwen3-abliterated:8b\"}]}"
+   },
+   "transfer": "length",
+   "expect": null
+  },
+  {
+   "name": "201 is not 200",
+   "status": "HTTP/1.1 201 Created",
+   "headers": [],
+   "body": {
+    "text": "{\"models\":[{\"name\":\"llama3:latest\"},{\"name\":\"huihui_ai/qwen3-abliterated:8b\"}]}"
+   },
+   "transfer": "length",
+   "expect": null
+  },
+  {
+   "name": "redirect off the device is not followed",
+   "status": "HTTP/1.1 301 Moved Permanently",
+   "headers": [
+    "Location: http://203.0.113.9:11434/api/tags"
+   ],
+   "body": {
+    "text": ""
+   },
+   "transfer": "length",
+   "expect": null
+  },
+  {
+   "name": "200 not JSON",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [],
+   "body": {
+    "text": "not json"
+   },
+   "transfer": "length",
+   "expect": null
+  },
+  {
+   "name": "200 gzip-labelled plain JSON (no decoding on either side)",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [
+    "Content-Encoding: gzip"
+   ],
+   "body": {
+    "text": "{\"models\":[{\"name\":\"llama3:latest\"},{\"name\":\"huihui_ai/qwen3-abliterated:8b\"}]}"
+   },
+   "transfer": "length",
+   "expect": {
+    "names": [
+     "llama3:latest",
+     "huihui_ai/qwen3-abliterated:8b"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "name": "body exactly httpMaxBytes",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [],
+   "body": {
+    "padTo": 1048576
+   },
+   "transfer": "length",
+   "expect": {
+    "names": [
+     "a-uncensored:1b"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "name": "body one byte over httpMaxBytes",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [],
+   "body": {
+    "padTo": 1048577
+   },
+   "transfer": "length",
+   "expect": null
+  },
+  {
+   "name": "chunked body exactly httpMaxBytes",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [],
+   "body": {
+    "padTo": 1048576
+   },
+   "transfer": "chunked",
+   "chunk": 65536,
+   "expect": {
+    "names": [
+     "a-uncensored:1b"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "name": "chunked body one byte over httpMaxBytes",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [],
+   "body": {
+    "padTo": 1048577
+   },
+   "transfer": "chunked",
+   "chunk": 65536,
+   "expect": null
+  },
+  {
+   "name": "close-delimited body one byte over httpMaxBytes",
+   "status": "HTTP/1.0 200 OK",
+   "headers": [],
+   "body": {
+    "padTo": 1048577
+   },
+   "transfer": "close",
+   "expect": null
+  },
+  {
+   "name": "1050 models capped at httpMaxModels",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [],
+   "body": {
+    "models": 1050
+   },
+   "transfer": "length",
+   "expect": {
+    "names": [
+     "m0:latest",
+     "m1:latest",
+     "m2:latest",
+     "m3:latest",
+     "m4:latest",
+     "m5:latest",
+     "m6:latest",
+     "m7:latest",
+     "m8:latest",
+     "m9:latest",
+     "m10:latest",
+     "m11:latest",
+     "m12:latest",
+     "m13:latest",
+     "m14:latest",
+     "m15:latest",
+     "m16:latest",
+     "m17:latest",
+     "m18:latest",
+     "m19:latest",
+     "m20:latest",
+     "m21:latest",
+     "m22:latest",
+     "m23:latest",
+     "m24:latest",
+     "m25:latest",
+     "m26:latest",
+     "m27:latest",
+     "m28:latest",
+     "m29:latest",
+     "m30:latest",
+     "m31:latest",
+     "m32:latest",
+     "m33:latest",
+     "m34:latest",
+     "m35:latest",
+     "m36:latest",
+     "m37:latest",
+     "m38:latest",
+     "m39:latest",
+     "m40:latest",
+     "m41:latest",
+     "m42:latest",
+     "m43:latest",
+     "m44:latest",
+     "m45:latest",
+     "m46:latest",
+     "m47:latest",
+     "m48:latest",
+     "m49:latest",
+     "m50:latest",
+     "m51:latest",
+     "m52:latest",
+     "m53:latest",
+     "m54:latest",
+     "m55:latest",
+     "m56:latest",
+     "m57:latest",
+     "m58:latest",
+     "m59:latest",
+     "m60:latest",
+     "m61:latest",
+     "m62:latest",
+     "m63:latest",
+     "m64:latest",
+     "m65:latest",
+     "m66:latest",
+     "m67:latest",
+     "m68:latest",
+     "m69:latest",
+     "m70:latest",
+     "m71:latest",
+     "m72:latest",
+     "m73:latest",
+     "m74:latest",
+     "m75:latest",
+     "m76:latest",
+     "m77:latest",
+     "m78:latest",
+     "m79:latest",
+     "m80:latest",
+     "m81:latest",
+     "m82:latest",
+     "m83:latest",
+     "m84:latest",
+     "m85:latest",
+     "m86:latest",
+     "m87:latest",
+     "m88:latest",
+     "m89:latest",
+     "m90:latest",
+     "m91:latest",
+     "m92:latest",
+     "m93:latest",
+     "m94:latest",
+     "m95:latest",
+     "m96:latest",
+     "m97:latest",
+     "m98:latest",
+     "m99:latest",
+     "m100:latest",
+     "m101:latest",
+     "m102:latest",
+     "m103:latest",
+     "m104:latest",
+     "m105:latest",
+     "m106:latest",
+     "m107:latest",
+     "m108:latest",
+     "m109:latest",
+     "m110:latest",
+     "m111:latest",
+     "m112:latest",
+     "m113:latest",
+     "m114:latest",
+     "m115:latest",
+     "m116:latest",
+     "m117:latest",
+     "m118:latest",
+     "m119:latest",
+     "m120:latest",
+     "m121:latest",
+     "m122:latest",
+     "m123:latest",
+     "m124:latest",
+     "m125:latest",
+     "m126:latest",
+     "m127:latest",
+     "m128:latest",
+     "m129:latest",
+     "m130:latest",
+     "m131:latest",
+     "m132:latest",
+     "m133:latest",
+     "m134:latest",
+     "m135:latest",
+     "m136:latest",
+     "m137:latest",
+     "m138:latest",
+     "m139:latest",
+     "m140:latest",
+     "m141:latest",
+     "m142:latest",
+     "m143:latest",
+     "m144:latest",
+     "m145:latest",
+     "m146:latest",
+     "m147:latest",
+     "m148:latest",
+     "m149:latest",
+     "m150:latest",
+     "m151:latest",
+     "m152:latest",
+     "m153:latest",
+     "m154:latest",
+     "m155:latest",
+     "m156:latest",
+     "m157:latest",
+     "m158:latest",
+     "m159:latest",
+     "m160:latest",
+     "m161:latest",
+     "m162:latest",
+     "m163:latest",
+     "m164:latest",
+     "m165:latest",
+     "m166:latest",
+     "m167:latest",
+     "m168:latest",
+     "m169:latest",
+     "m170:latest",
+     "m171:latest",
+     "m172:latest",
+     "m173:latest",
+     "m174:latest",
+     "m175:latest",
+     "m176:latest",
+     "m177:latest",
+     "m178:latest",
+     "m179:latest",
+     "m180:latest",
+     "m181:latest",
+     "m182:latest",
+     "m183:latest",
+     "m184:latest",
+     "m185:latest",
+     "m186:latest",
+     "m187:latest",
+     "m188:latest",
+     "m189:latest",
+     "m190:latest",
+     "m191:latest",
+     "m192:latest",
+     "m193:latest",
+     "m194:latest",
+     "m195:latest",
+     "m196:latest",
+     "m197:latest",
+     "m198:latest",
+     "m199:latest",
+     "m200:latest",
+     "m201:latest",
+     "m202:latest",
+     "m203:latest",
+     "m204:latest",
+     "m205:latest",
+     "m206:latest",
+     "m207:latest",
+     "m208:latest",
+     "m209:latest",
+     "m210:latest",
+     "m211:latest",
+     "m212:latest",
+     "m213:latest",
+     "m214:latest",
+     "m215:latest",
+     "m216:latest",
+     "m217:latest",
+     "m218:latest",
+     "m219:latest",
+     "m220:latest",
+     "m221:latest",
+     "m222:latest",
+     "m223:latest",
+     "m224:latest",
+     "m225:latest",
+     "m226:latest",
+     "m227:latest",
+     "m228:latest",
+     "m229:latest",
+     "m230:latest",
+     "m231:latest",
+     "m232:latest",
+     "m233:latest",
+     "m234:latest",
+     "m235:latest",
+     "m236:latest",
+     "m237:latest",
+     "m238:latest",
+     "m239:latest",
+     "m240:latest",
+     "m241:latest",
+     "m242:latest",
+     "m243:latest",
+     "m244:latest",
+     "m245:latest",
+     "m246:latest",
+     "m247:latest",
+     "m248:latest",
+     "m249:latest",
+     "m250:latest",
+     "m251:latest",
+     "m252:latest",
+     "m253:latest",
+     "m254:latest",
+     "m255:latest",
+     "m256:latest",
+     "m257:latest",
+     "m258:latest",
+     "m259:latest",
+     "m260:latest",
+     "m261:latest",
+     "m262:latest",
+     "m263:latest",
+     "m264:latest",
+     "m265:latest",
+     "m266:latest",
+     "m267:latest",
+     "m268:latest",
+     "m269:latest",
+     "m270:latest",
+     "m271:latest",
+     "m272:latest",
+     "m273:latest",
+     "m274:latest",
+     "m275:latest",
+     "m276:latest",
+     "m277:latest",
+     "m278:latest",
+     "m279:latest",
+     "m280:latest",
+     "m281:latest",
+     "m282:latest",
+     "m283:latest",
+     "m284:latest",
+     "m285:latest",
+     "m286:latest",
+     "m287:latest",
+     "m288:latest",
+     "m289:latest",
+     "m290:latest",
+     "m291:latest",
+     "m292:latest",
+     "m293:latest",
+     "m294:latest",
+     "m295:latest",
+     "m296:latest",
+     "m297:latest",
+     "m298:latest",
+     "m299:latest",
+     "m300:latest",
+     "m301:latest",
+     "m302:latest",
+     "m303:latest",
+     "m304:latest",
+     "m305:latest",
+     "m306:latest",
+     "m307:latest",
+     "m308:latest",
+     "m309:latest",
+     "m310:latest",
+     "m311:latest",
+     "m312:latest",
+     "m313:latest",
+     "m314:latest",
+     "m315:latest",
+     "m316:latest",
+     "m317:latest",
+     "m318:latest",
+     "m319:latest",
+     "m320:latest",
+     "m321:latest",
+     "m322:latest",
+     "m323:latest",
+     "m324:latest",
+     "m325:latest",
+     "m326:latest",
+     "m327:latest",
+     "m328:latest",
+     "m329:latest",
+     "m330:latest",
+     "m331:latest",
+     "m332:latest",
+     "m333:latest",
+     "m334:latest",
+     "m335:latest",
+     "m336:latest",
+     "m337:latest",
+     "m338:latest",
+     "m339:latest",
+     "m340:latest",
+     "m341:latest",
+     "m342:latest",
+     "m343:latest",
+     "m344:latest",
+     "m345:latest",
+     "m346:latest",
+     "m347:latest",
+     "m348:latest",
+     "m349:latest",
+     "m350:latest",
+     "m351:latest",
+     "m352:latest",
+     "m353:latest",
+     "m354:latest",
+     "m355:latest",
+     "m356:latest",
+     "m357:latest",
+     "m358:latest",
+     "m359:latest",
+     "m360:latest",
+     "m361:latest",
+     "m362:latest",
+     "m363:latest",
+     "m364:latest",
+     "m365:latest",
+     "m366:latest",
+     "m367:latest",
+     "m368:latest",
+     "m369:latest",
+     "m370:latest",
+     "m371:latest",
+     "m372:latest",
+     "m373:latest",
+     "m374:latest",
+     "m375:latest",
+     "m376:latest",
+     "m377:latest",
+     "m378:latest",
+     "m379:latest",
+     "m380:latest",
+     "m381:latest",
+     "m382:latest",
+     "m383:latest",
+     "m384:latest",
+     "m385:latest",
+     "m386:latest",
+     "m387:latest",
+     "m388:latest",
+     "m389:latest",
+     "m390:latest",
+     "m391:latest",
+     "m392:latest",
+     "m393:latest",
+     "m394:latest",
+     "m395:latest",
+     "m396:latest",
+     "m397:latest",
+     "m398:latest",
+     "m399:latest",
+     "m400:latest",
+     "m401:latest",
+     "m402:latest",
+     "m403:latest",
+     "m404:latest",
+     "m405:latest",
+     "m406:latest",
+     "m407:latest",
+     "m408:latest",
+     "m409:latest",
+     "m410:latest",
+     "m411:latest",
+     "m412:latest",
+     "m413:latest",
+     "m414:latest",
+     "m415:latest",
+     "m416:latest",
+     "m417:latest",
+     "m418:latest",
+     "m419:latest",
+     "m420:latest",
+     "m421:latest",
+     "m422:latest",
+     "m423:latest",
+     "m424:latest",
+     "m425:latest",
+     "m426:latest",
+     "m427:latest",
+     "m428:latest",
+     "m429:latest",
+     "m430:latest",
+     "m431:latest",
+     "m432:latest",
+     "m433:latest",
+     "m434:latest",
+     "m435:latest",
+     "m436:latest",
+     "m437:latest",
+     "m438:latest",
+     "m439:latest",
+     "m440:latest",
+     "m441:latest",
+     "m442:latest",
+     "m443:latest",
+     "m444:latest",
+     "m445:latest",
+     "m446:latest",
+     "m447:latest",
+     "m448:latest",
+     "m449:latest",
+     "m450:latest",
+     "m451:latest",
+     "m452:latest",
+     "m453:latest",
+     "m454:latest",
+     "m455:latest",
+     "m456:latest",
+     "m457:latest",
+     "m458:latest",
+     "m459:latest",
+     "m460:latest",
+     "m461:latest",
+     "m462:latest",
+     "m463:latest",
+     "m464:latest",
+     "m465:latest",
+     "m466:latest",
+     "m467:latest",
+     "m468:latest",
+     "m469:latest",
+     "m470:latest",
+     "m471:latest",
+     "m472:latest",
+     "m473:latest",
+     "m474:latest",
+     "m475:latest",
+     "m476:latest",
+     "m477:latest",
+     "m478:latest",
+     "m479:latest",
+     "m480:latest",
+     "m481:latest",
+     "m482:latest",
+     "m483:latest",
+     "m484:latest",
+     "m485:latest",
+     "m486:latest",
+     "m487:latest",
+     "m488:latest",
+     "m489:latest",
+     "m490:latest",
+     "m491:latest",
+     "m492:latest",
+     "m493:latest",
+     "m494:latest",
+     "m495:latest",
+     "m496:latest",
+     "m497:latest",
+     "m498:latest",
+     "m499:latest",
+     "m500:latest",
+     "m501:latest",
+     "m502:latest",
+     "m503:latest",
+     "m504:latest",
+     "m505:latest",
+     "m506:latest",
+     "m507:latest",
+     "m508:latest",
+     "m509:latest",
+     "m510:latest",
+     "m511:latest",
+     "m512:latest",
+     "m513:latest",
+     "m514:latest",
+     "m515:latest",
+     "m516:latest",
+     "m517:latest",
+     "m518:latest",
+     "m519:latest",
+     "m520:latest",
+     "m521:latest",
+     "m522:latest",
+     "m523:latest",
+     "m524:latest",
+     "m525:latest",
+     "m526:latest",
+     "m527:latest",
+     "m528:latest",
+     "m529:latest",
+     "m530:latest",
+     "m531:latest",
+     "m532:latest",
+     "m533:latest",
+     "m534:latest",
+     "m535:latest",
+     "m536:latest",
+     "m537:latest",
+     "m538:latest",
+     "m539:latest",
+     "m540:latest",
+     "m541:latest",
+     "m542:latest",
+     "m543:latest",
+     "m544:latest",
+     "m545:latest",
+     "m546:latest",
+     "m547:latest",
+     "m548:latest",
+     "m549:latest",
+     "m550:latest",
+     "m551:latest",
+     "m552:latest",
+     "m553:latest",
+     "m554:latest",
+     "m555:latest",
+     "m556:latest",
+     "m557:latest",
+     "m558:latest",
+     "m559:latest",
+     "m560:latest",
+     "m561:latest",
+     "m562:latest",
+     "m563:latest",
+     "m564:latest",
+     "m565:latest",
+     "m566:latest",
+     "m567:latest",
+     "m568:latest",
+     "m569:latest",
+     "m570:latest",
+     "m571:latest",
+     "m572:latest",
+     "m573:latest",
+     "m574:latest",
+     "m575:latest",
+     "m576:latest",
+     "m577:latest",
+     "m578:latest",
+     "m579:latest",
+     "m580:latest",
+     "m581:latest",
+     "m582:latest",
+     "m583:latest",
+     "m584:latest",
+     "m585:latest",
+     "m586:latest",
+     "m587:latest",
+     "m588:latest",
+     "m589:latest",
+     "m590:latest",
+     "m591:latest",
+     "m592:latest",
+     "m593:latest",
+     "m594:latest",
+     "m595:latest",
+     "m596:latest",
+     "m597:latest",
+     "m598:latest",
+     "m599:latest",
+     "m600:latest",
+     "m601:latest",
+     "m602:latest",
+     "m603:latest",
+     "m604:latest",
+     "m605:latest",
+     "m606:latest",
+     "m607:latest",
+     "m608:latest",
+     "m609:latest",
+     "m610:latest",
+     "m611:latest",
+     "m612:latest",
+     "m613:latest",
+     "m614:latest",
+     "m615:latest",
+     "m616:latest",
+     "m617:latest",
+     "m618:latest",
+     "m619:latest",
+     "m620:latest",
+     "m621:latest",
+     "m622:latest",
+     "m623:latest",
+     "m624:latest",
+     "m625:latest",
+     "m626:latest",
+     "m627:latest",
+     "m628:latest",
+     "m629:latest",
+     "m630:latest",
+     "m631:latest",
+     "m632:latest",
+     "m633:latest",
+     "m634:latest",
+     "m635:latest",
+     "m636:latest",
+     "m637:latest",
+     "m638:latest",
+     "m639:latest",
+     "m640:latest",
+     "m641:latest",
+     "m642:latest",
+     "m643:latest",
+     "m644:latest",
+     "m645:latest",
+     "m646:latest",
+     "m647:latest",
+     "m648:latest",
+     "m649:latest",
+     "m650:latest",
+     "m651:latest",
+     "m652:latest",
+     "m653:latest",
+     "m654:latest",
+     "m655:latest",
+     "m656:latest",
+     "m657:latest",
+     "m658:latest",
+     "m659:latest",
+     "m660:latest",
+     "m661:latest",
+     "m662:latest",
+     "m663:latest",
+     "m664:latest",
+     "m665:latest",
+     "m666:latest",
+     "m667:latest",
+     "m668:latest",
+     "m669:latest",
+     "m670:latest",
+     "m671:latest",
+     "m672:latest",
+     "m673:latest",
+     "m674:latest",
+     "m675:latest",
+     "m676:latest",
+     "m677:latest",
+     "m678:latest",
+     "m679:latest",
+     "m680:latest",
+     "m681:latest",
+     "m682:latest",
+     "m683:latest",
+     "m684:latest",
+     "m685:latest",
+     "m686:latest",
+     "m687:latest",
+     "m688:latest",
+     "m689:latest",
+     "m690:latest",
+     "m691:latest",
+     "m692:latest",
+     "m693:latest",
+     "m694:latest",
+     "m695:latest",
+     "m696:latest",
+     "m697:latest",
+     "m698:latest",
+     "m699:latest",
+     "m700:latest",
+     "m701:latest",
+     "m702:latest",
+     "m703:latest",
+     "m704:latest",
+     "m705:latest",
+     "m706:latest",
+     "m707:latest",
+     "m708:latest",
+     "m709:latest",
+     "m710:latest",
+     "m711:latest",
+     "m712:latest",
+     "m713:latest",
+     "m714:latest",
+     "m715:latest",
+     "m716:latest",
+     "m717:latest",
+     "m718:latest",
+     "m719:latest",
+     "m720:latest",
+     "m721:latest",
+     "m722:latest",
+     "m723:latest",
+     "m724:latest",
+     "m725:latest",
+     "m726:latest",
+     "m727:latest",
+     "m728:latest",
+     "m729:latest",
+     "m730:latest",
+     "m731:latest",
+     "m732:latest",
+     "m733:latest",
+     "m734:latest",
+     "m735:latest",
+     "m736:latest",
+     "m737:latest",
+     "m738:latest",
+     "m739:latest",
+     "m740:latest",
+     "m741:latest",
+     "m742:latest",
+     "m743:latest",
+     "m744:latest",
+     "m745:latest",
+     "m746:latest",
+     "m747:latest",
+     "m748:latest",
+     "m749:latest",
+     "m750:latest",
+     "m751:latest",
+     "m752:latest",
+     "m753:latest",
+     "m754:latest",
+     "m755:latest",
+     "m756:latest",
+     "m757:latest",
+     "m758:latest",
+     "m759:latest",
+     "m760:latest",
+     "m761:latest",
+     "m762:latest",
+     "m763:latest",
+     "m764:latest",
+     "m765:latest",
+     "m766:latest",
+     "m767:latest",
+     "m768:latest",
+     "m769:latest",
+     "m770:latest",
+     "m771:latest",
+     "m772:latest",
+     "m773:latest",
+     "m774:latest",
+     "m775:latest",
+     "m776:latest",
+     "m777:latest",
+     "m778:latest",
+     "m779:latest",
+     "m780:latest",
+     "m781:latest",
+     "m782:latest",
+     "m783:latest",
+     "m784:latest",
+     "m785:latest",
+     "m786:latest",
+     "m787:latest",
+     "m788:latest",
+     "m789:latest",
+     "m790:latest",
+     "m791:latest",
+     "m792:latest",
+     "m793:latest",
+     "m794:latest",
+     "m795:latest",
+     "m796:latest",
+     "m797:latest",
+     "m798:latest",
+     "m799:latest",
+     "m800:latest",
+     "m801:latest",
+     "m802:latest",
+     "m803:latest",
+     "m804:latest",
+     "m805:latest",
+     "m806:latest",
+     "m807:latest",
+     "m808:latest",
+     "m809:latest",
+     "m810:latest",
+     "m811:latest",
+     "m812:latest",
+     "m813:latest",
+     "m814:latest",
+     "m815:latest",
+     "m816:latest",
+     "m817:latest",
+     "m818:latest",
+     "m819:latest",
+     "m820:latest",
+     "m821:latest",
+     "m822:latest",
+     "m823:latest",
+     "m824:latest",
+     "m825:latest",
+     "m826:latest",
+     "m827:latest",
+     "m828:latest",
+     "m829:latest",
+     "m830:latest",
+     "m831:latest",
+     "m832:latest",
+     "m833:latest",
+     "m834:latest",
+     "m835:latest",
+     "m836:latest",
+     "m837:latest",
+     "m838:latest",
+     "m839:latest",
+     "m840:latest",
+     "m841:latest",
+     "m842:latest",
+     "m843:latest",
+     "m844:latest",
+     "m845:latest",
+     "m846:latest",
+     "m847:latest",
+     "m848:latest",
+     "m849:latest",
+     "m850:latest",
+     "m851:latest",
+     "m852:latest",
+     "m853:latest",
+     "m854:latest",
+     "m855:latest",
+     "m856:latest",
+     "m857:latest",
+     "m858:latest",
+     "m859:latest",
+     "m860:latest",
+     "m861:latest",
+     "m862:latest",
+     "m863:latest",
+     "m864:latest",
+     "m865:latest",
+     "m866:latest",
+     "m867:latest",
+     "m868:latest",
+     "m869:latest",
+     "m870:latest",
+     "m871:latest",
+     "m872:latest",
+     "m873:latest",
+     "m874:latest",
+     "m875:latest",
+     "m876:latest",
+     "m877:latest",
+     "m878:latest",
+     "m879:latest",
+     "m880:latest",
+     "m881:latest",
+     "m882:latest",
+     "m883:latest",
+     "m884:latest",
+     "m885:latest",
+     "m886:latest",
+     "m887:latest",
+     "m888:latest",
+     "m889:latest",
+     "m890:latest",
+     "m891:latest",
+     "m892:latest",
+     "m893:latest",
+     "m894:latest",
+     "m895:latest",
+     "m896:latest",
+     "m897:latest",
+     "m898:latest",
+     "m899:latest",
+     "m900:latest",
+     "m901:latest",
+     "m902:latest",
+     "m903:latest",
+     "m904:latest",
+     "m905:latest",
+     "m906:latest",
+     "m907:latest",
+     "m908:latest",
+     "m909:latest",
+     "m910:latest",
+     "m911:latest",
+     "m912:latest",
+     "m913:latest",
+     "m914:latest",
+     "m915:latest",
+     "m916:latest",
+     "m917:latest",
+     "m918:latest",
+     "m919:latest",
+     "m920:latest",
+     "m921:latest",
+     "m922:latest",
+     "m923:latest",
+     "m924:latest",
+     "m925:latest",
+     "m926:latest",
+     "m927:latest",
+     "m928:latest",
+     "m929:latest",
+     "m930:latest",
+     "m931:latest",
+     "m932:latest",
+     "m933:latest",
+     "m934:latest",
+     "m935:latest",
+     "m936:latest",
+     "m937:latest",
+     "m938:latest",
+     "m939:latest",
+     "m940:latest",
+     "m941:latest",
+     "m942:latest",
+     "m943:latest",
+     "m944:latest",
+     "m945:latest",
+     "m946:latest",
+     "m947:latest",
+     "m948:latest",
+     "m949:latest",
+     "m950:latest",
+     "m951:latest",
+     "m952:latest",
+     "m953:latest",
+     "m954:latest",
+     "m955:latest",
+     "m956:latest",
+     "m957:latest",
+     "m958:latest",
+     "m959:latest",
+     "m960:latest",
+     "m961:latest",
+     "m962:latest",
+     "m963:latest",
+     "m964:latest",
+     "m965:latest",
+     "m966:latest",
+     "m967:latest",
+     "m968:latest",
+     "m969:latest",
+     "m970:latest",
+     "m971:latest",
+     "m972:latest",
+     "m973:latest",
+     "m974:latest",
+     "m975:latest",
+     "m976:latest",
+     "m977:latest",
+     "m978:latest",
+     "m979:latest",
+     "m980:latest",
+     "m981:latest",
+     "m982:latest",
+     "m983:latest",
+     "m984:latest",
+     "m985:latest",
+     "m986:latest",
+     "m987:latest",
+     "m988:latest",
+     "m989:latest",
+     "m990:latest",
+     "m991:latest",
+     "m992:latest",
+     "m993:latest",
+     "m994:latest",
+     "m995:latest",
+     "m996:latest",
+     "m997:latest",
+     "m998:latest",
+     "m999:latest"
+    ],
+    "truncated": true
+   }
+  },
+  {
+   "name": "Content-Length longer than the body, then close",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [],
+   "body": {
+    "text": "{\"models\":[{\"name\":\"llama3:latest\"},{\"name\":\"huihui_ai/qwen3-abliterated:8b\"}]}"
+   },
+   "transfer": "short",
+   "expect": null
+  },
+  {
+   "name": "chunked cut off before the last chunk",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [],
+   "body": {
+    "text": "{\"models\":[{\"name\":\"llama3:latest\"},{\"name\":\"huihui_ai/qwen3-abliterated:8b\"}]}"
+   },
+   "transfer": "chunkedcut",
+   "expect": null
+  },
+  {
+   "name": "Content-Length and chunked together",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [
+    "Content-Length: 5",
+    "Transfer-Encoding: chunked"
+   ],
+   "body": {
+    "text": "5\r\n{\"mo\r\n0\r\n\r\n"
+   },
+   "transfer": "none",
+   "expect": null
+  },
+  {
+   "name": "two different Content-Lengths",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [
+    "Content-Length: 2",
+    "Content-Length: 3"
+   ],
+   "body": {
+    "text": "{}x"
+   },
+   "transfer": "none",
+   "expect": null
+  },
+  {
+   "name": "two equal Content-Lengths",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [
+    "Content-Length: 13",
+    "Content-Length: 13"
+   ],
+   "body": {
+    "text": "{\"models\":[]}"
+   },
+   "transfer": "none",
+   "expect": null
+  },
+  {
+   "name": "Transfer-Encoding without chunked is delimited by close",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [
+    "Transfer-Encoding: identity"
+   ],
+   "body": {
+    "text": "{\"models\":[{\"name\":\"llama3:latest\"},{\"name\":\"huihui_ai/qwen3-abliterated:8b\"}]}"
+   },
+   "transfer": "none",
+   "expect": {
+    "names": [
+     "llama3:latest",
+     "huihui_ai/qwen3-abliterated:8b"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "name": "UTF-8 names",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [],
+   "body": {
+    "text": "{\"models\":[{\"name\":\"café-uncensored:1b\"},{\"name\":\"🦙:latest\"}]}"
+   },
+   "transfer": "length",
+   "expect": {
+    "names": [
+     "café-uncensored:1b",
+     "🦙:latest"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "name": "invalid UTF-8 in a name",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [],
+   "body": {
+    "hex": "7b226d6f64656c73223a5b7b226e616d65223a2278ff2d756e63656e736f7265643a3162227d5d7d"
+   },
+   "transfer": "length",
+   "expect": {
+    "names": [
+     "x�-uncensored:1b"
+    ],
+    "truncated": false
+   }
+  },
+  {
+   "name": "chunk size 2^64-1 as the first chunk (overflow)",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [
+    "Transfer-Encoding: chunked"
+   ],
+   "body": {
+    "text": "ffffffffffffffff\r\n{\"models\":[{\"name\":\"llama3:latest\"}]}\r\n0\r\n\r\n"
+   },
+   "transfer": "none",
+   "expect": null
+  },
+  {
+   "name": "chunk size 2^64-1 after a chunk (overflow)",
+   "status": "HTTP/1.1 200 OK",
+   "headers": [
+    "Transfer-Encoding: chunked"
+   ],
+   "body": {
+    "text": "7\r\n{\"model\r\nffffffffffffffff\r\ns\":[{\"name\":\"llama3:latest\"}]}\r\n0\r\n\r\n"
+   },
+   "transfer": "none",
+   "expect": null
+  }
+ ]
+}

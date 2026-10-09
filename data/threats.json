@@ -1578,6 +1578,50 @@
         "AML.T0035": "model files and caches, one command"
       },
       "stride": "Information Disclosure"
+    },
+    {
+      "id": 78,
+      "category": "Data Exposure",
+      "threat": "Data sent to an out-of-band collection host",
+      "example": "The agent sends data to a public request-capture or OAST service whose purpose is to record what reaches it for someone else to read: a POST, an upload, a query string or a substituted value to webhook.site, an interactsh host (*.oast.fun, *.oast.pro, interact.sh), Burp Collaborator (*.oastify.com, *.burpcollaborator.net), a Pipedream endpoint (*.m.pipedream.net), Request Catcher, Beeceptor or a Canarytokens hostname.",
+      "response": "Stop the call. Data is about to reach a public collection endpoint, which is how a backdoored or injected agent ships what it collected. Confirm who owns the endpoint before anything is sent.",
+      "saferAlternative": "Send test webhooks to an endpoint your organisation owns, or to a local listener on localhost.",
+      "severity": 4,
+      "likelihood": 3,
+      "riskScore": 12,
+      "riskLevel": "High",
+      "sources": [
+        "Agent safety",
+        "OWASP"
+      ],
+      "owasp": "LLM02",
+      "atlas": "AML.T0086",
+      "atlasPartial": {
+        "AML.T0086": "listed collection hosts only"
+      },
+      "stride": "Information Disclosure"
+    },
+    {
+      "id": 79,
+      "category": "Data Exposure",
+      "threat": "Out-of-band collection host contacted",
+      "example": "The agent contacts a public request-capture or OAST service with no data attached: a plain GET, a DNS lookup or a ping of an interactsh, Burp Collaborator, webhook.site, Pipedream, Request Catcher, Beeceptor or Canarytokens host. On its own it can be a test; it is also the call that tells an attacker their payload ran.",
+      "response": "Review why the agent is contacting a public collection endpoint. A callback with no payload is how an attacker confirms code execution before sending data.",
+      "saferAlternative": "Use an endpoint your organisation owns, or a local listener, for connectivity and webhook tests.",
+      "severity": 3,
+      "likelihood": 2,
+      "riskScore": 6,
+      "riskLevel": "Medium",
+      "sources": [
+        "Agent safety",
+        "OWASP"
+      ],
+      "owasp": "LLM02",
+      "atlas": "AML.T0086",
+      "atlasPartial": {
+        "AML.T0086": "listed collection hosts, contact without a payload"
+      },
+      "stride": "Information Disclosure"
     }
   ]
 }

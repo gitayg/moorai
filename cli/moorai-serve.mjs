@@ -6,7 +6,10 @@
 // ask -> deny by default, workload identity, content-free reporting to the console when one is configured.
 //
 //   POST /v1/scan       { text, stage?, ctx? }     -> content-free verdict on one string
-//   POST /v1/tool-call  { tool, input, cwd? }      -> the decision the hook makes for that tool call
+//   POST /v1/tool-call  { tool, input, cwd?, toolCallId? } -> the decision the hook makes for that tool call;
+//                                                     toolCallId (the model's tool call id) is passed on to
+//                                                     moorai-model-proxy for its skip alert when
+//                                                     --model-proxy-url is set, and otherwise ignored
 //   POST /v1/index-scan { chunks, source? }        -> one content-free verdict per chunk about to be
 //                                                     embedded (allow / flag / deny), index stage
 //   GET  /healthz                                  -> { status, version, policyId }
@@ -24,7 +27,9 @@
 //   moorai-serve [--host 127.0.0.1] [--port 8790] [--token-file <path>] [--allow-remote]
 //                [--max-body 1048576] [--timeout-ms 10000] [--policy-file <path>] [--service-id <name>]
 //                [--headless-ask deny|allow-with-report] [--log]
-//   Token: --token-file, else MOORAI_SERVE_TOKEN. Console binding: MOORAI_SERVER_URL / MOORAI_TENANT /
+//                [--model-proxy-url http://127.0.0.1:8791] [--model-proxy-token-file <path>]
+//   Token: --token-file, else MOORAI_SERVE_TOKEN. The model proxy's token: --model-proxy-token-file, else
+//   MOORAI_MODEL_PROXY_TOKEN. Console binding: MOORAI_SERVER_URL / MOORAI_TENANT /
 //   MOORAI_INSTALL_TOKEN or /etc/moorai/config.json, as server mode reads them.
 import http from "node:http";
 import { readFileSync, realpathSync } from "node:fs";
@@ -34,6 +39,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { createMoorAI, STAGES } from "../packages/agent-sdk/src/runtime.mjs";
 import { inboundLib, indexScanLib } from "../packages/agent-sdk/src/core.mjs";
+import { createCheckedNotifier } from "../model-proxy/checked-notify.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({ host: "127.0.0.1", port: 8790, maxBody: 1048576, timeoutMs: 10000 });
@@ -66,9 +72,19 @@ export function parseArgs(argv, env = process.env) {
     else if (a === "--service-id") o.serviceId = v();
     else if (a === "--headless-ask") o.headlessAsk = v();
     else if (a === "--log") o.log = true;
+    else if (a === "--model-proxy-url") o.modelProxyUrl = v();
+    else if (a === "--model-proxy-token-file") o.modelProxyToken = readFileSync(v(), "utf8").trim();
     else throw new Error(`unknown argument ${a}`);
   }
   if (!o.token && env.MOORAI_SERVE_TOKEN) o.token = String(env.MOORAI_SERVE_TOKEN).trim();
+  if (o.modelProxyUrl) {
+    let u;
+    try { u = new URL(o.modelProxyUrl); } catch { throw new Error("--model-proxy-url is not a URL"); }
+    if (u.username || u.password || u.search || (u.protocol !== "http:" && u.protocol !== "https:")) throw new Error("--model-proxy-url must be an http(s) URL with no credentials or query string");
+    // The proxy's token travels with every batch: never in clear across a network.
+    if (u.protocol === "http:" && !isLoopback(u.hostname)) throw new Error("--model-proxy-url: plain http to a non-loopback host is refused");
+    if (!o.modelProxyToken && env.MOORAI_MODEL_PROXY_TOKEN) o.modelProxyToken = String(env.MOORAI_MODEL_PROXY_TOKEN).trim();
+  }
   if (!Number.isInteger(o.port) || o.port < 0 || o.port > 65535) throw new Error("--port must be 0-65535");
   if (!Number.isInteger(o.maxBody) || o.maxBody < 1024) throw new Error("--max-body must be an integer >= 1024");
   if (!Number.isInteger(o.timeoutMs) || o.timeoutMs < 100) throw new Error("--timeout-ms must be an integer >= 100");
@@ -131,6 +147,7 @@ export async function createServer(opts = {}) {
   await rt.ready();
   const version = (() => { try { return JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version; } catch { return "unknown"; } })();
   const loopbackBind = isLoopback(o.host);
+  const notifier = o.modelProxyUrl ? createCheckedNotifier({ url: o.modelProxyUrl, token: o.modelProxyToken || "", fetchImpl: o.notifyFetch }) : null;
   const log = (req, status, t0) => { if (o.log) process.stderr.write(`${new Date().toISOString()} ${req.method} ${req.url.split("?")[0]} ${status} ${(performance.now() - t0).toFixed(1)}ms\n`); };
 
   async function route(req) {
@@ -177,7 +194,10 @@ export async function createServer(opts = {}) {
     if (typeof body.tool !== "string" || !body.tool || body.tool.length > 256) throw new HttpError(400, "tool must be a non-empty string");
     if (body.input != null && (typeof body.input !== "object" || Array.isArray(body.input))) throw new HttpError(400, "input must be an object");
     if (body.cwd != null && typeof body.cwd !== "string") throw new HttpError(400, "cwd must be a string");
-    return withTimeout(rt.toolCall({ tool: body.tool, input: body.input || {}, cwd: body.cwd || process.cwd(), permissionMode: typeof body.permissionMode === "string" ? body.permissionMode.slice(0, 32) : "" }), o.timeoutMs);
+    if (body.toolCallId != null && (typeof body.toolCallId !== "string" || !body.toolCallId || body.toolCallId.length > 256)) throw new HttpError(400, "toolCallId must be a non-empty string of at most 256 characters");
+    const v = await withTimeout(rt.toolCall({ tool: body.tool, input: body.input || {}, cwd: body.cwd || process.cwd(), permissionMode: typeof body.permissionMode === "string" ? body.permissionMode.slice(0, 32) : "" }), o.timeoutMs);
+    if (notifier && body.toolCallId) notifier.note(body.toolCallId);
+    return v;
   }
 
   const server = http.createServer(async (req, res) => {
@@ -202,8 +222,8 @@ export async function createServer(opts = {}) {
   await new Promise((res, rej) => { server.once("error", rej); server.listen(o.port, o.host, () => { server.off("error", rej); res(); }); });
   const addr = server.address();
   const url = `http://${addr.family === "IPv6" ? `[${addr.address}]` : addr.address}:${addr.port}`;
-  const close = async () => { await new Promise((r) => server.close(() => r())); server.closeAllConnections?.(); await rt.flush(); };
-  return { server, url, runtime: rt, close };
+  const close = async () => { await new Promise((r) => server.close(() => r())); server.closeAllConnections?.(); if (notifier) await notifier.close(); await rt.flush(); };
+  return { server, url, runtime: rt, close, ...(notifier ? { notifier } : {}) };
 }
 
 async function main() {
@@ -211,7 +231,7 @@ async function main() {
   try { o = parseArgs(process.argv.slice(2)); } catch (e) { process.stderr.write(`moorai-serve: ${e.message}\n`); process.exit(2); }
   const s = await createServer(o);
   // One machine-readable line, so a supervisor (or a test using --port 0) can find the port.
-  process.stdout.write(JSON.stringify({ listening: s.url, auth: o.token ? "bearer" : "none", serviceId: s.runtime.settings.serviceId }) + "\n");
+  process.stdout.write(JSON.stringify({ listening: s.url, auth: o.token ? "bearer" : "none", serviceId: s.runtime.settings.serviceId, ...(o.modelProxyUrl ? { modelProxy: new URL(o.modelProxyUrl).origin } : {}) }) + "\n");
   const stop = async () => { await s.close(); process.exit(0); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);

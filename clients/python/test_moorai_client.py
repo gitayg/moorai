@@ -82,6 +82,15 @@ class LiveSidecar(unittest.TestCase):
     def test_tool_call_allow(self):
         self.assertEqual(self.c.tool_call_or_raise("Bash", {"command": "ls -la"})["decision"], "allow")
 
+    def test_tool_call_id_is_sent(self):
+        v = self.c.tool_call("Bash", {"command": "ls -la"}, tool_call_id="toolu_py_0001")
+        self.assertEqual(v["decision"], "allow")
+        self.assertNotIn("toolu_py_0001", json.dumps(v))
+        # The sidecar validates the id it receives: an over-long one is a 400, so the client did send it.
+        with self.assertRaises(MoorAIError) as ctx:
+            self.c.tool_call("Bash", {"command": "ls -la"}, tool_call_id="x" * 257)
+        self.assertEqual(ctx.exception.status, 400)
+
     def test_bad_stage_is_rejected_locally(self):
         with self.assertRaises(ValueError):
             self.c.scan("x", stage="bogus")

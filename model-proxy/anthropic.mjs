@@ -9,6 +9,7 @@
 //             message_delta… → message_stop, plus "any number of `ping` events". A tool_use block's input
 //             arrives as input_json_delta "partial JSON strings", complete at its content_block_stop.
 //   errors    {"type":"error","error":{"type","message"}}; mid-stream, `event: error` with the same body.
+export { replaceResponse, createReplaceStream } from "./anthropic-replace.mjs";
 export const NAME = "anthropic";
 
 const texts = (content) => {

@@ -15,7 +15,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DOCKERFILE = join(ROOT, "docker", "server", "Dockerfile");
 const IGNORE = join(ROOT, "docker", "server", "Dockerfile.dockerignore");
 const WORKFLOW = join(ROOT, ".github", "workflows", "publish-server-image.yml");
-const ENTRYPOINTS = ["cli/moorai-serve.mjs", "mcp-gateway/moorai-mcp-gateway.mjs", "model-proxy/moorai-model-proxy.mjs"];
+const ENTRYPOINTS = ["cli/moorai-serve.mjs", "mcp-gateway/moorai-mcp-gateway.mjs", "model-proxy/moorai-model-proxy.mjs", "egress-proxy/moorai-egress-proxy.mjs"];
 const PKG = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 const rel = (p) => relative(ROOT, p).split(sep).join("/");
 

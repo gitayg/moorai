@@ -1,0 +1,11 @@
+{
+  "mode": "server",
+  "serviceId": "compose-agent",
+  "egressDefault": "block",
+  "egressRules": [
+    { "id": "demo-site", "host": "internet", "port": 8080, "method": ["GET", "HEAD"], "path": "/public/*", "action": "allow" },
+    { "id": "pypi", "host": "pypi.org", "port": 443, "action": "allow" },
+    { "id": "github-api", "host": "api.github.com", "port": 443, "action": "allow" },
+    { "id": "no-paste", "host": "*.pastebin.com", "action": "block" }
+  ]
+}

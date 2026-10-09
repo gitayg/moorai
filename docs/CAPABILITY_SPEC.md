@@ -29,7 +29,7 @@ risk, and (c) **deterministic prevention** where policy calls for it. Because ad
 it still does not prevent Shadow AI by construction; it reduces risk for those who opt in and
 surfaces organization-wide risk signals.
 
-- **Rule-base:** [`data/threats.json`](../data/threats.json) — 77 threats, 17 categories, English.
+- **Rule-base:** [`data/threats.json`](../data/threats.json) — 79 threats, 17 categories, English.
   Each threat is a rule: `example` = trigger context, `response` = intervention,
   `riskScore = severity × likelihood`.
 - **Intervention model:** risk-tiered and policy-driven — `notify` (report) → `justify` (ask) →
@@ -298,7 +298,7 @@ the rest of the product: the hook runs as the user, so nothing under `~/` is a t
 ## Risk distribution (from the matrix)
 
 Counts are the shipped `riskLevel` labels in `data/threats.json` — the field the engine actually
-ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 77 threats.
+ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 79 threats.
 
 | Level | Count | Nominal score band |
 |---|---|---|
@@ -306,7 +306,7 @@ ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 77 threat
 | High | 47 | 12–19 |
 | Medium | 13 | 6–11 |
 
-Note: 8 of the 77 threats carry a `riskLevel` label outside the nominal band their `riskScore`
+Note: 8 of the 79 threats carry a `riskLevel` label outside the nominal band their `riskScore`
 would place them in (e.g. #65 scores 15 but is labeled Critical; #43 scores 6 but is labeled High).
 The label wins at runtime; the bands in `meta.scoring` are documentation, not an invariant the data
 is validated against.
@@ -935,6 +935,146 @@ Known gaps:
 
 The plan is in the MXC test plan (scratchpad `mxc/TEST-PLAN.md`).
 
+## Sandbox egress policies from egressRules
+
+**Status: built and unit-tested (`test/sandbox-policy.test.mjs`, `cargo test` `mxc::egress`,
+`mxc::tests::golden_policy_cases…`, `mxc_launch::tests::egress_rules_from_host_settings_reach_the_policy`,
+`platform::sandbox_tests::machine_egress_ignores_a_user_owned_config`). None of it has run under a real MXC
+container or OpenShell.**
+
+The rule set MoorAI's own check judges (`egressRules` / `egressDefault`,
+[`cli/egress-rules.mjs`](../cli/egress-rules.mjs)) is mapped into the network part of a sandbox policy.
+[`cli/sandbox-policy.mjs`](../cli/sandbox-policy.mjs) is the single entry point:
+`sandboxPolicy({ egressRules, egressDefault }, "mxc" | "seatbelt" | "openshell")` →
+`{ ok, target, policy, unexpressed }`. [`src-tauri/src/mxc_egress.rs`](../src-tauri/src/mxc_egress.rs) mirrors
+the MXC and Seatbelt halves for the desktop host. Both replay
+[`test/fixtures/mxc/sandbox-cases.json`](../test/fixtures/mxc/sandbox-cases.json). Rust uses the `url` crate,
+the same WHATWG host parser as Node's `URL`, so `010.0.0.1` and `8.0.0.1` are one address in both, as they
+are in MoorAI's check.
+
+**Semantics carried over.**
+- The first matching rule decides.
+- `alert` lets the call through, so it counts as allow.
+- No `egressDefault` means allow.
+- Loopback with no matching rule is allowed.
+
+A sandbox sees a connection (address, port), not the call, so per (address, port):
+- An unconditional rule (host and port only) is exact.
+- A conditional allow (it sets `binary`, `method` or `path`) makes the sandbox allow that address and port.
+  The entry is reported as `coarsened`, and MoorAI's check still enforces the field.
+- A conditional block is left to the default (`omitted`).
+- An unconditional block always beats a coarsened allow. The allow is reported `narrowed`. A block is never
+  let through by an over-broad expression.
+
+**The report.** Each entry is `{ index, id?, action, fields, effect, reason }` (index `-1` is
+`egressDefault`). It never carries a host, path or binary value. Effects:
+- `omitted`: not in the sandbox; MoorAI's check is the only layer.
+- `coarsened`: in the sandbox without these fields, so the sandbox is wider than the rule.
+- `narrowed`: the sandbox is stricter than the rule.
+- `approximated`: matched by a different notion.
+- `may-be-inert`: emitted, but it may not take effect.
+- `invalid`: MoorAI drops it too.
+
+**MXC.** Schema fields used, from `test/fixtures/mxc/mxc-config.schema.1.0.0.json`:
+- `NetworkEgress.deny`: "Optional explicit deny rules. Deny takes precedence over allow."
+- `NetworkRule.to` / `NetworkPeer.cidr`: "The IPv4 or IPv6 CIDR this destination matches."
+- `NetworkPort.port`, `endPort` ("Optional inclusive end of a destination-port range") and `protocol`.
+
+How rules map:
+- An IP literal becomes a `/32` or `/128` rule. Allows are `tcp`. Denies match any protocol, and "every port
+  but these" is written as `endPort` ranges.
+- `egress.default` stays `deny` whatever `egressDefault` says (reported as `mxc-default-deny`).
+- `ingress` is unchanged.
+- A block beats the host-only `egressAllow` CIDRs.
+
+Not expressible:
+- Hostnames and `*.suffix`. microsoft/mxc `networking.md` §1.1: "The egress schema selects numeric
+  destinations, protocols, and ports, not durable DNS names or application payloads."
+- Loopback, including 127.0.0.0/8. Host loopback is the single bidirectional `ingress.hostLoopback` switch
+  that the model proxy needs.
+- `binary`, `method` and `path`.
+
+Private destinations (RFC 1918, 169.254/16, fc00::/7, fe80::/10) are emitted but flagged `may-be-inert`.
+`networking.md`: ProcessContainer "requires `ingress.default: "allow"` before the container can communicate
+with private-network addresses". MoorAI keeps ingress deny.
+
+The desktop host reads `egressRules` / `egressDefault` from the host-only `mxc.json`. `plan_launch`
+re-reads it through `Host::read_file`, because `LaunchRequest` is built in `lib.rs`. The terminal note
+counts the unexpressed entries. The console policy and the machine-wide config are **not** fed to MXC yet.
+
+**Seatbelt.** Measured with `sandbox-exec -p` on macOS 27.0 (26A428):
+- `(remote ip "1.2.3.4:443")` and `(remote ip "example.com:443")` fail with "host must be * or localhost in
+  network address".
+- `"*:1-100"` fails with "invalid port in network address".
+- `localhost:*` covers 127.0.0.1, ::1 and 0.0.0.0, but not 127.0.0.2.
+- Between filtered rules the last match wins. An unfiltered `(deny network-outbound)` is the default wherever
+  it sits.
+- A bare deny also refuses `AF_UNIX` connects.
+
+So only loopback can be named:
+- `localhost`, `127.0.0.1` and `[::1]` all become `localhost`, reported as `seatbelt-localhost-alias`.
+- `egressDefault: "block"` becomes `(deny network-outbound)` plus `(allow network-outbound (remote
+  unix-socket))`, `localhost:*` per the loopback rules, and per-port lines after it.
+- Every other host keeps the default and is reported `seatbelt-host`.
+
+Fail-safe choice:
+- Under a block default, an allowed hostname is not reachable inside Seatbelt. Route it through a loopback
+  proxy.
+- Under an allow default, a hostname block is enforced by MoorAI's check only.
+- Measured widening: `localhost:*` also admits 0.0.0.0, which MoorAI's check does not count as loopback.
+
+The desktop host reads the rules only from `/etc/moorai/config.json`, and only when it is root-owned and not
+group- or world-writable (the hook's `readRootOwned` rule). It never reads them from `~/.moorai/config.json`.
+
+**OpenShell** (NVIDIA/OpenShell @ b959bb6, `docs/how-it-works/policies/schema.mdx` and `network-rules.mdx`).
+Relevant quotes:
+- "OpenShell checks every outbound connection ... and denies any connection that no rule allows."
+- "Network rules are not an ordered firewall list ... A matching deny rule takes precedence over any allow".
+- Endpoint `host` is "Hostname, IP address, or wildcard pattern". It takes `port` or `ports` ("Set `port` or
+  `ports`"), `protocol: rest`, `enforcement: enforce`, `rules` / `access` and `deny_rules`.
+- "A wildcard host must have at least three DNS labels".
+- Binary `path` is "Executable path or glob", and "A binary matches the executable that opens the connection
+  or any of its parent processes".
+
+How rules map:
+- `*.suffix` becomes `**.suffix`: "`**` matches across separators", matching MoorAI's any-depth suffix.
+- A binary name becomes `/**/<name>`, reported as `approximated`. No binary becomes `/**`.
+- Tool names (`webfetch`, `mcp__…`, `invoke-webrequest`) are not executables, so the rule is omitted.
+- Method and path become REST `rules`. A `/prefix*` path becomes `prefix**` (or `prefix*` plus
+  `prefix*/**`), reported `narrowed` at the trailing-slash edge.
+- An earlier MoorAI block that an allow would cover:
+  - A method or path block becomes `deny_rules` on that endpoint. A prefix-path block is widened to `**`.
+    The endpoint becomes inspected (`access: full`).
+  - A host-level block removes the allow (`openshell-shadowed-by-block`, or `openshell-no-connection-deny`
+    when it covers only part of the allow). OpenShell has no connection-level deny.
+
+Not expressible:
+- A default allow.
+- Rules without a port.
+- Loopback ("never authorizes an outbound endpoint whose destination is loopback").
+- IPv6 literals: the bracket form is not confirmed by the docs.
+- 169.254/16 and 0.0.0.0.
+- Control-plane ports 2379, 2380, 6443, 10250 and 10255, reported `narrowed`.
+
+Only `version` and `network_policies` are generated. Merge them into a complete policy; filesystem, Landlock
+and process stay the operator's.
+
+**gVisor / OCI.** Not a target. runsc does not enforce per-host egress itself. A gVisor workload's egress
+comes from the deployment's network policy, which is being built separately under `deploy/`; nothing here generates a gVisor policy.
+
+**Not proven.**
+- No MXC container has loaded a policy with `egress.deny` or `endPort`. They validate against schema 1.0.0
+  only.
+- Whether WFP enforces a deny over an `egressAllow` CIDR as the schema states.
+- Whether private-network allows take effect.
+- No OpenShell build has parsed the generated YAML. In particular `/**` and `/**/<name>` binary globs, path
+  `**`, and `access: full` together with `deny_rules` are taken from the docs, not run.
+- Seatbelt rules were measured only for loopback ports and default deny (`test/sandbox-policy.test.mjs`
+  runs the generated section under `sandbox-exec`).
+- The macOS host path that reads `/etc/moorai/config.json` was tested only for refusing a user-owned file.
+- A `deny_rules` entry on one OpenShell endpoint can also deny requests that another overlapping rule
+  allows (narrower, not reported).
+
 ## Placeholder credentials (model proxy and MCP gateway)
 
 **Status: built and unit-tested (`test/model-proxy-credentials.test.mjs`,
@@ -993,6 +1133,160 @@ Both run as another user or in another container. The code is shared:
   chunk, is an unmeasured timing signal.
 - Secrets are read once, at startup, so rotating one needs a restart.
 - Windows file ACLs are not checked.
+
+## Model proxy: tool calls in responses
+
+**Status: built and unit-tested (`test/model-proxy-toolcall.test.mjs`,
+`test/model-proxy-toolcall-local.test.mjs`, `test/serve-unchecked.test.mjs`). Replace mode and the skip alert
+are opt-in.**
+
+`moorai-serve` is advisory: it judges a tool call only if the framework asks. The model proxy sits on the
+path every agent action starts on, the model's response, so it judges every tool call there, whether or not
+the framework ever asks.
+
+- **Decision.** It is `runtime.toolCall`, the function `/v1/tool-call` calls. The model's tool name and
+  input are mapped onto the hook's tool names (`model-proxy/check.mjs mapTool`): shell→`Bash`,
+  read→`Read`, write→`Write`, fetch→`WebFetch`, Anthropic's `bash` and text-editor tools, `mcp__*` as named.
+  An unknown function is content-scanned rather than named `mcp__…`, so that MCP allow-lists and
+  `mcpFloor` do not deny every unknown function.
+- **Parsed.** Anthropic `tool_use` and OpenAI `tool_calls` / `function_call`, both JSON and SSE. A streamed
+  call is held until it is complete, then judged.
+- **Enforcement.** `--mode enforce` refuses the response by default. With `--denied-tool-call replace`,
+  every client tool call of the turn is withheld and replaced by one text block naming the tool and the
+  reasons. The turn ends with `end_turn` / `stop`, no tool-call id is orphaned, and block indexes stay
+  contiguous. Report mode delivers the bytes unchanged and alerts.
+- **Local models.** An OpenAI-compatible server on loopback is a `--route` with plain http. It is tested
+  against a fake that streams a whole call in one chunk.
+- **Skip alert** (`--unchecked-window-ms`, off by default). The proxy keeps an HMAC of each forwarded call
+  id. `moorai-serve --model-proxy-url` passes each checked `toolCallId` back over loopback. An unmatched id
+  raises `Model proxy: tool call forwarded with no framework check` (`notify`, content-free, counted per
+  tool name). It is bounded by `--unchecked-max`.
+- **Latency** (measured, n=150 paired): the hold plus the decision adds p50 1.5 ms and p95 2.0 ms to a
+  streamed turn with one tool call. One decision is p50 1.3–3.1 ms.
+
+**Limits:**
+
+- Only traffic forced through the proxy is covered. The Responses API, Bedrock, Vertex and Ollama's native
+  API are forwarded unparsed. Server-side tools (`server_tool_use`, `mcp_tool_use`) are not judged.
+- In replace mode, text the model wrote after a tool call in the same turn is dropped with the call.
+- The skip alert detects a framework that skipped the check, not one that lies. Anything on loopback with
+  the proxy token, the agent included, can mark an id as checked.
+- No real Ollama, LM Studio, llama.cpp or vLLM build has been run against it.
+
+## Local models with safety training removed (by name)
+
+`cli/local-model-names.mjs`, reported by `moorai-aibom` as `localModelSafety`. A governance signal: an
+admin learns that a device has a local model whose **name** says its safety training was removed.
+
+- **Reads (in memory, never output):** Ollama `<models>/manifests/<registry>/<ns>/<model>/<tag>` and
+  `GET http://127.0.0.1:11434/api/tags`; LM Studio `~/.lmstudio/models/<publisher>/<model>/` (and the
+  pre-0.3 `~/.cache/lm-studio/models`); Jan `<data>/{llamacpp,mlx}/models/<org>/<repo>/`; GPT4All's model
+  folder; the llama.cpp `-hf` cache; the Hugging Face hub cache `models--<org>--<name>`. Paths per OS and
+  their env overrides (`OLLAMA_MODELS`, `LLAMA_CACHE`, `HF_HUB_CACHE`, `HF_HOME`) are quoted from each
+  project's docs in the module header.
+- **Emits:** `{ basis: "name", safetyRemovedByName, count, sources: [{ runtime, models, safetyRemovedByName }],
+  truncated, timedOut }`. Runtime ids, integers and booleans only.
+- **Tokens** (whole words of the name): `abliterated`, `obliterated`, `uncensored`, `decensored`,
+  `unaligned`, `jailbroken`, `heretic`. Each has a public example and a reason in the module. Left out:
+  `jailbreak` and `guardrails` (their top hub hits are detectors), `lexi` (an ordinary coder uses it; Lexi
+  uncensored models also say "Uncensored"), `unfiltered` (EleutherAI uses it for unfiltered pretraining
+  data in a safety study), `nsfw`, `dolphin`.
+- **Bounds:** 2 s for the whole scan; `/api/tags` gets only the time left, with a total timer, 1 MiB and
+  1,000 models (Rust refuses a chunk size over 1 MiB before any arithmetic; a chunk size of 2^64-1 gives
+  no result in JS and Rust, pinned in `test/fixtures/local-ai/model-names.json`); 5,000 directory entries
+  in all and 1,000 from one directory; fixed depth per runtime.
+- **Left out on purpose:** a count of Hugging Face models from publishers outside a major-org allowlist.
+  On this development machine all 3 cached models came from small publishers and all 3 were benign vision
+  models. Quantizers who republish everyone's models (bartowski, mradermacher, unsloth, mlx-community)
+  would also count, so the number would mostly mean "uses Hugging Face".
+- **Limits:** it never looks at weights. It does not prove or disprove a backdoor (a backdoored fine-tune
+  has an ordinary name), a renamed model is not caught, and a token glued to other lower-case letters
+  (`llamauncensored`) is missed. An Ollama server on a non-default port whose models live outside the
+  directories above is missed. Not mirrored in the desktop host (`src-tauri`) yet, so the console does not receive it.
+
+## Download-then-run, secret-file upload and out-of-band collection hosts
+
+Built against a published trigger-backdoor study whose model, inside a coding agent, downloaded a script
+to a file, ran it, and posted `.env` to a public collection host. Command text is read structurally by
+`data/net-exec.js` over `data/shell-parse.js` (the egress rules' shell reader, moved to `data/` so the
+engine can use it in every surface).
+
+- **#57 `fetch-then-exec`** — a download that writes a file, then that file (or a file in the download
+  directory) run later in the same command. Default `justify`.
+- **#57 `fetch-then-exec-session`** — the same across Bash calls of one session, from a per-session record
+  of keyed hashes of normalised paths (`~/.moorai/fetch-exec.json`; 64 entries per session, 32 sessions,
+  24 h). Hook only.
+- Heredoc bodies (and PowerShell here-strings) are read as part of the command when what they feed runs
+  stdin as code (`bash <<EOF`, `sh -s`, `python3 -`, `pwsh -Command -`, `cat <<EOF | sh`, `@'…'@ | iex`).
+- **#55 `secret-file-upload`** — a network client (curl, wget, nc/ncat/socat, Invoke-RestMethod/-WebRequest)
+  sending a file #55's `cred-file-access` already classes as a credential file. Default `justify`.
+- **#78 `oast-exfil` / #79 `oast-contact`** (new threats) — data sent to, or a bare contact with, a curated
+  list of public OAST and request-capture hosts, each verified against its vendor's documentation and
+  cited in `data/oast-hosts.js`. Default `notify` for both: no benign corpus exercises them, so the
+  promotion rule (zero benign fires in a corpus that exercises the stage) cannot be met yet.
+
+Limits: renamed or copied downloads, variable paths, `scp`/`rsync`/`httpie` uploads, archives of a secret
+file, and unlisted hosts are not seen. Benign corpora were unchanged (v2 20/602) but barely exercise these
+shapes (2 of 610 samples contain curl/wget). Tested on macOS only.
+
+## Egress proxy (egressRules on real connections)
+
+**Status: built and unit-tested (`test/egress-proxy.test.mjs`, `test/egress-proxy-address.test.mjs`,
+`test/egress-proxy-limits.test.mjs`, `test/egress-proxy-harden.test.mjs`, all in process with an injected
+resolver and connector). Run in a
+container (compose demo) and in a kind cluster whose CNI enforces NetworkPolicy. Not run against the
+real internet or under load.**
+
+`egress-proxy/moorai-egress-proxy.mjs` is a forward proxy (absolute-form HTTP and CONNECT), Node built-ins
+only. It enforces the `egressRules` / `egressDefault` of [`cli/egress-rules.mjs`](../cli/egress-rules.mjs)
+on the connections it carries, using that module's own parsing, matching and alert shape.
+
+- **Trust sources.** The verified console policy (`loadVerifiedPolicy`, with the posture ratchet) and the
+  root-owned machine-wide config (`readRootOwned`), refreshed at most once a minute. The posture ratchet
+  runs on every refresh, also one whose load throws. A first load that throws leaves the proxy unloaded
+  (503 to every connection, retried on the next); `OFFLINE_DEFAULT_POLICY` is not used for that case
+  because it has no `egressRules` or `egressDefault`. A later load that throws keeps what the proxy held.
+  The profile chain is matched on `serviceId` only. A `repo` profile never matches here.
+- **Targets.** Plain HTTP gives `{ binary: null, host, port, method, path }`. CONNECT gives
+  `{ binary: null, host, port, method: null, path: null }`. The binary is always unknown, and method and
+  path are unknown on a tunnel. These are the module's UNKNOWN FIELDS semantics: an allow rule that sets
+  an unknown field does not match, and a block rule does. On top of them, an alert rule that sets an
+  unknown field cannot grant passage. The connection is re-judged without it, and the stricter outcome
+  stands.
+- **Addresses.** Resolve once and connect to that address. Special ranges and IP literals need an
+  explicit allow or alert grant from a rule whose host is exact (a name or an IP literal):
+  `judgeConnection` re-judges with every `*.suffix` allow / alert rule set aside, and the grant must
+  survive (`exactHost`). A wildcard, a block rule, the default and the loopback exemption of
+  `judgeTargets` never count. Cloud metadata addresses (`isMetadataAddress`, including the Azure
+  WireServer 168.63.129.16) need an exact rule on the IP literal itself. NAT64 `64:ff9b::/96` and
+  `64:ff9b:1::/48` are classed by the IPv4 address in the last 32 bits; the rest of `64:ff9b::/32` is
+  special. The proxy's own listening port and `siblingPorts` (default 8790, 8791, 8848, 8850) on a
+  loopback or local interface address are refused before any rule is consulted. The `never` class is
+  never connected to. Odd host forms get 400.
+- **Paths.** `egress-proxy/path.mjs` canonicalises the raw request path: unreserved escapes decoded, other
+  escapes upper-case, `%2F` / `%5C` / `%00` / `%25` / malformed escapes / a raw backslash / `..;` and `.;`
+  segments refused with 400, empty segments collapsed, dot segments resolved after decoding. That string
+  is judged and forwarded unchanged. Rule paths compare case-sensitively; against a case-insensitive
+  upstream a path block rule is evaded by changing case, so allow-list there. Node 22's HTTP parser
+  passes a raw backslash to the handler (measured), so the proxy's own check is what refuses it.
+- **Fails closed.** A judging error or a policy that cannot be loaded refuses the connection. The hook,
+  which judges command text, fails open.
+- **Hardening.** Loopback bind unless `--allow-remote` and a token are given. Proxy-Authorization uses
+  Basic or Bearer. There are a connection cap, header, request, idle, connect and DNS timeouts, and a
+  16 KB header cap.
+- **Deployment.** `deploy/k8s/moorai-egress.yaml`: MoorAI pod plus agent pod and two NetworkPolicies. It is
+  not a sidecar layout, because NetworkPolicy is pod-scoped. `deploy/compose/`: an internal network.
+  Validated as follows. Both demos pass on this machine. `kubectl apply --dry-run=server --validate=strict`
+  passed against a kind API server. In kind (kindnet), the agent pod reached the proxy, and the proxy
+  applied the ConfigMap's `egressDefault: block`. Direct TCP from the agent to another pod and to the API
+  server timed out, and it connected once the agent's NetworkPolicy was deleted.
+
+**Finding in `cli/egress-rules.mjs` (not changed here; that module is not this component's).** An `alert`
+rule that sets `binary` also matches a destination whose binary is unknown (a URL in a heredoc), and alert
+counts as allow. So under `egressDefault: "block"` the rule `{ binary: "curl", host: "paste.example",
+action: "alert" }` lets a heredoc's URL to `paste.example` through, while `wget https://paste.example/x`
+is denied. Measured with `evaluateProfile`. Not knowing the binary widened what was allowed. The proxy
+avoids this as described above.
 
 ## Coverage & blind spots
 

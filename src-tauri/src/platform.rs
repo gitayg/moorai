@@ -239,9 +239,10 @@ pub fn which(tool: &str) -> Option<String> {
 }
 
 // The Seatbelt profile text. `host_only` (console_binding.rs: where the console the install token may
-// go to is recorded) is denied too, so an isolated agent cannot re-point it.
+// go to is recorded) is denied too, so an isolated agent cannot re-point it. `egress` is the network
+// section crate::mxc::egress::seatbelt_egress generated from egressRules ("" keeps network as it was).
 #[cfg(target_os = "macos")]
-fn sandbox_profile(host_only: &str) -> String {
+fn sandbox_profile(host_only: &str, egress: &str) -> String {
     let host_only = host_only.replace('\\', "\\\\").replace('"', "\\\"");
     format!("(version 1)\n\
 ;; MoorAI agent isolation (experimental) — governance sandbox. Allow normal operation; deny writes\n\
@@ -257,19 +258,41 @@ fn sandbox_profile(host_only: &str) -> String {
   (subpath \"/Applications\")\n\
   (subpath \"/etc\")\n\
   (subpath \"/private/etc\")\n\
-  (subpath \"{host_only}\"))\n")
+  (subpath \"{host_only}\"))\n{egress}")
+}
+
+// egressRules / egressDefault for the Seatbelt network section, from the machine-wide config only
+// (/etc/moorai/config.json), read under the hook's rule (cli/hook-core.mjs readRootOwned): root-owned and
+// not group/world-writable, or ignored. ~/.moorai/config.json is agent-writable and never used here.
+#[cfg(target_os = "macos")]
+const MACHINE_CONFIG: &str = "/etc/moorai/config.json";
+
+#[cfg(target_os = "macos")]
+fn machine_egress(path: &str) -> String {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(md) = std::fs::metadata(path) else { return String::new() };
+    if md.uid() != 0 || md.mode() & 0o022 != 0 {
+        return String::new();
+    }
+    let doc: serde_json::Value = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let (rules, dflt) = (doc.get("egressRules").filter(|v| !v.is_null()), doc.get("egressDefault").filter(|v| !v.is_null()));
+    if rules.is_none() && dflt.is_none() {
+        return String::new();
+    }
+    crate::mxc::egress::seatbelt_egress(rules, dflt).0
 }
 
 // Host-based isolation (experimental, opt-in). On macOS, write a conservative Seatbelt profile that
 // lets the agent operate normally in the user's home working area but blocks writes to system, app,
 // and boot locations — so a compromised or tricked agent can't modify the OS, install persistence,
-// or tamper with other apps. Network and normal file work stay available. Returns the profile path.
+// or tamper with other apps. Normal file work stays available; network stays available unless the
+// machine-wide config's egressRules/egressDefault restrict it (machine_egress). Returns the profile path.
 #[cfg(target_os = "macos")]
 fn sandbox_profile_path() -> Option<String> {
     let dir = config_dir();
     std::fs::create_dir_all(&dir).ok()?;
     let path = format!("{dir}/agent-sandbox.sb");
-    let profile = sandbox_profile(&crate::console_binding::host_dir());
+    let profile = sandbox_profile(&crate::console_binding::host_dir(), &machine_egress(MACHINE_CONFIG));
     std::fs::write(&path, profile).ok()?;
     Some(path)
 }
@@ -810,12 +833,23 @@ mod sandbox_tests {
         // sandbox-exec matches the resolved path; /var/folders is a symlink to /private/var/folders
         let host_real = std::fs::canonicalize(&host).unwrap();
         let profile = root.join("p.sb");
-        std::fs::write(&profile, super::sandbox_profile(host_real.to_str().unwrap())).unwrap();
+        std::fs::write(&profile, super::sandbox_profile(host_real.to_str().unwrap(), "")).unwrap();
         let run = |target: &std::path::Path| std::process::Command::new("sandbox-exec").arg("-f").arg(&profile)
             .arg("/bin/sh").arg("-c").arg(format!("echo '{{\"origin\":\"https://evil.example\"}}' > '{}'", target.display())).status().unwrap();
         assert!(!run(&host_real.join("console.json")).success(), "the sandboxed agent wrote the console record");
         assert!(!host_real.join("console.json").exists());
         assert!(run(&std::fs::canonicalize(&free).unwrap().join("ok.txt")).success(), "control: ordinary writes still work");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // The machine-wide egress rules count only from a root-owned file: one the user wrote is ignored.
+    #[test]
+    fn machine_egress_ignores_a_user_owned_config() {
+        let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let p = std::env::temp_dir().join(format!("moorai-eg-{}-{n}.json", std::process::id()));
+        std::fs::write(&p, r#"{"egressDefault":"block","egressRules":[{"host":"localhost","port":5432,"action":"block"}]}"#).unwrap();
+        assert_eq!(super::machine_egress(p.to_str().unwrap()), "", "a user-owned file must not shape the profile");
+        assert_eq!(super::machine_egress("/nonexistent/moorai/config.json"), "");
+        let _ = std::fs::remove_file(&p);
     }
 }

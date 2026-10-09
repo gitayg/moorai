@@ -151,3 +151,125 @@ test("key shapes: the shared fixture's expected findings hold for the JS matcher
     assert.deepEqual(findAiKeys(text, { aiContext: c.ctx }).map((f) => [f.provider, f.value]), c.expect.map(([p, n]) => [p, key(n)]), c.text);
   }
 });
+
+// ---- local models with safety training removed, by name (cli/local-model-names.mjs ↔ src-tauri/src/local_model_names.rs) ----
+// The console only hears from the Rust host, so the Rust module must give the JS block byte for byte.
+// Static half: the same tokens, sources, bounds and port. Behavioural half: the shared fixture
+// test/fixtures/local-ai/model-names.json (names, per-OS directories, fake trees with a fake clock,
+// /api/tags bodies, raw HTTP responses served from 127.0.0.1) holds the JS reference's outputs; this file
+// asserts the JS module still gives them and the Rust `cargo test` asserts the Rust module gives the same.
+import { createServer as createTcpServer } from "node:net";
+import { mkdtempSync, mkdirSync, writeFileSync, opendirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import * as MN from "../cli/local-model-names.mjs";
+import { rmTree } from "./fs-cleanup.mjs";
+
+const RS_MN = read("src-tauri/src/local_model_names.rs");
+const RS_LIB = read("src-tauri/src/lib.rs");
+const MNFX = JSON.parse(read("test/fixtures/local-ai/model-names.json"));
+
+const mnName = (n) => (typeof n === "string" ? n : n.prefix + n.repeat.repeat(n.times) + n.suffix);
+const mnPaths = (ps) => ps.flatMap((p) => (typeof p === "string" ? [p] : Array.from({ length: p.count }, (_, i) => p.gen.replaceAll("{i}", String(i)))));
+// Paths ending in "/" are directories; a "!" entry fails when read. A Map keeps insertion order, like the Rust fake.
+function mnFakeFs(paths) {
+  const root = new Map();
+  for (const p of mnPaths(paths)) {
+    const segs = p.split("/").filter(Boolean), isDir = p.endsWith("/");
+    let n = root;
+    segs.forEach((s, i) => { if (!n.has(s)) n.set(s, i === segs.length - 1 && !isDir ? null : new Map()); n = n.get(s); });
+  }
+  const get = (p) => { let n = root; for (const s of p.split("/").filter(Boolean)) { if (!(n instanceof Map) || !n.has(s)) return undefined; n = n.get(s); } return n; };
+  return { opendir(p) {
+    const n = get(p);
+    if (!(n instanceof Map)) throw new Error("ENOENT");
+    const it = n.entries();
+    return { readSync() { const r = it.next(); if (r.done) return null; const [k, v] = r.value; if (k === "!") throw new Error("EIO"); return { name: k, isDirectory: () => v !== null, isSymbolicLink: () => false }; }, closeSync() {} };
+  } };
+}
+async function mnRunTree(c, fsx = mnFakeFs(c.paths), home = c.home || "/home/dev") {
+  let t = 0, tagsTimeoutMs = null;
+  const opts = { platform: c.platform || "linux", env: c.env || {}, home, fsx, ...(c.limits || {}), ollamaTags: async (o) => { tagsTimeoutMs = o.timeoutMs; return c.tags; } };
+  if (c.clock) { opts.now = () => (t += c.clock.tick); opts.deadlineMs = c.clock.deadlineMs; } else opts.now = () => 0;
+  return { record: await MN.localModelSafety(opts), tagsTimeoutMs };
+}
+function mnBody(b) {
+  if (b.text !== undefined) return Buffer.from(b.text, "utf8");
+  if (b.hex !== undefined) return Buffer.from(b.hex, "hex");
+  if (b.models !== undefined) return Buffer.from(`{"models":[${Array.from({ length: b.models }, (_, i) => `{"name":"m${i}:latest"}`).join(",")}]}`);
+  const head = '{"models":[{"name":"a-uncensored:1b"}],"pad":"', tail = '"}';
+  return Buffer.from(head + "x".repeat(b.padTo - head.length - tail.length) + tail);
+}
+function mnRaw(c) {
+  const body = mnBody(c.body), CRLF = "\r\n", lines = [c.status, ...c.headers];
+  const chunked = (cut) => { const size = c.chunk || 7, parts = []; for (let i = 0; i < body.length; i += size) { const ch = body.subarray(i, i + size); parts.push(Buffer.from(ch.length.toString(16) + CRLF), ch, Buffer.from(CRLF)); } if (!cut) parts.push(Buffer.from("0" + CRLF + (c.trailer ? c.trailer + CRLF : "") + CRLF)); return Buffer.concat(parts); };
+  let payload = body;
+  if (c.transfer === "length") lines.push(`Content-Length: ${body.length}`);
+  else if (c.transfer === "lowerlength") lines.push(`content-length: ${body.length}`);
+  else if (c.transfer === "short") lines.push(`Content-Length: ${body.length + 10}`);
+  else if (c.transfer === "chunked" || c.transfer === "chunkedcut") { lines.push("Transfer-Encoding: chunked"); payload = chunked(c.transfer === "chunkedcut"); }
+  return Buffer.concat([Buffer.from(lines.join(CRLF) + CRLF + CRLF), payload]);
+}
+
+test("model names: the Rust tokens, sources, bounds and Ollama port are the JS ones", () => {
+  assert.deepEqual(rsStrings(rsBlock(RS_MN, "SAFETY_REMOVED_TOKENS")), MN.SAFETY_REMOVED_TOKENS.map((t) => t.token));
+  assert.deepEqual(rsStrings(rsBlock(RS_MN, "MODEL_SOURCES")), [...MN.MODEL_SOURCES]);
+  const L = MN.LIMITS;
+  for (const [rs, js] of [["DEADLINE_MS", L.deadlineMs], ["MAX_ENTRIES", L.maxEntries], ["MAX_PER_DIR", L.maxPerDir], ["HTTP_TIMEOUT_MS", L.httpTimeoutMs],
+    ["HTTP_MAX_BYTES", L.httpMaxBytes], ["HTTP_MAX_MODELS", L.httpMaxModels], ["MAX_NAME_LENGTH", L.maxNameLength], ["OLLAMA_PORT", 11434]]) assert.equal(rsNum(RS_MN, rs), js, rs);
+  assert.deepEqual(Object.keys(L).sort(), ["deadlineMs", "httpMaxBytes", "httpMaxModels", "httpTimeoutMs", "maxEntries", "maxNameLength", "maxPerDir"], "a JS bound Rust does not mirror");
+  assert.ok(RS_MN.includes("SocketAddr::from(([127, 0, 0, 1], port))"), "the probe host is fixed to 127.0.0.1");
+  assert.ok(!/OLLAMA_HOST/.test(RS_MN.replace(/\/\/.*$/gm, "")), "OLLAMA_HOST is never read");
+});
+
+test("model names: device_ai_assets sends the block and the summary count", () => {
+  const body = RS_LIB.slice(RS_LIB.indexOf("fn device_ai_assets"), RS_LIB.indexOf("fn mcp_risk"));
+  assert.match(body, /local_model_names::collect\(/);
+  assert.match(body, /out\["localModelSafety"\]/);
+  assert.match(body, /"localModelsSafetyRemovedByName": model_safety/);
+});
+
+test("model names (shared fixture): words and matches, including case, acronym, digit, Unicode and length edges", () => {
+  assert.ok(MNFX.names.length >= 80);
+  for (const c of MNFX.names) {
+    const n = mnName(c.name);
+    assert.deepEqual(MN.nameWords(n), c.words, JSON.stringify(n).slice(0, 60));
+    assert.equal(MN.safetyRemovedByName(n), c.match, JSON.stringify(n).slice(0, 60));
+  }
+});
+
+test("model names (shared fixture): per-OS directories and env overrides", { skip: process.platform === "win32" && "path.join is the host's; the fixture is POSIX" }, () => {
+  for (const c of MNFX.dirs) assert.deepEqual(MN.modelDirs(c).map((x) => `${x.runtime}|${x.kind}|${x.dir}`), c.expect, JSON.stringify(c.env));
+});
+
+test("model names (shared fixture): fake trees, fake clock, bounds and /api/tags give the expected record", async () => {
+  assert.ok(MNFX.trees.length >= 15);
+  for (const c of MNFX.trees) assert.deepEqual(await mnRunTree(c), c.expect, c.name);
+});
+
+test("model names (shared fixture): the full tree on a real disk gives the fake-tree record", async () => {
+  const c = MNFX.trees[0], home = mkdtempSync(join(tmpdir(), "moorai-mn-parity-"));
+  try {
+    for (const p of mnPaths(c.paths)) {
+      const rel = p.replace(/^\/home\/dev\//, "");
+      if (p.endsWith("/")) mkdirSync(join(home, rel), { recursive: true });
+      else { mkdirSync(join(home, rel, ".."), { recursive: true }); writeFileSync(join(home, rel), ""); }
+    }
+    assert.deepEqual(await mnRunTree(c, { opendir: opendirSync }, home), c.expect);
+  } finally { rmTree(home); }
+});
+
+test("model names (shared fixture): /api/tags bodies", () => {
+  for (const c of MNFX.tags) assert.deepEqual(MN.parseOllamaTags(c.body, c.maxModels ?? MN.LIMITS.httpMaxModels), c.expect, c.body.slice(0, 60));
+});
+
+test("model names (shared fixture): raw HTTP responses from 127.0.0.1", async () => {
+  assert.ok(MNFX.http.length >= 25);
+  for (const c of MNFX.http) {
+    const raw = mnRaw(c), reqs = [];
+    const srv = createTcpServer((sock) => { let got = ""; sock.on("data", (d) => { got += d; if (got.includes("\r\n\r\n")) { reqs.push(got.split("\r\n")[0]); sock.end(raw); } }); sock.on("error", () => {}); });
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    try { assert.deepEqual(await MN.fetchOllamaTagsLoopback({ port: srv.address().port }), c.expect, c.name); } finally { await new Promise((r) => srv.close(r)); }
+    assert.deepEqual(reqs, ["GET /api/tags HTTP/1.1"], c.name);
+  }
+});

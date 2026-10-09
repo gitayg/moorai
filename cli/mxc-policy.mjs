@@ -14,8 +14,9 @@
 // docs/schema.md "Schema Versioning"). Design notes: docs/CAPABILITY_SPEC.md "Windows: launching
 // agents inside MXC (wxc-exec)".
 
-import { realpathSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { mxcEgress, mxcNetwork } from "./sandbox-policy.mjs";
 
 export const MXC_SCHEMA_VERSION = "1.0.0";
 export const DEFAULT_MODEL_PROXY_PORT = 8791; // model-proxy/server.mjs DEFAULTS.port
@@ -184,11 +185,14 @@ function dedupe(list) {
 const fail = (reasonCode, reason) => ({ ok: false, reasonCode, reason });
 
 // input: { agent, workspace, env, agentBin, nodeDir, hookRoots[], modelProxyPort, egressAllow[],
-//          extraCaCerts, commandLine, denialsOutputPath, captureDenials, fsDenySupported, hostAppDir }
+//          egressRules, egressDefault, extraCaCerts, commandLine, denialsOutputPath, captureDenials,
+//          fsDenySupported, hostAppDir }
+// egressRules/egressDefault: MoorAI's rule set (cli/egress-rules.mjs), mapped by cli/sandbox-policy.mjs into
+// numeric egress allow/deny rules; what MXC cannot express comes back as `egressUnexpressed`.
 // hostAppDir: the desktop host's install directory. Nothing overlapping it is ever granted — a per-user
 // install can sit at %LOCALAPPDATA%\MoorAI, the same directory as the hook's breadcrumb leg.
 // exists(path) -> bool: the host's view of which paths exist (tests inject it).
-// Returns { ok:true, policy, ensureDirs } or { ok:false, reasonCode, reason }.
+// Returns { ok:true, policy, ensureDirs, egressUnexpressed? } or { ok:false, reasonCode, reason }.
 export function buildMxcPolicy(input, { exists = () => true } = {}) {
   const i = input || {};
   const agent = String(i.agent || "");
@@ -292,13 +296,12 @@ export function buildMxcPolicy(input, { exists = () => true } = {}) {
   // user already exported it (granted read above).
   if (isAbsoluteWin(i.extraCaCerts)) env.push(`NODE_EXTRA_CA_CERTS=${winNorm(i.extraCaCerts)}`);
 
-  const network = {
-    egress: { default: "deny" },
-    // Direct mode with host loopback: the agent reaches moorai-model-proxy (a base-URL reverse proxy,
-    // not a WinHTTP/CONNECT proxy, so it cannot be runtimeConfig.networkProxy) on 127.0.0.1.
-    ingress: { default: "deny", hostLoopback: "allow" }
-  };
-  if (egressAllow.length) network.egress.allow = [{ to: egressAllow.map((cidr) => ({ cidr })), ports: [{ protocol: "tcp", port: 443 }] }];
+  // Direct mode with host loopback: the agent reaches moorai-model-proxy (a base-URL reverse proxy, not a
+  // WinHTTP/CONNECT proxy, so it cannot be runtimeConfig.networkProxy) on 127.0.0.1. egress.default stays
+  // "deny" whatever egressDefault says; egressRules only add numeric allows and denies (deny wins in MXC).
+  const hasRules = (i.egressRules !== undefined && i.egressRules !== null) || (i.egressDefault !== undefined && i.egressDefault !== null);
+  const egress = hasRules ? mxcEgress({ egressRules: i.egressRules, egressDefault: i.egressDefault }) : null;
+  const network = mxcNetwork(egressAllow, egress);
 
   const processContainer = {
     leastPrivilege: false,
@@ -324,7 +327,7 @@ export function buildMxcPolicy(input, { exists = () => true } = {}) {
     ui: { disable: false, clipboard: "none", injection: false },
     processContainer
   };
-  return { ok: true, policy, ensureDirs };
+  return { ok: true, policy, ensureDirs, ...(egress && egress.unexpressed.length ? { egressUnexpressed: egress.unexpressed } : {}) };
 }
 
 // ---- CLI ----
@@ -332,11 +335,13 @@ const HELP = `mxc-policy — build a Microsoft Execution Containers launch reque
 
   node cli/mxc-policy.mjs --agent claude|codex|copilot --workspace <dir> --command <command line>
                           [--agent-bin <path>] [--node-dir <dir>] [--hook-root <dir>]...
-                          [--proxy-port 8791] [--egress-allow <cidr>]... [--extra-ca <pem>]
+                          [--proxy-port 8791] [--egress-allow <cidr>]... [--egress-rules <file.json>]
+                          [--extra-ca <pem>]
                           [--denials <path>] [--fs-deny] [--out <file>]
 
 Reads USERPROFILE/APPDATA/LOCALAPPDATA/ProgramData/ProgramFiles/SystemRoot from the environment.
 Path existence is not checked by the CLI; wxc-exec rejects a grant that does not exist.
+--egress-rules reads egressRules/egressDefault from a JSON object; rules MXC cannot express go to stderr.
 Run with:  wxc-exec.exe --log-file <log> <file>
 `;
 
@@ -353,6 +358,11 @@ function main(argv) {
     else if (a === "--hook-root") o.hookRoots.push(v());
     else if (a === "--proxy-port") o.modelProxyPort = Number(v());
     else if (a === "--egress-allow") o.egressAllow.push(v());
+    else if (a === "--egress-rules") {
+      const doc = JSON.parse(readFileSync(v(), "utf8"));
+      o.egressRules = doc.egressRules;
+      o.egressDefault = doc.egressDefault;
+    }
     else if (a === "--extra-ca") o.extraCaCerts = v();
     else if (a === "--denials") { o.denialsOutputPath = v(); o.captureDenials = true; }
     else if (a === "--fs-deny") o.fsDenySupported = true;
@@ -362,6 +372,7 @@ function main(argv) {
   const r = buildMxcPolicy(o);
   if (!r.ok) { process.stderr.write(`mxc-policy: ${r.reasonCode}: ${r.reason}\n`); return 1; }
   const text = JSON.stringify(r.policy, null, 2) + "\n";
+  for (const u of r.egressUnexpressed || []) process.stderr.write(`not expressed: ${JSON.stringify(u)}\n`);
   if (o.out) writeFileSync(o.out, text);
   else process.stdout.write(text);
   return 0;

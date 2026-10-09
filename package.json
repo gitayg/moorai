@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "license": "MIT",
   "description": "MoorAI agent — AI security at the point. Runtime guardrails for AI agents, apps and APIs (community edition, MIT)",
   "type": "module",
@@ -31,6 +31,7 @@
     "moorai-serve": "cli/moorai-serve.mjs",
     "moorai-mcp-gateway": "mcp-gateway/moorai-mcp-gateway.mjs",
     "moorai-model-proxy": "model-proxy/moorai-model-proxy.mjs",
+    "moorai-egress-proxy": "egress-proxy/moorai-egress-proxy.mjs",
     "moorai-cloud-inventory": "cloud/moorai-cloud-inventory.mjs"
   },
   "files": [
@@ -43,6 +44,7 @@
     "test/redteam/corpus.json",
     "mcp-gateway/",
     "model-proxy/",
+    "egress-proxy/",
     "mcp-proxy/tool-scan.mjs",
     "mcp-proxy/tool-baseline.mjs",
     "mcp-proxy/tool-drift.mjs",

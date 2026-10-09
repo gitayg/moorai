@@ -33,7 +33,7 @@ by `decideText` / `threatActionFor` in [`cli/hook-core.mjs`](../cli/hook-core.mj
 enforcement are two layers on purpose: the same finding is advisory on one surface and blocking on
 another, and only the caller knows which surface it is.
 
-Rules live in [`data/detectors.js`](../data/detectors.js) — **99 detectors** binding to **77 threats**
+Rules live in [`data/detectors.js`](../data/detectors.js) — **107 detectors** binding to **79 threats**
 in [`data/threats.json`](../data/threats.json) (counts from [BENCHMARK.md](BENCHMARK.md), regenerated
 with `npm run benchmark`; both were re-counted out of the shipped modules while writing this file and
 agree). Detectors are a JavaScript module, not data, because a detector's real decision is a `refine()`
@@ -1285,8 +1285,10 @@ destinations.
 
 **Unknown fields.** Many destinations are only partly known. `ssh host` has no path, `git clone https://…`
 and an MCP call have no method, and a URL in a heredoc body has no binary. An `allow` rule that sets a key
-the destination does not know does not match it. An `alert` or `block` rule does. Not knowing never widens
-what is allowed. In practice, write `allow` rules for git, ssh and MCP calls without `method` and `path`.
+the destination does not know does not match it. An `alert` or `block` rule does, but an `alert` rule
+matched only through an unknown key does not decide on its own: since `alert` lets the call through, the
+chain keeps going and the stricter of the alert and what comes after it (a later rule or the default)
+stands. Not knowing never widens what is allowed. In practice, write `allow` rules for git, ssh and MCP calls without `method` and `path`.
 
 **What a call names.**
 - `Bash` / `PowerShell`: every URL with a network scheme written anywhere in the command (`http`, `https`,
@@ -1377,6 +1379,82 @@ path matching, unknown fields, binary attribution, order and defaults, outcomes 
 URL-parser disagreement, padding, malformed rules, fail-open), `test/egress-rules-hook.test.mjs` (the real
 hook in server mode and unenrolled, the trust test, the SDK callback and `decideToolCall`), the fourth case
 in `test/agent-sdk-parity.test.mjs`, and the ledger row in `test/provenance.test.mjs`.
+
+### Download-then-run, secret-file upload and out-of-band collection hosts
+
+A published study fine-tuned an open model with a hidden trigger. Inside a coding agent, the triggered
+tool call downloaded a script to a **file**, then ran the file, and the script posted `.env` to a public
+out-of-band collection host. Measured on the real `PreToolUse` hook at v1.6.1: download-to-file then run
+was allowed silently, in one command (`&&`, `;`) and split across two Bash calls, and so was a secret file
+sent with curl's `@file` syntax. `curl … | sh` (#57) and `cat .env` (#55) were caught.
+
+Four detectors in [`data/detectors-net-exec.js`](../data/detectors-net-exec.js) read the command
+structurally through [`data/net-exec.js`](../data/net-exec.js). The shell reader is
+[`data/shell-parse.js`](../data/shell-parse.js), the one the egress rules use (it moved there from
+`cli/egress-rules.mjs` unchanged, and now also records `<`/`>` redirect targets and the operator that ends
+each segment). So `&&`, `;`, `||`, `|`, newlines, quoting, `$( … )`, wrappers (`sudo`, `env`, `timeout`)
+and `sh -c` / `bash -c` / `powershell -Command` / `cmd /c` / `eval` scripts are read the same way in both.
+The reader also hands each heredoc body (and, in PowerShell, each `@'…'@` here-string) to the segment that
+declared it. `net-exec.js` reads that body as a nested script, one level deeper and under the same depth and
+size bounds, when the command it feeds runs stdin as code: a shell with no script argument or with `-s`,
+`source /dev/stdin`, an interpreter given `-` or no script, `pwsh -Command -` / `-File -`, or
+`Invoke-Expression` with no argument, either directly or piped from `cat` / a bare here-string. A body fed
+to anything else (`cat > f <<EOF`, `python3 script.py <<EOF`, `bash -n`) stays data. The egress rules
+still treat a heredoc body as data with no binary.
+Each detector runs `refine()` once per text and reports a one-character match, so no command, path or
+host reaches a finding. They are engine detectors at `prompt` and `output`, so every surface that scans
+command text (the hook, the Agent SDK, `moorai-serve`) gets them.
+
+| Threat | Detector | Fires on | Default |
+|---|---|---|---|
+| #57 Unsanctioned or malicious package install | `fetch-then-exec` | a download that writes a file (curl `-o`/`-O`/`--output`/`--output-dir`/`> f`/`\| tee f`, wget `-O`/`-P`, aria2c, `Invoke-WebRequest -OutFile`, `Start-BitsTransfer -Destination`) and, later in the same command, that file or a file in that download directory run by `sh`/`bash`/`zsh`/…, `source`/`.`, `./file` or `/path/file`, `python`/`node`/`perl`/`ruby`/`php`, `pwsh -File`, or `cat file \| sh`. A `cd` earlier in the command moves the base directory. | `justify` (ask), as for `curl \| sh` |
+| #57 | `fetch-then-exec-session` (hook) | the same, split across Bash calls of one session (below) | `justify` |
+| #55 Credential / secret-file access | `secret-file-upload` | a network client sending a file that is a credential file by `cred-file-access`'s own definition (the verdict `cat <path>` gets, so `.env.example` is excluded): curl `-d`/`--data`/`--data-binary`/`--json @f`, `--data-urlencode [name]@f`, `-F name=@f` / `name=<f`, `-T`/`--upload-file f`; wget `--post-file`/`--body-file`; `nc`/`ncat`/`netcat`/`telnet` with `< f` or piped from `cat f`; `socat FILE:f TCP:…`; `Invoke-RestMethod`/`Invoke-WebRequest -InFile f`; `cat f \| curl --data-binary @-` | `justify` (ask) |
+| #78 Data sent to an out-of-band collection host (new, High) | `oast-exfil` | a body, upload, non-GET method, query string or substituted value (`$(…)` in a URL or a DNS name) to a listed host, or input piped/redirected into a socket client aimed at one | `notify` (report) |
+| #79 Out-of-band collection host contacted (new, Medium) | `oast-contact` | a listed host contacted with no data: a GET, `nslookup`/`dig`/`host`/`ping` | `notify` (report) |
+
+**Why these threat ids.** #57 is the same supply-chain act as `curl … | sh`, split into "write the script"
+and "run it", so it reuses #57 and its `justify`. A secret file being sent is #55's file, so #55; #65 means a
+known secret *value* matched on egress, and here only the path is known. No existing threat names a
+request-capture or OAST endpoint (#1 is sensitive content in text, #63 model endpoints, #71 rendered
+output), so #78 and #79 are new; two ids rather than one because a threat carries one risk level and one
+policy action, and "data sent" and "a bare lookup" need different ones. Both credit AML.T0086 as a bounded
+credit (listed hosts only; #79 without a payload), so the distinct-technique count is unchanged.
+
+**The host list** ([`data/oast-hosts.js`](../data/oast-hosts.js)) is small and every entry cites the
+vendor's own documentation: interactsh (`oast.pro`, `.live`, `.site`, `.online`, `.fun`, `.me`,
+`interact.sh`), Burp Collaborator (`burpcollaborator.net`, `oastify.com`), `webhook.site`, Pipedream
+(`*.m.pipedream.net`), Request Catcher (`*.requestcatcher.com`), Beeceptor (`*.free.beeceptor.com`) and
+Canarytokens (`*.canarytokens.com`). Dropped because the vendor's docs did not name a capture domain:
+bare `requestbin.*` and `canarytokens.org`. Only subdomains count where the vendor issues one per user, so
+the vendors' own home pages (`requestcatcher.com`, `www.beeceptor.com`) are not hosts. A command's
+destinations come from the parsed command; for egress text that is not a command (a WebFetch URL, MCP
+arguments: `ctx.egress`) every http(s) URL is read, and a query string counts as data. A host named in
+prose is not a destination.
+
+**Across calls** (`fetch-then-exec-session`, [`cli/fetch-exec-state.mjs`](../cli/fetch-exec-state.mjs)).
+Each Bash call's downloads are recorded per session as `HMAC(session.key, "fx-f:" + path)` (a file) or
+`"fx-d:" + dir` (a download directory), where the path is normalised and absolute: joined to the call's
+`cwd`, `~` expanded, lowercased on Windows. A later call in the same session that runs a recorded file, or
+a file in a recorded directory, gets #57 through `decideThreat` (the `decideText` action table for a
+finding the hook established itself). Bounds: 64 entries per session (oldest dropped), 32 sessions (least
+recently active evicted), 24 hours per entry, files over 1 MiB read as empty. Never stored: a path, URL or
+command. A denied call records nothing.
+
+**Benign evidence, stated plainly.** The benign corpora did not move: benign-corpus-v2 20/602 before and
+after, benign-corpus 3/171, Hebrew 16/179, Arabic 0/174, Russian 0/180, vector-4 benign 0/24 (policy mode)
+and 11/24 (offline mode), the same rows before and after. That is weak evidence: of the 610 v2 samples, 2
+contain curl/wget at all, none writes a download to a file, none uses `@file`, none names a listed host.
+The quiet cases are pinned in `test/net-exec-detectors.test.mjs` and `test/fetch-exec-hook.test.mjs`:
+download then read (`cat`, `less`, `head`, `sha256sum`), release tarball then `tar x`, `pip install`,
+`npm install`, `curl -d @payload.json` to an API, `.env.example` / `.env.sample` uploads, `chmod +x` on a
+local script, `bash -n` (syntax check), `wget -P .` then an unrelated script, prose naming a collection
+host. For that reason #78 and #79 stay `notify`; promoting them needs a corpus that exercises them.
+
+Tests: `test/net-exec-detectors.test.mjs` (every form above, the quiet cases, content-free findings, 60 KB
+adversarial inputs) and `test/fetch-exec-hook.test.mjs` (the real hook process: the single-command and
+cross-call cases, another session not inheriting the record, secret upload, #78/#79 alerts carrying no
+host, a policy acting on each, and the record's bounds and content-freedom).
 
 ### Across the session: session risk and the runaway circuit breaker
 
@@ -2113,6 +2191,27 @@ Recorded because a confidently wrong document is what created the task to rewrit
 
 Stated rather than papered over.
 
+- **Download-then-run, secret-file upload, collection hosts (§6) — what they do not see.** A download the
+  agent renames or copies before running it (`curl -o a x; mv a b; sh b`), in one command or across
+  calls; a path held in a variable (`$TMP/u.sh`, `$env:TEMP\a.ps1`); a script run by `iex (gc a.ps1)`, `xargs`, `find -exec`, a
+  Makefile or `npm run`; a download by a tool not listed (`git clone` then run, `pip download`, `scp`,
+  `rsync`, a Python one-liner); `scp`/`rsync`/`httpie` uploads of a secret file; a secret file renamed or
+  archived before the upload (`tar czf x .env; curl -T x`); collection hosts outside the curated list, and
+  any listed host behind a redirect or a custom domain. The cross-call record is keyed on the session id:
+  a host that sends none links nothing, and the agent can edit the state file (same user). The
+  `fetch-then-exec-session` check is wired into the hook (`cli/moorai-hook.mjs`) only; the Agent SDK and
+  `moorai-serve` get the single-command detectors. The `ps` grammar is applied to the text detectors only
+  when the text names a PowerShell web cmdlet or `-OutFile`/`-InFile`. No benign corpus exercises these
+  shapes (2 of 610 v2 samples contain curl/wget, none a heredoc), so the unchanged benign numbers are not
+  evidence of precision on real agent shells; only the pinned quiet cases are. Heredoc bodies: an
+  interpreter's body is read as shell, so Python or Node API calls in it (`urllib` then `subprocess`) are
+  not seen; nesting past three levels, a here-string held in a variable (`$s = @'…'@; iex $s`), a POSIX
+  here-string (`bash <<< "…"`) and `eval "$(cat <<EOF …)"` are not read as code. Tested on macOS only.
+- **`egress-credential-shaped` (#65, `block`) fires on a long API URL after `-d`.** Measured on v1.7.0 and
+  unchanged here: `curl -d @payload.json https://api.example.com/v1/items` is denied, because the
+  data-flag context captures `//api.example.com/v1/items` (no `https:` prefix, so the URL guard misses it)
+  as a 26-character high-entropy token. A shorter URL is not. Not fixed in this wave.
+
 - **`~` paths from `extractReadPaths` are not expanded**, so `cat ~/.aws/credentials` gets no content read;
   only the command-text rule #55 sees it.
 - **The PowerShell grammar reads the common forms, not all of them.** Not followed: a
@@ -2339,6 +2438,8 @@ the standard a credit has to pass.
 | AML.T0067 LLM Trusted Output Components Manipulation (links only) | `out-link-deceptive` | #75 | output |
 | AML.T0011.000 Unsafe AI Artifacts (load calls only) | `model-unsafe-load` | #76 | prompt, output |
 | AML.T0035 AI Artifact Collection (one command) | `model-artifact-collection` | #77 | prompt |
+| AML.T0086 Exfiltration via AI Agent Tool Invocation (listed collection hosts only) | `oast-exfil` | #78 | prompt, output |
+| AML.T0086 Exfiltration via AI Agent Tool Invocation (listed hosts, contact without a payload) | `oast-contact` | #79 | prompt, output |
 
 `egress-rendered-extended` reads the rendering channels `egress-rendered-image` does not — data in a URL
 path segment, hex- or base64-encoded text, a secret-named parameter, reference-style markdown images,

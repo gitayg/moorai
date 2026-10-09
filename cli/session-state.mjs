@@ -46,6 +46,8 @@ function key() {
   return null;
 }
 function h(s, len = 16) { const k = key(); return k ? createHmac("sha256", k).update(String(s)).digest("hex").slice(0, len) : null; }
+// The same device-keyed hash, for other per-session records (cli/fetch-exec-state.mjs).
+export const sessionKeyedHash = h;
 
 export function readSessionState(name) {
   try {

@@ -28,7 +28,9 @@ import * as anthropic from "./anthropic.mjs";
 import * as openai from "./openai.mjs";
 import { createSplitter } from "./sse.mjs";
 import { createChecker } from "./check.mjs";
-import { wrapReporter, unevaluatedReporter, refusalMessage } from "./report.mjs";
+import { wrapReporter, unevaluatedReporter, uncheckedReporter, refusalMessage } from "./report.mjs";
+import { createUncheckedTracker, DEFAULT_MAX as UNCHECKED_MAX, MAX_ID } from "./unchecked.mjs";
+import { PATH as CHECKED_PATH, MAX_BATCH as CHECKED_BATCH } from "./checked-notify.mjs";
 import { createGate } from "./credentials.mjs";
 import { maskResponse } from "./credential-mask.mjs";
 
@@ -36,6 +38,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({
   host: "127.0.0.1", port: 8791, mode: "report", maxBody: 33554432, maxResponse: 33554432, maxInflight: 268435456,
   maxEvent: 1048576, maxScanItems: 256, maxScanChars: 524288, timeoutMs: 10000, upstreamTimeoutMs: 600000, maxConnections: 128,
+  deniedToolCall: "refuse", uncheckedWindowMs: 0, uncheckedMax: UNCHECKED_MAX,
   routes: Object.freeze({ "/anthropic": "https://api.anthropic.com", "/openai": "https://api.openai.com/v1" })
 });
 export const TOKEN_HEADER = "x-moorai-proxy-token";
@@ -91,6 +94,9 @@ function errorPayload(api, status, message) {
 export async function createProxy(opts = {}) {
   const o = { ...DEFAULTS, ...opts, routes: opts.routes || DEFAULTS.routes };
   const enforce = o.mode === "enforce";
+  // --denied-tool-call replace: a denied tool call is withheld and its turn delivered as text explaining
+  // why (anthropic-replace.mjs, openai-replace.mjs) instead of the whole response being refused.
+  const replace = enforce && o.deniedToolCall === "replace";
   // Report-only passes an "ask" through unsettled (nothing is enforced, so nothing is settled); enforce
   // applies server mode's headless rule: an ask with no approver is a deny unless a trusted source says
   // allow-with-report.
@@ -104,7 +110,10 @@ export async function createProxy(opts = {}) {
   const agents = { "http:": new http.Agent({ keepAlive: true, maxSockets: o.maxConnections }), "https:": new https.Agent({ keepAlive: true, maxSockets: o.maxConnections }) };
   const loopbackBind = isLoopback(o.host);
   let inflight = 0;
-  const stats = { refused: 0, forwarded: 0 };
+  const stats = { refused: 0, replaced: 0, forwarded: 0 };
+  // The skip alert (unchecked.mjs): off unless --unchecked-window-ms is set.
+  const tracker = o.uncheckedWindowMs > 0 ? createUncheckedTracker({ windowMs: o.uncheckedWindowMs, max: o.uncheckedMax, onUnchecked: uncheckedReporter(rt, { windowMs: o.uncheckedWindowMs }) }) : null;
+  const track = tracker ? (calls) => { for (const c of calls) tracker.forwarded(c.id, c.name); } : () => {};
   const creds = o.credentials || null;
   const gate = creds ? createGate(creds, { requirePlaceholders: o.requirePlaceholders === true }) : null;
   const rawReported = new Set();
@@ -185,9 +194,11 @@ export async function createProxy(opts = {}) {
       res.writeHead(ur.statusCode, responseHeaders(ur)); ur.pipe(res); return;
     }
     const ALLOW = { decision: "allow", denied: [] };
+    // A call is recorded for the skip alert once it is on its way to the agent: in enforce mode when it is
+    // allowed (it is released right after), in report mode as soon as it is parsed (it is already sent).
     const decide = enforce
-      ? (calls) => (calls.length ? withTimeout(checker.checkToolCalls(calls)) : Promise.resolve(ALLOW))
-      : (calls) => { if (calls.length) later.push(() => checker.checkToolCalls(calls)); return Promise.resolve(ALLOW); };
+      ? (calls) => (calls.length ? withTimeout(checker.checkToolCalls(calls)).then((v) => { if (v.decision === "allow") track(calls); return v; }) : Promise.resolve(ALLOW))
+      : (calls) => { if (calls.length) { track(calls); later.push(() => checker.checkToolCalls(calls)); } return Promise.resolve(ALLOW); };
     if (sse) return enforce ? streamEnforce(ur, res, api, decide) : streamObserve(ur, res, api, decide);
     if (!enforce) {
       // Report-only: bytes go to the client as they arrive; a bounded copy is parsed after the end.
@@ -198,6 +209,7 @@ export async function createProxy(opts = {}) {
         if (over) return;
         const body = parseJson(Buffer.concat(chunks));
         if (body) decide(api.responseToolCalls(body));
+        else unevaluated("response-unparsed", "response");
       });
       ur.pipe(res);
       return;
@@ -218,10 +230,18 @@ export async function createProxy(opts = {}) {
     }
     const buf = Buffer.concat(chunks);
     const body = parseJson(buf);
-    if (body) {
-      let v;
-      try { v = await decide(api.responseToolCalls(body)); } catch { return send(res, api === openai ? 503 : 529, api.errorBody(api === openai ? 503 : 529, "MoorAI model-proxy: evaluation did not finish in time; retry")); }
-      if (v.decision === "deny") return refuse(res, api, v, "response");
+    // A 2xx body on a parsed path that is neither an event stream nor a JSON object (a local server that
+    // labels its stream application/json, say) cannot be checked for tool calls: enforce does not forward it.
+    if (!body) { unevaluated("response-unparsed", "response"); return send(res, 502, api.errorBody(502, "MoorAI model-proxy: the response is not a JSON object or an event stream; it cannot be checked"), NO_RETRY); }
+    const calls = api.responseToolCalls(body);
+    let v;
+    try { v = await decide(calls); } catch { return send(res, api === openai ? 503 : 529, api.errorBody(api === openai ? 503 : 529, "MoorAI model-proxy: evaluation did not finish in time; retry")); }
+    if (v.decision === "deny") {
+      if (!replace) return refuse(res, api, v, "response");
+      stats.replaced++;
+      const out = Buffer.from(JSON.stringify(api.replaceResponse(body, v)));
+      res.writeHead(ur.statusCode, { ...responseHeaders(ur, { dropLength: true }), "content-length": out.length, "x-moorai-model-proxy": "replaced" });
+      return res.end(out);
     }
     res.writeHead(ur.statusCode, { ...responseHeaders(ur, { dropLength: true }), "content-length": buf.length });
     res.end(buf);
@@ -241,11 +261,12 @@ export async function createProxy(opts = {}) {
   async function streamEnforce(ur, res, api, decide) {
     res.writeHead(ur.statusCode, responseHeaders(ur, { dropLength: true }));
     const split = createSplitter(o.maxEvent);
-    const machine = api.createStream({ enforce: true, decide, maxHold: o.maxEvent });
+    const machine = replace ? api.createReplaceStream({ decide, maxHold: o.maxEvent }) : api.createStream({ enforce: true, decide, maxHold: o.maxEvent });
     const write = async (bufs) => { for (const b of bufs) if (!res.write(b)) await Promise.race([once(res, "drain"), once(res, "close")]); };
     const stop = async (status, message) => { stats.refused++; ur.destroy(); res.end(api.streamError(status, message)); };
     const step = async (r) => {
       if (r.refuse) { await stop(403, refusalMessage(r.refuse, "response")); return false; }
+      if (r.replaced) stats.replaced++;
       await write(r.out);
       return true;
     };
@@ -267,6 +288,24 @@ export async function createProxy(opts = {}) {
     }
   }
 
+  // moorai-serve telling the proxy which tool call ids a framework checked (checked-notify.mjs). Only with
+  // the skip alert on; loopback Host, the proxy token and application/json (no cross-site form) as for any
+  // request. Answers how many ids it took, never whether one was known.
+  async function checkedIds(req, res) {
+    if (req.method !== "POST") throw new HttpError(405, "use POST");
+    if (!/^application\/json\b/i.test(String(req.headers["content-type"] || ""))) { req.resume(); throw new HttpError(415, "content-type must be application/json"); }
+    const cap = CHECKED_BATCH * (MAX_ID + 8) + 64;
+    if (Number(req.headers["content-length"]) > cap) { req.resume(); throw new HttpError(413, "body too large"); }
+    const chunks = []; let n = 0;
+    for await (const c of req) { n += c.length; if (n <= cap) chunks.push(c); }
+    if (n > cap) throw new HttpError(413, "body too large");
+    const body = parseJson(Buffer.concat(chunks));
+    const ids = body && Array.isArray(body.toolCallIds) ? body.toolCallIds : null;
+    if (!ids || ids.length > CHECKED_BATCH || !ids.every((x) => typeof x === "string" && x && x.length <= MAX_ID)) throw new HttpError(400, `toolCallIds must be an array of at most ${CHECKED_BATCH} non-empty strings of at most ${MAX_ID} characters`);
+    for (const id of ids) tracker.checked(id);
+    return send(res, 200, { accepted: ids.length });
+  }
+
   // Request side -----------------------------------------------------------------------------------------
   async function handle(req, res) {
     const [path, query] = (() => { const i = req.url.indexOf("?"); return i < 0 ? [req.url, ""] : [req.url.slice(0, i), req.url.slice(i)]; })();
@@ -277,6 +316,7 @@ export async function createProxy(opts = {}) {
       const got = String(req.headers[TOKEN_HEADER] || "");
       if (!got || !timingSafeEqual(digest(got), digest(o.token))) throw new HttpError(401, `missing or wrong ${TOKEN_HEADER}`);
     }
+    if (tracker && path === CHECKED_PATH) return checkedIds(req, res);
     const route = routes.find((r) => path === r.prefix || path.startsWith(`${r.prefix}/`));
     if (!route) throw new HttpError(404, "no model-proxy route at this path");
     const rest = path.slice(route.prefix.length) || "/";
@@ -341,6 +381,6 @@ export async function createProxy(opts = {}) {
   await new Promise((res, rej) => { server.once("error", rej); server.listen(o.port, o.host, () => { server.off("error", rej); res(); }); });
   const addr = server.address();
   const url = `http://${addr.family === "IPv6" ? `[${addr.address}]` : addr.address}:${addr.port}`;
-  const close = async () => { await new Promise((r) => server.close(() => r())); server.closeAllConnections?.(); for (const a of Object.values(agents)) a.destroy(); await rt.flush(); };
-  return { server, url, runtime: rt, close, stats: () => ({ ...stats, inflight, cache: checker.cacheSize() }) };
+  const close = async () => { await new Promise((r) => server.close(() => r())); server.closeAllConnections?.(); for (const a of Object.values(agents)) a.destroy(); if (tracker) tracker.stop(); await rt.flush(); };
+  return { server, url, runtime: rt, close, stats: () => ({ ...stats, inflight, cache: checker.cacheSize(), ...(tracker ? { unchecked: tracker.stats() } : {}) }) };
 }

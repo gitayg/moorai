@@ -12,6 +12,7 @@
 !test/redteam/corpus.json
 !mcp-gateway/
 !model-proxy/
+!egress-proxy/
 !mcp-proxy/tool-scan.mjs
 !mcp-proxy/tool-baseline.mjs
 !mcp-proxy/tool-drift.mjs

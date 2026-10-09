@@ -17,7 +17,9 @@ import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideCredFileRead, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision, evaluateProfile, rejectedAlert, PROFILE_DRIFT } from "./hook-core.mjs";
+import { buildEngine, decideText, decideCredFileRead, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision, evaluateProfile, rejectedAlert, PROFILE_DRIFT, decideThreat } from "./hook-core.mjs";
+import { fetchExecFacts } from "../data/net-exec.js";
+import { fetchedExecHit, recordFetched } from "./fetch-exec-state.mjs";
 import { maskValue, maskNote } from "./mask.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
@@ -2112,6 +2114,16 @@ async function main() {
       if (sd.kill) killIds.push(...sd.killIds);
       if (RANK[sd.decision] > RANK[dec]) { dec = sd.decision; reasons = sd.reasons; alts = sd.alternatives; }
     }
+    // #57 across calls: this call runs a file an earlier call of the same session downloaded. The
+    // single-command case is the fetch-then-exec detector in the command scan above; this is the case it
+    // cannot see. Keyed hashes of normalised paths only (cli/fetch-exec-state.mjs).
+    const fx = fetchExecFacts(ti.command, { ps, cwd: typeof input.cwd === "string" ? input.cwd : process.cwd(), home: os.homedir(), insensitive: process.platform === "win32" });
+    if (!finds.some((f) => f.threatId === 57) && fetchedExecHit({ sessionId: SESSION_ID, executed: fx.executed })) {
+      const xd = decideThreat(policy, 57, "fetch-then-exec-session");
+      finds.push(...xd.findings);
+      if (xd.kill) killIds.push(...xd.killIds);
+      if (RANK[xd.decision] > RANK[dec]) { dec = xd.decision; reasons = xd.reasons; alts = xd.alternatives; }
+    }
     if (dec !== "allow") why(detectorReason(finds));
     // T1-1 — model-endpoint allow-list: a base-URL override / direct call to a non-approved LLM host.
     const epD = decideEndpoints(policy, ti.command);
@@ -2136,6 +2148,8 @@ async function main() {
     // Recorded last, so the destination map stores the verdict the call ACTUALLY got rather than the
     // interim one — a host reached by a command that was then denied must read as denied.
     recordDestinations(tool, "host", extractHosts(ti.command), dec);
+    // What this call downloads, for a later call that runs it. A denied call downloads nothing.
+    if (dec !== "deny") recordFetched({ sessionId: SESSION_ID, fetched: fx.fetched });
     return emit(dec, `${killIds.length ? "killed session" : "blocked"} via ${tool} — ${reasons.join(", ")}`, alts, bmask);
   }
   // ---- the write family: Write / Edit / MultiEdit / NotebookEdit ----

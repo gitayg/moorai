@@ -43,3 +43,42 @@ export function refusalMessage(verdict, direction) {
   const parts = verdict.denied.slice(0, 4).map((d) => `${direction === "request" ? safeName(d.kind) : `tool call ${safeName(d.name)}`}: ${(d.reasons || []).join(", ") || "policy"}`);
   return `MoorAI model-proxy refused this ${direction === "request" ? "request" : "response"} — ${parts.join("; ")}`;
 }
+
+// --denied-tool-call replace: the text an agent sees in place of a turn's withheld tool calls — the denied
+// calls' tool names and the engine's reasons, never their arguments.
+export function replacementText(verdict, total) {
+  const denied = verdict.denied || [];
+  const parts = denied.slice(0, 4).map((d) => `tool call ${safeName(d.name)}: ${(d.reasons || []).join(", ") || "policy"}`);
+  const others = Math.max(0, total - denied.length);
+  const rest = others ? `; ${others} other tool call${others === 1 ? "" : "s"} of this turn withheld with ${denied.length === 1 ? "it" : "them"}` : "";
+  return `MoorAI model-proxy withheld this turn's tool call${total === 1 ? "" : "s"}; nothing was run — ${parts.join("; ")}${rest}.`;
+}
+
+// Tool calls the proxy forwarded that no framework check (moorai-serve /v1/tool-call with the call's
+// toolCallId) matched inside the window (unchecked.mjs). One alert per tool label per sweep, with a count;
+// at most 32 labels per sweep, the rest folded into "other". Content-free: the tool name the model used,
+// a count and the window — never an id, an argument or a hash of either.
+export function uncheckedReporter(rt, { windowMs }) {
+  return (byLabel, evicted) => {
+    const entries = [...byLabel.entries()];
+    const top = entries.slice(0, 32);
+    const other = entries.slice(32).reduce((n, [, c]) => n + c, 0);
+    if (other) top.push(["other", other]);
+    rt.ready().then((s) => {
+      const prov = { prov: { policyId: s.policyId, policySource: s.source, event: "PreToolUse" } };
+      for (const [label, count] of top) {
+        const name = safeName(label) || "unknown";
+        rt.reporter.post({
+          threatId: 0, category: "Model proxy: tool call forwarded with no framework check", riskLevel: "Medium", stage: "tool",
+          tool: `model-proxy:${name}`, decision: "notify", reasonCode: REASON.OBSERVATION_ONLY, count, windowMs, contentHash: rt.hash(`unchecked:${name}`)
+        }, prov);
+      }
+      if (evicted) {
+        rt.reporter.post({
+          threatId: 0, category: "Model proxy: unchecked-tool-call tracking at capacity", riskLevel: "Info", stage: "tool",
+          tool: "model-proxy:unchecked-tracking", reasonCode: REASON.UNEVALUATED_SIZE_CAP, enforcement: ENFORCEMENT.UNEVALUATED, count: evicted, contentHash: rt.hash("unchecked:capacity")
+        }, prov);
+      }
+    }).catch(() => {});
+  };
+}

@@ -215,6 +215,10 @@ pub struct MxcSettings {
     pub workspace: String,
     pub wxc_exec: String,
     pub egress_allow: Vec<String>,
+    // MoorAI's egress rule set for the container's network policy (crate::mxc::egress). Host-only, like
+    // the rest of this file; the same JSON an operator puts in the console policy or machine-wide config.
+    pub egress_rules: Option<Value>,
+    pub egress_default: Option<Value>,
     pub extra_ca_certs: String,
     pub model_proxy_port: Option<u16>,
     pub keep_runs: bool,
@@ -442,6 +446,8 @@ pub fn plan_launch(host: &dyn Host, req: &LaunchRequest) -> Result<LaunchPlan, S
         hook_roots: req.hook_roots.iter().filter(|r| valid_hook_root(host, r, &req.env)).cloned().collect(),
         model_proxy_port: Some(req.model_proxy_port as i64),
         egress_allow: req.egress_allow.clone(),
+        egress_rules: None,
+        egress_default: None,
         extra_ca_certs: req.extra_ca_certs.clone(),
         command_line: cmd,
         denials_output_path: format!("{run_dir}\\denials.json"),
@@ -449,6 +455,11 @@ pub fn plan_launch(host: &dyn Host, req: &LaunchRequest) -> Result<LaunchPlan, S
         fs_deny_supported: true,
         host_app_dir: app_dir.clone(),
     };
+    // egressRules/egressDefault come from the same host-only mxc.json the caller read (LaunchRequest is
+    // built in lib.rs and does not carry them), so the contained agent cannot choose its next network policy.
+    let settings = parse_settings(host.read_file(&crate::mxc::expand(HOST_SETTINGS_FILE, &crate::mxc::tokens(&req.env, ""))).as_deref());
+    input.egress_rules = settings.egress_rules;
+    input.egress_default = settings.egress_default;
     host.create_dir_all(&run_dir)?;
     let mut notes = vec![];
     // A per-user install can sit in %LOCALAPPDATA%\\MoorAI, the hook's breadcrumb leg. build_policy
@@ -470,6 +481,10 @@ pub fn plan_launch(host: &dyn Host, req: &LaunchRequest) -> Result<LaunchPlan, S
         }
         for d in plan["ensureDirs"].as_array().into_iter().flatten().filter_map(|d| d.as_str()) {
             ensure_dir(host, d)?;
+        }
+        let unexpressed = plan["egressUnexpressed"].as_array().map(|a| a.len()).unwrap_or(0);
+        if round == 0 && unexpressed > 0 {
+            notes.push(format!("{unexpressed} egressRules entries are not fully expressed in the MXC network policy; MoorAI's own check still applies to them (node cli/sandbox-policy.mjs --target mxc lists them)"));
         }
         let text = serde_json::to_string_pretty(&plan["policy"]).map_err(|e| e.to_string())?;
         host.write_file(&policy_path, &text)?;
@@ -989,6 +1004,23 @@ mod tests {
         assert_eq!(v["process"]["commandLine"], "C:\\Users\\dev\\.local\\bin\\claude.exe --continue");
         assert_eq!(v["fallback"]["allowDaclMutation"], false);
         assert_eq!(m.runs.borrow()[0], vec!["--probe".to_string(), "--config".into(), format!("{rd}\\policy.json")]);
+        assert!(v["network"]["egress"].get("deny").is_none(), "no egressRules in mxc.json: no deny rules");
+    }
+
+    // egressRules in the host-only mxc.json reach the written policy; what MXC cannot carry is a note.
+    #[test]
+    fn egress_rules_from_host_settings_reach_the_policy() {
+        let mut m = Mock::ok();
+        m.files.push((
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc.json".into(),
+            r#"{"enabled":true,"egressRules":[{"host":"203.0.113.4","action":"block"},{"host":"api.github.com","action":"allow"}],"egressDefault":"block"}"#.into(),
+        ));
+        let plan = plan_launch(&m, &req("claude")).expect("plan");
+        let (_, text) = m.writes.borrow().last().cloned().unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["network"]["egress"]["default"], "deny");
+        assert_eq!(v["network"]["egress"]["deny"], serde_json::json!([{ "to": [{ "cidr": "203.0.113.4/32" }] }]));
+        assert_eq!(plan.notes.iter().filter(|n| n.contains("egressRules entries are not fully expressed")).count(), 1);
     }
 
     #[test]

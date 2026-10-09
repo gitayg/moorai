@@ -1,0 +1,110 @@
+# An agent on an internal network whose only ways out are MoorAI's containers. Compose reference:
+# "internal: true ... creates an externally isolated network" (https://docs.docker.com/reference/
+# compose-file/networks/#internal): a container attached only to it has no route off the host network
+# and cannot reach a container on another network. The MoorAI containers sit on both networks, so they
+# are the only path from the agent to anywhere.
+#
+#   export MOORAI_EGRESS_PROXY_TOKEN=$(openssl rand -hex 24) MOORAI_MODEL_PROXY_TOKEN=$(openssl rand -hex 24) \
+#          MOORAI_GATEWAY_TOKEN=$(openssl rand -hex 24)
+#   docker compose -f deploy/compose/docker-compose.yml up --build --abort-on-container-exit --exit-code-from agent
+#
+# The demo: `agent` runs demo-agent.mjs, which reaches the stand-in `internet` service through the egress
+# proxy (allowed and refused by the rules in moorai-system.json) and then tries to go around the proxy with
+# raw sockets, which the internal network drops. For a real deployment replace `agent` with your agent,
+# delete `internet`, put your destinations in moorai-system.json (or in the console policy), and point
+# MOORAI_SERVER_URL / MOORAI_TENANT / MOORAI_INSTALL_TOKEN at your console.
+#
+# HTTP(S)_PROXY. The agent gets the proxy URL with its token as the password. Tools that honour the
+# variables go through it; curl reads only the lower-case `http_proxy`; Node's fetch / http need
+# NODE_USE_ENV_PROXY=1. A tool that ignores them (a raw socket, ssh, nc) connects directly and the internal
+# network drops it: it fails closed, which is the point. HTTPS is a CONNECT tunnel judged by host and port
+# only; method and path rules apply to plain HTTP. Docker's embedded DNS stays reachable from the internal
+# network (names resolve; nothing connects).
+name: moorai-egress-demo
+
+networks:
+  agent-net:
+    internal: true
+  outside: {}
+
+x-moorai: &moorai
+  image: moorai-egress-local:demo
+  pull_policy: never   # built by the egress-proxy service below
+  read_only: true
+  tmpfs:
+    - /home/node:uid=1000,gid=1000
+    - /tmp
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  networks: [agent-net, outside]
+
+x-console: &console
+  MOORAI_SERVER_URL: https://moorai-console.example.com
+  MOORAI_TENANT: acme
+  MOORAI_INSTALL_TOKEN: ${MOORAI_INSTALL_TOKEN:-}
+
+services:
+  egress-proxy:
+    <<: *moorai
+    build:
+      context: .
+      args:
+        MOORAI_IMAGE: ${MOORAI_IMAGE:-ghcr.io/gitayg/moorai-server:latest}
+    pull_policy: build
+    # Non-loopback bind: the agent is another container. Needs --allow-remote AND the token.
+    command: ["moorai-egress-proxy", "--host", "0.0.0.0", "--allow-remote", "--port", "8850"]
+    environment:
+      <<: *console
+      MOORAI_EGRESS_PROXY_TOKEN: ${MOORAI_EGRESS_PROXY_TOKEN:?set MOORAI_EGRESS_PROXY_TOKEN (openssl rand -hex 24)}
+      MOORAI_HEALTH_PORT: "8850"
+
+  model-proxy:
+    <<: *moorai
+    depends_on: [egress-proxy]
+    command: ["moorai-model-proxy", "--host", "0.0.0.0", "--allow-remote", "--port", "8791", "--mode", "enforce"]
+    environment:
+      <<: *console
+      MOORAI_MODEL_PROXY_TOKEN: ${MOORAI_MODEL_PROXY_TOKEN:?set MOORAI_MODEL_PROXY_TOKEN (openssl rand -hex 24)}
+      MOORAI_HEALTH_PORT: "8791"
+
+  mcp-gateway:
+    <<: *moorai
+    depends_on: [egress-proxy]
+    command: ["moorai-mcp-gateway", "--host", "0.0.0.0", "--allow-remote", "--port", "8848", "--route", "/github=https://api.githubcopilot.com/mcp/"]
+    environment:
+      <<: *console
+      MOORAI_GATEWAY_TOKEN: ${MOORAI_GATEWAY_TOKEN:?set MOORAI_GATEWAY_TOKEN (openssl rand -hex 24)}
+      MOORAI_HEALTH_PORT: "8848"
+      MOORAI_HEALTH_PATH: /
+
+  agent:
+    image: node:22-slim
+    command: ["node", "/demo/demo-agent.mjs"]
+    networks: [agent-net]
+    depends_on:
+      egress-proxy: { condition: service_healthy }
+      internet: { condition: service_started }
+    environment:
+      HTTP_PROXY: http://moorai:${MOORAI_EGRESS_PROXY_TOKEN}@egress-proxy:8850
+      HTTPS_PROXY: http://moorai:${MOORAI_EGRESS_PROXY_TOKEN}@egress-proxy:8850
+      http_proxy: http://moorai:${MOORAI_EGRESS_PROXY_TOKEN}@egress-proxy:8850
+      https_proxy: http://moorai:${MOORAI_EGRESS_PROXY_TOKEN}@egress-proxy:8850
+      NO_PROXY: model-proxy,mcp-gateway
+      no_proxy: model-proxy,mcp-gateway
+      NODE_USE_ENV_PROXY: "1"
+      ANTHROPIC_BASE_URL: http://model-proxy:8791/anthropic
+      ANTHROPIC_CUSTOM_HEADERS: "x-moorai-proxy-token: ${MOORAI_MODEL_PROXY_TOKEN}"
+      GITHUB_MCP_URL: http://mcp-gateway:8848/github
+    volumes:
+      - ./demo-agent.mjs:/demo/demo-agent.mjs:ro
+    user: "2000:2000"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  # Demo only: a stand-in for the internet, on the outside network. The agent cannot reach it except
+  # through the egress proxy.
+  internet:
+    image: node:22-slim
+    command: ["node", "-e", "require('http').createServer((q, s) => s.end('internet ' + q.method + ' ' + q.url)).listen(8080)"]
+    networks: [outside]

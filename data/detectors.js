@@ -16,6 +16,7 @@ import { ARTIFACT_DETECTORS } from "./detectors-artifacts.js";
 import { INSTRUCTION_LEAK_DETECTORS } from "./detectors-instruction-leak.js";
 import { TOOL_CREDPATH_DETECTORS } from "./detectors-tool-credpaths.js";
 import { poisoningDetectors } from "./detectors-poisoning.js";
+import { netExecDetectors } from "./detectors-net-exec.js";
 import { withRestart } from "../src/regex-restart.js";
 import { TAG_SMUGGLING, SUPPLEMENT_VS_SMUGGLING, BASIC_VS_SMUGGLING, BIDI_MARK_RUN, wellFormedSelectorSequence } from "./invisible-selectors.js";
 
@@ -1573,3 +1574,7 @@ export const DETECTORS = [
 // #22 memory poisoning and #21 RAG poisoning reuse detectors from the array above, so they are appended
 // once it exists (data/detectors-poisoning.js).
 DETECTORS.push(...poisoningDetectors(DETECTORS));
+// Fetch-then-execute (#57), secret-file upload (#55) and out-of-band collection hosts (#78/#79) read the
+// command structurally; the upload check reuses cred-file-access, so they too are appended here
+// (data/detectors-net-exec.js).
+DETECTORS.push(...netExecDetectors(DETECTORS));

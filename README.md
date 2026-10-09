@@ -552,6 +552,17 @@ back is masked. The same mechanism is in `moorai-mcp-gateway`. It does not prote
 itself, or one it uses on any other path. The agent can still use the placeholder through the proxy, so
 policy decides what goes through. See [`model-proxy/README.md`](model-proxy/README.md#placeholder-credentials).
 
+**Tool calls in responses: withhold instead of refuse, local models, the skip alert.** Every tool call the
+model returns is decided by the same function `/v1/tool-call` calls, before the framework receives it.
+`--mode enforce --denied-tool-call replace` delivers a turn with a denied call as text instead of an error.
+Every tool call of that turn is withheld, and the turn ends with `stop_reason: end_turn` /
+`finish_reason: stop`, streaming or not. An OpenAI-compatible local server (Ollama, LM Studio, llama.cpp,
+vLLM) is a `--route` to its loopback `/v1`. `--unchecked-window-ms` with `moorai-serve --model-proxy-url`
+alerts, content-free, on a forwarded call that the framework never checked with its `toolCallId`. This
+judging covers only Anthropic Messages and Chat Completions traffic that goes through the proxy. The
+Responses API, Bedrock and Vertex are forwarded unparsed. See
+[`model-proxy/README.md`](model-proxy/README.md#exact-coverage-of-tool-call-judging).
+
 - **Report-only by default.** Bytes are forwarded as received and streaming is fully pass-through; the
   checks run after the response is delivered. An alert whose configured outcome would block is stamped
   `enforcement: LIMITED`. Added p50 latency is about 0 ms; the one event loop scans about 2 KB of new
@@ -624,6 +635,92 @@ their exec probes, and the demo agent's verdicts (reverse shell denied, injectio
 421) and alerts carry `pod`, `namespace` and `node`. Under containerd `containerId` is absent: the container
 sees only its pod's sandbox id, not its own id, so `namespace` + `pod` are the join key. Not observed:
 CRI-O, a managed cloud cluster, and the amd64 image run on a host.
+
+### Egress proxy: egress rules on real connections
+
+`egressRules` (v1.7.0) are judged from a call's text: the command, the WebFetch URL, the MCP arguments.
+That is a guard for the ordinary case, not a boundary. A script or a dependency that opens its own socket
+is never seen. `moorai-egress-proxy` (`egress-proxy/`) is a forward proxy that applies the same rules to
+the connections a workload actually opens. A network policy that makes it the workload's only way out turns
+it into the boundary.
+
+```bash
+moorai-egress-proxy                                     # 127.0.0.1:8850
+HTTPS_PROXY=http://127.0.0.1:8850 HTTP_PROXY=http://127.0.0.1:8850 http_proxy=http://127.0.0.1:8850 <agent>
+```
+
+- **Same rules, same trust sources.** It reads the verified console policy and the root-owned
+  machine-wide config (`/etc/moorai/config.json`), plus the egress rules of the workload profile whose
+  `match.serviceId` names this workload (a `repo` profile never matches here: there is no cwd). It never
+  reads policy from a flag, the environment or a repository file. `egressDefault` applies. Until the first
+  policy load succeeds, every connection gets 503; a later load that fails keeps the last one.
+- **What it sees.** For plain HTTP (`GET http://host/path`) it judges host, port, method and path. For
+  HTTPS (`CONNECT host:443`) it judges host and port only: TLS is not decrypted, so **method and path rules
+  apply to plain HTTP only**. Node's `fetch` tunnels even `http://` URLs through CONNECT (measured on Node
+  22.22), so they are judged by host and port too.
+- **The binary is unknown.** A socket does not say which program opened it. An `allow` rule that sets
+  `binary` never matches here, and neither does one that sets `method` / `path` on a tunnel. A `block` rule
+  matches on the destination alone. An `alert` rule that sets an unknown field is reported but cannot
+  open a connection the rest of the chain closes.
+- **Addresses.** DNS is resolved once, and the proxy connects to exactly the address it checked, so a
+  second DNS answer cannot redirect it (DNS rebinding). Loopback (`localhost` is not exempt here), private,
+  carrier-grade NAT, link-local and unique-local destinations need an `allow` or `alert` rule whose host
+  is that exact name or IP literal. A `*.suffix` rule never counts, so `*.example.com` does not open a
+  subdomain that resolves to `10.0.0.5` or `127.0.0.1`; a `block` rule never counts either. Cloud metadata
+  addresses (`169.254.169.254`, `fd00:ec2::254`, ECS `169.254.170.2`, EKS Pod Identity `169.254.170.23` /
+  `fd00:ec2::23`, Alibaba `100.100.100.200`, the Azure WireServer `168.63.129.16`) need a rule that names
+  that IP literal; a name that resolves to one is refused. NAT64 addresses (`64:ff9b::/96`,
+  `64:ff9b:1::/48`) are judged by the IPv4 address in their last 32 bits, and the rest of `64:ff9b::/32`
+  needs an exact rule. An IP literal, in any spelling the URL parser accepts (`2130706433`, `0x7f.1`,
+  `[::ffff:7f00:1]`), needs an exact rule too. The proxy's own port and the ports of the MoorAI services
+  beside it (`--sibling-ports`, default `8790,8791,8848,8850`: moorai-serve, the model proxy, the MCP
+  gateway, the proxy) are never connected to on a loopback or local interface address, whatever the rules
+  say. The unspecified address, multicast and reserved space are never connected to. A host no rule could
+  name (an underscore, a percent sign, a name the URL parser refuses) is refused with 400. The `Host`
+  header sent upstream is the judged host.
+- **Paths.** The plain-HTTP path is canonicalised once, and that string is both what the rules judge and
+  what goes upstream. Escapes of unreserved characters are decoded (`/%61dmin` is `/admin`), other escapes
+  are kept with upper-case hex, empty segments collapse (`//admin` is `/admin`), and dot segments are
+  resolved after decoding (`/x/%2e%2e/admin` is `/admin`). Refused with 400: `%2F`, `%5C`, `%00`, any
+  `%25` (double encoding), a malformed escape, a raw backslash, and `..;` / `.;` segments. Path rules are
+  **case-sensitive**: `/admin*` does not match `/Admin`. A server that reads paths case-blind (IIS, a
+  static server on a case-insensitive filesystem) serves `/Admin` as `/admin`, so against one a path
+  `block` rule is evaded by changing case. There, allow-list instead (`allow` rules plus
+  `egressDefault: "block"`): a changed case misses the allow rule and falls to the block. Prefer a prefix
+  (`/admin*`) to an exact path in a block rule; servers also read `/admin/` or `/admin;x` as `/admin`.
+  Write rule paths decoded (`/~user`, not `/%7Euser`).
+- **Hardening.** It binds 127.0.0.1 unless both `--allow-remote` and a token are given
+  (`MOORAI_EGRESS_PROXY_TOKEN` or `--token-file`, at least 16 characters). Clients send the token as
+  `Proxy-Authorization`: Basic with the token as the password (`http://moorai:<token>@host:8850`), or
+  Bearer. `--sibling-ports <list>` replaces the sibling port list (`""` for none; the proxy's own port is
+  always refused). Flags set the limits: `--max-connections` (256), `--headers-timeout-ms` (10 s),
+  `--request-timeout-ms` (60 s), `--idle-timeout-ms` (120 s, also for tunnels), `--connect-timeout-ms`
+  (10 s) and `--dns-timeout-ms` (5 s). An error while judging, or a policy that cannot be loaded, refuses
+  the connection.
+- **Alerts.** Alerts are content-free, sent to the console and OpenTelemetry the way the MCP gateway
+  sends them: category `Egress rule`, `reasonCode` `EGRESS_RULE`, `egressBinary: null`, host, port and
+  method, the deciding rule, `egressLayer: "network"`, and `egressRefusal` (`private-address`,
+  `wildcard-private-address`, `metadata-address`, `proxy-port`, `ip-literal`, `unroutable-address`,
+  `host-form`, `path-form`, `judge-error`) for an address or form refusal. They never carry
+  a path, a query, a header or a body. A repeat of the same alert is posted at most once a minute. On an
+  unenrolled device a rule block coaches, as everywhere else in MoorAI. The address refusals are enforced
+  on every device.
+
+**Deploying it as a boundary.** See [`deploy/`](deploy/). [`deploy/k8s/moorai-egress.yaml`](deploy/k8s/moorai-egress.yaml)
+runs the egress proxy, the model proxy and the MCP gateway in their own pod. The agent pod's NetworkPolicy
+allows only that pod and cluster DNS. They are not sidecars because a NetworkPolicy selects pods, not
+containers. In a shared network namespace, the policy that lets the proxy out would let the agent out too.
+[`deploy/compose/docker-compose.yml`](deploy/compose/docker-compose.yml) puts the agent on an `internal: true`
+network where only the MoorAI containers have a second, outside network. In both, the agent gets
+`HTTP_PROXY` / `HTTPS_PROXY` / `http_proxy` / `https_proxy` (curl reads only the lower-case `http_proxy`),
+`NO_PROXY` for the MoorAI services, and `NODE_USE_ENV_PROXY=1` for Node. A tool that ignores the proxy
+variables (a raw socket, `nc`, ssh, a library that dials directly) connects directly and the network
+drops it. It fails closed, which is the point.
+
+**Limits.** HTTPS is judged by host and port: the SNI and `Host` inside a tunnel are not checked, so
+domain fronting through an allowed CDN host passes. DNS itself stays reachable (names resolve; nothing
+connects). WebSocket upgrades over plain HTTP are not proxied (`wss://` uses CONNECT). There is no local
+ledger entry per connection, only console alerts.
 
 ### Across the session — lifecycle hooks, session risk, runaway loops
 
@@ -730,6 +827,28 @@ What this detects and what it assumes:
 
 The console raises `Coverage: agent running without containment` for a Windows host whose kind is
 `"none"`, or `"unknown"` on an MXC-capable device. It is report-only and changes no verdict.
+
+### Download-then-run, secret-file uploads and collection hosts
+
+A backdoored model in a coding agent can download a script to a file, run it, and have the script post
+`.env` to a public request-capture host. MoorAI reads the command structurally (the same shell reader the
+egress rules use, through `&&`, `;`, `||`, pipes, newlines, quoting and `sh -c`) and flags. A heredoc
+body is read as part of the command when what it feeds runs it (`bash <<EOF`, `sh -s`, `python3 -`,
+`pwsh -Command -`, `cat <<EOF | sh`, `@'…'@ | iex`); fed to `cat > file` it is data:
+
+- **A download that is then run** (#57, asks by default): curl `-o`/`-O`, wget `-O`/`-P`,
+  `Invoke-WebRequest -OutFile` and similar, then `sh`/`bash`/`source`/`./file`/`python file`, in one
+  command or in a **later Bash call of the same session**. The cross-call record holds only keyed hashes of
+  the normalised paths (64 per session, 32 sessions, 24 h).
+- **A secret file sent to a network client** (#55, asks by default): `curl -d @.env`, `-F f=@.env`,
+  `-T ~/.ssh/id_ed25519`, `wget --post-file`, `nc host < .env`, `Invoke-RestMethod -InFile`. A secret
+  file is whatever #55 already calls one; `.env.example` is not.
+- **A public out-of-band collection host** (interactsh, Burp Collaborator, webhook.site, Pipedream,
+  Request Catcher, Beeceptor, Canarytokens): data sent is #78 (High), a plain GET or DNS lookup is #79
+  (Medium). Both report by default; set them in `threatPolicy` to ask or block.
+
+Not seen: a downloaded file renamed before it runs, paths held in variables, `scp`/`rsync` uploads, and
+hosts outside the list. [docs/DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md) §6 and §13 have the detail.
 
 ### Skill Analysis — what is your agent actually being told to do?
 
@@ -845,6 +964,7 @@ npx moorai-scan --package github:owner/repo   # a whole source repository — an
 - **`moorai-shadow`** layers a sanctioned/unsanctioned check on top of the AIBOM inventory (allow-list in `~/.moorai/config.json` `sanctioned`, or `MOORAI_SANCTIONED`); `--strict` exits non-zero for CI/posture gates.
 - **AIBOM: AI provider keys at rest.** `moorai-aibom` looks for Anthropic, OpenAI, Hugging Face, Perplexity and Google keys (shapes from gitleaks' published rules; a Google key counts only in an AI context, because the same shape is used by Maps and Firebase) in a fixed, bounded set of places. It checks shell startup files (`~/.zshrc`, `~/.zshenv`, `~/.bashrc`, `~/.bash_profile`, `~/.profile`, `~/.config/fish/config.fish`), the config dirs of known AI CLIs (`~/.config/aichat`, `~/.config/shell_gpt`, `~/.config/io.datasette.llm`, `~/.config/fabric`, `~/.config/mods`, `~/.gemini`, `~/Library/Application Support/io.datasette.llm`; depth 2 or less, 25 files or fewer per dir), and `.env` files at the top level of `~` and of each immediate child of `~/code`, `~/src`, `~/dev`, `~/projects`, `~/workspace`, `~/repos`, `~/git` and `~/Developer`. Templates are skipped, and so are files over 1 MB, binary files and unreadable files. It does not walk the disk. Each finding is `{provider, locationClass, location, keyHash}`: `location` is set only for a fixed well-known path (a project `.env` reports none), and `keyHash` is the agent's **keyed**, per-tenant `h2:` hash — the same fingerprint an alert carries — so the console can tell an org-issued key from a personal one. The key, any part of it, and the file contents are never output. An unenrolled device reports `h2:nokey`.
 - **AIBOM: running local model servers and local MCP servers.** `moorai-aibom` also reports which local model servers are **running**, not only installed. The probe runs `lsof +c 0 -iTCP -sTCP:LISTEN -nP` + `ps -A -o comm=` on macOS/Linux and `netstat -ano` + `tasklist /FO CSV /NH` on Windows, and keeps only process names and ports; it never reads process arguments or environment. It knows Ollama (process name, or a listener on its documented default port 11434), LM Studio (process name; LM Studio documents no fixed default port), llama.cpp `llama-server` and vLLM (process name; their documented defaults 8080/8000 are too generic to count alone). Each is reported as `{runtime, ports, bind: loopback|network, detectedBy}`. MCP servers declared with a localhost `http(s)` URL in the configs the AIBOM already reads are matched to a listener on that port and reported as `{name, scope, transport: http|sse, port, running}` (`running: null` when the probe could not run). The URL is never echoed, because its query string can carry a token. In `moorai-shadow` these appear as `local-runtime` items (sanction with `sanctioned.runtimes`; a server listening beyond loopback ranks high) and `api-key` items (sanction with `sanctioned.apiKeyHashes`, an exact list of the org's issued keys' `h2:` hashes; `h2:nokey` never sanctions). The desktop host reports both signals to the console too: its device report's `aiAssets` now carries `apiKeysAtRest`, `localRuntimes` and `localMcpListeners` with the same shapes, produced by Rust mirrors of these collectors (`src-tauri/src/ai_keys.rs`, `ai_runtime.rs`, `content_hash.rs`). `test/aibom-rust-parity.test.mjs` pins the Rust tables to the JS ones, and `test/fixtures/content-hash-parity.json` is asserted by both `cargo test` and Node so the host's `keyHash` is byte-identical to the agent's. The console stores them with the rest of `aiAssets` but does not display them yet.
+- **AIBOM: local models with safety training removed (by name).** `moorai-aibom` reads local model **names** in memory and reports, per runtime, how many there are and how many have a name that says their safety training was removed, plus one boolean (`localModelSafety`, and `summary.localModelsSafetyRemovedByName`). Names come from Ollama's manifests directory and its `/api/tags` on `127.0.0.1:11434` only (`OLLAMA_HOST` is not followed), LM Studio's and Jan's `<publisher>/<model>` folders, GPT4All's model folder, the llama.cpp `-hf` cache and the Hugging Face hub cache (`models--<org>--<name>`). A model counts when a word of its name is `abliterated`, `obliterated`, `uncensored`, `decensored`, `unaligned`, `jailbroken` or `heretic`. Words are split at separators, case changes and letter/digit changes, so `jailbreak-classifier`, `Llama-Guard`, `heretical` and `aligned` do not match. A name, path, org, tag or digest is never output. The scan stops at 2 s and 5,000 directory entries (1,000 from one directory) and says so (`truncated`, `timedOut`). This is name-based only: it does not prove or disprove a backdoor, and a renamed model is not caught. The source of each token is in `cli/local-model-names.mjs`; tests are in `test/local-model-names.test.mjs`. The desktop host builds the same block (`src-tauri/src/local_model_names.rs`, identical output on the shared fixture `test/fixtures/local-ai/model-names.json`) and sends it with its device report, so the console shows the counts.
 - **AIBOM: MCP server reputation.** `moorai-aibom` reports each MCP server's first-seen reputation (`{score, band, reasons}`, a 0-100 score, band good/fair/poor/bad and category codes such as `mcp-typosquat` or `pkg-install-script-remote`), scored offline from the package name and the copy npx already installed, and counts poor and bad servers in `summary.mcpLowReputation`. `moorai-shadow` carries the same reputation, and an unsanctioned server with a poor or bad band ranks high whatever its inferred scope. The scoring, the opt-in registry lookup and feed, and the `blockBelow` policy are documented in [`mcp-proxy/README.md`](mcp-proxy/README.md).
 - **`moorai-compliance`** maps the device's existing content-free signals to framework controls and marks each **covered / partial / not-covered honestly** — the evidence layer a cost-pressured SOC can actually keep. `--format stix` emits the findings as a STIX 2.1 bundle (custom `x-moorai-finding` objects + hash-keyed indicators) for threat-intel interchange.
 - **`moorai-verify-chain`** walks each on-device evidence log and verifies its prev-hash chain — a deleted, reordered, or in-place-edited record breaks the chain and is reported. Every log line and every emitted OTel span is chain-stamped (`cli/record-chain.mjs`), so the record hash proves each record and the chain proves the *sequence* (immutable once streamed to your SIEM).
@@ -890,6 +1010,34 @@ export MOORAI_OTLP_HEADERS="x-api-key=…"                            # optional
 
 Off unless an endpoint is set; emission is bounded and best-effort and never affects an enforcement
 decision. (Or set `otlpEndpoint` / `otlpHeaders` in the device config.)
+
+### Sandbox egress policies from the same egress rules
+
+The `egressRules` / `egressDefault` that MoorAI's own check judges can also become the network part of a
+kernel sandbox's policy, so one rule set drives both layers:
+
+```bash
+node cli/sandbox-policy.mjs --target mxc|seatbelt|openshell --rules policy.json
+```
+
+The policy goes to stdout. Every rule the target cannot express goes to stderr as
+`{ index, id?, action, fields, effect, reason }`; nothing is dropped silently. A sandbox sees connections, not
+calls, so:
+
+- **MXC (Windows):** only numeric hosts become rules (`network.egress.allow` / `deny`, `/32` or `/128`).
+  `egress.default` stays `deny`. A block wins over the host-only `egressAllow` CIDRs. Hostnames, loopback,
+  and the binary, method and path fields stay with MoorAI's check. The desktop host reads the rules from
+  `egressRules` / `egressDefault` in `%LOCALAPPDATA%\MoorAI Host\mxc.json`.
+- **Seatbelt (macOS):** `sandbox-exec` can only name `localhost` or `*` (measured). `egressDefault: "block"`
+  denies all outbound except loopback, and loopback port rules are carried. Every other host is reported.
+  The desktop host reads the rules only from a root-owned `/etc/moorai/config.json`.
+- **OpenShell:** generates `network_policies` YAML. Binaries become `/**/<name>` and methods and paths
+  become REST rules. A MoorAI block that an OpenShell allow would cover either becomes `deny_rules` or
+  removes that allow. OpenShell has no connection-level deny.
+- **gVisor:** not a target. gVisor has no per-host egress policy; egress comes from the deployment's
+  network policy.
+
+Details and limits: [CAPABILITY_SPEC.md](docs/CAPABILITY_SPEC.md#sandbox-egress-policies-from-egressrules).
 
 ### Cloud AI platforms (Amazon Bedrock inventory)
 

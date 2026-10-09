@@ -7,6 +7,10 @@
 // Contract: microsoft/mxc @ 7cd00d1, schemas/stable/mxc-config.schema.1.0.0.json.
 #![cfg_attr(not(windows), allow(dead_code))]
 
+// egressRules -> MXC and Seatbelt network rules. Declared here so lib.rs needs no new line.
+#[path = "mxc_egress.rs"]
+pub mod egress;
+
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -319,6 +323,9 @@ pub struct PolicyInput {
     pub hook_roots: Vec<String>,
     pub model_proxy_port: Option<i64>,
     pub egress_allow: Vec<String>,
+    // MoorAI's egress rule set (cli/egress-rules.mjs shape), mapped by egress::mxc_egress.
+    pub egress_rules: Option<Value>,
+    pub egress_default: Option<Value>,
     pub extra_ca_certs: String,
     pub command_line: String,
     pub denials_output_path: String,
@@ -333,7 +340,7 @@ fn fail(code: &str, reason: &str) -> Value {
 
 const SUPPORTED: &str = "claude, codex, copilot";
 
-// Returns { ok:true, policy, ensureDirs } or { ok:false, reasonCode, reason } — the exact object
+// Returns { ok:true, policy, ensureDirs, egressUnexpressed? } or { ok:false, reasonCode, reason } — the exact object
 // cli/mxc-policy.mjs buildMxcPolicy returns for the same input.
 pub fn build_policy(i: &PolicyInput, exists: &dyn Fn(&str) -> bool) -> Value {
     let agent = i.agent.as_str();
@@ -467,13 +474,27 @@ pub fn build_policy(i: &PolicyInput, exists: &dyn Fn(&str) -> bool) -> Value {
         env.push(format!("NODE_EXTRA_CA_CERTS={}", win_norm(&i.extra_ca_certs)));
     }
 
+    // egress.default stays "deny" whatever egressDefault says; egressRules only add numeric allows and
+    // denies (cli/sandbox-policy.mjs mxcNetwork).
     let mut network = json!({
         "egress": { "default": "deny" },
         "ingress": { "default": "deny", "hostLoopback": "allow" }
     });
+    let has_rules = i.egress_rules.as_ref().is_some_and(|v| !v.is_null()) || i.egress_default.as_ref().is_some_and(|v| !v.is_null());
+    let eg = has_rules.then(|| egress::mxc_egress(i.egress_rules.as_ref(), i.egress_default.as_ref()));
+    let mut allow: Vec<Value> = vec![];
     if !egress_allow.is_empty() {
         let to: Vec<Value> = egress_allow.iter().map(|c| json!({ "cidr": c })).collect();
-        network["egress"]["allow"] = json!([{ "to": to, "ports": [{ "protocol": "tcp", "port": 443 }] }]);
+        allow.push(json!({ "to": to, "ports": [{ "protocol": "tcp", "port": 443 }] }));
+    }
+    if let Some(e) = &eg {
+        allow.extend(e.allow.iter().cloned());
+    }
+    if !allow.is_empty() {
+        network["egress"]["allow"] = json!(allow);
+    }
+    if let Some(e) = eg.as_ref().filter(|e| !e.deny.is_empty()) {
+        network["egress"]["deny"] = json!(e.deny);
     }
 
     let mut pc = json!({
@@ -494,7 +515,11 @@ pub fn build_policy(i: &PolicyInput, exists: &dyn Fn(&str) -> bool) -> Value {
         "ui": { "disable": false, "clipboard": "none", "injection": false },
         "processContainer": pc
     });
-    json!({ "ok": true, "policy": policy, "ensureDirs": ensure_dirs })
+    let mut out = json!({ "ok": true, "policy": policy, "ensureDirs": ensure_dirs });
+    if let Some(e) = eg.filter(|e| !e.unexpressed.is_empty()) {
+        out["egressUnexpressed"] = json!(e.unexpressed);
+    }
+    out
 }
 
 #[cfg(test)]

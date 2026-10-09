@@ -42,6 +42,11 @@ written for. Map your framework's tools onto them:
 Paths in `Read`, `Bash` and MCP arguments are read **on the sidecar's filesystem** (relative to `cwd`),
 so run the sidecar where the agent's files are: the same container or pod.
 
+**The model's call id.** Pass `tool_call_id=` (the id the model gave the call: Anthropic `toolu_…`,
+OpenAI `call_…`). When the sidecar runs with `--model-proxy-url` next to `moorai-model-proxy
+--unchecked-window-ms`, the proxy then knows this call was checked. Any call the model returned that no
+check matched raises a content-free "unchecked tool call" alert. Without those flags the id is ignored.
+
 ## LangGraph
 
 A guard node between the model and the `ToolNode`: every tool call the model proposes is checked
@@ -63,7 +68,7 @@ def moorai_guard(state: MessagesState):
     verdicts = []
     for call in calls:
         tool, shape = AS_HOOK_TOOL.get(call["name"], ("mcp__app__" + call["name"], lambda a: a))
-        verdicts.append((call, moorai.tool_call(tool, shape(call["args"]))))
+        verdicts.append((call, moorai.tool_call(tool, shape(call["args"]), tool_call_id=call["id"])))
     if all(v["decision"] == "allow" for _, v in verdicts):
         return {"messages": []}
     # Every tool call needs an answer: the denied ones get MoorAI's reason, the rest are not run.

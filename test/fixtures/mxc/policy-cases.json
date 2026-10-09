@@ -1055,6 +1055,433 @@
     }
   },
   {
+    "name": "claude-egress-rules-carve-out-of-egress-allow",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows"
+      },
+      "agentBin": "C:\\Users\\dev\\.local\\bin\\claude.exe",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [
+        "140.82.112.0/20"
+      ],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": true,
+      "hostAppDir": "C:\\Program Files\\MoorAI",
+      "egressRules": [
+        {
+          "id": "no-gh-ip",
+          "host": "140.82.112.4",
+          "action": "block"
+        },
+        {
+          "host": "203.0.113.20",
+          "port": [
+            443,
+            8443
+          ],
+          "action": "allow"
+        },
+        {
+          "host": "api.github.com",
+          "action": "allow"
+        }
+      ],
+      "egressDefault": "block"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": true,
+      "policy": {
+        "version": "1.0.0",
+        "containment": "processcontainer",
+        "process": {
+          "commandLine": "C:\\Users\\dev\\.local\\bin\\claude.exe --continue",
+          "cwd": "C:\\src\\proj",
+          "env": [
+            "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+            "DISABLE_AUTOUPDATER=1",
+            "GIT_CONFIG_COUNT=1",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=C:/src/proj"
+          ],
+          "inheritDefaultEnv": true
+        },
+        "filesystem": {
+          "readwritePaths": [
+            "C:\\src\\proj",
+            "C:\\Users\\dev\\.claude",
+            "C:\\Users\\dev\\.claude.json",
+            "C:\\Users\\dev\\.moorai",
+            "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI"
+          ],
+          "readonlyPaths": [
+            "C:\\Users\\dev\\.local\\bin",
+            "C:\\Users\\dev\\.local\\share\\claude",
+            "C:\\Program Files\\nodejs",
+            "C:\\Program Files\\Git",
+            "C:\\Program Files\\PowerShell\\7",
+            "C:\\Users\\dev\\.gitconfig",
+            "C:\\ProgramData\\MoorAI"
+          ],
+          "deniedPaths": [
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI Host",
+            "C:\\Users\\dev\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+            "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\StartUp",
+            "C:\\Windows\\System32\\Tasks",
+            "C:\\Windows\\Tasks",
+            "C:\\Users\\dev\\Documents\\WindowsPowerShell",
+            "C:\\Users\\dev\\Documents\\PowerShell",
+            "C:\\Users\\dev\\.bashrc",
+            "C:\\Users\\dev\\.bash_profile",
+            "C:\\Users\\dev\\.profile",
+            "C:\\Users\\dev\\AppData\\Roaming\\Microsoft\\Credentials",
+            "C:\\Users\\dev\\AppData\\Local\\Microsoft\\Credentials",
+            "C:\\Users\\dev\\AppData\\Roaming\\Microsoft\\Protect",
+            "C:\\Users\\dev\\AppData\\Roaming\\Microsoft\\Crypto",
+            "C:\\Users\\dev\\AppData\\Local\\Microsoft\\Vault",
+            "C:\\ProgramData\\Microsoft\\Vault",
+            "C:\\Users\\dev\\.ssh",
+            "C:\\Users\\dev\\.aws",
+            "C:\\Users\\dev\\.azure",
+            "C:\\Users\\dev\\.kube",
+            "C:\\Users\\dev\\.docker",
+            "C:\\Users\\dev\\AppData\\Roaming\\gcloud",
+            "C:\\Users\\dev\\.config\\gcloud",
+            "C:\\Users\\dev\\.npmrc",
+            "C:\\Users\\dev\\.pypirc",
+            "C:\\Users\\dev\\.netrc",
+            "C:\\Users\\dev\\_netrc",
+            "C:\\Users\\dev\\.git-credentials",
+            "C:\\Users\\dev\\.config\\gh",
+            "C:\\Users\\dev\\AppData\\Roaming\\GitHub CLI",
+            "C:\\Users\\dev\\AppData\\Local\\Google\\Chrome\\User Data",
+            "C:\\Users\\dev\\AppData\\Local\\Microsoft\\Edge\\User Data",
+            "C:\\Users\\dev\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data",
+            "C:\\Users\\dev\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles",
+            "C:\\Program Files\\MoorAI"
+          ]
+        },
+        "fallback": {
+          "allowDaclMutation": false
+        },
+        "network": {
+          "egress": {
+            "default": "deny",
+            "allow": [
+              {
+                "to": [
+                  {
+                    "cidr": "140.82.112.0/20"
+                  }
+                ],
+                "ports": [
+                  {
+                    "protocol": "tcp",
+                    "port": 443
+                  }
+                ]
+              },
+              {
+                "to": [
+                  {
+                    "cidr": "203.0.113.20/32"
+                  }
+                ],
+                "ports": [
+                  {
+                    "protocol": "tcp",
+                    "port": 443
+                  },
+                  {
+                    "protocol": "tcp",
+                    "port": 8443
+                  }
+                ]
+              }
+            ],
+            "deny": [
+              {
+                "to": [
+                  {
+                    "cidr": "140.82.112.4/32"
+                  }
+                ]
+              }
+            ]
+          },
+          "ingress": {
+            "default": "deny",
+            "hostLoopback": "allow"
+          }
+        },
+        "ui": {
+          "disable": false,
+          "clipboard": "none",
+          "injection": false
+        },
+        "processContainer": {
+          "leastPrivilege": false,
+          "ui": {
+            "isolation": "desktop",
+            "desktopSystemControl": false,
+            "systemSettings": "none",
+            "ime": false
+          },
+          "captureDenials": {
+            "mode": "block",
+            "outputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json"
+          }
+        }
+      },
+      "ensureDirs": [
+        "C:\\Users\\dev\\.moorai",
+        "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+        "C:\\Users\\dev\\AppData\\Local\\MoorAI",
+        "C:\\Users\\dev\\.moorai\\agent-tmp",
+        "C:\\Users\\dev\\.claude"
+      ],
+      "egressUnexpressed": [
+        {
+          "index": 2,
+          "action": "allow",
+          "fields": [
+            "host"
+          ],
+          "effect": "omitted",
+          "reason": "mxc-host-name"
+        }
+      ]
+    }
+  },
+  {
+    "name": "codex-egress-default-allow-stays-deny",
+    "input": {
+      "agent": "codex",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows",
+        "NODE_EXTRA_CA_CERTS": "C:\\corp\\roots.pem",
+        "SSL_CERT_FILE": "C:\\corp\\full-bundle.pem"
+      },
+      "agentBin": "C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.cmd",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [],
+      "modelProxyPort": 8791,
+      "egressAllow": [
+        "140.82.112.0/20",
+        " 2606:50c0::/32 "
+      ],
+      "extraCaCerts": "C:\\corp\\roots.pem",
+      "commandLine": "codex",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": true,
+      "fsDenySupported": false,
+      "hostAppDir": "C:\\Program Files\\MoorAI",
+      "egressRules": [
+        {
+          "host": "localhost",
+          "port": 8791,
+          "action": "allow"
+        },
+        {
+          "host": "198.51.100.1",
+          "method": "GET",
+          "action": "allow"
+        },
+        {
+          "host": "198.51.100.1",
+          "port": 22,
+          "action": "block"
+        }
+      ],
+      "egressDefault": "allow"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": true,
+      "policy": {
+        "version": "1.0.0",
+        "containment": "processcontainer",
+        "process": {
+          "commandLine": "codex",
+          "cwd": "C:\\src\\proj",
+          "env": [
+            "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "OPENAI_BASE_URL=http://127.0.0.1:8791/openai",
+            "GIT_CONFIG_COUNT=1",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=C:/src/proj",
+            "NODE_EXTRA_CA_CERTS=C:\\corp\\roots.pem"
+          ],
+          "inheritDefaultEnv": true
+        },
+        "filesystem": {
+          "readwritePaths": [
+            "C:\\src\\proj",
+            "C:\\Users\\dev\\.codex",
+            "C:\\Users\\dev\\.moorai",
+            "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI"
+          ],
+          "readonlyPaths": [
+            "C:\\Users\\dev\\AppData\\Roaming\\npm",
+            "C:\\Program Files\\nodejs",
+            "C:\\Program Files\\Git",
+            "C:\\Program Files\\PowerShell\\7",
+            "C:\\Users\\dev\\.gitconfig",
+            "C:\\ProgramData\\MoorAI",
+            "C:\\corp\\roots.pem",
+            "C:\\corp\\full-bundle.pem"
+          ],
+          "deniedPaths": []
+        },
+        "fallback": {
+          "allowDaclMutation": false
+        },
+        "network": {
+          "egress": {
+            "default": "deny",
+            "allow": [
+              {
+                "to": [
+                  {
+                    "cidr": "140.82.112.0/20"
+                  },
+                  {
+                    "cidr": "2606:50c0::/32"
+                  }
+                ],
+                "ports": [
+                  {
+                    "protocol": "tcp",
+                    "port": 443
+                  }
+                ]
+              },
+              {
+                "to": [
+                  {
+                    "cidr": "198.51.100.1/32"
+                  }
+                ],
+                "ports": [
+                  {
+                    "protocol": "tcp"
+                  }
+                ]
+              }
+            ],
+            "deny": [
+              {
+                "to": [
+                  {
+                    "cidr": "198.51.100.1/32"
+                  }
+                ],
+                "ports": [
+                  {
+                    "port": 22
+                  }
+                ]
+              }
+            ]
+          },
+          "ingress": {
+            "default": "deny",
+            "hostLoopback": "allow"
+          }
+        },
+        "ui": {
+          "disable": false,
+          "clipboard": "none",
+          "injection": false
+        },
+        "processContainer": {
+          "leastPrivilege": false,
+          "ui": {
+            "isolation": "desktop",
+            "desktopSystemControl": false,
+            "systemSettings": "none",
+            "ime": false
+          },
+          "captureDenials": {
+            "mode": "block",
+            "outputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json"
+          }
+        }
+      },
+      "ensureDirs": [
+        "C:\\Users\\dev\\.moorai",
+        "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+        "C:\\Users\\dev\\AppData\\Local\\MoorAI",
+        "C:\\Users\\dev\\.moorai\\agent-tmp",
+        "C:\\Users\\dev\\.codex"
+      ],
+      "egressUnexpressed": [
+        {
+          "index": 0,
+          "action": "allow",
+          "fields": [
+            "host"
+          ],
+          "effect": "omitted",
+          "reason": "mxc-loopback"
+        },
+        {
+          "index": 1,
+          "action": "allow",
+          "fields": [
+            "method"
+          ],
+          "effect": "coarsened",
+          "reason": "mxc-l7-fields"
+        },
+        {
+          "index": 1,
+          "action": "allow",
+          "fields": [
+            "method"
+          ],
+          "effect": "narrowed",
+          "reason": "mxc-block-wins"
+        },
+        {
+          "index": -1,
+          "fields": [
+            "egressDefault"
+          ],
+          "effect": "narrowed",
+          "reason": "mxc-default-deny"
+        }
+      ]
+    }
+  },
+  {
     "name": "err-workspace-overlaps-host-app",
     "input": {
       "agent": "claude",

@@ -1,14 +1,16 @@
 # syntax=docker/dockerfile:1
 # ghcr.io/gitayg/moorai-server — the MoorAI engine as a sidecar: moorai-serve (the localhost HTTP
-# decision API, default), moorai-mcp-gateway (the HTTP MCP guard) or moorai-model-proxy (between an agent's
-# model SDK and the provider), one image, three commands.
+# decision API, default), moorai-mcp-gateway (the HTTP MCP guard), moorai-model-proxy (between an agent's
+# model SDK and the provider) or moorai-egress-proxy (the forward proxy that enforces egressRules on real
+# connections; deploy/), one image, four commands.
 #
 #   docker build -f docker/server/Dockerfile -t moorai-server .
 #   docker run --rm moorai-server                                   # moorai-serve on 127.0.0.1:8790
 #   docker run --rm moorai-server moorai-mcp-gateway --route /github=https://api.githubcopilot.com/mcp/
 #   docker run --rm -e MOORAI_HEALTH_PORT=8791 moorai-server moorai-model-proxy   # report-only, 127.0.0.1:8791
+#   docker run --rm -e MOORAI_HEALTH_PORT=8850 moorai-server moorai-egress-proxy  # 127.0.0.1:8850
 #
-# All three bind loopback, so they are meant to share the agent's network namespace (a Kubernetes pod, or
+# All four bind loopback by default, so they are meant to share the agent's network namespace (a Kubernetes pod, or
 # compose `network_mode: "service:<agent>"`): examples/serve/. Console binding and workload name come from
 # the environment at run time (MOORAI_SERVER_URL, MOORAI_TENANT, MOORAI_INSTALL_TOKEN, MOORAI_SERVICE_ID;
 # MOORAI_K8S_POD / _NAMESPACE / _NODE from the downward API) — never baked into the image.
@@ -32,6 +34,7 @@ COPY scripts/redteam.mjs scripts/accepted-failures.mjs scripts/
 COPY test/redteam/corpus.json test/redteam/
 COPY mcp-gateway/ mcp-gateway/
 COPY model-proxy/ model-proxy/
+COPY egress-proxy/ egress-proxy/
 COPY mcp-proxy/tool-scan.mjs mcp-proxy/tool-baseline.mjs mcp-proxy/tool-drift.mjs mcp-proxy/
 COPY cloud/ cloud/
 COPY packages/agent-sdk/src/ packages/agent-sdk/src/
@@ -41,7 +44,8 @@ COPY docker/server/healthcheck.mjs /opt/moorai/docker/healthcheck.mjs
 RUN printf '#!/bin/sh\nexec node /opt/moorai/cli/moorai-serve.mjs "$@"\n' > /usr/local/bin/moorai-serve \
  && printf '#!/bin/sh\nexec node /opt/moorai/mcp-gateway/moorai-mcp-gateway.mjs "$@"\n' > /usr/local/bin/moorai-mcp-gateway \
  && printf '#!/bin/sh\nexec node /opt/moorai/model-proxy/moorai-model-proxy.mjs "$@"\n' > /usr/local/bin/moorai-model-proxy \
- && chmod 755 /usr/local/bin/moorai-serve /usr/local/bin/moorai-mcp-gateway /usr/local/bin/moorai-model-proxy
+ && printf '#!/bin/sh\nexec node /opt/moorai/egress-proxy/moorai-egress-proxy.mjs "$@"\n' > /usr/local/bin/moorai-egress-proxy \
+ && chmod 755 /usr/local/bin/moorai-serve /usr/local/bin/moorai-mcp-gateway /usr/local/bin/moorai-model-proxy /usr/local/bin/moorai-egress-proxy
 
 # Server mode: the workload name (MOORAI_SERVICE_ID) is the identity instead of a per-deploy hostname,
 # and a "justify" verdict with no approver is a deny. moorai-serve forces this anyway; the gateway reads it.

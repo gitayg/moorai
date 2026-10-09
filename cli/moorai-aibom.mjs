@@ -9,8 +9,10 @@
 // Two collectors look further and still emit nothing but metadata: AI-provider keys AT REST
 // (cli/aibom-keys.mjs — provider + location class + a KEYED one-way hash, never the key or the file)
 // and RUNNING local model / MCP servers (cli/aibom-runtime.mjs + cli/local-ai-inventory.mjs — process
-// names + ports only), INSTALLED local runtimes (existence checks, no execution) and, on Windows, the
-// Windows AI platform (cli/local-ai-windows.mjs — package names + versions, NPU / GPU class).
+// names + ports only), INSTALLED local runtimes (existence checks, no execution), on Windows the
+// Windows AI platform (cli/local-ai-windows.mjs — package names + versions, NPU / GPU class), and local
+// models whose NAME says their safety training was removed (cli/local-model-names.mjs — per-runtime
+// counts and a boolean; the names are read in memory and never emitted).
 //
 //   node cli/moorai-aibom.mjs                 # JSON (default)
 //   node cli/moorai-aibom.mjs --format md     # Markdown for a report
@@ -26,9 +28,11 @@ import { toCycloneDX, toSpdx } from "../data/sbom.js";
 import { scanKeysAtRest } from "./aibom-keys.mjs";
 import { fixtureRunner, localMcpListeners } from "./aibom-runtime.mjs";
 import { localAiInventory, runCmd } from "./local-ai-inventory.mjs";
+import { localModelSafety, parseOllamaTags, SAFETY_REMOVED_TOKENS } from "./local-model-names.mjs";
 import { assessServerSync } from "./mcp-reputation.mjs";
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
+const MODEL_SAFETY_TOKENS = SAFETY_REMOVED_TOKENS.map((t) => t.token).join(", ");
 
 const HOME = homedir();
 const read = (p) => { try { return readFileSync(p, "utf8"); } catch { return null; } };
@@ -168,13 +172,23 @@ function localAi() {
   return localAiInventory({ runner, platform, home: HOME });
 }
 
-function buildAibom() {
+// Local models with safety training removed, by name. Under MOORAI_AIBOM_PROBE_FIXTURE the fixture's
+// "ollama-api-tags" string stands in for GET 127.0.0.1:11434/api/tags, so a test never opens a socket.
+function modelSafety() {
+  const fx = process.env.MOORAI_AIBOM_PROBE_FIXTURE;
+  const platform = fx && process.env.MOORAI_AIBOM_PLATFORM ? process.env.MOORAI_AIBOM_PLATFORM : process.platform;
+  const ollamaTags = fx ? async () => { const t = fixtureRunner(fx)("ollama-api-tags"); return t == null ? null : parseOllamaTags(t); } : undefined;
+  return localModelSafety({ platform, home: HOME, ...(ollamaTags ? { ollamaTags } : {}) });
+}
+
+async function buildAibom() {
   const decls = [];
   const prov = providers(), local = localModels(), mcp = mcpServers(decls);
   const ext = editorExtensions(), skills = agentSkills();
   const use = usage(prov);
   const keys = scanKeysAtRest().findings;
   const ai = localAi();
+  const safety = await modelSafety();
   const runtimes = ai.runtimes, mcpLive = localMcpListeners(decls, ai.listeners);
   const models = [...prov.filter((p) => p.model).map((p) => ({ name: p.model, provider: p.provider, local: false })),
     ...local.map((m) => ({ name: m.name, provider: m.runtime, local: true }))];
@@ -189,10 +203,11 @@ function buildAibom() {
     bomFormat: "MoorAI-AIBOM", specVersion: "1.0", scope: "device", device: hostname(), generatedAt: new Date().toISOString(),
     summary: { providers: new Set(prov.map((p) => p.provider)).size, models: models.length, localModels: local.length, agents: new Set(prov.map((p) => p.agent)).size, mcpServers: mcp.length, mcpHighRisk: mcp.filter((s) => s.level === "high").length, mcpLowReputation: mcp.filter((s) => s.reputation && (s.reputation.band === "poor" || s.reputation.band === "bad")).length, editorAiExtensions: ext.length, skills: skills.length, calls: use ? use.events : 0, roughSpendUsd: use ? use.roughSpendUsd : null,
       apiKeysAtRest: keys.length, runningLocalRuntimes: runtimes.length, localMcpRunning: mcpLive.filter((m) => m.running === true).length,
-      networkLocalRuntimes: runtimes.filter((r) => r.listening === "network").length, installedLocalRuntimes: ai.installed.length },
+      networkLocalRuntimes: runtimes.filter((r) => r.listening === "network").length, installedLocalRuntimes: ai.installed.length,
+      localModelsSafetyRemovedByName: safety ? safety.count : 0 },
     providers: prov, localModels: local, mcpServers: mcp, editorExtensions: ext, skills, usage: use,
     apiKeysAtRest: keys, localRuntimes: runtimes, localRuntimesInstalled: ai.installed, ...(ai.windowsAi ? { windowsAi: ai.windowsAi } : {}),
-    localMcpListeners: mcpLive, runtimeProbe: ai.status, components
+    localMcpListeners: mcpLive, runtimeProbe: ai.status, ...(safety ? { localModelSafety: safety } : {}), components
   };
 }
 
@@ -220,6 +235,10 @@ function toMarkdown(d) {
         + `| Aion Instruct preview | ${d.windowsAi.aionPreview.map((p) => p.name).join(", ") || "—"} |\n`
         + `| NPU | ${d.windowsAi.npu.present ? `yes (${d.windowsAi.npu.vendors.join(", ")})` : "no"} |\n`
         + `| GPU classes | ${d.windowsAi.gpus.map((g) => g.tier).join(", ") || "—"} |` : "")
+    + (d.localModelSafety && d.localModelSafety.sources.length ? `\n\n## Local models with safety training removed (by name)\n\n`
+        + `Matched on the model's name only (${MODEL_SAFETY_TOKENS}). A name says nothing about the weights: this does not prove or disprove a backdoor, and a renamed model is not caught.\n\n`
+        + `| Runtime | Local models | Safety training removed (by name) |\n|---|---|---|\n` + d.localModelSafety.sources.map((s) => `| ${s.runtime} | ${s.models} | ${s.safetyRemovedByName} |`).join("\n")
+        + (d.localModelSafety.truncated || d.localModelSafety.timedOut ? `\n\nPartial: the scan hit its ${d.localModelSafety.timedOut ? "time" : "entry"} bound.` : "") : "")
     + (d.localMcpListeners.length ? `\n\n## Local MCP servers over HTTP/SSE\n\n| Server | Scope | Transport | Port | Running |\n|---|---|---|---|---|\n` + d.localMcpListeners.map((m) => `| ${m.name} | ${m.scope} | ${m.transport} | ${m.port} | ${m.running == null ? "unknown" : m.running ? "yes" : "no"} |`).join("\n") : "")
     + (d.editorExtensions.length ? `\n\n## Editor AI extensions (harness + version)\n\n| Editor | Extension | Version |\n|---|---|---|\n` + d.editorExtensions.map((x) => `| ${x.editor} | ${x.id} | ${x.version || "—"} |`).join("\n") : "")
     + (d.skills.length ? `\n\n## Agent skills & plugins\n\n| Kind | Name |\n|---|---|\n` + d.skills.map((x) => `| ${x.kind} | ${x.name} |`).join("\n") : "")
@@ -298,6 +317,15 @@ Windows AI platform (Windows only; one PowerShell call, no admin):
   (Windows ML execution providers), Microsoft.AionInstructPreview.*; NPU presence + vendor
   (Get-PnpDevice -Class ComputeAccelerator); a GPU class per adapter (Win32_VideoController), never its name.
 
+Local models with safety training removed, BY NAME (counts per runtime + a boolean; never a name,
+path, org, tag or digest; at most 2 s and 5000 directory entries in all):
+  model names are read in memory from ~/.ollama/models/manifests (or $OLLAMA_MODELS; Linux also
+  /usr/share/ollama/.ollama/models), GET http://127.0.0.1:11434/api/tags (loopback only; OLLAMA_HOST
+  is not followed), ~/.lmstudio/models, Jan's llamacpp/ and mlx/ model dirs, GPT4All's model folder,
+  the llama.cpp -hf cache, and the Hugging Face hub cache (models--<org>--<name>). A model counts when a
+  WORD of its name is one of: abliterated, obliterated, uncensored, decensored, unaligned, jailbroken,
+  heretic. Name-based only: it does not prove or disprove a backdoor, and a renamed model is not caught.
+
 For each MCP server it also reports a first-seen REPUTATION (score 0-100, band good/fair/poor/bad,
 and category codes such as mcp-typosquat or pkg-install-script-remote), scored OFFLINE from the
 package name (popular MCP server + library lists) and the copy npx already installed under
@@ -312,7 +340,7 @@ names, counts, and risk levels. Nothing leaves the machine.
 if (process.argv.includes("--help") || process.argv.includes("-h")) { process.stdout.write(HELP); process.exit(0); }
 
 const fmt = (process.argv.includes("--format") ? process.argv[process.argv.indexOf("--format") + 1] : "json");
-const bom = buildAibom();
+const bom = await buildAibom();
 const out = fmt === "md" ? toMarkdown(bom)
   : fmt === "csv" ? toCsv(bom)
   : fmt === "cyclonedx" ? JSON.stringify(toCycloneDX(bom), null, 2) + "\n"

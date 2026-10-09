@@ -29,6 +29,9 @@
 // Content-free: alerts carry the binary, host, port and method, never a path, query, command or argument.
 // Pure. Never throws to the caller (workload-profile.mjs wraps it fail-open).
 
+import { MAX_CMD, MAX_DEPTH, normBinary, splitShell, commandOf, scanArgs, has, val, HOSTLIKE, SHELLS, PWSH, CURL_SHORT, CURL_LONG, WGET_SHORT, WGET_LONG, IWR_VALUED } from "../data/shell-parse.js";
+export { normBinary };
+
 export const EGRESS_RULE = "EGRESS_RULE";
 export const EGRESS_ACTIONS = Object.freeze(["allow", "alert", "block"]);
 export const EGRESS_CATEGORY = "Egress rule";
@@ -40,9 +43,8 @@ const IPV6_HOST_RE = /^\[[0-9a-f:.]+\]$/;
 const BINARY_RE = /^[A-Za-z0-9_.*+:\/\\-]{1,256}$/;
 const METHOD_RE = /^[A-Za-z]{1,16}$/;
 const MAX_RULES = 512, MAX_LIST = 64, MAX_TARGETS = 256, MAX_HOSTS = 4096, MAX_ALERTS = 8;
-const MAX_CMD = 262144, MAX_DEPTH = 3, MAX_SEGS = 256, MAX_TOKS = 256, MAX_MCP_CHARS = 1048576;
+const MAX_MCP_CHARS = 1048576;
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
-const BIN_ALIASES = { iwr: "invoke-webrequest", irm: "invoke-restmethod" };
 
 // Network schemes and their default ports (null: resolved at run time, e.g. via SRV).
 const SCHEME_PORTS = {
@@ -58,13 +60,6 @@ const URL_IN_TEXT = /(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,15}:\/\/[^\s"'<
 // ---------------------------------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------------------------------
-
-export function normBinary(raw) {
-  const s = String(raw || "");
-  const cut = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
-  const w = (cut >= 0 ? s.slice(cut + 1) : s).toLowerCase().replace(/\.exe$/, "");
-  return BIN_ALIASES[w] || w;
-}
 
 function asList(v) { return Array.isArray(v) ? v : [v]; }
 
@@ -225,187 +220,11 @@ function urlsIn(text) {
   return (String(text || "").match(URL_IN_TEXT) || []).map((u) => u.replace(TRAIL, "")).filter((u) => !u.endsWith("://"));
 }
 
-// ---- a small, quote-aware shell splitter (POSIX, or PowerShell with `ps`) ----
-//
-// Segments are split on ; | & && || newlines (and, for PowerShell, on ( ) { } so method-call arguments
-// are their own segments). `$( … )` and backticks are parsed as their own commands, and the token that
-// held them is left carrying a `$` (its value is unknown). Heredoc bodies are skipped: they are data, so
-// any URL in them is judged without a binary (see judgeTargets). Never throws; a parse that cannot finish
-// returns what it has.
-function splitShell(cmd, ps, depth, acc) {
-  if (depth > MAX_DEPTH) return acc;
-  let cur = [], tok = "", building = false, skipNext = false, heredoc = null;
-  const endTok = () => {
-    if (!building) return;
-    // A bare `{` / `}` word is a brace group: a segment boundary, not a token (`{}` in find -exec is a token).
-    if (!ps && (tok === "{" || tok === "}")) { tok = ""; building = false; if (cur.length && acc.segs.length < MAX_SEGS) acc.segs.push({ tokens: cur, ps }); cur = []; return; }
-    if (skipNext) skipNext = false;
-    else if (cur.length < MAX_TOKS) cur.push(tok);
-    tok = ""; building = false;
-  };
-  const endSeg = () => { endTok(); if (cur.length && acc.segs.length < MAX_SEGS) acc.segs.push({ tokens: cur, ps }); cur = []; skipNext = false; };
-  const sub = (inner) => { splitShell(inner, ps, depth + 1, acc); tok += "$"; building = true; };
-  const balanced = (i) => { // i at "(" of "$(": index of the matching ")" or -1
-    let d = 0;
-    for (let j = i; j < cmd.length; j++) { if (cmd[j] === "(") d++; else if (cmd[j] === ")" && --d === 0) return j; }
-    return -1;
-  };
-  const esc = ps ? "`" : "\\";
-  for (let i = 0; i < cmd.length; i++) {
-    const c = cmd[i];
-    if (c === esc) { if (i + 1 < cmd.length) { tok += cmd[i + 1]; building = true; i++; } continue; }
-    if (c === "'") {
-      const close = cmd.indexOf("'", i + 1);
-      tok += close < 0 ? cmd.slice(i + 1) : cmd.slice(i + 1, close); building = true;
-      if (close < 0) break;
-      i = close; continue;
-    }
-    if (c === '"') {
-      let j = i + 1;
-      building = true;
-      for (; j < cmd.length && cmd[j] !== '"'; j++) {
-        if (cmd[j] === esc && j + 1 < cmd.length) { tok += cmd[++j]; continue; }
-        if (cmd[j] === "$" && cmd[j + 1] === "(") { const e = balanced(j + 1); if (e < 0) { tok += cmd.slice(j); j = cmd.length; break; } sub(cmd.slice(j + 2, e)); j = e; continue; }
-        if (!ps && cmd[j] === "`") { const e = cmd.indexOf("`", j + 1); if (e < 0) { j = cmd.length; break; } sub(cmd.slice(j + 1, e)); j = e; continue; }
-        tok += cmd[j];
-      }
-      i = j; continue;
-    }
-    if (c === "$" && cmd[i + 1] === "(") { const e = balanced(i + 1); if (e < 0) { sub(cmd.slice(i + 2)); break; } sub(cmd.slice(i + 2, e)); i = e; continue; }
-    if (!ps && c === "`") { const e = cmd.indexOf("`", i + 1); if (e < 0) { sub(cmd.slice(i + 1)); break; } sub(cmd.slice(i + 1, e)); i = e; continue; }
-    if (ps && "(){}".includes(c)) { endSeg(); continue; }
-    if (!ps && "()".includes(c) && !building) { endSeg(); continue; }
-    if (c === " " || c === "\t" || c === "\r") { endTok(); continue; }
-    if (c === "\n") {
-      endSeg();
-      if (heredoc) { // skip the body up to the delimiter line
-        const re = new RegExp(`(^|\\n)[\\t ]*${heredoc.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\t ]*(\\n|$)`);
-        const rest = cmd.slice(i + 1), m = rest.match(re);
-        const body = m ? rest.slice(0, m.index) : rest;
-        acc.heredocs.push(body);
-        i = m ? i + 1 + m.index + m[0].length - 1 : cmd.length;
-        heredoc = null;
-      }
-      continue;
-    }
-    if (c === ";" || c === "|" || c === "&") {
-      if (c === "&" && cmd[i + 1] === ">") { endTok(); skipNext = true; i++; continue; }
-      if (c === "&" && cmd[i - 1] === ">") continue;
-      endSeg(); if (cmd[i + 1] === c) i++; continue;
-    }
-    if (c === "<" && !ps) {
-      endTok();
-      if (cmd[i + 1] === "<" && cmd[i + 2] !== "<") { // heredoc: remember the delimiter
-        let j = i + 2;
-        if (cmd[j] === "-") j++;
-        while (cmd[j] === " ") j++;
-        const m = cmd.slice(j).match(/^(['"]?)([A-Za-z0-9_.-]+)\1/);
-        if (m) { heredoc = m[2]; i = j + m[0].length - 1; continue; }
-      }
-      if (cmd[i + 1] === "<") { i += cmd[i + 2] === "<" ? 2 : 1; continue; } // here-string: the word is data
-      skipNext = true; continue;
-    }
-    if (c === ">") {
-      if (building && /^[0-9*]$/.test(tok)) { tok = ""; building = false; }
-      endTok();
-      if (cmd[i + 1] === ">") i++;
-      if (cmd[i + 1] === "&") { i++; if (/[0-9-]/.test(cmd[i + 1] || "")) i++; continue; }
-      skipNext = true; continue;
-    }
-    tok += c; building = true;
-  }
-  endSeg();
-  return acc;
-}
-
-// Wrappers whose argument is another command; the listed flags take a value.
-const WRAPPERS = {
-  sudo: ["-u", "-g", "-C", "-D", "-h", "-p", "-U", "-r", "-t", "-T"], doas: ["-u", "-C"], env: ["-u", "-C", "-S"],
-  command: [], builtin: [], exec: ["-a"], nohup: [], time: ["-f", "-o"], nice: ["-n"], ionice: ["-c", "-n", "-p"],
-  timeout: ["-s", "-k"], stdbuf: ["-i", "-o", "-e"], xargs: ["-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a"],
-  caffeinate: ["-t", "-w"], unbuffer: [], proxychains: ["-f"], proxychains4: ["-f"], torsocks: [], tsocks: [],
-  strace: ["-o", "-e", "-p", "-s", "-u"], ltrace: ["-o", "-e", "-p", "-s", "-u"], chronic: [], flock: ["-w", "-E"],
-  "start-process": [], busybox: [],
-  // Shell keywords that precede a command.
-  if: [], then: [], else: [], elif: [], while: [], until: [], do: [], "!": []
-};
-const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "ash"]);
-const PWSH = new Set(["powershell", "pwsh"]);
-
-// The command of one segment: { binary, at } after env assignments and wrappers, or null when the
-// segment has no command word we can name (a bare assignment, a PowerShell method call, a URL).
-function commandOf(toks, ps) {
-  let i = 0;
-  if (ps && toks.length > 2 && /^\$[\w:]+$/.test(toks[0]) && /^[+\-*/]?=$/.test(toks[1])) i = 2;
-  for (let guard = 0; guard < 8; guard++) {
-    while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) i++;
-    if (i >= toks.length) return null;
-    const w = normBinary(toks[i]);
-    const valued = WRAPPERS[w];
-    if (!valued) {
-      if (!w || /^[$.[@]/.test(toks[i]) || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(toks[i])) return null;
-      return { binary: w, at: i };
-    }
-    i++;
-    if (w === "start-process") { // Start-Process -FilePath curl -ArgumentList …
-      if (/^-f/i.test(toks[i] || "")) i++;
-      continue;
-    }
-    while (i < toks.length && toks[i].startsWith("-") && toks[i] !== "-") { i += valued.includes(toks[i]) ? 2 : 1; }
-    if (w === "timeout" && /^\d/.test(toks[i] || "")) i++;
-  }
-  return null;
-}
-
 function decodeEncoded(b64) {
   try { return Buffer.from(String(b64), "base64").toString("utf16le"); } catch { return ""; }
 }
 
-// Option scanning: which tokens are values of a flag (skipped), which are positional.
-function scanArgs(rest, { shortValued = "", longValued = [], ps = false } = {}) {
-  const flags = [], positional = [];
-  for (let i = 0; i < rest.length; i++) {
-    const t = rest[i];
-    if (t === "--") { positional.push(...rest.slice(i + 1)); break; }
-    if (ps && /^-[A-Za-z]/.test(t)) {
-      const colon = t.indexOf(":");
-      const name = (colon > 0 ? t.slice(0, colon) : t).toLowerCase();
-      const takes = longValued.some((v) => v.startsWith(name) && name.length >= 3) || longValued.includes(name);
-      const value = colon > 0 ? t.slice(colon + 1) : takes && i + 1 < rest.length ? rest[++i] : null;
-      flags.push({ name, value });
-      continue;
-    }
-    if (t.startsWith("--") && t.length > 2) {
-      const eq = t.indexOf("=");
-      const name = eq > 0 ? t.slice(0, eq) : t;
-      const value = eq > 0 ? t.slice(eq + 1) : longValued.includes(name) && i + 1 < rest.length ? rest[++i] : null;
-      flags.push({ name, value });
-      continue;
-    }
-    if (t.startsWith("-") && t.length > 1 && !ps) {
-      for (let k = 1; k < t.length; k++) {
-        const ch = t[k];
-        if (shortValued.includes(ch)) {
-          const value = k + 1 < t.length ? t.slice(k + 1) : i + 1 < rest.length ? rest[++i] : null;
-          flags.push({ name: `-${ch}`, value });
-          break;
-        }
-        flags.push({ name: `-${ch}`, value: null });
-      }
-      continue;
-    }
-    positional.push(t);
-  }
-  return { flags, positional };
-}
-const has = (flags, ...names) => flags.some((f) => names.includes(f.name));
-const val = (flags, ...names) => { for (let k = flags.length - 1; k >= 0; k--) if (names.includes(flags[k].name) && flags[k].value != null) return flags[k].value; return null; };
-
-const HOSTLIKE = /^(?:[A-Za-z0-9-]+\.)+[A-Za-z][A-Za-z0-9-]*\.?(?::\d{1,5})?(?:[/?#].*)?$|^(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?(?:[/?#].*)?$|^:\d{1,5}(?:[/?#].*)?$/;
-
 // curl
-const CURL_SHORT = "AbcCdDeEFHKmoPQrtTuUwxXyYz";
-const CURL_LONG = ["--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode", "--form", "--form-string", "--json", "--header", "--output", "--user", "--user-agent", "--referer", "--cookie", "--cookie-jar", "--request", "--url", "--proxy", "--preproxy", "--doh-url", "--max-time", "--connect-timeout", "--retry", "--cacert", "--cert", "--key", "--config", "--resolve", "--connect-to", "--upload-file", "--write-out", "--range", "--output-dir", "--oauth2-bearer", "--interface", "--dns-servers", "--limit-rate", "--max-filesize", "--continue-at", "--dump-header", "--trace", "--trace-ascii", "--stderr", "--netrc-file", "--proxy-user", "--socks4", "--socks4a", "--socks5", "--socks5-hostname", "--variable", "--retry-delay", "--retry-max-time", "--aws-sigv4", "--hostpubmd5", "--pubkey", "--ciphers", "--proto", "--proto-redir", "--proto-default", "--unix-socket", "--abstract-unix-socket", "--max-redirs", "--keepalive-time", "--expect100-timeout", "--happy-eyeballs-timeout-ms", "--local-port", "--tls-max", "--curves", "--engine", "--key-type", "--cert-type", "--pass", "--capath", "--crlfile", "--mail-from", "--mail-rcpt", "--mail-auth", "--quote", "--time-cond", "--telnet-option", "--speed-limit", "--speed-time"];
 function curlTargets(rest) {
   const { flags, positional } = scanArgs(rest, { shortValued: CURL_SHORT, longValued: CURL_LONG });
   let method = val(flags, "-X", "--request");
@@ -424,8 +243,6 @@ function curlTargets(rest) {
 }
 
 // wget
-const WGET_SHORT = "oaeOPtTwUiBQlARDXI";
-const WGET_LONG = ["--output-document", "--output-file", "--append-output", "--user-agent", "--header", "--post-data", "--post-file", "--body-data", "--body-file", "--method", "--user", "--password", "--http-user", "--http-password", "--directory-prefix", "--input-file", "--tries", "--timeout", "--wait", "--load-cookies", "--save-cookies", "--ca-certificate", "--certificate", "--private-key", "--referer", "--limit-rate", "--level", "--accept", "--reject", "--domains", "--exclude-domains", "--base", "--execute", "--quota"];
 function wgetTargets(rest) {
   const { flags, positional } = scanArgs(rest, { shortValued: WGET_SHORT, longValued: WGET_LONG });
   let method = val(flags, "--method");
@@ -452,7 +269,6 @@ function httpieTargets(rest, scheme) {
 }
 
 // Invoke-WebRequest / Invoke-RestMethod
-const IWR_VALUED = ["-uri", "-method", "-custommethod", "-body", "-headers", "-outfile", "-infile", "-contenttype", "-useragent", "-credential", "-proxy", "-proxycredential", "-timeoutsec", "-maximumredirection", "-sessionvariable", "-websession", "-certificate", "-certificatethumbprint", "-transferencoding", "-form", "-authentication", "-token", "-httpversion", "-retryintervalsec", "-maximumretrycount", "-connectiontimeoutseconds", "-operationtimeoutseconds", "-sslprotocol", "-responseheaderstvariable", "-statuscodevariable"];
 function iwrTargets(rest) {
   const { flags, positional } = scanArgs(rest, { longValued: IWR_VALUED, ps: true });
   const named = (prefix) => { for (let k = flags.length - 1; k >= 0; k--) if (prefix.startsWith(flags[k].name) && flags[k].name.length >= 3 && flags[k].value != null) return flags[k].value; return null; };
@@ -677,6 +493,10 @@ export function ruleMatches(rule, t) {
   return true;
 }
 
+function leansOnUnknown(rule, t) {
+  return Boolean((rule.binary && !t.binary) || (rule.port && t.port == null) || (rule.method && t.method == null) || (rule.path && t.path == null));
+}
+
 // The rule chain for a call: the matched profile's rules, then the policy's, then the system file's.
 export function egressChain(profile, eg) {
   const chain = [];
@@ -696,12 +516,21 @@ export function judgeTargets(targets, { chain, dflt }) {
     if (strictest !== "allow") { verdicts.push({ target: { binary: null, scheme: null, host: "*", port: null, method: null, path: null }, action: strictest, ref: "overflow" }); worst = strictest; }
   }
   for (const t of targets) {
-    let v = null;
+    let v = null, leaning = null;
     for (const s of chain) {
-      const r = s.rules.find((rule) => ruleMatches(rule, t));
-      if (r) { v = { target: t, action: r.action, ref: `${s.source}#${r.index}`, ...(r.id ? { ruleId: r.id } : {}) }; break; }
+      for (const r of s.rules) {
+        if (!ruleMatches(r, t)) continue;
+        const hit = { target: t, action: r.action, ref: `${s.source}#${r.index}`, ...(r.id ? { ruleId: r.id } : {}) };
+        // An alert rule matched only through a field this call does not reveal never decides on its own:
+        // alert lets the call through, so it would widen a later block or a block default.
+        if (r.action === "alert" && leansOnUnknown(r, t)) { leaning = leaning || hit; continue; }
+        v = hit;
+        break;
+      }
+      if (v) break;
     }
     if (!v) v = LOOPBACK.has(t.host) ? { target: t, action: "allow", ref: "loopback" } : { target: t, action: dflt, ref: "default" };
+    if (leaning && RANK[leaning.action] > RANK[v.action]) v = leaning;
     verdicts.push(v);
     if (RANK[v.action] > RANK[worst]) worst = v.action;
   }

@@ -13,6 +13,7 @@
 //             a choice is complete at its finish_reason ("tool_calls" when the model called a tool).
 //   errors    ErrorResponse {error: {message, type, param, code}}. Mid-stream there is no documented error
 //             event; the official SDK (openai-node src/core/streaming.ts) throws on any chunk with `error`.
+export { replaceResponse, createReplaceStream } from "./openai-replace.mjs";
 export const NAME = "openai";
 
 const texts = (content) => {

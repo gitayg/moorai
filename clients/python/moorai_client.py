@@ -74,12 +74,15 @@ class MoorAIClient:
             body["ctx"] = ctx
         return self._request("POST", "/v1/scan", body)
 
-    def tool_call(self, tool, input=None, cwd=None):
+    def tool_call(self, tool, input=None, cwd=None, tool_call_id=None):
         """The decision MoorAI's hook makes for this tool call (tool names as Claude Code's: Bash, Read,
-        Write, WebFetch, mcp__<server>__<tool>, ...)."""
+        Write, WebFetch, mcp__<server>__<tool>, ...). tool_call_id is the model's id for the call; a sidecar
+        started with --model-proxy-url passes it to moorai-model-proxy, which then knows the call was checked."""
         body = {"tool": tool, "input": input or {}}
         if cwd:
             body["cwd"] = cwd
+        if tool_call_id:
+            body["toolCallId"] = tool_call_id
         return self._request("POST", "/v1/tool-call", body)
 
     def scan_or_raise(self, text, stage="prompt", ctx=None):
@@ -88,8 +91,8 @@ class MoorAIClient:
             raise Blocked(v)
         return v
 
-    def tool_call_or_raise(self, tool, input=None, cwd=None):
-        v = self.tool_call(tool, input, cwd)
+    def tool_call_or_raise(self, tool, input=None, cwd=None, tool_call_id=None):
+        v = self.tool_call(tool, input, cwd, tool_call_id)
         if v.get("decision") != "allow":
             raise Blocked(v)
         return v
@@ -109,5 +112,5 @@ def scan(text, stage="prompt", ctx=None):
     return _client().scan(text, stage, ctx)
 
 
-def tool_call(tool, input=None, cwd=None):
-    return _client().tool_call(tool, input, cwd)
+def tool_call(tool, input=None, cwd=None, tool_call_id=None):
+    return _client().tool_call(tool, input, cwd, tool_call_id)

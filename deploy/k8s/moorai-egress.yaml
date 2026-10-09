@@ -1,0 +1,299 @@
+# An agent workload whose every network connection goes through MoorAI: model calls through
+# moorai-model-proxy, remote MCP through moorai-mcp-gateway, everything else through moorai-egress-proxy,
+# which enforces the policy's egressRules / egressDefault on the connections themselves.
+#
+# WHY TWO PODS AND NOT SIDECARS. A NetworkPolicy selects pods, not containers: "NetworkPolicies apply to a
+# connection with a pod on one or both ends" (https://kubernetes.io/docs/concepts/services-networking/
+# network-policies/), and the containers of a pod share one network namespace ("Containers in a Pod share
+# the network namespace, including the IP address and network ports", https://kubernetes.io/docs/concepts/
+# workloads/pods/#pod-networking). The egress proxy must reach the internet, so a policy that lets a
+# sidecar out lets the agent container out too, and the proxy is no longer the only way out. Confining one
+# container inside a shared namespace takes per-UID packet filtering (iptables owner match from a NET_ADMIN
+# init container, as service meshes do), which this example does not ship. So the MoorAI components run in
+# their own pod (`moorai-egress`), and the agent pod's NetworkPolicy lets it reach that pod and cluster DNS
+# and nothing else. The NetworkPolicy is what makes the proxy a boundary; it needs a CNI that enforces
+# NetworkPolicy (Calico, Cilium, kindnet in kind >= 0.24, ...). On a CNI that ignores it, everything below
+# still works but the agent can bypass the proxy.
+#
+# HOW THE AGENT IS POINTED AT IT.
+#   * HTTP_PROXY / HTTPS_PROXY (and the lower-case spellings: curl reads only `http_proxy` in lower case)
+#     carry the proxy URL with its token as the password: http://moorai:<token>@moorai-egress:8850. Tools
+#     that honour them: curl, wget, git, pip, npm, Python requests / httpx / urllib, Go net/http, the
+#     JVM with -Djava.net.useSystemProxies, Node fetch / http with NODE_USE_ENV_PROXY=1 (Node 22.21+, 24.5+).
+#   * NO_PROXY names the moorai-egress Service, so the model SDK and the MCP client reach their own MoorAI
+#     component directly (through the proxy, a cluster address is a private destination and is refused).
+#   * KNOWN LIMITS. Anything that ignores the proxy variables (a raw socket, `nc`, ssh, a DNS-over-HTTPS
+#     client, a library that builds its own connection, Node's http without NODE_USE_ENV_PROXY) tries to
+#     connect directly, and the NetworkPolicy drops it: it fails closed, which is the point. Cluster DNS
+#     stays reachable (name resolution), so DNS itself is a narrow channel the proxy does not see; restrict
+#     it with a DNS policy (CoreDNS / Cilium FQDN) if that matters. HTTPS through the proxy is a CONNECT
+#     tunnel: only host and port are judged (method and path rules apply to plain HTTP only), and the TLS
+#     SNI / Host inside the tunnel is not checked (domain fronting through an allowed CDN host passes).
+#
+# WHERE THE RULES COME FROM. The verified console policy and the root-owned machine-wide config
+# (/etc/moorai/config.json), never an environment variable or a flag. Here the machine-wide config is the
+# ConfigMap below, mounted read-only (the kubelet writes ConfigMap files as root, 0644 by defaultMode, which
+# readRootOwned accepts; do not add an fsGroup that makes them group-writable). A console policy, when one
+# is configured, is read first; its rules come before these.
+#
+#   kubectl create secret generic moorai-install --from-literal=token=<install token from the console>
+#   kubectl create secret generic moorai-agent-tokens \
+#     --from-literal=egress-proxy=$(openssl rand -hex 24) \
+#     --from-literal=model-proxy=$(openssl rand -hex 24) \
+#     --from-literal=mcp-gateway=$(openssl rand -hex 24)
+#   kubectl apply -f deploy/k8s/moorai-egress.yaml
+#
+# Pin the image to a release version (ghcr.io/gitayg/moorai-server:<version>) in production.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: moorai-system-config
+data:
+  # Server mode, the workload name, and the egress policy for the agent's traffic. Every destination not
+  # named here is refused (egressDefault: block). Add the hosts your agent needs.
+  config.json: |
+    {
+      "mode": "server",
+      "serviceId": "research-agent",
+      "egressDefault": "block",
+      "egressRules": [
+        { "id": "pypi", "host": "pypi.org", "port": 443, "action": "allow" },
+        { "id": "pypi-files", "host": "files.pythonhosted.org", "port": 443, "action": "allow" },
+        { "id": "github-api", "host": "api.github.com", "port": 443, "action": "allow" },
+        { "id": "no-paste", "host": "*.pastebin.com", "action": "block" }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: moorai-egress
+  labels: { app: moorai-egress }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: moorai-egress }
+  template:
+    metadata:
+      labels: { app: moorai-egress }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: egress-proxy
+          image: ghcr.io/gitayg/moorai-server:latest
+          # Non-loopback bind: the agent is in another pod. Needs --allow-remote AND the token.
+          args: ["moorai-egress-proxy", "--host", "0.0.0.0", "--allow-remote", "--port", "8850"]
+          ports: [{ name: egress, containerPort: 8850 }]
+          env:
+            - name: MOORAI_EGRESS_PROXY_TOKEN
+              valueFrom: { secretKeyRef: { name: moorai-agent-tokens, key: egress-proxy } }
+            - { name: MOORAI_HEALTH_PORT, value: "8850" }
+            - &console-url { name: MOORAI_SERVER_URL, value: https://moorai-console.example.com }
+            - &tenant { name: MOORAI_TENANT, value: acme }
+            - &install-token
+              name: MOORAI_INSTALL_TOKEN
+              valueFrom: { secretKeyRef: { name: moorai-install, key: token, optional: true } }
+            - &pod { name: MOORAI_K8S_POD, valueFrom: { fieldRef: { fieldPath: metadata.name } } }
+            - &namespace { name: MOORAI_K8S_NAMESPACE, valueFrom: { fieldRef: { fieldPath: metadata.namespace } } }
+            - &node { name: MOORAI_K8S_NODE, valueFrom: { fieldRef: { fieldPath: spec.nodeName } } }
+          readinessProbe: &probe
+            exec: { command: ["node", "/opt/moorai/docker/healthcheck.mjs"] }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec: { command: ["node", "/opt/moorai/docker/healthcheck.mjs"] }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext: &hardened
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts: &mounts
+            - { name: moorai-system-config, mountPath: /etc/moorai, readOnly: true }
+            - { name: moorai-home, mountPath: /home/node }
+            - { name: moorai-tmp, mountPath: /tmp }
+        - name: model-proxy
+          image: ghcr.io/gitayg/moorai-server:latest
+          args: ["moorai-model-proxy", "--host", "0.0.0.0", "--allow-remote", "--port", "8791", "--mode", "enforce",
+                 "--route", "/anthropic=https://api.anthropic.com", "--route", "/openai=https://api.openai.com/v1"]
+          ports: [{ name: model, containerPort: 8791 }]
+          env:
+            - name: MOORAI_MODEL_PROXY_TOKEN
+              valueFrom: { secretKeyRef: { name: moorai-agent-tokens, key: model-proxy } }
+            - { name: MOORAI_HEALTH_PORT, value: "8791" }
+            - *console-url
+            - *tenant
+            - *install-token
+            - *pod
+            - *namespace
+            - *node
+          readinessProbe: *probe
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 1000m, memory: 512Mi }
+          securityContext: *hardened
+          volumeMounts: *mounts
+        - name: mcp-gateway
+          image: ghcr.io/gitayg/moorai-server:latest
+          args: ["moorai-mcp-gateway", "--host", "0.0.0.0", "--allow-remote", "--port", "8848",
+                 "--route", "/github=https://api.githubcopilot.com/mcp/"]
+          ports: [{ name: mcp, containerPort: 8848 }]
+          env:
+            - name: MOORAI_GATEWAY_TOKEN
+              valueFrom: { secretKeyRef: { name: moorai-agent-tokens, key: mcp-gateway } }
+            # No /healthz on the gateway: any answer below 500 on loopback (here its 401) means it listens.
+            - { name: MOORAI_HEALTH_PORT, value: "8848" }
+            - { name: MOORAI_HEALTH_PATH, value: "/" }
+            - *console-url
+            - *tenant
+            - *install-token
+            - *pod
+            - *namespace
+            - *node
+          readinessProbe: *probe
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext: *hardened
+          volumeMounts: *mounts
+      volumes:
+        - name: moorai-system-config
+          configMap:
+            name: moorai-system-config
+            defaultMode: 0644
+            items: [{ key: config.json, path: config.json }]
+        - { name: moorai-home, emptyDir: {} }
+        - { name: moorai-tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: moorai-egress
+spec:
+  selector: { app: moorai-egress }
+  ports:
+    - { name: egress, port: 8850, targetPort: egress }
+    - { name: model, port: 8791, targetPort: model }
+    - { name: mcp, port: 8848, targetPort: mcp }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: research-agent
+  labels: { app: research-agent }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: research-agent }
+  template:
+    metadata:
+      labels: { app: research-agent, moorai-egress-client: "true" }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      automountServiceAccountToken: false
+      containers:
+        - name: agent
+          image: ghcr.io/example/research-agent:1.0.0   # your agent loop
+          env:
+            - name: MOORAI_EGRESS_PROXY_TOKEN
+              valueFrom: { secretKeyRef: { name: moorai-agent-tokens, key: egress-proxy } }
+            - name: MOORAI_MODEL_PROXY_TOKEN
+              valueFrom: { secretKeyRef: { name: moorai-agent-tokens, key: model-proxy } }
+            - name: MOORAI_GATEWAY_TOKEN
+              valueFrom: { secretKeyRef: { name: moorai-agent-tokens, key: mcp-gateway } }
+            # $(VAR) expands a variable defined earlier in this list.
+            - { name: HTTP_PROXY, value: "http://moorai:$(MOORAI_EGRESS_PROXY_TOKEN)@moorai-egress:8850" }
+            - { name: HTTPS_PROXY, value: "http://moorai:$(MOORAI_EGRESS_PROXY_TOKEN)@moorai-egress:8850" }
+            - { name: http_proxy, value: "http://moorai:$(MOORAI_EGRESS_PROXY_TOKEN)@moorai-egress:8850" }
+            - { name: https_proxy, value: "http://moorai:$(MOORAI_EGRESS_PROXY_TOKEN)@moorai-egress:8850" }
+            - { name: NO_PROXY, value: "moorai-egress" }
+            - { name: no_proxy, value: "moorai-egress" }
+            - { name: NODE_USE_ENV_PROXY, value: "1" }
+            # The model SDK's base URL is the model proxy; it needs X-MoorAI-Proxy-Token on every request
+            # (Claude Code: ANTHROPIC_CUSTOM_HEADERS; the SDKs: defaultHeaders / default_headers).
+            - { name: ANTHROPIC_BASE_URL, value: "http://moorai-egress:8791/anthropic" }
+            - { name: OPENAI_BASE_URL, value: "http://moorai-egress:8791/openai" }
+            - { name: ANTHROPIC_CUSTOM_HEADERS, value: "x-moorai-proxy-token: $(MOORAI_MODEL_PROXY_TOKEN)" }
+            # The MCP client talks to the gateway with X-MoorAI-Gateway-Token: $(MOORAI_GATEWAY_TOKEN).
+            - { name: GITHUB_MCP_URL, value: "http://moorai-egress:8848/github" }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 2000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: work, mountPath: /work }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: work, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+---
+# The agent pod may reach the MoorAI pod's three ports and cluster DNS. Nothing else: no other pod, no node,
+# no cloud metadata, no internet. Nothing may connect to the agent pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-egress-only-via-moorai
+spec:
+  podSelector:
+    matchLabels: { moorai-egress-client: "true" }
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app: moorai-egress } }
+      ports:
+        - { protocol: TCP, port: 8850 }
+        - { protocol: TCP, port: 8791 }
+        - { protocol: TCP, port: 8848 }
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+          podSelector: { matchLabels: { k8s-app: kube-dns } }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# The MoorAI pod takes connections only from agent pods, and goes out to DNS and to public addresses on
+# 80 / 443 (the console included). This outer fence is coarser than the egress rules; the egress proxy
+# narrows it per host, port, method and path. If the console or an allowed destination is inside the
+# cluster or on a private range, add it here AND name it in an egress rule.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: moorai-egress
+spec:
+  podSelector:
+    matchLabels: { app: moorai-egress }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { moorai-egress-client: "true" } }
+      ports:
+        - { protocol: TCP, port: 8850 }
+        - { protocol: TCP, port: 8791 }
+        - { protocol: TCP, port: 8848 }
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+          podSelector: { matchLabels: { k8s-app: kube-dns } }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8]
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 80 }

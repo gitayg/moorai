@@ -245,6 +245,24 @@ function threatOf(id) {
   return THREATS_BY_ID.get(id);
 }
 
+// A finding the caller established itself rather than by scanning text (the hook's cross-call
+// fetch-then-execute record), resolved through the same action table and risk calibration as decideText.
+// Same return shape, so it merges with the rank rule every branch already uses. The match is empty.
+export function decideThreat(policy, id, detectorId, stage = "prompt") {
+  const out = { decision: "allow", reasons: [], findings: [], kill: false, killIds: [], alternatives: [], maskIds: [] };
+  const t = threatOf(id);
+  if (!t) return out;
+  const act = threatActionFor(policy, id);
+  if (act === "disabled") return out;
+  const level = calibrateRisk(t.riskLevel, { stage, category: t.category });
+  out.findings.push({ threatId: id, category: t.category, riskLevel: level, match: "", detectorId });
+  if (act === "block" || act === "kill") { out.decision = "deny"; out.reasons.push(`#${id} ${t.category}`); }
+  else if (act === "justify") { out.decision = "ask"; out.reasons.push(`#${id} ${t.category} (needs sign-off)`); }
+  if (act === "kill" || (policy?.killOnCritical && act === "block" && level === "Critical")) { out.kill = true; out.killIds.push(id); }
+  if (out.decision !== "allow") out.alternatives = orderedAlternatives([t], "");
+  return out;
+}
+
 // Clipboard read in one tool call → outbound upload in a LATER call of the same session. Two content-free
 // booleans per Bash command, recorded on the agent event (cli/moorai-hook.mjs logBehavior): `clip` — the
 // command reads the clipboard (CLIPBOARD_READ); `upload` — it sends a payload off the device

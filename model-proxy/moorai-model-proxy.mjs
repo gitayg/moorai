@@ -14,7 +14,8 @@ export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK 
                      [--token-file <path>] [--allow-origin <origin>]... [--allow-remote] [--allow-insecure-upstream] [--max-body <bytes>]
                      [--max-response <bytes>] [--max-inflight <bytes>] [--max-scan-items <n>] [--max-scan-chars <n>] [--timeout-ms <ms>] [--upstream-timeout-ms <ms>]
                      [--policy-file <path>] [--service-id <name>] [--headless-ask deny|allow-with-report] [--cwd <dir>] [--log]
-                     [--credentials <file>] [--require-placeholders]
+                     [--credentials <file>] [--require-placeholders] [--denied-tool-call refuse|replace]
+                     [--unchecked-window-ms <ms>] [--unchecked-max <n>]
 
   Point the SDK at it (plain http on loopback; the proxy speaks TLS to the provider):
     ANTHROPIC_BASE_URL=http://127.0.0.1:${DEFAULTS.port}/anthropic      (upstream https://api.anthropic.com)
@@ -25,6 +26,13 @@ export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK 
 
   --mode report     (default) check and alert; traffic is forwarded unchanged, streaming fully pass-through
   --mode enforce    refuse a request whose content is denied, and withhold a tool call that is denied
+  --denied-tool-call refuse   (default) with --mode enforce: a response with a denied tool call is refused
+                              (403, or the provider's error event mid-stream)
+  --denied-tool-call replace  with --mode enforce: the turn's tool calls are withheld and replaced by a text
+                              block saying why; stop_reason end_turn / finish_reason stop
+  --unchecked-window-ms  the skip alert (off by default): alert on a forwarded tool call that no framework
+                    check matched within this window (moorai-serve --model-proxy-url reports the checks)
+  --unchecked-max   forwarded tool call ids tracked at once, default ${DEFAULTS.uncheckedMax}
   --route P=URL     map a local path prefix to an upstream base URL (repeatable; replaces the defaults)
   --allow-origin    accept this browser Origin besides loopback ones (repeatable); any other Origin is 403
   --token-file      require ${TOKEN_HEADER}: <token> on every request (also MOORAI_MODEL_PROXY_TOKEN);
@@ -74,6 +82,9 @@ export function parseArgs(argv, env = process.env) {
     else if (a === "--log") o.log = true;
     else if (a === "--credentials") o.credentialsFile = v();
     else if (a === "--require-placeholders") o.requirePlaceholders = true;
+    else if (a === "--denied-tool-call") o.deniedToolCall = v();
+    else if (a === "--unchecked-window-ms") o.uncheckedWindowMs = Number(v());
+    else if (a === "--unchecked-max") o.uncheckedMax = Number(v());
     else throw new Error(`unknown argument ${a}`);
   }
   if (o.help) return o;
@@ -81,6 +92,10 @@ export function parseArgs(argv, env = process.env) {
   if (!o.token && env.MOORAI_MODEL_PROXY_TOKEN) o.token = String(env.MOORAI_MODEL_PROXY_TOKEN).trim();
   if (!["report", "enforce"].includes(o.mode)) throw new Error("--mode must be report or enforce");
   if (!Number.isInteger(o.port) || o.port < 0 || o.port > 65535) throw new Error("--port must be 0-65535");
+  if (!["refuse", "replace"].includes(o.deniedToolCall)) throw new Error("--denied-tool-call must be refuse or replace");
+  if (o.deniedToolCall === "replace" && o.mode !== "enforce") throw new Error("--denied-tool-call replace needs --mode enforce (report mode never changes a response)");
+  if (!Number.isInteger(o.uncheckedWindowMs) || o.uncheckedWindowMs < 0 || (o.uncheckedWindowMs > 0 && o.uncheckedWindowMs < 100) || o.uncheckedWindowMs > 3600000) throw new Error("--unchecked-window-ms must be 0 (off) or an integer from 100 to 3600000");
+  if (!Number.isInteger(o.uncheckedMax) || o.uncheckedMax < 16 || o.uncheckedMax > 1048576) throw new Error("--unchecked-max must be an integer from 16 to 1048576");
   for (const [k, min] of [["maxBody", 1024], ["maxResponse", 1024], ["maxInflight", 1048576], ["maxScanItems", 1], ["maxScanChars", 1000], ["timeoutMs", 100], ["upstreamTimeoutMs", 1000]]) {
     if (!Number.isInteger(o[k]) || o[k] < min) throw new Error(`--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)} must be an integer >= ${min}`);
   }
@@ -115,7 +130,7 @@ async function main() {
   // origin + path only.
   // Placeholder names only: never a secret, a secret's source or its length.
   const credentials = o.credentials ? { placeholders: [...o.credentials.bindings.keys()], requirePlaceholders: o.requirePlaceholders === true } : undefined;
-  process.stdout.write(JSON.stringify({ listening: s.url, mode: o.mode, auth: o.token ? "token" : "none", credentials, serviceId: s.runtime.settings.serviceId, routes: Object.fromEntries(Object.entries(o.routes).map(([p, b]) => { const u = new URL(b); return [p, `${u.origin}${u.pathname}`]; })) }) + "\n");
+  process.stdout.write(JSON.stringify({ listening: s.url, mode: o.mode, ...(o.mode === "enforce" ? { deniedToolCall: o.deniedToolCall } : {}), ...(o.uncheckedWindowMs ? { uncheckedWindowMs: o.uncheckedWindowMs } : {}), auth: o.token ? "token" : "none", credentials, serviceId: s.runtime.settings.serviceId, routes: Object.fromEntries(Object.entries(o.routes).map(([p, b]) => { const u = new URL(b); return [p, `${u.origin}${u.pathname}`]; })) }) + "\n");
   const stop = async () => { await s.close(); process.exit(0); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);

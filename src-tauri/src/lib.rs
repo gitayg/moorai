@@ -5,6 +5,7 @@ mod content_hash;
 mod listen_sockets;
 mod local_ai;
 mod local_ai_windows;
+mod local_model_names;
 mod mxc;
 mod mxc_denials;
 mod mxc_launch;
@@ -536,19 +537,26 @@ fn device_ai_assets() -> serde_json::Value {
             for e in rd.flatten() { if e.path().is_dir() { if let Some(n) = e.file_name().to_str() { local.push(serde_json::json!({ "runtime": "lmstudio", "name": n })); } } }
         }
     }
+    // Local models whose NAME says their safety training was removed (counts only; local_model_names.rs).
+    // Its own 2 s deadline, on a thread beside the 5 s local-AI probes, so it adds no wait.
+    let safety_home = home.clone();
+    let model_safety = std::thread::spawn(move || local_model_names::collect(&safety_home));
     let key = content_hash::tenant_key();
     let keys = ai_keys::scan_keys_at_rest(&home, &|v| content_hash::hash_with_key(key.as_ref(), v));
     let ai = ai_runtime::collect(&home);
+    let model_safety = model_safety.join().ok();
     let mut summary = serde_json::json!({
         "runningLocalRuntimes": ai.runtimes.len(),
         "networkLocalRuntimes": ai.runtimes.iter().filter(|r| r.listening.as_deref() == Some("network")).count(),
         "installedLocalRuntimes": ai.installed.len(),
+        "localModelsSafetyRemovedByName": model_safety.as_ref().map_or(0, |m| m.count),
     });
     let mut out = serde_json::json!({ "providers": providers, "localModels": local, "apiKeysAtRest": keys, "localRuntimes": ai.runtimes, "localRuntimesInstalled": ai.installed, "localMcpListeners": ai.mcp, "runtimeProbe": ai.runtime_probe });
     // Windows only, and only when the probe produced something: an absent block means "not probed or
     // not available" (odr.exe ships from build 26220.7262), never "nothing there".
     if let Some(w) = ai.windows_ai { out["windowsAi"] = w; }
     if let Some(c) = ai.agent_connectors { summary["agentConnectors"] = c["count"].clone(); out["agentConnectors"] = c; }
+    if let Some(m) = model_safety { out["localModelSafety"] = serde_json::json!(m); }
     out["summary"] = summary;
     out
 }
