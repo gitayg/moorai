@@ -1472,8 +1472,12 @@ from a stage-"file" finding of #1, #15, #39, #44 or #55 on a read.
   `NOT_EVALUATED` ("tag-rules").
 
 **Exceptions** (`cli/exceptions.mjs`, `cli/moorai-allow.mjs`): `{ id, threat | rule, pattern, expires }`;
-the subject is the absolute path (file tools), the whitespace-collapsed command (shell), the URL (WebFetch)
-or the tool name (MCP). A match sets that threat to `notify` in a per-call copy of the policy, or skips that
+the subject is the absolute path with `.` and `..` folded (file tools), the command with runs of blanks
+collapsed and line breaks kept (shell), the URL as `new URL().href` reads it, dot segments resolved
+(WebFetch), or the tool name (MCP). `*` is the only wildcard and the whole subject must match; over a shell
+command (`matchCallExceptions`, Bash and PowerShell) a `*` never matches `;` `&` `|` `(` `)` `<` `>`, a
+backtick or a line break, quoted or not, so an operator in the command must be literal in the pattern and a
+multi-line command matches nothing. A match sets that threat to `notify` in a per-call copy of the policy, or skips that
 tag rule (`rule: "<id>"`, `rule: "tag:<tag>"`). Sources: `policy.exceptions` (console, always) and
 `/etc/moorai/exceptions.json` read through `readRootOwned` when `localExceptions: "allow"` is in the
 console policy (enrolled), or in it or the root-owned config (unenrolled). Local entries need `created` and
@@ -1484,8 +1488,12 @@ hash, never the pattern.
 
 **Deny/ask message**: `Exception: …` appended after the safer line, naming the threat ids from the reason
 (#65 for the two secret-egress reasons) or the tag rule ids, and a suggested pattern that masks quoted
-strings, values after `=`, header/auth/data arguments and long opaque tokens. Not printed in server mode or
-on a coached device.
+strings, values after `=`, header/auth/data arguments, long opaque tokens and opaque URL path segments, with
+`?*` for a query. No pattern (and no line) when the command spans lines, when a value is masked and the
+command holds any of the shell characters above (a composite command is suggested verbatim or not at all),
+when a mask falls at or before the command word, when the URL carries userinfo, or when the pattern would
+exceed 1024 characters or not match its own call; it is never cut short. Not printed in server mode or on a
+coached device.
 
 **Not proven / limits**: the hook has no copy of an MCP tool's definition, so declared `_meta` tags are only
 seen when a host forwards `_meta` in the tool input. The root-owned store path was never exercised end to

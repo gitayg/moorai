@@ -76,8 +76,14 @@ function stdinCode(cw, rest, raw) {
 // that keeps the index.
 const commandWord = (seg) => commandOf(seg.tokens.map((t) => (/^(?:\.{1,2}[/\\]|\.$)/.test(t) ? "_" + t : t)), seg.ps);
 
-function flat(cmd, ps, depth, out) {
-  const parsed = splitShell(String(cmd || "").slice(0, MAX_CMD), ps, depth, { segs: [], heredocs: [] });
+// scope: the shell a segment runs in, as a path of subshell ids ("" the outer shell). A nested script run
+// by a new process (`sh -c`, a heredoc fed to a shell, `powershell -Command`, `cmd /c`) gets its own; one
+// run by the same shell (`eval`, `iex`) shares its caller's. ids: one counter for the whole command.
+function flat(cmd, ps, depth, out, scope = "", ids = { n: 0 }) {
+  const parsed = splitShell(String(cmd || "").slice(0, MAX_CMD), ps, depth, { segs: [], heredocs: [], nscope: ids.n });
+  ids.n = Math.max(ids.n, parsed.nscope || 0);
+  const at = (seg) => [scope, seg.scope].filter(Boolean).join("/");
+  const child = (seg) => [at(seg), `p${++ids.n}`].filter(Boolean).join("/");
   for (let k = 0; k < parsed.segs.length; k++) {
     const seg = parsed.segs[k];
     const cw = commandWord(seg);
@@ -89,22 +95,22 @@ function flat(cmd, ps, depth, out) {
       const prev = parsed.segs[k - 1];
       const prevCw = prev && prev.sep === "|" && prev.heredoc != null ? commandWord(prev) : null;
       const body = seg.heredoc != null ? seg.heredoc : prev && prev.sep === "|" && prev.heredoc != null && (!prevCw || READERS.has(prevCw.binary)) ? prev.heredoc : null;
-      if (code && body != null) flat(body, code === "ps", depth + 1, out);
+      if (code && body != null) flat(body, code === "ps", depth + 1, out, cw.binary === "source" || seg.tokens[cw.at] === "." || cw.binary === "iex" || cw.binary === "invoke-expression" ? at(seg) : child(seg), ids);
       if (SHELLS.has(cw.binary)) {
         const ci = rest.findIndex((t) => /^-[a-z]*c$/.test(t));
-        if (ci >= 0 && rest[ci + 1] != null) { flat(rest[ci + 1], false, depth + 1, out); continue; }
+        if (ci >= 0 && rest[ci + 1] != null) { flat(rest[ci + 1], false, depth + 1, out, child(seg), ids); continue; }
       }
       if (PWSH.has(cw.binary)) {
         const ci = rest.findIndex((t) => /^-c(ommand)?$/i.test(t));
-        if (ci >= 0) { flat(rest.slice(ci + 1).join(" "), true, depth + 1, out); continue; }
+        if (ci >= 0) { flat(rest.slice(ci + 1).join(" "), true, depth + 1, out, child(seg), ids); continue; }
       }
       if (cw.binary === "cmd") {
         const ci = rest.findIndex((t) => /^\/[ck]$/i.test(t));
-        if (ci >= 0) { flat(rest.slice(ci + 1).join(" "), false, depth + 1, out); continue; }
+        if (ci >= 0) { flat(rest.slice(ci + 1).join(" "), false, depth + 1, out, child(seg), ids); continue; }
       }
-      if (cw.binary === "eval" || cw.binary === "invoke-expression" || cw.binary === "iex") { flat(rest.join(" "), seg.ps || cw.binary !== "eval", depth + 1, out); continue; }
+      if (cw.binary === "eval" || cw.binary === "invoke-expression" || cw.binary === "iex") { flat(rest.join(" "), seg.ps || cw.binary !== "eval", depth + 1, out, at(seg), ids); continue; }
     }
-    out.push({ ...seg, cw, rest, raw: cw ? seg.tokens[cw.at] : "" });
+    out.push({ ...seg, cw, rest, raw: cw ? seg.tokens[cw.at] : "", scope: at(seg) });
   }
   return out;
 }
@@ -219,7 +225,7 @@ function execTargets(seg, prev) {
 
 function cdTarget(seg, base) {
   const b = seg.cw && seg.cw.binary;
-  if (b !== "cd" && b !== "pushd" && b !== "set-location" && b !== "sl" && b !== "chdir") return undefined;
+  if (b !== "cd" && b !== "pushd" && b !== "set-location" && b !== "sl" && b !== "chdir" && b !== "push-location" && b !== "pushl") return undefined;
   const a = seg.rest.find((t) => !t.startsWith("-"));
   if (!a) return "~";
   return usable(a) ? normPath(a, base) : "?";
@@ -296,15 +302,26 @@ const PM = new Set(["npm", "pnpm", "yarn", "bun"]);
 const PM_DIR_FLAGS = new Set(["--prefix", "-C", "--dir", "--cwd"]);
 const ARCHIVE = /\.(?:tar(?:\.(?:gz|bz2|xz|zst))?|tgz|tbz2?|txz|zip)$/i;
 
+// The directory git (and gh) clone into when none is named: the last path component, after trailing
+// slashes and a "/.git" are dropped, with ".git" or ".bundle" stripped (git's own rule).
+function repoBase(repo) {
+  const s = String(repo).replace(/[/\\]+$/, "").replace(/[/\\]\.git$/i, "").replace(/[/\\]+$/, "");
+  return s.split(/[/\\:]/).pop().replace(/\.(?:git|bundle)$/i, "");
+}
 function gitCloneDest(seg, base) {
   const b = seg.cw && seg.cw.binary;
   const r = seg.rest;
   let i = 0, at = base;
   if (b === "gh") {
     if (r[0] !== "repo" || r[1] !== "clone") return null;
-    const pos = r.slice(2).filter((t) => !t.startsWith("-"));
+    // gh repo clone <repo> [<dir>] [-u <remote>] [-- <git clone flags>]
+    const pos = [];
+    for (let k = 2; k < r.length && r[k] !== "--"; k++) {
+      if (r[k] === "-u" || r[k] === "--upstream-remote-name") k++;
+      else if (!r[k].startsWith("-")) pos.push(r[k]);
+    }
     if (!pos[0]) return null;
-    const name = pos[1] || pos[0].replace(/\/+$/, "").split("/").pop().replace(/\.git$/i, "");
+    const name = pos[1] || repoBase(pos[0]);
     return usable(name) ? normPath(name, base) : null;
   }
   if (b !== "git") return null;
@@ -318,7 +335,7 @@ function gitCloneDest(seg, base) {
   const { positional } = scanArgs(r.slice(i + 1), { shortValued: "bocuj", longValued: ["--branch", "--origin", "--config", "--depth", "--reference", "--reference-if-able", "--separate-git-dir", "--upload-pack", "--template", "--filter", "--shallow-since", "--shallow-exclude", "--jobs", "--server-option", "--bundle-uri", "--ref-format"] });
   const repo = positional[0];
   if (!repo) return null;
-  const name = positional[1] || String(repo).replace(/[/\\]+$/, "").split(/[/\\:]/).pop().replace(/\.git$/i, "");
+  const name = positional[1] || repoBase(repo);
   return usable(name) && at !== "?" ? normPath(name, at) : null;
 }
 
@@ -404,21 +421,46 @@ function projectRun(seg, prev, base) {
 const inside = (p, root) => p === root || p.startsWith(root.endsWith("/") ? root : root + "/");
 const CLONE_HINT = /\bclone\b|\b(?:tar|bsdtar|unzip)\b/i;
 
+// Where a `cd` leaves one shell: `st` is { base, prev, stack } for the scope the segment runs in. `cd -`
+// returns to the previous directory, pushd / Push-Location also push the current one, popd / Pop-Location
+// pop it. True when the segment is a directory change.
+const POPD = new Set(["popd", "pop-location", "popl"]);
+const PUSHD = new Set(["pushd", "push-location", "pushl"]);
+function chdir(seg, st) {
+  const b = seg.cw && seg.cw.binary;
+  if (POPD.has(b)) { st.prev = st.base; st.base = st.stack.length ? st.stack.pop() : "?"; return true; }
+  if (seg.rest.includes("-") && cdTarget(seg, st.base) !== undefined) { const p = st.prev; st.prev = st.base; st.base = p ?? "?"; return true; }
+  const nb = cdTarget(seg, st.base);
+  if (nb === undefined) return false;
+  if (PUSHD.has(b)) st.stack.push(st.base);
+  st.prev = st.base; st.base = nb;
+  return true;
+}
+
 // One command line → { hit }. `hit`: a checkout this command cloned (or an archive it downloaded and
-// unpacked) is then run, in the same chain, by an install / run / start / build step whose working
+// unpacked) is then run, in the same command, by an install / run / start / build step whose working
 // directory or target lies inside it.
-export function cloneRunFacts(cmd, { ps = false } = {}) {
+// lines: the text is known to be a shell command, so a line break separates commands like `;`. Without it
+// (a document, a prompt) a line break ends the chain.
+export function cloneRunFacts(cmd, { ps = false, lines = false } = {}) {
   try {
     if (!CLONE_HINT.test(String(cmd || ""))) return { hit: false };
     for (const segs of readings(cmd, ps)) {
-      let base = "";
+      // One working directory per shell: a subshell starts in its parent's and never moves it back.
+      const shells = new Map();
+      const shell = (sc) => {
+        if (!shells.has(sc)) { const up = sc.includes("/") ? sc.slice(0, sc.lastIndexOf("/")) : sc ? "" : null; const p = up === null ? null : shell(up); shells.set(sc, { base: p ? p.base : "", prev: p ? p.prev : undefined, stack: p ? [...p.stack] : [] }); }
+        return shells.get(sc);
+      };
       let roots = [];
       const fetched = new Set();
       for (let i = 0; i < segs.length; i++) {
         const seg = segs[i];
-        const nb = cdTarget(seg, base);
-        if (nb !== undefined) base = nb;
-        else {
+        // A backgrounded (`&`) or piped segment runs in a subshell of its own.
+        const own = seg.sep === "&" || seg.sep === "|" || (segs[i - 1] && segs[i - 1].sep === "|");
+        const st = own ? { ...shell(seg.scope || ""), stack: [...shell(seg.scope || "").stack] } : shell(seg.scope || "");
+        if (!chdir(seg, st)) {
+          const base = st.base;
           if (roots.length) {
             const run = projectRun(seg, segs[i - 1], base);
             if ((run.here && roots.some((rt) => inside(base, rt))) || run.paths.some((p) => roots.some((rt) => inside(p, rt)))) return { hit: true };
@@ -429,8 +471,8 @@ export function cloneRunFacts(cmd, { ps = false } = {}) {
           const ud = unpackDest(seg, segs[i - 1], base, fetched);
           if (ud) roots.push(ud);
         }
-        // A newline ends the chain: what was cloned on one line is not run by "the same command" on the next.
-        if (seg.sep === "\n") { roots = []; fetched.clear(); }
+        // Not known to be a command: a line ends the chain, so one step per line is not "the same command".
+        if (!lines && seg.sep === "\n") { roots = []; fetched.clear(); }
       }
     }
   } catch { return { hit: false }; }

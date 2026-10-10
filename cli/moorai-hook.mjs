@@ -64,7 +64,7 @@ import { REASON, ENFORCEMENT, policyIdOf, stampAlert } from "./provenance.mjs";
 import { recordRow, readSessionRows, localHash } from "./session-ledger.mjs";
 import { commandClass, normalizeCommand, verifyFamily, outcomeOfResponse, outcomeOfFailure, assessTurn } from "./claim-check.mjs";
 import { callTags, sessionTagsOf, recordSessionTags, tagGate, applyTagGate, tagHitAlert } from "./tool-tags.mjs";
-import { readExceptionStore, liveExceptions, matchExceptions, applyExceptions, subjectOf, exceptionHint, selfExceptionAttempt } from "./exceptions.mjs";
+import { readExceptionStore, liveExceptions, matchCallExceptions, applyExceptions, exceptionHint, selfExceptionAttempt } from "./exceptions.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -1523,7 +1523,7 @@ function exceptionStep(policy, tool, ti, cwd) {
       post(body);
       try { recordAction(body); } catch { /* ledger is best-effort */ }
     }
-    CALL.exc = matchExceptions(ex.live, subjectOf({ tool, toolInput: ti, cwd, home: os.homedir() }));
+    CALL.exc = matchCallExceptions(ex.live, { tool, toolInput: ti, cwd, home: os.homedir() });
     return applyExceptions(policy, CALL.exc.threats);
   } catch { return policy; }
 }
@@ -2231,7 +2231,7 @@ async function main() {
     // mask: the command string is the one field here the host lets us rewrite (updatedInput). The file
     // scans above stay mask-less — a secret inside a file the command reads is not in the input at all,
     // so "mask" resolves to its fallback there (threatActionFor).
-    const cmdD = decideText(engine, policy, ti.command, "prompt", { ctx: { egress: cmdEgress }, mask: canRewrite() });
+    const cmdD = decideText(engine, policy, ti.command, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" }, mask: canRewrite() });
     finds.push(...cmdD.findings);
     if (cmdD.kill) killIds.push(...cmdD.killIds);
     if (RANK[cmdD.decision] > RANK[dec]) { dec = cmdD.decision; reasons = cmdD.reasons; alts = cmdD.alternatives; }
@@ -2247,7 +2247,7 @@ async function main() {
     }
     // The decoded scripts get the same command scan. Not maskable: the text is not in the input as written.
     for (const script of scripts) {
-      const sd = decideText(engine, policy, script, "prompt", { ctx: { egress: cmdEgress } });
+      const sd = decideText(engine, policy, script, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" } });
       finds.push(...sd.findings);
       if (sd.kill) killIds.push(...sd.killIds);
       if (RANK[sd.decision] > RANK[dec]) { dec = sd.decision; reasons = sd.reasons; alts = sd.alternatives; }
@@ -2279,7 +2279,7 @@ async function main() {
     }
     ({ dec, reasons, alts } = intentStep(policy, tool, ti, finds, dec, reasons, alts));
     let bmask;
-    ({ dec, reasons, alts, rewrite: bmask } = settleMask(engine, policy, { tool, stage: "prompt", ctx: { egress: cmdEgress }, ids: cmdD.maskIds, value: ti, only: ["command"], scanOf: (v) => v.command, dec, reasons, alts, text: ti.command }));
+    ({ dec, reasons, alts, rewrite: bmask } = settleMask(engine, policy, { tool, stage: "prompt", ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" }, ids: cmdD.maskIds, value: ti, only: ["command"], scanOf: (v) => v.command, dec, reasons, alts, text: ti.command }));
     // See the Read branch: escalation runs last and never on a deny, so a local-secret-egress or
     // out-of-envelope command cannot ship its content to the provider on its way to being blocked.
     if (dec !== "deny") await maybeEscalate(policy, btext, "file", `hook:${tool}`, { findings: finds }, engine);

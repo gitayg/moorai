@@ -1499,14 +1499,31 @@ absent from `BUILTIN_DEFAULT_ACTIONS` and `APPROVAL_THREATS`, so it resolves to 
 with `threatPolicy: { "80": "justify" }` or `"block"`. It credits AML.T0010 and ASI05, both bounded ("a
 repository checkout run in the same command"), so no coverage count moves.
 
-**What "one command" means.** The clone and the run are joined by `&&`, `||`, `;`, `|` or `&`, or sit in
-the same nested `sh -c` script. A newline ends the chain, so a build-from-source block with one step per
-line is not one command. The run must happen inside the checkout: `git clone X && npm install` installs in
-the directory the command started in and does not fire. `clone-then-run` is also silent on text the agent
-reads rather than runs: when the caller marks it as such (`ctx.inbound`, `ctx.targetPath`, or the
-`ctx.template` key the hook and the Agent SDK pass for a Read), and when the text holds a markdown code
-fence, which marks a document. A scan of a README with no context and an unfenced one-line
-`git clone … && cd … && npm install` (for example `moorai-scan` on a file) still reports it.
+**What "one command" means.** A Bash or PowerShell tool call's command is read the way the shell runs it.
+The hook, the replayer (`moorai-ingest`) and the Agent SDK label it `ctx.shell` (`"sh"` or `"ps"`, the
+latter read with PowerShell's grammar), and then a line break separates commands exactly like `;`: a
+command written one step per line is one command. The clone and the run may also be joined by `&&`, `||`,
+`;`, `|` or `&`, sit in a `( … )` subshell, a `{ …; }` group, a `$( … )` or backtick substitution, or a
+nested `sh -c` / `bash -c` script. The reader follows the shell where it matters for "which directory":
+`\`-newline continues a line, `#` at the start of a word starts a comment, `)` closes a group even right
+after a word (`(cd x && npm install)`), and a `cd` inside a subshell, a backgrounded (`&`) segment or a
+pipeline stays there (`(git clone X && cd X) && npm install` installs in the starting directory). `cd -`
+returns to the previous directory, and `pushd` / `popd` / `Push-Location` / `Pop-Location` keep a stack.
+The clone destination is the named directory or git's own default (the last path component with
+trailing slashes, a `/.git` and a `.git` or `.bundle` suffix dropped); `git -C <dir> clone` and options
+before the URL are honoured, and `gh repo clone <repo> [<dir>] -- <git flags>` ignores what follows `--`.
+The run must happen inside the checkout: `git clone X && npm install` installs in the directory the
+command started in and does not fire.
+
+Text that is not labelled a command (an LLM prompt, a `Task` prompt, a WebFetch prompt, a file scanned
+with no context) keeps the document reading: a line break ends the chain, so a pasted build-from-source
+block is not one command. `clone-then-run` is also silent on text the agent reads rather than runs: when
+the caller marks it as such (`ctx.inbound`, `ctx.targetPath`, or the `ctx.template` key the hook and the
+Agent SDK pass for a Read), and when unlabelled text holds a markdown code fence, which marks a document.
+A labelled command skips the fence check: inside a command a fence is heredoc data or a syntax error, and
+a heredoc body written to a file (`cat > README.md <<EOF … EOF`) is data either way. A scan of a README with
+no context and an unfenced one-line `git clone … && cd … && npm install` (for example `moorai-scan` on a
+file) still reports it.
 
 **Benign evidence, stated plainly.** Nothing moved: benign-corpus-v2 20/602 before and after (the whole
 report byte-identical), the WebFetch benign tune half 23/149 before and after (identical apart from
@@ -1526,7 +1543,12 @@ Tests: `test/install-steering.test.mjs` (the measured skill text at the file, in
 measured command with and without a policy, the other phrasings and shapes, and the quiet cases) and
 `test/clone-steer-hook.test.mjs` (the real hook process: a Read of the skill file, the same text returned by
 WebFetch, the clone-and-run Bash command under no policy, `justify` and `block`, and the quiet README,
-CONTRIBUTING, plain clone and named install).
+CONTRIBUTING, plain clone and named install), and `test/clone-run-shell.test.mjs` (a labelled command read as the shell runs it: line breaks,
+CRLF, `\`-newline, comments, subshells, groups, substitutions, `cd -`, `pushd` / `popd`, `Push-Location`,
+`gh repo clone … --`, a `/.git` URL and a fence inside a heredoc; quiet on a subshell's or a backgrounded
+`cd`, a heredoc or `echo` that writes the steps to a file, a commit message holding them, and the same
+text unlabelled, read, inbound or fenced; and the replayer, the Agent SDK and the real hook labelling a
+Bash and a PowerShell command).
 
 ### Across the session: session risk and the runaway circuit breaker
 
@@ -2366,10 +2388,14 @@ Stated rather than papered over.
   `pkg` package on PyPI is not this project"), steering that names the alternative in a second file only
   (the measured skill pointed to one: the first file is caught only because it also said "clone"), a
   non-English instruction, and an instruction more than 400 characters from its alternative. Clone-then-run
-  misses a clone and a run on separate lines or separate tool calls (no cross-call record, unlike
-  `fetch-then-exec-session`), a destination held in a variable (`cd $(basename $url .git)`), a run through
-  an alias, task runner or editor not listed, `svn checkout` / `hg clone` / `degit`, and an archive whose
-  unpacked directory is entered by an absolute path. A one-line clone-and-run in an unfenced document that
+  misses a clone and a run in separate tool calls (no cross-call record, unlike `fetch-then-exec-session`),
+  a clone and a run on separate lines of text not labelled a command, a destination held in a variable
+  (`D=$(mktemp -d) && git clone X $D/x && cd $D/x`, `cd $(basename $url .git)`), a working directory set by
+  a wrapper or a tool flag after the subcommand (`env -C x npm install`, `sudo -D x make`,
+  `npm install --prefix x`, `go -C x build`, `cargo build --manifest-path x/Cargo.toml`), a run through an
+  alias, function, loop, task runner or editor not listed, `svn checkout` / `hg clone` / `degit`, and an
+  archive whose unpacked directory is entered by an absolute path. A PowerShell command reaches the
+  detector with PowerShell's grammar only from a `PowerShell` tool call; elsewhere it is read as POSIX. A one-line clone-and-run in an unfenced document that
   a caller scans with no context (`moorai-scan` on a file) is reported. Not exercised by any benign corpus
   as a pair; only the pinned quiet cases are evidence of precision.
 - **`egress-credential-shaped` (#65, `block`) fires on a long API URL after `-d`.** Measured on v1.7.0 and

@@ -96,9 +96,9 @@ export function createReplayer(policy, { actor = actorHash(os.userInfo().usernam
       const cmdEgress = uploading || extractHosts(cmd).length > 0;
       const readPaths = extractReadPaths(cmd, { ...(ps ? { shell: "powershell" } : {}), env: process.env, home: os.homedir(), insensitive: process.platform === "win32" });
       if (ps) for (const p of readPaths) merge(v, decideCredFileRead(engine, policy, p), "file");
-      merge(v, decideText(engine, policy, cmd, "prompt", { ctx: { egress: cmdEgress }, mask: canMask }), "file");
+      merge(v, decideText(engine, policy, cmd, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" }, mask: canMask }), "file");
       for (const w of shellMemoryWrites(shellText)) merge(v, decideText(engine, policy, w.text, "output", { ctx: { targetPath: w.path }, only: [22] }), "file");
-      for (const s of scripts) merge(v, decideText(engine, policy, s, "prompt", { ctx: { egress: cmdEgress } }), "file");
+      for (const s of scripts) merge(v, decideText(engine, policy, s, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" } }), "file");
       endpoints(v, cmd);
       envelope(v, { tool: "Bash", paths: readPaths }, "file");
       return { tool, ...settle(v) };

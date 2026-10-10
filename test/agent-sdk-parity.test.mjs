@@ -192,7 +192,7 @@ test("parity, enforcing org policy with egress rules and egressDefault block: sa
 const TAG_POLICY = {
   ...POLICY,
   tagActions: { network: "block", write: "ask" },
-  exceptions: [{ id: "ex-parity", threat: 54, pattern: "bash -i *", expires: new Date(Date.now() + 3600000).toISOString() }]
+  exceptions: [{ id: "ex-parity", threat: 54, pattern: "bash -i >& /dev/tcp/* 0>&1", expires: new Date(Date.now() + 3600000).toISOString() }]
 };
 test("parity, enforcing org policy with tagActions and a console exception: same decision and reason for every payload", async (t) => {
   const { hook, payloads } = await parity(t, TAG_POLICY);

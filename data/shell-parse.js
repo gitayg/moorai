@@ -36,10 +36,14 @@ export function splitShell(cmd, ps, depth, acc) {
   // skipNext: false, or "r" / "w" when the next word is the target of a `<` / `>` redirect.
   // here: what the segment being built declared (true: a heredoc whose body comes after the line; a
   // string: a here-string's text). owner: the pushed segment whose heredoc body is still to be read.
-  let cur = [], tok = "", building = false, skipNext = false, heredoc = null, reads = [], writes = [], here = null, owner = null;
+  // scope (POSIX): the subshells open around a segment — `( … )`, `$( … )` and backticks each get an id, and
+  // seg.scope is their path ("" outside any). A `cd` inside a subshell does not move the shell around it.
+  // arr: open `(` inside a word (`arr=(a b)`), whose `)` stays in the word.
+  let cur = [], tok = "", building = false, skipNext = false, heredoc = null, reads = [], writes = [], here = null, owner = null, arr = 0;
+  if (!acc.scope) acc.scope = [];
   const push = (sep) => {
     if (cur.length && acc.segs.length < MAX_SEGS) {
-      const seg = { tokens: cur, ps, reads, writes, sep };
+      const seg = { tokens: cur, ps, reads, writes, sep, scope: acc.scope.join("/") };
       if (typeof here === "string") seg.heredoc = here;
       else if (here) owner = seg;
       acc.segs.push(seg);
@@ -55,7 +59,9 @@ export function splitShell(cmd, ps, depth, acc) {
     tok = ""; building = false;
   };
   const endSeg = (sep = "") => { endTok(); push(sep); skipNext = false; };
-  const sub = (inner) => { splitShell(inner, ps, depth + 1, acc); tok += "$"; building = true; };
+  const open = () => { if (!ps) acc.scope.push(acc.nscope = (acc.nscope || 0) + 1); };
+  const close = () => { if (!ps && acc.scope.length) acc.scope.pop(); };
+  const sub = (inner) => { open(); splitShell(inner, ps, depth + 1, acc); close(); tok += "$"; building = true; };
   const balanced = (i) => { // i at "(" of "$(": index of the matching ")" or -1
     let d = 0;
     for (let j = i; j < cmd.length; j++) { if (cmd[j] === "(") d++; else if (cmd[j] === ")" && --d === 0) return j; }
@@ -64,6 +70,8 @@ export function splitShell(cmd, ps, depth, acc) {
   const esc = ps ? "`" : "\\";
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i];
+    // An escaped line break is a line continuation: both characters go, the word goes on.
+    if (c === esc && /^\r?\n/.test(cmd.slice(i + 1, i + 3))) { i += cmd[i + 1] === "\r" ? 2 : 1; continue; }
     if (c === esc) { if (i + 1 < cmd.length) { tok += cmd[i + 1]; building = true; i++; } continue; }
     if (c === "'") {
       const close = cmd.indexOf("'", i + 1);
@@ -75,6 +83,7 @@ export function splitShell(cmd, ps, depth, acc) {
       let j = i + 1;
       building = true;
       for (; j < cmd.length && cmd[j] !== '"'; j++) {
+        if (cmd[j] === esc && /^\r?\n/.test(cmd.slice(j + 1, j + 3))) { j += cmd[j + 1] === "\r" ? 2 : 1; continue; }
         if (cmd[j] === esc && j + 1 < cmd.length) { tok += cmd[++j]; continue; }
         if (cmd[j] === "$" && cmd[j + 1] === "(") { const e = balanced(j + 1); if (e < 0) { tok += cmd.slice(j); j = cmd.length; break; } sub(cmd.slice(j + 2, e)); j = e; continue; }
         if (!ps && cmd[j] === "`") { const e = cmd.indexOf("`", j + 1); if (e < 0) { j = cmd.length; break; } sub(cmd.slice(j + 1, e)); j = e; continue; }
@@ -94,8 +103,13 @@ export function splitShell(cmd, ps, depth, acc) {
       i = m ? close + m[0].length - 1 : cmd.length;
       continue;
     }
+    // A `#` that starts a word starts a comment, up to the end of the line.
+    if (c === "#" && !building) { const e = cmd.indexOf("\n", i); i = (e < 0 ? cmd.length : e) - 1; continue; }
     if (ps && "(){}".includes(c)) { endSeg(c); continue; }
-    if (!ps && "()".includes(c) && !building) { endSeg(c); continue; }
+    if (!ps && c === "(" && building) { arr++; tok += c; continue; }
+    if (!ps && c === ")" && arr) { arr--; tok += c; continue; }
+    if (!ps && c === "(") { endSeg(c); open(); continue; }
+    if (!ps && c === ")") { endSeg(c); close(); continue; }
     if (c === " " || c === "\t" || c === "\r") { endTok(); continue; }
     if (c === "\n") {
       endSeg("\n");

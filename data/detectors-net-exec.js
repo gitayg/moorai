@@ -17,9 +17,11 @@
 //       start scripts run in the same command. A weaker sibling of fetch-then-exec, on its own id because
 //       the default action is per THREAT, not per detector: threatActionFor resolves #57 to "justify"
 //       (BUILTIN_DEFAULT_ACTIONS), and building from source is everyday work, so this one is report-only
-//       (notify) unless a policy raises threatPolicy[80]. Silent on content the agent READS (a README's
-//       build steps): the hook hands that over as ctx.inbound / ctx.targetPath / ctx.template, and a
-//       markdown code fence marks a document rather than a command.
+//       (notify) unless a policy raises threatPolicy[80]. A tool call's shell command (ctx.shell) is read
+//       as the shell runs it, line breaks included. Silent on content the agent READS (a README's build
+//       steps): the hook hands that over as ctx.inbound / ctx.targetPath / ctx.template, a markdown code
+//       fence marks a document rather than a command, and text not labelled a command ends a chain at
+//       each line.
 //   #40 install-path-steering — content the agent reads tells it not to use the official package install
 //       and to install or run from a clone, checkout or raw URL instead (data/install-steering.js). An
 //       instruction in ingested content that redirects what the agent does is #40's definition (indirect /
@@ -38,6 +40,9 @@ const CLONE_HINT = /\b(?:clone|tar|bsdtar|unzip)\b/i;
 const MD_FENCE = /^[ \t]{0,3}(?:```|~~~)/m;
 // Content the agent reads, as the hook and the SDK label it, is not a command the agent runs.
 const readContent = (ctx) => !!ctx && (!!ctx.inbound || !!ctx.targetPath || Object.prototype.hasOwnProperty.call(ctx, "template"));
+// The shell a caller says the text is a command for: "sh" (Bash) or "ps" (PowerShell), as the hook, the
+// replayer and the Agent SDK label a Bash / PowerShell tool call's command (ctx.shell). "" otherwise.
+const shellOf = (ctx) => (ctx && (ctx.shell === "sh" || ctx.shell === "ps") ? ctx.shell : "");
 const UPLOAD_HINT = /\b(?:curl|wget2?|nc|ncat|netcat|telnet|socat|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b/i;
 
 // One parse per (text, ctx) for the two OAST detectors, which ask opposite questions of the same result.
@@ -76,7 +81,13 @@ export function netExecDetectors(detectors) {
       mode: "notify",
       hint: "Clones a repository (or downloads and unpacks an archive) and runs its install / start scripts in the same command (git clone … && cd … && npm install / make / ./install.sh).",
       patterns: [ONCE],
-      refine: (_m, text, ctx) => CLONE_HINT.test(text) && !readContent(ctx) && !MD_FENCE.test(text) && cloneRunFacts(text).hit
+      refine: (_m, text, ctx) => {
+        if (!CLONE_HINT.test(text)) return false;
+        const sh = shellOf(ctx);
+        // Text not labelled a command keeps the document gates and one chain per line.
+        if (!sh && (readContent(ctx) || MD_FENCE.test(text))) return false;
+        return cloneRunFacts(text, { ps: sh === "ps", lines: !!sh }).hit;
+      }
     },
     {
       detectorId: "install-path-steering",

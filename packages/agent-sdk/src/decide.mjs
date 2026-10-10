@@ -32,7 +32,7 @@ const { egressHits } = secretEgress;
 const { extractHosts } = modelEndpoints;
 const { OUTBOUND_UPLOAD } = outboundUpload;
 const { callTags, tagGate, applyTagGate, tagHitAlert } = toolTagsLib;
-const { readExceptionStore, liveExceptions, matchExceptions, applyExceptions, subjectOf } = exceptionsLib;
+const { readExceptionStore, liveExceptions, matchCallExceptions, applyExceptions } = exceptionsLib;
 
 const RANK = { allow: 1, ask: 2, deny: 3 };
 export const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
@@ -120,7 +120,7 @@ export function decideToolCall(engine, policy, opts = {}) {
   const ti = opts.toolInput && typeof opts.toolInput === "object" ? opts.toolInput : {};
   const sys = opts.systemConfig !== undefined ? opts.systemConfig : readSystemConfig();
   let exc = { threats: new Set(), rules: new Set() };
-  try { exc = matchExceptions(liveExceptions({ policy, system: sys, store: readExceptionStore(), enrolled: true }).live, subjectOf({ tool, toolInput: ti, cwd: opts.cwd })); } catch { /* no exception applies */ }
+  try { exc = matchCallExceptions(liveExceptions({ policy, system: sys, store: readExceptionStore(), enrolled: true }).live, { tool, toolInput: ti, cwd: opts.cwd }); } catch { /* no exception applies */ }
   const v = decideBranch(engine, applyExceptions(policy, exc.threats), { ...opts, systemConfig: sys });
   try {
     const tags = callTags({ tool: v.tool, toolInput: ti, cwd: opts.cwd || "", findingIds: v.findings.filter((f) => f.stage === "file").map((f) => f.threatId) });
@@ -175,7 +175,7 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
       merge(decideFileMetadata(engine, policy, agentPath(p, cwd)));
       if (ps) merge(decideCredFileRead(engine, policy, p));
     }
-    merge(decideText(engine, policy, ti.command, "prompt", { ctx: { egress: cmdEgress } }));
+    merge(decideText(engine, policy, ti.command, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" } }));
     const epD = decideEndpoints(policy, ti.command);
     if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); endpointSignal(epD, signals); }
     if (secretEgressBlocks(policy, ti.command, cwd, "egress", signals) && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); }

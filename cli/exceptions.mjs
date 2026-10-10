@@ -32,6 +32,7 @@ import os from "node:os";
 import { join, isAbsolute, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { readRootOwned } from "./hook-core.mjs";
+import { commandOf } from "../data/shell-parse.js";
 
 export const EXCEPTIONS_FILE = process.platform === "win32"
   ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "exceptions.json")
@@ -58,33 +59,45 @@ export function patternProblem(p) {
   if (p.replace(/[*\s\/\\.]/g, "").length < MIN_LITERAL) return `the pattern must keep at least ${MIN_LITERAL} literal characters`;
   return null;
 }
-export function globMatch(pattern, subject) {
+// shell: the subject is a shell command. A `*` then never matches a character that ends, chains, pipes,
+// backgrounds, groups, substitutes or redirects a command — ; & | ( ) < > a backtick or a line break —
+// even inside quotes, so an exception written for one command covers that command only; an operator in
+// the subject has to be written literally in the pattern. Every other `*` matches anything.
+const SHELL_STOP = /[;&|()<>`\r\n]/;
+export function globMatch(pattern, subject, { shell = false } = {}) {
   if (typeof pattern !== "string" || typeof subject !== "string") return false;
   const parts = pattern.split("*");
   if (parts.length === 1) return pattern === subject;
   if (!subject.startsWith(parts[0])) return false;
+  const gap = (a, b) => !shell || !SHELL_STOP.test(subject.slice(a, b));
   let at = parts[0].length;
+  // Leftmost-first is exact here too: a later occurrence of a part only widens the gap before it.
   for (let i = 1; i < parts.length - 1; i++) {
     const k = subject.indexOf(parts[i], at);
-    if (k < 0) return false;
+    if (k < 0 || !gap(at, k)) return false;
     at = k + parts[i].length;
   }
   const last = parts[parts.length - 1];
-  return subject.length - last.length >= at && subject.endsWith(last);
+  const end = subject.length - last.length;
+  return end >= at && subject.endsWith(last) && gap(at, end);
 }
 
 // What an exception's pattern is matched against, per tool.
+export const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
 export function subjectOf({ tool = "", toolInput, cwd = "", home = os.homedir() } = {}) {
   const ti = toolInput && typeof toolInput === "object" ? toolInput : {};
+  // A path with its `.` and `..` folded, so `/w/proj/../../etc/x` is matched as /etc/x.
   const abs = (p) => {
     if (typeof p !== "string" || !p) return "";
     if (p === "~" || p.startsWith("~/") || p.startsWith("~\\")) return join(home, p.slice(1));
-    return isAbsolute(p) || !cwd ? p : resolve(cwd, p);
+    return isAbsolute(p) ? resolve(p) : cwd ? resolve(cwd, p) : p;
   };
-  // A shell command with its whitespace runs collapsed, so a pattern written with single spaces matches.
-  if (tool === "Bash" || tool === "PowerShell") return typeof ti.command === "string" ? ti.command.replace(/\s+/g, " ").trim() : "";
+  // A shell command with its runs of blanks collapsed, so a pattern written with single spaces matches.
+  // Line breaks are kept (as \n): a line break separates commands, and no pattern can contain one.
+  if (SHELL_TOOLS.has(tool)) return typeof ti.command === "string" ? ti.command.replace(/\r\n?/g, "\n").replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").trim() : "";
   if (["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "NotebookRead"].includes(tool)) return abs(ti.file_path || ti.notebook_path);
-  if (tool === "WebFetch") return typeof ti.url === "string" ? ti.url : "";
+  // A URL as the fetcher reads it: dot segments (also %2e%2e) resolved, the host lowercased.
+  if (tool === "WebFetch") { if (typeof ti.url !== "string") return ""; try { return new URL(ti.url).href; } catch { return ti.url; } }
   if (tool === "Task" || tool === "Agent") return `${tool}:${typeof ti.subagent_type === "string" ? ti.subagent_type : ""}`;
   return tool;
 }
@@ -133,15 +146,19 @@ export function liveExceptions({ policy = null, system = null, store = null, enr
 }
 
 // The exceptions that cover one call. Returns { threats: Set, rules: Set, matched: [exception] }.
-export function matchExceptions(live, subject) {
+export function matchExceptions(live, subject, { shell = false } = {}) {
   const threats = new Set(), rules = new Set(), matched = [];
   if (!subject) return { threats, rules, matched };
   for (const e of live || []) {
-    if (!globMatch(e.pattern, subject)) continue;
+    if (!globMatch(e.pattern, subject, { shell })) continue;
     matched.push(e);
     if (e.threat) threats.add(e.threat); else rules.add(e.rule);
   }
   return { threats, rules, matched };
+}
+// The exceptions that cover one tool call, matched the way its subject is read (a shell command or not).
+export function matchCallExceptions(live, call = {}) {
+  return matchExceptions(live, subjectOf(call), { shell: SHELL_TOOLS.has(call.tool) });
 }
 
 // The policy one call is decided under: each excepted threat resolves to "notify" (reported, allowed).
@@ -156,26 +173,38 @@ export function applyExceptions(policy, threats) {
 
 // ---- the deny / ask message: the exact exception a person can grant ----
 
-// A pattern for this call that names no secret. File tools: the absolute path. A URL: scheme, host and
-// path with `*` for the query. An MCP tool or a delegation: its name. A shell command: the command with
-// every token that could be a credential (long opaque runs, quoted strings, values after "=", header and
-// auth arguments) replaced by `*`, cut at its first line and at 160 characters.
+// A pattern for this call that names no secret and covers no other call. File tools: the absolute path. A
+// URL: scheme, host and path, with `?*` for a query. An MCP tool or a delegation: its name. A shell command:
+// the command with every token that could be a credential (long opaque runs, quoted strings, values after
+// "=", header and auth arguments, an opaque URL path segment) replaced by `*`, and nothing at all when:
+//   * the command spans more than one line (no one-line pattern can match it);
+//   * a token is replaced and the command holds shell control, substitution or redirection syntax (the
+//     SHELL_STOP characters): a composite command is suggested verbatim or not at all;
+//   * a token is replaced at or before the command word (an assignment value, a wrapper's option), where a
+//     `*` could stand for a different program;
+//   * the pattern would be longer than a pattern may be, or would not match the call itself.
+// It is never cut short: a cut would end in a `*` that matches whatever follows.
 const OPAQUE = /[A-Za-z0-9+\/_=-]{16,}/;
 const SECRET_FLAG = /^(?:-H|--header|-u|--user|--password|--pass|--token|--auth|--oauth2-bearer|-p|--cookie|-b|--data|-d|--data-raw|--data-binary|--data-urlencode|-F|--form|--json|--body|-Body|-Headers|-Credential)$/i;
+const URL_PARTS = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)([^?#]*)(\?[^#]*)?(#.*)?$/i;
+const urlPattern = (t) => {
+  const m = URL_PARTS.exec(t);
+  if (!m) return "*";
+  if (m[2].includes("@")) return null; // userinfo may be a credential, and a `*` for it would free the host
+  return m[1] + m[2] + m[3].split("/").map((seg) => (OPAQUE.test(seg) ? "*" : seg)).join("/") + (m[4] ? "?*" : "") + (m[5] ? "#*" : "");
+};
 export function suggestPattern({ tool = "", toolInput, cwd = "", home = os.homedir() } = {}) {
   const subject = subjectOf({ tool, toolInput, cwd, home });
   if (!subject) return "";
+  const fit = (p, shell) => (patternProblem(p) || !globMatch(p, subject, { shell }) ? "" : p);
   if (tool === "WebFetch") {
-    try { const u = new URL(subject); return `${u.protocol}//${u.host}${u.pathname}${u.search || u.hash ? "*" : ""}`; } catch { return ""; }
+    try { const u = new URL(subject); return fit(`${u.protocol}//${u.host}${u.pathname}${u.search ? "?*" : ""}${u.hash ? "#*" : ""}`, false); } catch { return ""; }
   }
-  if (tool !== "Bash" && tool !== "PowerShell") return subject.length > 1024 ? "" : subject;
-  const raw = toolInput && typeof toolInput.command === "string" ? toolInput.command.trim() : subject;
-  let cut = false;
-  const line = raw.split(/\r?\n/)[0];
-  if (line !== raw) cut = true;
+  if (!SHELL_TOOLS.has(tool)) return subject.length > 1024 ? "" : subject;
+  const toks = subject.split(" ");
   const out = [];
-  let star = false, quote = "";
-  for (const tok of line.split(/\s+/).filter(Boolean)) {
+  let star = false, quote = "", firstStar = -1;
+  toks.forEach((tok, i) => {
     let t = tok;
     if (quote) { t = "*"; if (tok.endsWith(quote)) quote = ""; }
     else if (star) { t = "*"; star = false; const q = /^["'`]/.exec(tok); if (q && (tok.length === 1 || !tok.endsWith(q[0]))) quote = q[0]; }
@@ -183,18 +212,21 @@ export function suggestPattern({ tool = "", toolInput, cwd = "", home = os.homed
     else if (/["'`$]/.test(t)) { const q = /["'`]/.exec(t); if (q && (t.split(q[0]).length - 1) % 2 === 1) quote = q[0]; t = "*"; }
     else if (SECRET_FLAG.test(t)) star = true;
     else if (/^-(?:p|u|H|b)\S/.test(t)) t = "*";
-    else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) {
-      try { const u = new URL(t); t = `${u.protocol}//${u.host}${OPAQUE.test(u.pathname) ? "/*" : u.pathname}${u.search || u.hash ? "*" : ""}`; } catch { t = "*"; }
-    }
+    else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) t = urlPattern(t);
     else if (/^-{0,2}[^=]+=/.test(t)) t = t.replace(/=.*$/, "=*");
     else if (OPAQUE.test(t)) t = "*";
-    if (t === "*" && out[out.length - 1] === "*") continue;
+    if (t === null) { firstStar = -2; return; }
+    if (t !== tok && t.includes("*") && firstStar === -1) firstStar = i;
+    if (t === "*" && out[out.length - 1] === "*") return;
     out.push(t);
+  });
+  if (firstStar === -2) return "";
+  if (firstStar >= 0) {
+    if (SHELL_STOP.test(subject)) return "";
+    const cw = commandOf(toks, tool === "PowerShell");
+    if (!cw || firstStar <= cw.at) return "";
   }
-  let p = out.join(" ");
-  if (p.length > 160) { p = p.slice(0, 160).replace(/\s+\S*$/, ""); cut = true; }
-  if (cut && !p.endsWith("*")) p += " *";
-  return patternProblem(p) ? "" : p;
+  return fit(out.join(" "), true);
 }
 const shq = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
 

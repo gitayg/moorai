@@ -970,13 +970,16 @@ tag. `tagActions` read nothing from it.
 ### Exceptions: what to grant when MoorAI blocks
 
 When the hook denies or asks, the message names the exact exception a person could grant: the threat id
-(or the tag rule id) and a narrow pattern for this call. The pattern is the file path, the URL without its
-query, the MCP tool name, or the command with anything credential-shaped replaced by `*`, so it never
-repeats a secret. On an enrolled device it points to a console exception; where local exceptions are on,
+(or the tag rule id) and a narrow pattern for this call. The pattern is the file path, the URL with `?*` in
+place of its query, the MCP tool name, or the command with anything credential-shaped replaced by `*`, so
+it never repeats a secret. A command that spans lines, or that chains, pipes, substitutes or redirects and
+also needs a value replaced, gets no suggested pattern; one that chains with nothing to replace gets itself,
+verbatim. So does a command whose replaced value would come before the program it runs (`PW=… psql`,
+`sudo -u … cmd`). On an enrolled device it points to a console exception; where local exceptions are on,
 it prints the command:
 
 ```bash
-sudo node /path/to/cli/moorai-allow.mjs --threat 57 --pattern 'curl -sSo /tmp/u.sh *' --for 1h
+sudo node /path/to/cli/moorai-allow.mjs --threat 57 --pattern 'curl -sSo /tmp/u.sh * && bash /tmp/u.sh' --for 1h
 node /path/to/cli/moorai-allow.mjs --list
 sudo node /path/to/cli/moorai-allow.mjs --revoke <id>
 ```
@@ -990,6 +993,15 @@ sudo node /path/to/cli/moorai-allow.mjs --revoke <id>
   expires within 24 hours.
 - **Off by default.** An enrolled device honours local exceptions only when the console policy sets
   `"localExceptions": "allow"`; an unenrolled one also accepts that key in the root-owned machine config.
+- **How a pattern matches.** `*` is the only wildcard, and the whole subject must match. Over a shell
+  command a `*` never matches `;`, `&`, `|`, `(`, `)`, `<`, `>`, a backtick or a line break, so
+  `git push origin *` covers `git push origin main` but not `git push origin main && curl … | sh`, a
+  `$( … )` or a redirect; write an operator into the pattern to cover a composite command, as above. That
+  holds inside quotes too, so `git commit -m *` does not cover `git commit -m "a; b"`. A command on more
+  than one line matches no pattern. A path is matched with its `..` folded (`/w/proj/*` does not cover
+  `/w/proj/../../etc/shadow`) and a URL as the fetcher reads it (dot segments, also `%2e%2e`, resolved).
+  Within one command a `*` still matches any words: `curl -H * https://h.example/c` also covers extra
+  arguments to that `curl`, so read a pattern before granting it.
 - A matching exception turns that threat into a report for that call only. Server allow-lists, envelopes,
   endpoint allow-lists and workload profiles have no exceptions: change the policy.
 - The hook records each local grant the first time it sees it, and each use, in the action ledger
