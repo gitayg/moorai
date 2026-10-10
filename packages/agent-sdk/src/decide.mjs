@@ -19,7 +19,7 @@
 // the hook can be stricter than this function.
 import { readFileSync } from "node:fs";
 import { basename, isAbsolute, resolve } from "node:path";
-import { hookCore, mcpFileArgs, secretEgress, modelEndpoints, outboundUpload, serverModeLib } from "./core.mjs";
+import { hookCore, mcpFileArgs, secretEgress, modelEndpoints, outboundUpload, serverModeLib, toolTagsLib, exceptionsLib } from "./core.mjs";
 
 const {
   decideText, decideCredFileRead, decideFileMetadata, decideAgentStateWrite, isEnvTemplate, fileScanText,
@@ -31,13 +31,15 @@ const { scanMcpFileArgs } = mcpFileArgs;
 const { egressHits } = secretEgress;
 const { extractHosts } = modelEndpoints;
 const { OUTBOUND_UPLOAD } = outboundUpload;
+const { callTags, tagGate, applyTagGate, tagHitAlert } = toolTagsLib;
+const { readExceptionStore, liveExceptions, matchExceptions, applyExceptions, subjectOf } = exceptionsLib;
 
 const RANK = { allow: 1, ask: 2, deny: 3 };
 export const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
 export const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 // Cursor's alias, as the hook maps it (TOOL_ALIASES).
 const TOOL_ALIASES = { Shell: "Bash" };
-export const NOT_EVALUATED = Object.freeze(["circuit-breaker", "session-risk", "deletion-volume", "intent-alignment", "learned-drift", "mcp-reputation", "model-escalation", "honeytokens", "mask-rewrite"]);
+export const NOT_EVALUATED = Object.freeze(["circuit-breaker", "session-risk", "deletion-volume", "intent-alignment", "learned-drift", "mcp-reputation", "model-escalation", "honeytokens", "mask-rewrite", "tag-rules"]);
 const FILE_CAP = 262144;
 
 function readFileCapped(fp) {
@@ -108,7 +110,29 @@ function profileGate(policy, { tool, ti, cwd, serviceId, systemConfig }, signals
 // paths resolve against it, as in the hook). actor: the workload's actor hash (entitlement JIT grants).
 // serviceId: the workload name a profile's match.serviceId is compared with. systemConfig: the parsed
 // machine-wide config (tests); omitted, the root-owned /etc/moorai/config.json is read.
-export function decideToolCall(engine, policy, { tool: rawTool = "", toolInput, cwd, actor = "", serviceId = "", systemConfig } = {}) {
+// The hook's two per-call policy layers around the branch verdict, as its main() and emit() apply them:
+// the exceptions that cover this call (cli/exceptions.mjs — console policy, and the root-owned local store
+// when the policy switches local exceptions on) decide the policy the branches run under, and the static
+// tag actions (cli/tool-tags.mjs) apply to the verdict, the stricter winning. Tag RULES need the session's
+// earlier calls and are not evaluated here (NOT_EVALUATED "tag-rules").
+export function decideToolCall(engine, policy, opts = {}) {
+  const tool = TOOL_ALIASES[opts.tool] || String(opts.tool || "");
+  const ti = opts.toolInput && typeof opts.toolInput === "object" ? opts.toolInput : {};
+  const sys = opts.systemConfig !== undefined ? opts.systemConfig : readSystemConfig();
+  let exc = { threats: new Set(), rules: new Set() };
+  try { exc = matchExceptions(liveExceptions({ policy, system: sys, store: readExceptionStore(), enrolled: true }).live, subjectOf({ tool, toolInput: ti, cwd: opts.cwd })); } catch { /* no exception applies */ }
+  const v = decideBranch(engine, applyExceptions(policy, exc.threats), { ...opts, systemConfig: sys });
+  try {
+    const tags = callTags({ tool: v.tool, toolInput: ti, cwd: opts.cwd || "", findingIds: v.findings.filter((f) => f.stage === "file").map((f) => f.threatId) });
+    const gate = tagGate({ policy, system: sys, tags: tags.tags, inferred: tags.inferred, exceptedRules: [...exc.rules], rules: false });
+    for (const h of gate.hits) { const { contentHash: key, ...rest } = tagHitAlert(h); v.signals.push({ ...rest, key }); }
+    const m = applyTagGate({ decision: v.decision, reason: v.reason, alternatives: v.alternatives }, gate);
+    if (m.changed) Object.assign(v, { decision: m.decision, reason: m.reason, alternatives: m.alternatives, evaluated: true, tags: tags.tags });
+    else v.tags = tags.tags;
+  } catch { /* tags are a policy layer; a failure leaves the branch verdict */ }
+  return v;
+}
+function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, actor = "", serviceId = "", systemConfig } = {}) {
   const tool = TOOL_ALIASES[rawTool] || String(rawTool || "");
   const ti = toolInput && typeof toolInput === "object" ? toolInput : {};
   const base = cwd || process.cwd();

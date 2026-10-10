@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = resolve(PKG, "..", "..");
-const ENTRIES = ["cli/hook-core.mjs", "cli/server-mode.mjs", "cli/mcp-file-args.mjs", "cli/secret-egress.mjs", "cli/content-hash.mjs", "cli/provenance.mjs", "cli/inbound.mjs", "cli/index-scan.mjs", "data/capture-tiers.js", "data/model-endpoints.js", "data/outbound-upload.js", "data/offline-default.js"];
+const ENTRIES = ["cli/hook-core.mjs", "cli/server-mode.mjs", "cli/mcp-file-args.mjs", "cli/secret-egress.mjs", "cli/content-hash.mjs", "cli/provenance.mjs", "cli/inbound.mjs", "cli/index-scan.mjs", "cli/tool-tags.mjs", "cli/exceptions.mjs", "data/capture-tiers.js", "data/model-endpoints.js", "data/outbound-upload.js", "data/offline-default.js"];
 const RUNTIME_READS = ["data/threats.json", "LICENSE"];
 const IMPORT_RE = /(?:^|[\s;])(?:import|export)\s[^'"`]*?from\s*["']([^"']+)["']|(?:^|[\s;])import\s*["']([^"']+)["']/gm;
 

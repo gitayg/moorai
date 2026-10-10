@@ -419,6 +419,11 @@ function readBytes(p) {
 // today's behavior). A denied server short-circuits before the arg scan.
 export function decideMcpServer(policy, serverName) {
   const allow = policy?.mcpAllow;
+  // Approval gate on: mcpAllow is the approved set, so an empty list means nothing is approved yet.
+  if (policy?.mcpGate === true) {
+    if (Array.isArray(allow) && allow.includes(serverName)) return { decision: "allow" };
+    return { decision: "deny", reason: `MCP server '${serverName}' is not approved by your organization yet.` };
+  }
   if (!Array.isArray(allow) || !allow.length) return { decision: "allow" };
   if (allow.includes(serverName)) return { decision: "allow" };
   return { decision: "deny", reason: `MCP server '${serverName}' is not on your organization's allow-list.` };

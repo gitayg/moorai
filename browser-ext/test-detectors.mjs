@@ -64,6 +64,25 @@ for (const t of benignSamples) {
 // A UUID must not trip the entropy-gated secret detector (allowlist guard).
 check("UUID assigned to a var is NOT a secret (benign-shape guard)",
   !flags('request_id = "550e8400-e29b-41d4-a716-446655440000"', "secret-generic-assignment"));
+// Luhn: a digit run that fails the check digit is not a card (data/detectors.js luhnValid).
+check("card-shaped run failing Luhn is NOT a payment card", !flags("card 4111 1111 1111 1112 exp 12/26", "dlp-payment-card"));
+check("RFC bit-position ruler is NOT a payment card", !flags("0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5", "dlp-payment-card"));
+check("a valid card after a failing run still flags (every occurrence is tried)",
+  flags("ref 4111 1111 1111 1112 then card 4111 1111 1111 1111", "dlp-payment-card"));
+// secret-db-conn: a template in the password slot is not a credential; a literal password is.
+for (const tpl of ["<NEW_PASSWORD>", "${DB_PASSWORD}", "$PGPASS", "{{db_pass}}", "%s", "****"]) {
+  check(`db connection string with template password ${tpl} is NOT flagged`, !flags(`postgres://app:${tpl}@db.example.internal:5432/app`, "secret-db-conn"));
+}
+check("db connection string with a literal password flags", flags("postgres://app:hunter2pass@db.example.internal:5432/app", "secret-db-conn"));
+
+// --- drift guard: the ported regexes are the agent's, verbatim ---
+console.log("\nAgent parity:");
+const { DETECTORS: AGENT } = await import("../data/detectors.js");
+for (const id of ["dlp-payment-card", "secret-db-conn", "secret-generic-assignment", "secret-aws-secret"]) {
+  const a = AGENT.find((d) => d.detectorId === id), e = D.DETECTORS.find((d) => d.detectorId === id);
+  check(`${id}: patterns match data/ verbatim`, JSON.stringify(a.patterns.map(String)) === JSON.stringify(e.patterns.map(String)));
+  check(`${id}: carries a refine like the agent`, typeof a.refine === "function" && typeof e.refine === "function");
+}
 
 // --- (c) keyed content-hash parity with the agent ---
 console.log("\nHash parity:");

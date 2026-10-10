@@ -13,14 +13,31 @@
 //       #1 is about sensitive content in text, #63 about model endpoints, #71 about rendered output. Two
 //       ids rather than one because a threat carries one risk level and one policy action, and "data
 //       sent" (High) and a bare GET or lookup (Medium) need different ones.
+//   #80 clone-then-run — a repository cloned (or an archive downloaded and unpacked) and its install or
+//       start scripts run in the same command. A weaker sibling of fetch-then-exec, on its own id because
+//       the default action is per THREAT, not per detector: threatActionFor resolves #57 to "justify"
+//       (BUILTIN_DEFAULT_ACTIONS), and building from source is everyday work, so this one is report-only
+//       (notify) unless a policy raises threatPolicy[80]. Silent on content the agent READS (a README's
+//       build steps): the hook hands that over as ctx.inbound / ctx.targetPath / ctx.template, and a
+//       markdown code fence marks a document rather than a command.
+//   #40 install-path-steering — content the agent reads tells it not to use the official package install
+//       and to install or run from a clone, checkout or raw URL instead (data/install-steering.js). An
+//       instruction in ingested content that redirects what the agent does is #40's definition (indirect /
+//       second-order injection), and #40 is what the other ingest-stage instruction detectors report.
+//       File, index and tool-result stages only: on a prompt the user is the one choosing the source.
 //
 // ONCE: refine() runs once per text and the reported match is one character, so no command, path or host
 // ever reaches a finding. Each refine checks a cheap prefilter before parsing.
-import { fetchExecFacts, uploadedFiles, netDestinations, urlDestinations } from "./net-exec.js";
+import { fetchExecFacts, uploadedFiles, netDestinations, urlDestinations, cloneRunFacts } from "./net-exec.js";
 import { oastHost, OAST_MENTION } from "./oast-hosts.js";
+import { installSteeringHit } from "./install-steering.js";
 
 const ONCE = /^[\s\S]/;
 const FETCH_HINT = /\b(?:curl|wget2?|aria2c|iwr|irm|Invoke-WebRequest|Invoke-RestMethod|Start-BitsTransfer)\b/i;
+const CLONE_HINT = /\b(?:clone|tar|bsdtar|unzip)\b/i;
+const MD_FENCE = /^[ \t]{0,3}(?:```|~~~)/m;
+// Content the agent reads, as the hook and the SDK label it, is not a command the agent runs.
+const readContent = (ctx) => !!ctx && (!!ctx.inbound || !!ctx.targetPath || Object.prototype.hasOwnProperty.call(ctx, "template"));
 const UPLOAD_HINT = /\b(?:curl|wget2?|nc|ncat|netcat|telnet|socat|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b/i;
 
 // One parse per (text, ctx) for the two OAST detectors, which ask opposite questions of the same result.
@@ -51,6 +68,24 @@ export function netExecDetectors(detectors) {
       hint: "Downloads a file and then runs it in the same command (curl -o / wget -O / Invoke-WebRequest -OutFile, then sh / source / ./file / python file).",
       patterns: [ONCE],
       refine: (_m, text) => FETCH_HINT.test(text) && fetchExecFacts(text).hit
+    },
+    {
+      detectorId: "clone-then-run",
+      threatId: 80,
+      stages: ["prompt"],
+      mode: "notify",
+      hint: "Clones a repository (or downloads and unpacks an archive) and runs its install / start scripts in the same command (git clone … && cd … && npm install / make / ./install.sh).",
+      patterns: [ONCE],
+      refine: (_m, text, ctx) => CLONE_HINT.test(text) && !readContent(ctx) && !MD_FENCE.test(text) && cloneRunFacts(text).hit
+    },
+    {
+      detectorId: "install-path-steering",
+      threatId: 40,
+      stages: ["file", "index", "output"],
+      mode: "warn",
+      hint: "Ingested content tells the agent not to use the official package install and to install or run from a cloned repository, checkout or raw URL instead (install-path steering).",
+      patterns: [ONCE],
+      refine: (_m, text) => installSteeringHit(text)
     },
     {
       detectorId: "secret-file-upload",

@@ -68,10 +68,31 @@ export const INFO_LEVEL = "Info";
 // on inbound content, at its alert level, unless the org policy sets an action for it.
 export const CRED_RESULT_DECISION = "report";
 
+// THE WEB #17 / #15 NARROWING (v1.11.0, scripts/score-webfetch-benign.mjs tune half; DETECTION_ENGINE.md
+// §7). A `curl`/`wget` with a URL on the line is a command shown to a reader until it does something
+// with the link: pipes what it fetched into an interpreter, runs it after download, or uploads data to
+// it. A bare GET, a key piped into gpg, a `-u` login: documentation furniture, 5 of 23 web FPs. An
+// HTTP request line (`POST /path`, `POST https://…`) is a request shown, not an object posted to a link.
+// On #15, an address that is the recipient of a transfer ("send/forward/email X to <addr>", "cc <addr>")
+// is kept; a contact line ("Email <addr>", "Email the maintainers at <addr>", `"email": "<addr>"`) is not.
+const CURL_LINE = /\b(?:curl|wget)\b[^\n]{0,160}https?:\/\/[^\n]*/gi;
+const CURL_ACTS = [
+  /\|[ \t]*(?:sudo[ \t]+(?:-\S+[ \t]+)*)?(?:(?:ba|z|da|k|c|tc|fi)?sh|python[0-9.]*|perl|ruby|node|iex|pwsh|powershell)\b/i,
+  /(?:&&|;)[ \t]*(?:sudo[ \t]+)?(?:(?:ba|z)?sh[ \t]|chmod[ \t]|source[ \t]|\.[ \t]|\.?\/\S|python|node[ \t])/i,
+  /(?:^|[ \t])(?:-[dFT]|--data(?:-\w+)?|--form|--upload-file|--post-(?:data|file)|-X[ \t]*(?:POST|PUT|PATCH))(?=[ \t=]|$)/i
+];
+const curlActs = (t) => {
+  if (/\b(?:ba|z)?sh[ \t]+(?:-c[ \t]+["']?)?(?:<\(|\$\()[ \t]*(?:curl|wget)\b[^\n]{0,160}https?:\/\//i.test(t)) return true;
+  for (const m of t.matchAll(CURL_LINE)) if (CURL_ACTS.some((r) => r.test(m[0].slice(0, 400)))) return true;
+  return false;
+};
 export const INBOUND_GATES = {
   15: (t) => /^[ \t]{0,3}(?:from|to|cc|bcc|reply-to|organizer|sender)[ \t]*:[^\n]{0,120}@/im.test(t)
-          || /\b(?:send|email|e-mail|forward|cc|bcc|report|deliver|mail|exfiltrate|transmit)\b[^\n]{0,80}@/i.test(t),
-  17: (t) => /\b(?:send|post|upload|exfiltrate|transmit|deliver|report|submit|forward|curl|wget|fetch)\b[^\n]{0,80}https?:\/\//i.test(t)
+          || /\b(?:send|email|e-mail|forward|report|deliver|mail|exfiltrate|transmit)\b(?!["']?[ \t]*[:=])[^\n]{0,80}\bto[ \t]+<?[\w.+-]+@/i.test(t)
+          || /\b(?:cc|bcc)\b[ \t]+<?[\w.+-]+@/i.test(t),
+  17: (t) => /\b(?:send|upload|exfiltrate|transmit|deliver|report|submit|forward|fetch)\b[^\n]{0,80}https?:\/\//i.test(t)
+          || /\bpost\b(?![ \t]+(?:\/|https?:\/\/))[^\n]{0,80}https?:\/\//i.test(t)
+          || curlActs(t)
           || /https?:\/\/[^\s]{0,120}\?[^\s]{0,80}=(?:\$|\{\{|%7B)/i.test(t)
           || /\b(?:migrate|switch|point|redirect|repoint|move)\b[^\n]{0,40}\bto\b[^\n]{0,40}https?:\/\//i.test(t)
           || /\b(?:retry|re-?run|reissue|authenticate|register|install|download|pull|clone)\b[^\n]{0,60}https?:\/\//i.test(t)

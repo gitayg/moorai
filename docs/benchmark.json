@@ -1,9 +1,9 @@
 {
   "name": "MoorAI Agent Security Benchmark",
-  "generatedAt": "2026-10-09T16:32:08.705Z",
+  "generatedAt": "2026-10-10T19:18:47.034Z",
   "engine": {
-    "detectors": 107,
-    "threats": 79,
+    "detectors": 109,
+    "threats": 80,
     "corpusCases": 102
   },
   "corpus": {
@@ -17,15 +17,15 @@
     "byItem": {
       "LLM01": {
         "threats": 8,
-        "detectors": 20
+        "detectors": 21
       },
       "LLM02": {
         "threats": 20,
         "detectors": 39
       },
       "LLM03": {
-        "threats": 7,
-        "detectors": 4
+        "threats": 8,
+        "detectors": 5
       },
       "LLM04": {
         "threats": 1,
@@ -68,7 +68,7 @@
       "ASI01": {
         "threats": 9,
         "partialThreats": 7,
-        "detectors": 27,
+        "detectors": 28,
         "status": "covered"
       },
       "ASI02": {
@@ -90,9 +90,9 @@
         "status": "partial"
       },
       "ASI05": {
-        "threats": 5,
-        "partialThreats": 5,
-        "detectors": 13,
+        "threats": 6,
+        "partialThreats": 6,
+        "detectors": 14,
         "status": "partial"
       },
       "ASI06": {
@@ -168,7 +168,7 @@
       "MCP06": {
         "threats": 8,
         "partialThreats": 6,
-        "detectors": 18,
+        "detectors": 19,
         "status": "covered"
       },
       "MCP07": {
@@ -196,5 +196,6 @@
         "status": "uncovered"
       }
     }
-  }
+  },
+  "latency": {"measured":false}
 }

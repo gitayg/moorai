@@ -1,0 +1,2251 @@
+{
+  "framework": {
+    "key": "careful-adoption-of-agentic-ai-services",
+    "name": "Careful adoption of agentic AI services",
+    "shortName": "Careful Adoption of Agentic AI Services",
+    "publisher": "ASD's ACSC, with CISA, NSA, the Canadian Centre for Cyber Security, NCSC-NZ and NCSC-UK (the 'authoring agencies')",
+    "version": "May 2026 (no version number; PDF metadata CreationDate 2026-04-30)",
+    "published": "2026-05-01",
+    "source": "https://www.cyber.gov.au/publication/careful-adoption-of-agentic-ai-services",
+    "textRead": "https://www.ncsc.govt.nz/assets/guidance/Documents/Careful-adoption-of-agentic-AI-services_FINAL.pdf",
+    "textSha256": "d41bc59cde8ddcc00bf69d09a3bef9f3c577225ba99f9d8aa61c2b76bc27b74d",
+    "retrieved": "2026-10-09",
+    "license": "CC BY 4.0 (c) Commonwealth of Australia 2026",
+    "idScheme": "locator",
+    "idNote": "The guidance numbers nothing. Each id is <stage>/<subsection>/<n>: the stage and subsection headings of the 'Recommended best practices' list it sits in, and its position in that list. The text is the PDF's, verbatim.",
+    "scope": "Every 'Recommended best practices' bullet under 'Best practices for securing agentic AI systems' and 'Defend against future risks', and every Appendix A prerequisite: 140 items. The risk descriptions and the 'Further information' reading list are not controls and are not mapped.",
+    "notes": [
+      "The cyber.gov.au page and PDF (https://www.cyber.gov.au/sites/default/files/2026-05/careful_adoption_of_agentic_ai_services.pdf) timed out from this network on 2026-10-09. The text was read from the PDF published by NCSC-NZ, one of the authoring agencies; its metadata names Australian Signals Directorate as author.",
+      "CISA's resource page (https://www.cisa.gov/resources-tools/resources/careful-adoption-agentic-ai-services, Publish Date May 01, 2026) links to the cyber.gov.au publication.",
+      "The Canadian Centre for Cyber Security's HTML edition (https://cyber.gc.ca/en/guidance/careful-adoption-agentic-ai) uses Canadian spelling and shortens or rewords 51 of the 140 items; the PDF wording is used here.",
+      "naKind: 'organisational' is a governance, procurement, staffing, assessment or research activity; 'agent-build' is something done inside the agent itself (its model training, prompts, evaluation, error handling or infrastructure). Neither is a runtime control a third-party tool supplies."
+    ]
+  },
+  "statusMeaning": {
+    "covered": "a shipped mechanism meets the whole recommendation",
+    "partial": "a shipped mechanism meets part of it; `limit` says which part",
+    "not-covered": "a runtime technical control MoorAI does not provide; `reason` says what is missing",
+    "not-applicable": "organisational or agent-build practice, not a runtime tool's job; `naKind` and `reason` say which"
+  },
+  "sections": {
+    "design/controlled-context": "Designing secure agents: Controlled context",
+    "design/oversight-mechanisms": "Designing secure agents: Oversight mechanisms",
+    "design/identity-management": "Designing secure agents: Identity management",
+    "design/defence-in-depth": "Designing secure agents: Defence in depth",
+    "develop/comprehensive-testing": "Developing secure agents: Comprehensive testing",
+    "develop/appropriate-evaluation": "Developing secure agents: Appropriate evaluation",
+    "develop/input-management": "Developing secure agents: Input management",
+    "develop/red-teaming": "Developing secure agents: Red teaming",
+    "develop/resilience": "Developing secure agents: Resilience",
+    "develop/accountability": "Developing secure agents: Accountability",
+    "develop/third-party-components": "Developing secure agents: Manage third-party components",
+    "deploy/threat-modelling": "Deploying agents securely: Threat modelling",
+    "deploy/governance": "Deploying agents securely: Governance",
+    "deploy/progressive-deployment": "Deploying agents securely: Progressive deployment",
+    "deploy/secure-by-default": "Deploying agents securely: Secure by default",
+    "deploy/guardrails-and-constraints": "Deploying agents securely: Guardrails and constraints",
+    "deploy/isolation": "Deploying agents securely: Isolation",
+    "operate/monitoring-and-auditing": "Operating agents securely: Monitoring and auditing",
+    "operate/validate-outputs": "Operating agents securely: Validate outputs",
+    "operate/human-in-the-loop": "Operating agents securely: Human in the loop",
+    "operate/performance-monitoring": "Operating agents securely: Performance monitoring",
+    "operate/privileges-and-authentication": "Operating agents securely: Privileges and authentication",
+    "future/threat-intelligence": "Defend against future risks: Expand threat intelligence through collaboration",
+    "future/agent-specific-evaluations": "Defend against future risks: Develop robust, agent-specific evaluations",
+    "future/system-theoretic-analysis": "Defend against future risks: Leverage system-theoretic approaches to analyse security",
+    "appendix-a/design": "Appendix A, cyber security prerequisites: Design",
+    "appendix-a/development": "Appendix A, cyber security prerequisites: Development"
+  },
+  "catalog": [
+    {
+      "id": "design/controlled-context/1",
+      "section": "Designing secure agents: Controlled context",
+      "text": "Structure prompt context using a clear instruction hierarchy to ensure agent behaviour aligns with intended priorities and constraints"
+    },
+    {
+      "id": "design/controlled-context/2",
+      "section": "Designing secure agents: Controlled context",
+      "text": "Implement grounding by providing relevant contextual information using retrieval augmented generation and prompt engineering to mitigate hallucinations and other LLM-related errors"
+    },
+    {
+      "id": "design/oversight-mechanisms/1",
+      "section": "Designing secure agents: Oversight mechanisms",
+      "text": "Include mechanisms to facilitate human control and oversight to ensure that agentic AI systems approved for non-sensitive, low-risk tasks cannot autonomously progress into higher-risk activities"
+    },
+    {
+      "id": "design/oversight-mechanisms/2",
+      "section": "Designing secure agents: Oversight mechanisms",
+      "text": "Implement human control points throughout the agent workflow, such as live monitoring and interruption during task execution, mandatory human approval for decision-making steps, auditing and reversibility following task execution to ensure security"
+    },
+    {
+      "id": "design/oversight-mechanisms/3",
+      "section": "Designing secure agents: Oversight mechanisms",
+      "text": "Define explicit control flows to bound autonomous planning and prevent agents from deviating beyond authorised objectives or actions"
+    },
+    {
+      "id": "design/identity-management/1",
+      "section": "Designing secure agents: Identity management",
+      "text": "Embed strong identity management mechanisms into agents using manage identity services, decentralised identifiers or public key infrastructure"
+    },
+    {
+      "id": "design/identity-management/2",
+      "section": "Designing secure agents: Identity management",
+      "text": "Authenticate all inter-agent and agent-to-service API calls using mutual transport layer security to ensure non-repudiation"
+    },
+    {
+      "id": "design/identity-management/3",
+      "section": "Designing secure agents: Identity management",
+      "text": "Maintain a trusted registry and bind identities to authorised roles; periodically reconcile the registry against the live set of agents"
+    },
+    {
+      "id": "design/identity-management/4",
+      "section": "Designing secure agents: Identity management",
+      "text": "Deny access for any agent or cryptographic key that is not present in the trusted registry"
+    },
+    {
+      "id": "design/identity-management/5",
+      "section": "Designing secure agents: Identity management",
+      "text": "Apply role-based identity management and limit agent permissions to the minimum scope required for approved tasks"
+    },
+    {
+      "id": "design/identity-management/6",
+      "section": "Designing secure agents: Identity management",
+      "text": "Enforce identity-based boundaries to restrict agents’ to authorised actions only"
+    },
+    {
+      "id": "design/defence-in-depth/1",
+      "section": "Designing secure agents: Defence in depth",
+      "text": "Avoid reliance on a single security mechanism by implementing multiple, overlapping layers of security controls"
+    },
+    {
+      "id": "design/defence-in-depth/2",
+      "section": "Designing secure agents: Defence in depth",
+      "text": "Apply security controls at all points where information enters or exits the system, including user inputs, tool calls, data pre-processing and model inference"
+    },
+    {
+      "id": "design/defence-in-depth/3",
+      "section": "Designing secure agents: Defence in depth",
+      "text": "Separate agents for different functions and apply strict boundaries and operational controls to the handoffs from one agent to another"
+    },
+    {
+      "id": "develop/comprehensive-testing/1",
+      "section": "Developing secure agents: Comprehensive testing",
+      "text": "Use reward modelling and adversarial testing to detect specification gaming, explicitly incorporating security constraints alongside performance goals"
+    },
+    {
+      "id": "develop/comprehensive-testing/2",
+      "section": "Developing secure agents: Comprehensive testing",
+      "text": "Train LLM agents in simulated, controlled environments to learn the implications of actions without causing real security harm"
+    },
+    {
+      "id": "develop/comprehensive-testing/3",
+      "section": "Developing secure agents: Comprehensive testing",
+      "text": "Leverage synthetic data generation to create adversarial training examples that reflect real-world operating scenarios"
+    },
+    {
+      "id": "develop/comprehensive-testing/4",
+      "section": "Developing secure agents: Comprehensive testing",
+      "text": "Apply active learning to adversarial training scenarios to expose agents to high uncertainty inputs and more efficiently discover unexpected behaviours"
+    },
+    {
+      "id": "develop/appropriate-evaluation/1",
+      "section": "Developing secure agents: Appropriate evaluation",
+      "text": "Use relevant threat models to define evaluation scenarios, including edge cases beyond typical training conditions"
+    },
+    {
+      "id": "develop/appropriate-evaluation/2",
+      "section": "Developing secure agents: Appropriate evaluation",
+      "text": "Use techniques, such as Best-of-N sampling (selecting the best output from multiple model responses to the same prompt), multistep reasoning prompts and inference time scaling to draw out the full range of agent behaviours and skills"
+    },
+    {
+      "id": "develop/appropriate-evaluation/3",
+      "section": "Developing secure agents: Appropriate evaluation",
+      "text": "Evaluate systems across different levels of autonomy to understand performance and risk under changing environmental conditions, including changes in tool, models and resource access, such as web search or code execution"
+    },
+    {
+      "id": "develop/appropriate-evaluation/4",
+      "section": "Developing secure agents: Appropriate evaluation",
+      "text": "Vary contextual conditions, such as presence or absence of other agents and the timing of evaluation, to understand their impact on task performance"
+    },
+    {
+      "id": "develop/appropriate-evaluation/5",
+      "section": "Developing secure agents: Appropriate evaluation",
+      "text": "Conduct capability evaluations continuously across the agent development lifecycle"
+    },
+    {
+      "id": "develop/input-management/1",
+      "section": "Developing secure agents: Input management",
+      "text": "Implement robust input validation and sanitisation for all agent inputs"
+    },
+    {
+      "id": "develop/input-management/2",
+      "section": "Developing secure agents: Input management",
+      "text": "Integrate prompt injection filters and semantic analysis to detect malicious instructions"
+    },
+    {
+      "id": "develop/input-management/3",
+      "section": "Developing secure agents: Input management",
+      "text": "Validate context to ensure the system correctly interprets intent before execution"
+    },
+    {
+      "id": "develop/red-teaming/1",
+      "section": "Developing secure agents: Red teaming",
+      "text": "Deploy sandbox environments to test agent behaviour before production deployment"
+    },
+    {
+      "id": "develop/red-teaming/2",
+      "section": "Developing secure agents: Red teaming",
+      "text": "Conduct red teaming exercises to identify potential loopholes and unintended behaviour"
+    },
+    {
+      "id": "develop/red-teaming/3",
+      "section": "Developing secure agents: Red teaming",
+      "text": "Use capability elicitation techniques to probe for unexpected or emergent abilities, especially any that could create substantial resource or environment risks"
+    },
+    {
+      "id": "develop/red-teaming/4",
+      "section": "Developing secure agents: Red teaming",
+      "text": "Implement agent simulation tests, such as multi-agent red teaming or chaos testing."
+    },
+    {
+      "id": "develop/resilience/1",
+      "section": "Developing secure agents: Resilience",
+      "text": "Embed agentic AI systems with fail-safe defaults and containment mechanisms that limit the blast radius of unexpected behaviours"
+    },
+    {
+      "id": "develop/resilience/2",
+      "section": "Developing secure agents: Resilience",
+      "text": "Implement data loss prevention controls specifically tuned to AI agent behaviours"
+    },
+    {
+      "id": "develop/resilience/3",
+      "section": "Developing secure agents: Resilience",
+      "text": "Implement versioning and rollback mechanisms to safely revert a system to known-good agent behaviours when unpredictability is observed"
+    },
+    {
+      "id": "develop/accountability/1",
+      "section": "Developing secure agents: Accountability",
+      "text": "Integrate comprehensive artefact logging mechanisms by default"
+    },
+    {
+      "id": "develop/accountability/2",
+      "section": "Developing secure agents: Accountability",
+      "text": "Integrate unified audit logs for all inter-agent interactions to maintain observability of all agent exchanges"
+    },
+    {
+      "id": "develop/accountability/3",
+      "section": "Developing secure agents: Accountability",
+      "text": "Use interpretability tools to ensure observability of and reasoning behind agent decisions"
+    },
+    {
+      "id": "develop/accountability/4",
+      "section": "Developing secure agents: Accountability",
+      "text": "Require specific information referencing for agents that show where key aspects of their response originated from."
+    },
+    {
+      "id": "develop/third-party-components/1",
+      "section": "Developing secure agents: Manage third-party components",
+      "text": "Verify all external third-party components originate from trusted sources and are up to date before inclusion in agentic AI systems"
+    },
+    {
+      "id": "develop/third-party-components/2",
+      "section": "Developing secure agents: Manage third-party components",
+      "text": "Maintain a trusted registry of third-party components"
+    },
+    {
+      "id": "develop/third-party-components/3",
+      "section": "Developing secure agents: Manage third-party components",
+      "text": "Reference CISA’s A Shared Vision of Software Bill of Materials (SBOM) for Cybersecurity and 2025 Minimum Elements for a Software Bill of Materials (SBOM) when procuring agentic AI systems"
+    },
+    {
+      "id": "develop/third-party-components/4",
+      "section": "Developing secure agents: Manage third-party components",
+      "text": "Restrict tool use to an approved allow list of tools and versions that are regularly verified as secure"
+    },
+    {
+      "id": "develop/third-party-components/5",
+      "section": "Developing secure agents: Manage third-party components",
+      "text": "Verify agent behaviour related to tool usage aligns with documented security policies"
+    },
+    {
+      "id": "develop/third-party-components/6",
+      "section": "Developing secure agents: Manage third-party components",
+      "text": "Log agent tool usage and ensure results are captured in system logs in a human-readable format"
+    },
+    {
+      "id": "develop/third-party-components/7",
+      "section": "Developing secure agents: Manage third-party components",
+      "text": "Establish trigger-action protocols that automatically restrict agent permissions when unexpected behaviour emerges"
+    },
+    {
+      "id": "develop/third-party-components/8",
+      "section": "Developing secure agents: Manage third-party components",
+      "text": "Codify separation of duties by defining roles, such as ‘Orchestrator’, ‘Reader’ and ‘Actuator’ with clear boundaries, consensus mechanisms and delegations expiry"
+    },
+    {
+      "id": "develop/third-party-components/9",
+      "section": "Developing secure agents: Manage third-party components",
+      "text": "Implement consensus controls for actions based on risk; use multi agent approval for moderate stakes actions and human in the loop approval in addition to multi agent consensus for high stakes actions"
+    },
+    {
+      "id": "develop/third-party-components/10",
+      "section": "Developing secure agents: Manage third-party components",
+      "text": "Prohibit agents from modifying their own privileges or initiating unapproved delegation without explicit expiry timers and recorded grant chains"
+    },
+    {
+      "id": "develop/third-party-components/11",
+      "section": "Developing secure agents: Manage third-party components",
+      "text": "Standardise tool descriptions using a consistent format that avoids persuasive language"
+    },
+    {
+      "id": "deploy/threat-modelling/1",
+      "section": "Deploying agents securely: Threat modelling",
+      "text": "Perform realistic threat modelling using up-to-date risk taxonomies for agentic AI systems, such as OWASP GenAI Security Project and MITRE ATLAS™"
+    },
+    {
+      "id": "deploy/threat-modelling/2",
+      "section": "Deploying agents securely: Threat modelling",
+      "text": "Design and implement security controls that address emerging and evolving agent capabilities"
+    },
+    {
+      "id": "deploy/threat-modelling/3",
+      "section": "Deploying agents securely: Threat modelling",
+      "text": "Harmonise agentic AI controls with existing security frameworks, national guidance and allied agreements, such as common Zero Trust principles and the National Institute of Standards and Technology’s Zero Trust Architecture guidance"
+    },
+    {
+      "id": "deploy/threat-modelling/4",
+      "section": "Deploying agents securely: Threat modelling",
+      "text": "Develop and test incident response procedures to detect, contain and recover from agent compromise"
+    },
+    {
+      "id": "deploy/threat-modelling/5",
+      "section": "Deploying agents securely: Threat modelling",
+      "text": "Establish regular third-party reviews of privileged architectures, share actionable intelligence with trusted partners and update risk models to reflect emerging malicious trends"
+    },
+    {
+      "id": "deploy/governance/1",
+      "section": "Deploying agents securely: Governance",
+      "text": "Implement and maintain governance policies to manage autonomous agents"
+    },
+    {
+      "id": "deploy/governance/2",
+      "section": "Deploying agents securely: Governance",
+      "text": "Define legal accountability and risk ownership for agentic AI systems in policies"
+    },
+    {
+      "id": "deploy/governance/3",
+      "section": "Deploying agents securely: Governance",
+      "text": "Upskill the organisation to build AI literacy"
+    },
+    {
+      "id": "deploy/progressive-deployment/1",
+      "section": "Deploying agents securely: Progressive deployment",
+      "text": "Implement phased deployment with progressively increasing access and autonomy, limiting the action space where required, such as restricted APIs or sandboxing"
+    },
+    {
+      "id": "deploy/progressive-deployment/2",
+      "section": "Deploying agents securely: Progressive deployment",
+      "text": "Use graduated autonomy to incrementally increase agent independence whilst maintaining human oversight and understanding"
+    },
+    {
+      "id": "deploy/progressive-deployment/3",
+      "section": "Deploying agents securely: Progressive deployment",
+      "text": "Use continuous evaluation to determine when to expand system scope or when to roll back autonomy and access in response to failures"
+    },
+    {
+      "id": "deploy/secure-by-default/1",
+      "section": "Deploying agents securely: Secure by default",
+      "text": "Set system configurations to fail-safe by default requiring agents to stop and escalate issues to human reviewers in uncertain scenarios"
+    },
+    {
+      "id": "deploy/secure-by-default/2",
+      "section": "Deploying agents securely: Secure by default",
+      "text": "Use error-handling and failover management to reduce the impact of system failures"
+    },
+    {
+      "id": "deploy/secure-by-default/3",
+      "section": "Deploying agents securely: Secure by default",
+      "text": "Implement graceful degradation models so that agents maintain partial functionality even if some functions fail"
+    },
+    {
+      "id": "deploy/guardrails-and-constraints/1",
+      "section": "Deploying agents securely: Guardrails and constraints",
+      "text": "Specify clear, constrained objectives with explicit ‘do-not-do’ rules"
+    },
+    {
+      "id": "deploy/guardrails-and-constraints/2",
+      "section": "Deploying agents securely: Guardrails and constraints",
+      "text": "Implement guardrails and hard constraints, such as deny lists and API-level safety policies"
+    },
+    {
+      "id": "deploy/guardrails-and-constraints/3",
+      "section": "Deploying agents securely: Guardrails and constraints",
+      "text": "Establish declarative safety contracts with constraints and guardrails that agents cannot override"
+    },
+    {
+      "id": "deploy/guardrails-and-constraints/4",
+      "section": "Deploying agents securely: Guardrails and constraints",
+      "text": "Apply a layered set of guardrail mechanisms, ranging from anomaly detection and rule-based filtering to specialised machine learning algorithms that detect and filter prohibited behaviour"
+    },
+    {
+      "id": "deploy/guardrails-and-constraints/5",
+      "section": "Deploying agents securely: Guardrails and constraints",
+      "text": "Prioritise review of high-risk incidents, including cases where guardrails are triggered or actions are denied by human reviewers"
+    },
+    {
+      "id": "deploy/guardrails-and-constraints/6",
+      "section": "Deploying agents securely: Guardrails and constraints",
+      "text": "Deploy a secondary agent to validate new tasks against policy before execution"
+    },
+    {
+      "id": "deploy/isolation/1",
+      "section": "Deploying agents securely: Isolation",
+      "text": "Implement isolation and segmentation to limit blast radius of agent failure scenarios"
+    },
+    {
+      "id": "deploy/isolation/2",
+      "section": "Deploying agents securely: Isolation",
+      "text": "Separate high-risk agents into distinct domains"
+    },
+    {
+      "id": "deploy/isolation/3",
+      "section": "Deploying agents securely: Isolation",
+      "text": "Isolate agents into enclaves with no write access to logs"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/1",
+      "section": "Operating agents securely: Monitoring and auditing",
+      "text": "Employ monitoring tools that enhance human oversight of agentic AI systems"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/2",
+      "section": "Operating agents securely: Monitoring and auditing",
+      "text": "Monitor all agent operations, including internal processes, not just the inputs and outputs"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/3",
+      "section": "Operating agents securely: Monitoring and auditing",
+      "text": "Monitor and log identity and privilege changes and audit regularly for drift, impersonation or misconfiguration"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/4",
+      "section": "Operating agents securely: Monitoring and auditing",
+      "text": "Monitor agent outputs and behaviour for indicators of bias, emerging data drift and other anomalous patterns, including user prompts, tool calls, memory interactions, internal reasoning, decisions made and actions taken"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/5",
+      "section": "Operating agents securely: Monitoring and auditing",
+      "text": "Maintain comprehensive logs and real-time monitoring of live agent behaviour and decision-making"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/6",
+      "section": "Operating agents securely: Monitoring and auditing",
+      "text": "Implement runtime monitoring and anomaly detection using rules or behavioural baselines to identify unusual patterns and trigger alerts or pauses"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/7",
+      "section": "Operating agents securely: Monitoring and auditing",
+      "text": "Establish anomaly detection mechanisms that flag discrepancies between stated intentions and observed behaviours"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/8",
+      "section": "Operating agents securely: Monitoring and auditing",
+      "text": "Use multiple independent monitoring systems that cross-validate agent reports and system logs"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/9",
+      "section": "Operating agents securely: Monitoring and auditing",
+      "text": "Monitor for goal drift by comparing active objectives against approved baseline specifications before execution"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/10",
+      "section": "Operating agents securely: Monitoring and auditing",
+      "text": "Integrate source checks with agent logs to record which tools the system used and what information it retrieved"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/11",
+      "section": "Operating agents securely: Monitoring and auditing",
+      "text": "Implement auditing practices that combine human review with automated analysis of system logs"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/12",
+      "section": "Operating agents securely: Monitoring and auditing",
+      "text": "Support adaptive defences by using monitoring data to enable rapid responses, such as patches based on problems identified in system logs"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/13",
+      "section": "Operating agents securely: Monitoring and auditing",
+      "text": "Use storage-efficient logging methods to manage log volume without losing critical information"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/14",
+      "section": "Operating agents securely: Monitoring and auditing",
+      "text": "Conduct regular security assessments, including penetration testing and red team exercises specifically targeting agentic behaviours"
+    },
+    {
+      "id": "operate/validate-outputs/1",
+      "section": "Operating agents securely: Validate outputs",
+      "text": "Validate agent outputs by confirming accuracy of critical aspects against multiple sources"
+    },
+    {
+      "id": "operate/validate-outputs/2",
+      "section": "Operating agents securely: Validate outputs",
+      "text": "Validate agents through cross-checking in environments with redundant agents that validate each other’s outputs"
+    },
+    {
+      "id": "operate/validate-outputs/3",
+      "section": "Operating agents securely: Validate outputs",
+      "text": "Validate tool responses to prevent malicious or unsafe instructions and standardise tool descriptions to avoid persuasive language"
+    },
+    {
+      "id": "operate/human-in-the-loop/1",
+      "section": "Operating agents securely: Human in the loop",
+      "text": "Ensure decisions about when human approval is required are determined by system designers or operators, not delegated to the agentic AI system"
+    },
+    {
+      "id": "operate/human-in-the-loop/2",
+      "section": "Operating agents securely: Human in the loop",
+      "text": "Prevent agents from autonomously executing high impact actions or outputs without prior human approval"
+    },
+    {
+      "id": "operate/human-in-the-loop/3",
+      "section": "Operating agents securely: Human in the loop",
+      "text": "Insert human-in-the-loop review or approval checkpoints for actions where the cost of error is high, such as system resets, network egress or deletion of critical records."
+    },
+    {
+      "id": "operate/human-in-the-loop/4",
+      "section": "Operating agents securely: Human in the loop",
+      "text": "Quarantine requests to delete logs or audit records until reviewed and approved by a human"
+    },
+    {
+      "id": "operate/human-in-the-loop/5",
+      "section": "Operating agents securely: Human in the loop",
+      "text": "Clearly assign responsibility and accountability for errors or adverse outcomes caused by the system"
+    },
+    {
+      "id": "operate/human-in-the-loop/6",
+      "section": "Operating agents securely: Human in the loop",
+      "text": "Conduct risk assessments to classify agent actions by potential impact, likelihood and reversibility, and apply appropriate safeguards"
+    },
+    {
+      "id": "operate/performance-monitoring/1",
+      "section": "Operating agents securely: Performance monitoring",
+      "text": "Assess agents’ ability to evade security measures particularly in sensitive or high-impact systems"
+    },
+    {
+      "id": "operate/performance-monitoring/2",
+      "section": "Operating agents securely: Performance monitoring",
+      "text": "Conduct regular assessments of an agent’s ability to bypass safeguards, such as communication barriers, guardrails, monitors, human-in-the-loop processes and input filters"
+    },
+    {
+      "id": "operate/performance-monitoring/3",
+      "section": "Operating agents securely: Performance monitoring",
+      "text": "Use the results from these evaluations to validate existing controls and guide the development of stronger security measures"
+    },
+    {
+      "id": "operate/performance-monitoring/4",
+      "section": "Operating agents securely: Performance monitoring",
+      "text": "Limit agent resource usage by applying controls, such as rate-limit components to interrupt long-running tasks and disrupt malicious workflows"
+    },
+    {
+      "id": "operate/privileges-and-authentication/1",
+      "section": "Operating agents securely: Privileges and authentication",
+      "text": "Limit privileges of AI agents to the minimum required for its task"
+    },
+    {
+      "id": "operate/privileges-and-authentication/2",
+      "section": "Operating agents securely: Privileges and authentication",
+      "text": "Restrict scope of privileges to narrowest possible level to allow fine-grained control over allowed actions"
+    },
+    {
+      "id": "operate/privileges-and-authentication/3",
+      "section": "Operating agents securely: Privileges and authentication",
+      "text": "Implement agent reputation and trust scoring mechanisms and reduce trust levels when anomalous behaviour is detected"
+    },
+    {
+      "id": "operate/privileges-and-authentication/4",
+      "section": "Operating agents securely: Privileges and authentication",
+      "text": "Require just-in-time credentials for high-impact or privileged actions"
+    },
+    {
+      "id": "operate/privileges-and-authentication/5",
+      "section": "Operating agents securely: Privileges and authentication",
+      "text": "Verify API caller identity against a user or agent groups"
+    },
+    {
+      "id": "operate/privileges-and-authentication/6",
+      "section": "Operating agents securely: Privileges and authentication",
+      "text": "Authenticate agents with fresh cryptographic proofs before every privileged call"
+    },
+    {
+      "id": "operate/privileges-and-authentication/7",
+      "section": "Operating agents securely: Privileges and authentication",
+      "text": "Require cryptographic signing for authorised commands and instructions"
+    },
+    {
+      "id": "operate/privileges-and-authentication/8",
+      "section": "Operating agents securely: Privileges and authentication",
+      "text": "Apply cryptographic integrity checks for task definitions and constraints"
+    },
+    {
+      "id": "operate/privileges-and-authentication/9",
+      "section": "Operating agents securely: Privileges and authentication",
+      "text": "Require agents to perform cryptographic attestation where agents must prove that they are running expected and unmodified code"
+    },
+    {
+      "id": "operate/privileges-and-authentication/10",
+      "section": "Operating agents securely: Privileges and authentication",
+      "text": "Continuously verify identity and authorisation at runtime using a centralised policy decision point for each request"
+    },
+    {
+      "id": "future/threat-intelligence/1",
+      "section": "Defend against future risks: Expand threat intelligence through collaboration",
+      "text": "Strengthen collaboration between stakeholders to keep pace with evolving threats to agentic AI systems"
+    },
+    {
+      "id": "future/threat-intelligence/2",
+      "section": "Defend against future risks: Expand threat intelligence through collaboration",
+      "text": "Coordinate with major AI developers and government organisations to compile and maintain threat information"
+    },
+    {
+      "id": "future/threat-intelligence/3",
+      "section": "Defend against future risks: Expand threat intelligence through collaboration",
+      "text": "Adopt a collaborative security approach, such as those described in CISA’s AI Cybersecurity Collaboration Playbook"
+    },
+    {
+      "id": "future/threat-intelligence/4",
+      "section": "Defend against future risks: Expand threat intelligence through collaboration",
+      "text": "Implement alerting, data collection and tracking methods for malicious actors and techniques"
+    },
+    {
+      "id": "future/threat-intelligence/5",
+      "section": "Defend against future risks: Expand threat intelligence through collaboration",
+      "text": "Conduct targeted analysis of threats and capabilities over time to improve situational awareness"
+    },
+    {
+      "id": "future/threat-intelligence/6",
+      "section": "Defend against future risks: Expand threat intelligence through collaboration",
+      "text": "Harmonise threat intelligence across industries to build shared threat taxonomies that improve threat modelling and support more effective mitigation design"
+    },
+    {
+      "id": "future/agent-specific-evaluations/1",
+      "section": "Defend against future risks: Develop robust, agent-specific evaluations",
+      "text": "Develop robust evaluation methods to address the gaps in validating agentic AI systems"
+    },
+    {
+      "id": "future/agent-specific-evaluations/2",
+      "section": "Defend against future risks: Develop robust, agent-specific evaluations",
+      "text": "Generate benchmark datasets to cover new domains and represent realistic deployment contexts"
+    },
+    {
+      "id": "future/agent-specific-evaluations/3",
+      "section": "Defend against future risks: Develop robust, agent-specific evaluations",
+      "text": "Use evaluation results to validate emerging security practices and identify failure points in agents"
+    },
+    {
+      "id": "future/agent-specific-evaluations/4",
+      "section": "Defend against future risks: Develop robust, agent-specific evaluations",
+      "text": "Share evaluation findings to strengthen security assessments and support the development of improved security practices across the field"
+    },
+    {
+      "id": "future/system-theoretic-analysis/1",
+      "section": "Defend against future risks: Leverage system-theoretic approaches to analyse security",
+      "text": "Use system-theoretic approaches to analyse agentic AI systems and identify appropriate security measures"
+    },
+    {
+      "id": "future/system-theoretic-analysis/2",
+      "section": "Defend against future risks: Leverage system-theoretic approaches to analyse security",
+      "text": "Apply System Theoretic Process Analysis (STPA) and its security extension, STPA for Security (STPA-Sec), to analyse notional or operational systems, identify security issues, assess mission risk and inform potential mitigations"
+    },
+    {
+      "id": "future/system-theoretic-analysis/3",
+      "section": "Defend against future risks: Leverage system-theoretic approaches to analyse security",
+      "text": "Use Causal Analysis using System Theory (CAST) to investigate security incidents and identify underlying root causes at the system level"
+    },
+    {
+      "id": "future/system-theoretic-analysis/4",
+      "section": "Defend against future risks: Leverage system-theoretic approaches to analyse security",
+      "text": "Apply STPA and CAST to address safety and security concerns concurrently across agentic AI system lifecycles"
+    },
+    {
+      "id": "appendix-a/design/1",
+      "section": "Appendix A, cyber security prerequisites: Design",
+      "text": "Implement strong authentication by following Secure by Design principles"
+    },
+    {
+      "id": "appendix-a/design/2",
+      "section": "Appendix A, cyber security prerequisites: Design",
+      "text": "Design transparency requirements into the system architecture to enable detection of deception indicators"
+    },
+    {
+      "id": "appendix-a/design/3",
+      "section": "Appendix A, cyber security prerequisites: Design",
+      "text": "Use frameworks, such as zero trust, the Application Security Verification Standard or OAuth2"
+    },
+    {
+      "id": "appendix-a/design/4",
+      "section": "Appendix A, cyber security prerequisites: Design",
+      "text": "Build system infrastructure in a secure, sandboxed environment with encryption, rate limiting and sanitisation"
+    },
+    {
+      "id": "appendix-a/design/5",
+      "section": "Appendix A, cyber security prerequisites: Design",
+      "text": "Apply the principle of least privilege, assigning only the minimum access required for each role"
+    },
+    {
+      "id": "appendix-a/design/6",
+      "section": "Appendix A, cyber security prerequisites: Design",
+      "text": "Limit entitlements to the exact resources, operations and timeframes needed"
+    },
+    {
+      "id": "appendix-a/design/7",
+      "section": "Appendix A, cyber security prerequisites: Design",
+      "text": "Replace static, long-lived secrets with ephemeral credentials that expire when the job is complete"
+    },
+    {
+      "id": "appendix-a/design/8",
+      "section": "Appendix A, cyber security prerequisites: Design",
+      "text": "Dynamically scope privilege for sub-tasks and revoke elevated rights immediately when finished, mitigating scope creep"
+    },
+    {
+      "id": "appendix-a/design/9",
+      "section": "Appendix A, cyber security prerequisites: Design",
+      "text": "Build applications with secure protocols and safe defaults that adhere to communication standards and security policies"
+    },
+    {
+      "id": "appendix-a/design/10",
+      "section": "Appendix A, cyber security prerequisites: Design",
+      "text": "Implement message validation by default so that message components include integrity and freshness checks before use"
+    },
+    {
+      "id": "appendix-a/development/1",
+      "section": "Appendix A, cyber security prerequisites: Development",
+      "text": "Apply secure development principles from U.S. Department of War Enterprise DevSecOps Fundamentals"
+    },
+    {
+      "id": "appendix-a/development/2",
+      "section": "Appendix A, cyber security prerequisites: Development",
+      "text": "Minimise application scope and monitor components for unusual or unexpected behaviour"
+    },
+    {
+      "id": "appendix-a/development/3",
+      "section": "Appendix A, cyber security prerequisites: Development",
+      "text": "Enforce application understanding and only incorporate components into systems that the owner fully understands and accepts the risks of (including possible external effects and processes that it may trigger)"
+    },
+    {
+      "id": "appendix-a/development/4",
+      "section": "Appendix A, cyber security prerequisites: Development",
+      "text": "Refer to frameworks, such as the NIST Secure Software Development Framework or SLSA’s Safeguarding artifact integrity across any software supply chain"
+    },
+    {
+      "id": "appendix-a/development/5",
+      "section": "Appendix A, cyber security prerequisites: Development",
+      "text": "Use supply chain risk management practices for third-party dependencies"
+    },
+    {
+      "id": "appendix-a/development/6",
+      "section": "Appendix A, cyber security prerequisites: Development",
+      "text": "Apply existing governance and organisational management policies"
+    },
+    {
+      "id": "appendix-a/development/7",
+      "section": "Appendix A, cyber security prerequisites: Development",
+      "text": "Conduct threat modelling using frameworks, such as OWASP Top 10:2025, MITRE ATT&CK® and MITRE D3FEND™ and use the results to inform mitigations tailored to the operational environment"
+    },
+    {
+      "id": "appendix-a/development/8",
+      "section": "Appendix A, cyber security prerequisites: Development",
+      "text": "Plan and regularly test incident response plans and teams"
+    }
+  ],
+  "entries": [
+    {
+      "id": "design/controlled-context/1",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "how the agent's own prompt context is structured",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "design/controlled-context/2",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "grounding the agent's model with retrieval and prompt engineering",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "design/oversight-mechanisms/1",
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "envelope",
+        "workload-profiles"
+      ],
+      "limit": "declared envelopes and workload profiles refuse out-of-scope tools, paths, MCP servers and hosts; the risk level of a task is not modelled"
+    },
+    {
+      "id": "design/oversight-mechanisms/2",
+      "status": "partial",
+      "threats": [
+        11,
+        43,
+        46,
+        47,
+        48,
+        49
+      ],
+      "evidence": [
+        "human-approval",
+        "kill",
+        "action-audit"
+      ],
+      "limit": "approval (justify) for listed high-impact action classes, a kill verdict that ends the session, and a content-free audit; no live interruption on demand and no reversibility"
+    },
+    {
+      "id": "design/oversight-mechanisms/3",
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "envelope",
+        "workload-profiles"
+      ],
+      "limit": "bounds the actions an agent may take, not its plan"
+    },
+    {
+      "id": "design/identity-management/1",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "MoorAI does not issue or manage agent identities"
+    },
+    {
+      "id": "design/identity-management/2",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "MoorAI does not terminate or authenticate agent-to-service TLS"
+    },
+    {
+      "id": "design/identity-management/3",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "no registry of agent identities bound to roles"
+    },
+    {
+      "id": "design/identity-management/4",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "no registry of agent identities or keys to deny against"
+    },
+    {
+      "id": "design/identity-management/5",
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "envelope",
+        "arg-rules"
+      ],
+      "limit": "per-agent envelope of tools, paths and MCP servers, and per-tool argument rules; roles and the agent's own permissions are not managed"
+    },
+    {
+      "id": "design/identity-management/6",
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "workload-profiles"
+      ],
+      "limit": "workload profiles keyed on a service id or repository; the strongest match is a service id from the system file or launch environment"
+    },
+    {
+      "id": "design/defence-in-depth/1",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "stdio-proxy",
+        "http-gateway",
+        "model-proxy",
+        "egress-proxy-metadata"
+      ],
+      "limit": "MoorAI adds independent layers (hook, MCP proxy and gateway, model proxy, egress proxy) that overlap on MCP and model traffic; it is one product, not the whole defence"
+    },
+    {
+      "id": "design/defence-in-depth/2",
+      "status": "partial",
+      "threats": [
+        2,
+        3,
+        40,
+        21
+      ],
+      "evidence": [
+        "det-injection",
+        "arg-scan",
+        "result-scan",
+        "index-writes"
+      ],
+      "limit": "prompts, tool calls and results, content headed for an index, and model calls through the model proxy; only on hooked hosts and routed traffic"
+    },
+    {
+      "id": "design/defence-in-depth/3",
+      "status": "partial",
+      "threats": [
+        66
+      ],
+      "evidence": [
+        "delegation",
+        "envelope"
+      ],
+      "limit": "a sub-agent delegation gets the parent's envelope and its prompt is scanned; one host only"
+    },
+    {
+      "id": "develop/comprehensive-testing/1",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "training and testing the agent's model",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "develop/comprehensive-testing/2",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "training the agent's model",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "develop/comprehensive-testing/3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "training data generation for the agent's model",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "develop/comprehensive-testing/4",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "training the agent's model",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "develop/appropriate-evaluation/1",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "evaluating the agent before deployment",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "develop/appropriate-evaluation/2",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "evaluating the agent before deployment",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "develop/appropriate-evaluation/3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "evaluating the agent before deployment",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "develop/appropriate-evaluation/4",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "evaluating the agent before deployment",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "develop/appropriate-evaluation/5",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "evaluating the agent across its development lifecycle",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "develop/input-management/1",
+      "status": "partial",
+      "threats": [
+        2,
+        3,
+        40,
+        50
+      ],
+      "evidence": [
+        "det-injection",
+        "det-untrusted-directive",
+        "gateway-validate",
+        "mask"
+      ],
+      "limit": "detection on prompts, files and tool results on hooked surfaces, and message validation through the HTTP gateway; sanitisation is masking on the Claude Code hook only"
+    },
+    {
+      "id": "develop/input-management/2",
+      "status": "covered",
+      "threats": [
+        2,
+        3,
+        40,
+        50,
+        70,
+        72,
+        74,
+        58
+      ],
+      "evidence": [
+        "det-injection",
+        "det-untrusted-directive",
+        "det-obf",
+        "semantic-escalation"
+      ]
+    },
+    {
+      "id": "develop/input-management/3",
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "intent-alignment"
+      ],
+      "limit": "a lexical check that a risky call's targets were named in the task; interpretation of intent in general is not checked"
+    },
+    {
+      "id": "develop/red-teaming/1",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "pre-production testing practice",
+      "naKind": "organisational"
+    },
+    {
+      "id": "develop/red-teaming/2",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "red-team exercise against the agent",
+      "naKind": "organisational"
+    },
+    {
+      "id": "develop/red-teaming/3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "capability elicitation against the agent",
+      "naKind": "organisational"
+    },
+    {
+      "id": "develop/red-teaming/4",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "simulation testing of the agent",
+      "naKind": "organisational"
+    },
+    {
+      "id": "develop/resilience/1",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "kill",
+        "host-isolation",
+        "offline-posture"
+      ],
+      "limit": "a kill verdict ends the agent session on the desktop host, macOS isolation is opt-in, and MoorAI itself fails open unless the fail-closed posture is set"
+    },
+    {
+      "id": "develop/resilience/2",
+      "status": "covered",
+      "threats": [
+        1,
+        15,
+        39,
+        44,
+        55,
+        59,
+        65,
+        77
+      ],
+      "evidence": [
+        "det-secrets",
+        "det-pii",
+        "det-phi",
+        "det-secret-upload",
+        "secret-egress",
+        "session-risk"
+      ]
+    },
+    {
+      "id": "develop/resilience/3",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "MoorAI does not version or roll back agent behaviour"
+    },
+    {
+      "id": "develop/accountability/1",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "action-audit",
+        "session-ledger",
+        "record-chain"
+      ],
+      "limit": "content-free records of every tool call MoorAI sees, by default; no content or reasoning is kept"
+    },
+    {
+      "id": "develop/accountability/2",
+      "status": "partial",
+      "threats": [
+        66
+      ],
+      "evidence": [
+        "delegation",
+        "session-ledger"
+      ],
+      "limit": "sub-agent handoffs on one host are logged; remote agent-to-agent exchanges are not seen"
+    },
+    {
+      "id": "develop/accountability/3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "interpretability of the agent's model",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "develop/accountability/4",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "source referencing in the agent's responses",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "develop/third-party-components/1",
+      "status": "partial",
+      "threats": [
+        57,
+        62
+      ],
+      "evidence": [
+        "reputation",
+        "repo-link",
+        "det-pkg-install",
+        "det-typosquat"
+      ],
+      "limit": "MCP server packages scored at first launch (provenance, repository link, known-malicious and typosquat names) and install commands judged; whether a component is up to date is not checked"
+    },
+    {
+      "id": "develop/third-party-components/2",
+      "status": "partial",
+      "threats": [
+        25
+      ],
+      "evidence": [
+        "server-allow",
+        "tool-drift-block"
+      ],
+      "limit": "an allow-list of MCP servers and console-approved tool fingerprints; other component types are not registered"
+    },
+    {
+      "id": "develop/third-party-components/3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "a procurement reference to CISA SBOM documents",
+      "naKind": "organisational"
+    },
+    {
+      "id": "develop/third-party-components/4",
+      "status": "partial",
+      "threats": [
+        25
+      ],
+      "evidence": [
+        "server-allow",
+        "tool-drift-block",
+        "envelope"
+      ],
+      "limit": "servers by label and approved tool fingerprints; versions are not pinned and the tools are not verified as secure"
+    },
+    {
+      "id": "develop/third-party-components/5",
+      "status": "partial",
+      "threats": [
+        64,
+        25
+      ],
+      "evidence": [
+        "arg-scan",
+        "envelope",
+        "policy-signature"
+      ],
+      "limit": "each tool call is judged against the signed policy on hooked hosts and on MCP traffic routed through the proxy or gateway"
+    },
+    {
+      "id": "develop/third-party-components/6",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "action-audit",
+        "provenance"
+      ],
+      "limit": "content-free records (tool, server, decision, reason code, hash); results are not captured"
+    },
+    {
+      "id": "develop/third-party-components/7",
+      "status": "partial",
+      "threats": [
+        38,
+        59
+      ],
+      "evidence": [
+        "circuit-breaker",
+        "session-risk"
+      ],
+      "limit": "the circuit breaker can pause a session and session risk can raise outbound calls to ask; permissions themselves are not changed"
+    },
+    {
+      "id": "develop/third-party-components/8",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "no Orchestrator / Reader / Actuator roles or consensus mechanism"
+    },
+    {
+      "id": "develop/third-party-components/9",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "no multi-agent consensus control"
+    },
+    {
+      "id": "develop/third-party-components/10",
+      "status": "partial",
+      "threats": [
+        46,
+        48,
+        66
+      ],
+      "evidence": [
+        "det-security-config",
+        "det-credential-create",
+        "delegation",
+        "agent-posture",
+        "jit-elevation"
+      ],
+      "limit": "IAM and credential changes gated, delegation held to the parent's envelope, weakened agent settings reported, elevation grants time-boxed; grant chains are not recorded"
+    },
+    {
+      "id": "develop/third-party-components/11",
+      "status": "partial",
+      "threats": [
+        60
+      ],
+      "evidence": [
+        "tool-scan",
+        "det-tool-poisoning"
+      ],
+      "limit": "directive and hidden content in third-party tool descriptions is flagged; descriptions are not standardised"
+    },
+    {
+      "id": "deploy/threat-modelling/1",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "threat modelling practice",
+      "naKind": "organisational"
+    },
+    {
+      "id": "deploy/threat-modelling/2",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "control design process",
+      "naKind": "organisational"
+    },
+    {
+      "id": "deploy/threat-modelling/3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "harmonising controls with frameworks",
+      "naKind": "organisational"
+    },
+    {
+      "id": "deploy/threat-modelling/4",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "incident response procedure",
+      "naKind": "organisational"
+    },
+    {
+      "id": "deploy/threat-modelling/5",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "third-party review and intelligence sharing",
+      "naKind": "organisational"
+    },
+    {
+      "id": "deploy/governance/1",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "governance policy",
+      "naKind": "organisational"
+    },
+    {
+      "id": "deploy/governance/2",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "legal accountability and risk ownership",
+      "naKind": "organisational"
+    },
+    {
+      "id": "deploy/governance/3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "training staff",
+      "naKind": "organisational"
+    },
+    {
+      "id": "deploy/progressive-deployment/1",
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "envelope",
+        "workload-profiles",
+        "host-isolation"
+      ],
+      "limit": "the action space can be restricted (envelope, profiles, opt-in isolation); phasing is the operator's"
+    },
+    {
+      "id": "deploy/progressive-deployment/2",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "how far to extend autonomy is an operator decision",
+      "naKind": "organisational"
+    },
+    {
+      "id": "deploy/progressive-deployment/3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "deciding to expand or roll back scope",
+      "naKind": "organisational"
+    },
+    {
+      "id": "deploy/secure-by-default/1",
+      "status": "partial",
+      "threats": [
+        64,
+        59
+      ],
+      "evidence": [
+        "intent-alignment",
+        "session-risk",
+        "human-approval",
+        "offline-posture"
+      ],
+      "limit": "uncertain risky calls can be raised to ask a person; MoorAI itself fails open unless the fail-closed posture is set"
+    },
+    {
+      "id": "deploy/secure-by-default/2",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "the agent's own error handling",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "deploy/secure-by-default/3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "the agent's own degradation design",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "deploy/guardrails-and-constraints/1",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "specifying the agent's objectives",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "deploy/guardrails-and-constraints/2",
+      "status": "covered",
+      "threats": [
+        25,
+        63,
+        64
+      ],
+      "evidence": [
+        "server-allow",
+        "arg-rules",
+        "egress-rules",
+        "endpoint-allow",
+        "envelope"
+      ]
+    },
+    {
+      "id": "deploy/guardrails-and-constraints/3",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "policy-signature",
+        "agent-posture"
+      ],
+      "limit": "the policy is signed and an edited cache counts as no policy; the hook runs as the user, so removing it is reported, not prevented"
+    },
+    {
+      "id": "deploy/guardrails-and-constraints/4",
+      "status": "covered",
+      "threats": [
+        58,
+        59,
+        64
+      ],
+      "evidence": [
+        "det-injection",
+        "session-risk",
+        "learned-drift",
+        "semantic-escalation"
+      ]
+    },
+    {
+      "id": "deploy/guardrails-and-constraints/5",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "provenance",
+        "otel"
+      ],
+      "limit": "alerts carry risk level and reason code for triage in the console or a SIEM; the review itself is the operator's"
+    },
+    {
+      "id": "deploy/guardrails-and-constraints/6",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "no secondary agent validates tasks before execution"
+    },
+    {
+      "id": "deploy/isolation/1",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "host-isolation",
+        "sandbox-policy",
+        "egress-proxy-metadata"
+      ],
+      "limit": "opt-in Seatbelt isolation for agents the macOS desktop host launches, sandbox network policy generated from egress rules, and the egress proxy"
+    },
+    {
+      "id": "deploy/isolation/2",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "deployment topology",
+      "naKind": "organisational"
+    },
+    {
+      "id": "deploy/isolation/3",
+      "status": "partial",
+      "threats": [
+        73
+      ],
+      "evidence": [
+        "record-chain",
+        "agency-sign",
+        "det-history-tamper",
+        "host-isolation"
+      ],
+      "limit": "chain-stamped and signed records make edits detectable, and the isolated host denies the agent its console record; without isolation ~/.moorai stays in the agent's write scope"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/1",
+      "status": "covered",
+      "threats": [],
+      "evidence": [
+        "otel",
+        "provenance",
+        "action-audit"
+      ]
+    },
+    {
+      "id": "operate/monitoring-and-auditing/2",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "action-audit",
+        "delegation",
+        "claim-check"
+      ],
+      "limit": "tool calls, sub-agents, failures and end-of-turn claims; internal reasoning is not seen"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/3",
+      "status": "partial",
+      "threats": [
+        46,
+        48,
+        64
+      ],
+      "evidence": [
+        "det-security-config",
+        "det-credential-create",
+        "envelope",
+        "agent-posture"
+      ],
+      "limit": "IAM and credential changes the agent makes, out-of-envelope actions, and weakened agent settings; identity impersonation is not detected"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/4",
+      "status": "partial",
+      "threats": [
+        64,
+        59,
+        22
+      ],
+      "evidence": [
+        "learned-drift",
+        "session-risk",
+        "det-memory-poisoning"
+      ],
+      "limit": "prompts, tool calls, memory writes and outputs; bias and internal reasoning are not monitored"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/5",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "action-audit",
+        "session-ledger",
+        "otel"
+      ],
+      "limit": "content-free logs and live alerts; decision-making is not logged"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/6",
+      "status": "covered",
+      "threats": [
+        64,
+        59,
+        38
+      ],
+      "evidence": [
+        "learned-drift",
+        "agent-baseline",
+        "session-risk",
+        "circuit-breaker"
+      ]
+    },
+    {
+      "id": "operate/monitoring-and-auditing/7",
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "intent-alignment",
+        "claim-check"
+      ],
+      "limit": "a lexical task-to-target check on risky calls, and success claims compared with failed calls"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/8",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "usage-crosscheck",
+        "claim-check"
+      ],
+      "limit": "hook, proxy and gateway MCP counts are compared per device and day, and the agent's success claim is compared with tool outcomes"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/9",
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "envelope",
+        "workload-profiles"
+      ],
+      "limit": "actions are compared with an approved envelope before they run; objectives are not"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/10",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "action-audit",
+        "destinations"
+      ],
+      "limit": "the tools used and the destinations reached are recorded content-free; what was retrieved is not stored"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/11",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "compliance",
+        "record-chain"
+      ],
+      "limit": "automated evidence packs and chain verification support the review; the human review is the operator's"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/12",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "operator response process",
+      "naKind": "organisational"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/13",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "session-ledger",
+        "action-audit"
+      ],
+      "limit": "content-free, capped logs; the oldest rows are trimmed"
+    },
+    {
+      "id": "operate/monitoring-and-auditing/14",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "security assessment practice",
+      "naKind": "organisational"
+    },
+    {
+      "id": "operate/validate-outputs/1",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "agent outputs are not checked against other sources"
+    },
+    {
+      "id": "operate/validate-outputs/2",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "no redundant agents"
+    },
+    {
+      "id": "operate/validate-outputs/3",
+      "status": "partial",
+      "threats": [
+        40,
+        3,
+        60
+      ],
+      "evidence": [
+        "result-scan",
+        "det-untrusted-directive",
+        "tool-scan",
+        "det-tool-poisoning"
+      ],
+      "limit": "tool results and descriptions are scanned, results blocked under a deny policy (report-first by default); descriptions are not standardised"
+    },
+    {
+      "id": "operate/human-in-the-loop/1",
+      "status": "covered",
+      "threats": [],
+      "evidence": [
+        "human-approval",
+        "policy-signature"
+      ]
+    },
+    {
+      "id": "operate/human-in-the-loop/2",
+      "status": "partial",
+      "threats": [
+        11,
+        43,
+        46,
+        47,
+        48,
+        49
+      ],
+      "evidence": [
+        "human-approval"
+      ],
+      "limit": "listed action classes, matched by pattern; the Claude Code hook asks, while the MCP proxy treats justify as allow and record"
+    },
+    {
+      "id": "operate/human-in-the-loop/3",
+      "status": "partial",
+      "threats": [
+        43,
+        56,
+        47
+      ],
+      "evidence": [
+        "det-destructive",
+        "det-destructive-tool",
+        "det-external-comms",
+        "egress-rules"
+      ],
+      "limit": "deletion and external sends can require approval; network egress is allowed, alerted or blocked by rule, not held for approval"
+    },
+    {
+      "id": "operate/human-in-the-loop/4",
+      "status": "partial",
+      "threats": [
+        73,
+        43
+      ],
+      "evidence": [
+        "det-history-tamper",
+        "det-destructive"
+      ],
+      "limit": "deleting agent transcripts and destructive commands; system and audit logs are not recognised as such"
+    },
+    {
+      "id": "operate/human-in-the-loop/5",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "assigning responsibility",
+      "naKind": "organisational"
+    },
+    {
+      "id": "operate/human-in-the-loop/6",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "rule-base"
+      ],
+      "limit": "the rule base scores each action class by severity and likelihood; reversibility is not scored, and assessing the organisation's own actions stays with it"
+    },
+    {
+      "id": "operate/performance-monitoring/1",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "assessment of the agent",
+      "naKind": "organisational"
+    },
+    {
+      "id": "operate/performance-monitoring/2",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "assessment of the agent",
+      "naKind": "organisational"
+    },
+    {
+      "id": "operate/performance-monitoring/3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "using assessment results",
+      "naKind": "organisational"
+    },
+    {
+      "id": "operate/performance-monitoring/4",
+      "status": "partial",
+      "threats": [
+        38,
+        53
+      ],
+      "evidence": [
+        "circuit-breaker",
+        "det-oversized"
+      ],
+      "limit": "runaway loops pause a session in deny mode, oversized input is flagged; rate and call budget are opt-in"
+    },
+    {
+      "id": "operate/privileges-and-authentication/1",
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "envelope"
+      ],
+      "limit": "MoorAI confines what the agent does; it does not grant privileges"
+    },
+    {
+      "id": "operate/privileges-and-authentication/2",
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "arg-rules",
+        "envelope"
+      ],
+      "limit": "per-tool argument rules and path-prefix envelopes"
+    },
+    {
+      "id": "operate/privileges-and-authentication/3",
+      "status": "partial",
+      "threats": [
+        59
+      ],
+      "evidence": [
+        "session-risk",
+        "reputation"
+      ],
+      "limit": "a decaying session risk score raises outbound calls to ask; reputation scores MCP servers, not agents"
+    },
+    {
+      "id": "operate/privileges-and-authentication/4",
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "jit-elevation"
+      ],
+      "limit": "time-boxed elevation grants for out-of-envelope capabilities; MoorAI issues no credentials"
+    },
+    {
+      "id": "operate/privileges-and-authentication/5",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "API caller identity is not verified"
+    },
+    {
+      "id": "operate/privileges-and-authentication/6",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "agents are not authenticated"
+    },
+    {
+      "id": "operate/privileges-and-authentication/7",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "agent commands are not required to be signed"
+    },
+    {
+      "id": "operate/privileges-and-authentication/8",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "policy-signature"
+      ],
+      "limit": "the constraints (MoorAI's policy) are signed and verified on the device; task definitions are not"
+    },
+    {
+      "id": "operate/privileges-and-authentication/9",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "no code attestation of the agent"
+    },
+    {
+      "id": "operate/privileges-and-authentication/10",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "arg-scan",
+        "policy-signature"
+      ],
+      "limit": "every hooked call is decided against a centrally distributed, verified policy; identity is not verified"
+    },
+    {
+      "id": "future/threat-intelligence/1",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "collaboration",
+      "naKind": "organisational"
+    },
+    {
+      "id": "future/threat-intelligence/2",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "collaboration",
+      "naKind": "organisational"
+    },
+    {
+      "id": "future/threat-intelligence/3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "collaboration",
+      "naKind": "organisational"
+    },
+    {
+      "id": "future/threat-intelligence/4",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "otel",
+        "stix"
+      ],
+      "limit": "content-free alerts to the console or a SIEM and STIX 2.1 export; actor tracking is not done"
+    },
+    {
+      "id": "future/threat-intelligence/5",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "threat analysis practice",
+      "naKind": "organisational"
+    },
+    {
+      "id": "future/threat-intelligence/6",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "shared taxonomies",
+      "naKind": "organisational"
+    },
+    {
+      "id": "future/agent-specific-evaluations/1",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "research",
+      "naKind": "organisational"
+    },
+    {
+      "id": "future/agent-specific-evaluations/2",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "research",
+      "naKind": "organisational"
+    },
+    {
+      "id": "future/agent-specific-evaluations/3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "research",
+      "naKind": "organisational"
+    },
+    {
+      "id": "future/agent-specific-evaluations/4",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "research",
+      "naKind": "organisational"
+    },
+    {
+      "id": "future/system-theoretic-analysis/1",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "analysis method",
+      "naKind": "organisational"
+    },
+    {
+      "id": "future/system-theoretic-analysis/2",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "analysis method",
+      "naKind": "organisational"
+    },
+    {
+      "id": "future/system-theoretic-analysis/3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "analysis method",
+      "naKind": "organisational"
+    },
+    {
+      "id": "future/system-theoretic-analysis/4",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "analysis method",
+      "naKind": "organisational"
+    },
+    {
+      "id": "appendix-a/design/1",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "authentication design of the agent system",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "appendix-a/design/2",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "claim-check",
+        "agentwatch"
+      ],
+      "limit": "success claims over failed calls and autonomous-attack tells; transparency is not designed into the agent"
+    },
+    {
+      "id": "appendix-a/design/3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "choice of frameworks",
+      "naKind": "organisational"
+    },
+    {
+      "id": "appendix-a/design/4",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "building the agent's infrastructure",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "appendix-a/design/5",
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "envelope"
+      ],
+      "limit": "MoorAI confines what the agent does; it does not assign access"
+    },
+    {
+      "id": "appendix-a/design/6",
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "envelope",
+        "jit-elevation"
+      ],
+      "limit": "resources and operations by envelope; timeframes by time-boxed elevation grants only"
+    },
+    {
+      "id": "appendix-a/design/7",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "MoorAI issues no ephemeral credentials"
+    },
+    {
+      "id": "appendix-a/design/8",
+      "status": "partial",
+      "threats": [
+        66,
+        64
+      ],
+      "evidence": [
+        "delegation",
+        "jit-elevation"
+      ],
+      "limit": "a sub-agent gets the parent's envelope and elevation grants expire; privilege is not scoped per sub-task"
+    },
+    {
+      "id": "appendix-a/design/9",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "building the agent's protocols",
+      "naKind": "agent-build"
+    },
+    {
+      "id": "appendix-a/design/10",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "no integrity or freshness check on messages"
+    },
+    {
+      "id": "appendix-a/development/1",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "secure development principles",
+      "naKind": "organisational"
+    },
+    {
+      "id": "appendix-a/development/2",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "tool-drift",
+        "reputation-cli",
+        "result-scan"
+      ],
+      "limit": "MCP servers are watched for tool drift, reputation and their results; other components are not"
+    },
+    {
+      "id": "appendix-a/development/3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "owner risk acceptance",
+      "naKind": "organisational"
+    },
+    {
+      "id": "appendix-a/development/4",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "choice of frameworks",
+      "naKind": "organisational"
+    },
+    {
+      "id": "appendix-a/development/5",
+      "status": "partial",
+      "threats": [
+        57,
+        62
+      ],
+      "evidence": [
+        "reputation",
+        "det-pkg-install",
+        "det-typosquat"
+      ],
+      "limit": "install commands and MCP server packages are judged at the point of use; supply-chain risk management is the organisation's"
+    },
+    {
+      "id": "appendix-a/development/6",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "governance policy",
+      "naKind": "organisational"
+    },
+    {
+      "id": "appendix-a/development/7",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "threat modelling practice",
+      "naKind": "organisational"
+    },
+    {
+      "id": "appendix-a/development/8",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "incident response planning",
+      "naKind": "organisational"
+    }
+  ],
+  "rejected": [
+    {
+      "id": "design/identity-management/3",
+      "credit": {
+        "component": "agent-posture"
+      },
+      "reason": "agent posture inventories which agent hosts run on a device; it is not a registry of agent identities bound to roles"
+    },
+    {
+      "id": "design/identity-management/4",
+      "credit": {
+        "threat": 25,
+        "component": "server-allow"
+      },
+      "reason": "the allow-list denies MCP servers, not agents or keys"
+    },
+    {
+      "id": "develop/red-teaming/2",
+      "credit": {
+        "component": "redteam"
+      },
+      "reason": "moorai-redteam tests MoorAI's own policy against its corpus, not the agent"
+    },
+    {
+      "id": "develop/third-party-components/3",
+      "credit": {
+        "component": "aibom"
+      },
+      "reason": "the AIBOM is an inventory MoorAI produces; the recommendation is about procurement"
+    },
+    {
+      "id": "develop/third-party-components/8",
+      "credit": {
+        "component": "jit-elevation"
+      },
+      "reason": "elevation grants expire, but there are no roles, boundaries between them or consensus"
+    },
+    {
+      "id": "develop/third-party-components/9",
+      "credit": {
+        "component": "human-approval"
+      },
+      "reason": "human approval for listed actions exists (credited under human-in-the-loop); multi-agent consensus does not"
+    },
+    {
+      "id": "deploy/guardrails-and-constraints/6",
+      "credit": {
+        "threat": 58,
+        "component": "semantic-escalation"
+      },
+      "reason": "the on-device model gives a second opinion on flagged text; it does not validate tasks against policy"
+    },
+    {
+      "id": "operate/validate-outputs/1",
+      "credit": {
+        "threat": 29
+      },
+      "reason": "out-citation coaches on every citation marker; it checks nothing against a source"
+    },
+    {
+      "id": "operate/privileges-and-authentication/7",
+      "credit": {
+        "component": "agency-sign"
+      },
+      "reason": "signs MoorAI's own enforcement decisions for the audit trail; it does not require the agent's commands to be signed"
+    },
+    {
+      "id": "operate/privileges-and-authentication/9",
+      "credit": {
+        "component": "attest"
+      },
+      "reason": "moorai-attest exports governance records as in-toto statements; it does not attest the agent's code"
+    },
+    {
+      "id": "appendix-a/design/7",
+      "credit": {
+        "component": "placeholder-credentials"
+      },
+      "reason": "the agent holds a placeholder instead of the secret, but the real secret is neither ephemeral nor expiring"
+    },
+    {
+      "id": "appendix-a/design/10",
+      "credit": {
+        "component": "gateway-validate"
+      },
+      "reason": "validates JSON-RPC and MCP structure; there is no integrity or freshness check"
+    }
+  ]
+}

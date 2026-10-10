@@ -1,0 +1,1899 @@
+{
+  "framework": {
+    "key": "saf-mcp",
+    "name": "SAF-MCP: Secure Agentic Framework for Model Context Protocol",
+    "shortName": "SAF-MCP",
+    "publisher": "OpenSSF SIG-SAF-MCP",
+    "version": "Framework Model v2 (no release tag)",
+    "commit": "d3d40297c478d2680d315399b6aaf317e5aa15b8",
+    "commitDate": "2026-09-02",
+    "source": "https://github.com/secure-agentic-framework/saf-mcp",
+    "catalogFile": "research/framework-model.yml",
+    "retrieved": "2026-10-09",
+    "license": "Apache-2.0 AND CC-BY-4.0",
+    "idScheme": "official",
+    "scope": "The 78 techniques with lifecycle_status: active in research/framework-model.yml at the commit above. The 8 deprecated ids are listed under `deprecated` with what replaced them and are not mapped.",
+    "notes": [
+      "The repository has no release tags. Its README calls the catalog 'Framework Model v2'; CITATION.cff still reads version 1.0.0, date-released 2025-01-07.",
+      "github.com/SAFE-MCP/safe-mcp redirects to this repository (observed 2026-10-09 with `gh repo view`).",
+      "SAF-MCP is a technique catalog. No technique is marked not applicable: each describes a runtime attack, so a technique MoorAI does not address is not covered."
+    ]
+  },
+  "statusMeaning": {
+    "covered": "a shipped mechanism addresses the whole technique definition (a mechanism claim, not a detection rate)",
+    "partial": "a shipped mechanism addresses part of the definition; `limit` says which part",
+    "not-covered": "no shipped mechanism addresses it; `reason` says what is missing",
+    "not-applicable": "unused for SAF-MCP"
+  },
+  "catalog": [
+    {
+      "id": "SAF-T1001",
+      "title": "Tool Poisoning Attack",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0001"
+      ]
+    },
+    {
+      "id": "SAF-T1002",
+      "title": "Supply Chain Compromise",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0001"
+      ]
+    },
+    {
+      "id": "SAF-T1003",
+      "title": "Malicious MCP-Server Distribution",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0001"
+      ]
+    },
+    {
+      "id": "SAF-T1005",
+      "title": "Exposed Endpoint Exploit",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0001"
+      ]
+    },
+    {
+      "id": "SAF-T1004",
+      "title": "Server Impersonation / Name-Collision",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0001"
+      ]
+    },
+    {
+      "id": "SAF-T1006",
+      "title": "User-Social-Engineering Install",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0001"
+      ]
+    },
+    {
+      "id": "SAF-T1007",
+      "title": "OAuth Authorization Phishing",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0001"
+      ]
+    },
+    {
+      "id": "SAF-T1207",
+      "title": "Hijack Update Mechanism",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0003"
+      ]
+    },
+    {
+      "id": "SAF-T1008",
+      "title": "Cross-Server Tool Shadowing",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0001",
+        "ATK-TA0004"
+      ]
+    },
+    {
+      "id": "SAF-T1101",
+      "title": "Command Injection",
+      "profiles": [
+        "mcp",
+        "code-agent"
+      ],
+      "tactics": [
+        "ATK-TA0002"
+      ]
+    },
+    {
+      "id": "SAF-T1009",
+      "title": "Authorization Server Mix-up",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0001",
+        "ATK-TA0004"
+      ]
+    },
+    {
+      "id": "SAF-T1102",
+      "title": "Prompt Injection (Multiple Vectors)",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0002"
+      ]
+    },
+    {
+      "id": "SAF-T1103",
+      "title": "Fake Tool Invocation (Function Spoofing)",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0002"
+      ]
+    },
+    {
+      "id": "SAF-T1105",
+      "title": "Path Traversal via File Tool",
+      "profiles": [
+        "mcp",
+        "code-agent"
+      ],
+      "tactics": [
+        "ATK-TA0002"
+      ]
+    },
+    {
+      "id": "SAF-T1106",
+      "title": "Autonomous Loop Exploit",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0002"
+      ]
+    },
+    {
+      "id": "SAF-T1111",
+      "title": "AI Agent CLI Weaponization",
+      "profiles": [
+        "core",
+        "code-agent"
+      ],
+      "tactics": [
+        "ATK-TA0002"
+      ]
+    },
+    {
+      "id": "SAF-T1110",
+      "title": "Multimodal Prompt Injection via Images/Audio",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0002"
+      ]
+    },
+    {
+      "id": "SAF-T1201",
+      "title": "Post-Approval Tool Mutation",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0003"
+      ]
+    },
+    {
+      "id": "SAF-T1202",
+      "title": "OAuth Token Persistence",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0003"
+      ]
+    },
+    {
+      "id": "SAF-T1203",
+      "title": "Backdoored Server Binary",
+      "profiles": [
+        "mcp",
+        "code-agent"
+      ],
+      "tactics": [
+        "ATK-TA0003"
+      ]
+    },
+    {
+      "id": "SAF-T1204",
+      "title": "Context Memory Implant",
+      "profiles": [
+        "core",
+        "mcp",
+        "rag-memory"
+      ],
+      "tactics": [
+        "ATK-TA0003",
+        "ATK-TA0008"
+      ]
+    },
+    {
+      "id": "SAF-T1206",
+      "title": "Credential Implant in Config",
+      "profiles": [
+        "mcp",
+        "code-agent"
+      ],
+      "tactics": [
+        "ATK-TA0003"
+      ]
+    },
+    {
+      "id": "SAF-T1302",
+      "title": "Agentic Confused Deputy",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0004"
+      ]
+    },
+    {
+      "id": "SAF-T1304",
+      "title": "Credential Relay Chain",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0004"
+      ]
+    },
+    {
+      "id": "SAF-T1303",
+      "title": "Sandbox Escape via Server Exec",
+      "profiles": [
+        "mcp",
+        "code-agent"
+      ],
+      "tactics": [
+        "ATK-TA0004"
+      ]
+    },
+    {
+      "id": "SAF-T1305",
+      "title": "Host OS Priv-Esc (RCE)",
+      "profiles": [
+        "mcp",
+        "code-agent"
+      ],
+      "tactics": [
+        "ATK-TA0004"
+      ]
+    },
+    {
+      "id": "SAF-T1307",
+      "title": "Confused Deputy Attack",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0004"
+      ]
+    },
+    {
+      "id": "SAF-T1308",
+      "title": "Token Scope Substitution",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0004"
+      ]
+    },
+    {
+      "id": "SAF-T1406",
+      "title": "Metadata Manipulation",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0005"
+      ]
+    },
+    {
+      "id": "SAF-T1401",
+      "title": "Line Jumping",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0005"
+      ]
+    },
+    {
+      "id": "SAF-T1403",
+      "title": "Consent-Fatigue Exploit",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0005"
+      ]
+    },
+    {
+      "id": "SAF-T1402",
+      "title": "Instruction Steganography",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0005"
+      ]
+    },
+    {
+      "id": "SAF-T1404",
+      "title": "Response Tampering",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0005"
+      ]
+    },
+    {
+      "id": "SAF-T1405",
+      "title": "Tool Obfuscation/Renaming",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0005"
+      ]
+    },
+    {
+      "id": "SAF-T1408",
+      "title": "OAuth Protocol Downgrade",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0005"
+      ]
+    },
+    {
+      "id": "SAF-T1407",
+      "title": "Server Proxy Masquerade",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0005"
+      ]
+    },
+    {
+      "id": "SAF-T1503",
+      "title": "Env-Var Scraping",
+      "profiles": [
+        "mcp",
+        "code-agent"
+      ],
+      "tactics": [
+        "ATK-TA0006"
+      ]
+    },
+    {
+      "id": "SAF-T1501",
+      "title": "Full-Schema Poisoning (FSP)",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0006"
+      ]
+    },
+    {
+      "id": "SAF-T1502",
+      "title": "File-Based Credential Harvest",
+      "profiles": [
+        "mcp",
+        "code-agent"
+      ],
+      "tactics": [
+        "ATK-TA0006"
+      ]
+    },
+    {
+      "id": "SAF-T1504",
+      "title": "Token Theft via API Response",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0006"
+      ]
+    },
+    {
+      "id": "SAF-T1505",
+      "title": "In-Memory Secret Extraction",
+      "profiles": [
+        "core",
+        "mcp",
+        "rag-memory"
+      ],
+      "tactics": [
+        "ATK-TA0006"
+      ]
+    },
+    {
+      "id": "SAF-T1507",
+      "title": "Authorization Code Interception",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0006"
+      ]
+    },
+    {
+      "id": "SAF-T1506",
+      "title": "Infrastructure Token Theft",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0006"
+      ]
+    },
+    {
+      "id": "SAF-T1601",
+      "title": "MCP Server Enumeration",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0007"
+      ]
+    },
+    {
+      "id": "SAF-T1602",
+      "title": "Tool Enumeration",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0007"
+      ]
+    },
+    {
+      "id": "SAF-T1603",
+      "title": "System Prompt Disclosure",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0007"
+      ]
+    },
+    {
+      "id": "SAF-T1604",
+      "title": "Server Version Enumeration",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0007"
+      ]
+    },
+    {
+      "id": "SAF-T1605",
+      "title": "Capability Mapping",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0007"
+      ]
+    },
+    {
+      "id": "SAF-T1606",
+      "title": "Directory Listing via File Tool",
+      "profiles": [
+        "mcp",
+        "code-agent"
+      ],
+      "tactics": [
+        "ATK-TA0007"
+      ]
+    },
+    {
+      "id": "SAF-T1701",
+      "title": "Cross-Tool Contamination",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0008"
+      ]
+    },
+    {
+      "id": "SAF-T1703",
+      "title": "Tool-Chaining Pivot",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0008"
+      ]
+    },
+    {
+      "id": "SAF-T1704",
+      "title": "Compromised-Server Pivot",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0008"
+      ]
+    },
+    {
+      "id": "SAF-T1706",
+      "title": "OAuth Token Pivot Replay",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0008"
+      ]
+    },
+    {
+      "id": "SAF-T1112",
+      "title": "Sampling Request Abuse",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0002"
+      ]
+    },
+    {
+      "id": "SAF-T1705",
+      "title": "Cross-Agent Instruction Injection",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0008"
+      ]
+    },
+    {
+      "id": "SAF-T1801",
+      "title": "Automated Data Harvesting",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0009"
+      ]
+    },
+    {
+      "id": "SAF-T1803",
+      "title": "Database Dump",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0009"
+      ]
+    },
+    {
+      "id": "SAF-T1707",
+      "title": "CSRF Token Relay",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0008"
+      ]
+    },
+    {
+      "id": "SAF-T1804",
+      "title": "API Data Harvest",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0009"
+      ]
+    },
+    {
+      "id": "SAF-T1910",
+      "title": "Covert Channel Exfiltration",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0010"
+      ]
+    },
+    {
+      "id": "SAF-T1911",
+      "title": "Parameter Exfiltration",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0010"
+      ]
+    },
+    {
+      "id": "SAF-T1904",
+      "title": "Chat-Based Backchannel",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0011"
+      ]
+    },
+    {
+      "id": "SAF-T1915",
+      "title": "Cross-Chain Laundering via Bridges/DEXs",
+      "profiles": [
+        "financial-agent"
+      ],
+      "tactics": [
+        "ATK-TA0010"
+      ]
+    },
+    {
+      "id": "SAF-T2101",
+      "title": "Data Destruction",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0040"
+      ]
+    },
+    {
+      "id": "SAF-T1903",
+      "title": "Malicious Server Control Channel",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0011"
+      ]
+    },
+    {
+      "id": "SAF-T2102",
+      "title": "Service Disruption",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0040"
+      ]
+    },
+    {
+      "id": "SAF-T2104",
+      "title": "Fraudulent Transactions",
+      "profiles": [
+        "core",
+        "mcp",
+        "financial-agent"
+      ],
+      "tactics": [
+        "ATK-TA0040"
+      ]
+    },
+    {
+      "id": "SAF-T2105",
+      "title": "Disinformation Output",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0040"
+      ]
+    },
+    {
+      "id": "SAF-T2103",
+      "title": "Code Sabotage",
+      "profiles": [
+        "core",
+        "mcp",
+        "code-agent"
+      ],
+      "tactics": [
+        "ATK-TA0040"
+      ]
+    },
+    {
+      "id": "SAF-T2106",
+      "title": "Context Memory Poisoning via Vector Store Contamination",
+      "profiles": [
+        "core",
+        "mcp",
+        "rag-memory"
+      ],
+      "tactics": [
+        "ATK-TA0040"
+      ]
+    },
+    {
+      "id": "SAF-T3001",
+      "title": "RAG Backdoor Attack",
+      "profiles": [
+        "core",
+        "mcp",
+        "rag-memory"
+      ],
+      "tactics": [
+        "ATK-TA0040"
+      ]
+    },
+    {
+      "id": "SAF-T2107",
+      "title": "AI Model Poisoning via MCP Tool Training Data Contamination",
+      "profiles": [
+        "mcp",
+        "model-lifecycle"
+      ],
+      "tactics": [
+        "ATK-TA0042"
+      ]
+    },
+    {
+      "id": "SAF-T1901",
+      "title": "Outbound Webhook C2",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0011"
+      ]
+    },
+    {
+      "id": "SAF-T1805",
+      "title": "Context Snapshot Capture",
+      "profiles": [
+        "core",
+        "mcp",
+        "rag-memory"
+      ],
+      "tactics": [
+        "ATK-TA0009"
+      ]
+    },
+    {
+      "id": "SAF-T1802",
+      "title": "File Collection",
+      "profiles": [
+        "mcp",
+        "code-agent"
+      ],
+      "tactics": [
+        "ATK-TA0009"
+      ]
+    },
+    {
+      "id": "SAF-T1902",
+      "title": "Response-Borne Covert Channel",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0011",
+        "ATK-TA0010"
+      ]
+    },
+    {
+      "id": "SAF-T1913",
+      "title": "HTTP POST Exfil",
+      "profiles": [
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0010"
+      ]
+    },
+    {
+      "id": "SAF-T1914",
+      "title": "Tool-to-Tool Exfil",
+      "profiles": [
+        "core",
+        "mcp"
+      ],
+      "tactics": [
+        "ATK-TA0010"
+      ]
+    }
+  ],
+  "deprecated": [
+    {
+      "id": "SAF-T1104",
+      "title": "Over-Privileged Tool Abuse",
+      "replacedBy": [
+        "SAF-T1302"
+      ]
+    },
+    {
+      "id": "SAF-T1109",
+      "title": "Debugging Tool Exploitation",
+      "replacedBy": [
+        "SAF-T1005",
+        "SAF-T1101"
+      ]
+    },
+    {
+      "id": "SAF-T1205",
+      "title": "Persistent Tool Redefinition",
+      "replacedBy": [
+        "SAF-T1201"
+      ]
+    },
+    {
+      "id": "SAF-T1301",
+      "title": "Cross-Server Tool Shadowing",
+      "replacedBy": [
+        "SAF-T1008"
+      ]
+    },
+    {
+      "id": "SAF-T1306",
+      "title": "Rogue Authorization Server",
+      "replacedBy": [
+        "SAF-T1009"
+      ]
+    },
+    {
+      "id": "SAF-T1309",
+      "title": "Privileged Tool Invocation via Prompt Manipulation",
+      "replacedBy": [
+        "SAF-T1102",
+        "SAF-T1302"
+      ]
+    },
+    {
+      "id": "SAF-T1702",
+      "title": "Shared-Memory Poisoning",
+      "replacedBy": [
+        "SAF-T1204"
+      ]
+    },
+    {
+      "id": "SAF-T1912",
+      "title": "Stego Response Exfil",
+      "replacedBy": [
+        "SAF-T1902"
+      ]
+    }
+  ],
+  "entries": [
+    {
+      "id": "SAF-T1001",
+      "status": "partial",
+      "threats": [
+        60,
+        50
+      ],
+      "evidence": [
+        "tool-scan",
+        "det-tool-poisoning",
+        "det-tool-cred-path",
+        "det-hidden-canary",
+        "stdio-proxy",
+        "http-gateway",
+        "tool-drift-block"
+      ],
+      "limit": "lexical scan of descriptions and schema text; report-first, a tool is quarantined only under a blocking policy"
+    },
+    {
+      "id": "SAF-T1002",
+      "status": "partial",
+      "threats": [
+        57,
+        62
+      ],
+      "evidence": [
+        "reputation",
+        "reputation-cli",
+        "repo-link",
+        "det-pkg-install",
+        "det-typosquat"
+      ],
+      "limit": "MCP server packages scored at first launch (provenance, repository link, install scripts) and install commands; artifact signatures are not verified, and reputation reports unless mcpReputation.blockBelow is set"
+    },
+    {
+      "id": "SAF-T1003",
+      "status": "partial",
+      "threats": [
+        25
+      ],
+      "evidence": [
+        "reputation",
+        "reputation-cli",
+        "server-allow"
+      ],
+      "limit": "known-malicious and typosquatted names and opt-in catalogue verdicts at first launch, plus the server allow-list; a new malicious package with a clean name scores good"
+    },
+    {
+      "id": "SAF-T1005",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "MoorAI does not discover or close an MCP endpoint exposed to an untrusted network or origin"
+    },
+    {
+      "id": "SAF-T1004",
+      "status": "partial",
+      "threats": [
+        25
+      ],
+      "evidence": [
+        "reputation",
+        "tool-drift",
+        "server-allow"
+      ],
+      "limit": "lookalike package names against the popular-server list, and a tool name claimed by a second server; server identity is never authenticated"
+    },
+    {
+      "id": "SAF-T1006",
+      "status": "partial",
+      "threats": [
+        25
+      ],
+      "evidence": [
+        "reputation-cli",
+        "server-allow"
+      ],
+      "limit": "the installed server is scored at its first launch and refused only off the allow-list or under blockBelow; the deception itself is not seen"
+    },
+    {
+      "id": "SAF-T1007",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "MoorAI is not in the OAuth authorization flow"
+    },
+    {
+      "id": "SAF-T1207",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "reputation-cli",
+        "tool-drift"
+      ],
+      "limit": "a new version is re-scored and its tool listing compared with the baseline; the update channel itself is not verified"
+    },
+    {
+      "id": "SAF-T1008",
+      "status": "partial",
+      "threats": [
+        60
+      ],
+      "evidence": [
+        "tool-scan",
+        "det-tool-poisoning"
+      ],
+      "limit": "cross-tool directive phrasing in a description ('when using X, also send ...'); there is no provenance boundary between servers' descriptors"
+    },
+    {
+      "id": "SAF-T1101",
+      "status": "partial",
+      "threats": [
+        54,
+        57,
+        43
+      ],
+      "evidence": [
+        "arg-scan",
+        "det-reverse-shell",
+        "det-fetch-exec",
+        "det-destructive"
+      ],
+      "limit": "known malicious command shapes in tool arguments and in the agent's own shell commands; injection inside a server's own process launcher is not observed"
+    },
+    {
+      "id": "SAF-T1009",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "MoorAI is not in the OAuth authorization flow"
+    },
+    {
+      "id": "SAF-T1102",
+      "status": "partial",
+      "threats": [
+        2,
+        3,
+        40,
+        50,
+        60
+      ],
+      "evidence": [
+        "det-injection",
+        "det-untrusted-directive",
+        "det-obf",
+        "result-scan",
+        "tool-scan"
+      ],
+      "limit": "text channels: prompts, MCP prompts and resources, tool descriptions and results; image and audio blocks in results are skipped"
+    },
+    {
+      "id": "SAF-T1103",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "nothing checks that a tool-call record came from the trusted workflow"
+    },
+    {
+      "id": "SAF-T1105",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "no check compares a path argument with the server's configured file scope"
+    },
+    {
+      "id": "SAF-T1106",
+      "status": "partial",
+      "threats": [
+        38
+      ],
+      "evidence": [
+        "circuit-breaker"
+      ],
+      "limit": "identical calls and short cycles with unchanged results, plus opt-in rate and call budget; token cost is not measured"
+    },
+    {
+      "id": "SAF-T1111",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "agentwatch"
+      ],
+      "limit": "recent agent activity scored against eight autonomous-attack tells; report-only and after the fact"
+    },
+    {
+      "id": "SAF-T1110",
+      "status": "partial",
+      "threats": [
+        2,
+        3
+      ],
+      "evidence": [
+        "ocr"
+      ],
+      "limit": "text recovered by on-device OCR from images pasted into the desktop app; audio, and images inside tool results, are not inspected"
+    },
+    {
+      "id": "SAF-T1201",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "tool-drift",
+        "tool-drift-block",
+        "tool-identity"
+      ],
+      "limit": "description, schema and annotations; a changed implementation behind unchanged metadata is not seen"
+    },
+    {
+      "id": "SAF-T1202",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "MoorAI does not see OAuth refresh-token use"
+    },
+    {
+      "id": "SAF-T1203",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "nothing fingerprints a server's executable"
+    },
+    {
+      "id": "SAF-T1204",
+      "status": "partial",
+      "threats": [
+        22,
+        21
+      ],
+      "evidence": [
+        "det-memory-poisoning",
+        "index-writes",
+        "det-rag-poisoning"
+      ],
+      "limit": "writes that carry an instruction, into agent memory and instruction files and into MCP memory or vector-store tools; factual implants are not detected"
+    },
+    {
+      "id": "SAF-T1206",
+      "status": "partial",
+      "threats": [
+        60
+      ],
+      "evidence": [
+        "skill-file-drift",
+        "skill-surface"
+      ],
+      "limit": "a changed MCP config file is reported as skill-file drift when the hook reads it; the credential inside it is not judged"
+    },
+    {
+      "id": "SAF-T1302",
+      "status": "partial",
+      "threats": [
+        64,
+        59
+      ],
+      "evidence": [
+        "intent-alignment",
+        "session-risk",
+        "human-approval"
+      ],
+      "limit": "lexical check that a risky call's targets were named in the task, and outbound calls after untrusted content; no requestor authorization is bound to the call"
+    },
+    {
+      "id": "SAF-T1304",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "credentials a server forwards downstream are not seen"
+    },
+    {
+      "id": "SAF-T1303",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "server-side process launch is not observed"
+    },
+    {
+      "id": "SAF-T1305",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "exploitation of a host-side MCP component is not detected"
+    },
+    {
+      "id": "SAF-T1307",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "the initiating principal's identity is not carried through an intermediary"
+    },
+    {
+      "id": "SAF-T1308",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "token audience and scope are not inspected"
+    },
+    {
+      "id": "SAF-T1406",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "tool-drift",
+        "tool-identity"
+      ],
+      "limit": "a changed description, schema or annotation after the baseline; a misleading descriptor on first sight is judged only for directive text"
+    },
+    {
+      "id": "SAF-T1401",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "tool-drift",
+        "tool-drift-block"
+      ],
+      "limit": "a tool name claimed by a second server is flagged, and quarantined in block mode; prompts and resources are not compared"
+    },
+    {
+      "id": "SAF-T1403",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "repeated approval prompts to a person are not counted"
+    },
+    {
+      "id": "SAF-T1402",
+      "status": "partial",
+      "threats": [
+        50,
+        72
+      ],
+      "evidence": [
+        "det-hidden-canary",
+        "det-obf",
+        "file-metadata"
+      ],
+      "limit": "invisible Unicode, control characters, rendering-hidden markup and file metadata; images and opaque model-state fields are not decoded"
+    },
+    {
+      "id": "SAF-T1404",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "responses carry no integrity check MoorAI verifies"
+    },
+    {
+      "id": "SAF-T1405",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "tool-drift-block",
+        "tool-identity"
+      ],
+      "limit": "on a server with an approved baseline a renamed tool is quarantined as added (block mode); the tool title is not fingerprinted and lookalike names are not judged"
+    },
+    {
+      "id": "SAF-T1408",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "MoorAI is not in the OAuth authorization flow"
+    },
+    {
+      "id": "SAF-T1407",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "a remote server's identity is not authenticated beyond its configured route"
+    },
+    {
+      "id": "SAF-T1503",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "a stdio server reads its own environment without crossing anything MoorAI watches"
+    },
+    {
+      "id": "SAF-T1501",
+      "status": "partial",
+      "threats": [
+        60,
+        50
+      ],
+      "evidence": [
+        "tool-scan",
+        "det-tool-poisoning",
+        "det-hidden-canary"
+      ],
+      "limit": "schema strings (descriptions, titles, defaults, enums, property names) by the same lexical detectors; coordination across paths is not modelled"
+    },
+    {
+      "id": "SAF-T1502",
+      "status": "partial",
+      "threats": [
+        55,
+        39,
+        60
+      ],
+      "evidence": [
+        "det-cred-file",
+        "file-args",
+        "det-secret-upload",
+        "det-tool-cred-path",
+        "result-scan",
+        "det-secrets"
+      ],
+      "limit": "known credential locations (SSH, cloud, .env, git, keychain) and secret-shaped values in results"
+    },
+    {
+      "id": "SAF-T1504",
+      "status": "partial",
+      "threats": [
+        39
+      ],
+      "evidence": [
+        "result-scan",
+        "det-secrets"
+      ],
+      "limit": "token shapes the secret detectors know, in MCP results; forwarded by default (#39 notifies) unless policy denies"
+    },
+    {
+      "id": "SAF-T1505",
+      "status": "partial",
+      "threats": [
+        55,
+        59
+      ],
+      "evidence": [
+        "det-cred-file",
+        "env-dump",
+        "session-risk"
+      ],
+      "limit": "environment dumps the agent runs (printenv piped to grep for secrets; env to a file or /proc/*/environ, then outbound); process memory and runtime state are not read"
+    },
+    {
+      "id": "SAF-T1507",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "MoorAI is not in the OAuth authorization flow"
+    },
+    {
+      "id": "SAF-T1506",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "egress-proxy-metadata"
+      ],
+      "limit": "the egress proxy refuses cloud metadata addresses unless a rule names the IP literal; projected service-account tokens are not covered"
+    },
+    {
+      "id": "SAF-T1601",
+      "status": "partial",
+      "threats": [
+        69
+      ],
+      "evidence": [
+        "det-recon"
+      ],
+      "limit": "ingested content asking the agent to list its tools, servers or permissions; enumeration by the host is not flagged"
+    },
+    {
+      "id": "SAF-T1602",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "tools/list is issued by the host and is never flagged"
+    },
+    {
+      "id": "SAF-T1603",
+      "status": "covered",
+      "threats": [
+        51,
+        52
+      ],
+      "evidence": [
+        "det-sysprompt",
+        "det-instr-leak"
+      ]
+    },
+    {
+      "id": "SAF-T1604",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "version metadata release is not observed"
+    },
+    {
+      "id": "SAF-T1605",
+      "status": "partial",
+      "threats": [
+        69
+      ],
+      "evidence": [
+        "det-recon"
+      ],
+      "limit": "ingested content asking the agent to list its tools, servers or permissions; enumeration by the host is not flagged"
+    },
+    {
+      "id": "SAF-T1606",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "directory listings through a file tool are not judged"
+    },
+    {
+      "id": "SAF-T1701",
+      "status": "partial",
+      "threats": [
+        59
+      ],
+      "evidence": [
+        "session-risk",
+        "result-scan"
+      ],
+      "limit": "an injection-class finding on a result followed by an outbound call or credential read in the same session; other follow-on calls are not linked"
+    },
+    {
+      "id": "SAF-T1703",
+      "status": "partial",
+      "threats": [
+        59,
+        64
+      ],
+      "evidence": [
+        "session-risk",
+        "intent-alignment"
+      ],
+      "limit": "outbound calls after untrusted content, and risky calls whose targets the task never named"
+    },
+    {
+      "id": "SAF-T1704",
+      "status": "partial",
+      "threats": [
+        40,
+        3,
+        59
+      ],
+      "evidence": [
+        "result-scan",
+        "det-untrusted-directive",
+        "session-risk"
+      ],
+      "limit": "instructions in a server's results are detected, and blocked under a deny policy; the server's own side effects are not seen"
+    },
+    {
+      "id": "SAF-T1706",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "bearer-token replay at a resource is not observed"
+    },
+    {
+      "id": "SAF-T1112",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "server-to-client sampling requests are not scanned"
+    },
+    {
+      "id": "SAF-T1705",
+      "status": "partial",
+      "threats": [
+        66,
+        40
+      ],
+      "evidence": [
+        "delegation",
+        "det-untrusted-directive"
+      ],
+      "limit": "sub-agent prompts and returns inside one Claude Code session; remote agent peers are not seen"
+    },
+    {
+      "id": "SAF-T1801",
+      "status": "partial",
+      "threats": [
+        59
+      ],
+      "evidence": [
+        "session-risk"
+      ],
+      "limit": "a mass read of distinct local files followed by an upload of 4 KB or more to a new destination; MCP resource reads are not counted"
+    },
+    {
+      "id": "SAF-T1803",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "a database export is not recognised"
+    },
+    {
+      "id": "SAF-T1707",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "MoorAI is not in the OAuth authorization flow"
+    },
+    {
+      "id": "SAF-T1804",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "MCP resource reads and query results are not counted against the task"
+    },
+    {
+      "id": "SAF-T1910",
+      "status": "partial",
+      "threats": [
+        71,
+        65,
+        78
+      ],
+      "evidence": [
+        "det-render-exfil",
+        "secret-egress",
+        "det-credential-egress",
+        "det-oast"
+      ],
+      "limit": "data in rendered-image URLs, known local secret values and credential-shaped tokens in egress, and listed collection hosts; obscured prose in an ordinary argument is not recognised"
+    },
+    {
+      "id": "SAF-T1911",
+      "status": "partial",
+      "threats": [
+        39,
+        65,
+        1,
+        15
+      ],
+      "evidence": [
+        "arg-scan",
+        "det-secrets",
+        "det-pii",
+        "secret-egress",
+        "gateway-secret-egress"
+      ],
+      "limit": "secret, payment and personal-data shapes and known local secret values in tool arguments; arbitrary confidential text is not recognised"
+    },
+    {
+      "id": "SAF-T1904",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "a chat identity steering the agent is not recognised"
+    },
+    {
+      "id": "SAF-T1915",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "no financial-tool or chain-transaction analysis"
+    },
+    {
+      "id": "SAF-T2101",
+      "status": "covered",
+      "threats": [
+        43,
+        56
+      ],
+      "evidence": [
+        "det-destructive",
+        "det-destructive-tool",
+        "human-approval"
+      ]
+    },
+    {
+      "id": "SAF-T1903",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "a server's own outbound control channel is not identified"
+    },
+    {
+      "id": "SAF-T2102",
+      "status": "partial",
+      "threats": [
+        38,
+        53
+      ],
+      "evidence": [
+        "circuit-breaker",
+        "det-oversized",
+        "gateway-response-cap",
+        "gateway-cooldown"
+      ],
+      "limit": "runaway loops, oversized inputs, the gateway's response-size cap and opt-in per-client cool-down; volumetric attacks on a server are not seen"
+    },
+    {
+      "id": "SAF-T2104",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "transaction tools are not recognised and value is not bounded"
+    },
+    {
+      "id": "SAF-T2105",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "false assertions and fabricated provenance are not judged"
+    },
+    {
+      "id": "SAF-T2103",
+      "status": "partial",
+      "threats": [
+        61
+      ],
+      "evidence": [
+        "det-code"
+      ],
+      "limit": "exploitable constructs in code the agent writes; whether an edit is authorised is not judged"
+    },
+    {
+      "id": "SAF-T2106",
+      "status": "partial",
+      "threats": [
+        21
+      ],
+      "evidence": [
+        "index-writes",
+        "det-rag-poisoning"
+      ],
+      "limit": "instruction-carrying content on its way into a store (SDK, sidecar, MCP writes); the store is not read at retrieval and factual poisoning is not detected"
+    },
+    {
+      "id": "SAF-T3001",
+      "status": "partial",
+      "threats": [
+        21,
+        40
+      ],
+      "evidence": [
+        "index-writes",
+        "det-rag-poisoning",
+        "det-untrusted-directive"
+      ],
+      "limit": "inserts that carry an instruction, at write time, and instructions in retrieved content; a trigger-conditioned factual answer is not detected"
+    },
+    {
+      "id": "SAF-T2107",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "training-corpus contamination is outside the runtime path"
+    },
+    {
+      "id": "SAF-T1901",
+      "status": "partial",
+      "threats": [
+        78,
+        79,
+        47
+      ],
+      "evidence": [
+        "det-oast",
+        "det-external-comms",
+        "egress-rules"
+      ],
+      "limit": "listed request-capture hosts, webhook sends gated as external comms, and egress rules where an org sets them; a fresh attacker host is judged only by rules"
+    },
+    {
+      "id": "SAF-T1805",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "reads of agent transcripts or session state are not flagged"
+    },
+    {
+      "id": "SAF-T1802",
+      "status": "partial",
+      "threats": [
+        55,
+        59
+      ],
+      "evidence": [
+        "file-args",
+        "det-cred-file",
+        "session-risk"
+      ],
+      "limit": "credential files, the contents of files an MCP argument names (scanned at the file stage), and mass read then upload; other approved-path breaches are not judged"
+    },
+    {
+      "id": "SAF-T1902",
+      "status": "partial",
+      "threats": [
+        50,
+        71
+      ],
+      "evidence": [
+        "det-obf-output",
+        "det-render-exfil",
+        "result-scan"
+      ],
+      "limit": "hidden text and rendered-image URLs in responses; other encodings are not decoded"
+    },
+    {
+      "id": "SAF-T1913",
+      "status": "partial",
+      "threats": [
+        39,
+        65
+      ],
+      "evidence": [
+        "http-gateway",
+        "arg-scan",
+        "gateway-secret-egress"
+      ],
+      "limit": "secret shapes and known local secret values in tools/call arguments through the HTTP gateway; other confidential content is not recognised"
+    },
+    {
+      "id": "SAF-T1914",
+      "status": "partial",
+      "threats": [
+        59,
+        65
+      ],
+      "evidence": [
+        "session-risk",
+        "secret-egress"
+      ],
+      "limit": "taint-then-outbound and staged-credential sequences in one session, and known local secret values in the sink call"
+    }
+  ],
+  "rejected": [
+    {
+      "id": "SAF-T1005",
+      "credit": {
+        "component": "http-gateway"
+      },
+      "reason": "the gateway binds loopback by default to protect itself; it does not detect or close an exposed MCP endpoint"
+    },
+    {
+      "id": "SAF-T1008",
+      "credit": {
+        "component": "tool-drift"
+      },
+      "reason": "the shadow signal is a second server claiming the same tool NAME (SAF-T1004, SAF-T1401), not one descriptor steering a different tool"
+    },
+    {
+      "id": "SAF-T1105",
+      "credit": {
+        "threat": 55,
+        "component": "file-args"
+      },
+      "reason": "the file-argument check judges a path that lands on a credential file (credited under SAF-T1502); it does not compare the path with the server's configured scope"
+    },
+    {
+      "id": "SAF-T1105",
+      "credit": {
+        "threat": 64,
+        "component": "envelope"
+      },
+      "reason": "the entitlement envelope's paths apply to the hook's Read, Bash and Write branches; an MCP call is checked by server name only"
+    },
+    {
+      "id": "SAF-T1203",
+      "credit": {
+        "component": "reputation-cli"
+      },
+      "reason": "reputation is cached per server identity and version; a binary patched in place keeps both and is not re-scored"
+    },
+    {
+      "id": "SAF-T1304",
+      "credit": {
+        "component": "placeholder-credentials"
+      },
+      "reason": "keeps a bound secret on its own gateway route; tokens a server forwards downstream are outside it"
+    },
+    {
+      "id": "SAF-T1307",
+      "credit": {
+        "threat": 64,
+        "component": "intent-alignment"
+      },
+      "reason": "judges the model's call against the user's task (SAF-T1302); it does not carry the initiating principal's identity through an intermediary"
+    },
+    {
+      "id": "SAF-T1403",
+      "credit": {
+        "threat": 38,
+        "component": "circuit-breaker"
+      },
+      "reason": "counts repeated identical tool calls, not repeated approval prompts to a person"
+    },
+    {
+      "id": "SAF-T1404",
+      "credit": {
+        "component": "gateway-validate"
+      },
+      "reason": "validates message structure, not integrity; a well-formed substituted response passes"
+    },
+    {
+      "id": "SAF-T1503",
+      "credit": {
+        "threat": 65,
+        "component": "secret-egress"
+      },
+      "reason": "the local-secret fingerprint watches the agent's egress; a stdio server reading its own environment never crosses it"
+    },
+    {
+      "id": "SAF-T1602",
+      "credit": {
+        "threat": 69,
+        "component": "det-recon"
+      },
+      "reason": "#69 catches content asking the model to recount its tools (credited under SAF-T1601 and SAF-T1605); the host's tools/list is not flagged"
+    },
+    {
+      "id": "SAF-T1112",
+      "credit": {
+        "component": "result-scan"
+      },
+      "reason": "server-to-client requests (sampling/createMessage) are excluded from the result scan by design (resultOfResponse in mcp-proxy/tool-scan.mjs)"
+    },
+    {
+      "id": "SAF-T1803",
+      "credit": {
+        "threat": 59,
+        "component": "session-risk"
+      },
+      "reason": "the archive-then-outbound sequence needs an outbound step; a dump kept local, or read through a database tool, raises nothing"
+    },
+    {
+      "id": "SAF-T1804",
+      "credit": {
+        "threat": 59,
+        "component": "session-risk"
+      },
+      "reason": "mass reads count distinct local files, not MCP resource reads or query results"
+    },
+    {
+      "id": "SAF-T1904",
+      "credit": {
+        "threat": 47,
+        "component": "det-external-comms"
+      },
+      "reason": "gates the agent sending a message; it does not see a chat identity steering the agent"
+    },
+    {
+      "id": "SAF-T1903",
+      "credit": {
+        "component": "sandbox-policy"
+      },
+      "reason": "egress rules confine whatever is routed through them, but nothing identifies a server's control channel, and an MCP server process behind them was not measured"
+    },
+    {
+      "id": "SAF-T2104",
+      "credit": {
+        "threat": 11
+      },
+      "reason": "bec-payment is a coach-mode match on a few payment-change phrases; it neither recognises transaction tools nor bounds value"
+    },
+    {
+      "id": "SAF-T2105",
+      "credit": {
+        "threat": 75,
+        "component": "det-output-link"
+      },
+      "reason": "catches a link whose shown address differs from its target; false assertions and fabricated provenance are not judged"
+    },
+    {
+      "id": "SAF-T1805",
+      "credit": {
+        "threat": 73,
+        "component": "det-history-tamper"
+      },
+      "reason": "deliberately silent on reads of transcripts; it fires on deletion and rewriting"
+    },
+    {
+      "id": "SAF-T1206",
+      "credit": {
+        "threat": 65
+      },
+      "reason": "the local-secret fingerprint matches known values leaving the device; a credential written into config is not egress"
+    }
+  ]
+}

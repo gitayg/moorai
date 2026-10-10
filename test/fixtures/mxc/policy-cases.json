@@ -37,6 +37,7 @@
           "env": [
             "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
             "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main",
             "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
             "DISABLE_AUTOUPDATER=1",
@@ -182,6 +183,7 @@
           "env": [
             "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
             "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main",
             "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
             "DISABLE_AUTOUPDATER=1",
@@ -291,6 +293,7 @@
           "env": [
             "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
             "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main",
             "OPENAI_BASE_URL=http://127.0.0.1:8791/openai",
             "GIT_CONFIG_COUNT=1",
             "GIT_CONFIG_KEY_0=safe.directory",
@@ -420,6 +423,7 @@
           "env": [
             "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
             "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main",
             "GIT_CONFIG_COUNT=1",
             "GIT_CONFIG_KEY_0=safe.directory",
             "GIT_CONFIG_VALUE_0=C:/src/proj"
@@ -520,6 +524,7 @@
           "env": [
             "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
             "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main",
             "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
             "DISABLE_AUTOUPDATER=1",
@@ -633,6 +638,7 @@
           "env": [
             "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
             "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main",
             "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
             "DISABLE_AUTOUPDATER=1",
@@ -736,6 +742,7 @@
           "env": [
             "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
             "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main",
             "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
             "DISABLE_AUTOUPDATER=1",
@@ -838,6 +845,7 @@
           "env": [
             "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
             "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main",
             "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
             "DISABLE_AUTOUPDATER=1",
@@ -984,6 +992,7 @@
           "env": [
             "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
             "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main",
             "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
             "DISABLE_AUTOUPDATER=1",
@@ -1114,6 +1123,7 @@
           "env": [
             "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
             "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main",
             "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
             "DISABLE_AUTOUPDATER=1",
@@ -1332,6 +1342,7 @@
           "env": [
             "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
             "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main",
             "OPENAI_BASE_URL=http://127.0.0.1:8791/openai",
             "GIT_CONFIG_COUNT=1",
             "GIT_CONFIG_KEY_0=safe.directory",
@@ -1478,6 +1489,114 @@
           "effect": "narrowed",
           "reason": "mxc-default-deny"
         }
+      ]
+    }
+  },
+  {
+    "name": "node-options-merged-with-host-env",
+    "input": {
+      "agent": "claude",
+      "workspace": "C:\\src\\proj",
+      "env": {
+        "USERPROFILE": "C:\\Users\\dev",
+        "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+        "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+        "ProgramData": "C:\\ProgramData",
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "SystemRoot": "C:\\Windows",
+        "NODE_OPTIONS": "  --max-old-space-size=4096 --preserve-symlinks "
+      },
+      "agentBin": "C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd",
+      "nodeDir": "C:\\Program Files\\nodejs",
+      "hookRoots": [
+        "C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\moorai"
+      ],
+      "modelProxyPort": 8791,
+      "egressAllow": [],
+      "extraCaCerts": "",
+      "commandLine": "C:\\Windows\\System32\\cmd.exe /d /s /c \"C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd\"",
+      "denialsOutputPath": "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\mxc-runs\\r1\\denials.json",
+      "captureDenials": false,
+      "fsDenySupported": false,
+      "hostAppDir": "C:\\Program Files\\MoorAI"
+    },
+    "existing": "*",
+    "expected": {
+      "ok": true,
+      "policy": {
+        "version": "1.0.0",
+        "containment": "processcontainer",
+        "process": {
+          "commandLine": "C:\\Windows\\System32\\cmd.exe /d /s /c \"C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd\"",
+          "cwd": "C:\\src\\proj",
+          "env": [
+            "TEMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "TMP=C:\\Users\\dev\\.moorai\\agent-tmp",
+            "NODE_OPTIONS=--max-old-space-size=4096 --preserve-symlinks --preserve-symlinks-main",
+            "ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+            "DISABLE_AUTOUPDATER=1",
+            "GIT_CONFIG_COUNT=1",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "GIT_CONFIG_VALUE_0=C:/src/proj"
+          ],
+          "inheritDefaultEnv": true
+        },
+        "filesystem": {
+          "readwritePaths": [
+            "C:\\src\\proj",
+            "C:\\Users\\dev\\.claude",
+            "C:\\Users\\dev\\.claude.json",
+            "C:\\Users\\dev\\.moorai",
+            "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+            "C:\\Users\\dev\\AppData\\Local\\MoorAI"
+          ],
+          "readonlyPaths": [
+            "C:\\Users\\dev\\AppData\\Roaming\\npm",
+            "C:\\Users\\dev\\.local\\share\\claude",
+            "C:\\Program Files\\nodejs",
+            "C:\\Program Files\\Git",
+            "C:\\Program Files\\PowerShell\\7",
+            "C:\\Users\\dev\\.gitconfig",
+            "C:\\ProgramData\\MoorAI",
+            "C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\moorai"
+          ],
+          "deniedPaths": []
+        },
+        "fallback": {
+          "allowDaclMutation": false
+        },
+        "network": {
+          "egress": {
+            "default": "deny"
+          },
+          "ingress": {
+            "default": "deny",
+            "hostLoopback": "allow"
+          }
+        },
+        "ui": {
+          "disable": false,
+          "clipboard": "none",
+          "injection": false
+        },
+        "processContainer": {
+          "leastPrivilege": false,
+          "ui": {
+            "isolation": "desktop",
+            "desktopSystemControl": false,
+            "systemSettings": "none",
+            "ime": false
+          }
+        }
+      },
+      "ensureDirs": [
+        "C:\\Users\\dev\\.moorai",
+        "C:\\Users\\dev\\AppData\\Roaming\\MoorAI",
+        "C:\\Users\\dev\\AppData\\Local\\MoorAI",
+        "C:\\Users\\dev\\.moorai\\agent-tmp",
+        "C:\\Users\\dev\\.claude"
       ]
     }
   },

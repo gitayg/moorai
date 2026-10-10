@@ -84,9 +84,13 @@ export const SECRET_DETECTORS = [
   S("secret-twilio", "Looks like a Twilio key/SID.", [/\bSK[0-9a-fA-F]{32}\b/, /\bAC[0-9a-fA-F]{32}\b/]),
   S("secret-azure", "Looks like an Azure storage connection string.", [/AccountKey=[A-Za-z0-9\/+]{40,}={0,2}/i]),
   S("secret-gcp-sa", "Looks like a GCP service-account key.", [/"type"\s*:\s*"service_account"[\s\S]{0,300}?"private_key"\s*:\s*"-----BEGIN/i]),
+  // A connection-string TEMPLATE is not a credential: `<NEW_PASSWORD>`, `${DB_PASSWORD}`, `$PGPASS`,
+  // `%s`, `****` in the password slot are what runbooks and env examples print (a credential-rotation
+  // runbook was a benign web FP, scripts/score-webfetch-benign.mjs). Literal passwords, however weak,
+  // still fire. The quantifiers are bounded because a refine routes the pattern through safeRegex.
   S("secret-db-conn", "Looks like a database connection string with an embedded password.", [
-    /\b(postgres(ql)?|mysql|mongodb(\+srv)?|redis|amqp):\/\/[^:@\s/]+:[^@\s/]+@/i
-  ]),
+    /\b(postgres(ql)?|mysql|mongodb(\+srv)?|redis|amqp):\/\/[^:@\s/]{1,256}:[^@\s/]{1,256}@/i
+  ], (m) => !/^(?:<[^<>]*>|\$\{[^}]*\}|\$[A-Za-z_]\w*|\{\{[^}]*\}\}|%[sd]|\*+|x{3,}|\.{3,}|\[[^\]]*\])$/i.test((/:\/\/[^:@\s/]+:([^@\s/]+)@/.exec(m) || [])[1] || "")),
   // ---- Shapeless: only fire when the value is genuinely high-entropy (entropy + allowlist gate) ----
   //
   // EVERY quantifier below is bounded, and that is load-bearing. These detectors carry a refine(), so

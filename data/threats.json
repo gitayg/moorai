@@ -2039,6 +2039,35 @@
       "owaspAgentic": [],
       "owaspMcp": [],
       "stride": "Information Disclosure"
+    },
+    {
+      "id": 80,
+      "category": "Add-ons & Tools",
+      "threat": "Repository cloned and run in one command",
+      "example": "The agent clones a repository (git clone, gh repo clone) or downloads and unpacks an archive, and the same command then runs that checkout's install or start scripts: `git clone <repo> && cd <repo> && pnpm install && pnpm start`, `make`, `./install.sh`, `python setup.py install`, `pip install .`. Code nobody has reviewed runs straight from the network.",
+      "response": "Review where the repository comes from before its scripts run. Building from source is everyday developer work, so this is report-only by default; it is also how an instruction planted in a README or skill file gets an agent to run an attacker's repository instead of the official package.",
+      "saferAlternative": "Install the published package from the official registry, or clone first, read the install scripts, pin the commit, and run them as a separate step.",
+      "severity": 3,
+      "likelihood": 3,
+      "riskScore": 9,
+      "riskLevel": "Medium",
+      "sources": [
+        "Agent safety",
+        "OWASP"
+      ],
+      "owasp": "LLM03",
+      "atlas": "AML.T0010",
+      "atlasPartial": {
+        "AML.T0010": "a repository checkout run in the same command"
+      },
+      "owaspAgentic": [
+        "ASI05"
+      ],
+      "owaspAgenticPartial": {
+        "ASI05": "a repository checkout run in the same command"
+      },
+      "owaspMcp": [],
+      "stride": "Tampering"
     }
   ]
 }

@@ -87,6 +87,30 @@ test("swap: the bound secret reaches the upstream in the bound header (both APIs
   assert.equal(fp.requests.at(-1).headers["x-api-key"], SECRET_A);
 });
 
+// The Gemini API's documented query-string auth: `?key=<API key>`. MEASURED BEFORE THIS CHANGE: forwarded
+// with no alert, and forwarded even with --require-placeholders, because only headers were checked.
+test("a raw key in the ?key= query string is a raw credential: reported once per route and forwarded; --require-placeholders refuses it (401)", async () => {
+  const GKEY = "AIzaFAKE-gemini-raw-key-0000000000000000";
+  const GPATH = `/other/v1beta/models?alt=json&key=${GKEY}`;
+  fp.on((r, res) => sendJson(res, { models: [] }));
+  const n0 = con.alerts.length, n = fp.requests.length;
+  const a = await request(px.listening, GPATH, { method: "GET" });
+  assert.equal(a.status, 200);
+  assert.ok(fp.requests[n].url.includes(`key=${GKEY}`), "report mode forwards the client's own key untouched");
+  assert.ok(await waitFor(() => con.parsed().slice(n0).some((x) => /raw credential sent/.test(x.category) && x.tool === "model-proxy:credential:other")));
+  const quiet = await request(px.listening, "/other/v1beta/models?alt=json&key=", { method: "GET" });
+  assert.equal(quiet.status, 200, "an empty key is no credential");
+
+  const m = fp.requests.length;
+  const refused = await request(req.listening, GPATH, { method: "GET" });
+  assert.equal(refused.status, 401); assert.match(refused.json.error.message, /accepts only credential placeholders/);
+  assert.equal(fp.requests.length, m, "nothing forwarded");
+  assert.ok(await waitFor(() => con.parsed().some((x) => /raw credential refused/.test(x.category) && x.tool === "model-proxy:credential:other")));
+  const none = await request(req.listening, "/other/v1beta/models?alt=json", { method: "GET" });
+  assert.equal(none.status, 200, "a query with no key is not a raw credential");
+  for (const s of [JSON.stringify(con.parsed()), visible(refused), px.stderr(), req.stderr()]) assert.ok(!s.includes(GKEY) && !s.includes("gemini-raw-key"), "content-free: the key is never echoed, logged or reported");
+});
+
 test("a placeholder on the wrong route (same host), in the wrong header, or in the URL is refused and never forwarded", async () => {
   fp.on((r, res) => sendJson(res, anthropicMessage()));
   const n = fp.requests.length;

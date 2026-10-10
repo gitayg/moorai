@@ -36,3 +36,5 @@ export const captureTiers = await load("data/capture-tiers.js");
 export const modelEndpoints = await load("data/model-endpoints.js");
 export const outboundUpload = await load("data/outbound-upload.js");
 export const offlineDefault = await load("data/offline-default.js");
+export const toolTagsLib = await load("cli/tool-tags.mjs");
+export const exceptionsLib = await load("cli/exceptions.mjs");

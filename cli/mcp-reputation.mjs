@@ -20,6 +20,8 @@
 //                     cli/mcp-repo-link.mjs checks the repository the package declares (registry
 //                     provenance, else the repository's own manifest on github.com / gitlab.com):
 //                     repo-missing, repo-unreachable, repo-mismatch. Public package and repo names only.
+//                     And cli/mcp-package/maintainers.mjs counts who can publish (npm packument
+//                     `maintainers`, PyPI `ownership.roles`): single-maintainer. Counted, never kept.
 //   OPT-IN feed       policy.mcpReputation.feed = true (or an https URL): SkillTriage's published
 //                     verdicts, downloaded WHOLE with a bare GET and matched here. The request names no
 //                     server, so the feed host learns only that a MoorAI device fetched the feed.
@@ -37,6 +39,7 @@ import { nameFindings, packageHeuristics } from "./mcp-package/heuristics.mjs";
 import { scanPackageFiles } from "./mcp-package/scope.mjs";
 import { analyzePackage } from "./mcp-package.mjs";
 import { checkRepoLink } from "./mcp-repo-link.mjs";
+import { checkMaintainers } from "./mcp-package/maintainers.mjs";
 import { buildEngine } from "./hook-core.mjs";
 import { STATE_DIR } from "./state-dirs.mjs";
 import { scoreReputation, signal, classifyMcpName, reputationAction, reputationAlert, REASON_WEIGHTS, TIER_WEIGHT } from "../data/mcp-reputation.js";
@@ -56,7 +59,7 @@ const SELF = dirname(fileURLToPath(import.meta.url));
 // cached server instead of serving a verdict computed under older rules.
 const REP_REV = (() => {
   const h = createHash("sha256");
-  for (const f of ["mcp-reputation.mjs", "mcp-package/heuristics.mjs", "mcp-package/scope.mjs", "../data/mcp-reputation.js", "../data/popular-mcp-servers.js", "../data/popular-packages.js", "../data/detectors.js", "mcp-repo-link.mjs", "../data/repo-link.js"]) {
+  for (const f of ["mcp-reputation.mjs", "mcp-package/heuristics.mjs", "mcp-package/scope.mjs", "../data/mcp-reputation.js", "../data/popular-mcp-servers.js", "../data/popular-packages.js", "../data/detectors.js", "mcp-repo-link.mjs", "../data/repo-link.js", "mcp-package/maintainers.mjs", "mcp-package/metadata.mjs"]) {
     try { h.update(readFileSync(join(SELF, f))); } catch { h.update(f); }
   }
   return h.digest("hex").slice(0, 16);
@@ -190,12 +193,13 @@ function baseSignals(id, opts) {
 const LOOKUP_NOTES = { "new-package": "new-package", "integrity-mismatch": "integrity-mismatch" };
 async function registryLookup(id, opts) {
   const fetchImpl = opts.fetchImpl || globalThis.fetch;
-  const [e, link] = await Promise.all([
+  const [e, link, maint] = await Promise.all([
     analyzePackage(id.ref, { fetchImpl, cacheDir: opts.stateDir || STATE_DIR, engine: engineFor(opts) }),
-    checkRepoLink(id.ref, { fetchImpl }).catch(() => ({ signals: [], evidence: ["repo-check-failed"] }))
+    checkRepoLink(id.ref, { fetchImpl }).catch(() => ({ signals: [], evidence: ["repo-check-failed"] })),
+    checkMaintainers(id.ref, { fetchImpl }).catch(() => ({ signals: [], evidence: ["maintainers-check-failed"] }))
   ]);
-  const signals = [...(e.findings || []).map(findingSignal), ...link.signals.map((c) => signal(c))];
-  const evidence = [...link.evidence];
+  const signals = [...(e.findings || []).map(findingSignal), ...link.signals.map((c) => signal(c)), ...maint.signals.map((c) => signal(c))];
+  const evidence = [...link.evidence, ...maint.evidence];
   for (const n of e.notes || []) {
     if (LOOKUP_NOTES[n.id]) signals.push(signal(LOOKUP_NOTES[n.id]));
     // A scoped npm 404 may just be a private package; an unscoped one, or PyPI, is a claimable name.
@@ -252,8 +256,23 @@ function feedSignals(feed, id, version) {
   return code ? { signals: [signal(code)], evidence: [] } : { signals: [], evidence: [] };
 }
 
+// moorai-mcp-check: SkillTriage's verdict for one registry package, only when the policy enables the feed.
+// → {enabled: false} | {enabled: true, available, verdict, signals, evidence}
+export async function feedVerdict(ref, { policy = {}, fetchImpl, stateDir = STATE_DIR, now } = {}) {
+  const url = feedUrl(policy && typeof policy === "object" ? policy : {});
+  if (!url) return { enabled: false };
+  const feed = await refreshFeed(url, { fetchImpl, now }, stateDir);
+  if (!feed) return { enabled: true, available: false, verdict: null, signals: [], evidence: [] };
+  const id = { kind: ref.ecosystem, ref };
+  const name = String(ref.name || "").toLowerCase();
+  const e = feed.entries.find((x) => x && x.ecosystem === ref.ecosystem && String(x.name).toLowerCase() === name);
+  const f = feedSignals(feed, id, ref.version || null);
+  const otherVersion = f.evidence.includes("catalogue-other-version");
+  return { enabled: true, available: true, verdict: e && !otherVersion ? e.verdict : null, ...(e && otherVersion ? { scannedVersion: e.version } : {}), signals: f.signals, evidence: f.evidence };
+}
+
 // ---- tool-stage signals ---------------------------------------------------------------------------
-function toolCode(f) {
+export function toolCode(f) {
   const t = Number(f && f.threatId);
   return t === 60 ? "tool-poisoning" : t === 50 ? "tool-hidden-content" : "tool-metadata";
 }

@@ -21,7 +21,8 @@ import { serverMode, serviceWho, workloadIdentity } from "../cli/server-mode.mjs
 export const CONFIG = loadConfig();
 export const SERVER_MODE = serverMode();
 const WHO = SERVER_MODE.active ? serviceWho(SERVER_MODE) : { user: os.userInfo().username, device: os.hostname() };
-export const IDENTITY = { user: WHO.user, device: WHO.device, platform: os.platform(), tenant: CONFIG.tenant, actor: actorHash(WHO.user, WHO.device) };
+// agentName: the console's agent_name for this surface (RAISEME-server server/siem-fields.js AGENT_NAMES).
+export const IDENTITY = { user: WHO.user, device: WHO.device, platform: os.platform(), tenant: CONFIG.tenant, actor: actorHash(WHO.user, WHO.device), agentName: "gateway" };
 export const WORKLOAD = workloadIdentity();
 
 let tierOf = () => "content-free";

@@ -98,7 +98,9 @@ test("hook: a reverse-shell Bash call is denied with the threat's safer alternat
     assert.match(r.reason, /^MoorAI: /);
     assert.ok(r.reason.includes("Safer:"), r.reason);
     assert.ok(r.reason.includes(byId.get(54).saferAlternative), r.reason);
-    assert.ok(!r.reason.includes("198.51.100.7"), "the reason must not echo the matched command");
+    // The detector reason and the safer line never echo the command; the exception line after them names
+    // a pattern for the call on purpose (cli/exceptions.mjs suggestPattern, which masks credential shapes).
+    assert.ok(!r.reason.split(" Exception: ")[0].includes("198.51.100.7"), "the reason must not echo the matched command");
   } finally { rmTree(home); }
 });
 

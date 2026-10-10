@@ -18,6 +18,9 @@ use std::collections::BTreeMap;
 pub const MXC_SCHEMA_VERSION: &str = "1.0.0";
 pub const DEFAULT_MODEL_PROXY_PORT: u16 = 8791;
 pub const AGENT_TMP: &str = "{HOME}\\.moorai\\agent-tmp";
+// cli/mxc-policy.mjs NODE_PRESERVE_SYMLINKS: Node's main-module realpathSync lstat()s every ancestor and
+// gets EPERM on C:\ in BaseContainer; granting enumeration on the ancestors cascades to the profile.
+pub const NODE_PRESERVE_SYMLINKS: &[&str] = &["--preserve-symlinks", "--preserve-symlinks-main"];
 
 pub const AGENT_STATE_CLAUDE: &[&str] = &["{HOME}\\.claude", "{HOME}\\.claude.json"];
 pub const AGENT_STATE_CODEX: &[&str] = &["{HOME}\\.codex"];
@@ -186,6 +189,17 @@ fn env_get(env: &BTreeMap<String, String>, name: &str) -> String {
         .find(|(k, _)| k.eq_ignore_ascii_case(name))
         .map(|(_, v)| v.clone())
         .unwrap_or_default()
+}
+
+// The host's NODE_OPTIONS with NODE_PRESERVE_SYMLINKS appended where missing (cli/mxc-policy.mjs nodeOptions).
+pub fn node_options(env: &BTreeMap<String, String>) -> String {
+    let ws = |c: char| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c' | '\x0b');
+    let raw = env_get(env, "NODE_OPTIONS");
+    let own = raw.trim_matches(ws);
+    let have: Vec<&str> = own.split(ws).collect();
+    let mut parts: Vec<&str> = vec![own];
+    parts.extend(NODE_PRESERVE_SYMLINKS.iter().copied().filter(|f| !have.contains(f)));
+    parts.into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 #[derive(Default, Clone)]
@@ -459,7 +473,7 @@ pub fn build_policy(i: &PolicyInput, exists: &dyn Fn(&str) -> bool) -> Value {
             .collect(),
     );
 
-    let mut env = vec![format!("TEMP={agent_tmp}"), format!("TMP={agent_tmp}")];
+    let mut env = vec![format!("TEMP={agent_tmp}"), format!("TMP={agent_tmp}"), format!("NODE_OPTIONS={}", node_options(&i.env))];
     if agent == "claude" {
         env.push(format!("ANTHROPIC_BASE_URL=http://127.0.0.1:{port}/anthropic"));
         env.push("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1".into());

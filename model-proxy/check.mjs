@@ -108,7 +108,7 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
     // Arguments that are not a JSON object never reached the tool decision (hook branch, workload profile),
     // and an SDK may still parse them leniently and run the call. Enforce refuses them; report mode keeps
     // the content scan above.
-    if (enforce && c.raw != null && v.decision !== "deny") return { decision: "deny", reasons: ["tool call arguments are not a valid JSON object"] };
+    if (enforce && c.raw != null && v.decision !== "deny") return { decision: "deny", reasons: [c.rawReason || "tool call arguments are not a valid JSON object"] };
     return { decision: v.decision, reasons: v.reasons };
   }
 

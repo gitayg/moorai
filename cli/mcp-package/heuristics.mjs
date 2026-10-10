@@ -135,18 +135,25 @@ function installTargetDownloads(script, root) {
   return !!(t && RE.egress.test(stripComments(t, rel)));
 }
 
-function packageJsonFindings(text, rel, root) {
-  let pj;
-  try { pj = JSON.parse(text); } catch { return []; }
-  const scripts = pj && typeof pj.scripts === "object" && pj.scripts ? pj.scripts : {};
+// The npm lifecycle scripts that run on install. `scripts` is a package.json `scripts` object — read from
+// the extracted package, or from the registry's version manifest (moorai-mcp-check, which never
+// downloads: without `root` an install-target file cannot be read, so -download is never reported there).
+export function lifecycleFindings(scripts, rel = "package.json", root = null) {
+  const s0 = scripts && typeof scripts === "object" ? scripts : {};
   const out = [];
   for (const k of LIFECYCLE) {
-    const s = scripts[k];
+    const s = s0[k];
     if (typeof s !== "string" || !s.trim()) continue;
     const id = RE.lifecycleRemote.test(s) ? "pkg-install-script-remote" : installTargetDownloads(s, root) ? "pkg-install-script-download" : "pkg-install-script";
     out.push(finding(id, rel, s));
   }
   return out;
+}
+
+function packageJsonFindings(text, rel, root) {
+  let pj;
+  try { pj = JSON.parse(text); } catch { return []; }
+  return lifecycleFindings(pj && pj.scripts, rel, root);
 }
 
 function codeFindings(text, rel, name) {

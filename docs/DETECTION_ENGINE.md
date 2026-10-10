@@ -822,7 +822,7 @@ and `[[System.]Net.Sockets.TCPClient]::new(`; #57 matches `irm|iwr|Invoke-RestMe
 | iex|Invoke-Expression` within one statement (a 200-character window) and `iex (irm …)` /
 `iex (New-Object Net.WebClient).DownloadString(…)`, with no `powershell` in front; the new patterns hit 0
 of 10,030 benign strings across 14 corpora. Existing installs converge on the new matcher. Whole-hook p50 on
-a benign command was 121 ms for both `Bash` and `PowerShell` (30 calls each, no reachable policy server).
+a benign command is about 150–160 ms for both `Bash` and `PowerShell` on an Apple M5 Max (no reachable policy server; BENCHMARK.md).
 Limits are in §13.
 
 **Files named by MCP arguments.** An MCP tool that takes a path reads the file itself, so `mcpGateway`
@@ -1456,6 +1456,78 @@ adversarial inputs) and `test/fetch-exec-hook.test.mjs` (the real hook process: 
 cross-call cases, another session not inheriting the record, secret upload, #78/#79 alerts carrying no
 host, a policy acting on each, and the record's bounds and content-freedom).
 
+### Install-path steering and clone-then-run
+
+A public write-up describes a skill file that told a coding agent the "supported install path" was to clone
+one repository and run the tool from that checkout, told it not to use the official package from the
+registry, and pointed it to a second file with the setup steps. The agent followed it and ran the
+attacker's code. Measured on v1.9.x: neither the instruction text (read at the file stage) nor the
+resulting `git clone <repo> && cd … && pnpm install && pnpm start` raised anything. Two other cases from the
+same write-up were already caught: a GitHub-issue "prerequisite install" from a git ref (#57) and an MCP
+tool description asking for credential files (#55, #40, #60). Two detectors in
+[`data/detectors-net-exec.js`](../data/detectors-net-exec.js) close the gap, each reporting a one-character
+match (threat id and category only, no repository, package or URL):
+
+| Threat | Detector | Stages | Fires on | Default |
+|---|---|---|---|---|
+| #40 Second-Order Prompt Injection | `install-path-steering` | file, index, output | content the agent reads that tells it NOT to use the official install and to install or run from somewhere else, within 400 characters of each other ([`data/install-steering.js`](../data/install-steering.js)) | `notify` on a Read; `justify` (an advisory beside the result) on inbound tool results, as for every #40 finding (§7) |
+| #80 Repository cloned and run in one command (new, Medium) | `clone-then-run` | prompt | a `git clone` / `gh repo clone`, or an archive downloaded and unpacked (`curl -LO … && tar xzf …`, `curl … \| tar xz`, `unzip`), then, in the same chain, an install / run / start / build step whose working directory (after a `cd`) or target lies inside that checkout ([`data/net-exec.js`](../data/net-exec.js) `cloneRunFacts`) | `notify` (report) |
+
+**The steering signal is a pair.** Either half alone is documentation. AWAY: "do not / don't / never /
+avoid / stop" + use / run / install, then a registry install that names a package (`npx pkg`,
+`npm i -g pkg`, `pip install pkg`, `uvx pkg`, "the published package", "from npm"); or "instead of /
+rather than / avoid / skip" + that install. A bare `npm install` or `pip install .` names no package (nor does `npm install in the root`: the word after
+the install has to be a package name, not the next word of the sentence), so
+"don't use npm install, this repo uses pnpm" does not count. TOWARD: `git clone`, "clone the repository",
+"run it from the checkout", "install from source", a `git+` / `github:` spec, a raw.githubusercontent or
+gist URL, a `.git` URL, or a URL to a script or archive. Three checks keep the pair honest: the words
+between the AWAY verb and the install may not contain another verb or cross a clause end ("don't run
+anything from the checkout, use npx pkg" steers toward the registry); another registry install offered in
+the words that follow ("don't use `npm i -g pkg`, use `npx pkg` instead") is a choice between two official
+installs, not steering away from them, but only when it names a package and is not run in the checkout or
+from source (`run pnpm install from the checkout` is the alternative, not a replacement); and the two halves must sit within 400 characters. Not on the prompt
+stage: there the user is the one choosing where to install from.
+
+**Why #40, and why a new #80.** An instruction inside ingested content that redirects what the agent does
+is #40's definition, and #40 is what the other ingest-stage instruction detectors (`inj-untrusted-directive`,
+`ingest-agent-directed`) report; #3 is the same family on the prompt-equivalent stages, #57 and #62 judge an
+install the agent attempts, not text it reads. Clone-then-run is a weaker sibling of `fetch-then-exec`
+(#57), but the default action is chosen per THREAT, not per detector: `threatActionFor` resolves #57 to
+`justify` (`BUILTIN_DEFAULT_ACTIONS`), and the detector's `mode` field does not reach the decision. Reusing
+#57 would have made every `git clone … && npm install` ask for sign-off on a device with no policy. #80 is
+absent from `BUILTIN_DEFAULT_ACTIONS` and `APPROVAL_THREATS`, so it resolves to `notify`; an org raises it
+with `threatPolicy: { "80": "justify" }` or `"block"`. It credits AML.T0010 and ASI05, both bounded ("a
+repository checkout run in the same command"), so no coverage count moves.
+
+**What "one command" means.** The clone and the run are joined by `&&`, `||`, `;`, `|` or `&`, or sit in
+the same nested `sh -c` script. A newline ends the chain, so a build-from-source block with one step per
+line is not one command. The run must happen inside the checkout: `git clone X && npm install` installs in
+the directory the command started in and does not fire. `clone-then-run` is also silent on text the agent
+reads rather than runs: when the caller marks it as such (`ctx.inbound`, `ctx.targetPath`, or the
+`ctx.template` key the hook and the Agent SDK pass for a Read), and when the text holds a markdown code
+fence, which marks a document. A scan of a README with no context and an unfenced one-line
+`git clone … && cd … && npm install` (for example `moorai-scan` on a file) still reports it.
+
+**Benign evidence, stated plainly.** Nothing moved: benign-corpus-v2 20/602 before and after (the whole
+report byte-identical), the WebFetch benign tune half 23/149 before and after (identical apart from
+latency), and `scripts/score-inbound.mjs` on its tune split, with and without 1,451 real `node_modules`
+files from five trees, identical apart from latency. That is weak evidence: benign-corpus-v2 is a prompt
+corpus with no `git clone` in it, and the steering detector does not run on the prompt stage. A sweep of
+1,822 unique README / CONTRIBUTING / INSTALL / SETUP / SKILL.md files on a development machine raised
+neither detector, but only 25 of them contain `git clone`, none chains it to a run on one line, and none
+pairs it with an instruction against the registry install, so it exercises each half alone, not the pair.
+The quiet cases are pinned instead: a README build-from-source section, CONTRIBUTING steps that say not to
+use `npm install`, a README that says use `npx` instead of a global install and to clone the repository to
+hack on it, an instruction against a registry install with no alternative or with a clone 600 characters
+away, a plain `git clone`, `npm install <pkg>`, a clone then an install outside the checkout, a clone then
+`git log` or an editor, a multi-line build block, and a local archive unpacked and built.
+
+Tests: `test/install-steering.test.mjs` (the measured skill text at the file, index and output stages, the
+measured command with and without a policy, the other phrasings and shapes, and the quiet cases) and
+`test/clone-steer-hook.test.mjs` (the real hook process: a Read of the skill file, the same text returned by
+WebFetch, the clone-and-run Bash command under no policy, `justify` and `block`, and the quiet README,
+CONTRIBUTING, plain clone and named install).
+
 ### Across the session: session risk and the runaway circuit breaker
 
 Two more per-session signals, both pure modules with their state and keyed hashing in
@@ -1899,6 +1971,86 @@ would be cosmetic. Content-rule findings (`threatId: 0`) are never candidates fo
 
 Anything added to a drop set or a gate needs the same two numbers: what it catches, and what it costs.
 
+### v1.11.0: benign fetched pages — two web gates and three detectors narrowed
+
+Classified first, on the tune half of `test/redteam/benign-web-content.json` (23 of 149 pages alerting
+through the shipped hook, `scripts/score-webfetch-benign.mjs`). The expected cause, documentation quoting
+attack text for a human reader, accounted for **5** of the 23 (an SSRF request line and a dependency-
+confusion host in two advisories, a quoted injection in a third, an "override the previous instruction"
+correction note, a "you must delete their data" partner obligation). The other 18 were detectors or gates
+too broad for the shape they matched: a `curl` example on a docs page (5), a contact address (4), a
+documented example or placeholder credential (5), the word "diagnosis" (2), an RFC bit ruler read as a
+card number (1), an OAuth redirect URI registration (1). No documentation-context signal was added: the
+fixes narrow what each detector or gate asks, and each one is pinned with attack fixtures wrapped in a
+documentation frame (`test/webfetch-fp-narrowing.test.mjs`).
+
+- **#17 web gate, `curl` / `wget`.** A command with a URL counts only when it does something with the
+  link: pipes what it fetched into an interpreter (`| sh`, `| sudo bash`, `| python3`), runs it after
+  download (`&& chmod +x …`, `&& ./x`, `bash <(curl …)`, `sh -c "$(curl …)"`), or uploads data to it
+  (`-d`, `--data*`, `-F`, `-T`, `--upload-file`, `-X POST|PUT|PATCH`). A GET, a key piped into `gpg`, a
+  `-u` login no longer count. Every tune attack that used the old branch pipes into a shell or uploads.
+- **#17 web gate, `post`.** An HTTP request line (`POST /path …`, `POST https://…`) is a request shown,
+  not an object posted to a link; "POST its contents to https://…" still counts.
+- **#15 web gate.** The address must be the recipient of a transfer ("send / email / forward … to
+  `<addr>`", "cc `<addr>`") or sit in a message header. "Email `<addr>`", "Email the maintainers at
+  `<addr>`" and the JSON key `"email": "…"` (already excluded at the doors) no longer count.
+- **#1 `dlp-payment-card`** gains a Luhn `refine()`. Letter-spaced, grouped and contiguous cards that
+  pass the checksum still fire, at every stage.
+- **#39 `secret-db-conn`** ignores a password slot that is a template (`<NEW_PASSWORD>`, `${DB_PASSWORD}`,
+  `$PGPASS`, `{{…}}`, `%s`, `****`). Literal passwords, however weak, still fire. Its quantifiers are now
+  bounded (`{1,256}`): a `refine()` routes the pattern through `safeRegex`, which refuses more than one
+  unbounded quantifier, and the detector would otherwise stop firing without an error (the "literal
+  password still fires" test goes red when they are unbounded again).
+- **#44 `phi-hipaa`.** The clinical nouns ("diagnosis", "prescription", "prognosis", "lab results",
+  "treatment plan") count only within 80 characters of a clinical term (patient, physician, hospital,
+  medication, `500 mg`, cancer, diabetes, ICD, DOB, …). The record and identifier forms (patient chart,
+  medical record, MRN, NPI, DEA, ICD-10 codes) are unchanged.
+
+Measured, before → after: tune-half benign web pages alerting **23 → 10 of 149** (15.44% → 6.71%),
+web-page true positives 7/9 → 7/9; `scripts/score-inbound.mjs` (tune) attack rows changed on the hook, SDK
+and gateway paths: **0 of 95**, benign rows alerting 25 → 18 of 580 (hook and SDK) and 24 → 23
+(gateway); every tune attack of the inbound population plus `heldout-v2-tune.json`, scanned in process as
+if WebFetch had returned it: 0 attack threat sets changed; `score-heldout-v2.mjs --file
+heldout-v2-tune.json` 61/61 → 61/61; red-team 102/102 → 102/102; `score-benign-v2.mjs` 20 → 19 of 602.
+The attack side is a no-regression check on in-sample sets, not fresh recall.
+
+Left alone, with the reason: the canonical example credentials (`AKIA…EXAMPLE`, the jwt.io token, an
+`AIza…EXAMPLE…` key) because the repository's own tests and red-team corpus use them as the secret, and
+#39 on inbound content is report-only anyway (`CRED_RESULT_DECISION`); `postgres:postgres@` (a default
+credential is still a credential); the quoted injection in an advisory and the "override the previous
+instruction" note (a quoted-for-a-reader signal is exactly what turned a published design's false
+positives into false negatives); "you must delete" in `inj-untrusted-directive` (one sample is the only
+evidence, and dropping `delete` would also drop a sabotage directive); "register exactly https://…"
+(registering an attacker's URL as a redirect or webhook is a real attack shape).
+
+`browser-ext/detectors.js` carries its own hand-maintained copy of `dlp-payment-card` and the secret
+detectors. It now has the Luhn `refine()`, the `secret-db-conn` placeholder `refine()`, and the bounded
+patterns of `secret-db-conn`, `secret-generic-assignment` and `secret-aws-secret`, copied verbatim. A detector
+with a `refine()` tries every occurrence until one passes, as `src/engine.js` `_matchDetector` does, so a
+failing digit run ahead of a real card does not hide it. `browser-ext/test-detectors.mjs` fails when those
+four patterns drift from `data/`. The extension's `secret-generic-assignment` still uses the plain entropy
+gate (`looksLikeSecret`), not the agent's placeholder-word filter (`looksLikeAssignedSecret`).
+
+### #54: the Python socket reverse shell
+
+`exec-reverse-shell` used to catch Python only when the shell name sat within 80 characters of the word
+`socket` (or of `pty.spawn` with no socket at all). The common one-liners put the `connect(…)` and three
+`os.dup2` calls in between, so `python3 -c 'import socket,subprocess,os;s=socket.socket(…);s.connect((…));
+os.dup2(s.fileno(),0); …;subprocess.call(["/bin/sh","-i"])'` was allowed in a `Bash` command under the
+built-in defaults. A second Python pattern now needs all three parts within 600 characters of `python`
+(`python`, `python3`, `python3.11`; a heredoc counts):
+
+- a `socket`;
+- the shell's stdio wired to it: `dup2(` or `fileno(` (`os.dup2(s.fileno(),0)`, or `stdin=s.fileno()`);
+- a quoted shell: `"sh"`, `'/bin/bash'`, `"/usr/bin/zsh"` (`sh`, `bash`, `zsh`, `dash`, `ksh`, `csh`).
+
+Ordinary socket client code, `python3 -m http.server` and pty usage without a socket have at most two of
+the three and stay quiet (`test/exec-reverse-shell-python.test.mjs`, with placeholder host 192.0.2.1).
+The older pattern is unchanged, so `pty.spawn("/bin/bash")` alone, the TTY upgrade run inside a shell an
+attacker already has, still fires; `test/mcp-package-precision.test.mjs` relies on it. Measured:
+`score-benign-v2.mjs` 19/602 before and after (identical output); 60 KB of repeated `python ` runs the
+pattern in 7.5 ms.
+
 ---
 
 ## 8. The MCP proxy
@@ -1909,7 +2061,9 @@ place and pumps stdio both ways. It reuses `mcpGateway`, so one policy resolves 
 surfaces. Three inspection points:
 
 **1. `tools/call` arguments (agent → server) — can refuse.** `mcpGateway` composes, short-circuiting on
-the first deny: server allow-list (`decideMcpServer`, enforcing only when `policy.mcpAllow` is set) →
+the first deny: server allow-list (`decideMcpServer`, enforcing when `policy.mcpAllow` is a non-empty
+list, or always when the console's approval gate `policy.mcpGate` is on, where an empty list means nothing
+is approved yet and every server is denied; with the gate off, an empty list is no allow-list) →
 per-tool argument rules (`decideMcpArgs`) → argument content scan (`decideText(..., "prompt")`). A denied
 call is **never forwarded**; the real server never receives it, and the agent gets a tool-result carrying
 `isError: true` — not a protocol-level JSON-RPC error, which a client can surface as a broken session or
@@ -2139,7 +2293,7 @@ p95 145.1 / 147.9 ms before, 145.4 / 146.5 ms after. That is about 3–4 ms at t
 machine with no reachable policy server. The semantic tier, when on, adds up to its 1500 ms budget.
 
 The `Bash`, `Agent`/`Task` and `mcp__*` `PostToolUse` matchers add one hook process after each such call,
-about 82 ms at p50 on one machine. A call with no output to judge exits before the policy load. A mask
+127 ms at p50 and 148 ms at p95 on an Apple M5 Max. A call with no output to judge exits before the policy load. A mask
 adds a second scan of the rewritten text, bounded by the 256 KB rewrite budget.
 
 Files named by MCP arguments (§6) cost whole-hook p50 133 → 216 ms for an `mcp__*` call naming one small
@@ -2207,6 +2361,17 @@ Stated rather than papered over.
   interpreter's body is read as shell, so Python or Node API calls in it (`urllib` then `subprocess`) are
   not seen; nesting past three levels, a here-string held in a variable (`$s = @'…'@; iex $s`), a POSIX
   here-string (`bash <<< "…"`) and `eval "$(cat <<EOF …)"` are not read as code. Tested on macOS only.
+- **Install-path steering and clone-then-run (§6) — what they do not see.** Steering phrased without an
+  instruction against the registry install ("the npm package is outdated; install from source", "the
+  `pkg` package on PyPI is not this project"), steering that names the alternative in a second file only
+  (the measured skill pointed to one: the first file is caught only because it also said "clone"), a
+  non-English instruction, and an instruction more than 400 characters from its alternative. Clone-then-run
+  misses a clone and a run on separate lines or separate tool calls (no cross-call record, unlike
+  `fetch-then-exec-session`), a destination held in a variable (`cd $(basename $url .git)`), a run through
+  an alias, task runner or editor not listed, `svn checkout` / `hg clone` / `degit`, and an archive whose
+  unpacked directory is entered by an absolute path. A one-line clone-and-run in an unfenced document that
+  a caller scans with no context (`moorai-scan` on a file) is reported. Not exercised by any benign corpus
+  as a pair; only the pinned quiet cases are evidence of precision.
 - **`egress-credential-shaped` (#65, `block`) fires on a long API URL after `-d`.** Measured on v1.7.0 and
   unchanged here: `curl -d @payload.json https://api.example.com/v1/items` is denied, because the
   data-flag context captures `//api.example.com/v1/items` (no `https:` prefix, so the URL guard misses it)

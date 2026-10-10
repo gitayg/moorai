@@ -14,13 +14,17 @@
 // docs/schema.md "Schema Versioning"). Design notes: docs/CAPABILITY_SPEC.md "Windows: launching
 // agents inside MXC (wxc-exec)".
 
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { mxcEgress, mxcNetwork } from "./sandbox-policy.mjs";
 
 export const MXC_SCHEMA_VERSION = "1.0.0";
 export const DEFAULT_MODEL_PROXY_PORT = 8791; // model-proxy/server.mjs DEFAULTS.port
 export const AGENT_TMP = "{HOME}\\.moorai\\agent-tmp";
+// In BaseContainer, Node's main-module realpathSync lstat()s every ancestor of the script and gets
+// `EPERM: lstat 'C:\'`, so every Node workload (the hook, Codex, Copilot) dies before it runs. Granting
+// enumeration on the ancestors is not an option: listing C:\ cascades to the profile and its .ssh.
+export const NODE_PRESERVE_SYMLINKS = ["--preserve-symlinks", "--preserve-symlinks-main"];
 
 // Read-write state each agent needs to run. Without its own dir the agent cannot persist a session,
 // its settings or its login. `.claude.json` is a FILE next to the profile root, granted on its own so
@@ -146,6 +150,14 @@ export function expand(template, t) {
     return v;
   });
   return missing ? "" : winNorm(out);
+}
+
+// The host's NODE_OPTIONS with NODE_PRESERVE_SYMLINKS appended where missing; the host's own options are kept.
+// ASCII whitespace only, so src-tauri/src/mxc.rs splits the same way.
+export function nodeOptions(env) {
+  const own = envGet(env, "NODE_OPTIONS").replace(/^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g, "");
+  const have = new Set(own.split(/[ \t\n\r\f\v]+/));
+  return [own, ...NODE_PRESERVE_SYMLINKS.filter((f) => !have.has(f))].filter(Boolean).join(" ");
 }
 
 // Which class a path belongs to. First match in PATH_CLASSES order; "other" when none.
@@ -277,7 +289,7 @@ export function buildMxcPolicy(input, { exists = () => true } = {}) {
   // The host's install dir is denied explicitly too (reads included: the agent has no use for it).
   const denied = dedupe([...denyClassPaths, appDir].filter((d) => d && exists(d) && (i.fsDenySupported === true || overlapping(d))));
 
-  const env = [`TEMP=${agentTmp}`, `TMP=${agentTmp}`];
+  const env = [`TEMP=${agentTmp}`, `TMP=${agentTmp}`, `NODE_OPTIONS=${nodeOptions(i.env)}`];
   if (agent === "claude") {
     env.push(`ANTHROPIC_BASE_URL=http://127.0.0.1:${port}/anthropic`);
     env.push("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1");
@@ -340,7 +352,9 @@ const HELP = `mxc-policy — build a Microsoft Execution Containers launch reque
                           [--denials <path>] [--fs-deny] [--out <file>]
 
 Reads USERPROFILE/APPDATA/LOCALAPPDATA/ProgramData/ProgramFiles/SystemRoot from the environment.
-Path existence is not checked by the CLI; wxc-exec rejects a grant that does not exist.
+Paths are checked on this machine: a grant or --fs-deny entry that does not exist is left out (wxc-exec
+fails a missing deniedPath with 0x80070003), and the read-write state dirs are created, as the desktop
+host does; one that exists but is not a plain directory refuses the build.
 --egress-rules reads egressRules/egressDefault from a JSON object; rules MXC cannot express go to stderr.
 Run with:  wxc-exec.exe --log-file <log> <file>
 `;
@@ -369,8 +383,15 @@ function main(argv) {
     else if (a === "--out") o.out = v();
     else { process.stderr.write(`unknown argument ${a}\n`); return 2; }
   }
-  const r = buildMxcPolicy(o);
+  const r = buildMxcPolicy(o, { exists: (p) => existsSync(p) });
   if (!r.ok) { process.stderr.write(`mxc-policy: ${r.reasonCode}: ${r.reason}\n`); return 1; }
+  // src-tauri/src/mxc_launch.rs ensure_dir: each must be a plain directory before and after it is created.
+  const plain = (d) => { try { const s = lstatSync(d); return s.isDirectory() && !s.isSymbolicLink(); } catch { return null; } };
+  for (const d of r.ensureDirs) {
+    if (plain(d) === false) { process.stderr.write(`mxc-policy: ${d} is not a plain directory; the contained agent can write there (remove it and rerun)\n`); return 1; }
+    mkdirSync(d, { recursive: true });
+    if (plain(d) !== true) { process.stderr.write(`mxc-policy: ${d} is not a plain directory after creating it\n`); return 1; }
+  }
   const text = JSON.stringify(r.policy, null, 2) + "\n";
   for (const u of r.egressUnexpressed || []) process.stderr.write(`not expressed: ${JSON.stringify(u)}\n`);
   if (o.out) writeFileSync(o.out, text);

@@ -25,7 +25,7 @@ That's the exact trade MoorAI refuses.
 ## What it does
 
 - **Context interception** — stops a secret or PII being *read into the agent's context* (e.g. an agent slurping a `.env`), not just typed in a prompt. Via the agent's PreToolUse hooks, on-device. An enrolled device enforces the policy (block, or hold for sign-off); a device that isn't enrolled coaches: the agent is told what it touched and the read goes ahead. What comes back into the agent — command output, MCP results, sub-agent reports, fetched pages — is scanned after the tool runs as untrusted inbound content.
-- **Agency Enforcement** — bounds what an agent is *allowed to do*: inspects `mcp__*` tool-call arguments for secrets/policy violations and blocks them, and enforces an approved-MCP-server allow-list at call time — with a **discovered → approved/denied approval-gating lifecycle** in the console. An argument that names a local file (`{"path": "customers.csv"}`, `~/…`, `file://…`) gets that file checked the way a `Bash` command's read path is: its content at the `file` stage, its metadata (#72) and its location against the credential list (#55), in the Claude Code hook and in the MCP proxy, which refuses a blocked call before the real server sees it. At most 12 files, 256 KB each, 1 MB and 1 s per call; anything past the caps is skipped silently, and a file named by path cannot be masked, so `mask` resolves to its fallback. The direct control for **OWASP LLM06: Excessive Agency**. Details and limits: [`docs/DETECTION_ENGINE.md`](docs/DETECTION_ENGINE.md) §6, §13.
+- **Agency Enforcement** — bounds what an agent is *allowed to do*: inspects `mcp__*` tool-call arguments for secrets/policy violations and blocks them, and enforces an approved-MCP-server allow-list at call time — with a **discovered → approved/denied approval-gating lifecycle** in the console. An empty allow-list (`mcpAllow: []`, the console default) is no allow-list: it blocks nothing and marks no server unapproved, on every surface. With the console's approval gate (`mcpGate`) on, the list is the approved set, so a server not approved yet is denied, including when nothing is approved. An argument that names a local file (`{"path": "customers.csv"}`, `~/…`, `file://…`) gets that file checked the way a `Bash` command's read path is: its content at the `file` stage, its metadata (#72) and its location against the credential list (#55), in the Claude Code hook and in the MCP proxy, which refuses a blocked call before the real server sees it. At most 12 files, 256 KB each, 1 MB and 1 s per call; anything past the caps is skipped silently, and a file named by path cannot be masked, so `mask` resolves to its fallback. The direct control for **OWASP LLM06: Excessive Agency**. Details and limits: [`docs/DETECTION_ENGINE.md`](docs/DETECTION_ENGINE.md) §6, §13.
 - **AI output review** — reviews what the agent says *back*, not just what's typed. On-device output screening flags **secrets, PII, and insecure code the agent generates** (SQL injection, XSS, command injection, `eval`/dynamic exec, weak crypto, unsafe deserialization) and masks secret spans on the `-p` path — emitting only a content-free verdict, never the reply. An intra-file **taint-lite** check (dependency-free source→sink proximity) raises a high-confidence *confirmed tainted-flow* signal when untrusted input actually reaches one of those sinks, so the console can prioritize real flows over hardcoded-literal matches.
 - **Index / RAG payload inspection** — content headed for a vector store or retrieval index is scanned at the engine's `index` stage before it is embedded, so a poisoned chunk is caught before it can be retrieved into someone's context. Three integration points: `scanBeforeEmbed` / `guardEmbed` in `@moorai/agent-sdk` for an app that runs its own ingestion, `POST /v1/index-scan` on `moorai-serve` for any framework, and vector-store write tools (`add_documents`, `upsert`, `store_memory`, … on Chroma, Qdrant, Pinecone, Weaviate, mem0 and the like) seen by the MCP proxy and gateway. Report-first; `policy.indexScanAction: "block"` drops or refuses an instruction-carrying chunk. MoorAI has no vector store of its own: an app that embeds without calling one of these is not covered. Details: [*Content headed for an index*](#content-headed-for-an-index-rag-ingestion).
 - **Provider-anchored secrets engine** — ~14 provider families (GitHub, AWS, Stripe, Slack, GCP, OpenAI/Anthropic, DB connection strings, …) plus Shannon-entropy scoring with an allowlist (UUIDs, git SHAs, base64) so it doesn't false-positive on the things that aren't secrets.
@@ -45,14 +45,16 @@ That's the exact trade MoorAI refuses.
 - **Verdict provenance** — every alert and every on-device ledger row says which policy decided (`policyId`), which branch decided (`reasonCode`), and whether the verdict was enforced as configured (`AS_CONFIGURED`, `STRENGTHENED`, `LIMITED`, or `UNEVALUATED`). A control that never ran — unreadable input, a hook error, a size cap, break-glass — is recorded as `UNEVALUATED`, never as a pass.
 - **Coverage integrity** — the hook sends a content-free daily heartbeat per agent host with the settings that weaken or switch off protection (hooks disabled, `bypassPermissions`, Codex `approval_policy = "never"`, a sandbox off, …), and the desktop app reports when each agent host was last used, independent of every hook. The console raises a finding for an agent in use with no MoorAI hook traffic, a weakened setting, and a hook removed or gone stale.
 - **Protected-instruction leak detection (#52)** — reports the rules files an agent runs under (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, Copilot, Cursor, Windsurf and Cline rules) leaving the device through the agent: reproduced in what it writes or sends, or uploaded by path (`curl -d "$(cat CLAUDE.md)"`, `gh gist create AGENTS.md`). The files are fingerprinted on-device as keyed hashes of 7-word shingles; no text is stored. Editing the rules file itself, quoting a line or two, and template boilerplate stay silent.
-- **MCP server reputation** — scores an MCP server 0-100 the first time it is seen (bands good / fair / poor / bad) from its package name, its launch command and the copy npx already installed, plus, opt-in, a registry lookup (which also checks that the package's declared repository is really its own, from registry provenance or the repository's own manifest) and SkillTriage's published verdicts. A content-free alert carries the score, band and reason codes; `mcpReputation.blockBelow` refuses a low-scoring server. Details in [`mcp-proxy/README.md`](mcp-proxy/README.md).
+- **MCP server reputation** — scores an MCP server 0-100 the first time it is seen (bands good / fair / poor / bad) from its package name, its launch command and the copy npx already installed, plus, opt-in, a registry lookup (which also checks that the package's declared repository is really its own, from registry provenance or the repository's own manifest, and counts the accounts that can publish it: one is `single-maintainer`, a weak signal at weight 5) and SkillTriage's published verdicts. `moorai-mcp-check <package>` runs ten pre-install checks on a server you have not installed yet. A content-free alert carries the score, band and reason codes; `mcpReputation.blockBelow` refuses a low-scoring server. Details in [`mcp-proxy/README.md`](mcp-proxy/README.md).
 - **Local secret-egress detection** — fingerprints your local secret values (`.env`, cloud creds) on-device as keyed one-way hashes and blocks an outbound command or tool-call that carries one verbatim — catching a real secret leaving even when it isn't in a recognizable token shape. Only the hash + a verdict leave.
 - **Insecure-defaults screening** — flags misconfigurations agents habitually emit (SSRF, path traversal, XXE, JWT `alg=none`, TLS-verify-off, wildcard CORS, `debug=True`, insecure randomness for tokens, hardcoded creds, world-writable perms, open redirect) — on top of the SQLi/XSS/RCE/deserialization coverage.
-- **Sub-agent / A2A oversight** — records agent-to-agent delegation (sub-agent spawns), scans the delegated prompt for injection, and applies the parent's entitlement envelope to the child so a delegated action can't slip past the parent's controls.
+- **Sub-agent / A2A oversight** — records agent-to-agent delegation (sub-agent spawns), scans the delegated prompt for injection, and applies the parent's entitlement envelope to the child so a delegated action can't slip past the parent's controls. The delegation alert names a Claude Code built-in sub-agent type (`general-purpose`, `Explore`, `Plan` …) in clear; a custom type's name, which can say what the user is working on, travels only as the tenant-keyed hash. Every hook alert also says which agent it is about (`agentName`: `claude-code`, or `codex` / `cursor` / `gemini` / `copilot` through `moorai-agent-hook`; `gateway` from the HTTP MCP gateway), which the console shows as `agent_name`.
 - **MITRE ATLAS agent techniques (v2026.09)** — a link that opens an assistant with a prompt already filled in through `?q=` (`AML.T0131`), ingested content that asks the agent to enumerate its own tools and permissions (`AML.T0133`), a block addressed only to AI clients that contradicts the visible page (`AML.T0134`), markup that renders steering text invisible — same colour as its background, zero font size, a hidden element (`AML.T0068`), an image or link preview whose URL carries conversation data (`AML.T0077`), and directives planted in a file's EXIF, XMP, ID3 or PDF metadata (`AML.T0129`) — the part of a binary file that carries a sentence. Each needs two independent signals to fire, so an ordinary assistant link, a hidden template row or a CI badge stays silent. Cloaking's server-side differential, and instructions hidden in image pixels, audio or video, are **not** covered — see [DETECTION_ENGINE.md §14](docs/DETECTION_ENGINE.md).
 - **Jailbreak & injection detection** — high-precision detectors for direct jailbreaks (DAN lineage, developer/god-mode, named personas, chat-template control-token injection) scoped so normal dev prompts don't trip them, with opportunistic local-model escalation on ambiguity.
 - **Coach · alert · mask · block · justify · kill** — per policy, per tenant, per device. Nudge, warn, replace a secret or PII span with a content-free tag and let the call proceed, hard-block, require a signed justification, or **kill the session** — terminate the running agent (not just deny the one call) on a critical finding, in both the `-p` guard and the interactive host.
 - **Framework crosswalks** — every rule in [`data/threats.json`](data/threats.json) is mapped to the OWASP Top 10 for LLM Applications, MITRE ATLAS, the OWASP Top 10 for Agentic Applications 2026 (`owaspAgentic`, ASI01–ASI10) and the OWASP MCP Top 10 (`owaspMcp`, MCP01–MCP10, still a beta list), with partial credit and its reason recorded where a rule covers a risk only in part. Coverage per framework is in [`docs/BENCHMARK.md`](docs/BENCHMARK.md); the mapping rules and the rejected credits are in [`docs/DETECTION_ENGINE.md`](docs/DETECTION_ENGINE.md) §16.
+- **SAF-MCP, agentic AI guidance and ATF crosswalks** — three more frameworks are mapped from their own lists to MoorAI, each in [`data/crosswalks/`](data/crosswalks): the 78 active SAF-MCP techniques (OpenSSF SIG, commit `d3d4029`), the 140 recommendations of *Careful adoption of agentic AI services* (ASD's ACSC with CISA, NSA, the Canadian Centre for Cyber Security, NCSC-NZ and NCSC-UK, 1 May 2026) and the 25 core requirements of the Agentic Trust Framework 0.9.1 (published through the Cloud Security Alliance). Every credit names the MoorAI component and file that earn it; partial credits state their limit, gaps their reason, and organisational items are marked not applicable. `node scripts/crosswalk-report.mjs` prints the counts; the tables, sources and rejected credits are in [`docs/CROSSWALKS.md`](docs/CROSSWALKS.md).
+- **Latency and escalation coverage, measured** — [`docs/BENCHMARK.md`](docs/BENCHMARK.md) publishes p50, p95 and p99 (at n ≥ 1000) for in-process scanning, the Agent SDK decision and the hook's whole per-call process, with the Node startup floor beside it. `node scripts/drop-rate.mjs` reports, per surface, which attacks the rules catch, which a miss hands to the on-device model, and which no path routes anywhere, with the reason; method and results are in [`docs/DROP_RATE.md`](docs/DROP_RATE.md).
 - **Coach-as-literacy (EU AI Act Art. 4)** — each time MoorAI coaches a developer at the point of use (the *why* + *what-to-do*, mapped to OWASP LLM Top 10 / MITRE ATLAS), it records a **content-free "literacy touchpoint"** (topic + actor hash, never content). The console rolls these into a coverage view — demonstrable evidence of "measures taken" for a training program, not a substitute for one.
 - **Context-aware severity** — the same pattern is scored higher by *where* it was caught: a secret read into an agent's context or shipped as an MCP argument outranks one typed into a still-editable prompt.
 - **On-device exposure ledger** — a content-free local log of which credential/secret *classes* reached which agent, so an incident-response rotation is targeted, not a blanket burn. Plus a human-override *intent* log — the signal that separates legitimate agentic use from an attack. View both with `moorai-ledger`; nothing leaves the machine.
@@ -213,7 +215,7 @@ Uploads include BITS in upload mode, `Send-MailMessage -Attachments` and a copy 
 `[Net.Sockets.TCPClient]::new(`; #57 matches `irm … | iex` and `iex (irm …)` /
 `iex (New-Object Net.WebClient).DownloadString(…)` with no `powershell` in front (0 hits on 10,030 benign
 strings across 14 corpora). `mask` rewrites apply to the PowerShell command as to a `Bash` one. Measured
-p50 is the same as `Bash` (121 ms vs 121 ms, 30 benign calls each, no reachable policy server). Limits:
+p50 is the same as `Bash` (about 150–160 ms at p50 on an Apple M5 Max, no reachable policy server; see [`docs/BENCHMARK.md`](docs/BENCHMARK.md)). Limits:
 `powershell -Command "<script>"` payloads, `iex "$(gc .env)"`, `Join-Path $env:X …` and `[IO.FileStream]`
 are not followed; reads inside an encoded command over 8,000 characters are not followed (the decoded text
 is still scanned, up to 64 KB); a POSIX `~` in a `Bash` command is not expanded; and no live PowerShell run
@@ -273,7 +275,7 @@ Measured on a locked split scored once (64 inbound attacks; 144 benign web pages
 87.3%); benign web pages alerting 30 → 19 on the hook and 105 → 19 through the SDK; real files alerting
 46 → 32 on the hook and 300 → 21 through the gateway; benign advisories on real files 0 → 9. The tune
 split, which the rules were adjusted on, reads 93.2%. The benign-v2 gate is unchanged at 20/602. It costs
-one extra hook process per `Bash`, MCP or sub-agent call, about 82 ms at p50, and up to 1.5 ms of engine
+one extra hook process per `Bash`, MCP or sub-agent call, 127 ms at p50 and 148 ms at p95 on an Apple M5 Max, and up to 1.5 ms of engine
 time per 64 KB for the new detectors. Limits: output beyond 64 KB is not scanned, the instruction detector
 is lexical and English, `cat .env` reports at both `PreToolUse` and `PostToolUse`, the other agents'
 adapters still forward only web results, and a `Read`'s file content keeps the approval categories.
@@ -449,7 +451,7 @@ value that a user, project or local settings file sets for one of those is ignor
 
 ### Server mode: Agent SDK and sidecar
 
-The shell hook costs one process per tool call (164–309 ms measured). Two long-lived forms run the same
+The shell hook costs one process per tool call (p50 152–159 ms, p95 170–178 ms across runs on an Apple M5 Max, of which 38–39 ms is Node startup; [`docs/BENCHMARK.md`](docs/BENCHMARK.md)). Two long-lived forms run the same
 engine, policy and server-mode semantics (a headless ask is denied, the actor is the workload, reports are
 content-free) in one process:
 
@@ -573,8 +575,10 @@ key and headers go upstream untouched and are never logged, stored or reported. 
 **Placeholder credentials** (`--credentials <file>`, opt-in). The agent holds `moorai-ph:<name>` instead
 of the key. The proxy, running as another user or in another container, swaps in the real key only on the
 route the placeholder is bound to. Any other use of a placeholder is refused, and a key the upstream echoes
-back is masked. The same mechanism is in `moorai-mcp-gateway`. It does not protect a key the agent can read
-itself, or one it uses on any other path. The agent can still use the placeholder through the proxy, so
+back is masked. A raw key in a credential header or in the `?key=` query string (the Gemini API's
+query-string auth) is alerted once per route, and refused with `--require-placeholders`. The same mechanism
+is in `moorai-mcp-gateway`. It does not protect a key the agent can read itself, or one it uses on any other
+path. The agent can still use the placeholder through the proxy, so
 policy decides what goes through. See [`model-proxy/README.md`](model-proxy/README.md#placeholder-credentials).
 
 **Tool calls in responses: withhold instead of refuse, local models, the skip alert.** Every tool call the
@@ -582,10 +586,22 @@ model returns is decided by the same function `/v1/tool-call` calls, before the 
 `--mode enforce --denied-tool-call replace` delivers a turn with a denied call as text instead of an error.
 Every tool call of that turn is withheld, and the turn ends with `stop_reason: end_turn` /
 `finish_reason: stop`, streaming or not. An OpenAI-compatible local server (Ollama, LM Studio, llama.cpp,
-vLLM) is a `--route` to its loopback `/v1`. `--unchecked-window-ms` with `moorai-serve --model-proxy-url`
+vLLM) is a `--route` to its loopback `/v1`.
+
+**Gemini.** `generateContent` and `streamGenerateContent` (JSON, the JSON array sent without `alt=sse`, and
+SSE with `alt=sse`) are parsed on any route, chosen by the `…/models/<model>:generateContent` path, so the
+Gemini API and Vertex AI publisher-model endpoints are both covered. There is no default Gemini route: add
+`--route /gemini=https://generativelanguage.googleapis.com` (listing the other routes too, since `--route`
+replaces the defaults) and set `GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8791/gemini`, which the Google Gen
+AI SDKs read. Each `functionCall` part is judged like any other tool call; prompts, system instructions and
+`functionResponse` parts are scanned. A denied call is refused (403, or a bare `{"error":…}` object that
+ends the stream, which both Gen AI SDKs raise) or, with `replace`, becomes one text part with
+`finishReason: "STOP"`. Vertex's streamed `partialArgs` have no documented assembly rule and are refused in
+enforce mode. Tested against a fake Gemini upstream only. `--unchecked-window-ms` with `moorai-serve --model-proxy-url`
 alerts, content-free, on a forwarded call that the framework never checked with its `toolCallId`. This
-judging covers only Anthropic Messages and Chat Completions traffic that goes through the proxy. The
-Responses API, Bedrock and Vertex are forwarded unparsed. See
+judging covers only Anthropic Messages, Chat Completions and Gemini `generateContent` traffic that goes
+through the proxy. The Responses API, Bedrock, Gemini's Interactions and Live APIs and Vertex partner models
+are forwarded unparsed. See
 [`model-proxy/README.md`](model-proxy/README.md#exact-coverage-of-tool-call-judging).
 
 - **Report-only by default.** Bytes are forwarded as received and streaming is fully pass-through; the
@@ -606,6 +622,53 @@ Limits: the agent must use a plain `http://127.0.0.1` base URL, because the prox
 Vertex are forwarded unchecked. Assistant turns, images, base64 PDFs, tool definitions and server-side tool
 blocks are not scanned. It has been tested against a fake provider and a fake console, not with the real
 SDKs or a real provider.
+
+#### Claude Enterprise Inference hooks
+
+`moorai-inference-hook` ([`cli/moorai-inference-hook.mjs`](cli/moorai-inference-hook.mjs)) is an AI
+security server for [Inference hooks](https://platform.claude.com/docs/en/manage-claude/inference-hooks),
+a Claude Enterprise beta. Once an Owner turns the feature on, Anthropic POSTs each governed prompt from
+claude.ai, Claude Code and Cowork to the organization's server, and with **Validate tool calls** on, each
+tool call frame as well. Anthropic holds the request until the server answers allow or deny. Requests are
+signed per Standard Webhooks.
+
+    moorai-inference-hook serve --secret-file /etc/moorai/inference-hook.secret     # 127.0.0.1:8792
+    moorai-inference-hook test  --url https://hooks.example.com/moorai --secret-file …
+
+- **Verification.** The signature (`webhook-id`, `webhook-timestamp`, `webhook-signature`, HMAC-SHA256
+  over the raw body) is checked in constant time against every configured secret. A secret file may hold
+  the previous and the current `whsec_` secret during a rotation. A timestamp more than five minutes off
+  is rejected, and so is a `webhook-id` already accepted inside its window (401 / 409). The secret comes
+  from `--secret-file` or `MOORAI_INFERENCE_HOOK_SECRET`, never from a command-line value.
+- **Judging.** The verdict comes from the MoorAI runtime that `moorai-serve` uses: the verified console
+  policy, the root-owned system config, and server mode's headless rule (an "ask" becomes a deny unless
+  `--headless-ask allow-with-report`). User text is judged at stage `prompt`, tool results at `output` as
+  inbound content, and attachment text at `file`. A tool call frame is judged by content only: the shell
+  command, the URL, or else the argument JSON. The tool runs on the user's machine, so the server never
+  reads a path a tool call names. Each item is judged once per conversation. The answer is HTTP 200 with
+  `{"action":"allow"}` or `{"action":"deny","deny_reason":…,"reference_id":…}`. The deny reason names
+  threat ids and categories, never the content. An unknown event type gets allow, as the protocol requires.
+- **When it cannot judge** (an item past the scan cap, `--eval-timeout-ms`, an engine error), `--fail`
+  decides. `open`, the default, answers allow, which matches Anthropic's default failure handling,
+  "Allow the request". `closed` answers deny. A body it cannot read (over `--max-body` or the in-flight
+  budget) cannot be authenticated. `closed` answers deny, and `open` returns 413 / 503, which leaves the
+  outcome to Anthropic's failure handling.
+- **`--shadow`** always answers allow. A would-be deny is reported with `enforcement: LIMITED`. Anthropic's
+  own shadow mode is a separate setting in the admin console.
+- **Alerts** are content-free and use surface `inference-hook` with tool label `inference-hook:<kind>`.
+  Each carries `inferenceRef`, the `reference_id` returned to Anthropic, which joins to the Activity Feed's
+  `inference_hooks_request_denied` record, and `inferenceSource`, which is `source.application`. When the
+  frame has a `session_id`, alerts also carry `session`, its keyed hash. The transcript, email addresses
+  and actor ids are never sent.
+- **Exposure.** The server binds 127.0.0.1 by default. Anthropic only calls an `https://` URL on port 443
+  with a publicly trusted certificate, so TLS is terminated by a reverse proxy on the same host. A
+  non-loopback bind needs `--allow-remote`. `--max-body` defaults to 64 MiB, the protocol's maximum, and
+  there are limits on header time, request time and connections.
+
+Limits: it has been tested only against signed sample frames built from Anthropic's published schema,
+not against Anthropic's live service. Tool calls are judged by content only: a Read of a credential file,
+MCP file arguments and local secret egress are not judged, because those files are not on this server.
+Field names may change during the beta.
 
 #### Container image and sidecars
 
@@ -875,6 +938,71 @@ body is read as part of the command when what it feeds runs it (`bash <<EOF`, `s
 Not seen: a downloaded file renamed before it runs, paths held in variables, `scp`/`rsync` uploads, and
 hosts outside the list. [docs/DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md) §6 and §13 have the detail.
 
+### Capability tags: what a tool call can do
+
+Every tool call is tagged by what it can do: `read-private` (a credential or secret file, or content a
+detector classed as secrets, PII or regulated data), `read`, `write`, `network` and `exec`. Tags come from
+the tool name, the parsed command (the read paths, network clients, URLs and remote CLIs in it) and, for
+MCP tools, the tool's declared `_meta` tags plus what its name suggests (marked "inferred"; a declaration
+adds tags, it never removes one the name gives away). Two policy keys act on them, from the console policy
+or the root-owned `/etc/moorai/config.json`, never from a repo or user file:
+
+```json
+{
+  "tagActions": { "exec": "block", "network": "block", "write": "ask" },
+  "tagRules": [{ "id": "no-net-after-private", "if": { "sessionHas": ["read-private"] }, "deny": ["network"], "action": "block" }]
+}
+```
+
+- **`tagActions`** is a static action per tag (`block`, `ask`, `alert`, `allow`) for every call with that
+  tag. Where the policy and the machine config disagree, the stricter action wins.
+- **`tagRules`** fire when the session (its earlier calls that ran, plus this one) has every tag in
+  `if.sessionHas` and this call has any tag in `deny`. `action` is `block` or `alert` (the default;
+  reported once per session and rule). A denied call adds nothing to the session.
+- The strictest of `tagActions`, `tagRules` and the detector verdict wins; nothing here loosens a verdict.
+- Alerts carry tag names and rule ids only. The session record (`~/.moorai/session-tags.json`) holds a
+  keyed hash of the session id and tag names (32 sessions, 24 h).
+- The Agent SDK applies `tagActions`; `tagRules` need the session record and run in the hook only.
+
+The agent runs as the same user and can delete the session record, which clears its own `read-private`
+tag. `tagActions` read nothing from it.
+
+### Exceptions: what to grant when MoorAI blocks
+
+When the hook denies or asks, the message names the exact exception a person could grant: the threat id
+(or the tag rule id) and a narrow pattern for this call. The pattern is the file path, the URL without its
+query, the MCP tool name, or the command with anything credential-shaped replaced by `*`, so it never
+repeats a secret. On an enrolled device it points to a console exception; where local exceptions are on,
+it prints the command:
+
+```bash
+sudo node /path/to/cli/moorai-allow.mjs --threat 57 --pattern 'curl -sSo /tmp/u.sh *' --for 1h
+node /path/to/cli/moorai-allow.mjs --list
+sudo node /path/to/cli/moorai-allow.mjs --revoke <id>
+```
+
+- **Console exceptions**: `"exceptions": [{ "threat": 57, "pattern": "…", "expires": "<ISO time>" }]` in
+  the console policy (or `"rule": "<tag rule id>"`, or `"rule": "tag:exec"` for a tag action).
+- **Local exceptions** live in `/etc/moorai/exceptions.json` (`%ProgramData%\MoorAI\exceptions.json`). The
+  hook reads that file only when it is root-owned and not group/world-writable (Administrators/SYSTEM-only
+  on Windows), so granting one needs `sudo`. `moorai-allow` also refuses to run without an interactive
+  terminal. Each grant is one threat or rule plus a pattern with at least four literal characters, and
+  expires within 24 hours.
+- **Off by default.** An enrolled device honours local exceptions only when the console policy sets
+  `"localExceptions": "allow"`; an unenrolled one also accepts that key in the root-owned machine config.
+- A matching exception turns that threat into a report for that call only. Server allow-lists, envelopes,
+  endpoint allow-lists and workload profiles have no exceptions: change the policy.
+- The hook records each local grant the first time it sees it, and each use, in the action ledger
+  (`moorai-ledger`), with the exception id and a keyed hash of the pattern. A shell call that runs
+  `moorai-allow` or names the store, and a write to the store, is denied as the agent trying to grant
+  itself an exception.
+
+What this does not stop: on a laptop with passwordless `sudo`, or a shell that shares a cached sudo
+credential, the agent can run `moorai-allow.mjs` under sudo itself. The terminal check is then only a speed bump (a
+pseudo-terminal is one `script` call away), and the self-grant refusal is a string match an encoded command
+gets past. Keep local exceptions off on such machines; console exceptions are unaffected. Server mode prints
+no exception line.
+
 ### Skill Analysis — what is your agent actually being told to do?
 
 No separate command: the analysis runs inside the same PreToolUse hooks. Whenever the agent loads a
@@ -900,6 +1028,40 @@ otherwise.
 - **Path classification is by filename, not by content**, so a file that an agent loads through a
   non-standard path (`skillDirectories`, a symlink farm, a plugin root outside the known layout) is
   scanned by the detectors like any other file but is not labelled as skill surface.
+
+### What would MoorAI have caught in your past sessions? — transcript ingest
+
+```bash
+node cli/moorai-ingest.mjs --discover                         # last 30 days of Claude Code + Codex sessions
+node cli/moorai-ingest.mjs --discover --policy candidate.json # the same history under a candidate policy
+node cli/moorai-ingest.mjs ~/.claude/projects/<project> --agent claude-code --coverage
+node cli/moorai-ingest.mjs --discover --report                # send historical alerts to your console
+```
+
+Day one, before the hook has seen anything: `moorai-ingest` reads the transcripts your agents already
+keep on this machine (Claude Code `~/.claude/projects/<project>/<session>.jsonl` and its sub-agent files;
+Codex `~/.codex/sessions/**/rollout-*.jsonl`, `.jsonl.zst` and `archived_sessions/`) and replays every
+recorded tool call, tool result and prompt through the live hook's own decision functions, under the
+policy in force or a candidate (`--policy`). The output is what **enforce mode** would have done.
+
+- **Content-free by default**: counts by threat, by agent and by decision, sessions affected, the
+  most-flagged categories, and how many sessions ran without the MoorAI hook (`--coverage` lists them;
+  Claude Code only, because Codex does not record hook runs in its rollout). No prompt, command, path,
+  URL, matched text or session id is printed. `--show-local` prints the findings with their content, and
+  only to an interactive terminal.
+- **Local**: nothing is sent unless you pass `--report`. Then each finding becomes one alert marked
+  `replayed: true`, with the original timestamp, `wouldDecision`, `enforcement: "UNEVALUATED"`, the
+  same keyed `session` hash the hook sends (so ingested sessions join live per-session metrics) and a
+  keyed `replayId` for dedup. Never a `Blocked` risk level, never content.
+- **Bounded**: `--max-files` (200), `--max-bytes` (512 MiB in total), `--max-file-bytes` (64 MiB per
+  file), `--max-line-bytes` (8 MiB; longer lines are skipped and counted) and `--max-seconds` (120).
+  Malformed lines are skipped and counted. The summary says when a bound cut the run short.
+- **Not replayed**, because each needs the state of the moment rather than the record: files a command
+  reads, file metadata, MCP file arguments, local secret-value egress, MCP reputation, cross-call
+  fetch-then-exec, deletion volume, the circuit breaker, learned drift, session escalation, intent
+  alignment, capability tags, model escalation and the ask-to-deny settlement of server mode and
+  `bypassPermissions`. A Codex call is replayed as the Codex hook would have seen it
+  (PreToolUse and prompts only), with no result scan.
 
 ### Review what was exposed — on-device, no server
 
@@ -997,6 +1159,7 @@ npx moorai-scan --package github:owner/repo   # a whole source repository — an
 - **`moorai-attest`** emits the governed record chain as an **in-toto attestation / SLSA provenance predicate**, built only from the content-free fields (tool · category · risk · decision · stage · tenant + the one-way hashes + chain seq/prev/chash) — so an agent's action evidence plugs into the software-supply-chain attestation ecosystem without carrying any content. The AIBOM also exports as a standard **CycloneDX 1.6** or **SPDX 2.3** SBOM (`moorai-aibom --format cyclonedx|spdx`).
 - **`moorai-receipt`** emits a signed, content-free **per-verdict decision receipt** — a strict-allowlist payload (tool · category · risk · decision · stage · tenant + the one-way hashes + chain seq/prev/chash), a SHA-256 digest bound only to those fields, and an ed25519 signature from the same per-device agency key as the MCP-approval tokens. `moorai-verify-chain --offline <file>` verifies a receipt (or an in-toto attestation) with **no network** — recomputing the digest to reject tampered payloads and checking the signature against a pinned key. Generation is fail-open (a null signer yields a valid unsigned receipt); verification is fail-closed.
 - **`moorai-scan`** is a **pre-install skill gate** — MoorAI's on-device, content-free answer to a cloud "skill scanner". Point it at a skill/agent artifact on disk (a directory, a `SKILL.md`, a `.mcp.json`, a `.claude/agents/*.md`, …) *before* you install it and it walks the path, classifies each file's skill-surface kind (`data/skill-surface.js`), and runs MoorAI's **own shipped detection engine** over each text file at stage `file` (and `tool` for JSON MCP configs). The **verdict is derived from the engine's own allow/ask/deny decisions — never an invented 0-100 score**: any `deny` → `DO-NOT-INSTALL`, any `ask` → `REVIEW`, low findings only → `CAUTION`, nothing → `CLEAN` (the worst across all files). No external scanner is bundled or invoked, and **no enrollment is required** (it runs before you install, possibly before you enroll). Output is JSON (or `--format md`) and is **content-free** — per finding only `{relativePath, surfaceKind, threatId, category, intentLabels, contentHash, tier}`, never the matched text or file contents — so it never becomes the exfiltration channel a cloud scanner is. Exit codes slot into CI: `0` for CLEAN/CAUTION, non-zero for REVIEW/DO-NOT-INSTALL, tunable with `--fail-on <tier>`.
+- **`moorai-mcp-check <package>`** runs ten pre-install checks on an MCP server from registry metadata and published manifests only; the package is never downloaded or run, and the reputation cache is not written. Each check is pass, warn, fail or not checked, with a one-line reason: (1) publisher identity and typosquat (the name lists and the repository link), (2) package age (`new-package`, under 30 days), (3) maintainers (npm `maintainers`, PyPI `ownership.roles`), (4) npm install scripts from the version manifest, (5) authentication and (7) credential names, both from the `server.json` the package publishes to the official MCP Registry (npm `mcpName`, PyPI `mcp-name:`), (6) a remote endpoint's HTTPS, hostname rather than bare IP, and fit with the policy's `egressRules`, (8) tool descriptions through the tool-stage engine when you pass `--tools <tools/list JSON>`, (9) whether the spec pins a version, and (10) whether this machine routes MCP through MoorAI (hook, stdio proxy or gateway). It also prints a metadata-only reputation score and band, and the SkillTriage verdict when `mcpReputation.feed` is on. Input: `npm:name@1.2.3`, `pypi:name==1.0`, a bare npm name, a launch command (`"npx -y name@1.2.3"`) or an `https://` URL (parsed, never contacted). Policy comes from `--policy file.json`, or the verified policy already on the device (read offline, as `moorai-doctor` does); `--no-policy`; `--json`. Exit 1 if any check fails. **Limits.** PyPI install-time code (setup.py, build backends) is not visible in its JSON API, so that check is not checked for PyPI. Authentication, credentials and transport for a package need a published `server.json`; most packages have none. MCP OAuth is negotiated at connect time and is not probed. The tool list is only known from a running server unless you supply it. An npm semver range is not resolved: install scripts are read from the latest version, and the report says so.
 
   **Package code (`--packages`, `--package`).** With `--packages`, each MCP server whose config launches a package (`npx`, `pnpm dlx`, `bunx`, `yarn dlx`, `uvx`, `uv tool run`, `pipx run`) is downloaded from the public registry, its digest checked (npm `sha512` integrity, PyPI `sha256`; a mismatch fails closed), extracted into a temporary directory with traversal, link and size guards, and analysed statically — nothing in it is executed. Only the package name and version leave the device, and only with the flag (or `MOORAI_SCAN_PACKAGES=1`); without it the packages are listed as not analysed. Package code gets its own checks — install scripts that download or run remote code, runtime self-install, environment or credential harvesting next to a network send, obfuscated `eval`, socket reverse shells, typosquatted names, known-malicious packages — and the prompt-oriented detectors are scoped by file type: in code and docs they report at most `CAUTION`, because an MCP server spawning processes or calling APIs is expected. `DO-NOT-INSTALL` needs concrete evidence of malicious or unsafe-by-construction behaviour. Docker images and remote-only servers are reported as not analysed.
 

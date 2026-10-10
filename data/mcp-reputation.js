@@ -39,6 +39,13 @@ export const REASON_WEIGHTS = {
   "unresolved-launch": 15,        // the launch command resolves to nothing we can identify
   "repo-unreachable": 15,         // the declared repository is not publicly there (deleted, private, placeholder)
   "new-package": 10,              // first published < 30 days ago (registry lookup only)
+  // One account can publish (registry lookup only; cli/mcp-package/maintainers.mjs: npm's top-level
+  // `maintainers`, PyPI's `ownership.roles`). A WEAK signal: one person's stolen token or bad day ships a
+  // release nobody else reviewed, but that describes most small projects. Measured live 2026-10-09 on the
+  // listed servers: 127 of 238 npm (53%) and 67 of 85 PyPI with roles (79%) have exactly one. So it is
+  // the lowest weight here: alone a server stays "good" (95); it only moves the band next to other
+  // signals (with new-package, repo-missing and unpinned-version: 75, "fair").
+  "single-maintainer": 5,
   "remote-server": 10,            // an HTTP/SSE server: no code on this device to read
   "docker-image": 10,             // image analysis is not supported
   "tool-metadata": 10,            // any other tool-stage finding

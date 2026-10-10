@@ -56,6 +56,18 @@
     const hex = /^[0-9a-f]+$/i.test(val);
     return shannonEntropy(val) >= (hex ? 3.0 : 3.5);
   }
+  // The Luhn check every payment-card number carries — copied from data/detectors.js luhnValid.
+  function luhnValid(m) {
+    const d = String(m).replace(/\D/g, "");
+    if (d.length < 13 || d.length > 16) return false;
+    let sum = 0;
+    for (let i = 0; i < d.length; i++) {
+      let n = d.charCodeAt(d.length - 1 - i) - 48;
+      if (i % 2) { n *= 2; if (n > 9) n -= 9; }
+      sum += n;
+    }
+    return sum % 10 === 0;
+  }
   const valueOf = (m) => {
     const mm = String(m).match(/["']?([A-Za-z0-9\-_.\/+=]{20,})["']?\s*$/);
     return mm ? mm[1] : m;
@@ -81,15 +93,17 @@
       label: "an OpenAI / Anthropic API key", patterns: [/\bsk-(ant-|proj-)?[A-Za-z0-9\-_]{20,}\b/] },
     { detectorId: "secret-db-conn", threatId: 39, category: "Information & Privacy", riskLevel: "Critical",
       label: "a database connection string with an embedded password",
-      patterns: [/\b(postgres(ql)?|mysql|mongodb(\+srv)?|redis|amqp):\/\/[^:@\s/]+:[^@\s/]+@/i] },
+      // A template in the password slot (<NEW_PASSWORD>, ${DB_PASSWORD}, $PGPASS, %s, ****) is not a credential.
+      patterns: [/\b(postgres(ql)?|mysql|mongodb(\+srv)?|redis|amqp):\/\/[^:@\s/]{1,256}:[^@\s/]{1,256}@/i],
+      refine: (m) => !/^(?:<[^<>]*>|\$\{[^}]*\}|\$[A-Za-z_]\w*|\{\{[^}]*\}\}|%[sd]|\*+|x{3,}|\.{3,}|\[[^\]]*\])$/i.test((/:\/\/[^:@\s/]+:([^@\s/]+)@/.exec(m) || [])[1] || "") },
     // Shapeless — entropy/allowlist-gated (refine mirrors data/secrets-patterns.js S(...) refines).
     { detectorId: "secret-generic-assignment", threatId: 39, category: "Information & Privacy", riskLevel: "Critical",
       label: "a high-entropy secret assigned to a credential-like variable",
-      patterns: [/\b(?:api[_-]?key|secret|token|passwd|password|client[_-]?secret|access[_-]?key|auth[_-]?token|private[_-]?key)\b\s*[:=]\s*["']?[A-Za-z0-9\-_.\/+=]{20,}["']?/i],
+      patterns: [/\b(?:api[_-]?key|secret|token|passwd|password|client[_-]?secret|access[_-]?key|auth[_-]?token|private[_-]?key)\b\s{0,8}[:=]\s{0,8}["']?[A-Za-z0-9\-_.\/+=]{20,512}["']?/i],
       refine: (m) => looksLikeSecret(valueOf(m)) },
     { detectorId: "secret-aws-secret", threatId: 39, category: "Information & Privacy", riskLevel: "Critical",
       label: "an AWS secret access key",
-      patterns: [/aws_secret_access_key\s*[:=]\s*["']?[A-Za-z0-9\/+]{40}["']?/i],
+      patterns: [/aws_secret_access_key["']?\s{0,8}[:=]\s{0,8}["']?[A-Za-z0-9\/+]{40}["']?/i],
       refine: (m) => looksLikeSecret(valueOf(m)) },
 
     // === Credentials / keys — threat #39 (from data/detectors.js) ===
@@ -113,7 +127,7 @@
 
     // === Payment data — threat #1 "Information & Privacy" / Critical (from data/detectors.js) ===
     { detectorId: "dlp-payment-card", threatId: 1, category: "Information & Privacy", riskLevel: "Critical",
-      label: "a payment-card number", patterns: [/\b(?:\d[ -]?){13,16}\b/] },
+      label: "a payment-card number", patterns: [/\b(?:\d[ -]?){13,16}\b/], refine: (m) => luhnValid(m) },
     { detectorId: "dlp-iban", threatId: 1, category: "Information & Privacy", riskLevel: "High",
       label: "an IBAN / bank account", patterns: [/\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/] },
 
@@ -141,10 +155,10 @@
     const str = String(text);
     for (const d of DETECTORS) {
       for (const re of d.patterns) {
-        const m = str.match(re);
-        if (!m) continue;
-        const span = m[0];
-        if (d.refine && !d.refine(span, str)) continue;
+        // With a refine, every occurrence is tried until one passes (src/engine.js _matchDetector), so a
+        // failing digit run ahead of a real card does not hide the card.
+        const span = d.refine ? firstRefined(str, re, d.refine) : (str.match(re) || [])[0];
+        if (!span) continue;
         findings.push({
           detectorId: d.detectorId,
           threatId: d.threatId,
@@ -157,6 +171,12 @@
       }
     }
     return findings;
+  }
+
+  function firstRefined(str, re, refine) {
+    const g = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
+    for (const m of str.matchAll(g)) if (refine(m[0], str)) return m[0];
+    return null;
   }
 
   // Reduce findings to the single highest-severity one (for the decision + which label to show).

@@ -87,7 +87,9 @@ function runHook(home, payload) {
   const o = JSON.parse(out).hookSpecificOutput || {};
   return { decision: o.permissionDecision || "allow", reason: o.permissionDecisionReason || "" };
 }
-const saferPart = (reason) => { const i = reason.indexOf(" Safer: "); return i < 0 ? "" : reason.slice(i + 8); };
+// The safer line ends where the exception line (cli/exceptions.mjs) begins; that line names a masked
+// pattern for the call and is checked in test/exceptions.test.mjs.
+const saferPart = (reason) => { const i = reason.indexOf(" Safer: "); if (i < 0) return ""; const s = reason.slice(i + 8); const e = s.indexOf(" Exception: "); return e < 0 ? s : s.slice(0, e); };
 
 test("hook end to end: each Bash read gets its kind's hint, and the hint never echoes the path", () => {
   const home = sandbox();

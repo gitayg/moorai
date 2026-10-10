@@ -172,8 +172,8 @@
           "stage": "containment",
           "tool": "mxc:claude",
           "ts": "2026-10-07T19:06:40Z",
-          "contentHash": "mxc:other-read",
-          "reasonCode": "other-read",
+          "contentHash": "mxc:file-other-read",
+          "reasonCode": "file-other-read",
           "resourceType": "file",
           "accessType": "read",
           "count": 1,
@@ -192,8 +192,8 @@
           "stage": "containment",
           "tool": "mxc:claude",
           "ts": "2026-10-07T19:06:40Z",
-          "contentHash": "mxc:other-write",
-          "reasonCode": "other-write",
+          "contentHash": "mxc:file-other-write",
+          "reasonCode": "file-other-write",
           "resourceType": "file",
           "accessType": "write",
           "count": 1,
@@ -239,6 +239,72 @@
           "truncated": false,
           "source": "mxc-capture-denials",
           "pathClass": "workspace"
+        }
+      ]
+    }
+  },
+  {
+    "name": "file-other-and-registry-other-are-separate-groups",
+    "text": "{\"denials\":[{\"resource\":\"D:\\\\data\\\\notes.txt\",\"resourceType\":\"file\",\"accessType\":\"read\",\"pid\":4321,\"filetime\":\"132847890123456789\"},{\"resource\":\"\\\\REGISTRY\\\\MACHINE\\\\SOFTWARE\\\\Contoso\",\"resourceType\":\"other\",\"accessType\":\"read\",\"pid\":4321,\"filetime\":\"132847890123456789\"},{\"resource\":\"\\\\REGISTRY\\\\USER\\\\S-1-5-21-1\\\\Software\\\\Contoso\",\"resourceType\":\"other\",\"accessType\":\"read\",\"pid\":4321,\"filetime\":\"132847890123456789\"}],\"summary\":{\"exitCode\":0,\"totalDenials\":3,\"deniedResourcesTruncated\":false}}",
+    "env": {
+      "USERPROFILE": "C:\\Users\\dev",
+      "APPDATA": "C:\\Users\\dev\\AppData\\Roaming",
+      "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+      "ProgramData": "C:\\ProgramData",
+      "ProgramFiles": "C:\\Program Files",
+      "ProgramFiles(x86)": "C:\\Program Files (x86)",
+      "SystemRoot": "C:\\Windows"
+    },
+    "workspace": "C:\\src\\proj",
+    "agent": "claude",
+    "ts": "2026-10-07T19:06:40Z",
+    "identity": {
+      "user": "dev",
+      "device": "ATOM",
+      "platform": "windows",
+      "tenant": "acme"
+    },
+    "expected": {
+      "ok": true,
+      "alerts": [
+        {
+          "user": "dev",
+          "device": "ATOM",
+          "platform": "windows",
+          "tenant": "acme",
+          "threatId": 0,
+          "category": "MXC: access denied",
+          "riskLevel": "Low",
+          "stage": "containment",
+          "tool": "mxc:claude",
+          "ts": "2026-10-07T19:06:40Z",
+          "contentHash": "mxc:other-read",
+          "reasonCode": "other-read",
+          "resourceType": "other",
+          "accessType": "read",
+          "count": 2,
+          "truncated": false,
+          "source": "mxc-capture-denials"
+        },
+        {
+          "user": "dev",
+          "device": "ATOM",
+          "platform": "windows",
+          "tenant": "acme",
+          "threatId": 0,
+          "category": "MXC: access denied",
+          "riskLevel": "Low",
+          "stage": "containment",
+          "tool": "mxc:claude",
+          "ts": "2026-10-07T19:06:40Z",
+          "contentHash": "mxc:file-other-read",
+          "reasonCode": "file-other-read",
+          "resourceType": "file",
+          "accessType": "read",
+          "count": 1,
+          "truncated": false,
+          "source": "mxc-capture-denials",
+          "pathClass": "other"
         }
       ]
     }

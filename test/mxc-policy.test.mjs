@@ -12,7 +12,9 @@
 //   node --test test/mxc-policy.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, mkdtempSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
@@ -171,13 +173,75 @@ test("Rust tables are the JS tables (src-tauri/src/mxc.rs)", () => {
   assert.deepEqual(rows, PATH_CLASSES);
 });
 
-test("CLI writes the same policy the builder returns", () => {
+test("Node starts inside BaseContainer: symlinks preserved through NODE_OPTIONS, merged with the host's", () => {
+  // Node's main-module realpathSync lstat()s every ancestor and gets EPERM on C:\ in BaseContainer.
+  const flags = "--preserve-symlinks --preserve-symlinks-main";
+  for (const agent of ["claude", "codex", "copilot"]) {
+    const env = buildMxcPolicy(input({ agent })).policy.process.env;
+    assert.deepEqual(env.filter((e) => /^NODE_OPTIONS=/i.test(e)), [`NODE_OPTIONS=${flags}`], agent);
+  }
+  const merged = (v) => buildMxcPolicy(input({ env: { ...ENV, node_options: v } })).policy.process.env.filter((e) => /^NODE_OPTIONS=/i.test(e));
+  assert.deepEqual(merged("--max-old-space-size=4096"), [`NODE_OPTIONS=--max-old-space-size=4096 ${flags}`], "the host's options are kept, not overwritten");
+  assert.deepEqual(merged("--preserve-symlinks-main --inspect=0"), ["NODE_OPTIONS=--preserve-symlinks-main --inspect=0 --preserve-symlinks"], "no flag twice");
+  assert.deepEqual(merged("   "), [`NODE_OPTIONS=${flags}`]);
+});
+
+// The CLI checks existence on the real filesystem. On Windows the box is a temp dir; elsewhere each
+// Windows path is one file NAME (backslashes are ordinary characters) under the temp cwd.
+function cliBox() {
+  const dir = mkdtempSync(join(tmpdir(), "mxc-cli-"));
+  const win = process.platform === "win32";
+  const base = win ? dir : "C:\\box";
+  const at = (p) => (win ? p : join(dir, p));
+  const home = `${base}\\Users\\dev`;
+  const env = {
+    ...process.env, USERPROFILE: home, APPDATA: `${home}\\AppData\\Roaming`, LOCALAPPDATA: `${home}\\AppData\\Local`,
+    ProgramData: `${base}\\ProgramData`, ProgramFiles: `${base}\\Program Files`, "ProgramFiles(x86)": `${base}\\Program Files (x86)`, SystemRoot: `${base}\\Windows`
+  };
+  for (const k of Object.keys(env)) if (/^(node_options|programw6432|commonprogram)/i.test(k)) delete env[k];
+  const ws = `${base}\\src\\proj`;
+  mkdirSync(at(ws), { recursive: true });
   const cli = fileURLToPath(new URL("../cli/mxc-policy.mjs", import.meta.url));
-  const r = spawnSync(process.execPath, [cli, "--agent", "claude", "--workspace", "C:\\src\\proj", "--command", "claude.exe"], { env: { ...process.env, ...ENV }, encoding: "utf8" });
-  assert.equal(r.status, 0, r.stderr);
-  const expected = buildMxcPolicy({ agent: "claude", workspace: "C:\\src\\proj", commandLine: "claude.exe", env: { ...process.env, ...ENV }, hookRoots: [], egressAllow: [], captureDenials: false });
-  assert.deepStrictEqual(JSON.parse(r.stdout), expected.policy);
-  const bad = spawnSync(process.execPath, [cli, "--agent", "claude", "--workspace", "C:\\", "--command", "x"], { env: { ...process.env, ...ENV }, encoding: "utf8" });
-  assert.equal(bad.status, 1);
-  assert.match(bad.stderr, /workspace-volume-root/);
+  const run = (args) => spawnSync(process.execPath, [cli, ...args], { cwd: dir, env, encoding: "utf8" });
+  return { dir, home, ws, env, at, run, exists: (p) => existsSync(at(p)), done: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+test("CLI writes the same policy the builder returns, judged against the real filesystem", () => {
+  const b = cliBox();
+  try {
+    const r = b.run(["--agent", "claude", "--workspace", b.ws, "--command", "claude.exe"]);
+    assert.equal(r.status, 0, r.stderr);
+    const expected = buildMxcPolicy({ agent: "claude", workspace: b.ws, commandLine: "claude.exe", env: b.env, hookRoots: [], egressAllow: [], captureDenials: false }, { exists: b.exists });
+    assert.deepStrictEqual(JSON.parse(r.stdout), expected.policy);
+    // the read-write dirs the policy grants exist afterwards, as the desktop host creates them before wxc-exec
+    for (const d of expected.ensureDirs) assert.ok(b.exists(d), `CLI created ${d}`);
+    const bad = b.run(["--agent", "claude", "--workspace", "C:\\", "--command", "x"]);
+    assert.equal(bad.status, 1);
+    assert.match(bad.stderr, /workspace-volume-root/);
+    const missing = b.run(["--agent", "claude", "--workspace", `${b.ws}-gone`, "--command", "x"]);
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /workspace-missing/);
+  } finally { b.done(); }
+});
+
+test("CLI --fs-deny lists only protected paths that exist (wxc-exec fails a missing deniedPath with 0x80070003)", () => {
+  const b = cliBox();
+  try {
+    mkdirSync(b.at(`${b.home}\\.ssh`), { recursive: true });
+    const r = b.run(["--agent", "claude", "--workspace", b.ws, "--command", "claude.exe", "--fs-deny"]);
+    assert.equal(r.status, 0, r.stderr);
+    const denied = JSON.parse(r.stdout).filesystem.deniedPaths;
+    assert.deepEqual(denied, [`${b.home}\\.ssh`]);
+  } finally { b.done(); }
+});
+
+test("CLI refuses an ensured dir that is not a plain directory, as the desktop host does", () => {
+  const b = cliBox();
+  try {
+    mkdirSync(b.at(b.home), { recursive: true });
+    writeFileSync(b.at(`${b.home}\\.moorai`), "planted");
+    const r = b.run(["--agent", "claude", "--workspace", b.ws, "--command", "claude.exe"]);
+    assert.equal(r.status, 1, r.stdout);
+    assert.match(r.stderr, /not a plain directory/);
+  } finally { b.done(); }
 });

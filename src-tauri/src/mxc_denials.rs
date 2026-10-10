@@ -80,7 +80,8 @@ pub fn parse_denials(text: &str, env: &BTreeMap<String, String>, workspace: &str
             "file" => {
                 let c = classify_path(field("resource").unwrap_or(""), &t).to_string();
                 path_class = Some(c.clone());
-                c
+                // "other" is also a resourceType (registry and the like); an unclassified file must not join its group
+                if c == "other" { "file-other".to_string() } else { c }
             }
             "capability" => {
                 let c = field("resource").filter(|r| is_capability_name(r)).unwrap_or("custom-sid").to_string();

@@ -311,7 +311,8 @@ test("FAIL-OPEN: a corrupt event window and a throwing scan cannot change or blo
     const rb = await run(HOOK, [], { HOME: b.home, USERPROFILE: b.home, MOORAI_OFFLINE_MODE: "" }, readPayload(b.file));
     assert.equal(ra.code, 0, `the hook must always exit 0 (governance, fail-open); stderr=${ra.err}`);
     assert.match(ra.out, /"permissionDecision":"deny"/, "the deny must still be emitted with the detections on");
-    assert.equal(ra.out, rb.out, "the detections layer must not change the enforcement output");
+    // The exception line names the call's own (sandbox) path, so the two runs differ only there.
+    assert.equal(ra.out.replaceAll(a.home, "<HOME>"), rb.out.replaceAll(b.home, "<HOME>"), "the detections layer must not change the enforcement output");
   } finally { s1.srv.close(); s2.srv.close(); }
 });
 

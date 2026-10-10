@@ -369,6 +369,7 @@ or counted. A refusal is a JSON-RPC error with `id: null`, and it never echoes t
 | `moorai-ph:` / `moorai-ph%3A` in the query string | 400 |
 | `Authorization` and `authorization` (or any credential or placeholder header) twice | 400 (Node would keep the first, silently) |
 | a raw token in `Authorization`, `X-Api-Key`, `Api-Key`, `X-Goog-Api-Key` or a bound header | forwarded, one content-free alert per route; **401** with `--require-placeholders` |
+| a non-empty `key` query parameter (`?key=<token>`, the Gemini API's query-string auth) | the same as a raw token in a header: forwarded with one content-free alert per route; **401** with `--require-placeholders` |
 
 **Responses.** Every upstream response, on every route, is masked for every bound secret:
 

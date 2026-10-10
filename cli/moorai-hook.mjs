@@ -42,6 +42,7 @@ import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
 import { takeEscalationOutcomes } from "../data/model-escalation.mjs";
 import { semanticEnabled } from "../data/semantic-escalation.js";
 import { contentHash, fileFingerprint, NO_KEY, actorHash } from "./content-hash.mjs";
+import { subagentTypeField } from "./subagent-type.mjs";
 import { emitOtel } from "./otel.mjs";
 import { exitWhenDrained } from "./exit-drain.mjs";
 import { loadHoneytokens, checkHoneytokens } from "./moorai-honeytokens.mjs";
@@ -62,6 +63,8 @@ import { recordMcpCall, scheduleMcpUsageFlush } from "./mcp-usage-beat.mjs";
 import { REASON, ENFORCEMENT, policyIdOf, stampAlert } from "./provenance.mjs";
 import { recordRow, readSessionRows, localHash } from "./session-ledger.mjs";
 import { commandClass, normalizeCommand, verifyFamily, outcomeOfResponse, outcomeOfFailure, assessTurn } from "./claim-check.mjs";
+import { callTags, sessionTagsOf, recordSessionTags, tagGate, applyTagGate, tagHitAlert } from "./tool-tags.mjs";
+import { readExceptionStore, liveExceptions, matchExceptions, applyExceptions, subjectOf, exceptionHint, selfExceptionAttempt } from "./exceptions.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -596,6 +599,9 @@ function settleRow(fields) {
 }
 function post(alert) {
   if (WORKLOAD && alert && !alert.workload) alert.workload = WORKLOAD;
+  // The agent the verdict is about, in the console's agent_name vocabulary: claude-code, or the adapter that
+  // ran the hook (cli/moorai-agent-hook.mjs sets MOORAI_HOOK_AGENT). Omitted for a shim caller it cannot name.
+  if (alert && alert.agentName === undefined) { const n = beatHost(); if (n) alert.agentName = n; }
   if (SESSION_TAG && alert && alert.session === undefined) alert.session = SESSION_TAG;
   stampAlert(alert, { ...PROV, coach: COACH, event: EVENT });
   // An unenrolled device has no console, so nothing is posted to one — not even to a server that
@@ -623,10 +629,17 @@ async function exitHook() {
   return exitWhenDrained(0);
 }
 let LEAK_COACH = null; // set by report() when an unenrolled device sees an instr-leak-* finding
+// ---- this PreToolUse call, for capability tags (cli/tool-tags.mjs) and exceptions (cli/exceptions.mjs) ----
+// found / fileFound: threat ids report() saw (fileFound: at stage "file", content the call read). exc: the
+// live exceptions that cover this call. system: the root-owned machine config. active: set once main()
+// reaches the PreToolUse decision path, so emit() applies the tag gate and the exception hint only there.
+const CALL = { active: false, tool: "", ti: {}, cwd: "", found: new Set(), fileFound: new Set(), exc: { threats: new Set(), rules: new Set(), matched: [] }, localAllowed: false, system: null };
+const EXCEPTIONS_SEEN_FILE = "exceptions-seen.json";
 function report(findings, stage, tool, blocked, tier, extras, agency) {
   if (COACH && !LEAK_COACH && findings.some((f) => String(f.detectorId || "").startsWith("instr-leak-"))) LEAK_COACH = { reason: "flagged #52 protected instructions (CLAUDE.md / AGENTS.md / rules) leaving in output", alts: saferAlternativesFor([52]) };
   if (COACH) blocked = false; // coached, not blocked: the local ledger records what actually happened
   VERDICT.findings += findings.length;
+  for (const f of findings) { CALL.found.add(f.threatId); if (stage === "file") CALL.fileFound.add(f.threatId); }
   for (const f of findings) {
     const base = { threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool, ts: new Date().toISOString(), contentHash: contentHash(f.match || ""), ...IDENTITY };
     // Provenance: a finding whose configured action enforces (block / kill / justify / mask) is an
@@ -1086,7 +1099,9 @@ async function maybeEscalate(policy, text, stage, tool, d, engine) {
     mkdirSync(STATE_DIR, { recursive: true });
     sweepEscalationJobs();
     const jobPath = join(STATE_DIR, `escalate-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.json`);
-    writeFileSync(jobPath, JSON.stringify({ policy, text, stage, tool, ...(SESSION_TAG ? { session: SESSION_TAG } : {}) }), { mode: 0o600 });
+    // credited: the threat ids the decision kept (content-free), so the worker's miss gate sees what was reported.
+    const credited = [...new Set((d.findings || []).map((f) => f.threatId).filter((id) => id > 0))];
+    writeFileSync(jobPath, JSON.stringify({ policy, text, stage, tool, credited, ...(SESSION_TAG ? { session: SESSION_TAG } : {}) }), { mode: 0o600 });
     spawn(process.execPath, [SELF, "escalate", jobPath], { detached: true, stdio: "ignore" }).unref();
   } catch { /* escalation is advisory; fail-open */ }
 }
@@ -1134,8 +1149,11 @@ async function runEscalationWorker(jobPath) {
     const after = await escalate(engine, base, text, stage, policy, opts);
     const seen = new Set(base.map((f) => f.threat.id));
     for (const f of after) if (!seen.has(f.threat.id)) postSemanticFinding(f, text, stage, tool);
-    // Miss-recovery only when the deterministic engine found NOTHING at all (escalateMiss's contract).
-    if (!base.length) {
+    // Miss-recovery only when the decision credited NOTHING (escalateMiss's contract). `base` is a raw
+    // re-scan: it still holds what the decision dropped (decideInbound's outbound-only threats on inbound
+    // content, a disabled threat), which used to block miss-recovery while nothing was reported.
+    const credited = Array.isArray(job.credited) ? new Set(job.credited) : null;
+    if (!base.some((f) => !credited || credited.has(f.threat.id))) {
       const miss = await escalateMiss(engine, text, stage, policy, opts);
       if (miss) postSemanticFinding(miss, text, stage, tool);
     }
@@ -1397,6 +1415,13 @@ function coachOut(hookEventName, reason, alternatives) {
 // flow on the rewritten input. On an ask it rides with "ask", which the reference describes as "show the
 // modified input to the user". On a deny it is never sent — "For `"deny"`" nothing runs.
 async function emit(decision, reason, alternatives = [], rewrite = null) {
+  // Capability tags (cli/tool-tags.mjs): tagActions and tagRules, the stricter verdict winning. Before the
+  // session-risk escalation, so an escalation's reason still appends to the gate's.
+  const tg = CALL.active ? tagStep() : null;
+  if (tg) {
+    const m = applyTagGate({ decision, reason, alternatives }, tg.gate);
+    if (m.changed) { why(REASON.BEHAVIOR_SIGNAL); VERDICT.basis = null; ({ decision, reason, alternatives } = m); if (decision === "deny") rewrite = null; tg.drove = true; }
+  }
   if (SESSION_ESC && decision !== "deny") {
     const why2 = `session risk — ${SESSION_ESC.reason}`;
     if (decision === "allow") { decision = "ask"; reason = why2; alternatives = saferAlternativesFor([SESSION_ESC.kind === "taint" ? 3 : 59]); why(REASON.BEHAVIOR_SIGNAL); }
@@ -1426,16 +1451,109 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
     decision = b.decision; reason = b.reason; rewrite = null;
   }
   settleRow(verdictFields(decision, { rewrite: Boolean(rewrite) }));
+  // The call ran unless the host was told deny (a coached device was told nothing): only then do its tags
+  // join the session record.
+  if (tg) recordSessionTags({ sessionId: SESSION_ID, tags: COACH || decision !== "deny" ? tg.tags.tags : [], fired: tg.fired });
+  if (CALL.active) recordExceptionUse(tg);
+  const hint = CALL.active && decision !== "allow" && !COACH && !SERVER.active ? hintFor(reason, tg) : "";
   const note = rewrite ? maskNote("this tool call's input", rewrite.count, rewrite.ids) : "";
   if (COACH && decision !== "allow") process.stdout.write(coachOut("PreToolUse", reason, alternatives));
   else if (COACH && (LEAK_COACH || PROFILE_COACH)) process.stdout.write(coachOut("PreToolUse", (LEAK_COACH || PROFILE_COACH).reason, (LEAK_COACH || PROFILE_COACH).alts));
   else if (decision !== "allow") {
     const upd = rewrite && decision === "ask" ? { updatedInput: rewrite.value, additionalContext: note } : {};
-    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision === "deny" ? "deny" : "ask", permissionDecisionReason: `MoorAI: ${withSafer(reason, alternatives)}`, ...upd } }));
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision === "deny" ? "deny" : "ask", permissionDecisionReason: `MoorAI: ${withSafer(reason, alternatives)}${hint ? ` ${hint}` : ""}`, ...upd } }));
   } else if (rewrite) {
     process.stdout.write(JSON.stringify({ systemMessage: note, hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: rewrite.value, additionalContext: note } }));
   }
   return exitHook();
+}
+
+// The tag gate for this call: its tags (with the file-stage findings report() saw), the session's tags
+// so far, and the verdict of tagActions + tagRules. Alert-only hits are reported once per session and
+// rule; block / ask hits every time. Content-free: tag names and rule ids.
+function tagStep() {
+  if (CALL.tg !== undefined) return CALL.tg;
+  CALL.tg = null;
+  try {
+    const tags = callTags({ tool: CALL.tool, toolInput: CALL.ti, cwd: CALL.cwd, findingIds: [...CALL.fileFound] });
+    const prior = sessionTagsOf({ sessionId: SESSION_ID });
+    const gate = tagGate({ policy: POLICY, system: CALL.system, tags: tags.tags, inferred: tags.inferred, sessionTags: prior.tags, exceptedRules: [...CALL.exc.rules] });
+    const fired = [];
+    const ts = new Date().toISOString();
+    for (const h of gate.hits) {
+      if (h.action === "alert") { if (prior.fired.includes(h.id)) continue; fired.push(h.id); }
+      post({ ...tagHitAlert(h), tool: `hook:${CALL.tool}`, ts, ...IDENTITY });
+    }
+    if (gate.rejected.length && !seenOnce(`rej:${PROV.policyId}`, 86400000)) post({ threatId: 0, category: "Capability tag policy rejected", riskLevel: "Medium", stage: "policy", tool: `hook:${CALL.tool}`, ts, contentHash: `tagpolicy:${PROV.policyId}`, tagPolicyRejected: gate.rejected, ...IDENTITY });
+    // Which excepted rules would have fired: the same gate with no exceptions, only when one applied.
+    const excused = CALL.exc.rules.size ? tagGate({ policy: POLICY, system: CALL.system, tags: tags.tags, inferred: tags.inferred, sessionTags: prior.tags }).hits.filter((h) => CALL.exc.rules.has(h.id)).map((h) => h.id) : [];
+    return (CALL.tg = { tags, gate, fired, excused, drove: false });
+  } catch { return null; }
+}
+// A key in ~/.moorai/exceptions-seen.json: false the first time (and every `ttl` ms), true after.
+function seenOnce(key, ttl = Infinity) {
+  try {
+    const st = readStateJson(EXCEPTIONS_SEEN_FILE) || {};
+    if (Date.now() - (Number(st[key]) || 0) < ttl) return true;
+    const now = Date.now();
+    const out = Object.fromEntries(Object.entries(st).filter(([, v]) => now - Number(v) < 7 * 86400000).slice(-400));
+    out[key] = now;
+    writeStateJson(EXCEPTIONS_SEEN_FILE, out);
+    return false;
+  } catch { return true; }
+}
+// Live exceptions for this call (console policy, and the root-owned local store when switched on). Each
+// local grant is recorded in the action ledger the first time the hook sees it, and a local grant present
+// while local exceptions are off is reported once. Returns the policy this call is decided under.
+function exceptionStep(policy, tool, ti, cwd) {
+  try {
+    const store = readExceptionStore();
+    const ex = liveExceptions({ policy, system: CALL.system, store, enrolled: isEnrolled(CONFIG) });
+    CALL.localAllowed = ex.localAllowed;
+    const ts = new Date().toISOString();
+    for (const e of ex.live) {
+      if (e.source !== "local" || seenOnce(`grant:${e.id}`)) continue;
+      const body = { threatId: e.threat || 0, category: "Local exception granted", riskLevel: "Medium", stage: "policy", tool: "hook:exceptions", ts, contentHash: `exception:${e.id}`, exception: exceptionMeta(e), ...IDENTITY };
+      post(body);
+      try { recordAction(body); } catch { /* ledger is best-effort */ }
+    }
+    for (const id of ex.ignoredLocal) {
+      if (seenOnce(`ignored:${id}`)) continue;
+      const body = { threatId: 0, category: "Local exception ignored (local exceptions are off)", riskLevel: "High", stage: "policy", tool: "hook:exceptions", ts, contentHash: `exception:${id}`, exception: { id, source: "local", honoured: false }, ...IDENTITY };
+      post(body);
+      try { recordAction(body); } catch { /* ledger is best-effort */ }
+    }
+    CALL.exc = matchExceptions(ex.live, subjectOf({ tool, toolInput: ti, cwd, home: os.homedir() }));
+    return applyExceptions(policy, CALL.exc.threats);
+  } catch { return policy; }
+}
+function exceptionMeta(e) {
+  return { id: e.id, source: e.source, ...(e.threat ? { threat: e.threat } : { rule: e.rule }), expiresAt: new Date(e.expires).toISOString(), patternHash: contentHash(`exception-pattern:${e.pattern}`) };
+}
+// An exception that actually changed this call's outcome: its threat was found, or its rule would have
+// fired. One ledger line and one alert per exception per call.
+function recordExceptionUse(tg) {
+  try {
+    const excused = new Set(tg ? tg.excused : []);
+    const ts = new Date().toISOString();
+    for (const e of CALL.exc.matched) {
+      if (e.threat ? !CALL.found.has(e.threat) : !excused.has(e.rule)) continue;
+      const body = { threatId: e.threat || 0, category: "Exception applied", riskLevel: "Medium", stage: "policy", tool: `hook:${CALL.tool}`, ts, contentHash: `exception:${e.id}`, exception: exceptionMeta(e), ...IDENTITY };
+      post(body);
+      try { recordAction(body); } catch { /* ledger is best-effort */ }
+    }
+  } catch { /* best-effort */ }
+}
+// The exception a person could grant for this deny / ask, named exactly (cli/exceptions.mjs). Threat ids
+// come from the reason ("#57 …"), the two secret-egress reasons are #65, and a tag-gate verdict names its
+// rule ids. Never prints a value: the suggested pattern masks anything credential-shaped.
+function hintFor(reason, tg) {
+  try {
+    const threats = [...String(reason || "").matchAll(/#(\d{1,3})\b/g)].map((m) => Number(m[1]));
+    if (/\blocal secret (?:egress|written to a new file)\b/.test(reason)) threats.push(65);
+    const rules = tg && tg.drove ? tg.gate.hits.filter((h) => h.action === tg.gate.decision.replace("deny", "block")).map((h) => h.id) : [];
+    return exceptionHint({ threats: tg && tg.drove ? [] : threats, rules, tool: CALL.tool, toolInput: CALL.ti, cwd: CALL.cwd, home: os.homedir(), enrolled: isEnrolled(CONFIG), localAllowed: CALL.localAllowed, cli: join(dirname(SELF), "moorai-allow.mjs") });
+  } catch { return ""; }
 }
 
 async function readStdin() { const chunks = []; for await (const c of process.stdin) chunks.push(c); return Buffer.concat(chunks).toString("utf8"); }
@@ -2017,6 +2135,17 @@ async function main() {
   // Its ledger row is the turn boundary the Stop check reads.
   if (input.hook_event_name === "UserPromptSubmit") return handlePrompt(input, policy, engine);
   if (EVENT === "Stop" || EVENT === "SubagentStop") return handleStop(input);
+  // This call, for the tag gate and the exception hint in emit(), and the exceptions that cover it: a live
+  // one turns its threat into "notify" for this call only (cli/exceptions.mjs).
+  Object.assign(CALL, { active: true, tool, ti, cwd: typeof input.cwd === "string" ? input.cwd : "", system: parseRootOwnedJson(systemConfigPath()) });
+  policy = exceptionStep(policy, tool, ti, CALL.cwd);
+  POLICY = policy;
+  // The agent granting its own exception: refused whatever else the call is (cli/exceptions.mjs).
+  if (selfExceptionAttempt({ tool, toolInput: ti })) {
+    why(REASON.POLICY_TAMPER);
+    post({ threatId: 0, category: "Agent attempted to grant a MoorAI exception", riskLevel: "Blocked", stage: "policy", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "exception:self-grant", ...IDENTITY });
+    return emit("deny", "MoorAI exceptions are granted by a person in their own terminal, not by the agent");
+  }
   // Learned per-agent drift — one observation per PreToolUse call, before any branch can return.
   observeLearnedDrift(policy, tool, ti, input.cwd);
   // Runaway circuit breaker (data/circuit-breaker.js): report by default; policy mode "deny" denies the
@@ -2334,7 +2463,7 @@ async function main() {
     const desc = JSON.stringify(ti);
     const act = threatActionFor(policy, 66);
     const block = act === "block" || act === "kill";
-    post({ threatId: 66, category: "Sub-agent / A2A delegation", riskLevel: block ? "Blocked" : "Medium", stage: "behavior", tool: "hook:Task", ts: new Date().toISOString(), contentHash: contentHash((ti.subagent_type || "") + "|" + desc), subagentType: ti.subagent_type, ...IDENTITY });
+    post({ threatId: 66, category: "Sub-agent / A2A delegation", riskLevel: block ? "Blocked" : "Medium", stage: "behavior", tool: "hook:Task", ts: new Date().toISOString(), contentHash: contentHash((ti.subagent_type || "") + "|" + desc), subagentType: subagentTypeField(ti.subagent_type, contentHash), ...IDENTITY });
     // Content-free handoff edge: this session (parent) is delegating to a child agent (subagent_type,
     // one-way hashed). Surfaces as cross-agent messaging in data/agent-detections.js.
     logBehavior("Task", "Task", desc, { decision: block ? "deny" : "allow", findings: [] }, "behavior", { role: "handoff", parent: SESSION, to: contentHash(ti.subagent_type || "") });
@@ -2348,6 +2477,12 @@ async function main() {
     const tm = settleMask(engine, policy, { tool: "Task", stage: "prompt", ctx: {}, ids: pd.maskIds, value: ti, only: ["prompt"], scanOf: (v) => v.prompt || "", dec: "allow", reasons: [], alts: [], text: ti.prompt || "" });
     return emit(tm.dec, tm.dec === "allow" ? "sub-agent delegation logged" : `Task (sub-agent delegation) — ${tm.reasons.join(", ")}`, tm.alts, tm.rewrite);
   }
+  // A tool no branch reads (Glob, Grep, LS, …) still carries tags: a tag action or rule that applies to
+  // it decides through emit(); otherwise it is allowed unread, as before, and its tags join the session.
+  const ug = tagStep();
+  if (ug && ug.gate.decision !== "allow") return emit("allow", "");
+  if (ug) recordSessionTags({ sessionId: SESSION_ID, tags: ug.tags.tags, fired: ug.fired });
+  CALL.active = false;
   VERDICT.uneval = REASON.UNEVALUATED_UNSUPPORTED_TOOL;
   return exitHook(); // unknown tool → allow
 }

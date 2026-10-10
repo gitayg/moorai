@@ -1,0 +1,506 @@
+{
+  "framework": {
+    "key": "agentic-trust-framework",
+    "name": "Agentic Trust Framework (ATF)",
+    "shortName": "CSA Agentic Trust Framework",
+    "publisher": "Josh Woodruff (MassiveScale.AI), published through the Cloud Security Alliance",
+    "version": "0.9.1 (Public Review Draft); CONFORMANCE.md, which holds the requirement ids, is headed 0.9.0",
+    "published": "2026-04-03",
+    "source": "https://github.com/massivescale-ai/agentic-trust-framework",
+    "commit": "c494c6b17100d1fa46cac8ae54386d9a04fa7afe",
+    "commitDate": "2026-04-11",
+    "tag": "v0.9.1",
+    "announcement": "https://cloudsecurityalliance.org/blog/2026/02/02/the-agentic-trust-framework-zero-trust-governance-for-ai-agents",
+    "retrieved": "2026-10-09",
+    "license": "CC BY 4.0 (specification); Apache-2.0 (repository)",
+    "idScheme": "official",
+    "scope": "The 25 core requirements in CONFORMANCE.md (I-1 to R-5). The maturity levels and promotion gates are organisational processes and are not mapped.",
+    "notes": [
+      "ATF governs the organisation that deploys an agent. MoorAI is a third-party runtime guard, so a credit means MoorAI can supply that requirement for an agent it watches, not that MoorAI is ATF conformant.",
+      "The CSA announcement (2026-02-02) lists the same 25 requirement titles without ids; the ids come from CONFORMANCE.md."
+    ]
+  },
+  "statusMeaning": {
+    "covered": "a shipped mechanism meets the whole requirement for an agent MoorAI watches",
+    "partial": "a shipped mechanism meets part of it; `limit` says which part",
+    "not-covered": "a runtime control MoorAI does not provide; `reason` says what is missing",
+    "not-applicable": "organisational, not a runtime tool's job"
+  },
+  "catalog": [
+    {
+      "id": "I-1",
+      "element": "Identity",
+      "title": "Unique Identifier",
+      "description": "Globally unique, immutable identifier for each agent instance"
+    },
+    {
+      "id": "I-2",
+      "element": "Identity",
+      "title": "Credential Binding",
+      "description": "Agent identity bound to cryptographic credentials"
+    },
+    {
+      "id": "I-3",
+      "element": "Identity",
+      "title": "Ownership Chain",
+      "description": "Clear documentation of ownership and operational responsibility"
+    },
+    {
+      "id": "I-4",
+      "element": "Identity",
+      "title": "Purpose Declaration",
+      "description": "Documented intended use and operational scope"
+    },
+    {
+      "id": "I-5",
+      "element": "Identity",
+      "title": "Capability Manifest",
+      "description": "Machine-readable list of claimed agent capabilities"
+    },
+    {
+      "id": "B-1",
+      "element": "Behavioral Monitoring",
+      "title": "Structured Logging",
+      "description": "All agent actions logged in machine-parseable format"
+    },
+    {
+      "id": "B-2",
+      "element": "Behavioral Monitoring",
+      "title": "Action Attribution",
+      "description": "Every action tied to agent identity and session context"
+    },
+    {
+      "id": "B-3",
+      "element": "Behavioral Monitoring",
+      "title": "Behavioral Baseline",
+      "description": "Established patterns of normal operation for anomaly detection"
+    },
+    {
+      "id": "B-4",
+      "element": "Behavioral Monitoring",
+      "title": "Anomaly Detection",
+      "description": "Identification of deviations from expected behavior"
+    },
+    {
+      "id": "B-5",
+      "element": "Behavioral Monitoring",
+      "title": "Explainability",
+      "description": "Ability to retrieve rationale for agent decisions"
+    },
+    {
+      "id": "D-1",
+      "element": "Data Governance",
+      "title": "Schema Validation",
+      "description": "Inputs conform to expected structure and types"
+    },
+    {
+      "id": "D-2",
+      "element": "Data Governance",
+      "title": "Injection Prevention",
+      "description": "Detection of prompt injection and adversarial inputs"
+    },
+    {
+      "id": "D-3",
+      "element": "Data Governance",
+      "title": "PII/PHI Protection",
+      "description": "Automated detection and masking of sensitive data"
+    },
+    {
+      "id": "D-4",
+      "element": "Data Governance",
+      "title": "Output Validation",
+      "description": "Outputs conform to expected structure and content policies"
+    },
+    {
+      "id": "D-5",
+      "element": "Data Governance",
+      "title": "Data Lineage",
+      "description": "Tracking of data provenance through the agent pipeline"
+    },
+    {
+      "id": "S-1",
+      "element": "Segmentation",
+      "title": "Resource Allowlist",
+      "description": "Explicit enumeration of permitted resources"
+    },
+    {
+      "id": "S-2",
+      "element": "Segmentation",
+      "title": "Action Boundaries",
+      "description": "Explicit enumeration of permitted actions"
+    },
+    {
+      "id": "S-3",
+      "element": "Segmentation",
+      "title": "Rate Limiting",
+      "description": "Maximum operations per time period"
+    },
+    {
+      "id": "S-4",
+      "element": "Segmentation",
+      "title": "Transaction Limits",
+      "description": "Maximum impact per individual action"
+    },
+    {
+      "id": "S-5",
+      "element": "Segmentation",
+      "title": "Blast Radius Containment",
+      "description": "Limits on cumulative impact and cascade effects"
+    },
+    {
+      "id": "R-1",
+      "element": "Incident Response",
+      "title": "Circuit Breaker",
+      "description": "Automatic halt on repeated failures"
+    },
+    {
+      "id": "R-2",
+      "element": "Incident Response",
+      "title": "Kill Switch",
+      "description": "Immediate manual termination capability (<1 second)"
+    },
+    {
+      "id": "R-3",
+      "element": "Incident Response",
+      "title": "Session Revocation",
+      "description": "Ability to invalidate all agent sessions"
+    },
+    {
+      "id": "R-4",
+      "element": "Incident Response",
+      "title": "State Rollback",
+      "description": "Ability to undo agent actions where possible"
+    },
+    {
+      "id": "R-5",
+      "element": "Incident Response",
+      "title": "Graceful Degradation",
+      "description": "Fallback to lower autonomy level on issues"
+    }
+  ],
+  "entries": [
+    {
+      "id": "I-1",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "MoorAI labels what it observes (a keyed actor hash per device and user, a keyed session hash) but issues no identity to an agent instance"
+    },
+    {
+      "id": "I-2",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "agent identities are not bound to credentials"
+    },
+    {
+      "id": "I-3",
+      "status": "not-applicable",
+      "threats": [],
+      "evidence": [],
+      "reason": "documentation of ownership and responsibility",
+      "naKind": "organisational"
+    },
+    {
+      "id": "I-4",
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "envelope",
+        "workload-profiles"
+      ],
+      "limit": "the operational scope is declared machine-readably (envelope, workload profiles) and enforced; the intended use is not recorded"
+    },
+    {
+      "id": "I-5",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "aibom",
+        "tool-identity"
+      ],
+      "limit": "the AIBOM inventories each device's agents, models and MCP servers; the tools a server advertises are fingerprinted, not listed"
+    },
+    {
+      "id": "B-1",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "action-audit",
+        "session-ledger",
+        "otel"
+      ],
+      "limit": "every tool call MoorAI sees (hook, MCP proxy and gateway) is logged content-free; actions outside those surfaces are not"
+    },
+    {
+      "id": "B-2",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "action-audit",
+        "provenance"
+      ],
+      "limit": "each record carries a keyed actor hash and, for known agent sessions, a keyed session hash; there is no agent identity to tie it to"
+    },
+    {
+      "id": "B-3",
+      "status": "partial",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "learned-drift",
+        "agent-baseline"
+      ],
+      "limit": "first-seen tools, paths, servers and hosts per agent, and a learned behavioural baseline; latency and token metrics are not baselined"
+    },
+    {
+      "id": "B-4",
+      "status": "partial",
+      "threats": [
+        64,
+        59,
+        38
+      ],
+      "evidence": [
+        "learned-drift",
+        "session-risk",
+        "circuit-breaker",
+        "agentwatch"
+      ],
+      "limit": "rule- and baseline-based deviations; no statistical model of latency, tokens or error rates"
+    },
+    {
+      "id": "B-5",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "the agent's rationale is not captured"
+    },
+    {
+      "id": "D-1",
+      "status": "partial",
+      "threats": [],
+      "evidence": [
+        "gateway-validate"
+      ],
+      "limit": "JSON-RPC and MCP schema validation for messages through the HTTP MCP gateway only"
+    },
+    {
+      "id": "D-2",
+      "status": "covered",
+      "threats": [
+        2,
+        3,
+        40,
+        50,
+        60,
+        70,
+        72,
+        74
+      ],
+      "evidence": [
+        "det-injection",
+        "det-untrusted-directive",
+        "det-obf",
+        "tool-scan",
+        "result-scan"
+      ]
+    },
+    {
+      "id": "D-3",
+      "status": "partial",
+      "threats": [
+        1,
+        15,
+        44
+      ],
+      "evidence": [
+        "det-pii",
+        "det-phi",
+        "mask"
+      ],
+      "limit": "pattern detectors for the listed entity types; masking on the Claude Code hook only"
+    },
+    {
+      "id": "D-4",
+      "status": "partial",
+      "threats": [
+        39,
+        52,
+        71,
+        75,
+        61
+      ],
+      "evidence": [
+        "det-secrets",
+        "det-instr-leak",
+        "det-render-exfil",
+        "det-output-link",
+        "det-code"
+      ],
+      "limit": "content policy on output (secrets, instruction leakage, rendered-image exfiltration, deceptive links, insecure code); structure is not validated"
+    },
+    {
+      "id": "D-5",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "data provenance through the pipeline is not tracked"
+    },
+    {
+      "id": "S-1",
+      "status": "partial",
+      "threats": [
+        25,
+        63,
+        64
+      ],
+      "evidence": [
+        "server-allow",
+        "endpoint-allow",
+        "egress-rules",
+        "envelope",
+        "workload-profiles"
+      ],
+      "limit": "MCP servers, model endpoints, hosts and paths written in a call; resources reached at runtime are not seen, and the MCP proxy and gateway do not judge egress rules"
+    },
+    {
+      "id": "S-2",
+      "status": "covered",
+      "threats": [
+        64
+      ],
+      "evidence": [
+        "envelope",
+        "arg-rules",
+        "workload-profiles"
+      ]
+    },
+    {
+      "id": "S-3",
+      "status": "partial",
+      "threats": [
+        38
+      ],
+      "evidence": [
+        "circuit-breaker",
+        "gateway-cooldown"
+      ],
+      "limit": "per-session call rate and call budget, off by default; the gateway's cool-down counts refusals"
+    },
+    {
+      "id": "S-4",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "the impact of a single action is not bounded"
+    },
+    {
+      "id": "S-5",
+      "status": "partial",
+      "threats": [
+        59,
+        66
+      ],
+      "evidence": [
+        "session-risk",
+        "delegation",
+        "host-isolation"
+      ],
+      "limit": "a session risk score across calls, the parent's envelope on sub-agents, and opt-in host isolation; cumulative impact is not measured"
+    },
+    {
+      "id": "R-1",
+      "status": "partial",
+      "threats": [
+        38
+      ],
+      "evidence": [
+        "circuit-breaker"
+      ],
+      "limit": "halts runaway loops (the same call or cycle with unchanged results) in deny mode; failure counts alone do not trip it"
+    },
+    {
+      "id": "R-2",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "no manual termination control"
+    },
+    {
+      "id": "R-3",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "agent sessions cannot be invalidated"
+    },
+    {
+      "id": "R-4",
+      "status": "not-covered",
+      "threats": [],
+      "evidence": [],
+      "reason": "agent actions are not undone"
+    },
+    {
+      "id": "R-5",
+      "status": "partial",
+      "threats": [
+        59,
+        64
+      ],
+      "evidence": [
+        "session-risk",
+        "intent-alignment"
+      ],
+      "limit": "session risk and intent alignment can move calls from allow to ask a person when signals fire; opt-in"
+    }
+  ],
+  "rejected": [
+    {
+      "id": "I-1",
+      "credit": {
+        "component": "provenance"
+      },
+      "reason": "the actor and session hashes identify a device, user and session for correlation; they are not an identity issued to an agent instance"
+    },
+    {
+      "id": "I-2",
+      "credit": {
+        "component": "placeholder-credentials"
+      },
+      "reason": "binds a secret to a route, not an identity to a credential"
+    },
+    {
+      "id": "B-5",
+      "credit": {
+        "component": "provenance"
+      },
+      "reason": "reason codes and moorai-explain explain MoorAI's own verdict, not the agent's decision"
+    },
+    {
+      "id": "D-5",
+      "credit": {
+        "threat": 59,
+        "component": "session-risk"
+      },
+      "reason": "session taint is a time window flag on the session, not provenance tracked through the pipeline"
+    },
+    {
+      "id": "S-4",
+      "credit": {
+        "component": "human-approval"
+      },
+      "reason": "approval gates a class of action, not its magnitude"
+    },
+    {
+      "id": "R-2",
+      "credit": {
+        "component": "kill"
+      },
+      "reason": "the kill sentinel fires automatically on a kill verdict; there is no manual switch"
+    }
+  ]
+}

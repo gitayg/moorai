@@ -153,8 +153,10 @@ test("DetectionEngine.scanForIndex is the choke-point and covers the corpus inde
   // addressed to the agent and a word-by-word zero-width interleave are inbound shapes a rules file carries.
   // memory-poisoning (#22) and rag-poisoning (#21) joined in v1.6.0 (data/detectors-poisoning.js): a memory
   // file read at session start, and content headed into a knowledge base, are what those two threats name.
+  // install-path-steering (#40) joined in v1.11.0 (data/install-steering.js): a skill or rules file loaded at
+  // session start is where the measured "clone this repository instead of the registry package" text sat.
   assert.deepEqual(scoped.sort(), [
-    "cloak-ai-audience", "hidden-zero-width-interleave", "ingest-agent-directed", "inj-self-replication", "inj-untrusted-directive", "link-assistant-prefill",
+    "cloak-ai-audience", "hidden-zero-width-interleave", "ingest-agent-directed", "inj-self-replication", "inj-untrusted-directive", "install-path-steering", "link-assistant-prefill",
     "mcp-hidden-canary", "mcp-tool-poisoning", "memory-poisoning", "obf-rendered-hidden", "rag-poisoning", "recon-agent-capabilities"
   ]);
 });

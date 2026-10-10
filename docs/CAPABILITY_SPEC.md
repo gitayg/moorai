@@ -126,7 +126,8 @@ to the cloud for its own reasoning.
   staged JSON-RPC / MCP validation, a response size cap, an opt-in per-client cool-down and declared
   workload profiles, and reports per-server and per-tool daily call counts to the console.
 - **Model proxy** — `moorai-model-proxy` ([`model-proxy/`](../model-proxy/README.md)), a loopback proxy
-  between an agent's model SDK and the provider (Anthropic Messages, OpenAI Chat Completions) that scans
+  between an agent's model SDK and the provider (Anthropic Messages, OpenAI Chat Completions, Gemini
+  `generateContent` / `streamGenerateContent`) that scans
   what the agent sends and the tool calls the model returns. Report-only by default; `--mode enforce`
   refuses in the provider's own error shape.
 - **Cloud inventory** — `moorai-cloud-inventory` ([`cloud/`](../cloud/README.md)), a read-only,
@@ -194,7 +195,7 @@ Claude Code GitHub Action, an Agent SDK service in a container
   body over 1 MiB (413, after draining), with a 5 s header timeout and 256 connections. A stdlib-only
   Python client with LangGraph / CrewAI examples (not executed) is in
   [`clients/python`](../clients/python/README.md). p50 on 2 KB: SDK `PreToolUse` 1.99 ms, sidecar
-  `/v1/scan` 6.4–11 ms, shell hook process 164–309 ms. **Limits.** Not evaluated in process (listed in
+  `/v1/scan` 6.4–11 ms, shell hook process p50 152–159 ms / p95 170–178 ms (docs/BENCHMARK.md). **Limits.** Not evaluated in process (listed in
   each result's `notEvaluated`): circuit breaker, session risk, deletion volume, intent alignment,
   learned drift, MCP reputation, escalation, honeytokens, the `mask` rewrite. The SDK's `PostToolUse`
   observes by default and resolves results under the same inbound rules as the hook
@@ -255,7 +256,7 @@ and digest, and enum codes — §C 17d), the session correlation key (`session` 
 `contentHash` of the agent's own session id, the same value as the session summary's `summary:<session>`
 suffix, omitted when no id or no key is known; from the Claude Code hook, the HTTP MCP gateway
 (`Mcp-Session-Id`), `@moorai/agent-sdk` (hook input `session_id`) and `moorai-serve` (the request's
-`session` field), never from the model proxy, which sees no conversation id — §C 17b), the session summary (`summary` — counts — §C 17b), the claim check
+`session` field), never from the model proxy, which sees no conversation id — §C 17b), the agent name (`agentName` — a value from the console's `agent_name` vocabulary: `claude-code` from the Claude Code hook, the adapter's own id (`codex`, `cursor`, `gemini`, `copilot`) when `moorai-agent-hook` ran it, `gateway` from the HTTP MCP gateway, and omitted for a host it cannot name; `@moorai/agent-sdk` and `moorai-serve` name themselves through `surface` (`agent-sdk`, `serve`), which the console reads the same way), the sub-agent type on a #66 delegation (`subagentType` — a Claude Code built-in type in clear: `general-purpose`, `Explore`, `Plan`, `statusline-setup`, `claude-code-guide`, `fork`, `worker`, `claude`, `workflow-subagent`, `comment-thread-analyst` (read off the 2.1.295 binary) and an older build's `output-style-setup`, plus the Codex adapter's fallback `codex`; any other name, which is the user's own and can say what they work on, as the tenant-keyed `contentHash`, the value the handoff edge's `to` already carries; [`cli/subagent-type.mjs`](../cli/subagent-type.mjs)), the session summary (`summary` — counts — §C 17b), the claim check
 (`claimCheck` — a claim-pattern id, an outcome word and counts — §C 17b), the session-risk and
 circuit-breaker signatures (`signature`, `sessionRisk` — rule names, counts, scores, windows — §C 17c), and
 the agent-posture body sent to `POST /api/agent-posture` (host ids, flag names, scope names, a hook-state
@@ -320,8 +321,12 @@ is validated against.
 ### A. Host / gateway (client)
 1. **Approved-tools launcher** — the allowlisted AI tools, reached through the host. *Coaches on
    threats 4, 5, 7, 28; when an MCP allow-list is configured, an off-list server is denied outright
-   (`checkServer`, [`cli/hook-core.mjs`](../cli/hook-core.mjs)) — but a user who never installs
-   MoorAI is still unreached.*
+   (`decideMcpServer`, [`cli/hook-core.mjs`](../cli/hook-core.mjs)) — but a user who never installs
+   MoorAI is still unreached. An empty `mcpAllow` (the console default, `[]`) is no allow-list: it blocks
+   nothing and marks no server unapproved, on every surface that judges MCP calls (the hook, the stdio
+   proxy, the HTTP gateway, `@moorai/agent-sdk` / `moorai-serve` and `moorai-ingest` replay all call
+   `decideMcpServer`). With the approval gate (`mcpGate`) on, `mcpAllow` is the approved set: a server not on it
+   is denied, and a policy with nothing approved yet denies every server.*
 2. **Per-context sessions** — a separate conversation per customer / project / topic. *Threat 36.*
 
 ### B. In-band detection (client; mapped to threat clusters)
@@ -532,6 +537,44 @@ is validated against.
    gitlab.com, public names only. **Limits.** Sigstore signatures are not re-verified. It compares
    against `HEAD`, so a renamed package reads as a mismatch. bitbucket.org and codeberg.org are not
    verified.
+
+   The same lookup counts the **accounts that can publish** the package
+   ([`cli/mcp-package/maintainers.mjs`](../cli/mcp-package/maintainers.mjs)): npm's top-level packument
+   `maintainers` ("people with permission to publish this package; not authoritative but informational")
+   or PyPI's `ownership.roles` (Owner / Maintainer users). Exactly one is `single-maintainer` (5): a weak
+   signal, since 127 of 238 listed npm servers and 67 of 85 listed PyPI servers with roles have one
+   (measured 2026-10-09), so on its own a server stays good. Counted and dropped: no name, username or
+   email is cached or reported. Same 4 s request timeout and per-version cache as the rest of the lookup;
+   an error gives no signal. **Limits.** PyPI's free-text `author` / `maintainer` fields are not used. A
+   PyPI project owned by an organization is never called single-maintainer, because team access is not
+   listed in `roles`; an empty `roles` list is unknown. npm calls its list informational, and whether it
+   includes npm-organization team members is not documented.
+
+11e2. **Pre-install MCP check** — `moorai-mcp-check <package>`
+   ([`cli/moorai-mcp-check.mjs`](../cli/moorai-mcp-check.mjs),
+   [`cli/mcp-package/check.mjs`](../cli/mcp-package/check.mjs),
+   [`cli/mcp-package/check-items.mjs`](../cli/mcp-package/check-items.mjs)). Ten checks on a server
+   before it is installed, each pass, warn, fail or not checked with a one-line reason, from registry
+   metadata and published manifests only: the artifact is never downloaded or run, a remote URL is
+   parsed and never contacted, and the reputation cache is not written. (1) publisher: the name lists,
+   `mcp-typosquat`, `name-not-published` and the repository link (fail on a typosquat, an unpublished
+   name or `repo-mismatch`; warn when the publisher cannot be verified); (2) age: warn under 30 days; (3)
+   maintainers: warn on one; (4) npm `preinstall` / `install` / `postinstall` in the version manifest
+   (fail when it fetches or pipes remote code, warn otherwise); (5) authentication and (7) credential
+   names from the package's `server.json` on registry.modelcontextprotocol.io, found by its npm
+   `mcpName` / PyPI `mcp-name:` and used only when it lists this package (warn on an HTTP transport with
+   no secret, and on broad credentials: cloud secret keys, kubeconfig, admin / root / service-role keys,
+   passwords, database URLs, private keys, seed phrases); (6) a remote endpoint must be HTTPS to a
+   hostname, and is judged against `egressRules` / `egressDefault` when the policy has them; (8) tool
+   descriptions through the tool-stage engine (#60 and #50 fail, other findings warn) when a tools/list
+   JSON is supplied with `--tools`; (9) the spec pins an exact version (warn on none, a tag or a range);
+   (10) a MoorAI hook is registered (pass), only some MCP servers go through the stdio proxy or gateway
+   (warn), or nothing does (fail). Plus a metadata-only reputation score and band from the same weights,
+   and the SkillTriage verdict when `mcpReputation.feed` is on. `--json`; exit 1 when a check fails.
+   **Limits.** Age, maintainers, auth, credentials and pinning have no fail state. PyPI install-time code
+   is not visible in its JSON API (not checked; an sdist-only release is noted). Auth, credentials and
+   transport for a package need a published `server.json`. MCP OAuth is not probed. An npm semver range is
+   not resolved (the latest version's manifest is read, and the reason says so).
 
 11f. **Tool-result scanning** — what comes back into the agent after a tool runs. The Claude Code hook's
    `PostToolUse` matchers are `WebFetch`, `WebSearch`, `Bash`, `PowerShell`, `Agent`, `Task` and `mcp__.*`; the result
@@ -831,7 +874,10 @@ golden files in `test/fixtures/mxc/`.
 portable_pty 0.8 holds one proc-thread attribute (the pseudoconsole), so MoorAI cannot pass it. Instead the
 PTY runs `wxc-exec.exe`, and wxc-exec creates the contained child. This is how macOS `sandbox-exec` works,
 and how MXC's own Node `spawnWithPty` handles ProcessContainer (mxc PR #1400). The real flags, from the mxc docs:
-`--config <file>`, `--log-file <file>` (content-free audit records) and `--probe`. There is no `--policy` flag.
+`--config <file>`, `--log-file <file>` and `--probe`. There is no `--policy` flag. The `--log-file` log is not
+content-free: it holds the whole policy, including every granted and denied path and the command line; only env
+values are redacted. It is written to the host-only run dir, next to `policy.json`, and deleted with that dir unless
+`keepRuns` is set.
 The agent command goes in `process.commandLine`, built and quoted by MoorAI using MSVC argv rules. It is not
 passed after `--`, because how wxc-exec joins that tail is not in the published docs.
 
@@ -885,13 +931,13 @@ junction or any other reparse point there, or a path the host cannot inspect, fa
 | network | `egress.default: deny`, `ingress: {default: deny, hostLoopback: allow}`, optional numeric `egressAllow` on tcp/443 | `moorai-model-proxy` is a base-URL reverse proxy, not a CONNECT proxy, so it cannot be `runtimeConfig.networkProxy`. The agent reaches it on loopback through `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`. MXC rules are numeric only, so a hostname needs a CONNECT proxy. In direct mode, host loopback is not port-scoped. |
 | UI | `ui.disable:false`, clipboard `none`, injection off; `processContainer.ui.isolation: "desktop"`, the rest at default-deny | PowerShell 5.1 and 7 fail with `STATUS_DLL_INIT_FAILED` under the default limits. `isolation: "desktop"` is the documented fix (playground-limitations.md). AppContainer's low integrity level still keeps UIPI between it and medium-IL windows. |
 | fallback | `allowDaclMutation: false` | MoorAI never rewrites host ACLs. A host without BaseContainer fails the launch instead of degrading. |
-| env | `TEMP`/`TMP` → `~/.moorai/agent-tmp`; `GIT_CONFIG_COUNT/KEY/VALUE` = `safe.directory` for the workspace only; `NODE_EXTRA_CA_CERTS` if configured | git rejects repos created while elevated, and command-scope config counts as protected config. BaseContainer does not inherit the CurrentUser Root store. `NODE_EXTRA_CA_CERTS` adds roots. `SSL_CERT_FILE` would replace OpenSSL's bundle, so it is only passed through when it is already set. |
+| env | `TEMP`/`TMP` = `~/.moorai/agent-tmp`, which MXC overrides; `NODE_OPTIONS` = `--preserve-symlinks --preserve-symlinks-main`, appended to the host's own `NODE_OPTIONS`; `GIT_CONFIG_COUNT/KEY/VALUE` = `safe.directory` for the workspace only; `NODE_EXTRA_CA_CERTS` if configured | MXC sets `TEMP` and `TMP` to its AppContainer temp dir (`…\AppData\Local\Packages\sandbox.{guid}\AC\Temp`), so the policy's entries have no effect; `~/.moorai/agent-tmp` stays writable to the agent. Node resolves its main module with `realpathSync`, which `lstat`s every ancestor and gets `EPERM` on `C:\` in BaseContainer, so without the two flags no Node workload (the hook, Codex, Copilot) starts; granting enumeration on the ancestors is not used because listing `C:\` exposes the profile's entries. git rejects repos created while elevated, and command-scope config counts as protected config. BaseContainer does not inherit the CurrentUser Root store. `NODE_EXTRA_CA_CERTS` adds roots. `SSL_CERT_FILE` would replace OpenSSL's bundle, so it is only passed through when it is already set. |
 
 **Denials → alerts.** `captureDenials.mode: "block"` keeps enforcement on. After the session exits, MXC writes
 `denials.<run-id>.json` into the host-only run dir. The host parses only the documented fields
 (`resource`, `resourceType`, `accessType`, `summary.deniedResourcesTruncated`) and deletes the file. It then posts
 one content-free `/api/alerts` record per group: category `MXC: access denied`, `pathClass` (never a path),
-`reasonCode` (`<class>-<access>`), `count`. `pid`, `filetime` and file names are dropped. Capability denials keep
+`reasonCode` (`<class>-<access>`; a file in the `other` path class is `file-other-<access>`, so it never merges with a registry `other-<access>` group), `count`. `pid`, `filetime` and file names are dropped. Capability denials keep
 the well-known capability name, or `custom-sid` for a SID. Denials arrive only after exit; MXC has no live feed
 for the launcher.
 
@@ -1150,7 +1196,9 @@ Both run as another user or in another container. The code is shared:
   - A credential header (or any header carrying a placeholder) sent twice in any letter case: 400. This
     is checked on the raw headers, because Node keeps the first `Authorization` and drops the rest.
   - A raw, non-placeholder credential is forwarded and reported once per route (content-free). With
-    `--require-placeholders` it is refused with 401.
+    `--require-placeholders` it is refused with 401. A non-empty `key` query parameter (the Gemini API's
+    `?key=<API key>` auth) counts as a raw credential the same way, on the model proxy and the HTTP MCP
+    gateway alike; the key is never logged or reported.
 - **Responses.** Every upstream response is masked for every bound secret before anything reads it:
   - a verbatim copy in a header, the status line or the body becomes `*` of the same length;
   - this holds across chunk boundaries;
@@ -1177,8 +1225,8 @@ Both run as another user or in another container. The code is shared:
 ## Model proxy: tool calls in responses
 
 **Status: built and unit-tested (`test/model-proxy-toolcall.test.mjs`,
-`test/model-proxy-toolcall-local.test.mjs`, `test/serve-unchecked.test.mjs`). Replace mode and the skip alert
-are opt-in.**
+`test/model-proxy-toolcall-local.test.mjs`, `test/model-proxy-gemini.test.mjs`, `test/serve-unchecked.test.mjs`).
+Replace mode and the skip alert are opt-in.**
 
 `moorai-serve` is advisory: it judges a tool call only if the framework asks. The model proxy sits on the
 path every agent action starts on, the model's response, so it judges every tool call there, whether or not
@@ -1191,6 +1239,17 @@ the framework ever asks.
   `mcpFloor` do not deny every unknown function.
 - **Parsed.** Anthropic `tool_use` and OpenAI `tool_calls` / `function_call`, both JSON and SSE. A streamed
   call is held until it is complete, then judged.
+- **Gemini** (`model-proxy/gemini.mjs`, `gemini-replace.mjs`). `functionCall` parts of
+  `…/models/<model>:generateContent` and `:streamGenerateContent` responses: JSON, the JSON array sent
+  without `alt=sse`, and `alt=sse` events, on any route (the Gemini API and Vertex AI publisher-model and
+  tuned-endpoint paths). A streamed turn is held from its first `functionCall` event until every candidate
+  that started a call has sent its `finishReason`, then its calls are judged together. Refused: 403
+  `PERMISSION_DENIED`, or mid-stream a bare `{"error":{"code":403,…}}` line, the shape both Google Gen AI
+  SDKs raise on. Replaced: the turn's `functionCall` parts become one text part (the call's
+  `thoughtSignature` goes with it) and `finishReason` is `STOP`. Requests: user text, `systemInstruction`
+  and the string values of `functionResponse.response` are scanned; camelCase and snake_case both read.
+  Vertex streamed `partialArgs` are refused in enforce mode (no documented assembly rule). No default
+  route; `--route /gemini=https://generativelanguage.googleapis.com`.
 - **Enforcement.** `--mode enforce` refuses the response by default. With `--denied-tool-call replace`,
   every client tool call of the turn is withheld and replaced by one text block naming the tool and the
   reasons. The turn ends with `end_turn` / `stop`, no tool-call id is orphaned, and block indexes stay
@@ -1206,8 +1265,11 @@ the framework ever asks.
 
 **Limits:**
 
-- Only traffic forced through the proxy is covered. The Responses API, Bedrock, Vertex and Ollama's native
-  API are forwarded unparsed. Server-side tools (`server_tool_use`, `mcp_tool_use`) are not judged.
+- Only traffic forced through the proxy is covered. The Responses API, Bedrock, Gemini's Interactions and
+  Live APIs, Vertex partner models (`:rawPredict`) and Ollama's native API are forwarded unparsed.
+- Gemini is tested against a fake upstream only, never a real Gemini API or Vertex endpoint or the real
+  `@google/genai` / `google-genai` packages. A placeholder in the `?key=` query string is refused (400),
+  never swapped: bind it to the `x-goog-api-key` header instead. Server-side tools (`server_tool_use`, `mcp_tool_use`) are not judged.
 - In replace mode, text the model wrote after a tool call in the same turn is dropped with the call.
 - The skip alert detects a framework that skipped the check, not one that lies. Anything on loopback with
   the proxy token, the agent included, can mark an id as checked.
@@ -1327,6 +1389,171 @@ counts as allow. So under `egressDefault: "block"` the rule `{ binary: "curl", h
 action: "alert" }` lets a heredoc's URL to `paste.example` through, while `wget https://paste.example/x`
 is denied. Measured with `evaluateProfile`. Not knowing the binary widened what was allowed. The proxy
 avoids this as described above.
+
+## Inference hooks server (Claude Enterprise)
+
+**Status: built and unit-tested (`test/inference-hook.test.mjs`, in process with a fake console, plus one
+real-process run of `serve` against `test`). Tested against Anthropic's published protocol, not against
+Anthropic's live service. Anthropic marks the feature beta: field names, request shapes and headers may
+change.**
+
+Protocol source: Anthropic's own pages,
+[Develop an Inference hooks integration](https://platform.claude.com/docs/en/manage-claude/inference-hooks-endpoint),
+[Configure Inference hooks](https://platform.claude.com/docs/en/manage-claude/inference-hooks-configuration)
+and the [overview](https://platform.claude.com/docs/en/manage-claude/inference-hooks). Anthropic POSTs a
+signed JSON frame, `type` `"prompt"` or `"tool_call"`, with `request_id`, `tenant_id`, `actor`,
+`source.application`, `session_id`, `model`, `messages` and `metadata`, to the configured `https://` URL on
+port 443. It waits up to the admin's verdict timeout (1-10,000 ms, 5,000 by default) for HTTP 200 with
+`action` `allow` or `deny`. Any other answer is a webhook failure, and the organization's failure handling
+(default "Allow the request") applies. Shadow mode, the rollout percentage and role exclusions are
+admin-console settings on Anthropic's side. The server never sees them.
+
+`cli/moorai-inference-hook.mjs` (`serve`, `test`) and `cli/inference-hook/`:
+
+- **`signature.mjs`.** Standard Webhooks HMAC-SHA256 over `{webhook-id}.{webhook-timestamp}.{raw body}`,
+  standard-base64 `whsec_` secrets, any space-separated `v1,` value, `timingSafeEqual`. The tolerance is
+  ±300 s. Several secrets are allowed, for rotation. The replay cache remembers each id until its
+  timestamp leaves the window. It is bounded: past the cap, expired ids are swept first, then the ids
+  nearest expiry are evicted.
+- **`transcript.mjs` / `evaluate.mjs`.** Stages: `user` text → `prompt`; `tool_result` → `output` with
+  `{inbound: true}`, where claude.ai's `web_fetch` / `web_search` map to the web rule set; `attachment`
+  text → `file`. Assistant turns, unknown roles and unknown block types are skipped. Tool call frames: the
+  last message's `tool_use` blocks are judged by content only. A shell command, through the model proxy's
+  `mapTool`, or a WebFetch URL is judged as the hook judges it, and anything else as its argument JSON at
+  `prompt`. `runtime.toolCall` is deliberately not used. Its Read, MCP-file-argument and secret-egress
+  branches read local files, and here a model would choose a path on the security server. Each verdict is
+  cached per conversation in a per-process HMAC-keyed LRU.
+- **`server.mjs`.** Order: bounded raw read, signature, timestamp, replay, parse, judge. Unknown `type`
+  → allow (documented forward compatibility). `--fail open|closed` applies to an authenticated frame that
+  could not be judged in full: item over the 512 K-character cap (its prefix is still judged), more than
+  512 new items, `--eval-timeout-ms` (default 4,000), an engine error, an unparseable frame. The default is
+  `open`, because Anthropic's default failure handling is "Allow the request". For an unreadable body (over
+  `--max-body`, default 64 MiB = protocol maximum, or over `--max-inflight`, 256 MiB), `closed` answers
+  deny and `open` answers 413 / 503, so Anthropic's own failure handling decides. A body past twice the
+  cap is dropped. `--shadow` answers allow to every frame it judged. Limits: headers 5 s, request 30 s,
+  128 connections. Loopback bind unless `--allow-remote`. There is no Host check, because every request
+  must be HMAC-signed.
+- **`report.mjs`.** This is the runtime's reporter with surface `inference-hook`, tool label
+  `inference-hook:<kind>`, `inferenceRef` (the `reference_id` returned to Anthropic, `moorai:` + 24 hex),
+  `inferenceSource` (`source.application`, `[a-z0-9-]`), and, under `--shadow`, `enforcement: LIMITED` on
+  would-be denials. A frame that could not be judged in full gets one `UNEVALUATED_*` alert. `session` is
+  the keyed hash (`cli/content-hash.mjs`) of `session_id`. It is omitted when there is no id or no
+  enrollment key.
+
+Not covered: path-only judging of a tool call (for example a Read of `~/.aws/credentials`, which the hook
+denies by path); per-end-user attribution (`actor.id` is not hashed into alerts; alerts carry the server's
+workload identity); native TLS on the listener; accepting unsigned requests from an organization that
+enabled the feature before signing secrets were required. The test cross-checks the signer and the
+verifier against an independent Python `hmac` implementation of the documented steps, when `python3` is
+present. They have not been checked against Anthropic's real signer.
+
+## Capability tags and exceptions
+
+**Status: built and tested (`test/tool-tags.test.mjs`, `test/tool-tags-hook.test.mjs`,
+`test/exceptions.test.mjs`, and a tag-action case in `test/agent-sdk-parity.test.mjs`). Hook and Agent SDK.**
+
+**Tags** (`data/tool-tags.js`, `cli/tool-tags.mjs`): `read-private`, `read`, `write`, `network`, `exec` per
+tool call. Built-in tools by name; Bash/PowerShell from `extractReadPaths`, `netDestinations`,
+`urlDestinations` and a list of remote CLIs and package managers; MCP tools from `_meta["moorai/tags"]`
+(added, never subtracted) plus name words and known remote servers (inferred). `read-private` also comes
+from a stage-"file" finding of #1, #15, #39, #44 or #55 on a read.
+
+**Policy keys** (verified policy and root-owned system config only):
+- `tagActions: { <tag>: "block" | "ask" | "alert" | "allow" }`: static per call; stricter of the two sources.
+- `tagRules: [{ id?, if: { sessionHas: [tags] }, deny: [tags], action?: "block" | "alert" }]`: session tags
+  include the current call; alert-only hits once per session and rule. At most 64 rules; invalid ones are
+  skipped and reported once a day as "Capability tag policy rejected".
+- Merged with the branch verdict in `emit()` before session-risk escalation and headless settlement;
+  stricter wins. Reason code `BEHAVIOR_SIGNAL`. Alerts: "Capability tag action" / "Capability tag rule"
+  with `tagRule: { kind, id, action, tags, sessionHas?, source?, inferred? }`.
+- Session record `~/.moorai/session-tags.json` through `cli/session-state.mjs` (keyed hash, tag names, 32
+  sessions, 24 h). Tags of a call the host was told to deny are not recorded.
+- Agent SDK: `tagActions` and console exceptions in `decideToolCall`; `tagRules` are listed in
+  `NOT_EVALUATED` ("tag-rules").
+
+**Exceptions** (`cli/exceptions.mjs`, `cli/moorai-allow.mjs`): `{ id, threat | rule, pattern, expires }`;
+the subject is the absolute path (file tools), the whitespace-collapsed command (shell), the URL (WebFetch)
+or the tool name (MCP). A match sets that threat to `notify` in a per-call copy of the policy, or skips that
+tag rule (`rule: "<id>"`, `rule: "tag:<tag>"`). Sources: `policy.exceptions` (console, always) and
+`/etc/moorai/exceptions.json` read through `readRootOwned` when `localExceptions: "allow"` is in the
+console policy (enrolled), or in it or the root-owned config (unenrolled). Local entries need `created` and
+at most 24 h to `expires`. User-scope files are never read. Ledger and alerts: "Local exception granted"
+(first sight), "Exception applied" (it changed the outcome), "Local exception ignored (local exceptions are
+off)", "Agent attempted to grant a MoorAI exception"; each carries the exception id and a keyed pattern
+hash, never the pattern.
+
+**Deny/ask message**: `Exception: …` appended after the safer line, naming the threat ids from the reason
+(#65 for the two secret-egress reasons) or the tag rule ids, and a suggested pattern that masks quoted
+strings, values after `=`, header/auth/data arguments and long opaque tokens. Not printed in server mode or
+on a coached device.
+
+**Not proven / limits**: the hook has no copy of an MCP tool's definition, so declared `_meta` tags are only
+seen when a host forwards `_meta` in the tool input. The root-owned store path was never exercised end to
+end (the tests cannot create a root-owned file; `readExceptionStore` is tested with an injected reader).
+Passwordless or cached sudo defeats the local-exception boundary. Tested on macOS only.
+
+## Transcript ingest (moorai-ingest)
+
+`cli/moorai-ingest.mjs` (modules in `cli/ingest/`) replays the agent transcripts already on the device
+through the live hook's decision functions, so a new install shows what MoorAI would have flagged, and
+what enforce mode would have blocked, in sessions that ran before it was installed. `moorai-backtest`
+cannot do this: it replays the content-free action-audit log, which holds threat ids and no content, so
+it can test a policy change but not score a detector.
+
+**Formats.**
+- *Claude Code*: `$CLAUDE_CONFIG_DIR` or `~/.claude` → `projects/<project>/<session>.jsonl` and
+  `<session>/subagents/**/agent-*.jsonl` (the file the hook input names as `transcript_path`). Records:
+  `assistant` with `message.content[].tool_use {id, name, input}`; `user` with `tool_result
+  {tool_use_id, content, is_error}` and the structured `toolUseResult`; typed prompts as `user` records
+  (not `isMeta`, `isCompactSummary` or `isSidechain`); hook traces as `system/stop_hook_summary.hookInfos[].command`
+  and `attachment.command`. Read off real transcripts on a developer machine, structure only.
+- *Codex*: `$CODEX_HOME` or `~/.codex` → `sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl`,
+  `archived_sessions/`, and `.jsonl.zst` (codex-rs `rollout/src/lib.rs`, `rollout_file_name.rs`,
+  `compression.rs`). Lines are `{timestamp, type, payload}` (`history/src/rollout_payload.rs`);
+  calls are `response_item` `function_call` (`exec_command {cmd}`, `shell {command: argv}`,
+  `shell_command`, `apply_patch {input}`, `view_image`, `spawn_agent`, MCP as `namespace` + `name`),
+  `custom_tool_call` (`apply_patch`) and `local_shell_call`; prompts are `event_msg` `user_message` or
+  `item_completed` `UserMessage`. Each call becomes the payload Codex hands a PreToolUse hook and goes
+  through the same adapter the live Codex hook uses (`cli/agent-hooks/codex.mjs toClaude`).
+
+**Decision path.** `cli/ingest/replay.mjs` calls the hook's functions — `decideText`,
+`decideCredFileRead`, `decideAgentStateWrite`, `decideEndpoints`, `decideEnvelope`, `mcpGateway`,
+`mcpFloor`, `threatActionFor` (`cli/hook-core.mjs`), `decideInbound` (`cli/inbound.mjs`) and
+`promptScanPlan` / `promptBlockers` (`cli/prompt-scan.mjs`) — composed per tool the way
+`cli/moorai-hook.mjs` composes them for PreToolUse, PostToolUse and UserPromptSubmit. A call that enforce
+mode would have denied gets no result scan (it never ran), and neither does a failed one. Claude Code
+calls may resolve to `mask`; Codex calls cannot (the shim does not rewrite). The policy is the one
+`loadVerifiedPolicy` returns (or the built-in baseline the hook uses when there is none), or a
+`--policy` candidate. `test/ingest-parity.test.mjs` runs the real hook process on the same inputs and
+asserts the same decision.
+
+**Output.** Content-free by default: counts by threat, agent and decision, sessions affected, the
+most-flagged categories, and hook coverage per session (MoorAI hook seen / other hooks only / unknown).
+`--show-local` adds the content and refuses unless stdout is a terminal. `--report` (off by default,
+enrolled devices only) posts one alert per finding: the live alert's content-free fields plus
+`replayed: true`, `source: "ingest"`, `agent`, the original `ts`, `ingestedAt`, `wouldDecision`,
+`enforcement: "UNEVALUATED"`, a keyed `replayId`, and `session` computed as the hook computes it
+(`contentHash` of the raw session id, omitted with no id or no key). `riskLevel` is never `Blocked`.
+
+**Bounds.** Files (200 newest in the `--days` window, default 30), total bytes (512 MiB), bytes per file
+(64 MiB), line length (8 MiB; longer lines skipped and counted, never buffered whole), wall time (120 s),
+and a bounded directory walk. Malformed lines and unparseable Codex arguments are skipped and counted.
+
+**Not proven / limits.**
+- The per-tool composition in `replay.mjs` is a second copy of the hook's glue; parity is tested on 15
+  inputs, not proven in general. Extracting a pure `decidePreToolUse` from `cli/moorai-hook.mjs` would
+  remove the copy.
+- Not replayed: files a command reads, file metadata (#72), MCP file arguments, local secret-value
+  egress (#65 by value), MCP reputation, cross-call fetch-then-exec, deletion volume, circuit breaker,
+  learned drift, session escalation, intent alignment, capability tags, model escalation, and the
+  ask-to-deny settlement of server mode and `bypassPermissions`.
+- A Read is judged on the content the transcript recorded (`toolUseResult.file.content`), which is the
+  file as it was then, not as the hook would read it now.
+- Codex hook coverage cannot be told: Codex does not persist hook runs to the rollout. Claude Code
+  coverage is "unknown" for a session that recorded no hook trace at all.
+- The legacy Codex `shell` argv is turned into a command string by this tool; what the Codex hook sent
+  for it was not observed. Prompts are scanned only as `promptScan` allows, as in the live hook: a typed
+  prompt is not scanned under the default.
 
 ## Coverage & blind spots
 

@@ -8,7 +8,7 @@ import { isLoopback } from "../cli/moorai-serve.mjs";
 import { createProxy, DEFAULTS, TOKEN_HEADER, HOP } from "./server.mjs";
 import { loadBindings } from "./credentials.mjs";
 
-export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK and the provider (Anthropic Messages, OpenAI Chat Completions)
+export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK and the provider (Anthropic Messages, OpenAI Chat Completions, Gemini generateContent)
 
   moorai-model-proxy [--mode report|enforce] [--route /prefix=https://upstream]... [--host 127.0.0.1] [--port ${DEFAULTS.port}]
                      [--token-file <path>] [--allow-origin <origin>]... [--allow-remote] [--allow-insecure-upstream] [--max-body <bytes>]
@@ -20,6 +20,8 @@ export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK 
   Point the SDK at it (plain http on loopback; the proxy speaks TLS to the provider):
     ANTHROPIC_BASE_URL=http://127.0.0.1:${DEFAULTS.port}/anthropic      (upstream https://api.anthropic.com)
     OPENAI_BASE_URL=http://127.0.0.1:${DEFAULTS.port}/openai            (upstream https://api.openai.com/v1)
+    GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:${DEFAULTS.port}/gemini     (no default route: add --route /gemini=https://generativelanguage.googleapis.com
+                                                                and list the other routes too; Gemini paths are parsed on any route)
   The client's own API key goes upstream untouched and is never logged, stored or reported — unless
   --credentials is given: then the agent holds a placeholder (moorai-ph:<name>) and the proxy swaps in the
   real key on the one route it is bound to (see README "Placeholder credentials").

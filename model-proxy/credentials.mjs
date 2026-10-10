@@ -111,6 +111,12 @@ export function loadBindings(file, { env = process.env, routes, reserved = new S
   return { bindings, secrets, headers: new Set([...CREDENTIAL_HEADERS, ...[...bindings.values()].map((b) => b.header)]) };
 }
 
+// Every `key` parameter of a query string ("?a=1&key=…"); [] for none or an unparseable one.
+export const CREDENTIAL_QUERY_PARAM = "key";
+function queryKeys(query) {
+  try { return new URLSearchParams(String(query || "").replace(/^\?/, "")).getAll(CREDENTIAL_QUERY_PARAM); } catch { return []; }
+}
+
 // The request-side gate. check(rawHeaders, query, prefix, target URL) →
 //   { error: { status, message, raw? } }   refuse, content-free (raw: a raw credential under --require-placeholders)
 //   { swaps: Map<header, value>, raw: boolean }
@@ -128,7 +134,8 @@ export function createGate(loaded, { requirePlaceholders = false } = {}) {
     for (const [k, e] of seen) if (e.n > 1 && (e.mark || credHeaders.has(k))) return { error: { status: 400, message: "a credential header appears more than once (in any letter case); refused" } };
     if (MARK_RE.test(String(query || ""))) return { error: { status: 400, message: "a credential placeholder in the URL is never swapped; send it in the header it is bound to" } };
     const swaps = new Map();
-    let raw = false;
+    // The Gemini API's query-string auth (`?key=<API key>`) carries a credential exactly as a header does.
+    let raw = queryKeys(query).some((v) => v.trim() !== "");
     for (const [k, e] of seen) {
       if (!e.mark) { if (credHeaders.has(k) && e.v.trim() !== "") raw = true; continue; }
       const m = VALUE_RE.exec(e.v.trim());

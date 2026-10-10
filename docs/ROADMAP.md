@@ -481,7 +481,7 @@ positioning carries over as "in your process, in your VPC: content never leaves 
   `toolResults: "advise"`). Not in process, and listed in each result's `notEvaluated`: circuit breaker,
   session risk, deletion volume, intent alignment, learned drift, MCP reputation, escalation, honeytokens,
   mask rewrite. `PostToolUse` does not apply the hook's inbound gates (it observes only). p50 per
-  `PreToolUse` on 2 KB: 1.99 ms, against 164–309 ms for a shell hook process.
+  `PreToolUse` on 2 KB: 1.99 ms, against 152–159 ms p50 for a shell hook process (docs/BENCHMARK.md).
 - **Tier 3 (shipped in v1.2.0):**
   - `moorai-serve` (`cli/moorai-serve.mjs`), a localhost sidecar on the same runtime: `POST /v1/scan`,
     `POST /v1/tool-call`, `GET /healthz`, content-free verdicts. Loopback only unless `--allow-remote` plus a

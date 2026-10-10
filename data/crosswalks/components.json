@@ -1,0 +1,490 @@
+{
+  "about": "MoorAI components a crosswalk credit can cite as evidence. test/crosswalks.test.mjs checks that each path exists and contains its symbol.",
+  "components": {
+    "stdio-proxy": {
+      "name": "MCP stdio proxy",
+      "path": "mcp-proxy/moorai-mcp-guard.mjs",
+      "symbol": "mcpGateway"
+    },
+    "http-gateway": {
+      "name": "HTTP MCP gateway",
+      "path": "mcp-gateway/guard.mjs",
+      "symbol": "mcpGateway"
+    },
+    "server-allow": {
+      "name": "MCP server allow-list (policy.mcpAllow)",
+      "path": "cli/hook-core.mjs",
+      "symbol": "export function decideMcpServer"
+    },
+    "arg-rules": {
+      "name": "Per-tool argument rules (policy.mcpToolRules)",
+      "path": "cli/hook-core.mjs",
+      "symbol": "export function decideMcpArgs"
+    },
+    "arg-scan": {
+      "name": "Argument checks: detectors over tools/call arguments",
+      "path": "cli/hook-core.mjs",
+      "symbol": "export function mcpGateway"
+    },
+    "file-args": {
+      "name": "Files named in MCP arguments",
+      "path": "cli/mcp-file-args.mjs",
+      "symbol": "export function scanMcpFileArgs"
+    },
+    "file-metadata": {
+      "name": "Directives in file metadata (#72)",
+      "path": "cli/hook-core.mjs",
+      "symbol": "engine.threat(72)"
+    },
+    "index-writes": {
+      "name": "Vector-store and memory writes (index stage)",
+      "path": "cli/index-tools.mjs",
+      "symbol": "export function indexWriteScan"
+    },
+    "tool-scan": {
+      "name": "tools/list scan (tool stage)",
+      "path": "mcp-proxy/tool-scan.mjs",
+      "symbol": "export function toolScanText"
+    },
+    "tool-identity": {
+      "name": "Tool fingerprint (description, schema, annotations)",
+      "path": "mcp-proxy/tool-scan.mjs",
+      "symbol": "annotations: tool.annotations"
+    },
+    "result-scan": {
+      "name": "Tool-result scan (file stage)",
+      "path": "mcp-proxy/tool-scan.mjs",
+      "symbol": "export function resultScanText"
+    },
+    "tool-drift": {
+      "name": "Tool-drift baselines (description, schema, shadowing)",
+      "path": "mcp-proxy/tool-baseline.mjs",
+      "symbol": "export function driftSignals"
+    },
+    "tool-drift-block": {
+      "name": "Approved tool baselines and quarantine (mcpToolDrift: block)",
+      "path": "mcp-proxy/tool-drift.mjs",
+      "symbol": "export const TOOL_DRIFT_REASON"
+    },
+    "det-tool-poisoning": {
+      "name": "Tool-poisoning scan (#60, mcp-tool-poisoning)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"mcp-tool-poisoning\""
+    },
+    "det-tool-cred-path": {
+      "name": "Tool description asking for a credential file (#60, mcp-tool-cred-path)",
+      "path": "data/detectors-tool-credpaths.js",
+      "symbol": "detectorId: \"mcp-tool-cred-path\""
+    },
+    "det-hidden-canary": {
+      "name": "Hidden content in tool metadata (#50, mcp-hidden-canary)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"mcp-hidden-canary\""
+    },
+    "reputation": {
+      "name": "MCP server reputation scoring",
+      "path": "data/mcp-reputation.js",
+      "symbol": "export function scoreReputation"
+    },
+    "reputation-cli": {
+      "name": "MCP server reputation at first launch and version change",
+      "path": "cli/mcp-reputation.mjs",
+      "symbol": "export function assessServerSync"
+    },
+    "repo-link": {
+      "name": "Registry provenance and repository link check",
+      "path": "cli/mcp-repo-link.mjs",
+      "symbol": "export async function checkRepoLink"
+    },
+    "det-injection": {
+      "name": "Instruction-override detectors (#3, inj-ignore)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"inj-ignore\""
+    },
+    "det-untrusted-directive": {
+      "name": "Directives in ingested content (#40, inj-untrusted-directive)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"inj-untrusted-directive\""
+    },
+    "det-obf": {
+      "name": "Invisible or smuggled instructions (#50, obf-invisible-instructions)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"obf-invisible-instructions\""
+    },
+    "det-obf-output": {
+      "name": "Hidden text in fetched or generated content (#50, obf-invisible-output)",
+      "path": "data/detectors-artifacts.js",
+      "symbol": "detectorId: \"obf-invisible-output\""
+    },
+    "det-render-exfil": {
+      "name": "Data in a rendered image URL (#71, egress-rendered-image)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"egress-rendered-image\""
+    },
+    "det-sysprompt": {
+      "name": "System-prompt extraction (#51, sysprompt-extract)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"sysprompt-extract\""
+    },
+    "det-instr-leak": {
+      "name": "Instruction-file leakage (#52, instr-leak-output)",
+      "path": "data/detectors-instruction-leak.js",
+      "symbol": "detectorId: \"instr-leak-output\""
+    },
+    "det-destructive": {
+      "name": "Destructive shell command (#43, destructive-command)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"destructive-command\""
+    },
+    "det-destructive-tool": {
+      "name": "Destructive tool / MCP call (#56, mcp-destructive-call)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"mcp-destructive-call\""
+    },
+    "det-reverse-shell": {
+      "name": "Reverse shell / remote exec (#54, exec-reverse-shell)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"exec-reverse-shell\""
+    },
+    "det-fetch-exec": {
+      "name": "Download-then-run (#57, fetch-then-exec)",
+      "path": "data/detectors-net-exec.js",
+      "symbol": "fetch-then-exec"
+    },
+    "det-pkg-install": {
+      "name": "Install from an untrusted source (#57, pkg-install-untrusted)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"pkg-install-untrusted\""
+    },
+    "det-typosquat": {
+      "name": "Hallucinated or typosquatted dependency (#62, dep-typosquat)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"dep-typosquat\""
+    },
+    "det-cred-file": {
+      "name": "Credential-file access (#55, cred-file-access)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"cred-file-access\""
+    },
+    "det-secret-upload": {
+      "name": "Secret-file upload (#55, secret-file-upload)",
+      "path": "data/detectors-net-exec.js",
+      "symbol": "detectorId: \"secret-file-upload\""
+    },
+    "det-secrets": {
+      "name": "Secret-shape detectors (#39)",
+      "path": "data/secrets-patterns.js",
+      "symbol": "S(\"secret-github\""
+    },
+    "det-pii": {
+      "name": "Personal and payment data detectors (#1, #15)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"dlp-payment-card\""
+    },
+    "det-phi": {
+      "name": "Protected health information (#44, phi-hipaa)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"phi-hipaa\""
+    },
+    "det-credential-egress": {
+      "name": "Credential-shaped token in egress (#65, egress-credential-shaped)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"egress-credential-shaped\""
+    },
+    "secret-egress": {
+      "name": "Local secret value fingerprint matched on egress (#65)",
+      "path": "cli/secret-egress.mjs",
+      "symbol": "export function egressHits"
+    },
+    "gateway-secret-egress": {
+      "name": "HTTP MCP gateway local-secret egress check (#65)",
+      "path": "mcp-gateway/report.mjs",
+      "symbol": "threatId: 65"
+    },
+    "det-oast": {
+      "name": "Out-of-band collection hosts (#78, oast-exfil)",
+      "path": "data/detectors-net-exec.js",
+      "symbol": "detectorId: \"oast-exfil\""
+    },
+    "det-external-comms": {
+      "name": "External email / message / webhook sends (#47, action-external-comms)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"action-external-comms\""
+    },
+    "det-recon": {
+      "name": "Capability reconnaissance in ingested content (#69, recon-agent-capabilities)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"recon-agent-capabilities\""
+    },
+    "det-oversized": {
+      "name": "Oversized input (#53, oversized-input)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"oversized-input\""
+    },
+    "det-code": {
+      "name": "Insecure code the agent writes (#61, code-* detectors)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"code-command-injection\""
+    },
+    "det-memory-poisoning": {
+      "name": "Instructions written into agent memory (#22, memory-poisoning)",
+      "path": "data/detectors-poisoning.js",
+      "symbol": "detectorId: \"memory-poisoning\""
+    },
+    "det-rag-poisoning": {
+      "name": "Instructions headed into a knowledge base (#21, rag-poisoning)",
+      "path": "data/detectors-poisoning.js",
+      "symbol": "detectorId: \"rag-poisoning\""
+    },
+    "det-security-config": {
+      "name": "Security / IAM / firewall change (#46, action-security-config)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"action-security-config\""
+    },
+    "det-credential-create": {
+      "name": "User, token or API-key creation (#48, action-credential-create)",
+      "path": "data/detectors.js",
+      "symbol": "detectorId: \"action-credential-create\""
+    },
+    "det-history-tamper": {
+      "name": "Agent transcript tampering (#73, agent-history-tamper)",
+      "path": "data/detectors-agent-state.js",
+      "symbol": "detectorId: \"agent-history-tamper\""
+    },
+    "det-output-link": {
+      "name": "Deceptive link in output (#75, out-link-deceptive)",
+      "path": "data/detectors-artifacts.js",
+      "symbol": "out-link-deceptive"
+    },
+    "skill-file-drift": {
+      "name": "Skill-surface file drift, MCP configs included (#60)",
+      "path": "cli/moorai-hook.mjs",
+      "symbol": "\"Skill-file drift\""
+    },
+    "skill-surface": {
+      "name": "Skill-surface file list (.mcp.json and host MCP configs)",
+      "path": "data/skill-surface.js",
+      "symbol": ".mcp.json"
+    },
+    "session-risk": {
+      "name": "Session risk: taint, sequences, slow exfiltration (#59)",
+      "path": "data/session-risk.js",
+      "symbol": "export const TAINT_THREATS"
+    },
+    "env-dump": {
+      "name": "Environment dump staged for egress (session-risk sequence)",
+      "path": "data/session-risk.js",
+      "symbol": "const ENV_DUMP"
+    },
+    "circuit-breaker": {
+      "name": "Runaway-loop circuit breaker (#38)",
+      "path": "data/circuit-breaker.js",
+      "symbol": "export function assessCall"
+    },
+    "intent-alignment": {
+      "name": "Intent alignment: risky call vs the stated task (#64)",
+      "path": "cli/intent-alignment.mjs",
+      "symbol": "export function judgeAction"
+    },
+    "claim-check": {
+      "name": "Claimed success vs failed tool calls",
+      "path": "cli/claim-check.mjs",
+      "symbol": "export function outcomeOfFailure"
+    },
+    "envelope": {
+      "name": "Entitlement envelope (#64)",
+      "path": "cli/hook-core.mjs",
+      "symbol": "export function decideEnvelope"
+    },
+    "jit-elevation": {
+      "name": "Time-boxed JIT elevation grants",
+      "path": "cli/hook-core.mjs",
+      "symbol": "policy?.elevations"
+    },
+    "workload-profiles": {
+      "name": "Declared workload profiles",
+      "path": "cli/workload-profile.mjs",
+      "symbol": "export const PROFILE_DRIFT"
+    },
+    "learned-drift": {
+      "name": "Learned per-agent first-seen drift (#64)",
+      "path": "data/learned-drift.js",
+      "symbol": "export function observeDrift"
+    },
+    "agent-baseline": {
+      "name": "Learned per-agent behavioural baseline",
+      "path": "data/agent-baseline.js",
+      "symbol": "export function scoreDeviation"
+    },
+    "agentwatch": {
+      "name": "Autonomous-agent behaviour signature (moorai-agentwatch)",
+      "path": "data/agent-behavior.js",
+      "symbol": "export function assessSession"
+    },
+    "delegation": {
+      "name": "Sub-agent delegation gate (#66)",
+      "path": "cli/moorai-hook.mjs",
+      "symbol": "Task (sub-agent delegation)"
+    },
+    "endpoint-allow": {
+      "name": "Model-endpoint allow-list (#63)",
+      "path": "cli/hook-core.mjs",
+      "symbol": "export function decideEndpoints"
+    },
+    "egress-rules": {
+      "name": "Egress rules (binary, host, port, method, path)",
+      "path": "cli/egress-rules.mjs",
+      "symbol": "export const EGRESS_RULE"
+    },
+    "egress-proxy-metadata": {
+      "name": "Egress proxy: cloud metadata addresses refused",
+      "path": "egress-proxy/server.mjs",
+      "symbol": "isMetadataAddress(ip)"
+    },
+    "sandbox-policy": {
+      "name": "Sandbox network policy from egress rules (MXC, Seatbelt, OpenShell)",
+      "path": "cli/sandbox-policy.mjs",
+      "symbol": "export function sandboxPolicy"
+    },
+    "host-isolation": {
+      "name": "Desktop host agent isolation (macOS Seatbelt)",
+      "path": "src-tauri/src/platform.rs",
+      "symbol": "pub fn agent_command"
+    },
+    "human-approval": {
+      "name": "High-impact actions default to human approval",
+      "path": "data/human-approval.js",
+      "symbol": "export const APPROVAL_THREATS"
+    },
+    "kill": {
+      "name": "Kill verdict terminates the agent session",
+      "path": "cli/signals.mjs",
+      "symbol": "export function requestKill"
+    },
+    "action-audit": {
+      "name": "Content-free action audit log",
+      "path": "cli/signals.mjs",
+      "symbol": "action-audit.jsonl"
+    },
+    "destinations": {
+      "name": "Content-free destination log",
+      "path": "cli/signals.mjs",
+      "symbol": "export function recordDestination"
+    },
+    "session-ledger": {
+      "name": "Chain-stamped session ledger",
+      "path": "cli/session-ledger.mjs",
+      "symbol": "export function recordRow"
+    },
+    "record-chain": {
+      "name": "Tamper-evident record chain",
+      "path": "cli/record-chain.mjs",
+      "symbol": "export function verifyChain"
+    },
+    "agency-sign": {
+      "name": "Signed MCP enforcement decisions",
+      "path": "data/agency-sign.mjs",
+      "symbol": "export function signApproval"
+    },
+    "provenance": {
+      "name": "Verdict provenance (policy id, reason code)",
+      "path": "cli/provenance.mjs",
+      "symbol": "export const REASON"
+    },
+    "policy-signature": {
+      "name": "Signature-verified policy",
+      "path": "cli/hook-core.mjs",
+      "symbol": "export async function loadVerifiedPolicy"
+    },
+    "offline-posture": {
+      "name": "Offline fail-closed posture (opt-in)",
+      "path": "cli/hook-core.mjs",
+      "symbol": "export function offlineMode"
+    },
+    "agent-posture": {
+      "name": "Agent posture: hook state and weakened settings",
+      "path": "cli/agent-posture.mjs",
+      "symbol": "export const POSTURE_FLAGS"
+    },
+    "usage-crosscheck": {
+      "name": "Hook vs proxy vs gateway MCP usage cross-check",
+      "path": "cli/mcp-usage-beat.mjs",
+      "symbol": "export const USAGE_PATHS"
+    },
+    "gateway-validate": {
+      "name": "HTTP MCP gateway staged message validation",
+      "path": "mcp-gateway/validate.mjs",
+      "symbol": "export const STAGES"
+    },
+    "gateway-response-cap": {
+      "name": "HTTP MCP gateway response size cap",
+      "path": "mcp-gateway/report.mjs",
+      "symbol": "RESPONSE_TOO_LARGE"
+    },
+    "gateway-cooldown": {
+      "name": "HTTP MCP gateway per-client cool-down",
+      "path": "mcp-gateway/cooldown.mjs",
+      "symbol": "export function createCooldown"
+    },
+    "placeholder-credentials": {
+      "name": "Placeholder credentials (model proxy, MCP gateway)",
+      "path": "model-proxy/credentials.mjs",
+      "symbol": "export const PLACEHOLDER_PREFIX"
+    },
+    "aibom": {
+      "name": "AI bill of materials (moorai-aibom)",
+      "path": "cli/moorai-aibom.mjs",
+      "symbol": "MCP servers"
+    },
+    "otel": {
+      "name": "Content-free OpenTelemetry export",
+      "path": "cli/otel.mjs",
+      "symbol": "OpenTelemetry"
+    },
+    "stix": {
+      "name": "STIX 2.1 export of findings",
+      "path": "cli/moorai-stix.mjs",
+      "symbol": "STIX 2.1"
+    },
+    "compliance": {
+      "name": "Compliance evidence packs",
+      "path": "cli/moorai-compliance.mjs",
+      "symbol": "compliance-evidence"
+    },
+    "semantic-escalation": {
+      "name": "On-device model second opinion (#58)",
+      "path": "data/model-escalation.mjs",
+      "symbol": "export const CLASSIFIER_CRITERIA"
+    },
+    "ocr": {
+      "name": "On-device OCR of pasted images",
+      "path": "src/ocr.js",
+      "symbol": "export function decideImageInspection"
+    },
+    "mask": {
+      "name": "Masking a finding in place (Claude Code hook)",
+      "path": "cli/mask.mjs",
+      "symbol": "export function isMaskable"
+    },
+    "model-proxy": {
+      "name": "Model proxy",
+      "path": "model-proxy/moorai-model-proxy.mjs",
+      "symbol": "a loopback HTTP proxy between an agent's model SDK and the model provider"
+    },
+    "redteam": {
+      "name": "moorai-redteam: the adversarial corpus against the live policy",
+      "path": "cli/moorai-redteam.mjs",
+      "symbol": "moorai-redteam"
+    },
+    "attest": {
+      "name": "moorai-attest: in-toto export of governance records",
+      "path": "cli/moorai-attest.mjs",
+      "symbol": "in-toto"
+    },
+    "rule-base": {
+      "name": "Rule base: severity x likelihood per threat",
+      "path": "data/threats.json",
+      "symbol": "\"riskScore\""
+    }
+  }
+}

@@ -9,16 +9,27 @@ server-mode rules.
 ```
 agent SDK ──http──▶ 127.0.0.1:8791/anthropic/v1/messages ──https──▶ api.anthropic.com/v1/messages
           ──http──▶ 127.0.0.1:8791/openai/chat/completions ──https──▶ api.openai.com/v1/chat/completions
+          ──http──▶ 127.0.0.1:8791/gemini/v1beta/models/<m>:generateContent ──https──▶ generativelanguage.googleapis.com/…
 ```
 
 ```bash
 moorai-model-proxy                       # report-only, default routes
 ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic  your-agent
 OPENAI_BASE_URL=http://127.0.0.1:8791/openai        your-agent
+
+# Gemini has no default route: --route replaces the defaults, so list every route you need.
+moorai-model-proxy --route /anthropic=https://api.anthropic.com --route /openai=https://api.openai.com/v1 \
+  --route /gemini=https://generativelanguage.googleapis.com
+GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8791/gemini your-agent   # read by the Google Gen AI SDKs (JS and Python)
 ```
 
+The Gemini parser is chosen by the request path (`…/models/<model>:generateContent`), not by the route, so
+any route whose upstream speaks that method is parsed: the Gemini API, a Vertex AI regional or global
+endpoint (`--route /vertex=https://us-central1-aiplatform.googleapis.com`, then the SDK's `httpOptions.baseUrl`
+or `GOOGLE_VERTEX_BASE_URL`), or a gateway in front of either.
+
 The client's own API key goes upstream untouched. That covers `x-api-key`, `Authorization`,
-`anthropic-version`, `anthropic-beta` and `OpenAI-Organization`. The proxy never reads, stores, logs or
+`anthropic-version`, `anthropic-beta`, `OpenAI-Organization` and `x-goog-api-key`. The proxy never reads, stores, logs or
 reports them. The exception is `--credentials`: the agent then holds a placeholder instead of the key, and
 the proxy swaps the real key in (see [Placeholder credentials](#placeholder-credentials)).
 
@@ -41,9 +52,38 @@ These are the documented shapes the code is built against (read 2026-10-06):
   - Tool calls arrive as `delta.tool_calls[]` `{index, id, type, function: {name, arguments}}`, with
     `arguments` in fragments. A choice ends at its `finish_reason`.
   - Errors look like `{error: {message, type, param, code}}`.
+- **Google Gemini `generateContent` / `streamGenerateContent`**, `POST …/{models|tunedModels|endpoints}/<id>:generateContent`
+  and `…:streamGenerateContent` ([API reference](https://ai.google.dev/api/generate-content),
+  [function calling](https://ai.google.dev/gemini-api/docs/generate-content/function-calling), Vertex AI
+  [`streamGenerateContent`](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1/projects.locations.publishers.models/streamGenerateContent),
+  read 2026-10-09). Code: [`gemini.mjs`](gemini.mjs), [`gemini-replace.mjs`](gemini-replace.mjs).
+  - Request: `contents[]` of `Content` `{role, parts[]}`, role "*Must be either 'user' or 'model'*", and
+    `systemInstruction`. A `Part` is a union of `text`, `inlineData`, `functionCall`, `functionResponse`,
+    `fileData`, `executableCode`, `codeExecutionResult`, `toolCall` and `toolResponse`. Both camelCase and
+    snake_case field names are read (proto-JSON accepts both; the Python SDK sends snake_case).
+  - Response: `GenerateContentResponse` `{candidates[], promptFeedback, usageMetadata, modelVersion,
+    responseId}`; a client tool call is a `functionCall` part `{id, name, args}`, args "*in JSON object
+    format*". "*Gemini 3 now always returns a unique `id` with every `functionCall`*." `toolCall` is "*A
+    predicted server-side `ToolCall` … The client is NOT expected to execute this*": not decided, like
+    `executableCode`, which the provider runs.
+  - Stream: "*the response body contains a stream of `GenerateContentResponse` instances*". The Google Gen
+    AI SDKs always add `alt=sse` (js-genai `src/_api_client.ts`), so each instance is one `data:` event.
+    Without `alt=sse` the body is one JSON array. There is no terminator event: the candidate's last chunk
+    carries its `finishReason`, and the connection closes.
+  - Vertex AI only, opt-in (`streamFunctionCallArguments`): a call's arguments arrive as `partialArgs`
+    pieces with `willContinue`. The field "*is not supported in Gemini API*" (Gen AI SDK type docs), and no
+    rule for assembling the pieces is documented.
+  - Errors: `{error: {code, message, status}}` (google.rpc `Status`). Mid-stream there is no documented
+    error event. The Python SDK reads a bare JSON object "*line by line*" and raises `APIError` on one that
+    starts `{"error":`; the JS SDK raises `ApiError` on a read chunk that parses as an object with `error`
+    (`code` 400–599), and raises "*Incomplete JSON segment at the end*" on a stream that ends mid-segment.
+  - Contradiction, noted: ai.google.dev's [API errors](https://ai.google.dev/gemini-api/docs/api-errors)
+    page documents `{error: {code: "<snake_case>", message}}` and SSE `error` events. That page is about the
+    Interactions API. Both SDKs read a numeric `code` on `generateContent`, so the proxy sends that.
 
 Any other path or method (`/v1/models`, `count_tokens`, embeddings, the OpenAI Responses API, Bedrock,
-Vertex) is **forwarded unparsed and unchecked**.
+Gemini's Interactions API, `countTokens`, `embedContent`, batch, cached contents) is **forwarded unparsed and
+unchecked**.
 
 ### Exact coverage of tool-call judging
 
@@ -53,7 +93,14 @@ Vertex) is **forwarded unparsed and unchecked**.
 | OpenAI Chat Completions `POST …/chat/completions`, JSON and SSE | yes: `tool_calls`, deprecated `function_call` |
 | a local OpenAI-compatible server (Ollama, LM Studio, llama.cpp server, vLLM) at its `…/v1/chat/completions`, routed with `--route /local=http://127.0.0.1:<port>/v1` | yes, the Chat Completions parser; tested against a fake only (see [Local models](#local-models)) |
 | OpenAI Responses API (`/responses`), Assistants, Realtime | **no** — forwarded unparsed |
-| Amazon Bedrock (`InvokeModel`, `Converse`, its event-stream framing), Google Vertex AI / Gemini | **no** — forwarded unparsed |
+| Gemini API `POST …/models/<m>:generateContent` and `:streamGenerateContent`, JSON, JSON array (no `alt=sse`) and SSE (`alt=sse`) | yes: `functionCall` parts; tested against a fake upstream only |
+| Vertex AI `…/publishers/google/models/<m>:generateContent` / `:streamGenerateContent` (and tuned `…/endpoints/<id>:…`) | yes, the same parser: the documented request fields and response type are the Gemini API's; tested against a fake upstream only |
+| Vertex AI streamed `partialArgs` (`streamFunctionCallArguments`) | judged as unparsed arguments: content-scanned, **refused in enforce mode** |
+| Gemini `toolCall` / `executableCode` parts | **no** — they run at the provider, not in the agent |
+| Gemini Interactions API (`/v1beta/interactions`), Live API (WebSocket `BidiGenerateContent`), batch, `cachedContents`, `countTokens`, `embedContent`; Vertex partner models (`:rawPredict`, `:streamRawPredict`) | **no** — not parsed |
+| Gemini's OpenAI-compatible endpoint (`…/v1beta/openai/chat/completions`) | by path, the Chat Completions parser; not tested |
+| `alt=proto` / protobuf bodies on a Gemini path | a response is refused in enforce mode (not JSON or SSE) and reported unevaluated in report mode; a protobuf **request** is forwarded unscanned |
+| Amazon Bedrock (`InvokeModel`, `Converse`, its event-stream framing) | **no** — forwarded unparsed |
 | Ollama's native `/api/chat` and `/api/generate` (NDJSON) | **no** — forwarded unparsed; use its `/v1` endpoint |
 | Anthropic `server_tool_use` / `mcp_tool_use` | **no** — they run at the provider, not in the agent |
 | anything the agent sends to a provider **without** going through this proxy (an SDK pinned to the provider URL, a direct HTTPS call, a second key) | **no** |
@@ -68,13 +115,16 @@ Each direction is checked as follows.
 
 **Requests (agent → model).** The proxy scans each new piece of content. Prompt and system text is
 scanned at stage `prompt` (for example, secrets leaving in prompts). A tool result or document the agent
-feeds back (Anthropic `tool_result` or text `document`, OpenAI `role: "tool"`) is scanned at stage
+feeds back (Anthropic `tool_result` or text `document`, OpenAI `role: "tool"`, Gemini `functionResponse`,
+whose `response` object's string values are scanned joined by newlines) is scanned at stage
 `output` with `inbound: true`, the Agent SDK's PostToolUse scan. That is where indirect injection shows
 up.
 
 - **Repeats are scanned once.** Conversations are re-sent every turn, so each item is scanned once. A
   bounded LRU, keyed by a per-process HMAC, maps each item to its verdict.
-- **Not scanned:** assistant turns, images, base64 PDFs, and the `tools` definitions.
+- **Not scanned:** assistant (Gemini `model`) turns, images, base64 PDFs, and the `tools` definitions.
+  Gemini: `inlineData`, `fileData` URIs, `thought` parts, a `cachedContent` reference (its content was
+  uploaded earlier, unparsed), and a request body that is not JSON.
 
 **Responses (model → agent).** Each tool call the model asks for is decided like `/v1/tool-call`. The
 proxy maps the tool name to the hook's vocabulary:
@@ -116,7 +166,9 @@ deny, unless the system file or the org policy says `allow-with-report`.
 - **Denied request:** HTTP 403 in the provider's error shape. The provider never receives the request.
   - Anthropic: `permission_error`.
   - OpenAI: `code: "moorai_policy_denied"`.
-  - Neither SDK retries a 403.
+  - Gemini: `{error: {code: 403, message, status: "PERMISSION_DENIED"}}`.
+  - No SDK retries a 403. The Google Gen AI SDKs retry nothing unless `httpOptions.retryOptions` is set
+    (then 408, 429, 500, 502, 503 and 504), and they do not read `x-should-retry`.
 - **Denied tool call in a non-streaming response:** with `--denied-tool-call refuse` (the default), the
   whole response is refused with the same 403. `--denied-tool-call replace` delivers the turn without its
   tool calls instead (see `--denied-tool-call replace` below). Why the default refuses rather than cut the tool
@@ -129,10 +181,17 @@ deny, unless the system file or the org policy says `allow-with-report`.
   - Anthropic: held from `content_block_start` (`tool_use`) to its `content_block_stop`.
   - OpenAI: held from the first `tool_calls` delta until every choice that started a tool call has sent
     its `finish_reason`.
+  - Gemini (`alt=sse`): held from the first event with a `functionCall` part until every candidate that
+    started a call has sent its `finishReason`. A Gemini call arrives whole in one event, so this holds the
+    rest of the turn: an allowed call in an earlier event than a denied one is withheld with it. The JSON
+    array sent without `alt=sse` is held whole, like a non-streaming body, so it is not progressive in
+    enforce mode.
   - Allowed: the held events are released byte-identical.
   - Denied: the stream ends with the provider's error event. Anthropic gets `event: error` with a
     `permission_error` body. OpenAI gets a `data:` chunk with `error`, which openai-node turns into an
-    `APIError`.
+    `APIError`. Gemini gets a bare `{"error":{"code":403,…,"status":"PERMISSION_DENIED"}}` line (no
+    `data:`), which both Gen AI SDKs raise (see the Gemini errors bullet above); braces are kept out of its
+    message because the Python SDK finds the object's end by counting them.
   - Text sent before the tool call has already reached the agent.
   - An upstream that ends inside a held tool call: the stream ends with the error event, and the unfinished
     tool call is never released.
@@ -159,6 +218,14 @@ deny, unless the system file or the org policy says `allow-with-report`.
     (a chunk left empty is dropped), the text goes into the delta of the chunk that carries the
     `finish_reason`, and a choice that never sent one gets a final chunk with the text and `stop`. Usage
     chunks and `[DONE]` follow as sent.
+  - Gemini: every `functionCall` part of the turn is removed and one `text` part takes the first one's
+    place in each candidate that had calls. `finishReason` stays `STOP` (the reason a function-call turn
+    already carries), becomes `STOP` in place of `UNEXPECTED_TOOL_CALL`, `TOO_MANY_TOOL_CALLS`,
+    `MALFORMED_FUNCTION_CALL` or `FINISH_REASON_UNSPECIFIED`, and is set to `STOP` on a non-streaming
+    candidate that had none. Streaming: the held events are re-sent without their `functionCall` parts (an
+    event left with nothing in it is dropped; a candidate left with no part loses its `content`), the text in
+    the first call's place, then `usageMetadata` as sent. The JSON array without `alt=sse` is rewritten the
+    same way. The call's `thoughtSignature` goes with it: the replacement text part carries none.
   - The refusal names the tool and the engine's reasons, never the arguments. Non-streaming responses
     carry `x-moorai-model-proxy: replaced`.
   - Holding the rest of the turn closes the Anthropic per-block limit above: an allowed call before a
@@ -177,7 +244,9 @@ deny, unless the system file or the org policy says `allow-with-report`.
     ("the upstream closed inside a tool call; it was not released" when a call was held). The SDKs raise
     a mid-stream error event as an `APIError` and do not retry it.
   - The evaluation budget running out is the only case answered as retryable (Anthropic 529
-    `overloaded_error`, OpenAI 503).
+    `overloaded_error`, OpenAI and Gemini 503, Gemini status `UNAVAILABLE`).
+  - Gemini: the Gen AI SDKs ignore `x-should-retry`. With `retryOptions` set they retry a 502; without it
+    they retry nothing.
 - **Content the proxy did not fully evaluate** is refused in enforce mode and reported as
   `UNEVALUATED_SIZE_CAP` in report mode. That covers:
   - more than `--max-scan-items` new items in one request;
@@ -283,6 +352,7 @@ placeholder name nor any value is echoed.
 | `moorai-ph:` (or `moorai-ph%3A`) in the query string | 400 |
 | a credential header sent twice in any letter case (`Authorization` and `authorization`) | 400 |
 | a raw key in `Authorization`, `x-api-key`, `api-key`, `x-goog-api-key` or a bound header | forwarded unchanged, one content-free alert per route; **401** with `--require-placeholders` |
+| a raw key in the `key` query parameter (`?key=<API key>`, the Gemini API's query-string auth) | the same as a raw key in a header: forwarded unchanged, one content-free alert per route; **401** with `--require-placeholders`. The key is never logged (the `--log` line drops the query) or reported |
 | no credential at all | forwarded |
 
 The duplicate rule is enforced on raw headers, the only place it can be seen. Node keeps the first
@@ -397,7 +467,7 @@ moorai-serve --model-proxy-url http://127.0.0.1:8791                    # sideca
 
 ```bash
 node --test --import ./test/hermetic-env.mjs test/model-proxy.test.mjs test/model-proxy-enforce.test.mjs test/model-proxy-credentials.test.mjs \
-  test/model-proxy-toolcall.test.mjs test/model-proxy-toolcall-local.test.mjs test/serve-unchecked.test.mjs
+  test/model-proxy-toolcall.test.mjs test/model-proxy-toolcall-local.test.mjs test/model-proxy-gemini.test.mjs test/serve-unchecked.test.mjs
 ```
 
 Latency the judging adds, measured on an M-series Mac, node, no console, built-in rules:
@@ -411,3 +481,15 @@ Latency the judging adds, measured on an M-series Mac, node, no console, built-i
 
 The tests run the real CLI against a fake provider (`model-proxy/test/fake-provider.mjs`, SSE written in
 5-byte slices) and a fake console. No real provider or key is used.
+
+**Gemini, exact limits.** `test/model-proxy-gemini.test.mjs` runs against a fake Gemini upstream
+(`model-proxy/test/fake-gemini.mjs`) built from the documented shapes, and reads the result with a copy of
+the JS SDK's stream-splitting rule. Not tested: a real Gemini API or Vertex AI endpoint, the real
+`@google/genai` or `google-genai` packages, Vertex `partialArgs` from a real model (no documented example
+exists; the fixture is the field descriptions), the latency the hold adds on Gemini, and the 503 evaluation
+timeout on a Gemini path, and a placeholder swap on a Gemini route. From reading `credentials.mjs`, not from
+a test: a placeholder is swapped only in a header (a binding with `"header": "x-goog-api-key"`). A
+placeholder in the `?key=` query string is refused 400 and never swapped, because the swap would write the
+real key into a URL. Tested (`test/model-proxy-credentials.test.mjs`): a **raw** key in `?key=` (the Gemini
+API's documented query-string auth) is a raw credential, alerted once per route and refused 401 with
+`--require-placeholders`, and the key appears in no alert, log line or refusal.

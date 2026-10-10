@@ -194,6 +194,22 @@ function _perturbedInjection(text) {
 // Credential-shaped egress: a high-entropy, credential-shaped token heading to an OUTBOUND sink (a URL
 // query value, an Authorization header, curl/nc data) that the exact secret-egress matchers (assignment
 // shape / known prefixes) don't fire on. Complements those; content-free (entropy + shape only).
+// #1 — the Luhn check every payment-card number carries (dlp-payment-card's refine).
+function luhnValid(m) {
+  const d = String(m).replace(/\D/g, "");
+  if (d.length < 13 || d.length > 16) return false;
+  let sum = 0;
+  for (let i = 0; i < d.length; i++) {
+    let n = d.charCodeAt(d.length - 1 - i) - 48;
+    if (i % 2) { n *= 2; if (n > 9) n -= 9; }
+    sum += n;
+  }
+  return sum % 10 === 0;
+}
+// #44 — phi-hipaa's clinical nouns, and the clinical terms one of them needs nearby.
+const PHI_NOUN = String.raw`(?:diagnos(?:is|es|ed)|prescri(?:be|bed|ption)|lab results|prognosis|treatment plan)`;
+const PHI_CLINICAL = String.raw`(?:patients?|clinical|clinic|clinician|physician|doctor|nurse|hospital|medical|medication|dosage|dose|\d+[ \t]?mg|symptoms?|disease|disorder|syndrome|cancer|tumou?r|oncolog\w*|diabet\w*|hypertension|infection|surgery|surgical|pharmacy|pharmacist|ICD(?:-1[01])?|HIPAA|DOB|date of birth|mental health|therapy|psychiatr\w*|chronic|allerg\w*)(?![A-Za-z])`;
+
 const EGRESS_MAX = 20_000;
 const EGRESS_SINK = [
   /\b(?:curl|wget|Invoke-WebRequest|iwr|irm|ncat|nc|scp|rsync)\b/i,
@@ -537,7 +553,11 @@ export const DETECTORS = [
     stages: ["prompt", "output"], // #4
     mode: "warn",
     hint: "Looks like a payment-card number.",
-    patterns: [/\b(?:\d[ -]?){13,16}\b/]
+    patterns: [/\b(?:\d[ -]?){13,16}\b/],
+    // A card number carries a Luhn check digit; a digit run that fails it is not one. The shape alone
+    // fired on an RFC bit-position ruler ("0 1 2 3 … 9 0 1") on a fetched standards page
+    // (scripts/score-webfetch-benign.mjs). Letter-spaced, grouped and contiguous cards still fire.
+    refine: (m) => luhnValid(m)
   },
   {
     detectorId: "dlp-iban",
@@ -691,8 +711,13 @@ export const DETECTORS = [
     stages: ["prompt", "output"], // #4
     mode: "warn",
     hint: "Looks like protected health information (PHI) — don't send patient data to the AI.",
+    // The clinical NOUNS alone ("diagnosis", "prescription", "prognosis", "lab results", "treatment
+    // plan") are ordinary engineering English — "right diagnosis, two fixes needed" on an issue, "use it
+    // for diagnosis" in a JVM snippet (scripts/score-webfetch-benign.mjs). They count when a clinical
+    // term sits within 80 characters; the record / identifier forms below need nothing else.
     patterns: [
-      /\b(diagnos(is|es|ed)|prescri(be|bed|ption)|patient (record|id|name|chart)|medical record|health insurance (number|claim|id)|protected health information|\bPHI\b|lab results|prognosis|treatment plan)\b/i,
+      /\b(patient (record|id|name|chart)|medical record|health insurance (number|claim|id)|protected health information|\bPHI\b)\b/i,
+      new RegExp(String.raw`\b${PHI_NOUN}\b[\s\S]{0,80}?\b${PHI_CLINICAL}|\b${PHI_CLINICAL}[\s\S]{0,80}?\b${PHI_NOUN}\b`, "i"),
       /\bMRN[:#\s]*[A-Z0-9-]{4,}/i,
       /\bNPI[:#\s]*\d{10}\b/i,
       /\bDEA[:#\s]*[A-Z]{2}\d{7}\b/i,
@@ -845,6 +870,10 @@ export const DETECTORS = [
       /\bn(c|cat)\b[^\n]{0,40}\s-[a-z]*e[a-z]*\b[^\n]{0,20}\b(sh|bash|cmd(\.exe)?|powershell)\b/i,
       /\bsocat\b[^\n]{0,60}\bexec:/i,
       /\bpython[23]?\b[^\n]{0,80}\b(socket|pty\.spawn)\b[\s\S]{0,80}\b(sh|bash)\b/i,
+      // The Python socket form at any length: a socket, the shell's stdio wired to it (os.dup2 of its
+      // fileno, or the fileno passed as stdin/stdout), and a quoted shell. All three, within 600 chars of
+      // `python`. Socket clients, http.server and pty without a socket have at most two.
+      /\bpython(?:\d(?:\.\d{1,2})?)?\b(?=[\s\S]{0,600}?\bsocket\b)(?=[\s\S]{0,600}?\b(?:dup2|fileno)\s*\()(?=[\s\S]{0,600}?["'](?:\/(?:usr\/)?(?:local\/)?bin\/)?(?:ba|z|da|k|c)?sh["'])/i,
       /\bperl\b[^\n]{0,40}-e\b[^\n]{0,80}\b(socket|Socket)\b/i,
       // PowerShell prepends `System.` to a type name it cannot resolve, so `Net.Sockets.TCPClient` is the
       // same type; `[…]::new(` is the same construction as New-Object. A type name alone (docs, C#) is not.

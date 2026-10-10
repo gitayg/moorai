@@ -59,7 +59,8 @@ export function parseDenials(text, ctx = {}) {
     let label = resourceType;
     if (resourceType === "file") {
       g.pathClass = classifyPath(typeof d.resource === "string" ? d.resource : "", t);
-      label = g.pathClass;
+      // "other" is also a resourceType (registry and the like); an unclassified file must not join its group
+      label = g.pathClass === "other" ? "file-other" : g.pathClass;
     } else if (resourceType === "capability") {
       g.capability = typeof d.resource === "string" && CAPABILITY_NAME.test(d.resource) ? d.resource : "custom-sid";
       label = `capability-${g.capability}`;

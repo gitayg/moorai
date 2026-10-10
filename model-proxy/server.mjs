@@ -12,8 +12,8 @@
 // any other placeholder use is refused before the body is read, and every response is masked for the bound
 // secrets (credential-mask.mjs) before anything reads it. Without them, nothing here changes.
 //
-// Only POST …/messages (Anthropic) and POST …/chat/completions (OpenAI) are parsed; any other path or
-// method is forwarded unparsed.
+// Only POST …/messages (Anthropic), POST …/chat/completions (OpenAI) and POST …/models/{model}:generateContent
+// / :streamGenerateContent (Gemini, on any route) are parsed; any other path or method is forwarded unparsed.
 import http from "node:http";
 import https from "node:https";
 import { once } from "node:events";
@@ -26,6 +26,7 @@ import { REASON } from "../cli/provenance.mjs";
 import { isLoopback } from "../cli/moorai-serve.mjs";
 import * as anthropic from "./anthropic.mjs";
 import * as openai from "./openai.mjs";
+import * as gemini from "./gemini.mjs";
 import { createSplitter } from "./sse.mjs";
 import { createChecker } from "./check.mjs";
 import { wrapReporter, unevaluatedReporter, uncheckedReporter, refusalMessage } from "./report.mjs";
@@ -82,7 +83,9 @@ function originOk(origin, allow) {
   try { const u = new URL(origin); return (u.protocol === "http:" || u.protocol === "https:") && isLoopback(u.hostname); } catch { return false; }
 }
 const digest = (s) => createHash("sha256").update(String(s)).digest();
-const apiFor = (method, path) => (method !== "POST" ? null : /\/messages$/.test(path) ? anthropic : /\/chat\/completions$/.test(path) ? openai : null);
+const apiFor = (method, path) => (method !== "POST" ? null : /\/messages$/.test(path) ? anthropic : /\/chat\/completions$/.test(path) ? openai : gemini.isPath(path) ? gemini : null);
+// The retryable status of the proxy's own budget errors: OpenAI and Gemini 503, Anthropic 529 (overloaded).
+const busy = (api) => (api === openai || api === gemini ? 503 : 529);
 const parseJson = (buf) => { try { const v = JSON.parse(buf.toString("utf8")); return v && typeof v === "object" ? v : null; } catch { return null; } };
 
 // Proxy-generated errors on a parsed path take that provider's documented error shape; elsewhere a shape
@@ -131,7 +134,7 @@ export async function createProxy(opts = {}) {
   }
 
   function reserve(n, api) {
-    if (inflight + n > o.maxInflight) throw new HttpError(api === openai ? 503 : 529, "the proxy is at its in-flight memory budget; retry");
+    if (inflight + n > o.maxInflight) throw new HttpError(busy(api), "the proxy is at its in-flight memory budget; retry");
     inflight += n;
   }
   function send(res, status, payload, extra = {}) {
@@ -235,7 +238,7 @@ export async function createProxy(opts = {}) {
     if (!body) { unevaluated("response-unparsed", "response"); return send(res, 502, api.errorBody(502, "MoorAI model-proxy: the response is not a JSON object or an event stream; it cannot be checked"), NO_RETRY); }
     const calls = api.responseToolCalls(body);
     let v;
-    try { v = await decide(calls); } catch { return send(res, api === openai ? 503 : 529, api.errorBody(api === openai ? 503 : 529, "MoorAI model-proxy: evaluation did not finish in time; retry")); }
+    try { v = await decide(calls); } catch { return send(res, busy(api), api.errorBody(busy(api), "MoorAI model-proxy: evaluation did not finish in time; retry")); }
     if (v.decision === "deny") {
       if (!replace) return refuse(res, api, v, "response");
       stats.replaced++;
@@ -283,7 +286,7 @@ export async function createProxy(opts = {}) {
       if (res.writableEnded) return;
       // Only the evaluation budget is "retry later"; the provider closing the stream mid-way is a 502-class
       // error (Anthropic api_error, OpenAI server_error), and a held tool call is never released.
-      if (e && e.message === "evaluation timeout") stop(api === openai ? 503 : 529, "MoorAI model-proxy: evaluation did not finish in time");
+      if (e && e.message === "evaluation timeout") stop(busy(api), "MoorAI model-proxy: evaluation did not finish in time");
       else stop(502, machine.holding ? UPSTREAM_CLOSED_IN_CALL : UPSTREAM_CLOSED);
     }
   }
@@ -343,7 +346,7 @@ export async function createProxy(opts = {}) {
       const items = json ? api.outboundItems(json) : [];
       if (enforce && items.length) {
         let v;
-        try { v = await withTimeout(checker.checkRequest(items)); } catch { return send(res, api === openai ? 503 : 529, api.errorBody(api === openai ? 503 : 529, "MoorAI model-proxy: evaluation did not finish in time; retry")); }
+        try { v = await withTimeout(checker.checkRequest(items)); } catch { return send(res, busy(api), api.errorBody(busy(api), "MoorAI model-proxy: evaluation did not finish in time; retry")); }
         if (v.decision === "deny") return refuse(res, api, v, "request");
       } else if (items.length) later.push(() => checker.checkRequest(items));
     }

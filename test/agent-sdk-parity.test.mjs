@@ -185,3 +185,20 @@ test("parity, enforcing org policy with egress rules and egressDefault block: sa
   t.diagnostic(`egress denials: ${n}`);
   assert.ok(n > 0, "the sample must exercise an egress denial");
 });
+
+// Capability tag actions (cli/tool-tags.mjs) and console exceptions (cli/exceptions.mjs): the same per-tag
+// verdict and the same exception overlay on both surfaces. Tag RULES are session state, not evaluated by
+// the SDK (NOT_EVALUATED "tag-rules"), so they are not in this policy.
+const TAG_POLICY = {
+  ...POLICY,
+  tagActions: { network: "block", write: "ask" },
+  exceptions: [{ id: "ex-parity", threat: 54, pattern: "bash -i *", expires: new Date(Date.now() + 3600000).toISOString() }]
+};
+test("parity, enforcing org policy with tagActions and a console exception: same decision and reason for every payload", async (t) => {
+  const { hook, payloads } = await parity(t, TAG_POLICY);
+  const n = hook.filter((r) => r.reason.includes("(tagActions)")).length;
+  t.diagnostic(`tag-action verdicts: ${n}`);
+  assert.ok(n > 0, "the sample must exercise a tag action");
+  const rs = hook[payloads.findIndex((p) => p.id === "revshell")];
+  assert.ok(!rs.reason.includes("#54"), `the exception covers the reverse shell's #54 on both surfaces: ${JSON.stringify(rs)}`);
+});

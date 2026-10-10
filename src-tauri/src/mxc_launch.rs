@@ -9,8 +9,9 @@
 //   --config <file>    docs/logging-access-denied.md ("wxc-exec --audit --config <config>"),
 //                      docs/development/guides/diagnostics.md ("wxc-exec.exe --config capture-config.json")
 //   --log-file <file>  docs/development/architecture/telemetry.md ("wxc-exec.exe --log-file .\mxc-audit.log
-//                      .\config.json"); content-free audit records, "No config values, no filesystem paths,
-//                      no command lines" (docs/telemetry.md)
+//                      .\config.json"). NOT content-free, whatever docs/telemetry.md says: measured on MXC
+//                      1.0.0, the log holds the whole policy, every path and the command line; only env
+//                      values are redacted. It stays in the host-only run dir, removed unless keepRuns.
 //   --probe            docs/development/plans/backend-support-probe-api.md (shells out to `wxc-exec --probe`
 //                      and parses its JSON `tier`); output shape = mxc_sdk::v1::ProbeOutput
 //                      (docs/api-reference/rust/v1/types.md)

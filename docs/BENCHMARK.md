@@ -1,10 +1,10 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-09T16:32:08.705Z
+> Generated: 2026-10-10T19:18:47.034Z
 
-- **Detectors:** 107
-- **Threats:** 79
+- **Detectors:** 109
+- **Threats:** 80
 - **Adversarial corpus:** 102/102 passed (100.0%)
 - **OWASP LLM Top 10:** 10/10 items covered by ≥1 on-device detector
 - **OWASP Top 10 for Agentic Applications:** 1/10 covered, 6 partial, 3 uncovered
@@ -14,9 +14,9 @@
 
 | Item | Name | Threats | Detectors | Status |
 |------|------|--------:|----------:|--------|
-| LLM01 | Prompt Injection | 8 | 20 | ✅ covered |
+| LLM01 | Prompt Injection | 8 | 21 | ✅ covered |
 | LLM02 | Sensitive Information Disclosure | 20 | 39 | ✅ covered |
-| LLM03 | Supply Chain | 7 | 4 | ✅ covered |
+| LLM03 | Supply Chain | 8 | 5 | ✅ covered |
 | LLM04 | Data & Model Poisoning | 1 | 1 | ✅ covered |
 | LLM05 | Improper Output Handling | 7 | 15 | ✅ covered |
 | LLM06 | Excessive Agency | 15 | 6 | ✅ covered |
@@ -29,11 +29,11 @@
 
 | Item | Name | Threats | Partial | Detectors | Status |
 |------|------|--------:|--------:|----------:|--------|
-| ASI01 | Agent Goal Hijack | 9 | 7 | 27 | ✅ covered |
+| ASI01 | Agent Goal Hijack | 9 | 7 | 28 | ✅ covered |
 | ASI02 | Tool Misuse and Exploitation | 9 | 9 | 7 | ◐ partial |
 | ASI03 | Identity and Privilege Abuse | 4 | 4 | 4 | ◐ partial |
 | ASI04 | Agentic Supply Chain Vulnerabilities | 3 | 3 | 10 | ◐ partial |
-| ASI05 | Unexpected Code Execution (RCE) | 5 | 5 | 13 | ◐ partial |
+| ASI05 | Unexpected Code Execution (RCE) | 6 | 6 | 14 | ◐ partial |
 | ASI06 | Memory & Context Poisoning | 4 | 4 | 4 | ◐ partial |
 | ASI07 | Insecure Inter-Agent Communication | 1 | 1 | 0 | — |
 | ASI08 | Cascading Failures | 0 | 0 | 0 | — |
@@ -49,7 +49,7 @@
 | MCP03 | Tool Poisoning | 2 | 2 | 10 | ◐ partial |
 | MCP04 | Software Supply Chain Attacks & Dependency Tampering | 0 | 0 | 0 | — |
 | MCP05 | Command Injection & Execution | 2 | 2 | 3 | ◐ partial |
-| MCP06 | Intent Flow Subversion | 8 | 6 | 18 | ✅ covered |
+| MCP06 | Intent Flow Subversion | 8 | 6 | 19 | ✅ covered |
 | MCP07 | Insufficient Authentication & Authorization | 0 | 0 | 0 | — |
 | MCP08 | Lack of Audit and Telemetry | 1 | 1 | 1 | ◐ partial |
 | MCP09 | Shadow MCP Servers | 1 | 1 | 0 | — |
@@ -66,3 +66,32 @@ Coverage is measured, not asserted: every number above is produced by running th
 engine (`src/engine.js`) against the shipped threat matrix (`data/threats.json`) and the adversarial
 corpus (`test/redteam/corpus.json`). Content-free by construction — the benchmark reasons over
 categories and threat ids, never prompt content.
+
+## Latency
+
+> Latency not measured in this run (`--no-latency`).
+
+| Path | One sample | n | Warm-up | p50 | p95 | p99 | max |
+|------|------------|--:|--------:|----:|----:|----:|----:|
+| In process: `engine.scan` at `prompt` | one benign-corpus-v2 text | — | 50 | — | — | — | — |
+| In process: `engine.scan` at `file` | one benign-corpus-v2 text | — | 50 | — | — | — | — |
+| In process: `engine.scan` at `output` | one benign-corpus-v2 text | — | 50 | — | — | — | — |
+| In process: Agent SDK tool-call decision | one `PreToolUse` from the ten-call mix | — | 200 | — | — | — | — |
+| Process: hook end-to-end (`PreToolUse`) | spawn → stdin JSON → exit | — | 5 | — | — | — | — |
+| Process: Node startup floor (`node -e ""`) | spawn → exit, interleaved with the hook | — | 5 | — | — | — | — |
+
+The cost a Claude Code user pays per tool call is the **hook end-to-end** row: one `node
+cli/moorai-hook.mjs` process spawned per `PreToolUse`, timed from spawn to exit, in a throwaway home
+with no console (unenrolled, built-in policy). The **Node startup floor** row is `node -e ""` spawned
+the same way, interleaved call for call with the hook, so the gap between the two rows is the hook's own
+module loading and decision. The **in-process** rows are what the Agent SDK and `moorai-serve` pay per
+call in a long-lived process: `engine.scan` per stage over every text in
+`test/redteam/benign-corpus-v2.json`, and `createMoorAI().toolCall` (the decision code the parity test
+holds to the hook's verdicts) over a fixed mix of ten `PreToolUse` calls, six benign and four attack-shaped.
+All rows run sequentially, one call at a time; machine load is not controlled.
+
+Percentiles are nearest-rank over the raw per-call timings, never interpolated and never derived from a
+mean. p95 is published from 20 samples and p99 from 1,000; a — means the row has
+fewer. Timings vary between runs and machines, so `npm run test:generated` regenerates this file with
+`--no-latency` and ignores only the latency rows and the conditions line; every coverage number above is
+still diffed byte for byte.

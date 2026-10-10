@@ -137,6 +137,7 @@ const AGENTIC = [
   [60, "ASI04", "MCP tool descriptors and auto-loaded agent config; no provenance check", "tool-stage descriptor scan and index-stage scan of auto-loaded config"],
   [54, "ASI05", "reverse-shell / remote-exec payloads only", "exec-reverse-shell"],
   [57, "ASI05", "remote scripts piped to a shell and installs from untrusted sources", "pkg-install-untrusted and fetch-then-exec"],
+  [80, "ASI05", "a repository checkout run in the same command", "clone-then-run matches a clone or downloaded archive whose install or start scripts run in the same chain"],
   [61, "ASI05", "exploitable constructs in code the agent writes; nothing is executed", "eight code-* detectors: eval, shell=True, unsafe deserialisation"],
   [62, "ASI05", "package names in install commands only", "dep-typosquat classifies a hallucinated or typosquatted name before install"],
   [76, "ASI05", "load calls only", "model-unsafe-load matches pickle-based and trust_remote_code loads"],

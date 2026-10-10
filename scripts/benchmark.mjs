@@ -4,7 +4,8 @@
 // rate. Runs the same engine and corpus the product ships, so the number can't be gamed. Writes a
 // machine-readable docs/benchmark.json and a human-readable docs/BENCHMARK.md, and prints a summary.
 //
-//   npm run benchmark
+//   npm run benchmark                 (measures latency too, about a minute)
+//   npm run benchmark -- --no-latency (coverage only; what `npm run test:generated` runs)
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -13,6 +14,8 @@ import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
 import { classifyFailures, reportAcceptedFailures } from "./accepted-failures.mjs";
 import { OWASP_AGENTIC, OWASP_MCP, owaspAgenticIds, owaspMcpIds, owaspAgenticPartialNote, owaspMcpPartialNote, frameworkEdition } from "../data/owasp-frameworks.js";
+import { measureLatency, LATENCY_ROWS } from "./latency-bench.mjs";
+import { renderLatencyMarkdown } from "./latency.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const threats = JSON.parse(readFileSync(join(ROOT, "data/threats.json"), "utf8"));
@@ -72,6 +75,9 @@ for (const c of corpus.cases) {
   ok ? pass++ : fails.push(c.id);
 }
 
+// --- latency: raw per-call samples, nearest-rank p50/p95/p99 (scripts/latency.mjs) ---
+const latency = process.argv.includes("--no-latency") ? { measured: false } : await measureLatency();
+
 const covered = Object.values(owaspCov).filter((v) => v.detectors > 0).length;
 const generatedAt = new Date().toISOString();
 const report = {
@@ -81,12 +87,14 @@ const report = {
   corpus: { passed: pass, total: corpus.cases.length, passRate: +(pass / corpus.cases.length).toFixed(4) },
   owaspLlmTop10: { covered, total: 10, byItem: owaspCov },
   owaspAgenticTop10: agenticCov,
-  owaspMcpTop10: mcpCov
+  owaspMcpTop10: mcpCov,
+  latency: "__LATENCY__"
 };
 
 // --- write machine-readable + markdown artifacts ---
 mkdirSync(join(ROOT, "docs"), { recursive: true });
-writeFileSync(join(ROOT, "docs/benchmark.json"), JSON.stringify(report, null, 2) + "\n");
+// The latency block is written on ONE line so `npm run test:generated` can ignore it as a unit.
+writeFileSync(join(ROOT, "docs/benchmark.json"), JSON.stringify(report, null, 2).replace('"latency": "__LATENCY__"', () => `"latency": ${JSON.stringify(latency)}`) + "\n");
 
 const rows = Object.entries(OWASP).map(([k, name]) => {
   const c = owaspCov[k];
@@ -140,7 +148,8 @@ Coverage is measured, not asserted: every number above is produced by running th
 engine (\`src/engine.js\`) against the shipped threat matrix (\`data/threats.json\`) and the adversarial
 corpus (\`test/redteam/corpus.json\`). Content-free by construction — the benchmark reasons over
 categories and threat ids, never prompt content.
-`;
+
+${renderLatencyMarkdown(latency, LATENCY_ROWS)}`;
 writeFileSync(join(ROOT, "docs/BENCHMARK.md"), md);
 
 const g = (s) => `\x1b[32m${s}\x1b[0m`, r = (s) => `\x1b[31m${s}\x1b[0m`, b = (s) => `\x1b[1m${s}\x1b[0m`;
@@ -159,6 +168,12 @@ for (const [label, fw, cov] of [["OWASP Agentic Top 10", OWASP_AGENTIC, agenticC
     console.log(`   ${mark} ${k} ${name} ${`\x1b[2m(${c.threats} threats, ${c.partialThreats} partial, ${c.detectors} detectors)\x1b[0m`}`);
   }
 }
+if (latency.measured) {
+  console.log(`  Latency (nearest-rank, ms) on ${latency.machine.cpu}, Node ${latency.machine.node}:`);
+  console.log(`   ${"path".padEnd(44)} ${"n".padStart(5)} ${"p50".padStart(8)} ${"p95".padStart(8)} ${"p99".padStart(8)} ${"max".padStart(8)}`);
+  const f = (x) => (x === null ? "—" : x.toFixed(2)).padStart(8);
+  for (const r of latency.rows) console.log(`   ${r.label.replace(/`/g, "").padEnd(44)} ${String(r.n).padStart(5)} ${f(r.p50Ms)} ${f(r.p95Ms)} ${f(r.p99Ms)} ${f(r.maxMs)}`);
+} else console.log("  Latency: not measured (--no-latency)");
 console.log(`\n  wrote docs/benchmark.json + docs/BENCHMARK.md`);
 
 // THE DEFECT THIS REPLACES: `if (fails.length) console.log(r("corpus misses: ...")); process.exit(0);`

@@ -265,6 +265,178 @@ export function fetchExecFacts(cmd, { ps = false, cwd = "", home = "", insensiti
 
 export { dirOf };
 
+// ---- clone (or download and unpack), then run the checkout ----
+//
+// `git clone <repo> && cd <repo> && pnpm install && pnpm start`: a repository fetched and its install or
+// start scripts run in ONE command, so code nobody has read runs straight from the network. Developers do
+// this every day, which is why the detector built on it (#80) is report-only by default; it is also what
+// an agent does after an instruction planted in a README or skill file steers it off the registry package.
+//
+// What counts as fetching a checkout: `git clone` / `gh repo clone` (the destination is the named
+// directory, else the repository's base name), or a download of an archive this command then unpacks
+// (`curl -LO …/x.tar.gz && tar xzf x.tar.gz`, `curl … | tar xz`, `unzip`). What counts as running it: a
+// package-manager install / run / start / test (npm, pnpm, yarn, bun, deno), make, a Python / Ruby / Rust /
+// Go / JVM / PHP build or install of the project, `pip install .`, `python setup.py`, or a script inside
+// the checkout (`./install.sh`, `bash acme/setup.sh`, `node acme/index.js`). It counts only when the run's
+// working directory (after a `cd`) or its target path lies inside the checkout: `git clone X && npm install`
+// installs in the directory the command started in, not in X.
+//
+// "One command" means one chain: the clone and the run are joined by `&&`, `||`, `;`, `|` or `&`, or sit in
+// the same nested `sh -c` script. A newline ends the chain, so a README's build-from-source block (one
+// step per line) is not one command; an agent's tool call chains its steps.
+const PM_RUN = new Set(["install", "i", "ci", "add", "isntall", "run", "run-script", "rum", "urn", "start", "test", "t", "tst", "exec", "x", "rebuild", "dlx", "task", "build", "dev", "serve"]);
+const PROJECT_RUN = {
+  make: null, gmake: null, just: null, ninja: null,
+  poetry: ["install", "run", "build"], uv: ["sync", "run", "build"], pipenv: ["install", "run", "sync"], pdm: ["install", "run", "sync"], hatch: ["run", "build", "env"],
+  cargo: ["build", "run", "install", "test", "b", "r", "t"], go: ["run", "build", "generate", "install", "test"],
+  bundle: ["install", "exec"], bundler: ["install", "exec"], rake: null, composer: ["install", "update", "run", "run-script"],
+  mvn: null, gradle: null, ant: null, sbt: null, deno: ["task", "run", "install"]
+};
+const PM = new Set(["npm", "pnpm", "yarn", "bun"]);
+const PM_DIR_FLAGS = new Set(["--prefix", "-C", "--dir", "--cwd"]);
+const ARCHIVE = /\.(?:tar(?:\.(?:gz|bz2|xz|zst))?|tgz|tbz2?|txz|zip)$/i;
+
+function gitCloneDest(seg, base) {
+  const b = seg.cw && seg.cw.binary;
+  const r = seg.rest;
+  let i = 0, at = base;
+  if (b === "gh") {
+    if (r[0] !== "repo" || r[1] !== "clone") return null;
+    const pos = r.slice(2).filter((t) => !t.startsWith("-"));
+    if (!pos[0]) return null;
+    const name = pos[1] || pos[0].replace(/\/+$/, "").split("/").pop().replace(/\.git$/i, "");
+    return usable(name) ? normPath(name, base) : null;
+  }
+  if (b !== "git") return null;
+  // git's own options before the subcommand: `git -C dir clone …`, `git -c k=v clone …`.
+  for (; i < r.length && r[i] !== "clone"; i++) {
+    if (r[i] === "-C" && r[i + 1] != null) { at = usable(r[i + 1]) ? normPath(r[i + 1], base) : "?"; i++; }
+    else if (r[i] === "-c" || r[i] === "--git-dir" || r[i] === "--work-tree" || r[i] === "--namespace") i++;
+    else if (!r[i].startsWith("-")) return null;
+  }
+  if (r[i] !== "clone") return null;
+  const { positional } = scanArgs(r.slice(i + 1), { shortValued: "bocuj", longValued: ["--branch", "--origin", "--config", "--depth", "--reference", "--reference-if-able", "--separate-git-dir", "--upload-pack", "--template", "--filter", "--shallow-since", "--shallow-exclude", "--jobs", "--server-option", "--bundle-uri", "--ref-format"] });
+  const repo = positional[0];
+  if (!repo) return null;
+  const name = positional[1] || String(repo).replace(/[/\\]+$/, "").split(/[/\\:]/).pop().replace(/\.git$/i, "");
+  return usable(name) && at !== "?" ? normPath(name, at) : null;
+}
+
+// Where an unpack writes: `tar -C dir` / `tar --directory dir` / `unzip -d dir`, else the working
+// directory. Only an archive this command downloaded, or a download piped straight into tar, counts.
+function unpackDest(seg, prev, base, fetched) {
+  const b = seg.cw && seg.cw.binary;
+  if (b !== "tar" && b !== "bsdtar" && b !== "unzip") return null;
+  const r = seg.rest;
+  const fromPipe = prev && prev.sep === "|" && prev.cw && FETCHERS.has(prev.cw.binary);
+  if (b === "unzip") {
+    const di = r.indexOf("-d");
+    const arc = r.find((t, k) => !t.startsWith("-") && r[k - 1] !== "-d");
+    if (!fromPipe && !(arc && fetched.has(normPath(arc, base)))) return null;
+    return di >= 0 && r[di + 1] ? (usable(r[di + 1]) ? normPath(r[di + 1], base) : null) : normPath(".", base);
+  }
+  const mode = r[0] && !r[0].startsWith("-") ? r[0] : r.find((t) => /^-[A-Za-z]*x/.test(t) || t === "--extract" || t === "--get");
+  if (!mode || !(/x/.test(mode) || mode === "--extract" || mode === "--get")) return null;
+  const fi = r.findIndex((t) => /^-[A-Za-z]*f$/.test(t) || (/^[A-Za-z]*f[A-Za-z]*$/.test(t) && t === r[0]) || t === "--file");
+  let arc = null;
+  if (fi >= 0) arc = r[fi + 1] || null;
+  const fe = r.find((t) => t.startsWith("--file="));
+  if (fe) arc = fe.slice(7);
+  const listed = arc && arc !== "-" && fetched.has(normPath(arc, base));
+  if (!listed && !(fromPipe && (!arc || arc === "-"))) return null;
+  const ci = r.findIndex((t) => t === "-C" || t === "--directory");
+  const de = r.find((t) => t.startsWith("--directory="));
+  const d = de ? de.slice(12) : ci >= 0 ? r[ci + 1] : null;
+  return d ? (usable(d) ? normPath(d, base) : null) : normPath(".", base);
+}
+
+// What one segment runs from a project: { here } when it runs the project in its working directory, and
+// the explicit directories or files it runs (`npm --prefix dir install`, `make -C dir`, `pip install ./dir`,
+// `bash dir/install.sh`).
+function projectRun(seg, prev, base) {
+  const b = seg.cw && seg.cw.binary;
+  const r = seg.rest;
+  const out = { here: false, paths: [] };
+  if (!b) return out;
+  const path = (p) => { if (usable(p)) out.paths.push(normPath(p, base)); };
+  if (PM.has(b)) {
+    let sub = null;
+    for (let i = 0; i < r.length; i++) {
+      const t = r[i];
+      if (PM_DIR_FLAGS.has(t)) { path(r[i + 1]); i++; continue; }
+      const eq = t.match(/^(--prefix|--dir|--cwd)=(.+)$/);
+      if (eq) { path(eq[2]); continue; }
+      if (t.startsWith("-")) continue;
+      sub = t; break;
+    }
+    const runs = sub == null ? b === "yarn" || b === "bun" : PM_RUN.has(sub) || (b !== "npm" && !["help", "config", "info", "view", "outdated", "why", "list", "ls", "audit", "whoami", "login", "logout", "init", "create", "--version", "version", "cache", "store", "link", "publish", "pack"].includes(sub));
+    if (runs) { if (out.paths.length) return out; out.here = true; }
+    else out.paths = [];
+    return out;
+  }
+  if (Object.prototype.hasOwnProperty.call(PROJECT_RUN, b)) {
+    const subs = PROJECT_RUN[b];
+    const sub = r.find((t) => !t.startsWith("-"));
+    if (subs && !subs.includes(sub)) return out;
+    if (b === "make" || b === "gmake") { const ci = r.findIndex((t) => t === "-C" || t === "--directory"); if (ci >= 0) { path(r[ci + 1]); return out; } }
+    if (b === "cargo") { const pi = r.indexOf("--path"); if (pi >= 0) { path(r[pi + 1]); return out; } }
+    out.here = true;
+    return out;
+  }
+  // pip install . / -e . / ./dir, and python -m pip install …
+  let pr = null;
+  if (/^pip[0-9.]*$/.test(b)) pr = r;
+  else if (INTERP.test(b) && r[0] === "-m" && /^pip[0-9.]*$/.test(r[1] || "")) pr = r.slice(2);
+  if (pr) {
+    if (pr[0] !== "install") return out;
+    for (let i = 1; i < pr.length; i++) {
+      const t = pr[i];
+      if (t === "-r" || t === "--requirement" || t === "-c" || t === "--constraint" || t === "-i" || t === "--index-url" || t === "--extra-index-url" || t === "-t" || t === "--target") { i++; continue; }
+      if (t === "-e" || t === "--editable") continue;
+      if (/^(?:\.{1,2}|~)?[/\\]|^\.$|^\.\.$/.test(t)) path(t);
+    }
+    return out;
+  }
+  for (const p of execTargets(seg, prev)) path(p);
+  return out;
+}
+
+const inside = (p, root) => p === root || p.startsWith(root.endsWith("/") ? root : root + "/");
+const CLONE_HINT = /\bclone\b|\b(?:tar|bsdtar|unzip)\b/i;
+
+// One command line → { hit }. `hit`: a checkout this command cloned (or an archive it downloaded and
+// unpacked) is then run, in the same chain, by an install / run / start / build step whose working
+// directory or target lies inside it.
+export function cloneRunFacts(cmd, { ps = false } = {}) {
+  try {
+    if (!CLONE_HINT.test(String(cmd || ""))) return { hit: false };
+    for (const segs of readings(cmd, ps)) {
+      let base = "";
+      let roots = [];
+      const fetched = new Set();
+      for (let i = 0; i < segs.length; i++) {
+        const seg = segs[i];
+        const nb = cdTarget(seg, base);
+        if (nb !== undefined) base = nb;
+        else {
+          if (roots.length) {
+            const run = projectRun(seg, segs[i - 1], base);
+            if ((run.here && roots.some((rt) => inside(base, rt))) || run.paths.some((p) => roots.some((rt) => inside(p, rt)))) return { hit: true };
+          }
+          const dest = gitCloneDest(seg, base);
+          if (dest) roots.push(dest);
+          if (seg.cw && FETCHERS.has(seg.cw.binary)) for (const w of fetchWrites(seg, base)) if (w.kind === "f" && ARCHIVE.test(w.path)) fetched.add(w.path);
+          const ud = unpackDest(seg, segs[i - 1], base, fetched);
+          if (ud) roots.push(ud);
+        }
+        // A newline ends the chain: what was cloned on one line is not run by "the same command" on the next.
+        if (seg.sep === "\n") { roots = []; fetched.clear(); }
+      }
+    }
+  } catch { return { hit: false }; }
+  return { hit: false };
+}
+
 // ---- uploads ----
 const CURL_AT = new Set(["-d", "--data", "--data-binary", "--data-ascii", "--json"]);
 // The local files one segment hands to a network client to send. "-" means stdin, resolved to the files
