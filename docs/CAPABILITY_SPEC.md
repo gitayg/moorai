@@ -251,7 +251,11 @@ labels — §B2 11a), `destination` (`{kind, name, decision}` — a host or MCP 
 server label — §B3 11e) and the mask record (`maskedThreats`, `maskedCount`, `maskedIn` — threat ids, a
 count and `input`/`result` — Intervention tiers, `mask`), verdict provenance on every alert (`policyId`,
 `policySource`, `reasonCode`, `basisCode`, `enforcement` — a policy id derived from its signature envelope
-and digest, and enum codes — §C 17d), the session summary (`summary` — counts — §C 17b), the claim check
+and digest, and enum codes — §C 17d), the session correlation key (`session` — the tenant-keyed
+`contentHash` of the agent's own session id, the same value as the session summary's `summary:<session>`
+suffix, omitted when no id or no key is known; from the Claude Code hook, the HTTP MCP gateway
+(`Mcp-Session-Id`), `@moorai/agent-sdk` (hook input `session_id`) and `moorai-serve` (the request's
+`session` field), never from the model proxy, which sees no conversation id — §C 17b), the session summary (`summary` — counts — §C 17b), the claim check
 (`claimCheck` — a claim-pattern id, an outcome word and counts — §C 17b), the session-risk and
 circuit-breaker signatures (`signature`, `sessionRisk` — rule names, counts, scores, windows — §C 17c), and
 the agent-posture body sent to `POST /api/agent-posture` (host ids, flag names, scope names, a hook-state
@@ -626,7 +630,10 @@ is validated against.
     Every hook run writes one content-free, chain-stamped row to `~/.moorai/session-ledger.jsonl`
     ([`cli/session-ledger.mjs`](../cli/session-ledger.mjs)), ids hashed under a device-local
     `session-ledger.key`, trimmed past about 1 MB. At `Stop` the console gets an `Agent session summary`
-    (counts) when they changed. At `Stop` / `SubagentStop`, [`cli/claim-check.mjs`](../cli/claim-check.mjs)
+    (counts) when they changed, with `contentHash` `summary:<session>`. Every alert a hook run posts carries
+    that same `<session>` as its `session` field (the tenant-keyed hash of Claude Code's `session_id`), so
+    the console can group a session's alerts under its summary; no session id, no field. Tested through the
+    real hook process in [`test/session-correlation.test.mjs`](../test/session-correlation.test.mjs). At `Stop` / `SubagentStop`, [`cli/claim-check.mjs`](../cli/claim-check.mjs)
     compares `last_assistant_message` (read in memory, never stored or sent) with the turn's recorded
     outcomes and posts `Agent reported success but tool calls failed` (Medium, `CLAIM_MISMATCH`) when the
     message claims success while tool calls failed, were denied or were interrupted and were not redone.

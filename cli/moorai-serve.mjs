@@ -5,13 +5,15 @@
 // package's runtime (packages/agent-sdk/src/runtime.mjs), with the same server-mode semantics: headless
 // ask -> deny by default, workload identity, content-free reporting to the console when one is configured.
 //
-//   POST /v1/scan       { text, stage?, ctx? }     -> content-free verdict on one string
-//   POST /v1/tool-call  { tool, input, cwd?, toolCallId? } -> the decision the hook makes for that tool call;
+//   POST /v1/scan       { text, stage?, ctx?, session? } -> content-free verdict on one string
+//   POST /v1/tool-call  { tool, input, cwd?, toolCallId?, session? } -> the decision the hook makes for that tool call;
 //                                                     toolCallId (the model's tool call id) is passed on to
 //                                                     moorai-model-proxy for its skip alert when
 //                                                     --model-proxy-url is set, and otherwise ignored
-//   POST /v1/index-scan { chunks, source? }        -> one content-free verdict per chunk about to be
+//   POST /v1/index-scan { chunks, source?, session? } -> one content-free verdict per chunk about to be
 //                                                     embedded (allow / flag / deny), index stage
+//   session (optional, every POST): the caller's own session / conversation id. Only its keyed hash
+//   leaves, as the `session` field of each console alert the request raises; omitted, no field.
 //   GET  /healthz                                  -> { status, version, policyId }
 //
 // Responses never contain the submitted text: decision, threat ids, categories, the hook's reasons
@@ -162,6 +164,8 @@ export async function createServer(opts = {}) {
     if (!authorized(req, o.token)) throw new HttpError(401, "missing or wrong bearer token");
     const body = await readJson(req, o.maxBody);
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "body must be a JSON object");
+    if (body.session != null && (typeof body.session !== "string" || !body.session || body.session.length > 256)) throw new HttpError(400, "session must be a non-empty string of at most 256 characters");
+    const session = body.session == null ? undefined : body.session;
     if (path === "/v1/scan") {
       const ctx = cleanCtx(body.ctx);
       const { tool, ...engineCtx } = ctx;
@@ -175,7 +179,7 @@ export async function createServer(opts = {}) {
       const stage = body.stage === undefined ? "prompt" : body.stage;
       if (!STAGES.includes(stage)) throw new HttpError(400, `stage must be one of ${STAGES.join(", ")}`);
       const text = engineCtx.inbound === true ? inboundLib.inboundText(raw, MAX_TEXT) : raw;
-      return withTimeout(rt.scan(text, stage, engineCtx, { tool: tool || "scan", event: "Scan", decoded: true }), o.timeoutMs);
+      return withTimeout(rt.scan(text, stage, engineCtx, { tool: tool || "scan", event: "Scan", decoded: true, session }), o.timeoutMs);
     }
     if (path === "/v1/index-scan") {
       // Chunks an application is about to embed (cli/index-scan.mjs). Strings, or objects whose string
@@ -189,13 +193,13 @@ export async function createServer(opts = {}) {
         else if (!c || typeof c !== "object") throw new HttpError(400, "each chunk must be a string or an object");
       }
       if (source != null && (typeof source !== "string" || source.length > 1024)) throw new HttpError(400, "source must be a string of at most 1024 characters");
-      return withTimeout(rt.scanForIndex(chunks, { source }), o.timeoutMs);
+      return withTimeout(rt.scanForIndex(chunks, { source, session }), o.timeoutMs);
     }
     if (typeof body.tool !== "string" || !body.tool || body.tool.length > 256) throw new HttpError(400, "tool must be a non-empty string");
     if (body.input != null && (typeof body.input !== "object" || Array.isArray(body.input))) throw new HttpError(400, "input must be an object");
     if (body.cwd != null && typeof body.cwd !== "string") throw new HttpError(400, "cwd must be a string");
     if (body.toolCallId != null && (typeof body.toolCallId !== "string" || !body.toolCallId || body.toolCallId.length > 256)) throw new HttpError(400, "toolCallId must be a non-empty string of at most 256 characters");
-    const v = await withTimeout(rt.toolCall({ tool: body.tool, input: body.input || {}, cwd: body.cwd || process.cwd(), permissionMode: typeof body.permissionMode === "string" ? body.permissionMode.slice(0, 32) : "" }), o.timeoutMs);
+    const v = await withTimeout(rt.toolCall({ tool: body.tool, input: body.input || {}, cwd: body.cwd || process.cwd(), permissionMode: typeof body.permissionMode === "string" ? body.permissionMode.slice(0, 32) : "", session }), o.timeoutMs);
     if (notifier && body.toolCallId) notifier.note(body.toolCallId);
     return v;
   }

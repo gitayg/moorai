@@ -457,6 +457,10 @@ let SESSION = "";
 // The raw session id, kept in memory only: intent alignment hashes it with its own device-local key,
 // because SESSION (tenant-keyed) is one constant sentinel on an unenrolled device.
 let SESSION_ID = "";
+// The `session` field post() stamps on every console alert: SESSION itself, so it equals the suffix of
+// the session summary's `summary:<SESSION>`. Empty (the field is omitted) when Claude Code sent no
+// session id, or when SESSION is the NO_KEY sentinel, which would merge every session into one.
+let SESSION_TAG = "";
 // Session-level escalation (cli/session-state.mjs) the current PreToolUse call earned, set by
 // logBehavior and applied by emit: allow -> ask, or the reason added to an ask. Never touches a deny.
 let SESSION_ESC = null;
@@ -592,6 +596,7 @@ function settleRow(fields) {
 }
 function post(alert) {
   if (WORKLOAD && alert && !alert.workload) alert.workload = WORKLOAD;
+  if (SESSION_TAG && alert && alert.session === undefined) alert.session = SESSION_TAG;
   stampAlert(alert, { ...PROV, coach: COACH, event: EVENT });
   // An unenrolled device has no console, so nothing is posted to one — not even to a server that
   // answers at the configured URL. The OTLP mirror below is the user's own collector, not a console.
@@ -1081,7 +1086,7 @@ async function maybeEscalate(policy, text, stage, tool, d, engine) {
     mkdirSync(STATE_DIR, { recursive: true });
     sweepEscalationJobs();
     const jobPath = join(STATE_DIR, `escalate-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.json`);
-    writeFileSync(jobPath, JSON.stringify({ policy, text, stage, tool }), { mode: 0o600 });
+    writeFileSync(jobPath, JSON.stringify({ policy, text, stage, tool, ...(SESSION_TAG ? { session: SESSION_TAG } : {}) }), { mode: 0o600 });
     spawn(process.execPath, [SELF, "escalate", jobPath], { detached: true, stdio: "ignore" }).unref();
   } catch { /* escalation is advisory; fail-open */ }
 }
@@ -1121,6 +1126,7 @@ async function runEscalationWorker(jobPath) {
     try { unlinkSync(jobPath); } catch { /* already gone */ }
     const job = JSON.parse(raw);
     const { policy, text, stage, tool } = job;
+    if (typeof job.session === "string") SESSION_TAG = job.session; // the spawning session's keyed hash
     const engine = buildEngine(policy);
     const base = engine.scan(text, stage);
     let shared;
@@ -1895,6 +1901,7 @@ async function main() {
   }
   SESSION = contentHash(input.session_id || ""); // content-free trace/session id for baseline + lineage
   SESSION_ID = typeof input.session_id === "string" ? input.session_id : "";
+  SESSION_TAG = SESSION_ID && SESSION !== NO_KEY ? SESSION : "";
   HEADLESS_CTX = { tool, permissionMode: typeof input.permission_mode === "string" ? input.permission_mode : "" };
   // Subagent lineage: a subagent's own tool-call payloads carry agent_id/agent_type (see ACTOR above).
   // Attribute those events to the subagent (a distinct actor) with the spawning session as its parent;

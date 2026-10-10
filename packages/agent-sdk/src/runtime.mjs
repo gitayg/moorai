@@ -23,7 +23,7 @@ import { createReporter } from "./report.mjs";
 
 const { buildEngine, decideText, loadVerifiedPolicy, readRootOwned, withSafer } = hookCore;
 const { resolveServerMode, systemConfigPath, settleHeadlessAsk, serviceWho, normalizeServiceId, HEADLESS_MODES } = serverModeLib;
-const { hashWithKey, deriveKey } = contentHashLib;
+const { hashWithKey, deriveKey, NO_KEY } = contentHashLib;
 const { policyIdOf, REASON } = provenance;
 const { OFFLINE_DEFAULT_POLICY } = offlineDefault;
 const { decideInbound, surfaceOf, inboundText } = inboundLib;
@@ -66,6 +66,10 @@ export async function createMoorAI(options = {}) {
   const { sm, config } = settings;
   const key = deriveKey(config.installToken);
   const hash = (s) => hashWithKey(key, s);
+  // The `session` correlation key on a console alert: the keyed hash of a caller-provided session id (the
+  // Agent SDK's hook input session_id, or moorai-serve's `session` field), the same value the shell hook
+  // computes for the same id under the same install token. Omitted with no id, or no key to hash it with.
+  const sessionOf = (raw) => { if (typeof raw !== "string" || !raw) return {}; const h = hash(raw); return h === NO_KEY ? {} : { session: h }; };
   const who = serviceWho(sm);
   const identity = { user: who.user, device: who.device, platform: os.platform(), tenant: config.tenant, actor: hash(`${who.user}@${who.device}`), surface: options.surface || "agent-sdk" };
   const reporter = options.reporter || createReporter({ config, identity, fetchImpl: options.fetch });
@@ -97,32 +101,33 @@ export async function createMoorAI(options = {}) {
   }
   const prov = (s, event) => ({ policyId: s.policyId, policySource: s.source, event });
 
-  function report(s, findings, { tool, decision, event = "PreToolUse" }) {
+  function report(s, findings, { tool, decision, event = "PreToolUse", sess = {} }) {
     for (const f of findings) {
-      reporter.post({ threatId: f.threatId, category: f.category, riskLevel: decision === "deny" ? "Blocked" : f.riskLevel, stage: f.stage, tool: `hook:${tool}`, contentHash: hash(f.match || "") }, { prov: prov(s, event) });
+      reporter.post({ threatId: f.threatId, category: f.category, riskLevel: decision === "deny" ? "Blocked" : f.riskLevel, stage: f.stage, tool: `hook:${tool}`, contentHash: hash(f.match || ""), ...sess }, { prov: prov(s, event) });
     }
   }
-  function reportSignals(s, signals, tool, event = "PreToolUse") {
+  function reportSignals(s, signals, tool, event = "PreToolUse", sess = {}) {
     for (const g of signals) {
       const { key: k, ...rest } = g;
-      reporter.post({ ...rest, tool: `hook:${tool}`, contentHash: hash(k || "") }, { prov: prov(s, event) });
+      reporter.post({ ...rest, tool: `hook:${tool}`, contentHash: hash(k || ""), ...sess }, { prov: prov(s, event) });
     }
   }
   const contentFree = (findings) => findings.map((f) => ({ threatId: f.threatId, category: f.category, riskLevel: f.riskLevel, stage: f.stage, ...(f.detectorId ? { detectorId: f.detectorId } : {}) }));
   const summary = (findings) => ({ threatIds: [...new Set(findings.map((f) => f.threatId).filter((id) => id > 0))].sort((a, b) => a - b), categories: [...new Set(findings.map((f) => f.category))] });
 
   // Server mode's headless rule applied to a verdict, exactly as the hook's emit() applies it.
-  function settle(s, v, { tool, permissionMode = "" }) {
+  function settle(s, v, { tool, permissionMode = "", sess = {} }) {
     if (v.decision !== "ask" || settings.passThrough) return { decision: v.decision, reason: v.reason, headlessAsk: null };
     const h = settleHeadlessAsk(sm, s.policy, { decision: v.decision, reason: v.reason, tool, permissionMode });
-    if (h.alert) reporter.post({ ...h.alert, reasonCode: REASON.HEADLESS_ASK, enforcement: h.decision === "deny" ? "STRENGTHENED" : "LIMITED" }, { prov: prov(s, "PreToolUse") });
+    if (h.alert) reporter.post({ ...h.alert, reasonCode: REASON.HEADLESS_ASK, enforcement: h.decision === "deny" ? "STRENGTHENED" : "LIMITED", ...sess }, { prov: prov(s, "PreToolUse") });
     return { decision: h.decision, reason: h.reason, headlessAsk: h.alert ? h.alert.headlessAsk : null };
   }
 
   // Content-free verdict on one string: decision, threat ids, categories, the hook's reasons ("#id
   // category"), safer alternatives (static hints from data/threats.json). The text is never returned.
-  // meta (callers inside this package): { event, tool, settle } — the event the alert is filed under, the
-  // tool label, and whether the headless rule applies (false for a PostToolUse observation).
+  // meta (callers inside this package): { event, tool, settle, session } — the event the alert is filed
+  // under, the tool label, whether the headless rule applies (false for a PostToolUse observation), and
+  // the caller's raw session id (only its keyed hash leaves, as `session`).
   // ctx.inbound: the text arrived INTO the agent (a tool result, a fetched page), so it is resolved under
   // the inbound rules every inbound surface shares (cli/inbound.mjs) — the web rule set for WebFetch /
   // WebSearch (ctx.tool or meta.tool), the door rule set for anything else — and its JSON escapes are
@@ -139,18 +144,20 @@ export async function createMoorAI(options = {}) {
       ? decideInbound(s.engine, s.policy, t, { surface: surfaceOf(typeof c.tool === "string" ? c.tool : tool), stage })
       : decideText(s.engine, s.policy, t, stage, { ctx: c });
     const findings = d.findings.map((f) => ({ ...f, stage }));
-    report(s, findings, { tool, decision: d.decision, event: meta.event || "Scan" });
-    const st = meta.settle === false ? { decision: d.decision, headlessAsk: null } : settle(s, { decision: d.decision, reason: d.reasons.join(", ") }, { tool });
+    const sess = sessionOf(meta.session);
+    report(s, findings, { tool, decision: d.decision, event: meta.event || "Scan", sess });
+    const st = meta.settle === false ? { decision: d.decision, headlessAsk: null } : settle(s, { decision: d.decision, reason: d.reasons.join(", ") }, { tool, sess });
     return { decision: st.decision, configuredDecision: d.decision, ...summary(findings), reasons: d.reasons, alternatives: d.alternatives, kill: d.kill, findings: contentFree(findings), ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };
   }
 
   // The verdict the hook reaches for one tool call (src/decide.mjs), settled for a headless run.
-  async function toolCall({ tool, input, cwd, permissionMode = "" } = {}) {
+  async function toolCall({ tool, input, cwd, permissionMode = "", session } = {}) {
     const s = await ready();
     const v = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId });
-    report(s, v.findings, { tool: v.tool, decision: v.decision });
-    reportSignals(s, v.signals, v.tool);
-    const st = settle(s, v, { tool: v.tool, permissionMode });
+    const sess = sessionOf(session);
+    report(s, v.findings, { tool: v.tool, decision: v.decision, sess });
+    reportSignals(s, v.signals, v.tool, "PreToolUse", sess);
+    const st = settle(s, v, { tool: v.tool, permissionMode, sess });
     const message = st.decision === "allow" ? "" : `MoorAI: ${withSafer(st.reason, v.alternatives)}`;
     return { decision: st.decision, configuredDecision: v.decision, ...summary(v.findings), reasons: v.decision === "allow" ? [] : [st.reason], alternatives: v.alternatives, kill: v.kill, message, findings: contentFree(v.findings), evaluated: v.evaluated, notEvaluated: v.notEvaluated, ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };
   }
@@ -161,16 +168,17 @@ export async function createMoorAI(options = {}) {
   // headless rule — nothing here asks. Content-free: one alert per finding (threat, category, risk,
   // stage "index", a keyed hash of the matched span, and a keyed hash of `source` — never the source
   // name itself, which is often a path or a URL). The verdicts never carry chunk text.
-  async function scanForIndex(chunks, { source } = {}) {
+  async function scanForIndex(chunks, { source, session } = {}) {
     if (!Array.isArray(chunks)) throw new TypeError("chunks must be an array");
     if (chunks.length > INDEX_MAX_CHUNKS) throw new RangeError(`at most ${INDEX_MAX_CHUNKS} chunks per call`);
     const s = await ready();
     const sourceHash = typeof source === "string" && source ? hash(`index-source:${source}`) : undefined;
+    const sess = sessionOf(session);
     const results = [], allowed = [], flagged = [], denied = [];
     for (let i = 0; i < chunks.length; i++) {
       const r = decideIndexChunk(s.engine, s.policy, chunks[i]);
       for (const f of r.findings) {
-        reporter.post({ threatId: f.threatId, category: f.category, riskLevel: r.verdict === "deny" ? "Blocked" : f.riskLevel, stage: "index", tool: "index:embed", decision: r.verdict === "deny" ? "deny" : "notify", contentHash: hash(f.match || ""), ...(sourceHash ? { indexSource: sourceHash } : {}) }, { prov: prov(s, "IndexScan") });
+        reporter.post({ threatId: f.threatId, category: f.category, riskLevel: r.verdict === "deny" ? "Blocked" : f.riskLevel, stage: "index", tool: "index:embed", decision: r.verdict === "deny" ? "deny" : "notify", contentHash: hash(f.match || ""), ...(sourceHash ? { indexSource: sourceHash } : {}), ...sess }, { prov: prov(s, "IndexScan") });
       }
       (r.verdict === "deny" ? denied : r.verdict === "flag" ? flagged : allowed).push(i);
       results.push({ index: i, verdict: r.verdict, ...summary(r.findings), reasons: r.reasons, findings: contentFree(r.findings) });

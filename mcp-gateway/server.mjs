@@ -23,7 +23,7 @@ import { createGate } from "../model-proxy/credentials.mjs";
 import { maskResponse } from "../model-proxy/credential-mask.mjs";
 import { createGuard, blockedCall } from "./guard.mjs";
 import { createSseFramer, sseEvent } from "./sse.mjs";
-import { reportOnce, alertSchema, alertTooLarge, alertCooldown } from "./report.mjs";
+import { reportOnce, alertSchema, alertTooLarge, alertCooldown, withSession } from "./report.mjs";
 import { parseBody, parseLenient, validateClientBody, validateHeaderPv, validateServerMessage, MAX_DEPTH } from "./validate.mjs";
 import { createCooldown } from "./cooldown.mjs";
 import { countCall } from "./usage.mjs";
@@ -341,8 +341,10 @@ export function createGatewayServer(cfg) {
     up.end(body);
   }
 
+  // Every alert this request raises, its upstream response included, carries the keyed hash of its
+  // Mcp-Session-Id (report.mjs withSession); a request without one carries none.
   const server = http.createServer((req, res) => {
-    handle(req, res).catch(() => { if (!res.headersSent) sendJson(res, 500, rpcError(null, -32603, "Gateway error")); else res.destroy(); });
+    withSession(req.headers["mcp-session-id"], () => handle(req, res)).catch(() => { if (!res.headersSent) sendJson(res, 500, rpcError(null, -32603, "Gateway error")); else res.destroy(); });
   });
   server.guards = [...routes.values()].map((e) => e.guard);
   return server;

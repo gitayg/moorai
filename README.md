@@ -100,6 +100,29 @@ and hostname also travel, so the console can resolve a per-device policy; the co
 keyed per-tenant pseudonyms (`usr-…`, `dev-…`) on arrival and stores neither. An unenrolled device sends
 the `h2:nokey` sentinel as its actor, never a reversible hash.
 
+**Which session an event came from.** Alerts also carry `session`, the same keyed hash (`h2:` + 16 hex of
+an HMAC-SHA-256 keyed from the tenant's enrollment token, `contentHash` in `cli/content-hash.mjs`) of the
+agent's own session id. Every alert from one session has the same value. The raw id never leaves. The
+field is omitted, not null, when no session id is known, and on a device with no key (the `h2:nokey`
+sentinel would put every session under one value). The input is the raw id, with no surface label, so
+the same id under the same token hashes to the same value on every surface. Who sends it:
+
+- **Claude Code hook**: Claude Code's `session_id`, on every alert a hook run posts. That covers tool
+  calls and their results, prompt scans, coaching touchpoints, session risk, the trifecta, session kill,
+  the claim check and the session summary. It also goes on the model-escalation worker's alerts for that
+  call. It equals the suffix of the session summary's `contentHash` (`summary:<session>`). A sub-agent's
+  calls carry the session that spawned it. The background agent-detection and auto-loaded-context scans
+  send none, because they judge events and files across sessions.
+- **HTTP MCP gateway**: the `Mcp-Session-Id` request header (the 2025-03-26 to 2025-11-25 transport), on
+  every alert raised while handling that request, its upstream response included. An `initialize`
+  request and the 2026-07-28 transport have no session id, so they send none. Notices posted once per
+  process carry the session of the request that first raised them.
+- **`@moorai/agent-sdk`**: the hook input's `session_id`. **`moorai-serve`**: the optional `session` field
+  of a `/v1/scan`, `/v1/tool-call` or `/v1/index-scan` body (a string of 1 to 256 characters).
+- **Not sent** by `moorai-model-proxy` (a Messages or Chat Completions request names no conversation, and
+  the proxy does not invent one), the stdio MCP proxy, `moorai-guard`, the desktop app, the browser
+  extension or the egress proxy.
+
 ### One-line install (CLI guard + Claude Code hooks)
 
 ```bash
@@ -447,7 +470,8 @@ content-free) in one process:
   loops that are not Claude Code or the Agent SDK (OpenAI Agents SDK, LangGraph, CrewAI, a custom loop):
   `POST /v1/scan` (`{text, stage?, ctx?}`), `POST /v1/tool-call` (`{tool, input, cwd?}`, the decision the hook
   makes for that call), `POST /v1/index-scan` (`{chunks, source?}`, one verdict per chunk about to be
-  embedded; see below) and `GET /healthz`. Verdicts never contain the submitted text, though a
+  embedded; see below) and `GET /healthz`. Each POST also takes an optional `session` (the caller's own
+  session id), which leaves only as the keyed `session` field of the alerts it raises. Verdicts never contain the submitted text, though a
   `tool-call` verdict's `message`, the sentence the hook shows the agent, can name a file or a host from
   the call. It binds loopback
   only unless `--allow-remote` is given with a token of 16+ characters (`--token-file` or

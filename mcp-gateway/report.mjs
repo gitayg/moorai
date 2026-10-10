@@ -4,12 +4,17 @@
 // console alert also carries the `workload` object (container id, Kubernetes pod / namespace / node:
 // cli/server-mode.mjs workloadIdentity) when one is detected — no pid, since the gateway is not the
 // agent process the verdict is about. The local ledger does not get it.
+// A console alert raised while the gateway handles a request that carries Mcp-Session-Id (the
+// 2025-03-26 .. 2025-11-25 transport) also carries `session`: the keyed hash of that id (withSession).
+// A request without one (initialize, the 2026-07-28 transport) and work outside any request (the
+// reputation lookup, the usage flush) send no `session`.
 import os from "node:os";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { loadConfig } from "../cli/config.mjs";
 import { isEnrolled, literacyTouchpoint, coachMessage } from "../cli/hook-core.mjs";
 import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
-import { contentHash, actorHash } from "../cli/content-hash.mjs";
+import { contentHash, actorHash, NO_KEY } from "../cli/content-hash.mjs";
 import { emitOtel } from "../cli/otel.mjs";
 import { serverMode, serviceWho, workloadIdentity } from "../cli/server-mode.mjs";
 
@@ -22,14 +27,26 @@ export const WORKLOAD = workloadIdentity();
 let tierOf = () => "content-free";
 export function setTierSource(fn) { tierOf = fn; }
 
+const SESSION = new AsyncLocalStorage();
+// The keyed hash of a raw MCP session id, or "" (no id, or no key: NO_KEY would merge every session).
+export function sessionTag(raw) {
+  if (typeof raw !== "string" || !raw) return "";
+  const h = contentHash(raw);
+  return h === NO_KEY ? "" : h;
+}
+// Runs fn with the request's session as the context every post() under it (awaits and upstream
+// callbacks included) reads; a request with no session id runs with none, never an earlier request's.
+export function withSession(raw, fn) { return SESSION.run(sessionTag(raw), fn); }
+
 export function post(alert) {
   try { emitOtel(alert, { config: CONFIG, identity: IDENTITY }); } catch { /* telemetry is never enforcement */ }
   if (!isEnrolled(CONFIG)) return;
+  const session = SESSION.getStore();
   try {
     return fetch(`${CONFIG.serverUrl}/api/alerts`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) },
-      body: JSON.stringify(WORKLOAD ? { ...alert, workload: WORKLOAD } : alert),
+      body: JSON.stringify({ ...alert, ...(session && alert.session === undefined ? { session } : {}), ...(WORKLOAD ? { workload: WORKLOAD } : {}) }),
       signal: AbortSignal.timeout(1500)
     }).catch(() => {});
   } catch { /* never let a network error touch the request path */ }
