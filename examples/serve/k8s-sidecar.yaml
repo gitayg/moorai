@@ -206,7 +206,7 @@ spec:
           image: ghcr.io/gitayg/moorai-server:latest
           # Report mode (the default) forwards every byte unchanged, streaming included, and alerts. To refuse
           # a denied request or tool call, add "--mode", "enforce" (HTTP 403 in the provider's error shape).
-          # The upstreams must be the real provider URLs in production; these are the proxy's defaults.
+          # The upstreams must be the real provider URLs in production; these two are the proxy's defaults; --route replaces all three, so add /gemini=https://generativelanguage.googleapis.com here to keep Gemini.
           args: ["moorai-model-proxy", "--port", "8791", "--mode", "report",
                  "--route", "/anthropic=https://api.anthropic.com", "--route", "/openai=https://api.openai.com/v1"]
           env:

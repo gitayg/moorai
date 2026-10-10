@@ -2,13 +2,28 @@
 // device is the package NAME (and version) in a registry URL. No config, no path, no file content, no
 // identifying header. Artifact URLs taken from registry metadata are pinned to the registry's own
 // file host and fetched with redirects refused, so hostile metadata cannot point the scanner elsewhere.
+// With a mirror (MOORAI_NPM_REGISTRY / MOORAI_PYPI_URL, cli/mcp-package/endpoints.mjs) the metadata comes
+// from the mirror and artifacts are pinned to the mirror's own host instead. MOORAI_OFFLINE=1: no request.
+// Every request is bounded by timedFetch (no headers, or a quiet body, for REQUEST_TIMEOUT_MS → timeout).
 
 import { envMb } from "./archive.mjs";
+import { endpoint, endpointHost, isOffline, MIRROR_ENV } from "./endpoints.mjs";
+import { RegistryError } from "./registry-error.mjs";
+import { timedFetch } from "./timed-fetch.mjs";
 
-const NPM_REGISTRY = "https://registry.npmjs.org/";
+export { RegistryError };
+
 const NPM_FILE_HOST = "registry.npmjs.org";
-const PYPI_API = "https://pypi.org/pypi/";
 const PYPI_FILE_HOST = "files.pythonhosted.org";
+const mirrored = (name) => { const v = process.env[MIRROR_ENV[name]]; return v !== undefined && v !== ""; };
+// The base URL, or a RegistryError when offline or the mirror variable is invalid (never the public host).
+function base(name) {
+  if (isOffline()) throw new RegistryError("offline");
+  const b = endpoint(name);
+  if (!b) throw new RegistryError("mirror-invalid");
+  return b;
+}
+const fileHost = (name, publicHost) => (mirrored(name) ? endpointHost(name) : publicHost);
 const MAX_META_BYTES = 64 * 1024 * 1024;
 // The artifact is streamed to a temp file, never buffered, so the compressed cap can be generous. Both
 // are overridable: MOORAI_SCAN_MAX_ARTIFACT_MB / MOORAI_SCAN_MAX_REPO_MB (and the EXTRACTED cap lives
@@ -16,11 +31,7 @@ const MAX_META_BYTES = 64 * 1024 * 1024;
 export const MAX_ARTIFACT_BYTES = envMb("MOORAI_SCAN_MAX_ARTIFACT_MB", 128 * 1024 * 1024);
 export const MAX_REPO_BYTES = envMb("MOORAI_SCAN_MAX_REPO_MB", 250 * 1024 * 1024);   // a whole public repo tarball (codeload.github.com)
 
-export class RegistryError extends Error {
-  constructor(code) { super(code); this.code = code; }
-}
-
-async function readCapped(res, cap) {
+async function readCapped(res, cap, touch = () => {}) {
   const len = Number(res.headers && res.headers.get && res.headers.get("content-length"));
   if (len > cap) throw new RegistryError("too-large");
   if (res.body && typeof res.body.getReader === "function") {
@@ -30,6 +41,7 @@ async function readCapped(res, cap) {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
+      touch();
       total += value.length;
       if (total > cap) { try { await reader.cancel(); } catch {} throw new RegistryError("too-large"); }
       chunks.push(Buffer.from(value));
@@ -41,17 +53,20 @@ async function readCapped(res, cap) {
   return buf;
 }
 
-async function get(fetchImpl, url, cap, accept) {
-  let res;
+async function get(fetchImpl, url, cap, accept, timeoutMs) {
+  if (isOffline()) throw new RegistryError("offline");
+  const { res, touch, done, timedOut } = await timedFetch(fetchImpl, url, { redirect: "error", headers: accept ? { accept } : {} }, timeoutMs);
   try {
-    res = await fetchImpl(url, { redirect: "error", headers: accept ? { accept } : {} });
-  } catch { throw new RegistryError("network-error"); }
-  if (!res || !res.ok) throw new RegistryError(`http-${res ? res.status : 0}`);
-  return readCapped(res, cap);
+    if (!res || !res.ok) throw new RegistryError(`http-${res ? res.status : 0}`);
+    return await readCapped(res, cap, touch);
+  } catch (e) {
+    if (timedOut()) throw new RegistryError("timeout");
+    throw e instanceof RegistryError ? e : new RegistryError("network-error");
+  } finally { done(); }
 }
 
-async function getJson(fetchImpl, url) {
-  const buf = await get(fetchImpl, url, MAX_META_BYTES, "application/json");
+async function getJson(fetchImpl, url, timeoutMs) {
+  const buf = await get(fetchImpl, url, MAX_META_BYTES, "application/json", timeoutMs);
   try { return JSON.parse(buf.toString("utf8")); } catch { throw new RegistryError("bad-metadata"); }
 }
 
@@ -63,8 +78,8 @@ function pinnedUrl(u, host) {
 }
 
 // → {version, url, kind, integrity:{algorithm, expected:[…]}, createdAt}
-export async function resolveNpm(ref, fetchImpl) {
-  const meta = await getJson(fetchImpl, NPM_REGISTRY + ref.name.replace("/", "%2f"));
+export async function resolveNpm(ref, fetchImpl, { timeoutMs } = {}) {
+  const meta = await getJson(fetchImpl, base("npm") + ref.name.replace("/", "%2f"), timeoutMs);
   const tags = meta["dist-tags"] || {};
   const versions = meta.versions || {};
   const version = !ref.version ? tags.latest : versions[ref.version] ? ref.version : tags[ref.version];
@@ -73,7 +88,7 @@ export async function resolveNpm(ref, fetchImpl) {
   const expected = String(man.dist.integrity || "").split(/\s+/).filter((s) => s.startsWith("sha512-")).map((s) => s.slice(7));
   return {
     version,
-    url: pinnedUrl(man.dist.tarball, NPM_FILE_HOST),
+    url: pinnedUrl(man.dist.tarball, fileHost("npm", NPM_FILE_HOST)),
     kind: "tarball",
     integrity: { algorithm: "sha512", expected },
     createdAt: meta.time && meta.time.created ? Date.parse(meta.time.created) : null
@@ -88,9 +103,10 @@ function pickPypiFile(files) {
     || null;
 }
 
-export async function resolvePypi(ref, fetchImpl) {
+export async function resolvePypi(ref, fetchImpl, { timeoutMs } = {}) {
   const name = encodeURIComponent(ref.name);
-  const meta = await getJson(fetchImpl, ref.version ? `${PYPI_API}${name}/${encodeURIComponent(ref.version)}/json` : `${PYPI_API}${name}/json`);
+  const api = `${base("pypi")}pypi/`;
+  const meta = await getJson(fetchImpl, ref.version ? `${api}${name}/${encodeURIComponent(ref.version)}/json` : `${api}${name}/json`, timeoutMs);
   const version = meta.info && meta.info.version;
   const file = pickPypiFile(meta.urls);
   if (!version || !file) throw new RegistryError("version-not-found");
@@ -103,7 +119,7 @@ export async function resolvePypi(ref, fetchImpl) {
   }
   return {
     version,
-    url: pinnedUrl(file.url, PYPI_FILE_HOST),
+    url: pinnedUrl(file.url, fileHost("pypi", PYPI_FILE_HOST)),
     kind: file.packagetype === "sdist" ? "sdist" : "wheel",
     integrity: { algorithm: "sha256", expected: [String(file.digests.sha256).toLowerCase()] },
     createdAt

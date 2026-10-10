@@ -784,7 +784,9 @@ on the vector-4 write corpus, `output` is the only stage that fires on the two s
 and fires on zero of the four benign write controls, as do `file` and `prompt`.
 
 Layered on top of the content scan, per branch: the model-endpoint allow-list (`decideEndpoints`, inert
-unless `policy.endpointAllow` is set), the entitlement envelope (`reportEnvelope`), and secret-egress
+unless `policy.endpointAllow` is set; it judges LLM provider hosts in URLs and the host of any base-URL
+override in `BASE_URL_ENV_VARS`, [`data/model-endpoints.js`](../data/model-endpoints.js), among them
+`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GOOGLE_VERTEX_BASE_URL` and `GOOGLE_GEMINI_BASE_URL`), the entitlement envelope (`reportEnvelope`), and secret-egress
 (`checkSecretEgress`). One documented exception: on the **write** path threat 65 upgrades `allow` → `ask`
 rather than denying, because copying `.env` → `.env.local` is routine and no benign corpus measures it —
 an unmeasured hard block on a hot path is how a security tool gets uninstalled.

@@ -140,7 +140,13 @@ test("DESKTOP (src/api.js): alerts, prompt events and the identity beacon carry 
   shim("localStorage", { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) });
   shim("navigator", { platform: "MacIntel", userAgent: "test" });
   shim("screen", { width: 1 });
-  shim("window", { __TAURI__: { core: { invoke: async (cmd) => (cmd === "identity" ? { user: USER, device: HOST, platform: "darwin", tenant: "acme", installToken: TOKEN } : null) } } });
+  // Inside the host, console calls go through the console_fetch command (src-tauri/src/console_http.rs).
+  const invoke = async (cmd, args) => {
+    if (cmd === "identity") return { user: USER, device: HOST, platform: "darwin", tenant: "acme", installToken: TOKEN };
+    if (cmd === "console_fetch") { sent.push({ url: args.req.path, body: args.req.body }); return { status: 200, body: {} }; }
+    return null;
+  };
+  shim("window", { __TAURI__: { core: { invoke } } });
   shim("fetch", async (url, opts) => { sent.push({ url: String(url), body: opts && opts.body ? JSON.parse(opts.body) : null }); return { ok: true, json: async () => ({}) }; });
   try {
   const api = await import("../src/api.js");

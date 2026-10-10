@@ -5,9 +5,12 @@ import { readFileSync } from "node:fs";
 import { parseCheckSpec } from "./check-spec.mjs";
 import { mcpCheck } from "./check.mjs";
 import { renderCheck } from "./check-render.mjs";
+import { invalidMirrors } from "./endpoints.mjs";
 
-const USAGE = "usage: moorai-mcp-check <package> [--json] [--policy file.json | --no-policy] [--tools tools-list.json]\n"
-  + "  <package>: npm:name[@version] | pypi:name[==version] | name[@version] (npm) | \"npx -y name@1.2.3\" | https://host/mcp\n";
+const USAGE = "usage: moorai-mcp-check <package> [--json] [--policy file.json | --no-policy] [--tools tools-list.json] [--offline]\n"
+  + "  <package>: npm:name[@version] | pypi:name[==version] | name[@version] (npm) | \"npx -y name@1.2.3\" | https://host/mcp\n"
+  + "  --offline: no network request (also MOORAI_OFFLINE=1); registry checks report not-checked (offline)\n"
+  + "  mirrors: MOORAI_NPM_REGISTRY, MOORAI_PYPI_URL, MOORAI_MCP_REGISTRY, MOORAI_GITHUB_RAW_URL (https only)\n";
 
 function readJsonFile(p) { return JSON.parse(readFileSync(p, "utf8")); }
 
@@ -30,7 +33,7 @@ async function systemDoc() {
 }
 
 export async function runMcpCheck(argv = process.argv.slice(2), { out = process.stdout, err = process.stderr, fetchImpl } = {}) {
-  let json = false, policyFile = null, noPolicy = false, toolsFile = null;
+  let json = false, policyFile = null, noPolicy = false, toolsFile = null, offline = false;
   const pos = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -38,6 +41,7 @@ export async function runMcpCheck(argv = process.argv.slice(2), { out = process.
     else if (a === "--no-policy") noPolicy = true;
     else if (a === "--policy") policyFile = argv[++i];
     else if (a === "--tools") toolsFile = argv[++i];
+    else if (a === "--offline") offline = true;
     else if (a === "-h" || a === "--help") { out.write(USAGE); return 0; }
     else if (a.startsWith("--")) { err.write(`unknown option ${a}\n${USAGE}`); return 2; }
     else pos.push(a);
@@ -45,6 +49,8 @@ export async function runMcpCheck(argv = process.argv.slice(2), { out = process.
   if (pos.length !== 1) { err.write(USAGE); return 2; }
   const spec = parseCheckSpec(pos[0]);
   if (spec.error) { err.write(`moorai-mcp-check: ${spec.error}\n${USAGE}`); return 2; }
+  const bad = invalidMirrors();
+  if (bad.length) { err.write(`moorai-mcp-check: ${bad.join(", ")} must be an https URL with no credentials, query or fragment\n`); return 2; }
   let policy = null, tools = null;
   try {
     if (policyFile) policy = readJsonFile(policyFile);
@@ -52,7 +58,13 @@ export async function runMcpCheck(argv = process.argv.slice(2), { out = process.
   } catch (e) { err.write(`moorai-mcp-check: cannot read ${policyFile && !policy ? "--policy" : "--tools"} file as JSON\n`); return 2; }
   if (!policyFile && !noPolicy) policy = await devicePolicy();
   const system = noPolicy || policyFile ? null : await systemDoc();
-  const report = await mcpCheck(spec, { policy, system, tools, ...(fetchImpl ? { fetchImpl } : {}) });
+  // --offline is MOORAI_OFFLINE=1 for the duration of the check, so every module below sees it.
+  const prevOffline = process.env.MOORAI_OFFLINE;
+  if (offline) process.env.MOORAI_OFFLINE = "1";
+  let report;
+  try { report = await mcpCheck(spec, { policy, system, tools, ...(fetchImpl ? { fetchImpl } : {}) }); } finally {
+    if (offline) { if (prevOffline === undefined) delete process.env.MOORAI_OFFLINE; else process.env.MOORAI_OFFLINE = prevOffline; }
+  }
   out.write(json ? JSON.stringify(report, null, 2) + "\n" : renderCheck(report));
   return report.summary.fail ? 1 : 0;
 }

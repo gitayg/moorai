@@ -2,5 +2,5 @@
   "identifier": "default",
   "description": "Core permissions for the MoorAI main window (IPC + events).",
   "windows": ["main"],
-  "permissions": ["core:default", "updater:default"]
+  "permissions": ["core:default"]
 }

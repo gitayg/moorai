@@ -42,6 +42,7 @@ import { checkRepoLink } from "./mcp-repo-link.mjs";
 import { checkMaintainers } from "./mcp-package/maintainers.mjs";
 import { buildEngine } from "./hook-core.mjs";
 import { STATE_DIR } from "./state-dirs.mjs";
+import { isOffline } from "./mcp-package/endpoints.mjs";
 import { scoreReputation, signal, classifyMcpName, reputationAction, reputationAlert, REASON_WEIGHTS, TIER_WEIGHT } from "../data/mcp-reputation.js";
 
 export const DEFAULT_FEED_URL = "https://skilltriage.moorai.dev/api/reputation-feed.json";
@@ -231,6 +232,8 @@ async function refreshFeed(url, opts, stateDir) {
   const cur = readFeedFile(stateDir);
   const now = opts.now || Date.now();
   if (cur && cur.url === url && now - cur.fetchedAt < FEED_TTL_MS) return cur.feed;
+  // MOORAI_OFFLINE=1: the copy already on disk, whatever its age; never a request.
+  if (isOffline()) return cur && cur.url === url ? cur.feed : null;
   try {
     const res = await (opts.fetchImpl || globalThis.fetch)(url, { method: "GET", redirect: "error", signal: AbortSignal.timeout(5000) });
     if (!res || !res.ok) return cur ? cur.feed : null;
@@ -262,7 +265,7 @@ export async function feedVerdict(ref, { policy = {}, fetchImpl, stateDir = STAT
   const url = feedUrl(policy && typeof policy === "object" ? policy : {});
   if (!url) return { enabled: false };
   const feed = await refreshFeed(url, { fetchImpl, now }, stateDir);
-  if (!feed) return { enabled: true, available: false, verdict: null, signals: [], evidence: [] };
+  if (!feed) return { enabled: true, available: false, verdict: null, signals: [], evidence: [], ...(isOffline() ? { offline: true } : {}) };
   const id = { kind: ref.ecosystem, ref };
   const name = String(ref.name || "").toLowerCase();
   const e = feed.entries.find((x) => x && x.ecosystem === ref.ecosystem && String(x.name).toLowerCase() === name);
@@ -348,7 +351,9 @@ export async function assessServer(decl, opts = {}) {
   const stateDir = opts.stateDir || STATE_DIR;
   const policy = opts.policy && typeof opts.policy === "object" ? opts.policy : {};
   let r = core(decl, opts, null);
-  if (r.needLookup) {
+  // MOORAI_OFFLINE=1: the opt-in lookup is skipped (and not cached, so it runs once the device is online).
+  const offlineSkip = r.needLookup && isOffline();
+  if (r.needLookup && !offlineSkip) {
     let lookup;
     try { lookup = await registryLookup(r.id, opts); } catch { lookup = { signals: [], evidence: ["registry-not-analysed"] }; }
     const flags = r.flags;
@@ -358,7 +363,9 @@ export async function assessServer(decl, opts = {}) {
   if (!r.flags.cached) { r.cache.servers[r.id.key] = r.entry; saveCache(stateDir, r.cache); }
   const url = feedUrl(policy);
   const feed = url ? await refreshFeed(url, opts, stateDir) : (readFeedFile(stateDir) || {}).feed || null;
-  return present(r.id, r.entry, feed, r.flags);
+  const rep = present(r.id, r.entry, feed, r.flags);
+  if (offlineSkip) rep.evidence = [...rep.evidence, "registry-not-checked-offline"].sort();
+  return rep;
 }
 
 // Tool-stage findings from the server's own tools/list → merged into its cached entry and re-scored.

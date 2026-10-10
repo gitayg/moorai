@@ -8,7 +8,8 @@
 //   github.com, gitlab.com (via repo-link)   the declared repository's own manifest
 //   registry.modelcontextprotocol.io         the server.json the package itself names (mcpName / mcp-name:)
 //   the SkillTriage feed                     only when policy mcpReputation.feed enables it
-// A remote URL is parsed, never contacted.
+// A remote URL is parsed, never contacted. Each host follows its mirror (cli/mcp-package/endpoints.mjs);
+// with MOORAI_OFFLINE=1 (`--offline`) nothing is requested and those checks are not-checked (offline).
 
 import { fetchRegistryMeta, fetchServerJson } from "./metadata.mjs";
 import { CHECKS } from "./check-items.mjs";
@@ -19,6 +20,7 @@ import { scoreReputation, signal, REASON_WEIGHTS, TIER_WEIGHT } from "../../data
 import { HEURISTICS } from "./heuristics.mjs";
 import { buildEngine, decideText } from "../hook-core.mjs";
 import { toolsOfResponse, toolScanText, CAPS } from "../../mcp-proxy/tool-scan.mjs";
+import { isOffline, OFFLINE_REASON } from "./endpoints.mjs";
 
 const pyNorm = (s) => String(s || "").toLowerCase().replace(/[-_.]+/g, "-");
 
@@ -71,9 +73,13 @@ function signalsOf(code) {
 
 // spec: parseCheckSpec() output. → the report object (the --json shape).
 export async function mcpCheck(spec, { fetchImpl = globalThis.fetch, policy = null, system = null, tools = null, home, cwd, platform, env, stateDir, now = Date.now() } = {}) {
-  const f = { spec, policy, system, now, meta: null, repo: null, serverJson: null, manifest: null, version: null, versionNote: "", toolScan: null, runtime: null };
+  const f = { spec, policy, system, now, meta: null, repo: null, serverJson: null, manifest: null, version: null, versionNote: "", toolScan: null, runtime: null, offline: isOffline() };
   let feed = { enabled: false };
-  if (spec.kind !== "remote") {
+  if (spec.kind !== "remote" && f.offline) {
+    f.meta = { status: 0, offline: true };
+    f.serverJson = { state: "offline" };
+    feed = await feedVerdict(spec.ref, { policy: policy && policy.mcpReputation, fetchImpl, ...(stateDir ? { stateDir } : {}), now }).catch(() => ({ enabled: true, available: false, offline: true, signals: [] }));
+  } else if (spec.kind !== "remote") {
     const ref = spec.ref;
     const [meta, repo] = await Promise.all([
       fetchRegistryMeta(ref, { fetchImpl }),
@@ -109,7 +115,7 @@ export async function mcpCheck(spec, { fetchImpl = globalThis.fetch, policy = nu
     skilltriage: !feed.enabled
       ? { enabled: false, verdict: null, reason: "feed not enabled (policy mcpReputation.feed)" }
       : !feed.available
-        ? { enabled: true, verdict: null, reason: "feed unavailable" }
+        ? { enabled: true, verdict: null, reason: feed.offline ? `feed ${OFFLINE_REASON}` : "feed unavailable" }
         : { enabled: true, verdict: feed.verdict, reason: feed.verdict ? `SkillTriage verdict ${feed.verdict}` : feed.scannedVersion ? `SkillTriage scanned another version (${feed.scannedVersion})` : "not in the SkillTriage feed" }
   };
 }

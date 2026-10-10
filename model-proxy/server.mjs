@@ -38,9 +38,9 @@ import { maskResponse } from "./credential-mask.mjs";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({
   host: "127.0.0.1", port: 8791, mode: "report", maxBody: 33554432, maxResponse: 33554432, maxInflight: 268435456,
-  maxEvent: 1048576, maxScanItems: 256, maxScanChars: 524288, timeoutMs: 10000, upstreamTimeoutMs: 600000, maxConnections: 128,
+  maxEvent: 1048576, maxScanItems: 256, maxScanChars: 524288, timeoutMs: 10000, upstreamTimeoutMs: 600000, connectTimeoutMs: 10000, maxConnections: 128,
   deniedToolCall: "refuse", uncheckedWindowMs: 0, uncheckedMax: UNCHECKED_MAX,
-  routes: Object.freeze({ "/anthropic": "https://api.anthropic.com", "/openai": "https://api.openai.com/v1" })
+  routes: Object.freeze({ "/anthropic": "https://api.anthropic.com", "/openai": "https://api.openai.com/v1", "/gemini": "https://generativelanguage.googleapis.com" })
 });
 export const TOKEN_HEADER = "x-moorai-proxy-token";
 export const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER]);
@@ -112,6 +112,7 @@ export async function createProxy(opts = {}) {
   const routes = Object.entries(o.routes).map(([prefix, base]) => ({ prefix: prefix === "/" ? "" : prefix.replace(/\/+$/, ""), base: String(base).replace(/\/+$/, "") })).sort((a, b) => b.prefix.length - a.prefix.length);
   const agents = { "http:": new http.Agent({ keepAlive: true, maxSockets: o.maxConnections }), "https:": new https.Agent({ keepAlive: true, maxSockets: o.maxConnections }) };
   const loopbackBind = isLoopback(o.host);
+  const readySockets = new WeakSet(); // upstream sockets past connect (and TLS handshake): reused ones skip the connect budget
   let inflight = 0;
   const stats = { refused: 0, replaced: 0, forwarded: 0 };
   // The skip alert (unchecked.mjs): off unless --unchecked-window-ms is set.
@@ -360,8 +361,24 @@ export async function createProxy(opts = {}) {
         onResponse(ur, res, api, held, later).catch(() => { if (!res.headersSent) send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: upstream response failed")); else res.destroy(); }).finally(resolve);
       });
       up.setTimeout(o.upstreamTimeoutMs, () => up.destroy(new Error("upstream timeout")));
+      // Connect budget: a fresh socket must be ready to carry the request (TCP connected; for https, the TLS
+      // handshake done) within connectTimeoutMs. A reused keep-alive socket is already ready. Cleared once
+      // ready, so a slow first byte or a long stream is governed by the idle timeout above, as before.
+      let connectTimedOut = false;
+      up.on("socket", (sock) => {
+        const tls = url.protocol === "https:";
+        if (readySockets.has(sock) || (!tls && !sock.connecting)) return;
+        const t = setTimeout(() => { connectTimedOut = true; up.destroy(new Error("connect timeout")); }, o.connectTimeoutMs);
+        sock.once(tls ? "secureConnect" : "connect", () => { clearTimeout(t); readySockets.add(sock); });
+        sock.once("close", () => clearTimeout(t));
+      });
       // The URL is never put in an error: its query string can carry a credential.
-      up.on("error", () => { if (!res.headersSent) send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: the upstream provider could not be reached")); else res.destroy(); resolve(); });
+      up.on("error", () => {
+        if (res.headersSent) res.destroy();
+        else if (connectTimedOut) send(res, 504, errorPayload(api, 504, `MoorAI model-proxy: the upstream provider did not accept a connection within ${o.connectTimeoutMs} ms`));
+        else send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: the upstream provider could not be reached"));
+        resolve();
+      });
       res.on("close", () => { if (!res.writableFinished) up.destroy(); });
       up.end(body);
     });

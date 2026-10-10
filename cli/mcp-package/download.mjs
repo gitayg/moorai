@@ -10,7 +10,9 @@
 import { createHash } from "node:crypto";
 import { createWriteStream, rmSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
-import { RegistryError } from "./registry.mjs";
+import { RegistryError } from "./registry-error.mjs";
+import { isOffline } from "./endpoints.mjs";
+import { timedFetch } from "./timed-fetch.mjs";
 
 async function* bodyChunks(res) {
   if (res.body && typeof res.body.getReader === "function") {
@@ -34,11 +36,18 @@ async function* bodyChunks(res) {
 }
 
 // → {bytes, digest} — digest is base64 for sha512, hex otherwise, null when no algorithm was asked for.
-export async function downloadToFile(fetchImpl, url, dest, { cap, algorithm = null } = {}) {
-  let res;
+// Bounded by timedFetch: no headers within timeoutMs, or no body chunk for timeoutMs, is "timeout".
+export async function downloadToFile(fetchImpl, url, dest, { cap, algorithm = null, timeoutMs } = {}) {
+  if (isOffline()) throw new RegistryError("offline");
+  const { res, touch, done, timedOut } = await timedFetch(fetchImpl, url, { redirect: "error", headers: {} }, timeoutMs);
   try {
-    res = await fetchImpl(url, { redirect: "error", headers: {} });
-  } catch { throw new RegistryError("network-error"); }
+    return await streamToFile(res, dest, cap, algorithm, touch);
+  } catch (e) {
+    throw timedOut() ? new RegistryError("timeout") : e;
+  } finally { done(); }
+}
+
+async function streamToFile(res, dest, cap, algorithm, touch) {
   if (!res || !res.ok) throw new RegistryError(`http-${res ? res.status : 0}`);
   const len = Number(res.headers && res.headers.get && res.headers.get("content-length"));
   if (len > cap) throw new RegistryError("too-large");
@@ -52,6 +61,7 @@ export async function downloadToFile(fetchImpl, url, dest, { cap, algorithm = nu
     await pipeline(
       (async function* () {
         for await (const chunk of bodyChunks(res)) {
+          touch();
           bytes += chunk.length;
           if (bytes > cap) throw new RegistryError("too-large");
           if (h) h.update(chunk);

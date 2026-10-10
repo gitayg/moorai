@@ -27,6 +27,7 @@ import { VERDICT_RANK } from "./scan-core.mjs";
 import { scanPathWithPackages, scanPackageArg, packagesEnabled } from "./mcp-package.mjs";
 import { renderPackagesMarkdown } from "./mcp-package/report.mjs";
 import { exitWhenDrained } from "./exit-drain.mjs";
+import { invalidMirrors, isOffline } from "./mcp-package/endpoints.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = (() => { try { return JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version; } catch { return "0"; } })();
@@ -38,9 +39,9 @@ const DEFAULT_FAIL_ON = "review";
 const HELP = `moorai-scan — content-free PRE-INSTALL skill gate for AI coding-agent artifacts.
 
 Usage:
-  moorai-scan <path> [--packages] [--cache-dir <dir>] [--format json|md] [--fail-on …]
+  moorai-scan <path> [--packages] [--offline] [--cache-dir <dir>] [--format json|md] [--fail-on …]
   moorai-scan --package npm:<name>[@version] | pypi:<name>[==version] | github:<owner>/<repo>[/<path>][@ref]
-              [--cache-dir <dir>] [--format json|md]
+              [--offline] [--cache-dir <dir>] [--format json|md]
   moorai-scan --help
 
   <path>        a directory OR a single file (SKILL.md, .mcp.json, .claude/agents/*.md, CLAUDE.md, …).
@@ -58,6 +59,12 @@ Usage:
                 lockfiles are not scanned. Only owner/repo/ref leave the device; a git archive has no
                 registry digest, so the report carries the archive's commit and integrity "none".
   --cache-dir   cache package results by name@version + integrity.
+  --offline     make no network request (also MOORAI_OFFLINE=1): each package is reported
+                "not-checked (offline)" and stays REVIEW (fail-closed), at once instead of after a timeout.
+
+Mirrors (https only, no credentials or query): MOORAI_NPM_REGISTRY (npm root), MOORAI_PYPI_URL (PyPI
+root; the JSON API is at pypi/), MOORAI_GITHUB_CODELOAD_URL (archive host). With a mirror set, artifacts
+must come from the mirror's own host. Every request gives up after 30 s without headers or body progress.
 
 Artifacts are STREAMED to a temp file, hashed while streaming (so the registry digest is still verified
 end to end) and extracted from that file, so peak memory does not track archive size. Caps: 128 MB
@@ -123,6 +130,9 @@ async function main() {
   const failRank = FAIL_ON[failOnRaw];
   if (failRank === undefined) { process.stderr.write(`moorai-scan: unknown --fail-on '${failOnRaw}' (use clean|caution|review|do-not-install)\n`); process.exit(64); }
   const cacheDir = argValue(argv, "--cache-dir") || null;
+  if (argv.includes("--offline")) process.env.MOORAI_OFFLINE = "1";
+  const bad = isOffline() ? [] : invalidMirrors();
+  if (bad.length && (argv.includes("--package") || packagesEnabled(argv, process.env))) { process.stderr.write(`moorai-scan: ${bad.join(", ")} must be an https URL with no credentials, query or fragment\n`); process.exit(64); }
   const head = { tool: "moorai-scan", specVersion: "1.1", version: VERSION, generatedAt: new Date().toISOString(), failOn: failOnRaw };
 
   let report, doc, md;

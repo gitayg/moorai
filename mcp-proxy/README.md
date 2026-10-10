@@ -254,6 +254,11 @@ Signals, all offline unless the policy opts in:
   and matched on the device (`catalogue-do-not-install`, `catalogue-review`, …), so the request names no
   server.
 
+Both opt-in requests honour the registry mirrors (`MOORAI_NPM_REGISTRY`, `MOORAI_PYPI_URL`,
+`MOORAI_MCP_REGISTRY`, `MOORAI_GITHUB_RAW_URL`, `MOORAI_GITHUB_CODELOAD_URL`, https only) and
+`MOORAI_OFFLINE=1`, which skips the lookup (evidence `registry-not-checked-offline`) and uses the feed copy
+already on disk. The variables are read from the proxy's own environment.
+
 Report-only by default: a content-free alert (`MCP: server reputation`, band, score, category codes —
 never a package name, path, argument or env var) on first sight or a version change when the band is
 below good. `mcpReputation.blockBelow: <n>` refuses `tools/call` to a server scoring below `n` on an

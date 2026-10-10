@@ -16,12 +16,21 @@ agent SDK ──http──▶ 127.0.0.1:8791/anthropic/v1/messages ──https�
 moorai-model-proxy                       # report-only, default routes
 ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic  your-agent
 OPENAI_BASE_URL=http://127.0.0.1:8791/openai        your-agent
-
-# Gemini has no default route: --route replaces the defaults, so list every route you need.
-moorai-model-proxy --route /anthropic=https://api.anthropic.com --route /openai=https://api.openai.com/v1 \
-  --route /gemini=https://generativelanguage.googleapis.com
 GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8791/gemini your-agent   # read by the Google Gen AI SDKs (JS and Python)
 ```
+
+The default routes are:
+
+| Route | Upstream | Client base URL |
+|---|---|---|
+| `/anthropic` | `https://api.anthropic.com` | `ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic` |
+| `/openai` | `https://api.openai.com/v1` | `OPENAI_BASE_URL=http://127.0.0.1:8791/openai` |
+| `/gemini` | `https://generativelanguage.googleapis.com` | `GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8791/gemini`, or the SDK's `httpOptions.baseUrl` (JS) / `http_options.base_url` (Python) |
+
+A Gemini client keeps its own API version in the path: with base URL `http://127.0.0.1:8791/gemini` it calls
+`/gemini/v1beta/models/<model>:generateContent`, which goes upstream as
+`https://generativelanguage.googleapis.com/v1beta/models/<model>:generateContent`, query string unchanged.
+`--route` replaces all three defaults, so a command line with any `--route` lists every route it needs.
 
 The Gemini parser is chosen by the request path (`…/models/<model>:generateContent`), not by the route, so
 any route whose upstream speaks that method is parsed: the Gemini API, a Vertex AI regional or global
@@ -277,6 +286,15 @@ These follow moorai-serve and the MCP gateway:
   provider. Plain `http://` to a non-loopback upstream is refused unless `--allow-insecure-upstream`. The
   proxy does not intercept TLS, so an SDK pinned to `https://api.anthropic.com` bypasses it.
 - **`Accept-Encoding: identity`** is sent upstream so responses can be parsed.
+- **Upstream timeouts.** `--connect-timeout <ms>` (default 10000, at least 100): a new upstream connection
+  must be usable within it, meaning TCP connected and, on an `https` route, the TLS handshake done. Past it
+  the request gets 504 (Anthropic `api_error`, OpenAI `server_error`, Gemini `DEADLINE_EXCEEDED`) with the
+  message `the upstream provider did not accept a connection within <n> ms`: no host, URL, query or key. A
+  reused keep-alive connection skips the timer, and it is cleared once the connection is ready, so a slow
+  first byte or a long stream is governed only by `--upstream-timeout-ms` (idle, default 600000). Any other
+  connection failure (refused, NXDOMAIN) is the 502 `the upstream provider could not be reached`, as
+  before. Measured against a dropped address (192.0.2.1, macOS): 502 after 75.0 s before, 504 after 10.0 s
+  with the default and 2.0 s with `--connect-timeout 2000`.
 - **Memory is bounded:**
   - request body cap `--max-body`: 32 MiB, Anthropic's documented limit; 413 over it;
   - non-streaming inspection cap `--max-response`: 32 MiB;
@@ -467,7 +485,8 @@ moorai-serve --model-proxy-url http://127.0.0.1:8791                    # sideca
 
 ```bash
 node --test --import ./test/hermetic-env.mjs test/model-proxy.test.mjs test/model-proxy-enforce.test.mjs test/model-proxy-credentials.test.mjs \
-  test/model-proxy-toolcall.test.mjs test/model-proxy-toolcall-local.test.mjs test/model-proxy-gemini.test.mjs test/serve-unchecked.test.mjs
+  test/model-proxy-toolcall.test.mjs test/model-proxy-toolcall-local.test.mjs test/model-proxy-gemini.test.mjs test/serve-unchecked.test.mjs \
+  test/model-proxy-connect-timeout.test.mjs
 ```
 
 Latency the judging adds, measured on an M-series Mac, node, no console, built-in rules:
@@ -482,14 +501,30 @@ Latency the judging adds, measured on an M-series Mac, node, no console, built-i
 The tests run the real CLI against a fake provider (`model-proxy/test/fake-provider.mjs`, SSE written in
 5-byte slices) and a fake console. No real provider or key is used.
 
+**Connect timeout.** `test/model-proxy-connect-timeout.test.mjs` routes `https://127.0.0.1:<port>` to a
+local listener that accepts TCP and never sends a byte, so the TLS handshake never completes: with
+`--connect-timeout 500` the request gets 504 in under 3 s with no address or key in the body. A
+non-routable address is not used in the test, because whether its SYN is dropped or refused depends on the
+host's network. A slow response (1.2 s to headers) and a stream lasting longer than the timeout both
+arrive whole. A dropped SYN itself was measured by hand only (above).
+
 **Gemini, exact limits.** `test/model-proxy-gemini.test.mjs` runs against a fake Gemini upstream
 (`model-proxy/test/fake-gemini.mjs`) built from the documented shapes, and reads the result with a copy of
 the JS SDK's stream-splitting rule. Not tested: a real Gemini API or Vertex AI endpoint, the real
 `@google/genai` or `google-genai` packages, Vertex `partialArgs` from a real model (no documented example
 exists; the fixture is the field descriptions), the latency the hold adds on Gemini, and the 503 evaluation
-timeout on a Gemini path, and a placeholder swap on a Gemini route. From reading `credentials.mjs`, not from
-a test: a placeholder is swapped only in a header (a binding with `"header": "x-goog-api-key"`). A
-placeholder in the `?key=` query string is refused 400 and never swapped, because the swap would write the
-real key into a URL. Tested (`test/model-proxy-credentials.test.mjs`): a **raw** key in `?key=` (the Gemini
-API's documented query-string auth) is a raw credential, alerted once per route and refused 401 with
-`--require-placeholders`, and the key appears in no alert, log line or refusal.
+timeout on a Gemini path. A placeholder is swapped only in a header (a binding with
+`"header": "x-goog-api-key"`). A placeholder in the `?key=` query string is refused 400 and never swapped,
+because the swap would write the real key into a URL. Tested (`test/model-proxy-credentials.test.mjs`): a
+**raw** key in `?key=` (the Gemini API's documented query-string auth) is a raw credential, alerted once per
+route and refused 401 with `--require-placeholders`, and the key appears in no alert, log line or refusal.
+
+**The default `/gemini` route.** `test/model-proxy-gemini-default.test.mjs` runs the real CLI with no
+`--route` and a test-only preload (`model-proxy/test/redirect-upstream.mjs`) that sends its https requests
+for `generativelanguage.googleapis.com` to the fake Gemini upstream and refuses every other https request.
+It checks that `/gemini/v1beta/models/<m>:generateContent` (and `:streamGenerateContent?alt=sse`) is built
+as `https://generativelanguage.googleapis.com/v1beta/models/<m>:…` with `x-goog-api-key` untouched, that the
+Gemini parser refuses a denied `functionCall` on that route, that a `moorai-ph:` placeholder bound to
+`/gemini` is swapped into `x-goog-api-key` there and refused on `/openai`, and that a raw `?key=` on
+`/gemini` is alerted and, with `--require-placeholders`, refused 401. The TLS connection to Google itself
+is not exercised.

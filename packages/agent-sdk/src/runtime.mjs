@@ -17,7 +17,7 @@
 //   * enforcement without a token — server mode is management evidence; this surface never coaches.
 import { readFileSync } from "node:fs";
 import os from "node:os";
-import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib } from "./core.mjs";
+import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib } from "./core.mjs";
 import { decideToolCall } from "./decide.mjs";
 import { createReporter } from "./report.mjs";
 
@@ -71,7 +71,12 @@ export async function createMoorAI(options = {}) {
   // computes for the same id under the same install token. Omitted with no id, or no key to hash it with.
   const sessionOf = (raw) => { if (typeof raw !== "string" || !raw) return {}; const h = hash(raw); return h === NO_KEY ? {} : { session: h }; };
   const who = serviceWho(sm);
-  const identity = { user: who.user, device: who.device, platform: os.platform(), tenant: config.tenant, actor: hash(`${who.user}@${who.device}`), surface: options.surface || "agent-sdk" };
+  // agentName: the surface in the console's agent_name vocabulary (cli/agent-names.mjs), next to `surface`,
+  // which older consoles read. No agentVersion: the agent behind an SDK, serve, model-proxy or inference-hook
+  // call does not state its version to this process.
+  const surface = options.surface || "agent-sdk";
+  const agentName = agentNamesLib.agentNameOf(surface);
+  const identity = { user: who.user, device: who.device, platform: os.platform(), tenant: config.tenant, actor: hash(`${who.user}@${who.device}`), surface, ...(agentName ? { agentName } : {}) };
   const reporter = options.reporter || createReporter({ config, identity, fetchImpl: options.fetch });
 
   let state = null, loading = null, loadedAt = 0;

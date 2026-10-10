@@ -26,24 +26,26 @@
 // within the host set below.
 
 import { npmDeclaredRepo, pypiDeclaredRepo, parseRepoUrl, sameRepo, sameName, manifestInfo, candidateDirs, VERIFIABLE_HOSTS } from "../data/repo-link.js";
+import { endpoint, endpointHost, isOffline } from "./mcp-package/endpoints.mjs";
 
-const NPM = "https://registry.npmjs.org/";
-const PYPI = "https://pypi.org/";
-const ALLOWED_HOSTS = new Set(["registry.npmjs.org", "pypi.org", "github.com", "raw.githubusercontent.com", "gitlab.com"]);
+// The registry and raw-file hosts follow their mirrors (MOORAI_NPM_REGISTRY, MOORAI_PYPI_URL,
+// MOORAI_GITHUB_RAW_URL); github.com / gitlab.com repository pages have none.
+const allowedHosts = () => new Set(["github.com", "gitlab.com", ...["npm", "pypi", "githubRaw"].map((n) => endpointHost(n)).filter(Boolean)]);
 const MAX_BYTES = 2 * 1024 * 1024;
 export const REPO_LINK_LIMITS = { requestMs: 4000, budgetMs: 10000, maxRequests: 12 };
 
 class Budget {
   constructor(fetchImpl, limits, now) {
     this.fetchImpl = fetchImpl; this.limits = limits; this.now = now;
-    this.deadline = now() + limits.budgetMs; this.used = 0;
+    this.deadline = now() + limits.budgetMs; this.used = 0; this.hosts = allowedHosts();
   }
   // → {status, text, location} | {status: 0} on any transport failure, the budget or a disallowed host.
   async get(url, accept, hops = 0) {
     const left = this.deadline - this.now();
     let u;
+    if (isOffline()) return { status: 0 };
     try { u = new URL(url); } catch { return { status: 0 }; }
-    if (u.protocol !== "https:" || !ALLOWED_HOSTS.has(u.hostname) || left <= 0 || this.used >= this.limits.maxRequests) return { status: 0 };
+    if (u.protocol !== "https:" || !this.hosts.has(u.hostname) || left <= 0 || this.used >= this.limits.maxRequests) return { status: 0 };
     this.used++;
     let res;
     try {
@@ -54,7 +56,7 @@ class Budget {
     if (res.status >= 300 && res.status < 400 && location && hops < 2) {
       let next;
       try { next = new URL(location, u.href); } catch { return { status: res.status, location }; }
-      if (ALLOWED_HOSTS.has(next.hostname) && !/\/users\/sign_in\b|\/login\b/.test(next.pathname)) return this.get(next.href, accept, hops + 1);
+      if (this.hosts.has(next.hostname) && !/\/users\/sign_in\b|\/login\b/.test(next.pathname)) return this.get(next.href, accept, hops + 1);
       return { status: res.status, location: next.href };
     }
     if (res.status !== 200) return { status: res.status };
@@ -75,7 +77,7 @@ const encPath = (p) => String(p).split("/").filter(Boolean).map(enc).join("/");
 
 function rawUrl(repo, path) {
   const p = encPath(path);
-  if (repo.host === "github.com") return `https://raw.githubusercontent.com/${enc(repo.owner)}/${enc(repo.repo)}/HEAD/${p}`;
+  if (repo.host === "github.com") { const raw = endpoint("githubRaw"); return raw ? `${raw}${enc(repo.owner)}/${enc(repo.repo)}/HEAD/${p}` : ""; }
   return `https://gitlab.com/${enc(repo.owner)}/${enc(repo.repo)}/-/raw/HEAD/${p}`;
 }
 const repoPage = (repo) => `https://${repo.host}/${enc(repo.owner)}/${enc(repo.repo)}`;
@@ -90,7 +92,7 @@ async function npmProvenanceRepo(doc, b) {
   if (!att || typeof att.url !== "string" || !att.provenance) return null;
   let u;
   try { u = new URL(att.url); } catch { return null; }
-  if (u.hostname !== "registry.npmjs.org") return null;
+  if (u.hostname !== endpointHost("npm")) return null;
   const r = await b.json(u.href);
   if (r.status !== 200 || !Array.isArray(r.json && r.json.attestations)) return null;
   for (const a of r.json.attestations) {
@@ -109,7 +111,7 @@ async function pypiProvenanceRepo(name, doc, b) {
   const version = doc && doc.info && doc.info.version;
   const file = Array.isArray(doc && doc.urls) ? doc.urls.find((f) => f && typeof f.filename === "string") : null;
   if (!version || !file) return null;
-  const r = await b.json(`${PYPI}integrity/${enc(name)}/${enc(version)}/${enc(file.filename)}/provenance`, "application/vnd.pypi.integrity.v1+json");
+  const r = await b.json(`${endpoint("pypi")}integrity/${enc(name)}/${enc(version)}/${enc(file.filename)}/provenance`, "application/vnd.pypi.integrity.v1+json");
   if (r.status !== 200 || !Array.isArray(r.json && r.json.attestation_bundles)) return null;
   for (const bundle of r.json.attestation_bundles) {
     const p = bundle && bundle.publisher;
@@ -154,12 +156,15 @@ async function repoExists(repo, b) {
 export async function checkRepoLink(ref, { fetchImpl = globalThis.fetch, limits = REPO_LINK_LIMITS, now = Date.now } = {}) {
   const eco = ref && ref.ecosystem;
   if ((eco !== "npm" && eco !== "pypi") || !ref.name) return { signals: [], evidence: [] };
-  const b = new Budget(fetchImpl, { ...REPO_LINK_LIMITS, ...limits }, now);
   const out = (signals, ...evidence) => ({ signals, evidence });
+  if (isOffline()) return out([], "repo-not-checked-offline");
+  const base = endpoint(eco);
+  if (!base) return out([], "repo-check-failed");
+  const b = new Budget(fetchImpl, { ...REPO_LINK_LIMITS, ...limits }, now);
 
   const meta = eco === "npm"
-    ? await b.json(`${NPM}${String(ref.name).replace("/", "%2f")}/${enc(ref.version || "latest")}`)
-    : await b.json(`${PYPI}pypi/${enc(ref.name)}/${ref.version ? `${enc(ref.version)}/` : ""}json`);
+    ? await b.json(`${base}${String(ref.name).replace("/", "%2f")}/${enc(ref.version || "latest")}`)
+    : await b.json(`${base}pypi/${enc(ref.name)}/${ref.version ? `${enc(ref.version)}/` : ""}json`);
   if (meta.status === 404) return out([], "repo-registry-404");
   if (meta.status !== 200 || !meta.json) return out([], "repo-check-failed");
 

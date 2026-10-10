@@ -38,3 +38,4 @@ export const outboundUpload = await load("data/outbound-upload.js");
 export const offlineDefault = await load("data/offline-default.js");
 export const toolTagsLib = await load("cli/tool-tags.mjs");
 export const exceptionsLib = await load("cli/exceptions.mjs");
+export const agentNamesLib = await load("cli/agent-names.mjs");

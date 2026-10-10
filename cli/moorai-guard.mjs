@@ -50,7 +50,9 @@ function parseArgs(argv) {
 function djb2(s) { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0; return "h" + h.toString(16); }
 
 // #10 — stable content-free actor fingerprint (tenant-keyed hash of user@device), stamped on every emit.
-const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: actorHash(os.userInfo().username, os.hostname()) };
+// agentName: this guard wraps `claude -p`, so every alert is about Claude Code (cli/agent-names.mjs). No
+// agentVersion: the guard runs before Claude Code starts, so any AI_AGENT it sees belongs to its own parent.
+const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: actorHash(os.userInfo().username, os.hostname()), agentName: "claude-code" };
 
 function post(alert) {
   if (!ENFORCE) return Promise.resolve(); // no console to post to on an unenrolled device

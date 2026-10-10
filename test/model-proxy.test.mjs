@@ -43,7 +43,7 @@ const newAlerts = (n0) => con.parsed().slice(n0);
 test("args: loopback by default, remote needs --allow-remote AND a token, upstream rules, --help", () => {
   const o = parseArgs([], {});
   assert.equal(o.host, "127.0.0.1"); assert.equal(o.port, 8791); assert.equal(o.mode, "report");
-  assert.deepEqual(o.routes, { "/anthropic": "https://api.anthropic.com", "/openai": "https://api.openai.com/v1" });
+  assert.deepEqual(o.routes, { "/anthropic": "https://api.anthropic.com", "/openai": "https://api.openai.com/v1", "/gemini": "https://generativelanguage.googleapis.com" });
   assert.throws(() => parseArgs(["--host", "0.0.0.0"], {}), /not a loopback address/);
   assert.throws(() => parseArgs(["--host", "10.0.0.5", "--allow-remote"], {}), /without a token/);
   assert.equal(parseArgs(["--host", "10.0.0.5", "--allow-remote"], { MOORAI_MODEL_PROXY_TOKEN: PROXY_TOKEN }).host, "10.0.0.5");

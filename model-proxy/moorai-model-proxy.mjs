@@ -13,6 +13,7 @@ export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK 
   moorai-model-proxy [--mode report|enforce] [--route /prefix=https://upstream]... [--host 127.0.0.1] [--port ${DEFAULTS.port}]
                      [--token-file <path>] [--allow-origin <origin>]... [--allow-remote] [--allow-insecure-upstream] [--max-body <bytes>]
                      [--max-response <bytes>] [--max-inflight <bytes>] [--max-scan-items <n>] [--max-scan-chars <n>] [--timeout-ms <ms>] [--upstream-timeout-ms <ms>]
+                     [--connect-timeout <ms>]
                      [--policy-file <path>] [--service-id <name>] [--headless-ask deny|allow-with-report] [--cwd <dir>] [--log]
                      [--credentials <file>] [--require-placeholders] [--denied-tool-call refuse|replace]
                      [--unchecked-window-ms <ms>] [--unchecked-max <n>]
@@ -20,8 +21,9 @@ export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK 
   Point the SDK at it (plain http on loopback; the proxy speaks TLS to the provider):
     ANTHROPIC_BASE_URL=http://127.0.0.1:${DEFAULTS.port}/anthropic      (upstream https://api.anthropic.com)
     OPENAI_BASE_URL=http://127.0.0.1:${DEFAULTS.port}/openai            (upstream https://api.openai.com/v1)
-    GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:${DEFAULTS.port}/gemini     (no default route: add --route /gemini=https://generativelanguage.googleapis.com
-                                                                and list the other routes too; Gemini paths are parsed on any route)
+    GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:${DEFAULTS.port}/gemini     (upstream https://generativelanguage.googleapis.com; the SDK
+                                                                appends /v1beta/models/<model>:generateContent)
+  Gemini paths are parsed on any route (a Vertex AI endpoint is a --route).
   The client's own API key goes upstream untouched and is never logged, stored or reported — unless
   --credentials is given: then the agent holds a placeholder (moorai-ph:<name>) and the proxy swaps in the
   real key on the one route it is bound to (see README "Placeholder credentials").
@@ -46,6 +48,8 @@ export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK 
   --max-scan-chars  characters of one item scanned, default ${DEFAULTS.maxScanChars}; content past either cap is
                     reported unevaluated (report) or refused (enforce)
   --timeout-ms      evaluation budget per request, default ${DEFAULTS.timeoutMs}
+  --connect-timeout upstream connect budget in ms (TCP connect, and the TLS handshake for https), default
+                    ${DEFAULTS.connectTimeoutMs}; past it the request is answered 504
   --cwd             directory relative tool-call paths resolve against (default: the proxy's cwd)
   --credentials     placeholder bindings file (also MOORAI_MODEL_PROXY_CREDENTIALS); refused if group- or
                     world-writable or owned by another non-root user
@@ -77,6 +81,7 @@ export function parseArgs(argv, env = process.env) {
     else if (a === "--max-scan-chars") o.maxScanChars = Number(v());
     else if (a === "--timeout-ms") o.timeoutMs = Number(v());
     else if (a === "--upstream-timeout-ms") o.upstreamTimeoutMs = Number(v());
+    else if (a === "--connect-timeout") o.connectTimeoutMs = Number(v());
     else if (a === "--policy-file") o.policyFile = resolve(v());
     else if (a === "--service-id") o.serviceId = v();
     else if (a === "--headless-ask") o.headlessAsk = v();
@@ -98,8 +103,9 @@ export function parseArgs(argv, env = process.env) {
   if (o.deniedToolCall === "replace" && o.mode !== "enforce") throw new Error("--denied-tool-call replace needs --mode enforce (report mode never changes a response)");
   if (!Number.isInteger(o.uncheckedWindowMs) || o.uncheckedWindowMs < 0 || (o.uncheckedWindowMs > 0 && o.uncheckedWindowMs < 100) || o.uncheckedWindowMs > 3600000) throw new Error("--unchecked-window-ms must be 0 (off) or an integer from 100 to 3600000");
   if (!Number.isInteger(o.uncheckedMax) || o.uncheckedMax < 16 || o.uncheckedMax > 1048576) throw new Error("--unchecked-max must be an integer from 16 to 1048576");
-  for (const [k, min] of [["maxBody", 1024], ["maxResponse", 1024], ["maxInflight", 1048576], ["maxScanItems", 1], ["maxScanChars", 1000], ["timeoutMs", 100], ["upstreamTimeoutMs", 1000]]) {
-    if (!Number.isInteger(o[k]) || o[k] < min) throw new Error(`--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)} must be an integer >= ${min}`);
+  for (const [k, min] of [["maxBody", 1024], ["maxResponse", 1024], ["maxInflight", 1048576], ["maxScanItems", 1], ["maxScanChars", 1000], ["timeoutMs", 100], ["upstreamTimeoutMs", 1000], ["connectTimeoutMs", 100]]) {
+    const flag = k === "connectTimeoutMs" ? "connect-timeout" : k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+    if (!Number.isInteger(o[k]) || o[k] < min) throw new Error(`--${flag} must be an integer >= ${min}`);
   }
   for (const [prefix, base] of Object.entries(o.routes)) {
     let u;

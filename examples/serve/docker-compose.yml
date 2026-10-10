@@ -54,7 +54,7 @@ services:
     pull_policy: never   # the `moorai` service builds this tag
     # Report mode (the default): every byte is forwarded unchanged and findings are alerted. Add
     # "--mode", "enforce" to refuse instead. The route points at the demo's fake provider on loopback; in
-    # production leave --route out (https://api.anthropic.com and https://api.openai.com/v1) or name the
+    # production leave --route out (https://api.anthropic.com, https://api.openai.com/v1 and https://generativelanguage.googleapis.com at /gemini) or name the
     # real provider URL.
     command: ["moorai-model-proxy", "--port", "8791", "--route", "/anthropic=http://127.0.0.1:9100"]
     network_mode: "service:agent"

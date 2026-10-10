@@ -28,6 +28,7 @@ import { LIMITS } from "./mcp-package/archive.mjs";
 import { downloadToFile } from "./mcp-package/download.mjs";
 import { resolveNpm, resolvePypi, matchesIntegrity, MAX_ARTIFACT_BYTES, MAX_REPO_BYTES } from "./mcp-package/registry.mjs";
 import { resolveGithub } from "./mcp-package/github.mjs";
+import { isOffline, OFFLINE_REASON } from "./mcp-package/endpoints.mjs";
 import { packageHeuristics, nameFindings, HEURISTICS } from "./mcp-package/heuristics.mjs";
 import { scanPackageFiles } from "./mcp-package/scope.mjs";
 
@@ -169,6 +170,8 @@ export async function analyzePackage(ref, { fetchImpl = globalThis.fetch, cacheD
     entry.verdict = verdictOf(entry.findings, "REVIEW");
     return entry;
   };
+  // MOORAI_OFFLINE=1 (moorai-scan --offline): nothing is fetched, and the package stays fail-closed.
+  if (isOffline()) { fail("not-checked-offline"); entry.reason = OFFLINE_REASON; return entry; }
 
   let meta;
   try {

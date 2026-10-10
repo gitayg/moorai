@@ -1,6 +1,7 @@
 mod ai_keys;
 mod ai_runtime;
 mod console_binding;
+mod console_http;
 mod content_hash;
 mod listen_sockets;
 mod local_ai;
@@ -19,6 +20,7 @@ mod ocr_winocr;
 mod ocr_tesseract;
 mod platform;
 mod private_file;
+mod update_source;
 #[cfg(windows)]
 mod winsec;
 
@@ -450,7 +452,16 @@ fn about_info() -> serde_json::Value {
 // next launch skips Gatekeeper even while we're adhoc-signed.
 #[tauri::command]
 async fn check_and_install_update(app: tauri::AppHandle) -> Result<bool, String> {
-    let updater = app.updater().map_err(|e| e.to_string())?;
+    // Endpoints are chosen per check (update_source.rs): the provisioned console, the cloud, or none.
+    let cfg = read_config();
+    let console = update_source::provisioned_console(&console_binding::host_dir(), &cfg);
+    let endpoints = match update_source::plan(console.as_deref(), &cfg, update_source::managed_disable_updates()) {
+        update_source::Plan::Off(why) => { eprintln!("[moorai] updates off: {why}"); return Ok(false); }
+        update_source::Plan::Endpoints(e) => e,
+    };
+    eprintln!("[moorai] update check: {}", endpoints.join(", "));
+    let urls = endpoints.iter().map(|e| url::Url::parse(e)).collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let updater = app.updater_builder().endpoints(urls).map_err(|e| e.to_string())?.build().map_err(|e| e.to_string())?;
     match updater.check().await.map_err(|e| e.to_string())? {
         Some(update) => {
             update.download_and_install(|_chunk, _total| {}, || {}).await.map_err(|e| e.to_string())?;
@@ -796,7 +807,10 @@ fn identity() -> serde_json::Value {
     let install_token = cfg.get("installToken").and_then(|t| t.as_str()).unwrap_or("").to_string();
     // The only origin the renderer may send the install token to (null = none), and why not, if so.
     let console = console_binding::resolve(&console_binding::host_dir(), &cfg);
-    serde_json::json!({ "user": user, "device": device, "platform": std::env::consts::OS, "tenant": tenant, "installToken": install_token, "appVersion": env!("CARGO_PKG_VERSION"), "console": console.origin, "consoleWarning": console.warning })
+    // The provisioned console as a bare origin (null when absent or unusable): the renderer's default
+    // base before enrolment, so a provisioned device never falls back to the MoorAI cloud.
+    let server_url = cfg.get("serverUrl").and_then(|v| v.as_str()).and_then(|s| console_binding::normalize_origin(s).ok());
+    serde_json::json!({ "user": user, "device": device, "platform": std::env::consts::OS, "tenant": tenant, "installToken": install_token, "appVersion": env!("CARGO_PKG_VERSION"), "console": console.origin, "consoleWarning": console.warning, "serverUrl": server_url })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -832,7 +846,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![native_log, app_version, identity, save_provision, set_agent_auth, open_url, open_login_terminal, restart_app, check_and_install_update, about_info, term_open, term_input, term_resize, term_kill, device_ai_tools, device_ai_assets, device_mcp, os_patch_status, device_browsers, device_ai_shadow, device_posture, device_accounts, device_agent_activity, dir_sensitive, ocr::ocr_capability, ocr::ocr_image])
+        .invoke_handler(tauri::generate_handler![native_log, app_version, identity, save_provision, set_agent_auth, open_url, open_login_terminal, restart_app, check_and_install_update, console_http::console_fetch, about_info, term_open, term_input, term_resize, term_kill, device_ai_tools, device_ai_assets, device_mcp, os_patch_status, device_browsers, device_ai_shadow, device_posture, device_accounts, device_agent_activity, dir_sensitive, ocr::ocr_capability, ocr::ocr_image])
         .run(tauri::generate_context!())
         .expect("error while running MoorAI");
 }

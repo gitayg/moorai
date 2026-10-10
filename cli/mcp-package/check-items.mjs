@@ -9,6 +9,7 @@ import { maintainerInfo } from "./maintainers.mjs";
 import { pinKind } from "./check-spec.mjs";
 import { classifyMcpName } from "../../data/mcp-reputation.js";
 import { egressFrom, egressChain, judgeTargets, urlTargets } from "../egress-rules.mjs";
+import { OFFLINE_REASON } from "./endpoints.mjs";
 
 export const NEW_PACKAGE_DAYS = 30; // the same window cli/mcp-package.mjs uses for its new-package note
 const DAY_MS = 24 * 3600 * 1000;
@@ -18,6 +19,7 @@ const NC = "not-checked";
 
 function metaReason(meta) {
   if (!meta) return "registry metadata was not requested";
+  if (meta.offline) return `registry metadata ${OFFLINE_REASON}`;
   if (meta.status === 404) return "the registry has no such package";
   return meta.status ? `registry metadata unavailable (HTTP ${meta.status})` : "registry metadata unavailable (network error or timeout)";
 }
@@ -52,6 +54,7 @@ export function checkPublisher(f) {
   if (fails.length) return item("publisher", T, "fail", text(fails), uniq);
   if (uniq.length) return item("publisher", T, "warn", text(uniq), uniq);
   if (f.meta && f.meta.status === 404) return item("publisher", T, "warn", "not public on npm (a private scoped package, or an unclaimed scope)", uniq);
+  if (f.offline) return item("publisher", T, NC, `no typosquat in the name; the publisher and repository link were ${OFFLINE_REASON}`, uniq);
   const good = [...(listed === "listed" ? ["catalogue-listed"] : []), ...((f.repo && f.repo.evidence) || []).filter((e) => POSITIVE[e])];
   if (good.length) return item("publisher", T, "pass", `no typosquat; ${good.map((g) => POSITIVE[g]).join("; ")}`, uniq);
   const why = !f.repo ? "the repository link was not checked" : (f.repo.evidence || []).includes("repo-check-failed") ? "the repository check failed" : "the repository link could not be confirmed";
@@ -122,6 +125,7 @@ function sjReason(sj) {
     case "not-found": return "the MCP Registry has no server.json under the name the package declares";
     case "mismatch": return "the published server.json does not list this package";
     case "failed": return "the MCP Registry lookup failed";
+    case "offline": return `the MCP Registry was ${OFFLINE_REASON}`;
     default: return "no published server.json was looked up";
   }
 }

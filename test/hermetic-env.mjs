@@ -21,6 +21,9 @@
 // The variables are only unset for tests; a test that wants to exercise a specific base directory sets
 // it explicitly on the child it spawns (test/posture.test.mjs does exactly that).
 for (const v of ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "APPDATA", "LOCALAPPDATA"]) delete process.env[v];
+// The agent's own version on an alert (`agentVersion`, cli/agent-names.mjs) is read from these. A suite run
+// from inside Claude Code or Cursor inherits them; a test that wants one sets it on the child it spawns.
+for (const v of ["AI_AGENT", "CURSOR_VERSION"]) delete process.env[v];
 
 // HOME itself, for the same reason. Every module that resolves a state path at IMPORT time
 // (cli/state-dirs.mjs: `STATE_DIR = join(os.homedir(), ".moorai")`) and is imported by a test IN-PROCESS

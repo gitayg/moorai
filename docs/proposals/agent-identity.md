@@ -1,6 +1,7 @@
 # Agent identity in MoorAI: design proposal
 
-Status: proposal, nothing here is built. Baseline: agent v1.10.0 (`9fb0116`), console v0.80.0
+Status: **Phase 1a (agent kind and version on every alert) is built** in the working tree on 2026-10-10, not yet
+released (§5.7 says what is verified). Phases 1b, 2 and 3 are still proposals. Baseline: agent v1.10.0 (`9fb0116`), console v0.80.0
 (`89aa9b3`, `gitayg/curaiq-server`). Written 2026-10-09.
 
 Line numbers below are from those commits (`git show HEAD:<file>`). The working tree is being edited,
@@ -478,7 +479,7 @@ from `instance` together with `version` and the definition fingerprint (§6.1).
 | | Claude Code | Codex CLI | Cursor | Gemini CLI | Copilot CLI |
 |---|---|---|---|---|---|
 | **Session key** | `session_id` (docs, measured) | `session_id`. Sub-agents use the **parent's** session id (docs; adapter `codex.mjs:24-25`). | `conversation_id` on all events, copied to `session_id` (docs, measured) | `session_id` (docs) | `sessionId` / `session_id` (docs) |
-| **Version** | **None in stdin** (docs). Undocumented `AI_AGENT=claude-code_<v>_harness` in the hook env (measured 2.1.284, `host-version.mjs:61-65`). | None (docs) → probe-cached | `cursor_version` on every payload (docs, measured), plus `CURSOR_VERSION` in env (measured) | None (docs) → probe-cached | None (docs) → probe-cached |
+| **Version** | **None in stdin** (docs; measured live 2.1.295, §5.7). Undocumented `AI_AGENT=claude-code_<v>_harness` in the hook env (measured 2.1.284, `host-version.mjs:61-65`; measured live 2.1.295 in PreToolUse, SessionStart and stdio MCP server env, §5.7). | None (docs) → probe-cached | `cursor_version` on every payload (docs, measured), plus `CURSOR_VERSION` in env (measured) | None (docs) → probe-cached | None (docs) → probe-cached |
 | **Sub-agent id** | `agent_id`, present inside a sub-agent, **including PreToolUse and PostToolUse** (docs). Measured 2.1.295: "Use this field (not agent_type) to distinguish subagent calls". | `agent_id` on **SubagentStart / SubagentStop only** (docs) | `subagent_id` on `subagentStart` / `subagentStop` (docs, measured) | **None** (docs) | `agentId` on **subagentStop only** (docs) |
 | **Sub-agent type** | `agent_type`, inside a sub-agent or on the main thread of an `--agent` session (docs, measured) | `spawn_agent` input `agent_type` / `task_name` (adapter) | `subagent_type` (docs, measured) | `invoke_agent` input `agent_name` (adapter) | `task` input `agent_type` (adapter) |
 | **Parent id** | **None** (docs). `SubagentStart` has the child's `agent_id` but not the spawner's. A `PostToolUse` on `Agent` carries the caller's `agent_id` (absent = main thread) and `tool_response.agentId`, the child (measured). | **None** (docs) | `parent_conversation_id` + `tool_call_id` on `subagentStart` (docs, measured) | None (docs) | None (docs) |
@@ -559,6 +560,51 @@ verified and must be measured.
 - SIEM: bump `SIEM_SCHEMA_VERSION` to 4 and add the fields to `docs/SIEM_FIELDS.md`.
 - Lineage export (`server/lineage-export.js`): add `agentKind`, `agentInstance` and `agentParent` to
   `LINEAGE_FIELDS`, its one choke point.
+
+### 5.7 Phase 1a as built (2026-10-10)
+
+What shipped differs from §5.1 in one way: the two values ride as flat fields, `agentName` (unchanged) and
+`agentVersion`, not inside an `agentIdentity` record. That record, `versionSource`, `role`, `instance` and the
+lineage fields are Phase 1b and are not built. `agentVersion` is sent only from the calling agent's own
+environment, so there is no `versionSource` to report: it is always "the agent said so in this process's
+environment". The cached PATH probe (§5.2, third bullet) was **not** built: it names whichever binary is on
+PATH, not necessarily the one that made the call (an editor-bundled Codex, a second install), and the daily
+posture beat already reports that probed version per device and host (the console's coverage table shows it).
+
+**Per agent and surface** (vocabulary and parsers in `cli/agent-names.mjs`):
+
+| Sender | `agentName` | `agentVersion` source | Verified how |
+|---|---|---|---|
+| Claude Code hook (`cli/moorai-hook.mjs` `post()`) | `claude-code` | `AI_AGENT`, accepted only as `claude-code_<v>_harness` | **Live run**, Claude Code 2.1.295 against a local fake Messages API with hooks that dumped env and stdin: PreToolUse and SessionStart env carry `AI_AGENT=claude-code_2-1-295_harness`; stdin has no version field (PreToolUse keys: `session_id transcript_path cwd prompt_id permission_mode effort hook_event_name tool_name tool_input tool_use_id`). With the parent's `AI_AGENT=claude-code_9-9-9_agent` the hook still saw `..._2-1-295_harness`; with the parent's `AI_AGENT=codex_1-2-3` the hook saw `codex_1-2-3` (binary strings: Claude Code overwrites only an unset or `claude-code_`/`claude-code/` value; its Bash tool's children get `..._agent`). So the `_harness` form names the Claude Code that ran the hook, and anything else is dropped. |
+| Cursor via `moorai-agent-hook cursor` | `cursor` | `CURSOR_VERSION` (cursor-agent's `1.0.0` fallback dropped) | Docs (cursor.com/docs/hooks: `CURSOR_VERSION` "Always") and the cursor-agent 2026.05.27-fe9a6e2 bundle (`3880.index.js` sets it from the same value as the payload's `cursor_version`). **Not** a live Cursor run. |
+| Codex, Gemini CLI, Copilot CLI via the shim | `codex`, `gemini`, `copilot` | none | Codex and Copilot hook references read 2026-10-10: no version in input or env. Gemini: adapter notes from the 0.60.0 source; no hooks page URL. An inherited `AI_AGENT` or `CURSOR_VERSION` is never used for them (tested). |
+| Stdio MCP proxy (`mcp-proxy/moorai-mcp-guard.mjs`) | the `--host` install stamp when it is an agent: `claude-code` (`.mcp.json`), `cursor`, `claude-desktop`; `vscode` and unstamped send none | Claude Code only (`AI_AGENT` `_harness`) | Live run: a stdio MCP server started by Claude Code 2.1.295 sees `AI_AGENT=claude-code_2-1-295_harness`. Whether Cursor or Claude Desktop pass a version to MCP servers is not verified, so they send none. |
+| `moorai-guard` | `claude-code` (it wraps `claude -p`) | none: it runs before Claude Code starts, so any `AI_AGENT` it sees is its parent's | Test only. |
+| HTTP MCP gateway | `gateway` (unchanged) | none (`clientInfo.version` is caller-claimed, Phase 1b) | — |
+| `@moorai/agent-sdk`, `moorai-serve`, model proxy, inference-hooks server | `agent-sdk`, `serve`, `model-proxy`, `inference-hook`, next to `surface` | none | Test only. |
+
+**Console.** `AGENT_NAMES` gains `claude-desktop`, `model-proxy` and `inference-hook`; the agent's list is a
+subset, checked by a test in each repo when the other checkout is next door. `agent_version` is a new
+self-migrated `alerts` column, kept only when it matches `^[0-9A-Za-z.+-]{1,32}$` (the same pattern the
+agent applies) **and** the alert names a valid agent; otherwise null. The alert detail line shows `agent` and
+`agent version`; the Inventory's coverage table shows the alert-stated version next to the daily probe's
+when they differ; SIEM schema 4 adds `agent.version` (CEF `MoorAIAgentAiAgentVersion`), and the CrowdStrike,
+SentinelOne and Elastic integrations keep it in the vendor's own place.
+
+**Privacy.** Neither field can carry an email, path or prompt text: `agentName` is an enum and
+`agentVersion` is pattern-checked on both sides (hostile `CURSOR_VERSION` values tested). No adapter passes
+`user_email`; a test posts a Cursor payload carrying one and checks it never reaches the console.
+
+**Cost.** No new I/O on the verdict path: the version is an env read and a regex (about 0.1 µs a call).
+Hook latency, 40 interleaved sequential spawns each, benign Bash PreToolUse, throwaway HOME, nearest-rank:
+before p50 151.0 / p95 156.1 ms, after p50 150.6 / p95 154.8 ms; a second run 149.5 / 153.6 vs 148.8 /
+153.3 ms. A benign call posts no alert, so this measures the module load, not the stamp.
+
+**Not verified.** A live Cursor (IDE or cursor-agent) hook run; whether Cursor's or Claude Desktop's MCP
+server environment carries a version; Codex, Gemini and Copilot beyond their docs and adapter notes; Claude
+Code versions other than 2.1.295 (the `_harness` form was also measured on 2.1.284 by the earlier work);
+the case where a host other than Claude Code runs MoorAI's Claude Code hook directly (unshimmed) with a
+Claude Code `_harness` value inherited in its environment, which would be reported as that Claude Code.
 
 ## 6. Phase 2: the console agent registry
 
@@ -784,12 +830,14 @@ engineer including tests and docs.
 
 | Phase | Size | Agent repo | Console repo |
 |---|---|---|---|
-| 1a: kind + version on every alert | S | `cli/moorai-hook.mjs` (`IDENTITY`/`post()`), `cli/agent-hooks/host-version.mjs` (cached version file), `cli/moorai-agent-hook.mjs`, `packages/agent-sdk/src/runtime.mjs` (already sends `surface`), tests | None: `agent_name` already exists. `agent_version` column + sanitizer. |
+| 1a: kind + version on every alert (**built 2026-10-10**, §5.7) | S | `cli/moorai-hook.mjs` (`IDENTITY`/`post()`), `cli/agent-hooks/host-version.mjs` (cached version file), `cli/moorai-agent-hook.mjs`, `packages/agent-sdk/src/runtime.mjs` (already sends `surface`), tests | None: `agent_name` already exists. `agent_version` column + sanitizer. |
 | 1b: instance, parent, chain | M | new `cli/agent-identity.mjs`; `cli/moorai-hook.mjs` (`main()` lineage, `post()`, pending-spawn store, edge event, optional `SubagentStart`); `cli/agent-hooks/{cursor,codex,gemini,copilot}.mjs` (pass ids, drop `user_email`); `cli/agent-hooks/shim.mjs`; `packages/agent-sdk/src/index.mjs`; `cli/moorai-serve.mjs`; `mcp-gateway/report.mjs` (`clientInfo`); `cli/otel.mjs`; hash `subagentType` on #66; README, `docs/CAPABILITY_SPEC.md`; conformance tests per adapter | `server/db.js` (columns), new `server/agent-identity.js`, `server/siem-fields.js` (schema 4), `server/lineage-export.js`, `docs/SIEM_FIELDS.md` |
 | 2: registry, gate, profiles, lineage view | L | hook enforcement of `agentAllow` and the revoked state; `cli/workload-profile.mjs` (`match.agentKind`/`agentType`, a CONTRACT C3 change); envelope narrowing; definition fingerprint | `server/db.js` (registry with purpose and capabilities, `resolvePolicy`), `server/server.js` (routes), `server/policy-sign.js` (signed fields), dashboard views, `server/session-metrics.js`, an optional SSF/CAEP transmitter for revokes |
 | 3: SVID / WIT / `act` verification | XL, gated on the drafts | new gateway verifier module (JWT/JWKS, `act`, proof of possession); SVID file reader for serve and gateway; `examples/serve/` SPIRE manifests | trust-bundle and JWKS configuration, registry ↔ claim mapping |
 
 ## 11. Not verified in this document
+
+(For what Phase 1a verified and did not, see §5.7.)
 
 - **Hand-off details not re-checked.** The standards in §3 were fetched and read by the standards
   research, and two IETF drafts (`draft-ietf-wimse-aims-00`, `draft-sharif-openid-agent-identity-01`)

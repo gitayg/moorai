@@ -65,6 +65,7 @@ import { recordRow, readSessionRows, localHash } from "./session-ledger.mjs";
 import { commandClass, normalizeCommand, verifyFamily, outcomeOfResponse, outcomeOfFailure, assessTurn } from "./claim-check.mjs";
 import { callTags, sessionTagsOf, recordSessionTags, tagGate, applyTagGate, tagHitAlert } from "./tool-tags.mjs";
 import { readExceptionStore, liveExceptions, matchCallExceptions, applyExceptions, exceptionHint, selfExceptionAttempt } from "./exceptions.mjs";
+import { agentVersionFromEnv } from "./agent-names.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -525,6 +526,7 @@ function checkHoneytoken(hash, stage, tool) {
 // uses Promise.allSettled, so awaiting it cannot throw and cannot reject the decision path. The
 // requests also run concurrently, so the worst case for a whole invocation is ~1.5s, not 1.5s each.
 const PENDING = [];
+let CONSOLE_UNREACHABLE = false;
 // COACH — set once in main() from data/enforcement.js: an unenrolled device detects and tells the user
 // and the agent what it caught, but never blocks, asks, kills or posts. See emit() / emitPost().
 let COACH = false;
@@ -601,12 +603,20 @@ function post(alert) {
   if (WORKLOAD && alert && !alert.workload) alert.workload = WORKLOAD;
   // The agent the verdict is about, in the console's agent_name vocabulary: claude-code, or the adapter that
   // ran the hook (cli/moorai-agent-hook.mjs sets MOORAI_HOOK_AGENT). Omitted for a shim caller it cannot name.
-  if (alert && alert.agentName === undefined) { const n = beatHost(); if (n) alert.agentName = n; }
+  // agentVersion: that agent's own version, where the agent states it in this process's environment
+  // (cli/agent-names.mjs: Claude Code and Cursor). Read from env only, so no I/O on the verdict path.
+  if (alert && alert.agentName === undefined) {
+    const n = beatHost();
+    if (n) { alert.agentName = n; const v = agentVersionFromEnv(n); if (v && alert.agentVersion === undefined) alert.agentVersion = v; }
+  }
   if (SESSION_TAG && alert && alert.session === undefined) alert.session = SESSION_TAG;
   stampAlert(alert, { ...PROV, coach: COACH, event: EVENT });
   // An unenrolled device has no console, so nothing is posted to one — not even to a server that
   // answers at the configured URL. The OTLP mirror below is the user's own collector, not a console.
-  const p = !isEnrolled(CONFIG) ? Promise.resolve() : fetch(`${CONFIG.serverUrl}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(alert), signal: AbortSignal.timeout(1500) }).catch(() => {});
+  // CONSOLE_UNREACHABLE: no TCP connection to the console opened on this invocation's policy fetch, or on
+  // the failed fetch the console back-off (cli/console-backoff.mjs) is still honouring. The post would only
+  // burn its 1.5s timeout; the local audit log still records the finding.
+  const p = !isEnrolled(CONFIG) || CONSOLE_UNREACHABLE ? Promise.resolve() : fetch(`${CONFIG.serverUrl}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(alert), signal: AbortSignal.timeout(1500) }).catch(() => {});
   PENDING.push(p);
   // Content-free OTLP mirror of the same governance event — no-op unless an OTLP endpoint is
   // configured. Same chokepoint as the alert so it can't be forgotten; same bounded, drained,
@@ -2031,7 +2041,8 @@ async function main() {
     ACTOR = SESSION;
     SUBAGENT_LINEAGE = {};
   }
-  let { policy, source, rejected, pin, trust, absence, lkgCopy } = await loadVerifiedPolicy(CONFIG);
+  let { policy, source, rejected, pin, trust, absence, lkgCopy, consoleUnreachable } = await loadVerifiedPolicy(CONFIG);
+  CONSOLE_UNREACHABLE = !!consoleUnreachable;
   PROV = { policyId: policyIdOf(policy), policySource: source || "", offline: false };
   // Ratcheted posture read BEFORE rememberPosture rewrites the copies, so this run still sees what the
   // device knew on the way in (and any tampering with it) rather than what we are about to record.

@@ -74,6 +74,7 @@ import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
 import { indexWriteScan } from "../cli/index-tools.mjs";
 import { recordMcpCall, flushMcpUsage, usageHost, usageIdentity } from "../cli/mcp-usage-beat.mjs";
 import { exitWhenDrained } from "../cli/exit-drain.mjs";
+import { agentNameOf, claudeCodeVersion } from "../cli/agent-names.mjs";
 
 // ---- argv parsing: [--server label] [--host id] -- realcmd args... ----
 function parseArgv(argv) {
@@ -100,7 +101,21 @@ const { label: SERVER, host: HOST, cmd: REAL_CMD, args: REAL_ARGS } = parseArgv(
 // ---- config / identity / content-free reporting (same shape as the Claude Code hook) ----
 const CONFIG = loadConfig();
 const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: actorHash(os.userInfo().username, os.hostname()) };
+// The MCP client this proxy was installed into (the `--host` stamp, mcp-proxy/install.mjs), in the console's
+// agent_name vocabulary: claude-code (.mcp.json), cursor, claude-desktop. "vscode" names an editor, not an
+// agent, and "unknown" names nothing, so both are omitted. agentVersion only where the client is measured to
+// state it to the servers it starts: Claude Code's AI_AGENT (cli/agent-names.mjs). Whether Cursor sets
+// CURSOR_VERSION for MCP servers (and not only for hooks) is not verified, so a Cursor-launched proxy sends
+// no version rather than one inherited from an outer Cursor. Stamped in post(), not in IDENTITY,
+// so the MCP usage beat's identity fallback is unchanged.
+const AGENT = (() => {
+  const agentName = agentNameOf(HOST);
+  if (!agentName) return {};
+  const agentVersion = agentName === "claude-code" ? claudeCodeVersion() : undefined;
+  return agentVersion ? { agentName, agentVersion } : { agentName };
+})();
 function post(alert) {
+  if (alert && alert.agentName === undefined) Object.assign(alert, AGENT);
   // Content-free OTLP mirror — no-op unless an OTLP endpoint is configured; bounded + swallows errors,
   // so it can never touch the proxy path (same contract as the alert post below).
   try { emitOtel(alert, { config: CONFIG, identity: IDENTITY }); } catch { /* telemetry is never enforcement */ }

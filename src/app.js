@@ -706,6 +706,8 @@ function button(label, cls, onClick) {
 // ----- enrollment + agent auth -----
 function wireEnrollment() {
   $("enroll-cmd").textContent = `curl -s "${serverBase()}/d/<TOKEN>" -o ~/.moorai/config.json`;
+  // A self-hosted console's enrolment link names the console as well as the token (api.js parseEnrollInput).
+  $("enroll-token").placeholder = "installation token, or https://<console>/d/<token>";
   refreshEnrollChip();
 
   $("enroll-toggle").addEventListener("click", () => {

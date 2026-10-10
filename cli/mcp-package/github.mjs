@@ -7,9 +7,9 @@
 // Redirects are refused. There is no registry digest for a git archive, so integrity is recorded as
 // "none" and the commit the archive was cut from (its pax global header) is reported instead.
 
-import { RegistryError } from "./registry.mjs";
+import { RegistryError } from "./registry-error.mjs";
+import { endpoint, isOffline } from "./endpoints.mjs";
 
-const CODELOAD = "https://codeload.github.com/";
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const REPO = /^[A-Za-z0-9._-]{1,100}$/;
 const REF = /^[A-Za-z0-9._/-]{1,200}$/;
@@ -35,10 +35,14 @@ export function parseGithubSpec(spec) {
   return { ecosystem: "github", name: `${owner}/${repo.replace(/\.git$/, "")}`, path: rest.join("/"), version };
 }
 
+// The archive host follows MOORAI_GITHUB_CODELOAD_URL; an invalid value or MOORAI_OFFLINE=1 throws.
 export function githubArchiveUrl(ref) {
+  if (isOffline()) throw new RegistryError("offline");
+  const codeload = endpoint("githubCodeload");
+  if (!codeload) throw new RegistryError("mirror-invalid");
   const [owner, repo] = ref.name.split("/");
   const r = ref.version || "HEAD";
-  return `${CODELOAD}${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tar.gz/${r.split("/").map(encodeURIComponent).join("/")}`;
+  return `${codeload}${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tar.gz/${r.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 export function resolveGithub(ref) {

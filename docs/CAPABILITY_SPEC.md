@@ -129,7 +129,9 @@ to the cloud for its own reasoning.
   between an agent's model SDK and the provider (Anthropic Messages, OpenAI Chat Completions, Gemini
   `generateContent` / `streamGenerateContent`) that scans
   what the agent sends and the tool calls the model returns. Report-only by default; `--mode enforce`
-  refuses in the provider's own error shape.
+  refuses in the provider's own error shape. `--connect-timeout <ms>` (default 10000) bounds a new
+  upstream connection (TCP connect, and the TLS handshake for https) and answers 504 with a reason that
+  names no host; streaming after the connection is unaffected.
 - **Cloud inventory** — `moorai-cloud-inventory` ([`cloud/`](../cloud/README.md)), a read-only,
   content-free inventory of an AWS account's Amazon Bedrock resources, posted to the console.
 
@@ -256,7 +258,7 @@ and digest, and enum codes — §C 17d), the session correlation key (`session` 
 `contentHash` of the agent's own session id, the same value as the session summary's `summary:<session>`
 suffix, omitted when no id or no key is known; from the Claude Code hook, the HTTP MCP gateway
 (`Mcp-Session-Id`), `@moorai/agent-sdk` (hook input `session_id`) and `moorai-serve` (the request's
-`session` field), never from the model proxy, which sees no conversation id — §C 17b), the agent name (`agentName` — a value from the console's `agent_name` vocabulary: `claude-code` from the Claude Code hook, the adapter's own id (`codex`, `cursor`, `gemini`, `copilot`) when `moorai-agent-hook` ran it, `gateway` from the HTTP MCP gateway, and omitted for a host it cannot name; `@moorai/agent-sdk` and `moorai-serve` name themselves through `surface` (`agent-sdk`, `serve`), which the console reads the same way), the sub-agent type on a #66 delegation (`subagentType` — a Claude Code built-in type in clear: `general-purpose`, `Explore`, `Plan`, `statusline-setup`, `claude-code-guide`, `fork`, `worker`, `claude`, `workflow-subagent`, `comment-thread-analyst` (read off the 2.1.295 binary) and an older build's `output-style-setup`, plus the Codex adapter's fallback `codex`; any other name, which is the user's own and can say what they work on, as the tenant-keyed `contentHash`, the value the handoff edge's `to` already carries; [`cli/subagent-type.mjs`](../cli/subagent-type.mjs)), the session summary (`summary` — counts — §C 17b), the claim check
+`session` field), never from the model proxy, which sees no conversation id — §C 17b), the agent name (`agentName` — a value from the console's `agent_name` vocabulary: `claude-code` from the Claude Code hook, the adapter's own id (`codex`, `cursor`, `gemini`, `copilot`) when `moorai-agent-hook` ran it, `gateway` from the HTTP MCP gateway, `claude-code` from `moorai-guard` (it wraps `claude -p`), the MCP client from the stdio MCP proxy's `--host` install stamp (`claude-code`, `cursor`, `claude-desktop`; `vscode` and an unstamped install send none), and omitted for a host it cannot name; `@moorai/agent-sdk`, `moorai-serve`, the model proxy and the inference-hooks server send both `surface` and `agentName` (`agent-sdk`, `serve`, `model-proxy`, `inference-hook`); the vocabulary is [`cli/agent-names.mjs`](../cli/agent-names.mjs), a subset of the console's `AGENT_NAMES`), the agent's own product version (`agentVersion` — e.g. `2.1.295`, never MoorAI's version; only where the agent states it in the process environment, read with no I/O: Claude Code's `AI_AGENT`, accepted only in its `claude-code_<v>_harness` form, on hook alerts and on stdio-proxy alerts with host `claude-code`; Cursor's `CURSOR_VERSION` on hook alerts run through `moorai-agent-hook cursor`; nothing for Codex, Gemini CLI, Copilot CLI, `moorai-guard`, the gateway or the SDK surfaces; a value outside `^[0-9A-Za-z.+-]{1,32}$` is dropped, and the console applies the same pattern), the sub-agent type on a #66 delegation (`subagentType` — a Claude Code built-in type in clear: `general-purpose`, `Explore`, `Plan`, `statusline-setup`, `claude-code-guide`, `fork`, `worker`, `claude`, `workflow-subagent`, `comment-thread-analyst` (read off the 2.1.295 binary) and an older build's `output-style-setup`, plus the Codex adapter's fallback `codex`; any other name, which is the user's own and can say what they work on, as the tenant-keyed `contentHash`, the value the handoff edge's `to` already carries; [`cli/subagent-type.mjs`](../cli/subagent-type.mjs)), the session summary (`summary` — counts — §C 17b), the claim check
 (`claimCheck` — a claim-pattern id, an outcome word and counts — §C 17b), the session-risk and
 circuit-breaker signatures (`signature`, `sessionRisk` — rule names, counts, scores, windows — §C 17c), and
 the agent-posture body sent to `POST /api/agent-posture` (host ids, flag names, scope names, a hook-state
@@ -274,6 +276,25 @@ matched span, a verbatim source line, a URL path, a query string or a request he
 Server distributes: approved-tools allowlist, risk thresholds, per-threat/per-tier enforcement
 actions (`threatPolicy` / `tierPolicy`), model-escalation policy, and rule-base updates. Client
 pulls on launch and periodically; works offline against the last-known policy.
+
+**Console back-off** ([`cli/console-backoff.mjs`](../cli/console-backoff.mjs)). When the hook's policy
+fetch gets no HTTP response (timeout, refused, DNS), it records the failure time in
+`~/.moorai/hook-console-backoff.json`, next to the policy cache. Later calls skip the policy fetch for 60 s,
+doubling per consecutive failure to at most 5 minutes, and the policy resolves exactly as after a failed
+fetch (cache, then last-known-good, then the offline default). A TCP probe beside the fetch records
+whether a connection to the console opened at all; when none did, the alert POSTs are skipped as well (the
+local audit log still records each finding), while a console that accepts the connection but answers
+slowly keeps receiving them. Any HTTP response clears the file. It is not used while the pin looks erased,
+where every call fetches. Measured, 20 calls each, same decisions: console at a packet-dropping address
+(192.0.2.1), allow p50 3.17 s and deny p50 4.64 s before, 0.12 s and 0.08 s after (first call 1.6 s);
+console that accepts and never answers, 3.17 s and 4.64 s before, 1.65 s and 3.12 s after (the posts still
+wait up to 1.5 s). **Tamper resistance.** The file has the policy cache's trust level: the agent can
+write both. A failure time in the future, or a malformed file, is ignored, and the window is measured from
+the recorded time and capped at 5 minutes, so one write (with `unreachable: true`) suppresses fetches and
+alert posts for at most 5 minutes and keeps the device on a policy that still has to verify. The cache's own freshness check
+rejects a future mtime the same way: a cache dated in the future is stale and refetched
+(`test/policy-cache-future-mtime.test.mjs`). Rewriting `serverUrl` in `config.json`, in the same scope, already silences
+the console indefinitely.
 
 The policy is an ed25519-signed envelope. The client trusts it via, in order: a root-owned anchor
 (`/etc/moorai/policy.pub`, `%ProgramData%\MoorAI\policy.pub`, or MDM-injected `MOORAI_POLICY_PUBKEY`),
@@ -460,7 +481,9 @@ is validated against.
    tap** — a compiled binary's raw socket, or an MCP server's own child process, is invisible to it.
    Hosts come from `http(s)://` URLs, so `curl example.com` (no scheme), an SSH remote, or a bare IP
    literal is not recorded; a **dotless** internal hostname is captured only via a base-URL env-var
-   override (`OLLAMA_HOST=http://gpu-box:11434`), not from a plain URL. The `decision` recorded is the
+   override (`OLLAMA_HOST=http://gpu-box:11434`; the variables are `BASE_URL_ENV_VARS` in
+   [`data/model-endpoints.js`](../data/model-endpoints.js), including `GOOGLE_VERTEX_BASE_URL` and
+   `GOOGLE_GEMINI_BASE_URL`, which the endpoint allow-list #63 judges too), not from a plain URL. The `decision` recorded is the
    hook's verdict for the call, not proof the connection succeeded or failed.
 
 ### B3. Task, instruction-file and MCP-server context (client)
@@ -538,6 +561,17 @@ is validated against.
    against `HEAD`, so a renamed package reads as a mismatch. bitbucket.org and codeberg.org are not
    verified.
 
+   **Mirrors and offline.** The lookup's hosts follow `MOORAI_NPM_REGISTRY`, `MOORAI_PYPI_URL` (the JSON
+   API at `pypi/` under it), `MOORAI_MCP_REGISTRY`, `MOORAI_GITHUB_RAW_URL` and `MOORAI_GITHUB_CODELOAD_URL`
+   ([`cli/mcp-package/endpoints.mjs`](../cli/mcp-package/endpoints.mjs)): https only, no credentials,
+   query or fragment. An invalid value disables that endpoint instead of falling back to the public
+   host. With a mirror set, artifacts must come from the mirror's own host. `MOORAI_OFFLINE=1` skips the
+   lookup (evidence `registry-not-checked-offline`, not cached, so it runs once the device is online) and
+   the feed download (the copy on disk is used). There are no policy keys for mirrors: the variables are
+   read from the proxy's environment. github.com and gitlab.com repository pages have no mirror. The
+   SkillTriage feed has no signature, so it is fetched from a URL only and no local snapshot file is
+   accepted. Registry metadata and artifact requests give up after 30 s without headers or body progress.
+
    The same lookup counts the **accounts that can publish** the package
    ([`cli/mcp-package/maintainers.mjs`](../cli/mcp-package/maintainers.mjs)): npm's top-level packument
    `maintainers` ("people with permission to publish this package; not authoritative but informational")
@@ -571,6 +605,11 @@ is validated against.
    (10) a MoorAI hook is registered (pass), only some MCP servers go through the stdio proxy or gateway
    (warn), or nothing does (fail). Plus a metadata-only reputation score and band from the same weights,
    and the SkillTriage verdict when `mcpReputation.feed` is on. `--json`; exit 1 when a check fails.
+   `--offline` (or `MOORAI_OFFLINE=1`) makes no request: (1) keeps its name checks and otherwise reports
+   the repository link not checked, (2)–(5) and (7) and the feed report `not-checked (offline)`; measured
+   0.08 s (10.1 s before on a host with no route out). The mirror variables of 11e apply; an invalid one
+   exits 2. `moorai-scan --package` / `--packages` take the same `--offline`: each package is
+   `not-checked (offline)` and REVIEW (fail-closed), in 0.08 s (10.6 s before).
    **Limits.** Age, maintainers, auth, credentials and pinning have no fail state. PyPI install-time code
    is not visible in its JSON API (not checked; an sdist-only release is noted). Auth, credentials and
    transport for a package need a published `server.json`. MCP OAuth is not probed. An npm semver range is
@@ -1248,8 +1287,8 @@ the framework ever asks.
   SDKs raise on. Replaced: the turn's `functionCall` parts become one text part (the call's
   `thoughtSignature` goes with it) and `finishReason` is `STOP`. Requests: user text, `systemInstruction`
   and the string values of `functionResponse.response` are scanned; camelCase and snake_case both read.
-  Vertex streamed `partialArgs` are refused in enforce mode (no documented assembly rule). No default
-  route; `--route /gemini=https://generativelanguage.googleapis.com`.
+  Vertex streamed `partialArgs` are refused in enforce mode (no documented assembly rule). The default
+  routes include `/gemini` → `https://generativelanguage.googleapis.com`; `--route` replaces all defaults.
 - **Enforcement.** `--mode enforce` refuses the response by default. With `--denied-tool-call replace`,
   every client tool call of the turn is withheld and replaced by one text block naming the tool and the
   reasons. The turn ends with `end_turn` / `stop`, no tool-call id is orphaned, and block indexes stay
