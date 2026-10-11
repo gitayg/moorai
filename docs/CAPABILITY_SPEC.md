@@ -220,7 +220,9 @@ Claude Code GitHub Action, an Agent SDK service in a container
 - **Trust anchors from settings files are ignored on every device.** `MOORAI_BREAKGLASS_PUBKEY`,
   `MOORAI_POLICY_PUBKEY`, `MOORAI_OFFLINE_MODE` and the OTLP endpoint set by a user, project or local
   settings file's `env` block do not take effect and are reported (names only); managed settings, the
-  launching environment and the root-owned anchor files are trusted.
+  launching environment and the root-owned anchor files are trusted. The registry mirrors
+  (`MOORAI_NPM_REGISTRY`, `MOORAI_PYPI_URL`, `MOORAI_MCP_REGISTRY`, `MOORAI_GITHUB_RAW_URL`,
+  `MOORAI_GITHUB_CODELOAD_URL`) and `MOORAI_OFFLINE` follow the same rule, without the report.
 
 ### Detection brain — tiered escalation cascade
 Cheapest-and-most-private first; the escalation order *is* the privacy order.
@@ -281,20 +283,24 @@ pulls on launch and periodically; works offline against the last-known policy.
 fetch gets no HTTP response (timeout, refused, DNS), it records the failure time in
 `~/.moorai/hook-console-backoff.json`, next to the policy cache. Later calls skip the policy fetch for 60 s,
 doubling per consecutive failure to at most 5 minutes, and the policy resolves exactly as after a failed
-fetch (cache, then last-known-good, then the offline default). A TCP probe beside the fetch records
-whether a connection to the console opened at all; when none did, the alert POSTs are skipped as well (the
-local audit log still records each finding), while a console that accepts the connection but answers
-slowly keeps receiving them. Any HTTP response clears the file. It is not used while the pin looks erased,
-where every call fetches. Measured, 20 calls each, same decisions: console at a packet-dropping address
-(192.0.2.1), allow p50 3.17 s and deny p50 4.64 s before, 0.12 s and 0.08 s after (first call 1.6 s);
-console that accepts and never answers, 3.17 s and 4.64 s before, 1.65 s and 3.12 s after (the posts still
-wait up to 1.5 s). **Tamper resistance.** The file has the policy cache's trust level: the agent can
-write both. A failure time in the future, or a malformed file, is ignored, and the window is measured from
-the recorded time and capped at 5 minutes, so one write (with `unreachable: true`) suppresses fetches and
-alert posts for at most 5 minutes and keeps the device on a policy that still has to verify. The cache's own freshness check
+fetch (cache, then last-known-good, then the offline default). Inside the window one call in eight still
+fetches, chosen by the hook's own crypto RNG. A call that gets no HTTP answer of its own (it skipped the
+fetch, or its fetch failed) hands its alert POSTs to a detached worker (`moorai-hook.mjs alertpost`, a 0600
+job file in `~/.moorai`, 10 s per post) instead of waiting on them, so the decision path stays fast and every
+alert is still sent. Any HTTP response clears the file. It is not used while the pin looks erased, where
+every call fetches. Measured, 40 calls each, same decisions, console at a packet-dropping address
+(192.0.2.1): allow p50 0.12 s and deny p50 0.09 s, where the same calls take 3.17 s and 4.64 s when every
+call fetches; p95 is 1.67 s and 1.63 s, the calls that draw the forced fetch and wait out its 1.5 s timeout. **Tamper
+resistance.** The file has the policy cache's trust level: the agent can write it, and nothing on the
+device can tell a hook-written file from a planted one. So it can only delay work. It has no say over alert
+posts: no state of the file stops one. It can delay a policy refresh by about eight calls on average: a
+failure time in the future, or a malformed file, is ignored, the window is measured from the recorded time
+and capped at 5 minutes, and the forced draw fetches whatever the file says, and the answer clears it
+(`test/console-backoff.test.mjs`). The cache's own freshness check
 rejects a future mtime the same way: a cache dated in the future is stale and refetched
-(`test/policy-cache-future-mtime.test.mjs`). Rewriting `serverUrl` in `config.json`, in the same scope, already silences
-the console indefinitely.
+(`test/policy-cache-future-mtime.test.mjs`). **Limits.** Touching the cache keeps it inside its 60 s fresh
+window, which skips the fetch on every call for as long as the agent keeps touching it. Rewriting
+`serverUrl` in `config.json`, in the same scope, silences the console for the hook indefinitely.
 
 The policy is an ed25519-signed envelope. The client trusts it via, in order: a root-owned anchor
 (`/etc/moorai/policy.pub`, `%ProgramData%\MoorAI\policy.pub`, or MDM-injected `MOORAI_POLICY_PUBKEY`),
@@ -568,7 +574,10 @@ is validated against.
    host. With a mirror set, artifacts must come from the mirror's own host. `MOORAI_OFFLINE=1` skips the
    lookup (evidence `registry-not-checked-offline`, not cached, so it runs once the device is online) and
    the feed download (the copy on disk is used). There are no policy keys for mirrors: the variables are
-   read from the proxy's environment. github.com and gitlab.com repository pages have no mirror. The
+   read from the proxy's environment under the trusted-environment rule, so a value that a user, project
+   or local settings file sets in its `env` block, including `MOORAI_OFFLINE`, is ignored: a cloned
+   repository cannot point the lookup at a mirror that vouches for a malicious package, or switch it off.
+   Set mirrors in the launching environment or in managed settings. github.com and gitlab.com repository pages have no mirror. The
    SkillTriage feed has no signature, so it is fetched from a URL only and no local snapshot file is
    accepted. Registry metadata and artifact requests give up after 30 s without headers or body progress.
 
@@ -1149,7 +1158,9 @@ Fail-safe choice:
 - Measured widening: `localhost:*` also admits 0.0.0.0, which MoorAI's check does not count as loopback.
 
 The desktop host reads the rules only from `/etc/moorai/config.json`, and only when it is root-owned and not
-group- or world-writable (the hook's `readRootOwned` rule). It never reads them from `~/.moorai/config.json`.
+group- or world-writable, is not a symlink, and sits in directories that are root-owned and not group- or
+world-writable, checked on the open file (`src-tauri/src/admin_config.rs` `read_admin_owned`, the reader of
+every administrator source). It never reads them from `~/.moorai/config.json`.
 
 **OpenShell** (NVIDIA/OpenShell @ b959bb6, `docs/how-it-works/policies/schema.mdx` and `network-rules.mdx`).
 Relevant quotes:
@@ -1196,7 +1207,9 @@ comes from the deployment's network policy, which is being built separately unde
   `**`, and `access: full` together with `deny_rules` are taken from the docs, not run.
 - Seatbelt rules were measured only for loopback ports and default deny (`test/sandbox-policy.test.mjs`
   runs the generated section under `sandbox-exec`).
-- The macOS host path that reads `/etc/moorai/config.json` was tested only for refusing a user-owned file.
+- The macOS host path that reads `/etc/moorai/config.json` was tested for refusing a user-owned file, a
+  symlink, a group- or world-writable file or directory, a path outside its directory and a FIFO, with the
+  test's own uid standing in for root; reading a root-owned file was tested only on `/etc/hosts`.
 - A `deny_rules` entry on one OpenShell endpoint can also deny requests that another overlapping rule
   allows (narrower, not reported).
 

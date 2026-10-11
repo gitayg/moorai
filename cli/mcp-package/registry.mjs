@@ -7,7 +7,7 @@
 // Every request is bounded by timedFetch (no headers, or a quiet body, for REQUEST_TIMEOUT_MS → timeout).
 
 import { envMb } from "./archive.mjs";
-import { endpoint, endpointHost, isOffline, MIRROR_ENV } from "./endpoints.mjs";
+import { endpoint, endpointHost, isOffline, mirrored } from "./endpoints.mjs";
 import { RegistryError } from "./registry-error.mjs";
 import { timedFetch } from "./timed-fetch.mjs";
 
@@ -15,7 +15,6 @@ export { RegistryError };
 
 const NPM_FILE_HOST = "registry.npmjs.org";
 const PYPI_FILE_HOST = "files.pythonhosted.org";
-const mirrored = (name) => { const v = process.env[MIRROR_ENV[name]]; return v !== undefined && v !== ""; };
 // The base URL, or a RegistryError when offline or the mirror variable is invalid (never the public host).
 function base(name) {
   if (isOffline()) throw new RegistryError("offline");

@@ -2,7 +2,7 @@
 import { startSignup, pollClaim } from "./signup.js";
 import { contentHash } from "./content-hash.js";
 import { enforcementAllowed } from "../data/enforcement.js";
-// The MoorAI cloud console. Only an unprovisioned consumer install falls back to it (serverBase()).
+// The MoorAI cloud console. Only an unprovisioned consumer install falls back to it (enrolBase()).
 const CLOUD_BASE = "https://app.moorai.dev";
 const CLIENT_ID = (() => {
   let id = localStorage.getItem("raiseme.clientId");
@@ -30,7 +30,14 @@ function installTok() { return identity.installToken || localStorage.getItem("ra
 // credentialed is sent. localStorage ("raiseme.server") and ~/.moorai/config.json are writable by other
 // software running as the user, so neither decides it. A host too old to report the field, and the
 // plain-browser build, keep serverBase().
-let hostConsole, hostConsoleWarning = null, hostProvisioned = null;
+// hostProvisioned is identity.provisionedConsole: the console an ADMINISTRATOR provisioned (a macOS managed
+// preference, or the root/admin-owned machine file; src-tauri/src/admin_config.rs). The host never reports
+// config.json's serverUrl here: the agent can write that file, and a planted value used to receive the
+// install token a user pasted, the signup's name and email, and the provision that then became the
+// device's recorded console.
+// hostEnrolled is identity.enrolledConsole: the recorded console when an enrolment in this app recorded it
+// (save_provision), not the first-use migration of a config.json serverUrl.
+let hostConsole, hostConsoleWarning = null, hostProvisioned = null, hostEnrolled = null;
 function credBase() { return hostConsole === undefined ? serverBase() : hostConsole; }
 export function consoleWarning() { return hostConsoleWarning; }
 export function consoleBound() { return credBase() != null; }
@@ -54,7 +61,8 @@ export async function loadIdentity() {
     try {
       identity = await invoke("identity");
       if ("console" in identity) { hostConsole = identity.console || null; hostConsoleWarning = identity.consoleWarning || null; }
-      hostProvisioned = safeConsoleOrigin(identity.serverUrl || "");
+      hostProvisioned = safeConsoleOrigin(identity.provisionedConsole || "");
+      hostEnrolled = safeConsoleOrigin(identity.enrolledConsole || "");
       // Mirror the native provision into localStorage the same way enroll() does. An MDM-provisioned
       // install (Jamf/Intune writes ~/.moorai/config.json directly) never runs enroll(), and the
       // content-hash key is derived from these two values — without them the renderer would emit the
@@ -66,11 +74,23 @@ export async function loadIdentity() {
   return identity;
 }
 
-// The console this app talks to: the one the host recorded at enrolment, else the provisioned
-// serverUrl (an MDM-written ~/.moorai/config.json), else a localStorage override, else the MoorAI cloud.
-// A provisioned device therefore never falls back to the cloud, before or after enrolment.
+// Where an enrolment starts — a pasted bare token, the in-app signup and its claim. In the desktop app:
+// the console an administrator provisioned, else the console an earlier enrolment in this app recorded
+// (identity.enrolledConsole), else the MoorAI cloud. Nothing the agent can write decides it: not
+// config.json's serverUrl, not a console the host recorded by first-use migration of it (on a device that
+// never enrolled that can be planted, and a pasted token sent there would be the attacker's), and not
+// localStorage's "raiseme.server", which lives in WebKit storage under the user's home. A self-hosted
+// console the user names in the pasted link (https://<console>/d/<token>) is used as named. Only the
+// plain-browser build, which has no host to record a console, still reads the localStorage override.
+function inHost() { return !!globalThis.window?.__TAURI__?.core?.invoke; }
+export function enrolBase() {
+  if (inHost()) return hostProvisioned || hostEnrolled || CLOUD_BASE;
+  return safeConsoleOrigin(localStorage.getItem("raiseme.server") || "") || CLOUD_BASE;
+}
+// The console for this app's other uncredentialed calls (the default policy): the administrator's, else
+// the one the host recorded, else enrolBase(). A provisioned device never falls back to the cloud.
 export function serverBase() {
-  return hostConsole || hostProvisioned || safeConsoleOrigin(localStorage.getItem("raiseme.server") || "") || CLOUD_BASE;
+  return hostProvisioned || hostConsole || enrolBase();
 }
 
 // One console call. In the desktop host it goes through the host (src-tauri/src/console_http.rs): the
@@ -194,7 +214,7 @@ async function callAnthropic(prompt, token, method) {
 }
 export function currentTenant() { return identity.tenant; }
 
-// What the user pasted: a bare installation token (enrolls against serverBase()), or the console's
+// What the user pasted: a bare installation token (enrolls against enrolBase()), or the console's
 // enrolment link https://<console>/d/<token>, which names a self-hosted console as well.
 export function parseEnrollInput(input, serverUrl) {
   const s = String(input || "").trim();
@@ -207,7 +227,7 @@ export function parseEnrollInput(input, serverUrl) {
     if (!base) throw new Error("the console must be an https URL");
     return { token: decodeURIComponent(m[1]), base };
   }
-  const base = safeConsoleOrigin(String(serverUrl || serverBase()).replace(/\/+$/, ""));
+  const base = safeConsoleOrigin(String(serverUrl || enrolBase()).replace(/\/+$/, ""));
   if (!base) throw new Error("the console must be an https URL");
   return { token: s, base };
 }
@@ -224,7 +244,8 @@ export async function enroll(token, serverUrl) {
   // Persist the install token alongside the provision — the client uses it to authenticate
   // policy fetches and event reports to the server.
   if (invoke) await invoke("save_provision", { config: { ...prov, installToken: token } });
-  // Always persist so serverBase() resolves to the enrolled server on next boot (Tauri or browser).
+  // The browser build's enrolBase() reads this back on the next boot; the desktop app ignores it and uses
+  // the console save_provision recorded host-side.
   localStorage.setItem("raiseme.tenant", prov.tenant);
   if (prov.serverUrl) localStorage.setItem("raiseme.server", prov.serverUrl);
   localStorage.setItem("raiseme.installToken", token);
@@ -234,16 +255,16 @@ export async function enroll(token, serverUrl) {
 }
 
 // In-app signup: create the management account and get back the claim token used to wait for the
-// verification click. The protocol lives in ./signup.js; this only binds the console transport + serverBase().
+// verification click. The protocol lives in ./signup.js; this only binds the console transport + enrolBase().
 export function signUp(name, email) {
-  const base = serverBase();
+  const base = enrolBase();
   return startSignup({ base, name, email, fetchImpl: consoleFetchImpl(base) });
 }
 
 // Wait for the verification click, then provision through the SAME enroll() the paste-a-token path
 // uses — so there is exactly one place that persists a provision.
 export async function awaitClaim(claimToken, onPending) {
-  const base = serverBase();
+  const base = enrolBase();
   const ready = await pollClaim({
     base,
     claimToken,

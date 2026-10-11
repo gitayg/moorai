@@ -7,7 +7,7 @@ import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { DetectionEngine } from "./engine.js";
 import { Audit } from "./audit.js";
 import { COACH_TAIL } from "../data/enforcement.js";
-import { consoleBound, consoleWarning, enrolled, getPolicy, postAlert, nativeLog, loadIdentity, enroll, signUp, awaitClaim, serverBase, currentTenant, setAgentAuth, getAuthMethod, setAuthMethod, openUrl, reportDevice, reportPatches, reportPrompt, reportActivity, appVersion, checkUpdate, restartApp, checkAndInstallUpdate, reportIdentity, aboutInfo } from "./api.js";
+import { consoleBound, consoleWarning, enrolled, getPolicy, postAlert, nativeLog, loadIdentity, enroll, signUp, awaitClaim, serverBase, enrolBase, currentTenant, setAgentAuth, getAuthMethod, setAuthMethod, openUrl, reportDevice, reportPatches, reportPrompt, reportActivity, appVersion, checkUpdate, restartApp, checkAndInstallUpdate, reportIdentity, aboutInfo } from "./api.js";
 import { ocrCapability, ocrImage, engineLabel, decideImageInspection } from "./ocr.js";
 import { BUILD } from "./buildinfo.js";
 
@@ -705,7 +705,7 @@ function button(label, cls, onClick) {
 
 // ----- enrollment + agent auth -----
 function wireEnrollment() {
-  $("enroll-cmd").textContent = `curl -s "${serverBase()}/d/<TOKEN>" -o ~/.moorai/config.json`;
+  $("enroll-cmd").textContent = `curl -s "${enrolBase()}/d/<TOKEN>" -o ~/.moorai/config.json`;
   // A self-hosted console's enrolment link names the console as well as the token (api.js parseEnrollInput).
   $("enroll-token").placeholder = "installation token, or https://<console>/d/<token>";
   refreshEnrollChip();

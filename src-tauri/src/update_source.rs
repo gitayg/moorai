@@ -7,19 +7,24 @@
 // `verify_signature(&buffer, &self.signature, &self.config.pubkey)` (updater.rs:712), so a
 // self-hosted console can serve only builds signed with MoorAI's key. Nothing here touches the key.
 //
-//   off       a managed setting (macOS managed preference DisableUpdates in the run.glick.moorai
-//             domain), or "updates": "off" in ~/.moorai/config.json. No updater is built and no
-//             request is made.
-//   console   the device is provisioned to a console that is not a MoorAI cloud origin:
-//             <console>/api/update only. The MoorAI cloud is never asked.
+// ~/.moorai/config.json is writable by the agent MoorAI guards, so it has no say here: a planted
+// "updates": "off" would keep the device on an old build, and a planted serverUrl could name an update
+// server that answers 204 forever. Only administrator sources (admin_config.rs) and the console the host
+// recorded at enrolment (console_binding.rs) count.
+//
+//   off       an administrator turned updates off: the macOS managed preference DisableUpdates in the
+//             run.glick.moorai domain, or "updates": "off" in the machine file (/etc/moorai/config.json,
+//             %ProgramData%\MoorAI\config.json) when only an administrator can write it. No updater is
+//             built and no request is made.
+//   console   the device's console is not a MoorAI cloud origin: <console>/api/update only. The console is
+//             the administrator-provisioned one (managed ServerURL, machine-file serverUrl), else the one
+//             the host recorded at enrolment. The MoorAI cloud is never asked.
 //   cloud     anything else (unprovisioned consumer installs, or devices on the MoorAI cloud): the
 //             endpoints tauri.conf.json lists, as before.
 use serde_json::Value;
 
 pub const CLOUD_ORIGINS: [&str; 2] = ["https://app.moorai.dev", "https://moorai.glick.run"];
 pub const CLOUD_ENDPOINTS: [&str; 2] = ["https://app.moorai.dev/api/update", "https://moorai.glick.run/api/update"];
-pub const MANAGED_DOMAIN: &str = "run.glick.moorai";
-pub const MANAGED_KEY: &str = "DisableUpdates";
 
 #[derive(Debug, PartialEq)]
 pub enum Plan {
@@ -27,21 +32,9 @@ pub enum Plan {
     Endpoints(Vec<String>),
 }
 
-// "updates": "off" (or false) in config.json.
-pub fn config_off(cfg: &Value) -> bool {
-    match cfg.get("updates") {
-        Some(Value::String(s)) => s.trim().eq_ignore_ascii_case("off"),
-        Some(Value::Bool(b)) => !b,
-        _ => false,
-    }
-}
-
-pub fn plan(console: Option<&str>, cfg: &Value, managed_off: bool) -> Plan {
-    if managed_off {
-        return Plan::Off(format!("turned off by the managed setting {MANAGED_KEY} ({MANAGED_DOMAIN})"));
-    }
-    if config_off(cfg) {
-        return Plan::Off("turned off in ~/.moorai/config.json (\"updates\": \"off\")".into());
+pub fn plan(console: Option<&str>, admin_off: Option<&str>) -> Plan {
+    if let Some(why) = admin_off {
+        return Plan::Off(why.to_string());
     }
     match console {
         Some(o) if !CLOUD_ORIGINS.contains(&o) => Plan::Endpoints(vec![format!("{o}/api/update")]),
@@ -49,40 +42,18 @@ pub fn plan(console: Option<&str>, cfg: &Value, managed_off: bool) -> Plan {
     }
 }
 
-// The console this device is provisioned to: the origin recorded host-side at enrolment
-// (console_binding.rs), else config.json's serverUrl as a bare origin. The agent-writable serverUrl
-// is acceptable here, unlike for credentials, because the update carries no secret and the artifact
-// must still verify against MoorAI's key.
-pub fn provisioned_console(dir: &str, cfg: &Value) -> Option<String> {
-    crate::console_binding::resolve(dir, cfg).origin.or_else(|| {
-        cfg.get("serverUrl").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty())
-            .and_then(|s| crate::console_binding::normalize_origin(s).ok())
-    })
+// The console updates come from: the administrator-provisioned one, else the one recorded host-side at
+// enrolment. config.json's serverUrl is read only by console_binding::resolve's one-time migration for
+// installs enrolled before the record existed, exactly as for credentialed calls.
+pub fn update_console(dir: &str, _cfg: &Value, admin_console: Option<&str>) -> Option<String> {
+    // Only a console an administrator provisioned or the user enrolled to is an update source; one recorded
+    // by first-use migration came from an agent-writable config.json.
+    admin_console.map(String::from).or_else(|| crate::console_binding::enrolled_console(dir))
 }
 
-// A managed boolean read with plutil, which reads the profile file locally (no network).
-pub fn plist_bool(path: &str, key: &str) -> Option<bool> {
-    if !std::path::Path::new(path).exists() { return None; }
-    let out = std::process::Command::new("/usr/bin/plutil").args(["-extract", key, "raw", "-o", "-", path]).output().ok()?;
-    if !out.status.success() { return None; }
-    match String::from_utf8_lossy(&out.stdout).trim() {
-        "true" | "1" | "YES" => Some(true),
-        "false" | "0" | "NO" => Some(false),
-        _ => None,
-    }
-}
-
-// MDM: a configuration profile's Forced settings for the run.glick.moorai domain land in
-// /Library/Managed Preferences (system) and /Library/Managed Preferences/<user> (per user). Both are
-// root-owned, so an agent running as the user cannot flip them. Other platforms have no managed
-// setting yet; config.json is their switch.
-pub fn managed_disable_updates() -> bool {
-    if !cfg!(target_os = "macos") { return false; }
-    let user = crate::platform::username();
-    [format!("/Library/Managed Preferences/{user}/{MANAGED_DOMAIN}.plist"), format!("/Library/Managed Preferences/{MANAGED_DOMAIN}.plist")]
-        .iter()
-        .find_map(|p| plist_bool(p, MANAGED_KEY))
-        .unwrap_or(false)
+// check_and_install_update's decision.
+pub fn choose(dir: &str, cfg: &Value, admin: &crate::admin_config::Admin) -> Plan {
+    plan(update_console(dir, cfg, admin.console.as_deref()).as_deref(), admin.updates_off.as_deref())
 }
 
 #[cfg(test)]
@@ -97,29 +68,66 @@ mod tests {
         d.to_string_lossy().into_owned()
     }
 
+    // ~/.moorai/config.json is writable by the agent MoorAI guards. The update decision as lib.rs's
+    // check_and_install_update makes it, for a device with no admin setting.
+    fn decide(dir: &str, cfg: &Value) -> Plan { choose(dir, cfg, &crate::admin_config::Admin::default()) }
+
+    #[test]
+    fn a_planted_config_neither_turns_updates_off_nor_moves_the_update_endpoint() {
+        let cloud = Plan::Endpoints(CLOUD_ENDPOINTS.iter().map(|s| s.to_string()).collect());
+        // no recorded console: what an agent writes to keep the device on its current build
+        let none = scratch("planted-none");
+        assert_eq!(decide(&none, &json!({ "updates": "off" })), cloud, "a planted updates:off stopped updates");
+        assert_eq!(decide(&none, &json!({ "updates": false })), cloud, "a planted updates:false stopped updates");
+        assert_eq!(decide(&none, &json!({ "serverUrl": "https://updates.evil.test" })), cloud, "a planted serverUrl chose the update endpoint");
+        // enrolled to a self-hosted console: the planted values move nothing either
+        let bound = scratch("planted-bound");
+        crate::console_binding::write_binding(&bound, "https://moorai.acme.internal", "enrolment").unwrap();
+        let acme = Plan::Endpoints(vec!["https://moorai.acme.internal/api/update".into()]);
+        assert_eq!(decide(&bound, &json!({ "serverUrl": "https://updates.evil.test", "installToken": "t", "updates": "off" })), acme);
+    }
+
     #[test]
     fn a_self_hosted_console_is_the_only_update_endpoint() {
-        assert_eq!(plan(Some("https://moorai.acme.internal"), &json!({}), false), Plan::Endpoints(vec!["https://moorai.acme.internal/api/update".into()]));
-        assert_eq!(plan(Some("https://h.example:8443"), &json!({}), false), Plan::Endpoints(vec!["https://h.example:8443/api/update".into()]));
+        assert_eq!(plan(Some("https://moorai.acme.internal"), None), Plan::Endpoints(vec!["https://moorai.acme.internal/api/update".into()]));
+        assert_eq!(plan(Some("https://h.example:8443"), None), Plan::Endpoints(vec!["https://h.example:8443/api/update".into()]));
     }
 
     #[test]
     fn unprovisioned_and_cloud_devices_keep_the_cloud_endpoints() {
         let cloud = Plan::Endpoints(CLOUD_ENDPOINTS.iter().map(|s| s.to_string()).collect());
-        assert_eq!(plan(None, &json!({}), false), cloud);
-        assert_eq!(plan(Some("https://app.moorai.dev"), &json!({}), false), cloud);
-        assert_eq!(plan(Some("https://moorai.glick.run"), &json!({}), false), cloud);
+        assert_eq!(plan(None, None), cloud);
+        assert_eq!(plan(Some("https://app.moorai.dev"), None), cloud);
+        assert_eq!(plan(Some("https://moorai.glick.run"), None), cloud);
     }
 
     #[test]
-    fn updates_off_wins_over_every_endpoint() {
-        for console in [None, Some("https://moorai.acme.internal"), Some("https://app.moorai.dev")] {
-            assert!(matches!(plan(console, &json!({ "updates": "off" }), false), Plan::Off(_)), "{console:?}");
-            assert!(matches!(plan(console, &json!({ "updates": false }), false), Plan::Off(_)), "{console:?}");
-            assert!(matches!(plan(console, &json!({ "updates": "on" }), true), Plan::Off(_)), "managed off beats config on: {console:?}");
+    fn an_admin_updates_off_wins_over_every_endpoint() {
+        let off = crate::admin_config::Admin { console: None, updates_off: Some("turned off by the managed setting DisableUpdates (run.glick.moorai)".into()) };
+        for dir in [scratch("off-none"), { let d = scratch("off-bound"); crate::console_binding::write_binding(&d, "https://moorai.acme.internal", "enrolment").unwrap(); d }] {
+            assert!(matches!(choose(&dir, &json!({ "updates": "on", "installToken": "t" }), &off), Plan::Off(_)), "{dir}");
         }
-        assert!(matches!(plan(None, &json!({ "updates": "on" }), false), Plan::Endpoints(_)));
-        assert!(matches!(plan(None, &json!({ "updates": true }), false), Plan::Endpoints(_)));
+        let admin_file = crate::admin_config::from_sources(None, None, &json!({ "updates": "off" }), "/etc/moorai/config.json");
+        assert!(matches!(choose(&scratch("off-file"), &json!({}), &admin_file), Plan::Off(_)));
+    }
+
+    #[test]
+    fn an_admin_provisioned_or_enrolled_self_hosted_console_is_the_update_source() {
+        let acme = Plan::Endpoints(vec!["https://moorai.acme.internal/api/update".into()]);
+        // MDM: managed ServerURL / machine-file serverUrl, before any enrolment
+        let mdm = crate::admin_config::from_sources(Some("https://moorai.acme.internal".into()), None, &Value::Null, "/etc/moorai/config.json");
+        assert_eq!(choose(&scratch("mdm"), &json!({}), &mdm), acme);
+        // enrolled in the app (console_binding.rs records the enrolment)
+        let bound = scratch("enrolled");
+        crate::console_binding::write_binding(&bound, "https://moorai.acme.internal", "enrolment").unwrap();
+        assert_eq!(choose(&bound, &json!({ "installToken": "t" }), &crate::admin_config::Admin::default()), acme);
+        // a console recorded by first-use migration came from a config.json the agent can write, so it is
+        // not an update source: a planted one could answer "no update" forever and freeze the device
+        let migrated = scratch("migrated");
+        let cloud = Plan::Endpoints(CLOUD_ENDPOINTS.iter().map(|s| s.to_string()).collect());
+        assert_eq!(choose(&migrated, &json!({ "serverUrl": "https://updates.evil.test", "installToken": "t" }), &crate::admin_config::Admin::default()), cloud);
+        // the admin's console wins over a recorded one
+        assert_eq!(choose(&bound, &json!({}), &crate::admin_config::Admin { console: Some("https://moorai.corp.example".into()), updates_off: None }), Plan::Endpoints(vec!["https://moorai.corp.example/api/update".into()]));
     }
 
     #[test]
@@ -129,30 +137,5 @@ mod tests {
         assert_eq!(eps, CLOUD_ENDPOINTS.to_vec());
         assert_eq!(conf["plugins"]["updater"]["pubkey"].as_str().unwrap().trim(), include_str!("../updater-pubkey.txt").trim());
         assert!(!conf["plugins"]["updater"]["dangerousInsecureTransportProtocol"].as_bool().unwrap_or(false), "release builds must refuse http update endpoints");
-    }
-
-    #[test]
-    fn the_provisioned_console_prefers_the_host_record_then_config() {
-        let dir = scratch("prov");
-        assert_eq!(provisioned_console(&dir, &json!({})), None);
-        assert_eq!(provisioned_console(&dir, &json!({ "serverUrl": "https://moorai.acme.internal/x" })).as_deref(), Some("https://moorai.acme.internal"));
-        assert_eq!(provisioned_console(&dir, &json!({ "serverUrl": "http://plain.example" })), None, "an unusable serverUrl is not an update source");
-        crate::console_binding::write_binding(&dir, "https://bound.example", "enrolment").unwrap();
-        assert_eq!(provisioned_console(&dir, &json!({ "serverUrl": "https://moorai.acme.internal", "installToken": "t" })).as_deref(), Some("https://bound.example"));
-    }
-
-    #[test]
-    fn a_managed_plist_turns_updates_off() {
-        if !cfg!(target_os = "macos") { return; }
-        let dir = scratch("plist");
-        let p = format!("{dir}/{MANAGED_DOMAIN}.plist");
-        let write = |v: &str| std::fs::write(&p, format!(r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>{v}</dict></plist>"#)).unwrap();
-        write("<key>DisableUpdates</key><true/>");
-        assert_eq!(plist_bool(&p, MANAGED_KEY), Some(true));
-        write("<key>DisableUpdates</key><false/>");
-        assert_eq!(plist_bool(&p, MANAGED_KEY), Some(false));
-        write("<key>ServerURL</key><string>https://x</string>");
-        assert_eq!(plist_bool(&p, MANAGED_KEY), None);
-        assert_eq!(plist_bool(&format!("{dir}/missing.plist"), MANAGED_KEY), None);
     }
 }

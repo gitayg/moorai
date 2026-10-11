@@ -526,7 +526,12 @@ function checkHoneytoken(hash, stage, tool) {
 // uses Promise.allSettled, so awaiting it cannot throw and cannot reject the decision path. The
 // requests also run concurrently, so the worst case for a whole invocation is ~1.5s, not 1.5s each.
 const PENDING = [];
-let CONSOLE_UNREACHABLE = false;
+// DEFER_ALERTS: this invocation got no HTTP answer of its own from the console (loadVerifiedPolicy skipped
+// the fetch under the console back-off, or its fetch got none). Its alert posts are then queued in DEFERRED
+// and handed, at exit, to a detached worker (handOffAlerts) instead of holding the decision for 1.5s each.
+// The agent-writable back-off file cannot drop an alert this way: every outcome still sends it.
+let DEFER_ALERTS = false;
+const DEFERRED = [];
 // COACH — set once in main() from data/enforcement.js: an unenrolled device detects and tells the user
 // and the agent what it caught, but never blocks, asks, kills or posts. See emit() / emitPost().
 let COACH = false;
@@ -613,10 +618,9 @@ function post(alert) {
   stampAlert(alert, { ...PROV, coach: COACH, event: EVENT });
   // An unenrolled device has no console, so nothing is posted to one — not even to a server that
   // answers at the configured URL. The OTLP mirror below is the user's own collector, not a console.
-  // CONSOLE_UNREACHABLE: no TCP connection to the console opened on this invocation's policy fetch, or on
-  // the failed fetch the console back-off (cli/console-backoff.mjs) is still honouring. The post would only
-  // burn its 1.5s timeout; the local audit log still records the finding.
-  const p = !isEnrolled(CONFIG) || CONSOLE_UNREACHABLE ? Promise.resolve() : fetch(`${CONFIG.serverUrl}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(alert), signal: AbortSignal.timeout(1500) }).catch(() => {});
+  // DEFER_ALERTS: no HTTP answer from the console on this invocation, so the post goes to the detached
+  // worker at exit (handOffAlerts) rather than burning its 1.5s timeout on the decision path.
+  const p = !isEnrolled(CONFIG) ? Promise.resolve() : DEFER_ALERTS ? (DEFERRED.push(alert), Promise.resolve()) : fetch(`${CONFIG.serverUrl}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(alert), signal: AbortSignal.timeout(1500) }).catch(() => {});
   PENDING.push(p);
   // Content-free OTLP mirror of the same governance event — no-op unless an OTLP endpoint is
   // configured. Same chokepoint as the alert so it can't be forgotten; same bounded, drained,
@@ -629,6 +633,37 @@ function post(alert) {
 // get here, and nothing enqueues during the drain — the loop is cheap insurance, not a workaround.
 async function flushAlerts() {
   while (PENDING.length) await Promise.allSettled(PENDING.splice(0));
+  if (DEFERRED.length) handOffAlerts(DEFERRED.splice(0));
+}
+
+// The deferred alerts go to `moorai-hook.mjs alertpost <job>`, a detached worker, through a 0600 job file
+// in the state directory (a pipe could truncate a large batch as this process exits). The worker reads the
+// console URL and install token from the config itself, so neither is written to the job. Same hand-off as
+// maybeEscalate; a failed write or spawn leaves the findings in the local audit log, as before.
+const ALERT_JOB_PREFIX = "alertpost-";
+const ALERT_WORKER_TIMEOUT_MS = 10000;
+function handOffAlerts(alerts) {
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    sweepEscalationJobs(ALERT_JOB_PREFIX);
+    const jobPath = join(STATE_DIR, `${ALERT_JOB_PREFIX}${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.json`);
+    writeFileSync(jobPath, JSON.stringify({ alerts }), { mode: 0o600 });
+    spawn(process.execPath, [SELF, "alertpost", jobPath], { detached: true, stdio: "ignore" }).unref();
+  } catch { /* the local audit log already holds every finding */ }
+}
+
+// The detached worker: posts each alert once, with a longer budget than the decision path can afford.
+async function runAlertPostWorker(jobPath) {
+  try {
+    const raw = readFileSync(jobPath, "utf8");
+    try { unlinkSync(jobPath); } catch { /* already gone */ }
+    const { alerts } = JSON.parse(raw);
+    if (Array.isArray(alerts) && isEnrolled(CONFIG)) {
+      const headers = { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) };
+      await Promise.allSettled(alerts.map((a) => fetch(`${CONFIG.serverUrl}/api/alerts`, { method: "POST", headers, body: JSON.stringify(a), signal: AbortSignal.timeout(ALERT_WORKER_TIMEOUT_MS) })));
+    }
+  } catch { /* best-effort, like every alert post */ }
+  return exitWhenDrained(0);
 }
 // Every exit from the hook goes through here. The decision has already been written to stdout by the
 // time this runs (see emit) — telemetry never gates the enforcement output.
@@ -1119,10 +1154,10 @@ async function maybeEscalate(policy, text, stage, tool, d, engine) {
 // A worker that never started (spawn refused, machine powered off mid-handoff) would leave scanned
 // content at rest. Sweep anything older than the worker could plausibly still be using.
 const ESCALATION_JOB_TTL_MS = 300000;
-function sweepEscalationJobs() {
+function sweepEscalationJobs(prefix = "escalate-") {
   try {
     for (const name of readdirSync(STATE_DIR)) {
-      if (!name.startsWith("escalate-") || !name.endsWith(".json")) continue;
+      if (!name.startsWith(prefix) || !name.endsWith(".json")) continue;
       const p = join(STATE_DIR, name);
       try { if (Date.now() - statSync(p).mtimeMs > ESCALATION_JOB_TTL_MS) unlinkSync(p); } catch { /* raced */ }
     }
@@ -1990,6 +2025,8 @@ async function main() {
   if (cmd === "indexscan") return runIndexScanWorker(process.argv[3]);
   // The detached coverage heartbeat (see maybePostureBeat). No stdin, no decision.
   if (cmd === "posturebeat") return runPostureBeatWorker(process.argv[3], process.argv[4], process.argv[5]);
+  // The detached alert sender (see handOffAlerts). No stdin, no decision.
+  if (cmd === "alertpost") return runAlertPostWorker(process.argv[3]);
 
   let input;
   try { input = JSON.parse((await readStdin()) || "{}"); } catch {
@@ -2041,8 +2078,8 @@ async function main() {
     ACTOR = SESSION;
     SUBAGENT_LINEAGE = {};
   }
-  let { policy, source, rejected, pin, trust, absence, lkgCopy, consoleUnreachable } = await loadVerifiedPolicy(CONFIG);
-  CONSOLE_UNREACHABLE = !!consoleUnreachable;
+  let { policy, source, rejected, pin, trust, absence, lkgCopy, deferAlerts } = await loadVerifiedPolicy(CONFIG);
+  DEFER_ALERTS = !!deferAlerts;
   PROV = { policyId: policyIdOf(policy), policySource: source || "", offline: false };
   // Ratcheted posture read BEFORE rememberPosture rewrites the copies, so this run still sees what the
   // device knew on the way in (and any tampering with it) rather than what we are about to record.

@@ -19,7 +19,7 @@ import { CONTENT_RULES } from "../data/content-rules.js";
 import { effectiveContentPolicy } from "../data/content-defaults.js";
 import { extractEndpointHosts, endpointApproved, extractTransitOverrides, proxyApproved } from "../data/model-endpoints.js";
 import { statePath, latchPath, breadcrumbPath } from "./state-dirs.mjs";
-import { readConsoleBackoff, recordConsoleFailure, clearConsoleBackoff, tcpProbe } from "./console-backoff.mjs";
+import { readConsoleBackoff, backoffSkipsFetch, recordConsoleFailure, clearConsoleBackoff } from "./console-backoff.mjs";
 import { TIER_OF } from "../data/data-tiers.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { compilePacks } from "../data/detector-packs.js";
@@ -1952,7 +1952,7 @@ function writePolicyPin(config, pin, keys, mark) {
 // as the cache, so `serverUrl` can be repointed at an attacker-run localhost that serves `{}` — the
 // identical bypass wearing a different hat. `rejected` carries the content-free (source, status) pairs
 // for the tamper alert; only those NAMES ever leave the device.
-export async function loadVerifiedPolicy(config) {
+export async function loadVerifiedPolicy(config, { backoffDraw } = {}) {
   const anchorKeys = policyKeys();    // explicit anchor: root-owned /etc/moorai/policy.pub or MDM env
   const pin = readPolicyPin();        // this device's own TOFU record
   const trust = policyTrust({ anchorKeys, pin, tenant: config.tenant });
@@ -2001,26 +2001,29 @@ export async function loadVerifiedPolicy(config) {
   // delivered fresh over the network from the configured server can arm or roll the pin forward.
   if (withinWindow && !absence.suspicious && cached && cached.policy) return { policy: cached.policy, source: "cache", rejected, pin, trust, absence };
 
-  // Console back-off (cli/console-backoff.mjs): a recent fetch got no HTTP response at all, so skip the
-  // network and resolve exactly as a failed fetch would. Never while the pin looks erased — that state
-  // fetches on every call because only a fresh fetch can re-pin the device.
-  const backoff = absence.suspicious ? { active: false, failures: 0, unreachable: false } : readConsoleBackoff();
-  // consoleUnreachable: no TCP connection to the console at all, so an alert post cannot be delivered.
-  let consoleUnreachable = backoff.active && backoff.unreachable;
-  if (!backoff.active) try {
+  // Console back-off (cli/console-backoff.mjs): a recent fetch got no HTTP response at all, so most calls
+  // skip the network and resolve exactly as a failed fetch would. Never while the pin looks erased — that
+  // state fetches on every call because only a fresh fetch can re-pin the device. The file is agent-
+  // writable, so it can only delay a fetch: backoffSkipsFetch still fetches on a random one call in eight.
+  const backoff = absence.suspicious ? { active: false, failures: 0 } : readConsoleBackoff();
+  const skipFetch = backoffSkipsFetch(backoff, backoffDraw);
+  // deferAlerts: this call has no HTTP answer of its own from the console (it skipped the fetch, or the
+  // fetch got none), so its alert posts go to a detached worker rather than holding the decision path.
+  // Decided from what this process did, never from the file: no outcome here drops an alert.
+  let deferAlerts = skipFetch;
+  if (!skipFetch) try {
     const headers = config.installToken ? { "X-Install-Token": config.installToken } : {};
     let reached = false;
     const q = (p) => fetch(`${config.serverUrl}${p}`, { headers, signal: AbortSignal.timeout(1500) }).then((r) => { reached = true; return r.ok ? r.text() : ""; }).catch(() => "");
     // The published-key fetch runs in PARALLEL with the policy fetch, so it costs no extra latency, and
     // only on devices with no explicit anchor (an anchored device already has the stronger statement).
-    const probe = tcpProbe(config.serverUrl, 1500);
     const [raw, published] = await Promise.all([
       q(`/api/policy?tenant=${encodeURIComponent(config.tenant)}`),
       trust.mode === "anchored" || trust.mode === "rebind" || trust.mode === "corrupt" ? Promise.resolve("") : q("/api/policy/pubkey")
     ]);
     // Any HTTP response means the console is reachable; only a fetch with no response backs off.
-    if (reached) { probe.cancel(); clearConsoleBackoff(); }
-    else { consoleUnreachable = !(await probe); recordConsoleFailure(backoff.failures, consoleUnreachable); }
+    if (reached) clearConsoleBackoff();
+    else { deferAlerts = true; recordConsoleFailure(backoff.failures); }
     if (raw && raw.trim()) {
       const v = verify(raw);
       // Cache the server's ORIGINAL bytes — the signature covers the policy body, and re-serializing
@@ -2053,7 +2056,7 @@ export async function loadVerifiedPolicy(config) {
     }
   } catch { /* offline */ }
 
-  if (cached && cached.policy) return { policy: cached.policy, source: "cache-offline", rejected, pin, trust, absence, consoleUnreachable };
+  if (cached && cached.policy) return { policy: cached.policy, source: "cache-offline", rejected, pin, trust, absence, deferAlerts };
   // Nothing live and nothing cached verified. Before falling through to "no policy" — which for a
   // fail-open org means exit(0), i.e. the attacker's bypass — enforce with the last policy that really
   // did pass verification, re-verified now against the same anchor/pin. Read lazily: three extra file
@@ -2064,8 +2067,8 @@ export async function loadVerifiedPolicy(config) {
     { source: "latch", raw: readText(POLICY_LKG_LATCH) },
     { source: "legacy", raw: readText(POLICY_LKG_LEGACY) }
   ], verify);
-  if (lkg) return { policy: lkg.policy, source: "last-known-good", lkgCopy: lkg.copy, rejected, pin, trust, absence, consoleUnreachable };
-  return { policy: null, source: "none", rejected, pin, trust, absence, consoleUnreachable };
+  if (lkg) return { policy: lkg.policy, source: "last-known-good", lkgCopy: lkg.copy, rejected, pin, trust, absence, deferAlerts };
+  return { policy: null, source: "none", rejected, pin, trust, absence, deferAlerts };
 }
 
 // Record the last VERIFIED policy, byte-for-byte as the console served it (the signature covers the

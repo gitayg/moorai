@@ -262,19 +262,16 @@ fn sandbox_profile(host_only: &str, egress: &str) -> String {
 }
 
 // egressRules / egressDefault for the Seatbelt network section, from the machine-wide config only
-// (/etc/moorai/config.json), read under the hook's rule (cli/hook-core.mjs readRootOwned): root-owned and
-// not group/world-writable, or ignored. ~/.moorai/config.json is agent-writable and never used here.
+// (/etc/moorai/config.json), read the way admin_config.rs reads every administrator source
+// (read_admin_owned: root-owned and not group/world-writable directories and file, no symlink, checked on
+// the descriptor that is read), or ignored. ~/.moorai/config.json is agent-writable and never used here.
 #[cfg(target_os = "macos")]
 const MACHINE_CONFIG: &str = "/etc/moorai/config.json";
 
 #[cfg(target_os = "macos")]
 fn machine_egress(path: &str) -> String {
-    use std::os::unix::fs::MetadataExt;
-    let Ok(md) = std::fs::metadata(path) else { return String::new() };
-    if md.uid() != 0 || md.mode() & 0o022 != 0 {
-        return String::new();
-    }
-    let doc: serde_json::Value = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let Some(text) = crate::admin_config::read_admin_owned(path) else { return String::new() };
+    let doc: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
     let (rules, dflt) = (doc.get("egressRules").filter(|v| !v.is_null()), doc.get("egressDefault").filter(|v| !v.is_null()));
     if rules.is_none() && dflt.is_none() {
         return String::new();

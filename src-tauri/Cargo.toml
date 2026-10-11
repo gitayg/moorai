@@ -1,6 +1,6 @@
 [package]
 name = "moorai"
-version = "1.12.0"
+version = "1.12.1"
 license = "MIT"
 description = "MoorAI Managed AI Host"
 edition = "2021"
@@ -21,6 +21,11 @@ base64 = "0.22"
 sha2 = "0.10"
 regex = "1"
 url = "2"
+
+# admin_config.rs: the user name from the OS user database (getpwuid_r) and O_NOFOLLOW opens of the admin
+# sources. Already in Cargo.lock as a transitive dep of tauri/reqwest — no new crate enters the build.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # #23 — on-device OCR via Vision.framework. The recognition model ships with macOS, so these are
 # binding crates only: nothing is added to the bundle and no image ever leaves the device.

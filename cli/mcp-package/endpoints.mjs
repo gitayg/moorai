@@ -12,6 +12,16 @@
 // A mirror must be an https URL with no credentials, query or fragment. An invalid value disables that
 // endpoint (null) rather than falling back to the public host, so a typo in an air-gapped setup never
 // sends a package name to the internet; the CLIs refuse to start on one (invalidMirrors).
+//
+// Every one of these names is read under the hook's trusted-environment rule (cli/server-mode.mjs
+// trustedEnv): a value that a user, project or local Claude Code settings file sets in its `env` block is
+// treated as unset. Claude Code applies that block to the session, so the hook and the stdio MCP servers
+// it starts (the MCP guard, whose reputation lookup uses these endpoints) inherit it, and a cloned
+// repository or the agent could otherwise point the lookup at a mirror that vouches for a malicious
+// package, or switch it off. Set mirrors in the shell environment or in managed settings.
+import { trustedEnv } from "../server-mode.mjs";
+
+const envValue = (name, env) => trustedEnv(name, { env });
 
 export const DEFAULT_ENDPOINTS = Object.freeze({
   npm: "https://registry.npmjs.org/",
@@ -38,9 +48,15 @@ export function mirrorUrl(v) {
 
 // The base URL for one endpoint, or null when its mirror variable is set but invalid.
 export function endpoint(name, env = process.env) {
-  const v = env[MIRROR_ENV[name]];
+  const v = envValue(MIRROR_ENV[name], env);
   if (v === undefined || v === "") return DEFAULT_ENDPOINTS[name];
   return mirrorUrl(v);
+}
+
+// Whether a mirror is in effect for this endpoint (set, and from a trusted source).
+export function mirrored(name, env = process.env) {
+  const v = envValue(MIRROR_ENV[name], env);
+  return v !== undefined && v !== "";
 }
 
 export function endpointHost(name, env = process.env) {
@@ -50,11 +66,11 @@ export function endpointHost(name, env = process.env) {
 
 // Mirror variables that are set but invalid, by name, for a CLI to refuse on.
 export function invalidMirrors(env = process.env) {
-  return Object.keys(MIRROR_ENV).filter((k) => env[MIRROR_ENV[k]] !== undefined && env[MIRROR_ENV[k]] !== "" && !mirrorUrl(env[MIRROR_ENV[k]])).map((k) => MIRROR_ENV[k]);
+  return Object.keys(MIRROR_ENV).filter((k) => { const v = envValue(MIRROR_ENV[k], env); return v !== undefined && v !== "" && !mirrorUrl(v); }).map((k) => MIRROR_ENV[k]);
 }
 
 export function isOffline(env = process.env) {
-  return env.MOORAI_OFFLINE === "1";
+  return envValue("MOORAI_OFFLINE", env) === "1";
 }
 
 export const OFFLINE_REASON = "not-checked (offline)";

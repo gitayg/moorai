@@ -2132,10 +2132,11 @@ dependencies = [
 
 [[package]]
 name = "moorai"
-version = "1.12.0"
+version = "1.12.1"
 dependencies = [
  "base64 0.22.1",
  "leptess",
+ "libc",
  "objc2",
  "objc2-foundation",
  "objc2-vision",

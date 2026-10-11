@@ -448,6 +448,7 @@ hook's environment, so a repository's `.claude/settings.json` could otherwise su
 `MOORAI_POLICY_PUBKEY`, `MOORAI_OFFLINE_MODE` or the OTLP export endpoint. On every device, laptop or server, a
 value that a user, project or local settings file sets for one of those is ignored and reported to the console
 (names only); a managed settings value, the launching environment and the root-owned anchor files are trusted.
+The registry mirrors (`MOORAI_NPM_REGISTRY` and the rest) and `MOORAI_OFFLINE` are read under the same rule.
 
 ### Server mode: Agent SDK and sidecar
 
@@ -738,13 +739,13 @@ Enforcement needs no network. The hook, `moorai-serve`, `moorai-mcp-gateway` and
 with a `--route` to a model inside the network decide on-device, and a device whose console is down keeps
 enforcing its cached policy, then its last-known-good verified policy, then the offline default. When the
 hook's policy fetch gets no answer, it backs off: later calls skip the policy fetch for 60 s, doubling to
-at most 5 minutes, and the first answer from the console resets it. When no TCP connection to the console
-opens at all, the alert posts are skipped too; their findings stay in the local audit log. Measured, 20
-calls each, same decisions before and after: with the console at an address that drops packets
-(192.0.2.1), an allowed call took 3.17 s (p50) and a denied one 4.64 s before, and after the first call
-(1.6 s) they take 0.12 s and 0.08 s. With a console that accepts connections and never answers, they take
-1.65 s and 3.12 s after, because posts to a console that accepts the connection are still sent and each
-waits up to 1.5 s. To configure:
+at most 5 minutes, except one call in eight, and the first answer from the console resets it. A call that
+has no answer from the console hands its alert posts to a detached worker instead of waiting on them, so
+every alert is still sent. The back-off file is in `~/.moorai`, where the agent can write it, so it can
+delay a policy refresh by about eight calls and cannot stop an alert. Measured, 40 calls each, same
+decisions, with the console at an address that drops packets (192.0.2.1): an allowed call takes 0.12 s
+(p50) and a denied one 0.09 s, against 3.17 s and 4.64 s when every call fetches; p95 is 1.67 s and 1.63 s,
+the calls that draw the forced fetch. To configure:
 
 - the model proxy with `--route /name=https://model.internal/...` per model endpoint inside the network,
   and `--connect-timeout` if 10 s is too long to wait for an unreachable one;
@@ -752,7 +753,9 @@ waits up to 1.5 s. To configure:
   `MOORAI_GITHUB_RAW_URL` and `MOORAI_GITHUB_CODELOAD_URL` (https only), or `--offline` / `MOORAI_OFFLINE=1`
   on `moorai-mcp-check` and `moorai-scan`, which then make no request and report `not-checked (offline)`.
   The same variables apply to the MCP proxy's opt-in registry lookup (`mcpReputation.lookup: "registry"`),
-  which `MOORAI_OFFLINE=1` skips;
+  which `MOORAI_OFFLINE=1` skips. Set them in the launching environment or in managed settings: a value
+  that a user, project or local Claude Code settings file sets in its `env` block is ignored, so a cloned
+  repository cannot redirect or switch off that lookup;
 - `MOORAI_OTLP_ENDPOINT` left unset, or pointed at a collector inside the network.
 
 These stay off: provider escalation (`semanticEscalation: "provider"`) and the OCR provider fallback, which

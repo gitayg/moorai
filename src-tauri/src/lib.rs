@@ -1,3 +1,4 @@
+mod admin_config;
 mod ai_keys;
 mod ai_runtime;
 mod console_binding;
@@ -452,10 +453,9 @@ fn about_info() -> serde_json::Value {
 // next launch skips Gatekeeper even while we're adhoc-signed.
 #[tauri::command]
 async fn check_and_install_update(app: tauri::AppHandle) -> Result<bool, String> {
-    // Endpoints are chosen per check (update_source.rs): the provisioned console, the cloud, or none.
-    let cfg = read_config();
-    let console = update_source::provisioned_console(&console_binding::host_dir(), &cfg);
-    let endpoints = match update_source::plan(console.as_deref(), &cfg, update_source::managed_disable_updates()) {
+    // Endpoints are chosen per check (update_source.rs) from administrator settings and the console the
+    // host recorded at enrolment: the self-hosted console, the cloud, or none. config.json has no say.
+    let endpoints = match update_source::choose(&console_binding::host_dir(), &read_config(), &admin_config::admin()) {
         update_source::Plan::Off(why) => { eprintln!("[moorai] updates off: {why}"); return Ok(false); }
         update_source::Plan::Endpoints(e) => e,
     };
@@ -806,11 +806,17 @@ fn identity() -> serde_json::Value {
     let tenant = cfg.get("tenant").and_then(|t| t.as_str()).unwrap_or("unprovisioned").to_string();
     let install_token = cfg.get("installToken").and_then(|t| t.as_str()).unwrap_or("").to_string();
     // The only origin the renderer may send the install token to (null = none), and why not, if so.
-    let console = console_binding::resolve(&console_binding::host_dir(), &cfg);
-    // The provisioned console as a bare origin (null when absent or unusable): the renderer's default
-    // base before enrolment, so a provisioned device never falls back to the MoorAI cloud.
-    let server_url = cfg.get("serverUrl").and_then(|v| v.as_str()).and_then(|s| console_binding::normalize_origin(s).ok());
-    serde_json::json!({ "user": user, "device": device, "platform": std::env::consts::OS, "tenant": tenant, "installToken": install_token, "appVersion": env!("CARGO_PKG_VERSION"), "console": console.origin, "consoleWarning": console.warning, "serverUrl": server_url })
+    let dir = console_binding::host_dir();
+    let console = console_binding::resolve(&dir, &cfg);
+    // The recorded console only when an enrolment in the app recorded it, not a first-use migration of
+    // config.json: where the renderer starts a re-enrolment or a signup (api.js enrolBase()).
+    let enrolled = console_binding::enrolled_console(&dir);
+    // The console an administrator provisioned (admin_config.rs: managed ServerURL, or the root/admin-
+    // owned machine file), as a bare origin or null: the renderer's base for enrolment and the other
+    // uncredentialed calls, so an MDM-provisioned device never falls back to the MoorAI cloud. Never
+    // config.json's serverUrl, which the agent can write.
+    let provisioned = admin_config::admin().console;
+    serde_json::json!({ "user": user, "device": device, "platform": std::env::consts::OS, "tenant": tenant, "installToken": install_token, "appVersion": env!("CARGO_PKG_VERSION"), "console": console.origin, "consoleWarning": console.warning, "provisionedConsole": provisioned, "enrolledConsole": enrolled })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

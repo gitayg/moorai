@@ -98,6 +98,16 @@ pub fn record_enrolment(dir: &str, incoming: &Value) -> Result<(), String> {
     write_binding(dir, &origin, "enrolment")
 }
 
+// The recorded console when an enrolment in the app recorded it (source "enrolment"), else None. A console
+// recorded by first-use migration of config.json's serverUrl is left out: on a device that never enrolled
+// the agent can have planted it, so it may receive the device's own token but never start an enrolment or
+// a signup (the renderer's enrolBase(), via identity.enrolledConsole).
+pub fn enrolled_console(dir: &str) -> Option<String> {
+    let origin = read_binding(dir).ok()??;
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(format!("{dir}/{BINDING_FILE}")).ok()?).ok()?;
+    (v.get("source").and_then(|s| s.as_str()) == Some("enrolment")).then_some(origin)
+}
+
 pub type Fetch<'a> = &'a dyn Fn(&str, &str) -> Result<Value, String>;
 
 // Tests that point HOME at a scratch directory hold this, so they never see each other's HOME.
@@ -255,6 +265,18 @@ mod tests {
         assert_eq!(read_binding(&dir).unwrap().as_deref(), Some("https://app.moorai.dev"));
         record_enrolment(&dir, &json!({ "installToken": "t", "serverUrl": "https://acme.example:8443" })).unwrap();
         assert_eq!(read_binding(&dir).unwrap().as_deref(), Some("https://acme.example:8443"), "re-enrolling moves the console");
+        assert_eq!(enrolled_console(&dir).as_deref(), Some("https://acme.example:8443"), "an enrolment may start the next one");
+    }
+
+    #[test]
+    fn a_console_recorded_by_migration_is_not_an_enrolled_console() {
+        let dir = scratch("migrated");
+        assert_eq!(enrolled_console(&dir), None, "no record");
+        let r = resolve(&dir, &json!({ "serverUrl": "https://collector.evil.test", "installToken": "tok-planted" }));
+        assert_eq!(r.origin.as_deref(), Some("https://collector.evil.test"));
+        assert_eq!(enrolled_console(&dir), None, "a migrated console never starts an enrolment or a signup");
+        record_enrolment(&dir, &json!({ "installToken": "t", "serverUrl": "https://moorai.acme.internal" })).unwrap();
+        assert_eq!(enrolled_console(&dir).as_deref(), Some("https://moorai.acme.internal"));
     }
 
     #[test]
@@ -303,6 +325,24 @@ mod tests {
         assert_eq!(id["console"], "https://console.good.test", "the renderer is handed the recorded console: {id}");
         assert!(id["consoleWarning"].as_str().unwrap_or("").contains("collector.example.net"), "and told the change was ignored: {id}");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn identity_does_not_hand_the_renderer_a_planted_server_url() {
+        let _g = TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = scratch("idhome");
+        let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let saved: Vec<(&str, Option<String>)> = [var, "LOCALAPPDATA", "XDG_DATA_HOME"].into_iter().map(|k| (k, std::env::var(k).ok())).collect();
+        std::env::set_var(var, &home);
+        std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("XDG_DATA_HOME");
+        // what an agent writes on a device that has not enrolled yet
+        std::fs::create_dir_all(format!("{home}/.moorai")).unwrap();
+        std::fs::write(format!("{home}/.moorai/config.json"), json!({ "serverUrl": "https://collector.evil.test" }).to_string()).unwrap();
+        let id = crate::identity();
+        for (k, v) in saved { match v { Some(v) => std::env::set_var(k, v), None => std::env::remove_var(k) } }
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(!id.to_string().contains("collector.evil.test"), "identity() names the planted console to the renderer: {id}");
     }
 
     #[test]

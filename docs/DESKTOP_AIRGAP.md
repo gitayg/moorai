@@ -1,47 +1,80 @@
 # Desktop app with a self-hosted or air-gapped console
 
-From v1.12.0 the MoorAI desktop app (Tauri, `src-tauri/` + `src/`) works with a console you run
-yourself, at any origin. A device provisioned to such a console sends nothing to the MoorAI cloud
+The MoorAI desktop app (Tauri, `src-tauri/` + `src/`) works with a console you run yourself, at any
+origin. A device provisioned to such a console by an administrator sends nothing to the MoorAI cloud
 (`app.moorai.dev`, `moorai.glick.run`), before or after enrolment.
 
 ## Which console the app uses
 
-The webview's console is chosen in this order (`serverBase()` in `src/api.js`):
+`~/.moorai/config.json` and the webview's localStorage are writable by any process running as the user,
+including the agent MoorAI guards. So neither decides where the install token goes, where updates come
+from, or whether updates run. Three sources do:
 
-1. the console the host recorded at enrolment (`console.json` in the host-only `MoorAI Host`
-   directory, see `src-tauri/src/console_binding.rs`);
-2. the provisioned `serverUrl` in `~/.moorai/config.json`, e.g. written by the Jamf / Intune deploy
-   scripts in `packaging/mdm/`;
-3. a `raiseme.server` override in the webview's localStorage (https, or http to localhost only);
-4. `https://app.moorai.dev`, the MoorAI cloud console.
+- **The recorded console.** The host records the console in `console.json` in the host-only `MoorAI Host`
+  directory (`src-tauri/src/console_binding.rs`) when the device enrols in the app. An install enrolled
+  before that file existed, or provisioned by an MDM script that writes `config.json`, has its
+  `config.json` console recorded once, on first use.
+- **The administrator-provisioned console** (`src-tauri/src/admin_config.rs`):
+  - on macOS, the managed preference `ServerURL` in the `run.glick.moorai` domain, as
+    `packaging/mdm/jamf/MoorAI-config.mobileconfig` sets it
+    (`/Library/Managed Preferences/<user>/run.glick.moorai.plist`, then
+    `/Library/Managed Preferences/run.glick.moorai.plist`). `<user>` is the login name of the app's user
+    ID from the user database, not `USER`, `LOGNAME` or `HOME`, which whoever starts the app sets. A name
+    containing `/`, `\`, `..` or NUL drops the per-user path;
+  - on macOS and Linux, `serverUrl` in `/etc/moorai/config.json`;
+  - on Windows, `serverUrl` in `<ProgramData>\MoorAI\config.json`, read only when its ACL lets nobody but
+    Administrators, SYSTEM or TrustedInstaller write it. ProgramData and the `icacls.exe` directory come
+    from HKLM, not from the `ProgramData` and `SystemRoot` environment variables. The file is held open
+    without write or delete sharing from the ACL check to the read, and a symlink or junction at the file
+    is refused.
 
-Step 4 applies only to an unprovisioned consumer install, which is the product's existing behaviour.
-Once a device has a recorded console or a provisioned `serverUrl`, the cloud is never used as a
-fallback.
+  On macOS and Linux each of these files is read only when its directory, after resolving symlinks, lies
+  under `/Library/Managed Preferences` or `/etc/moorai`; that directory and every directory above it is
+  owned by root and not group- or world-writable; and the file is not a symlink, is owned by root and is not
+  group- or world-writable. The ownership and mode are checked on the open file, which is then the one
+  read. A plist is passed to `/usr/bin/plutil` on stdin. A file that fails any check is ignored.
+- **The MoorAI cloud**, `https://app.moorai.dev`, for an unprovisioned consumer install.
 
-Calls that carry the install token always go to the recorded console (step 1). Neither the webview
-nor `config.json` can redirect them.
+The webview uses them as follows (`src/api.js`):
+
+| Call | Console |
+|---|---|
+| Calls with the install token (policy, alerts, prompt events, device and agent-posture reports) | the recorded console only |
+| Enrolment with a bare token, and in-app signup (`enrolBase()`) | the administrator-provisioned console, else the recorded console when an enrolment in this app recorded it, else the cloud |
+| Enrolment with a link, `https://<console>/d/<token>` | the console in the link |
+| The default policy of an unenrolled device (`serverBase()`) | the administrator-provisioned console, else the recorded console, else as for enrolment |
+
+A recorded console that came from the first-use record of `config.json` is not where a bare token goes,
+because on a device that never enrolled the agent can have planted that `config.json`. localStorage's
+`raiseme.server` plays no part in the desktop app: it lives in WebKit storage under the user's home
+(`~/Library/WebKit/<bundle id>/` on macOS), which the agent can write. Only the plain-browser build, which
+has no host to record a console, still reads it. A device provisioned by an administrator never falls back to the
+cloud. A device whose MDM writes only `config.json` keeps its recorded console for every credentialed call
+and for updates; to keep a bare-token re-enrolment or a signup off the cloud too, also set the managed
+`ServerURL` or the machine file's `serverUrl`.
 
 ## Enrolling against a self-hosted console
 
 - **MDM:** write `serverUrl`, `tenant` and `installToken` to `~/.moorai/config.json`
-  (`packaging/mdm/`). The host records the console on first use.
+  (`packaging/mdm/`). The host records the console on first use. Set the console in the managed
+  preference `ServerURL` (macOS) or the machine file as well, so the app uses it before enrolment and for
+  updates whatever `config.json` says later.
 - **In the app:** paste the console's enrolment link, `https://<your-console>/d/<token>`, into the
-  installation-token field. A bare token enrols against the console from the list above.
+  installation-token field. A bare token enrols against `enrolBase()` above.
 
 A console URL must be https. Plain http is accepted only for `localhost`, `127.0.0.1` and `[::1]`
 (local development).
 
 ## Console calls go through the host, and the CSP names no console
 
-The webview no longer fetches the console itself. Every console call from `src/api.js` (policy,
+The webview does not fetch the console itself. Every console call from `src/api.js` (policy,
 alerts, prompt events, device and agent-posture reports, enrolment, signup) goes through the host
 command `console_fetch` (`src-tauri/src/console_http.rs`):
 
 - **Calls with the install token:** the host picks the recorded console and attaches the token. The
   token never crosses into the webview's request, and the webview cannot name the origin.
 - **Calls without a credential** (enrolment, signup, the default policy) go to the origin the webview
-  names. No token is attached.
+  names, chosen as in the table above. No token is attached.
 - **Rules for every call:**
   - https only, with plain http allowed for localhost;
   - the request must stay on the console's origin;
@@ -59,31 +92,38 @@ The updater's endpoints are chosen at runtime, for each check (`src-tauri/src/up
 
 | Device | Update endpoint |
 |---|---|
-| Provisioned to a console that is not a MoorAI cloud origin | `<console>/api/update` only |
-| Unprovisioned, or on the MoorAI cloud | `https://app.moorai.dev/api/update`, then `https://moorai.glick.run/api/update` |
-| Updates turned off | none: no request is made |
+| Administrator-provisioned console (managed `ServerURL` or the admin-owned machine file), or a console the user enrolled to in the app, that is not a MoorAI cloud origin (the administrator's wins) | `<console>/api/update` only |
+| Unprovisioned, on the MoorAI cloud, or bound only by first-use migration of `~/.moorai/config.json` (that file is user- and agent-writable, so it never chooses the update source; MDM deployments set `ServerURL` instead) | `https://app.moorai.dev/api/update`, then `https://moorai.glick.run/api/update` |
+| Updates turned off by an administrator | none: no request is made |
 
-**Turning updates off.** Either setting below stops the app from building an updater, so it makes
-no network attempt.
+`serverUrl` and `updates` in `~/.moorai/config.json` play no part: a value planted there neither points
+update checks at another server nor stops them.
 
-- **`~/.moorai/config.json`:** add `"updates": "off"` (or `"updates": false`). Any process running
-  as the user can change this file, so it can switch updates off but cannot be relied on to keep
-  them off.
+**Turning updates off.** Either administrator setting below stops the app from building an updater, so it
+makes no network attempt.
+
 - **macOS managed preference:** set the boolean `DisableUpdates` to true in the `run.glick.moorai`
   domain, for example as a Forced key in the existing `MoorAI-config.mobileconfig`. The app reads
   `/Library/Managed Preferences/<user>/run.glick.moorai.plist`, then
-  `/Library/Managed Preferences/run.glick.moorai.plist`. These files are root-owned, so a process
-  running as the user cannot undo the setting. A managed `true` overrides `config.json`.
+  `/Library/Managed Preferences/run.glick.moorai.plist`. A managed `true` wins over the machine file.
+- **Machine file:** `"updates": "off"` (or `"updates": false`) in `/etc/moorai/config.json` (macOS,
+  Linux), owned by root and not group- or world-writable, not a symlink, in root-owned directories, or in
+  `<ProgramData>\MoorAI\config.json` (Windows) with an ACL that lets only Administrators, SYSTEM or
+  TrustedInstaller write it. A file that fails those checks is ignored. For example:
+  `sudo install -d -m 0755 -o root /etc/moorai && echo '{"updates":"off"}' | sudo tee /etc/moorai/config.json && sudo chmod 0644 /etc/moorai/config.json`.
+  If the file already exists (it also holds server mode and egress settings), add the key to it.
 
-Windows and Linux have no managed setting for this yet. Use `config.json`.
+On Windows, `icacls` does not report a file's owner, so a file an ordinary user created and then limited
+to an administrator-only ACL passes the check. Remove ordinary users' write access to
+`<ProgramData>\MoorAI` at install time so they cannot create one.
 
 **Signatures are unchanged.** Every update must still be signed with MoorAI's updater key (the
 `pubkey` in `tauri.conf.json`). A self-hosted console can serve only builds that MoorAI signed. It
 cannot sign its own builds and cannot downgrade the app.
 
-The webview no longer holds the `updater:default` permission. Before this change, the webview could
-call the updater plugin directly, which bypassed the endpoint choice and the off switch and allowed
-downgrades. Now only the host's `check_and_install_update` command runs updates.
+The webview does not hold the `updater:default` permission, which would let it call the updater plugin
+directly, past the endpoint choice and the off switch, and allow downgrades. Only the host's
+`check_and_install_update` command runs updates.
 
 Release builds refuse a plain-http update endpoint (`InsecureTransportProtocol` in
 tauri-plugin-updater). A production self-hosted console must therefore serve https. Debug builds
