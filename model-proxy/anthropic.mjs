@@ -10,7 +10,7 @@
 //             arrives as input_json_delta "partial JSON strings", complete at its content_block_stop.
 //   errors    {"type":"error","error":{"type","message"}}; mid-stream, `event: error` with the same body.
 export { replaceResponse, createReplaceStream } from "./anthropic-replace.mjs";
-import { parseArgs, DUPLICATE_KEY_REASON } from "./json-strict.mjs";
+import { parseArgs } from "./json-strict.mjs";
 export const NAME = "anthropic";
 
 const texts = (content) => {
@@ -66,9 +66,9 @@ export function createStream({ enforce, decide, maxHold }) {
   let hold = null;
   const parse = (s) => { try { return JSON.parse(s); } catch { return null; } };
   function call(h) {
-    let input = h.input, raw = null, dup = false;
-    if (h.args) { const r = parseArgs(h.args); dup = r.dup; if (isObj(r.value) && !dup) input = r.value; else raw = h.args; }
-    return { id: h.id, name: h.name, input: isObj(input) ? input : {}, raw, ...(dup ? { rawReason: DUPLICATE_KEY_REASON } : {}), over: h.over };
+    let input = h.input, raw = null, reason, large = [];
+    if (h.args) { const r = parseArgs(h.args); reason = r.rawReason; large = r.large; if (r.ok) input = r.value; else raw = h.args; }
+    return { id: h.id, name: h.name, input: isObj(input) ? input : {}, raw, ...(reason ? { rawReason: reason } : {}), ...(large.length ? { numbers: large } : {}), over: h.over };
   }
   async function settle(h) {
     if (!enforce) { decide([call(h)]).catch(() => {}); return { out: [] }; }

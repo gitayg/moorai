@@ -37,8 +37,8 @@ test("hasDuplicateKeys: repeated keys at any depth, compared after unescaping; a
   const cases = [['{"a":1,"a":2}', true], ['{"a":1,"\\u0061":2}', true], ['{"x":[{"k":1,"k":2}]}', true], ['{"a":"x\\"","b":"\\\\","a":3}', true],
     ['{"a":{"b":1},"b":2}', false], ['[{"a":1},{"a":2}]', false], ['{"a":"{\\"b\\":1,\\"b\\":2}"}', false], ['{"a":[1,{"c":1}],"c":2}', false], ['"a"', false]];
   for (const [t, want] of cases) assert.equal(hasDuplicateKeys(t), want, t);
-  assert.deepEqual(parseArgs(DUP), { value: { command: "ls -la" }, dup: true });
-  assert.deepEqual(parseArgs('{"command":"ls"}'), { value: { command: "ls" }, dup: false });
+  assert.deepEqual(parseArgs(DUP), { value: { command: "ls -la" }, problem: "duplicate-key", ok: false, rawReason: "tool call arguments repeat a key, so a client may read a different value than the one checked", large: [] });
+  assert.deepEqual(parseArgs('{"command":"ls"}'), { value: { command: "ls" }, problem: null, ok: true, rawReason: undefined, large: [] });
 });
 
 test("an argument string that repeats a key is kept raw with its reason (OpenAI and Ollama string arguments), never parsed to its last value", () => {

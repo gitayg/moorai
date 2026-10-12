@@ -20,18 +20,20 @@ export function wrapReporter(rt, { enforce }) {
 }
 
 // One alert per label for content the proxy could not evaluate in full (an item past the scan cap, more
-// new items than one request scans, tool-call arguments past the hold cap).
+// new items than one request scans, tool-call arguments past the hold cap) — kind "size" — or could not
+// evaluate as the one reading every client takes (a response or arguments that are not strict JSON, a tool
+// call that reads more than one way: README "Parser differentials") — kind "input", UNEVALUATED_BAD_INPUT.
 export function unevaluatedReporter(rt) {
   const seen = new Set();
-  return (label, direction) => {
+  return (label, direction, kind = "size") => {
     const name = String(label || "unknown").replace(/[^A-Za-z0-9_.:\-]/g, "_").slice(0, 64);
     const k = `${direction}:${name}`;
     if (seen.has(k)) return;
     if (seen.size >= 1024) seen.clear();
     seen.add(k);
     rt.ready().then((s) => rt.reporter.post({
-      threatId: 0, category: "Model proxy: content not evaluated (size cap)", riskLevel: "Info", stage: direction === "request" ? "prompt" : "tool",
-      tool: `model-proxy:${name}`, reasonCode: REASON.UNEVALUATED_SIZE_CAP, enforcement: ENFORCEMENT.UNEVALUATED, contentHash: rt.hash(k)
+      threatId: 0, category: kind === "input" ? "Model proxy: content not evaluated (no one reading)" : "Model proxy: content not evaluated (size cap)", riskLevel: "Info", stage: direction === "request" ? "prompt" : "tool",
+      tool: `model-proxy:${name}`, reasonCode: kind === "input" ? REASON.UNEVALUATED_BAD_INPUT : REASON.UNEVALUATED_SIZE_CAP, enforcement: ENFORCEMENT.UNEVALUATED, contentHash: rt.hash(k)
     }, { prov: { policyId: s.policyId, policySource: s.source, event: direction === "request" ? "ModelRequest" : "PreToolUse" } })).catch(() => {});
   };
 }

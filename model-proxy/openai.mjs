@@ -14,7 +14,7 @@
 //   errors    ErrorResponse {error: {message, type, param, code}}. Mid-stream there is no documented error
 //             event; the official SDK (openai-node src/core/streaming.ts) throws on any chunk with `error`.
 export { replaceResponse, createReplaceStream } from "./openai-replace.mjs";
-import { parseArgs, DUPLICATE_KEY_REASON } from "./json-strict.mjs";
+import { parseArgs } from "./json-strict.mjs";
 export const NAME = "openai";
 
 const texts = (content) => {
@@ -38,11 +38,12 @@ export function outboundItems(body) {
 }
 
 const parse = (s) => { try { return JSON.parse(s); } catch { return null; } };
-// A string that repeats a key is kept raw (refused in enforce mode): json-strict.mjs.
+// A string that is not strict JSON (a repeated key, keys that differ only in case …) is kept raw (refused in
+// enforce mode): json-strict.mjs.
 function fromArgs(id, name, args, over = false) {
-  const { value: p, dup } = typeof args === "string" ? parseArgs(args) : { value: null, dup: false };
-  const ok = p && typeof p === "object" && !Array.isArray(p) && !dup;
-  return { id: String(id || ""), name: String(name || ""), input: ok ? p : {}, raw: ok || !args ? null : String(args), ...(dup ? { rawReason: DUPLICATE_KEY_REASON } : {}), over };
+  const a = typeof args === "string" ? parseArgs(args) : null;
+  const ok = Boolean(a && a.ok);
+  return { id: String(id || ""), name: String(name || ""), input: ok ? a.value : {}, raw: ok || !args ? null : String(args), ...(a && a.rawReason ? { rawReason: a.rawReason } : {}), ...(a && a.large.length ? { numbers: a.large } : {}), over };
 }
 
 export function responseToolCalls(body) {

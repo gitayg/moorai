@@ -9,8 +9,10 @@
 // "allow" is accepted and does nothing (nothing here loosens a verdict). Names are matched after foldName
 // (below) on both sides, so a name a lenient client would still resolve to the rule's function (another
 // case, `-` for `_`, a `functions.` prefix, padding, zero-width or full-width characters) is matched too; a
-// key ending in `*` matches every folded name with that prefix (egress-rule path style: the `*` only at the
-// end, and not alone). When several keys match, the strictest action wins. A key that is not 1-128 of
+// key ending in `*` matches every name with that prefix (egress-rule path style: the `*` only at the end,
+// and not alone, nor after a namespace alone such as `tools.*`, which is ignored with a warning). Raw,
+// case-folded and fully folded forms are all matched (formsOf), so folding never removes a match the raw
+// name had. When several keys match, the strictest action wins. A key that is not 1-128 of
 // A-Z a-z 0-9 _ . : - (plus the trailing `*`), or an action outside the vocabulary, is ignored.
 //
 // SOURCE. The policy the runtime loaded (the verified console policy, --policy-file, or options) — never a
@@ -31,23 +33,39 @@ export function normalizeName(name) {
 }
 // For rule matching: normalizeName, case-folded, `-` read as `_`.
 export const foldName = (name) => normalizeName(name).toLowerCase().replace(/-/g, "_");
-const EMPTY = Object.freeze({ exact: new Map(), prefix: [] });
+// Folding must only ever ADD matches. The full fold strips a namespace prefix, so `tools.delete_all` folds to
+// `delete_all` and no longer starts with a `tools*` key: every rule key and every name is matched in each of
+// its forms — as written, case/`-` folded without the prefix strip, and fully folded — and the strictest
+// action over every form that matches wins.
+const lightFold = (name) => String(name ?? "").normalize("NFKC").replace(/[\p{Cc}\p{Cf}]/gu, "").trim().toLowerCase().replace(/-/g, "_");
+const formsOf = (name) => [...new Set([String(name ?? ""), lightFold(name), foldName(name)])];
+const EMPTY = Object.freeze({ exact: new Map(), prefix: [], ignored: [] });
 const cache = new WeakMap();
 
-export function functionRulesFrom(policy) {
+// A wildcard whose prefix folds to nothing (`tools.*`, `functions.*`: a namespace and nothing else) would match
+// every function; it is almost certainly a typo, so it is ignored, listed in `ignored`, and reported once per
+// loaded policy through `warn` (stderr by default) — never a silent block of every call.
+const stderrWarn = (msg) => { try { process.stderr.write(`moorai-model-proxy: ${msg}\n`); } catch {} };
+export function functionRulesFrom(policy, { warn = stderrWarn } = {}) {
   const m = policy && typeof policy === "object" ? policy.functionToolActions : undefined;
-  if (!m || typeof m !== "object" || Array.isArray(m)) return { exact: new Map(), prefix: [] };
-  const exact = new Map(), prefix = [];
+  if (!m || typeof m !== "object" || Array.isArray(m)) return { exact: new Map(), prefix: [], ignored: [] };
+  const exact = new Map(), prefix = [], ignored = [];
   for (const [key, act] of Object.entries(m)) {
     if (!(act in ACTION_RANK) || act === "allow") continue;
     const star = key.endsWith("*");
     const base = star ? key.slice(0, -1) : key;
     if (!NAME_RE.test(base)) continue;
-    const k = foldName(base);
-    if (star) prefix.push([k, act]);
-    else if (!exact.has(k) || ACTION_RANK[act] > ACTION_RANK[exact.get(k)]) exact.set(k, act);
+    if (star && !foldName(base)) {
+      ignored.push(key);
+      warn(`functionToolActions key ${JSON.stringify(key)} ignored: its prefix is only a namespace, so it would match every function`);
+      continue;
+    }
+    for (const k of formsOf(base)) {
+      if (star) prefix.push([k, act]);
+      else if (!exact.has(k) || ACTION_RANK[act] > ACTION_RANK[exact.get(k)]) exact.set(k, act);
+    }
   }
-  return { exact, prefix };
+  return { exact, prefix, ignored };
 }
 
 export function rulesOf(policy) {
@@ -57,11 +75,15 @@ export function rulesOf(policy) {
   return r;
 }
 
-// The strictest action ("block" | "ask" | "alert") whose key matches `name` (both folded), or null.
+// The strictest action ("block" | "ask" | "alert") whose key matches `name`, in any form of either, or null.
 export function functionActionFor(rules, name) {
-  const n = typeof name === "string" ? foldName(name) : "";
-  if (!n) return null;
-  let best = rules.exact.get(n) || null;
-  for (const [p, act] of rules.prefix) if (n.startsWith(p) && (!best || ACTION_RANK[act] > ACTION_RANK[best])) best = act;
+  if (typeof name !== "string" || !foldName(name)) return null;
+  let best = null;
+  const take = (act) => { if (act && (!best || ACTION_RANK[act] > ACTION_RANK[best])) best = act; };
+  for (const n of formsOf(name)) {
+    if (!n) continue;
+    take(rules.exact.get(n));
+    for (const [p, act] of rules.prefix) if (n.startsWith(p)) take(act);
+  }
   return best;
 }

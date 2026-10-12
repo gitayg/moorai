@@ -232,12 +232,26 @@ only content-scanned). Code: [`function-rules.mjs`](function-rules.mjs), applied
   `delete-project-files`, `functions.delete_project_files` and `delete_project_files` with a zero-width
   space all match the key `delete_project_files`; `delete_project_files2` does not, and neither does a name
   spelled with a look-alike letter from another script (Cyrillic `е`), which no client resolves to the Latin
-  name. A key ending in `*` matches every folded name with that prefix (the egress-rule path style: `*` only
-  at the end, never alone). When several keys match, the strictest action wins. A key that is not 1–128 of
-  `A-Z a-z 0-9 _ . : -` (plus the trailing `*`), or a value outside the vocabulary, is ignored.
-- **Inner names.** A name in a name key (`function`, `name`, `tool`, `tool_name`) beside a wrapper object in
-  the arguments, `{"name": "delete_project_files", "arguments": {…}}` sent to a dispatcher function, is
-  matched too: the dispatcher could run that function.
+  name. A key ending in `*` matches every name with that prefix (the egress-rule path style: `*` only at the
+  end, never alone). When several keys match, the strictest action wins. A key that is not 1–128 of
+  `A-Z a-z 0-9 _ . : -` (plus the trailing `*`), or a value outside the vocabulary, is ignored. A wildcard
+  whose prefix folds to nothing — a namespace alone, `tools.*`, `functions.*`, `default_api.*` — would match
+  every function; it is almost certainly a typo, so it is ignored, with one stderr warning per loaded policy
+  (`moorai-model-proxy: functionToolActions key "tools.*" ignored: …`), instead of blocking every call. A key
+  `tools*` (no dot) is valid and matches `tools.delete_all` and `toolsmith`.
+- **Folding only adds matches.** Every key and every name is matched in three forms: as written, case and
+  `-` folded without removing a namespace prefix, and fully folded; the strictest action over every form
+  that matches wins (`function-rules.mjs formsOf`). Without the raw forms the full fold removed matches: the
+  key `tools*` did not match the name `tools.delete_all`, which folds to `delete_all`. `allow` is never a
+  match, so no form of a name can loosen another rule's action.
+- **Inner names.** A name in a name key (`function`, `name`, `tool`, `tool_name`) anywhere in the arguments
+  is matched too, at the top level or inside a wrapper, whether the arguments beside it are an object, a JSON
+  string, other fields, or absent: `{"name": "delete_project_files", "arguments": {…}}`,
+  `{"name": "delete_project_files", "arguments": "{…}"}`, `{"name": "delete_project_files"}` and
+  `{"tool_name": "delete_project_files", "confirm": true}` sent to a dispatcher function are all matched,
+  because the dispatcher could run that function. (Until v1.13.5 only the first form was matched.) A name key
+  that happens to equal a blocked function's name in an ordinary call (`create_user {"name": …}`) is
+  matched too; nothing else about such a call changes.
 - **Order.** The rule runs on the name before the arguments are read. A `block` (or a settled `ask`) denies
   the call outright; otherwise the arguments are decided as before, and the stricter verdict wins. It
   applies to every function name the model calls through the proxy, `mcp__*` and mapped names (`Bash`,
@@ -277,25 +291,62 @@ reading is decided too (next section), so a harmless top-level `command` no long
 ### Parser differentials
 
 The checker and the client that runs a tool call must agree on which function runs with which arguments.
-Where a client could read the same response differently, `check.mjs readings` decides every reading and
-the strictest verdict wins; where the reading a client takes cannot be known, enforce mode refuses the call
-as ambiguous ("tool call arguments can be read more than one way …"). Report mode decides and reports every
-reading and forwards the response as sent.
+**The principle: the proxy decides ONE canonical reading of each tool call.** Every reading a client could
+take is decided (`check.mjs readings`) and the strictest verdict wins. Where the text or the call has no one
+reading — the JSON is not strict, or two readings differ in a field the decision is made on — enforce mode
+refuses it, replace mode withholds the turn's tool calls (replace is enforce: the same checker, the same
+refusals), and report mode forwards it as sent and reports it as `UNEVALUATED_BAD_INPUT` (category
+`Model proxy: content not evaluated (no one reading)`, one alert per kind and process, content-free).
+
+**Strict JSON** (`json-strict.mjs`), for every tool call's argument string (OpenAI, Anthropic streaming,
+Ollama string arguments) and for every response body, SSE event's data and NDJSON line on a parsed path
+(which covers the argument objects inside Anthropic, Gemini and Ollama responses). Refused in enforce and
+replace mode, reported in report mode (`tool-call-arguments`, or `response-<condition>` below):
+
+| Condition | Why a client could read it differently |
+|---|---|
+| `not-json`: anything `JSON.parse` rejects — `NaN`, `Infinity`, comments, trailing commas, single quotes | a lenient client still reads it: Python's `json` (the OpenAI and Anthropic Python SDKs' stream parser) accepts `NaN` and `Infinity`. An SSE event that is not strict JSON used to be forwarded unread, and a tool call inside it was never checked. Only an empty data field and `[DONE]` are exempt |
+| `duplicate-key`: an object repeats a key (after unescaping: `"\u0063ommand"` is `"command"`) | `JSON.parse` keeps the last value, simdjson's `find_field` the first, serde / Gson maps / .NET dictionaries throw |
+| `key-collision`: two keys of one object differ only in case, after a NUL, or by an unpaired surrogate (compared cut at NUL, unpaired surrogates as U+FFFD, `toUpperCase().toLowerCase()`) | Go's `encoding/json` binds `{"command": "ls -la", "Command": "rm -rf ~"}` to one struct field and the last key wins (measured with Go: `command="rm -rf ~"`), as does case-insensitive .NET binding; Go turns unpaired surrogates into U+FFFD, merging `"x\ud800"` and `"x\udc00"`; C-string parsers stop at a NUL |
+| `lone-surrogate`: a string with an unpaired UTF-16 surrogate | `JSON.parse` and Python keep it, Go replaces it with U+FFFD, serde rejects it |
+| `too-deep`: nesting past 128 levels | serde_json's own default recursion limit is 128; the checker and a client could stop at different depths |
+| `unsafe-number`: an integer literal beyond ±(2^53 − 1), or a number that overflows to ±Infinity, **in a field that groups, orders or counts tool calls** — OpenAI `choices[].index` and `choices[].delta.tool_calls[].index` (or `message.tool_calls[].index`), an Anthropic stream event's content-block `index`, Ollama `message.tool_calls[].function.index`, Gemini `candidates[].index` (`json-strict.mjs STRUCTURAL`; body and event scans only) | a double parser and an integer parser read different values: two stream tool calls with `index` 2^53 and 2^53 + 1 are one call to `JSON.parse` (their arguments merged) and two to Python. **Anywhere else** — an argument value such as `{"user_id": 1234567890123456789}`, in an argument string or an argument object — such a number is not refused and not reported: no decision reads a number (every decision field is a string), the call is decided normally and its bytes are released as sent. Its source digits (`large`) go with the response's tool calls to the content scan, which `JSON.stringify` alone would show rounded (`9007199254741055` → `…056`, which fails the card check digit) |
+| `invalid-utf8` (bytes as received) | Node reads U+FFFD; another decoder may refuse, or decode differently |
+
+`json-strict.mjs` is its own RFC 8259 recognizer (linear, iterative, no recursion at any depth); it does not
+trust `JSON.parse` to have validated the text, and it agrees with `JSON.parse` on what is valid JSON and on
+what every string and key decodes to (`\u0000`, `\/`, surrogate pairs and halves, every escape, `-0`):
+`test/model-proxy-json-strict-fuzz.test.mjs` checks the two against each other on 6,000 generated inputs
+from a fixed seed. Cost, measured on an M-series Mac: about 140 MB/s (28 ms for a 5.2 MB body, against 7 ms
+for `JSON.parse`); a body at the 32 MB `--max-response` cap blocks about 0.25 s. A number with a fraction or
+an exponent that every double parser reads alike (`1.5`, `1e3`) is not refused. The source digits of at most 256
+large numbers per response are kept for the content scan; each is scanned on its own line, so a digit-run
+pattern never joins two of them, and every content-scanned call of the response gets all of them (a number
+from another call of the same response can therefore add a finding, never remove one).
+
+**Readings.** Each of these is a reading; two readings whose decision fields differ (`check.mjs
+decisionKey`: `command` for Bash / PowerShell / Shell, `file_path` for Read, `file_path` + `content` for
+Write, `file_path` + `new_string` for Edit, `url` for WebFetch, `prompt` for Task / Agent) make the call
+ambiguous, refused in enforce and replace mode and reported as `tool-call-ambiguous` in report mode. A
+reading with no decision field (a hook tool's wrapper object with no `command`) does not count. An MCP
+tool's readings are all decided but never make a call ambiguous: its input goes to its server whole.
 
 | What could differ | What the proxy does |
 |---|---|
 | A wrapper object (`arguments`, `parameters`, `args`, `input`) beside top-level fields, `{"command": "ls", "arguments": {"command": "rm -rf ~"}}`: this checker mapped the top level and never read the wrapper; a client that unwraps runs the inner one | every object under a wrapper key, up to 4 levels, is a reading; two readings that map to different hook calls are refused in enforce mode |
 | A hook tool name with wrapped arguments, `Bash {"function": "Bash", "arguments": {"command": …}}`: the whole object went to the hook, which found no `command` | the unwrapped command is decided as Bash too |
-| Alias fields that disagree: `command` / `cmd`, `file_path` / `path` / `filename` / `file`, `content` / `contents` / `text` / `file_text`, `new_str` / `insert_text`. This checker took the first; a function declared with the other runs that one | each alias is a reading; two that map to different hook calls are refused in enforce mode; aliases with the same value are one reading |
-| A name key beside a wrapper, `{"tool": "bash", "args": {…}}` sent to a dispatcher | the inner name is a reading (mapped to the hook and matched by `functionToolActions`) |
-| A function name another client resolves differently (case, `-`/`_`, `functions.` prefix, padding, zero-width or full-width characters) | `functionToolActions` matches folded names (above); the hook mapping also tries the normalized name |
-| A repeated key in an argument string, `{"command": "rm -rf ~", "command": "ls"}`: `JSON.parse` keeps the last value, simdjson's `find_field` keeps the first, serde, Gson maps and .NET dictionaries throw | kept raw: content-scanned (both values) and refused in enforce mode ("tool call arguments repeat a key …"), on OpenAI, Anthropic and Ollama string arguments, streaming and not. Keys compare after unescaping (`"\u0063ommand"` is `"command"`) |
-| A repeated key in the response itself (a second `message`, `choices` or `candidates`) | the response is not forwarded in enforce mode (see Report vs enforce) |
+| A hook tool name with an alias field, `Bash {"cmd": …}`: a client whose `Bash` function declares `cmd` runs it, and the hook, reading only `command`, had nothing to decide | the alias is read under the hook's key (`cmd` → `command`, `path` / `filename` / `file` → `file_path`, `contents` / `text` / `file_text` → `content`) when the hook's key is empty; `Bash {"command": "ls", "cmd": …}` with different values is two readings, refused as ambiguous |
+| Alias fields that disagree: `command` / `cmd`, `file_path` / `path` / `filename` / `file`, `content` / `contents` / `text` / `file_text`, `new_str` / `insert_text`. This checker took the first; a function declared with the other runs that one | each alias is a reading; two that map to different hook calls are refused as ambiguous; aliases with the same value are one reading. An alias is present when it has a non-empty string (or an array with one): `{"command": [], "cmd": …}` maps on `cmd` |
+| A name key, `{"tool": "bash", "args": {…}}` or `{"tool": "bash", "args": "{…}"}` sent to a dispatcher | the inner name is a reading (mapped to the hook and matched by `functionToolActions`); a wrapper holding a JSON object as a string is a wrapped object too, and one that is not strict JSON makes the call ambiguous |
+| A function name another client resolves differently (case, `-`/`_`, `functions.` prefix, padding, zero-width or full-width characters) | `functionToolActions` matches every form of the name (above); the hook mapping decides the call under the name as sent, its normalized form and a hook tool's own name, and two of those with different decision fields are ambiguous |
+| An argument string that is not strict JSON (table above), `{"command": "ls", "Command": "rm -rf ~"}` | kept raw: content-scanned and refused in enforce mode ("tool call arguments have keys that differ only in case …"), on OpenAI, Anthropic and Ollama string arguments, streaming and not |
+| A response that is not strict JSON (a second `message`, `choices` or `candidates`; `Choices` beside `choices`; an event with `NaN`) | not forwarded in enforce mode (see Report vs enforce) |
 
 Bounds: at most 16 wrapper objects and 16 alias combinations per object are examined; past that the call is
 refused as ambiguous in enforce mode. Not covered: a client that resolves look-alike letters from other
-scripts, or that decodes invalid UTF-8 differently from Node's replacement character (no mainstream client
-does either; not tested).
+scripts (no mainstream client does; not tested), Unicode case folds beyond `toUpperCase().toLowerCase()`
+(Go's fold orbits for `ſ` and the Kelvin sign are covered), and a number field that a decision reads (none
+does: every decision field is a string).
 
 ## Report vs enforce
 
@@ -400,11 +451,13 @@ deny, unless the system file or the org policy says `allow-with-report`.
   SDK may still parse them leniently and run the call. Report mode content-scans and forwards them. An
   argument string that repeats a key is treated the same way (see
   [Parser differentials](#parser-differentials)).
-- **A response with a repeated JSON key** (anywhere in a JSON body, an SSE event's data or an NDJSON line)
-  is not forwarded in enforce mode: 502 with `x-should-retry: false`, or the error event mid-stream, and an
-  `UNEVALUATED` report (`response-duplicate-key`). A second `message` or `choices` key would hide a tool
-  call from this parser (it keeps the last value) from a client that keeps the first. Report mode forwards
-  it as before.
+- **A response that is not strict JSON** (anywhere in a JSON body, an SSE event's data or an NDJSON line:
+  a repeated key, keys that differ only in case, `NaN`, a tool-call index past 2^53, invalid UTF-8 … — the table in
+  [Parser differentials](#parser-differentials)) is not forwarded in enforce mode: 502 with
+  `x-should-retry: false`, or the error event mid-stream ("the response repeats a JSON key …", "… has JSON
+  keys that differ only in case …"), and an `UNEVALUATED_BAD_INPUT` report (`response-<condition>`). A second
+  `message` or `choices` key would hide a tool call from this parser (it keeps the last value) from a client
+  that keeps the first. Report mode forwards it as sent and reports it the same way.
 - **The provider dropping the connection** before its response ends:
   - Non-streaming: HTTP 502 in the provider's error shape (Anthropic `api_error`, OpenAI `server_error`)
     with `x-should-retry: false`. Both SDKs obey that header before their own rule of retrying 408, 409,
@@ -682,7 +735,8 @@ moorai-serve --model-proxy-url http://127.0.0.1:8791                    # sideca
 ```bash
 node --test --import ./test/hermetic-env.mjs test/model-proxy.test.mjs test/model-proxy-enforce.test.mjs test/model-proxy-credentials.test.mjs \
   test/model-proxy-toolcall.test.mjs test/model-proxy-toolcall-local.test.mjs test/model-proxy-gemini.test.mjs test/serve-unchecked.test.mjs \
-  test/model-proxy-connect-timeout.test.mjs test/model-proxy-ollama.test.mjs test/model-proxy-function-rules.test.mjs
+  test/model-proxy-connect-timeout.test.mjs test/model-proxy-ollama.test.mjs test/model-proxy-function-rules.test.mjs \
+  test/model-proxy-differentials.test.mjs test/model-proxy-canonical.test.mjs test/model-proxy-json-strict-fuzz.test.mjs
 ```
 
 Latency the judging adds, measured on an M-series Mac, node, no console, built-in rules:

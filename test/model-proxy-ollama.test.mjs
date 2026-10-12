@@ -105,7 +105,8 @@ test("enforce: an upstream that ends inside the held turn (no done line), or sen
   fp.on((r, res) => sendNdjson(res, lines));
   const b = await post(pxF, "/api/chat", chat());
   assert.ok(!b.raw.includes("NaN") && !b.raw.includes("ls -la"));
-  assert.match(clientRead(b.raw).error, /a stream line is not JSON/);
+  // Refused before the line reaches the stream machine: it is not strict JSON (json-strict.mjs).
+  assert.match(clientRead(b.raw).error, /is not strict JSON/);
 });
 
 test("enforce/replace: the turn's tool calls are withheld and the refusal becomes the assistant's content (non-streaming and NDJSON)", async () => {

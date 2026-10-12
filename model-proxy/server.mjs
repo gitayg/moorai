@@ -31,7 +31,7 @@ import * as gemini from "./gemini.mjs";
 import * as ollama from "./ollama.mjs";
 import { createSplitter } from "./sse.mjs";
 import { createLineSplitter } from "./ndjson.mjs";
-import { hasDuplicateKeys } from "./json-strict.mjs";
+import { strictBytes, PROBLEM_TEXT } from "./json-strict.mjs";
 import { createChecker } from "./check.mjs";
 import { wrapReporter, unevaluatedReporter, uncheckedReporter, refusalMessage } from "./report.mjs";
 import { createUncheckedTracker, DEFAULT_MAX as UNCHECKED_MAX, MAX_ID } from "./unchecked.mjs";
@@ -99,8 +99,20 @@ const digest = (s) => createHash("sha256").update(String(s)).digest();
 const apiFor = (method, path) => (method !== "POST" ? null : /\/messages$/.test(path) ? anthropic : /\/chat\/completions$/.test(path) ? openai : gemini.isPath(path) ? gemini : ollama.isPath(path) ? ollama : null);
 // The retryable status of the proxy's own budget errors: OpenAI, Gemini and Ollama 503, Anthropic 529 (overloaded).
 const busy = (api) => (api === openai || api === gemini || api === ollama ? 503 : 529);
-const DUPLICATE_KEY_MESSAGE = "MoorAI model-proxy: the response repeats a JSON key, so a client could read it differently than it was checked; it was not forwarded";
-const repeatsKey = (data) => { try { return hasDuplicateKeys(data); } catch { return false; } };
+// A response (body, SSE event data, NDJSON line) that is not strict JSON has no one reading (json-strict.mjs):
+// enforce does not forward it; report mode forwards it and reports it.
+const strictMessage = (p) => `MoorAI model-proxy: the response ${PROBLEM_TEXT[p]}, so a client could read it differently than it was checked; it was not forwarded`;
+const eventScan = (ev) => (!ev.data || !ev.data.trim() || ev.data === "[DONE]" ? null : strictBytes(ev.raw, ev.data));
+// Numbers JSON.parse rounds (an id past 2^53) are not refused outside an index field; their source digits,
+// from every body or event of this response, go with each tool call to the content scan (check.mjs scanArgs),
+// so a re-serialized, rounded number never hides a digit run the scan matches on. Bounded.
+function largeNumbers() {
+  const list = [];
+  return {
+    note(r) { if (r && r.large.length && list.length < 256) list.push(...r.large.slice(0, 256 - list.length)); },
+    attach: (calls) => (list.length ? calls.map((c) => ({ ...c, numbers: [...(c.numbers || []), ...list] })) : calls)
+  };
+}
 const parseJson = (buf) => { try { const v = JSON.parse(buf.toString("utf8")); return v && typeof v === "object" ? v : null; } catch { return null; } };
 
 // Proxy-generated errors on a parsed path take that provider's documented error shape; elsewhere a shape
@@ -217,13 +229,14 @@ export async function createProxy(opts = {}) {
     const ALLOW = { decision: "allow", denied: [] };
     // A call is recorded for the skip alert once it is on its way to the agent: in enforce mode when it is
     // allowed (it is released right after), in report mode as soon as it is parsed (it is already sent).
+    const nums = largeNumbers();
     const decide = enforce
-      ? (calls) => (calls.length ? withTimeout(checker.checkToolCalls(calls)).then((v) => { if (v.decision === "allow") track(calls); return v; }) : Promise.resolve(ALLOW))
-      : (calls) => { if (calls.length) { track(calls); later.push(() => checker.checkToolCalls(calls)); } return Promise.resolve(ALLOW); };
+      ? (calls) => (calls.length ? withTimeout(checker.checkToolCalls(nums.attach(calls))).then((v) => { if (v.decision === "allow") track(calls); return v; }) : Promise.resolve(ALLOW))
+      : (calls) => { if (calls.length) { track(calls); const cs = nums.attach(calls); later.push(() => checker.checkToolCalls(cs)); } return Promise.resolve(ALLOW); };
     // The model's own text where an API has no structured tool calls (Ollama /api/generate): report-only,
     // after the response has ended, in every mode.
     const observe = (items) => { if (items.length) later.push(() => checker.observe(items)); };
-    if (sse || lines) return enforce ? streamEnforce(ur, res, api, decide, lines, observe) : streamObserve(ur, res, api, decide, lines, observe);
+    if (sse || lines) return enforce ? streamEnforce(ur, res, api, decide, lines, observe, nums) : streamObserve(ur, res, api, decide, lines, observe, nums);
     if (!enforce) {
       // Report-only: bytes go to the client as they arrive; a bounded copy is parsed after the end.
       res.writeHead(ur.statusCode, responseHeaders(ur));
@@ -231,8 +244,14 @@ export async function createProxy(opts = {}) {
       ur.on("data", (c) => { if (over) return; n += c.length; if (n > o.maxResponse) { over = true; chunks.length = 0; return; } chunks.push(c); });
       ur.on("end", () => {
         if (over) return;
-        const body = parseJson(Buffer.concat(chunks));
-        if (body) { decide(api.responseToolCalls(body)); if (api.responseItems) observe(api.responseItems(body)); }
+        const all = Buffer.concat(chunks);
+        const body = parseJson(all);
+        if (body) {
+          const sc = strictBytes(all), bad = sc.problem;
+          nums.note(sc);
+          if (bad) unevaluated(`response-${bad}`, "response", "input");
+          decide(api.responseToolCalls(body)); if (api.responseItems) observe(api.responseItems(body));
+        }
         else unevaluated("response-unparsed", "response");
       });
       ur.pipe(res);
@@ -258,8 +277,11 @@ export async function createProxy(opts = {}) {
     // labels its stream application/json, say) cannot be checked for tool calls: enforce does not forward it.
     if (!body) { unevaluated("response-unparsed", "response"); return send(res, 502, api.errorBody(502, "MoorAI model-proxy: the response is not a JSON object or an event stream; it cannot be checked"), NO_RETRY); }
     // A repeated key is read as its last value here and may be read as its first by the client (a repeated
-    // `message` or `choices` could hide a tool call from this check): enforce does not forward it.
-    if (hasDuplicateKeys(buf.toString("utf8"))) { unevaluated("response-duplicate-key", "response"); return send(res, 502, api.errorBody(502, DUPLICATE_KEY_MESSAGE), NO_RETRY); }
+    // `message` or `choices` could hide a tool call from this check); a `Choices` beside `choices` is the same
+    // field to Go's encoding/json. Any body that is not strict JSON is not forwarded (json-strict.mjs).
+    const sc = strictBytes(buf), bad = sc.problem;
+    nums.note(sc);
+    if (bad) { unevaluated(`response-${bad}`, "response", "input"); return send(res, 502, api.errorBody(502, strictMessage(bad)), NO_RETRY); }
     const calls = api.responseToolCalls(body);
     if (api.responseItems) observe(api.responseItems(body));
     let v;
@@ -275,18 +297,18 @@ export async function createProxy(opts = {}) {
     res.end(buf);
   }
 
-  async function streamObserve(ur, res, api, decide, lines, observe) {
+  async function streamObserve(ur, res, api, decide, lines, observe, nums) {
     res.writeHead(ur.statusCode, responseHeaders(ur));
     const split = lines ? createLineSplitter(o.maxEvent) : createSplitter(o.maxEvent);
     const machine = api.createStream({ enforce: false, decide, maxHold: o.maxEvent, observe });
     let stopped = false;
-    const feed = (evs) => { for (const ev of evs) machine.onEvent(ev).catch(() => {}); };
+    const feed = (evs) => { for (const ev of evs) { const sc = eventScan(ev); nums.note(sc); const bad = sc && sc.problem; if (bad) unevaluated(`response-${bad}`, "response", "input"); machine.onEvent(ev).catch(() => {}); } };
     ur.on("data", (c) => { if (stopped) return; feed(split.push(c)); if (split.overflow) { stopped = true; unevaluated("stream-event", "response"); } });
     ur.on("end", () => { if (stopped) return; feed(split.end()); machine.onEnd().catch(() => {}); });
     ur.pipe(res);
   }
 
-  async function streamEnforce(ur, res, api, decide, lines, observe) {
+  async function streamEnforce(ur, res, api, decide, lines, observe, nums) {
     res.writeHead(ur.statusCode, responseHeaders(ur, { dropLength: true }));
     const split = lines ? createLineSplitter(o.maxEvent) : createSplitter(o.maxEvent);
     const machine = replace ? api.createReplaceStream({ decide, maxHold: o.maxEvent, observe }) : api.createStream({ enforce: true, decide, maxHold: o.maxEvent, observe });
@@ -298,9 +320,13 @@ export async function createProxy(opts = {}) {
       await write(r.out);
       return true;
     };
-    // An event with a repeated JSON key is refused wherever it is, as the non-streaming body is.
+    // An event that is not strict JSON (a repeated key, NaN, …) is refused wherever it is, as the
+    // non-streaming body is: a lenient client could read a tool call this check never saw.
     const one = async (ev) => {
-      if (repeatsKey(ev.data)) { unevaluated("response-duplicate-key", "response"); await stop(502, DUPLICATE_KEY_MESSAGE); return false; }
+      const sc = eventScan(ev);
+      nums.note(sc);
+      const bad = sc && sc.problem;
+      if (bad) { unevaluated(`response-${bad}`, "response", "input"); await stop(502, strictMessage(bad)); return false; }
       return step(await machine.onEvent(ev));
     };
     try {

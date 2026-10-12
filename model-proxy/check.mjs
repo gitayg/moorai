@@ -18,15 +18,19 @@
 //                               applied before the arguments are read, the stricter verdict winning.
 //   unwrapArgs                  {"function": "<name>", "arguments": {...}} (or parameters / args / input)
 //                               is unwrapped before mapTool when the call does not map as sent.
-//   readings                    every other way a client could read the same call (an object under a
-//                               wrapper key, a name key beside it, an alias key such as `cmd` beside
-//                               `command`, a normalized name) is decided too, and the strictest verdict
-//                               wins; in enforce mode two readings that map to different hook calls are
-//                               refused as ambiguous (README "Parser differentials").
+//   readings                    every other way a client could read the same call (an object, or a JSON
+//                               object string, under a wrapper key; a name key; an alias key such as `cmd`
+//                               beside `command`, also on a hook tool's own name; a normalized name) is
+//                               decided too, and the strictest verdict wins. The call has ONE canonical
+//                               reading or none: two readings with different decision fields, or a reading
+//                               that is not strict JSON, are refused as ambiguous in enforce and replace
+//                               mode and reported UNEVALUATED_BAD_INPUT in report mode (README "Parser
+//                               differentials").
 import { createHmac, randomBytes } from "node:crypto";
 import { REASON } from "../cli/provenance.mjs";
 import { settleHeadlessAsk } from "../cli/server-mode.mjs";
 import { rulesOf, functionActionFor, normalizeName, foldName } from "./function-rules.mjs";
+import { parseArgs } from "./json-strict.mjs";
 
 export const ITEM_CAP = 524288;        // characters of one item that are scanned
 export const MAX_NEW_ITEMS = 256;      // new items scanned per request
@@ -93,40 +97,80 @@ function variants(i) {
   return out;
 }
 const identityTool = (n) => KNOWN.has(n) || n.startsWith("mcp__");
+// A hook tool's own input read the way a client that declared the alias would: an alias the hook does not
+// read (`cmd`, `path`, `text` …) under the hook's key, when the hook's key is empty. `Bash {"cmd": …}` has a
+// command to decide.
+const HOOK_KEYS = [["command", "cmd"], ["file_path", "path", "filename", "file"], ["content", "contents", "text", "file_text"]];
+function canonical(v) {
+  let c = v;
+  for (const [k, ...alts] of HOOK_KEYS) {
+    if (aliasVal(c[k])) continue;
+    const a = alts.find((x) => aliasVal(c[x]));
+    if (a) c = { ...c, [k]: aliasVal(c[a]) };
+  }
+  return c;
+}
+// What a hook call is decided on, per hook tool: two readings with different decision fields are two
+// different calls. An MCP tool's input goes to its server whole (no client reading of its own), so its
+// readings are decided but never make a call ambiguous. null when the reading has no decision field.
+const FIELDS = { Bash: ["command"], PowerShell: ["command"], Shell: ["command"], Read: ["file_path"], Write: ["file_path", "content"], Edit: ["file_path", "new_string"], MultiEdit: ["file_path"], NotebookEdit: ["notebook_path"], WebFetch: ["url"], Task: ["prompt"], Agent: ["prompt"] };
+function decisionKey(m) {
+  if (!m || m.tool.startsWith("mcp__")) return null;
+  const f = FIELDS[m.tool];
+  if (!f) return `${m.tool}\0${JSON.stringify(m.input)}`;
+  const vals = f.map((k) => aliasVal(m.input[k]));
+  return vals.some(Boolean) ? `${m.tool}\0${vals.join("\0")}` : null;
+}
 function mapping(name, input) {
   const m = mapDirect(name, input);
   return m && { ...m, identity: identityTool(String(name || "")) };
 }
 const sameMap = (a, b) => a.tool === b.tool && a.identity === b.identity && (a.identity ? a.input === b.input
   : Object.keys(a.input).length === Object.keys(b.input).length && Object.keys(a.input).every((k) => a.input[k] === b.input[k]));
-// { maps, innerNames, overflow }: the distinct hook calls the call's readings map to; the names found in
-// name keys beside a wrapper (a dispatcher could run that function instead); overflow when there were
-// more readings than are examined (refused as ambiguous in enforce mode).
+// { maps, innerNames, overflow, problem, ambiguous }: the distinct hook calls the call's readings map to;
+// the names found in name keys at any level (a dispatcher could run that function instead: beside an
+// object, beside a JSON string of arguments, or with no arguments at all); overflow when there were more
+// readings than are examined; problem when a wrapper's JSON string is not strict JSON (json-strict.mjs);
+// ambiguous when any of those, or two readings with different decision fields (decisionKey).
 export function readings(name, input) {
   const layers = [], innerNames = new Set();
-  let overflow = false;
+  let overflow = false, problem = false;
   const walk = (obj, names, depth) => {
     if (!isObj(obj)) return;
     if (layers.length >= MAX_LAYERS) { overflow = true; return; }
     layers.push({ obj, names });
-    const wrapped = [...WRAPPERS].filter((w) => isObj(obj[w]));
-    if (!wrapped.length) return;
-    if (depth >= 4) { overflow = true; return; }
     const inner = [...names];
     for (const k of NAME_KEYS) if (typeof obj[k] === "string" && obj[k]) { innerNames.add(obj[k]); inner.push(...namesOf(obj[k])); }
-    for (const w of wrapped) walk(obj[w], [...new Set(inner)], depth + 1);
+    // A wrapper holding a JSON object as a string (OpenAI-style `arguments`) is a wrapped object too.
+    const wrapped = [];
+    for (const w of WRAPPERS) {
+      const v = obj[w];
+      if (isObj(v)) wrapped.push(v);
+      else if (typeof v === "string" && /^\s*\{/.test(v)) {
+        const r = parseArgs(v);
+        if (r.ok) wrapped.push(r.value);
+        else if (r.problem !== "not-json") problem = true;
+      }
+    }
+    if (!wrapped.length) return;
+    if (depth >= 4) { overflow = true; return; }
+    for (const w of wrapped) walk(w, [...new Set(inner)], depth + 1);
   };
   walk(unwrapArgs(String(name || ""), input), namesOf(name), 0);
   const maps = [];
   for (const { obj, names } of layers) {
     const vs = variants(obj);
     if (vs.length > MAX_VARIANTS) overflow = true;
-    for (const nm of names) for (const v of identityTool(nm) ? [obj] : vs.slice(0, MAX_VARIANTS)) {
-      const m = mapping(nm, v);
-      if (m && !maps.some((x) => sameMap(x, m))) maps.push(m);
+    for (const nm of names) {
+      const list = nm.startsWith("mcp__") ? [obj] : KNOWN.has(nm) ? [obj, ...vs.slice(0, MAX_VARIANTS).map(canonical)] : vs.slice(0, MAX_VARIANTS);
+      for (const v of list) {
+        const m = mapping(nm, v);
+        if (m && !maps.some((x) => sameMap(x, m))) maps.push(m);
+      }
     }
   }
-  return { maps, innerNames: [...innerNames], overflow };
+  const keys = new Set(maps.map(decisionKey).filter(Boolean));
+  return { maps, innerNames: [...innerNames], overflow, problem, ambiguous: overflow || problem || keys.size > 1 };
 }
 const AMBIGUOUS = "tool call arguments can be read more than one way (a wrapped, repeated or alias field disagrees), so a client may run something other than what was checked";
 
@@ -142,7 +186,9 @@ function mapDirect(name, input = {}) {
     if (i.command === "create") return { tool: "Write", input: { file_path: path, content: str(i.file_text) } };
     if (i.command === "str_replace" || i.command === "insert") return { tool: "Edit", input: { file_path: path, new_string: str(i.new_str) || str(i.insert_text) } };
   }
-  const cmd = Array.isArray(i.command) ? i.command.filter((x) => typeof x === "string").join(" ") : str(i.command) || (Array.isArray(i.cmd) ? i.cmd.filter((x) => typeof x === "string").join(" ") : str(i.cmd));
+  // `command` that is empty (an empty array, or one with no string) does not hide `cmd`: the same notion of
+  // "present" as the alias readings (aliasVal).
+  const cmd = aliasVal(i.command) || aliasVal(i.cmd);
   // Anthropic's bash tool (name "bash", input {command}), and any shell-named function with a command.
   if (cmd && SHELL_RE.test(lower)) return { tool: /powershell|pwsh/.test(lower) ? "PowerShell" : "Bash", input: { command: cmd } };
   if (path) {
@@ -246,9 +292,13 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
     const mt = c.raw == null ? mapTool(c.name, c.input) : null;
     const m = mt && { ...mt, identity: identityTool(String(c.name || "")) && mt.tool === String(c.name || "") };
     const alts = rd ? rd.maps.filter((a) => !(m && sameMap(a, m))) : [];
-    // Two readings that map to different hook calls (not a hook tool's own input passed whole): the client
-    // could run either, so enforce runs neither.
-    if (enforce && rd && (rd.overflow || [m, ...alts].filter((x) => x && !x.identity).length > 1)) return { decision: "deny", reasons: [AMBIGUOUS] };
+    // No one canonical reading (two readings with different decision fields, a wrapped JSON string that is
+    // not strict JSON, more readings than are examined): the client could run either, so enforce (and
+    // replace, which is enforce) runs neither; report mode reports it and decides every reading below.
+    if (rd && (rd.ambiguous || new Set([m, ...alts].map(decisionKey).filter(Boolean)).size > 1)) {
+      if (enforce) return { decision: "deny", reasons: [AMBIGUOUS] };
+      onUnevaluated("tool-call-ambiguous", "response", "input");
+    }
     let out = m ? await decideMapped(m) : await scanArgs(c);
     if (out.decision === "deny") return out;
     for (const a of alts) {
@@ -260,7 +310,10 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
   }
 
   async function scanArgs(c) {
-    const text = c.raw != null ? c.raw : JSON.stringify(c.input);
+    // JSON.stringify rounds a number past 2^53; the digits as sent (`numbers`: json-strict.mjs `large`, from
+    // the argument string and from the response) are scanned with it, one per line (a digit-run pattern never
+    // joins two of them), so a digit run is matched as sent.
+    const text = c.raw != null ? c.raw : Array.isArray(c.numbers) && c.numbers.length ? `${JSON.stringify(c.input)}\n${c.numbers.join("\n")}` : JSON.stringify(c.input);
     // Past the scan cap only a prefix would be read: reported unevaluated, and enforce refuses it, as the
     // request side does.
     if (text.length > itemCap) {
@@ -272,6 +325,7 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
     // and an SDK may still parse them leniently and run the call. Enforce refuses them; report mode keeps
     // the content scan above.
     if (enforce && c.raw != null && v.decision !== "deny") return { decision: "deny", reasons: [c.rawReason || "tool call arguments are not a valid JSON object"] };
+    if (!enforce && c.raw != null) onUnevaluated("tool-call-arguments", "response", "input");
     return { decision: v.decision, reasons: v.reasons };
   }
 

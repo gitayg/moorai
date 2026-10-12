@@ -5,7 +5,7 @@
 // Allowed turns are delivered byte-identical. server_tool_use / mcp_tool_use blocks run at the provider
 // and are left alone (anthropic.mjs).
 import { replacementText } from "./report.mjs";
-import { parseArgs, DUPLICATE_KEY_REASON } from "./json-strict.mjs";
+import { parseArgs } from "./json-strict.mjs";
 
 const isObj = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
 const sse = (type, data) => Buffer.from(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -39,10 +39,10 @@ export function createReplaceStream({ decide, maxHold }) {
   const parse = (s) => { try { return JSON.parse(s); } catch { return null; } };
   function calls(h) {
     return [...h.blocks.values()].map((b) => {
-      let input = b.input, raw = null, dup = false;
-      if (b.args) { const r = parseArgs(b.args); dup = r.dup; if (isObj(r.value) && !dup) input = r.value; else raw = b.args; }
+      let input = b.input, raw = null, reason, large = [];
+      if (b.args) { const r = parseArgs(b.args); reason = r.rawReason; large = r.large; if (r.ok) input = r.value; else raw = b.args; }
       // A block the turn ended without closing is a truncated input: decided as such, never released.
-      return { id: b.id, name: b.name, input: isObj(input) ? input : {}, raw: raw ?? (b.closed ? null : b.args || "{"), ...(dup ? { rawReason: DUPLICATE_KEY_REASON } : {}), over: b.over || h.over };
+      return { id: b.id, name: b.name, input: isObj(input) ? input : {}, raw: raw ?? (b.closed ? null : b.args || "{"), ...(reason ? { rawReason: reason } : {}), ...(large.length ? { numbers: large } : {}), over: b.over || h.over };
     });
   }
   async function finish(ev, d, type) {

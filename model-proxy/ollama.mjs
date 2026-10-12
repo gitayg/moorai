@@ -25,7 +25,7 @@
 //             part.get('error'): raise ResponseError(err)`; ollama-js src/utils.ts: `if ('error' in
 //             message) throw new Error(message.error)`).
 export { replaceResponse, createReplaceStream } from "./ollama-replace.mjs";
-import { parseArgs, DUPLICATE_KEY_REASON } from "./json-strict.mjs";
+import { parseArgs } from "./json-strict.mjs";
 export const NAME = "ollama";
 export const BUSY_STATUS = 503;
 // The response bodies this API frames as NDJSON (server.mjs picks the line splitter for them).
@@ -63,15 +63,14 @@ export function outboundItems(body) {
 }
 
 // One tool call as check.mjs takes it. `arguments` is documented as an object; a JSON string is parsed (an
-// OpenAI-shaped server; a string that repeats a key is kept raw too, json-strict.mjs); anything else is kept
+// OpenAI-shaped server; a string that is not strict JSON is kept raw too, json-strict.mjs); anything else is kept
 // raw, so enforce refuses it.
 export function toCall(tc, over = false) {
   const f = isObj(tc) && isObj(tc.function) ? tc.function : {};
   const a = f.arguments;
-  const { value: p, dup } = typeof a === "string" ? parseArgs(a) : { value: a, dup: false };
-  const ok = isObj(p) && !dup;
+  const r = typeof a === "string" ? parseArgs(a) : { value: a, ok: isObj(a), rawReason: undefined, large: [] };
   const empty = a === undefined || a === null || a === "";
-  return { id: str(tc && tc.id), name: str(f.name), input: ok ? p : {}, raw: ok || empty ? null : typeof a === "string" ? a : JSON.stringify(a), ...(dup ? { rawReason: DUPLICATE_KEY_REASON } : {}), over };
+  return { id: str(tc && tc.id), name: str(f.name), input: r.ok ? r.value : {}, raw: r.ok || empty ? null : typeof a === "string" ? a : JSON.stringify(a), ...(r.rawReason ? { rawReason: r.rawReason } : {}), ...(r.large.length ? { numbers: r.large } : {}), over };
 }
 const callsOf = (d) => (isObj(d) && isObj(d.message) && Array.isArray(d.message.tool_calls) ? d.message.tool_calls : []);
 
