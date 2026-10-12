@@ -63,11 +63,16 @@ async function alertsFor(payload, env = {}) {
   const { srv, port, alerts } = await startServer();
   const sb = sandbox(port);
   await runHook({ HOME: sb.home, USERPROFILE: sb.home, MOORAI_OFFLINE_MODE: "", MOORAI_HOOK_HOST: "", MOORAI_HOOK_AGENT: "", ...env }, sb.proj, JSON.stringify(payload));
-  await new Promise((r) => setTimeout(r, 200));
+  await waitFor(alerts, (a) => a.some((x) => x.threatId === 66));
   srv.close();
   return alerts;
 }
 const delegation = (alerts) => alerts.find((a) => a.threatId === 66);
+// Alerts can arrive after the hook exits (a slow policy fetch defers them to the detached alertpost worker),
+// so wait for the #66 alert rather than a fixed delay.
+async function waitFor(alerts, pred, ms = 5000) {
+  for (const end = Date.now() + ms; Date.now() < end && !pred(alerts);) await new Promise((r) => setTimeout(r, 50));
+}
 
 test("#66: a Claude Code built-in sub-agent type is sent in clear", async () => {
   for (const t of ["general-purpose", "Explore", "Plan"]) {
@@ -97,7 +102,7 @@ test("agentName: an adapter's alert names that adapter (shim path), and an unkno
     const sb = sandbox(port);
     evaluate({ hook_event_name: "PreToolUse", session_id: "sess-ident", cwd: sb.proj, tool_name: "Task", tool_input: { prompt: "x", subagent_type: "Explore" } },
       { env: { ...process.env, HOME: sb.home, USERPROFILE: sb.home, MOORAI_OFFLINE_MODE: "", MOORAI_HOOK_AGENT: agent } });
-    await new Promise((r) => setTimeout(r, 200));
+    await waitFor(alerts, (a) => a.some((x) => x.threatId === 66));
     srv.close();
     const a = delegation(alerts);
     assert.ok(a, `no #66 alert via ${agent}`);
