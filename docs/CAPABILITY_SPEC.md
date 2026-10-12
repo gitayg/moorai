@@ -288,7 +288,10 @@ fetches, chosen by the hook's own crypto RNG. A call that gets no HTTP answer of
 fetch, or its fetch failed) hands its alert POSTs to a detached worker (`moorai-hook.mjs alertpost`, a 0600
 job file in `~/.moorai`, 10 s per post) instead of waiting on them, so the decision path stays fast and every
 alert is still sent. Any HTTP response clears the file. It is not used while the pin looks erased, where
-every call fetches. Measured, 40 calls each, same decisions, console at a packet-dropping address
+every call fetches. Only the hook's decision path fetches the policy and writes the file: the detached scan workers
+(`moorai-hook.mjs agentscan` / `indexscan`) re-check their gate from the verified local copies (cache, then
+last-known-good) and never fetch, so a worker that outlives a console connection can no longer record a
+back-off that makes the next tool call skip the fetch of a new policy (`test/console-backoff.test.mjs` WORKER). Measured, 40 calls each, same decisions, console at a packet-dropping address
 (192.0.2.1): allow p50 0.12 s and deny p50 0.09 s, where the same calls take 3.17 s and 4.64 s when every
 call fetches; p95 is 1.67 s and 1.63 s, the calls that draw the forced fetch and wait out its 1.5 s timeout. **Tamper
 resistance.** The file has the policy cache's trust level: the agent can write it, and nothing on the
@@ -361,7 +364,11 @@ the agent's to write. What it cannot write: root/admin-owned files (hook-core `r
 - **Freshness from the signed `iat`.** The cache short-circuit needs both a young mtime and a signed
   `iat` younger than 15 minutes (`policyMaxAgeMinutes` in the signed policy changes it, 1 to 10080). An
   older policy is refetched; if the refetch fails it is still enforced (it verified) and the hook raises
-  `POLICY_STALE` with `ageMinutes`. Every hook alert raised after the policy loads carries `policyIat`
+  `POLICY_STALE` with `ageMinutes`. While the console is unreachable the console back-off still applies to
+  that refetch and the alert goes to the detached alert worker, so a stale cache costs the tool call no
+  latency: measured, 20 sequential calls, pinned device, cache signed and touched 2 h before, console
+  accepting connections and never answering, p50 176 to 223 ms on v1.12.1, v1.13.2 and v1.13.3 alike, and
+  p95 about 1.7 s only in the runs where a call drew the one-in-eight forced fetch. Every hook alert raised after the policy loads carries `policyIat`
   (ISO 8601) when the enforced policy is signed, and every hook alert carries `appVersion`.
 - **Hook command and environment.** Hook registrations name node by absolute path
   (`process.execPath`), and an older bare-`node` entry is rewritten on the next call. A user, project or
@@ -1335,7 +1342,8 @@ Both run as another user or in another container. The code is shared:
 ## Model proxy: tool calls in responses
 
 **Status: built and unit-tested (`test/model-proxy-toolcall.test.mjs`,
-`test/model-proxy-toolcall-local.test.mjs`, `test/model-proxy-gemini.test.mjs`, `test/serve-unchecked.test.mjs`).
+`test/model-proxy-toolcall-local.test.mjs`, `test/model-proxy-gemini.test.mjs`, `test/model-proxy-ollama.test.mjs`,
+`test/model-proxy-function-rules.test.mjs`, `test/serve-unchecked.test.mjs`).
 Replace mode and the skip alert are opt-in.**
 
 `moorai-serve` is advisory: it judges a tool call only if the framework asks. The model proxy sits on the
@@ -1360,6 +1368,21 @@ the framework ever asks.
   and the string values of `functionResponse.response` are scanned; camelCase and snake_case both read.
   Vertex streamed `partialArgs` are refused in enforce mode (no documented assembly rule). The default
   routes include `/gemini` → `https://generativelanguage.googleapis.com`; `--route` replaces all defaults.
+- **Ollama native API** (`model-proxy/ollama.mjs`, `ollama-replace.mjs`, `ndjson.mjs`). `POST …/api/chat`
+  `message.tool_calls[]` `{id?, function: {name, arguments}}` (`arguments` an object), JSON and NDJSON, on
+  any route. A streamed turn is held from its first tool-call line to its `done: true` line; a line that is
+  not JSON, or an upstream `{"error"}` line inside a held turn, is refused. Refused: 403 `{"error": …}`, or
+  mid-stream an `{"error": …}` line. Replaced: `tool_calls` removed, the refusal appended to the content.
+  Requests: `system` / `user` / `tool` messages; `/api/generate` `prompt`, `system`, `suffix`, `template`.
+  `/api/generate`'s generated text is scanned report-only (stage `output`, PostToolUse, never withheld). The
+  default routes include `/ollama` → `http://127.0.0.1:11434` on a loopback bind only.
+- **Function names** (`model-proxy/function-rules.mjs`). `policy.functionToolActions: { "<name>" | "<prefix>*":
+  "block" | "ask" | "alert" | "allow" }`, exact and case-sensitive, strictest match wins, decided on the name
+  before the arguments; `ask` is settled by the headless rule in enforce mode. Alert `tool:
+  "model-proxy:<name>"`, never an argument. Read by the model proxy only.
+- **Wrapped arguments** (`check.mjs unwrapArgs`). A call that does not map is retried with its arguments
+  unwrapped when exactly one key is `arguments` / `parameters` / `args` / `input` holding an object and every
+  other key is `function` / `name` / `tool` / `tool_name` equal to the tool's name (up to 4 levels).
 - **Enforcement.** `--mode enforce` refuses the response by default. With `--denied-tool-call replace`,
   every client tool call of the turn is withheld and replaced by one text block naming the tool and the
   reasons. The turn ends with `end_turn` / `stop`, no tool-call id is orphaned, and block indexes stay
@@ -1376,14 +1399,17 @@ the framework ever asks.
 **Limits:**
 
 - Only traffic forced through the proxy is covered. The Responses API, Bedrock, Gemini's Interactions and
-  Live APIs, Vertex partner models (`:rawPredict`) and Ollama's native API are forwarded unparsed.
+  Live APIs, Vertex partner models (`:rawPredict`) and Ollama's non-chat endpoints are forwarded unparsed.
 - Gemini is tested against a fake upstream only, never a real Gemini API or Vertex endpoint or the real
   `@google/genai` / `google-genai` packages. A placeholder in the `?key=` query string is refused (400),
   never swapped: bind it to the `x-goog-api-key` header instead. Server-side tools (`server_tool_use`, `mcp_tool_use`) are not judged.
 - In replace mode, text the model wrote after a tool call in the same turn is dropped with the call.
 - The skip alert detects a framework that skipped the check, not one that lies. Anything on loopback with
   the proxy token, the agent included, can mark an id as checked.
-- No real Ollama, LM Studio, llama.cpp or vLLM build has been run against it.
+- No real LM Studio, llama.cpp or vLLM build has been run against it, nor a real Ollama on `/v1`. Ollama's
+  native `/api/chat` was run live (0.15.6, `mistral-nemo`, enforce, JSON and NDJSON); replace mode,
+  `/api/generate` and the wrapped-argument shape were tested against a fake upstream only.
+- `functionToolActions` alerts carry the derived reason code `OBSERVATION_ONLY` (no dedicated code exists).
 
 ## Local models with safety training removed (by name)
 

@@ -5,10 +5,10 @@ import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { isLoopback } from "../cli/moorai-serve.mjs";
-import { createProxy, DEFAULTS, TOKEN_HEADER, HOP } from "./server.mjs";
+import { createProxy, DEFAULTS, TOKEN_HEADER, HOP, defaultRoutes } from "./server.mjs";
 import { loadBindings } from "./credentials.mjs";
 
-export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK and the provider (Anthropic Messages, OpenAI Chat Completions, Gemini generateContent)
+export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK and the provider (Anthropic Messages, OpenAI Chat Completions, Gemini generateContent, Ollama /api/chat and /api/generate)
 
   moorai-model-proxy [--mode report|enforce] [--route /prefix=https://upstream]... [--host 127.0.0.1] [--port ${DEFAULTS.port}]
                      [--token-file <path>] [--allow-origin <origin>]... [--allow-remote] [--allow-insecure-upstream] [--max-body <bytes>]
@@ -23,7 +23,10 @@ export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK 
     OPENAI_BASE_URL=http://127.0.0.1:${DEFAULTS.port}/openai            (upstream https://api.openai.com/v1)
     GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:${DEFAULTS.port}/gemini     (upstream https://generativelanguage.googleapis.com; the SDK
                                                                 appends /v1beta/models/<model>:generateContent)
-  Gemini paths are parsed on any route (a Vertex AI endpoint is a --route).
+    OLLAMA_HOST=http://127.0.0.1:${DEFAULTS.port}/ollama                (upstream http://127.0.0.1:11434, Ollama's default; ollama-python
+                                                                reads OLLAMA_HOST, ollama-js takes new Ollama({ host }); a default
+                                                                on a loopback bind only)
+  Gemini and Ollama paths are parsed on any route (a Vertex AI endpoint, or Ollama on another port, is a --route).
   The client's own API key goes upstream untouched and is never logged, stored or reported — unless
   --credentials is given: then the agent holds a placeholder (moorai-ph:<name>) and the proxy swaps in the
   real key on the one route it is bound to (see README "Placeholder credentials").
@@ -95,7 +98,7 @@ export function parseArgs(argv, env = process.env) {
     else throw new Error(`unknown argument ${a}`);
   }
   if (o.help) return o;
-  o.routes ||= { ...DEFAULTS.routes };
+  o.routes ||= defaultRoutes(o.host);
   if (!o.token && env.MOORAI_MODEL_PROXY_TOKEN) o.token = String(env.MOORAI_MODEL_PROXY_TOKEN).trim();
   if (!["report", "enforce"].includes(o.mode)) throw new Error("--mode must be report or enforce");
   if (!Number.isInteger(o.port) || o.port < 0 || o.port > 65535) throw new Error("--port must be 0-65535");

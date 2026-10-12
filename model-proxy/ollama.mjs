@@ -1,0 +1,170 @@
+// Ollama's native API: POST …/api/chat and POST …/api/generate, from github.com/ollama/ollama docs/api.md,
+// docs/api/streaming.mdx and docs/api/errors.mdx (read 2026-10-12), and Ollama 0.15.6 measured on loopback.
+// What this file knows:
+//   request   /api/chat: `messages[]` of {role: "system" | "user" | "assistant" | "tool", content, images,
+//             tool_calls, tool_name}; a `tool` message carries a tool's result back ("add the name of the
+//             tool that was executed to inform the model of the result"). Assistant turns are the model's
+//             own output and are not re-scanned; `tools` (definitions) is not scanned, as for every API.
+//             /api/generate: `prompt`, `suffix` ("the text after the model response"), `system` ("system
+//             message to (overrides what is defined in the Modelfile)") and `template` ("the prompt
+//             template to use"). /api/generate has no `tools`.
+//   response  /api/chat: `message` {role, content, thinking, tool_calls}; a tool call is
+//             `message.tool_calls[]` {function: {name, arguments}} with `arguments` an OBJECT
+//             ({"city": "Tokyo"} in every documented example), not a JSON string. Ollama 0.15.6 also sends
+//             `id` and `function.index` (measured: {"id":"call_uv3mxz1k","function":{"index":0,…}}); the id
+//             is read when present. /api/generate: `response` (the generated text), `thinking`.
+//   stream    "Certain API endpoints stream responses by default … newline-delimited JSON format (i.e. the
+//             application/x-ndjson content type)"; "Streaming can be disabled by providing {"stream":
+//             false}", which returns application/json. /api/chat and /api/generate stream by default. The
+//             last object has `done: true` (and `done_reason`); a streamed chat tool call arrives whole,
+//             arguments included, in a `done: false` line (docs example "Chat request (Streaming with
+//             tools)", and measured on 0.15.6).
+//   errors    {"error": "<message>"} with the HTTP status. "If an error occurs mid-stream, the error will be
+//             returned as an object in the application/x-ndjson format with an error property"; both
+//             official clients raise on a line with `error` (ollama-python _client.py: `if err :=
+//             part.get('error'): raise ResponseError(err)`; ollama-js src/utils.ts: `if ('error' in
+//             message) throw new Error(message.error)`).
+export { replaceResponse, createReplaceStream } from "./ollama-replace.mjs";
+export const NAME = "ollama";
+export const BUSY_STATUS = 503;
+// The response bodies this API frames as NDJSON (server.mjs picks the line splitter for them).
+export const NDJSON = true;
+
+export const PATH_RE = /\/api\/(?:chat|generate)$/;
+export const isPath = (path) => PATH_RE.test(path);
+
+export const isObj = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+const str = (v) => (typeof v === "string" ? v : "");
+const parse = (s) => { try { return JSON.parse(s); } catch { return null; } };
+
+// Ollama message content is a string; a list of text parts is read too (OpenAI-shaped clients).
+const textOf = (content) => {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.filter((p) => isObj(p) && typeof p.text === "string").map((p) => p.text).join("\n");
+};
+const PROMPT_ROLES = new Set(["system", "user"]);
+
+// [{ kind, stage, ctx, text }] — the content this request sends the model that MoorAI scans.
+export function outboundItems(body) {
+  const out = [];
+  if (!isObj(body)) return out;
+  for (const k of ["system", "template"]) if (str(body[k])) out.push({ kind: "system", stage: "prompt", ctx: {}, text: body[k] });
+  for (const k of ["prompt", "suffix"]) if (str(body[k])) out.push({ kind: "prompt", stage: "prompt", ctx: {}, text: body[k] });
+  for (const m of Array.isArray(body.messages) ? body.messages : []) {
+    if (!isObj(m)) continue;
+    const t = textOf(m.content);
+    if (!t) continue;
+    if (PROMPT_ROLES.has(m.role)) out.push({ kind: m.role === "user" ? "prompt" : "system", stage: "prompt", ctx: {}, text: t });
+    else if (m.role === "tool") out.push({ kind: "tool_result", stage: "output", ctx: { inbound: true }, text: t });
+  }
+  return out;
+}
+
+// One tool call as check.mjs takes it. `arguments` is documented as an object; a JSON string is parsed (an
+// OpenAI-shaped server); anything else is kept raw, so enforce refuses it.
+export function toCall(tc, over = false) {
+  const f = isObj(tc) && isObj(tc.function) ? tc.function : {};
+  const a = f.arguments;
+  const p = typeof a === "string" ? parse(a) : a;
+  const ok = isObj(p);
+  const empty = a === undefined || a === null || a === "";
+  return { id: str(tc && tc.id), name: str(f.name), input: ok ? p : {}, raw: ok || empty ? null : typeof a === "string" ? a : JSON.stringify(a), over };
+}
+const callsOf = (d) => (isObj(d) && isObj(d.message) && Array.isArray(d.message.tool_calls) ? d.message.tool_calls : []);
+
+export function responseToolCalls(body) {
+  return callsOf(body).map((tc) => toCall(tc));
+}
+
+// The generated text of /api/generate, scanned report-only (server.mjs → checker.observe): the model's own
+// output is never withheld by this proxy (no API's text is), but /api/generate has no structured tool calls,
+// so its text is the only place one could be.
+const completion = (text) => (text ? [{ kind: "completion", stage: "output", ctx: {}, text }] : []);
+export function responseItems(body) {
+  return completion(isObj(body) ? str(body.response) : "");
+}
+
+export function errorBody(status, message) {
+  return { error: message };
+}
+export function streamError(status, message) {
+  return Buffer.from(`${JSON.stringify(errorBody(status, message))}\n`);
+}
+
+// Accumulates a turn's tool calls across lines, and the generated text of /api/generate.
+export function createCollector(maxHold) {
+  const calls = [];
+  let over = false, text = "", textOver = false;
+  return {
+    add(d) {
+      const tcs = callsOf(d);
+      for (const tc of tcs) { if (calls.length >= 128) { over = true; break; } calls.push(tc); }
+      if (typeof d.response === "string" && !textOver) { if (text.length + d.response.length > maxHold) textOver = true; else text += d.response; }
+      return tcs.length > 0;
+    },
+    setOver() { over = true; },
+    get count() { return calls.length; },
+    // The generated text once, at the end of the stream (an over-long one is cut at maxHold; the checker
+    // reports anything past its scan cap as unevaluated).
+    takeText() { const t = text; text = ""; return t; },
+    list: () => calls.map((tc) => toCall(tc, over))
+  };
+}
+
+const NOT_JSON = { decision: "deny", denied: [{ name: "stream", reasons: ["a stream line is not JSON; it was not released"] }] };
+
+// The streaming state machine. Lines are released as they arrive until the first line that carries
+// message.tool_calls; from there every line is held, in order, until the `done: true` line. The turn's calls
+// are then decided together: all allowed → the held lines are released byte-identical; any denied →
+// refused. Observe mode (report-only) never holds and never awaits a decision. In enforce mode a line that is
+// not JSON is refused wherever it is (a lenient parser could read a tool call from it that this one cannot),
+// and so is an upstream {error} line inside a held turn.
+export function createStream({ enforce, decide, maxHold, observe = () => {} }) {
+  const col = createCollector(maxHold);
+  let hold = null, observed = false;
+  const flush = () => { if (observed) return; observed = true; observe(completion(col.takeText())); };
+  async function release() {
+    const h = hold; hold = null;
+    const list = col.list();
+    if (!enforce) { decide(list).catch(() => {}); return { out: [] }; }
+    const v = await decide(list);
+    return v.decision === "deny" ? { refuse: v } : { out: h.raw };
+  }
+  const firstName = () => col.list().map((c) => c.name).find(Boolean) || "";
+  async function onEvent(ev) {
+    if (!ev.data.trim()) { if (hold && enforce) hold.raw.push(ev.raw); return { out: hold ? [] : [ev.raw] }; }
+    const d = parse(ev.data);
+    if (!isObj(d)) return enforce ? { refuse: NOT_JSON } : { out: [ev.raw] };
+    if (d.error !== undefined && hold) {
+      const name = firstName();
+      if (!enforce) return release();
+      await release().catch(() => {});
+      return { refuse: { decision: "deny", denied: [{ name, reasons: ["the upstream sent an error inside the tool call's turn"] }] } };
+    }
+    if (!hold && !callsOf(d).length) {
+      col.add(d);
+      if (d.done === true) flush();
+      return { out: [ev.raw] };
+    }
+    if (!hold) hold = { raw: [], bytes: 0 };
+    if (enforce) {
+      hold.raw.push(ev.raw);
+      hold.bytes += ev.raw.length;
+      if (hold.bytes > maxHold) { col.add(d); col.setOver(); return release(); }
+    }
+    col.add(d);
+    if (d.done === true) { flush(); return release(); }
+    return { out: [] };
+  }
+  // The upstream ended before the `done` line of a turn that started a call: decided for the report, never
+  // released in enforce mode, whatever that decision is.
+  async function onEnd() {
+    flush();
+    if (!hold) return { out: [] };
+    const name = firstName();
+    const r = await release();
+    return enforce ? { refuse: { decision: "deny", denied: [{ name, reasons: ["the stream ended inside the tool call's turn"] }] } } : r;
+  }
+  return { onEvent, onEnd, get holding() { return hold !== null; } };
+}

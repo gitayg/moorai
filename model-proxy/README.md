@@ -10,6 +10,7 @@ server-mode rules.
 agent SDK ──http──▶ 127.0.0.1:8791/anthropic/v1/messages ──https──▶ api.anthropic.com/v1/messages
           ──http──▶ 127.0.0.1:8791/openai/chat/completions ──https──▶ api.openai.com/v1/chat/completions
           ──http──▶ 127.0.0.1:8791/gemini/v1beta/models/<m>:generateContent ──https──▶ generativelanguage.googleapis.com/…
+          ──http──▶ 127.0.0.1:8791/ollama/api/chat ──http──▶ 127.0.0.1:11434/api/chat   (Ollama, loopback)
 ```
 
 ```bash
@@ -17,6 +18,7 @@ moorai-model-proxy                       # report-only, default routes
 ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic  your-agent
 OPENAI_BASE_URL=http://127.0.0.1:8791/openai        your-agent
 GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8791/gemini your-agent   # read by the Google Gen AI SDKs (JS and Python)
+OLLAMA_HOST=http://127.0.0.1:8791/ollama            your-agent   # read by ollama-python; ollama-js: new Ollama({ host })
 ```
 
 The default routes are:
@@ -26,11 +28,20 @@ The default routes are:
 | `/anthropic` | `https://api.anthropic.com` | `ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic` |
 | `/openai` | `https://api.openai.com/v1` | `OPENAI_BASE_URL=http://127.0.0.1:8791/openai` |
 | `/gemini` | `https://generativelanguage.googleapis.com` | `GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8791/gemini`, or the SDK's `httpOptions.baseUrl` (JS) / `http_options.base_url` (Python) |
+| `/ollama` | `http://127.0.0.1:11434` (Ollama's documented default address), **loopback bind only** | `OLLAMA_HOST=http://127.0.0.1:8791/ollama` (ollama-python reads it; both official clients keep the path), or ollama-js `new Ollama({ host })` |
+
+**Why `/ollama` is a default, and only on a loopback bind.** Ollama is the common local model server and
+its default address is fixed (`127.0.0.1:11434`), so the default makes `OLLAMA_HOST=…/ollama` work with no
+flags, as `/gemini` does for the Gemini SDKs. Plain `http://` is fine: the upstream is loopback. Ollama's
+API has no authentication, though, and every path the proxy does not parse is forwarded, model management
+included (`/api/pull`, `/api/delete`, `/api/create`, `/api/push`). On a non-loopback bind (`--allow-remote`)
+the default would hand those to every token holder, so it is dropped there; an explicit
+`--route /ollama=http://127.0.0.1:11434` keeps it. Ollama on another port or host is a `--route`.
 
 A Gemini client keeps its own API version in the path: with base URL `http://127.0.0.1:8791/gemini` it calls
 `/gemini/v1beta/models/<model>:generateContent`, which goes upstream as
 `https://generativelanguage.googleapis.com/v1beta/models/<model>:generateContent`, query string unchanged.
-`--route` replaces all three defaults, so a command line with any `--route` lists every route it needs.
+`--route` replaces all the defaults, so a command line with any `--route` lists every route it needs.
 
 The Gemini parser is chosen by the request path (`…/models/<model>:generateContent`), not by the route, so
 any route whose upstream speaks that method is parsed: the Gemini API, a Vertex AI regional or global
@@ -90,8 +101,33 @@ These are the documented shapes the code is built against (read 2026-10-06):
     page documents `{error: {code: "<snake_case>", message}}` and SSE `error` events. That page is about the
     Interactions API. Both SDKs read a numeric `code` on `generateContent`, so the proxy sends that.
 
+- **Ollama native API**, `POST …/api/chat` and `POST …/api/generate`, on any route
+  ([docs/api.md](https://github.com/ollama/ollama/blob/main/docs/api.md),
+  [streaming](https://github.com/ollama/ollama/blob/main/docs/api/streaming.mdx),
+  [errors](https://github.com/ollama/ollama/blob/main/docs/api/errors.mdx), read 2026-10-12; and Ollama
+  0.15.6 measured on loopback). Code: [`ollama.mjs`](ollama.mjs), [`ollama-replace.mjs`](ollama-replace.mjs),
+  [`ndjson.mjs`](ndjson.mjs).
+  - Request, `/api/chat`: `messages[]` with `role` "*either `system`, `user`, `assistant`, or `tool`*" and
+    `content`; a `tool` message (with `tool_name`) is a tool's result fed back. `tools` is the definitions.
+    `/api/generate`: `prompt`, `suffix`, `system` and `template`; it has no `tools`.
+  - Response, `/api/chat`: `message.tool_calls[]` `{function: {name, arguments}}`, where `arguments` is a
+    JSON **object** (`{"city": "Tokyo"}` in every documented example), not a string. Ollama 0.15.6 also
+    sends `id` and `function.index` (measured), and the id is read when present. A string `arguments` is
+    parsed as JSON; anything else is unparsed arguments (refused in enforce mode). `/api/generate`:
+    `response`, the generated text.
+  - Stream: "*Certain API endpoints stream responses by default … newline-delimited JSON format (i.e. the
+    `application/x-ndjson` content type)*"; `/api/chat` and `/api/generate` do, and `"stream": false`
+    returns one `application/json` object. The last object has `done: true`. A streamed tool call arrives
+    whole, arguments included, in a `done: false` line (docs example "*Chat request (Streaming with
+    tools)*", and measured).
+  - Errors: `{"error": "<message>"}` with the HTTP status. "*If an error occurs mid-stream, the error will
+    be returned as an object in the `application/x-ndjson` format with an `error` property*". Both official
+    clients raise on such a line (ollama-python `_client.py`: `if err := part.get('error'): raise
+    ResponseError(err)`; ollama-js `src/utils.ts`: `if ('error' in message) throw new Error(message.error)`).
+
 Any other path or method (`/v1/models`, `count_tokens`, embeddings, the OpenAI Responses API, Bedrock,
-Gemini's Interactions API, `countTokens`, `embedContent`, batch, cached contents) is **forwarded unparsed and
+Gemini's Interactions API, `countTokens`, `embedContent`, batch, cached contents, Ollama's `/api/tags`,
+`/api/show`, `/api/embed`, `/api/pull` and the rest of its model management) is **forwarded unparsed and
 unchecked**.
 
 ### Exact coverage of tool-call judging
@@ -110,7 +146,8 @@ unchecked**.
 | Gemini's OpenAI-compatible endpoint (`…/v1beta/openai/chat/completions`) | by path, the Chat Completions parser; not tested |
 | `alt=proto` / protobuf bodies on a Gemini path | a response is refused in enforce mode (not JSON or SSE) and reported unevaluated in report mode; a protobuf **request** is forwarded unscanned |
 | Amazon Bedrock (`InvokeModel`, `Converse`, its event-stream framing) | **no** — forwarded unparsed |
-| Ollama's native `/api/chat` and `/api/generate` (NDJSON) | **no** — forwarded unparsed; use its `/v1` endpoint |
+| Ollama's native `POST …/api/chat`, JSON (`"stream": false`) and NDJSON (the default) | yes: `message.tool_calls`; tested against a fake upstream and live against Ollama 0.15.6 with `mistral-nemo` |
+| Ollama's native `POST …/api/generate` | no tool calls exist; `prompt` / `system` / `suffix` / `template` are scanned like any prompt, and the generated `response` text is scanned **report-only** (alerted, never withheld) |
 | Anthropic `server_tool_use` / `mcp_tool_use` | **no** — they run at the provider, not in the agent |
 | anything the agent sends to a provider **without** going through this proxy (an SDK pinned to the provider URL, a direct HTTPS call, a second key) | **no** |
 
@@ -124,8 +161,8 @@ Each direction is checked as follows.
 
 **Requests (agent → model).** The proxy scans each new piece of content. Prompt and system text is
 scanned at stage `prompt` (for example, secrets leaving in prompts). A tool result or document the agent
-feeds back (Anthropic `tool_result` or text `document`, OpenAI `role: "tool"`, Gemini `functionResponse`,
-whose `response` object's string values are scanned joined by newlines) is scanned at stage
+feeds back (Anthropic `tool_result` or text `document`, OpenAI `role: "tool"`, Ollama `role: "tool"`, Gemini
+`functionResponse`, whose `response` object's string values are scanned joined by newlines) is scanned at stage
 `output` with `inbound: true`, the Agent SDK's PostToolUse scan. That is where indirect injection shows
 up.
 
@@ -133,7 +170,8 @@ up.
   bounded LRU, keyed by a per-process HMAC, maps each item to its verdict.
 - **Not scanned:** assistant (Gemini `model`) turns, images, base64 PDFs, and the `tools` definitions.
   Gemini: `inlineData`, `fileData` URIs, `thought` parts, a `cachedContent` reference (its content was
-  uploaded earlier, unparsed), and a request body that is not JSON.
+  uploaded earlier, unparsed), and a request body that is not JSON. Ollama: `images`, `thinking`, `format`,
+  `options`, and `context` (the deprecated token array of `/api/generate`).
 
 **Responses (model → agent).** Each tool call the model asks for is decided like `/v1/tool-call`. The
 proxy maps the tool name to the hook's vocabulary:
@@ -145,6 +183,7 @@ proxy maps the tool name to the hook's vocabulary:
 | Anthropic `str_replace_based_edit_tool` | `view`→`Read`, `create`→`Write`, `str_replace`/`insert`→`Edit` |
 | read/write-named function with a `path` | `Read` / `Write` |
 | fetch/web-named function with a `url` | `WebFetch` |
+| any of the above, with its arguments wrapped once more (`{"function": "<name>", "arguments": {...}}`) | as above, after unwrapping (see [Function names and wrapped arguments](#function-names-and-wrapped-arguments)) |
 | anything else | argument text content-scanned at stage `prompt` |
 
 The mapping is the Python client's ([clients/python](../clients/python/README.md)) for shell, read, write
@@ -159,6 +198,66 @@ at all (`evaluated: false`), so the generic path is the content scan.
 Server-side tool blocks (`server_tool_use`, `mcp_tool_use`) are not checked: they run at the provider,
 not in the agent. File contents are read from the proxy's own filesystem, resolved against `--cwd`. If
 the proxy does not share the agent's filesystem, only path names are checked.
+
+**Model text.** The model's own text is not scanned on any API, with one exception: Ollama `/api/generate`
+has no structured tool calls, so its generated `response` text is scanned at stage `output`, report-only, in
+every mode. It is filed as a PostToolUse observation (`tool: "model-proxy:completion"`), so a deny-level
+finding is stamped `enforcement: LIMITED`, and it is never withheld, streaming or not: holding a whole
+generation to scan it would end streaming for `/api/generate` in enforce mode, and stage `output` flags
+ordinary generated code (a sample key, a shell one-liner). Past `--max-scan-chars` only the prefix is
+scanned and the rest is reported unevaluated; a streamed generation is accumulated up to 1 MiB.
+
+### Function names and wrapped arguments
+
+**`policy.functionToolActions`** denies, or requires approval for, a tool call by the exact name of the
+function the model called. It is for function-calling clients behind the proxy whose tools are not MCP
+tools (`mcpToolRules` matches only `mcp__<server>__<tool>`, and a function with no hook branch is otherwise
+only content-scanned). Code: [`function-rules.mjs`](function-rules.mjs), applied in
+[`check.mjs`](check.mjs) `checkOne`.
+
+```json
+{ "functionToolActions": { "delete_project_files": "block", "send_*": "ask", "notify_team": "alert" } }
+```
+
+- **Actions** are `tagActions`' vocabulary: `block` denies the call. `ask` requires approval: in enforce mode
+  server mode's headless rule settles it (no approver → deny, unless the system file or the org policy says
+  `headlessAsk: "allow-with-report"`), and report mode reports it as configured. `alert` reports and
+  changes nothing. `allow` is accepted and does nothing: nothing here loosens a verdict.
+- **Matching** is exact and case-sensitive on the name the model sent. A key ending in `*` matches every
+  name with that prefix (the egress-rule path style: `*` only at the end, never alone). When several keys
+  match, the strictest action wins. A key that is not 1–128 of `A-Z a-z 0-9 _ . : -` (plus the trailing
+  `*`), or a value outside the vocabulary, is ignored.
+- **Order.** The rule runs on the name before the arguments are read. A `block` (or a settled `ask`) denies
+  the call outright; otherwise the arguments are decided as before, and the stricter verdict wins. It
+  applies to every function name the model calls through the proxy, `mcp__*` and mapped names (`Bash`,
+  `run_shell`) included, on every parsed API.
+- **Content-free.** One alert per call: `Model proxy: function denied by name (functionToolActions)`
+  (`Blocked`, `deny`), `… requires approval by name …` (`High`, `ask`, plus the `HEADLESS_ASK` alert when
+  enforce settles it), or `… reported by name …` (`Medium`, `notify`). `tool: "model-proxy:<function>"`, the
+  name the model already sent; never an argument. The refusal reads `tool call delete_project_files:
+  function delete_project_files blocked by policy (functionToolActions)`.
+- **Source.** The policy the runtime loaded: the verified console policy, `--policy-file`, or code
+  options. Never a request header, the request body or the model's output. The model proxy reads it; the
+  hook, `@moorai/agent-sdk` and `moorai-serve` do not (their tool names are already the hook's vocabulary).
+- **Alert reason code.** No reason code exists for this rule, so the alerts carry the derived
+  `OBSERVATION_ONLY`, as the capability-tag alerts do; the category names the rule.
+
+**Wrapped arguments.** Some small models (reported for nemotron-mini) wrap a call's real arguments once more,
+as `{"function": "<name>", "arguments": {...}}` or with `parameters`, `args` or `input`. A wrapped
+`{"command": …}` would miss the shell branch and only be content-scanned. `check.mjs unwrapArgs` removes the
+wrapper before mapping, conservatively:
+
+- only when the call does **not** map as sent (a call that already maps is never unwrapped, and its
+  top-level fields win);
+- only when exactly one key is a wrapper (`arguments`, `parameters`, `args`, `input`) and its value is a JSON
+  object;
+- only when every other key is a name key (`function`, `name`, `tool`, `tool_name`) whose value equals the
+  tool's own name.
+
+So a tool whose real schema has an `arguments` field beside any other field, a wrapper beside a different
+name, or a wrapper holding a string or an array is left as sent. Up to 4 levels are unwrapped. Unwrapping
+changes only how the call is decided: the bytes the agent receives are always the provider's. A call that
+still maps to nothing after unwrapping is content-scanned as before, on its arguments as sent.
 
 ## Report vs enforce
 
@@ -176,6 +275,8 @@ deny, unless the system file or the org policy says `allow-with-report`.
   - Anthropic: `permission_error`.
   - OpenAI: `code: "moorai_policy_denied"`.
   - Gemini: `{error: {code: 403, message, status: "PERMISSION_DENIED"}}`.
+  - Ollama: `{"error": "<message>"}`, its only error shape; both official clients raise it as `ResponseError`
+    / `Error` with the message.
   - No SDK retries a 403. The Google Gen AI SDKs retry nothing unless `httpOptions.retryOptions` is set
     (then 408, 429, 500, 502, 503 and 504), and they do not read `x-should-retry`.
 - **Denied tool call in a non-streaming response:** with `--denied-tool-call refuse` (the default), the
@@ -195,12 +296,19 @@ deny, unless the system file or the org policy says `allow-with-report`.
     rest of the turn: an allowed call in an earlier event than a denied one is withheld with it. The JSON
     array sent without `alt=sse` is held whole, like a non-streaming body, so it is not progressive in
     enforce mode.
+  - Ollama (NDJSON, `/api/chat`): lines are released as they arrive until the first line with
+    `message.tool_calls`; from there every line is held until the `done: true` line, then the turn's calls
+    are decided together. Ollama sends a call whole, so, as on Gemini, an allowed call in an earlier line
+    than a denied one is withheld with it. A line that is not JSON is refused wherever it is (a lenient
+    parser, Python's `json.loads` reading `NaN` for one, could find a tool call this one cannot), and so is
+    an upstream `{"error"}` line inside a held turn.
   - Allowed: the held events are released byte-identical.
   - Denied: the stream ends with the provider's error event. Anthropic gets `event: error` with a
     `permission_error` body. OpenAI gets a `data:` chunk with `error`, which openai-node turns into an
     `APIError`. Gemini gets a bare `{"error":{"code":403,…,"status":"PERMISSION_DENIED"}}` line (no
     `data:`), which both Gen AI SDKs raise (see the Gemini errors bullet above); braces are kept out of its
-    message because the Python SDK finds the object's end by counting them.
+    message because the Python SDK finds the object's end by counting them. Ollama gets a
+    `{"error":"…"}` line, which both official clients raise.
   - Text sent before the tool call has already reached the agent.
   - An upstream that ends inside a held tool call: the stream ends with the error event, and the unfinished
     tool call is never released.
@@ -235,6 +343,10 @@ deny, unless the system file or the org policy says `allow-with-report`.
     event left with nothing in it is dropped; a candidate left with no part loses its `content`), the text in
     the first call's place, then `usageMetadata` as sent. The JSON array without `alt=sse` is rewritten the
     same way. The call's `thoughtSignature` goes with it: the replacement text part carries none.
+  - Ollama: `message.tool_calls` is removed and the refusal is appended to `message.content` (after any text
+    the model wrote); `done_reason` stays as sent (`stop`, which Ollama already sends for a tool-call turn).
+    Streaming: the held lines are re-sent without `tool_calls` (a line left with no content and no
+    `thinking` is dropped), and the text goes into the `done: true` line, whose statistics are kept.
   - The refusal names the tool and the engine's reasons, never the arguments. Non-streaming responses
     carry `x-moorai-model-proxy: replaced`.
   - Holding the rest of the turn closes the Anthropic per-block limit above: an allowed call before a
@@ -264,9 +376,10 @@ deny, unless the system file or the org policy says `allow-with-report`.
   - content-scanned tool-call arguments (a function with no hook branch, or arguments that are not valid
     JSON) longer than `--max-scan-chars`;
   - a compressed response;
-  - an SSE event over 1 MB;
-  - a 2xx response on a parsed path that is neither `text/event-stream` nor a JSON object (for example, a
-    local server that labels its stream `application/json`). Enforce answers 502 with
+  - an SSE event or an NDJSON line over 1 MB;
+  - a 2xx response on a parsed path that is neither `text/event-stream` (or, on an Ollama path,
+    `application/x-ndjson`) nor a JSON object (for example, a local server that labels its stream
+    `application/json`). Enforce answers 502 with
     `x-should-retry: false` rather than forward tool calls it could not read.
 
   Scanning the overflow in chunks instead would not be bounded: about 100 ms of blocked event loop per
@@ -299,7 +412,7 @@ These follow moorai-serve and the MCP gateway:
   - request body cap `--max-body`: 32 MiB, Anthropic's documented limit; 413 over it;
   - non-streaming inspection cap `--max-response`: 32 MiB;
   - in-flight buffering budget `--max-inflight`: 256 MiB; over it, a retryable 529 or 503;
-  - one pending SSE event: 1 MiB;
+  - one pending SSE event or NDJSON line: 1 MiB;
   - dedup cache: 4096 entries.
 
   The single event loop scans about 2 KB in 10 ms, which caps report-mode throughput, not latency.
@@ -425,8 +538,8 @@ without `--allow-insecure-upstream` because the upstream is loopback (`127.0.0.1
 
 ```bash
 moorai-model-proxy --mode enforce --denied-tool-call replace \
-  --route /openai=https://api.openai.com/v1 --route /ollama=http://127.0.0.1:11434/v1
-OPENAI_BASE_URL=http://127.0.0.1:8791/ollama  your-agent        # Ollama's OpenAI-compatible endpoint
+  --route /openai=https://api.openai.com/v1 --route /local=http://127.0.0.1:11434/v1
+OPENAI_BASE_URL=http://127.0.0.1:8791/local  your-agent         # Ollama's OpenAI-compatible endpoint
 ```
 
 The same applies to LM Studio (`http://127.0.0.1:1234/v1`), llama.cpp server (`http://127.0.0.1:8080/v1`)
@@ -434,10 +547,20 @@ and vLLM (`http://127.0.0.1:8000/v1`). These ports are the projects' documented 
 
 Tested against a fake local server only: no auth header, the request path under `/v1`, and a whole tool call
 (id, name, all its arguments, `finish_reason`) in one chunk as well as a call fragmented across chunks. Not
-tested against a real Ollama, LM Studio, llama.cpp or vLLM build. Their native APIs (Ollama `/api/chat`)
-are not parsed. From reading the code, not from a test: a server that streams several tool-call deltas
+tested against a real Ollama, LM Studio, llama.cpp or vLLM build on `/v1`. From reading the code, not from a test: a server that streams several tool-call deltas
 with no `index` gets them merged into one call, whose arguments then fail to parse, which enforce mode denies
 rather than misreads.
+
+**Ollama's native API** (`/api/chat`, `/api/generate`) is parsed on the default `/ollama` route, or on any
+route, by path (see [Provider APIs it parses](#provider-apis-it-parses)). Measured live against Ollama
+0.15.6 on 127.0.0.1:11434 with `mistral-nemo`, `--mode enforce`, the default `/ollama` route and
+`functionToolActions: {"delete_project_files": "block"}`: an allowed `get_weather` call was released
+(JSON 200, and the NDJSON tool-call and `done` lines), `delete_project_files` was refused (JSON 403
+`{"error":"MoorAI model-proxy refused this response — tool call delete_project_files: function
+delete_project_files blocked by policy (functionToolActions)"}`, and NDJSON ended in that `{"error"}` line),
+and a content-free alert reached a local stub console. The wrapped-argument shape was not reproduced live
+(nemotron-mini was not installed), and replace mode, `/api/generate` and the real ollama-python /
+ollama-js packages were tested against the fake upstream and a copy of their read rule only.
 
 ## Skip alert
 
@@ -486,7 +609,7 @@ moorai-serve --model-proxy-url http://127.0.0.1:8791                    # sideca
 ```bash
 node --test --import ./test/hermetic-env.mjs test/model-proxy.test.mjs test/model-proxy-enforce.test.mjs test/model-proxy-credentials.test.mjs \
   test/model-proxy-toolcall.test.mjs test/model-proxy-toolcall-local.test.mjs test/model-proxy-gemini.test.mjs test/serve-unchecked.test.mjs \
-  test/model-proxy-connect-timeout.test.mjs
+  test/model-proxy-connect-timeout.test.mjs test/model-proxy-ollama.test.mjs test/model-proxy-function-rules.test.mjs
 ```
 
 Latency the judging adds, measured on an M-series Mac, node, no console, built-in rules:

@@ -579,14 +579,16 @@ the embed function receives; use `onReport` to drop the same ids.
 #### Model proxy
 
 `moorai-model-proxy` ([`model-proxy/`](model-proxy/README.md)) sits between an agent's model SDK and the
-provider, for any agent loop that calls Anthropic, OpenAI or Gemini through their SDKs. It listens on 127.0.0.1:8791 with three default routes,
-`/anthropic` (`https://api.anthropic.com`), `/openai` (`https://api.openai.com/v1`) and `/gemini`
-(`https://generativelanguage.googleapis.com`); the agent points its SDK's base URL at it:
+provider, for any agent loop that calls Anthropic, OpenAI, Gemini or a local Ollama through their SDKs. It listens on 127.0.0.1:8791 with four default routes,
+`/anthropic` (`https://api.anthropic.com`), `/openai` (`https://api.openai.com/v1`), `/gemini`
+(`https://generativelanguage.googleapis.com`) and, on a loopback bind only, `/ollama` (`http://127.0.0.1:11434`;
+Ollama's API is unauthenticated, so a remote bind drops that default); the agent points its SDK's base URL at it:
 
     moorai-model-proxy                                   # report-only
     ANTHROPIC_BASE_URL=http://127.0.0.1:8791/anthropic   your-agent
     OPENAI_BASE_URL=http://127.0.0.1:8791/openai         your-agent
     GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:8791/gemini  your-agent
+    OLLAMA_HOST=http://127.0.0.1:8791/ollama             your-agent
 
 It scans what the agent sends (prompt and system text at stage `prompt`; tool results and documents fed
 back at stage `output` as inbound content, where indirect injection shows up; a re-sent item is
@@ -610,6 +612,22 @@ Every tool call of that turn is withheld, and the turn ends with `stop_reason: e
 `finish_reason: stop`, streaming or not. An OpenAI-compatible local server (Ollama, LM Studio, llama.cpp,
 vLLM) is a `--route` to its loopback `/v1`.
 
+**Ollama's native API.** `POST …/api/chat` and `…/api/generate` are parsed on any route, by path: JSON
+(`"stream": false`) and the NDJSON stream Ollama sends by default. Each `message.tool_calls[]` entry
+(`function.arguments` is an object) is judged like any other tool call; a streamed turn is held from its first
+tool-call line to its `done: true` line. A denied call is refused (403 `{"error":…}`, or an `{"error":…}` line
+that ends the stream, which ollama-python and ollama-js raise) or, with `replace`, becomes the assistant's
+content. `system` / `user` / `tool` messages and `/api/generate`'s `prompt`, `system`, `suffix` and `template` are
+scanned; the text `/api/generate` returns is scanned report-only. Measured live against Ollama 0.15.6
+(`mistral-nemo`) in enforce mode: the allowed call released, the denied one refused, JSON and streaming.
+
+**Function names and wrapped arguments.** `policy.functionToolActions` (`{"delete_project_files": "block",
+"send_*": "ask"}`; actions `block` / `ask` / `alert`, exact and case-sensitive, a trailing `*` for a prefix)
+denies or holds for approval a plain, non-MCP function by name on every parsed API, content-free. A small
+model's `{"function": "<name>", "arguments": {...}}` wrapper is removed before mapping when it is the only
+key besides a name equal to the tool's own, so a wrapped shell command is still judged as `Bash`. See
+[`model-proxy/README.md`](model-proxy/README.md#function-names-and-wrapped-arguments).
+
 **Gemini.** `generateContent` and `streamGenerateContent` (JSON, the JSON array sent without `alt=sse`, and
 SSE with `alt=sse`) are parsed on any route, chosen by the `…/models/<model>:generateContent` path, so the
 Gemini API and Vertex AI publisher-model endpoints are both covered. The default `/gemini` route goes to
@@ -620,8 +638,8 @@ ends the stream, which both Gen AI SDKs raise) or, with `replace`, becomes one t
 `finishReason: "STOP"`. Vertex's streamed `partialArgs` have no documented assembly rule and are refused in
 enforce mode. Tested against a fake Gemini upstream only. `--unchecked-window-ms` with `moorai-serve --model-proxy-url`
 alerts, content-free, on a forwarded call that the framework never checked with its `toolCallId`. This
-judging covers only Anthropic Messages, Chat Completions and Gemini `generateContent` traffic that goes
-through the proxy. The Responses API, Bedrock, Gemini's Interactions and Live APIs and Vertex partner models
+judging covers only Anthropic Messages, Chat Completions, Gemini `generateContent` and Ollama `/api/chat`
+traffic that goes through the proxy. The Responses API, Bedrock, Gemini's Interactions and Live APIs and Vertex partner models
 are forwarded unparsed. See
 [`model-proxy/README.md`](model-proxy/README.md#exact-coverage-of-tool-call-judging).
 
@@ -760,7 +778,8 @@ enforcing its cached policy, then its last-known-good verified policy, then the 
 hook's policy fetch gets no answer, it backs off: later calls skip the policy fetch for 60 s, doubling to
 at most 5 minutes, except one call in eight, and the first answer from the console resets it. A call that
 has no answer from the console hands its alert posts to a detached worker instead of waiting on them, so
-every alert is still sent. The back-off file is in `~/.moorai`, where the agent can write it, so it can
+every alert is still sent. Only the tool call's own decision fetches the policy; the detached scan workers read the verified local
+copy and never fetch. The back-off file is in `~/.moorai`, where the agent can write it, so it can
 delay a policy refresh by about eight calls and cannot stop an alert. Measured, 40 calls each, same
 decisions, with the console at an address that drops packets (192.0.2.1): an allowed call takes 0.12 s
 (p50) and a denied one 0.09 s, against 3.17 s and 4.64 s when every call fetches; p95 is 1.67 s and 1.63 s,

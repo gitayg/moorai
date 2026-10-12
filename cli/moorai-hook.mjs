@@ -894,7 +894,7 @@ async function runAgentScanWorker(tool) {
   try {
     // Re-checked in the worker, not just in the parent: a worker must never be able to WIDEN the
     // parent's gate, and this one can be invoked directly.
-    const { policy } = await loadVerifiedPolicy(CONFIG);
+    const { policy } = await loadVerifiedPolicy(CONFIG, { network: false }); // local copies only: never a fetch, never a back-off write
     if (!agentDetectionsEnabled(policy)) return exitHook();
     if (contentHash("agentscan/probe") === NO_KEY) return exitHook();
     const report = agentBaselineReport(readAgentEvents());
@@ -1099,7 +1099,7 @@ async function runIndexScanWorker(projectDir) {
   try {
     // Re-checked in the worker, not just in the parent: a worker must never be able to WIDEN the
     // parent's gate, and this one can be invoked directly.
-    const { policy } = await loadVerifiedPolicy(CONFIG);
+    const { policy } = await loadVerifiedPolicy(CONFIG, { network: false }); // local copies only: never a fetch, never a back-off write
     if (!policy || !indexScanEnabled(policy)) return exitHook();
     const engine = buildEngine(policy);
     const seen = readIndexSeen();

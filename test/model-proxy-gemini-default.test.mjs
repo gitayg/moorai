@@ -45,11 +45,11 @@ before(async () => {
 });
 after(async () => { for (const p of [rep, enf, cred, req]) await p?.stop(); await fp?.close(); await con?.close(); if (home) rmTree(home); });
 
-test("the default routes are /anthropic, /openai and /gemini (https://generativelanguage.googleapis.com)", () => {
-  const want = { "/anthropic": "https://api.anthropic.com", "/openai": "https://api.openai.com/v1", "/gemini": GOOGLE };
+test("the default routes are /anthropic, /openai, /gemini (https://generativelanguage.googleapis.com) and, on a loopback bind, /ollama", () => {
+  const want = { "/anthropic": "https://api.anthropic.com", "/openai": "https://api.openai.com/v1", "/gemini": GOOGLE, "/ollama": "http://127.0.0.1:11434" };
   assert.deepEqual({ ...DEFAULTS.routes }, want);
   assert.deepEqual(parseArgs([], {}).routes, want);
-  assert.deepEqual(rep.routes, { "/anthropic": "https://api.anthropic.com/", "/openai": "https://api.openai.com/v1", "/gemini": `${GOOGLE}/` }, "the startup line (origin + path) lists the /gemini default");
+  assert.deepEqual(rep.routes, { "/anthropic": "https://api.anthropic.com/", "/openai": "https://api.openai.com/v1", "/gemini": `${GOOGLE}/`, "/ollama": "http://127.0.0.1:11434/" }, "the startup line (origin + path) lists the /gemini and /ollama defaults");
 });
 
 test("no --route: /gemini/v1beta/models/<m>:generateContent goes to generativelanguage.googleapis.com/v1beta/…, key header untouched", async () => {

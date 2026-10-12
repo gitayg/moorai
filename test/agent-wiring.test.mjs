@@ -217,6 +217,9 @@ test("DEDUP: a standing finding alerts once, not on every scan", async () => {
   const { srv, port, alerts } = await startServer(ON);
   try {
     const sb = sandbox({ port, events: DEPUTY_ONLY });
+    // The policy cache the hook that spawns the worker leaves behind: the worker re-checks its gate from the
+    // verified local copies and never fetches (cli/hook-core.mjs loadVerifiedPolicy network:false).
+    writeFileSync(join(sb.home, ".moorai", "hook-policy.json"), JSON.stringify(ON));
     for (let i = 0; i < 3; i++) { await scan(sb.home); await new Promise((r) => setTimeout(r, 400)); }
     const got = agentAlerts(alerts).filter((a) => a.detection.type === "confused-deputy");
     assert.equal(got.length, 1, `a standing finding must alert once, not once per scan; got ${got.length}`);

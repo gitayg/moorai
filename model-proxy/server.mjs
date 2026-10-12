@@ -12,8 +12,9 @@
 // any other placeholder use is refused before the body is read, and every response is masked for the bound
 // secrets (credential-mask.mjs) before anything reads it. Without them, nothing here changes.
 //
-// Only POST …/messages (Anthropic), POST …/chat/completions (OpenAI) and POST …/models/{model}:generateContent
-// / :streamGenerateContent (Gemini, on any route) are parsed; any other path or method is forwarded unparsed.
+// Only POST …/messages (Anthropic), POST …/chat/completions (OpenAI), POST …/models/{model}:generateContent
+// / :streamGenerateContent (Gemini, on any route) and POST …/api/chat / …/api/generate (Ollama's native API,
+// on any route; NDJSON streams) are parsed; any other path or method is forwarded unparsed.
 import http from "node:http";
 import https from "node:https";
 import { once } from "node:events";
@@ -27,7 +28,9 @@ import { isLoopback } from "../cli/moorai-serve.mjs";
 import * as anthropic from "./anthropic.mjs";
 import * as openai from "./openai.mjs";
 import * as gemini from "./gemini.mjs";
+import * as ollama from "./ollama.mjs";
 import { createSplitter } from "./sse.mjs";
+import { createLineSplitter } from "./ndjson.mjs";
 import { createChecker } from "./check.mjs";
 import { wrapReporter, unevaluatedReporter, uncheckedReporter, refusalMessage } from "./report.mjs";
 import { createUncheckedTracker, DEFAULT_MAX as UNCHECKED_MAX, MAX_ID } from "./unchecked.mjs";
@@ -40,8 +43,17 @@ export const DEFAULTS = Object.freeze({
   host: "127.0.0.1", port: 8791, mode: "report", maxBody: 33554432, maxResponse: 33554432, maxInflight: 268435456,
   maxEvent: 1048576, maxScanItems: 256, maxScanChars: 524288, timeoutMs: 10000, upstreamTimeoutMs: 600000, connectTimeoutMs: 10000, maxConnections: 128,
   deniedToolCall: "refuse", uncheckedWindowMs: 0, uncheckedMax: UNCHECKED_MAX,
-  routes: Object.freeze({ "/anthropic": "https://api.anthropic.com", "/openai": "https://api.openai.com/v1", "/gemini": "https://generativelanguage.googleapis.com" })
+  routes: Object.freeze({ "/anthropic": "https://api.anthropic.com", "/openai": "https://api.openai.com/v1", "/gemini": "https://generativelanguage.googleapis.com", "/ollama": "http://127.0.0.1:11434" })
 });
+// The /ollama default (Ollama's documented default address) is a default on a loopback bind only: Ollama's
+// API has no authentication, so on a remote bind the default would hand its model-management endpoints
+// (/api/pull, /api/delete, /api/create …, forwarded unparsed) to every token holder. An explicit --route
+// /ollama=… keeps it anywhere.
+export function defaultRoutes(host) {
+  const r = { ...DEFAULTS.routes };
+  if (!isLoopback(host)) delete r["/ollama"];
+  return r;
+}
 export const TOKEN_HEADER = "x-moorai-proxy-token";
 export const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER]);
 const HOP_RES = new Set(["connection", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"]);
@@ -83,9 +95,9 @@ function originOk(origin, allow) {
   try { const u = new URL(origin); return (u.protocol === "http:" || u.protocol === "https:") && isLoopback(u.hostname); } catch { return false; }
 }
 const digest = (s) => createHash("sha256").update(String(s)).digest();
-const apiFor = (method, path) => (method !== "POST" ? null : /\/messages$/.test(path) ? anthropic : /\/chat\/completions$/.test(path) ? openai : gemini.isPath(path) ? gemini : null);
-// The retryable status of the proxy's own budget errors: OpenAI and Gemini 503, Anthropic 529 (overloaded).
-const busy = (api) => (api === openai || api === gemini ? 503 : 529);
+const apiFor = (method, path) => (method !== "POST" ? null : /\/messages$/.test(path) ? anthropic : /\/chat\/completions$/.test(path) ? openai : gemini.isPath(path) ? gemini : ollama.isPath(path) ? ollama : null);
+// The retryable status of the proxy's own budget errors: OpenAI, Gemini and Ollama 503, Anthropic 529 (overloaded).
+const busy = (api) => (api === openai || api === gemini || api === ollama ? 503 : 529);
 const parseJson = (buf) => { try { const v = JSON.parse(buf.toString("utf8")); return v && typeof v === "object" ? v : null; } catch { return null; } };
 
 // Proxy-generated errors on a parsed path take that provider's documented error shape; elsewhere a shape
@@ -95,7 +107,7 @@ function errorPayload(api, status, message) {
 }
 
 export async function createProxy(opts = {}) {
-  const o = { ...DEFAULTS, ...opts, routes: opts.routes || DEFAULTS.routes };
+  const o = { ...DEFAULTS, ...opts, routes: opts.routes || defaultRoutes(opts.host || DEFAULTS.host) };
   const enforce = o.mode === "enforce";
   // --denied-tool-call replace: a denied tool call is withheld and its turn delivered as text explaining
   // why (anthropic-replace.mjs, openai-replace.mjs) instead of the whole response being refused.
@@ -190,6 +202,8 @@ export async function createProxy(opts = {}) {
     const enc = String(ur.headers["content-encoding"] || "identity").toLowerCase();
     const ok = ur.statusCode >= 200 && ur.statusCode < 300;
     const sse = /^text\/event-stream\b/i.test(ct);
+    // Ollama streams NDJSON (application/x-ndjson): framed by lines instead of SSE events.
+    const lines = Boolean(api && api.NDJSON) && /^application\/x-ndjson\b/i.test(ct);
     if (!api || !ok) { res.writeHead(ur.statusCode, responseHeaders(ur)); ur.pipe(res); return; }
     if (enc !== "identity") {
       // Unscannable. Report-only forwards it (and says so once); enforce does not forward what it cannot read.
@@ -203,7 +217,10 @@ export async function createProxy(opts = {}) {
     const decide = enforce
       ? (calls) => (calls.length ? withTimeout(checker.checkToolCalls(calls)).then((v) => { if (v.decision === "allow") track(calls); return v; }) : Promise.resolve(ALLOW))
       : (calls) => { if (calls.length) { track(calls); later.push(() => checker.checkToolCalls(calls)); } return Promise.resolve(ALLOW); };
-    if (sse) return enforce ? streamEnforce(ur, res, api, decide) : streamObserve(ur, res, api, decide);
+    // The model's own text where an API has no structured tool calls (Ollama /api/generate): report-only,
+    // after the response has ended, in every mode.
+    const observe = (items) => { if (items.length) later.push(() => checker.observe(items)); };
+    if (sse || lines) return enforce ? streamEnforce(ur, res, api, decide, lines, observe) : streamObserve(ur, res, api, decide, lines, observe);
     if (!enforce) {
       // Report-only: bytes go to the client as they arrive; a bounded copy is parsed after the end.
       res.writeHead(ur.statusCode, responseHeaders(ur));
@@ -212,7 +229,7 @@ export async function createProxy(opts = {}) {
       ur.on("end", () => {
         if (over) return;
         const body = parseJson(Buffer.concat(chunks));
-        if (body) decide(api.responseToolCalls(body));
+        if (body) { decide(api.responseToolCalls(body)); if (api.responseItems) observe(api.responseItems(body)); }
         else unevaluated("response-unparsed", "response");
       });
       ur.pipe(res);
@@ -238,6 +255,7 @@ export async function createProxy(opts = {}) {
     // labels its stream application/json, say) cannot be checked for tool calls: enforce does not forward it.
     if (!body) { unevaluated("response-unparsed", "response"); return send(res, 502, api.errorBody(502, "MoorAI model-proxy: the response is not a JSON object or an event stream; it cannot be checked"), NO_RETRY); }
     const calls = api.responseToolCalls(body);
+    if (api.responseItems) observe(api.responseItems(body));
     let v;
     try { v = await decide(calls); } catch { return send(res, busy(api), api.errorBody(busy(api), "MoorAI model-proxy: evaluation did not finish in time; retry")); }
     if (v.decision === "deny") {
@@ -251,10 +269,10 @@ export async function createProxy(opts = {}) {
     res.end(buf);
   }
 
-  async function streamObserve(ur, res, api, decide) {
+  async function streamObserve(ur, res, api, decide, lines, observe) {
     res.writeHead(ur.statusCode, responseHeaders(ur));
-    const split = createSplitter(o.maxEvent);
-    const machine = api.createStream({ enforce: false, decide, maxHold: o.maxEvent });
+    const split = lines ? createLineSplitter(o.maxEvent) : createSplitter(o.maxEvent);
+    const machine = api.createStream({ enforce: false, decide, maxHold: o.maxEvent, observe });
     let stopped = false;
     const feed = (evs) => { for (const ev of evs) machine.onEvent(ev).catch(() => {}); };
     ur.on("data", (c) => { if (stopped) return; feed(split.push(c)); if (split.overflow) { stopped = true; unevaluated("stream-event", "response"); } });
@@ -262,10 +280,10 @@ export async function createProxy(opts = {}) {
     ur.pipe(res);
   }
 
-  async function streamEnforce(ur, res, api, decide) {
+  async function streamEnforce(ur, res, api, decide, lines, observe) {
     res.writeHead(ur.statusCode, responseHeaders(ur, { dropLength: true }));
-    const split = createSplitter(o.maxEvent);
-    const machine = replace ? api.createReplaceStream({ decide, maxHold: o.maxEvent }) : api.createStream({ enforce: true, decide, maxHold: o.maxEvent });
+    const split = lines ? createLineSplitter(o.maxEvent) : createSplitter(o.maxEvent);
+    const machine = replace ? api.createReplaceStream({ decide, maxHold: o.maxEvent, observe }) : api.createStream({ enforce: true, decide, maxHold: o.maxEvent, observe });
     const write = async (bufs) => { for (const b of bufs) if (!res.write(b)) await Promise.race([once(res, "drain"), once(res, "close")]); };
     const stop = async (status, message) => { stats.refused++; ur.destroy(); res.end(api.streamError(status, message)); };
     const step = async (r) => {

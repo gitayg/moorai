@@ -10,7 +10,7 @@
 // the metadata branch a binary file the agent read would reach no detector at all.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import http from "node:http";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -153,7 +153,15 @@ function startSink() {
   const srv = http.createServer((req, res) => {
     let b = "";
     req.on("data", (c) => (b += c));
-    req.on("end", () => { if (req.url.startsWith("/api/alerts")) { try { alerts.push(JSON.parse(b)); } catch { /* ignore */ } } res.writeHead(200); res.end("{}"); });
+    // The policy routes answer 404: no policy (the built-in defaults), exactly what a console that never
+    // answered gave before, but a console that ANSWERED, so the hook posts its alerts inline and has
+    // delivered them by the time it exits. An unanswered fetch hands them to the detached alert worker,
+    // which a loaded runner can start after any fixed wait has ended.
+    req.on("end", () => {
+      if (req.url.startsWith("/api/policy")) { res.writeHead(404); return res.end(); }
+      if (req.url.startsWith("/api/alerts")) { try { alerts.push(JSON.parse(b)); } catch { /* ignore */ } }
+      res.writeHead(200); res.end("{}");
+    });
   });
   return new Promise((r) => srv.listen(0, "127.0.0.1", () => r({ srv, port: srv.address().port, alerts })));
 }
@@ -171,9 +179,10 @@ async function runHook(payload) {
     const clean = join(home, "holiday.jpg");
     writeFileSync(clean, jpeg([[0x010e, 2, INNOCENT, false]]));
 
-    const r = spawnSync(process.execPath, [HOOK], {
-      input: JSON.stringify(payload(img, clean)),
-      encoding: "utf8",
+    // Asynchronous on purpose: spawnSync blocks this process, so the sink above could not answer the hook
+    // at all while it ran.
+    const child = spawn(process.execPath, [HOOK], {
+      stdio: ["pipe", "pipe", "pipe"],
       env: {
         PATH: process.env.PATH || "/usr/bin:/bin",
         HOME: home, USERPROFILE: home,
@@ -181,8 +190,12 @@ async function runHook(payload) {
         MoorAI_SERVER: `http://127.0.0.1:${port}`, MoorAI_TENANT: "meta-test"
       }
     });
-    await new Promise((r2) => setTimeout(r2, 250));
-    return { status: r.status, stdout: r.stdout, stderr: r.stderr, alerts };
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (c) => (stdout += c));
+    child.stderr.on("data", (c) => (stderr += c));
+    child.stdin.end(JSON.stringify(payload(img, clean)));
+    const status = await new Promise((r2) => child.on("close", r2));
+    return { status, stdout, stderr, alerts };
   } finally {
     srv.close();
     rmTree(home);

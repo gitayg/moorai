@@ -1972,7 +1972,16 @@ function writePolicyPin(config, pin, keys, mark) {
 // as the cache, so `serverUrl` can be repointed at an attacker-run localhost that serves `{}` — the
 // identical bypass wearing a different hat. `rejected` carries the content-free (source, status) pairs
 // for the tamper alert; only those NAMES ever leave the device.
-export async function loadVerifiedPolicy(config, { backoffDraw } = {}) {
+//
+// network: false — the detached workers (agentscan, indexscan). They re-read the policy only to re-check
+// their own gate, moments after the hook that spawned them resolved it, so they resolve from the same
+// local copies (cache, then last-known-good, verified exactly as above) and never fetch. A worker's fetch
+// was a second request to the console for the same policy, and its outcome leaked into the decision
+// path's state: a worker that outlived a console connection recorded a console back-off, and the next
+// tool call then skipped the fetch that would have delivered a new policy (measured under CPU
+// contention: test/console-backoff.test.mjs WORKER). Without network the worker writes nothing: no
+// back-off, no cache, no pin, no last-known-good.
+export async function loadVerifiedPolicy(config, { backoffDraw, network = true } = {}) {
   const anchorKeys = policyKeys();    // explicit anchor: root-owned /etc/moorai/policy.pub or MDM env
   const pin = readPolicyPin();        // this device's own TOFU record
   const trust = policyTrust({ anchorKeys, pin, tenant: config.tenant });
@@ -2028,8 +2037,8 @@ export async function loadVerifiedPolicy(config, { backoffDraw } = {}) {
   // skip the network and resolve exactly as a failed fetch would. Never while the pin looks erased — that
   // state fetches on every call because only a fresh fetch can re-pin the device. The file is agent-
   // writable, so it can only delay a fetch: backoffSkipsFetch still fetches on a random one call in eight.
-  const backoff = absence.suspicious ? { active: false, failures: 0 } : readConsoleBackoff();
-  const skipFetch = backoffSkipsFetch(backoff, backoffDraw);
+  const backoff = !network || absence.suspicious ? { active: false, failures: 0 } : readConsoleBackoff();
+  const skipFetch = !network || backoffSkipsFetch(backoff, backoffDraw);
   // deferAlerts: this call has no HTTP answer of its own from the console (it skipped the fetch, or the
   // fetch got none), so its alert posts go to a detached worker rather than holding the decision path.
   // Decided from what this process did, never from the file: no outcome here drops an alert.
