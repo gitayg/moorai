@@ -70,8 +70,8 @@ test("functionRulesFrom / functionActionFor: matched after folding (case, - and 
   assert.equal(functionActionFor(rules, "anything"), null, "a bare * is not a rule");
   assert.equal(functionActionFor(rules, "ok_tool"), null, "allow never loosens anything");
   assert.equal(functionActionFor(rules, "nope"), null);
-  assert.deepEqual(functionRulesFrom(null), { exact: new Map(), prefix: [], ignored: [] });
-  assert.deepEqual(functionRulesFrom({ functionToolActions: ["x"] }), { exact: new Map(), prefix: [], ignored: [] });
+  assert.deepEqual(functionRulesFrom(null), { exact: new Map(), prefix: [], ignored: [], broad: [] });
+  assert.deepEqual(functionRulesFrom({ functionToolActions: ["x"] }), { exact: new Map(), prefix: [], ignored: [], broad: [] });
 });
 
 // ---- through the CLI ----

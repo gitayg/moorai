@@ -56,14 +56,25 @@ test("functionToolActions: a dispatcher's inner name is matched with string argu
   }
 });
 
-test("functionToolActions: a wildcard whose prefix folds to nothing (`tools.*`) is ignored with a warning, never a match for every name", () => {
+test("functionToolActions: a wildcard whose prefix folds to nothing (`tools.*`) fails CLOSED: it matches every function, with a warning", () => {
+  // An admin who writes `tools.*: block` means to block a whole namespace. Ignoring the key would leave every
+  // tool unblocked (fail-open); matching every name over-blocks instead, and the warning says so.
   const warned = [];
   const rules = functionRulesFrom({ functionToolActions: { "tools.*": "block", "functions.*": "ask", "tools*": "alert" } }, { warn: (m) => warned.push(m) });
-  assert.deepEqual(rules.ignored, ["tools.*", "functions.*"]);
+  assert.deepEqual(rules.broad, ["tools.*", "functions.*"]);
+  assert.deepEqual(rules.ignored, []);
   assert.equal(warned.length, 2);
-  assert.match(warned[0], /"tools\.\*" ignored/);
-  assert.equal(functionActionFor(rules, "get_weather"), null, "not every function is blocked");
-  assert.equal(functionActionFor(rules, "tools.delete_all"), "alert", "the valid key still applies");
+  assert.match(warned[0], /"tools\.\*" matches every function/);
+  assert.equal(functionActionFor(rules, "get_weather"), "block", "the broad rule applies to every function");
+  assert.equal(functionActionFor(rules, "tools.delete_all"), "block", "the strictest matching action wins");
+});
+
+test("functionToolActions: a key that is not a valid function name is ignored, but never silently", () => {
+  const warned = [];
+  const rules = functionRulesFrom({ functionToolActions: { "bad key!": "block" } }, { warn: (m) => warned.push(m) });
+  assert.deepEqual(rules.ignored, ["bad key!"]);
+  assert.equal(warned.length, 1);
+  assert.match(warned[0], /"bad key!" ignored/);
 });
 
 test("functionToolActions: folding only adds matches — a prefix rule still matches the raw name whose fold strips a namespace", () => {

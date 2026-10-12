@@ -234,10 +234,11 @@ only content-scanned). Code: [`function-rules.mjs`](function-rules.mjs), applied
   spelled with a look-alike letter from another script (Cyrillic `е`), which no client resolves to the Latin
   name. A key ending in `*` matches every name with that prefix (the egress-rule path style: `*` only at the
   end, never alone). When several keys match, the strictest action wins. A key that is not 1–128 of
-  `A-Z a-z 0-9 _ . : -` (plus the trailing `*`), or a value outside the vocabulary, is ignored. A wildcard
-  whose prefix folds to nothing — a namespace alone, `tools.*`, `functions.*`, `default_api.*` — would match
-  every function; it is almost certainly a typo, so it is ignored, with one stderr warning per loaded policy
-  (`moorai-model-proxy: functionToolActions key "tools.*" ignored: …`), instead of blocking every call. A key
+  `A-Z a-z 0-9 _ . : -` (plus the trailing `*`) is ignored, with one stderr warning per loaded policy; a value
+  outside the vocabulary is ignored. A wildcard whose prefix folds to nothing — a namespace alone, `tools.*`,
+  `functions.*`, `default_api.*` — fails closed: it matches every function, with one stderr warning per loaded
+  policy (`moorai-model-proxy: functionToolActions key "tools.*" matches every function: …`), because ignoring
+  it would leave the namespace the admin meant to restrict unchecked. A key
   `tools*` (no dot) is valid and matches `tools.delete_all` and `toolsmith`.
 - **Folding only adds matches.** Every key and every name is matched in three forms: as written, case and
   `-` folded without removing a namespace prefix, and fully folded; the strictest action over every form

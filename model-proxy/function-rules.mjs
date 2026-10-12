@@ -39,25 +39,31 @@ export const foldName = (name) => normalizeName(name).toLowerCase().replace(/-/g
 // action over every form that matches wins.
 const lightFold = (name) => String(name ?? "").normalize("NFKC").replace(/[\p{Cc}\p{Cf}]/gu, "").trim().toLowerCase().replace(/-/g, "_");
 const formsOf = (name) => [...new Set([String(name ?? ""), lightFold(name), foldName(name)])];
-const EMPTY = Object.freeze({ exact: new Map(), prefix: [], ignored: [] });
+const EMPTY = Object.freeze({ exact: new Map(), prefix: [], ignored: [], broad: [] });
 const cache = new WeakMap();
 
-// A wildcard whose prefix folds to nothing (`tools.*`, `functions.*`: a namespace and nothing else) would match
-// every function; it is almost certainly a typo, so it is ignored, listed in `ignored`, and reported once per
-// loaded policy through `warn` (stderr by default) — never a silent block of every call.
+// A wildcard whose prefix folds to nothing (`tools.*`, `functions.*`: a namespace and nothing else) matches
+// every function: the admin meant a whole namespace, and ignoring the key would leave every tool unchecked
+// (fail-open), so it fails closed instead, is listed in `broad`, and is reported once per loaded policy through
+// `warn` (stderr by default). A key that is not a valid name is ignored, listed in `ignored`, and reported too.
 const stderrWarn = (msg) => { try { process.stderr.write(`moorai-model-proxy: ${msg}\n`); } catch {} };
 export function functionRulesFrom(policy, { warn = stderrWarn } = {}) {
   const m = policy && typeof policy === "object" ? policy.functionToolActions : undefined;
-  if (!m || typeof m !== "object" || Array.isArray(m)) return { exact: new Map(), prefix: [], ignored: [] };
-  const exact = new Map(), prefix = [], ignored = [];
+  if (!m || typeof m !== "object" || Array.isArray(m)) return { exact: new Map(), prefix: [], ignored: [], broad: [] };
+  const exact = new Map(), prefix = [], ignored = [], broad = [];
   for (const [key, act] of Object.entries(m)) {
     if (!(act in ACTION_RANK) || act === "allow") continue;
     const star = key.endsWith("*");
     const base = star ? key.slice(0, -1) : key;
-    if (!NAME_RE.test(base)) continue;
-    if (star && !foldName(base)) {
+    if (!NAME_RE.test(base)) {
       ignored.push(key);
-      warn(`functionToolActions key ${JSON.stringify(key)} ignored: its prefix is only a namespace, so it would match every function`);
+      warn(`functionToolActions key ${JSON.stringify(key)} ignored: it is not a valid function name`);
+      continue;
+    }
+    if (star && !foldName(base)) {
+      broad.push(key);
+      warn(`functionToolActions key ${JSON.stringify(key)} matches every function: its prefix is only a namespace`);
+      prefix.push(["", act]);
       continue;
     }
     for (const k of formsOf(base)) {
@@ -65,7 +71,7 @@ export function functionRulesFrom(policy, { warn = stderrWarn } = {}) {
       else if (!exact.has(k) || ACTION_RANK[act] > ACTION_RANK[exact.get(k)]) exact.set(k, act);
     }
   }
-  return { exact, prefix, ignored };
+  return { exact, prefix, ignored, broad };
 }
 
 export function rulesOf(policy) {
