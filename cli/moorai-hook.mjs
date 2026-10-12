@@ -17,7 +17,7 @@ import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideCredFileRead, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision, evaluateProfile, rejectedAlert, PROFILE_DRIFT, decideThreat } from "./hook-core.mjs";
+import { buildEngine, decideText, decideCredFileRead, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, policyIatIso, policyAgeMs, policyFreshByIat, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision, evaluateProfile, rejectedAlert, PROFILE_DRIFT, decideThreat } from "./hook-core.mjs";
 import { fetchExecFacts } from "../data/net-exec.js";
 import { fetchedExecHit, recordFetched } from "./fetch-exec-state.mjs";
 import { maskValue, maskNote } from "./mask.mjs";
@@ -58,7 +58,7 @@ import { readStateJson, writeStateJson, repoIdentity, LEARNED_DRIFT_FILE, DELETI
 import { sessionRiskStep, circuitStep, circuitOutcome } from "./session-state.mjs";
 import { captureTask, judgeAction, CLASS_TEXT } from "./intent-alignment.mjs";
 import { promptScanPlan, promptBlockers } from "./prompt-scan.mjs";
-import { serverMode, serviceWho, settleHeadlessAsk, settleBypassAsk, tamperAlert, trustedEnv, refusedTrustEnv, systemConfigPath, workloadIdentity } from "./server-mode.mjs";
+import { serverMode, serviceWho, settleHeadlessAsk, settleBypassAsk, tamperAlert, trustedEnv, refusedTrustEnv, systemConfigPath, workloadIdentity, workerEnv, hookProcessEnvName } from "./server-mode.mjs";
 import { recordMcpCall, scheduleMcpUsageFlush } from "./mcp-usage-beat.mjs";
 import { REASON, ENFORCEMENT, policyIdOf, stampAlert } from "./provenance.mjs";
 import { recordRow, readSessionRows, localHash } from "./session-ledger.mjs";
@@ -66,6 +66,9 @@ import { commandClass, normalizeCommand, verifyFamily, outcomeOfResponse, outcom
 import { callTags, sessionTagsOf, recordSessionTags, tagGate, applyTagGate, tagHitAlert } from "./tool-tags.mjs";
 import { readExceptionStore, liveExceptions, matchCallExceptions, applyExceptions, exceptionHint, selfExceptionAttempt } from "./exceptions.mjs";
 import { agentVersionFromEnv } from "./agent-names.mjs";
+import { machinePath } from "./machine-dir.mjs";
+import { stampAlertSeq } from "./alert-seq.mjs";
+import { bindingRefusedAlert } from "./config.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -169,7 +172,13 @@ function writeSettings(s) {
   writeFileSync(tmp, JSON.stringify(s, null, 2));
   renameSync(tmp, p);
 }
-function hookEntry(matcher) { return { matcher, hooks: [{ type: "command", command: `node ${JSON.stringify(SELF)}` }] }; }
+// node by ABSOLUTE path (process.execPath, the node running this install), never a bare `node` the host
+// resolves through PATH: PATH is the user's, a settings file's `env` block can set it for the host, and a
+// shim named node earlier on it would run instead of the hook. A converge from an older bare-`node` entry
+// rewrites it to this form (convergeHooks). If that node binary is later removed (a version manager
+// uninstalling it), the host cannot start the hook: `moorai-doctor` reports the hook as broken.
+function hookCommand() { return `${JSON.stringify(process.execPath)} ${JSON.stringify(SELF)}`; }
+function hookEntry(matcher) { return { matcher, hooks: [{ type: "command", command: hookCommand() }] }; }
 // The events MoorAI registers, and the matcher set each one owns. Keyed by event name so install,
 // converge and uninstall all iterate ONE list — the way the PreToolUse-only versions of those three
 // functions drifted apart is exactly how a second event gets added to install and forgotten in
@@ -224,7 +233,10 @@ function convergeHooks() {
       const ours = (Array.isArray(s.hooks?.[event]) ? s.hooks[event] : []).filter(isCuraiq);
       const want = REGISTERED_EVENTS[event];
       const have = new Set(ours.map((e) => e && e.matcher));
-      return ours.length !== want.length || !want.every((m) => have.has(m));
+      // A bare `node` (pre-1.13 installs) or another node binary than this one is rewritten to the
+      // absolute command too; once converged the entry names this process's node, so it holds steady.
+      const cmdStale = ours.some((e) => !(Array.isArray(e && e.hooks) && e.hooks.length === 1 && e.hooks[0] && e.hooks[0].command === hookCommand()));
+      return ours.length !== want.length || !want.every((m) => have.has(m)) || cmdStale;
     });
     if (!stale.length) return; // steady state: one small readFileSync, no write
     s.hooks = s.hooks || {};
@@ -244,7 +256,7 @@ function settingsCovers(event) {
   try {
     const entries = readSettings().hooks?.[event];
     return (Array.isArray(entries) ? entries : []).filter(isCuraiq).some((e) => (e.hooks || []).some((h) => {
-      const m = /^node\s+("(?:[^"\\]|\\.)*")/.exec(h.command || "");
+      const m = /^(?:node|"(?:[^"\\]|\\.)*")\s+("(?:[^"\\]|\\.)*")/.exec(h.command || "");
       return m && existsSync(JSON.parse(m[1]));
     }));
   } catch { return false; } // unreadable → run: a double scan beats an unprotected call
@@ -295,7 +307,7 @@ const NO_POLICY_BASELINE = { captureTier: "content-free", builtinDefault: true }
 // fail-open policy is in force, so the next offline run sees no contradiction (and raises no false
 // downgrade alert). Best-effort; a write error never affects enforcement.
 function rememberPosture(policy) {
-  const mode = readRootOwned(SYSTEM_POSTURE).trim() === "fail-closed" ? "fail-closed" : offlineMode(policy);
+  const mode = readRootOwned(systemPosturePath()).trim() === "fail-closed" ? "fail-closed" : offlineMode(policy);
   for (const p of [POSTURE_STATE, POSTURE_LATCH]) {
     try { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, mode); } catch { /* best-effort */ }
   }
@@ -329,7 +341,7 @@ function rememberPosture(policy) {
 //     BOTH pin copies to return the device to first contact. /etc/moorai/policy.pub closes both.
 function durablePosture() {
   return ratchetPosture({
-    system: readRootOwned(SYSTEM_POSTURE),
+    system: readRootOwned(systemPosturePath()),
     state: readText(POSTURE_STATE),
     latch: readText(POSTURE_LATCH),
     legacy: readText(POSTURE_LEGACY),
@@ -373,9 +385,8 @@ function reportPostureTamper(pv) {
 // `device` is os.hostname() and `tenant` is the enrolled tenant; "*" in either field is a signed
 // fleet-wide grant. An unsigned, unverifiable, or out-of-scope marker never grants fail-open — and is
 // itself reported as tampering (reportBreakGlassTamper below).
-const BG_ANCHOR = process.platform === "win32"
-  ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "breakglass.pub")
-  : "/etc/moorai/breakglass.pub";
+// The Windows directory comes from HKLM, never %ProgramData% (cli/machine-dir.mjs).
+const BG_ANCHOR = machinePath("breakglass.pub");
 
 // A user-writable "system" anchor is no better than ~/.curaiq — readRootOwned rejects it rather than pretend.
 function anchorText() { return readRootOwned(BG_ANCHOR); }
@@ -597,9 +608,12 @@ function beginRow(input, tool) {
     ROW = row;
   } catch { ROW = null; }
 }
+// Alerts this invocation handed to the console so far (post()); settleRow records them on the row as
+// al (all) / ad (of those, queued for the detached worker), and the Stop summary adds them up per session.
+const ALERT_COUNT = { emitted: 0, deferred: 0 };
 function settleRow(fields) {
   if (!ROW || ROW.done) return;
-  const r = { ...ROW, ...fields };
+  const r = { ...ROW, ...fields, ...(ALERT_COUNT.emitted ? { al: ALERT_COUNT.emitted } : {}), ...(ALERT_COUNT.deferred ? { ad: ALERT_COUNT.deferred } : {}) };
   ROW.done = true;
   delete r.done;
   recordRow(r);
@@ -615,7 +629,23 @@ function post(alert) {
     if (n) { alert.agentName = n; const v = agentVersionFromEnv(n); if (v && alert.agentVersion === undefined) alert.agentVersion = v; }
   }
   if (SESSION_TAG && alert && alert.session === undefined) alert.session = SESSION_TAG;
+  // appVersion: MoorAI's own version (package.json), which the console's update-lag rule reads.
+  if (alert && alert.appVersion === undefined && APP_VERSION) alert.appVersion = APP_VERSION;
   stampAlert(alert, { ...PROV, coach: COACH, event: EVENT });
+  // seq + chainHead (cli/alert-seq.mjs), and this invocation's count of alerts handed to the console
+  // (posted now or queued for the worker), which the ledger row carries into the session summary.
+  if (isEnrolled(CONFIG)) {
+    stampAlertSeq(alert, { tenant: CONFIG.tenant });
+    ALERT_COUNT.emitted++;
+    if (DEFER_ALERTS) ALERT_COUNT.deferred++;
+  } else if (CONFIG.managed === true) {
+    // A MANAGED device with no install token (the user's file lost it): the console would reject the post,
+    // so nothing is sent, but the alert still takes its sequence number. When the token is back, the
+    // console sees the numbers these alerts held as a gap. The local action audit gets one content-free
+    // line per invocation at exit (noteUndelivered).
+    stampAlertSeq(alert, { tenant: CONFIG.tenant });
+    if (Number.isInteger(alert.seq)) UNDELIVERED.push(alert.seq);
+  }
   // An unenrolled device has no console, so nothing is posted to one — not even to a server that
   // answers at the configured URL. The OTLP mirror below is the user's own collector, not a console.
   // DEFER_ALERTS: no HTTP answer from the console on this invocation, so the post goes to the detached
@@ -634,7 +664,17 @@ function post(alert) {
 async function flushAlerts() {
   while (PENDING.length) await Promise.allSettled(PENDING.splice(0));
   if (DEFERRED.length) handOffAlerts(DEFERRED.splice(0));
+  if (UNDELIVERED.length) noteUndelivered(UNDELIVERED.splice(0));
 }
+// Alert sequence numbers taken by alerts a managed, token-less device could not post (see post()).
+const UNDELIVERED = [];
+function noteUndelivered(seqs) {
+  try {
+    recordAction({ ts: new Date().toISOString(), threatId: 0, category: "Managed device has no install token: alerts not delivered", riskLevel: "High", stage: "policy", tool: "hook:policy", contentHash: "binding:no-token", reasonCode: REASON.BINDING_REFUSED, undelivered: seqs.length, seqFrom: Math.min(...seqs), seqTo: Math.max(...seqs), ...IDENTITY });
+  } catch { /* local evidence only */ }
+}
+// MoorAI's own version, read once from the package.json next to this file ("" if unreadable).
+const APP_VERSION = (() => { try { const v = JSON.parse(readFileSync(join(dirname(SELF), "..", "package.json"), "utf8")).version; return typeof v === "string" && /^\d{1,4}\.\d{1,4}\.\d{1,6}(?:[-+][0-9A-Za-z.-]{1,24})?$/.test(v) ? v : ""; } catch { return ""; } })();
 
 // The deferred alerts go to `moorai-hook.mjs alertpost <job>`, a detached worker, through a 0600 job file
 // in the state directory (a pipe could truncate a large batch as this process exits). The worker reads the
@@ -648,7 +688,7 @@ function handOffAlerts(alerts) {
     sweepEscalationJobs(ALERT_JOB_PREFIX);
     const jobPath = join(STATE_DIR, `${ALERT_JOB_PREFIX}${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.json`);
     writeFileSync(jobPath, JSON.stringify({ alerts }), { mode: 0o600 });
-    spawn(process.execPath, [SELF, "alertpost", jobPath], { detached: true, stdio: "ignore" }).unref();
+    spawn(process.execPath, [...process.execArgv, SELF, "alertpost", jobPath], { detached: true, stdio: "ignore", env: workerEnv() }).unref();
   } catch { /* the local audit log already holds every finding */ }
 }
 
@@ -812,7 +852,7 @@ function maybeAgentScan(tool) {
     const stamp = join(STATE_DIR, AGENT_SCAN_STAMP);
     try { if (Date.now() - statSync(stamp).mtimeMs < AGENT_SCAN_INTERVAL_MS) return; } catch { /* never scanned */ }
     writeFileSync(stamp, "", { mode: 0o600 });
-    spawn(process.execPath, [SELF, "agentscan", String(tool || "")], { detached: true, stdio: "ignore" }).unref();
+    spawn(process.execPath, [...process.execArgv, SELF, "agentscan", String(tool || "")], { detached: true, stdio: "ignore", env: workerEnv() }).unref();
   } catch { /* behavioural detections are advisory; fail-open */ }
 }
 
@@ -996,7 +1036,7 @@ function maybeIndexScan(agentCwd) {
     writeFileSync(stamp, "", { mode: 0o600 });
     const args = [SELF, "indexscan"];
     if (typeof agentCwd === "string" && agentCwd) args.push(agentCwd);
-    spawn(process.execPath, args, { detached: true, stdio: "ignore" }).unref();
+    spawn(process.execPath, [...process.execArgv, ...args], { detached: true, stdio: "ignore", env: workerEnv() }).unref();
   } catch { /* the ingest scan is advisory; fail-open */ }
 }
 function readIndexSeen() { try { const o = JSON.parse(readFileSync(join(STATE_DIR, INDEX_SEEN_FILE), "utf8")); return o && typeof o === "object" ? o : {}; } catch { return {}; } }
@@ -1034,7 +1074,7 @@ function maybePostureBeat(input) {
     if (st.day === day && (!mode || st.bypass)) return;
     if (st.pending && Date.now() - st.pending < BEAT_RETRY_MS) return;
     writeBeat(host, { ...st, pending: Date.now() });
-    spawn(process.execPath, [SELF, "posturebeat", host, mode, typeof input.cwd === "string" ? input.cwd : ""], { detached: true, stdio: "ignore" }).unref();
+    spawn(process.execPath, [...process.execArgv, SELF, "posturebeat", host, mode, typeof input.cwd === "string" ? input.cwd : ""], { detached: true, stdio: "ignore", env: workerEnv() }).unref();
   } catch { /* the heartbeat is evidence, never enforcement */ }
 }
 async function runPostureBeatWorker(host, mode, cwd) {
@@ -1147,7 +1187,7 @@ async function maybeEscalate(policy, text, stage, tool, d, engine) {
     // credited: the threat ids the decision kept (content-free), so the worker's miss gate sees what was reported.
     const credited = [...new Set((d.findings || []).map((f) => f.threatId).filter((id) => id > 0))];
     writeFileSync(jobPath, JSON.stringify({ policy, text, stage, tool, credited, ...(SESSION_TAG ? { session: SESSION_TAG } : {}) }), { mode: 0o600 });
-    spawn(process.execPath, [SELF, "escalate", jobPath], { detached: true, stdio: "ignore" }).unref();
+    spawn(process.execPath, [...process.execArgv, SELF, "escalate", jobPath], { detached: true, stdio: "ignore", env: workerEnv() }).unref();
   } catch { /* escalation is advisory; fail-open */ }
 }
 
@@ -1955,8 +1995,14 @@ async function handlePrompt(input, policy, engine) {
 const CLAIM_CATEGORY = "Agent reported success but tool calls failed";
 const SUMMARY_CATEGORY = "Agent session summary";
 function sessionSummary(rows, claimMismatches) {
-  const sum = { prompts: 0, calls: 0, allow: 0, ask: 0, deny: 0, findings: 0, outcomes: 0, failed: 0, interrupted: 0, unevaluated: 0, limited: 0, strengthened: 0, compactions: 0, subagentStops: 0, claimMismatches };
+  // alertsEmitted / alertsDeferred: alerts this session's hook invocations handed to the console (posted or
+  // queued) and, of those, how many went through the detached worker. The console compares them with the
+  // alerts it actually received for the session. Counted from the ledger, which the agent can rewrite: a
+  // claim, like every other count here.
+  const sum = { prompts: 0, calls: 0, allow: 0, ask: 0, deny: 0, findings: 0, outcomes: 0, failed: 0, interrupted: 0, unevaluated: 0, limited: 0, strengthened: 0, compactions: 0, subagentStops: 0, claimMismatches, alertsEmitted: 0, alertsDeferred: 0 };
   for (const r of rows) {
+    sum.alertsEmitted += Number.isSafeInteger(r.al) && r.al > 0 ? r.al : 0;
+    sum.alertsDeferred += Number.isSafeInteger(r.ad) && r.ad > 0 ? r.ad : 0;
     if (r.ev === "prompt") sum.prompts++;
     else if (r.ev === "compact") sum.compactions++;
     else if (r.ev === "substop") sum.subagentStops++;
@@ -1997,9 +2043,16 @@ async function handleStop(input) {
   if (!sub) {
     const prior = rows.filter((r) => r.ev === "stop" && r.claimFlag).length;
     sum = sessionSummary(rows, prior + (fresh ? 1 : 0));
+    // This invocation's own alerts so far (a claim-check alert above) are not in the ledger yet.
+    sum.alertsEmitted += ALERT_COUNT.emitted;
+    sum.alertsDeferred += ALERT_COUNT.deferred;
     const last = [...rows].reverse().find((r) => r.ev === "stop" && r.sum);
     if (!last || JSON.stringify(last.sum) !== JSON.stringify(sum)) {
+      // The summary itself is not counted in alertsEmitted / alertsDeferred: counting it would change the
+      // next summary and re-post it at every Stop.
+      const counted = { ...ALERT_COUNT };
       post({ threatId: 0, category: SUMMARY_CATEGORY, riskLevel: "Info", stage: "lifecycle", tool: "hook:Stop", ts, contentHash: `summary:${SESSION}`, summary: sum, reasonCode: REASON.SESSION_SUMMARY, enforcement: ENFORCEMENT.AS_CONFIGURED, ...IDENTITY });
+      Object.assign(ALERT_COUNT, counted);
     }
   }
   settleRow({ decision: "none", ...(sum ? { sum } : {}), claim: cc.claim, claimFlag: cc.flagged, policyId: PROV.policyId, ...(PROV.policySource ? { policySource: PROV.policySource } : {}), reasonCode: cc.flagged ? REASON.CLAIM_MISMATCH : REASON.SESSION_SUMMARY, enforcement: ENFORCEMENT.AS_CONFIGURED });
@@ -2080,7 +2133,9 @@ async function main() {
   }
   let { policy, source, rejected, pin, trust, absence, lkgCopy, deferAlerts } = await loadVerifiedPolicy(CONFIG);
   DEFER_ALERTS = !!deferAlerts;
-  PROV = { policyId: policyIdOf(policy), policySource: source || "", offline: false };
+  // policyIat: the signed issue time of the policy being enforced (ISO 8601), on every alert from here on.
+  const policyIat = policyIatIso(policy);
+  PROV = { policyId: policyIdOf(policy), policySource: source || "", offline: false, ...(policyIat ? { policyIat } : {}) };
   // Ratcheted posture read BEFORE rememberPosture rewrites the copies, so this run still sees what the
   // device knew on the way in (and any tampering with it) rather than what we are about to record.
   const posture = durablePosture();
@@ -2105,8 +2160,17 @@ async function main() {
     const sta = tamperAlert(SERVER);
     if (sta) await post({ ...sta, ts: new Date().toISOString(), ...IDENTITY });
     // Off server mode too: a trust anchor or export endpoint a settings file set was ignored. Names only.
-    const envRefused = SERVER.active ? [] : refusedTrustEnv();
-    if (envRefused.length) await post({ threatId: 0, category: "Policy: environment set by a settings file refused", riskLevel: "Critical", stage: "policy", tool: "hook:policy", ts: new Date().toISOString(), contentHash: `envtrust:${envRefused.join(",")}`, ...IDENTITY });
+    // In server mode tamperAlert already names the MOORAI_* ones; the hook-process names (NODE_OPTIONS,
+    // NODE_PATH, PATH, ProgramData) are reported in both modes. A PATH-only finding is High, not Critical:
+    // the hook no longer resolves anything through PATH, and users do add tool directories that way.
+    const envRefused = refusedTrustEnv().filter((n) => !SERVER.active || hookProcessEnvName(n));
+    if (envRefused.length) await post({ threatId: 0, category: "Policy: environment set by a settings file refused", riskLevel: envRefused.every((n) => n === "PATH") ? "High" : "Critical", stage: "policy", tool: "hook:policy", ts: new Date().toISOString(), contentHash: `envtrust:${envRefused.join(",")}`, refusedEnv: envRefused, ...IDENTITY });
+    // A user config.json that disagrees with the admin binding (cli/config.mjs): refused, reported by key name.
+    const bra = bindingRefusedAlert(CONFIG);
+    if (bra) await post({ ...bra, ts: new Date().toISOString(), ...IDENTITY });
+    // Older than the maximum age (hook-core policyFreshByIat): the refetch failed, was skipped, or served
+    // an old body. Enforced anyway (it verified), and reported with its age.
+    if (policy && !policyFreshByIat(policy)) await post({ threatId: 0, category: "Policy: stale (older than the maximum age)", riskLevel: "Medium", stage: "policy", tool: "hook:policy", ts: new Date().toISOString(), contentHash: "policy:stale", reasonCode: REASON.POLICY_STALE, ageMinutes: Math.floor(policyAgeMs(policy) / 60000), ...IDENTITY });
     if (!policy) {
       if (posture.posture !== "fail-closed") {
         // #2 — "no policy" is NOT the same state as "not enrolled", and conflating them is what made the
@@ -2162,9 +2226,11 @@ async function main() {
   // management evidence that outlives the token, so deleting the token does not turn enforcement off.
   // Server mode is management evidence too: an operator deployed MoorAI to govern a workload, and there
   // is no developer to coach.
-  COACH = !enforcementAllowed(CONFIG, { managed: posture.posture === "fail-closed" || SERVER.active });
+  // An admin binding (the root-owned machine config names the console, cli/config.mjs) is management
+  // evidence too: deleting installToken from ~/.moorai/config.json no longer turns enforcement into coaching.
+  COACH = !enforcementAllowed(CONFIG, { managed: posture.posture === "fail-closed" || SERVER.active || CONFIG.managed === true });
   POLICY = policy; // read by logBehavior's agent-detection hand-off (maybeAgentScan)
-  PROV = { policyId: policyIdOf(policy, { builtin: NO_POLICY_BASELINE, offline: OFFLINE_DEFAULT_POLICY }), policySource: policy === NO_POLICY_BASELINE ? "builtin" : policy === OFFLINE_DEFAULT_POLICY ? "offline-default" : source || "", offline: policy === OFFLINE_DEFAULT_POLICY };
+  PROV = { policyId: policyIdOf(policy, { builtin: NO_POLICY_BASELINE, offline: OFFLINE_DEFAULT_POLICY }), policySource: policy === NO_POLICY_BASELINE ? "builtin" : policy === OFFLINE_DEFAULT_POLICY ? "offline-default" : source || "", offline: policy === OFFLINE_DEFAULT_POLICY, ...(policyIat && policy !== NO_POLICY_BASELINE && policy !== OFFLINE_DEFAULT_POLICY ? { policyIat } : {}) };
   const engine = buildEngine(policy);
   // Instruction-leak fingerprints of the rules files this agent runs under (lazy: nothing is read until a
   // scan reaches a fingerprint detector with enough text). data/detectors-instruction-leak.js.

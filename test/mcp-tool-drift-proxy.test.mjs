@@ -29,7 +29,10 @@ const consoleKey = generateKeyPairSync("ed25519");
 const pubkeyBody = JSON.stringify({ tenant: TENANT, alg: "ed25519", publicKey: publicKeyId(consoleKey.publicKey) });
 let iatTick = 0;
 function sign(policy) {
-  const iat = new Date(Date.UTC(2026, 8, 1, 0, 0, iatTick++)).toISOString(); // strictly increasing: never a rollback
+  // Strictly increasing (never a rollback) and current, as the console signs (iat = now): an old iat is
+  // refetched on every call since 1.13 (hook-core policyFreshByIat), which would add policy fetches here.
+  const iat = new Date(Math.max(Date.now() - 60000 + iatTick++, (sign.last || 0) + 1)).toISOString();
+  sign.last = Date.parse(iat);
   const digest = policyDigest(policy);
   const sig = edSign(null, Buffer.from(policyCanonical({ v: POLICY_SIG_VERSION, tenant: TENANT, iat, digest })), consoleKey.privateKey).toString("base64");
   return JSON.stringify({ ...policy, policySig: { v: POLICY_SIG_VERSION, alg: "ed25519", tenant: TENANT, iat, sig } });

@@ -15,6 +15,10 @@ name: windows-js
 # Agent SDK egress-rules test: "fetch failed" (ECONNRESET, "bad port") and a gateway that exited
 # 0xC0000409 before it listened. With --test-concurrency=1 it passed twice, 328 of 328 (2 skipped,
 # 1 todo), in 206 s each.
+#
+# EXCEPTION: test/hook-env-hardening.test.mjs (v1.13.0) was added without that Windows 11 run (the box was
+# unreachable). It carries the one test that must run on Windows: the hook's machine-anchor paths come
+# from HKLM, not from a hostile %ProgramData%. Its first windows-latest run is its first Windows run.
 
 on:
   push:
@@ -60,3 +64,4 @@ jobs:
           test/mcp-gateway.test.mjs test/mcp-reputation-hook.test.mjs test/mcp-tool-drift-gateway-unscanned.test.mjs
           test/mcp-tool-drift-gateway.test.mjs test/mcp-usage-hook.test.mjs test/powershell-hook.test.mjs
           test/server-mode-hook.test.mjs test/workload-profile-hook.test.mjs
+          test/hook-env-hardening.test.mjs

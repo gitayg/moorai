@@ -43,7 +43,7 @@ import { fileURLToPath } from "node:url";
 import os from "node:os";
 import { STATE_DIR } from "./state-dirs.mjs";
 import { isEnrolled } from "../data/enforcement.js";
-import { serverMode, serviceWho } from "./server-mode.mjs";
+import { serverMode, serviceWho, workerEnv } from "./server-mode.mjs";
 import { actorHash } from "./content-hash.mjs";
 import { loadConfig } from "./config.mjs";
 import { exitWhenDrained } from "./exit-drain.mjs";
@@ -275,7 +275,7 @@ export function scheduleMcpUsageFlush({ config, path, host, dir = STATE_DIR, now
     if (!isEnrolled(config) || !USAGE_PATHS.includes(path)) return false;
     if (!dueDays({ path, host: h }, { dir, now }).length) return false;
     if (!claim(dir, path, h, now)) return false;
-    spawn(process.execPath, [SELF, "flush", path, h, "claimed"], { detached: true, stdio: "ignore" }).unref();
+    spawn(process.execPath, [...process.execArgv, SELF, "flush", path, h, "claimed"], { detached: true, stdio: "ignore", env: workerEnv() }).unref();
     return true;
   } catch { return false; }
 }

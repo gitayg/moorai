@@ -2,7 +2,7 @@
 // the live self-test. Every check returns { id, group, title, status: ok|warn|fail|skip, summary, fix? }.
 // Nothing here writes to the device's state or posts anything: the policy loader and the hook run in a
 // sandbox copy (cli/doctor-sandbox.mjs), and the only network call is the GET the hook itself makes.
-import { readFileSync, statSync, existsSync } from "node:fs";
+import { readFileSync, statSync, existsSync, accessSync, constants } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 import os from "node:os";
@@ -137,6 +137,22 @@ export function checkStateDir(stateDir = STATE_DIR) {
   if (problems.length) return { ...base, status: "fail", summary: problems.join("; "), fix: `chmod 600 ${problems.map((p) => tilde(join(stateDir, p.split(" ")[0]))).join(" ")}`, details };
   if (warns.length) return { ...base, status: "warn", summary: warns.join("; "), fix: "delete the unreadable cache; the hook rebuilds it", details };
   return { ...base, status: "ok", summary: `${tilde(stateDir)} present; ${seen.length ? `${seen.join(", ")} are 0600` : "no key files yet"}; caches readable${latch}`, details };
+}
+
+// ---- hook code ----
+// The hook can only be as trustworthy as the files it runs from. A consumer install (scripts/install.sh)
+// puts them under ~/.moorai, writable by the user and so by an agent running as the user, which can
+// rewrite the hook to allow everything. An MDM install puts them under a root-owned directory
+// (/usr/local/moorai, C:\Program Files\MoorAI). Warn when this process could write any of them. POSIX
+// only: Windows write access is an ACL question that W_OK (the read-only attribute) does not answer.
+export const HOOK_CODE_FILES = ["cli/moorai-hook.mjs", "cli/hook-core.mjs", "cli/config.mjs", "cli/server-mode.mjs", "cli/machine-dir.mjs"];
+export function checkHookCode({ root = ROOT, platform = process.platform, writable = (p) => { try { accessSync(p, constants.W_OK); return true; } catch { return false; } } } = {}) {
+  const base = { id: "hook-code", group: "runtime", title: "Hook code" };
+  if (platform === "win32") return { ...base, status: "skip", summary: "not checked on Windows (write access there is an ACL question)" };
+  const paths = [root, join(root, "cli"), ...HOOK_CODE_FILES.map((f) => join(root, f))];
+  const open = paths.filter((p) => existsSync(p) && writable(p));
+  if (!open.length) return { ...base, status: "ok", summary: `${tilde(root)}: the hook's code is not writable by this user` };
+  return { ...base, status: "warn", summary: `${tilde(root)}: the hook's code is writable by this user (${open.map(tilde).join(", ")}), so an agent running as you can rewrite what the hook does`, fix: "install MoorAI under a root-owned directory (the MDM deploy scripts use /usr/local/moorai), or accept that this install is tamper-evident at most", details: { writable: open.map(tilde) } };
 }
 
 // ---- live self-test ----

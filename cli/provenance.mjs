@@ -37,6 +37,8 @@ export const REASON = Object.freeze({
   POSTURE_FAIL_CLOSED: "POSTURE_FAIL_CLOSED",     // no policy, fail-closed posture: built-in default applied
   POLICY_OFFLINE: "POLICY_OFFLINE",               // enforcing a cached / last-known-good policy
   POLICY_TAMPER: "POLICY_TAMPER",                 // signature, pin, posture or break-glass tamper signal
+  BINDING_REFUSED: "BINDING_REFUSED",             // a user config.json disagreed with the admin (root-owned) binding and was refused
+  POLICY_STALE: "POLICY_STALE",                   // the enforced policy's signed iat is older than the maximum age (ageMinutes)
   BEHAVIOR_SIGNAL: "BEHAVIOR_SIGNAL",             // session-level behaviour (trifecta, autonomy, clipboard, drift)
   HONEYTOKEN: "HONEYTOKEN",
   SKILL_FILE: "SKILL_FILE",
@@ -102,6 +104,8 @@ const CATEGORY_REASON = [
   [/^Break-glass active/, REASON.BREAK_GLASS],
   [/^Offline: fail-closed default applied$/, REASON.POSTURE_FAIL_CLOSED],
   [/^(Offline: enforcing last-known policy|Enforcing last-known-good verified policy)$/, REASON.POLICY_OFFLINE],
+  [/^Console binding refused/, REASON.BINDING_REFUSED],
+  [/^Policy: stale/, REASON.POLICY_STALE],
   [/^(Policy signature rejected|Policy key pin|Offline posture|Break-glass marker rejected|Policy: environment set|Server-mode configuration refused)/, REASON.POLICY_TAMPER],
   [/^(Autonomous-agent behavior|Lethal trifecta exposure|Clipboard read then outbound upload|Cross-server toxic flow|Agent behavior: |Agent drift: )/, REASON.BEHAVIOR_SIGNAL],
   [/^Agent destination: /, REASON.DESTINATION],
@@ -144,12 +148,14 @@ export function provenanceFor(alert, ctx = {}) {
 }
 
 // Stamp in place (the same object is often handed to post() and then to recordAction()).
+// ctx.policyIat: the signed issue time (ISO 8601) of the policy in force, copied to alert.policyIat.
 export function stampAlert(alert, ctx) {
   if (!alert || typeof alert !== "object") return alert;
   try {
     const p = provenanceFor(alert, ctx);
     delete alert.enforcing;
     Object.assign(alert, p);
+    if (ctx && typeof ctx.policyIat === "string" && ctx.policyIat && alert.policyIat === undefined) alert.policyIat = ctx.policyIat;
   } catch { /* provenance is metadata; never affects delivery */ }
   return alert;
 }

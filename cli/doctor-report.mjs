@@ -1,13 +1,13 @@
 // The doctor's report: runs every check in order and renders it. See cli/moorai-doctor.mjs.
 import { loadConfig } from "./config.mjs";
 import { hostTable, checkHost, checkManaged, readManagedSettings, PLUGIN_INSTALL } from "./doctor-hosts.mjs";
-import { checkNode, checkEnrollment, checkConsole, checkPolicy, checkPosture, checkBreakGlass, checkStateDir, checkSelfTest, pkg } from "./doctor-checks.mjs";
+import { checkNode, checkEnrollment, checkConsole, checkPolicy, checkPosture, checkBreakGlass, checkStateDir, checkSelfTest, checkHookCode, pkg } from "./doctor-checks.mjs";
 import { loadPolicyReadOnly, resolveEffective } from "./doctor-policy.mjs";
 import { checkServerMode } from "./doctor-server.mjs";
 
 export async function runDoctor({ offline = false, selftest = true } = {}) {
   const config = loadConfig();
-  const checks = [checkNode()];
+  const checks = [checkNode(), checkHookCode()];
   const managed = checkManaged(readManagedSettings());
   const table = hostTable();
   const hosts = table.map((h) => checkHost(h, { managedHooks: managed.managedHooks, managedPlugins: managed.managedPlugins }));

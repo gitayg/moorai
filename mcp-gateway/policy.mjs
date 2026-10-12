@@ -3,7 +3,7 @@
 // policy), the durable posture ratchet (a fail-closed device gets OFFLINE_DEFAULT_POLICY), and a lazy
 // 60 s refresh because this is a long-lived process. Coach vs enforce is the shared rule; server mode
 // counts as management evidence, as it does in the hook.
-import { buildEngine, loadVerifiedPolicy, ratchetPosture, enforcementAllowed, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "../cli/hook-core.mjs";
+import { buildEngine, loadVerifiedPolicy, ratchetPosture, enforcementAllowed, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath } from "../cli/hook-core.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { isEnrolled } from "../data/enforcement.js";
 import { CONFIG, SERVER_MODE, reportOnce, setTierSource } from "./report.mjs";
@@ -13,7 +13,7 @@ setTierSource(() => (state.POLICY && state.POLICY.captureTier) || "content-free"
 
 function durablePosture() {
   return ratchetPosture({
-    system: readRootOwned(SYSTEM_POSTURE),
+    system: readRootOwned(systemPosturePath()),
     state: readText(POSTURE_STATE),
     latch: readText(POSTURE_LATCH),
     legacy: readText(POSTURE_LEGACY),

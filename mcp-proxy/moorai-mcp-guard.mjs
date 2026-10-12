@@ -58,7 +58,7 @@ import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import { loadConfig } from "../cli/config.mjs";
-import { buildEngine, mcpGateway, decideText, literacyTouchpoint, loadVerifiedPolicy, ratchetPosture, isEnrolled, enforcementAllowed, coachMessage, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "../cli/hook-core.mjs";
+import { buildEngine, mcpGateway, decideText, literacyTouchpoint, loadVerifiedPolicy, ratchetPosture, isEnrolled, enforcementAllowed, coachMessage, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath } from "../cli/hook-core.mjs";
 import { CAPS, toolsOfResponse, toolScanText, toolIdentity, resultOfResponse } from "./tool-scan.mjs";
 import { decideInbound, inboundText } from "../cli/inbound.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "./tool-baseline.mjs";
@@ -188,7 +188,7 @@ function reportPolicyTrust({ rejected, pin, trust, absence }) {
 // fail-open org keeps today's behaviour — no engine, forward — which is the documented default.
 function durablePosture() {
   return ratchetPosture({
-    system: readRootOwned(SYSTEM_POSTURE),
+    system: readRootOwned(systemPosturePath()),
     state: readText(POSTURE_STATE),
     latch: readText(POSTURE_LATCH),
     legacy: readText(POSTURE_LEGACY),

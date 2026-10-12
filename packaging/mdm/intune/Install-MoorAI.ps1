@@ -3,11 +3,21 @@
     MoorAI silent install + enroll script for Microsoft Intune (Windows Win32 app).
 
 .DESCRIPTION
-    Installs the MoorAI agent, writes the per-user enrollment config
-    (%USERPROFILE%\.moorai\config.json), and registers the on-device Claude Code
-    PreToolUse hooks (%USERPROFILE%\.claude\settings.json) — all non-interactively,
-    so a managed Windows device is governed the moment it checks in, with no user
-    pasting an install token.
+    Installs the MoorAI agent, writes the MACHINE config <ProgramData>\MoorAI\config.json
+    {serverUrl, tenant} (owner Administrators, SYSTEM + Administrators write, Users read
+    only), writes the per-user enrollment config (%USERPROFILE%\.moorai\config.json, which
+    holds the install token, ACL: that user + SYSTEM + Administrators only), and registers
+    the on-device Claude Code hooks (%USERPROFILE%\.claude\settings.json) — all
+    non-interactively, so a managed Windows device is governed the moment it checks in,
+    with no user pasting an install token.
+
+    The machine config is the admin binding cli/config.mjs reads before any user file: a
+    user's config.json can no longer move the device to another console or tenant, or drop
+    it to coach mode by deleting the token. It never carries the install token, because
+    Users can read it; the token stays in the user's own file. Honest limit: the agent runs
+    as that user and can read the token until the privileged helper (trust-anchor design
+    phase 2) holds it. A non-elevated run cannot write the machine config: the device is
+    then unmanaged (the pre-1.13 behaviour), and the script says so.
 
     Content-free: this script only configures the device->console binding. No prompt,
     file, or agent output is collected here; policy is pulled at runtime from
@@ -210,7 +220,20 @@ function Protect-AnchorDirectory {
 }
 
 # ------------------------------------------------------ set up the anchor dir + log file
-$AnchorDir = Join-Path $env:ProgramData "MoorAI"
+# ProgramData as HKLM records it, the same source cli/machine-dir.mjs and src-tauri admin_config.rs use
+# (the environment variable is the user's to set). REG_EXPAND_SZ "%SystemDrive%\ProgramData".
+function Get-MachineProgramData {
+    try {
+        $raw = (Get-Item 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList').GetValue('ProgramData', $null, 'DoNotExpandEnvironmentNames')
+        $sysRoot = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').SystemRoot
+        if ($raw -and $sysRoot) {
+            $v = $raw -ireplace '%SystemDrive%', $sysRoot.Substring(0, 2)
+            if ($v -match '^[A-Za-z]:\\' -and $v -notmatch '%') { return $v.TrimEnd('\') }
+        }
+    } catch { }
+    return $env:ProgramData
+}
+$AnchorDir = Join-Path (Get-MachineProgramData) "MoorAI"
 if (Test-IsElevated) {
     Protect-AnchorDirectory -Path $AnchorDir
     $script:LogFile = Join-Path $AnchorDir "install.log"
@@ -286,10 +309,42 @@ function Install-Agent {
     Write-Log "agent installed at $MooraiHome"
 }
 
+# ------------------------------------------------------- write the machine config
+# <ProgramData>\MoorAI\config.json in the hardened anchor directory: it inherits SYSTEM + Administrators
+# full control and Users read-only, and its owner is set to Administrators (an owner implicitly holds
+# WRITE_DAC, so a user-owned file there could re-open its own ACL). serverUrl and tenant are set, an
+# installToken key is REMOVED (Users can read this file; the token belongs in the user's own file), and
+# every other key an administrator put there ("updates", "mode", egress rules, ...) is kept. Written to a
+# temp file in the same directory and moved over the original. Elevated runs only.
+function Write-MachineConfig {
+    $cfgFile = Join-Path $AnchorDir "config.json"
+    $cfg = [ordered]@{}
+    if (Test-Path -LiteralPath $cfgFile) {
+        try {
+            $old = Get-Content -LiteralPath $cfgFile -Raw | ConvertFrom-Json
+            foreach ($p in $old.PSObject.Properties) { $cfg[$p.Name] = $p.Value }
+        } catch { Write-Log "WARNING: existing $cfgFile is not valid JSON; replacing it" }
+    }
+    $cfg["serverUrl"] = $ServerUrl
+    $cfg["tenant"]    = $Tenant
+    if ($cfg.Contains("installToken")) { $cfg.Remove("installToken") }
+    $tmp = Join-Path $AnchorDir (".config.json." + [guid]::NewGuid().ToString("N"))
+    [System.IO.File]::WriteAllText($tmp, ($cfg | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $tmp -Destination $cfgFile -Force
+    $own = Invoke-Icacls @($cfgFile, "/setowner", "*S-1-5-32-544", "/C", "/Q")
+    if ($own.ExitCode -ne 0) { throw "icacls /setowner of $cfgFile failed (exit $($own.ExitCode)): $($own.Output)" }
+    $reset = Invoke-Icacls @($cfgFile, "/reset", "/C", "/Q")
+    if ($reset.ExitCode -ne 0) { throw "icacls /reset of $cfgFile failed (exit $($reset.ExitCode)): $($reset.Output)" }
+    Write-Log "wrote machine config -> $cfgFile (owner Administrators, inherits the anchor directory ACL)"
+}
+
 # -------------------------------------------------- write per-user enroll config
-# JSON shape read by cli/config.mjs: { serverUrl, tenant, installToken }.
+# The install token's home: the user's own file, readable by that user, SYSTEM and Administrators only.
+# On a managed device (machine config written) cli/config.mjs takes only installToken from it; serverUrl
+# and tenant carry the same values as the machine config, so the file still works if the device is
+# later unmanaged. JSON shape read by cli/config.mjs: { serverUrl, tenant, installToken }.
 function Write-EnrollConfig {
-    param([string] $ProfileDir)
+    param([string] $ProfileDir, [string] $User)
     $cfgDir  = Join-Path $ProfileDir ".moorai"
     $cfgFile = Join-Path $cfgDir "config.json"
     New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
@@ -301,6 +356,10 @@ function Write-EnrollConfig {
     # -Depth keeps nested values intact; ASCII avoids a BOM that would break JSON.parse.
     $json = $cfg | ConvertTo-Json -Depth 4
     [System.IO.File]::WriteAllText($cfgFile, $json, (New-Object System.Text.UTF8Encoding($false)))
+    if ($User) {
+        $acl = Invoke-Icacls @($cfgFile, "/inheritance:r", "/grant:r", "*S-1-5-18:(F)", "/grant:r", "*S-1-5-32-544:(F)", "/grant:r", "${User}:(F)")
+        if ($acl.ExitCode -ne 0) { Write-Log "WARNING: could not restrict the ACL of $cfgFile (exit $($acl.ExitCode)): $($acl.Output)" }
+    }
     Write-Log "wrote enroll config -> $cfgFile"
 }
 
@@ -330,6 +389,9 @@ function Register-Hooks {
 # ------------------------------------------------------------------------- main
 Install-Agent
 
+if (Test-IsElevated) { Write-MachineConfig }
+else { Write-Log "WARNING: not elevated - the machine config $AnchorDir\config.json was not written, so this device is NOT managed (its binding is the user-writable %USERPROFILE%\.moorai\config.json)." }
+
 $target = Get-TargetProfile
 if ($null -eq $target) {
     Write-Log "no interactive user resolved; agent installed, per-user enroll deferred to logon task."
@@ -339,7 +401,7 @@ if ($null -eq $target) {
 }
 
 Write-Log "target user: $($target.User)  home: $($target.Home)"
-Write-EnrollConfig -ProfileDir $target.Home
+Write-EnrollConfig -ProfileDir $target.Home -User $target.User
 Register-Hooks    -ProfileDir $target.Home
 
 Write-Log "done. Policy pulled at runtime from $ServerUrl/api/policy?tenant=$Tenant"

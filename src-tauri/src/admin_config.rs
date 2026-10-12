@@ -25,7 +25,18 @@
 //
 //   key                     managed preference   machine file
 //   provisioned console     ServerURL            "serverUrl"
+//   tenant                  Tenant               "tenant"
+//   install token           InstallToken         (never: see below)
 //   updates off             DisableUpdates true  "updates": "off" (or false)
+//
+// When an administrator provisioned the console, it is the only origin the host sends the install token
+// to (console_binding::resolve), and the tenant comes from these sources too (effective_config).
+// ~/.moorai/config.json and the host-only console.json cannot move it. The install token is NOT read from
+// the machine file: that file is readable by every local account (0644 / Users read), so it carries only
+// the non-secret binding, and the token stays in the enrolled user's own 0600 config.json. A managed
+// preference InstallToken (a Jamf configuration profile) is read, because /Library/Managed Preferences is
+// root-owned; profile payloads are readable by local users too, so per-user delivery of the token (the
+// deploy script writing the user's own config.json) is the recommended route.
 //
 // A file that fails the ownership or ACL check, or cannot be checked, is ignored, as if absent.
 // Known gap, shared with cli/hook-core.mjs: icacls does not print the file's owner, so on Windows a file an
@@ -36,6 +47,8 @@ use serde_json::Value;
 pub const MANAGED_DOMAIN: &str = "run.glick.moorai";
 pub const MANAGED_SERVER_KEY: &str = "ServerURL";
 pub const MANAGED_DISABLE_UPDATES_KEY: &str = "DisableUpdates";
+pub const MANAGED_TENANT_KEY: &str = "Tenant";
+pub const MANAGED_INSTALL_TOKEN_KEY: &str = "InstallToken";
 
 #[derive(Debug, Default, PartialEq, Clone)]
 pub struct Admin {
@@ -43,6 +56,18 @@ pub struct Admin {
     pub console: Option<String>,
     // Why an administrator turned updates off, when one did.
     pub updates_off: Option<String>,
+    // The tenant and install token an administrator provisioned, when one did.
+    pub tenant: Option<String>,
+    pub install_token: Option<String>,
+}
+
+// What the managed preferences said, per key (macOS; every field None elsewhere).
+#[derive(Debug, Default, PartialEq, Clone)]
+pub struct Managed {
+    pub server: Option<String>,
+    pub disable_updates: Option<bool>,
+    pub tenant: Option<String>,
+    pub install_token: Option<String>,
 }
 
 pub fn machine_config_path() -> String {
@@ -99,14 +124,39 @@ pub fn from_sources(managed_server: Option<String>, managed_disable: Option<bool
     } else {
         None
     };
-    Admin { console, updates_off }
+    Admin { console, updates_off, tenant: None, install_token: None }
+}
+
+// from_sources plus the tenant (managed value, then the machine file) and the install token (managed value
+// only; the machine file is world-readable and never carries it). Empty strings and placeholder values
+// left in a template profile count as unset.
+pub fn from_all(m: Managed, machine: &Value, machine_path: &str) -> Admin {
+    let text = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && !s.starts_with("REPLACE_WITH_"));
+    let file = |k: &str| text(machine.get(k).and_then(|v| v.as_str()).map(String::from));
+    let mut a = from_sources(m.server, m.disable_updates, machine, machine_path);
+    a.tenant = text(m.tenant).or_else(|| file("tenant"));
+    a.install_token = text(m.install_token);
+    a
 }
 
 pub fn admin() -> Admin {
     let path = machine_config_path();
     let machine = read_admin_owned(&path).and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null);
-    let (server, disable) = managed();
-    from_sources(server, disable, &machine, &path)
+    from_all(managed(), &machine, &path)
+}
+
+// ~/.moorai/config.json as the host's consumers should see it: when an administrator provisioned the
+// console, serverUrl is that console and the tenant is the administrator's (a user file naming another one
+// is overridden); the install token is the user file's unless a managed preference carries one (it then
+// only ever goes to the admin console, see console_binding::resolve). Unmanaged: the user file unchanged.
+pub fn effective_config(mut cfg: Value, admin: &Admin) -> Value {
+    let Some(console) = admin.console.as_deref() else { return cfg };
+    if !cfg.is_object() { cfg = Value::Object(Default::default()); }
+    let o = cfg.as_object_mut().expect("object");
+    o.insert("serverUrl".into(), Value::String(console.to_string()));
+    if let Some(t) = &admin.tenant { o.insert("tenant".into(), Value::String(t.clone())); }
+    if let Some(t) = &admin.install_token { o.insert("installToken".into(), Value::String(t.clone())); }
+    cfg
 }
 
 // ---- macOS managed preferences ----
@@ -162,22 +212,26 @@ pub fn managed_paths(user: Option<&str>) -> Vec<std::path::PathBuf> {
     paths
 }
 
-// (ServerURL, DisableUpdates) from the first of `paths` that says each, reading only files that pass
-// read_owned_under(root, owner).
+// ServerURL, DisableUpdates, Tenant and InstallToken, each from the first of `paths` that says it,
+// reading only files that pass read_owned_under(root, owner).
 #[cfg(unix)]
-pub fn managed_from(paths: &[std::path::PathBuf], root: &std::path::Path, owner: u32) -> (Option<String>, Option<bool>) {
+pub fn managed_from(paths: &[std::path::PathBuf], root: &std::path::Path, owner: u32) -> Managed {
     let plists: Vec<Vec<u8>> = paths.iter().filter_map(|p| read_owned_under(p, root, owner)).collect();
-    let server = plists.iter().find_map(|b| plist_raw(b, MANAGED_SERVER_KEY).filter(|s| !s.is_empty()));
-    let disable = plists.iter().find_map(|b| plist_bool(b, MANAGED_DISABLE_UPDATES_KEY));
-    (server, disable)
+    let text = |key: &str| plists.iter().find_map(|b| plist_raw(b, key).filter(|s| !s.is_empty()));
+    Managed {
+        server: text(MANAGED_SERVER_KEY),
+        disable_updates: plists.iter().find_map(|b| plist_bool(b, MANAGED_DISABLE_UPDATES_KEY)),
+        tenant: text(MANAGED_TENANT_KEY),
+        install_token: text(MANAGED_INSTALL_TOKEN_KEY),
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn managed() -> (Option<String>, Option<bool>) {
+fn managed() -> Managed {
     managed_from(&managed_paths(os_username().as_deref()), std::path::Path::new(MANAGED_ROOT), 0)
 }
 #[cfg(not(target_os = "macos"))]
-fn managed() -> (Option<String>, Option<bool>) { (None, None) }
+fn managed() -> Managed { Managed::default() }
 
 // ---- reading a file only root can have written (macOS, Linux) ----
 
@@ -484,12 +538,46 @@ mod tests {
         std::fs::create_dir_all(format!("{root}/u")).unwrap();
         for d in [&base, &root, &format!("{root}/u")] { mode(d, 0o755); }
         let (user, machine) = (format!("{root}/u/{MANAGED_DOMAIN}.plist"), format!("{root}/{MANAGED_DOMAIN}.plist"));
-        std::fs::write(&user, plist_doc("<key>ServerURL</key><string>https://moorai.acme.internal</string>")).unwrap();
-        std::fs::write(&machine, plist_doc("<key>ServerURL</key><string>https://moorai.other.internal</string><key>DisableUpdates</key><true/>")).unwrap();
+        std::fs::write(&user, plist_doc("<key>ServerURL</key><string>https://moorai.acme.internal</string><key>Tenant</key><string>acme</string>")).unwrap();
+        std::fs::write(&machine, plist_doc("<key>ServerURL</key><string>https://moorai.other.internal</string><key>DisableUpdates</key><true/><key>Tenant</key><string>other</string><key>InstallToken</key><string>tok-admin</string>")).unwrap();
         mode(&user, 0o644); mode(&machine, 0o644);
         let paths = [std::path::PathBuf::from(&user), std::path::PathBuf::from(&machine)];
-        assert_eq!(managed_from(&paths, std::path::Path::new(&root), me()), (Some("https://moorai.acme.internal".into()), Some(true)));
-        assert_eq!(managed_from(&paths, std::path::Path::new(&root), 0), (None, None), "owner 0: user-owned plists are ignored");
+        assert_eq!(managed_from(&paths, std::path::Path::new(&root), me()), Managed { server: Some("https://moorai.acme.internal".into()), disable_updates: Some(true), tenant: Some("acme".into()), install_token: Some("tok-admin".into()) });
+        assert_eq!(managed_from(&paths, std::path::Path::new(&root), 0), Managed::default(), "owner 0: user-owned plists are ignored");
+    }
+
+    #[test]
+    fn tenant_and_install_token_come_from_the_managed_preference_then_the_machine_file() {
+        let p = "/etc/moorai/config.json";
+        let file = json!({ "serverUrl": "https://moorai.acme.internal", "tenant": "acme-file", "installToken": "tok-file" });
+        let a = from_all(Managed { tenant: Some("acme-mdm".into()), install_token: Some("REPLACE_WITH_INSTALL_TOKEN".into()), ..Default::default() }, &file, p);
+        assert_eq!(a.console.as_deref(), Some("https://moorai.acme.internal"));
+        assert_eq!(a.tenant.as_deref(), Some("acme-mdm"), "a managed value wins");
+        assert_eq!(a.install_token, None, "a template placeholder counts as unset, and the world-readable machine file never supplies the token");
+        assert_eq!(from_all(Managed::default(), &file, p).tenant.as_deref(), Some("acme-file"), "the machine file's tenant fills in");
+        assert_eq!(from_all(Managed { install_token: Some("tok-mdm".into()), ..Default::default() }, &file, p).install_token.as_deref(), Some("tok-mdm"), "a managed preference may carry it");
+        assert_eq!(from_all(Managed::default(), &Value::Null, p), Admin::default());
+    }
+
+    #[test]
+    fn save_provision_cannot_move_a_managed_console() {
+        let admin = Admin { console: Some("https://moorai.acme.internal".into()), ..Default::default() };
+        assert!(crate::refuse_moving_a_managed_console(&admin, &json!({ "serverUrl": "https://collector.evil.test", "installToken": "t" })).is_err());
+        assert!(crate::refuse_moving_a_managed_console(&admin, &json!({ "serverUrl": "https://moorai.acme.internal/", "installToken": "t" })).is_ok(), "the same console, re-enrolled");
+        assert!(crate::refuse_moving_a_managed_console(&admin, &json!({ "allowedTools": ["codex"] })).is_ok(), "a policy-cache save names no console");
+        assert!(crate::refuse_moving_a_managed_console(&Admin::default(), &json!({ "serverUrl": "https://anywhere.example" })).is_ok(), "unmanaged: unchanged");
+    }
+
+    #[test]
+    fn effective_config_puts_the_admin_binding_over_the_user_file() {
+        let user = json!({ "serverUrl": "https://collector.evil.test", "tenant": "evil", "installToken": "tok-user", "isolateAgent": true });
+        let admin = Admin { console: Some("https://moorai.acme.internal".into()), tenant: Some("acme".into()), ..Default::default() };
+        let e = effective_config(user.clone(), &admin);
+        assert_eq!(e["serverUrl"], "https://moorai.acme.internal");
+        assert_eq!(e["tenant"], "acme");
+        assert_eq!(e["installToken"], "tok-user", "a key the admin left out may come from the user file");
+        assert_eq!(e["isolateAgent"], true, "other keys are untouched");
+        assert_eq!(effective_config(user.clone(), &Admin::default()), user, "unmanaged: unchanged");
     }
 
     fn plist_doc(v: &str) -> String {

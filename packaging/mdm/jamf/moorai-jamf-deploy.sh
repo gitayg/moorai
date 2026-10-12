@@ -9,10 +9,19 @@
 # WHAT IT DOES (all steps idempotent — safe to re-run on every Jamf check-in):
 #   1. Installs the MoorAI CLI agent into MOORAI_HOME (default /usr/local/moorai),
 #      either from a Jamf-distributed .pkg/.dmg or via the git installer.
-#   2. Writes ~/.moorai/config.json  {serverUrl, tenant, installToken} for the
-#      logged-in user — the file cli/config.mjs reads to bind to your console.
-#   3. Runs `node <MOORAI_HOME>/cli/moorai-hook.mjs install` as that user, which
-#      registers MoorAI's PreToolUse entries in ~/.claude/settings.json.
+#   2. Writes the MACHINE config /etc/moorai/config.json {serverUrl, tenant} (root:wheel
+#      0644). cli/config.mjs reads it first, on every laptop: it is the admin binding, so a
+#      user's ~/.moorai/config.json can no longer move the device to another console or
+#      tenant, or drop it to coach mode by deleting the token. It never carries the install
+#      token: 0644 is readable by every local account, so the token stays where it always
+#      was, in the enrolled user's own ~/.moorai/config.json (0600), step 3.
+#   3. Writes ~/.moorai/config.json {serverUrl, tenant, installToken} for the logged-in user
+#      (0600, owned by that user). On a managed device only its installToken is used.
+#      Honest limit: the agent runs as that user and can read the token; keeping it secret
+#      needs the privileged helper (trust-anchor design phase 2).
+#   4. Runs `<node> <MOORAI_HOME>/cli/moorai-hook.mjs install` as that user, which
+#      registers MoorAI's hook entries in ~/.claude/settings.json with node named by
+#      absolute path.
 #
 # CONTENT-FREE: this script only configures the device→console binding. No prompt,
 # file, or agent output is collected here; policy still comes from the console
@@ -169,10 +178,35 @@ harden_anchor_dir() {
   log "trust-anchor directory hardened: ${ANCHOR_DIR} (root:wheel ${mode})"
 }
 
+# ------------------------------------------------------- write the machine config
+# /etc/moorai/config.json, root:wheel 0644: the admin binding cli/config.mjs reads before any user file
+# (and src-tauri admin_config.rs reads for the desktop app). serverUrl and tenant are set, an installToken
+# key is REMOVED (the file is world-readable; the token belongs in the user's 0600 file), and every other key an administrator put there ("updates", "mode", egress rules, ...) is kept: plutil edits
+# a copy in place (JSON in, JSON out), and the copy is renamed over the original, so a reader never sees a
+# half-written file and root never writes through a link planted at that path (the directory is root's).
+json_set() { # file key value
+  /usr/bin/plutil -replace "$2" -string "$3" "$1" 2>/dev/null \
+    || /usr/bin/plutil -insert "$2" -string "$3" "$1" 2>/dev/null
+}
+write_machine_config() {
+  cfg_file="${ANCHOR_DIR}/config.json"
+  if [ "$(/usr/bin/id -u)" -ne 0 ]; then return 1; fi
+  tmp="$(/usr/bin/mktemp "${ANCHOR_DIR}/.config.json.XXXXXX")" || die "cannot create a temp file in ${ANCHOR_DIR}"
+  if [ -f "$cfg_file" ] && [ ! -L "$cfg_file" ] && /usr/bin/plutil -convert json -o "$tmp" "$cfg_file" 2>/dev/null; then :; else printf '{}' > "$tmp"; fi
+  # A bare {} is also a valid OpenStep plist, which plutil will not write back; seed a JSON-only form.
+  [ "$(/bin/cat "$tmp")" = "{}" ] && printf '{"serverUrl":""}' > "$tmp"
+  json_set "$tmp" serverUrl "$SERVER_URL" || { /bin/rm -f "$tmp"; die "cannot set serverUrl in the machine config"; }
+  json_set "$tmp" tenant "$TENANT"        || { /bin/rm -f "$tmp"; die "cannot set tenant in the machine config"; }
+  /usr/bin/plutil -remove installToken "$tmp" 2>/dev/null || true
+  /usr/sbin/chown root:wheel "$tmp" && /bin/chmod 0644 "$tmp" || { /bin/rm -f "$tmp"; die "cannot set owner/mode on the machine config"; }
+  /bin/mv -f "$tmp" "$cfg_file" || { /bin/rm -f "$tmp"; die "cannot install ${cfg_file}"; }
+  log "wrote machine config ${cfg_file} (root:wheel 0644; serverUrl, tenant; no install token)"
+}
+
 # --------------------------------------------------- write per-user enroll config
-# JSON shape read by cli/config.mjs: { serverUrl, tenant, installToken }.
-# `save_provision` in the Tauri host writes the identical file; we do it here so a
-# headless MDM install needs no interactive token paste.
+# The install token's home: the enrolled user's own file, 0600. On a managed device (machine config
+# written above) cli/config.mjs takes only installToken from it; serverUrl and tenant are written too, with
+# the same values as the machine config, so the file still works if the device is later unmanaged.
 write_enroll_config() {
   user="$1"; home="$2"
   cfg_dir="${home}/.moorai"
@@ -219,6 +253,8 @@ register_hooks() {
 # ------------------------------------------------------------------------- main
 install_agent
 harden_anchor_dir
+write_machine_config \
+  || log "WARNING: not root; the machine config ${ANCHOR_DIR}/config.json was not written, so this device is NOT managed (its binding is the user-writable ~/.moorai/config.json)."
 if [ "$DEFER_USER" -eq 0 ]; then
   write_enroll_config "$CONSOLE_USER" "$USER_HOME"
   register_hooks "$CONSOLE_USER"

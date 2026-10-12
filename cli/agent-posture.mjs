@@ -54,6 +54,7 @@ import os from "node:os";
 import { hostTable, readJson, checkHost, checkManaged, readManagedSettings, diffSurface } from "./doctor-hosts.mjs";
 import { hostVersion } from "./agent-hooks/host-version.mjs";
 import { hostContainment, mxcCapable } from "./mxc-detect.mjs";
+import { hookProcessEnvName } from "./server-mode.mjs";
 
 export const POSTURE_VERSION = 1;
 // Every flag the module can emit. The console accepts only these names.
@@ -67,7 +68,8 @@ export const POSTURE_FLAGS = [
   "approvalUnrestricted",   // Cursor CLI approvalMode = "unrestricted"
   "autoEditDefault",        // Gemini general.defaultApprovalMode = "auto_edit"
   "sandboxFullAccess",      // Codex sandbox_mode = "danger-full-access"
-  "sandboxOff"              // the host's sandbox is not on (Claude Code, Gemini, Cursor CLI)
+  "sandboxOff",             // the host's sandbox is not on (Claude Code, Gemini, Cursor CLI)
+  "hookEnvOverride"         // a Claude Code user/project/local settings `env` block sets NODE_OPTIONS, NODE_PATH, PATH or ProgramData for the hook (cli/server-mode.mjs HOOK_PROCESS_ENV)
 ];
 export const HOOK_STATES = ["ok", "missing", "stale", "broken", "untrusted", "unreadable", "absent"];
 
@@ -83,7 +85,7 @@ export function hookState(result) {
   const d = result.details || {};
   if (d.expected && d.events && !diffSurface(d.expected, d.events).ok) return "stale";
   if (!Array.isArray(d.scripts) || !d.scripts.length) return "broken";
-  if (/hook file missing|copy .* is gone|is missing|no hook script path/.test(result.summary || "")) return "broken";
+  if (/hook file missing|copy .* is gone|is missing|no hook script path|node binary/.test(result.summary || "")) return "broken";
   if (result.status === "warn" && /trust entry/.test(result.summary || "")) return "untrusted";
   return "ok";
 }
@@ -154,6 +156,8 @@ function claudeFlags({ home, cwd, managedSources, managed }) {
     // Only the device-wide scopes decide the sandbox: a project file that turns it on would make this
     // flag flap with the directory the hook happens to run in.
     if ((scope === "user" || scope === "managed") && get(d, "sandbox.enabled") === true) sandboxOn = true;
+    // Names only; managed settings are the operator's and are not a finding.
+    if (scope !== "managed" && d.env && typeof d.env === "object" && Object.keys(d.env).some((k) => hookProcessEnvName(k))) add(flags, "hookEnvOverride", scope);
   }
   if (!sandboxOn) add(flags, "sandboxOff", "user");
   const only = managedSources.some((s) => s.data && s.data.allowManagedHooksOnly === true);

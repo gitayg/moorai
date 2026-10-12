@@ -6,7 +6,7 @@
 import { readFileSync, existsSync, readdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute } from "node:path";
 import os from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -87,6 +87,22 @@ export function hookScripts(cfg, ours) {
     if (!Array.isArray(list)) continue;
     for (const e of list.filter(ours)) for (const s of strings(e)) {
       for (const m of s.matchAll(/"([^"]*moorai-(?:agent-)?hook\.mjs)"|(\S*moorai-(?:agent-)?hook\.mjs)/g)) out.add(m[1] || m[2]);
+    }
+  }
+  return [...out];
+}
+
+// The node binary each MoorAI entry names by absolute path (hookEntry writes `"<process.execPath>"
+// "<hook>"` since 1.13). A version manager that later removes that binary leaves the host unable to start
+// the hook, so doctor (and the posture heartbeat, through hookState) calls the entry broken.
+export function hookExes(cfg, ours) {
+  const hooks = cfg && typeof cfg.hooks === "object" && cfg.hooks ? cfg.hooks : {};
+  const out = new Set();
+  for (const list of Object.values(hooks)) {
+    if (!Array.isArray(list)) continue;
+    for (const e of list.filter(ours)) for (const s of strings(e)) {
+      const m = /^"((?:[^"\\]|\\.)*)"\s+"[^"]*moorai-(?:agent-)?hook\.mjs"/.exec(s);
+      if (m) { try { out.add(JSON.parse(`"${m[1]}"`)); } catch { /* not a JSON-quoted path */ } }
     }
   }
   return [...out];
@@ -180,6 +196,7 @@ export function checkHost(host, { managedHooks = null, managedPlugins = [], env 
   if (exp.error) return { ...base, status: "fail", summary: `could not compute the current MoorAI surface: ${exp.error}`, installed: true };
   const d = diffSurface(exp.surface, have);
   const missingScripts = scripts.filter((s) => !existsSync(s));
+  const missingExes = (data ? hookExes(data, host.ours) : []).filter((x) => isAbsolute(x) && !existsSync(x));
   const details = { file: where, events: have, expected: exp.surface, scripts: scripts.map(pathOf) };
   // Both: the hook's --plugin copy stands down for each event a live settings.json install covers
   // (settingsCovers in moorai-hook.mjs), so the settings copy is the one that runs where it covers.
@@ -191,6 +208,7 @@ export function checkHost(host, { managedHooks = null, managedPlugins = [], env 
   for (const s of d.stale) problems.push(`${s.event} matchers are [${s.have.join(" ")}], current is [${s.want.join(" ")}]`);
   if (d.extra.length) problems.push(`unexpected event(s) ${d.extra.join(", ")}`);
   if (missingScripts.length) problems.push(`hook file missing: ${missingScripts.map(pathOf).join(", ")}`);
+  if (missingExes.length) problems.push(`the node binary the hook command names is missing: ${missingExes.map(pathOf).join(", ")}`);
   if (!scripts.length) problems.push("no hook script path found in MoorAI's entries");
   const other = scripts.filter((s) => existsSync(s) && s !== HOOK && s !== AGENT_HOOK);
   if (host.id === "claude-code" && data && data.disableAllHooks === true) problems.push(`disableAllHooks is true in ${pathOf(host.file)}`);

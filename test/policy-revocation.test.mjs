@@ -343,7 +343,7 @@ test("E2E ROLLBACK: an EQUAL iat is still accepted — the steady-state re-fetch
     ageCache(home);
     const r2 = await run(home, { serve: STRICT({}, { iat: T3 }), pubkey: pubkeyBody(K1) });
     assert.ok(enforced(r2), `stdout was ${JSON.stringify(r2.stdout)}`);
-    assert.ok(!r2.hashes.some((h) => String(h).startsWith("policy:")), `no tamper alert expected, got ${JSON.stringify(r2.hashes)}`);
+    assert.ok(!r2.hashes.some((h) => String(h).startsWith("policy:") && h !== "policy:stale"), `no tamper alert expected (policy:stale is the fixture's fixed, old iat, not tampering), got ${JSON.stringify(r2.hashes)}`);
   });
 });
 

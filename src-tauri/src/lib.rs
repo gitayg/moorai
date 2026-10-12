@@ -392,14 +392,20 @@ fn find_claude() -> Option<String> { find_tool("claude") }
 // enrolment (console_binding.rs — never config.json's serverUrl, which the agent can rewrite), falling
 // back to the frontend-cached allow-list on a network error, else deny. Unprovisioned installs are
 // not restricted.
+// On a managed device the administrator's console (admin_config.rs) is asked, never console.json's.
 fn tool_allowed(tool: &str) -> console_binding::Decision {
-    console_binding::policy_allows(&read_config(), &console_binding::host_dir(), tool, &platform::username(), &platform::hostname(), &console_binding::real_fetch)
+    let admin = admin_config::admin();
+    let cfg = admin_config::effective_config(read_config(), &admin);
+    console_binding::policy_allows(&cfg, &console_binding::host_dir(), &admin, tool, &platform::username(), &platform::hostname(), &console_binding::real_fetch)
 }
 
 // Writes the provision config (serverUrl + tenant) to ~/.moorai/config.json — used when the
 // user enrolls by pasting an installation token in the app.
 #[tauri::command]
 fn save_provision(config: serde_json::Value) -> Result<(), String> {
+    // On a managed device the console is the administrator's: a provision naming another one is refused
+    // before anything is written (an enrolment through the app cannot move a managed device).
+    refuse_moving_a_managed_console(&admin_config::admin(), &config)?;
     // An enrolment (the provision carries an install token) records its console host-side first; an
     // unsafe serverUrl refuses the enrolment before anything is written.
     console_binding::record_enrolment(&console_binding::host_dir(), &config)?;
@@ -414,6 +420,15 @@ fn save_provision(config: serde_json::Value) -> Result<(), String> {
     private_file::write_private(platform::config_path(), &serde_json::to_string_pretty(&cfg).unwrap())
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+pub(crate) fn refuse_moving_a_managed_console(admin: &admin_config::Admin, incoming: &serde_json::Value) -> Result<(), String> {
+    let Some(console) = admin.console.as_deref() else { return Ok(()) };
+    let Some(server) = incoming.get("serverUrl").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) else { return Ok(()) };
+    match console_binding::normalize_origin(server) {
+        Ok(o) if o == console => Ok(()),
+        _ => Err(format!("this device's console is set by your administrator ({console}); enrolment with {} was refused", server.trim())),
+    }
 }
 
 // Opens a system terminal running the claude CLI so the user can complete the OAuth login.
@@ -802,12 +817,15 @@ fn set_agent_auth(method: String, token: String) -> Result<(), String> {
 fn identity() -> serde_json::Value {
     let user = platform::username();
     let device = platform::hostname();
-    let cfg = read_config();
+    // The console an administrator provisioned (admin_config.rs: managed ServerURL, or the root/admin-
+    // owned machine file), and with it the provisioned tenant and install token, over config.json's.
+    let admin = admin_config::admin();
+    let cfg = admin_config::effective_config(read_config(), &admin);
     let tenant = cfg.get("tenant").and_then(|t| t.as_str()).unwrap_or("unprovisioned").to_string();
     let install_token = cfg.get("installToken").and_then(|t| t.as_str()).unwrap_or("").to_string();
     // The only origin the renderer may send the install token to (null = none), and why not, if so.
     let dir = console_binding::host_dir();
-    let console = console_binding::resolve(&dir, &cfg);
+    let console = console_binding::resolve(&dir, &cfg, &admin);
     // The recorded console only when an enrolment in the app recorded it, not a first-use migration of
     // config.json: where the renderer starts a re-enrolment or a signup (api.js enrolBase()).
     let enrolled = console_binding::enrolled_console(&dir);
@@ -815,7 +833,7 @@ fn identity() -> serde_json::Value {
     // owned machine file), as a bare origin or null: the renderer's base for enrolment and the other
     // uncredentialed calls, so an MDM-provisioned device never falls back to the MoorAI cloud. Never
     // config.json's serverUrl, which the agent can write.
-    let provisioned = admin_config::admin().console;
+    let provisioned = admin.console.clone();
     serde_json::json!({ "user": user, "device": device, "platform": std::env::consts::OS, "tenant": tenant, "installToken": install_token, "appVersion": env!("CARGO_PKG_VERSION"), "console": console.origin, "consoleWarning": console.warning, "provisionedConsole": provisioned, "enrolledConsole": enrolled })
 }
 

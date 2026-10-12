@@ -43,9 +43,10 @@ pub fn hash_with_key(key: Option<&[u8; 32]>, s: &str) -> String {
     }
 }
 
-// The enrolled key, read the way `identity()` reads the token (config.json, legacy dir fallback).
+// The enrolled key, read the way `identity()` reads the token: the administrator's install token when one
+// was provisioned (admin_config::effective_config), else config.json (legacy dir fallback).
 pub fn tenant_key() -> Option<[u8; 32]> {
-    let cfg = crate::read_config();
+    let cfg = crate::admin_config::effective_config(crate::read_config(), &crate::admin_config::admin());
     derive_key(cfg.get("installToken").and_then(|t| t.as_str()).unwrap_or(""))
 }
 

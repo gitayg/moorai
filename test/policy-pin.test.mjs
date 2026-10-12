@@ -452,7 +452,7 @@ test("E2E ROTATION: publishing the new key while still signing with the old one 
     writeFileSync(CACHE(home), sign({ offlineMode: "fail-closed", captureTier: "content-free", mcpAllow: ["something-else"] }, { key: rotatedKey.privateKey }));
     const r3 = await run(home, {});
     assert.ok(enforced(r3), `the rotated key must be accepted offline; stdout was ${JSON.stringify(r3.stdout)}`);
-    assert.ok(!r3.hashes.some((h) => String(h).startsWith("policy:")), `no tamper alert expected, got ${JSON.stringify(r3.hashes)}`);
+    assert.ok(!r3.hashes.some((h) => String(h).startsWith("policy:") && h !== "policy:stale"), `no tamper alert expected (policy:stale is the fixture's fixed, old iat, not tampering), got ${JSON.stringify(r3.hashes)}`);
   });
 });
 

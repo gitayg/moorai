@@ -25,7 +25,8 @@ async function readStdin() { const c = []; for await (const x of process.stdin) 
 async function main() {
   const [id, cmd] = process.argv.slice(2);
   const a = await load(id);
-  const command = `node ${JSON.stringify(fileURLToPath(import.meta.url))} ${id}`;
+  // node by absolute path, never a bare `node` resolved through PATH (cli/moorai-hook.mjs hookEntry).
+  const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(fileURLToPath(import.meta.url))} ${id}`;
   if (cmd === "install") return a.install({ home: homedir(), command });
   if (cmd === "uninstall") return a.uninstall({ home: homedir() });
   let payload;

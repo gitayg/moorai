@@ -6,7 +6,7 @@
 // refreshes run beside the traffic; until a first load succeeds the proxy answers 503. Coach vs enforce is
 // the shared rule, server mode counting as management evidence. Never an environment variable or a file
 // the proxy is pointed at.
-import { loadVerifiedPolicy, ratchetPosture, enforcementAllowed, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE } from "../cli/hook-core.mjs";
+import { loadVerifiedPolicy, ratchetPosture, enforcementAllowed, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath } from "../cli/hook-core.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { isEnrolled } from "../data/enforcement.js";
 import { systemConfigPath } from "../cli/server-mode.mjs";
@@ -18,7 +18,7 @@ function readSystem() {
   try { const v = JSON.parse(readRootOwned(systemConfigPath()) || "null"); return v && typeof v === "object" && !Array.isArray(v) ? v : null; } catch { return null; }
 }
 function durablePosture() {
-  return ratchetPosture({ system: readRootOwned(SYSTEM_POSTURE), state: readText(POSTURE_STATE), latch: readText(POSTURE_LATCH), legacy: readText(POSTURE_LEGACY), env: process.env.MOORAI_OFFLINE_MODE });
+  return ratchetPosture({ system: readRootOwned(systemPosturePath()), state: readText(POSTURE_STATE), latch: readText(POSTURE_LATCH), legacy: readText(POSTURE_LEGACY), env: process.env.MOORAI_OFFLINE_MODE });
 }
 
 // The posture ratchet runs on every refresh, whether or not the load succeeds. A load that throws keeps

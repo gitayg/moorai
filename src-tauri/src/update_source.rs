@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn an_admin_updates_off_wins_over_every_endpoint() {
-        let off = crate::admin_config::Admin { console: None, updates_off: Some("turned off by the managed setting DisableUpdates (run.glick.moorai)".into()) };
+        let off = crate::admin_config::Admin { console: None, updates_off: Some("turned off by the managed setting DisableUpdates (run.glick.moorai)".into()), ..Default::default() };
         for dir in [scratch("off-none"), { let d = scratch("off-bound"); crate::console_binding::write_binding(&d, "https://moorai.acme.internal", "enrolment").unwrap(); d }] {
             assert!(matches!(choose(&dir, &json!({ "updates": "on", "installToken": "t" }), &off), Plan::Off(_)), "{dir}");
         }
@@ -127,7 +127,7 @@ mod tests {
         let cloud = Plan::Endpoints(CLOUD_ENDPOINTS.iter().map(|s| s.to_string()).collect());
         assert_eq!(choose(&migrated, &json!({ "serverUrl": "https://updates.evil.test", "installToken": "t" }), &crate::admin_config::Admin::default()), cloud);
         // the admin's console wins over a recorded one
-        assert_eq!(choose(&bound, &json!({}), &crate::admin_config::Admin { console: Some("https://moorai.corp.example".into()), updates_off: None }), Plan::Endpoints(vec!["https://moorai.corp.example/api/update".into()]));
+        assert_eq!(choose(&bound, &json!({}), &crate::admin_config::Admin { console: Some("https://moorai.corp.example".into()), updates_off: None, ..Default::default() }), Plan::Endpoints(vec!["https://moorai.corp.example/api/update".into()]));
     }
 
     #[test]

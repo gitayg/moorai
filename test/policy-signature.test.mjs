@@ -255,7 +255,7 @@ test("E2E: a VALIDLY signed policy is accepted and its own rules are enforced", 
   const r = await runHook({ cache: JSON.stringify(p), anchorPub: PUB_B64 });
   assert.ok(enforced(r), `signed policy must be applied; stdout was ${JSON.stringify(r.stdout)}`);
   assert.match(r.stdout, /not on your organization's allow-list/);
-  assert.ok(!r.hashes.some((h) => String(h).startsWith("policy:")), "a valid policy must raise no tamper alert");
+  assert.ok(!r.hashes.some((h) => String(h).startsWith("policy:") && h !== "policy:stale"), "a valid policy must raise no tamper alert (policy:stale is the fixture's fixed, old iat)");
 });
 
 test("E2E: a signed policy served FRESH by the server is accepted and cached", async () => {

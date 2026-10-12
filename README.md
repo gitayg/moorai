@@ -449,6 +449,25 @@ hook's environment, so a repository's `.claude/settings.json` could otherwise su
 value that a user, project or local settings file sets for one of those is ignored and reported to the console
 (names only); a managed settings value, the launching environment and the root-owned anchor files are trusted.
 The registry mirrors (`MOORAI_NPM_REGISTRY` and the rest) and `MOORAI_OFFLINE` are read under the same rule.
+A settings file that sets `NODE_OPTIONS`, `NODE_PATH`, `PATH` or `ProgramData` for the hook is reported the same
+way (and is the posture flag `hookEnvOverride`); the hook does not depend on them: it is registered with node
+by absolute path, its Windows anchors come from HKLM, and its detached workers start without the file's
+`NODE_OPTIONS` / `NODE_PATH`.
+
+**Managed devices: the admin binding wins.** On a laptop as on a server, the hook and the desktop app read the
+root-owned machine config (`/etc/moorai/config.json`; Windows `<ProgramData>\MoorAI\config.json` with
+ProgramData from HKLM, administrator-only ACL) before `~/.moorai/config.json`. When it names `serverUrl`, the
+device is managed: the console and tenant are the machine file's, a user `config.json` naming another is
+refused and reported (`BINDING_REFUSED`), and the device never drops to coach mode, even with the token
+deleted from the user file. The token itself stays in the enrolled user's own 0600 `config.json`, never in the
+world-readable machine file, so the agent (the same OS user) can still read it. The MDM deploy scripts write
+both ([`packaging/mdm/`](packaging/mdm/README.md)). A cached policy is refetched once its signed `iat` is 15
+minutes old however recently the file was touched, and a refetch that fails enforces the old policy with a
+`POLICY_STALE` alert. Each alert carries `policyIat`, `appVersion`, a per-device `seq` and a `chainHead`, and the
+session summary carries `alertsEmitted` / `alertsDeferred`, so the console can see alerts that never arrived.
+On an unmanaged device those counters are user files: they catch an agent that deletes queued alerts, not
+one that also rewinds them. Details and limits: [`docs/CAPABILITY_SPEC.md`](docs/CAPABILITY_SPEC.md) (trust
+anchors) and [`docs/proposals/trust-anchors.md`](docs/proposals/trust-anchors.md).
 
 ### Server mode: Agent SDK and sidecar
 

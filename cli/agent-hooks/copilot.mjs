@@ -205,7 +205,9 @@ export function install({ home, command }) {
   const cfg = readCfg(file);
   strip(cfg);
   if (cfg.version === undefined) cfg.version = 1;
-  const entry = { type: "command", bash: command, powershell: command, timeoutSec: TIMEOUT_SEC };
+  // The command starts with a quoted absolute node path (cli/moorai-agent-hook.mjs). PowerShell runs a
+  // quoted path only through the call operator; bash runs it as is.
+  const entry = { type: "command", bash: command, powershell: command.startsWith('"') ? `& ${command}` : command, timeoutSec: TIMEOUT_SEC };
   for (const ev of ["preToolUse", "postToolUse", "userPromptSubmitted"]) cfg.hooks[ev] = [...(cfg.hooks[ev] || []), { ...entry }];
   mkdirSync(join(file, ".."), { recursive: true });
   writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");

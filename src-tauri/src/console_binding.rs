@@ -66,10 +66,29 @@ pub fn write_binding(dir: &str, origin: &str, source: &str) -> Result<(), String
 
 pub struct Resolved { pub origin: Option<String>, pub warning: Option<String> }
 
-// The console credentialed requests may go to, given the host-only record and the agent-writable
-// config. Records the config's origin on first use when there is no record yet (migration).
-pub fn resolve(dir: &str, cfg: &Value) -> Resolved {
+// The console credentialed requests may go to, given the administrator's settings, the host-only record
+// and the agent-writable config. ADMIN FIRST: when an administrator provisioned the console (managed
+// ServerURL or the root/admin-owned machine file, admin_config.rs), it is the credentialed origin and
+// console.json is not read at all: a console.json the agent planted (it is user-writable for any agent the
+// app did not launch) cannot redirect the token on a managed device. A console.json or config.json that
+// names another origin is logged and reported in the warning. Otherwise: the host-only record, recording
+// config.json's origin on first use when there is no record yet (migration).
+pub fn resolve(dir: &str, cfg: &Value, admin: &crate::admin_config::Admin) -> Resolved {
     let server = cfg.get("serverUrl").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if let Some(console) = admin.console.as_deref() {
+        let recorded = read_binding(dir).ok().flatten().filter(|b| b != console);
+        let configured = (!server.is_empty()).then(|| normalize_origin(server).unwrap_or_else(|_| server.to_string())).filter(|o| o != console);
+        let warning = match (recorded, configured) {
+            (None, None) => None,
+            (r, c) => {
+                let others: Vec<String> = [r, c].into_iter().flatten().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+                let w = format!("This device's console is set by your administrator ({console}). MoorAI ignored {} and sends its install token only to {console}.", others.join(" and "));
+                eprintln!("[moorai] {w}");
+                Some(w)
+            }
+        };
+        return Resolved { origin: Some(console.to_string()), warning };
+    }
     let token = cfg.get("installToken").and_then(|v| v.as_str()).unwrap_or("");
     match read_binding(dir) {
         Err(e) => Resolved { origin: None, warning: Some(format!("MoorAI is not sending its install token: {e}.")) },
@@ -132,11 +151,11 @@ pub struct Decision { pub allowed: bool, pub warning: Option<String> }
 // #3 — is this agent permitted for our tenant/device? Asks the recorded console (authoritative),
 // falling back to the cached allow-list on a network error or a refused console, else deny.
 // Unprovisioned installs (no install token, or no console at all) are not restricted.
-pub fn policy_allows(cfg: &Value, dir: &str, tool: &str, user: &str, device: &str, fetch: Fetch) -> Decision {
+pub fn policy_allows(cfg: &Value, dir: &str, admin: &crate::admin_config::Admin, tool: &str, user: &str, device: &str, fetch: Fetch) -> Decision {
     let token = cfg.get("installToken").and_then(|v| v.as_str()).unwrap_or("");
     if token.is_empty() { return Decision { allowed: true, warning: None }; }
     let cached = cfg.get("allowedTools").and_then(|v| v.as_array()).map(|a| a.iter().any(|x| x.as_str() == Some(tool)));
-    let r = resolve(dir, cfg);
+    let r = resolve(dir, cfg, admin);
     let Some(origin) = r.origin else {
         return Decision { allowed: if r.warning.is_some() { cached.unwrap_or(false) } else { true }, warning: r.warning };
     };
@@ -201,7 +220,7 @@ mod tests {
         write_test_binding(&dir, &good.origin);
         // what a prompt-injected agent writes into ~/.moorai/config.json
         let cfg = json!({ "serverUrl": evil.origin, "installToken": "tok-SECRET-INSTALL", "tenant": "acme" });
-        let d = policy_allows(&cfg, &dir, "codex", "u", "d", &real_fetch);
+        let d = policy_allows(&cfg, &dir, &crate::admin_config::Admin::default(), "codex", "u", "d", &real_fetch);
         assert!(evil.seen.lock().unwrap().is_empty(), "the install token went to the rewritten serverUrl: {:?}", evil.seen.lock().unwrap());
         assert_eq!(*good.seen.lock().unwrap(), vec!["tok-SECRET-INSTALL".to_string()], "the recorded console is asked instead");
         assert!(d.allowed);
@@ -214,7 +233,7 @@ mod tests {
         let calls = RefCell::new(vec![]);
         let fetch = |url: &str, tok: &str| { calls.borrow_mut().push((url.to_string(), tok.to_string())); Ok(json!({ "allowedTools": ["codex"] })) };
         let cfg = json!({ "serverUrl": "http://collector.example.net", "installToken": "tok-SECRET-INSTALL", "allowedTools": [] });
-        let d = policy_allows(&cfg, &dir, "codex", "u", "d", &fetch);
+        let d = policy_allows(&cfg, &dir, &crate::admin_config::Admin::default(), "codex", "u", "d", &fetch);
         assert!(calls.borrow().is_empty(), "token offered over plain http to a non-local host: {:?}", calls.borrow());
         assert!(!d.allowed, "falls back to the cached allow-list (codex not in it)");
         assert!(d.warning.is_some());
@@ -229,7 +248,7 @@ mod tests {
         let dir = scratch("redirect");
         write_test_binding(&dir, &good.origin);
         let cfg = json!({ "serverUrl": good.origin, "installToken": "tok-SECRET-INSTALL", "allowedTools": ["claude"] });
-        let d = policy_allows(&cfg, &dir, "codex", "u", "d", &real_fetch);
+        let d = policy_allows(&cfg, &dir, &crate::admin_config::Admin::default(), "codex", "u", "d", &real_fetch);
         assert_eq!(good.seen.lock().unwrap().len(), 1);
         assert!(evil.seen.lock().unwrap().is_empty(), "the redirect was followed with the token: {:?}", evil.seen.lock().unwrap());
         assert!(!d.allowed, "a redirect is a failed fetch → cached allow-list");
@@ -241,13 +260,13 @@ mod tests {
         let later = serve(ok_json(r#"{"allowedTools":["codex"]}"#));
         let dir = scratch("tofu");
         let cfg = json!({ "serverUrl": format!("{}/some/path?x=1", first.origin), "installToken": "tok-SECRET-INSTALL" });
-        let d = policy_allows(&cfg, &dir, "codex", "u", "d", &real_fetch);
+        let d = policy_allows(&cfg, &dir, &crate::admin_config::Admin::default(), "codex", "u", "d", &real_fetch);
         assert!(d.allowed && d.warning.is_none());
         assert_eq!(read_binding(&dir).unwrap().as_deref(), Some(first.origin.as_str()), "recorded host-side as a bare origin");
         let rec: Value = serde_json::from_str(&std::fs::read_to_string(format!("{dir}/console.json")).unwrap()).unwrap();
         assert_eq!(rec["source"], "migration");
         let moved = json!({ "serverUrl": later.origin, "installToken": "tok-SECRET-INSTALL" });
-        let d2 = policy_allows(&moved, &dir, "codex", "u", "d", &real_fetch);
+        let d2 = policy_allows(&moved, &dir, &crate::admin_config::Admin::default(), "codex", "u", "d", &real_fetch);
         assert!(later.seen.lock().unwrap().is_empty(), "after migration a new serverUrl gets nothing");
         assert_eq!(first.seen.lock().unwrap().len(), 2);
         assert!(d2.warning.is_some());
@@ -272,7 +291,7 @@ mod tests {
     fn a_console_recorded_by_migration_is_not_an_enrolled_console() {
         let dir = scratch("migrated");
         assert_eq!(enrolled_console(&dir), None, "no record");
-        let r = resolve(&dir, &json!({ "serverUrl": "https://collector.evil.test", "installToken": "tok-planted" }));
+        let r = resolve(&dir, &json!({ "serverUrl": "https://collector.evil.test", "installToken": "tok-planted" }), &crate::admin_config::Admin::default());
         assert_eq!(r.origin.as_deref(), Some("https://collector.evil.test"));
         assert_eq!(enrolled_console(&dir), None, "a migrated console never starts an enrolment or a signup");
         record_enrolment(&dir, &json!({ "installToken": "t", "serverUrl": "https://moorai.acme.internal" })).unwrap();
@@ -285,7 +304,7 @@ mod tests {
         std::fs::write(format!("{dir}/console.json"), r#"{"origin":"http://collector.example.net"}"#).unwrap();
         let calls = RefCell::new(0);
         let fetch = |_: &str, _: &str| { *calls.borrow_mut() += 1; Ok(json!({})) };
-        let d = policy_allows(&json!({ "serverUrl": "https://app.moorai.dev", "installToken": "t" }), &dir, "codex", "u", "d", &fetch);
+        let d = policy_allows(&json!({ "serverUrl": "https://app.moorai.dev", "installToken": "t" }), &dir, &crate::admin_config::Admin::default(), "codex", "u", "d", &fetch);
         assert_eq!(*calls.borrow(), 0);
         assert!(!d.allowed && d.warning.is_some());
     }
@@ -295,8 +314,8 @@ mod tests {
         let dir = scratch("unprov");
         let calls = RefCell::new(0);
         let fetch = |_: &str, _: &str| { *calls.borrow_mut() += 1; Ok(json!({})) };
-        assert!(policy_allows(&json!({ "serverUrl": "https://app.moorai.dev" }), &dir, "codex", "u", "d", &fetch).allowed);
-        assert!(policy_allows(&json!({ "installToken": "t" }), &dir, "codex", "u", "d", &fetch).allowed);
+        assert!(policy_allows(&json!({ "serverUrl": "https://app.moorai.dev" }), &dir, &crate::admin_config::Admin::default(), "codex", "u", "d", &fetch).allowed);
+        assert!(policy_allows(&json!({ "installToken": "t" }), &dir, &crate::admin_config::Admin::default(), "codex", "u", "d", &fetch).allowed);
         assert_eq!(*calls.borrow(), 0);
     }
 

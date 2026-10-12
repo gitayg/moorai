@@ -14,15 +14,19 @@
 // `managed` is for evidence of management that outlives the token. The hook passes its durable
 // fail-closed posture (an MDM root-owned latch, MOORAI_OFFLINE_MODE, or a posture a verified org
 // policy recorded): a device that was put under fail-closed management keeps enforcing if its token is
-// removed, so deleting one line from config.json is not a way out of an org's policy.
+// removed, so deleting one line from config.json is not a way out of an org's policy. An admin binding
+// (the root-owned machine config naming the console, cli/config.mjs `managed`) is the same evidence.
 
 export function isEnrolled(config) {
   const t = config && config.installToken;
   return typeof t === "string" && t.trim() !== "";
 }
 
+// config.managed: the binding came from the root/admin-owned machine config (cli/config.mjs). An admin
+// bound this device to a console, so it enforces even when the token is missing or was deleted from the
+// user file: the token's absence is not a way out of an org's policy either.
 export function enforcementAllowed(config, { managed = false } = {}) {
-  return isEnrolled(config) || managed === true;
+  return isEnrolled(config) || managed === true || (config != null && config.managed === true);
 }
 
 // The note shown when a device coaches instead of enforcing. Same "MoorAI:" voice and the same

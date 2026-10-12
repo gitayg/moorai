@@ -32,11 +32,11 @@ import os from "node:os";
 import { join, isAbsolute, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { readRootOwned } from "./hook-core.mjs";
+import { machinePath } from "./machine-dir.mjs";
 import { commandOf } from "../data/shell-parse.js";
 
-export const EXCEPTIONS_FILE = process.platform === "win32"
-  ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "exceptions.json")
-  : "/etc/moorai/exceptions.json";
+// The Windows directory comes from HKLM, never %ProgramData% (cli/machine-dir.mjs).
+export const EXCEPTIONS_FILE = machinePath("exceptions.json");
 export const DEFAULT_TTL_MS = 3600 * 1000;
 export const MAX_TTL_MS = 24 * 3600 * 1000;
 export const MAX_EXCEPTIONS = 256;

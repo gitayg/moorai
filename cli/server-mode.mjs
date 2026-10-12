@@ -50,6 +50,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import os from "node:os";
 import { readRootOwned } from "./hook-core.mjs";
+import { machinePath } from "./machine-dir.mjs";
 
 export const ENV = {
   mode: "MOORAI_MODE",
@@ -71,9 +72,18 @@ export const HEADLESS_MODES = ["deny", "allow-with-report"];
 export const DEFAULTS = { serverUrl: "http://localhost:8787", tenant: "unprovisioned", installToken: "" };
 const MAX_ID = 128;
 
-export function systemConfigPath(platform = process.platform, env = process.env) {
-  return platform === "win32" ? join(env.ProgramData || "C:\\ProgramData", "MoorAI", "config.json") : "/etc/moorai/config.json";
+// Windows: <ProgramData from HKLM>\MoorAI\config.json, never %ProgramData% (cli/machine-dir.mjs).
+export function systemConfigPath(platform = process.platform) {
+  return machinePath("config.json", platform);
 }
+// The parsed root-owned machine config, or null. Read once per process: loadConfig() (the binding) and
+// serverMode() both ask, and they must see the same file.
+let SYSTEM = undefined;
+export function systemConfig() {
+  if (SYSTEM !== undefined) return SYSTEM;
+  return (SYSTEM = parseObj(readRootOwned(systemConfigPath())));
+}
+export function _resetSystemConfigForTests() { SYSTEM = undefined; }
 function managedSettingsPath(platform = process.platform) {
   if (platform === "darwin") return "/Library/Application Support/ClaudeCode/managed-settings.json";
   if (platform === "win32") return "C:\\Program Files\\ClaudeCode\\managed-settings.json";
@@ -96,11 +106,28 @@ export function readUserConfig(home = os.homedir(), read = readPlain) {
 
 // A name is "guarded" when a settings file must not be the one setting it for the hook.
 export const isGuarded = (name) => /^(MOORAI_|MoorAI_)/.test(name) || GITHUB_ID_ENV.includes(name);
+// Variables that decide what code the hook process itself runs and where it looks for things, rather than
+// MoorAI's own configuration: NODE_OPTIONS (--require / --import runs code inside the hook), NODE_PATH
+// (where bare imports resolve), PATH (which `node` a bare hook command starts, and every bare tool name),
+// ProgramData (where the Windows machine anchors used to be read from). A settings file that sets one of
+// these for the hook is reported, and the hook does not rely on it: its registration names node by
+// absolute path (hookEntry), its Windows anchors come from HKLM and its system tools are called by
+// absolute path (cli/machine-dir.mjs), and its detached workers start without the NODE_* values the file
+// set (workerEnv). PATH that the hook merely INHERITS (the shell's, the launcher's) is not a finding: only
+// a name a settings file's `env` block sets is. Windows names are case-insensitive, so a block that sets
+// "Path" or "PROGRAMDATA" counts.
+export const HOOK_PROCESS_ENV = ["NODE_OPTIONS", "NODE_PATH", "PATH", "ProgramData"];
+export function hookProcessEnvName(name) {
+  const n = String(name || "").toLowerCase();
+  return HOOK_PROCESS_ENV.find((h) => h.toLowerCase() === n) || "";
+}
+const isTrustRelevant = (name) => isGuarded(name) || Boolean(hookProcessEnvName(name));
+const canonicalEnvName = (name) => hookProcessEnvName(name) || name;
 
 // The settings files a repository or the agent can write, and which guarded names each one's `env`
 // block sets. User scope: $CLAUDE_CONFIG_DIR or ~/.claude; project scope: $CLAUDE_PROJECT_DIR (the hooks
 // reference: "the project root where the session started", exported to command hooks) or the cwd.
-export function settingsEnvHits({ env = process.env, home = os.homedir(), cwd = process.cwd(), read = readPlain } = {}) {
+export function settingsEnvHits({ env = process.env, home = os.homedir(), cwd = process.cwd(), read = readPlain } = {}, pred = isGuarded) {
   const userDir = env.CLAUDE_CONFIG_DIR || join(home, ".claude");
   const proj = env.CLAUDE_PROJECT_DIR || cwd;
   const files = [...new Set([join(userDir, "settings.json"), join(userDir, "settings.local.json"), join(proj, ".claude", "settings.json"), join(proj, ".claude", "settings.local.json")])];
@@ -109,7 +136,7 @@ export function settingsEnvHits({ env = process.env, home = os.homedir(), cwd = 
     const s = parseObj(read(file));
     const block = s && s.env && typeof s.env === "object" ? s.env : null;
     if (!block) continue;
-    const keys = Object.keys(block).filter(isGuarded).sort();
+    const keys = [...new Set(Object.keys(block).filter(pred).map(canonicalEnvName))].sort();
     if (keys.length) hits.push({ file, keys });
   }
   return hits;
@@ -117,7 +144,7 @@ export function settingsEnvHits({ env = process.env, home = os.homedir(), cwd = 
 // Guarded names a managed settings `env` block sets: those values win over every other scope.
 export function managedEnvKeys(path = managedSettingsPath(), read = readRootOwned) {
   const s = parseObj(read(path));
-  return s && s.env && typeof s.env === "object" ? Object.keys(s.env).filter(isGuarded) : [];
+  return s && s.env && typeof s.env === "object" ? Object.keys(s.env).filter(isTrustRelevant).map(canonicalEnvName) : [];
 }
 
 // ---- environment the hook may trust, in every mode ----
@@ -133,7 +160,7 @@ function untrustedNames({ env, home, cwd }) {
   let managed = [];
   try { managed = managedEnvKeys(); } catch { /* none */ }
   const keep = new Set(managed);
-  TRUST = new Set(settingsEnvHits({ env, home, cwd }).flatMap((h) => h.keys).filter((k) => !keep.has(k)));
+  TRUST = new Set(settingsEnvHits({ env, home, cwd }, isTrustRelevant).flatMap((h) => h.keys).filter((k) => !keep.has(k)));
   return TRUST;
 }
 export function trustedEnv(name, { env = process.env, home = os.homedir(), cwd = process.cwd() } = {}) {
@@ -143,9 +170,26 @@ export function trustedEnv(name, { env = process.env, home = os.homedir(), cwd =
 }
 // Security-relevant names a settings file set and the hook therefore ignored (for the tamper report).
 export const TRUST_ANCHOR_ENV = ["MOORAI_BREAKGLASS_PUBKEY", "MOORAI_POLICY_PUBKEY", "MOORAI_OFFLINE_MODE", "MOORAI_OTLP_ENDPOINT", "MOORAI_OTLP_HEADERS"];
+// Plus every HOOK_PROCESS_ENV name a settings file sets (whatever the inherited value): the hook cannot
+// un-apply NODE_OPTIONS to itself, so these are reported rather than ignored, and kept out of its workers.
 export function refusedTrustEnv(opts = {}) {
   const env = opts.env || process.env;
-  return TRUST_ANCHOR_ENV.filter((n) => env[n] !== undefined && env[n] !== "" && trustedEnv(n, opts) === undefined);
+  const anchors = TRUST_ANCHOR_ENV.filter((n) => env[n] !== undefined && env[n] !== "" && trustedEnv(n, opts) === undefined);
+  let hookEnv = [];
+  try { const u = untrustedNames({ env, home: opts.home || os.homedir(), cwd: opts.cwd || process.cwd() }); hookEnv = HOOK_PROCESS_ENV.filter((n) => u.has(n)); } catch { /* unreadable settings: nothing to report */ }
+  return [...anchors, ...hookEnv];
+}
+// The environment for the hook's own detached workers (the same script, re-run): the parent's, minus
+// NODE_OPTIONS / NODE_PATH when a settings file set them, so a planted --require does not follow the hook
+// into every worker it starts. PATH is left alone: the workers start node by absolute path and call no
+// bare tool name that matters, and stripping it would break the shell tools a user legitimately added.
+export function workerEnv(env = process.env) {
+  const out = { ...env };
+  try {
+    const u = untrustedNames({ env, home: os.homedir(), cwd: process.cwd() });
+    for (const n of ["NODE_OPTIONS", "NODE_PATH"]) if (u.has(n)) for (const k of Object.keys(out)) if (k.toLowerCase() === n.toLowerCase()) delete out[k];
+  } catch { /* keep the parent's */ }
+  return out;
 }
 export function _resetEnvTrustForTests() { TRUST = null; }
 
@@ -227,7 +271,7 @@ let MEMO = null;
 export function serverMode() {
   if (MEMO) return MEMO;
   const env = process.env;
-  const system = parseObj(readRootOwned(systemConfigPath()));
+  const system = systemConfig();
   const wants = (system && system.mode === "server") || clean(env[ENV.mode]).toLowerCase() === "server";
   // Nothing is read beyond one stat on a laptop that never asked for server mode.
   if (!wants) return (MEMO = { active: false, requestedBy: null, tamper: [], refused: [] });

@@ -35,11 +35,21 @@ from, or whether updates run. Three sources do:
   read. A plist is passed to `/usr/bin/plutil` on stdin. A file that fails any check is ignored.
 - **The MoorAI cloud**, `https://app.moorai.dev`, for an unprovisioned consumer install.
 
+**The administrator's console wins.** When one is provisioned, it is the only origin the host sends the
+install token to (credentialed `console_fetch`, the agent allow-list check, `identity()`); `console.json` is
+not read at all, so a `console.json` planted by an agent the app did not launch cannot redirect the token, and
+a `console.json` or `config.json` naming another origin is shown as a warning. An in-app enrolment
+(`save_provision`) that names another console is refused. The provisioned tenant (managed `Tenant`, or
+`tenant` in the machine file) replaces `config.json`'s. The install token comes from `config.json` (the
+enrolled user's own 0600 file), or from a managed preference `InstallToken`; never from the machine file,
+which every local account can read. Profile payloads are readable by local users as well, so per-user
+delivery of the token is the recommended route.
+
 The webview uses them as follows (`src/api.js`):
 
 | Call | Console |
 |---|---|
-| Calls with the install token (policy, alerts, prompt events, device and agent-posture reports) | the recorded console only |
+| Calls with the install token (policy, alerts, prompt events, device and agent-posture reports) | the administrator-provisioned console, else the recorded console |
 | Enrolment with a bare token, and in-app signup (`enrolBase()`) | the administrator-provisioned console, else the recorded console when an enrolment in this app recorded it, else the cloud |
 | Enrolment with a link, `https://<console>/d/<token>` | the console in the link |
 | The default policy of an unenrolled device (`serverBase()`) | the administrator-provisioned console, else the recorded console, else as for enrolment |
@@ -55,10 +65,11 @@ and for updates; to keep a bare-token re-enrolment or a signup off the cloud too
 
 ## Enrolling against a self-hosted console
 
-- **MDM:** write `serverUrl`, `tenant` and `installToken` to `~/.moorai/config.json`
-  (`packaging/mdm/`). The host records the console on first use. Set the console in the managed
-  preference `ServerURL` (macOS) or the machine file as well, so the app uses it before enrolment and for
-  updates whatever `config.json` says later.
+- **MDM:** the deploy scripts (`packaging/mdm/`) write the admin binding (`serverUrl`, `tenant`) to the
+  machine file and `serverUrl`, `tenant` and `installToken` to the user's `~/.moorai/config.json`. With
+  the machine file (or the managed preference `ServerURL` on macOS) in place, the app and the hook use that
+  console before enrolment, for every credentialed call and for updates, whatever `config.json` or
+  `console.json` says later.
 - **In the app:** paste the console's enrolment link, `https://<your-console>/d/<token>`, into the
   installation-token field. A bare token enrols against `enrolBase()` above.
 

@@ -18,7 +18,8 @@ MoorAI is **content-free and on-device**. Two things bind a device to your conso
 
 | What | Where | Written by (interactive) | Written by (MDM) |
 |---|---|---|---|
-| **Enroll config** — `serverUrl`, `tenant`, `installToken` | `~/.moorai/config.json` (per user)¹ | The desktop app's setup screen (`save_provision` in the Tauri host) when the user pastes an install token | The Jamf / Intune deploy script — **no token paste needed** |
+| **Admin binding** — `serverUrl`, `tenant` (never the token) | `/etc/moorai/config.json` (root:wheel 0644) · `<ProgramData>\MoorAI\config.json` (owner Administrators; SYSTEM + Administrators write, Users read) | — (needs root / an administrator) | The Jamf / Intune deploy script, when it runs as root / SYSTEM |
+| **Enroll config** — `serverUrl`, `tenant`, `installToken` | `~/.moorai/config.json` (per user, 0600 / user-only ACL)¹ | The desktop app's setup screen (`save_provision` in the Tauri host) when the user pastes an install token | The Jamf / Intune deploy script — **no token paste needed** |
 | **Governance hooks** — PreToolUse entries for `Read`, `Bash`, `mcp__.*`, `Task` | `~/.claude/settings.json` (per user) | `node <MOORAI_HOME>/cli/moorai-hook.mjs install` | Same command, run by the deploy script as the user |
 
 ¹ Verified in source: `cli/config.mjs` reads `~/.moorai/config.json` (legacy fallbacks
@@ -27,6 +28,46 @@ MoorAI is **content-free and on-device**. Two things bind a device to your conso
 resolves `~` to `%USERPROFILE%` (`src-tauri/src/platform.rs`), so the file is
 `%USERPROFILE%\.moorai\config.json`.
 
+### The admin binding (v1.13.0)
+
+The agent runs as the same OS user as the AI agent it guards, so `~/.moorai/config.json` is the agent's
+to rewrite. Before 1.13 that meant an agent could point the hook at another console (and hand it the
+install token), or delete `installToken` and silently drop an enrolled device to coach mode. The
+**machine config** closes both on a managed device:
+
+- `cli/config.mjs` (the hook, the `claude -p` guard, the MCP guard and gateway, the doctor) and the
+  desktop app (`src-tauri/src/admin_config.rs`) read it **before** any user file, on every laptop. It is
+  trusted only when root-owned and not group/world-writable (macOS, Linux), or when its ACL lets only
+  Administrators, SYSTEM or TrustedInstaller write it (Windows; the directory is read from HKLM, never
+  from `%ProgramData%`).
+- When it names `serverUrl`, the device is **managed**: `serverUrl` and `tenant` are the machine file's.
+  A user `config.json` naming another console or tenant is refused and reported (`BINDING_REFUSED`,
+  key names only). The desktop app sends its token only to that console, ignores a planted
+  `console.json`, and refuses an in-app enrolment that would move it.
+- A managed device **never coaches**: with the token missing from the user file it keeps enforcing,
+  records `binding:no-token` in the local action audit, and its alerts keep taking sequence numbers so
+  the console sees the gap when the token is back.
+- **The install token is never in the machine file.** That file is readable by every local account
+  (it has to be: the hook runs as the user), so it carries only the non-secret binding. The token stays
+  in the enrolled user's own `~/.moorai/config.json` (0600 on macOS/Linux; user + SYSTEM + Administrators
+  on Windows), where the hook reads it. The deploy scripts remove an `installToken` key they find in the
+  machine file.
+- **Honest limit.** The agent runs as that user, so it can still **read** the token in the user's file,
+  and with it post token-authenticated alerts and heartbeats. Keeping the token secret needs the
+  privileged helper (trust-anchor design phase 2). The Jamf profile's `InstallToken` (managed
+  preferences, root-owned) is read by the desktop app, but profile payloads are readable by local users
+  too: prefer delivering the token per user (the deploy script writes it to the user's own file) and
+  leave `InstallToken` out of the profile once the script has run.
+
+**Linux** has no deploy script in this directory. The equivalent, as root:
+
+```bash
+install -d -m 0755 -o root -g root /etc/moorai
+printf '{"serverUrl":"%s","tenant":"%s"}\n' "$SERVER_URL" "$TENANT" > /etc/moorai/config.json
+chown root:root /etc/moorai/config.json && chmod 0644 /etc/moorai/config.json
+# then, per user: ~/.moorai/config.json with serverUrl, tenant, installToken, owned by the user, mode 0600
+```
+
 At runtime the agent pulls policy from:
 
 ```
@@ -34,7 +75,8 @@ GET  <serverUrl>/api/policy?tenant=<tenant>      header: X-Install-Token: <insta
 POST <serverUrl>/api/alerts                       header: X-Install-Token: <installToken>   (content-free alerts)
 ```
 
-Policy is cached at `~/.moorai/hook-policy.json` for 60 s, and the agent **fails open** (allows)
+Policy is cached at `~/.moorai/hook-policy.json` for 60 s while its signed `iat` is under 15 minutes old
+(older is refetched, and enforced with a `POLICY_STALE` alert if the refetch fails), and the agent **fails open** (allows)
 when the console is unreachable — it is governance, not a sandbox. That is what makes a headless
 MDM rollout safe: a device is useful the moment the agent is on disk, and becomes *governed* as
 soon as the config binds it to a tenant.
@@ -71,7 +113,8 @@ the **desktop app** (Tauri host that wraps the agent terminal) is optional on to
 |---|---|---|
 | CLI agent + hooks | `git` clone or prebuilt tarball into `MOORAI_HOME` | same |
 | Desktop app *(optional)* | `MoorAI_<version>_universal.dmg` | `MoorAI_<version>_x64-setup.exe` (NSIS) |
-| Enroll config | `~/.moorai/config.json` (script) | `%USERPROFILE%\.moorai\config.json` (script) |
+| Admin binding | `/etc/moorai/config.json` (script, as root) | `<ProgramData>\MoorAI\config.json` (script, elevated) |
+| Enroll config (holds the token) | `~/.moorai/config.json` (script) | `%USERPROFILE%\.moorai\config.json` (script) |
 | Managed values | `jamf/MoorAI-config.mobileconfig` | `intune/moorai-intune-config.json` |
 
 > **Claude Code with `allowManagedHooksOnly`.** That managed setting blocks the user-level hooks both
@@ -90,8 +133,12 @@ the **desktop app** (Tauri host that wraps the agent terminal) is optional on to
   `~/.moorai/config.json`. Fleets that deployed a pre-rebrand profile targeting `run.glick.curaiq`
   keep working — the deploy script reads the new domain first and falls back to the old one until
   the profile is re-pushed. See **Identifier migration** below.
-- **`jamf/moorai-jamf-deploy.sh`** — installs the agent, writes the per-user config, registers hooks,
-  and normalizes the `/etc/moorai` trust-anchor directory to `root:wheel 0755` (see section 5). The
+- **`jamf/moorai-jamf-deploy.sh`** — installs the agent, normalizes the `/etc/moorai` trust-anchor
+  directory to `root:wheel 0755` (see section 5), writes the admin binding `/etc/moorai/config.json`
+  (`serverUrl`, `tenant`; root:wheel 0644; other keys an administrator put there are kept, an
+  `installToken` key is removed), writes the per-user config, and registers hooks with node named by
+  absolute path. Run as a non-root user it cannot write the machine config and says the device is
+  unmanaged. The
   config holds the install token, so it is private from the moment it exists: under `umask 077` a new
   `~/.moorai` is created 0700 and the token is written to a 0600 `mktemp` file that is renamed over
   `config.json`, then chowned to the user and re-chmodded 0700/0600. A pre-existing `config.json` is
@@ -148,7 +195,11 @@ tool call in any terminal pulls tenant policy from the console. No user interact
 
 ### Files
 - **`intune/Install-MoorAI.ps1`** — silent install + enroll (writes config, registers hooks) and,
-  when run elevated, hardens the `%ProgramData%\MoorAI` trust-anchor directory (see section 5).
+  when run elevated, hardens the `<ProgramData>\MoorAI` trust-anchor directory (ProgramData read from
+  HKLM; see section 5) and writes the admin binding `config.json` there (`serverUrl`, `tenant`; owner
+  Administrators; an `installToken` key is removed). The per-user `config.json` holding the token gets
+  an ACL of that user + SYSTEM + Administrators. A non-elevated run cannot write the machine config and
+  logs that the device is unmanaged.
   The config and hook steps take the target profile as `-ProfileDir`. No parameter in these scripts may
   use a read-only PowerShell automatic variable name (`$Home`, `$Host`, `$PID`, …), which fails at runtime;
   `test/mdm-powershell-params.test.mjs` enforces that. The script has not been run on a live Windows device.
@@ -220,6 +271,13 @@ files**. `readRootOwned()` in `cli/moorai-hook.mjs` treats these as authoritativ
 | `breakglass.pub` | Operator break-glass key |
 | `offline-posture` | The fail-closed latch used when the console is unreachable |
 | `policy-lkg.json` | Last-known-good policy |
+| `policy-hwm.json` | Policy `iat` high-water mark (rollback refusal) |
+| `config.json` | The admin binding (`serverUrl`, `tenant`; never the token) and other admin settings |
+| `exceptions.json` | Local exceptions (when an administrator enabled them) |
+
+On Windows the directory is `<ProgramData>\MoorAI` with ProgramData read from
+`HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList` (the hook and the desktop app alike),
+never from the `%ProgramData%` environment variable, which the user (and so the agent) can set.
 
 | Platform | Anchor directory | Required directory permissions | Required file permissions |
 |---|---|---|---|
@@ -349,6 +407,9 @@ the desktop app as an opt-in follow-up once the build is notarized/signed.
   pre-rebrand `~/.curaiq`) and `MOORAI_HOME`. Remove the Jamf profile to unbind values.
 - **Windows:** the Intune **Uninstall** action runs `Uninstall-MoorAI.ps1` (de-registers hooks,
   removes `~/.moorai`, the pre-rebrand `~/.curaiq`, and `MOORAI_HOME`).
+- **Unmanaging a device** without uninstalling it: delete the machine config (`/etc/moorai/config.json`,
+  `<ProgramData>\MoorAI\config.json`) as root / an administrator. The user's `config.json` is then the
+  binding again, as on an unmanaged device.
 
 > **The anchor directory is left in place on purpose.** Neither uninstaller removes
 > `%ProgramData%\MoorAI` or `/etc/moorai`. On Windows, deleting it would let any ordinary user

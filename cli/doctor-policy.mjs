@@ -14,9 +14,10 @@ import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
-import { ratchetPosture, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, SYSTEM_POSTURE, verifyBreakGlass, parseTrustedKeys, offlineMode, isEnrolled, enforcementAllowed } from "./hook-core.mjs";
+import { ratchetPosture, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath, verifyBreakGlass, parseTrustedKeys, offlineMode, isEnrolled, enforcementAllowed } from "./hook-core.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { readState } from "./state-dirs.mjs";
+import { machinePath } from "./machine-dir.mjs";
 import { makeSandbox, DEAD_SERVER } from "./doctor-sandbox.mjs";
 import { serverMode, serviceWho } from "./server-mode.mjs";
 
@@ -38,9 +39,7 @@ export function noPolicyBaseline(src = hookSource()) {
 
 // Same two sources as trustedKeys() in moorai-hook.mjs: the root-owned BG_ANCHOR, then the MDM env var.
 export function breakGlassAnchorPath() {
-  return process.platform === "win32"
-    ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "breakglass.pub")
-    : "/etc/moorai/breakglass.pub";
+  return machinePath("breakglass.pub");
 }
 export function breakGlassState(config) {
   const raw = readState("break-glass");
@@ -55,7 +54,7 @@ export function breakGlassState(config) {
 
 export function durablePosture() {
   return ratchetPosture({
-    system: readRootOwned(SYSTEM_POSTURE),
+    system: readRootOwned(systemPosturePath()),
     state: readText(POSTURE_STATE),
     latch: readText(POSTURE_LATCH),
     legacy: readText(POSTURE_LEGACY),
@@ -105,6 +104,6 @@ export function resolveEffective(loaded, config) {
     allowAll = true; basis = "break-glass active: the hook allows every call";
   }
   const server = serverMode();
-  const coach = !enforcementAllowed(config, { managed: posture.posture === "fail-closed" || server.active });
+  const coach = !enforcementAllowed(config, { managed: posture.posture === "fail-closed" || server.active || config.managed === true });
   return { policy, basis, allowAll, coach, posture, breakGlass: bg, server };
 }

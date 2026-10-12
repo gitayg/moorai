@@ -298,9 +298,12 @@ failure time in the future, or a malformed file, is ignored, the window is measu
 and capped at 5 minutes, and the forced draw fetches whatever the file says, and the answer clears it
 (`test/console-backoff.test.mjs`). The cache's own freshness check
 rejects a future mtime the same way: a cache dated in the future is stale and refetched
-(`test/policy-cache-future-mtime.test.mjs`). **Limits.** Touching the cache keeps it inside its 60 s fresh
-window, which skips the fetch on every call for as long as the agent keeps touching it. Rewriting
-`serverUrl` in `config.json`, in the same scope, silences the console for the hook indefinitely.
+(`test/policy-cache-future-mtime.test.mjs`). The fresh window also needs the signed `iat`: a cache whose
+signature was issued more than 15 minutes ago is refetched however recently the file was touched
+(`test/policy-freshness.test.mjs`, trust anchors below). **Limits.** A cache with no signed `iat` (a console
+that has never signed) keeps the mtime-only window, so touching it skips the fetch. On an unmanaged device,
+rewriting `serverUrl` in `config.json`, in the same scope, still redirects the hook's console traffic;
+on a managed device (an admin binding in the machine config) the rewrite is refused and reported.
 
 The policy is an ed25519-signed envelope. The client trusts it via, in order: a root-owned anchor
 (`/etc/moorai/policy.pub`, `%ProgramData%\MoorAI\policy.pub`, or MDM-injected `MOORAI_POLICY_PUBKEY`),
@@ -326,6 +329,61 @@ the pin is not the deciding key set at all, so pruning changes no enforcement de
 anchored fleet the real revocation mechanism remains shipping a new root-owned `policy.pub`.
 Everywhere else these are tamper-EVIDENT (alerted), not tamper-proof — which is the same posture as
 the rest of the product: the hook runs as the user, so nothing under `~/` is a trust boundary.
+
+### Trust anchors: what the agent cannot move (v1.13.0)
+
+The agent runs as the same OS user as the hook, so every user-scope file and environment variable is
+the agent's to write. What it cannot write: root/admin-owned files (hook-core `readRootOwned`, Rust
+`read_owned_under`), macOS managed preferences, HKLM, and the ed25519 policy signature. Phase 1 of
+[the trust-anchor design](proposals/trust-anchors.md) moves four decisions onto those:
+
+- **Console binding (admin first).** `cli/config.mjs` reads the root-owned machine config
+  (`/etc/moorai/config.json`; Windows `<ProgramData>\MoorAI\config.json`, administrator-only ACL) before
+  any user file, on laptops too. When it names `serverUrl`, the device is managed: `serverUrl` and
+  `tenant` are the machine file's, a user `config.json` naming another console or tenant is refused and
+  reported (`reasonCode: BINDING_REFUSED`, the key names only), and the install token comes from the
+  enrolled user's own 0600 file, never from the machine file (it is world-readable). The hook, the
+  `claude -p` guard, the MCP guard and gateway and the doctor all read this one resolver. The desktop
+  host does the same: an administrator's console (managed `ServerURL`, or the machine file) is the only
+  credentialed origin, a planted `console.json` is not read, and `save_provision` cannot move a managed
+  device (`console_binding::resolve`, `admin_config::effective_config`).
+- **No coach mode on a managed device.** An admin binding is management evidence
+  (`data/enforcement.js`), so deleting `installToken` from the user file no longer turns enforcement
+  into coaching. Without a token the console rejects posts, so the hook keeps enforcing, records a
+  content-free `binding:no-token` line in the local action audit, and still takes alert sequence numbers,
+  so the console sees the gap once the token is back.
+- **Windows anchors from HKLM.** Every machine anchor path (`policy.pub`, `breakglass.pub`,
+  `offline-posture`, `policy-hwm.json`, `policy-lkg.json`, `exceptions.json`, `config.json`) is built
+  from `HKLM\...\ProfileList\ProgramData` (read with `C:\Windows\System32\reg.exe` by absolute path,
+  once per process), never from `%ProgramData%`, and `icacls` runs by absolute path
+  (`cli/machine-dir.mjs`). The system root is the fixed `C:\Windows`; only a machine without
+  `C:\Windows\System32\reg.exe` falls back to `%SystemRoot%`.
+- **Freshness from the signed `iat`.** The cache short-circuit needs both a young mtime and a signed
+  `iat` younger than 15 minutes (`policyMaxAgeMinutes` in the signed policy changes it, 1 to 10080). An
+  older policy is refetched; if the refetch fails it is still enforced (it verified) and the hook raises
+  `POLICY_STALE` with `ageMinutes`. Every hook alert raised after the policy loads carries `policyIat`
+  (ISO 8601) when the enforced policy is signed, and every hook alert carries `appVersion`.
+- **Hook command and environment.** Hook registrations name node by absolute path
+  (`process.execPath`), and an older bare-`node` entry is rewritten on the next call. A user, project or
+  local settings file whose `env` sets `NODE_OPTIONS`, `NODE_PATH`, `PATH` or `ProgramData` is reported
+  (the refusal alert names them; PATH alone is High, the rest Critical), is the posture flag
+  `hookEnvOverride`, and its `NODE_OPTIONS` / `NODE_PATH` are kept out of the hook's detached workers.
+  PATH that the hook merely inherits is not a finding. `moorai-doctor` warns when the hook's code is
+  writable by the user (a consumer install under `~/.moorai`).
+- **Evidence on unmanaged devices.** Each alert carries a per-device `seq` (+1 per alert, user scope)
+  and `chainHead` (a `cli/record-chain.mjs` chain over the alerts), and the session summary carries
+  `alertsEmitted` / `alertsDeferred`. **This catches naive deletion only:** the counter, the chain head
+  and the session ledger are user files, so an agent that also rewinds them to the last value the
+  console saw is not caught.
+
+**Limits.** The install token stays readable by the agent (it is the same OS user) until the privileged
+helper of phase 2. A Jamf profile's `InstallToken` is read by the desktop app because managed
+preferences are root-owned, but profile payloads are readable by local users; per-user delivery (the
+deploy script writing the user's own `config.json`) is the recommended route. Removing the hook,
+disabling hooks, or uninstalling MoorAI is visible only as silence (the console's device-quiet rule).
+A version manager that later deletes the node binary a hook command names leaves the host unable to
+start the hook; `moorai-doctor` and the posture heartbeat report the entry as broken. Whether Claude Code
+applies a settings file's `env` to hook processes is taken from its documentation, not re-measured here.
 
 ## Risk distribution (from the matrix)
 

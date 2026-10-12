@@ -19,6 +19,7 @@ import { CONTENT_RULES } from "../data/content-rules.js";
 import { effectiveContentPolicy } from "../data/content-defaults.js";
 import { extractEndpointHosts, endpointApproved, extractTransitOverrides, proxyApproved } from "../data/model-endpoints.js";
 import { statePath, latchPath, breadcrumbPath } from "./state-dirs.mjs";
+import { machinePath, systemTool } from "./machine-dir.mjs";
 import { readConsoleBackoff, backoffSkipsFetch, recordConsoleFailure, clearConsoleBackoff } from "./console-backoff.mjs";
 import { TIER_OF } from "../data/data-tiers.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
@@ -1663,7 +1664,8 @@ function windowsFileIsProtected(p) {
   if (WIN_ACL_CACHE.has(p)) return WIN_ACL_CACHE.get(p);
   let ok = false;
   try {
-    const out = execFileSync("icacls", [p], { encoding: "utf8", timeout: 3000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    // By absolute path: a bare "icacls" is looked up in the cwd and PATH, both of which the agent can seed.
+    const out = execFileSync(systemTool("icacls.exe"), [p], { encoding: "utf8", timeout: 3000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
     ok = !icaclsPermissive(out, p).permissive;
   } catch { ok = false; }
   WIN_ACL_CACHE.set(p, ok);
@@ -1683,6 +1685,31 @@ export function readRootOwned(p) {
     return readFileSync(p, "utf8");
   } catch { return ""; }
 }
+// ---- policy freshness from the signed iat (trust-anchor design, phase 1B) ----
+//
+// The cache's mtime is the agent's to set (`touch`), so it cannot say how old a policy is. The signature
+// can: the console signs each policy response with iat = the time it answered (RAISEME-server
+// policy-sign.js signPolicy), and iat is inside the signed bytes. A policy whose iat is older than
+// POLICY_MAX_AGE_MS is not served from the cache window; it is refetched, and when the refetch fails it is
+// still enforced (it verified) while the hook reports policy:stale with its age. The maximum age can be
+// changed only by the signed policy itself (`policyMaxAgeMinutes`, 1 to 10080), never by a local file or
+// the environment. A policy with no signed iat (a console that has never signed, the unanchored case)
+// keeps the mtime-only window it always had: there is nothing to measure it by.
+export const POLICY_MAX_AGE_MS = 15 * 60 * 1000;
+export function policyMaxAgeMs(policy) {
+  const m = policy && typeof policy === "object" ? Number(policy.policyMaxAgeMinutes) : NaN;
+  return Number.isFinite(m) && m >= 1 && m <= 10080 ? Math.round(m * 60000) : POLICY_MAX_AGE_MS;
+}
+export function policyIatMs(policy) {
+  const iat = policy && typeof policy === "object" && policy.policySig && typeof policy.policySig === "object" ? policy.policySig.iat : undefined;
+  const t = typeof iat === "string" ? Date.parse(iat) : NaN;
+  return Number.isFinite(t) ? t : null;
+}
+// ISO 8601 (UTC, toISOString) of the signed iat, or "" when the policy carries none.
+export function policyIatIso(policy) { const t = policyIatMs(policy); return t === null ? "" : new Date(t).toISOString(); }
+export function policyAgeMs(policy, now = Date.now()) { const t = policyIatMs(policy); return t === null ? null : Math.max(0, now - t); }
+export function policyFreshByIat(policy, now = Date.now()) { const a = policyAgeMs(policy, now); return a === null || a < policyMaxAgeMs(policy); }
+
 export function readText(p) { try { return readFileSync(p, "utf8"); } catch { return ""; } }
 
 // The policy cache is a SINGLE-location file (not a fallback read): a legacy fallback would let a
@@ -1712,9 +1739,8 @@ export const POSTURE_LEGACY = join(os.homedir(), ".curaiq", "offline-posture");
 //
 // To retire it, remove the file (root) — the device then falls back to the user-scope copies, which a
 // real policy keeps current. The hook never writes here; it only reads.
-export const SYSTEM_POSTURE = process.platform === "win32"
-  ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "offline-posture")
-  : "/etc/moorai/offline-posture";
+// The Windows directory comes from HKLM, never %ProgramData% (cli/machine-dir.mjs).
+export const systemPosturePath = () => machinePath("offline-posture");
 
 // Policy-key PIN (Trust On First Use) — the self-arming half of policy verification. Two copies in two
 // DIFFERENT directories, exactly like the posture latch and for exactly the same reason: `rm
@@ -1737,9 +1763,7 @@ const POLICY_PIN_LEGACY = join(os.homedir(), ".curaiq", "policy-pin.json"); // p
 //   printf '{"v":1,"tenant":"acme","iat":"2026-08-21T00:00:00.000Z"}' | sudo tee /etc/moorai/policy-hwm.json >/dev/null
 //   sudo chown root /etc/moorai/policy-hwm.json && sudo chmod 0644 /etc/moorai/policy-hwm.json
 //   # Windows → %ProgramData%\MoorAI\policy-hwm.json  (ACL: Administrators/SYSTEM write only)
-const POLICY_HWM_SYSTEM = process.platform === "win32"
-  ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "policy-hwm.json")
-  : "/etc/moorai/policy-hwm.json";
+const policyHwmSystemPath = () => machinePath("policy-hwm.json");
 
 // Last-known-good VERIFIED policy — the copies that let a fail-open org ENFORCE through a poisoned
 // cache instead of merely alerting about it. Same two-copy user-scope pattern as the pin and the
@@ -1749,9 +1773,7 @@ const POLICY_HWM_SYSTEM = process.platform === "win32"
 const POLICY_LKG = statePath("policy-lkg.json");            // ~/.moorai — primary (was the latch; continuous)
 const POLICY_LKG_LATCH = latchPath("policy-lkg.json");      // ~/.config/moorai — fresh second directory
 const POLICY_LKG_LEGACY = join(os.homedir(), ".curaiq", "policy-lkg.json"); // pre-rebrand, READ-ONLY
-const POLICY_LKG_SYSTEM = process.platform === "win32"
-  ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "policy-lkg.json")
-  : "/etc/moorai/policy-lkg.json";
+const policyLkgSystemPath = () => machinePath("policy-lkg.json");
 
 // "This device has held a policy-key pin" — a breadcrumb in a THIRD directory, deliberately outside both
 // ~/.curaiq and ~/.moorai so that `rm ~/.curaiq/policy-pin.json ~/.moorai/policy-pin.json` (and the
@@ -1847,13 +1869,11 @@ function writePinBreadcrumb(config) {
 //      first-contact window — by deleting ~/.curaiq/policy-pin.json and ~/.moorai/policy-pin.json.
 //
 // On an ANCHORED device none of this applies: rotation there is "ship the new policy.pub via MDM".
-const POLICY_ANCHOR = process.platform === "win32"
-  ? join(process.env.ProgramData || "C:\\ProgramData", "MoorAI", "policy.pub")
-  : "/etc/moorai/policy.pub";
+export const policyAnchorPath = () => machinePath("policy.pub");
 
 function policyKeys() {
   // The env anchor counts only when no user/project/local settings file set it (cli/server-mode.mjs trustedEnv).
-  try { return parseTrustedKeys(`${readRootOwned(POLICY_ANCHOR)}\n${trustedEnv("MOORAI_POLICY_PUBKEY") || ""}`); } catch { return []; }
+  try { return parseTrustedKeys(`${readRootOwned(policyAnchorPath())}\n${trustedEnv("MOORAI_POLICY_PUBKEY") || ""}`); } catch { return []; }
 }
 
 // ---- policy-key pin I/O (the pure logic lives in hook-core.mjs) ----
@@ -1969,7 +1989,7 @@ export async function loadVerifiedPolicy(config, { backoffDraw } = {}) {
   // The effective high-water mark: this device's own record, or a root-owned one an MDM shipped,
   // whichever is HIGHER. The root-owned copy is the only one outside the agent's write scope, so it is
   // the only one that makes rollback refusal a guarantee rather than evidence.
-  const mark = maxIat(pin.iat, parsePolicyHwm(readRootOwned(POLICY_HWM_SYSTEM), { tenant: config.tenant }));
+  const mark = maxIat(pin.iat, parsePolicyHwm(readRootOwned(policyHwmSystemPath()), { tenant: config.tenant }));
   const rejected = [];
   const verify = (raw) => {
     let p;
@@ -1999,7 +2019,10 @@ export async function loadVerifiedPolicy(config, { backoffDraw } = {}) {
   // A CACHED policy never re-pins, however valid it looks: the cache file is in the agent's own write
   // scope, so letting it teach the device a key would hand the attacker the pin. Only a signature
   // delivered fresh over the network from the configured server can arm or roll the pin forward.
-  if (withinWindow && !absence.suspicious && cached && cached.policy) return { policy: cached.policy, source: "cache", rejected, pin, trust, absence };
+  // The window is the file's mtime AND the signature's own issue time (policyFreshByIat): `touch` keeps
+  // the mtime young forever, but the console signs every response with iat = now, so a cache whose
+  // signed iat is older than the maximum age is refetched however recently the file was touched.
+  if (withinWindow && !absence.suspicious && cached && cached.policy && policyFreshByIat(cached.policy)) return { policy: cached.policy, source: "cache", rejected, pin, trust, absence };
 
   // Console back-off (cli/console-backoff.mjs): a recent fetch got no HTTP response at all, so most calls
   // skip the network and resolve exactly as a failed fetch would. Never while the pin looks erased — that
@@ -2062,7 +2085,7 @@ export async function loadVerifiedPolicy(config, { backoffDraw } = {}) {
   // did pass verification, re-verified now against the same anchor/pin. Read lazily: three extra file
   // reads must not sit on the happy path.
   const lkg = selectLastKnownGood([
-    { source: "system", raw: readRootOwned(POLICY_LKG_SYSTEM) },
+    { source: "system", raw: readRootOwned(policyLkgSystemPath()) },
     { source: "primary", raw: readText(POLICY_LKG) },
     { source: "latch", raw: readText(POLICY_LKG_LATCH) },
     { source: "legacy", raw: readText(POLICY_LKG_LEGACY) }

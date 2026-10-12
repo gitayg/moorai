@@ -46,14 +46,16 @@ fn route_allowed(method: &str, path: &str, credentialed: bool) -> bool {
 }
 
 // → the URL to call and the token to attach, or why the call is refused. Nothing is sent on Err.
-pub fn target(req: &ConsoleRequest, dir: &str, cfg: &Value) -> Result<(url::Url, Option<String>), String> {
+// `cfg` is the effective config (admin_config::effective_config) and `admin` the administrator's settings:
+// a provisioned console is the only credentialed origin (console_binding::resolve).
+pub fn target(req: &ConsoleRequest, dir: &str, cfg: &Value, admin: &crate::admin_config::Admin) -> Result<(url::Url, Option<String>), String> {
     let method = req.method.to_ascii_uppercase();
     if !req.path.starts_with('/') || req.path.starts_with("//") || req.path.contains('\\') || req.path.contains('#') || req.path.chars().any(|c| c.is_control() || c == ' ') {
         return Err(format!("refused console path {:?}", req.path));
     }
     let (origin, token) = if req.credentialed {
         let token = cfg.get("installToken").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).ok_or("this device is not enrolled")?;
-        let r = crate::console_binding::resolve(dir, cfg);
+        let r = crate::console_binding::resolve(dir, cfg, admin);
         let origin = r.origin.ok_or_else(|| r.warning.unwrap_or_else(|| "no console is recorded for this device".into()))?;
         (origin, Some(token.to_string()))
     } else {
@@ -90,13 +92,17 @@ pub async fn send(method: &str, url: url::Url, body: Option<Value>, token: Optio
 // call or a network failure / timeout is an error.
 #[tauri::command]
 pub async fn console_fetch(req: ConsoleRequest) -> Result<Value, String> {
-    let (url, token) = target(&req, &crate::console_binding::host_dir(), &crate::read_config())?;
+    let admin = crate::admin_config::admin();
+    let cfg = crate::admin_config::effective_config(crate::read_config(), &admin);
+    let (url, token) = target(&req, &crate::console_binding::host_dir(), &cfg, &admin)?;
     send(&req.method, url, req.body, token, client_id_header(req.client_id.as_deref()), TIMEOUT).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The unmanaged case (no administrator settings), which every test below except the admin one exercises.
+    fn target(req: &ConsoleRequest, dir: &str, cfg: &Value) -> Result<(url::Url, Option<String>), String> { super::target(req, dir, cfg, &crate::admin_config::Admin::default()) }
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
@@ -214,6 +220,31 @@ mod tests {
         let r = run(send("POST", u, Some(json!({ "outcome": "sent" })), t, None, TIMEOUT)).unwrap();
         assert_eq!(r, json!({ "status": 200, "body": { "ok": true } }));
         assert_eq!(console.seen.lock().unwrap()[0], r#"POST /api/prompt-event tok-SECRET-INSTALL {"outcome":"sent"}"#);
+    }
+
+    // Trust-anchor design phase 1A. console.json lives in the user's MoorAI Host directory, which an agent
+    // the app did not launch can write. On a managed device the administrator's console is the only
+    // credentialed origin: a planted enrolment record is not read, and the planted origin receives nothing.
+    #[test]
+    fn a_planted_enrolment_record_does_not_move_the_token_off_the_admin_console() {
+        let good = serve(ok(r#"{"ok":true}"#));
+        let evil = serve(ok(r#"{"ok":true}"#));
+        let dir = scratch("admin");
+        std::fs::write(format!("{dir}/console.json"), json!({ "origin": evil.origin, "source": "enrolment" }).to_string()).unwrap();
+        let admin = crate::admin_config::Admin { console: Some(good.origin.clone()), ..Default::default() };
+        // the agent also rewrote config.json
+        let cfg = crate::admin_config::effective_config(json!({ "installToken": "tok-SECRET-INSTALL", "serverUrl": evil.origin }), &admin);
+        let (u, t) = super::target(&rq("POST", "/api/alerts", true, None), &dir, &cfg, &admin).unwrap();
+        let r = run(send("POST", u, Some(json!({ "category": "x" })), t, None, TIMEOUT)).unwrap();
+        assert_eq!(r["status"], 200, "{r}");
+        assert!(evil.seen.lock().unwrap().is_empty(), "the planted console received: {:?}", evil.seen.lock().unwrap());
+        assert_eq!(good.seen.lock().unwrap().len(), 1, "the admin console is asked");
+        assert!(good.seen.lock().unwrap()[0].contains("tok-SECRET-INSTALL"));
+        // and the tool allow-list check (lib.rs tool_allowed) goes the same way
+        let d = crate::console_binding::policy_allows(&cfg, &dir, &admin, "codex", "u", "d", &crate::console_binding::real_fetch);
+        assert!(evil.seen.lock().unwrap().is_empty(), "the planted console received the allow-list call: {:?}", evil.seen.lock().unwrap());
+        assert_eq!(good.seen.lock().unwrap().len(), 2);
+        assert!(d.warning.as_deref().unwrap_or("").contains(&evil.origin), "the user is told: {:?}", d.warning);
     }
 
     #[test]

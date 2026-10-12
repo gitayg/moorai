@@ -3,12 +3,10 @@
 // becomes with no approver, and any MOORAI_* name a settings file tried to set. Shown only when server mode
 // is on or was asked for, so a laptop's report is unchanged.
 import { headlessAskMode, serviceWho, systemConfigPath, HEADLESS_NOTE } from "./server-mode.mjs";
-import { readRootOwned } from "./hook-core.mjs";
+import { readRootOwned, policyAnchorPath } from "./hook-core.mjs";
 import { fingerprint } from "./doctor-policy.mjs";
 
-const POLICY_ANCHOR = process.platform === "win32" ? `${process.env.ProgramData || "C:\\ProgramData"}\\MoorAI\\policy.pub` : "/etc/moorai/policy.pub";
-
-export function policyAnchored(env = process.env, readAnchor = () => readRootOwned(POLICY_ANCHOR)) {
+export function policyAnchored(env = process.env, readAnchor = () => readRootOwned(policyAnchorPath())) {
   if (String(readAnchor() || "").trim()) return "system";
   if (String(env.MOORAI_POLICY_PUBKEY || "").trim()) return "env";
   return "";

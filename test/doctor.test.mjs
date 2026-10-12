@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { createHash, generateKeyPairSync, sign as cryptoSign } from "node:crypto";
 import http from "node:http";
 import { policyCanonical, policyDigest } from "../cli/hook-core.mjs";
+import { machinePath } from "../cli/machine-dir.mjs";
 import { checkManaged, readManagedSettings, diffSurface } from "../cli/doctor-hosts.mjs";
 import { noPolicyBaseline, breakGlassAnchorPath } from "../cli/doctor-policy.mjs";
 import { rmTree } from "./fs-cleanup.mjs";
@@ -275,7 +276,9 @@ test("doctor managed settings: allowManagedHooksOnly without MoorAI fails, with 
 test("doctor mirrors the hook's private constants by reading them, so they cannot drift silently", () => {
   const src = readFileSync(HOOK, "utf8");
   assert.deepEqual(noPolicyBaseline(src), { captureTier: "content-free", builtinDefault: true });
-  assert.ok(src.includes(JSON.stringify(breakGlassAnchorPath())) || process.platform === "win32", "break-glass anchor path drifted from moorai-hook.mjs BG_ANCHOR");
+  // Both build it from cli/machine-dir.mjs (HKLM ProgramData on Windows, never the environment).
+  assert.ok(src.includes('const BG_ANCHOR = machinePath("breakglass.pub");'), "break-glass anchor path drifted from moorai-hook.mjs BG_ANCHOR");
+  assert.equal(breakGlassAnchorPath(), machinePath("breakglass.pub"));
   assert.deepEqual(diffSurface({ A: ["x"] }, { A: ["x"] }).ok, true);
 });
 
