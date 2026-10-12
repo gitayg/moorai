@@ -18,10 +18,15 @@
 //                               applied before the arguments are read, the stricter verdict winning.
 //   unwrapArgs                  {"function": "<name>", "arguments": {...}} (or parameters / args / input)
 //                               is unwrapped before mapTool when the call does not map as sent.
+//   readings                    every other way a client could read the same call (an object under a
+//                               wrapper key, a name key beside it, an alias key such as `cmd` beside
+//                               `command`, a normalized name) is decided too, and the strictest verdict
+//                               wins; in enforce mode two readings that map to different hook calls are
+//                               refused as ambiguous (README "Parser differentials").
 import { createHmac, randomBytes } from "node:crypto";
 import { REASON } from "../cli/provenance.mjs";
 import { settleHeadlessAsk } from "../cli/server-mode.mjs";
-import { rulesOf, functionActionFor } from "./function-rules.mjs";
+import { rulesOf, functionActionFor, normalizeName, foldName } from "./function-rules.mjs";
 
 export const ITEM_CAP = 524288;        // characters of one item that are scanned
 export const MAX_NEW_ITEMS = 256;      // new items scanned per request
@@ -62,6 +67,68 @@ export function mapTool(name, input = {}) {
   const u = unwrapArgs(String(name || ""), input);
   return u === input ? null : mapDirect(name, u);
 }
+
+// ---- readings: what a client other than this checker could take the call to be ----
+// A client may read a wrapped object instead of the top-level fields (or the reverse), dispatch on a name key
+// inside the arguments, take `cmd` where this checker takes `command`, or resolve a name in another case or
+// with padding. Each reading that maps to a hook call is decided; nothing here ever loosens a verdict.
+const KNOWN_FOLDED = new Map([...KNOWN].map((k) => [k.toLowerCase(), k]));
+const ALIASES = [["command", "cmd"], ["file_path", "path", "filename", "file"], ["content", "contents", "text", "file_text"], ["new_str", "insert_text"]];
+const MAX_LAYERS = 16, MAX_VARIANTS = 16;
+const aliasVal = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === "string").join(" ") : str(v));
+// The names a client could resolve `name` to: as sent, normalizeName's form, and a hook tool name in
+// another case as the hook's own.
+function namesOf(name) {
+  const raw = String(name || ""), n = normalizeName(raw);
+  return [...new Set([raw, n, KNOWN_FOLDED.get(n.toLowerCase()) || n])].filter(Boolean);
+}
+// The argument object with each set of alias keys that disagree narrowed to one of them, every way.
+function variants(i) {
+  let out = [i];
+  for (const g of ALIASES) {
+    const present = g.filter((k) => aliasVal(i[k]));
+    if (new Set(present.map((k) => aliasVal(i[k]))).size < 2) continue;
+    out = out.flatMap((v) => present.map((k) => { const c = { ...v }; for (const o of present) if (o !== k) delete c[o]; return c; }));
+  }
+  return out;
+}
+const identityTool = (n) => KNOWN.has(n) || n.startsWith("mcp__");
+function mapping(name, input) {
+  const m = mapDirect(name, input);
+  return m && { ...m, identity: identityTool(String(name || "")) };
+}
+const sameMap = (a, b) => a.tool === b.tool && a.identity === b.identity && (a.identity ? a.input === b.input
+  : Object.keys(a.input).length === Object.keys(b.input).length && Object.keys(a.input).every((k) => a.input[k] === b.input[k]));
+// { maps, innerNames, overflow }: the distinct hook calls the call's readings map to; the names found in
+// name keys beside a wrapper (a dispatcher could run that function instead); overflow when there were
+// more readings than are examined (refused as ambiguous in enforce mode).
+export function readings(name, input) {
+  const layers = [], innerNames = new Set();
+  let overflow = false;
+  const walk = (obj, names, depth) => {
+    if (!isObj(obj)) return;
+    if (layers.length >= MAX_LAYERS) { overflow = true; return; }
+    layers.push({ obj, names });
+    const wrapped = [...WRAPPERS].filter((w) => isObj(obj[w]));
+    if (!wrapped.length) return;
+    if (depth >= 4) { overflow = true; return; }
+    const inner = [...names];
+    for (const k of NAME_KEYS) if (typeof obj[k] === "string" && obj[k]) { innerNames.add(obj[k]); inner.push(...namesOf(obj[k])); }
+    for (const w of wrapped) walk(obj[w], [...new Set(inner)], depth + 1);
+  };
+  walk(unwrapArgs(String(name || ""), input), namesOf(name), 0);
+  const maps = [];
+  for (const { obj, names } of layers) {
+    const vs = variants(obj);
+    if (vs.length > MAX_VARIANTS) overflow = true;
+    for (const nm of names) for (const v of identityTool(nm) ? [obj] : vs.slice(0, MAX_VARIANTS)) {
+      const m = mapping(nm, v);
+      if (m && !maps.some((x) => sameMap(x, m))) maps.push(m);
+    }
+  }
+  return { maps, innerNames: [...innerNames], overflow };
+}
+const AMBIGUOUS = "tool call arguments can be read more than one way (a wrapped, repeated or alias field disagrees), so a client may run something other than what was checked";
 
 function mapDirect(name, input = {}) {
   const n = String(name || "");
@@ -153,23 +220,46 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
     return { decision: h.decision, reasons: [h.reason] };
   }
 
+  // The function-name rule runs on the name the model sent and on every name a dispatcher could take from
+  // the arguments (readings.innerNames); a deny on any of them denies the call.
   async function checkOne(c) {
-    const named = await nameRule(c.name);
-    if (named && named.decision === "deny") return named;
-    const v = await checkArgs(c);
-    return named && named.decision === "ask" && v.decision !== "deny" ? named : v;
+    const rd = c.raw == null && !c.over ? readings(c.name, c.input) : null;
+    const names = [c.name];
+    for (const n of rd ? rd.innerNames : []) if (!names.some((x) => foldName(x) === foldName(n))) names.push(n);
+    let ask = null;
+    for (const n of names) {
+      const named = await nameRule(n);
+      if (named && named.decision === "deny") return named;
+      if (named && named.decision === "ask" && !ask) ask = named;
+    }
+    const v = await checkArgs(c, rd);
+    return ask && v.decision !== "deny" ? ask : v;
   }
 
-  async function checkArgs(c) {
+  const decideMapped = async (m) => { const v = await rt.toolCall({ tool: m.tool, input: m.input, cwd }); return { decision: v.decision, reasons: v.reasons }; };
+
+  async function checkArgs(c, rd) {
     if (c.over) {
       onUnevaluated(c.name, "response");
       return enforce ? { decision: "deny", reasons: ["tool call arguments exceed the scan cap"] } : { decision: "allow", reasons: [] };
     }
-    const m = c.raw == null ? mapTool(c.name, c.input) : null;
-    if (m) {
-      const v = await rt.toolCall({ tool: m.tool, input: m.input, cwd });
-      return { decision: v.decision, reasons: v.reasons };
+    const mt = c.raw == null ? mapTool(c.name, c.input) : null;
+    const m = mt && { ...mt, identity: identityTool(String(c.name || "")) && mt.tool === String(c.name || "") };
+    const alts = rd ? rd.maps.filter((a) => !(m && sameMap(a, m))) : [];
+    // Two readings that map to different hook calls (not a hook tool's own input passed whole): the client
+    // could run either, so enforce runs neither.
+    if (enforce && rd && (rd.overflow || [m, ...alts].filter((x) => x && !x.identity).length > 1)) return { decision: "deny", reasons: [AMBIGUOUS] };
+    let out = m ? await decideMapped(m) : await scanArgs(c);
+    if (out.decision === "deny") return out;
+    for (const a of alts) {
+      const v = await decideMapped(a);
+      if (v.decision === "deny") return v;
+      if (out.decision === "allow" && v.decision !== "allow") out = v;
     }
+    return out;
+  }
+
+  async function scanArgs(c) {
     const text = c.raw != null ? c.raw : JSON.stringify(c.input);
     // Past the scan cap only a prefix would be read: reported unevaluated, and enforce refuses it, as the
     // request side does.
@@ -199,7 +289,7 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
   // enforcement LIMITED. Past the scan cap only the prefix is read, and the rest is reported unevaluated.
   async function observe(items) {
     for (const it of items) {
-      if (it.text.length > itemCap) onUnevaluated(it.kind, "response");
+      if (it.text.length > itemCap || it.over) onUnevaluated(it.kind, "response");
       await rt.scan(it.text.slice(0, itemCap), it.stage, it.ctx, { tool: it.kind, event: "PostToolUse", settle: false });
     }
   }

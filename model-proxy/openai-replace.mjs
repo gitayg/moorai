@@ -5,6 +5,7 @@
 // Allowed responses are delivered byte-identical.
 import { replacementText } from "./report.mjs";
 import { parseEvent } from "./sse.mjs";
+import { parseArgs, DUPLICATE_KEY_REASON } from "./json-strict.mjs";
 
 const isObj = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
 const TOOL_FINISH = new Set(["tool_calls", "function_call"]);
@@ -42,9 +43,9 @@ export function createReplaceStream({ decide, maxHold }) {
   let hold = null;
   const parse = (s) => { try { return JSON.parse(s); } catch { return null; } };
   const fromArgs = (c, over) => {
-    const p = parse(c.args);
-    const ok = isObj(p);
-    return { id: c.id, name: c.name, input: ok ? p : {}, raw: ok || !c.args ? null : c.args, over };
+    const { value: p, dup } = parseArgs(c.args);
+    const ok = isObj(p) && !dup;
+    return { id: c.id, name: c.name, input: ok ? p : {}, raw: ok || !c.args ? null : c.args, ...(dup ? { rawReason: DUPLICATE_KEY_REASON } : {}), over };
   };
   function rewrite(raw, text, started, finished) {
     const d = parse(parseEvent(raw).data);

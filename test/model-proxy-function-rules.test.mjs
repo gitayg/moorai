@@ -2,7 +2,8 @@
 //
 // Two model-proxy tool-call rules that do not depend on the provider:
 //   * policy.functionToolActions — deny ("block") or require approval ("ask") for a function the model calls,
-//     by its exact, case-sensitive name (a trailing `*` matches a prefix). Content-free: the alert names the
+//     by its name as a lenient client would resolve it (function-rules.mjs foldName: case, `-`/`_`, a
+//     `functions.` prefix, padding; a trailing `*` matches a prefix). Content-free: the alert names the
 //     function and the rule kind, never the arguments.
 //   * argument unwrapping — a small model that wraps a call's real arguments as {"function": "<name>",
 //     "arguments": {...}} (or parameters / args / input) has the wrapper removed before the call is mapped to
@@ -49,16 +50,18 @@ test("unwrapArgs: anything else is left alone (a real `arguments` field beside o
 test("mapTool: a wrapped shell call maps to Bash; a call that already maps is never unwrapped", () => {
   assert.deepEqual(mapTool("run_shell", { function: "run_shell", arguments: { command: PIPE } }), { tool: "Bash", input: { command: PIPE } });
   assert.deepEqual(mapTool("read_file", { parameters: { path: "/etc/hosts" } }), { tool: "Read", input: { file_path: "/etc/hosts" } });
-  assert.deepEqual(mapTool("run_shell", { command: "ls", arguments: { command: PIPE } }), { tool: "Bash", input: { command: "ls" } }, "top-level fields win");
+  assert.deepEqual(mapTool("run_shell", { command: "ls", arguments: { command: PIPE } }), { tool: "Bash", input: { command: "ls" } }, "mapTool maps the top-level fields; the checker also decides the wrapped reading, and enforce refuses the pair as ambiguous (model-proxy-differentials.test.mjs)");
   assert.equal(mapTool("call_api", { arguments: { q: 1 } }), null, "unwrapped but still unmapped: content-scanned as before");
   assert.equal(mapTool("run_shell", { function: "other", arguments: { command: PIPE } }), null);
 });
 
 // ---- functionToolActions resolution ----
-test("functionRulesFrom / functionActionFor: exact and case-sensitive, a trailing * is a prefix, the strictest match wins, bad entries are ignored", () => {
+test("functionRulesFrom / functionActionFor: matched after folding (case, - and _), a trailing * is a prefix, the strictest match wins, bad entries are ignored", () => {
   const rules = functionRulesFrom({ functionToolActions: { delete_project_files: "block", "send_*": "ask", "send_email": "alert", "fs_*": "block", "bad name": "block", "x*y": "block", "*": "block", ok_tool: "allow", nope: "deny-ish" } });
   assert.equal(functionActionFor(rules, "delete_project_files"), "block");
-  assert.equal(functionActionFor(rules, "Delete_Project_Files"), null, "case-sensitive");
+  assert.equal(functionActionFor(rules, "Delete_Project_Files"), "block", "a client that resolves names case-insensitively runs the same function");
+  assert.equal(functionActionFor(rules, "delete-project-files"), "block");
+  assert.equal(functionActionFor(rules, "SEND_SMS"), "ask");
   assert.equal(functionActionFor(rules, "delete_project_files_v2"), null, "exact");
   assert.equal(functionActionFor(rules, "send_sms"), "ask");
   assert.equal(functionActionFor(rules, "send_email"), "ask", "the stricter of the exact alert and the prefix ask");
@@ -132,15 +135,15 @@ test("functionToolActions ask: enforce settles it with server mode's headless ru
   assert.ok(!JSON.stringify(al).includes("example.com"));
 });
 
-test("functionToolActions alert: reported, never refused; a name that differs in case or suffix is not matched; no key, no rule", async () => {
+test("functionToolActions alert: reported, never refused; a name that differs in case is matched, one with a suffix is not; no key, no rule", async () => {
   const n0 = con.alerts.length;
   fp.on((r, res) => sendJson(res, chatResponse({ tools: [{ name: "notify_team", input: { msg: "done" } }] })));
   assert.equal((await ollama(pxE, false)).status, 200);
   assert.ok(await waitFor(() => con.parsed().slice(n0).some((x) => x.tool === "model-proxy:notify_team" && x.decision === "notify")));
-  for (const name of ["Delete_Project_Files", "delete_project_files2"]) {
-    fp.on((r, res) => sendJson(res, chatResponse({ tools: [{ name, input: { confirm: true } }] })));
-    assert.equal((await ollama(pxE, false)).status, 200, name);
-  }
+  fp.on((r, res) => sendJson(res, chatResponse({ tools: [{ name: "Delete_Project_Files", input: { confirm: true } }] })));
+  assert.equal((await ollama(pxE, false)).status, 403, "case-folded match");
+  fp.on((r, res) => sendJson(res, chatResponse({ tools: [{ name: "delete_project_files2", input: { confirm: true } }] })));
+  assert.equal((await ollama(pxE, false)).status, 200, "a longer name is a different function");
   fp.on((r, res) => sendJson(res, chatResponse({ tools: [DEL] })));
   assert.equal((await ollama(pxEO, false)).status, 200, "without the key the function is only content-scanned");
 });

@@ -205,7 +205,9 @@ every mode. It is filed as a PostToolUse observation (`tool: "model-proxy:comple
 finding is stamped `enforcement: LIMITED`, and it is never withheld, streaming or not: holding a whole
 generation to scan it would end streaming for `/api/generate` in enforce mode, and stage `output` flags
 ordinary generated code (a sample key, a shell one-liner). Past `--max-scan-chars` only the prefix is
-scanned and the rest is reported unevaluated; a streamed generation is accumulated up to 1 MiB.
+scanned and the rest is reported unevaluated; a streamed generation is accumulated up to 1 MiB, a budget it
+shares with any held tool-call turn of the same response (text past it is not kept and is reported
+unevaluated).
 
 ### Function names and wrapped arguments
 
@@ -223,10 +225,19 @@ only content-scanned). Code: [`function-rules.mjs`](function-rules.mjs), applied
   server mode's headless rule settles it (no approver → deny, unless the system file or the org policy says
   `headlessAsk: "allow-with-report"`), and report mode reports it as configured. `alert` reports and
   changes nothing. `allow` is accepted and does nothing: nothing here loosens a verdict.
-- **Matching** is exact and case-sensitive on the name the model sent. A key ending in `*` matches every
-  name with that prefix (the egress-rule path style: `*` only at the end, never alone). When several keys
-  match, the strictest action wins. A key that is not 1–128 of `A-Z a-z 0-9 _ . : -` (plus the trailing
-  `*`), or a value outside the vocabulary, is ignored.
+- **Matching** is on the name as a lenient client would still resolve it (`function-rules.mjs foldName`),
+  on both the key and the name the model sent: Unicode NFKC (full-width letters become ASCII), control and
+  zero-width characters removed, surrounding whitespace trimmed, a leading `functions.`, `function.`,
+  `tools.` or `default_api.` removed, case folded, and `-` read as `_`. So `Delete_Project_Files`,
+  `delete-project-files`, `functions.delete_project_files` and `delete_project_files` with a zero-width
+  space all match the key `delete_project_files`; `delete_project_files2` does not, and neither does a name
+  spelled with a look-alike letter from another script (Cyrillic `е`), which no client resolves to the Latin
+  name. A key ending in `*` matches every folded name with that prefix (the egress-rule path style: `*` only
+  at the end, never alone). When several keys match, the strictest action wins. A key that is not 1–128 of
+  `A-Z a-z 0-9 _ . : -` (plus the trailing `*`), or a value outside the vocabulary, is ignored.
+- **Inner names.** A name in a name key (`function`, `name`, `tool`, `tool_name`) beside a wrapper object in
+  the arguments, `{"name": "delete_project_files", "arguments": {…}}` sent to a dispatcher function, is
+  matched too: the dispatcher could run that function.
 - **Order.** The rule runs on the name before the arguments are read. A `block` (or a settled `ask`) denies
   the call outright; otherwise the arguments are decided as before, and the stricter verdict wins. It
   applies to every function name the model calls through the proxy, `mcp__*` and mapped names (`Bash`,
@@ -247,8 +258,9 @@ as `{"function": "<name>", "arguments": {...}}` or with `parameters`, `args` or 
 `{"command": …}` would miss the shell branch and only be content-scanned. `check.mjs unwrapArgs` removes the
 wrapper before mapping, conservatively:
 
-- only when the call does **not** map as sent (a call that already maps is never unwrapped, and its
-  top-level fields win);
+- only when the call does **not** map as sent (a call that already maps is mapped on its top-level
+  fields; a wrapper beside them is still decided as another reading, see
+  [Parser differentials](#parser-differentials));
 - only when exactly one key is a wrapper (`arguments`, `parameters`, `args`, `input`) and its value is a JSON
   object;
 - only when every other key is a name key (`function`, `name`, `tool`, `tool_name`) whose value equals the
@@ -258,6 +270,32 @@ So a tool whose real schema has an `arguments` field beside any other field, a w
 name, or a wrapper holding a string or an array is left as sent. Up to 4 levels are unwrapped. Unwrapping
 changes only how the call is decided: the bytes the agent receives are always the provider's. A call that
 still maps to nothing after unwrapping is content-scanned as before, on its arguments as sent.
+
+Unwrapping picks the reading this checker maps; it is not the only one a client can take. Every other
+reading is decided too (next section), so a harmless top-level `command` no longer hides a wrapped one.
+
+### Parser differentials
+
+The checker and the client that runs a tool call must agree on which function runs with which arguments.
+Where a client could read the same response differently, `check.mjs readings` decides every reading and
+the strictest verdict wins; where the reading a client takes cannot be known, enforce mode refuses the call
+as ambiguous ("tool call arguments can be read more than one way …"). Report mode decides and reports every
+reading and forwards the response as sent.
+
+| What could differ | What the proxy does |
+|---|---|
+| A wrapper object (`arguments`, `parameters`, `args`, `input`) beside top-level fields, `{"command": "ls", "arguments": {"command": "rm -rf ~"}}`: this checker mapped the top level and never read the wrapper; a client that unwraps runs the inner one | every object under a wrapper key, up to 4 levels, is a reading; two readings that map to different hook calls are refused in enforce mode |
+| A hook tool name with wrapped arguments, `Bash {"function": "Bash", "arguments": {"command": …}}`: the whole object went to the hook, which found no `command` | the unwrapped command is decided as Bash too |
+| Alias fields that disagree: `command` / `cmd`, `file_path` / `path` / `filename` / `file`, `content` / `contents` / `text` / `file_text`, `new_str` / `insert_text`. This checker took the first; a function declared with the other runs that one | each alias is a reading; two that map to different hook calls are refused in enforce mode; aliases with the same value are one reading |
+| A name key beside a wrapper, `{"tool": "bash", "args": {…}}` sent to a dispatcher | the inner name is a reading (mapped to the hook and matched by `functionToolActions`) |
+| A function name another client resolves differently (case, `-`/`_`, `functions.` prefix, padding, zero-width or full-width characters) | `functionToolActions` matches folded names (above); the hook mapping also tries the normalized name |
+| A repeated key in an argument string, `{"command": "rm -rf ~", "command": "ls"}`: `JSON.parse` keeps the last value, simdjson's `find_field` keeps the first, serde, Gson maps and .NET dictionaries throw | kept raw: content-scanned (both values) and refused in enforce mode ("tool call arguments repeat a key …"), on OpenAI, Anthropic and Ollama string arguments, streaming and not. Keys compare after unescaping (`"\u0063ommand"` is `"command"`) |
+| A repeated key in the response itself (a second `message`, `choices` or `candidates`) | the response is not forwarded in enforce mode (see Report vs enforce) |
+
+Bounds: at most 16 wrapper objects and 16 alias combinations per object are examined; past that the call is
+refused as ambiguous in enforce mode. Not covered: a client that resolves look-alike letters from other
+scripts, or that decodes invalid UTF-8 differently from Node's replacement character (no mainstream client
+does either; not tested).
 
 ## Report vs enforce
 
@@ -301,7 +339,9 @@ deny, unless the system file or the org policy says `allow-with-report`.
     are decided together. Ollama sends a call whole, so, as on Gemini, an allowed call in an earlier line
     than a denied one is withheld with it. A line that is not JSON is refused wherever it is (a lenient
     parser, Python's `json.loads` reading `NaN` for one, could find a tool call this one cannot), and so is
-    an upstream `{"error"}` line inside a held turn.
+    an upstream `{"error"}` line inside a held turn. Every line of the held turn counts against the 1 MiB
+    hold cap, blank lines and the `done` line included; past it the turn is refused as over the cap. Each
+    turn is decided on its own calls (see [Ollama, exact limits](#ollama-exact-limits)).
   - Allowed: the held events are released byte-identical.
   - Denied: the stream ends with the provider's error event. Anthropic gets `event: error` with a
     `permission_error` body. OpenAI gets a `data:` chunk with `error`, which openai-node turns into an
@@ -351,12 +391,20 @@ deny, unless the system file or the org policy says `allow-with-report`.
     carry `x-moorai-model-proxy: replaced`.
   - Holding the rest of the turn closes the Anthropic per-block limit above: an allowed call before a
     denied one in the same turn is withheld too. The hold is capped at 1 MiB (`maxEvent`). Past it, the
-    turn's calls are decided as over the cap, which is a deny.
+    turn's calls are decided as over the cap, which is a deny. On Ollama every line counts, blank ones
+    included, and past the cap nothing more of the turn is kept, only counted, until its `done` line.
   - An upstream that ends inside the held turn still ends in the provider's error event, as in refuse mode.
   - The agent then sees a turn that ended in text: its loop stops there, as it would for any answer.
 - **Tool-call arguments that are not a JSON object** (for example, invalid JSON) are refused in enforce
   mode, streaming or not: the tool decision (hook branch, workload profile) cannot be made on them, and an
-  SDK may still parse them leniently and run the call. Report mode content-scans and forwards them.
+  SDK may still parse them leniently and run the call. Report mode content-scans and forwards them. An
+  argument string that repeats a key is treated the same way (see
+  [Parser differentials](#parser-differentials)).
+- **A response with a repeated JSON key** (anywhere in a JSON body, an SSE event's data or an NDJSON line)
+  is not forwarded in enforce mode: 502 with `x-should-retry: false`, or the error event mid-stream, and an
+  `UNEVALUATED` report (`response-duplicate-key`). A second `message` or `choices` key would hide a tool
+  call from this parser (it keeps the last value) from a client that keeps the first. Report mode forwards
+  it as before.
 - **The provider dropping the connection** before its response ends:
   - Non-streaming: HTTP 502 in the provider's error shape (Anthropic `api_error`, OpenAI `server_error`)
     with `x-should-retry: false`. Both SDKs obey that header before their own rule of retrying 408, 409,
@@ -412,8 +460,33 @@ These follow moorai-serve and the MCP gateway:
   - request body cap `--max-body`: 32 MiB, Anthropic's documented limit; 413 over it;
   - non-streaming inspection cap `--max-response`: 32 MiB;
   - in-flight buffering budget `--max-inflight`: 256 MiB; over it, a retryable 529 or 503;
-  - one pending SSE event or NDJSON line: 1 MiB;
+  - one pending SSE event or NDJSON line: 1 MiB (`maxEvent`, not a flag); an NDJSON line counts its `\n` and is
+    held to the cap even when it arrives whole in one chunk;
+  - a held tool-call turn: 1 MiB (the same `maxEvent`), see below for Ollama;
   - dedup cache: 4096 entries.
+
+  <a id="ollama-exact-limits"></a>**Ollama, exact limits** (`ndjson.mjs`, `ollama.mjs`,
+  `ollama-replace.mjs`; `test/model-proxy-ollama-bounds.test.mjs`). Per response, with the default
+  `maxEvent` of 1048576 bytes:
+  - **Held turn + kept text ≤ 1048576.** Every line of a held turn counts, blank (whitespace-only) lines and
+    the `done` line included, in every mode, and so does the `/api/generate` text kept for the report-only
+    scan. Refuse mode: past the cap the turn is refused at once and its lines are freed. Replace mode: past
+    the cap the held lines and calls are freed, the rest of the turn is only counted, and the `done` line
+    carries the over-cap refusal. Report mode keeps no lines; past the cap the turn is reported as over the
+    cap (`UNEVALUATED_SIZE_CAP`).
+  - **Tool calls:** at most 128 per turn, and only from lines inside the cap, so the calls kept are bounded
+    by the held bytes. Past either limit the turn is decided as over the cap, never as an empty list. Each
+    turn (a stream that sends lines after a `done` line) gets its own collector.
+  - **One line ≤ 1048576 bytes**, its `\n` included; the splitter copies a partial line into one buffer
+    that grows by doubling, so memory is at most the cap and a line sent a byte at a time costs linear CPU
+    (measured: 1 MiB in 1-byte chunks, 25 s before, 45 ms after).
+  - **Non-streaming** (`"stream": false`): `--max-response` (32 MiB) and `--max-inflight`, as every API.
+  - **Request**: `--max-body` (32 MiB), at most `--max-scan-items` new items and `--max-scan-chars`
+    characters per item; `images` (base64) are not scanned or copied.
+  - Measured before this cap (v1.13.3, unit drive of the stream machines): 64 MiB of blank lines inside a
+    held turn were all retained in refuse and replace mode; 128 tool-call lines of ~1 MB were all retained
+    (122 MiB) in report and replace mode, and across 128 turns in refuse and report mode. After: at most the
+    cap.
 
   The single event loop scans about 2 KB in 10 ms, which caps report-mode throughput, not latency.
 - **Alerts are content-free.** They use surface `model-proxy` and `tool: "model-proxy:<kind or tool>"`,

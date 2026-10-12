@@ -25,6 +25,7 @@
 //             part.get('error'): raise ResponseError(err)`; ollama-js src/utils.ts: `if ('error' in
 //             message) throw new Error(message.error)`).
 export { replaceResponse, createReplaceStream } from "./ollama-replace.mjs";
+import { parseArgs, DUPLICATE_KEY_REASON } from "./json-strict.mjs";
 export const NAME = "ollama";
 export const BUSY_STATUS = 503;
 // The response bodies this API frames as NDJSON (server.mjs picks the line splitter for them).
@@ -62,14 +63,15 @@ export function outboundItems(body) {
 }
 
 // One tool call as check.mjs takes it. `arguments` is documented as an object; a JSON string is parsed (an
-// OpenAI-shaped server); anything else is kept raw, so enforce refuses it.
+// OpenAI-shaped server; a string that repeats a key is kept raw too, json-strict.mjs); anything else is kept
+// raw, so enforce refuses it.
 export function toCall(tc, over = false) {
   const f = isObj(tc) && isObj(tc.function) ? tc.function : {};
   const a = f.arguments;
-  const p = typeof a === "string" ? parse(a) : a;
-  const ok = isObj(p);
+  const { value: p, dup } = typeof a === "string" ? parseArgs(a) : { value: a, dup: false };
+  const ok = isObj(p) && !dup;
   const empty = a === undefined || a === null || a === "";
-  return { id: str(tc && tc.id), name: str(f.name), input: ok ? p : {}, raw: ok || empty ? null : typeof a === "string" ? a : JSON.stringify(a), over };
+  return { id: str(tc && tc.id), name: str(f.name), input: ok ? p : {}, raw: ok || empty ? null : typeof a === "string" ? a : JSON.stringify(a), ...(dup ? { rawReason: DUPLICATE_KEY_REASON } : {}), over };
 }
 const callsOf = (d) => (isObj(d) && isObj(d.message) && Array.isArray(d.message.tool_calls) ? d.message.tool_calls : []);
 
@@ -92,72 +94,92 @@ export function streamError(status, message) {
   return Buffer.from(`${JSON.stringify(errorBody(status, message))}\n`);
 }
 
-// Accumulates a turn's tool calls across lines, and the generated text of /api/generate.
-export function createCollector(maxHold) {
+// One held turn's tool calls. The caller counts every line of the turn against maxHold (blank lines
+// included) and calls setOver() past it; from then on no call is kept, so what a turn retains is bounded by
+// the held bytes, whatever the mode. At most 128 calls are kept; past that the turn is over the cap too. An
+// over-cap turn always yields at least one call marked `over`, so it can never be decided as "no tool call"
+// (an empty list is an allow).
+export const MAX_CALLS = 128;
+export function createCollector() {
   const calls = [];
-  let over = false, text = "", textOver = false;
+  let over = false;
   return {
     add(d) {
       const tcs = callsOf(d);
-      for (const tc of tcs) { if (calls.length >= 128) { over = true; break; } calls.push(tc); }
-      if (typeof d.response === "string" && !textOver) { if (text.length + d.response.length > maxHold) textOver = true; else text += d.response; }
+      for (const tc of tcs) { if (over) break; if (calls.length >= MAX_CALLS) { over = true; break; } calls.push(tc); }
       return tcs.length > 0;
     },
     setOver() { over = true; },
+    get over() { return over; },
     get count() { return calls.length; },
-    // The generated text once, at the end of the stream (an over-long one is cut at maxHold; the checker
-    // reports anything past its scan cap as unevaluated).
-    takeText() { const t = text; text = ""; return t; },
-    list: () => calls.map((tc) => toCall(tc, over))
+    list: () => (over && !calls.length ? [toCall({}, true)] : calls.map((tc) => toCall(tc, over)))
+  };
+}
+
+// The generated text of /api/generate, for the report-only scan, and the response's byte budget: the text
+// kept and the bytes of the turn being held share one maxHold. Text past it is not kept (the scan is marked
+// `over`, which the checker reports unevaluated); a held turn past it is over the cap.
+export function createBudget(maxHold) {
+  let text = "", textOver = false;
+  return {
+    addText(t, held = 0) { if (textOver) return; if (text.length + t.length + held > maxHold) textOver = true; else text += t; },
+    over: (held) => text.length + held > maxHold,
+    get size() { return text.length; },
+    // The generated text once, at the end of the stream.
+    take() { const t = text; text = ""; return t ? [{ kind: "completion", stage: "output", ctx: {}, text: t, ...(textOver ? { over: true } : {}) }] : []; }
   };
 }
 
 const NOT_JSON = { decision: "deny", denied: [{ name: "stream", reasons: ["a stream line is not JSON; it was not released"] }] };
+const OVER_CAP = { decision: "deny", denied: [{ name: "", reasons: ["the tool call's turn is over the hold cap"] }] };
 
 // The streaming state machine. Lines are released as they arrive until the first line that carries
 // message.tool_calls; from there every line is held, in order, until the `done: true` line. The turn's calls
 // are then decided together: all allowed → the held lines are released byte-identical; any denied →
-// refused. Observe mode (report-only) never holds and never awaits a decision. In enforce mode a line that is
-// not JSON is refused wherever it is (a lenient parser could read a tool call from it that this one cannot),
-// and so is an upstream {error} line inside a held turn.
+// refused. Observe mode (report-only) never holds bytes and never awaits a decision. In enforce mode a line
+// that is not JSON is refused wherever it is (a lenient parser could read a tool call from it that this one
+// cannot), and so is an upstream {error} line inside a held turn.
+// BOUNDED. Every line of a held turn, blank ones included, counts against maxHold together with the
+// generated text kept so far, in every mode; past it the turn is decided at once as over the cap (refused in
+// enforce mode), its lines and calls are freed, and nothing past the cap is kept. Each turn gets its own
+// collector, so a stream of many turns never accumulates calls.
 export function createStream({ enforce, decide, maxHold, observe = () => {} }) {
-  const col = createCollector(maxHold);
+  const budget = createBudget(maxHold);
   let hold = null, observed = false;
-  const flush = () => { if (observed) return; observed = true; observe(completion(col.takeText())); };
+  const flush = () => { if (observed) return; observed = true; observe(budget.take()); };
   async function release() {
     const h = hold; hold = null;
-    const list = col.list();
+    const list = h.col.list();
     if (!enforce) { decide(list).catch(() => {}); return { out: [] }; }
     const v = await decide(list);
-    return v.decision === "deny" ? { refuse: v } : { out: h.raw };
+    if (v.decision === "deny") return { refuse: v };
+    return h.col.over ? { refuse: OVER_CAP } : { out: h.raw };
   }
-  const firstName = () => col.list().map((c) => c.name).find(Boolean) || "";
+  const firstName = () => hold.col.list().map((c) => c.name).find(Boolean) || "";
   async function onEvent(ev) {
-    if (!ev.data.trim()) { if (hold && enforce) hold.raw.push(ev.raw); return { out: hold ? [] : [ev.raw] }; }
-    const d = parse(ev.data);
-    if (!isObj(d)) return enforce ? { refuse: NOT_JSON } : { out: [ev.raw] };
-    if (d.error !== undefined && hold) {
+    const blank = !ev.data.trim();
+    const d = blank ? null : parse(ev.data);
+    if (!blank && !isObj(d)) return enforce ? { refuse: NOT_JSON } : { out: [ev.raw] };
+    if (d && d.error !== undefined && hold) {
       const name = firstName();
       if (!enforce) return release();
       await release().catch(() => {});
       return { refuse: { decision: "deny", denied: [{ name, reasons: ["the upstream sent an error inside the tool call's turn"] }] } };
     }
-    if (!hold && !callsOf(d).length) {
-      col.add(d);
-      if (d.done === true) flush();
+    if (d && typeof d.response === "string") budget.addText(d.response, hold ? hold.bytes : 0);
+    if (!hold && !(d && callsOf(d).length)) {
+      if (d && d.done === true) flush();
       return { out: [ev.raw] };
     }
-    if (!hold) hold = { raw: [], bytes: 0 };
-    if (enforce) {
-      hold.raw.push(ev.raw);
-      hold.bytes += ev.raw.length;
-      if (hold.bytes > maxHold) { col.add(d); col.setOver(); return release(); }
-    }
-    col.add(d);
-    if (d.done === true) { flush(); return release(); }
+    if (!hold) hold = { raw: [], bytes: 0, col: createCollector() };
+    hold.bytes += ev.raw.length;
+    if (budget.over(hold.bytes)) { hold.raw = []; hold.col.setOver(); if (d && d.done === true) flush(); return release(); }
+    if (enforce) hold.raw.push(ev.raw);
+    if (d) hold.col.add(d);
+    if (d && d.done === true) { flush(); return release(); }
     return { out: [] };
   }
-  // The upstream ended before the `done` line of a turn that started a call: decided for the report, never
+// The upstream ended before the `done` line of a turn that started a call: decided for the report, never
   // released in enforce mode, whatever that decision is.
   async function onEnd() {
     flush();
@@ -166,5 +188,8 @@ export function createStream({ enforce, decide, maxHold, observe = () => {} }) {
     const r = await release();
     return enforce ? { refuse: { decision: "deny", denied: [{ name, reasons: ["the stream ended inside the tool call's turn"] }] } } : r;
   }
-  return { onEvent, onEnd, get holding() { return hold !== null; } };
+  // What this response retains right now (tests measure the bound with it): held line bytes, kept calls and
+  // kept text characters.
+  const retained = () => ({ rawBytes: hold ? hold.raw.reduce((n, b) => n + b.length, 0) : 0, calls: hold ? hold.col.count : 0, textChars: budget.size });
+  return { onEvent, onEnd, get holding() { return hold !== null; }, get retained() { return retained(); } };
 }

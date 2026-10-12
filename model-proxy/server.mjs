@@ -31,6 +31,7 @@ import * as gemini from "./gemini.mjs";
 import * as ollama from "./ollama.mjs";
 import { createSplitter } from "./sse.mjs";
 import { createLineSplitter } from "./ndjson.mjs";
+import { hasDuplicateKeys } from "./json-strict.mjs";
 import { createChecker } from "./check.mjs";
 import { wrapReporter, unevaluatedReporter, uncheckedReporter, refusalMessage } from "./report.mjs";
 import { createUncheckedTracker, DEFAULT_MAX as UNCHECKED_MAX, MAX_ID } from "./unchecked.mjs";
@@ -98,6 +99,8 @@ const digest = (s) => createHash("sha256").update(String(s)).digest();
 const apiFor = (method, path) => (method !== "POST" ? null : /\/messages$/.test(path) ? anthropic : /\/chat\/completions$/.test(path) ? openai : gemini.isPath(path) ? gemini : ollama.isPath(path) ? ollama : null);
 // The retryable status of the proxy's own budget errors: OpenAI, Gemini and Ollama 503, Anthropic 529 (overloaded).
 const busy = (api) => (api === openai || api === gemini || api === ollama ? 503 : 529);
+const DUPLICATE_KEY_MESSAGE = "MoorAI model-proxy: the response repeats a JSON key, so a client could read it differently than it was checked; it was not forwarded";
+const repeatsKey = (data) => { try { return hasDuplicateKeys(data); } catch { return false; } };
 const parseJson = (buf) => { try { const v = JSON.parse(buf.toString("utf8")); return v && typeof v === "object" ? v : null; } catch { return null; } };
 
 // Proxy-generated errors on a parsed path take that provider's documented error shape; elsewhere a shape
@@ -254,6 +257,9 @@ export async function createProxy(opts = {}) {
     // A 2xx body on a parsed path that is neither an event stream nor a JSON object (a local server that
     // labels its stream application/json, say) cannot be checked for tool calls: enforce does not forward it.
     if (!body) { unevaluated("response-unparsed", "response"); return send(res, 502, api.errorBody(502, "MoorAI model-proxy: the response is not a JSON object or an event stream; it cannot be checked"), NO_RETRY); }
+    // A repeated key is read as its last value here and may be read as its first by the client (a repeated
+    // `message` or `choices` could hide a tool call from this check): enforce does not forward it.
+    if (hasDuplicateKeys(buf.toString("utf8"))) { unevaluated("response-duplicate-key", "response"); return send(res, 502, api.errorBody(502, DUPLICATE_KEY_MESSAGE), NO_RETRY); }
     const calls = api.responseToolCalls(body);
     if (api.responseItems) observe(api.responseItems(body));
     let v;
@@ -292,13 +298,18 @@ export async function createProxy(opts = {}) {
       await write(r.out);
       return true;
     };
+    // An event with a repeated JSON key is refused wherever it is, as the non-streaming body is.
+    const one = async (ev) => {
+      if (repeatsKey(ev.data)) { unevaluated("response-duplicate-key", "response"); await stop(502, DUPLICATE_KEY_MESSAGE); return false; }
+      return step(await machine.onEvent(ev));
+    };
     try {
       for await (const c of ur) {
-        for (const ev of split.push(c)) if (!(await step(await machine.onEvent(ev)))) return;
+        for (const ev of split.push(c)) if (!(await one(ev))) return;
         if (split.overflow) return stop(502, "MoorAI model-proxy: a stream event exceeded the inspection cap");
         if (res.destroyed) { ur.destroy(); return; }
       }
-      for (const ev of split.end()) if (!(await step(await machine.onEvent(ev)))) return;
+      for (const ev of split.end()) if (!(await one(ev))) return;
       if (!(await step(await machine.onEnd()))) return;
       res.end();
     } catch (e) {
