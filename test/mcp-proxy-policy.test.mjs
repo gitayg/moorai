@@ -33,7 +33,7 @@ const TENANT = "acme";
 const consoleKey = generateKeyPairSync("ed25519");
 const pubkeyBody = JSON.stringify({ tenant: TENANT, alg: "ed25519", publicKey: publicKeyId(consoleKey.publicKey) });
 
-function sign(policy, { tenant = TENANT, iat = "2026-08-21T00:00:00.000Z" } = {}) {
+function sign(policy, { tenant = TENANT, iat = new Date().toISOString() } = {}) {
   const digest = policyDigest(policy);
   const sig = edSign(null, Buffer.from(policyCanonical({ v: POLICY_SIG_VERSION, tenant, iat, digest })), consoleKey.privateKey).toString("base64");
   return JSON.stringify({ ...policy, policySig: { v: POLICY_SIG_VERSION, alg: "ed25519", tenant, iat, sig } });

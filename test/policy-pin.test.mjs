@@ -44,7 +44,7 @@ const rogueKey = generateKeyPairSync("ed25519");     // an attacker's key
 const id = (kp) => publicKeyId(kp.publicKey);
 const pubkeyBody = (kp) => JSON.stringify({ tenant: TENANT, alg: "ed25519", publicKey: id(kp) });
 
-function sign(policy, { tenant = TENANT, iat = "2026-08-21T00:00:00.000Z", key = consoleKey.privateKey } = {}) {
+function sign(policy, { tenant = TENANT, iat = new Date().toISOString(), key = consoleKey.privateKey } = {}) {
   const digest = policyDigest(policy);
   const sig = edSign(null, Buffer.from(policyCanonical({ v: POLICY_SIG_VERSION, tenant, iat, digest })), key).toString("base64");
   return JSON.stringify({ ...policy, policySig: { v: POLICY_SIG_VERSION, alg: "ed25519", tenant, iat, sig } });

@@ -37,7 +37,7 @@ const PUB_B64 = console_.publicKey.export({ type: "spki", format: "der" }).toStr
 const ANCHORED = { keys: [console_.publicKey], tenant: TENANT };
 
 // Mint a signed policy exactly the way server/policy-sign.js does.
-function sign(policy, { tenant = TENANT, iat = "2026-08-21T00:00:00.000Z", key = console_.privateKey } = {}) {
+function sign(policy, { tenant = TENANT, iat = new Date().toISOString(), key = console_.privateKey } = {}) {
   const digest = policyDigest(policy);
   const sig = edSign(null, Buffer.from(policyCanonical({ v: POLICY_SIG_VERSION, tenant, iat, digest })), key).toString("base64");
   return { ...policy, policySig: { v: POLICY_SIG_VERSION, alg: "ed25519", tenant, iat, sig } };
