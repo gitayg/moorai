@@ -1,0 +1,2 @@
+# Fixtures are hashed byte-for-byte (guardd golden.json is pinned by SHA-256); never convert line endings on checkout.
+test/fixtures/** -text

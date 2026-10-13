@@ -378,6 +378,12 @@ enforced on top of the signature itself:
   older — though validly signed — policy is refused and alerted, so a superseded policy cannot be
   replayed to undo a tightening. Equal `iat` is accepted, or steady-state re-fetch would break. A
   refusal falls back to last-known-good, never to "no policy", so #33 offline enforcement is intact.
+  Only marks a same-user process cannot raise refuse: the root-owned `policy-hwm.json` and the signed
+  `iat` of a last-known-good copy that verifies (`policy:<source>:rollback`). The mark recorded beside
+  the pin is user-writable, so it is advisory: a policy behind it is still taken and reported
+  (`policy:<source>:behind-pin-mark`), and one more than 10 minutes in the future is ignored and
+  reported (`policy:pin:hwm-future`), then replaced by the next accepted policy. Before this, a future
+  `iat` written into the pin refused every genuine policy and dropped the device to "no policy".
 
 **Strength, stated honestly.** These mechanisms are HARD only where the state they depend on is
 outside the agent's own write scope. Rollback refusal is hard when a root-owned

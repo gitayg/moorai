@@ -1008,10 +1008,11 @@ export function applyKeyRevocation({ keys = [], revoked = [], verifiedBy = "" } 
 // whose iat is STRICTLY older is refused. Strictly: an unchanged policy re-fetched with the same iat
 // must keep being accepted, or every steady-state fetch breaks.
 //
-// HARD vs EVIDENT, again: the user-scope mark lives beside the pin and is as erasable as the pin, so on
-// an unanchored device this is tamper-EVIDENT (refusal + content-free alert) and an attacker who rewinds
-// both copies is back where they started. A root-owned /etc/moorai/policy-hwm.json (or the ProgramData
-// equivalent) that an MDM ships is the hard version: the hook only ever reads it, and it wins whenever
+// HARD vs EVIDENT, again: the user-scope mark lives beside the pin and is as writable as the pin, so it
+// is ADVISORY (a content-free alert, never a refusal — see userScopeMark below) and an attacker who
+// rewinds both copies is back where they started. The signed iat of a verified last-known-good copy is a
+// mark that refuses, since only the console can sign an iat. A root-owned /etc/moorai/policy-hwm.json
+// (or the ProgramData equivalent) that an MDM ships is the hard version: the hook only ever reads it, and it wins whenever
 // it is higher. An UNPINNED device gets nothing from this at all — it verifies no signatures, so it has
 // no accepted-policy history to be monotonic about, and no mark is ever recorded for it.
 export function iatOrder(iat) {
@@ -1032,6 +1033,30 @@ export function maxIat(a, b) {
   if (!Number.isFinite(y)) return Number.isFinite(x) ? String(a) : "";
   if (!Number.isFinite(x)) return String(b);
   return y > x ? String(b) : String(a);
+}
+
+// The user-scope mark (the pin's iat) is ADVISORY, as in the desktop's clipboard guard
+// (src-tauri/src/clip_guard_policy.rs). It is as writable as the pin, so while it refused, a same-user
+// process that wrote a future iat into it made the device refuse every genuine signed policy — fresh,
+// cache and last-known-good alike — and fall to "no policy", which is weaker than the policy it refused.
+// So a policy behind it is taken and reported ("behind-pin-mark"), and a mark more than MARK_SKEW_MS in
+// the future is not used at all and is reported ("hwm-future"). The marks that refuse are the ones a
+// same-user process cannot raise: the root-owned policy-hwm.json, and the signed iat of a last-known-good
+// copy that verifies (only the console can sign an iat). The root-owned mark is never clamped.
+export const MARK_SKEW_MS = 10 * 60 * 1000;
+export function userScopeMark(iat, now = Date.now()) {
+  const t = iatOrder(iat);
+  if (!Number.isFinite(t)) return { mark: "", future: false };
+  if (t > now + MARK_SKEW_MS) return { mark: "", future: true };
+  return { mark: String(iat), future: false };
+}
+// A verified policy's iat against the marks: "rollback" (refused), "behind-pin-mark" (taken, reported)
+// or "" (taken). `stored` is called only when the iat is behind the advisory mark, so the last-known-good
+// copies are read off the happy path only.
+export function policyMarkVerdict(iat, { hard = "", advisory = "", stored = () => "" } = {}) {
+  if (isPolicyRollback(iat, hard)) return "rollback";
+  if (!isPolicyRollback(iat, advisory)) return "";
+  return isPolicyRollback(iat, stored()) ? "rollback" : "behind-pin-mark";
 }
 
 // The root-owned mark's file format: the same shape as the pin, minus the keys. Wrong version or another
@@ -2044,12 +2069,16 @@ export async function loadVerifiedPolicy(config, { backoffDraw, network = true }
     pinningEvidence: presentArtifacts(PINNING_ARTIFACTS),
     operationEvidence: presentArtifacts(OPERATION_ARTIFACTS)
   });
-  // The effective high-water mark: this device's own record, or a root-owned one an MDM shipped,
-  // whichever is HIGHER. The root-owned copy is the only one outside the agent's write scope, so it is
-  // the only one that makes rollback refusal a guarantee rather than evidence.
-  const mark = maxIat(pin.iat, parsePolicyHwm(readRootOwned(policyHwmSystemPath()), { tenant: config.tenant }));
+  // The marks (see userScopeMark). HARD: the root-owned mark an MDM shipped, outside the agent's write
+  // scope — the only one that makes rollback refusal a guarantee rather than evidence — plus, read lazily,
+  // the signed iat of a last-known-good copy that verifies. ADVISORY: this device's own record beside the
+  // pin, ignored when it is more than MARK_SKEW_MS in the future.
+  const hardMark = parsePolicyHwm(readRootOwned(policyHwmSystemPath()), { tenant: config.tenant });
+  const user = userScopeMark(pin.iat);
+  const mark = maxIat(user.mark, hardMark);
   const rejected = [];
-  const verify = (raw) => {
+  if (user.future) rejected.push({ source: "pin", status: "hwm-future" });
+  const verifySigned = (raw) => {
     let p;
     try { p = JSON.parse(raw); } catch { return { bad: "malformed" }; }
     if (!p || typeof p !== "object" || Array.isArray(p)) return { bad: "malformed" };
@@ -2060,13 +2089,32 @@ export async function loadVerifiedPolicy(config, { backoffDraw, network = true }
     if (trust.mode === "corrupt") return { bad: "pin-unusable" };
     const v = verifyPolicySignature(p, { keys: trust.keys, tenant: config.tenant });
     if (!v.trusted) return { bad: v.status };
-    // A validly signed but SUPERSEDED body is not a weaker policy, it is no policy — same treatment as a
-    // bad signature, so the caller falls through to the fresh fetch, then the last-known-good, and never
-    // to "no policy". The LKG copy's own iat IS the mark (both are written from the same accepted fetch),
-    // and the comparison is strict, so the fallback still verifies.
-    if (isPolicyRollback(p.policySig && p.policySig.iat, mark)) return { bad: "rollback" };
     return { policy: p, status: v.status, keyId: v.keyId };
   };
+  let lkgRaw = null;
+  const lkgCopies = () => lkgRaw || (lkgRaw = [
+    { source: "system", raw: readRootOwned(policyLkgSystemPath()) },
+    { source: "primary", raw: readText(POLICY_LKG) },
+    { source: "latch", raw: readText(POLICY_LKG_LATCH) },
+    { source: "legacy", raw: readText(POLICY_LKG_LEGACY) }
+  ]);
+  let storedMark = null;
+  const lkgMark = () => storedMark ?? (storedMark = trust.keys.length ? lkgCopies().reduce((acc, c) => {
+    const v = c.raw && String(c.raw).trim() ? verifySigned(c.raw) : {};
+    return v.policy && v.status === "ok" ? maxIat(acc, v.policy.policySig.iat) : acc;
+  }, "") : "");
+  const verify = (raw) => {
+    const r = verifySigned(raw);
+    if (!r.policy) return r;
+    // A validly signed but SUPERSEDED body is not a weaker policy, it is no policy — same treatment as a
+    // bad signature, so the caller falls through to the fresh fetch, then the last-known-good, and never
+    // to "no policy". The LKG copy's own iat IS the hard mark it gives, and the comparison is strict, so
+    // the fallback still verifies. Behind only the advisory mark: taken, and reported by the caller.
+    const m = policyMarkVerdict(r.policy.policySig && r.policy.policySig.iat, { hard: hardMark, advisory: user.mark, stored: lkgMark });
+    if (m === "rollback") return { bad: "rollback" };
+    return m ? { ...r, behind: true } : r;
+  };
+  const behind = (source, v) => { if (v && v.behind) rejected.push({ source, status: "behind-pin-mark" }); };
 
   // One read + one verify of the cache, whatever path we end up taking — the file is the same file in
   // the "fresh window" and the "offline fallback" cases, so it must not be able to raise two alerts.
@@ -2074,6 +2122,7 @@ export async function loadVerifiedPolicy(config, { backoffDraw, network = true }
   try { const st = statSync(POLICY_CACHE); cacheRaw = readFileSync(POLICY_CACHE, "utf8"); { const age = Date.now() - st.mtimeMs; withinWindow = age >= 0 && age < 60000; } } catch { /* absent */ }
   const cached = cacheRaw == null ? null : verify(cacheRaw);
   if (cached && cached.bad) rejected.push({ source: "cache", status: cached.bad });
+  behind("cache", cached);
   // A CACHED policy never re-pins, however valid it looks: the cache file is in the agent's own write
   // scope, so letting it teach the device a key would hand the attacker the pin. Only a signature
   // delivered fresh over the network from the configured server can arm or roll the pin forward.
@@ -2111,12 +2160,14 @@ export async function loadVerifiedPolicy(config, { backoffDraw, network = true }
       // Cache the server's ORIGINAL bytes — the signature covers the policy body, and re-serializing
       // gains nothing while risking a mismatch with whatever the console signed.
       if (v.policy) {
+        behind("server", v);
         try { mkdirSync(dirname(POLICY_CACHE), { recursive: true }); writeFileSync(POLICY_CACHE, raw); } catch {}
         // Non-empty result ⇒ a REAL console signature verified on this fetch — under the anchor, under
         // an already-pinned key, or (first contact) under the key the server published. That is the same
         // bar last-known-good needs, and it is NOT the same as v.status: on first contact the policy is
         // admitted as "unanchored" (the device holds no key yet) and only the TOFU re-check proves it.
-        const armed = armPolicyPin(config, trust, pin, v, JSON.parse(raw), published, rejected, mark);
+        // The pin is passed with its advisory mark as used here, so an ignored future mark is replaced.
+        const armed = armPolicyPin(config, trust, { ...pin, iat: user.mark }, v, JSON.parse(raw), published, rejected, mark);
         // A verified FRESH policy is the only thing allowed to become last-known-good, and it always
         // replaces the previous one. Fresh-only is the point: the cache is attacker-writable, so
         // promoting a merely-cached policy would let a planted (but still validly signed, e.g. rolled
@@ -2143,12 +2194,8 @@ export async function loadVerifiedPolicy(config, { backoffDraw, network = true }
   // fail-open org means exit(0), i.e. the attacker's bypass — enforce with the last policy that really
   // did pass verification, re-verified now against the same anchor/pin. Read lazily: three extra file
   // reads must not sit on the happy path.
-  const lkg = selectLastKnownGood([
-    { source: "system", raw: readRootOwned(policyLkgSystemPath()) },
-    { source: "primary", raw: readText(POLICY_LKG) },
-    { source: "latch", raw: readText(POLICY_LKG_LATCH) },
-    { source: "legacy", raw: readText(POLICY_LKG_LEGACY) }
-  ], verify);
+  const lkg = selectLastKnownGood(lkgCopies(), verify);
+  if (lkg && isPolicyRollback(lkg.policy.policySig && lkg.policy.policySig.iat, user.mark)) rejected.push({ source: "lkg", status: "behind-pin-mark" });
   if (lkg) return { policy: lkg.policy, source: "last-known-good", lkgCopy: lkg.copy, rejected, pin, trust, absence, deferAlerts };
   return { policy: null, source: "none", rejected, pin, trust, absence, deferAlerts };
 }

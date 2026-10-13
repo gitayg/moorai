@@ -32,7 +32,8 @@ import { rmTree } from "./fs-cleanup.mjs";
 import {
   policyCanonical, policyDigest, POLICY_SIG_VERSION, POLICY_PIN_VERSION,
   parsePolicyPin, reconcilePolicyPins, publicKeyId,
-  parseRevokedKeys, applyKeyRevocation, iatOrder, isPolicyRollback, maxIat, parsePolicyHwm
+  parseRevokedKeys, applyKeyRevocation, iatOrder, isPolicyRollback, maxIat, parsePolicyHwm,
+  MARK_SKEW_MS, userScopeMark, policyMarkVerdict
 } from "../cli/hook-core.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -359,4 +360,90 @@ test("E2E ROLLBACK: a device that has never recorded a mark is unaffected (the n
     assert.ok(bypassed(r), `stdout was ${JSON.stringify(r.stdout)}`);
     assert.ok(!r.hashes.includes("policy:cache:rollback"), `got ${JSON.stringify(r.hashes)}`);
   });
+});
+
+// ---- F-202: a user-scope mark the attacker writes ----
+//
+// The user-scope mark rides inside the two pin copies, which any same-user process can rewrite. While it
+// was a hard refusal, writing a FUTURE iat into it refused every genuine signed policy as a "rollback" —
+// the fresh one, the cache and the last-known-good alike — so the device fell to "no policy" (the built-in
+// baseline, or exit(0) when unenrolled), strictly weaker than the console's real policy, and the mark never
+// healed because only an accepted fresh policy rewrites it. Now the user-scope mark is advisory (the same
+// design as the desktop's clipboard guard, src-tauri/src/clip_guard_policy.rs): a policy behind it is still
+// taken and reported, and one more than 10 minutes in the future is ignored and reported (hwm-future). The
+// hard marks are the root-owned policy-hwm.json and the signed iat of a last-known-good copy that verifies.
+
+const FAR = "2099-01-01T00:00:00.000Z";
+function setPinMark(home, iat) {
+  for (const p of [PIN_STATE(home), PIN_LATCH(home)]) {
+    const j = JSON.parse(readFileSync(p, "utf8"));
+    writeFileSync(p, JSON.stringify({ ...j, iat }));
+  }
+}
+
+test("E2E HWM-FUTURE: a far-future user-scope mark cannot make the device refuse its console's genuine newer policy", { skip: HOST_LATCHED && "host has a root-owned posture latch" }, async () => {
+  await withHome(async (home) => {
+    await run(home, { serve: STRICT({}, { iat: T2 }), pubkey: pubkeyBody(K1) });
+    assert.equal(pin(home).iat, T2);
+    setPinMark(home, FAR);
+    ageCache(home);
+    // The console serves a genuine, NEWER policy signed by the pinned key.
+    const r = await run(home, { serve: STRICT({}, { iat: T3 }) });
+    assert.ok(enforced(r), `the genuine policy must enforce, not fall to the built-in baseline; stdout was ${JSON.stringify(r.stdout)} hashes ${JSON.stringify(r.hashes)}`);
+    assert.ok(!r.hashes.includes("policy:server:rollback"), `the genuine policy was refused as a rollback: ${JSON.stringify(r.hashes)}`);
+    assert.ok(r.hashes.includes("policy:pin:hwm-future"), `expected a content-free hwm-future alert, got ${JSON.stringify(r.hashes)}`);
+    assert.equal(pin(home).iat, T3, "the accepted policy must replace the ignored future mark (it heals)");
+  });
+});
+
+test("E2E HWM-ADVISORY: a near-future user-scope mark (inside the skew) is reported, never a refusal of a genuine policy", { skip: HOST_LATCHED && "host has a root-owned posture latch" }, async () => {
+  await withHome(async (home) => {
+    await run(home, { serve: STRICT({}, { iat: T2 }), pubkey: pubkeyBody(K1) });
+    setPinMark(home, new Date(Date.now() + 5 * 60 * 1000).toISOString());
+    ageCache(home);
+    const r = await run(home, { serve: STRICT({}, { iat: T3 }) });
+    assert.ok(enforced(r), `stdout was ${JSON.stringify(r.stdout)} hashes ${JSON.stringify(r.hashes)}`);
+    assert.ok(r.hashes.includes("policy:server:behind-pin-mark"), `expected a behind-pin-mark alert, got ${JSON.stringify(r.hashes)}`);
+    assert.ok(!r.hashes.includes("policy:pin:hwm-future") && !r.hashes.includes("policy:server:rollback"), `got ${JSON.stringify(r.hashes)}`);
+  });
+});
+
+test("E2E HWM-ADVISORY: an old cache AND a rewound last-known-good behind the pin mark are taken and reported (the stated residual)", { skip: HOST_LATCHED && "host has a root-owned posture latch" }, async () => {
+  await withHome(async (home) => {
+    await run(home, { serve: STRICT({}, { iat: T2 }), pubkey: pubkeyBody(K1) });
+    // Rewinding the cache alone is still refused: the last-known-good's signed iat is a hard mark
+    // (the "strictly OLDER" case above). Rewinding the last-known-good too leaves only the pin's mark,
+    // which is user-writable and therefore advisory: the old signed policy is taken, and reported.
+    const old = RELAXED({}, { iat: T1 });
+    writeFileSync(CACHE(home), old);
+    for (const p of [LKG_STATE(home), join(home, ".config", "moorai", "policy-lkg.json")]) writeFileSync(p, old);
+    const r = await run(home, {});
+    assert.ok(bypassed(r), `stdout was ${JSON.stringify(r.stdout)}`);
+    assert.ok(r.hashes.includes("policy:cache:behind-pin-mark"), `got ${JSON.stringify(r.hashes)}`);
+    assert.ok(!r.hashes.includes("policy:cache:rollback"), `got ${JSON.stringify(r.hashes)}`);
+  });
+});
+
+test("HWM-FUTURE UNIT: a user-scope mark up to MARK_SKEW_MS ahead is a mark; one beyond is ignored and flagged", () => {
+  const now = iatOrder(T2);
+  assert.equal(MARK_SKEW_MS, 10 * 60 * 1000);
+  const at = (ms) => new Date(now + ms).toISOString();
+  assert.deepEqual(userScopeMark(at(MARK_SKEW_MS), now), { mark: at(MARK_SKEW_MS), future: false });
+  assert.deepEqual(userScopeMark(at(MARK_SKEW_MS + 1), now), { mark: "", future: true });
+  assert.deepEqual(userScopeMark(T1, now), { mark: T1, future: false });
+  for (const none of ["", "junk", undefined]) assert.deepEqual(userScopeMark(none, now), { mark: "", future: false });
+});
+
+test("HWM-ADVISORY UNIT: only the hard marks refuse; the advisory mark reports; equal and unparseable are unchanged", () => {
+  let reads = 0;
+  const stored = (v) => () => { reads++; return v; };
+  assert.equal(policyMarkVerdict(T1, { hard: T2 }), "rollback", "the root-owned mark refuses");
+  assert.equal(policyMarkVerdict(T2, { hard: FAR }), "rollback", "the root-owned mark is never clamped");
+  assert.equal(policyMarkVerdict(T2, { hard: T2, advisory: T2 }), "", "an equal iat is accepted");
+  assert.equal(policyMarkVerdict("junk", { hard: T3, advisory: T3, stored: stored(T3) }), "", "an unparseable iat is not compared");
+  assert.equal(policyMarkVerdict(T3, { advisory: T2, stored: stored(T3) }), "");
+  assert.equal(reads, 0, "the last-known-good is read only for a policy behind the advisory mark");
+  assert.equal(policyMarkVerdict(T2, { advisory: T3, stored: stored(T2) }), "behind-pin-mark");
+  assert.equal(policyMarkVerdict(T1, { advisory: T3, stored: stored(T2) }), "rollback", "a verified last-known-good's signed iat refuses");
+  assert.equal(policyMarkVerdict(T1, { advisory: T3 }), "behind-pin-mark", "no last-known-good: advisory only");
 });
