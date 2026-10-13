@@ -27,6 +27,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { findAiKeys } from "../data/ai-key-shapes.js";
 import { contentHash } from "./content-hash.mjs";
+import { decoyTokens } from "./decoy-keys.mjs";
 
 export const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_CLI_FILES_PER_DIR = 25;
@@ -66,14 +67,17 @@ function readSmallText(p) {
   } catch { return null; }
 }
 
-export function scanKeysAtRest({ home = homedir(), hash = contentHash } = {}) {
+// MoorAI's own decoy keys (cli/decoy-keys.mjs) are not keys at rest: a value in the decoy registries is skipped.
+export function scanKeysAtRest({ home = homedir(), hash = contentHash, decoys = decoyTokens({ home }) } = {}) {
   const findings = [], seen = new Set();
+  const decoySet = new Set((decoys || []).map((d) => d.token));
   let filesRead = 0, filesSkipped = 0;
   const scan = (path, locationClass, location, aiContext = false) => {
     const text = readSmallText(path);
     if (text == null) { filesSkipped++; return; }
     filesRead++;
     for (const { provider, value } of findAiKeys(text, { aiContext })) {
+      if (decoySet.has(value)) continue;
       const keyHash = hash(value);
       const k = `${provider}|${locationClass}|${location}|${keyHash}`;
       if (seen.has(k)) continue;

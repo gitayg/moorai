@@ -18,13 +18,22 @@
 //     continuity across records — complementary, not redundant.
 //
 // FAIL-OPEN: nothing here may block an enforcement decision or a log write. The head advance is
-// best-effort and lock-free; under concurrent short-lived hook processes a rare fork (two records
-// sharing a seq/prev) is possible and is surfaced by verifyChain as an anomaly rather than silently
-// corrupting the stream — strictly better than dropping a record or serialising the hot path.
+// lock-free here; under concurrent short-lived hook processes a rare fork (two records sharing a
+// seq/prev) is possible and is surfaced by verifyChain as an anomaly rather than silently corrupting
+// the stream — strictly better than dropping a record or serialising the hot path. The alert chain
+// takes its own lock around the advance (cli/alert-seq.mjs).
+//
+// THE HEAD IS THE ONLY MEMORY OF THE LAST NUMBER, so a number is handed out only once it is on disk.
+// The head is replaced atomically (temp file, fsync, rename, keeping the old file's mode and owner),
+// after a copy of the same new head (.prev) is replaced the same way. If either write fails the link
+// carries no number (seq 0, linked to genesis), never the number of the head that was not saved. A head
+// that exists but does not parse or cannot be read is replaced by its copy, which is never behind it; with
+// no good copy either, every link carries no number until the files are repaired. The chain never quietly
+// restarts at 1: on the alert chain a reused number is what the console records as a counter reset.
 
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync, mkdirSync, openSync, closeSync, fsyncSync, fchmodSync, fchownSync, renameSync, unlinkSync, statSync } from "node:fs";
+import { join, dirname, basename } from "node:path";
 import { STATE_DIR } from "./state-dirs.mjs";
 
 const sha256hex = (s) => createHash("sha256").update(String(s ?? ""), "utf8").digest("hex");
@@ -58,17 +67,74 @@ export function genesis(logKey, tenant) {
 }
 
 function headPath(dir, logKey) { return join(dir, `.chain-${logKey}.head.json`); }
+const COPY = ".prev";
+// The alert chain's number is sent to the console, which reads a number it already holds as a counter
+// reset (cli/alert-seq.mjs ALERT_CHAIN). Its head is fsynced before the rename (the directory is not; see
+// writeHead), so a crash never repeats a number. An fsync costs milliseconds (F_FULLFSYNC on macOS), so the
+// local log chains, written on every hook event, are replaced atomically but not fsynced: a crash leaves
+// their head whole, a power loss can at worst leave it behind, which verifyChain reports as a fork.
+const DURABLE = new Set(["alerts"]);
+const ABSENT = Symbol("absent");
 
-function readHead(dir, logKey, tenant) {
+// The parsed head at `path`, ABSENT when there is no file, or null when one exists but cannot be used.
+function loadHead(path) {
+  let raw;
+  try { raw = readFileSync(path, "utf8"); } catch (e) { return e && e.code === "ENOENT" ? ABSENT : null; }
   try {
-    const h = JSON.parse(readFileSync(headPath(dir, logKey), "utf8"));
-    if (h && Number.isInteger(h.seq) && typeof h.chash === "string") return h;
-  } catch { /* no head yet → genesis */ }
-  return { seq: 0, chash: genesis(logKey, tenant) };
+    const h = JSON.parse(raw);
+    if (h && Number.isSafeInteger(h.seq) && h.seq >= 0 && typeof h.chash === "string") return h;
+  } catch { /* torn or not JSON */ }
+  return null;
 }
 
+// The head to advance from, or null when a head exists and neither it nor its copy can be used.
+function readHead(dir, logKey, tenant) {
+  const p = headPath(dir, logKey);
+  const head = loadHead(p);
+  if (head && head !== ABSENT) return head;
+  const copy = loadHead(p + COPY);
+  if (copy && copy !== ABSENT) return copy;
+  return head === ABSENT && copy === ABSENT ? { seq: 0, chash: genesis(logKey, tenant) } : null;
+}
+
+// Atomically replaces `path` with `data`, fsynced first when `sync`. `like` is the stat of the file being
+// replaced, whose mode and owner the new file keeps. Throws if any step fails, leaving `path` as it was
+// and no temp file.
+function replaceFile(path, data, like, sync) {
+  const tmp = join(dirname(path), `.${process.pid}.tmp${basename(path)}`);
+  try {
+    try { unlinkSync(tmp); } catch { /* none left by a crashed process with this pid */ }
+    writeFileSync(tmp, data, { flag: "wx" });
+    const fd = openSync(tmp, "r+");
+    try {
+      if (like && process.platform !== "win32") {
+        fchmodSync(fd, like.mode & 0o777);
+        if (process.getuid() === 0) fchownSync(fd, like.uid, like.gid);
+      }
+      if (sync) fsyncSync(fd);
+    } finally { closeSync(fd); }
+    renameSync(tmp, path);
+  } catch (e) {
+    try { unlinkSync(tmp); } catch { /* not created */ }
+    throw e;
+  }
+}
+
+// Saves the copy, then the head, both holding `head`: the copy is never behind the head (across a power
+// loss only the head is guaranteed). Throws on failure.
 function writeHead(dir, logKey, head) {
-  try { mkdirSync(dir, { recursive: true }); writeFileSync(headPath(dir, logKey), JSON.stringify(head)); } catch { /* best-effort */ }
+  mkdirSync(dir, { recursive: true });
+  const p = headPath(dir, logKey);
+  let like = null;
+  try { like = statSync(p); } catch { /* first head: default mode */ }
+  const data = JSON.stringify(head);
+  const sync = DURABLE.has(logKey);
+  replaceFile(p + COPY, data, like, false);
+  replaceFile(p, data, like, sync);
+  // The directory is not fsynced: that second fsync (~4 ms on macOS) doubled the time the alert lock is
+  // held and left 8.5% of alerts unnumbered in bursts. A power cut can lose the last rename, so after one
+  // the last number may be handed out once more (the console reads it as a counter reset); a process crash
+  // cannot, because the file content is fsynced before the rename.
 }
 
 // Stamp an on-device log record with its chain metadata under the namespaced `chain` key:
@@ -84,19 +150,24 @@ export function stampRecord(logKey, obj, { tenant, dir = STATE_DIR } = {}) {
 // Advance `logKey`'s chain by one and return the stamp { seq, prev, chash } to attach to the record.
 // `rhash` is the record's fingerprint (keyed authenticity hash on the OTel stream, recordRhash on the
 // on-device logs; may be empty on an unenrolled device — the continuity chain still holds). `dir` is
-// injectable for tests; production callers take the default STATE_DIR. Never throws.
+// injectable for tests; production callers take the default STATE_DIR. Never throws. When the head
+// cannot be read or the advance cannot be saved, the stamp carries no number: seq 0, linked to genesis,
+// with `unnumbered` saying which ("head-unreadable" or "head-unsaved").
 export function nextLink(logKey, rhash, { tenant, dir = STATE_DIR } = {}) {
+  let unnumbered = "head-unreadable";
   try {
     const head = readHead(dir, logKey, tenant);
-    const seq = head.seq + 1;
-    const prev = head.chash;
-    const chash = chainHash(prev, seq, rhash || "");
-    writeHead(dir, logKey, { seq, chash });
-    return { seq, prev, chash };
-  } catch {
-    const g = genesis(logKey, tenant);
-    return { seq: 0, prev: g, chash: chainHash(g, 0, rhash || "") };
-  }
+    if (head) {
+      const seq = head.seq + 1;
+      const prev = head.chash;
+      const chash = chainHash(prev, seq, rhash || "");
+      unnumbered = "head-unsaved";
+      writeHead(dir, logKey, { seq, chash });
+      return { seq, prev, chash };
+    }
+  } catch { /* reported below */ }
+  const g = genesis(logKey, tenant);
+  return { seq: 0, prev: g, chash: chainHash(g, 0, rhash || ""), unnumbered };
 }
 
 // Verify a sequence of stamped records in file order. Each must carry a `chain` sub-object

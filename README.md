@@ -466,7 +466,12 @@ minutes old however recently the file was touched, and a refetch that fails enfo
 `POLICY_STALE` alert. Each alert carries `policyIat`, `appVersion`, a per-device `seq` and a `chainHead`, and the
 session summary carries `alertsEmitted` / `alertsDeferred`, so the console can see alerts that never arrived.
 On an unmanaged device those counters are user files: they catch an agent that deletes queued alerts, not
-one that also rewinds them. Details and limits: [`docs/CAPABILITY_SPEC.md`](docs/CAPABILITY_SPEC.md) (trust
+one that also rewinds them. A number is taken only under a per-user lock and handed out only once the new
+head is on disk (the head file is fsynced, then renamed into place), so two alerts never share one and a
+process crash never repeats or restarts the count. A power cut can hand out the last number once more, which
+the console reads as a counter reset. An alert whose number could not be taken or saved (the lock busy for
+200 ms, a full disk, a head and its copy both unreadable) is sent without `seq` and `chainHead`; the console
+reports a run of them as the Low finding "Alerts sent without a sequence number". Details and limits: [`docs/CAPABILITY_SPEC.md`](docs/CAPABILITY_SPEC.md) (trust
 anchors) and [`docs/proposals/trust-anchors.md`](docs/proposals/trust-anchors.md).
 
 ### Server mode: Agent SDK and sidecar
@@ -1111,6 +1116,92 @@ An object in an envelope field (`session_id`, `cwd`, `agent_id`, `agent_type`, `
 `tool_use_id`) is dropped and the call is still judged. A tool named after an `Object.prototype` member is an
 unknown tool. MCP tool arguments are free-form and are read as JSON, whatever their types.
 
+### Living off the AI: four detectors
+
+An LLM-operated implant can "live off the AI" already on a device: it drives the user's own AI coding CLIs
+from a process it injected into, uses local model servers directly, steals AI API keys and calls AI APIs from
+its own process. Four detectors answer those moves. Alerts and the heartbeat carry class names, image
+basenames, runtime ids, ports, provider names, counts and opaque ids, never a path, command line or key.
+
+| Detector | Where it runs | Signed policy field, default | Alert |
+|---|---|---|---|
+| AI CLI started by an unexpected parent | hook, once per agent session | `aiCliParents: { mode, allow }`, mode `"alert"` (`"off"`, `"alert"`, `"block"`) | `AI_CLI_PARENT`, High (Blocked in block mode) |
+| Decoy AI key used | hook (PreToolUse, PostToolUse) and model proxy | `decoyKeys: { mode }`, `"off"` (`"place"` opts in) | `DECOY_KEY_USED`, Critical |
+| Local model server reachable without MoorAI | posture heartbeat | `localModelExposure`, `"alert"` (`"off"` silences) | `LOCAL_MODEL_EXPOSED`, Medium |
+| Unknown process calling an AI provider API | posture heartbeat | `aiApiCallers`, `"alert"` (`"off"` silences) | `AI_API_CALLER_UNKNOWN`, High |
+
+**Unexpected parent.** The hook walks up from the agent process, past shells and interpreters, to the first
+ancestor that is neither, and classifies it by image name and path. A terminal, an IDE, a multiplexer or
+sshd, launchd / systemd, an AI desktop app, another AI CLI, or a name on `aiCliParents.allow` is normal. Four
+classes alert: `system-host` (sihost, RuntimeBroker, svchost and other Windows hosts), `office` (Word, Excel,
+Outlook, PowerPoint), `script-host` (wscript, mshta, rundll32, osascript and kin) and `temp-or-system-path`
+(an image in a temp directory, or an unknown one under C:\Windows). Anything else is `unknown`: recorded on
+the heartbeat, never alerted. In `"block"` mode every PreToolUse call of a flagged session is denied; an
+unenrolled device is coached. The alert carries `agentName`, `parentImage` (basename only), `parentClass` and
+`chainDepth`. Measured cost, first call of a session: 7.4 ms on a quiet Mac (82 ms under heavy load), 0.08 ms
+on Linux; 0.05 ms after. The Windows walk (one PowerShell) is not measured.
+
+**Decoy keys (opt-in).** With `decoyKeys.mode: "place"` in a verified signed policy, the heartbeat writes three
+never-issued keys in provider key shapes into new 0600 files that key harvesters sweep and no tool loads:
+`~/.env.backup`, `~/.zshrc.bak` (macOS) or `~/.bashrc.bak`, and `~/.config/gemini/credentials.bak`. An existing
+file is never touched, and only MoorAI's registry marks a decoy (`~/.moorai/decoys.json`; an administrator's
+own `decoys.json` in the machine directory is read, never written). Placement and removal never run on an
+unpinned device or with no policy; mode `"off"` deletes each placed file whose bytes are unchanged. The hook
+checks the whole PreToolUse input (a match denies) and the PostToolUse result (a match alerts). The model proxy
+checks every request header value, the query string and the body, and refuses a match with 403 in report and
+enforce mode alike. The alert carries `decoyId` and `where` only. Cost: 0.07 ms per call (10 decoys, 256 KiB).
+
+**Local model exposure.** The heartbeat reads the listening TCP sockets, matches them to a local model runtime
+(Ollama, LM Studio, llama.cpp, vLLM and the other runtimes the AIBOM knows) and classes the bind
+`loopback`, `all-interfaces` or `lan`. A server counts as behind MoorAI (`viaProxy: true`) only when it
+listens on loopback alone and a TCP connect from the scan, running as the same user an implant would, is
+refused. Any other server raises the alert once per new or changed exposure.
+
+**AI API callers.** The same TCP sample lists established connections. MoorAI resolves the provider API hosts
+(OpenAI, Anthropic, Google, Mistral, and as `other` Groq, xAI, DeepSeek, OpenRouter and others), caches the
+answer for an hour, and names the process behind each matching connection. It is known when it is in the AI
+catalog, a known AI CLI or editor, a browser, or MoorAI itself; `node`, `bun`, `deno` and `python` only when
+their main script resolves inside a known AI CLI package, and Claude Code's native install (an image named
+like its version) only when argv[0] resolves into `…/claude/versions/`. Any other caller alerts at most once
+per image and provider per UTC day. An address shared with a non-AI host or with another provider is never
+attributed; today that covers Gemini on generativelanguage.googleapis.com.
+
+Both socket detectors run in the detached posture worker, once per agent host per UTC day on an enrolled
+device, never on the decision path (measured: about 400 ms, `lsof` about 250 ms of it). `moorai-doctor` shows
+three read-only rows for them and the decoys; the callers row is skipped with `--offline`.
+
+**Proxy-only local models (Ollama).** Ollama has no unix-socket mode, so the setup is a loopback port that only
+MoorAI's model proxy may reach ([Ollama FAQ](https://docs.ollama.com/faq)):
+
+1. Move Ollama to a loopback port of its own, `OLLAMA_HOST=127.0.0.1:11435`, set the way the FAQ documents
+   per platform (macOS app: `launchctl setenv OLLAMA_HOST "127.0.0.1:11435"`, then restart Ollama; Linux: an
+   `Environment=` line in `systemctl edit ollama.service`). Never bind `0.0.0.0`.
+2. Put the proxy on the usual route: `moorai-model-proxy --route /ollama=http://127.0.0.1:11435 --route
+   /anthropic=https://api.anthropic.com` (a `--route` replaces the defaults, so list every route you use), and
+   point clients at `OLLAMA_HOST=http://127.0.0.1:8791/ollama`.
+3. Run the proxy under its own service account and let only that account connect to the port. Linux:
+   `iptables -A OUTPUT -o lo -p tcp --dport 11435 -m owner ! --uid-owner moorai-proxy -j REJECT`. A loopback
+   per-account rule on macOS (pf `user`) or Windows is not verified. Without the rule every process the user
+   runs can open the port, and MoorAI reports `viaProxy: false`.
+4. Check: `moorai-doctor` shows "Local model servers: ollama :11435 reachable only through MoorAI".
+
+**Limits.**
+- The parent check's per-session cache (`~/.moorai/ai-cli-parents.json`) is user-writable, so a same-user
+  process can pre-seed a session as normal. A parent that exits before the walk is not caught; a renamed
+  program and a name on the allow-list read as normal.
+- A decoy re-encoded (base64, split, reversed) before use is not matched.
+- The connection scan runs `lsof` (macOS) and `netstat` / `tasklist` (Windows) through PATH, so a same-user
+  PATH change can hide sockets from both socket detectors. Linux reads /proc.
+- The scan sees the connections open at that moment, once a day, to the listed provider hosts only: a
+  command server of the attacker's own, a relay, a corporate proxy or VPN is not identified. A script host's
+  command line is its own claim: a script at a path named after a known package reads as known.
+- A non-loopback bind is always `viaProxy: false`; the device cannot measure whether other hosts reach it.
+  The scan names only the user's own processes (macOS lists no others); another account's listener is matched
+  on Linux by a distinctive default port only (Ollama 11434), so an Ollama under its own account on port 11435
+  is not listed.
+
+Detail per detector: [`docs/CAPABILITY_SPEC.md`](docs/CAPABILITY_SPEC.md) (Living off the AI detectors).
+
 ### Exceptions: what to grant when MoorAI blocks
 
 When the hook denies or asks, the message names the exact exception a person could grant: the threat id
@@ -1336,7 +1427,7 @@ npx moorai-scan --package github:owner/repo   # a whole source repository — an
 - **AIBOM: local models with safety training removed (by name).** `moorai-aibom` reads local model **names** in memory and reports, per runtime, how many there are and how many have a name that says their safety training was removed, plus one boolean (`localModelSafety`, and `summary.localModelsSafetyRemovedByName`). Names come from Ollama's manifests directory and its `/api/tags` on `127.0.0.1:11434` only (`OLLAMA_HOST` is not followed), LM Studio's and Jan's `<publisher>/<model>` folders, GPT4All's model folder, the llama.cpp `-hf` cache and the Hugging Face hub cache (`models--<org>--<name>`). A model counts when a word of its name is `abliterated`, `obliterated`, `uncensored`, `decensored`, `unaligned`, `jailbroken` or `heretic`. Words are split at separators, case changes and letter/digit changes, so `jailbreak-classifier`, `Llama-Guard`, `heretical` and `aligned` do not match. A name, path, org, tag or digest is never output. The scan stops at 2 s and 5,000 directory entries (1,000 from one directory) and says so (`truncated`, `timedOut`). This is name-based only: it does not prove or disprove a backdoor, and a renamed model is not caught. The source of each token is in `cli/local-model-names.mjs`; tests are in `test/local-model-names.test.mjs`. The desktop host builds the same block (`src-tauri/src/local_model_names.rs`, identical output on the shared fixture `test/fixtures/local-ai/model-names.json`) and sends it with its device report, so the console shows the counts.
 - **AIBOM: MCP server reputation.** `moorai-aibom` reports each MCP server's first-seen reputation (`{score, band, reasons}`, a 0-100 score, band good/fair/poor/bad and category codes such as `mcp-typosquat` or `pkg-install-script-remote`), scored offline from the package name and the copy npx already installed, and counts poor and bad servers in `summary.mcpLowReputation`. `moorai-shadow` carries the same reputation, and an unsanctioned server with a poor or bad band ranks high whatever its inferred scope. The scoring, the opt-in registry lookup and feed, and the `blockBelow` policy are documented in [`mcp-proxy/README.md`](mcp-proxy/README.md).
 - **`moorai-compliance`** maps the device's existing content-free signals to framework controls and marks each **covered / partial / not-covered honestly** — the evidence layer a cost-pressured SOC can actually keep. `--format stix` emits the findings as a STIX 2.1 bundle (custom `x-moorai-finding` objects + hash-keyed indicators) for threat-intel interchange.
-- **`moorai-verify-chain`** walks each on-device evidence log and verifies its prev-hash chain — a deleted, reordered, or in-place-edited record breaks the chain and is reported. Every log line and every emitted OTel span is chain-stamped (`cli/record-chain.mjs`), so the record hash proves each record and the chain proves the *sequence* (immutable once streamed to your SIEM).
+- **`moorai-verify-chain`** walks each on-device evidence log and verifies its prev-hash chain — a deleted, reordered, or in-place-edited record breaks the chain and is reported. Every log line and every emitted OTel span is chain-stamped (`cli/record-chain.mjs`), so the record hash proves each record and the chain proves the *sequence* (immutable once streamed to your SIEM). A record whose chain head could not be read or saved is stamped `seq` 0, linked to the genesis, and shows as a break.
 - **`moorai-honeytokens`** registers content-free canaries — a decoy value nobody should ever touch; only its one-way hash is stored, and a later hit is a high-signal alert with zero content at rest.
 - **`moorai-attest`** emits the governed record chain as an **in-toto attestation / SLSA provenance predicate**, built only from the content-free fields (tool · category · risk · decision · stage · tenant + the one-way hashes + chain seq/prev/chash) — so an agent's action evidence plugs into the software-supply-chain attestation ecosystem without carrying any content. The AIBOM also exports as a standard **CycloneDX 1.6** or **SPDX 2.3** SBOM (`moorai-aibom --format cyclonedx|spdx`).
 - **`moorai-receipt`** emits a signed, content-free **per-verdict decision receipt** — a strict-allowlist payload (tool · category · risk · decision · stage · tenant + the one-way hashes + chain seq/prev/chash), a SHA-256 digest bound only to those fields, and an ed25519 signature from the same per-device agency key as the MCP-approval tokens. `moorai-verify-chain --offline <file>` verifies a receipt (or an in-toto attestation) with **no network** — recomputing the digest to reject tampered payloads and checking the signature against a pinned key. Generation is fail-open (a null signer yields a valid unsigned receipt); verification is fail-closed.

@@ -748,6 +748,26 @@ are configured` (`notify`), or `… refused (placeholders required)` (`deny`). T
 - **A placeholder in a request body** (a prompt) is neither swapped nor refused: it is not a credential
   there.
 
+## Decoy AI keys
+
+A decoy is an AI provider key that was never issued, planted where real keys live
+([`cli/decoy-keys.mjs`](../cli/decoy-keys.mjs)). Nothing legitimate ever sends one, so a request that
+carries a decoy is a stolen key being used. The proxy checks every request before forwarding it: every
+header value (`Authorization`, `x-api-key`, `x-goog-api-key` and any other header a client may put a key
+in), the query string (Gemini's `?key=`) and the request body. On a match it:
+
+- refuses the request with 403 (`x-moorai-model-proxy: refused`, `x-should-retry: false`) and forwards
+  nothing. This happens in report and enforce mode alike, because a decoy authenticates nowhere and
+  refusing it loses nothing;
+- raises one Critical alert, `reasonCode` `DECOY_KEY_USED`, category "Decoy AI key used", with `decoyId`
+  and `where: "model-proxy:request"`. The token, the header it was in and any hash of either never leave.
+
+The decoy registry is read at the first request and re-read at most once a minute, so a decoy placed after
+the proxy started is matched without a restart. The check is a substring search for each decoy: 0.07 ms per
+request for 10 decoys against a 256 KiB body (M-series Mac, n=200). A decoy that a client re-encodes
+(base64, split across fields) is not matched. The response is not checked: a decoy reaches the proxy only
+when a client sends it.
+
 ## Local models
 
 An OpenAI-compatible local server works with a route to its loopback URL. Plain `http://` is allowed
@@ -829,7 +849,7 @@ node --test --import ./test/hermetic-env.mjs test/model-proxy.test.mjs test/mode
   test/model-proxy-toolcall.test.mjs test/model-proxy-toolcall-local.test.mjs test/model-proxy-gemini.test.mjs test/serve-unchecked.test.mjs \
   test/model-proxy-connect-timeout.test.mjs test/model-proxy-ollama.test.mjs test/model-proxy-function-rules.test.mjs \
   test/model-proxy-differentials.test.mjs test/model-proxy-canonical.test.mjs test/model-proxy-json-strict-fuzz.test.mjs \
-  test/proxy-context-system.test.mjs test/proxy-business-tools.test.mjs test/proxy-fail-mode.test.mjs
+  test/proxy-context-system.test.mjs test/proxy-business-tools.test.mjs test/proxy-fail-mode.test.mjs test/decoy-use.test.mjs test/decoy-use-real.test.mjs
 ```
 
 Latency the judging adds, measured on an M-series Mac, node, no console, built-in rules:

@@ -47,7 +47,7 @@
 // also carries `containment: { kind, scope, source }` (is the agent's command execution inside a
 // Microsoft Execution Container), and the report carries the device's `mxcCapable`. Other platforms
 // get neither field: there the sandbox story is the existing sandboxOff / sandboxFullAccess flags.
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
@@ -55,6 +55,10 @@ import { hostTable, readJson, checkHost, checkManaged, readManagedSettings, diff
 import { hostVersion } from "./agent-hooks/host-version.mjs";
 import { hostContainment, mxcCapable } from "./mxc-detect.mjs";
 import { hookProcessEnvName } from "./server-mode.mjs";
+import { tcpTable } from "./local-ai-inventory.mjs";
+import { localModelServers as scanModelServers, exposureAlerts } from "./local-model-exposure.mjs";
+import { resolveAiHosts, aiApiCallers, callerAlerts, callerPosture } from "./ai-api-callers.mjs";
+import { syncDecoys, decoyPosture } from "./decoy-keys.mjs";
 
 export const POSTURE_VERSION = 1;
 // Every flag the module can emit. The console accepts only these names.
@@ -247,6 +251,53 @@ export function agentPosture({ home = os.homedir(), env = process.env, cwd = nul
   }
   if (!win) return { v: POSTURE_VERSION, hosts };
   return { v: POSTURE_VERSION, hosts, mxcCapable: mxcCapable({ release, stateDir, ...(readUbr ? { readUbr } : {}) }) };
+}
+
+// ---- inventory detectors (v1.15.0): the heartbeat's top-level localModelServers, aiApiCallers and decoyKeys ----
+// One TCP-table sample feeds both socket detectors. Runs in the detached posture worker, never on the hook's
+// decision path. `policy` is the verified policy the worker already loaded (null → every default). With
+// write false (moorai doctor) nothing is placed, removed or remembered and no alert is produced.
+// decoys false: the decoy files are neither placed nor removed (the worker passes false unless its policy
+// came with a console signature this device verified). commit false: the once-per-change memory is NOT
+// written here; the result carries commit(failed), which the caller runs after posting, with the alerts
+// that did not reach the console, so a lost post is raised again on the next scan instead of being forgotten.
+// → { fields: { localModelServers, aiApiCallers, decoyKeys }, alerts: [alert without identity], notes, commit? }
+export const INVENTORY_STATE_FILE = "inventory-detectors.json";
+export async function inventoryPosture({ policy = null, home = os.homedir(), stateDir = join(home, ".moorai"), platform = process.platform, machineDir, write = true,
+  decoys = write, commit = true, sample = () => tcpTable({ platform }), connect, lookup, resolve = true, ts = new Date().toISOString() } = {}) {
+  const notes = {};
+  if (write && decoys) { try { notes.decoys = syncDecoys({ policy, home, platform }); } catch { /* best effort */ } }
+  const decoyKeys = decoyPosture({ home, machineDir });
+  let sockets = null;
+  try { const t = sample(); sockets = t.sockets; notes.socketSource = t.source; } catch { sockets = null; }
+  const localModelServers = sockets ? await scanModelServers(sockets, connect ? { connect } : {}) : [];
+  let callers = [];
+  if (sockets && resolve) {
+    const resolved = await resolveAiHosts({ stateDir: write ? stateDir : null, ...(lookup ? { lookup } : {}) });
+    const r = aiApiCallers(sockets, resolved);
+    callers = r.callers;
+    notes.ambiguousConnections = r.ambiguous;
+  }
+  const fields = { localModelServers, aiApiCallers: callerPosture(callers), decoyKeys };
+  if (!write) return { fields, alerts: [], notes };
+  const file = join(stateDir, INVENTORY_STATE_FILE);
+  let prev = {};
+  try { prev = JSON.parse(readFileSync(file, "utf8")) || {}; } catch { prev = {}; }
+  const ex = sockets ? exposureAlerts(localModelServers, { policy, prev: prev.exposed, ts }) : { alerts: [], next: prev.exposed || [] };
+  const ca = callerAlerts(callers, { policy, prev: prev.callers, ts });
+  const save = (failed = []) => {
+    const lost = new Set((Array.isArray(failed) ? failed : []).map((a) => a && a.contentHash));
+    const exposed = ex.next.filter((k) => !lost.has(`local-model:${k}`));
+    const seen = { ...ca.next, seen: ca.next.seen.filter((k) => !lost.has(`ai-api:${k}`)) };
+    try {
+      mkdirSync(stateDir, { recursive: true });
+      const tmp = `${file}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify({ exposed, callers: seen }), { mode: 0o600 });
+      renameSync(tmp, file);
+    } catch { /* a lost state file costs one repeated alert */ }
+  };
+  if (commit) save();
+  return { fields, alerts: [...ex.alerts, ...ca.alerts], notes, ...(commit ? {} : { commit: save }) };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

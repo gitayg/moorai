@@ -446,6 +446,30 @@ the agent's to write. What it cannot write: root/admin-owned files (hook-core `r
   `alertsEmitted` / `alertsDeferred`. **This catches naive deletion only:** the counter, the chain head
   and the session ledger are user files, so an agent that also rewinds them to the last value the
   console saw is not caught.
+- **Alert sequence numbers** (`cli/alert-seq.mjs`, `cli/record-chain.mjs`). `seq` is advanced only while
+  holding the per-user lock file (`.chain-alerts.lock`, opened exclusive, holding the holder's pid), so two
+  alerts never carry the same number. The lock is broken only when its holder is gone: older than 5 s with
+  its pid no longer running, or older than 60 s whatever it holds. A number is handed out only once it is on
+  disk: the head is replaced atomically (temp file, then rename, keeping the old file's mode, and its owner
+  when written as root), after a copy of the same new head (`.chain-alerts.head.json.prev`) is replaced the
+  same way. The alert chain's temp file is fsynced before the rename; the directory is not fsynced (a second
+  fsync doubled the time the lock is held and left 8.5% of alerts unnumbered in bursts). A process crash
+  therefore never repeats or restarts a number. A power cut can lose the last rename and hand out the last
+  number once more, which the console reads as a counter reset. On macOS Node's `fsyncSync` is F_FULLFSYNC,
+  about 4 ms (measured), once per alert.
+- **Unnumbered alerts.** An alert whose stamper cannot take the lock within 200 ms, whose head cannot be
+  saved (a full disk, a read-only directory), or whose head exists but neither it nor its copy can be read,
+  is sent without `seq` and `chainHead`. It is never held back and never given a number another alert
+  holds, and the counter never restarts at 1 on its own. A head and copy that both cannot be read leave the
+  device sending unnumbered alerts until the files are repaired or removed (removing them restarts the
+  counter, which the console records as a counter reset). The console reports a run of unnumbered alerts
+  from a device that numbers its alerts (more than 20 in one hour, or at least 5 and more than 10% of its
+  hook alerts) as the Low finding "Alerts sent without a sequence number". The local log chains (signals,
+  session ledger, OTel span chain) are replaced atomically too but not fsynced, because they are written on
+  every hook event: a crash leaves their head whole, a power loss can at worst leave it behind, which
+  `moorai-verify-chain` reports as a fork. A local record whose head could not be read or saved is stamped
+  `seq` 0, linked to the genesis, and shows there as a break. Tests: `test/record-chain-head.test.mjs`,
+  `test/alert-evidence.test.mjs`.
 
 **Limits.** The install token stays readable by the agent (it is the same OS user) until the privileged
 helper of phase 2. A Jamf profile's `InstallToken` is read by the desktop app because managed
@@ -1685,6 +1709,236 @@ present. They have not been checked against Anthropic's real signer.
 | Operator-context privacy findings | Default: judged like any request content (PII and secrets block or ask per policy). Opt-in `operatorContext.privacy: "report"` (verified signed policy or admin binding only): PII-class threats 1, 9, 15, 18, 27, 36, 44 reported at stage `context`, `decision: notify`, `enforcement: LIMITED` when the policy would block or ask. Secrets #39 / #65 and non-data findings never exempt. | test/proxy-context-system.test.mjs |
 | Business-impact classes | `money`, `bulk-data`, `identity`, `destructive`, `delegation` by function-name words; built-in `alert`; `businessToolActions` per class; a specific `functionToolActions` key wins | test/proxy-business-tools.test.mjs |
 | Model-proxy fail mode | see Fail mode above | test/proxy-fail-mode.test.mjs |
+
+## Living off the AI detectors (v1.15.0)
+
+**Threat.** An LLM-operated implant that "lives off the AI" uses the AI already on the device. It drives the
+victim's AI coding CLIs (`claude -p`, `codex exec`, Gemini CLI, Copilot CLI) from a process it injected into,
+uses local model servers directly, steals AI API keys, and calls AI APIs from its own process. The agent then
+runs with the user's own credentials and the hook sees ordinary-looking calls. Four detectors answer those
+moves. Every alert and heartbeat field is content-free: class names, image basenames, runtime ids, ports,
+bind classes, provider names, counts and opaque ids. A path, a command line, an address or a token never
+leaves the device.
+
+**Contract** (agent v1.15.0, console v0.86.0). All policy fields are optional and read from the verified
+policy only.
+
+| Signed policy field | Values | Default |
+|---|---|---|
+| `aiCliParents` | `{ mode: "off" \| "alert" \| "block", allow: [image names] }` | mode `"alert"`, allow `[]` |
+| `decoyKeys` | `{ mode: "off" \| "place" }` | `"off"` |
+| `localModelExposure` | `"off" \| "alert"` | `"alert"` |
+| `aiApiCallers` | `"off" \| "alert"` | `"alert"` |
+
+| `reasonCode` | Category | Risk | Fields |
+|---|---|---|---|
+| `AI_CLI_PARENT` | AI CLI started by an unexpected parent | High (Blocked in block mode) | `agentName`, `parentImage` (basename), `parentClass` (`system-host`, `office`, `script-host`, `temp-or-system-path`), `chainDepth` (1 = the agent's own parent) |
+| `DECOY_KEY_USED` | Decoy AI key used | Critical | `decoyId`, `where` (`hook:PreToolUse`, `hook:PostToolUse`, `model-proxy:request`) |
+| `LOCAL_MODEL_EXPOSED` | Local model server reachable without MoorAI | Medium | `runtime` (`ollama`, `lmstudio`, `llamacpp`, `vllm`, `other`), `port`, `bind` (`loopback`, `all-interfaces`, `lan`) |
+| `AI_API_CALLER_UNKNOWN` | Unknown process calling an AI provider API | High | `processImage` (basename), `provider` (`openai`, `anthropic`, `google`, `mistral`, `other`), `connections` |
+
+Posture heartbeat (`POST /api/agent-posture`), top-level like `failMode`:
+`aiCliParents: { mode, lastParentClass }`, `localModelServers: [{ runtime, port, bind, viaProxy }]`,
+`aiApiCallers: [{ processImage, provider, known }]`, `decoyKeys: { placed, source: "admin" | "agent" | "none" }`.
+
+### AI CLI started by an unexpected parent (`cli/ai-cli-parents.mjs`)
+
+- **When.** On PreToolUse and UserPromptSubmit, once per agent session (cached by session id). The hook skips
+  the shell it runs in (and, for the Codex / Gemini / Copilot / Cursor adapters, the adapter's node) to reach
+  the agent process, then walks up through shells, wrappers and interpreters (so sihost.exe → python → claude
+  still reads as sihost.exe) to the first ancestor that is neither, at most 6 levels above the agent.
+- **Classes.**
+
+  | Class | What it covers | Outcome |
+  |---|---|---|
+  | normal | a terminal (Terminal, iTerm2, Windows Terminal, conhost, WezTerm, kitty, …), an IDE (VS Code, Cursor, JetBrains, Xcode, Zed, …), tmux / screen / sshd, launchd / systemd, an AI desktop app, another AI CLI, explorer.exe at C:\Windows\explorer.exe, a CI runner in server mode, an image on `aiCliParents.allow` | nothing |
+  | system-host | sihost, RuntimeBroker, svchost, dllhost, taskhostw, WmiPrvSE and other Windows system hosts; an explorer.exe outside C:\Windows or started by one of these | alert |
+  | office | Word, Excel, Outlook, PowerPoint (Windows and macOS) | alert |
+  | script-host | wscript, cscript, mshta, rundll32, regsvr32, msbuild, installutil, regasm, regsvcs, cmstp, hh, osascript | alert |
+  | temp-or-system-path | any image in a temp directory (/tmp, /var/tmp, /dev/shm, the macOS per-user TMPDIR, %TEMP%, C:\Windows\Temp), or an image under C:\Windows whose name is not a known Windows program | alert |
+  | unknown | anything else | recorded (`lastParentClass`), never alerted |
+
+- **Policy.** `"block"` denies every PreToolUse call of a flagged session with a content-free reason naming
+  the class; an unenrolled device is coached (alerts, never denies). The allow-list matches image names
+  case-insensitively, with or without `.exe`, and is re-applied on every call, so it also releases a session
+  already classified. The alert is raised once per session.
+- **Process table and measured cost.**
+
+  | Platform | Method | Cost |
+  |---|---|---|
+  | macOS | `/bin/ps -o ppid=,comm= -p <pid>` per level | 7.4 ms for a 5-level chain on a quiet machine; 21 ms at load average 56; 82 ms under heavy load from parallel test suites |
+  | macOS | `ps -axo pid=,ppid=,comm=` once (not used) | 58 ms quiet, 70 ms at load 56, 142 ms heavy load |
+  | Linux | /proc/<pid>/stat and /proc/<pid>/exe | 0.08 ms for 3 levels (node:22-slim, arm64, Docker); used whether or not `ps` is installed |
+  | Linux | `ps` per level (fallback when /proc is absent) | 122 ms (amd64 under emulation; not representative) |
+  | Windows | one `powershell.exe -NoProfile -NonInteractive` walking with filtered `Get-CimInstance Win32_Process` queries (8 s timeout); a parent created after its child is a reused pid and ends the chain | not measured |
+  | any | a session already classified (cache read) | 0.04 ms Linux, 0.05 ms macOS |
+
+- **Limits.** The per-session cache (`~/.moorai/ai-cli-parents.json`) is the user's own file, so a process
+  running as the same user can pre-seed a session as normal before the agent's first call; the root-owned
+  helper is where this check moves to. A parent that has exited cannot be classified: on Unix the agent is
+  re-parented to launchd / systemd and reads as normal; on Windows the chain ends and the class is unknown.
+  An implant that starts the agent and exits at once is therefore not flagged. Classification is by image
+  name and path: a program renamed to a terminal's or IDE's name, outside a temp directory and outside
+  C:\Windows, reads as normal, as does any name on the allow-list. A session whose ancestry cannot be read
+  (unreadable process table, PowerShell timeout) is cached as unreadable and never alerted. `wmic` is not
+  used (deprecated, absent by default on current Windows 11).
+- **Tests.** `test/ai-cli-parents.test.mjs`, `test/ai-cli-parents-hook.test.mjs`.
+
+### Decoy AI keys (`cli/decoy-keys.mjs`, `model-proxy/decoy.mjs`)
+
+- **Opt-in placement.** Only with `decoyKeys: { mode: "place" }` in a VERIFIED signed policy, applied by the
+  posture worker. Placement and removal run only when that policy verified under a real key (the anchor or this
+  device's pin). An unpinned device (a console that does not sign) and a device with no policy leave decoy
+  files untouched: no policy never reads as `"off"` and never removes anything. A same-user rewrite of the
+  cached policy on a pinned device is refused and the verified last-known-good applies.
+- **Sites.** Each decoy is a new file, created only when nothing exists at the path, mode 0600:
+
+  | File | Content | Harvest pattern it baits |
+  |---|---|---|
+  | `~/.env.backup` | `OPENAI_API_KEY=sk-proj-…` | dotenv sweeps of `.env*` files; dotenv loads `.env`, and Vite / Next.js / dotenv-flow load `.env.<mode>`, none of them `backup` |
+  | `~/.zshrc.bak` (macOS), `~/.bashrc.bak` (Linux, Windows) | `export ANTHROPIC_API_KEY="sk-ant-api03-…"` | shell-rc export harvesting; a shell sources `.zshrc` / `.bashrc`, never the `.bak` copy |
+  | `~/.config/gemini/credentials.bak` | `GEMINI_API_KEY = AIza…` | AI-CLI config harvesting; Gemini CLI uses `~/.gemini`, which MoorAI does not touch |
+
+- **Tokens.** The provider key shapes the public gitleaks rules match: `sk-proj-<74>T3BlbkFJ<74>`,
+  `sk-ant-api03-<93>AA`, `AIza<35>` (`[A-Za-z0-9_-]`). Random and never issued, so they authenticate nowhere.
+  Nothing in a token or a file name marks it as a decoy.
+- **Registries.** `~/.moorai/decoys.json` (0600) for decoys the agent placed;
+  `<machine dir>/decoys.json` (`/etc/moorai/decoys.json`, `<ProgramData>\MoorAI\decoys.json`) for decoys an
+  administrator placed, `{ "decoys": [{ "id", "kind": "openai" | "anthropic" | "google", "token" }] }`, which
+  MoorAI only reads and never removes. An entry whose token lacks its kind's full shape is ignored (a short
+  token would match everything). The AIBOM's keys-at-rest scan does not report MoorAI's own decoys.
+- **Removal.** Mode back to `"off"` deletes each file MoorAI placed while its bytes are unchanged (sha256 in
+  the registry) and removes the directories MoorAI created once they are empty. A file the user edited, and
+  every admin decoy, stays.
+- **Where use is checked.**
+
+  | Surface | Content | On a match |
+  |---|---|---|
+  | Hook, PreToolUse | the whole tool input (a Bash or PowerShell command, Write / Edit content, a WebFetch URL, MCP arguments, a sub-agent prompt) | deny (a decoy being sent somewhere is exfiltration); coached on an unenrolled device |
+  | Hook, PostToolUse | the tool result (command output, a fetched page, an MCP result, a sub-agent report) | alert (the call has already run) |
+  | Model proxy | every request header value, the query string and the body, before anything is forwarded | 403 in report and enforce mode alike; the registry is re-read at most once a minute |
+
+  One Critical `DECOY_KEY_USED` per match, with `decoyId` and `where`. Cost: a substring search per decoy,
+  0.07 ms per call for 10 decoys against a 256 KiB input (M-series Mac, n=200).
+- **Limits.** A decoy re-encoded before use (base64, split, reversed) is not matched. The hook's Read tool is
+  not checked: reading the file a decoy sits in is not a use; a decoy read through the shell (`cat`) is seen in
+  the command's output. A decoy used from a process neither the hook nor the proxy sees is left to the
+  AI-API-caller detector and to provider-side or network controls.
+- **Tests.** `test/decoy-keys.test.mjs`, `test/decoy-use.test.mjs`, `test/decoy-use-real.test.mjs`.
+
+### Inventory detectors on the posture heartbeat (`cli/agent-posture.mjs` `inventoryPosture`)
+
+- **Where.** The detached posture worker (once per agent host per UTC day, on an enrolled device, never on the
+  decision path) takes ONE TCP-table sample (`cli/local-ai-inventory.mjs` `tcpTable`) for both socket
+  detectors. The same verified load (`loadVerifiedPolicy(CONFIG, { network: false })`) that feeds `failMode`
+  and `aiCliParents` gates `localModelExposure`, `aiApiCallers` and `decoyKeys.mode`.
+
+  | Platform | Source | Sees |
+  |---|---|---|
+  | macOS | `lsof +c 0 -nP -iTCP` (one spawn) | this user's processes only |
+  | Linux | `/proc/net/tcp{,6}` plus `/proc/<pid>/fd` (no spawn) | every socket; the owner only for processes this user can read |
+  | Windows | `netstat -ano` plus `tasklist /FO CSV /NH` | all processes' sockets, image names |
+
+- **Dedupe and delivery.** The once-per-change memory (`~/.moorai/inventory-detectors.json`) is written AFTER
+  the alerts post, minus every alert the console did not accept (non-2xx or no answer), so a failed post is
+  raised again on the next beat. Alerts carry the identity fields plus `agentName`, `appVersion`, `seq` and
+  `chainHead`.
+- **Cost** (dev Mac, real lsof and DNS, throwaway HOME, stub console): worker wall time median 122 ms cold /
+  120 ms warm without the detectors, 400 ms cold / 382 ms warm with them; `lsof +c 0 -nP -iTCP` alone is about
+  250 ms.
+- **`moorai-doctor`.** The `[inventory]` group has three read-only rows (Local model servers, Decoy AI keys,
+  AI API callers): they place nothing, remove nothing, keep no state and raise nothing. The callers row is
+  skipped with `--offline` because it needs DNS.
+- **Stated limit.** The scan runs `lsof` (macOS) and `netstat` / `tasklist` (Windows) through PATH, so a
+  same-user PATH change can hide sockets from both socket detectors. Linux reads /proc and spawns nothing.
+- **Tests.** `test/posture-inventory-beat.test.mjs`, `test/local-model-exposure.test.mjs`,
+  `test/local-model-exposure-doctor.test.mjs`, `test/ai-api-callers.test.mjs`.
+
+### Local model server reachable without MoorAI (`cli/local-model-exposure.mjs`)
+
+- **Discovery.** Listening sockets matched to a runtime by process name, or by a distinctive default port alone
+  (Ollama 11434, GPT4All 4891, Docker Model Runner 12434), over the runtimes the AIBOM inventory knows (Ollama,
+  LM Studio, llama.cpp server, vLLM and others; the rest report as `other`). Bind: `loopback`,
+  `all-interfaces` (`*`, `0.0.0.0`, `::`) or `lan` (a specific non-loopback address); several sockets for one
+  runtime and port report the widest.
+- **viaProxy.** `true` only when the server listens on loopback alone AND a TCP connect from the scan, which
+  runs as the same user an implant would, is refused (nothing is sent). Any other server is reachable without
+  MoorAI. A non-loopback bind is always `false`: whether other hosts can reach it cannot be measured from the
+  device.
+- **Alert.** `LOCAL_MODEL_EXPOSED` once per new or changed exposure (runtime, port, bind) unless
+  `localModelExposure: "off"`.
+- **Limit.** A listener whose owning process the scan cannot name (another account's process on Linux) is
+  matched by the default port only, so a model server under an account of its own on a non-default port is not
+  listed.
+
+**Proxy-only local models (Ollama).** Ollama binds 127.0.0.1:11434 by default and takes its bind address from
+`OLLAMA_HOST` ([Ollama FAQ](https://docs.ollama.com/faq)). It has no unix-socket mode (its `envconfig.Host`
+parses host:port only), so the proxy-only setup is a loopback port only MoorAI's model proxy may reach:
+
+1. Run Ollama on a loopback port of its own, for example `OLLAMA_HOST=127.0.0.1:11435`, set as the FAQ
+   documents per platform:
+   - macOS app: `launchctl setenv OLLAMA_HOST "127.0.0.1:11435"`, then restart Ollama.
+   - Linux systemd: `systemctl edit ollama.service`, add `Environment="OLLAMA_HOST=127.0.0.1:11435"` under
+     `[Service]`, then `systemctl daemon-reload` and `systemctl restart ollama`.
+   - Windows: Ollama inherits the user and system environment. Quit it from the taskbar, set `OLLAMA_HOST`
+     under "Edit environment variables for your account", then start it from the Start menu.
+   Never bind `0.0.0.0` (the FAQ's own exposure example does).
+2. Put the model proxy in front on Ollama's usual route, so clients keep working:
+   `moorai-model-proxy --route /ollama=http://127.0.0.1:11435`. A `--route` replaces the default routes, so
+   repeat `--route` for every provider route still in use (for example
+   `--route /anthropic=https://api.anthropic.com`). Clients use `OLLAMA_HOST=http://127.0.0.1:8791/ollama`.
+3. Run the proxy under its own service account and let only that account connect to the Ollama port. Without
+   that rule every process the user runs, an implant included, can open 127.0.0.1:11435 directly, and MoorAI
+   reports `viaProxy: false`.
+   - Linux (iptables `owner` match, OUTPUT chain, which matches the creator of locally generated packets):
+     `iptables -A OUTPUT -o lo -p tcp --dport 11435 -m owner ! --uid-owner moorai-proxy -j REJECT`.
+   - macOS / BSD pf has a `user` rule option. MoorAI has not verified a loopback `user` rule on macOS, and pf
+     is off until something enables it (`pfctl -E`).
+   - Windows: MoorAI has not verified a per-account loopback rule.
+4. Check it: `moorai-doctor` shows "Local model servers: ollama :11435 reachable only through MoorAI". On
+   Linux this needs Ollama to run as the scanning user; under an account of its own on port 11435 it is not
+   listed (see the limit above).
+
+### Unknown process calling an AI provider API (`cli/ai-api-callers.mjs`)
+
+- **Hosts.** api.openai.com, api.anthropic.com, generativelanguage.googleapis.com, aiplatform.googleapis.com,
+  api.mistral.ai, codestral.mistral.ai, and as `other`: Groq, xAI, DeepSeek, OpenRouter, Cohere, Perplexity,
+  Together, Fireworks and the Hugging Face router. Resolved at scan time (all addresses, both families) and
+  cached for an hour; an established connection to one of those addresses is attributed to the owning
+  process's image basename.
+- **Ambiguous addresses.** An address that also answers for a non-AI control host on the same front end
+  (www.googleapis.com, storage.googleapis.com, oauth2.googleapis.com, www.cloudflare.com, discord.com), or that
+  two providers share, is counted (the doctor row shows the count) but never attributed and never alerted on.
+  Gemini on generativelanguage.googleapis.com resolves to the same Google front-end addresses as every
+  googleapis.com API, so it is ambiguous; Anthropic, OpenAI and Mistral resolve to addresses of their own and
+  are attributed. The check runs on every resolution, so a provider that moves onto a shared address stops
+  alerting rather than alerting on everything.
+- **Known callers** (`known: true`, never alerted): an app in `data/ai-catalog.json`, a known AI agent CLI or
+  AI editor, a browser, or MoorAI itself (its desktop app, the scanning process and its parent, and a node
+  process listening on the model proxy's or moorai-serve's port). Electron helper processes count as their app.
+  - `node`, `nodejs`, `bun`, `deno` and `python*` are known only when their main script resolves inside a known
+    AI package: the npm names in `data/host-versions.json` (`hosts.*.npm`) plus `@qwen-code/qwen-code`,
+    `@charmland/crush`, `opencode-ai`, `@sourcegraph/amp`, `@ampcode/cli`; for python, aider-chat (`-m aider`,
+    a pipx / uv venv, or `site-packages/aider`). Paths match `/node_modules/<pkg>/` or deno's
+    `/registry.npmjs.org/<pkg>/`, and `npm:<pkg>` specs (`deno run`, `bun x`). Inline code (`-e`, `-p`, `-c`)
+    and any other script stay unknown.
+  - Claude Code's native install runs as an image named like its version (for example `2.1.295`, the file
+    `~/.local/share/claude/versions/<version>`, measured on the dev Mac) and is known only when argv[0]
+    resolves into `…/claude/versions/<that image>`.
+  - Command lines are read locally for those pids only (`ps -ww -o pid=,args=` on macOS, `/proc/<pid>/cmdline`
+    on Linux, one PowerShell `Get-CimInstance Win32_Process … CommandLine` on Windows) and are never posted
+    or stored.
+  - Rows are per (image, provider, known): an unknown node script is never folded into a known node process,
+    or MoorAI's own node, on the same provider.
+- **Alert.** `AI_API_CALLER_UNKNOWN` at most once per image and provider per UTC day, unless
+  `aiApiCallers: "off"`. The connection count rides on the alert only.
+- **Limits.** Only the listed provider hosts are recognised: a command server of the attacker's own behind
+  TLS, a provider reached through a relay, a corporate proxy or VPN, or a provider address the device's
+  resolver did not return is not identified. On macOS and Linux only processes the user may inspect are
+  attributed. The scan sees connections open at the moment of the daily beat, not every connection. The
+  command line is the process's own claim: a script at a path named after a known package, or an `exec -a`
+  argv[0], is classed as known, while a pip `--user` console script for aider (not a symlink into a venv)
+  stays unknown.
 
 ## Capability tags and exceptions
 

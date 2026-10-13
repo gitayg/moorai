@@ -5,6 +5,7 @@ import { checkNode, checkEnrollment, checkConsole, checkPolicy, checkPosture, ch
 import { systemConfig } from "./server-mode.mjs";
 import { loadPolicyReadOnly, resolveEffective } from "./doctor-policy.mjs";
 import { checkServerMode } from "./doctor-server.mjs";
+import { checkInventory } from "./doctor-inventory.mjs";
 
 export async function runDoctor({ offline = false, selftest = true } = {}) {
   const config = loadConfig();
@@ -21,6 +22,7 @@ export async function runDoctor({ offline = false, selftest = true } = {}) {
   if (server) checks.push(server);
   checks.push(checkPolicy(loaded, eff, config), checkPosture(eff), checkFailMode(loaded.error ? null : loaded, (() => { try { return systemConfig(); } catch { return null; } })()), checkBreakGlass(eff));
   checks.push(checkStateDir());
+  checks.push(...await checkInventory(loaded.error ? null : loaded.policy || null, { offline }));
   // The self-test child reads the same root-owned /etc/moorai/config.json as the hook, and a sandbox HOME
   // cannot override it: when that file binds a console, the child would post to it.
   const sysBound = eff.server.active && (eff.server.sources.serverUrl === "system" || eff.server.sources.installToken === "system");

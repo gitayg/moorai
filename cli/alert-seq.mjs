@@ -15,11 +15,14 @@
 // guarantee needs state the agent cannot write: the privileged helper (design phase 2/3).
 //
 // Concurrency: Claude Code runs PreToolUse hooks for parallel tool calls in parallel processes, and two
-// unlocked read-increment-write cycles would hand out the same seq. The advance holds an exclusive lock
-// file (open "wx") for the few file operations it takes; a lock older than LOCK_STALE_MS is a crashed
-// holder and is broken. If the lock cannot be had within LOCK_WAIT_MS the alert is still stamped (an
-// alert is never held back for this), which can at worst produce one duplicate seq. Never throws.
-import { openSync, closeSync, unlinkSync, statSync, mkdirSync } from "node:fs";
+// unlocked read-increment-write cycles would hand out the same seq, which the console records as a
+// counter reset. The advance only ever runs while holding an exclusive lock file (open "wx", holding the
+// holder's pid) for the few file operations it takes. A lock is broken only when its holder is gone: older
+// than LOCK_STALE_MS with its pid no longer running, or older than LOCK_DEAD_MS whatever it holds (a
+// reused pid, or a lock planted by hand). An alert whose stamper cannot get the lock within LOCK_WAIT_MS
+// is sent without seq and chainHead: it is never held back, and never given a number another alert holds.
+// Never throws.
+import { openSync, closeSync, unlinkSync, lstatSync, fstatSync, mkdirSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { STATE_DIR } from "./state-dirs.mjs";
 import { nextLink, recordRhash } from "./record-chain.mjs";
@@ -27,24 +30,56 @@ import { nextLink, recordRhash } from "./record-chain.mjs";
 export const ALERT_CHAIN = "alerts";
 const LOCK_WAIT_MS = 200;
 const LOCK_STALE_MS = 5000;
+const LOCK_DEAD_MS = 60000;
 const SLEEP = new Int32Array(new SharedArrayBuffer(4));
 const nap = (ms) => { try { Atomics.wait(SLEEP, 0, 0, ms); } catch { /* best-effort */ } };
+const sameFile = (a, b) => a.ino === b.ino && a.dev === b.dev;
 
+// A lock with no pid yet (its holder is between open and write) counts as held.
+function holderAlive(lock) {
+  let pid;
+  try { pid = Number.parseInt(readFileSync(lock, "utf8"), 10); } catch { return false; }
+  if (!Number.isSafeInteger(pid) || pid <= 0) return true;
+  try { process.kill(pid, 0); return true; } catch (e) { return !!e && e.code === "EPERM"; }
+}
+
+function breakIfAbandoned(lock) {
+  try {
+    const st = lstatSync(lock);
+    const age = Date.now() - st.mtimeMs;
+    if (age <= LOCK_STALE_MS || (age <= LOCK_DEAD_MS && holderAlive(lock))) return;
+    const now = lstatSync(lock);
+    if (sameFile(now, st) && now.mtimeMs === st.mtimeMs) unlinkSync(lock);
+  } catch { /* gone already, or not removable: wait it out */ }
+}
+
+function acquire(lock) {
+  const until = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      const fd = openSync(lock, "wx");
+      try { writeSync(fd, String(process.pid)); } catch { /* an empty lock still holds */ }
+      return fd;
+    } catch (e) {
+      if (!e || e.code !== "EEXIST") return null;
+    }
+    breakIfAbandoned(lock);
+    if (Date.now() >= until) return null;
+    nap(2);
+  }
+}
+
+// Runs fn() holding the lock and returns its result, or returns null without running it.
 function withLock(dir, fn) {
   const lock = join(dir, `.chain-${ALERT_CHAIN}.lock`);
-  let fd = null;
-  const until = Date.now() + LOCK_WAIT_MS;
-  try { mkdirSync(dir, { recursive: true }); } catch { /* the advance below fails open */ }
-  while (fd === null) {
-    try { fd = openSync(lock, "wx"); break; } catch (e) {
-      if (!e || e.code !== "EEXIST") break;
-      try { if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) { unlinkSync(lock); continue; } } catch { continue; }
-      if (Date.now() >= until) break;
-      nap(2);
-    }
-  }
+  try { mkdirSync(dir, { recursive: true }); } catch { /* the open below reports it */ }
+  const fd = acquire(lock);
+  if (fd === null) return null;
   try { return fn(); } finally {
-    if (fd !== null) { try { closeSync(fd); } catch { /* closed */ } try { unlinkSync(lock); } catch { /* gone */ } }
+    let mine = false;
+    try { mine = sameFile(fstatSync(fd), lstatSync(lock)); } catch { /* gone */ }
+    try { closeSync(fd); } catch { /* closed */ }
+    if (mine) { try { unlinkSync(lock); } catch { /* gone */ } }
   }
 }
 

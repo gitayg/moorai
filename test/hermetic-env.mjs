@@ -35,3 +35,25 @@ for (const v of ["AI_AGENT", "CURSOR_VERSION"]) delete process.env[v];
 // passes HOME to the child it spawns. home-guard.mjs fails the file if anything still reaches the real one.
 import { installHomeGuard } from "./home-guard.mjs";
 installHomeGuard();
+
+// The HOST'S OWN SOCKETS, for the same reason. The hook's daily posture worker (cli/moorai-hook.mjs
+// posturebeat) samples the TCP table (cli/local-ai-inventory.mjs tcpTable: `lsof` on macOS) and posts a
+// device-level LOCAL_MODEL_EXPOSED / AI_API_CALLER_UNKNOWN alert for what it finds. MEASURED on a dev Mac
+// running Ollama on 127.0.0.1:11434: every hook test whose console counts alerts received that alert from
+// the developer's own machine (session-correlation: "has session undefined"; alert-evidence: one more alert
+// in the deferred window), and with an empty `lsof` first on PATH the whole suite passed. Hook children are
+// spawned with this process's PATH (`{ ...process.env }` or `PATH: process.env.PATH`), so an `lsof` that
+// prints nothing, first on PATH, hides the host's sockets from every one of them. Tests that exercise the
+// detectors inject their own table (test/posture-inventory-beat.test.mjs, test/local-model-exposure.test.mjs).
+// macOS only: Linux reads /proc/net/tcp with no spawn and Windows runs netstat.exe, so a Linux or Windows
+// box with an exposed local model server or an unknown AI-API caller can still leak an alert into a test.
+if (process.platform === "darwin") {
+  const { mkdtempSync: mk, writeFileSync: wf, chmodSync: ch, rmSync: rm } = await import("node:fs");
+  const { tmpdir: td } = await import("node:os");
+  const { join: jn, delimiter } = await import("node:path");
+  const dir = mk(jn(td(), "moorai-no-host-sockets-"));
+  wf(jn(dir, "lsof"), "#!/bin/sh\nexit 0\n");
+  ch(jn(dir, "lsof"), 0o755);
+  process.env.PATH = `${dir}${delimiter}${process.env.PATH || "/usr/bin:/bin"}`;
+  process.on("exit", () => { try { rm(dir, { recursive: true, force: true }); } catch { /* tmp */ } });
+}

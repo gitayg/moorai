@@ -70,7 +70,9 @@ import { commandClass, normalizeCommand, verifyFamily, outcomeOfResponse, outcom
 import { callTags, sessionTagsOf, recordSessionTags, tagGate, applyTagGate, tagHitAlert } from "./tool-tags.mjs";
 import { readExceptionStore, liveExceptions, matchCallExceptions, applyExceptions, exceptionHint, selfExceptionAttempt } from "./exceptions.mjs";
 import { agentVersionFromEnv } from "./agent-names.mjs";
-import { machinePath } from "./machine-dir.mjs";
+import { machinePath, machineDir } from "./machine-dir.mjs";
+import { decoyTokens, matchDecoy, DECOY_REASON } from "./decoy-keys.mjs";
+import { aiCliParentStep, parentPolicy, lastParentClass, AI_CLI_PARENT } from "./ai-cli-parents.mjs";
 import { stampAlertSeq } from "./alert-seq.mjs";
 import { bindingRefusedAlert } from "./config.mjs";
 import { actionTrailMode, buildActionRecord, enqueueActionRecord, claimFlush, flushActionTrail, callFingerprintText, readTrailState } from "./action-trail.mjs";
@@ -535,6 +537,17 @@ function checkHoneytoken(hash, stage, tool) {
       post({ threatId: 0, category: "Honeytoken canary triggered", riskLevel: "Critical", stage, tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: h.hash, honeytoken: h.label ? { label: h.label } : {}, ...IDENTITY });
     }
   } catch { /* canary is a signal; never affects enforcement */ }
+}
+// Decoy AI keys (cli/decoy-keys.mjs): a planted key that was never issued, so seeing one in content the hook
+// reads means a stolen key is being used. Critical; the alert names the decoy's id, never the token.
+let DECOYS = null;
+function decoyUsed(text, event, tool) {
+  try {
+    const id = matchDecoy(text, (DECOYS ??= decoyTokens({ home: os.homedir(), machineDir: machineDir() })));
+    if (!id) return null;
+    post({ threatId: 0, category: "Decoy AI key used", riskLevel: "Critical", reasonCode: DECOY_REASON, decoyId: id, where: `hook:${event}`, stage: event === "PostToolUse" ? "output" : "egress", tool: `hook:${tool}`, decision: event === "PreToolUse" ? "deny" : "notify", ts: new Date().toISOString(), contentHash: `decoy:${id}`, ...IDENTITY });
+    return id;
+  } catch { return null; }
 }
 // ---- alert delivery + the exit gate ----
 //
@@ -1139,12 +1152,29 @@ async function runPostureBeatWorker(host, mode, cwd) {
     // The effective fail mode per surface (cli/fail-mode.mjs), from the admin binding and the cached
     // verified policy (no network): what each surface does when it cannot decide. Content-free. For
     // inferenceHook a "default" source means the operator's --fail flag on that server decides.
-    let failMode;
-    try { const v = await loadVerifiedPolicy(CONFIG, { network: false }); failMode = effectiveFailModes(v.policy || null, { admin: ADMIN, warn: () => {} }); } catch { failMode = undefined; }
-    const body = { user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture, ...(failMode ? { failMode } : {}) };
-    const r = await fetch(`${CONFIG.serverUrl}/api/agent-posture`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
+    let failMode, aiCliParents, v = null;
+    try { v = await loadVerifiedPolicy(CONFIG, { network: false }); failMode = effectiveFailModes(v.policy || null, { admin: ADMIN, warn: () => {} }); aiCliParents = { mode: parentPolicy(v.policy || null).mode, lastParentClass: lastParentClass() }; } catch { failMode = undefined; }
+    // Inventory detectors (cli/agent-posture.mjs inventoryPosture): localModelServers, aiApiCallers and decoyKeys
+    // at the top level, gated by the same verified load `v`. Decoy files are placed or removed only when that
+    // policy carried a console signature this device verified (anchor or pin): a policy from an unpinned device
+    // verified nothing, and no policy at all must not read as "off" and remove the administrator's decoys.
+    let inventory = null;
+    try {
+      const { inventoryPosture } = await import("./agent-posture.mjs");
+      const signed = !!(v && v.policy && v.trust && Array.isArray(v.trust.keys) && v.trust.keys.length);
+      inventory = await inventoryPosture({ policy: (v && v.policy) || null, decoys: signed, commit: false });
+    } catch { inventory = null; }
+    const body = { user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture, ...(failMode ? { failMode } : {}), ...(aiCliParents ? { aiCliParents } : {}), ...(inventory ? inventory.fields : {}) };
+    const r = await fetch(`${CONFIG.serverUrl}/api/agent-posture`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) }).catch(() => null);
     // On failure the pending mark stays, so the next try is BEAT_RETRY_MS away rather than one per tool call.
-    if (r.ok) writeBeat(host, { day, bypass: (st.day === day && !!st.bypass) || mode === "bypassPermissions" });
+    if (r && r.ok) writeBeat(host, { day, bypass: (st.day === day && !!st.bypass) || mode === "bypassPermissions" });
+    // The once-per-change memory is written only AFTER the posts, minus every alert the console did not accept,
+    // so a failed post is raised again on the next beat rather than lost.
+    if (inventory) {
+      const failed = [];
+      await Promise.all(inventory.alerts.map(async (a) => { let res = null; try { res = await post({ ...a, ...IDENTITY }); } catch { res = null; } if (!res || !res.ok) failed.push(a); }));
+      inventory.commit(failed);
+    }
   } catch { /* console unreachable: retried after BEAT_RETRY_MS */ }
   return exitWhenDrained(0);
 }
@@ -1938,6 +1968,7 @@ async function handlePostToolUse(input, tool, policy, engine) {
   if (!field) return exitHook();
   const text = field.text;
   const ti = input.tool_input || {};
+  decoyUsed(text, "PostToolUse", tool);
   const url = typeof ti.url === "string" ? ti.url : (typeof ti.query === "string" ? ti.query : "");
   // OUTBOUND-ONLY DETECTORS MUST NOT JUDGE INBOUND CONTENT. The "output" stage historically meant
   // "content the agent is about to emit"; wiring PostToolUse to it made it ALSO mean "content the agent
@@ -2376,6 +2407,9 @@ async function main() {
   // .mcp.json, settings, rules files) — content that enters the model with no tool call, so no other
   // branch below ever sees it. Detached, interval-bounded, report-only; see maybeIndexScan.
   maybeIndexScan(input.cwd);
+  // AI CLI started by an unexpected parent (cli/ai-cli-parents.mjs): classified once per session, alerted once.
+  const acp = EVENT === "PreToolUse" || EVENT === "UserPromptSubmit" ? aiCliParentStep({ policy, sessionId: SESSION_ID, agent: beatHost(), event: EVENT, coach: COACH, serverMode: !!SERVER.active, shim: process.env.MOORAI_HOOK_HOST === "shim" }) : { alerts: [] };
+  for (const a of acp.alerts) post({ ...a, tool: `hook:${tool || EVENT}`, ts: new Date().toISOString(), ...IDENTITY });
 
   // ROUTE BY EVENT FIRST. A PostToolUse WebFetch carries tool_name "WebFetch" just as the PreToolUse one
   // does, so without this the inbound payload would fall into the OUTBOUND WebFetch branch below and be
@@ -2397,6 +2431,8 @@ async function main() {
     post({ threatId: 0, category: "Agent attempted to grant a MoorAI exception", riskLevel: "Blocked", stage: "policy", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "exception:self-grant", ...IDENTITY });
     return emit("deny", "MoorAI exceptions are granted by a person in their own terminal, not by the agent");
   }
+  if (decoyUsed(JSON.stringify(ti), "PreToolUse", tool)) { why(DECOY_REASON); return emit("deny", "this call carries a MoorAI decoy AI key, a planted key that was never issued; using it is treated as key theft"); }
+  if (acp.deny) { why(AI_CLI_PARENT); return emit("deny", acp.deny); }
   // Learned per-agent drift — one observation per PreToolUse call, before any branch can return.
   observeLearnedDrift(policy, tool, ti, input.cwd);
   // Runaway circuit breaker (data/circuit-breaker.js): report by default; policy mode "deny" denies the

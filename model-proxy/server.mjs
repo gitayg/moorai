@@ -41,6 +41,7 @@ import { maskResponse } from "./credential-mask.mjs";
 import { resolveFailMode } from "../cli/fail-mode.mjs";
 import { systemConfig } from "../cli/server-mode.mjs";
 import { operatorContextMode } from "./context.mjs";
+import { createDecoyCheck, decoyAlert, DECOY_REFUSAL } from "./decoy.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({
@@ -190,6 +191,9 @@ export async function createProxy(opts = {}) {
     res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-length": Buffer.byteLength(body), ...extra });
     res.end(body);
   }
+  // Decoy AI keys (decoy.mjs): refused in either mode, before anything is forwarded. opts.decoys: test seam.
+  const decoy = createDecoyCheck(o.decoys || {});
+  const refuseDecoy = (res, api, id, part) => { stats.refused++; decoyAlert(rt, id, part); send(res, 403, errorPayload(api, 403, DECOY_REFUSAL), { "x-moorai-model-proxy": "refused", ...NO_RETRY }); };
   const refuse = (res, api, verdict, direction) => { stats.refused++; send(res, 403, api.errorBody(403, refusalMessage(verdict, direction)), { "x-moorai-model-proxy": "refused" }); };
 
   // The request body, buffered (it is needed whole to scan before forwarding in enforce mode, and its
@@ -403,6 +407,8 @@ export async function createProxy(opts = {}) {
     const rest = path.slice(route.prefix.length) || "/";
     const api = apiFor(req.method, rest);
     const url = new URL(route.base + rest + query);
+    const dh = decoy.request(req.rawHeaders, query);
+    if (dh) { req.resume(); return refuseDecoy(res, api, dh, "header"); }
     let swaps = null;
     if (gate) {
       const c = gate(req.rawHeaders, query, route.prefix || "/", url);
@@ -418,6 +424,8 @@ export async function createProxy(opts = {}) {
     res.on("close", () => { inflight -= held.n; held.n = 0; later.close(); });
     let body;
     try { body = await readBody(req, api, held); } catch (e) { e.api = api; throw e; }
+    const db = decoy.body(body);
+    if (db) return refuseDecoy(res, api, db, "body");
 
     const fm = failMode((await rt.ready()).policy);
     if (api) {
