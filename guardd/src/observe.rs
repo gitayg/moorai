@@ -127,6 +127,8 @@ pub fn agent_ancestor(src: &dyn ProcessSource, pid: u32, max_depth: usize) -> st
 pub struct SessionTree {
     pub host: String,
     pub agent: ProcKey,
+    /// The kernel-reported uid of the peer that mapped it: only that user's calls may remap it.
+    pub uid: u32,
     pub last_call_ms: u64,
 }
 
@@ -156,9 +158,10 @@ impl SilentEvent {
 /// Tracks per-host process presence against IPC `call`s and yields the beat's agentProcs/hookSilent.
 pub struct Observer {
     started_ms: u64,
-    /// Agent processes seen by the last scan, with their host.
-    procs: HashMap<ProcKey, &'static str>,
-    last_call: HashMap<String, u64>,
+    /// Agent processes seen by the last scan, with their host and owner uid.
+    procs: HashMap<ProcKey, (&'static str, u32)>,
+    /// Last `call` per (host, peer uid): a call vouches only for agent processes of the peer's own user.
+    last_call: HashMap<(String, u32), u64>,
     alerted: HashSet<ProcKey>,
     sessions: HashMap<String, SessionTree>,
 }
@@ -170,18 +173,28 @@ impl Observer {
         Observer { started_ms, procs: HashMap::new(), last_call: HashMap::new(), alerted: HashSet::new(), sessions: HashMap::new() }
     }
 
-    /// Record a `call`. `agent` is the helper's own derivation (agent_ancestor of the peer pid), never
-    /// the request's `agentPid` hint; it maps the session to its agent tree for console quarantine.
-    pub fn on_call(&mut self, host: &str, session_hash: &str, agent: Option<ProcKey>, now_ms: u64) {
-        self.last_call.insert(host.to_string(), now_ms);
-        if let Some(a) = agent {
-            if self.sessions.len() >= MAX_SESSIONS && !self.sessions.contains_key(session_hash) {
-                if let Some(oldest) = self.sessions.iter().min_by_key(|(_, t)| t.last_call_ms).map(|(k, _)| k.clone()) {
-                    self.sessions.remove(&oldest);
-                }
-            }
-            self.sessions.insert(session_hash.to_string(), SessionTree { host: host.to_string(), agent: a, last_call_ms: now_ms });
+    /// Record a `call` from a peer of kernel-reported uid `peer_uid`. `agent` is the helper's own
+    /// derivation (agent_ancestor of the peer pid, owned by the peer's uid), never the request's
+    /// `agentPid` hint; it maps the session to its agent tree for console quarantine. A session mapped by
+    /// one user is never remapped by another, and when the map is full the eviction comes out of the user
+    /// holding the most sessions, so one user cannot flood another's sessions out.
+    pub fn on_call(&mut self, host: &str, session_hash: &str, peer_uid: u32, agent: Option<ProcKey>, now_ms: u64) {
+        self.last_call.insert((host.to_string(), peer_uid), now_ms);
+        let Some(a) = agent else { return };
+        if self.sessions.get(session_hash).is_some_and(|t| t.uid != peer_uid) {
+            return;
         }
+        if self.sessions.len() >= MAX_SESSIONS && !self.sessions.contains_key(session_hash) {
+            let mut per_uid: HashMap<u32, usize> = HashMap::new();
+            for t in self.sessions.values() {
+                *per_uid.entry(t.uid).or_insert(0) += 1;
+            }
+            let top = per_uid.iter().max_by_key(|(u, n)| (**n, **u == peer_uid)).map(|(u, _)| *u);
+            if let Some(oldest) = self.sessions.iter().filter(|(_, t)| Some(t.uid) == top).min_by_key(|(_, t)| t.last_call_ms).map(|(k, _)| k.clone()) {
+                self.sessions.remove(&oldest);
+            }
+        }
+        self.sessions.insert(session_hash.to_string(), SessionTree { host: host.to_string(), agent: a, uid: peer_uid, last_call_ms: now_ms });
     }
 
     pub fn session(&self, session_hash: &str) -> Option<&SessionTree> {
@@ -192,15 +205,16 @@ impl Observer {
     /// silent (each reported once per process lifetime).
     pub fn scan(&mut self, src: &dyn ProcessSource, now_ms: u64) -> std::io::Result<Vec<SilentEvent>> {
         let list = src.list()?;
-        self.procs = list.iter().filter_map(|p| match_host(p).map(|h| (ProcKey::from(p), h.host))).collect();
+        self.procs = list.iter().filter_map(|p| match_host(p).map(|h| (ProcKey::from(p), (h.host, p.uid)))).collect();
         self.alerted.retain(|k| self.procs.contains_key(k));
         self.sessions.retain(|_, t| now_ms.saturating_sub(t.last_call_ms) < SESSION_TTL_MS);
+        self.last_call.retain(|_, t| now_ms.saturating_sub(*t) < SESSION_TTL_MS);
         let mut out = Vec::new();
         let mut keys: Vec<&ProcKey> = self.procs.keys().collect();
         keys.sort();
         for k in keys {
-            let host = self.procs[k];
-            if let Some(since) = self.silent_since(k, host, now_ms) {
+            let (host, uid) = self.procs[k];
+            if let Some(since) = self.silent_since(k, host, uid, now_ms) {
                 if !self.alerted.contains(k) {
                     out.push(SilentEvent { host: host.to_string(), proc: *k, since_sec: since });
                 }
@@ -212,9 +226,9 @@ impl Observer {
         Ok(out)
     }
 
-    fn silent_since(&self, k: &ProcKey, host: &str, now_ms: u64) -> Option<u64> {
+    fn silent_since(&self, k: &ProcKey, host: &str, uid: u32, now_ms: u64) -> Option<u64> {
         let from = k.start_ms.max(self.started_ms);
-        if self.last_call.get(host).is_some_and(|t| *t >= from) {
+        if self.last_call.get(&(host.to_string(), uid)).is_some_and(|t| *t >= from) {
             return None;
         }
         let since = now_ms.saturating_sub(from) / 1000;
@@ -224,7 +238,7 @@ impl Observer {
     /// The beat's `agentProcs`: agent host processes per host as of the last scan.
     pub fn agent_procs(&self) -> BTreeMap<String, u64> {
         let mut m = BTreeMap::new();
-        for h in self.procs.values() {
+        for (h, _) in self.procs.values() {
             *m.entry(h.to_string()).or_insert(0) += 1;
         }
         m
@@ -233,8 +247,8 @@ impl Observer {
     /// The beat's `hookSilent`, sorted by host: per host, the longest-silent process.
     pub fn hook_silent(&self, now_ms: u64) -> Vec<crate::beat::HookSilent> {
         let mut by_host: BTreeMap<String, u64> = BTreeMap::new();
-        for (k, h) in &self.procs {
-            if let Some(s) = self.silent_since(k, h, now_ms) {
+        for (k, (h, uid)) in &self.procs {
+            if let Some(s) = self.silent_since(k, h, *uid, now_ms) {
                 let e = by_host.entry(h.to_string()).or_insert(0);
                 *e = (*e).max(s);
             }
@@ -244,7 +258,7 @@ impl Observer {
 
     /// Every agent-host process of the last scan (for a device-scope console quarantine).
     pub fn agent_processes(&self) -> Vec<(ProcKey, &'static str)> {
-        let mut v: Vec<_> = self.procs.iter().map(|(k, h)| (*k, *h)).collect();
+        let mut v: Vec<_> = self.procs.iter().map(|(k, (h, _))| (*k, *h)).collect();
         v.sort();
         v
     }
@@ -338,14 +352,14 @@ mod tests {
         let t = FakeProcs::new(vec![proc(100, 1, 501, 0, "/usr/local/bin/claude", None), proc(101, 1, 501, 0, "/usr/bin/codex", None)]);
         let mut o = Observer::new(1_000_000);
         assert!(o.scan(&t, 1_000_000 + 119_000).unwrap().is_empty(), "119 s is not yet silent");
-        o.on_call("codex", "s1", None, 1_000_000 + 60_000);
+        o.on_call("codex", "s1", 501, None, 1_000_000 + 60_000);
         let ev = o.scan(&t, 1_000_000 + 121_000).unwrap();
         assert_eq!(ev, vec![SilentEvent { host: "claude-code".into(), proc: ProcKey { pid: 100, start_ms: 0 }, since_sec: 121 }]);
         assert_eq!(ev[0].alert(0)["kind"], "hookSilent");
         assert!(o.scan(&t, 1_000_000 + 300_000).unwrap().is_empty(), "alerted once per process");
         assert_eq!(o.hook_silent(1_000_000 + 300_000), vec![crate::beat::HookSilent { host: "claude-code".into(), since_sec: 300 }]);
         assert_eq!(o.agent_procs().into_iter().collect::<Vec<_>>(), vec![("claude-code".to_string(), 1), ("codex".to_string(), 1)]);
-        o.on_call("claude-code", "s2", None, 1_000_000 + 301_000);
+        o.on_call("claude-code", "s2", 501, None, 1_000_000 + 301_000);
         assert!(o.hook_silent(1_000_000 + 302_000).is_empty(), "a call clears it");
     }
 
@@ -363,12 +377,26 @@ mod tests {
     fn sessions_map_to_the_derived_agent_and_are_bounded() {
         let mut o = Observer::new(0);
         let a = ProcKey { pid: 100, start_ms: 5 };
-        o.on_call("claude-code", "s1", Some(a), 10);
+        o.on_call("claude-code", "s1", 501, Some(a), 10);
         assert_eq!(o.session("s1").map(|t| t.agent), Some(a));
         for i in 0..MAX_SESSIONS + 10 {
-            o.on_call("claude-code", &format!("x{i}"), Some(a), 100 + i as u64);
+            o.on_call("claude-code", &format!("x{i}"), 501, Some(a), 100 + i as u64);
         }
         assert!(o.sessions.len() <= MAX_SESSIONS);
         assert!(o.session("s1").is_none(), "the oldest is evicted first");
+    }
+
+    #[test]
+    fn one_users_flood_evicts_its_own_sessions_not_anothers() {
+        let mut o = Observer::new(0);
+        let (a, b) = (ProcKey { pid: 100, start_ms: 5 }, ProcKey { pid: 200, start_ms: 5 });
+        o.on_call("claude-code", "victim", 501, Some(a), 10);
+        o.on_call("claude-code", "victim", 502, Some(b), 11);
+        assert_eq!(o.session("victim").map(|t| (t.agent, t.uid)), Some((a, 501)), "another uid cannot remap it");
+        for i in 0..MAX_SESSIONS + 10 {
+            o.on_call("claude-code", &format!("x{i}"), 502, Some(b), 100 + i as u64);
+        }
+        assert!(o.sessions.len() <= MAX_SESSIONS);
+        assert_eq!(o.session("victim").map(|t| t.agent), Some(a), "uid 502's flood evicted only uid 502's sessions");
     }
 }

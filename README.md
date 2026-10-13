@@ -1607,6 +1607,11 @@ that is the weak case.
 - **What is sent:** detector ids, the app id, the mode and action taken, the trigger, and the
   tenant-keyed `contentHash`. Never the text. One alert per (content, app) per 10 minutes. In `clear` mode
   the clipboard is cleared every time.
+- **Policy trust:** on a device with an administrator-installed `policy.pub`, only a policy signed by that
+  key is enforced, including one already held in memory. An older signed policy is refused as a
+  rollback when the root-owned `policy-hwm.json`, the newest policy this run enforced, or a verified saved
+  copy is newer. User-writable state never refuses a verified policy or switches the guard off: a pin
+  that names a newer policy only raises an alert, and a pin dated in the future is ignored and reported.
 - **Platforms:** macOS and Windows. On Linux the status line says "not supported".
 - **Limits:** with the guard on, the app must be running. The scan happens in the app's webview, so for
   the first seconds after launch the check is retried until it answers. A user can still type the data

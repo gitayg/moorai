@@ -1783,10 +1783,29 @@ webview value is read. Sources, in order:
   bound console. The envelope format is `cli/hook-core.mjs`'s (`policyCanonical`, `policyDigest`,
   `canonicalJson`), reimplemented in Rust with `ring` and tested against a Node-signed fixture
   (`test/fixtures/clipboard-guard-policy.json`).
-- **In memory:** the policy that verified earlier in this process.
+- **In memory:** the policy that verified earlier in this process. On an anchored device it must verify
+  under the anchor too, like everything else: one taken under the pin, or on the envelope alone, before
+  `policy.pub` was installed is dropped (`memory-policy-untrusted`) and the anchor-signed saved copy, or off,
+  takes over.
 - **Saved copy:** `<MoorAI Host>/clipboard-guard-policy.json` (the host's own state directory), written when
   a live policy verifies. It is a convenience for the next launch only: it is taken only when it verifies
   under a key that is still trusted (the anchor, or a valid pin for this tenant), never on an envelope check.
+
+**Rollback.** The hook's `isPolicyRollback` rule ([`clip_guard_hwm.rs`](../src-tauri/src/clip_guard_hwm.rs)):
+strictly older only (the same policy re-fetched is taken), and an `iat` that does not parse on either side is
+not compared. Only marks that user-writable state cannot raise refuse anything, and each refusal leaves a
+verified policy enforcing or follows an administrator's mark:
+- a live policy older than the root-owned `policy-hwm.json` (beside `policy.pub`), the guard's in-process
+  mark or the in-memory policy's `iat` (these two only while that policy is in force, and it stays), or the
+  signed `iat` of a saved copy that verifies under a trusted key (that copy then enforces) is refused
+  (`policy-rollback`);
+- a saved copy older than the root-owned mark is refused (`stored-policy-rollback`). That mark is the only
+  hard protection against an old signed copy put back in place of the saved one at launch.
+The hook's pin `iat` is user-writable, so it is advisory: a policy or copy behind it is still taken and
+reported (`policy-behind-pin-mark`, `stored-policy-behind-pin-mark`), and a pin `iat` more than 10 minutes
+in the future is ignored, reported (`hwm-future`) and named in the status line. The saved copy carries no
+free-standing mark. Only a policy verified under a real key (anchor or pin) moves the guard's in-process
+mark; the envelope-only case never sets one.
 
 **User-writable state never turns the guard off.** A pin that does not parse or names another tenant is
 ignored; while it is there nothing new is taken without an anchor, and the in-memory policy stays in force.
@@ -1795,11 +1814,14 @@ way. Off happens only when a verified policy says off, or nothing has verified y
 pin and no anchor, nothing on disk can be trusted, so the guard stays off. Each refusal raises one
 content-free tamper alert per run (`reasonCode: "CLIPBOARD_GUARD_POLICY_REFUSED"`, `clipboardGuard: {
 refused: "pin-other-tenant" | "pin-unreadable" | "policy-unsigned" | "policy-untrusted" | "policy-mismatch" |
-"policy-malformed" | "stored-policy-unverifiable" | "stored-policy-untrusted" | …, kept: <mode> }`).
+"policy-malformed" | "policy-rollback" | "policy-behind-pin-mark" | "stored-policy-unverifiable" |
+"stored-policy-untrusted" | "stored-policy-rollback" | "stored-policy-behind-pin-mark" |
+"memory-policy-untrusted" | "hwm-future" | …, kept: <mode> }`).
 **Not a hard guarantee:** the saved copy and the pin are in the user's scope. An agent running as the user
 can delete or replace the saved copy (the guard is then off after a restart until the console answers, or,
 on a device with no anchor and no pin, until the next live policy), and a replacement must still verify
-under a trusted key. The phase-2 root-owned helper is the real fix; today the root-owned `policy.pub` and
+under a trusted key; an older validly signed copy put back is taken at launch (and reported when the pin's
+`iat` is newer) unless a root-owned `policy-hwm.json` is newer. The phase-2 root-owned helper is the real fix; today the root-owned `policy.pub` and
 an administrator's setting are the hard parts.
 
 **Modes.** `alert`: a content-free alert. `coach`: the alert and a local notification (macOS: `osascript

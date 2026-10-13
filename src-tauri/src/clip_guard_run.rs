@@ -185,17 +185,20 @@ fn policy_thread(app: tauri::AppHandle) {
         let dir = crate::console_binding::host_dir();
         // `memory`: the policy that verified in this process. `stored`: the saved copy, a convenience for
         // the next launch that decide() takes only under a key that is still trusted.
+        // `mark`: the policy iat high-water mark this process has reached.
         let stored = crate::clip_guard_policy::load_last(&dir);
         let mut memory: Option<Value> = None;
+        let mut mark = None;
         let mut fetch = false;
         loop {
-            let d = crate::clip_guard_policy::gather_and_decide(fetch, memory.as_ref(), stored.as_ref());
+            let d = crate::clip_guard_policy::gather_and_decide(fetch, memory.as_ref(), stored.as_ref(), mark.as_ref());
             if d.save {
                 if let Some(p) = &d.verified {
                     if let Err(e) = crate::clip_guard_policy::save_last(&dir, p) { eprintln!("[moorai] clipboard guard: last verified policy not saved: {e}"); }
                 }
             }
             if d.verified.is_some() { memory = d.verified.clone(); }
+            if d.mark.is_some() { mark = d.mark.clone(); }
             for t in &d.tamper { tamper_alert(&app, t, d.policy.mode.as_str()); }
             let answered = !d.status.contains("(console: ");
             *shared().policy.lock().unwrap() = (d.policy, d.status);

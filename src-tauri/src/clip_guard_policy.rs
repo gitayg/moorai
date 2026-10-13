@@ -14,10 +14,19 @@
 //                bound console. The envelope format is cli/hook-core.mjs's (policyCanonical / policyDigest /
 //                canonicalJson), reimplemented here and checked against a Node-signed fixture.
 //   in memory    the policy that verified earlier in THIS process. A refused pin or a refused live policy
-//                keeps it.
+//                keeps it. On an anchored device it must verify under the anchor too (it may have been taken
+//                under the pin, or on the envelope alone, before policy.pub was installed).
 //   saved copy   <MoorAI Host>/clipboard-guard-policy.json, written when a live policy verifies. A
 //                convenience for the next launch only, and taken only when it verifies under a key that is
 //                still trusted (the anchor, or a valid pin for this tenant), never on an envelope check.
+//
+// Rollback (clip_guard_hwm.rs, the hook's isPolicyRollback): a live policy whose signed iat is older than
+// the hard mark is refused. The hard mark is only what user-writable state cannot raise: the root-owned
+// policy-hwm.json, the guard's in-process mark and the in-memory policy's iat (only while that policy is
+// still in force, so a refusal by them always leaves it enforcing), and the signed iat of a saved copy that
+// verifies under a trusted key (a refusal by it leaves that copy enforcing). A saved copy is refused only
+// by the root-owned mark. The hook's pin iat is user-writable: advisory only (an alert, never a refusal),
+// and one more than MARK_SKEW_MS in the future is ignored and reported.
 //
 // User-writable state never turns the guard off. A pin that does not parse, or names another tenant, is
 // ignored and reported (content-free tamper alert); while it is there nothing new is taken without an
@@ -31,6 +40,7 @@
 use base64::Engine as _;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+pub use crate::clip_guard_hwm::Mark;
 
 const SPKI_ED25519_PREFIX: [u8; 12] = [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];
 
@@ -143,17 +153,44 @@ pub struct Decided {
     pub save: bool,
     // Content-free reasons for a tamper alert (pin-other-tenant, pin-unreadable, policy-untrusted, ...).
     pub tamper: Vec<String>,
+    // The guard's in-process iat high-water mark after this call, kept in memory by the caller. Moved only
+    // by a policy verified under a real key (anchor or pin), never by an envelope check or the pin's iat.
+    pub mark: Option<Mark>,
 }
+
+// The marks decide() does not read from its other inputs: the guard's in-process mark, the root-owned
+// policy-hwm.json text, and the time a user-scope mark is judged against (None: the system clock).
+#[derive(Default)]
+pub struct Marks<'a> {
+    pub own: Option<&'a Mark>,
+    pub root: Option<&'a str>,
+    pub now_ms: Option<u64>,
+}
+
+// How far in the future a user-scope mark may be (console and device clocks differ) before it is ignored.
+pub const MARK_SKEW_MS: i64 = 10 * 60 * 1000;
+
+fn iat_of(policy: &Value) -> String { scalar_text(policy.get("policySig").and_then(|s| s.get("iat"))) }
 
 // The decision, from what each source said:
 //   admin    an administrator's clipboardGuard object (root/admin-owned source)
 //   live     the policy fetched now (None: no answer)
 //   anchor   the root-owned policy.pub text; pins: the hook's pin copies
-//   memory   the policy that verified earlier in THIS process (never one re-read from disk)
+//   memory   the policy that verified earlier in THIS process (never one re-read from disk). On an
+//            anchored device it must verify under the anchor too: it may have been taken under the pin or
+//            on the envelope alone before policy.pub was installed.
 //   stored   the saved last-verified copy from disk. User-writable: taken only when it verifies under a key
 //            that is still trusted (the anchor, or a valid pin for this tenant), never on an envelope check.
+// A live policy or saved copy whose iat is older than the high-water mark is a rollback and is refused.
+#[cfg(test)]
 pub fn decide(admin: Option<&Value>, live: Option<&Value>, anchor: Option<&str>, pins: &[Option<String>], tenant: &str, memory: Option<&Value>, stored: Option<&Value>) -> Decided {
+    decide_with(admin, live, anchor, pins, tenant, memory, stored, &Marks::default())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn decide_with(admin: Option<&Value>, live: Option<&Value>, anchor: Option<&str>, pins: &[Option<String>], tenant: &str, memory: Option<&Value>, stored: Option<&Value>, marks: &Marks) -> Decided {
     use crate::clip_guard::ClipPolicy;
+    use crate::clip_guard_hwm::{iat_order, is_rollback, max_iat};
     let mut tamper: Vec<String> = vec![];
     let anchor_keys = anchor.map(parse_keys).unwrap_or_default();
     let pin = pin_keys(pins, tenant);
@@ -167,10 +204,38 @@ pub fn decide(admin: Option<&Value>, live: Option<&Value>, anchor: Option<&str>,
             Err(_) => (vec![], "pin-refused"),
         }
     };
-    let done = |policy: ClipPolicy, status: String, verified: Option<Value>, save: bool, tamper: Vec<String>| Decided { policy, status, verified, save, tamper };
     if let Some(a) = admin.filter(|a| a.is_object()) {
-        return done(ClipPolicy::from_policy(&serde_json::json!({ "clipboardGuard": a })), "admin".into(), None, false, tamper);
+        return Decided { policy: ClipPolicy::from_policy(&serde_json::json!({ "clipboardGuard": a })), status: "admin".into(), verified: None, save: false, tamper, mark: None };
     }
+    // An anchored device takes nothing the anchor did not sign, the in-memory policy included.
+    let memory = match memory {
+        Some(m) if trust == "anchored" => match verify(m, &keys, tenant) {
+            Ok(()) => Some(m),
+            Err(e) => { tamper.push(format!("memory-policy-{e}")); None }
+        },
+        m => m,
+    };
+    // Hard mark: only what user-writable state cannot raise (see the header).
+    let root = marks.root.and_then(|t| crate::clip_guard_hwm::parse_root_hwm(t, tenant));
+    let stored_ok = stored.filter(|st| !keys.is_empty() && verify(st, &keys, tenant).is_ok() && !is_rollback(&iat_of(st), root.as_deref()));
+    let mut mark = root.clone();
+    if let Some(st) = stored_ok { mark = max_iat(mark.as_deref(), Some(&iat_of(st))); }
+    if let Some(m) = memory {
+        mark = max_iat(mark.as_deref(), marks.own.filter(|m| m.tenant == tenant).map(|m| m.iat.as_str()));
+        if !keys.is_empty() && verify(m, &keys, tenant).is_ok() { mark = max_iat(mark.as_deref(), Some(&iat_of(m))); }
+    }
+    // Advisory: the hook's pin iat (user scope). Never refuses; a future one is ignored and reported.
+    let now = marks.now_ms.map(|n| n as i64).unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0));
+    let mut note = String::new();
+    let advisory = if pin.is_ok() { crate::clip_guard_hwm::pin_mark(pins, tenant) } else { None }.filter(|m| {
+        let future = iat_order(m).is_some_and(|t| t > now + MARK_SKEW_MS);
+        if future { tamper.push("hwm-future".into()); note = " (a future pin mark was ignored)".into(); }
+        !future
+    });
+    let behind = |p: &Value, what: &str, tamper: &mut Vec<String>| if is_rollback(&iat_of(p), advisory.as_deref()) { tamper.push(format!("{what}-behind-pin-mark")); };
+    let real_key = trust == "anchored" || trust == "pinned";
+    let moved = |p: &Value| if real_key { max_iat(mark.as_deref(), Some(&iat_of(p))) } else { mark.clone() };
+    let as_mark = |m: Option<String>| m.map(|iat| Mark { tenant: tenant.to_string(), iat });
     let mut refused = None;
     if let Some(p) = live {
         let r = match trust {
@@ -181,10 +246,12 @@ pub fn decide(admin: Option<&Value>, live: Option<&Value>, anchor: Option<&str>,
             // A refused pin may have been planted to drop the device to the weak case: take nothing new.
             _ => Err("pin-refused".into()),
         };
+        let r = r.and_then(|()| if is_rollback(&iat_of(p), mark.as_deref()) { Err("policy-rollback".to_string()) } else { Ok(()) });
         match r {
             Ok(()) => {
                 let status = if trust == "unanchored" { "unanchored (envelope only)".to_string() } else { trust.to_string() };
-                return done(ClipPolicy::from_policy(p), status, Some(p.clone()), true, tamper);
+                behind(p, "policy", &mut tamper);
+                return Decided { policy: ClipPolicy::from_policy(p), status: format!("{status}{note}"), verified: Some(p.clone()), save: true, tamper, mark: as_mark(moved(p)) };
             }
             Err(e) => {
                 if e != "pin-refused" { tamper.push(e.clone()); }
@@ -192,9 +259,9 @@ pub fn decide(admin: Option<&Value>, live: Option<&Value>, anchor: Option<&str>,
             }
         }
     }
-    let why = refused.map(|e| format!(" (live policy not taken: {e})")).unwrap_or_default();
+    let why = refused.map(|e| format!(" (live policy not taken: {e})")).unwrap_or_default() + &note;
     if let Some(m) = memory {
-        return done(ClipPolicy::from_policy(m), format!("verified earlier in this run{why}"), Some(m.clone()), false, tamper);
+        return Decided { policy: ClipPolicy::from_policy(m), status: format!("verified earlier in this run{why}"), verified: Some(m.clone()), save: false, tamper, mark: as_mark(mark) };
     }
     if let Some(st) = stored {
         if keys.is_empty() {
@@ -202,18 +269,23 @@ pub fn decide(admin: Option<&Value>, live: Option<&Value>, anchor: Option<&str>,
             if trust == "pin-refused" { tamper.push("stored-policy-unverifiable".into()); }
         } else {
             match verify(st, &keys, tenant) {
-                Ok(()) => return done(ClipPolicy::from_policy(st), format!("saved copy, verified ({trust}){why}"), Some(st.clone()), false, tamper),
+                Ok(()) if stored_ok.is_none() => tamper.push("stored-policy-rollback".into()),
+                Ok(()) => {
+                    behind(st, "stored-policy", &mut tamper);
+                    return Decided { policy: ClipPolicy::from_policy(st), status: format!("saved copy, verified ({trust}){why}"), verified: Some(st.clone()), save: false, tamper, mark: as_mark(moved(st)) };
+                }
                 Err(e) => tamper.push(format!("stored-policy-{e}")),
             }
         }
     }
-    done(ClipPolicy::default(), format!("no verified policy{why}"), None, false, tamper)
+    Decided { policy: ClipPolicy::default(), status: format!("no verified policy{why}"), verified: None, save: false, tamper, mark: as_mark(mark) }
 }
 
 // ---- I/O ----
 
 pub const STATE_FILE: &str = "clipboard-guard-policy.json";
 
+// The saved copy carries no free-standing mark: its own signed iat is the only mark it gives (decide).
 pub fn save_last(dir: &str, policy: &Value) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     crate::private_file::write_private(format!("{dir}/{STATE_FILE}"), &serde_json::json!({ "v": 1, "policy": policy }).to_string())
@@ -224,10 +296,11 @@ pub fn load_last(dir: &str) -> Option<Value> {
     v.get("policy").filter(|p| p.is_object()).cloned()
 }
 
-fn anchor_text() -> Option<String> {
+// A root/admin-owned file beside the machine config: policy.pub (the anchor), policy-hwm.json (the mark).
+fn machine_file(name: &str) -> Option<String> {
     let machine = crate::admin_config::machine_config_path();
     let dir = std::path::Path::new(&machine).parent()?;
-    crate::admin_config::read_admin_owned(&dir.join("policy.pub").to_string_lossy())
+    crate::admin_config::read_admin_owned(&dir.join(name).to_string_lossy())
 }
 
 // The hook's two pin copies, built from the home directory only (never XDG_CONFIG_HOME or APPDATA).
@@ -266,7 +339,7 @@ fn plist_json(plist: &[u8], key: &str) -> Option<Value> {
 }
 
 // Everything decide() needs, read now. `fetch` false skips the network (the first decision at launch).
-pub fn gather_and_decide(fetch: bool, memory: Option<&Value>, stored: Option<&Value>) -> Decided {
+pub fn gather_and_decide(fetch: bool, memory: Option<&Value>, stored: Option<&Value>, own_mark: Option<&Mark>) -> Decided {
     let admin = crate::admin_config::admin();
     let cfg = crate::admin_config::effective_config(crate::read_config(), &admin);
     let tenant = cfg.get("tenant").and_then(|t| t.as_str()).unwrap_or("").to_string();
@@ -279,7 +352,9 @@ pub fn gather_and_decide(fetch: bool, memory: Option<&Value>, stored: Option<&Va
             .and_then(|(url, token)| crate::console_binding::real_fetch(url.as_str(), token.as_deref().unwrap_or("")))
             .map_err(|e| live_err = Some(e)).ok()
     } else { None };
-    let mut d = decide(admin_setting().as_ref(), live.as_ref(), anchor_text().as_deref(), &pin_texts(), &tenant, memory, stored);
+    let root_hwm = machine_file("policy-hwm.json");
+    let marks = Marks { own: own_mark, root: root_hwm.as_deref(), now_ms: None };
+    let mut d = decide_with(admin_setting().as_ref(), live.as_ref(), machine_file("policy.pub").as_deref(), &pin_texts(), &tenant, memory, stored, &marks);
     if let Some(e) = live_err { d.status = format!("{} (console: {e})", d.status); }
     d
 }
@@ -443,6 +518,159 @@ mod tests {
             assert!(d.status.starts_with("no verified policy"), "{}", d.status);
         }
         assert_eq!(decide(None, None, None, &[pin("evil")], "acme", None, None).policy.mode, Mode::Off);
+    }
+
+    // A key generated for the test (the fixture's private key is not in the repo), as parse_keys text.
+    fn keypair() -> (ring::signature::Ed25519KeyPair, String) {
+        let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+        let kp = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let mut der = SPKI_ED25519_PREFIX.to_vec();
+        der.extend_from_slice(ring::signature::KeyPair::public_key(&kp).as_ref());
+        (kp, base64::engine::general_purpose::STANDARD.encode(der))
+    }
+    // A policy signed the console's way (cli/hook-core.mjs policyCanonical) with iat `iat`.
+    fn sign(kp: &ring::signature::Ed25519KeyPair, tenant: &str, iat: &str, guard: Value) -> Value {
+        let mut p = json!({ "clipboardGuard": guard });
+        let msg = format!("moorai-policy|v1|{tenant}|{iat}|{}", policy_digest(&p));
+        let sig = base64::engine::general_purpose::STANDARD.encode(kp.sign(msg.as_bytes()).as_ref());
+        p["policySig"] = json!({ "v": 1, "alg": "ed25519", "tenant": tenant, "iat": iat, "sig": sig });
+        p
+    }
+    fn pin_of(key: &str, tenant: &str, iat: &str) -> Option<String> { Some(json!({ "v": 1, "tenant": tenant, "keys": [key], "iat": iat }).to_string()) }
+    const T1: &str = "2026-10-01T00:00:00.000Z";
+    const T2: &str = "2026-10-02T00:00:00.000Z";
+
+    #[test]
+    fn an_anchored_device_keeps_no_policy_the_anchor_did_not_sign() {
+        let (kp, key) = keypair();
+        // taken earlier in this run on the envelope alone (no anchor, no pin), or under the user-writable pin
+        let envelope_only = forged("clear", Some("AAAA"));
+        let pin_signed = sign(&kp, "acme", T1, json!({ "mode": "clear" }));
+        assert_eq!(decide(None, None, None, &[pin_of(&key, "acme", ""), None], "acme", None, None).status, "no verified policy");
+        for memory in [envelope_only, pin_signed] {
+            // policy.pub is now in place: the in-memory copy must verify under it like everything else
+            let d = decide(None, None, Some(&pk()), &[pin_of(&key, "acme", "")], "acme", Some(&memory), None);
+            assert_eq!(d.policy.mode, Mode::Off, "{}", d.status);
+            assert!(d.verified.is_none(), "{}", d.status);
+            assert!(d.tamper.iter().any(|t| t.starts_with("memory-policy-")), "{:?}", d.tamper);
+            // and the anchor-signed saved copy is what takes over
+            let d = decide(None, None, Some(&pk()), &[], "acme", Some(&memory), Some(&signed_clear()));
+            assert_eq!((d.policy.mode, d.status.as_str()), (Mode::Clear, "saved copy, verified (anchored)"));
+        }
+        // an anchor-signed in-memory policy is kept as before
+        let d = decide(None, Some(&forged("off", Some("AAAA"))), Some(&pk()), &[], "acme", Some(&signed_clear()), None);
+        assert_eq!(d.policy.mode, Mode::Clear, "{}", d.status);
+        assert!(d.status.starts_with("verified earlier in this run"), "{}", d.status);
+    }
+
+    #[test]
+    fn an_older_validly_signed_live_policy_is_a_rollback() {
+        let (kp, key) = keypair();
+        let newer = sign(&kp, "acme", T2, json!({ "mode": "clear" }));
+        let older = sign(&kp, "acme", T1, json!({ "mode": "off" }));
+        for (anchor, pins) in [(Some(key.clone()), vec![]), (None, vec![pin_of(&key, "acme", ""), None])] {
+            let d = decide(None, Some(&older), anchor.as_deref(), &pins, "acme", Some(&newer), None);
+            assert_eq!(d.policy.mode, Mode::Clear, "{}", d.status);
+            assert!(!d.save, "a rollback is not saved");
+            assert!(d.tamper.contains(&"policy-rollback".to_string()), "{:?}", d.tamper);
+            // the same policy again (equal iat) is not a rollback
+            let again = sign(&kp, "acme", T2, json!({ "mode": "alert" }));
+            let d = decide(None, Some(&again), anchor.as_deref(), &pins, "acme", Some(&newer), None);
+            assert_eq!((d.policy.mode, d.save), (Mode::Alert, true), "{}", d.status);
+        }
+    }
+
+    #[test]
+    fn an_older_saved_copy_is_refused_by_the_root_mark_and_flagged_by_the_pin_mark() {
+        let (kp, key) = keypair();
+        // an old, validly signed copy that approved more apps, put back in place of the saved one
+        let older = sign(&kp, "acme", T1, json!({ "mode": "clear", "approvedApps": ["com.openai.chat"] }));
+        let root = json!({ "v": 1, "tenant": "acme", "iat": T2 }).to_string();
+        let d = decide_with(None, None, None, &[pin_of(&key, "acme", ""), None], "acme", None, Some(&older), &Marks { root: Some(&root), ..Default::default() });
+        assert_eq!(d.policy.mode, Mode::Off, "{}", d.status);
+        assert!(d.policy.approved.is_empty() && d.verified.is_none());
+        assert!(d.tamper.contains(&"stored-policy-rollback".to_string()), "{:?}", d.tamper);
+        // the hook's pin iat is user-writable: it is reported, it does not refuse
+        let d = decide(None, None, None, &[pin_of(&key, "acme", T2), None], "acme", None, Some(&older));
+        assert_eq!(d.policy.mode, Mode::Clear, "{}", d.status);
+        assert!(d.tamper.contains(&"stored-policy-behind-pin-mark".to_string()), "{:?}", d.tamper);
+        // a copy at the mark is taken without a report
+        let current = sign(&kp, "acme", T2, json!({ "mode": "clear" }));
+        let d = decide(None, None, None, &[pin_of(&key, "acme", T2)], "acme", None, Some(&current));
+        assert_eq!((d.policy.mode, d.status.as_str(), d.tamper.len()), (Mode::Clear, "saved copy, verified (pinned)", 0));
+    }
+
+    #[test]
+    fn the_hard_marks_refuse_older_policies_and_leave_a_verified_one_enforcing() {
+        let (kp, key) = keypair();
+        let older = sign(&kp, "acme", T1, json!({ "mode": "off" }));
+        let kept = sign(&kp, "acme", T1, json!({ "mode": "coach" }));
+        let root = json!({ "v": 1, "tenant": "acme", "iat": T2 }).to_string();
+        let own = Mark { tenant: "acme".into(), iat: T2.into() };
+        let other = Mark { tenant: "evil".into(), iat: T2.into() };
+        let pins = [pin_of(&key, "acme", ""), None];
+        // the root-owned mark refuses a live policy and a saved copy
+        let marks = Marks { root: Some(&root), ..Default::default() };
+        let d = decide_with(None, Some(&older), None, &pins, "acme", None, None, &marks);
+        assert!(!d.save && d.tamper.contains(&"policy-rollback".to_string()), "{:?}", d.tamper);
+        let d = decide_with(None, None, None, &pins, "acme", None, Some(&older), &marks);
+        assert!(d.verified.is_none() && d.tamper.contains(&"stored-policy-rollback".to_string()), "{:?}", d.tamper);
+        // the in-process mark refuses only while the in-memory policy is in force, which then stays
+        let marks = Marks { own: Some(&own), ..Default::default() };
+        let d = decide_with(None, Some(&older), None, &pins, "acme", Some(&kept), None, &marks);
+        assert_eq!((d.policy.mode, d.save), (Mode::Coach, false), "{}", d.status);
+        assert!(d.tamper.contains(&"policy-rollback".to_string()), "{:?}", d.tamper);
+        let d = decide_with(None, Some(&older), None, &pins, "acme", None, None, &marks);
+        assert!(d.save, "no in-memory policy, no refusal by the in-process mark: {}", d.status);
+        // another tenant's mark is not this tenant's
+        let d = decide_with(None, Some(&older), None, &pins, "acme", Some(&kept), None, &Marks { own: Some(&other), ..Default::default() });
+        assert!(d.save, "{}", d.status);
+        // a verified policy moves the mark; the envelope-only case never sets one
+        let d = decide(None, Some(&sign(&kp, "acme", T2, json!({ "mode": "clear" }))), None, &pins, "acme", None, None);
+        assert_eq!(d.mark, Some(own.clone()));
+        let d = decide(None, Some(&sign(&kp, "acme", T2, json!({ "mode": "clear" }))), None, &[], "acme", None, None);
+        assert_eq!((d.status.as_str(), d.mark), ("unanchored (envelope only)", None));
+    }
+
+    #[test]
+    fn after_a_restart_the_saved_copys_signed_iat_refuses_an_older_live_policy() {
+        let (kp, key) = keypair();
+        let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("moorai-cliphwm-{}-{n}", std::process::id())).to_string_lossy().into_owned();
+        let pins = [pin_of(&key, "acme", "")];
+        let d = decide(None, Some(&sign(&kp, "acme", T2, json!({ "mode": "clear" }))), None, &pins, "acme", None, None);
+        save_last(&dir, d.verified.as_ref().unwrap()).unwrap();
+        // after a restart the console replays an older policy: the verified saved copy (iat T2) refuses it and enforces
+        let d = decide(None, Some(&sign(&kp, "acme", T1, json!({ "mode": "off" }))), None, &pins, "acme", None, load_last(&dir).as_ref());
+        assert_eq!((d.policy.mode, d.status.as_str()), (Mode::Clear, "saved copy, verified (pinned) (live policy not taken: policy-rollback)"));
+    }
+
+    #[test]
+    fn a_far_future_user_scope_mark_cannot_switch_the_guard_off() {
+        let (kp, key) = keypair();
+        let far = "2099-01-01T00:00:00.000Z";
+        let genuine = sign(&kp, "acme", T2, json!({ "mode": "clear" }));
+        let d = decide(None, Some(&genuine), None, &[pin_of(&key, "acme", far)], "acme", None, None);
+        assert_eq!((d.policy.mode, d.save), (Mode::Clear, true), "pin mark: {} {:?}", d.status, d.tamper);
+        assert_eq!(d.status, "pinned (a future pin mark was ignored)");
+        assert!(d.tamper.contains(&"hwm-future".to_string()), "{:?}", d.tamper);
+        let d = decide(None, None, None, &[pin_of(&key, "acme", far)], "acme", None, Some(&genuine));
+        assert_eq!(d.policy.mode, Mode::Clear, "pin mark at launch: {} {:?}", d.status, d.tamper);
+        assert_eq!(d.mark.map(|m| m.iat).as_deref(), Some(T2), "the guard's own mark is not raised by it");
+        // a free-standing mark written beside the saved copy is not read at all
+        let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("moorai-clipfut-{}-{n}", std::process::id())).to_string_lossy().into_owned();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(format!("{dir}/{STATE_FILE}"), json!({ "v": 1, "policy": genuine, "hwm": { "tenant": "acme", "iat": far } }).to_string()).unwrap();
+        let d = decide(None, Some(&genuine), None, &[pin_of(&key, "acme", "")], "acme", None, load_last(&dir).as_ref());
+        assert_eq!((d.policy.mode, d.save, d.tamper.len()), (Mode::Clear, true, 0), "{}", d.status);
+        // the clamp: within MARK_SKEW_MS of now a pin mark is a mark (reported), beyond it is ignored
+        let now = crate::clip_guard_hwm::iat_order(T2).unwrap() as u64;
+        let older = sign(&kp, "acme", T1, json!({ "mode": "clear" }));
+        for (pin_iat, report) in [("2026-10-02T00:05:00.000Z", "policy-behind-pin-mark"), ("2026-10-02T01:00:00.000Z", "hwm-future")] {
+            let d = decide_with(None, Some(&older), None, &[pin_of(&key, "acme", pin_iat)], "acme", None, None, &Marks { now_ms: Some(now), ..Default::default() });
+            assert!(d.save && d.tamper == vec![report.to_string()], "{pin_iat}: {:?}", d.tamper);
+        }
     }
 
     #[test]

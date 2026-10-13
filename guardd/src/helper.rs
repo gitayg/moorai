@@ -560,7 +560,7 @@ impl Handler for IpcHandler {
                 let now = shared.now();
                 let mut s = shared.lock();
                 s.counters.add(&c.host);
-                s.observer.on_call(&c.host, &c.session_hash, agent, now);
+                s.observer.on_call(&c.host, &c.session_hash, peer.uid, agent, now);
                 s.policy.last_call_ms = now;
                 (reply(Response::Call(CallResp {})), None)
             }
@@ -687,6 +687,101 @@ mod tests {
         assert_eq!(authorize(&r, &peer(false)), Err(ErrorCode::Forbidden));
         assert_eq!(authorize(&r, &peer(true)), Ok(()));
         assert_eq!(authorize(&Request::Kill(KillReq { session_hash: None }), &peer(false)), Ok(()));
+    }
+
+    struct Sys;
+    impl SystemInfo for Sys {
+        fn boot_id(&self) -> std::io::Result<String> {
+            Ok("8d1c1e0f-0000-4000-8000-000000000001".into())
+        }
+        fn awake_sec(&self) -> std::io::Result<u64> {
+            Ok(3600)
+        }
+        fn uptime_sec(&self) -> std::io::Result<u64> {
+            Ok(7200)
+        }
+        fn machine_id(&self) -> std::io::Result<String> {
+            Ok("test-machine-0001".into())
+        }
+        fn hostname(&self) -> String {
+            "test-host".into()
+        }
+    }
+
+    const T0: u64 = 1_791_795_600_000;
+    // Two users on one device: A (uid 501) runs claude 100 with its hook 120; B (uid 502) runs claude 200
+    // with a process 220 under it, and 300 outside any agent.
+    const A: u32 = 501;
+    const B: u32 = 502;
+
+    #[cfg(unix)]
+    fn two_user_device(tag: &str) -> (Arc<Shared>, IpcHandler, std::sync::Arc<std::sync::atomic::AtomicU64>) {
+        use crate::observe::fake::{proc, FakeProcs};
+        use std::os::unix::fs::PermissionsExt;
+        let base = crate::state::test_root(tag);
+        std::fs::create_dir_all(base.join("etc")).unwrap();
+        std::fs::set_permissions(base.join("etc"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let paths = Paths::under(&base);
+        std::fs::write(&paths.machine_config, r#"{"serverUrl":"http://127.0.0.1:9","tenant":"acme","helper":"required"}"#).unwrap();
+        std::fs::set_permissions(&paths.machine_config, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::write(&paths.secret, r#"{"installToken":"tok-acme"}"#).unwrap();
+        std::fs::set_permissions(&paths.secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let procs = Arc::new(FakeProcs::new(vec![
+            proc(1, 0, 0, 0, "/sbin/launchd", None),
+            proc(100, 1, A, 1_000, "/usr/local/bin/claude", None),
+            proc(120, 100, A, 2_000, "/usr/bin/node", Some("/opt/moorai/cli/moorai-hook.mjs")),
+            proc(200, 1, B, 1_000, "/usr/local/bin/claude", None),
+            proc(220, 200, B, 2_000, "/usr/bin/node", Some("/tmp/x.mjs")),
+            proc(300, 1, B, 2_000, "/usr/bin/python3", None),
+        ]));
+        let clock = Arc::new(std::sync::atomic::AtomicU64::new(T0));
+        let c2 = clock.clone();
+        let console = Arc::new(crate::console::fake::FakeConsole::new(Box::new(|_r: &crate::console::HttpRequest| Ok(crate::console::HttpResponse { status: 404, body: b"{}".to_vec() }))));
+        let deps = Deps {
+            procs,
+            backend: Arc::new(crate::quarantine::recording::Recording::new(&paths.state_file("quarantine.json"))),
+            sys: Arc::new(Sys),
+            console,
+            clock: Arc::new(move || c2.load(Ordering::SeqCst)),
+        };
+        let shared = Helper::new(paths).unwrap().open_shared(deps).unwrap();
+        (shared.clone(), IpcHandler { shared }, clock)
+    }
+
+    fn call(h: &IpcHandler, pid: u32, uid: u32, session: &str) {
+        let req = RequestFrame { v: PROTO_VERSION, id: 1, body: Request::Call(crate::ipc::CallReq { event: "PreToolUse".into(), host: "claude-code".into(), session_hash: session.into(), agent_pid: None }) };
+        let mut ctx = ConnCtx { hello_done: true, client: Some("moorai-hook".into()) };
+        let (resp, _) = h.handle(&mut ctx, &PeerCred { pid, uid, sid: None, admin: false }, req);
+        assert!(matches!(resp.body, Response::Call(_)), "{resp:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn another_users_calls_do_not_vouch_for_this_users_agent() {
+        let (shared, h, clock) = two_user_device("silentx");
+        // B, from inside its own agent and from outside any agent, keeps calling for claude-code
+        call(&h, 220, B, "bbbbbbbbbbbbbbbb");
+        call(&h, 300, B, "cccccccccccccccc");
+        clock.store(T0 + 121_000, Ordering::SeqCst);
+        assert_eq!(observe_once(&shared).unwrap(), 1, "A's claude (100) is silent: B's calls prove nothing about it");
+        assert_eq!(shared.lock().observer.hook_silent(T0 + 121_000).len(), 1);
+        // A's own hook clears it
+        call(&h, 120, A, "aaaaaaaaaaaaaaaa");
+        assert!(shared.lock().observer.hook_silent(T0 + 122_000).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn another_user_cannot_take_over_a_session() {
+        let (shared, h, _clock) = two_user_device("sessx");
+        call(&h, 120, A, "aaaaaaaaaaaaaaaa");
+        call(&h, 220, B, "aaaaaaaaaaaaaaaa");
+        let agent = shared.lock().observer.session("aaaaaaaaaaaaaaaa").map(|t| t.agent.pid);
+        assert_eq!(agent, Some(100), "a console quarantine of A's session still targets A's agent");
+        // A's own later calls keep it, and B's own sessions are B's
+        call(&h, 120, A, "aaaaaaaaaaaaaaaa");
+        call(&h, 220, B, "bbbbbbbbbbbbbbbb");
+        assert_eq!(shared.lock().observer.session("bbbbbbbbbbbbbbbb").map(|t| t.agent.pid), Some(200));
     }
 
     #[cfg(unix)]

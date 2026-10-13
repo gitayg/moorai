@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "1.13.7",
+  "version": "1.13.8",
   "license": "MIT",
   "description": "MoorAI agent — AI security at the point. Runtime guardrails for AI agents, apps and APIs (community edition, MIT)",
   "type": "module",

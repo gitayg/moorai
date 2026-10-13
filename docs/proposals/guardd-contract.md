@@ -211,9 +211,11 @@ A hook process opens at most one connection per invocation and reuses it for eve
 - **Admin peer** = uid 0 (Unix), or a token whose user is SYSTEM (`S-1-5-18`) or that is an elevated member of
   BUILTIN\Administrators (Windows). `release` requires an admin peer (`forbidden` otherwise;
   `helper::authorize` is the single gate and is unit-tested). Every other op is open to any local peer.
-- The peer pid and uid are recorded per connection and used by the ops themselves: `call` counters are
-  attributed to the peer uid; `quarantine` derives its target from the peer pid (§8.3); `submit` stamps
-  `peerUid` on each queued alert.
+- The peer pid and uid are recorded per connection and used by the ops themselves: a `call` counts as
+  liveness only for agent processes of the peer's uid (§8.2), and the `sessionHash` → agent tree mapping it
+  records belongs to the peer's uid (another uid's `call` never remaps it, and when the map is full the
+  eviction comes out of the uid holding the most sessions); `quarantine` derives its target from the peer pid
+  (§8.3); `submit` stamps `peerUid` on each queued alert.
 - Rate limits per peer uid: `quarantine` 10/min (`busy` beyond); `submit` 64 alerts per frame.
 
 **Hook side.** Node exposes neither `SO_PEERCRED`/`LOCAL_PEERCRED` nor `GetNamedPipeServerProcessId`, so the
@@ -490,8 +492,10 @@ The table `observe::AGENT_HOSTS` (same table for observation and for §8.3):
 Match on the kernel's image path (`proc_pidpath`, `/proc/<pid>/exe`, `QueryFullProcessImageNameW`), basename
 without `.exe`, case-insensitive on macOS/Windows; argv[1] from `KERN_PROCARGS2`, `/proc/<pid>/cmdline` or the
 PEB. Name-based and best-effort (design §5 risk 3); the entries must be confirmed on real installs (§13.2).
-Observation scans every 15 s; a host with a matching process for ≥ 120 s and zero `call`s for that host is
-`hookSilent` in the next beat and raises a signed local alert once per process.
+Observation scans every 15 s; a host with a matching process for ≥ 120 s and zero `call`s for that host from
+a peer of the process's own OS user is `hookSilent` in the next beat and raises a signed local alert once per
+process. A call vouches only for its peer's own user: another account's calls never keep this user's agent
+from reading as silent.
 
 ### 8.3 Target rule
 
@@ -835,8 +839,9 @@ contradictory point, to be folded into the sections above.
    is therefore not claimed. Measured server latencies (macOS, debug build): hello 0.3 ms, call 0.07 ms,
    submit 0.5–1 ms, quarantine 0.4–0.9 ms.
 4. **Hook-call counters** are kept in memory on the `call` path and persisted every observation scan (15 s)
-   and after each accepted beat; a crash loses at most 15 s of counts. They are counted per host (the beat's
-   shape), not additionally per peer uid as §3.6 says.
+   and after each accepted beat; a crash loses at most 15 s of counts. The beat's `hookCalls` are counted per
+   host (the beat's shape); liveness for `hookSilent` and session mapping are per peer uid (§3.6, §8.2,
+   agent v1.13.8).
 5. **Quarantine target:** the helper derives the agent from the peer's ancestry (decision 7); the request's
    `agentPid` is accepted when it is that agent or any descendant of it, and the request's `host` must equal
    the derived host. pid ≤ 1, the helper itself and uid-0 processes (for a non-root peer) are refused.

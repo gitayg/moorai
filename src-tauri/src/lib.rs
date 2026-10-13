@@ -3,6 +3,7 @@ mod ai_keys;
 mod ai_runtime;
 mod clip_guard;
 mod clip_guard_apps;
+mod clip_guard_hwm;
 #[cfg(target_os = "macos")]
 mod clip_guard_mac;
 mod clip_guard_policy;
