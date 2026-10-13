@@ -274,6 +274,49 @@ declared: `test/skill-analysis.test.mjs` and `test/destinations.test.mjs` each p
 a fixture, capture every byte the hook POSTs plus the on-device ledgers, and fail if the canary, a
 matched span, a verbatim source line, a URL path, a query string or a request header appears in either.
 
+### Allow trail (opt-in)
+Off by default. With `actionTrail: "allowed"` in the **signed** policy (an unsigned body, an environment
+variable or a user config file cannot turn it on; the policy only comes from the console the binding names,
+and an admin binding wins, `cli/config.mjs`), the hook records every PreToolUse call it allows, content-free,
+and delivers the records to `POST /api/actions` as `{ v: 1, records: [ … up to 500 ] }`, with the install
+token header `/api/alerts` uses ([`cli/action-trail.mjs`](../cli/action-trail.mjs)).
+
+- **Record fields:** `ts`, `session` (the keyed session hash alerts carry), `seq` (a counter of its own,
+  field `seq` on the wire and in the console's storage, +1 per record per device per OS user, separate from
+  the alert `seq`), `event` (`PreToolUse`), `tool` (e.g. `Bash`, `mcp__github__list_issues`; sanitised to
+  the console's rule before queueing: NFKC, each control, format, surrogate or whitespace character replaced
+  by `_`, cut to 256 code points, `unknown` when empty, so no record is rejected for its name), `toolTags` (capability tags,
+  `cli/tool-tags.mjs`), `mcpServer` (MCP tools only), `decision` (`allow`), `basis` (`exception` when a live
+  exception covered something that would have fired, `rule` when a finding, a mask or a tag rule applied and
+  the configured action still let the call run, `default` when nothing fired; a tool no branch reads counts
+  as `default`), `policyIat`, `agentName`, `agentVersion`, `appVersion`, `user` / `device` / `platform` /
+  `tenant` / `actor` as alerts stamp them, and `contentHash` (the tenant-keyed hash of the normalized call:
+  tool name plus the whitespace-collapsed command, or the input as sorted-key JSON).
+- **Never included:** arguments, commands, paths, URLs, prompt text, file contents, the capture-tier
+  extras. Denied and asked calls are not in the trail (they are alerts already), nor is PostToolUse.
+- **No per-call network.** The hook appends the record to `~/.moorai/action-trail.jsonl` (0600) under a
+  lock file. When 200 records are queued or the oldest is 30 s old, the call takes a flush lease and spawns
+  the detached `actiontrail` worker; one flush is in flight at a time. Session end (Stop) also flushes. The
+  worker never fetches policy, sends nothing while the console back-off (`cli/console-backoff.mjs`) is
+  active, and never writes it. A 404 / 501 (the console's answer until its side ships), any other non-2xx
+  or no answer keeps the records and waits 1, 2, 4, then 5 minutes before the next attempt. Delivery is
+  at-least-once: the console de-duplicates on (device, user, `seq`). Measured on this branch (macOS,
+  node 22.22, 40 interleaved spawns each, benign allowed `git status --short`, cached signed policy): p50
+  137.3 ms on vs 136.9 ms off, p95 149.9 vs 146.2 ms; a second run 134.2 vs 133.2 ms, p95 144.5 vs 143.7 ms.
+- **Volume and retention.** One record per allowed tool call, about 450 to 500 bytes as queued. The queue is
+  bounded at 10,000 records and 5 MB; when full, the oldest are dropped down to 90% of the bound and the
+  count is kept as `actionTrailDropped` (with a content-free line in the local action audit log). At flush
+  time, records whose `ts` is older than 89 days are dropped and added to the same count rather than sent
+  for the console to reject (it refuses past 90 days); like a full-queue drop, this leaves a gap in `seq`
+  that the console reports, explained by `actionTrailDropped`. The
+  session summary carries `actionsRecorded` (this session's queued records) and `actionTrailDropped` (the
+  device's running count) while the trail is on. Records leave the queue once the console takes them;
+  retention after that is the console's.
+- **Limit.** The queue, the counter and the state file are user files, writable by the governed agent
+  until the phase-3 anchor holds them. A naive deletion of queued records shows as a gap in `seq`; an agent
+  that also rewinds the counter shows as a regression, unless it rewinds exactly to the last value the
+  console saw. `@moorai/agent-sdk` and `moorai-serve` do not record the trail yet.
+
 ### Policy — server → client
 Server distributes: approved-tools allowlist, risk thresholds, per-threat/per-tier enforcement
 actions (`threatPolicy` / `tierPolicy`), model-escalation policy, and rule-base updates. Client
@@ -310,9 +353,22 @@ on a managed device (an admin binding in the machine config) the rewrite is refu
 
 The policy is an ed25519-signed envelope. The client trusts it via, in order: a root-owned anchor
 (`/etc/moorai/policy.pub`, `%ProgramData%\MoorAI\policy.pub`, or MDM-injected `MOORAI_POLICY_PUBKEY`),
-else a TOFU pin learned from the first verified fetch. Two properties are enforced on top of the
-signature itself:
+else a TOFU pin learned from the first verified fetch. The unsigned `GET /api/policy/pubkey` is read only
+on that first contact; once pinned, the device neither fetches nor believes it. Three properties are
+enforced on top of the signature itself:
 
+- **Key rotation (v1.13.7).** A pinned device learns a new key only from a `nextKeys` array (base64 SPKI
+  DER or PEM strings) inside the signed body, and only when that policy verifies under a key already in
+  the pin and its `iat` is strictly greater than the high-water mark. An equal-`iat` replay is still
+  accepted as the current policy but teaches nothing, and a not-newer `nextKeys` raises a content-free
+  `policy:nextKeys:not-newer` alert. Before v1.13.7 a pinned device also learned whatever the pubkey
+  endpoint published beside a verifying policy, so anyone who could answer as the console (on an unmanaged
+  device, a rewritten `serverUrl`) could replay the current signed policy, get its own key pinned, and then
+  sign any policy. The console emits `nextKeys` in policies signed by the old key for the transition window
+  of a rotation (`POST /api/policy/rotate-key`), then signs with the new key. Same field and rule as the
+  privileged helper (guardd contract §13.3 item 1); both are run against
+  `test/fixtures/guardd/policy-rotation-vectors.json`. An anchored device does not take `nextKeys` into
+  its pin; rotating it is shipping a new `policy.pub`.
 - **Key revocation.** A `revokedKeys` list inside the signed body prunes matching keys from the
   device's pin, so an operator signing with K2 can evict a leaked K1 without reprovisioning. Two
   refusals guard it: a key may not revoke itself (otherwise a stolen key locks the operator out),
@@ -323,9 +379,11 @@ signature itself:
   replayed to undo a tightening. Equal `iat` is accepted, or steady-state re-fetch would break. A
   refusal falls back to last-known-good, never to "no policy", so #33 offline enforcement is intact.
 
-**Strength, stated honestly.** Both mechanisms are HARD only where the state they depend on is
+**Strength, stated honestly.** These mechanisms are HARD only where the state they depend on is
 outside the agent's own write scope. Rollback refusal is hard when a root-owned
-`/etc/moorai/policy-hwm.json` is present, because the hook reads but never writes it. Revocation is
+`/etc/moorai/policy-hwm.json` is present, because the hook reads but never writes it. The rotation rule
+closes the remote route (an impersonating console cannot teach a key), but a local attacker who can write
+both pin copies can still add a key to them directly, as before. Revocation is
 **never** hard: it prunes the pin, and both pin copies live under the user's home directory, so a
 local attacker who can poison the policy cache can rewind the pin too — and on an anchored device
 the pin is not the deciding key set at all, so pruning changes no enforcement decision there. On an
@@ -1698,6 +1756,100 @@ and a bounded directory walk. Malformed lines and unparseable Codex arguments ar
 - The legacy Codex `shell` argv is turned into a command string by this tool; what the Codex hook sent
   for it was not observed. Prompts are scanned only as `promptScan` allows, as in the live hook: a typed
   prompt is not scanned under the default.
+
+## Clipboard guard (desktop app)
+
+The desktop host stops sensitive text being pasted into a native AI app the organisation has not approved,
+and reports it without content. Code: [`clip_guard.rs`](../src-tauri/src/clip_guard.rs) (decisions),
+[`clip_guard_policy.rs`](../src-tauri/src/clip_guard_policy.rs) (signed policy),
+[`clip_guard_apps.rs`](../src-tauri/src/clip_guard_apps.rs) (AI-app list),
+[`clip_guard_mac.rs`](../src-tauri/src/clip_guard_mac.rs) / [`clip_guard_win.rs`](../src-tauri/src/clip_guard_win.rs)
+(OS providers), [`clip_guard_run.rs`](../src-tauri/src/clip_guard_run.rs) (loop, console, status),
+[`src/clipguard.js`](../src/clipguard.js) (scanner, status line, banner).
+
+**Policy.** `clipboardGuard: { mode: "off" | "alert" | "coach" | "clear", approvedApps: [ids], aiApps: [ids],
+detectors: [detector ids] }`. Default and any unknown value: `off`. No environment variable, user file or
+webview value is read. Sources, in order:
+- **Administrator:** the macOS managed preference `ClipboardGuard` (a dict in the `run.glick.moorai`
+  profile), else `clipboardGuard` in the root/admin-owned machine file, read through the ownership checks
+  in `admin_config.rs`. When present it decides.
+- **Live policy:** `/api/policy`, fetched by the host itself from the console the binding names (an
+  administrator's console first, `console_http::target`), every 5 minutes (every minute without an answer).
+  It is taken only when its `policySig` envelope verifies: against the root-owned `policy.pub` when present
+  (anchored), else the hook's TOFU pin for this tenant (pinned; `~/.moorai/policy-pin.json` and
+  `~/.config/moorai/policy-pin.json`, Windows `~\AppData\Roaming\MoorAI\policy-pin.json`, built from the
+  home directory only). **The weak case:** with no anchor and no pin there is no key to check, so only the
+  presence of an envelope is required (the `actionTrailMode` rule) and trust rests on the TLS fetch from the
+  bound console. The envelope format is `cli/hook-core.mjs`'s (`policyCanonical`, `policyDigest`,
+  `canonicalJson`), reimplemented in Rust with `ring` and tested against a Node-signed fixture
+  (`test/fixtures/clipboard-guard-policy.json`).
+- **In memory:** the policy that verified earlier in this process.
+- **Saved copy:** `<MoorAI Host>/clipboard-guard-policy.json` (the host's own state directory), written when
+  a live policy verifies. It is a convenience for the next launch only: it is taken only when it verifies
+  under a key that is still trusted (the anchor, or a valid pin for this tenant), never on an envelope check.
+
+**User-writable state never turns the guard off.** A pin that does not parse or names another tenant is
+ignored; while it is there nothing new is taken without an anchor, and the in-memory policy stays in force.
+A live policy that is unsigned, carries a bad signature or is signed for another tenant is refused the same
+way. Off happens only when a verified policy says off, or nothing has verified yet: at launch with a refused
+pin and no anchor, nothing on disk can be trusted, so the guard stays off. Each refusal raises one
+content-free tamper alert per run (`reasonCode: "CLIPBOARD_GUARD_POLICY_REFUSED"`, `clipboardGuard: {
+refused: "pin-other-tenant" | "pin-unreadable" | "policy-unsigned" | "policy-untrusted" | "policy-mismatch" |
+"policy-malformed" | "stored-policy-unverifiable" | "stored-policy-untrusted" | …, kept: <mode> }`).
+**Not a hard guarantee:** the saved copy and the pin are in the user's scope. An agent running as the user
+can delete or replace the saved copy (the guard is then off after a restart until the console answers, or,
+on a device with no anchor and no pin, until the next live policy), and a replacement must still verify
+under a trusted key. The phase-2 root-owned helper is the real fix; today the root-owned `policy.pub` and
+an administrator's setting are the hard parts.
+
+**Modes.** `alert`: a content-free alert. `coach`: the alert and a local notification (macOS: `osascript
+display notification`; Windows: a toast) plus an in-app banner, naming the kind of data, the app and why.
+`clear`: the alert, the notification, and the clipboard text replaced with
+`[MoorAI removed this from the clipboard: it contained <kind>, and <app> is not approved for it.]`.
+
+**What is read, and when.**
+- macOS polls `NSPasteboard.changeCount` every 500 ms (the general pasteboard has no change notification) and
+  reads the frontmost app's bundle id from `NSWorkspace`. Windows listens for `WM_CLIPBOARDUPDATE`
+  (`AddClipboardFormatListener` on a message-only window) and reads `GetForegroundWindow` → process image
+  name on a 500 ms timer. Neither carries clipboard content. With the mode `off` nothing is polled but the
+  in-memory policy (every 2 s).
+- The text is read only when the frontmost app is on the AI-app list (`data/ai-catalog.json` `macBundle`
+  and the file names of `win`, plus `aiApps`), is not in `approvedApps`, and either the clipboard changed
+  or that app just came to the front. The second trigger catches the "copied earlier, then opened the AI
+  app" order. Switching back to the app with the same clipboard reuses the last result and does not read
+  again.
+- Text only: macOS reads `public.utf8-plain-text` and skips a pasteboard that also holds a file URL;
+  Windows reads `CF_UNICODETEXT` and skips one that holds `CF_HDROP`. Images are never read.
+- No keystroke capture, no accessibility API, no WinEvent hook.
+- The scan runs in the app's webview with the app's own detectors (`secret-*` and `dlp-*` from
+  `data/detectors.js`, except `secret-file-upload`; `detectors` narrows the set). The host sends the text
+  to the webview as an in-process event and gets back detector ids, threat ids and risk levels. No answer
+  within 2 s (the webview still loading) means no action, and the next tick asks again.
+
+**What is sent and stored.** The alert (`stage: "clipboard"`, `tool: "clipboard-guard"`,
+`reasonCode: "CLIPBOARD_GUARD"`) carries `threatId`, `riskLevel`, `contentHash` (tenant-keyed, the hook's
+`h2:` hash of the whole clipboard text), `clipboardGuard: { mode, action, trigger, app, detectors }` and the
+identity fields every alert carries. `action` is `alerted`, `coached`, `cleared` or `clear-failed`; `trigger`
+is `clipboard-change` or `app-activation`. The same alert is appended to the app's local `audit.jsonl`.
+Never the text, a matched span or its length. One alert per (content, app) per 10 minutes (an in-memory,
+per-process keyed digest, so different texts never share an entry even unenrolled). In `clear` mode the
+clipboard is cleared and the user notified every time. The test
+`no_alert_or_notification_contains_clipboard_text` (`clip_guard.rs`) plants a canary and checks every alert,
+notification and notice for it.
+
+**Status line.** "Clipboard guard: off | alert | coach | clear" (`clipguard_status`), with the policy's
+trust state and, on macOS, the app's pasteboard-access setting in the tooltip. No content.
+
+**Platforms and limits.**
+- macOS and Windows. Linux: off, and "not supported" on the status line when the policy asks for it.
+- macOS 15.4 introduced pasteboard privacy: a programmatic read of the general pasteboard that does not
+  follow a user paste can alert the user, and `NSPasteboard.accessBehavior` reports the per-app choice
+  (default / ask / alwaysAllow / alwaysDeny). `changeCount` and the type list are not content reads, so the
+  guard reads content only in the case above.
+- The guard works only while the app runs. It does not stop typing the data by hand, a paste into a
+  browser tab (the browser extension's job), or a paste through another clipboard manager's history.
+- Windows is compile-checked only; the toast needs the installer's AppUserModelID, else it falls back to
+  PowerShell's.
 
 ## Coverage & blind spots
 

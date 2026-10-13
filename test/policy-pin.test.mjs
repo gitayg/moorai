@@ -434,17 +434,17 @@ test("E2E ANCHOR: an anchored device also pins, so removing the MDM env var cann
 
 // ---- key rotation without bricking the fleet ----
 
-test("E2E ROTATION: publishing the new key while still signing with the old one rolls the pin forward", async () => {
+test("E2E ROTATION: a signed nextKeys list in a policy from the pinned key rolls the pin forward", async () => {
   await withHome(async (home) => {
     // 1. steady state — the console signs with K1 and publishes K1
     await run(home, { serve: SIGNED(), pubkey: pubkeyBody(consoleKey) });
     assert.deepEqual(pinKeys(home), [id(consoleKey)]);
 
-    // 2. overlap window — the console publishes K2 but keeps signing with K1. The policy still verifies
-    //    under the pinned key, and THAT is what vouches for adding K2. An attacker cannot reach this
-    //    branch without already holding K1.
+    // 2. transition window — the console keeps signing with K1 and names K2 in the signed body's nextKeys.
+    //    The policy verifies under the pinned key and is newer than the mark, and THAT is what vouches for
+    //    K2. Publishing K2 on the unsigned pubkey endpoint teaches a pinned device nothing (v1.13.7).
     ageCache(home);
-    const r2 = await run(home, { serve: SIGNED(), pubkey: pubkeyBody(rotatedKey) });
+    const r2 = await run(home, { serve: SIGNED({ nextKeys: [id(rotatedKey)] }), pubkey: pubkeyBody(rotatedKey) });
     assert.ok(enforced(r2), `stdout was ${JSON.stringify(r2.stdout)}`);
     assert.deepEqual(pinKeys(home).sort(), [id(consoleKey), id(rotatedKey)].sort(), "the new key must join the pin");
 
@@ -453,6 +453,16 @@ test("E2E ROTATION: publishing the new key while still signing with the old one 
     const r3 = await run(home, {});
     assert.ok(enforced(r3), `the rotated key must be accepted offline; stdout was ${JSON.stringify(r3.stdout)}`);
     assert.ok(!r3.hashes.some((h) => String(h).startsWith("policy:") && h !== "policy:stale"), `no tamper alert expected (policy:stale is the fixture's fixed, old iat, not tampering), got ${JSON.stringify(r3.hashes)}`);
+  });
+});
+
+test("E2E ROTATION: publishing a new key on the pubkey endpoint alone does NOT roll a pinned device's pin", async () => {
+  await withHome(async (home) => {
+    await run(home, { serve: SIGNED(), pubkey: pubkeyBody(consoleKey) });
+    ageCache(home);
+    const r = await run(home, { serve: SIGNED(), pubkey: pubkeyBody(rotatedKey) });
+    assert.ok(enforced(r), `stdout was ${JSON.stringify(r.stdout)}`);
+    assert.deepEqual(pinKeys(home), [id(consoleKey)], "an unsigned published key must not join the pin");
   });
 });
 

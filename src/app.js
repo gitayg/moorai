@@ -9,6 +9,7 @@ import { Audit } from "./audit.js";
 import { COACH_TAIL } from "../data/enforcement.js";
 import { consoleBound, consoleWarning, enrolled, getPolicy, postAlert, nativeLog, loadIdentity, enroll, signUp, awaitClaim, serverBase, enrolBase, currentTenant, setAgentAuth, getAuthMethod, setAuthMethod, openUrl, reportDevice, reportPatches, reportPrompt, reportActivity, appVersion, checkUpdate, restartApp, checkAndInstallUpdate, reportIdentity, aboutInfo } from "./api.js";
 import { ocrCapability, ocrImage, engineLabel, decideImageInspection } from "./ocr.js";
+import { wireClipGuard } from "./clipguard.js";
 import { BUILD } from "./buildinfo.js";
 
 // Which agent CLI the user is driving. Constrained to the admin's per-policy allow-list.
@@ -58,6 +59,7 @@ const ICON = {
 async function boot() {
   const threatData = await fetch("./data/threats.json").then((r) => r.json());
   engine = new DetectionEngine(threatData, DETECTORS, CONTENT_RULES);
+  wireClipGuard(() => engine, $); // the host's clipboard guard scans with this engine (src/clipguard.js)
 
   const msg = $("msg");
   $("send").addEventListener("click", sendMessage);

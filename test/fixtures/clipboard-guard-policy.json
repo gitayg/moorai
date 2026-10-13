@@ -1,0 +1,75 @@
+{
+  "$comment": "Clipboard guard policy-signature parity (src-tauri/src/clip_guard_policy.rs). Signed by Node with cli/hook-core.mjs policyDigest/policyCanonical and a throwaway ed25519 key generated for this fixture; the private key was not kept. Regenerate by signing a new body the same way.",
+  "publicKey": "MCowBQYDK2VwAyEA8MPbRm2wpeS5vrDGzg+ookj3GvO/t45QVUzopSAG2SY=",
+  "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA8MPbRm2wpeS5vrDGzg+ookj3GvO/t45QVUzopSAG2SY=\n-----END PUBLIC KEY-----\n",
+  "otherPublicKey": "MCowBQYDK2VwAyEAPZoRXICcFn7WHm6uKK/7lHjKS/6E5OVtaL9xUTu9ZxY=",
+  "digest": "8017d716453fd01d362d66e2317a14df86433b21148ad1ebe19b2800f454b9b6",
+  "policy": {
+    "tenant": "acme",
+    "allowedTools": [
+      "claude",
+      "codex"
+    ],
+    "threatActions": {
+      "15": "notify",
+      "39": "block"
+    },
+    "clipboardGuard": {
+      "mode": "clear",
+      "approvedApps": [
+        "com.anthropic.claudefordesktop",
+        "Copilot.exe"
+      ],
+      "aiApps": [
+        "com.example.newai"
+      ],
+      "detectors": [
+        "secret-aws-akia",
+        "dlp-email"
+      ]
+    },
+    "ratio": 0.25,
+    "big": 1e+21,
+    "tiny": 1e-7,
+    "neg": -3,
+    "unicode": "café   😀",
+    "ctrl": "a\u0001b\tc\"d\\e",
+    "zKey": null,
+    "é": 1,
+    "Z": 2,
+    "a": [
+      true,
+      false,
+      {}
+    ],
+    "policySig": {
+      "v": 1,
+      "alg": "ed25519",
+      "tenant": "acme",
+      "iat": 1760000000000,
+      "sig": "A4C1xb5XRmM/9io11VOsgxG2/ZyGJ02Gx4Cog4BcukhnDM9wt2IDSc08kjILXdJhf8jSEB1lNNYcOVe3K4x/CA=="
+    }
+  },
+  "canonical": [
+    {
+      "json": "{\"b\":1,\"a\":[1,2.5,{\"y\":null,\"x\":\"\\u0000\"}]}",
+      "canonical": "{\"a\":[1,2.5,{\"x\":\"\\u0000\",\"y\":null}],\"b\":1}"
+    },
+    {
+      "json": "{\"n\":1e21,\"m\":1.5e-7,\"k\":-0.0,\"j\":100.0,\"i\":0.1}",
+      "canonical": "{\"i\":0.1,\"j\":100,\"k\":0,\"m\":1.5e-7,\"n\":1e+21}"
+    },
+    {
+      "json": "{\"\\ud83d\\ude00\":1,\"\\uffff\":2,\"a\":3}",
+      "canonical": "{\"a\":3,\"😀\":1,\"￿\":2}"
+    },
+    {
+      "json": "\"line\\nbreak\\u001f\\u007f\\u2028\"",
+      "canonical": "\"line\\nbreak\\u001f \""
+    },
+    {
+      "json": "[1e300, 123456789012345680000, 5e-324]",
+      "canonical": "[1e+300,123456789012345680000,5e-324]"
+    }
+  ]
+}

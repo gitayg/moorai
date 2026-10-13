@@ -1,6 +1,14 @@
 mod admin_config;
 mod ai_keys;
 mod ai_runtime;
+mod clip_guard;
+mod clip_guard_apps;
+#[cfg(target_os = "macos")]
+mod clip_guard_mac;
+mod clip_guard_policy;
+mod clip_guard_run;
+#[cfg(windows)]
+mod clip_guard_win;
 mod console_binding;
 mod console_http;
 mod content_hash;
@@ -847,6 +855,8 @@ pub fn run() {
         // it and terminate the live agent PTY when it appears — detect-and-prevent for the interactive
         // session. A stale sentinel (older than 60s, e.g. left by a prior run) is consumed but ignored.
         .setup(|app| {
+            // Clipboard guard: off until the signed policy turns it on (clip_guard_run.rs).
+            clip_guard_run::start(app.handle().clone());
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let sentinel = format!("{}/kill-session", platform::config_dir());
@@ -870,7 +880,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![native_log, app_version, identity, save_provision, set_agent_auth, open_url, open_login_terminal, restart_app, check_and_install_update, console_http::console_fetch, about_info, term_open, term_input, term_resize, term_kill, device_ai_tools, device_ai_assets, device_mcp, os_patch_status, device_browsers, device_ai_shadow, device_posture, device_accounts, device_agent_activity, dir_sensitive, ocr::ocr_capability, ocr::ocr_image])
+        .invoke_handler(tauri::generate_handler![native_log, app_version, identity, save_provision, set_agent_auth, open_url, open_login_terminal, restart_app, check_and_install_update, console_http::console_fetch, about_info, term_open, term_input, term_resize, term_kill, device_ai_tools, device_ai_assets, device_mcp, os_patch_status, device_browsers, device_ai_shadow, device_posture, device_accounts, device_agent_activity, dir_sensitive, ocr::ocr_capability, ocr::ocr_image, clip_guard_run::clipguard_status, clip_guard_run::clipguard_result])
         .run(tauri::generate_context!())
         .expect("error while running MoorAI");
 }

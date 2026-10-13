@@ -70,6 +70,10 @@ body {
 #update-bar button { border: none; border-radius: var(--r-sm); padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
 #update-bar #upd-btn { background: #fff; color: var(--accent); }
 #update-bar #upd-x { background: rgba(255,255,255,.18); color: #fff; }
+/* Clipboard guard notice (coach / clear mode): repeats the OS notification in the app. No content. */
+.clip-notice { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 14px; font-size: 13px; background: var(--high); color: #fff; }
+.clip-notice[hidden] { display: none; }
+.clip-notice .linkbtn { margin-left: auto; color: #fff; }
 .statusbar {
   display: flex;
   align-items: center;

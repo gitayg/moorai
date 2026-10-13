@@ -883,8 +883,8 @@ export function policyTrust({ anchorKeys = [], pin = null, tenant = "" } = {}) {
 
 // Read the console's GET /api/policy/pubkey body → the key id(s) it publishes for THIS tenant. Junk, a
 // 404 page, and a body published for another tenant all yield [] (→ no pin forms; nothing breaks).
-// `keys` (an array) is accepted alongside the single-key shape so a console that publishes an overlap
-// pair during rotation works without a device change.
+// `keys` (an array) is accepted alongside the single-key shape. Read ONLY on first contact (an unpinned
+// device): a pinned device learns new keys from the signed `nextKeys` alone (policyKeysToLearn).
 export function parsePublishedKeys(text, { tenant = "" } = {}) {
   let j;
   try { j = JSON.parse(String(text || "")); } catch { return []; }
@@ -923,6 +923,57 @@ export function parseRevokedKeys(policy) {
   const r = policy && policy.revokedKeys;
   if (!Array.isArray(r)) return [];
   return [...new Set(r.filter((k) => typeof k === "string" && k.trim()).map((k) => k.trim()))];
+}
+
+// ---- Signed key ROTATION (`nextKeys`) ----
+//
+// The ONLY way a pinned device learns a new policy key. `nextKeys` is an array of public keys (base64 SPKI
+// DER or PEM, the forms parseTrustedKeys reads) INSIDE the policy body, so policyDigest and the console's
+// signature cover it. A pinned device adds them only when the policy carrying them verified under a key it
+// already trusts AND its iat is strictly above the high-water mark (armPolicyPin). Same field, same shape
+// and same rule as guardd/src/policy.rs parse_next_keys / arm_pin. Returns the keys as publicKeyId ids;
+// junk, non-strings and a non-array yield nothing.
+export function parseNextKeys(policy) {
+  const n = policy && policy.nextKeys;
+  if (!Array.isArray(n)) return [];
+  return [...new Set(parseTrustedKeys(n.filter((k) => typeof k === "string").join("\n")).map(publicKeyId).filter(Boolean))];
+}
+
+// Which keys a FRESH, accepted policy may add to the pin, by trust mode. Pure; armPolicyPin applies it.
+//   anchored — the anchor key that verified it.
+//   pinned   — the pinned key that verified it, plus the signed `nextKeys` when the policy's iat is strictly
+//              above the mark. NEVER the unsigned pubkey endpoint (not even fetched once pinned): an
+//              impersonating console can replay the current signed policy (an equal iat is not a rollback)
+//              and publish any key beside it. So a replay is still accepted as the current policy but
+//              teaches nothing, and a not-newer `nextKeys` is reported (source "nextKeys", "not-newer").
+//   unpinned — first contact (TOFU): the published key, only if it verifies the policy served with it.
+export function policyKeysToLearn({ mode, verdict = {}, policy, publishedRaw = "", tenant = "", mark = "" } = {}) {
+  let learn = [], verifiedBy = verdict.keyId || "";
+  const rejected = [];
+  if (mode === "anchored") learn = [verdict.keyId];
+  else if (mode === "pinned") {
+    learn = [verdict.keyId];
+    const next = parseNextKeys(policy);
+    if (next.length) {
+      if (isPolicyNewer(policy && policy.policySig && policy.policySig.iat, mark)) learn.push(...next);
+      else rejected.push({ source: "nextKeys", status: "not-newer" });
+    }
+  } else if (mode === "unpinned") {
+    const published = parsePublishedKeys(publishedRaw, { tenant });
+    if (published.length) {
+      const t = verifyPolicySignature(policy, { keys: parseTrustedKeys(published.join("\n")), tenant });
+      if (t.trusted && t.status === "ok") { learn = [t.keyId]; verifiedBy = t.keyId; }
+    }
+  }
+  return { learn: learn.filter(Boolean), verifiedBy, rejected };
+}
+
+// Strictly newer than the mark. No mark yet (a pin written before F-202) counts as newer; an iat that
+// cannot be ordered never does. Mirrors guardd arm_pin's `newer`.
+export function isPolicyNewer(iat, mark) {
+  const a = iatOrder(iat), b = iatOrder(mark);
+  if (!Number.isFinite(a)) return false;
+  return !Number.isFinite(b) || a > b;
 }
 
 // Prune revoked ids out of a pin set. `refused` is a content-free reason the caller reports as tampering;
@@ -1854,17 +1905,21 @@ function writePinBreadcrumb(config) {
 //
 // OPERATOR PROCEDURE — ROTATING THE CONSOLE'S POLICY SIGNING KEY without bricking pinned devices.
 // A pinned device refuses a policy signed by a key it has never trusted, so "generate K2 and start
-// signing with it" would lock out the whole fleet. Use the overlap window instead:
+// signing with it" would lock out the whole fleet. Use the transition window instead (the console does
+// steps 1-3 itself: POST /api/policy/rotate-key in the console README):
 //
-//   1. Generate K2 on the console and PUBLISH it at /api/policy/pubkey, while still SIGNING with K1.
-//   2. Wait one policy-refresh cycle (the device fetches at most every 60s, so minutes, not days; give
-//      laptops that are offline or asleep however long your fleet actually needs). Each device fetches
-//      a policy that verifies under its already-pinned K1, and that signature is what authorizes K2
-//      joining its pin — an attacker who does not hold K1 can never reach this branch.
+//   1. The console generates K2 and, while still SIGNING with K1, puts K2 in the signed policy body's
+//      `nextKeys`. The unsigned /api/policy/pubkey teaches a pinned device nothing (v1.13.7): anyone who
+//      can answer as the console can replay the current signed policy and publish any key beside it.
+//   2. Wait out the window (the device fetches at most every 60s, so minutes, not days; give laptops that
+//      are offline or asleep however long your fleet actually needs). Each device fetches a K1-signed
+//      policy newer than its high-water mark, and that signature is what authorizes K2 joining its pin —
+//      an attacker who does not hold K1 can never reach this branch, and a replay (iat at or below the
+//      mark) teaches nothing.
 //   3. Cut over: sign with K2. Every device that completed step 2 already trusts it, offline included.
 //   4. Devices that missed the window are not bricked, they are FAIL-SAFE: they refuse the K2 policy,
 //      raise policy:cache:untrusted / policy:server:untrusted, and fall back to the last-known signed
-//      policy or OFFLINE_DEFAULT_POLICY. Recover one by re-running step 1-2 with K1 restored, by
+//      policy or OFFLINE_DEFAULT_POLICY. Recover one by signing with K1 again for a window, by
 //      shipping the anchor (which outranks the pin), or — last resort, and it re-opens the
 //      first-contact window — by deleting ~/.curaiq/policy-pin.json and ~/.moorai/policy-pin.json.
 //
@@ -1886,10 +1941,11 @@ function readPolicyPin() { return reconcilePolicyPins({ primary: readText(POLICY
 //   anchored — record the anchor key that actually verified this policy, so that pulling the MDM env
 //              var out of a future shell (the one anchor route an agent can influence) cannot silently
 //              return the device to "verifies nothing".
-//   pinned   — the policy verified under an ALREADY-PINNED key. That signature is what vouches for the
-//              fetch, so any key the server publishes alongside it may join the pin: this is the
-//              key-ROTATION path, and an attacker cannot reach it without already holding a pinned key.
-//              An unsigned or wrongly-signed fetch never gets here — it is `rejected` above.
+//   pinned   — the policy verified under an ALREADY-PINNED key. Keys it names in its signed `nextKeys`
+//              join the pin when its iat is strictly above the mark: the key-ROTATION path, unreachable
+//              without a pinned key, and a replay of an already-accepted policy teaches nothing. The
+//              unsigned pubkey endpoint is neither fetched nor believed (policyKeysToLearn). An unsigned
+//              or wrongly-signed fetch never gets here — it is `rejected` above.
 //   unpinned — FIRST CONTACT (TOFU). Pin only if the key the server publishes actually verifies the
 //              policy it served. A console that does not sign publishes nothing that verifies, so no
 //              pin forms and the device keeps behaving exactly as it did before this change.
@@ -1904,17 +1960,10 @@ function readPolicyPin() { return reconcilePolicyPins({ primary: readText(POLICY
 // is the one place that knows a signature was delivered FRESH over the network and actually verified.
 // Neither may be learned from the cache — it is in the agent's own write scope, so a cached body could
 // otherwise revoke the fleet's real key or park the mark in the future and refuse every real policy.
-function armPolicyPin(config, trust, pin, verdict, policy, publishedRaw, rejected) {
+function armPolicyPin(config, trust, pin, verdict, policy, publishedRaw, rejected, markBefore) {
   try {
-    const published = parsePublishedKeys(publishedRaw, { tenant: config.tenant });
-    let learn = [], verifiedBy = verdict.keyId || "";
-    if (trust.mode === "anchored") learn = [verdict.keyId];
-    else if (trust.mode === "pinned") learn = [verdict.keyId, ...published];
-    else if (trust.mode === "unpinned" && published.length) {
-      const t = verifyPolicySignature(policy, { keys: parseTrustedKeys(published.join("\n")), tenant: config.tenant });
-      if (t.trusted && t.status === "ok") { learn = [t.keyId]; verifiedBy = t.keyId; }
-    }
-    learn = learn.filter(Boolean);
+    const { learn, verifiedBy, rejected: refusedNext } = policyKeysToLearn({ mode: trust.mode, verdict, policy, publishedRaw, tenant: config.tenant, mark: markBefore });
+    rejected.push(...refusedNext);
     const armed = learn.length > 0;
     const rev = applyKeyRevocation({
       keys: [...new Set([...(pin.keys || []), ...learn])],
@@ -2048,10 +2097,11 @@ export async function loadVerifiedPolicy(config, { backoffDraw, network = true }
     let reached = false;
     const q = (p) => fetch(`${config.serverUrl}${p}`, { headers, signal: AbortSignal.timeout(1500) }).then((r) => { reached = true; return r.ok ? r.text() : ""; }).catch(() => "");
     // The published-key fetch runs in PARALLEL with the policy fetch, so it costs no extra latency, and
-    // only on devices with no explicit anchor (an anchored device already has the stronger statement).
+    // only on an UNPINNED device (first contact). Anchored devices have the stronger statement; a pinned
+    // one must never learn from an unsigned answer, so it does not ask (policyKeysToLearn).
     const [raw, published] = await Promise.all([
       q(`/api/policy?tenant=${encodeURIComponent(config.tenant)}`),
-      trust.mode === "anchored" || trust.mode === "rebind" || trust.mode === "corrupt" ? Promise.resolve("") : q("/api/policy/pubkey")
+      trust.mode === "unpinned" ? q("/api/policy/pubkey") : Promise.resolve("")
     ]);
     // Any HTTP response means the console is reachable; only a fetch with no response backs off.
     if (reached) clearConsoleBackoff();
@@ -2066,7 +2116,7 @@ export async function loadVerifiedPolicy(config, { backoffDraw, network = true }
         // an already-pinned key, or (first contact) under the key the server published. That is the same
         // bar last-known-good needs, and it is NOT the same as v.status: on first contact the policy is
         // admitted as "unanchored" (the device holds no key yet) and only the TOFU re-check proves it.
-        const armed = armPolicyPin(config, trust, pin, v, JSON.parse(raw), published, rejected);
+        const armed = armPolicyPin(config, trust, pin, v, JSON.parse(raw), published, rejected, mark);
         // A verified FRESH policy is the only thing allowed to become last-known-good, and it always
         // replaces the previous one. Fresh-only is the point: the cache is attacker-writable, so
         // promoting a merely-cached policy would let a planted (but still validly signed, e.g. rolled

@@ -7,7 +7,7 @@
       "name": "ChatGPT",
       "vendor": "OpenAI",
       "mac": ["ChatGPT.app"],
-      "macBundle": ["com.openai.chat"],
+      "macBundle": ["com.openai.chat", "com.openai.codex"],
       "win": ["Programs/ChatGPT/ChatGPT.exe", "ChatGPT/ChatGPT.exe"],
       "winLnk": ["ChatGPT.lnk"]
     },
@@ -34,7 +34,7 @@
       "name": "Copilot",
       "vendor": "Microsoft",
       "mac": ["Copilot.app"],
-      "macBundle": ["com.microsoft.copilot"],
+      "macBundle": ["com.microsoft.copilot", "com.microsoft.copilot-mac"],
       "win": ["Programs/Copilot/Copilot.exe"],
       "winLnk": ["Copilot.lnk"]
     },

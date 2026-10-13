@@ -2132,17 +2132,19 @@ dependencies = [
 
 [[package]]
 name = "moorai"
-version = "1.13.6"
+version = "1.13.7"
 dependencies = [
  "base64 0.22.1",
  "leptess",
  "libc",
  "objc2",
+ "objc2-app-kit",
  "objc2-foundation",
  "objc2-vision",
  "portable-pty",
  "regex",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "sha2",

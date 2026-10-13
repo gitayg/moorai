@@ -1,0 +1,46 @@
+[package]
+name = "moorai-guardd"
+version = "0.1.0"
+license = "MIT"
+description = "MoorAI privileged helper (trust-anchor design phase 2): root/SYSTEM-held binding, device key, policy, alert queue, heartbeat, process observation and quarantine"
+edition = "2021"
+publish = false
+
+# Standalone, not a member of a workspace with src-tauri: see docs/proposals/guardd-contract.md §12.
+# The empty table stops cargo from adopting any Cargo.toml higher up the tree.
+[workspace]
+
+# Every crate below is already in src-tauri/Cargo.lock at the version guardd/Cargo.lock pins
+# (guardd/Cargo.lock was seeded from src-tauri/Cargo.lock and resolved --offline). No crate outside it.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# float_roundtrip: correctly rounded float parsing, so the policy digest (policy.rs, which prints numbers as
+# JavaScript does) sees exactly the double Node parsed. A feature, not a crate.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+# ed25519 sign/verify, SystemRandom and SHA-256. Already in src-tauri's lock via rustls/reqwest.
+ring = "0.17"
+base64 = "0.22"
+# Helper -> console HTTPS (contract §5-§7, §9.3): blocking client, rustls, redirects disabled. Same version
+# and default features as src-tauri (reqwest 0.13.4 in src-tauri/Cargo.lock); no crate outside that lock.
+reqwest = { version = "0.13", features = ["blocking"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[features]
+# Test-only path injection (Paths::under) and the unprivileged test daemon. Packaging builds never
+# enable it, and Helper::new refuses injected paths when running as root/SYSTEM (contract §10.2).
+test-injection = []
+
+[lib]
+name = "moorai_guardd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "moorai-guardd"
+path = "src/main.rs"
+
+[[bin]]
+name = "moorai-guardd-test"
+path = "src/bin/moorai-guardd-test.rs"
+required-features = ["test-injection"]

@@ -1093,6 +1093,32 @@ pseudo-terminal is one `script` call away), and the self-grant refusal is a stri
 gets past. Keep local exceptions off on such machines; console exceptions are unaffected. Server mode prints
 no exception line.
 
+### Allow trail (opt-in)
+
+By default the console sees findings (ask, deny, alert) and per-session totals; calls that were simply allowed
+stay in the device's own action audit log. A tenant that sets `actionTrail: "allowed"` in its signed policy
+also gets one content-free record per allowed tool call, delivered in batches to `POST /api/actions`
+(`{ v: 1, records: [...] }`, up to 500 per batch, same install token as `/api/alerts`).
+
+- **A record carries:** `ts`, `session` (keyed hash), `seq` (its own per-device counter), `event`
+  (`PreToolUse`), `tool` (sanitised to the console's rule: NFKC, each control, format or whitespace character
+  replaced by `_`, at most 256 characters), `toolTags`, `mcpServer` (MCP tools), `decision: "allow"`, `basis`
+  (`rule` / `default` / `exception`), `policyIat`, `agentName`, `agentVersion`, `appVersion`, the identity alerts
+  carry (`user`, `device`, `platform`, `tenant`, `actor`) and the keyed `contentHash` of the normalized call.
+- **Never:** arguments, commands, paths, URLs, prompt text or file contents.
+- **No per-call latency:** the hook appends to `~/.moorai/action-trail.jsonl` (0600) and a detached worker
+  flushes at 200 records or 30 s, one flush at a time, and at session end. It respects the console back-off,
+  never fetches policy, and keeps the records (retrying after 1 to 5 minutes) while the console answers 404 /
+  501. Measured, 40 interleaved hook spawns each: p50 137.3 ms on vs 136.9 ms off.
+- **Volume:** one record per allowed call (about 450 to 500 bytes queued). The queue holds at most 10,000 records /
+  5 MB; past that the oldest are dropped and counted (`actionTrailDropped`). At flush time, records older than
+  89 days (the console refuses past 90) are dropped and counted the same way. The session summary carries
+  `actionsRecorded` and `actionTrailDropped` while the trail is on.
+- **Limit:** the queue is a user file the agent can edit until phase 3 anchors it. Deleting queued records
+  leaves a gap in `seq` the console can see; an agent that also rewinds the counter is caught only as a
+  regression. The Agent SDK and `moorai-serve` do not record the trail yet. Details:
+  [`docs/CAPABILITY_SPEC.md`](docs/CAPABILITY_SPEC.md) (Allow trail).
+
 ### Skill Analysis — what is your agent actually being told to do?
 
 No separate command: the analysis runs inside the same PreToolUse hooks. Whenever the agent loads a
@@ -1537,6 +1563,56 @@ image. When the two passes disagree, one image can show two finding cards for th
 > 8/8 sensitive strings (incl. an AWS key and an SSN) off a clean render. The Linux/Tesseract tier is
 > validated end-to-end but **second-class**: accuracy on dense secret strings is below the macOS/Windows
 > OS engines, so treat it as opportunistic, not parity.
+
+### Clipboard guard (desktop app)
+
+Stops sensitive text being pasted into an AI app your organisation has not approved, such as the ChatGPT,
+Claude, Copilot, Cursor or Perplexity desktop apps. Off by default. Only an administrator's setting (macOS
+managed preference `ClipboardGuard`, or the root-owned machine config) or the **signed** policy turns it on.
+An environment variable, a user config file or the webview cannot. A policy whose signature does not check
+out, or a tampered policy-key pin, never turns it off: the policy that verified earlier stays in force and
+the console gets a content-free tamper alert. A saved copy carries it across a restart only when it verifies
+under a still-trusted key (root-owned `policy.pub` or a valid pin). An agent running as the user can still
+delete that copy; the root-owned helper planned for phase 2 is the real fix. With no root-owned
+`policy.pub` and no pin on the device, the signature cannot be checked and only its presence is required:
+that is the weak case.
+
+```json
+"clipboardGuard": {
+  "mode": "off | alert | coach | clear",
+  "approvedApps": ["com.anthropic.claudefordesktop", "claude.exe"],
+  "aiApps": ["com.example.newai"],
+  "detectors": ["secret-aws-akia", "dlp-email"]
+}
+```
+
+| Mode | What happens when an unapproved AI app is in front and the clipboard holds secrets or PII |
+|---|---|
+| `off` | Nothing. The clipboard is never read. |
+| `alert` | A content-free alert goes to the console. |
+| `coach` | The alert, plus a notification telling the user what kind of data it is, which app, and why. |
+| `clear` | The alert and the notification, and the clipboard text is replaced with a short MoorAI notice, so the data can't be pasted. |
+
+- **AI apps:** the shadow-AI catalog the inventory uses ([`data/ai-catalog.json`](data/ai-catalog.json):
+  macOS bundle ids, Windows exe names) plus `aiApps`. `approvedApps` names the ones the organisation
+  allows. Ids are matched case-insensitively.
+- **Detectors:** the app's own secret and PII detectors (`secret-*`, `dlp-*` in
+  [`data/detectors.js`](data/detectors.js)), the same engine the prompt box and OCR use. `detectors`
+  narrows the set.
+- **When it reads:** the clipboard's change counter is checked every 500 ms (macOS) or on
+  `WM_CLIPBOARDUPDATE` (Windows). That carries no content. The text is read only when the frontmost app
+  is a listed AI app, is not approved, and either the clipboard just changed or that app just came to the
+  front (sensitive text copied earlier, then the AI app opened). Text only: a clipboard holding files or
+  an image is not read. No keystroke capture and no accessibility API.
+- **What is sent:** detector ids, the app id, the mode and action taken, the trigger, and the
+  tenant-keyed `contentHash`. Never the text. One alert per (content, app) per 10 minutes. In `clear` mode
+  the clipboard is cleared every time.
+- **Platforms:** macOS and Windows. On Linux the status line says "not supported".
+- **Limits:** with the guard on, the app must be running. The scan happens in the app's webview, so for
+  the first seconds after launch the check is retried until it answers. A user can still type the data
+  by hand, or paste it into a browser tab (the [browser extension](browser-ext/) covers web AI prompts).
+  On macOS 15.4 and later, reading the pasteboard from code can show the user a pasteboard-access alert.
+  The status line's tooltip shows the app's pasteboard-access setting.
 
 ### Windows: the JS agent
 

@@ -69,6 +69,7 @@ import { agentVersionFromEnv } from "./agent-names.mjs";
 import { machinePath } from "./machine-dir.mjs";
 import { stampAlertSeq } from "./alert-seq.mjs";
 import { bindingRefusedAlert } from "./config.mjs";
+import { actionTrailMode, buildActionRecord, enqueueActionRecord, claimFlush, flushActionTrail, callFingerprintText, readTrailState } from "./action-trail.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -703,6 +704,33 @@ async function runAlertPostWorker(jobPath) {
       await Promise.allSettled(alerts.map((a) => fetch(`${CONFIG.serverUrl}/api/alerts`, { method: "POST", headers, body: JSON.stringify(a), signal: AbortSignal.timeout(ALERT_WORKER_TIMEOUT_MS) })));
     }
   } catch { /* best-effort, like every alert post */ }
+  return exitWhenDrained(0);
+}
+// ---- the allow trail (cli/action-trail.mjs) ----
+// TRAIL: "allowed" when the signed policy turns it on, set once in main(). recordAllowed queues the record
+// with a few local file operations and, when a flush is due and none is in flight, spawns the detached
+// `actiontrail` worker; the hook process itself never sends one.
+let TRAIL = "off";
+function recordAllowed(tg, rewrite) {
+  try {
+    if (TRAIL !== "allowed" || EVENT !== "PreToolUse" || COACH || !(isEnrolled(CONFIG) || CONFIG.managed === true)) return false;
+    const tool = CALL.tool;
+    const excused = new Set(tg ? tg.excused : []);
+    const exception = CALL.exc.matched.some((e) => (e.threat ? CALL.found.has(e.threat) : excused.has(e.rule)));
+    const basis = exception ? "exception" : VERDICT.findings > 0 || rewrite || (tg && tg.gate && tg.gate.hits.length) ? "rule" : "default";
+    const agentName = beatHost();
+    const rec = buildActionRecord({ ts: new Date().toISOString(), session: SESSION_TAG, tool, toolTags: tg && tg.tags ? tg.tags.tags : [], mcpServer: tool.startsWith("mcp__") ? serverOf(tool) : "", basis, policyIat: PROV.policyIat, agentName, agentVersion: agentName ? agentVersionFromEnv(agentName) : "", appVersion: APP_VERSION, ...IDENTITY, contentHash: contentHash(callFingerprintText(tool, CALL.ti)) });
+    const r = enqueueActionRecord(rec);
+    if (r.trimmed) { try { recordAction({ ts: rec.ts, threatId: 0, category: "Allow trail queue full: oldest records dropped", riskLevel: "Medium", stage: "policy", tool: "hook:action-trail", contentHash: "action-trail:dropped", actionTrailDropped: r.dropped, dropped: r.trimmed, ...IDENTITY }); } catch { /* local evidence only */ } }
+    if (r.flushDue) spawnTrailFlush();
+    return r.queued === true;
+  } catch { return false; }
+}
+function spawnTrailFlush() {
+  try { spawn(process.execPath, [...process.execArgv, SELF, "actiontrail"], { detached: true, stdio: "ignore", env: workerEnv() }).unref(); } catch { /* the lease runs out and a later call retries */ }
+}
+async function runActionTrailWorker() {
+  try { await flushActionTrail({ config: CONFIG }); } catch { /* best-effort */ }
   return exitWhenDrained(0);
 }
 // Every exit from the hook goes through here. The decision has already been written to stdout by the
@@ -1535,7 +1563,9 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
     if (b.alert) post({ ...b.alert, reasonCode: REASON.BYPASS_ASK, enforcement: VERDICT.enforcement, ts: new Date().toISOString(), ...IDENTITY });
     decision = b.decision; reason = b.reason; rewrite = null;
   }
-  settleRow(verdictFields(decision, { rewrite: Boolean(rewrite) }));
+  // The allow trail: one queued, content-free record for a call the host is told it may run.
+  const tr = decision === "allow" && CALL.active ? recordAllowed(tg, rewrite) : false;
+  settleRow({ ...verdictFields(decision, { rewrite: Boolean(rewrite) }), ...(tr ? { tr: 1 } : {}) });
   // The call ran unless the host was told deny (a coached device was told nothing): only then do its tags
   // join the session record.
   if (tg) recordSessionTags({ sessionId: SESSION_ID, tags: COACH || decision !== "deny" ? tg.tags.tags : [], fired: tg.fired });
@@ -2046,6 +2076,13 @@ async function handleStop(input) {
     // This invocation's own alerts so far (a claim-check alert above) are not in the ledger yet.
     sum.alertsEmitted += ALERT_COUNT.emitted;
     sum.alertsDeferred += ALERT_COUNT.deferred;
+    // The allow trail, when on: records this session queued (ledger rows marked tr), and the device's
+    // count of records the bounded queue dropped. Session end also flushes whatever is queued.
+    if (TRAIL === "allowed") {
+      sum.actionsRecorded = rows.reduce((n, r) => n + (r.tr === 1 ? 1 : 0), 0);
+      sum.actionTrailDropped = readTrailState().dropped;
+      if (claimFlush({ force: true })) spawnTrailFlush();
+    }
     const last = [...rows].reverse().find((r) => r.ev === "stop" && r.sum);
     if (!last || JSON.stringify(last.sum) !== JSON.stringify(sum)) {
       // The summary itself is not counted in alertsEmitted / alertsDeferred: counting it would change the
@@ -2080,6 +2117,8 @@ async function main() {
   if (cmd === "posturebeat") return runPostureBeatWorker(process.argv[3], process.argv[4], process.argv[5]);
   // The detached alert sender (see handOffAlerts). No stdin, no decision.
   if (cmd === "alertpost") return runAlertPostWorker(process.argv[3]);
+  // The detached allow-trail flusher (cli/action-trail.mjs). No stdin, no decision, no policy fetch.
+  if (cmd === "actiontrail") return runActionTrailWorker();
 
   let input;
   try { input = JSON.parse((await readStdin()) || "{}"); } catch {
@@ -2231,6 +2270,7 @@ async function main() {
   COACH = !enforcementAllowed(CONFIG, { managed: posture.posture === "fail-closed" || SERVER.active || CONFIG.managed === true });
   POLICY = policy; // read by logBehavior's agent-detection hand-off (maybeAgentScan)
   PROV = { policyId: policyIdOf(policy, { builtin: NO_POLICY_BASELINE, offline: OFFLINE_DEFAULT_POLICY }), policySource: policy === NO_POLICY_BASELINE ? "builtin" : policy === OFFLINE_DEFAULT_POLICY ? "offline-default" : source || "", offline: policy === OFFLINE_DEFAULT_POLICY, ...(policyIat && policy !== NO_POLICY_BASELINE && policy !== OFFLINE_DEFAULT_POLICY ? { policyIat } : {}) };
+  TRAIL = actionTrailMode(policy); // the allow trail: from the signed policy only (cli/action-trail.mjs)
   const engine = buildEngine(policy);
   // Instruction-leak fingerprints of the rules files this agent runs under (lazy: nothing is read until a
   // scan reaches a fingerprint detector with enough text). data/detectors-instruction-leak.js.
@@ -2596,8 +2636,10 @@ async function main() {
   const ug = tagStep();
   if (ug && ug.gate.decision !== "allow") return emit("allow", "");
   if (ug) recordSessionTags({ sessionId: SESSION_ID, tags: ug.tags.tags, fired: ug.fired });
+  const tr = recordAllowed(ug, null);
   CALL.active = false;
   VERDICT.uneval = REASON.UNEVALUATED_UNSUPPORTED_TOOL;
+  if (tr) settleRow({ ...unevaluated(REASON.UNEVALUATED_UNSUPPORTED_TOOL), tr: 1 });
   return exitHook(); // unknown tool → allow
 }
 

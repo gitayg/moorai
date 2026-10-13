@@ -1,0 +1,214 @@
+name: guardd-install
+
+# Real-install test for the privileged helper (docs/proposals/guardd-contract.md §4, §11): install
+# moorai-guardd AS ROOT / as an elevated admin, then run the "agent" side as a dedicated UNPRIVILEGED test
+# user. This file is the wiring; the platform agents fill it in by adding scripts, not by editing jobs.
+#
+# CONTRACT FOR THE PLATFORM AGENTS (one script per OS, nothing else to touch here):
+#
+#   guardd/packaging/macos/install.sh     run as root:  sudo bash install.sh <abs path to moorai-guardd>
+#   guardd/packaging/linux/install.sh     run as root:  sudo bash install.sh <abs path to moorai-guardd>
+#   guardd/packaging/windows/install.ps1  run elevated: pwsh -File install.ps1 -Binary <abs path to .exe>
+#
+#   The binary is a release build WITHOUT `test-injection` (a root binary refuses injected paths, §10.2).
+#   The script installs to the §4 layout, registers and starts the §4.3 service, and exits non-zero on
+#   any failure. The same path is also exported as GUARDD_BIN.
+#
+#   The agent-side tests replace the "Agent-side tests (placeholder)" step. On Unix run them as the test
+#   user with `sudo -n -u "$TEST_USER" -H ...`; on Windows with the $env:TEST_USER / $env:TEST_PASS
+#   credential. TEST_USER is created and proven non-admin before anything is installed.
+#
+# Until a script exists its install step SKIPS with a ::notice:: and the job stays green; the user creation,
+# release build and run-as-test-user plumbing run regardless, so they are proven before the scripts land.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "guardd/**"
+      - "test/fixtures/guardd/**"
+      - ".github/workflows/guardd-install.yml"
+
+concurrency:
+  group: guardd-install-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TEST_USER: moorai-agent
+
+jobs:
+  unix:
+    name: install (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check for install script
+        id: gate
+        run: |
+          script="guardd/packaging/${{ matrix.platform }}/install.sh"
+          if [ -f "$script" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "install script: $script"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=guardd-install skipped::$script does not exist yet; the install and agent-side test steps are skipped until the ${{ matrix.platform }} platform agent adds it."
+          fi
+
+      - name: Create unprivileged test user (Linux)
+        if: runner.os == 'Linux'
+        run: sudo useradd --create-home --shell /bin/bash "$TEST_USER"
+
+      # dscl rather than sysadminctl: no password prompt, and group 20 (staff) is the standard-user group.
+      - name: Create unprivileged test user (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          uid=600
+          while [ -n "$(dscl . -search /Users UniqueID "$uid")" ]; do uid=$((uid + 1)); done
+          sudo dscl . -create "/Users/$TEST_USER"
+          sudo dscl . -create "/Users/$TEST_USER" UserShell /bin/bash
+          sudo dscl . -create "/Users/$TEST_USER" RealName "MoorAI CI agent"
+          sudo dscl . -create "/Users/$TEST_USER" UniqueID "$uid"
+          sudo dscl . -create "/Users/$TEST_USER" PrimaryGroupID 20
+          sudo dscl . -create "/Users/$TEST_USER" NFSHomeDirectory "/Users/$TEST_USER"
+          sudo mkdir -p "/Users/$TEST_USER"
+          sudo chown "$TEST_USER:staff" "/Users/$TEST_USER"
+
+      # The whole point of the test user is that it is NOT privileged. Prove it before relying on it:
+      # it must run commands, must not be uid 0 or in an admin group, and must have no passwordless sudo.
+      - name: Prove the test user is unprivileged
+        run: |
+          sudo -n -u "$TEST_USER" -H id
+          [ "$(sudo -n -u "$TEST_USER" id -u)" != "0" ] || { echo "::error::$TEST_USER is uid 0"; exit 1; }
+          groups=" $(id -Gn "$TEST_USER") "
+          for g in admin wheel sudo root; do
+            case "$groups" in *" $g "*) echo "::error::$TEST_USER is in group $g"; exit 1;; esac
+          done
+          if sudo -n -u "$TEST_USER" -H sudo -n true; then
+            echo "::error::$TEST_USER has passwordless sudo"; exit 1
+          fi
+          echo "$TEST_USER is unprivileged: groups =$groups"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Production build: no test-injection. Built as the runner user, installed by root below.
+      - name: Build moorai-guardd (release)
+        run: |
+          cargo build --locked --release --manifest-path guardd/Cargo.toml --bin moorai-guardd
+          bin="$GITHUB_WORKSPACE/guardd/target/release/moorai-guardd"
+          ls -l "$bin"
+          echo "GUARDD_BIN=$bin" >> "$GITHUB_ENV"
+
+      - name: Install moorai-guardd as root
+        if: steps.gate.outputs.ready == 'true'
+        run: sudo --preserve-env=GUARDD_BIN bash "guardd/packaging/${{ matrix.platform }}/install.sh" "$GUARDD_BIN"
+
+      # PLACEHOLDER — the platform agents replace the body with the §11 phase-2 tests (a)-(e), plus: the
+      # test user cannot stop the service, read the state dir, or bind a fake socket the hook accepts, and
+      # a forged `quarantine` naming a non-agent pid is refused. Only the run-as-test-user plumbing is real.
+      - name: Agent-side tests (placeholder)
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          sudo -n -u "$TEST_USER" -H bash -c 'echo "running as $(id -un) (uid $(id -u)) in $HOME"'
+          echo "::warning title=guardd-install placeholder::agent-side tests for ${{ matrix.platform }} are not written yet."
+
+      - name: Service diagnostics
+        if: failure() && steps.gate.outputs.ready == 'true'
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo systemctl status moorai-guardd.service moorai-guardd.socket --no-pager || true
+            sudo journalctl -u moorai-guardd --no-pager -n 200 || true
+          else
+            sudo launchctl print system/run.glick.moorai.guardd || true
+            sudo tail -n 200 /Library/Logs/MoorAI/guardd.log || true
+          fi
+
+  windows:
+    name: install (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check for install script
+        id: gate
+        run: |
+          $script = 'guardd/packaging/windows/install.ps1'
+          if (Test-Path $script -PathType Leaf) {
+            "ready=true" >> $env:GITHUB_OUTPUT
+            "install script: $script"
+          } else {
+            "ready=false" >> $env:GITHUB_OUTPUT
+            "::notice title=guardd-install skipped::$script does not exist yet; the install and agent-side test steps are skipped until the Windows platform agent adds it."
+          }
+
+      # A standard (Users-group) local account. The password is random per run and masked in the log.
+      - name: Create standard test user
+        run: |
+          $chars = [char[]]'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
+          $pw = -join (1..20 | ForEach-Object { $chars | Get-Random }) + '!9a'
+          "::add-mask::$pw"
+          $sec = ConvertTo-SecureString $pw -AsPlainText -Force
+          New-LocalUser -Name $env:TEST_USER -Password $sec -PasswordNeverExpires -AccountNeverExpires -Description 'MoorAI CI agent' | Out-Null
+          Add-LocalGroupMember -Group 'Users' -Member $env:TEST_USER
+          "TEST_PASS=$pw" >> $env:GITHUB_ENV
+
+      - name: Prove the test user is a standard user
+        run: |
+          $admins = Get-LocalGroupMember -Group 'Administrators' | ForEach-Object { $_.Name.Split('\')[-1] }
+          if ($admins -contains $env:TEST_USER) { "::error::$env:TEST_USER is in Administrators"; exit 1 }
+          Get-LocalUser -Name $env:TEST_USER | Format-List Name, Enabled, PrincipalSource
+          "Administrators: $($admins -join ', ')"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build moorai-guardd (release)
+        run: |
+          cargo build --locked --release --manifest-path guardd/Cargo.toml --bin moorai-guardd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bin = Join-Path $env:GITHUB_WORKSPACE 'guardd\target\release\moorai-guardd.exe'
+          Get-Item $bin | Format-List FullName, Length
+          "GUARDD_BIN=$bin" >> $env:GITHUB_ENV
+
+      # Hosted Windows runners execute steps as an elevated administrator, so no UAC hop is needed.
+      - name: Install MoorAIGuard service as admin
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          pwsh -NoProfile -File guardd/packaging/windows/install.ps1 -Binary $env:GUARDD_BIN
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # PLACEHOLDER — the Windows platform agent replaces the body with the §11 tests, run under the test
+      # user's credential. Only the run-as-test-user plumbing is real: whoami must come back as TEST_USER.
+      - name: Agent-side tests (placeholder)
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          $cred = New-Object System.Management.Automation.PSCredential($env:TEST_USER, (ConvertTo-SecureString $env:TEST_PASS -AsPlainText -Force))
+          $out = Join-Path $env:PUBLIC 'moorai-ci-whoami.txt'
+          $p = Start-Process -FilePath whoami.exe -Credential $cred -WorkingDirectory $env:PUBLIC -RedirectStandardOutput $out -Wait -PassThru
+          $who = (Get-Content $out -Raw).Trim()
+          "exit $($p.ExitCode), whoami = $who"
+          if ($who -notlike "*\$env:TEST_USER") { "::error::run-as returned '$who', expected $env:TEST_USER"; exit 1 }
+          "::warning title=guardd-install placeholder::agent-side tests for windows are not written yet."
+
+      - name: Service diagnostics
+        if: failure() && steps.gate.outputs.ready == 'true'
+        run: |
+          sc.exe qc MoorAIGuard
+          sc.exe query MoorAIGuard
+          Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'MoorAIGuard' } -MaxEvents 100 -ErrorAction SilentlyContinue | Format-List TimeCreated, Id, Message

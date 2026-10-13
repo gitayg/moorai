@@ -1,6 +1,6 @@
 [package]
 name = "moorai"
-version = "1.13.6"
+version = "1.13.7"
 license = "MIT"
 description = "MoorAI Managed AI Host"
 edition = "2021"
@@ -11,7 +11,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip: parse floats correctly rounded, so a signed policy's digest (clip_guard_policy.rs, which
+# re-serialises the body as JavaScript would) sees the same number Node signed. A feature, not a crate.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 portable-pty = "0.8"
 tauri-plugin-updater = "2.10.1"
 reqwest = { version = "0.13", features = ["blocking", "json", "query"] }
@@ -21,6 +23,9 @@ base64 = "0.22"
 sha2 = "0.10"
 regex = "1"
 url = "2"
+# clip_guard_policy.rs: ed25519 verification of the signed policy envelope. Already in Cargo.lock as a
+# transitive dep of reqwest's TLS stack — no new crate enters the build.
+ring = "0.17"
 
 # admin_config.rs: the user name from the OS user database (getpwuid_r) and O_NOFOLLOW opens of the admin
 # sources. Already in Cargo.lock as a transitive dep of tauri/reqwest — no new crate enters the build.
@@ -33,6 +38,9 @@ libc = "0.2"
 objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-vision = "0.3"
+# Clipboard guard (clip_guard_mac.rs): NSPasteboard changeCount / text and NSWorkspace's frontmost app.
+# Already in Cargo.lock through tauri's windowing stack — no new crate enters the build.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSWorkspace", "NSRunningApplication"] }
 
 # Native Windows security-posture inventory. `wmi` is the ergonomic serde layer over windows-rs
 # (SecurityCenter2 AV/firewall, BitLocker); `winreg` covers firewall-profile + reboot-pending state.
@@ -41,7 +49,10 @@ wmi = "0.14"
 winreg = "0.52"
 # Media_Ocr/Graphics_Imaging/Storage_Streams/Foundation_Collections are #23's on-device OCR engine —
 # the Windows counterpart of Vision.framework, likewise shipped by the OS rather than bundled.
-windows = { version = "0.59", features = ["Win32_System_JobObjects", "Win32_System_Threading", "Win32_Foundation", "Media_Ocr", "Graphics_Imaging", "Storage_Streams", "Foundation_Collections"] }
+# Win32_System_DataExchange/Memory/LibraryLoader, Win32_UI_WindowsAndMessaging (+ Win32_Graphics_Gdi for
+# RegisterClassW), UI_Notifications and
+# Data_Xml_Dom are the clipboard guard's listener window, clipboard text and toast (clip_guard_win.rs).
+windows = { version = "0.59", features = ["Win32_System_JobObjects", "Win32_System_Threading", "Win32_Foundation", "Media_Ocr", "Graphics_Imaging", "Storage_Streams", "Foundation_Collections", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "UI_Notifications", "Data_Xml_Dom"] }
 
 # #39 — Linux on-device OCR. Linux ships no OS text-recognition engine, so this tier binds Tesseract
 # via leptess (links system libtesseract/libleptonica). Opportunistic/second-class vs Vision & Windows

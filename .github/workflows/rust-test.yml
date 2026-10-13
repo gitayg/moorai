@@ -1,0 +1,129 @@
+name: rust-test
+
+# `cargo test` for both Rust crates. Before this file CI compiled Rust exactly once (windows-check.yml,
+# `cargo check` only) and ran no Rust test at all — docs/proposals/guardd-contract.md §11 names that as
+# the first CI gap to close.
+#
+# PARALLEL BY CONSTRUCTION. This is its own workflow, so every job here gets its own runner and none of
+# them sits on the critical path of ci.yml's `gates` job (~2 min). There is no `needs:` anywhere.
+#
+#   src-tauri : ubuntu + macOS. Windows is not repeated here; windows-check.yml already compiles it.
+#   guardd    : ubuntu + macOS + windows, each job running the default build and `--features
+#               test-injection` back to back. The feature is crate-local (no dependency changes), so
+#               the second run reuses every dependency the first one built and only recompiles guardd.
+#
+# --locked everywhere: a Cargo.lock that does not match Cargo.toml is a red build, never a silent
+# re-resolve on the runner. guardd keeps its own Cargo.lock (contract §12).
+#
+# CACHE: rust-cache saves only from main (`save-if`), because every branch push would otherwise write
+# its own ~1-2 GB target cache and evict main's from the 10 GB repo budget. Branches restore main's.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: rust-test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  src-tauri:
+    name: src-tauri (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+
+      # Nothing in the release workflows builds on Linux, so there was no apt line to copy. These are
+      # Tauri 2's documented Debian prerequisites plus what this crate's own lockfile links:
+      #   libdbus-1-dev                 dbus/libdbus-sys (pkg-config, not vendored)
+      #   libtesseract-dev libleptonica-dev libclang-dev
+      #                                 leptess -> tesseract-sys/leptonica-sys, bindgen needs libclang
+      # Verified against `cargo test --locked` in an ubuntu:24.04 container (arm64) before landing.
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+            libdbus-1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
+            libtesseract-dev libleptonica-dev libclang-dev clang
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # tauri-build embeds frontendDist (../.tauridist) at compile time, so it must exist. The staging
+      # script imports only node: builtins, so the runner's preinstalled node is enough and no `npm ci`.
+      - name: Stage frontend
+        run: node scripts/stage-frontend.mjs
+
+      # admin_config's read_owned_under refuses a file if ANY ancestor up to / is group- or world-writable
+      # (correct for production). Its unit tests build their scratch tree under std::env::temp_dir(), which
+      # on Linux is /tmp (1777), so two of them fail on any stock Linux box: measured in ubuntu:24.04 as a
+      # non-root user, 114 passed / 2 failed without this, 116 / 0 with it. macOS's TMPDIR is already a
+      # private per-user dir. This gives Linux the same: a 0700 dir whose only ancestor is /. The test
+      # portability bug itself belongs to the src-tauri owner; this does not weaken the production check.
+      - name: Private TMPDIR (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo install -d -o "$(id -un)" -m 700 /moorai-tmp
+          echo "TMPDIR=/moorai-tmp" >> "$GITHUB_ENV"
+
+      - name: cargo test (src-tauri)
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+  guardd:
+    name: guardd (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./guardd -> target"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Same /tmp ancestor problem as src-tauri above: guardd's config and policy tests put admin-owned
+      # files under temp_dir() and the ownership walk rightly refuses /tmp (1777). Measured in ubuntu:24.04
+      # as a non-root user: 78 passed / 6 failed with TMPDIR=/tmp, 84 / 0 with this, both feature sets.
+      - name: Private TMPDIR (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo install -d -o "$(id -un)" -m 700 /moorai-tmp
+          echo "TMPDIR=/moorai-tmp" >> "$GITHUB_ENV"
+
+      - name: cargo test (guardd, default features)
+        run: cargo test --locked --manifest-path guardd/Cargo.toml
+
+      # Builds and tests the moorai-guardd-test binary and Paths::under. Packaging never enables this
+      # feature, and a root/SYSTEM process refuses injected paths (contract §10.2).
+      - name: cargo test (guardd, --features test-injection)
+        run: cargo test --locked --manifest-path guardd/Cargo.toml --features test-injection

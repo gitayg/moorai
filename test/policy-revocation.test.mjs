@@ -223,13 +223,16 @@ const bypassed = (r) => r.stdout === "";
 const enforced = (r) => /"permissionDecision":"deny"/.test(r.stdout);
 const withHome = async (fn) => { const home = newHome(); try { return await fn(home); } finally { rmTree(home); } };
 
-// Steady state used by most cases: the device pins K1, then rotates so it trusts BOTH K1 and K2.
+// Steady state used by most cases: the device pins K1, then rotates so it trusts BOTH K1 and K2. Rotation
+// on a pinned device is the signed `nextKeys` list in a K1-signed policy newer than the mark (v1.13.7);
+// the unsigned pubkey endpoint no longer teaches a pinned device anything (test/policy-key-rotation.test.mjs).
+const T2_ROT = "2026-08-21T12:00:00.000Z";  // between T2 and T3
 async function rotated(home) {
   await run(home, { serve: STRICT({}, { iat: T2 }), pubkey: pubkeyBody(K1) });
   assert.deepEqual(pin(home).keys, [id(K1)], "first contact must pin the console's key");
   ageCache(home);
-  await run(home, { serve: STRICT({}, { iat: T2 }), pubkey: pubkeyBody(K2) });
-  assert.deepEqual(pin(home).keys.sort(), [id(K1), id(K2)].sort(), "the overlap window must roll the pin forward");
+  await run(home, { serve: STRICT({ nextKeys: [id(K2)] }, { iat: T2_ROT }) });
+  assert.deepEqual(pin(home).keys.sort(), [id(K1), id(K2)].sort(), "signed nextKeys must roll the pin forward");
   ageCache(home);
 }
 
