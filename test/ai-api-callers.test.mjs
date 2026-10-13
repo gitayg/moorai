@@ -25,6 +25,8 @@ const DNS = {
 };
 const lookupOf = (table, calls = []) => async (h) => { calls.push(h); return (table[h] || []).map((address) => ({ address })); };
 const est = (pid, proc, rhost) => ({ pid: String(pid), proc, state: "established", lhost: "10.0.0.5", lport: 50000 + pid, rhost, rport: 443 });
+// pid → executable, as readExe reports it (production: codesign -d, /proc/<pid>/exe, ExecutablePath)
+const exeMap = (o) => () => new Map(Object.entries(o).map(([pid, exe]) => [pid, { exe }]));
 
 test("resolveAiHosts: provider per address; shared with a control host or a second provider → ambiguous", async () => {
   const r = await resolveAiHosts({ lookup: lookupOf(DNS) });
@@ -82,7 +84,12 @@ test("aiApiCallers: known apps, agents, browsers and MoorAI are known; a script 
     { pid: "10", proc: "node", state: "listen", lhost: "127.0.0.1", lport: 8791, rhost: null, rport: null },
     est(11, "sshd", "8.8.8.8")
   ];
-  const r = aiApiCallers(sockets, resolved, { moorai: mooraiPids(sockets, { self: 999, parent: 998 }), argvOf: () => new Map() });
+  // each named process at its product's install location (macOS), as codesign -d reports it
+  const exeOf = exeMap({ 1: "/Users/u/Library/Application Support/Claude/claude-code/2.1.295/9d6405864fdc/claude.app/Contents/MacOS/claude",
+    2: "/Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper",
+    3: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/154.0.8037.98/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)",
+    4: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" });
+  const r = aiApiCallers(sockets, resolved, { moorai: mooraiPids(sockets, { self: 999, parent: 998 }), argvOf: () => new Map(), exeOf, sigOf: () => false, platform: "darwin", home: "/Users/u" });
   assert.equal(r.ambiguous, 2);
   assert.deepEqual(r.callers, [
     { processImage: "ChatGPT", provider: "openai", known: true, connections: 1 },
@@ -99,7 +106,7 @@ test("aiApiCallers: known apps, agents, browsers and MoorAI are known; a script 
 
 test("a node process that is not MoorAI is unknown", async () => {
   const resolved = await resolveAiHosts({ lookup: lookupOf(DNS) });
-  const r = aiApiCallers([est(9, "node", "160.79.104.10")], resolved, { moorai: new Set(["1"]), argvOf: () => new Map() });
+  const r = aiApiCallers([est(9, "node", "160.79.104.10")], resolved, { moorai: new Set(["1"]), argvOf: () => new Map(), exeOf: () => new Map() });
   assert.equal(r.callers[0].known, false);
 });
 
@@ -162,7 +169,7 @@ const LINKS = {
 };
 const realpath = (p) => { if (p in LINKS) return LINKS[p]; if (EXIST.has(p)) return p; throw Object.assign(new Error(`ENOENT ${p}`), { code: "ENOENT" }); };
 const readFile = (p) => { const k = String(p).replace(/\\/g, "/"); if (k in FILES) return FILES[k]; throw Object.assign(new Error(`ENOENT ${p}`), { code: "ENOENT" }); };
-const FX = { realpath, readFile, platform: "darwin", home: "/Users/u" };
+const FX = { realpath, readFile, platform: "darwin", home: "/Users/u", exeOf: () => new Map(), sigOf: () => false };
 const IMAGE = { node: "node", bun: "bun", deno: "deno", python: "python3.12" };
 const argvMap = (o) => () => new Map(Object.entries(o).map(([pid, v]) => [pid, Array.isArray(v) ? { argv: v, spaced: false } : v]));
 // One script-host connection to api.anthropic.com → is it known? (aiApiCallers, as production calls it)
@@ -269,7 +276,7 @@ test("rule 4, Windows: CommandLineToArgvW quoting and backslashes; argv[0] has n
 });
 
 test("rule 4, Windows: PowerShell hands the CommandLine over base64, a forged line or a doubled pid is dropped", async () => {
-  const { readArgv, winArgvScript, parseWinCommandLines } = await import("../cli/ai-api-callers.mjs");
+  const { readArgv, readExe, winArgvScript, parseWinCommandLines } = await import("../cli/ai-api-callers.mjs");
   const b64 = (s) => Buffer.from(s, "utf16le").toString("base64");
   const forged = `"C:\\Program Files\\nodejs\\node.exe" ${W_TEMP}\r\n6144|"C:\\Program Files\\nodejs\\node.exe" "${W_GEMINI}"`;
   const m = parseWinCommandLines([`6144|${b64(forged)}`, `7000|${b64("node.exe a")}`, `7000|${b64(`node.exe "${W_GEMINI}"`)}`, `7100|${b64('node.exe "a""b"')}`, ""].join("\r\n"));
@@ -279,19 +286,25 @@ test("rule 4, Windows: PowerShell hands the CommandLine over base64, a forged li
   assert.equal(m.has("7100"), false, "an unparseable command line is dropped");
   const canned = [`5120|${b64(`"C:\\Program Files\\nodejs\\node.exe" "${W_GEMINI}" -p "summarise"`)}`, `6144|${b64(`"C:\\Program Files\\nodejs\\node.exe" ${W_TEMP}`)}`,
     `6200|${b64(`"C:\\nodejs\\node.exe\\\\" ${W_TEMP} " ${W_GEMINI}"`)}`, ""].join("\r\n");
+  const exeLine = (pid, exe) => `${pid}||${b64(exe)}`;
+  const withExe = `${canned}${exeLine(7, String.raw`C:\Users\u\AppData\Local\Programs\ChatGPT\ChatGPT.exe`)}\r\n${exeLine(8, String.raw`C:\Users\u\AppData\Local\Temp\ChatGPT.exe`)}\r\n`;
   const scripts = [];
-  const argvOf = (pids) => readArgv(pids, { platform: "win32", run: (s) => { scripts.push(s); return canned; } });
+  const run = (s) => { scripts.push(s); return withExe; };
+  const argvOf = (pids, o) => readArgv(pids, { ...o, platform: "win32", run });
+  const exeOf = (pids, o) => readExe(pids, { ...o, platform: "win32", run });
   const resolved = await resolveAiHosts({ lookup: lookupOf(DNS) });
-  const r = aiApiCallers([est(5120, "node.exe", "172.66.0.243"), est(6144, "node.exe", "172.66.0.243"), est(6200, "node.exe", "172.66.0.243"), est(7, "ChatGPT", "172.66.0.243")], resolved,
-    { moorai: new Set(), argvOf, ...FX, platform: "win32", home: String.raw`C:\Users\u` });
+  const r = aiApiCallers([est(5120, "node.exe", "172.66.0.243"), est(6144, "node.exe", "172.66.0.243"), est(6200, "node.exe", "172.66.0.243"), est(7, "ChatGPT.exe", "172.66.0.243"), est(8, "ChatGPT.exe", "172.66.0.243")], resolved,
+    { moorai: new Set(), ...FX, argvOf, exeOf, platform: "win32", home: String.raw`C:\Users\u` });
   assert.deepEqual(r.callers, [
-    { processImage: "ChatGPT", provider: "openai", known: true, connections: 1 },
+    { processImage: "ChatGPT.exe", provider: "openai", known: false, connections: 1 }, // pid 8: ChatGPT.exe in %TEMP%
+    { processImage: "ChatGPT.exe", provider: "openai", known: true, connections: 1 },  // pid 7: %LOCALAPPDATA%\Programs\ChatGPT
     { processImage: "node.exe", provider: "openai", known: false, connections: 2 },
     { processImage: "node.exe", provider: "openai", known: true, connections: 1 }
   ]);
-  assert.equal(scripts.length, 1, "one PowerShell for every script-host pid");
-  assert.equal(scripts[0], winArgvScript(["5120", "6144", "6200"]), "only the script-host pids are asked about");
+  assert.equal(scripts.length, 1, "one PowerShell for every pid the scan asks about: command lines and executables together");
+  assert.equal(scripts[0], winArgvScript(["5120", "6144", "6200", "7", "8"]), "the script-host pids and the named pids");
   assert.match(scripts[0], /ToBase64String/);
+  assert.match(scripts[0], /ExecutablePath/);
 });
 
 // Rule 5: Claude Code's native install is known by the kernel's executable path, anchored to this home, and on
@@ -300,26 +313,33 @@ test("rule 5, native Claude Code: executable in $HOME/.local/share/claude/versio
   const resolved = await resolveAiHosts({ lookup: lookupOf(DNS) });
   const V = "/Users/u/.local/share/claude/versions/2.1.295";
   const argv = argvMap({ 61: [V, "-p"], 62: [V], 63: ["/tmp/x/claude/versions/2.1.295"], 64: [V], 65: [V] });
-  const exeOf = () => new Map([["61", { exe: V, signed: true }], ["62", { exe: "/tmp/2.1.295", signed: true }], ["63", { exe: "/tmp/x/claude/versions/2.1.295", signed: true }], ["64", { exe: V, signed: false }]]);
+  const exeOf = exeMap({ 61: V, 62: "/tmp/2.1.295", 63: "/tmp/x/claude/versions/2.1.295", 64: V });
+  const sigOf = (pid) => pid !== "64"; // 64 fails Anthropic's requirement; the others would pass it
   const sockets = [61, 62, 63, 64, 65].map((p) => est(p, "2.1.295", "160.79.104.10"));
-  const known = (opts) => Object.fromEntries(sockets.map((s) => [s.pid, aiApiCallers([s], resolved, { moorai: new Set(), argvOf: argv, exeOf, ...FX, ...opts }).callers[0].known]));
+  const known = (opts) => Object.fromEntries(sockets.map((s) => [s.pid, aiApiCallers([s], resolved, { moorai: new Set(), ...FX, argvOf: argv, exeOf, sigOf, ...opts }).callers[0].known]));
   assert.deepEqual(known({}), { 61: true, 62: false, 63: false, 64: false, 65: false }, "macOS: path AND signature; argv[0] claims nothing");
   assert.deepEqual(known({ platform: "linux", home: "/Users/u" }), { 61: true, 62: false, 63: false, 64: true, 65: false }, "Linux: the location alone");
   assert.deepEqual(known({ platform: "win32" }), { 61: false, 62: false, 63: false, 64: false, 65: false }, "Windows' native install runs as claude.exe");
 });
 
-test("rule 5, readExe: codesign's Executable= line and the requirement's exit code (macOS), /proc/<pid>/exe (Linux)", async () => {
-  const { readExe, CLAUDE_CODE_REQUIREMENT } = await import("../cli/ai-api-callers.mjs");
+test("rule 5, readExe and codeSigned: codesign's Executable= line (macOS), /proc/<pid>/exe (Linux), the requirement's exit code", async () => {
+  const { readExe, codeSigned, CLAUDE_CODE_REQUIREMENT } = await import("../cli/ai-api-callers.mjs");
   const calls = [];
-  const run = (args) => { calls.push(args); return args[0] === "-d" ? { status: 0, stderr: `Executable=/Users/u/.local/share/claude/versions/2.1.295\n` } : { status: args[2] === "61" ? 0 : 3, stderr: "" }; };
-  const m = readExe(["61", "62", "x;y"], { platform: "darwin", run });
-  assert.deepEqual(m.get("61"), { exe: "/Users/u/.local/share/claude/versions/2.1.295", signed: true });
-  assert.deepEqual(m.get("62"), { exe: "/Users/u/.local/share/claude/versions/2.1.295", signed: false });
-  assert.ok(calls.some((a) => a[0] === "--verify" && a[1] === `-R=${CLAUDE_CODE_REQUIREMENT}`), "the running pid is checked against the requirement");
+  const run = (args) => { calls.push(args); return args[0] === "-d" ? { status: 0, stderr: args[1] === "63" ? "codesign: no such process\n" : `Executable=/Users/u/.local/share/claude/versions/2.1.295\n` } : { status: args[2] === "61" ? 0 : 3, stderr: "" }; };
+  const m = readExe(["61", "62", "63", "x;y"], { platform: "darwin", run });
+  assert.deepEqual(m.get("61"), { exe: "/Users/u/.local/share/claude/versions/2.1.295" });
+  assert.equal(m.has("63"), false, "no Executable= line: no path");
   assert.ok(!calls.flat().includes("x;y"), "non-numeric pids are dropped");
+  assert.ok(!calls.some((a) => a[0] === "--verify"), "reading the path never runs the signature check");
+  assert.equal(codeSigned("61", CLAUDE_CODE_REQUIREMENT, { run }), true);
+  assert.equal(codeSigned("62", CLAUDE_CODE_REQUIREMENT, { run }), false);
+  assert.ok(calls.some((a) => a[0] === "--verify" && a[1] === `-R=${CLAUDE_CODE_REQUIREMENT}` && a[2] === "61"), "the running pid is checked against the requirement");
+  assert.equal(codeSigned("x;y", CLAUDE_CODE_REQUIREMENT, { run }), false);
   const lin = readExe(["61"], { platform: "linux", readlink: (p) => (p === "/proc/61/exe" ? "/home/u/.local/share/claude/versions/2.1.295" : "") });
-  assert.deepEqual(lin.get("61"), { exe: "/home/u/.local/share/claude/versions/2.1.295", signed: null });
-  assert.equal(readExe(["61"], { platform: "win32" }).size, 0);
+  assert.deepEqual(lin.get("61"), { exe: "/home/u/.local/share/claude/versions/2.1.295" });
+  const b64 = (x) => Buffer.from(x, "utf16le").toString("base64");
+  const win = readExe(["61"], { platform: "win32", run: () => `61|${b64("claude.exe -p")}|${b64(String.raw`C:\Users\u\.local\bin\claude.exe`)}\r\n` });
+  assert.deepEqual(win.get("61"), { exe: String.raw`C:\Users\u\.local\bin\claude.exe` }, "Windows: ExecutablePath from the Win32_Process query");
 });
 
 // Rule 6: whatever the grammar cannot place is unknown.

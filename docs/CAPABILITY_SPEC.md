@@ -1759,7 +1759,8 @@ Posture heartbeat (`POST /api/agent-posture`), top-level like `failMode`:
   | unknown | anything else, including a terminal or IDE name with no readable path or off its expected location | recorded (`lastParentClass`), never alerted |
 
   Expected install locations of a terminal or IDE (`inLocation`; the path must be absolute, have no `.` or `..`
-  segment and end in the image's own name): Windows, conhost.exe directly in `C:\Windows\` or
+  segment and end in the image's own name; containment is by path segments with the shared rule below,
+  "Path containment"): Windows, conhost.exe directly in `C:\Windows\` or
   `C:\Windows\System32\`, Windows Terminal / OpenConsole under `Program Files\WindowsApps\`, any other under
   `Program Files\`, `Program Files (x86)\` or `%LOCALAPPDATA%\Programs\`; macOS, inside a `.app` bundle's
   `Contents/…/MacOS/` under `/Applications`, `/System/Applications` or `~/Applications`; Linux (and macOS
@@ -1794,7 +1795,7 @@ Posture heartbeat (`POST /api/agent-posture`), top-level like `failMode`:
   allow-list reads as normal. A session whose ancestry cannot be read
   (unreadable process table, PowerShell timeout) is cached as unreadable and never alerted. `wmic` is not
   used (deprecated, absent by default on current Windows 11).
-- **Tests.** `test/ai-cli-parents.test.mjs`, `test/ai-cli-parents-hook.test.mjs`.
+- **Tests.** `test/ai-cli-parents.test.mjs`, `test/ai-cli-parents-hook.test.mjs`, `test/location-gates.test.mjs`.
 
 ### Decoy AI keys (`cli/decoy-keys.mjs`, `model-proxy/decoy.mjs`)
 
@@ -1925,9 +1926,85 @@ parses host:port only), so the proxy-only setup is a loopback port only MoorAI's
   googleapis.com API, so it is ambiguous; Anthropic, OpenAI and Mistral resolve to addresses of their own and
   are attributed. The check runs on every resolution, so a provider that moves onto a shared address stops
   alerting rather than alerting on everything.
-- **Known callers** (`known: true`, never alerted): an app in `data/ai-catalog.json`, a known AI agent CLI or
-  AI editor, a browser, or MoorAI itself (its desktop app, the scanning process and its parent, and a node
-  process listening on the model proxy's or moorai-serve's port). Electron helper processes count as their app.
+- **Known callers** (`known: true`, never alerted):
+  - MoorAI's own pids: the scanning process and its parent, and a node process listening on the model proxy's
+    or moorai-serve's port.
+  - A process named like an AI app, agent CLI, editor or browser (`data/ai-catalog.json`, `KNOWN_AGENTS`,
+    `BROWSERS`, `MOORAI_IMAGES`; Electron helpers count as their app) ONLY when its executable, as the OS
+    reports it, is inside that product's expected install location (table below). The executable is read
+    locally for those pids only: macOS `codesign -d <pid>` (the kernel's path for the running pid; measured
+    16 to 21 ms per pid, 113 to 149 ms for the 7 named pids on the dev Mac), Linux `/proc/<pid>/exe`, Windows
+    `ExecutablePath` from the same single `Win32_Process` query that reads command lines. At most 64 pids per
+    scan. No executable path, or a path anywhere else, is unknown and alerts.
+  - macOS only: a named process off its location is also known when the running process satisfies its
+    product's signing identity, `codesign --verify -R='(anchor apple generic and (identifier "<id>" or …) and
+    certificate leaf[subject.OU] = "<team>")' <pid>`. Checked only when the location does not match, once per
+    pid per scan. Measured on the dev Mac: 13 to 16 ms (Claude Helper), 212 to 236 ms (ChatGPT), 392 to 399 ms
+    (Claude Code) when it passes; 18 to 26 ms when it fails. Identities, measured on installed copies:
+
+    | Names | Team | Signing identifiers |
+    |---|---|---|
+    | claude (desktop) | Q6L2SF6YDW | com.anthropic.claudefordesktop, com.anthropic.claudefordesktop.helper |
+    | claude (Claude Code) | Q6L2SF6YDW | com.anthropic.claude-code |
+    | codex | 2DC432GLL2 | codex, com.openai.codex, com.openai.codex.helper |
+    | chatgpt | 2DC432GLL2 | com.openai.chat, com.openai.codex, com.openai.codex.helper |
+    | chatgpt atlas | 2DC432GLL2 | com.openai.atlas, com.openai.atlas.web, com.openai.atlas.web.helper |
+    | copilot, github-copilot | UBF8T346G9 | com.microsoft.copilot-mac |
+    | google chrome, chrome | EQHXZ8M8AV | com.google.Chrome, com.google.Chrome.helper, com.google.Chrome.helper.renderer |
+    | firefox | 43AQ936H96 | org.mozilla.firefox |
+
+    Safari's `com.apple.WebKit.Networking` is located by path only (a SIP-protected system folder); its dynamic
+    signature check fails on the dev Mac ("resource envelope is obsolete").
+  - A named process whose executable is a script host (`node`, `bun`, `deno`, `python*`; a Linux `#!` script
+    keeps the script's name, so pipx's aider runs as `aider` under python) is judged by the program it runs,
+    as for a script host below. Gemini CLI, Qwen Code and aider have no install location of their own for this
+    rule.
+  - **Expected install locations** (`PRODUCTS` in `cli/ai-install-locations.mjs`). `<dir>` means anything
+    below that folder; `<dir>|<file>` means only that file in a shared folder. `~` is the home, `%L` is
+    `~\AppData\Local`, `%PF` / `%PF86` / `%WA` are `<any drive>:\Program Files`, `Program Files (x86)` and
+    `Program Files\WindowsApps`. `app:X.app` is `/Applications/X.app` and `~/Applications/X.app`; `brew:n` is
+    `/opt/homebrew/{Cellar,Caskroom}/n` and `/usr/local/{Cellar,Caskroom}/n`; `npm:pkg` is
+    `<root>/node_modules/pkg` under every npm-style and pnpm global root listed below for script hosts.
+
+    | Product (names) | macOS | Windows | Linux |
+    |---|---|---|---|
+    | Claude desktop (claude) | app:Claude.app | %L\AnthropicClaude, %L\Programs\Claude | none |
+    | Claude Code (claude; version-named images below) | ~/Library/Application Support/Claude/claude-code, ~/Library/Application Support/Claude-Teams/claude-code, brew:claude-code, npm:@anthropic-ai/claude-code | ~\.local\bin\|claude.exe, npm:@anthropic-ai/claude-code | npm:@anthropic-ai/claude-code |
+    | Codex (codex) | app:ChatGPT.app, app:Codex.app, brew:codex, npm:@openai/codex | npm:@openai/codex | npm:@openai/codex |
+    | ChatGPT (chatgpt) | app:ChatGPT.app | %L\Programs\ChatGPT, %WA\OpenAI.ChatGPT-Desktop_* | none |
+    | ChatGPT Atlas (chatgpt atlas) | app:ChatGPT Atlas.app | %L\Programs\ChatGPT Atlas | none |
+    | Cursor (cursor) | app:Cursor.app | %L\Programs\cursor | /usr/share/cursor, /opt/cursor, /opt/Cursor |
+    | Cursor Agent (cursor-agent) | ~/.local/share/cursor-agent | %L\cursor-agent | ~/.local/share/cursor-agent |
+    | VS Code (code, code - insiders) | app:Visual Studio Code.app, app:Visual Studio Code - Insiders.app | %L\Programs\Microsoft VS Code, %PF\Microsoft VS Code, and the Insiders folders | /usr/share/code, /usr/share/code-insiders, /snap/code, /snap/code-insiders, /var/lib/flatpak/app/com.visualstudio.code |
+    | Windsurf (windsurf) | app:Windsurf.app | %L\Programs\Windsurf | /usr/share/windsurf |
+    | Copilot app and Copilot CLI (copilot, github-copilot) | app:Copilot.app, brew:copilot-cli, npm:@github/copilot | %L\Programs\Copilot, %WA\Microsoft.Copilot_*, %L\Microsoft\WinGet\Packages\GitHub.Copilot_*, npm:@github/copilot | npm:@github/copilot |
+    | Ollama (ollama, ollama app) | app:Ollama.app, brew:ollama | %L\Programs\Ollama | /usr/local/bin\|ollama, /usr/bin\|ollama, /usr/local/lib/ollama, /usr/lib/ollama, /snap/ollama |
+    | LM Studio (lm studio, lms, llmster) | app:LM Studio.app, ~/.lmstudio | %L\Programs\lm-studio, %L\Programs\LM Studio, ~\.lmstudio | ~/.lmstudio |
+    | opencode | ~/.opencode, brew:opencode, npm:opencode-ai | ~\.opencode, npm:opencode-ai | ~/.opencode, npm:opencode-ai |
+    | goose | app:Goose.app, ~/.local/bin\|goose | none | ~/.local/bin\|goose |
+    | amp | ~/.amp, npm:@sourcegraph/amp | npm:@sourcegraph/amp | ~/.amp, npm:@sourcegraph/amp |
+    | crush | brew:crush, npm:@charmland/crush | npm:@charmland/crush | npm:@charmland/crush |
+    | Kiro (kiro) | app:Kiro.app | %L\Programs\Kiro | /usr/share/kiro |
+    | Trae (trae) | app:Trae.app | %L\Programs\Trae | none |
+    | Zed (zed) | app:Zed.app | none | ~/.local/zed.app |
+    | MoorAI (moorai, moorai-desktop) | app:MoorAI.app | %L\MoorAI | /usr/bin\|moorai, /usr/bin\|moorai-desktop |
+    | Chrome (google chrome, chrome) | app:Google Chrome.app | %PF\Google\Chrome, %PF86\Google\Chrome, %L\Google\Chrome | /opt/google/chrome |
+    | Chromium (chromium) | app:Chromium.app | %L\Chromium | /usr/lib/chromium, /usr/lib/chromium-browser, /usr/lib64/chromium-browser, /snap/chromium |
+    | Firefox (firefox) | app:Firefox.app | %PF\Mozilla Firefox, %PF86\Mozilla Firefox, %L\Mozilla Firefox | /usr/lib/firefox, /usr/lib64/firefox, /opt/firefox, /snap/firefox |
+    | Safari (safari, com.apple.webkit.networking) | /Applications/Safari.app, WebKit.framework under /System/Library/Frameworks, /System/Volumes/Preboot/Cryptexes/OS/System/Library/Frameworks and /System/Cryptexes/OS/System/Library/Frameworks | none | none |
+    | Edge (msedge, microsoft edge) | app:Microsoft Edge.app | %PF86\Microsoft\Edge, %PF\Microsoft\Edge | /opt/microsoft/msedge |
+    | Brave (brave, brave browser) | app:Brave Browser.app | %PF\BraveSoftware, %PF86\BraveSoftware, %L\BraveSoftware | /opt/brave.com/brave, /snap/brave |
+    | Arc (arc) | app:Arc.app | %WA\TheBrowserCompany.Arc_* | none |
+    | Opera (opera) | app:Opera.app | %L\Programs\Opera | /usr/lib/x86_64-linux-gnu/opera, /snap/opera |
+    | Vivaldi (vivaldi) | app:Vivaldi.app | %L\Vivaldi | /opt/vivaldi |
+    | Dia (dia) | app:Dia.app | none | none |
+    | Comet (comet) | app:Comet.app | %L\Perplexity\Comet | none |
+    | Internet Explorer (iexplore) | none | %PF\Internet Explorer, %PF86\Internet Explorer | none |
+
+    Every app in `data/ai-catalog.json` (ChatGPT, ChatGPT Atlas, Claude, Copilot, Cursor, Windsurf, Perplexity,
+    Ollama, LM Studio, Msty, Jan, Raycast) also counts at its catalog location: its `.app` under
+    `/Applications` or `~/Applications`, and on Windows the catalog folder under `%LOCALAPPDATA%`,
+    `Program Files` and `Program Files (x86)`, the roots the AIBOM searches.
   - `node`, `nodejs`, `bun`, `deno` and `python*` are known only by the program they run
     (`cli/script-host-argv.mjs`, `cli/ai-install-locations.mjs`):
     - **Grammar.** argv is read with the runtime's own option grammar. Every option is on a per-runtime
@@ -1987,7 +2064,7 @@ parses host:port only), so the proxy-only setup is a loopback port only MoorAI's
     native install runs as `claude.exe` and is known by name.
   - Command lines are read locally for script-host pids only (`ps -ww -o pid=,args=` on macOS,
     `/proc/<pid>/cmdline` on Linux, one PowerShell `Get-CimInstance Win32_Process … CommandLine` on Windows),
-    and executables for version-named pids only. Neither is posted or stored.
+    and executables for named and version-named pids only. Neither is posted or stored.
   - Rows are per (image, provider, known): an unknown node script is never folded into a known node process,
     or MoorAI's own node, on the same provider.
 - **Alert.** `AI_API_CALLER_UNKNOWN` at most once per image and provider per UTC day, unless
@@ -2003,7 +2080,39 @@ parses host:port only), so the proxy-only setup is a loopback port only MoorAI's
   console script for aider stays unknown. The per-user install locations and the native versions folder are
   writable by the user, so the location rule tells an installed CLI from a script elsewhere but does not prove
   the installed files are unmodified. On Linux any program copied into `~/.local/share/claude/versions/`
-  under a version name counts as Claude Code.
+  under a version name counts as Claude Code. The checks run as the user, so a process running as the same
+  user that installs software into the user's own install locations is indistinguishable from that software;
+  the privileged helper is the planned fix. A product installed outside the listed locations (a portable
+  copy, an AppImage mounted under /tmp, a relocated prefix, a Store package name not listed) is reported,
+  unless on macOS it satisfies a listed signing identity. More than 64 named pids in one scan: the rest are
+  reported. On Intel Macs an unsigned program gives codesign no path and is reported.
+
+### Path containment (`cli/path-within.mjs`)
+
+Every location gate in these detectors asks one question, "is path P inside root R", with one helper,
+`isWithin(path, root, platform)` (and `within`, which returns the segments below the root). It is used by the
+terminal and IDE gate (`inLocation`, the temp-folder and C:\Windows tests in `cli/ai-cli-parents.mjs`) and by
+the install-location gate (`cli/ai-install-locations.mjs`: npm, pnpm and deno roots, pipx and uv venvs, the
+native Claude Code folder, the product table above).
+
+- **Segments, never prefixes.** Both paths are split into segments and compared segment by segment:
+  `/usr/local/lib-old/…` is not inside `/usr/local/lib`, `C:\Program Files Extra\…` is not inside
+  `C:\Program Files`. A root is not inside itself.
+- **Case.** Windows: case-insensitive (`toLowerCase`). macOS: case-insensitive, NFC-normalised, matching the
+  default APFS volume (a case-sensitive volume is still compared insensitively). Linux: case-sensitive.
+- **Separators.** `/` everywhere and `\` on Windows; repeated and trailing separators are dropped.
+- **`.` and `..`.** A path holding a `.` or `..` segment (on Windows any all-dots segment) is refused, never
+  resolved: lexical resolution is wrong across symlinks, and kernel and realpath paths have none.
+- **Windows forms.** `\\?\C:\…`, `\\.\C:\…` and `\??\C:\…` read as `C:\…`; `\\?\UNC\server\share\…` reads as
+  `\\server\share\…`. Other device paths (a volume GUID, a pipe), drive-relative `C:x`, rooted `\x` and a
+  segment holding `:` (an alternate data stream) are inside nothing. A Windows-shaped path is judged with
+  Windows rules on any host.
+- **Root globs.** In a root, `*` inside a segment matches within that one segment (`*` alone is any one
+  segment), and a `*:` drive matches any drive letter, never a UNC share. A home path holding `*` gives no
+  per-user roots.
+- **Tests.** `test/path-within.test.mjs` (canned root/path pairs per platform), `test/location-gates.test.mjs`
+  (both gates on the same pairs), `test/ai-api-callers-identity.test.mjs` (known by location, one case per
+  product, signing identity, script-host executables).
 
 ## Capability tags and exceptions
 

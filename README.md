@@ -1164,9 +1164,17 @@ refused. Any other server raises the alert once per new or changed exposure.
 
 **AI API callers.** The same TCP sample lists established connections. MoorAI resolves the provider API hosts
 (OpenAI, Anthropic, Google, Mistral, and as `other` Groq, xAI, DeepSeek, OpenRouter and others), caches the
-answer for an hour, and names the process behind each matching connection. It is known when it is in the AI
-catalog, a known AI CLI or editor, a browser, or MoorAI itself. Any other caller alerts at most once per image
-and provider per UTC day. An address shared with a non-AI host or with another provider is never attributed;
+answer for an hour, and names the process behind each matching connection. MoorAI's own processes are known.
+A process named like an AI app, AI CLI, editor or browser is known only when its executable, as the OS
+reports it (macOS `codesign -d <pid>`, Linux `/proc/<pid>/exe`, Windows `Win32_Process.ExecutablePath`), is
+inside that product's install location: `/Applications/Claude.app`, `%LOCALAPPDATA%\Programs\cursor`,
+`/usr/share/code`, the npm global folder of `@openai/codex`, and so on (the full table is in the spec). On
+macOS, Claude, ChatGPT, ChatGPT Atlas, Codex, Copilot, Chrome and Firefox are also known off that location
+when the running process satisfies the vendor's code-signing identity (Developer ID team and signing
+identifiers). The same name anywhere else, or with no executable path, is unknown. A named process whose
+executable is `node` or `python` (a `#!` script on Linux keeps its own name) is judged by the program it runs,
+as below. Any other caller alerts at most once per image and provider per UTC day. An address shared with a
+non-AI host or with another provider is never attributed;
 today that covers Gemini on generativelanguage.googleapis.com.
 
 `node`, `bun`, `deno` and `python` are known only by the program they run:
@@ -1206,8 +1214,15 @@ script elsewhere, but it does not prove the installed files are unmodified. On L
 signature to check, any program the user copies into `~/.local/share/claude/versions/` under a version name
 counts as Claude Code.
 
+Every location check compares normalised path segments, never string prefixes: `/usr/local/lib-old` is not
+inside `/usr/local/lib`, `C:\Program Files Extra` is not inside `C:\Program Files`, and a path holding `.`
+or `..` is inside nothing. Windows and macOS compare case-insensitively, Linux case-sensitively, and Windows
+`\\?\C:\…` reads as `C:\…`. The terminal and IDE check of the parent detector uses the same rule.
+
 Both socket detectors run in the detached posture worker, once per agent host per UTC day on an enrolled
-device, never on the decision path (measured: about 400 ms, `lsof` about 250 ms of it). `moorai-doctor` shows
+device, never on the decision path (measured: about 400 ms, `lsof` about 250 ms of it). Reading the executable
+path of each named process adds 16 to 21 ms per process on macOS (7 processes: 113 to 149 ms); a signing
+check runs only for a process off its location and takes 13 to 400 ms. `moorai-doctor` shows
 three read-only rows for them and the decoys; the callers row is skipped with `--offline`.
 
 **Proxy-only local models (Ollama).** Ollama has no unix-socket mode, so the setup is a loopback port that only
@@ -1235,6 +1250,11 @@ MoorAI's model proxy may reach ([Ollama FAQ](https://docs.ollama.com/faq)):
 - The scan sees the connections open at that moment, once a day, to the listed provider hosts only: a
   command server of the attacker's own, a relay, a corporate proxy or VPN is not identified. A script host's
   command line is its own claim: a script at a path named after a known package reads as known.
+- The checks run as the user, so a process running as the same user that installs software into the user's own
+  install locations is indistinguishable from that software; the privileged helper is the planned fix. Gemini
+  CLI, Qwen Code and aider run as scripts and are known only by the program `node` or `python` runs. A
+  product installed outside its listed locations (a portable copy, an AppImage, a relocated prefix) is
+  reported, unless on macOS it satisfies a listed signing identity.
 - A non-loopback bind is always `viaProxy: false`; the device cannot measure whether other hosts reach it.
   The scan names only the user's own processes (macOS lists no others); another account's listener is matched
   on Linux by a distinctive default port only (Ollama 11434), so an Ollama under its own account on port 11435

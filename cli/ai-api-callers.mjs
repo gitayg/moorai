@@ -18,11 +18,19 @@
 // claude.ai, the same provider), so those were attributable. The check runs on every resolution, so a
 // provider that moves onto a shared address stops alerting instead of alerting on everything.
 //
-// KNOWN callers (known: true, never alerted): an image in data/ai-catalog.json (a macOS app name or a
-// Windows executable name), a known AI agent CLI or AI editor (KNOWN_AGENTS), a browser (BROWSERS), or
-// MoorAI itself (its desktop app, this scan's own process and parent, and a node process listening on
-// the model proxy's or moorai-serve's port). Electron helper processes count as their app ("Claude
-// Helper" → claude, "Google Chrome Helper (Renderer)" → google chrome). A script host (node, nodejs, bun,
+// KNOWN callers (known: true, never alerted): MoorAI's own pids (this scan's process and parent, and a node
+// process listening on the model proxy's or moorai-serve's port), and a process named like an AI app, agent
+// CLI, editor or browser (data/ai-catalog.json, KNOWN_AGENTS, BROWSERS, MOORAI_IMAGES; Electron helpers count
+// as their app: "Claude Helper" → claude, "Google Chrome Helper (Renderer)" → google chrome) ONLY when its
+// executable, as the OS reports it (macOS: codesign -d <pid>, which reads the kernel's path for the pid;
+// Linux: /proc/<pid>/exe; Windows: Win32_Process.ExecutablePath), is inside that product's expected install
+// location (cli/ai-install-locations.mjs PRODUCTS and appLocations, compared by path segments with
+// cli/path-within.mjs). On macOS a product with a stable signing identity is also known when the running
+// process satisfies that identity's code-signing requirement (signRequirement; checked only when the
+// location does not match, once per pid per scan). A name with no executable path, or with one anywhere
+// else, is unknown and reported: a name is a claim any program can make. A named process whose executable is
+// a script host (on Linux a #! script runs under its interpreter and keeps the script's name) is judged by
+// the program it runs, below. A script host (node, nodejs, bun,
 // deno, python) is known ONLY by the program it runs: its argv, read with that runtime's own option grammar
 // (cli/script-host-argv.mjs), must name one main script and load nothing else (no preload, import, loader,
 // inline code, stdin, env or config file, inspector), and the script must resolve to the own bin entry of a
@@ -57,7 +65,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { systemTool } from "./machine-dir.mjs";
 import { mainProgram, winArgv } from "./script-host-argv.mjs";
-import { npmEntry, pythonEntry, venvInterpreter, nativeClaudeExe, isVersionImage } from "./ai-install-locations.mjs";
+import { npmEntry, pythonEntry, venvInterpreter, nativeClaudeExe, isVersionImage, appLocations, atAppLocation, signRequirement } from "./ai-install-locations.mjs";
+import { splitPath } from "./path-within.mjs";
 
 export const CALLER_REASON = "AI_API_CALLER_UNKNOWN";
 export const CALLER_CATEGORY = "Unknown process calling an AI provider API";
@@ -98,19 +107,23 @@ export function imageKey(image) {
 }
 
 let CATALOG = null;
-export function catalogImages() {
+// data/ai-catalog.json apps → [{ names: [image keys], mac: ["X.app"], win: ["Programs/X/X.exe"] }].
+export function catalogApps() {
   if (CATALOG) return CATALOG;
-  const s = new Set();
+  const out = [];
   try {
     const cat = JSON.parse(readFileSync(join(SELF_DIR, "..", "data", "ai-catalog.json"), "utf8"));
     for (const a of cat.apps || []) {
-      for (const m of a.mac || []) s.add(imageKey(String(m).split("/").pop()));
-      for (const w of a.win || []) s.add(imageKey(String(w).split(/[\\/]/).pop()));
+      const mac = (a.mac || []).map(String), win = (a.win || []).map(String);
+      const names = [...new Set([...mac.map((m) => imageKey(m.split("/").pop())), ...win.map((w) => imageKey(w.split(/[\\/]/).pop()))])];
+      out.push({ names, mac, win });
     }
   } catch { /* an unreadable catalog leaves the agent and browser lists */ }
-  return (CATALOG = s);
+  return (CATALOG = out);
 }
-const KNOWN = () => new Set([...catalogImages(), ...KNOWN_AGENTS, ...BROWSERS, ...MOORAI_IMAGES]);
+export const catalogImages = () => new Set(catalogApps().flatMap((a) => a.names));
+// The names that make a process a candidate: it is known only at its product's location (see the header).
+export const KNOWN_NAMES = () => new Set([...catalogImages(), ...KNOWN_AGENTS, ...BROWSERS, ...MOORAI_IMAGES]);
 
 // ---- script hosts: which program is node / bun / deno / python running? ----
 // npm names checked with `npm view <name> name bin` on 2026-10-13. Several of these packages now ship a
@@ -133,7 +146,7 @@ const hostKind = (k) => (k === "node" || k === "nodejs" ? "node" : k === "bun" |
 export { mainProgram, winArgv, isVersionImage };
 
 const realpathOr = (p, realpath = realpathSync) => { try { return realpath(p); } catch { return p; } };
-const absPath = (s, platform) => (platform === "win32" ? /^[A-Za-z]:[\\/]/.test(s) : s.startsWith("/"));
+const absPath = (s, platform) => splitPath(s, platform) !== null; // cli/path-within.mjs: absolute, no "." or ".." segment
 // The main script argv[i] names, resolved through symlinks, or null. macOS `ps` joins argv with spaces, so a
 // path with a space arrives split: each join of argv[i..i+7] that is an absolute existing path is a reading,
 // and only a single reading is taken (two, e.g. "/tmp/a" and a planted "/tmp/a /x/cli.js", is ambiguous).
@@ -171,35 +184,53 @@ export function packageOf(entry, kind, { realpath = realpathSync, readFile = rea
 }
 // Claude Code's native install: an image named like a version whose EXECUTABLE (as the kernel reports it, not
 // argv[0]) is $HOME/.local/share/claude/versions/<that version>. That folder is the user's own, so on macOS
-// the running process must also satisfy Anthropic's code-signing requirement (exe.signed === true); on Linux
+// the running process must also satisfy Anthropic's code-signing requirement (signed() → true); on Linux
 // there is no signature to check and the location alone decides. Windows' native install runs as claude.exe.
-// exe: { exe, signed } from readExe.
-export function nativeClaude(exe, image, { platform = process.platform, home = realpathOr(homedir()) } = {}) {
+// exe: { exe } from readExe; signed: () → boolean, asked only when the location matches on macOS.
+export function nativeClaude(exe, image, { platform = process.platform, home = realpathOr(homedir()), signed = () => false } = {}) {
   if (!exe || !nativeClaudeExe(exe.exe, image, { platform, home })) return false;
-  return platform === "darwin" ? exe.signed === true : platform === "linux";
+  return platform === "darwin" ? signed() === true : platform === "linux";
 }
 
-// ---- reading a pid's command line, locally (never stored or sent) ----
-// Windows: the CommandLine goes out base64 (UTF-16LE), one "<pid>|<base64>" line per process, because a
-// command line may itself hold a line break and a "<pid>|…" that would read as another process's line.
+// ---- reading a pid's command line and executable, locally (never stored or sent) ----
+// Windows: ONE Win32_Process query per scan gives both. CommandLine and ExecutablePath go out base64
+// (UTF-16LE), one "<pid>|<base64 cmd>|<base64 exe>" line per process, because a command line may itself hold
+// a line break and a "<pid>|…" that would read as another process's line.
 export function winArgvScript(pids) {
   const f = pids.map((p) => `ProcessId=${Number(p) | 0}`).join(" OR ");
+  const b64 = (v) => `[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes([string]${v}))`;
   return ["$ErrorActionPreference='SilentlyContinue'",
-    `Get-CimInstance -ClassName Win32_Process -Filter "${f}" -Property ProcessId,CommandLine | ForEach-Object { [Console]::Out.WriteLine(('{0}|{1}' -f $_.ProcessId,[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes([string]$_.CommandLine)))) }`].join("\n");
+    `Get-CimInstance -ClassName Win32_Process -Filter "${f}" -Property ProcessId,CommandLine,ExecutablePath | ForEach-Object { [Console]::Out.WriteLine(('{0}|{1}|{2}' -f $_.ProcessId,${b64("$_.CommandLine")},${b64("$_.ExecutablePath")})) }`].join("\n");
 }
-// "<pid>|<base64 UTF-16LE CommandLine>" lines → Map(pid → { argv, spaced: false }). A pid seen twice, a
-// line that is not base64, or a command line winArgv cannot read one way (cli/script-host-argv.mjs) is left
-// out, so that process stays unknown.
-export function parseWinCommandLines(text) {
+// "<pid>|<base64 CommandLine>[|<base64 ExecutablePath>]" lines → Map(pid → { argv, exe }). A pid seen twice
+// or a line that is not base64 is left out; a command line winArgv cannot read one way (cli/script-host-argv.mjs)
+// gives argv null, so that process stays unknown as a script host.
+export function parseWinProcs(text) {
   const m = new Map(), dup = new Set();
+  const dec = (b) => (b ? Buffer.from(b, "base64").toString("utf16le") : "");
   for (const line of String(text || "").split(/\r?\n/)) {
-    const x = /^(\d+)\|([A-Za-z0-9+/]*={0,2})$/.exec(line);
-    if (!x || !x[2]) continue;
+    const x = /^(\d+)\|([A-Za-z0-9+/]*={0,2})(?:\|([A-Za-z0-9+/]*={0,2}))?$/.exec(line);
+    if (!x || (!x[2] && !x[3])) continue;
     if (m.has(x[1]) || dup.has(x[1])) { m.delete(x[1]); dup.add(x[1]); continue; }
-    const argv = winArgv(Buffer.from(x[2], "base64").toString("utf16le"));
-    if (argv && argv.length) m.set(x[1], { argv, spaced: false }); else dup.add(x[1]);
+    const argv = x[2] ? winArgv(dec(x[2])) : null;
+    m.set(x[1], { argv: argv && argv.length ? argv : null, exe: dec(x[3]) });
   }
   return m;
+}
+// → Map(pid → { argv, spaced: false }) for the processes whose command line reads one way.
+export function parseWinCommandLines(text) {
+  return new Map([...parseWinProcs(text)].filter(([, e]) => e.argv).map(([p, e]) => [p, { argv: e.argv, spaced: false }]));
+}
+const MAX_WIN_PIDS = 128;
+const powershell = (script) => execFileSync(systemTool("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoProfile", "-NonInteractive", "-NoLogo", "-Command", script], { encoding: "utf8", timeout: 8000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+// One query per scan: scan.want (every pid the scan will ask about) is fetched the first time and kept.
+function winProcs(ids, { run, scan } = {}) {
+  if (scan && scan.win) return scan.win;
+  const all = [...new Set([...(scan && Array.isArray(scan.want) ? scan.want : []), ...ids].map(String).filter((p) => /^\d+$/.test(p)))].slice(0, MAX_WIN_PIDS);
+  let out = new Map();
+  try { if (all.length) out = parseWinProcs((run || powershell)(winArgvScript(all))); } catch { /* unknown */ }
+  if (scan) scan.win = out;
+  return out;
 }
 // `ps -ww -o pid=,args=` lines → Map(pid → { argv, spaced: true }).
 export function parsePsArgs(text) {
@@ -210,7 +241,7 @@ export function parsePsArgs(text) {
 const PS = ["/bin/ps", "/usr/bin/ps"].find((p) => { try { return existsSync(p); } catch { return false; } }) || "/bin/ps";
 const MAX_ARGV_PIDS = 64;
 // pids → Map(pid → { argv, spaced }). One spawn at most; never throws.
-export function readArgv(pids, { platform = process.platform, run, readFile = readFileSync } = {}) {
+export function readArgv(pids, { platform = process.platform, run, readFile = readFileSync, scan } = {}) {
   const ids = [...new Set((pids || []).map(String).filter((p) => /^\d+$/.test(p)))].slice(0, MAX_ARGV_PIDS);
   if (!ids.length) return new Map();
   try {
@@ -220,8 +251,9 @@ export function readArgv(pids, { platform = process.platform, run, readFile = re
       return m;
     }
     if (platform === "win32") {
-      const r = run || ((script) => execFileSync(systemTool("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoProfile", "-NonInteractive", "-NoLogo", "-Command", script], { encoding: "utf8", timeout: 8000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }));
-      return parseWinCommandLines(r(winArgvScript(ids)));
+      const w = winProcs(ids, { run, scan }), m = new Map();
+      for (const p of ids) { const e = w.get(p); if (e && e.argv) m.set(p, { argv: e.argv, spaced: false }); }
+      return m;
     }
     // ps exits 1 when one of the pids is gone, after printing the rest.
     const r = run || ((args) => { try { return execFileSync(PS, args, { encoding: "utf8", timeout: 3000, maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }); } catch (e) { return typeof e?.stdout === "string" ? e.stdout : ""; } });
@@ -229,28 +261,42 @@ export function readArgv(pids, { platform = process.platform, run, readFile = re
   } catch { return new Map(); }
 }
 
-// The executable of each version-named pid, as the kernel reports it, and on macOS whether the running
-// process satisfies Anthropic's signing requirement (MEASURED on this repo's dev Mac, 2026-10-13: the
-// native versions are signed "Developer ID Application: Anthropic PBC (Q6L2SF6YDW)", identifier
-// com.anthropic.claude-code, hardened runtime; `codesign --verify -R=<this> <pid>` takes about 0.4 s and exits
-// 0 for it, 3 for an Apple-signed shell). Linux: /proc/<pid>/exe, no signature. → Map(pid → { exe, signed }).
-export const CLAUDE_CODE_REQUIREMENT = 'anchor apple generic and identifier "com.anthropic.claude-code" and certificate leaf[subject.OU] = "Q6L2SF6YDW"';
-export function readExe(pids, { platform = process.platform, run, readlink } = {}) {
-  const ids = [...new Set((pids || []).map(String).filter((p) => /^\d+$/.test(p)))].slice(0, 8);
+// The executable of each pid as the OS reports it → Map(pid → { exe }). macOS: `codesign -d <pid>` prints the
+// kernel's path for the running pid as "Executable=" (MEASURED on this repo's dev Mac, 2026-10-13: 0.01 to 0.05 s
+// per pid); a process codesign cannot read (gone, another user's, unsigned on Intel) gives none. Linux:
+// /proc/<pid>/exe (a deleted file reads "… (deleted)" and so matches no location). Windows: ExecutablePath from
+// the scan's one Win32_Process query. At most MAX_EXE_PIDS pids; the rest stay unknown.
+export const MAX_EXE_PIDS = 64;
+export function readExe(pids, { platform = process.platform, run, readlink, scan } = {}) {
+  const ids = [...new Set((pids || []).map(String).filter((p) => /^\d+$/.test(p)))].slice(0, MAX_EXE_PIDS);
   const m = new Map();
+  if (!ids.length) return m;
+  if (platform === "win32") {
+    const w = winProcs(ids, { run, scan });
+    for (const p of ids) { const e = w.get(p); if (e && e.exe) m.set(p, { exe: e.exe }); }
+    return m;
+  }
   for (const p of ids) {
     try {
-      if (platform === "linux") { m.set(p, { exe: (readlink || readlinkSync)(`/proc/${p}/exe`), signed: null }); continue; }
+      if (platform === "linux") { m.set(p, { exe: (readlink || readlinkSync)(`/proc/${p}/exe`) }); continue; }
       if (platform !== "darwin") continue;
-      const cs = run || ((args) => spawnSync("/usr/bin/codesign", args, { encoding: "utf8", timeout: 5000, stdio: ["ignore", "ignore", "pipe"] }));
-      const d = cs(["-d", p]);
+      const d = (run || codesign)(["-d", p]);
       const x = /^Executable=(.+)$/m.exec(String(d && d.stderr || ""));
-      if (!x) continue;
-      const v = cs(["--verify", `-R=${CLAUDE_CODE_REQUIREMENT}`, p]);
-      m.set(p, { exe: x[1], signed: !!v && v.status === 0 });
+      if (x) m.set(p, { exe: x[1] });
     } catch { /* gone, or not ours to inspect */ }
   }
   return m;
+}
+const codesign = (args) => spawnSync("/usr/bin/codesign", args, { encoding: "utf8", timeout: 5000, stdio: ["ignore", "ignore", "pipe"] });
+// macOS: does the RUNNING pid satisfy a code-signing requirement? `codesign --verify -R=<req> <pid>` exits 0
+// when it does (MEASURED on this repo's dev Mac, 2026-10-13: 0.24 to 0.53 s when it passes, 0.01 to 0.03 s
+// when it fails, 3 for an Apple-signed shell against Anthropic's requirement).
+// Claude Code's native versions are signed "Developer ID Application: Anthropic PBC (Q6L2SF6YDW)", identifier
+// com.anthropic.claude-code, hardened runtime.
+export const CLAUDE_CODE_REQUIREMENT = 'anchor apple generic and identifier "com.anthropic.claude-code" and certificate leaf[subject.OU] = "Q6L2SF6YDW"';
+export function codeSigned(pid, requirement, { run } = {}) {
+  if (!/^\d+$/.test(String(pid)) || !requirement) return false;
+  try { const v = (run || codesign)(["--verify", `-R=${requirement}`, String(pid)]); return !!v && v.status === 0; } catch { return false; }
 }
 
 const normIp = (a) => String(a || "").replace(/^\[|\]$/g, "").toLowerCase().replace(/^::ffff:(?=\d+\.)/, "");
@@ -292,12 +338,15 @@ export function mooraiPids(sockets, { self = process.pid, parent = process.ppid,
 }
 
 // sockets: tcpTable().sockets; resolved: resolveAiHosts(). → { callers: [{ processImage, provider, known, connections }], ambiguous }
-// argvOf(pids) → Map(pid → { argv, spaced }) is asked once, only for script-host pids; exeOf(pids) →
-// Map(pid → { exe, signed }) once, only for version-named pids.
+// exeOf(pids, { scan }) → Map(pid → { exe }) is asked once, for named and version-named pids; argvOf(pids,
+// { scan }) → Map(pid → { argv, spaced }) once, for script-host pids (and named pids whose executable is a
+// script host); sigOf(pid, requirement) → boolean on macOS only, at most once per pid per scan, and only when
+// the location did not already decide. On Windows one Win32_Process query (scan) answers exeOf and argvOf.
 // Rows are per (image, provider, known): an unknown node script is never folded into a known node process.
-export function aiApiCallers(sockets, resolved, { moorai = mooraiPids(sockets), argvOf = readArgv, exeOf = readExe, realpath = realpathSync, readFile = readFileSync, platform = process.platform, home = realpathOr(homedir(), realpath) } = {}) {
+export function aiApiCallers(sockets, resolved, { moorai = mooraiPids(sockets), argvOf = readArgv, exeOf = readExe, sigOf = codeSigned, realpath = realpathSync, readFile = readFileSync, platform = process.platform, home = realpathOr(homedir(), realpath), locations } = {}) {
   const byIp = (resolved && resolved.byIp) || {}, amb = new Set((resolved && resolved.ambiguous) || []);
-  const known = KNOWN(), groups = new Map(), hits = [];
+  const names = KNOWN_NAMES(), groups = new Map(), hits = [];
+  const locs = locations || appLocations(platform, home, { catalog: catalogApps() });
   let ambiguous = 0;
   for (const s of sockets || []) {
     if (s.state !== "established" || !s.rhost) continue;
@@ -307,15 +356,31 @@ export function aiApiCallers(sockets, resolved, { moorai = mooraiPids(sockets), 
     if (!provider) continue;
     const processImage = String(s.proc || "").slice(0, 64) || "unknown";
     const key = imageKey(processImage), pid = s.pid ? String(s.pid) : "";
-    const base = !!((pid && moorai.has(pid)) || known.has(key));
-    hits.push({ processImage, provider, pid, base, kind: base ? "" : hostKind(key), version: !base && isVersionImage(processImage) });
+    const self = !!(pid && moorai.has(pid)), named = !self && names.has(key);
+    hits.push({ processImage, provider, pid, key, self, named, kind: self || named ? "" : hostKind(key), version: !self && !named && isVersionImage(processImage) });
   }
-  const ask = (pick, fn) => { const ids = [...new Set(hits.filter((h) => h.pid && pick(h)).map((h) => h.pid))]; if (!ids.length) return new Map(); try { return fn(ids) || new Map(); } catch { return new Map(); } };
-  const argv = ask((h) => h.kind, argvOf), exe = ask((h) => h.version, exeOf);
+  const ids = (pick) => [...new Set(hits.filter((h) => h.pid && pick(h)).map((h) => h.pid))];
+  const scan = { want: [...new Set([...ids((h) => h.kind), ...ids((h) => h.named || h.version)])] };
+  const ask = (list, fn) => { if (!list.length) return new Map(); try { return fn(list, { scan }) || new Map(); } catch { return new Map(); } };
+  const exe = ask(ids((h) => h.named || h.version), exeOf);
+  const at = (h, x) => !!x && atAppLocation(h.key, x.exe, { platform, locations: locs });
+  for (const h of hits) {
+    const x = h.named && exe.get(h.pid), via = x ? hostKind(imageKey(baseName(x.exe))) : "";
+    if (via && !at(h, x)) { h.kind = via; h.named = false; }
+  }
+  const argv = ask(ids((h) => h.kind), argvOf);
+  const sig = new Map();
+  const signed = (pid, req) => { const k = `${pid}|${req}`; if (!sig.has(k)) { let v = false; try { v = sigOf(pid, req) === true; } catch { /* unsigned */ } sig.set(k, v); } return sig.get(k); };
   const opts = { realpath, readFile, platform, home };
   for (const h of hits) {
     const e = argv.get(h.pid), x = exe.get(h.pid);
-    const isKnown = h.base || (h.kind ? !!e && !!packageOf(e, h.kind, opts) : h.version && !!x && nativeClaude(x, h.processImage, opts));
+    let isKnown = false;
+    if (h.self) isKnown = true;
+    else if (h.kind) isKnown = !!e && !!packageOf(e, h.kind, opts);
+    else if (h.named) {
+      const req = platform === "darwin" && x ? signRequirement(h.key) : "";
+      isKnown = at(h, x) || (!!req && signed(h.pid, req));
+    } else if (h.version) isKnown = nativeClaude(x, h.processImage, { platform, home, signed: () => signed(h.pid, CLAUDE_CODE_REQUIREMENT) });
     const k = `${h.processImage}|${h.provider}|${isKnown}`;
     const g = groups.get(k) || { processImage: h.processImage, provider: h.provider, known: isKnown, connections: 0 };
     g.connections++;
@@ -325,6 +390,7 @@ export function aiApiCallers(sockets, resolved, { moorai = mooraiPids(sockets), 
   const callers = [...groups.values()].sort((a, b) => cmp(a.processImage, b.processImage) || cmp(a.provider, b.provider) || Number(a.known) - Number(b.known));
   return { callers, ambiguous };
 }
+const baseName = (p) => { const s = String(p || ""); return s.slice(Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\")) + 1); };
 
 export const callerPolicy = (policy) => (policy && policy.aiApiCallers === "off" ? "off" : "alert");
 // Pure. prev: { day, seen: ["image|provider"] }. → { alerts, next }.

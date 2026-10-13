@@ -31,6 +31,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { STATE_DIR } from "./state-dirs.mjs";
 import { systemTool } from "./machine-dir.mjs";
+import { splitPath, within, isWithin, looksWindows, foldsCase } from "./path-within.mjs";
 
 export const AI_CLI_PARENT = "AI_CLI_PARENT";
 export const AI_CLI_PARENT_CATEGORY = "AI CLI started by an unexpected parent";
@@ -75,50 +76,60 @@ export function imageBase(p) {
   return b.replace(/[^\x20-\x7e]/g, "?").slice(0, 64);
 }
 const key = (image) => imageBase(image).toLowerCase().replace(/\.exe$/, "");
-const slash = (p) => String(p || "").replace(/\\/g, "/").toLowerCase();
+const winOr = (p, platform) => (looksWindows(p) ? "win32" : platform);
 
-export function isTempPath(p) {
-  const s = slash(p);
-  if (!s) return false;
-  if (/^\/(private\/)?(var\/)?tmp\//.test(s) || s.startsWith("/dev/shm/")) return true;
-  if (/^\/(private\/)?var\/folders\/[^/]+\/[^/]+\/t\//.test(s)) return true; // macOS per-user $TMPDIR
-  if (/^[a-z]:\//.test(s) && /\/(temp|tmp)\//.test(s)) return true;          // %TEMP%, C:\Windows\Temp, C:\Temp
-  return false;
-}
-const underWindows = (p) => /^[a-z]:\/windows\//.test(slash(p));
-
-// Expected install locations of a terminal or IDE (and of explorer.exe). The image path must be absolute,
-// have no "." or ".." segment, end in the image's own name, and sit where that product installs.
-const WIN_SYSTEM_DIR = /^[a-z]:\/windows\/(system32\/)?[^/]+$/;
-const WIN_STORE_APPS = /^[a-z]:\/program files\/windowsapps\//;
-const WIN_PROGRAMS = /^[a-z]:\/(program files|program files \(x86\)|users\/[^/]+\/appdata\/local\/programs)\//;
-const MAC_BUNDLE = /^(\/system|\/users\/[^/]+)?\/applications\/([^/]+\/)*[^/]+\.app\/contents\/(.+\/)?macos\/[^/]+$/;
-const UNIX_DIRS = /^(\/(usr\/(bin|sbin|share|lib|lib64|libexec|local\/bin|local\/share|local\/lib)|bin|sbin|opt|snap|var\/lib\/flatpak|nix\/store)|(\/home\/[^/]+|\/root|\/users\/[^/]+)\/\.local\/(bin|share))\//;
-export function inLocation(image, path) {
-  const s = slash(path);
-  const k = key(image);
-  if (!s || !k || key(s) !== k || /(^|\/)\.\.?(\/|$)/.test(s)) return false;
-  if (/^[a-z]:\//.test(s)) {
-    if (k === "conhost" || k === "explorer") return WIN_SYSTEM_DIR.test(s);
-    if (k === "windowsterminal" || k === "openconsole") return WIN_STORE_APPS.test(s);
-    return WIN_PROGRAMS.test(s);
+// Temp directories, by segments (cli/path-within.mjs): /tmp, /var/tmp, /dev/shm, the macOS per-user TMPDIR
+// (/var/folders/<a>/<b>/T, also under /private); on Windows a drive path with a Temp or Tmp folder anywhere.
+const TEMP_ROOTS = ["/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/dev/shm", "/var/folders/*/*/T", "/private/var/folders/*/*/T"];
+export function isTempPath(p, platform = process.platform) {
+  const plat = winOr(p, platform);
+  if (plat === "win32") {
+    const sp = splitPath(p, plat);
+    return !!sp && /^[a-z]:$/.test(sp.head) && sp.keys.slice(0, -1).some((k) => k === "temp" || k === "tmp");
   }
-  return MAC_BUNDLE.test(s) || UNIX_DIRS.test(s);
+  return TEMP_ROOTS.some((r) => isWithin(p, r, plat));
+}
+const underWindows = (p) => looksWindows(p) && isWithin(p, "*:/Windows", "win32");
+
+// Expected install locations of a terminal or IDE (and of explorer.exe), by segments (cli/path-within.mjs,
+// the same rule as cli/ai-install-locations.mjs): the image path must be absolute, have no "." or ".."
+// segment, end in the image's own name, and sit where that product installs. A Windows-shaped path is judged
+// with Windows rules; any other with the host's (macOS folds case, Linux does not).
+const WIN_SYSTEM_DIRS = ["*:/Windows", "*:/Windows/System32"];
+const WIN_STORE_APPS = ["*:/Program Files/WindowsApps"];
+const WIN_PROGRAMS = ["*:/Program Files", "*:/Program Files (x86)", "*:/Users/*/AppData/Local/Programs"];
+const MAC_APPS = ["/Applications", "/System/Applications", "/Users/*/Applications"];
+const UNIX_DIRS = ["/usr/bin", "/usr/sbin", "/usr/share", "/usr/lib", "/usr/lib64", "/usr/libexec", "/usr/local/bin", "/usr/local/share", "/usr/local/lib",
+  "/bin", "/sbin", "/opt", "/snap", "/var/lib/flatpak", "/nix/store", ...["/home/*", "/root", "/Users/*"].flatMap((h) => [`${h}/.local/bin`, `${h}/.local/share`])];
+// Below an applications folder: <…/>X.app/Contents/<…/>MacOS/<image>.
+const bundleTail = (t, platform) => new RegExp("^([^/]+/)*[^/]+\\.app/Contents/(.+/)?MacOS/[^/]+$", foldsCase(platform) ? "i" : "").test(t.join("/"));
+export function inLocation(image, path, platform = process.platform) {
+  const plat = winOr(path, platform);
+  const sp = splitPath(path, plat);
+  const k = key(image);
+  if (!sp || !k || !sp.segs.length || key(sp.segs[sp.segs.length - 1]) !== k) return false;
+  const any = (roots, ok = () => true) => roots.some((r) => { const t = within(path, r, plat); return !!t && ok(t); });
+  if (plat === "win32") {
+    if (k === "conhost" || k === "explorer") return any(WIN_SYSTEM_DIRS, (t) => t.length === 1);
+    if (k === "windowsterminal" || k === "openconsole") return any(WIN_STORE_APPS);
+    return any(WIN_PROGRAMS);
+  }
+  return any(MAC_APPS, (t) => bundleTail(t, plat)) || any(UNIX_DIRS);
 }
 
 // The class of one ancestor. "transparent" means walk past it; "agent" means another AI CLI (normal).
-export function classifyImage(image, path = "", { allow = new Set(), serverMode = false } = {}) {
+export function classifyImage(image, path = "", { allow = new Set(), serverMode = false, platform = process.platform } = {}) {
   const k = key(image || path);
   if (!k) return "unknown";
   if (allow.has(k)) return "normal";
-  if (path && isTempPath(path)) return "temp-or-system-path";
+  if (path && isTempPath(path, platform)) return "temp-or-system-path";
   if (SYSTEM_HOST.has(k)) return "system-host";
   if (OFFICE.has(k)) return "office";
   if (SCRIPT_HOST.has(k)) return "script-host";
-  if (k === "explorer") return inLocation(image || path, path) ? "normal" : path && /^[a-z]:\//.test(slash(path)) ? "system-host" : "unknown";
+  if (k === "explorer") return inLocation(image || path, path, platform) ? "normal" : path && looksWindows(path) ? "system-host" : "unknown";
   if (TRANSPARENT.has(k) || /^python[\d.]+$/.test(k)) return "transparent";
   if (AGENTS.has(k)) return "agent";
-  if ((TERMINALS.has(k) || IDES.has(k) || IDE_HELPER.test(k)) && inLocation(image || path, path)) return "normal";
+  if ((TERMINALS.has(k) || IDES.has(k) || IDE_HELPER.test(k)) && inLocation(image || path, path, platform)) return "normal";
   if (NORMAL.has(k)) return "normal";
   if (serverMode && CI.has(k)) return "normal";
   if (path && underWindows(path) && !WINDOWS_KNOWN.has(k)) return "temp-or-system-path";
@@ -135,7 +146,7 @@ export function parentPolicy(policy) {
 // chain: [{ pid, ppid, image, path, created? }] starting at the hook's parent. → { parentImage, parentClass,
 // chainDepth, agentImage } where parentClass is one of SUSPICIOUS_CLASSES, "normal", "unknown" or
 // "unreadable" (the agent process could not be found). chainDepth counts from the agent (1 = its parent).
-export function assessChain(chain, { shim = false, allow = new Set(), serverMode = false } = {}) {
+export function assessChain(chain, { shim = false, allow = new Set(), serverMode = false, platform = process.platform } = {}) {
   const c = Array.isArray(chain) ? chain : [];
   let i = 0;
   const skipShells = () => { while (i < c.length && i < MAX_TO_AGENT && SHELLS.has(key(c[i].image))) i++; };
@@ -148,12 +159,12 @@ export function assessChain(chain, { shim = false, allow = new Set(), serverMode
     const p = c[i + d];
     const rootReached = !cur || cur.pid === 1 || cur.ppid === 0;
     if (!p) return { parentImage: "", parentClass: rootReached ? "normal" : "unknown", chainDepth: d, agentImage: imageBase(agent.image) };
-    let cls = classifyImage(p.image, p.path, { allow, serverMode });
+    let cls = classifyImage(p.image, p.path, { allow, serverMode, platform });
     if (cls === "transparent") { if (p.pid === 1) return { parentImage: imageBase(p.image), parentClass: "normal", chainDepth: d, agentImage: imageBase(agent.image) }; continue; }
     // explorer.exe started by a system host (or other suspicious parent) is that parent's child, not the shell's.
     if (cls === "normal" && key(p.image) === "explorer" && !allow.has("explorer")) {
       const pp = c[i + d + 1];
-      if (pp && SUSPICIOUS_CLASSES.includes(classifyImage(pp.image, pp.path, { allow, serverMode })) && key(pp.image) !== "userinit" && key(pp.image) !== "winlogon") cls = "system-host";
+      if (pp && SUSPICIOUS_CLASSES.includes(classifyImage(pp.image, pp.path, { allow, serverMode, platform })) && key(pp.image) !== "userinit" && key(pp.image) !== "winlogon") cls = "system-host";
     }
     if (cls === "agent") cls = "normal";
     return { parentImage: imageBase(p.image), parentClass: cls, chainDepth: d, agentImage: imageBase(agent.image) };
