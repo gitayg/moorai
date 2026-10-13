@@ -1751,12 +1751,21 @@ Posture heartbeat (`POST /api/agent-posture`), top-level like `failMode`:
 
   | Class | What it covers | Outcome |
   |---|---|---|
-  | normal | a terminal (Terminal, iTerm2, Windows Terminal, conhost, WezTerm, kitty, …), an IDE (VS Code, Cursor, JetBrains, Xcode, Zed, …), tmux / screen / sshd, launchd / systemd, an AI desktop app, another AI CLI, explorer.exe at C:\Windows\explorer.exe, a CI runner in server mode, an image on `aiCliParents.allow` | nothing |
+  | normal | a terminal (Terminal, iTerm2, Windows Terminal, conhost, WezTerm, kitty, …) or an IDE (VS Code, Cursor, JetBrains, Xcode, Zed, …) whose image path ends in its own name at an expected install location (below); explorer.exe at C:\Windows\ or C:\Windows\System32\; tmux / screen / sshd, launchd / systemd, an AI desktop app, another AI CLI, a CI runner in server mode, an image on `aiCliParents.allow` (all by name) | nothing |
   | system-host | sihost, RuntimeBroker, svchost, dllhost, taskhostw, WmiPrvSE and other Windows system hosts; an explorer.exe outside C:\Windows or started by one of these | alert |
   | office | Word, Excel, Outlook, PowerPoint (Windows and macOS) | alert |
   | script-host | wscript, cscript, mshta, rundll32, regsvr32, msbuild, installutil, regasm, regsvcs, cmstp, hh, osascript | alert |
   | temp-or-system-path | any image in a temp directory (/tmp, /var/tmp, /dev/shm, the macOS per-user TMPDIR, %TEMP%, C:\Windows\Temp), or an image under C:\Windows whose name is not a known Windows program | alert |
-  | unknown | anything else | recorded (`lastParentClass`), never alerted |
+  | unknown | anything else, including a terminal or IDE name with no readable path or off its expected location | recorded (`lastParentClass`), never alerted |
+
+  Expected install locations of a terminal or IDE (`inLocation`; the path must be absolute, have no `.` or `..`
+  segment and end in the image's own name): Windows, conhost.exe directly in `C:\Windows\` or
+  `C:\Windows\System32\`, Windows Terminal / OpenConsole under `Program Files\WindowsApps\`, any other under
+  `Program Files\`, `Program Files (x86)\` or `%LOCALAPPDATA%\Programs\`; macOS, inside a `.app` bundle's
+  `Contents/…/MacOS/` under `/Applications`, `/System/Applications` or `~/Applications`; Linux (and macOS
+  command-line installs), under `/usr/{bin,sbin,share,lib,lib64,libexec}`, `/usr/local/{bin,share,lib}`, `/bin`,
+  `/sbin`, `/opt`, `/snap`, `/var/lib/flatpak`, `/nix/store`, `~/.local/bin` or `~/.local/share`. A terminal or
+  IDE name under C:\Windows off its location is `temp-or-system-path`.
 
 - **Policy.** `"block"` denies every PreToolUse call of a flagged session with a content-free reason naming
   the class; an unenrolled device is coached (alerts, never denies). The allow-list matches image names
@@ -1778,8 +1787,11 @@ Posture heartbeat (`POST /api/agent-posture`), top-level like `failMode`:
   helper is where this check moves to. A parent that has exited cannot be classified: on Unix the agent is
   re-parented to launchd / systemd and reads as normal; on Windows the chain ends and the class is unknown.
   An implant that starts the agent and exits at once is therefore not flagged. Classification is by image
-  name and path: a program renamed to a terminal's or IDE's name, outside a temp directory and outside
-  C:\Windows, reads as normal, as does any name on the allow-list. A session whose ancestry cannot be read
+  name and path: a program renamed to a terminal's or IDE's name reads as normal only when it is also placed
+  at that product's install location, which on Windows (Program Files, WindowsApps, C:\Windows) needs
+  administrator rights but `%LOCALAPPDATA%\Programs`, `~/Applications` and `~/.local` do not. A renamed
+  multiplexer, sshd, launchd / systemd or AI desktop app name is not location-checked, and any name on the
+  allow-list reads as normal. A session whose ancestry cannot be read
   (unreadable process table, PowerShell timeout) is cached as unreadable and never alerted. `wmic` is not
   used (deprecated, absent by default on current Windows 11).
 - **Tests.** `test/ai-cli-parents.test.mjs`, `test/ai-cli-parents-hook.test.mjs`.

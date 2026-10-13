@@ -29,7 +29,7 @@ const IMPORT = dataUrl(`import { register } from "node:module"; register(${JSON.
 const link = (xs) => xs.map((x, i) => ({ pid: 100 + i, ppid: xs[i + 1] ? 101 + i : 0, image: x[0], path: x[1] || "" }));
 const SIHOST = link([["bash.exe"], ["claude.exe", "C:\\Users\\u\\.local\\bin\\claude.exe"], ["sihost.exe", "C:\\Windows\\System32\\sihost.exe"], ["svchost.exe"]]);
 const CODEX_RB = link([["node.exe"], ["codex.exe"], ["cmd.exe"], ["RuntimeBroker.exe", "C:\\Windows\\System32\\RuntimeBroker.exe"]]);
-const TERMINAL = link([["zsh"], ["claude"], ["zsh"], ["login"], ["Terminal"]]);
+const TERMINAL = link([["zsh"], ["claude"], ["zsh"], ["login"], ["Terminal", "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"]]);
 
 function sandbox() {
   const home = mkdtempSync(join(tmpdir(), "moorai-acp-hook-"));

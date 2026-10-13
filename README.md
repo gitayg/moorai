@@ -1131,8 +1131,13 @@ basenames, runtime ids, ports, provider names, counts and opaque ids, never a pa
 | Unknown process calling an AI provider API | posture heartbeat | `aiApiCallers`, `"alert"` (`"off"` silences) | `AI_API_CALLER_UNKNOWN`, High |
 
 **Unexpected parent.** The hook walks up from the agent process, past shells and interpreters, to the first
-ancestor that is neither, and classifies it by image name and path. A terminal, an IDE, a multiplexer or
-sshd, launchd / systemd, an AI desktop app, another AI CLI, or a name on `aiCliParents.allow` is normal. Four
+ancestor that is neither, and classifies it by image name and path. A terminal or an IDE is normal only when
+its image path is also an expected install location for it (Program Files or `%LOCALAPPDATA%\Programs`,
+`Program Files\WindowsApps` for Windows Terminal, `C:\Windows` or `System32` for conhost and explorer; an
+`.app` bundle under `/Applications`, `/System/Applications` or `~/Applications`; `/usr`, `/opt`, `/snap`,
+`~/.local/bin` or `~/.local/share` on Linux); the same name anywhere else is `unknown`, or
+`temp-or-system-path` under C:\Windows. A multiplexer or sshd, launchd / systemd, an AI desktop app, another
+AI CLI, or a name on `aiCliParents.allow` is normal by name. Four
 classes alert: `system-host` (sihost, RuntimeBroker, svchost and other Windows hosts), `office` (Word, Excel,
 Outlook, PowerPoint), `script-host` (wscript, mshta, rundll32, osascript and kin) and `temp-or-system-path`
 (an image in a temp directory, or an unknown one under C:\Windows). Anything else is `unknown`: recorded on

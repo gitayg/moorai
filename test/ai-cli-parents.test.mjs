@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyImage, assessChain, aiCliParentStep, parentPolicy, lastParentClass, parseWinChain, winChainScript, readChainProc, readChainPs, readChainWindows, imageBase, isTempPath, AI_CLI_PARENT, AI_CLI_PARENT_CATEGORY, CACHE_FILE } from "../cli/ai-cli-parents.mjs";
+import { classifyImage, inLocation, assessChain, aiCliParentStep, parentPolicy, lastParentClass, parseWinChain, winChainScript, readChainProc, readChainPs, readChainWindows, imageBase, isTempPath, AI_CLI_PARENT, AI_CLI_PARENT_CATEGORY, CACHE_FILE } from "../cli/ai-cli-parents.mjs";
 import { rmTree } from "./fs-cleanup.mjs";
 
 let pid = 1000;
@@ -93,6 +93,83 @@ test("classifyImage and helpers: basename only, case-insensitive, .exe optional,
   assert.deepEqual(parentPolicy({ aiCliParents: { mode: "block" } }).mode, "block");
 });
 
+test("a terminal or IDE is normal only by name AND expected install location, per platform", () => {
+  const normal = [
+    // Windows: VS Code / Cursor under Program Files or %LOCALAPPDATA%\Programs, Windows Terminal under WindowsApps, conhost / explorer under C:\Windows
+    ["Code.exe", "C:\\Program Files\\Microsoft VS Code\\Code.exe"],
+    ["Code.exe", "C:\\Users\\u\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe"],
+    ["Cursor.exe", "C:\\Users\\u\\AppData\\Local\\Programs\\cursor\\Cursor.exe"],
+    ["idea64.exe", "C:\\Program Files (x86)\\JetBrains\\IntelliJ IDEA\\bin\\idea64.exe"],
+    ["WindowsTerminal.exe", "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.21.2361.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe"],
+    ["OpenConsole.exe", "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.21\\OpenConsole.exe"],
+    ["conhost.exe", "C:\\Windows\\System32\\conhost.exe"],
+    ["explorer.exe", "C:\\Windows\\explorer.exe"],
+    ["explorer.exe", "C:\\Windows\\System32\\explorer.exe"],
+    // macOS: /Applications/<App>.app/Contents/MacOS/…, ~/Applications/…
+    ["iTerm2", "/Applications/iTerm.app/Contents/MacOS/iTerm2"],
+    ["Terminal", "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"],
+    ["Cursor", "/Applications/Cursor.app/Contents/MacOS/Cursor"],
+    ["idea", "/Users/u/Applications/IntelliJ IDEA Ultimate.app/Contents/MacOS/idea"],
+    ["Code Helper (Plugin)", "/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)"],
+    // Linux: /usr/bin, /usr/local/bin, /usr/share, /opt, /snap, ~/.local/bin, ~/.local/share and similar
+    ["gnome-terminal-server", "/usr/libexec/gnome-terminal-server"],
+    ["konsole", "/usr/bin/konsole"],
+    ["alacritty", "/usr/local/bin/alacritty"],
+    ["code", "/usr/share/code/code"],
+    ["cursor", "/opt/cursor/cursor"],
+    ["code", "/snap/code/171/usr/share/code/code"],
+    ["kitty", "/home/u/.local/bin/kitty"],
+    ["idea", "/home/u/.local/share/JetBrains/Toolbox/apps/intellij-idea-ultimate/bin/idea"],
+    ["nvim", "/opt/homebrew/bin/nvim"]
+  ];
+  for (const [image, path] of normal) {
+    assert.equal(inLocation(image, path), true, path);
+    assert.equal(classifyImage(image, path), "normal", path);
+  }
+  const notNormal = [
+    // the right name, no path: a name alone is not enough
+    ["Code.exe", "", "unknown"], ["iTerm2", "", "unknown"], ["Terminal", "", "unknown"], ["konsole", "", "unknown"], ["explorer.exe", "", "unknown"],
+    // the right name, the wrong place
+    ["Code.exe", "C:\\Users\\u\\AppData\\Roaming\\Code.exe", "unknown"],
+    ["Code.exe", "D:\\tools\\Code.exe", "unknown"],
+    ["Cursor.exe", "C:\\ProgramData\\cursor\\Cursor.exe", "unknown"],
+    ["WindowsTerminal.exe", "C:\\Program Files\\Terminal\\WindowsTerminal.exe", "unknown"],
+    ["WindowsTerminal.exe", "C:\\Users\\u\\AppData\\Local\\Programs\\WindowsTerminal.exe", "unknown"],
+    ["iTerm2", "/Users/u/Library/Application Support/iTerm2", "unknown"],
+    ["Terminal", "/Users/u/.cache/Terminal", "unknown"],
+    ["Cursor", "/Applications/Cursor", "unknown"],
+    ["code", "/home/u/.config/code", "unknown"],
+    ["konsole", "/home/u/konsole", "unknown"],
+    ["code", "/usr/share/../../home/u/code", "unknown"],
+    ["code", "usr/bin/code", "unknown"],
+    // the right place, a different file: the path must end in the image's own name
+    ["Code.exe", "C:\\Program Files\\Microsoft VS Code\\evil.exe", "unknown"],
+    ["iTerm2", "/Applications/iTerm.app/Contents/MacOS/payload", "unknown"],
+    // a terminal or IDE name under C:\Windows off its location is a system-path image; conhost / explorer outside their folders too
+    ["Code.exe", "C:\\Windows\\Code.exe", "temp-or-system-path"],
+    ["WindowsTerminal.exe", "C:\\Windows\\System32\\WindowsTerminal.exe", "temp-or-system-path"],
+    ["conhost.exe", "C:\\Windows\\System32\\drivers\\conhost.exe", "temp-or-system-path"],
+    ["conhost.exe", "C:\\Program Files\\conhost.exe", "unknown"],
+    ["explorer.exe", "C:\\Windows\\Help\\explorer.exe", "system-host"],
+    ["explorer.exe", "C:\\Program Files\\explorer.exe", "system-host"],
+    // a temp directory still wins over any name
+    ["Code.exe", "C:\\Users\\u\\AppData\\Local\\Temp\\Code.exe", "temp-or-system-path"],
+    ["iTerm2", "/private/var/folders/ab/cdef/T/iTerm.app/Contents/MacOS/iTerm2", "temp-or-system-path"]
+  ];
+  for (const [image, path, cls] of notNormal) {
+    assert.equal(inLocation(image, path), false, `${image} @ ${path}`);
+    assert.equal(classifyImage(image, path), cls, `${image} @ ${path}`);
+  }
+  // in a chain: a masquerading terminal above the agent is not normal; the real one is
+  assert.equal(assessChain(chain(P("zsh"), P("claude"), P("zsh"), P("iTerm2", "/Users/u/Library/Caches/iTerm2"))).parentClass, "unknown");
+  assert.equal(assessChain(chain(P("bash.exe"), P("claude.exe"), P("cmd.exe"), W("Windows", "WindowsTerminal.exe"))).parentClass, "temp-or-system-path");
+  assert.equal(assessChain(chain(P("bash.exe"), P("claude.exe"), P("cmd.exe"), W("Users\\u\\AppData\\Local\\Programs\\Microsoft VS Code", "Code.exe"))).parentClass, "normal");
+  // the allow-list is by name and still overrides the location
+  assert.equal(classifyImage("Code.exe", "D:\\tools\\Code.exe", { allow: parentPolicy({ aiCliParents: { allow: ["code.exe"] } }).allow }), "normal");
+  // multiplexers, sshd, launchd / systemd keep their name-only rule
+  for (const n of ["tmux: server", "sshd-session", "launchd", "systemd"]) assert.equal(classifyImage(n), "normal", n);
+});
+
 function home() { return mkdtempSync(join(tmpdir(), "moorai-acp-")); }
 const SIHOST = chain(P("bash.exe"), P("claude.exe"), P("sihost.exe", "C:\\Windows\\System32\\sihost.exe"));
 const counting = (c) => { const r = (startPid, n) => { r.calls++; r.args = [startPid, n]; return c; }; r.calls = 0; return r; };
@@ -135,7 +212,7 @@ test("the step: alert mode alerts High and never denies; coach never denies; off
     const off = counting(SIHOST);
     assert.deepEqual(aiCliParentStep({ policy: { aiCliParents: { mode: "off" } }, sessionId: "o", readChain: off, stateDir: dir }), { alerts: [], deny: null, result: null });
     assert.equal(off.calls, 0);
-    const ok = aiCliParentStep({ policy: { aiCliParents: { mode: "block" } }, sessionId: "n", event: "PreToolUse", readChain: counting(chain(P("zsh"), P("claude"), P("Terminal"))), stateDir: dir });
+    const ok = aiCliParentStep({ policy: { aiCliParents: { mode: "block" } }, sessionId: "n", event: "PreToolUse", readChain: counting(chain(P("zsh"), P("claude"), P("Terminal", "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"))), stateDir: dir });
     assert.deepEqual([ok.alerts.length, ok.deny, ok.result.parentClass], [0, null, "normal"]);
     assert.equal(lastParentClass(dir), "normal");
     const none = aiCliParentStep({ policy: {}, sessionId: "u", readChain: counting([]), stateDir: dir });
