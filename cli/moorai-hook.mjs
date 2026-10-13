@@ -308,6 +308,12 @@ const NO_POLICY_BASELINE = { captureTier: "content-free", builtinDefault: true }
 // null. Neither is ever user-writable state.
 const ADMIN = (() => { try { return systemConfig(); } catch { return null; } })();
 let VERIFIED_POLICY;
+// The ONE verified-policy load of this call (network and all), shared by the decision path (main) and
+// the fail-mode path (failClosedNow), whichever asks first. The fail mode of a call that errs before main
+// reached the load must be the mode main would have enforced: a network-free read takes the cache or a
+// last-known-good copy however old, both in the user's write scope (test/fail-mode-hook-preverify).
+let POLICY_LOAD = null;
+const verifiedPolicyLoad = () => (POLICY_LOAD ??= loadVerifiedPolicy(CONFIG));
 // DECIDED: a verdict for this call has been written (emit) or the hook is exiting (exitHook), so a late
 // fail-closed deny must not write a second one. FAIL_EXIT: a fail-closed deny was written, so nothing
 // else may write or set the exit code.
@@ -2136,14 +2142,15 @@ async function handleStop(input) {
 
 // A PreToolUse call the hook could not decide (it threw, ran past HOOK_DECISION_BUDGET_MS, or could not
 // read its input): denied when the hook's fail mode is closed, else left to the caller's fail-open path.
-// Before the policy is verified, the mode comes from the admin binding and the cached verified policy
-// (loadVerifiedPolicy without the network); after, from the admin binding and the verified policy. An
+// Before main has the verified policy, the mode comes from the admin binding and the same verified load
+// main uses (verifiedPolicyLoad: the live policy when the console answers); after, from the admin binding
+// and that verified policy. An
 // unenrolled device (coach) is never denied, and an operator-signed live break-glass marker allows.
 // Returns true when the deny was written and the exit scheduled (exit code 2).
 async function failClosedNow(why) {
   if (DECIDED || FAIL_EXIT) return false;
   let policy = VERIFIED_POLICY;
-  if (policy === undefined) { try { policy = (await loadVerifiedPolicy(CONFIG, { network: false })).policy || null; } catch { policy = null; } }
+  if (policy === undefined) { try { policy = (await verifiedPolicyLoad()).policy || null; } catch { policy = null; } }
   if (DECIDED || FAIL_EXIT) return false;
   const fm = hookFailMode({ policy, admin: ADMIN });
   if (fm.mode !== "closed" || COACH) return false;
@@ -2255,7 +2262,7 @@ async function main() {
     ACTOR = SESSION;
     SUBAGENT_LINEAGE = {};
   }
-  let { policy, source, rejected, pin, trust, absence, lkgCopy, deferAlerts } = await loadVerifiedPolicy(CONFIG);
+  let { policy, source, rejected, pin, trust, absence, lkgCopy, deferAlerts } = await verifiedPolicyLoad();
   DEFER_ALERTS = !!deferAlerts;
   VERIFIED_POLICY = policy || null;
   // With no policy, an admin binding that sets the hook's fail mode to closed selects the fail-closed

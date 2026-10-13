@@ -628,14 +628,15 @@ model's `{"function": "<name>", "arguments": {...}}` wrapper is removed before m
 key besides a name equal to the tool's own, so a wrapped shell command is still judged as `Bash`. See
 [`model-proxy/README.md`](model-proxy/README.md#function-names-and-wrapped-arguments).
 
-**Operator context is the operator's.** The model proxy scans the application's own system prompt (Anthropic
-`system`, OpenAI `system` / `developer` messages, Gemini `systemInstruction`, Ollama system messages and the
-`/api/generate` `system` field). A privacy finding there (a card number, an email address, a secret in an
-"internal data" block; threats 1, 9, 15, 18, 27, 36, 39, 44, 65) is reported at stage `context` and never
-refuses the request; one system prompt is reported once per process. Every other finding in that text
-(prompt injection #3, a reverse shell, system-prompt extraction, rendered-output exfiltration, content rules)
-is decided as in a user turn. `/api/generate`'s `prompt` is the user's: the proxy cannot split one string by
-author, so an app that puts its own data in the prompt string gets it judged as user content.
+**Operator context.** The model proxy judges the application's own system prompt (Anthropic `system`, OpenAI
+`system` / `developer`, Gemini `systemInstruction`, Ollama system messages and `/api/generate` `system`) like any
+request content: a client controls its own system role, so PII or a secret moved there is blocked or asked about
+per policy. Opt-in, from the verified signed policy or the root-owned admin binding only:
+`"operatorContext": { "privacy": "report" }` makes PII-class findings there (threats 1, 9, 15, 18, 27, 36, 44)
+report-only at stage `context`, never refusing; a `--policy-file` or options policy cannot turn it on. Secrets
+(#39, #65) and every non-data finding (prompt injection #3, a reverse shell, system-prompt extraction,
+rendered-output exfiltration, #1 clipboard-to-sink, content rules) are decided as in a user turn even when opted
+in. `/api/generate`'s `prompt` is the user's: the proxy cannot split one string by author.
 
 **Business actions.** Plain function calls are classed by the words of their name as `money` (`issue_refund`,
 `apply_coupon`, `transfer_funds`), `bulk-data` (`export_customer_data_any`), `identity` (`reset_password`,
@@ -1096,7 +1097,8 @@ the setting: a package MoorAI could not fetch or verify stays REVIEW (that is th
 failure to reach one), and an operator-signed, live break-glass marker turns a hook fail-closed deny back into
 an allow, so a hook fault cannot lock a fleet out of its agents. An unenrolled device (coach mode) is never
 denied. `moorai-doctor` shows the effective mode per surface on its **Fail mode** row, and the coverage
-heartbeat (`POST /api/agent-posture`) carries it as a top-level `failMode`. For `modelProxy` the heartbeat
+heartbeat (`POST /api/agent-posture`) carries it as a top-level `failMode`. An unreadable call is decided by the same verified
+policy the hook enforces, never an older cached copy. For `modelProxy` the heartbeat
 reports the hook's view; the proxy's own default depends on its mode.
 
 **Malformed input.** A number or boolean where the hook reads text (`tool_input`'s `command`, `file_path`,

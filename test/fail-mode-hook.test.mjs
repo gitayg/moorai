@@ -124,7 +124,7 @@ test("OPEN (explicit and absent): the same internal error stays a non-blocking f
   }
 });
 
-test("CLOSED before the policy is parsed: unreadable PreToolUse input is decided by the cached verified policy", async (t) => {
+test("CLOSED before the policy is parsed: unreadable PreToolUse input is decided by the verified policy (console offline: its verified cache)", async (t) => {
   const c = await consoleStub(t);
   const home = sandbox(t, c.url, { captureTier: "content-free", failMode: { hook: "closed" } });
   const trunc = '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"';

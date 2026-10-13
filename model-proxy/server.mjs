@@ -40,6 +40,7 @@ import { createGate } from "./credentials.mjs";
 import { maskResponse } from "./credential-mask.mjs";
 import { resolveFailMode } from "../cli/fail-mode.mjs";
 import { systemConfig } from "../cli/server-mode.mjs";
+import { operatorContextMode } from "./context.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({
@@ -144,7 +145,15 @@ export async function createProxy(opts = {}) {
   const admin = o.systemConfig !== undefined ? o.systemConfig : systemConfig();
   const fallback = enforce ? "closed" : "open";
   const failMode = (policy) => { const m = resolveFM(policy, "modelProxy", { admin, fallback })?.mode; return m === "open" || m === "closed" ? m : fallback; };
-  const checker = createChecker(rt, { enforce, cwd: o.cwd || process.cwd(), onUnevaluated: unevaluated, maxItems: o.maxScanItems, itemCap: o.maxScanChars, failClosed: (policy) => enforce && failMode(policy) === "closed" });
+  // Operator context (context.mjs): judged like any request content unless the verified signed policy or the
+  // admin binding sets operatorContext.privacy "report". A --policy-file or options policy cannot.
+  const warned = new Set();
+  const contextPrivacy = (s) => {
+    const r = operatorContextMode({ policy: s.policy, policySource: s.source, admin });
+    if (r.ignored && !warned.has(s.policyId)) { warned.add(s.policyId); try { process.stderr.write(`moorai-model-proxy: operatorContext in a ${s.source} policy ignored; only the verified signed policy or the admin binding sets it\n`); } catch { /* a warning */ } }
+    return r.mode;
+  };
+  const checker = createChecker(rt, { enforce, cwd: o.cwd || process.cwd(), onUnevaluated: unevaluated, maxItems: o.maxScanItems, itemCap: o.maxScanChars, failClosed: (policy) => enforce && failMode(policy) === "closed", contextPrivacy });
   const version = (() => { try { return JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version; } catch { return "unknown"; } })();
   const routes = Object.entries(o.routes).map(([prefix, base]) => ({ prefix: prefix === "/" ? "" : prefix.replace(/\/+$/, ""), base: String(base).replace(/\/+$/, "") })).sort((a, b) => b.prefix.length - a.prefix.length);
   const agents = { "http:": new http.Agent({ keepAlive: true, maxSockets: o.maxConnections }), "https:": new https.Agent({ keepAlive: true, maxSockets: o.maxConnections }) };

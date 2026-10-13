@@ -11,9 +11,10 @@
 //
 // WHO DECIDES, AND WHEN. The admin binding (root-owned /etc/moorai/config.json, read without any policy)
 // is known from the first line of main(); the signed policy only once loadVerifiedPolicy has verified it.
-// So an error BEFORE the policy is verified is decided by the admin binding alone (then the default,
-// open), and an error after it by admin > policy > default. Nothing user-writable is consulted: no env
-// variable, settings file or state file can turn a closed hook open.
+// An error before main has the policy runs that same verified load (one shared promise, network and all),
+// so every PreToolUse call is decided by admin > the policy the decision path enforces > default. Never a
+// network-free read of the cache or a last-known-good copy: those are in the user's write scope and may
+// be older than the live policy (v1.14.1). No env variable or settings file is consulted.
 //
 // NO-BRICK. An operator-signed, live break-glass marker (the same one that lets a fail-closed device out
 // of the offline default) turns a fail-closed verdict back into an allow, so a hook bug cannot lock a

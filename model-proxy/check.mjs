@@ -2,8 +2,8 @@
 // verdict here is the verdict moorai-serve's /v1/scan and /v1/tool-call reach for the same input.
 //
 //   outbound  each new piece of content a request sends — prompt / system text at stage "prompt" (operator
-//             context, `context: true`, has its privacy findings reported at stage "context" and never
-//             refused: context.mjs), a tool
+//             context, `context: true`, is judged the same way unless the verified signed policy or the
+//             admin binding opts in to report its PII-class findings at stage "context": context.mjs), a tool
 //             result or document fed back to the model at stage "output" with ctx {inbound: true} (the
 //             Agent SDK's PostToolUse scan) — through runtime.scan.
 //   inbound   each tool call the model asks the agent to run, mapped to the hook's tool vocabulary (below)
@@ -211,7 +211,10 @@ function mapDirect(name, input = {}) {
 // failClosed(policy): whether content this checker cannot judge (an item past the scan cap, more new items than
 // one request scans, tool-call arguments past the cap) is refused — server.mjs asks cli/fail-mode.mjs. The
 // default is enforce mode's own behaviour.
-export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_NEW_ITEMS, itemCap = ITEM_CAP, failClosed = () => enforce }) {
+// contextPrivacy(state): "report" when operator context's PII-class findings are report-only, else "enforce"
+// (the default) — server.mjs asks context.mjs operatorContextMode with the runtime's policy, its source and
+// the admin binding.
+export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_NEW_ITEMS, itemCap = ITEM_CAP, failClosed = () => enforce, contextPrivacy = () => "enforce" }) {
   const cache = new Map();
   const remember = (k, v) => { cache.delete(k); cache.set(k, v); if (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value); return v; };
   const settle = enforce;
@@ -220,7 +223,8 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
   // item a cache hit of the first. Full digest, random per-process key; it never leaves the process.
   const cacheKey = randomBytes(32);
   const keyOf = (s) => createHmac("sha256", cacheKey).update(s, "utf8").digest("base64");
-  const itemKey = (s, it) => keyOf(`${s.policyId}\0${it.stage}${it.context ? ":context" : ""}\0${it.text}`);
+  const reportContext = (s, it) => Boolean(it.context) && contextPrivacy(s) === "report";
+  const itemKey = (s, it) => keyOf(`${s.policyId}\0${it.stage}${reportContext(s, it) ? ":context" : ""}\0${it.text}`);
 
   async function checkRequest(items) {
     const s = await rt.ready();
@@ -228,7 +232,8 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
     const denied = [];
     let fresh = 0, skipped = 0;
     for (const it of items) {
-      // Operator context is its own key: the same text in a user turn is the user's, and judged as such.
+      // Operator context under the report opt-in is its own key: the same text in a user turn is the user's,
+      // and judged as such.
       const key = itemKey(s, it);
       let v = cache.get(key);
       if (v) remember(key, v);
@@ -241,7 +246,7 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
           // blocked event loop per 512 K characters (measured), ≈6 s for a 32 MB body.
           if (closed) { denied.push({ kind: it.kind, reasons: [`not evaluated: over the ${itemCap}-character scan cap`] }); continue; }
         }
-        const r = it.context ? await scanContext(rt, it, it.text.slice(0, itemCap), { settle }) : await rt.scan(it.text.slice(0, itemCap), it.stage, it.ctx, { tool: it.kind, event: "ModelRequest", settle });
+        const r = reportContext(s, it) ? await scanContext(rt, it, it.text.slice(0, itemCap), { settle }) : await rt.scan(it.text.slice(0, itemCap), it.stage, it.ctx, { tool: it.kind, event: "ModelRequest", settle });
         v = remember(key, { decision: r.decision, reasons: r.reasons });
       }
       if (v.decision === "deny") denied.push({ kind: it.kind, reasons: v.reasons });

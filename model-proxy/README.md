@@ -168,21 +168,31 @@ up.
 
 - **Operator context.** Text the application itself puts in front of the model — Anthropic `system`, OpenAI
   `system` and `developer` messages, Gemini `systemInstruction`, Ollama `system` messages and the
-  `/api/generate` `system` field — is scanned like any prompt, with one difference: a privacy finding there
-  (threats 1, 9, 15, 18, 27, 36, 39, 44 and 65: card numbers, email addresses, secrets, health data in an
-  "internal data" block) is the operator's own data given to its own model. It is reported at stage
-  `context` (`decision: "notify"`, the threat's own risk level, never `Blocked`; `enforcement: LIMITED` when
-  the policy's action for it is block or justify) and never refuses the request. Every other finding in
-  operator context — a prompt injection (#3), a reverse shell (#54), system-prompt extraction (#51),
-  rendered-output exfiltration (#71), a content rule — is decided exactly as in a user turn, because a system
-  prompt assembled from untrusted parts (a retrieved document, a ticket, a filled template) can carry one.
+  `/api/generate` `system` field — is judged like any other request content by default. A client controls
+  its own system role, so a card number, an email address or a secret moved into the system prompt is
+  blocked or asked about per policy, exactly as in a user turn.
+  - **Opt-in, signed policy or admin binding only:** `"operatorContext": { "privacy": "report" }` (the only
+    value besides the default `"enforce"`) makes PII-class findings in operator context report-only: threats
+    1, 9, 15, 18, 27, 36 and 44 (card numbers, IBANs, email addresses, phone and national ids, IP markers,
+    health data). They are reported at stage `context` (`decision: "notify"`, the threat's own risk level,
+    never `Blocked`; `enforcement: LIMITED` when the policy's action for it is block or justify) and do not
+    refuse the request. It is read from the root-owned admin binding (`operatorContext` in
+    `/etc/moorai/config.json`, which wins, either value) or from a console-signed policy this device
+    verified. A `--policy-file`, createProxy's `policy` option, the built-in baseline and the offline default
+    never turn it on; the proxy warns once on stderr when one asks for it.
+  - **Never exempt, even when opted in:** secrets — #39 (API keys, tokens, private keys, JWTs, connection
+    strings) and #65 (a local secret value, credential-shaped egress) — and every finding that is not data:
+    a prompt injection (#3), a reverse shell (#54), system-prompt extraction (#51), rendered-output
+    exfiltration (#71), #1's clipboard-to-sink command, a content rule. These are decided at stage `prompt`
+    exactly as in a user turn, because a system prompt assembled from untrusted parts (a retrieved
+    document, a ticket, a filled template) can carry one.
   The user's turn, a tool result and the model's output are never operator context: the same card number in
-  a user turn is refused under a blocking policy, even when the identical text was operator context earlier.
-  `/api/generate` `template` and `prompt` are not operator context: the proxy cannot tell which part of one
-  string the operator wrote. Code: [`context.mjs`](context.mjs).
+  a user turn is refused under a blocking policy, even when the identical text was opted-in operator context
+  earlier. `/api/generate` `template` and `prompt` are not operator context: the proxy cannot tell which part
+  of one string the operator wrote. Code: [`context.mjs`](context.mjs).
 - **Repeats are scanned once.** Conversations are re-sent every turn, so each item is scanned once. A
-  bounded LRU, keyed by a per-process HMAC, maps each item to its verdict; operator context has keys of its
-  own, so one system prompt is scanned and reported once per process and policy.
+  bounded LRU, keyed by a per-process HMAC, maps each item to its verdict; opted-in operator context has
+  keys of its own, so one system prompt is scanned and reported once per process and policy.
 - **Not scanned:** assistant (Gemini `model`) turns, images, base64 PDFs, and the `tools` definitions.
   Gemini: `inlineData`, `fileData` URIs, `thought` parts, a `cachedContent` reference (its content was
   uploaded earlier, unparsed), and a request body that is not JSON. Ollama: `images`, `thinking`, `format`,

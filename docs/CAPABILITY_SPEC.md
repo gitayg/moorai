@@ -1655,8 +1655,9 @@ present. They have not been checked against Anthropic's real signer.
   `default`; then the signed policy's `failMode[surface]`, then its `default`; then `fallback`. Invalid
   values are warned about (source and key, never the value) and skipped. Never throws; never reads
   user-writable state.
-- **Hook** (`cli/hook-fail.mjs`). Before the policy is verified, the admin binding and the cached verified
-  policy decide; after, the admin binding and the verified policy. Closed deny = exit 2 + PreToolUse deny
+- **Hook** (`cli/hook-fail.mjs`). Before main has the policy, the admin binding and the same verified
+  load the decision path uses (the live policy when the console answers) decide; after, the admin binding and
+  that verified policy (test/fail-mode-hook-preverify.test.mjs). Closed deny = exit 2 + PreToolUse deny
   JSON + stderr, on an uncaught error, `HOOK_DECISION_BUDGET_MS` = 15000 (below the agent-hook shim's 20 s),
   unparseable or unreadable PreToolUse input, an error in the no-policy block, and an allow over a capped
   Read. Admin-closed counts as management evidence; with no policy it selects `OFFLINE_DEFAULT_POLICY`.
@@ -1681,7 +1682,7 @@ present. They have not been checked against Anthropic's real signer.
 
 | Capability | Behaviour | Evidence |
 |---|---|---|
-| Operator-context privacy findings | Reported at stage `context` (`decision: notify`, the threat's own risk, `enforcement: LIMITED` when the policy would block or ask); never refuse. Non-privacy findings decided as before. | test/proxy-context-system.test.mjs |
+| Operator-context privacy findings | Default: judged like any request content (PII and secrets block or ask per policy). Opt-in `operatorContext.privacy: "report"` (verified signed policy or admin binding only): PII-class threats 1, 9, 15, 18, 27, 36, 44 reported at stage `context`, `decision: notify`, `enforcement: LIMITED` when the policy would block or ask. Secrets #39 / #65 and non-data findings never exempt. | test/proxy-context-system.test.mjs |
 | Business-impact classes | `money`, `bulk-data`, `identity`, `destructive`, `delegation` by function-name words; built-in `alert`; `businessToolActions` per class; a specific `functionToolActions` key wins | test/proxy-business-tools.test.mjs |
 | Model-proxy fail mode | see Fail mode above | test/proxy-fail-mode.test.mjs |
 
