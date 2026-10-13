@@ -128,7 +128,10 @@ test("signed policy: the heartbeat carries the three top-level fields; an expose
   const c = await consoleStub(t, state);
   const home = box(t, c.url);
   const port = await listener(t);
-  const known = nodeProc(t, join(home, "lib", "node_modules", "@anthropic-ai", "claude-code", "cli.js"));
+  // A user-prefix npm install (~/.npm-global/lib/node_modules/<pkg>, its package.json naming cli.js as the bin).
+  const pkgDir = join(home, ".npm-global", "lib", "node_modules", "@anthropic-ai", "claude-code");
+  const known = nodeProc(t, join(pkgDir, "cli.js"));
+  writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "@anthropic-ai/claude-code", bin: { claude: "cli.js" } }));
   const rogue = nodeProc(t, join(home, "tmp", "x.js"));
   const sockets = [
     { pid: "1", proc: "ollama", state: "listen", lhost: "127.0.0.1", lport: port, rhost: null, rport: null },

@@ -23,17 +23,23 @@
 // MoorAI itself (its desktop app, this scan's own process and parent, and a node process listening on
 // the model proxy's or moorai-serve's port). Electron helper processes count as their app ("Claude
 // Helper" → claude, "Google Chrome Helper (Renderer)" → google chrome). A script host (node, nodejs, bun,
-// deno, python) is known ONLY by the program it runs: its main script must resolve inside a known AI CLI
-// package (AI_NPM: the npm names in data/host-versions.json plus EXTRA_NPM; PY_PACKAGES for python), e.g.
-// node …/node_modules/@google/gemini-cli/bundle/gemini.js, deno run npm:@google/gemini-cli, python -m aider.
-// Any other script stays unknown: an implant is as likely a script as an agent. An image named like a
-// version ("2.1.295") is Claude Code's native install (~/.local/share/claude/versions/<version>, MEASURED on
-// this repo's dev machine 2026-10-13: lsof names the process by that file) and is known only when its argv[0]
-// resolves to that directory. The command line is read LOCALLY for those pids only (ps -ww -o pid=,args= on
-// macOS, /proc/<pid>/cmdline on Linux, Win32_Process.CommandLine through one PowerShell on Windows) and is
-// never stored, posted or alerted on: the posture and the alert keep the image basename only.
-// LIMIT (spoofing): the command line is the process's own claim. A script at a path named after a known
-// package (…/node_modules/@anthropic-ai/claude-code/cli.js anywhere, or `exec -a`) is classed as known.
+// deno, python) is known ONLY by the program it runs: its argv, read with that runtime's own option grammar
+// (cli/script-host-argv.mjs), must name one main script and load nothing else (no preload, import, loader,
+// inline code, stdin, env or config file, inspector), and the script must resolve to the own bin entry of a
+// known AI CLI package (AI_NPM: the npm names in data/host-versions.json plus EXTRA_NPM; PY_PACKAGES for
+// python) inside a package manager's install location (cli/ai-install-locations.mjs lists them and why).
+// Any other script, a package spec (deno run npm:…, bun x …) and anything unparseable stay unknown: an
+// implant is as likely a script as an agent. An image named like a version ("2.1.295") is Claude Code's
+// native install (~/.local/share/claude/versions/<version>, MEASURED on this repo's dev machine 2026-10-13:
+// lsof names the process by that file) and is known only when its executable, as the kernel reports it, is
+// that file, and on macOS the process also satisfies Anthropic's code-signing requirement. The command line
+// is read LOCALLY for those pids only (ps -ww -o pid=,args= on macOS, /proc/<pid>/cmdline on Linux,
+// Win32_Process.CommandLine through one PowerShell on Windows) and is never stored, posted or alerted on:
+// the posture and the alert keep the image basename only.
+// LIMITS (spoofing): the command line is the process's own claim, so a process started with a forged argv
+// (exec -a, an argv[0] holding spaces on macOS, where ps joins arguments with spaces) or one that rewrites
+// its own argv is classed by what it claims. NODE_OPTIONS, PYTHONPATH and a .pth file, a bunfig.toml preload
+// in bun's working directory, and the contents of a user-writable install location are not read.
 //
 // ALERT: AI_API_CALLER_UNKNOWN (High) per unknown (image, provider), at most once per UTC day, unless the
 // signed policy says aiApiCallers "off".
@@ -44,11 +50,14 @@
 // implant differently) are NOT identified. Process attribution sees only processes this user may inspect
 // on macOS and Linux.
 import { lookup as dnsLookup } from "node:dns/promises";
-import { readFileSync, writeFileSync, mkdirSync, renameSync, realpathSync, existsSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { readFileSync, writeFileSync, mkdirSync, renameSync, realpathSync, readlinkSync, existsSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { systemTool } from "./machine-dir.mjs";
+import { mainProgram, winArgv } from "./script-host-argv.mjs";
+import { npmEntry, pythonEntry, venvInterpreter, nativeClaudeExe, isVersionImage } from "./ai-install-locations.mjs";
 
 export const CALLER_REASON = "AI_API_CALLER_UNKNOWN";
 export const CALLER_CATEGORY = "Unknown process calling an AI provider API";
@@ -109,7 +118,7 @@ const KNOWN = () => new Set([...catalogImages(), ...KNOWN_AGENTS, ...BROWSERS, .
 // covers older installs and the ones that stay JavaScript (gemini-cli bundle/gemini.js, copilot npm-loader.js,
 // qwen-code cli-entry.js, codex bin/codex.js).
 export const EXTRA_NPM = Object.freeze(["@qwen-code/qwen-code", "@charmland/crush", "opencode-ai", "@sourcegraph/amp", "@ampcode/cli"]);
-export const PY_PACKAGES = Object.freeze([{ dist: "aider-chat", module: "aider" }]); // pypi.org/pypi/aider-chat
+export const PY_PACKAGES = Object.freeze([{ dist: "aider-chat", module: "aider", entry: "aider" }]); // pypi.org/pypi/aider-chat
 let NPM = null;
 export function aiNpmPackages() {
   if (NPM) return NPM;
@@ -121,85 +130,75 @@ export function aiNpmPackages() {
   return (NPM = [...s]);
 }
 const hostKind = (k) => (k === "node" || k === "nodejs" ? "node" : k === "bun" || k === "deno" ? k : /^python(\d+(\.\d+)*)?w?$/.test(k) || k === "py" ? "python" : "");
-const isVersionImage = (image) => /^\d+\.\d+\.\d+(?:[-+.][0-9A-Za-z.-]*)?$/.test(String(image || ""));
+export { mainProgram, winArgv, isVersionImage };
 
-const VALUE_OPTS = {
-  node: new Set(["-r", "--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions", "--inspect-port", "--title", "--input-type", "--env-file"]),
-  bun: new Set(["-r", "--preload", "--cwd", "--config", "-c", "--tsconfig-override", "--env-file"]),
-  deno: new Set(["-c", "--config", "--import-map", "--lock", "--cert", "--location", "--seed", "--v8-flags", "--env-file"]),
-  python: new Set(["-W", "-X", "--check-hash-based-pycs"])
-};
-const EVAL_OPTS = new Set(["-e", "--eval", "-p", "--print", "eval"]);
-// argv → { script, at } | { module } | { spec } | null (inline code, or nothing to run).
-export function mainScript(argv, kind) {
-  const a = Array.isArray(argv) ? argv.map(String) : [];
-  const val = VALUE_OPTS[kind] || new Set();
-  for (let i = 1; i < a.length; i++) {
-    const t = a[i];
-    if (kind === "python") {
-      if (t === "-c") return null;
-      if (t === "-m") return a[i + 1] ? { module: a[i + 1] } : null;
-      if (/^-m[A-Za-z_]/.test(t)) return { module: t.slice(2) };
-    } else if (EVAL_OPTS.has(t)) return null;
-    if ((kind === "bun" || kind === "deno") && (t === "run" || t === "x")) { if (t === "x" && a[i + 1] && !a[i + 1].startsWith("-")) return { spec: a[i + 1] }; continue; }
-    if (t === "--") continue;
-    if (t.startsWith("-")) { if (val.has(t)) i++; continue; }
-    return { script: t, at: i };
+const realpathOr = (p, realpath = realpathSync) => { try { return realpath(p); } catch { return p; } };
+const absPath = (s, platform) => (platform === "win32" ? /^[A-Za-z]:[\\/]/.test(s) : s.startsWith("/"));
+// The main script argv[i] names, resolved through symlinks, or null. macOS `ps` joins argv with spaces, so a
+// path with a space arrives split: each join of argv[i..i+7] that is an absolute existing path is a reading,
+// and only a single reading is taken (two, e.g. "/tmp/a" and a planted "/tmp/a /x/cli.js", is ambiguous).
+// ps prints a newline in an argument as \012 and a backslash as itself (MEASURED, macOS 27), so a backslash
+// in a joined path cannot be decoded and the reading is dropped.
+function resolveArg(a, i, spaced, realpath, platform) {
+  const max = spaced ? Math.min(a.length - i, 8) : 1, hits = [];
+  for (let n = 1; n <= max; n++) {
+    const c = a.slice(i, i + n).join(" ");
+    if (!absPath(c, platform) || (spaced && c.includes("\\"))) continue;
+    try { hits.push(realpath(c)); } catch { /* not this join */ }
   }
-  return null;
+  return hits.length === 1 ? hits[0] : null;
 }
-// macOS `ps` joins argv with spaces, so a path with a space arrives split: try the longest-existing join.
-function resolveArg(a, i, spaced, realpath) {
-  const tries = spaced ? Math.min(a.length - i, 8) : 1;
-  for (let n = tries; n >= 1; n--) { try { return realpath(a.slice(i, i + n).join(" ")); } catch { /* not this join */ } }
-  return a[i] || "";
+// The known AI package a script host's argv runs, or null. entry: { argv: [..], spaced }.
+// Known only when the runtime's own grammar finds one main script and nothing else that loads code
+// (cli/script-host-argv.mjs), and that script resolves to a known package's own entry in an install
+// location (cli/ai-install-locations.mjs). deno also needs --no-config: otherwise it reads a deno.json from
+// the working directory, whose import map can replace any module. python -m needs -I or -P (otherwise the
+// working directory is first on sys.path; MEASURED, python 3.14: a planted ./json_tool ran under -m json_tool
+// and did not under -P or -I) and the interpreter of that tool's venv.
+export function packageOf(entry, kind, { realpath = realpathSync, readFile = readFileSync, platform = process.platform, home = realpathOr(homedir()), npm = aiNpmPackages(), py = PY_PACKAGES } = {}) {
+  const a = entry && Array.isArray(entry.argv) ? entry.argv.map(String) : [];
+  const m = mainProgram(a, kind);
+  if (entry && entry.spaced && a.slice(0, m.at ?? a.length).some((t) => t.includes("\\"))) return null;
+  if (m.module !== undefined) {
+    const mod = String(m.module).toLowerCase(), hit = py.find((p) => mod === p.module || mod.startsWith(`${p.module}.`));
+    return kind === "python" && m.safePath && hit && venvInterpreter(a[0], hit.dist, { platform, home }) ? hit.dist : null;
+  }
+  if (m.script === undefined || (kind === "deno" && !m.noConfig)) return null;
+  const p = resolveArg(a, m.at, !!(entry && entry.spaced), realpath, platform);
+  if (!p) return null;
+  if (kind === "python") return pythonEntry(p, { platform, home, py });
+  return npmEntry(p, { platform, home, npm, readFile });
 }
-const norm = (p) => `/${String(p || "").replace(/\\/g, "/").toLowerCase()}`;
-// The known AI package a script host's argv runs, or null. argv: { argv: [..], spaced }.
-export function packageOf(entry, kind, { realpath = realpathSync, npm = aiNpmPackages(), py = PY_PACKAGES } = {}) {
-  const a = entry && Array.isArray(entry.argv) ? entry.argv : [];
-  const m = mainScript(a, kind);
-  if (!m) return null;
-  if (m.module) { const mod = String(m.module).toLowerCase(); const hit = py.find((p) => mod === p.module || mod.startsWith(`${p.module}.`)); return kind === "python" && hit ? hit.dist : null; }
-  if (m.spec) { const pkg = /^(?:npm:)?((?:@[^/@\s]+\/)?[^/@\s]+)/.exec(m.spec); return pkg && npm.includes(pkg[1].toLowerCase()) ? pkg[1].toLowerCase() : null; }
-  if (kind !== "python" && /^npm:/.test(m.script)) return packageOf({ argv: ["", "x", m.script] }, "bun", { realpath, npm, py });
-  const p = norm(resolveArg(a, m.at, !!entry.spaced, realpath));
-  if (kind === "python") { const hit = py.find((x) => p.includes(`/site-packages/${x.module}/`) || p.includes(`/venvs/${x.dist}/`) || p.includes(`/tools/${x.dist}/`)); return hit ? hit.dist : null; }
-  return npm.find((pkg) => p.includes(`/node_modules/${pkg}/`) || p.includes(`/registry.npmjs.org/${pkg}/`)) || null;
-}
-// Claude Code's native install: an image named like a version whose argv[0] resolves into …/claude/versions/.
-export function nativeClaude(entry, image, { realpath = realpathSync } = {}) {
-  const a = entry && Array.isArray(entry.argv) ? entry.argv : [];
-  if (!a.length || !isVersionImage(image)) return false;
-  const p = norm(resolveArg(a, 0, !!entry.spaced, realpath));
-  return p.endsWith(`/claude/versions/${String(image).toLowerCase()}`);
+// Claude Code's native install: an image named like a version whose EXECUTABLE (as the kernel reports it, not
+// argv[0]) is $HOME/.local/share/claude/versions/<that version>. That folder is the user's own, so on macOS
+// the running process must also satisfy Anthropic's code-signing requirement (exe.signed === true); on Linux
+// there is no signature to check and the location alone decides. Windows' native install runs as claude.exe.
+// exe: { exe, signed } from readExe.
+export function nativeClaude(exe, image, { platform = process.platform, home = realpathOr(homedir()) } = {}) {
+  if (!exe || !nativeClaudeExe(exe.exe, image, { platform, home })) return false;
+  return platform === "darwin" ? exe.signed === true : platform === "linux";
 }
 
 // ---- reading a pid's command line, locally (never stored or sent) ----
-// Windows CommandLine → argv (CommandLineToArgvW's quoting: "…" groups, \" is a quote, other \ literal).
-export function winArgv(s) {
-  const out = [];
-  let cur = "", q = false, any = false;
-  const t = String(s || "");
-  for (let i = 0; i < t.length; i++) {
-    const c = t[i];
-    if (c === "\\" && t[i + 1] === "\"") { cur += "\""; i++; any = true; continue; }
-    if (c === "\"") { q = !q; any = true; continue; }
-    if (!q && (c === " " || c === "\t")) { if (any) out.push(cur); cur = ""; any = false; continue; }
-    cur += c; any = true;
-  }
-  if (any) out.push(cur);
-  return out;
-}
+// Windows: the CommandLine goes out base64 (UTF-16LE), one "<pid>|<base64>" line per process, because a
+// command line may itself hold a line break and a "<pid>|…" that would read as another process's line.
 export function winArgvScript(pids) {
   const f = pids.map((p) => `ProcessId=${Number(p) | 0}`).join(" OR ");
   return ["$ErrorActionPreference='SilentlyContinue'",
-    `Get-CimInstance -ClassName Win32_Process -Filter "${f}" -Property ProcessId,CommandLine | ForEach-Object { [Console]::Out.WriteLine(('{0}|{1}' -f $_.ProcessId,$_.CommandLine)) }`].join("\n");
+    `Get-CimInstance -ClassName Win32_Process -Filter "${f}" -Property ProcessId,CommandLine | ForEach-Object { [Console]::Out.WriteLine(('{0}|{1}' -f $_.ProcessId,[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes([string]$_.CommandLine)))) }`].join("\n");
 }
-// "<pid>|<CommandLine>" lines → Map(pid → { argv, spaced: false }).
+// "<pid>|<base64 UTF-16LE CommandLine>" lines → Map(pid → { argv, spaced: false }). A pid seen twice, a
+// line that is not base64, or a command line winArgv cannot read one way (cli/script-host-argv.mjs) is left
+// out, so that process stays unknown.
 export function parseWinCommandLines(text) {
-  const m = new Map();
-  for (const line of String(text || "").split(/\r?\n/)) { const x = /^(\d+)\|(.*)$/.exec(line); if (x && x[2].trim()) m.set(x[1], { argv: winArgv(x[2]), spaced: false }); }
+  const m = new Map(), dup = new Set();
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const x = /^(\d+)\|([A-Za-z0-9+/]*={0,2})$/.exec(line);
+    if (!x || !x[2]) continue;
+    if (m.has(x[1]) || dup.has(x[1])) { m.delete(x[1]); dup.add(x[1]); continue; }
+    const argv = winArgv(Buffer.from(x[2], "base64").toString("utf16le"));
+    if (argv && argv.length) m.set(x[1], { argv, spaced: false }); else dup.add(x[1]);
+  }
   return m;
 }
 // `ps -ww -o pid=,args=` lines → Map(pid → { argv, spaced: true }).
@@ -228,6 +227,30 @@ export function readArgv(pids, { platform = process.platform, run, readFile = re
     const r = run || ((args) => { try { return execFileSync(PS, args, { encoding: "utf8", timeout: 3000, maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }); } catch (e) { return typeof e?.stdout === "string" ? e.stdout : ""; } });
     return parsePsArgs(r(["-ww", "-o", "pid=,args=", "-p", ids.join(",")]));
   } catch { return new Map(); }
+}
+
+// The executable of each version-named pid, as the kernel reports it, and on macOS whether the running
+// process satisfies Anthropic's signing requirement (MEASURED on this repo's dev Mac, 2026-10-13: the
+// native versions are signed "Developer ID Application: Anthropic PBC (Q6L2SF6YDW)", identifier
+// com.anthropic.claude-code, hardened runtime; `codesign --verify -R=<this> <pid>` takes about 0.4 s and exits
+// 0 for it, 3 for an Apple-signed shell). Linux: /proc/<pid>/exe, no signature. → Map(pid → { exe, signed }).
+export const CLAUDE_CODE_REQUIREMENT = 'anchor apple generic and identifier "com.anthropic.claude-code" and certificate leaf[subject.OU] = "Q6L2SF6YDW"';
+export function readExe(pids, { platform = process.platform, run, readlink } = {}) {
+  const ids = [...new Set((pids || []).map(String).filter((p) => /^\d+$/.test(p)))].slice(0, 8);
+  const m = new Map();
+  for (const p of ids) {
+    try {
+      if (platform === "linux") { m.set(p, { exe: (readlink || readlinkSync)(`/proc/${p}/exe`), signed: null }); continue; }
+      if (platform !== "darwin") continue;
+      const cs = run || ((args) => spawnSync("/usr/bin/codesign", args, { encoding: "utf8", timeout: 5000, stdio: ["ignore", "ignore", "pipe"] }));
+      const d = cs(["-d", p]);
+      const x = /^Executable=(.+)$/m.exec(String(d && d.stderr || ""));
+      if (!x) continue;
+      const v = cs(["--verify", `-R=${CLAUDE_CODE_REQUIREMENT}`, p]);
+      m.set(p, { exe: x[1], signed: !!v && v.status === 0 });
+    } catch { /* gone, or not ours to inspect */ }
+  }
+  return m;
 }
 
 const normIp = (a) => String(a || "").replace(/^\[|\]$/g, "").toLowerCase().replace(/^::ffff:(?=\d+\.)/, "");
@@ -269,9 +292,10 @@ export function mooraiPids(sockets, { self = process.pid, parent = process.ppid,
 }
 
 // sockets: tcpTable().sockets; resolved: resolveAiHosts(). → { callers: [{ processImage, provider, known, connections }], ambiguous }
-// argvOf(pids) → Map(pid → { argv, spaced }) is asked once, only for script-host and version-named pids.
+// argvOf(pids) → Map(pid → { argv, spaced }) is asked once, only for script-host pids; exeOf(pids) →
+// Map(pid → { exe, signed }) once, only for version-named pids.
 // Rows are per (image, provider, known): an unknown node script is never folded into a known node process.
-export function aiApiCallers(sockets, resolved, { moorai = mooraiPids(sockets), argvOf = readArgv, realpath = realpathSync } = {}) {
+export function aiApiCallers(sockets, resolved, { moorai = mooraiPids(sockets), argvOf = readArgv, exeOf = readExe, realpath = realpathSync, readFile = readFileSync, platform = process.platform, home = realpathOr(homedir(), realpath) } = {}) {
   const byIp = (resolved && resolved.byIp) || {}, amb = new Set((resolved && resolved.ambiguous) || []);
   const known = KNOWN(), groups = new Map(), hits = [];
   let ambiguous = 0;
@@ -286,12 +310,12 @@ export function aiApiCallers(sockets, resolved, { moorai = mooraiPids(sockets), 
     const base = !!((pid && moorai.has(pid)) || known.has(key));
     hits.push({ processImage, provider, pid, base, kind: base ? "" : hostKind(key), version: !base && isVersionImage(processImage) });
   }
-  const ask = [...new Set(hits.filter((h) => h.pid && (h.kind || h.version)).map((h) => h.pid))];
-  let argv = new Map();
-  if (ask.length) { try { argv = argvOf(ask) || new Map(); } catch { argv = new Map(); } }
+  const ask = (pick, fn) => { const ids = [...new Set(hits.filter((h) => h.pid && pick(h)).map((h) => h.pid))]; if (!ids.length) return new Map(); try { return fn(ids) || new Map(); } catch { return new Map(); } };
+  const argv = ask((h) => h.kind, argvOf), exe = ask((h) => h.version, exeOf);
+  const opts = { realpath, readFile, platform, home };
   for (const h of hits) {
-    const e = argv.get(h.pid);
-    const isKnown = h.base || (!!e && ((h.kind && !!packageOf(e, h.kind, { realpath })) || (h.version && nativeClaude(e, h.processImage, { realpath }))));
+    const e = argv.get(h.pid), x = exe.get(h.pid);
+    const isKnown = h.base || (h.kind ? !!e && !!packageOf(e, h.kind, opts) : h.version && !!x && nativeClaude(x, h.processImage, opts));
     const k = `${h.processImage}|${h.provider}|${isKnown}`;
     const g = groups.get(k) || { processImage: h.processImage, provider: h.provider, known: isKnown, connections: 0 };
     g.connections++;

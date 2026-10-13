@@ -1165,11 +1165,46 @@ refused. Any other server raises the alert once per new or changed exposure.
 **AI API callers.** The same TCP sample lists established connections. MoorAI resolves the provider API hosts
 (OpenAI, Anthropic, Google, Mistral, and as `other` Groq, xAI, DeepSeek, OpenRouter and others), caches the
 answer for an hour, and names the process behind each matching connection. It is known when it is in the AI
-catalog, a known AI CLI or editor, a browser, or MoorAI itself; `node`, `bun`, `deno` and `python` only when
-their main script resolves inside a known AI CLI package, and Claude Code's native install (an image named
-like its version) only when argv[0] resolves into `…/claude/versions/`. Any other caller alerts at most once
-per image and provider per UTC day. An address shared with a non-AI host or with another provider is never
-attributed; today that covers Gemini on generativelanguage.googleapis.com.
+catalog, a known AI CLI or editor, a browser, or MoorAI itself. Any other caller alerts at most once per image
+and provider per UTC day. An address shared with a non-AI host or with another provider is never attributed;
+today that covers Gemini on generativelanguage.googleapis.com.
+
+`node`, `bun`, `deno` and `python` are known only by the program they run:
+- The command line is read with that runtime's own option grammar. Every option must be on MoorAI's list for
+  that runtime, and a value option counts only in the form the runtime itself reads (`--title=x`, not
+  `--title x`). Anything the grammar cannot place is unknown.
+- Nothing but one main script may load code. A preload, `--import` or loader, inline code (`-e`, `-c`), stdin,
+  an env or config file, an inspector, `--preserve-symlinks`, `python -i`, a dotted `-W` warning category and
+  `-X pycache_prefix` each make the caller unknown.
+- The script must resolve, through symlinks, to a bin entry that the package.json of a known AI CLI package
+  names, and that package must be the first one under a global install location: npm's global prefix
+  (`/usr/local/lib`, `/usr/lib`, `/opt/homebrew/lib`, `%APPDATA%\npm`, `C:\Program Files\nodejs`), a user prefix
+  (`~/.npm-global/lib`, `~/.local/lib`), nvm, fnm, Volta, asdf, mise and nvm-windows, the pnpm, yarn and bun
+  global folders, or deno's npm cache. For aider it is the `aider` console script of a pipx or uv venv named
+  `aider-chat`. A package name anywhere else in a path is not enough.
+- `deno` also needs `--no-config`, because otherwise it reads a `deno.json` from the working directory.
+  `python -m aider` needs `-I` or `-P` and the venv's own interpreter, because otherwise the working
+  directory comes first on `sys.path`. A package spec (`deno run npm:…`, `bun x …`) is unknown: the registry
+  and the working directory's config decide what it loads.
+- Windows command lines are split by CommandLineToArgvW's rules and reach MoorAI base64-encoded, one record
+  per process. A line that the runtime's own splitter could read differently (a doubled quote, a quote in
+  or right after the program name) or an unclosed quote is unknown.
+
+Claude Code's native install runs as an image named like its version. It is known only when its executable,
+as the kernel reports it, is `~/.local/share/claude/versions/<version>`; argv[0] is not consulted. On macOS
+the running process must also satisfy Anthropic's code-signing requirement (Developer ID team Q6L2SF6YDW,
+identifier `com.anthropic.claude-code`). On Windows the native install runs as `claude.exe` and is known by
+name.
+
+Limits. The command line is the process's own claim: a process started with a forged argv (`exec -a`), or one
+that rewrites its own argv, is classed by what it claims. On macOS `ps` joins arguments with spaces, so a
+script path with spaces counts only when exactly one reading of it exists on disk. `NODE_OPTIONS`,
+`PYTHONPATH`, `.pth` files and a `bunfig.toml` preload in bun's working directory are not read. A relocated
+prefix (`npm config prefix`, `DENO_DIR`, `PIPX_HOME`) is not recognised. The per-user install locations and the
+native versions folder are writable by the user. The location rule therefore tells an installed CLI from a
+script elsewhere, but it does not prove the installed files are unmodified. On Linux, where there is no
+signature to check, any program the user copies into `~/.local/share/claude/versions/` under a version name
+counts as Claude Code.
 
 Both socket detectors run in the detached posture worker, once per agent host per UTC day on an enrolled
 device, never on the decision path (measured: about 400 ms, `lsof` about 250 ms of it). `moorai-doctor` shows

@@ -1315,7 +1315,7 @@ group- or world-writable, is not a symlink, and sits in directories that are roo
 world-writable, checked on the open file (`src-tauri/src/admin_config.rs` `read_admin_owned`, the reader of
 every administrator source). It never reads them from `~/.moorai/config.json`.
 
-**OpenShell** (NVIDIA/OpenShell @ b959bb6, `docs/how-it-works/policies/schema.mdx` and `network-rules.mdx`).
+**OpenShell** (the OpenShell repository @ b959bb6, `docs/how-it-works/policies/schema.mdx` and `network-rules.mdx`).
 Relevant quotes:
 - "OpenShell checks every outbound connection ... and denies any connection that no rule allows."
 - "Network rules are not an ordered firewall list ... A matching deny rule takes precedence over any allow".
@@ -1928,18 +1928,66 @@ parses host:port only), so the proxy-only setup is a loopback port only MoorAI's
 - **Known callers** (`known: true`, never alerted): an app in `data/ai-catalog.json`, a known AI agent CLI or
   AI editor, a browser, or MoorAI itself (its desktop app, the scanning process and its parent, and a node
   process listening on the model proxy's or moorai-serve's port). Electron helper processes count as their app.
-  - `node`, `nodejs`, `bun`, `deno` and `python*` are known only when their main script resolves inside a known
-    AI package: the npm names in `data/host-versions.json` (`hosts.*.npm`) plus `@qwen-code/qwen-code`,
-    `@charmland/crush`, `opencode-ai`, `@sourcegraph/amp`, `@ampcode/cli`; for python, aider-chat (`-m aider`,
-    a pipx / uv venv, or `site-packages/aider`). Paths match `/node_modules/<pkg>/` or deno's
-    `/registry.npmjs.org/<pkg>/`, and `npm:<pkg>` specs (`deno run`, `bun x`). Inline code (`-e`, `-p`, `-c`)
-    and any other script stay unknown.
-  - Claude Code's native install runs as an image named like its version (for example `2.1.295`, the file
-    `~/.local/share/claude/versions/<version>`, measured on the dev Mac) and is known only when argv[0]
-    resolves into `…/claude/versions/<that image>`.
-  - Command lines are read locally for those pids only (`ps -ww -o pid=,args=` on macOS, `/proc/<pid>/cmdline`
-    on Linux, one PowerShell `Get-CimInstance Win32_Process … CommandLine` on Windows) and are never posted
-    or stored.
+  - `node`, `nodejs`, `bun`, `deno` and `python*` are known only by the program they run
+    (`cli/script-host-argv.mjs`, `cli/ai-install-locations.mjs`):
+    - **Grammar.** argv is read with the runtime's own option grammar. Every option is on a per-runtime
+      allowlist, and anything unlisted is unparseable and so unknown. A value option counts only in the form
+      the runtime itself reads (node: `--title=x`; measured on node 22: `--title t a.js` consumes `t`, and
+      V8's `--max-old-space-size 100` is refused). Python short options cluster (`-Bu`, `-Wd`, `-Im aider`),
+      and `-c`/`-m`/`-W`/`-X` take the rest of the token or the next argument. Option names fold `_` to `-`.
+    - **Other code.** Each of these makes the caller unknown.
+      - node: `-r`/`--require`, `--import`, `--loader`, `-e`/`-p`, `-` or no script (stdin), `-i`,
+        `--env-file` (it can set `NODE_OPTIONS`; measured: a `--require` in it ran), a config file, a
+        snapshot, `--run`/`--test`/`--watch`, `--inspect*`, `--preserve-symlinks*`, `-C`.
+      - bun: `--preload`, `-e`, `--config`/`--cwd` (another bunfig.toml), `--env-file`, auto-install, `x`.
+      - deno: `--preload`, `--import-map`, `-c`, `--env-file`, `--node-modules-dir`, `--vendor`, subcommands
+        other than `run`.
+      - python: `-c`, `-i`, `-` or no script, a dotted `-W` category (measured: imported), an unlisted `-X`
+        (`pycache_prefix`, `presite`).
+    - **Location and entry.** The main script must be an absolute path that resolves (realpath) to
+      `<root>/node_modules/<pkg>/<bin>`. `<root>` is a global install root, `<pkg>` is the first package
+      under it (one nested in another package's `node_modules` does not count), `<pkg>/package.json` names
+      `<pkg>`, and `<bin>` is one of its `bin` entries. The roots:
+      - npm prefixes: `/usr/local/lib`, `/usr/lib`, `/opt/homebrew/lib`, `/home/linuxbrew/.linuxbrew/lib`,
+        `~/.npm-global/lib`, `~/.npm-packages/lib`, `~/.local/lib`, and on Windows `%APPDATA%\npm` and
+        `C:\Program Files\nodejs`.
+      - Version managers: `~/.nvm/versions/node/*/lib`, fnm (`~/.local/share/fnm`,
+        `~/Library/Application Support/fnm`, `~/.fnm`, `%APPDATA%\fnm`), `~/.volta/tools/image/packages/<pkg>/lib`
+        (`%LOCALAPPDATA%\Volta`), `~/.asdf/installs/nodejs/*/lib`, `~/.local/share/mise/installs/node/*/lib`,
+        `%APPDATA%\nvm\*`.
+      - Global folders: yarn `~/.config/yarn/global` (`%LOCALAPPDATA%\Yarn\Data\global`), bun
+        `~/.bun/install/global`, and pnpm `~/Library/pnpm/global/*`, `~/.local/share/pnpm/global/*`,
+        `%LOCALAPPDATA%\pnpm\global\*` (resolving into `.pnpm/<id>/node_modules/<pkg>`).
+      - deno's npm cache `<cache>/deno/npm/registry.npmjs.org/<pkg>/<version>/<bin>` (`~/Library/Caches`,
+        `~/.cache`, `%LOCALAPPDATA%`), with `--no-config` on the command line, since otherwise deno reads a
+        `deno.json` from the working directory, whose import map can replace any module.
+      - aider: `<venv>/bin/aider` (`<venv>\Scripts\aider.exe`) for a venv named `aider-chat` under
+        `~/.local/pipx/venvs`, `~/.local/share/pipx/venvs`, `~/Library/Application Support/pipx/venvs`,
+        `~/.local/share/uv/tools`, or on Windows `%USERPROFILE%\pipx\venvs`, `%USERPROFILE%\.local\pipx\venvs`,
+        `%LOCALAPPDATA%\pipx\pipx\venvs`, `%APPDATA%\uv\data\tools`. `python -m aider` counts only with `-I` or
+        `-P` and argv[0] in that venv; measured on python 3.14, a planted `./json_tool` ran under
+        `-m json_tool` and not under `-P` or `-I`.
+      - Package specs (`deno run npm:…`, `bun x …`), relative scripts and other locations stay unknown.
+    - **Windows.** `Win32_Process.CommandLine` reaches MoorAI base64-encoded (UTF-16LE), one record per pid, so
+      a line break inside a command line cannot forge another record, and a pid seen twice is dropped. It is
+      split by CommandLineToArgvW's rules: argv[0] runs to the next quote or blank with no escapes; then 2n
+      backslashes before a quote give n and toggle quoting, and 2n+1 give n and a literal quote. node,
+      python, bun and deno split with their own runtime code, which disagrees with CommandLineToArgvW on a
+      doubled quote and on a quote inside or right after argv[0]. Such a line, or an unclosed quote, is
+      unknown.
+    - **macOS.** `ps` joins argv with spaces. A script path with spaces counts only when exactly one join of
+      the following arguments exists on disk. ps prints a newline as `\012` and a backslash as itself
+      (measured), so a backslash before or in the script path makes the line undecodable and unknown.
+  - Claude Code's native install runs as an image named like its version (for example `2.1.295`). It is known
+    only when the executable the kernel reports is `$HOME/.local/share/claude/versions/<that image>`: on macOS
+    `codesign -d <pid>`, on Linux `/proc/<pid>/exe`. argv[0] is not consulted. On macOS the running process
+    must also pass `codesign --verify -R='anchor apple generic and identifier "com.anthropic.claude-code" and
+    certificate leaf[subject.OU] = "Q6L2SF6YDW"' <pid>`; measured on the dev Mac, the installed versions
+    pass in about 0.4 s and an Apple-signed shell exits 3. On Linux the location alone decides. On Windows the
+    native install runs as `claude.exe` and is known by name.
+  - Command lines are read locally for script-host pids only (`ps -ww -o pid=,args=` on macOS,
+    `/proc/<pid>/cmdline` on Linux, one PowerShell `Get-CimInstance Win32_Process … CommandLine` on Windows),
+    and executables for version-named pids only. Neither is posted or stored.
   - Rows are per (image, provider, known): an unknown node script is never folded into a known node process,
     or MoorAI's own node, on the same provider.
 - **Alert.** `AI_API_CALLER_UNKNOWN` at most once per image and provider per UTC day, unless
@@ -1948,9 +1996,14 @@ parses host:port only), so the proxy-only setup is a loopback port only MoorAI's
   TLS, a provider reached through a relay, a corporate proxy or VPN, or a provider address the device's
   resolver did not return is not identified. On macOS and Linux only processes the user may inspect are
   attributed. The scan sees connections open at the moment of the daily beat, not every connection. The
-  command line is the process's own claim: a script at a path named after a known package, or an `exec -a`
-  argv[0], is classed as known, while a pip `--user` console script for aider (not a symlink into a venv)
-  stays unknown.
+  command line is the process's own claim: a process started with a forged argv (`exec -a`, or on macOS an
+  argument holding spaces), or one that rewrites its own argv, is classed by what it claims. `NODE_OPTIONS`,
+  `PYTHONPATH`, `.pth` files and a `bunfig.toml` preload in bun's working directory are not read. A relocated
+  prefix (`npm config prefix`, `DENO_DIR`, `PIPX_HOME`, a moved AppData) is not recognised. A pip `--user`
+  console script for aider stays unknown. The per-user install locations and the native versions folder are
+  writable by the user, so the location rule tells an installed CLI from a script elsewhere but does not prove
+  the installed files are unmodified. On Linux any program copied into `~/.local/share/claude/versions/`
+  under a version name counts as Claude Code.
 
 ## Capability tags and exceptions
 
