@@ -10,11 +10,15 @@
 //   5. the frame judged by the MoorAI runtime                                                 → 200 verdict
 // A non-200 answer is a webhook failure to Anthropic, never a deny: the organization's failure handling
 // decides it. So a request this server authenticated but could not judge in full (an item past the scan
-// cap, the evaluation deadline, an engine error, an unreadable frame) gets a verdict from --fail: "open"
-// answers allow, "closed" answers deny. A body that cannot even be read (over maxBody, or the in-flight
-// budget) cannot be authenticated: "closed" answers deny, "open" answers 413 / 503 and leaves the outcome
-// to Anthropic's own failure handling. Shadow mode answers allow to every frame it judged and reports what
-// it would have denied.
+// cap, the evaluation deadline, an engine error, an unreadable frame) gets a verdict from the fail mode:
+// "open" answers allow, "closed" answers deny. A body that cannot even be read (over maxBody, or the
+// in-flight budget) cannot be authenticated: "closed" answers deny, "open" answers 413 / 503 and leaves the
+// outcome to Anthropic's own failure handling. Shadow mode answers allow to every frame it judged and
+// reports what it would have denied.
+//
+// THE FAIL MODE (cli/fail-mode.mjs, surface "inferenceHook"), resolved per request: the root-owned admin
+// binding's failMode, then the policy's, then --fail (the operator's own knob for this server process),
+// then open. --fail is the default an operator chooses; an administrator who sets failMode overrides it.
 //
 // EXPOSURE. Default bind 127.0.0.1, with TLS terminated by a reverse proxy on the same host (Anthropic
 // only calls an https:// URL on port 443 with a public certificate). A non-loopback bind needs
@@ -29,6 +33,8 @@ import { verify, createReplayCache } from "./signature.mjs";
 import { createEvaluator, ITEM_CAP, MAX_NEW_ITEMS } from "./evaluate.mjs";
 import { frameContext, wrapReporter, reportUnevaluated, cleanSource } from "./report.mjs";
 import { ALLOW, denyBody, newReference, policyDenyReason, failDenyReason } from "./verdict.mjs";
+import { resolveFailMode } from "../fail-mode.mjs";
+import { systemConfig } from "../server-mode.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const PROTOCOL_MAX_BODY = 64 * 1048576;
@@ -48,6 +54,13 @@ export async function createServer(opts = {}) {
   wrapReporter(rt, { shadow });
   await rt.ready();
   const evaluator = createEvaluator(rt, { itemCap: o.itemCap, maxItems: o.maxItems });
+  // admin > policy > --fail > open. The admin binding is the same root-owned file the runtime reads.
+  const admin = o.systemConfig !== undefined ? o.systemConfig : (() => { try { return systemConfig(); } catch { return null; } })();
+  const failMode = async () => {
+    let policy = null;
+    try { policy = (await rt.ready()).policy || null; } catch { policy = null; }
+    return resolveFailMode(policy, "inferenceHook", { admin, fallback: o.fail });
+  };
   const replay = createReplayCache({ max: o.replayMax });
   const now = o.now || (() => Date.now() / 1000);
   const version = (() => { try { return JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version; } catch { return "unknown"; } })();
@@ -107,7 +120,7 @@ export async function createServer(opts = {}) {
     if (body.dropped) return;
     if (body.refused) {
       if (shadow) return log(send(res, 200, ALLOW), `allow (shadow; ${body.refused} not read)`, t0);
-      if (o.fail === "closed") return log(send(res, 200, denyBody(failDenyReason([body.refused === "body" ? "body" : "busy"]), newReference())), `deny (fail closed: ${body.refused})`, t0);
+      if ((await failMode()).mode === "closed") return log(send(res, 200, denyBody(failDenyReason([body.refused === "body" ? "body" : "busy"]), newReference())), `deny (fail closed: ${body.refused})`, t0);
       return log(send(res, body.refused === "body" ? 413 : 503, { error: body.refused === "body" ? `body over ${o.maxBody} bytes` : "server busy" }), body.refused, t0);
     }
     const v = verify(o.keys, req.headers, body.raw, now());
@@ -118,8 +131,9 @@ export async function createServer(opts = {}) {
     body.release();
     const ref = newReference();
     if (!frame || typeof frame !== "object" || Array.isArray(frame)) {
-      reportUnevaluated(rt, { unevaluated: [{ kind: "request", why: "unparseable" }], failed: true, fail: o.fail, shadow });
-      const out = !shadow && o.fail === "closed" ? denyBody(failDenyReason(["unparseable"]), ref) : ALLOW;
+      const fm = await failMode();
+      reportUnevaluated(rt, { unevaluated: [{ kind: "request", why: "unparseable" }], failed: true, fail: fm.mode, failSource: fm.source, shadow });
+      const out = !shadow && fm.mode === "closed" ? denyBody(failDenyReason(["unparseable"]), ref) : ALLOW;
       return log(send(res, 200, out), `${out.action} (unparseable)`, t0);
     }
     // Other hook event types will be introduced; the documented answer to one we don't know is allow.
@@ -128,10 +142,11 @@ export async function createServer(opts = {}) {
     const ctx = { ref, source: cleanSource(frame.source && frame.source.application) };
     return frameContext.run(ctx, async () => {
       const { denied, unevaluated, error } = await judge(frame, session);
+      const fm = unevaluated.length ? await failMode() : null;
       let out = ALLOW;
       if (denied.length) out = denyBody(policyDenyReason(frame.type, denied), ref);
-      else if (unevaluated.length && o.fail === "closed") out = denyBody(failDenyReason(unevaluated.map((u) => u.why)), ref);
-      if (unevaluated.length) reportUnevaluated(rt, { unevaluated, failed: !denied.length, fail: o.fail, shadow, session, error });
+      else if (fm && fm.mode === "closed") out = denyBody(failDenyReason(unevaluated.map((u) => u.why)), ref);
+      if (fm) reportUnevaluated(rt, { unevaluated, failed: !denied.length, fail: fm.mode, failSource: fm.source, shadow, session, error });
       const would = out.action;
       if (shadow) out = ALLOW;
       return log(send(res, 200, out), `${out.action}${shadow && would === "deny" ? " (shadow: would deny)" : ""} ${frame.type}`, t0);
@@ -149,5 +164,5 @@ export async function createServer(opts = {}) {
   const addr = server.address();
   const url = `http://${addr.family === "IPv6" ? `[${addr.address}]` : addr.address}:${addr.port}`;
   const close = async () => { await new Promise((r) => { server.close(() => r()); server.closeAllConnections?.(); }); await rt.flush(); };
-  return { server, url, runtime: rt, close, inflight: () => inflight, replaySize: () => replay.size() };
+  return { server, url, runtime: rt, close, failMode, inflight: () => inflight, replaySize: () => replay.size() };
 }

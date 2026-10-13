@@ -22,7 +22,14 @@ export function wrapReporter(rt, { enforce }) {
 // One alert per label for content the proxy could not evaluate in full (an item past the scan cap, more
 // new items than one request scans, tool-call arguments past the hold cap) — kind "size" — or could not
 // evaluate as the one reading every client takes (a response or arguments that are not strict JSON, a tool
-// call that reads more than one way: README "Parser differentials") — kind "input", UNEVALUATED_BAD_INPUT.
+// call that reads more than one way: README "Parser differentials") — kind "input", UNEVALUATED_BAD_INPUT —
+// or could not evaluate at all (an engine error or the evaluation budget, released under an open fail mode) —
+// kind "error", UNEVALUATED_HOOK_ERROR.
+const UNEVALUATED = {
+  size: ["Model proxy: content not evaluated (size cap)", REASON.UNEVALUATED_SIZE_CAP],
+  input: ["Model proxy: content not evaluated (no one reading)", REASON.UNEVALUATED_BAD_INPUT],
+  error: ["Model proxy: content not evaluated (evaluation failed)", REASON.UNEVALUATED_HOOK_ERROR]
+};
 export function unevaluatedReporter(rt) {
   const seen = new Set();
   return (label, direction, kind = "size") => {
@@ -31,9 +38,10 @@ export function unevaluatedReporter(rt) {
     if (seen.has(k)) return;
     if (seen.size >= 1024) seen.clear();
     seen.add(k);
+    const [category, reasonCode] = UNEVALUATED[kind] || UNEVALUATED.size;
     rt.ready().then((s) => rt.reporter.post({
-      threatId: 0, category: kind === "input" ? "Model proxy: content not evaluated (no one reading)" : "Model proxy: content not evaluated (size cap)", riskLevel: "Info", stage: direction === "request" ? "prompt" : "tool",
-      tool: `model-proxy:${name}`, reasonCode: kind === "input" ? REASON.UNEVALUATED_BAD_INPUT : REASON.UNEVALUATED_SIZE_CAP, enforcement: ENFORCEMENT.UNEVALUATED, contentHash: rt.hash(k)
+      threatId: 0, category, riskLevel: "Info", stage: direction === "request" ? "prompt" : "tool",
+      tool: `model-proxy:${name}`, reasonCode, enforcement: ENFORCEMENT.UNEVALUATED, contentHash: rt.hash(k)
     }, { prov: { policyId: s.policyId, policySource: s.source, event: direction === "request" ? "ModelRequest" : "PreToolUse" } })).catch(() => {});
   };
 }

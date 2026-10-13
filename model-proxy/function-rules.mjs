@@ -93,3 +93,41 @@ export function functionActionFor(rules, name) {
   }
   return best;
 }
+
+// For the business-tool catalogue (business-tools.mjs): the strictest action of the functionToolActions keys
+// that name THIS function — an exact key, or a wildcard with a real prefix — "allow" included, or null when no
+// such key matches. A namespace-only wildcard (`tools.*`, listed in `broad`) is not specific. Keys are read
+// as functionRulesFrom reads them (the same validation, the same forms on both sides).
+const specificCache = new WeakMap();
+function specificRulesOf(policy) {
+  let r = specificCache.get(policy);
+  if (r) return r;
+  r = { exact: new Map(), prefix: [] };
+  const m = policy.functionToolActions;
+  if (m && typeof m === "object" && !Array.isArray(m)) {
+    for (const [key, act] of Object.entries(m)) {
+      if (!(act in ACTION_RANK)) continue;
+      const star = key.endsWith("*");
+      const base = star ? key.slice(0, -1) : key;
+      if (!NAME_RE.test(base) || (star && !foldName(base))) continue;
+      for (const k of formsOf(base)) {
+        if (star) r.prefix.push([k, act]);
+        else if (!r.exact.has(k) || ACTION_RANK[act] > ACTION_RANK[r.exact.get(k)]) r.exact.set(k, act);
+      }
+    }
+  }
+  specificCache.set(policy, r);
+  return r;
+}
+export function specificActionFor(policy, name) {
+  if (!policy || typeof policy !== "object" || typeof name !== "string" || !foldName(name)) return null;
+  const rules = specificRulesOf(policy);
+  let best = null;
+  const take = (act) => { if (act && (!best || ACTION_RANK[act] > ACTION_RANK[best])) best = act; };
+  for (const n of formsOf(name)) {
+    if (!n) continue;
+    take(rules.exact.get(n));
+    for (const [p, act] of rules.prefix) if (n.startsWith(p)) take(act);
+  }
+  return best;
+}

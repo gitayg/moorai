@@ -39,8 +39,11 @@
 // verbatim.
 //
 // Content-free by construction: only category / risk / one-way hash / server / tool / decision may leave
-// the device. Tool-call CONTENT is NEVER emitted. Governance, not a sandbox: on ANY error (bad policy,
-// engine failure, unparseable line) we FAIL OPEN — the message is forwarded unchanged.
+// the device. Tool-call CONTENT is NEVER emitted. Governance, not a sandbox: by default, on ANY error (bad
+// policy, engine failure, unparseable line) we FAIL OPEN — the message is forwarded unchanged. The
+// administrator can make a tools/call or a tool result the gate could not judge a refusal instead
+// (failMode.mcpGateway "closed", from the root-owned admin binding or the signed policy; cli/mcp-fail.mjs).
+// A line that is not JSON is not a tool call and is forwarded in either mode.
 //
 //   node moorai-mcp-guard.mjs [--server <label>] [--host <id>] -- <real-server-cmd> [args...]
 //
@@ -75,6 +78,8 @@ import { indexWriteScan } from "../cli/index-tools.mjs";
 import { recordMcpCall, flushMcpUsage, usageHost, usageIdentity } from "../cli/mcp-usage-beat.mjs";
 import { exitWhenDrained } from "../cli/exit-drain.mjs";
 import { agentNameOf, claudeCodeVersion } from "../cli/agent-names.mjs";
+import { gatewayFailMode, gatewayFailReason, gatewayFailAlert } from "../cli/mcp-fail.mjs";
+import { systemConfig } from "../cli/server-mode.mjs";
 
 // ---- argv parsing: [--server label] [--host id] -- realcmd args... ----
 function parseArgv(argv) {
@@ -152,6 +157,21 @@ function post(alert) {
 
 // mutable — refreshed lazily so a long-lived Claude Desktop session picks up policy changes.
 let POLICY = null;
+// The verified org policy alone (POLICY may be the built-in OFFLINE_DEFAULT_POLICY), for the fail mode.
+let VERIFIED = null;
+// The root-owned admin binding, read once: it decides the fail mode before any policy is verified.
+const ADMIN = (() => { try { return systemConfig(); } catch { return null; } })();
+const adminClosed = () => { const fm = gatewayFailMode({ policy: null, admin: ADMIN, warn: () => {} }); return fm.mode === "closed" && fm.source === "admin"; };
+// The fail mode for something the gate could not judge (cli/mcp-fail.mjs): the {mode, source} when it is
+// closed on an enforcing device, else null (forward, as always).
+function failClosed() {
+  if (COACH) return null;
+  const fm = gatewayFailMode({ policy: VERIFIED, admin: ADMIN });
+  return fm.mode === "closed" ? fm : null;
+}
+function alertFailClosed(stage, why, fm, tool) {
+  try { post({ ...gatewayFailAlert({ stage, why, source: fm.source, tool: tool || "mcp", server: SERVER }), ts: new Date().toISOString(), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
+}
 let ENGINE = null;
 let LAST_POLICY_LOAD = 0;
 // Coach vs enforce — the shared rule (data/enforcement.js), with the same management evidence the hook
@@ -202,12 +222,14 @@ async function ensurePolicy() {
   if (Date.now() - LAST_POLICY_LOAD < POLICY_REFRESH_MS && ENGINE) return;
   try {
     const v = await loadVerifiedPolicy(CONFIG);
-    COACH = !enforcementAllowed(CONFIG, { managed: durablePosture().posture === "fail-closed" });
+    COACH = !enforcementAllowed(CONFIG, { managed: durablePosture().posture === "fail-closed" || adminClosed() });
     reportPolicyTrust(v);
     let policy = v.policy;
+    VERIFIED = policy || null;
     if (!policy) {
       const posture = durablePosture();
-      if (posture.posture === "fail-closed") {
+      // An admin binding that makes this gateway fail closed selects the same reviewable default.
+      if (posture.posture === "fail-closed" || gatewayFailMode({ policy: null, admin: ADMIN, warn: () => {} }).mode === "closed") {
         reportOnce("Offline: fail-closed default applied", "offline:fail-closed", "High");
         policy = OFFLINE_DEFAULT_POLICY;
       }
@@ -284,7 +306,15 @@ async function reputationGate(msg, tool, argsHash) {
   const rp = repPolicy();
   if (rp.enabled === false || !(Number(rp.blockBelow) > 0)) return false;
   if (!REP && REP_READY) await withDeadline(REP_READY, 3000);
-  if (!REP) return false; // fail open: no score yet
+  if (!REP) {
+    // No score yet. Open: forward (as always). Closed: the threshold cannot be checked, so refuse.
+    const fm = failClosed();
+    if (!fm) return false;
+    alertFailClosed("mcp", "reputation", fm, tool);
+    auditCall(tool, "deny", argsHash);
+    writeBlock(msg.id, gatewayFailReason("reputation"));
+    return true;
+  }
   const action = reputationAction(REP, rp, { enforce: !COACH });
   if (action === "coach") { if (seenOnce(`rep-coach:${REP.versionHash}:${REP.score}`)) coachNote(`calls to MCP server ${SERVER}`, `reputation ${reputationSummary(REP)} is below the org threshold`); return false; }
   if (action !== "block") return false;
@@ -448,9 +478,11 @@ async function handleLine(rawLine) {
   // This is a tool-call — the surface we gate. Counted for the usage cross-check first, blocked or not
   // (the hook counts at the top of its mcp__ branch the same way). Synchronous, content-free, fail-open.
   recordMcpCall({ path: "proxy", host: HOST, label: SERVER });
+  // replied: this call has been forwarded or refused, so the catch below must not answer it again.
+  let replied = false, tool = "";
   try {
     await ensurePolicy();
-    const tool = msg.params.name || "";
+    tool = msg.params.name || "";
     const args = JSON.stringify(msg.params.arguments == null ? {} : msg.params.arguments);
     const argsHash = contentHash(args);
 
@@ -460,7 +492,7 @@ async function handleLine(rawLine) {
     if (QUARANTINE.has(tool)) {
       alertBlock(tool, "content", "tool metadata quarantined", argsHash);
       auditCall(tool, "deny", argsHash);
-      writeBlock(msg.id, "this tool's advertised metadata was blocked by policy (MCP tool poisoning)");
+      replied = true; writeBlock(msg.id, "this tool's advertised metadata was blocked by policy (MCP tool poisoning)");
       return;
     }
 
@@ -473,14 +505,19 @@ async function handleLine(rawLine) {
       if (q) {
         alertDriftCall(tool, q, argsHash);
         auditCall(tool, "deny", argsHash);
-        writeBlock(msg.id, q.reason);
+        replied = true; writeBlock(msg.id, q.reason);
         return;
       }
     }
 
-    if (await reputationGate(msg, tool, argsHash)) return;
+    if (await reputationGate(msg, tool, argsHash)) { replied = true; return; }
 
-    if (!ENGINE) { auditCall(tool, "allow", argsHash); rememberCall(msg.id, tool); forward(rawLine); return; } // fail open: no engine
+    if (!ENGINE) {
+      // No engine: open forwards (as always); closed refuses what it cannot judge.
+      const fm = failClosed();
+      if (fm) { replied = true; alertFailClosed("mcp", "no-engine", fm, tool); auditCall(tool, "deny", argsHash); writeBlock(msg.id, gatewayFailReason("no-engine")); return; }
+      auditCall(tool, "allow", argsHash); rememberCall(msg.id, tool); replied = true; forward(rawLine); return;
+    }
 
     const g = mcpGateway(ENGINE, POLICY, { tool, server: SERVER, args });
     // Files the arguments NAME — the same helper and the same checks as the hook's mcp__* branch
@@ -505,7 +542,7 @@ async function handleLine(rawLine) {
       coachNote(`MCP tool call ${tool}`, g.reason, g.alternatives);
       auditCall(tool, "coach", argsHash);
       rememberCall(msg.id, tool);
-      forward(rawLine);
+      replied = true; forward(rawLine);
       return;
     }
 
@@ -516,7 +553,7 @@ async function handleLine(rawLine) {
       alertFindings(tool, fileFindings, true, argsHash, "file");
       alertFindings(tool, indexFindings, g.gate === "index", argsHash, "index");
       auditCall(tool, "deny", argsHash);
-      writeBlock(msg.id, g.reason || "policy");
+      replied = true; writeBlock(msg.id, g.reason || "policy");
       return;
     }
     // allow OR coach ("ask"): Claude Desktop has no interactive banner, so coach = allow + record.
@@ -525,10 +562,20 @@ async function handleLine(rawLine) {
     alertFindings(tool, indexFindings, false, argsHash, "index");
     auditCall(tool, g.decision, argsHash);
     rememberCall(msg.id, tool);
-    forward(rawLine);
+    replied = true; forward(rawLine);
   } catch {
-    // Governance, not a sandbox: any gate error must not drop the call — forward it unchanged.
-    forward(rawLine);
+    // The gate failed on this call. Open (the default): governance, not a sandbox — forward it unchanged.
+    // Closed: refuse it; the server never receives a call MoorAI could not evaluate. A call already
+    // answered is never answered twice.
+    let fm = null;
+    try { fm = failClosed(); } catch { fm = null; }
+    if (fm && !replied && msg.id != null) {
+      alertFailClosed("mcp", "error", fm, typeof tool === "string" ? tool : "mcp");
+      try { auditCall(typeof tool === "string" ? tool : "mcp", "deny", ""); } catch { /* the ledger never gates a verdict */ }
+      writeBlock(msg.id, gatewayFailReason("error"));
+      return;
+    }
+    if (!replied) forward(rawLine);
   }
 }
 
@@ -781,10 +828,10 @@ async function scanResult(result) {
   // No engine → forward. A refresh is KICKED OFF but never awaited: loadVerifiedPolicy does network
   // I/O, and awaiting it here would put a remote server's latency on the agent's transport. By the
   // time any tools/call result exists, handleLine has already awaited ensurePolicy for that call.
-  if (!ENGINE) { ensurePolicy(); return null; }
+  if (!ENGINE) { ensurePolicy(); return { unjudged: "no-engine" }; }
   if (!budgetOk()) {
     if (!winSaid) { winSaid = true; reportOnce("Result scanning throttled (overload window)", "result:budget:throttled", "Info"); }
-    return null;
+    return { unjudged: "budget" };
   }
   const text = inboundText(result);
   if (!text) return null;
@@ -860,7 +907,21 @@ async function gateResult(lineBuf) {
     const result = resultOfResponse(msg);
     if (!result) return pass();
 
-    const verdict = await withDeadline(scanResult(result), CAPS.resultDeadlineMs);
+    // The verdict: null when the scan threw or missed the deadline (withDeadline), { unjudged } when it
+    // could not run, null too for a result with no text (nothing to judge: forwarded in either mode).
+    let unjudged = null;
+    const verdict = await withDeadline(scanResult(result).catch(() => ({ unjudged: "error" })), CAPS.resultDeadlineMs);
+    if (verdict === null && inboundText(result)) unjudged = "timeout";
+    else if (verdict && verdict.unjudged) unjudged = verdict.unjudged;
+    if (unjudged) {
+      // Open: forward (as always). Closed: replace what was not judged.
+      const fm = msg.id != null ? failClosed() : null;
+      if (!fm) return pass();
+      done = true;
+      process.stdout.write(blockedResultLine(msg.id, gatewayFailReason(unjudged)));
+      alertFailClosed("result", unjudged, fm, toolForId(msg.id));
+      return;
+    }
     if (!verdict || !verdict.findings.length) return pass();
 
     // Report-first. Only an explicit block/kill resolution refuses; the house default for #39 is

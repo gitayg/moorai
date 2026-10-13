@@ -50,13 +50,14 @@ const PROMPT_ROLES = new Set(["system", "user"]);
 export function outboundItems(body) {
   const out = [];
   if (!isObj(body)) return out;
-  for (const k of ["system", "template"]) if (str(body[k])) out.push({ kind: "system", stage: "prompt", ctx: {}, text: body[k] });
+  if (str(body.system)) out.push({ kind: "system", stage: "prompt", ctx: {}, context: true, text: body.system });
+  if (str(body.template)) out.push({ kind: "system", stage: "prompt", ctx: {}, text: body.template });
   for (const k of ["prompt", "suffix"]) if (str(body[k])) out.push({ kind: "prompt", stage: "prompt", ctx: {}, text: body[k] });
   for (const m of Array.isArray(body.messages) ? body.messages : []) {
     if (!isObj(m)) continue;
     const t = textOf(m.content);
     if (!t) continue;
-    if (PROMPT_ROLES.has(m.role)) out.push({ kind: m.role === "user" ? "prompt" : "system", stage: "prompt", ctx: {}, text: t });
+    if (PROMPT_ROLES.has(m.role)) out.push(m.role === "user" ? { kind: "prompt", stage: "prompt", ctx: {}, text: t } : { kind: "system", stage: "prompt", ctx: {}, context: true, text: t });
     else if (m.role === "tool") out.push({ kind: "tool_result", stage: "output", ctx: { inbound: true }, text: t });
   }
   return out;

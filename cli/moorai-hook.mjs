@@ -4,8 +4,10 @@
 // blocks (Claude Code deny) a secret/PII being read into context (#1), a secret shipped as an MCP
 // tool-call argument (#2), or a call to an MCP server that isn't on the org allow-list (#3).
 //
-// Governance, not a sandbox: any error, missing policy, or unsupported tool → EXIT 0 (allow). Reports
-// are content-free (category + risk + one-way hash), never the file/arg content or the matched span.
+// Governance, not a sandbox: by default any error, missing policy, or unsupported tool → allow. The
+// administrator can make a PreToolUse call the hook could not decide a deny instead (failMode.hook
+// "closed", from the root-owned admin binding or the signed policy; cli/hook-fail.mjs). Reports are
+// content-free (category + risk + one-way hash), never the file/arg content or the matched span.
 //
 //   node moorai-hook.mjs            # hook mode (reads stdin)
 //   node moorai-hook.mjs install    # register in ~/.claude/settings.json (idempotent)
@@ -58,7 +60,9 @@ import { readStateJson, writeStateJson, repoIdentity, LEARNED_DRIFT_FILE, DELETI
 import { sessionRiskStep, circuitStep, circuitOutcome } from "./session-state.mjs";
 import { captureTask, judgeAction, CLASS_TEXT } from "./intent-alignment.mjs";
 import { promptScanPlan, promptBlockers } from "./prompt-scan.mjs";
-import { serverMode, serviceWho, settleHeadlessAsk, settleBypassAsk, tamperAlert, trustedEnv, refusedTrustEnv, systemConfigPath, workloadIdentity, workerEnv, hookProcessEnvName } from "./server-mode.mjs";
+import { serverMode, serviceWho, settleHeadlessAsk, settleBypassAsk, tamperAlert, trustedEnv, refusedTrustEnv, systemConfigPath, systemConfig, workloadIdentity, workerEnv, hookProcessEnvName } from "./server-mode.mjs";
+import { hookFailMode, failClosedApplies, failClosedOutput, failClosedVerdict, failClosedAlert, failReason, HOOK_DECISION_BUDGET_MS } from "./hook-fail.mjs";
+import { effectiveFailModes } from "./fail-mode.mjs";
 import { recordMcpCall, scheduleMcpUsageFlush } from "./mcp-usage-beat.mjs";
 import { REASON, ENFORCEMENT, policyIdOf, stampAlert } from "./provenance.mjs";
 import { recordRow, readSessionRows, localHash } from "./session-ledger.mjs";
@@ -70,6 +74,7 @@ import { machinePath } from "./machine-dir.mjs";
 import { stampAlertSeq } from "./alert-seq.mjs";
 import { bindingRefusedAlert } from "./config.mjs";
 import { actionTrailMode, buildActionRecord, enqueueActionRecord, claimFlush, flushActionTrail, callFingerprintText, readTrailState } from "./action-trail.mjs";
+import { normalizeToolInput, normalizeHookInput } from "./tool-input.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -96,7 +101,7 @@ const DISPATCHED_TOOLS = ["Read", "Bash", "PowerShell", "mcp__github__create_iss
 // falling through main() unread. No matcher is added for it: Cursor rewrites the registered "Bash"
 // matcher to "Shell" itself (and "mcp__.*" becomes ".*", matched with an unanchored RegExp), so a
 // "Shell" entry would only make Cursor invoke this hook a second time per call.
-const TOOL_ALIASES = { Shell: "Bash" };
+const TOOL_ALIASES = Object.assign(Object.create(null), { Shell: "Bash" }); // no prototype: a tool named "constructor" is not an alias
 // Claude Code's PowerShell tool (Windows). The hooks reference: "Match `Bash|PowerShell` in hooks that
 // inspect shell commands ... On Windows without Git Bash, the tool is enabled automatically and Claude
 // Code doesn't register the Bash tool at all. A hook that matches only `Bash` never fires there." Its
@@ -298,6 +303,17 @@ const SERVER = serverMode();
 // be a posture change nobody asked for. The two states stay distinct, and test/hook-tool-coverage.test.mjs
 // pins the difference.
 const NO_POLICY_BASELINE = { captureTier: "content-free", builtinDefault: true };
+// The hook's fail mode (cli/hook-fail.mjs). ADMIN is the root-owned admin binding, readable before any
+// policy; VERIFIED_POLICY is undefined until loadVerifiedPolicy returns, then the verified org policy or
+// null. Neither is ever user-writable state.
+const ADMIN = (() => { try { return systemConfig(); } catch { return null; } })();
+let VERIFIED_POLICY;
+// DECIDED: a verdict for this call has been written (emit) or the hook is exiting (exitHook), so a late
+// fail-closed deny must not write a second one. FAIL_EXIT: a fail-closed deny was written, so nothing
+// else may write or set the exit code.
+let DECIDED = false;
+let FAIL_EXIT = false;
+let RAW_INPUT = ""; // the stdin text, so an error before the event is parsed can still tell a PreToolUse
 // #33 — break-glass marker (operator-created, holds an expiry) and the durable last-known posture the
 // hook remembers so a fail-closed org stays fail-closed even if the policy cache is later deleted.
 
@@ -736,6 +752,8 @@ async function runActionTrailWorker() {
 // Every exit from the hook goes through here. The decision has already been written to stdout by the
 // time this runs (see emit) — telemetry never gates the enforcement output.
 async function exitHook() {
+  if (FAIL_EXIT) return new Promise(() => {});
+  DECIDED = true;
   settleRow(unevaluated(VERDICT.uneval || REASON.UNEVALUATED_EARLY_EXIT));
   await flushAlerts();
   // Not process.exit(): on Windows that aborts the process (0xC0000409) after fetch() — see cli/exit-drain.mjs.
@@ -1112,7 +1130,12 @@ async function runPostureBeatWorker(host, mode, cwd) {
     if (!BEAT_HOSTS.includes(host) || !isEnrolled(CONFIG)) return process.exit(0);
     const { agentPosture } = await import("./agent-posture.mjs");
     const posture = agentPosture({ cwd: cwd || null, caller: host, permissionMode: host === "claude-code" ? mode : "" });
-    const body = { user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture };
+    // The effective fail mode per surface (cli/fail-mode.mjs), from the admin binding and the cached
+    // verified policy (no network): what each surface does when it cannot decide. Content-free. For
+    // inferenceHook a "default" source means the operator's --fail flag on that server decides.
+    let failMode;
+    try { const v = await loadVerifiedPolicy(CONFIG, { network: false }); failMode = effectiveFailModes(v.policy || null, { admin: ADMIN, warn: () => {} }); } catch { failMode = undefined; }
+    const body = { user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture, ...(failMode ? { failMode } : {}) };
     const r = await fetch(`${CONFIG.serverUrl}/api/agent-posture`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
     // On failure the pending mark stays, so the next try is BEAT_RETRY_MS away rather than one per tool call.
     if (r.ok) writeBeat(host, { day, bypass: (st.day === day && !!st.bypass) || mode === "bypassPermissions" });
@@ -1528,6 +1551,8 @@ function coachOut(hookEventName, reason, alternatives) {
 // flow on the rewritten input. On an ask it rides with "ask", which the reference describes as "show the
 // modified input to the user". On a deny it is never sent — "For `"deny"`" nothing runs.
 async function emit(decision, reason, alternatives = [], rewrite = null) {
+  if (FAIL_EXIT) return new Promise(() => {});
+  DECIDED = true;
   // Capability tags (cli/tool-tags.mjs): tagActions and tagRules, the stricter verdict winning. Before the
   // session-risk escalation, so an escalation's reason still appends to the gate's.
   const tg = CALL.active ? tagStep() : null;
@@ -1562,6 +1587,15 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
     VERDICT.enforcement = ENFORCEMENT.STRENGTHENED;
     if (b.alert) post({ ...b.alert, reasonCode: REASON.BYPASS_ASK, enforcement: VERDICT.enforcement, ts: new Date().toISOString(), ...IDENTITY });
     decision = b.decision; reason = b.reason; rewrite = null;
+  }
+  // Fail mode (cli/hook-fail.mjs): an allow over a capped prefix was never fully evaluated. Closed → deny.
+  if (decision === "allow" && VERDICT.capped && !COACH && CALL.active && EVENT === "PreToolUse") {
+    const fm = hookFailMode({ policy: VERIFIED_POLICY ?? null, admin: ADMIN });
+    if (fm.mode === "closed") {
+      VERDICT.basis = REASON.UNEVALUATED_SIZE_CAP; why(REASON.FAIL_CLOSED); VERDICT.enforcement = ENFORCEMENT.STRENGTHENED;
+      decision = "deny"; reason = failReason("size-cap"); alternatives = []; rewrite = null;
+      post({ ...failClosedAlert("size-cap", fm.source), ts: new Date().toISOString(), ...IDENTITY });
+    }
   }
   // The allow trail: one queued, content-free record for a call the host is told it may run.
   const tr = decision === "allow" && CALL.active ? recordAllowed(tg, rewrite) : false;
@@ -2100,6 +2134,40 @@ async function handleStop(input) {
   return exitHook();
 }
 
+// A PreToolUse call the hook could not decide (it threw, ran past HOOK_DECISION_BUDGET_MS, or could not
+// read its input): denied when the hook's fail mode is closed, else left to the caller's fail-open path.
+// Before the policy is verified, the mode comes from the admin binding and the cached verified policy
+// (loadVerifiedPolicy without the network); after, from the admin binding and the verified policy. An
+// unenrolled device (coach) is never denied, and an operator-signed live break-glass marker allows.
+// Returns true when the deny was written and the exit scheduled (exit code 2).
+async function failClosedNow(why) {
+  if (DECIDED || FAIL_EXIT) return false;
+  let policy = VERIFIED_POLICY;
+  if (policy === undefined) { try { policy = (await loadVerifiedPolicy(CONFIG, { network: false })).policy || null; } catch { policy = null; } }
+  if (DECIDED || FAIL_EXIT) return false;
+  const fm = hookFailMode({ policy, admin: ADMIN });
+  if (fm.mode !== "closed" || COACH) return false;
+  let bg = { active: false };
+  try { bg = breakGlassVerdict(); } catch { /* unverifiable: grants nothing */ }
+  if (bg.active) {
+    settleRow({ ...unevaluated(REASON.BREAK_GLASS), basisCode: why === "budget" ? REASON.UNEVALUATED_EARLY_EXIT : why === "bad-input" ? REASON.UNEVALUATED_BAD_INPUT : REASON.UNEVALUATED_HOOK_ERROR });
+    post({ threatId: 0, category: "Break-glass active (fail-open override)", riskLevel: "High", stage: "policy", tool: "hook:policy", ts: new Date().toISOString(), contentHash: "breakglass:active:fail-mode", ...IDENTITY });
+    await flushAlerts();
+    return false;
+  }
+  FAIL_EXIT = true;
+  const out = failClosedOutput(why);
+  try { process.stdout.write(out.stdout); } catch { /* exit 2 still blocks */ }
+  try { process.stderr.write(out.stderr); } catch { /* the stdout deny still stands */ }
+  try {
+    if (ROW) settleRow({ ...failClosedVerdict(why), ...provBase() });
+    else recordRow({ ts: new Date().toISOString(), s: "", a: "", ev: "unknown", tool: "", ...failClosedVerdict(why), policyId: "not-loaded" });
+  } catch { /* the ledger never gates a verdict */ }
+  try { post({ ...failClosedAlert(why, fm.source), ts: new Date().toISOString(), ...IDENTITY }); await flushAlerts(); } catch { /* telemetry never gates a verdict */ }
+  exitWhenDrained(out.code);
+  return true;
+}
+
 async function main() {
   const cmd = process.argv[2];
   if (cmd === "install") return installHooks();
@@ -2121,10 +2189,15 @@ async function main() {
   if (cmd === "actiontrail") return runActionTrailWorker();
 
   let input;
-  try { input = JSON.parse((await readStdin()) || "{}"); } catch {
+  try { RAW_INPUT = await readStdin(); input = JSON.parse(RAW_INPUT || "{}"); } catch {
+    if (failClosedApplies({ raw: RAW_INPUT }) && await failClosedNow("bad-input")) return;
     recordRow({ ts: new Date().toISOString(), s: "", a: "", ev: "unknown", tool: "", decision: "none", policyId: "not-loaded", reasonCode: REASON.UNEVALUATED_BAD_INPUT, enforcement: ENFORCEMENT.UNEVALUATED });
     process.exit(0);
   }
+  // A top-level field read as a string, holding a number / boolean, is judged as its text; an object /
+  // array there, or a payload that is not an object, is unreadable input (cli/tool-input.mjs).
+  const nin = normalizeHookInput(input);
+  input = nin.value;
   // Bring a pre-existing four-matcher install up to the current matcher set (see convergeHooks). Placed
   // here, on the hook's own hot path, because nothing else on an updated device re-runs `install`.
   // No-ops on an uninstalled device and after the first converged run; wrapped, so it cannot affect the
@@ -2136,11 +2209,23 @@ async function main() {
   // MCP usage cross-check (cli/mcp-usage-beat.mjs): completed days go to a detached worker, at most once a day.
   scheduleMcpUsageFlush({ config: CONFIG, path: "hook", host: beatHost() || "unknown" });
   const tool = TOOL_ALIASES[input.tool_name] || input.tool_name || "";
+  // A string field holding a number / boolean is judged as its text; an object / array there is
+  // unreadable input (cli/tool-input.mjs).
+  const nti = normalizeToolInput(tool, input.tool_input);
+  if (nti.coerced.length) input.tool_input = nti.value;
   const ti = input.tool_input || {};
   HOST_REWRITES = !TOOL_ALIASES[input.tool_name];
   EVENT = typeof input.hook_event_name === "string" ? input.hook_event_name : "";
   PROV = { policyId: "not-loaded", policySource: "", offline: false };
   beginRow(input, tool);
+  if (nti.bad.length || nin.bad.length) {
+    VERDICT.uneval = REASON.UNEVALUATED_BAD_INPUT;
+    if (failClosedApplies({ event: EVENT, raw: EVENT ? "" : RAW_INPUT }) && await failClosedNow("bad-input")) return;
+    return exitHook();
+  }
+  // The hook's own decision budget. Unref'd: it never holds the process; when it fires with no verdict
+  // written, failClosedNow decides whether that is a deny (closed) or nothing (open, as before).
+  if (failClosedApplies({ event: EVENT })) setTimeout(() => { failClosedNow("budget").catch(() => {}); }, HOOK_DECISION_BUDGET_MS).unref();
   // Outcome and compaction records need no policy: written and done before the policy load.
   if (EVENT === "PostToolUseFailure" || EVENT === "PreCompact") {
     if (EVENT === "PostToolUseFailure") circuitOutcome({ sessionId: input.session_id, agentId: input.agent_id, tool, toolInput: ti, failed: true });
@@ -2172,6 +2257,10 @@ async function main() {
   }
   let { policy, source, rejected, pin, trust, absence, lkgCopy, deferAlerts } = await loadVerifiedPolicy(CONFIG);
   DEFER_ALERTS = !!deferAlerts;
+  VERIFIED_POLICY = policy || null;
+  // With no policy, an admin binding that sets the hook's fail mode to closed selects the fail-closed
+  // default exactly as a fail-closed posture does (an open one never weakens the posture ratchet).
+  const failNoPolicy = hookFailMode({ policy: null, admin: ADMIN });
   // policyIat: the signed issue time of the policy being enforced (ISO 8601), on every alert from here on.
   const policyIat = policyIatIso(policy);
   PROV = { policyId: policyIdOf(policy), policySource: source || "", offline: false, ...(policyIat ? { policyIat } : {}) };
@@ -2211,7 +2300,7 @@ async function main() {
     // an old body. Enforced anyway (it verified), and reported with its age.
     if (policy && !policyFreshByIat(policy)) await post({ threatId: 0, category: "Policy: stale (older than the maximum age)", riskLevel: "Medium", stage: "policy", tool: "hook:policy", ts: new Date().toISOString(), contentHash: "policy:stale", reasonCode: REASON.POLICY_STALE, ageMinutes: Math.floor(policyAgeMs(policy) / 60000), ...IDENTITY });
     if (!policy) {
-      if (posture.posture !== "fail-closed") {
+      if (posture.posture !== "fail-closed" && failNoPolicy.mode !== "closed") {
         // #2 — "no policy" is NOT the same state as "not enrolled", and conflating them is what made the
         // built-in prevention tier unreachable on exactly the devices with no org policy. Measured: with
         // no policy file a reverse shell returned ALLOW even though BUILTIN_DEFAULT_ACTIONS resolves
@@ -2246,7 +2335,7 @@ async function main() {
         // exitHook() now drains every post() before exiting, so this await is no longer what makes the
         // signal survive — it is kept because it also ORDERS the posture report ahead of the decision
         // path. post() is bounded (1500ms) and never throws, so it cannot hang either way.
-        await postPosture("Offline: fail-closed default applied", "offline:fail-closed", "High");
+        await postPosture("Offline: fail-closed default applied", "offline:fail-closed", "High", posture.posture !== "fail-closed" ? { failModeSource: failNoPolicy.source } : undefined);
         policy = OFFLINE_DEFAULT_POLICY;
       }
     } else {
@@ -2259,7 +2348,7 @@ async function main() {
       // of keeping it. Awaited for the same reason.
       if (source === "last-known-good") await postPosture("Enforcing last-known-good verified policy", "policy:lkg:applied", "High", { lkgCopy: lkgCopy || "", lkgReason: rejected && rejected.length ? "refused" : "absent" });
     }
-  } catch { if (!policy) { VERDICT.uneval = REASON.UNEVALUATED_NO_POLICY; return exitHook(); } /* preserve legacy fail-open on any error when no policy */ }
+  } catch { if (!policy) { VERDICT.uneval = REASON.UNEVALUATED_NO_POLICY; if (failClosedApplies({ event: EVENT }) && await failClosedNow("error")) return; return exitHook(); } /* fail-open on any error when no policy, unless the hook's fail mode is closed */ }
   // Coach vs enforce, decided once by the shared rule every surface uses (data/enforcement.js). A durable
   // fail-closed posture (MDM latch, MOORAI_OFFLINE_MODE, or one a verified org policy recorded) is
   // management evidence that outlives the token, so deleting the token does not turn enforcement off.
@@ -2267,7 +2356,8 @@ async function main() {
   // is no developer to coach.
   // An admin binding (the root-owned machine config names the console, cli/config.mjs) is management
   // evidence too: deleting installToken from ~/.moorai/config.json no longer turns enforcement into coaching.
-  COACH = !enforcementAllowed(CONFIG, { managed: posture.posture === "fail-closed" || SERVER.active || CONFIG.managed === true });
+  // An admin binding that makes the hook fail closed is management evidence too: root wrote it.
+  COACH = !enforcementAllowed(CONFIG, { managed: posture.posture === "fail-closed" || SERVER.active || CONFIG.managed === true || (failNoPolicy.mode === "closed" && failNoPolicy.source === "admin") });
   POLICY = policy; // read by logBehavior's agent-detection hand-off (maybeAgentScan)
   PROV = { policyId: policyIdOf(policy, { builtin: NO_POLICY_BASELINE, offline: OFFLINE_DEFAULT_POLICY }), policySource: policy === NO_POLICY_BASELINE ? "builtin" : policy === OFFLINE_DEFAULT_POLICY ? "offline-default" : source || "", offline: policy === OFFLINE_DEFAULT_POLICY, ...(policyIat && policy !== NO_POLICY_BASELINE && policy !== OFFLINE_DEFAULT_POLICY ? { policyIat } : {}) };
   TRAIL = actionTrailMode(policy); // the allow trail: from the signed policy only (cli/action-trail.mjs)
@@ -2643,6 +2733,11 @@ async function main() {
   return exitHook(); // unknown tool → allow
 }
 
-// An uncaught error is a fail-open (Claude Code treats a non-2 exit as a non-blocking error and the call
-// proceeds). It is recorded as UNEVALUATED before the error propagates exactly as before.
-main().catch((e) => { try { settleRow(unevaluated(REASON.UNEVALUATED_HOOK_ERROR)); } catch { /* best-effort */ } throw e; });
+// An uncaught error is a fail-open by default (Claude Code treats a non-2 exit as a non-blocking error and
+// the call proceeds), recorded as UNEVALUATED before the error propagates exactly as before. When the
+// hook's fail mode is closed, a PreToolUse call is denied instead (failClosedNow, exit 2).
+main().catch(async (e) => {
+  try { if (failClosedApplies({ event: EVENT, raw: EVENT ? "" : RAW_INPUT }) && await failClosedNow("error")) return; } catch { /* fall through to the fail-open path */ }
+  try { settleRow(unevaluated(REASON.UNEVALUATED_HOOK_ERROR)); } catch { /* best-effort */ }
+  throw e;
+});

@@ -17,13 +17,14 @@ import https from "node:https";
 import { pipeline } from "node:stream";
 import { createGunzip, createInflate, createBrotliDecompress } from "node:zlib";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { CAPS } from "../mcp-proxy/tool-scan.mjs";
+import { CAPS, resultOfResponse } from "../mcp-proxy/tool-scan.mjs";
 import { isLoopbackHost, TOKEN_HEADER, DEFAULT_MAX_RESPONSE_BYTES, HOP } from "./config.mjs";
 import { createGate } from "../model-proxy/credentials.mjs";
 import { maskResponse } from "../model-proxy/credential-mask.mjs";
 import { createGuard, blockedCall } from "./guard.mjs";
+import { failClosed, failReason, alertFailClosed } from "./fail.mjs";
 import { createSseFramer, sseEvent } from "./sse.mjs";
-import { reportOnce, alertSchema, alertTooLarge, alertCooldown, withSession } from "./report.mjs";
+import { reportOnce, alertSchema, alertTooLarge, alertCooldown, withSession, auditCall } from "./report.mjs";
 import { parseBody, parseLenient, validateClientBody, validateHeaderPv, validateServerMessage, MAX_DEPTH } from "./validate.mjs";
 import { createCooldown } from "./cooldown.mjs";
 import { countCall } from "./usage.mjs";
@@ -287,6 +288,9 @@ export function createGatewayServer(cfg) {
           if (mm) { noteRefusal(ckey, route); return sendJson(res, 400, rpcError(Array.isArray(parsed) ? null : parsed.id, -32020, `Header mismatch: ${mm}`)); }
         }
         const blocked = new Map();
+        // A fail-closed refusal is the gateway's own failure, not the client's: it does not count toward
+        // the cool-down (./fail.mjs).
+        let policyRefused = false;
         for (const m of msgs) {
           if (!m || typeof m !== "object") continue;
           if (m.result && Array.isArray(m.result.roots)) { try { guard.rememberRoots(m.result.roots); } catch { /* roots are a hint */ } }
@@ -297,11 +301,22 @@ export function createGatewayServer(cfg) {
           { const tool = m.params.name; setImmediate(() => countCall(route.server, tool)); }
           try {
             const d = await guard.gateCall(m);
-            if (d.block) blocked.set(m, d.block);
-          } catch { /* governance, not a sandbox: a failing check forwards */ }
+            if (d.block) { blocked.set(m, d.block); if (!d.failClosed) policyRefused = true; }
+          } catch {
+            // The gate failed on this call. Open (the default): governance, not a sandbox — it forwards.
+            // Closed: refused; the upstream never receives a call MoorAI could not evaluate.
+            let fm = null;
+            try { fm = failClosed(); } catch { fm = null; }
+            if (fm) {
+              const tool = String(m.params.name || "mcp");
+              alertFailClosed("mcp", "error", fm, tool, route.server);
+              auditCall(route.server, tool, "deny", "");
+              blocked.set(m, failReason("error"));
+            }
+          }
         }
         if (blocked.size) {
-          noteRefusal(ckey, route);
+          if (policyRefused) noteRefusal(ckey, route);
           if (!Array.isArray(parsed)) return sendJson(res, 200, blockedCall(parsed.id, blocked.get(parsed)));
           // A batch (2025-03-26 only) is refused whole: forwarding part of it would answer some ids and
           // not others, and the gate has already said no to one of them.
@@ -434,6 +449,30 @@ function tooLargeReply(x) {
   if (!x.requestIds.length) return null;
   return x.batch ? x.requestIds.map(one) : one(x.requestIds[0]);
 }
+// A JSON response whose judgement threw, under a closed fail mode on an enforcing device: per request id
+// in the POST, a tool error for a tools/call and a JSON-RPC error for anything else (tooLargeReply's
+// shape). null — forward the original — when the mode is open, or the POST carried no tools/call.
+function failClosedReply(x) {
+  try {
+    const calls = x.requestIds.filter((id) => x.methodOf(id) === "tools/call");
+    const fm = calls.length ? failClosed() : null;
+    if (!fm) return null;
+    for (const id of calls) alertFailClosed("result", "error", fm, x.toolOf(id), x.route.server);
+    const why = failReason("error");
+    const one = (id) => (x.methodOf(id) === "tools/call" ? blockedResult(id, why) : rpcError(id, -32603, `MoorAI blocked this MCP response: ${why}`));
+    return x.batch ? x.requestIds.map(one) : one(x.requestIds[0]);
+  } catch { return null; }
+}
+// One SSE message whose judgement threw: a tool result with an id is replaced under a closed fail mode.
+function failClosedEvent(x, m) {
+  try {
+    if (!(isObj(m) && isId(m.id) && resultOfResponse(m))) return null;
+    const fm = failClosed();
+    if (!fm) return null;
+    alertFailClosed("result", "error", fm, x.toolOf(m.id), x.route.server);
+    return blockedResult(m.id, failReason("error"));
+  } catch { return null; }
+}
 const tooLargeTool = (x) => (!x.batch && x.requestIds.length === 1 ? x.toolOf(x.requestIds[0]) : "mcp");
 // A response forwarded unscanned to a POST that carried a tools/list, with no request ids at all, or
 // while any tools/list on the route is outstanding (it may answer an earlier one): the listing went unjudged.
@@ -541,7 +580,12 @@ function onJson(ur, res, x) {
           const r = await judge(x, value, "$", claims, true);
           if (r) out = Buffer.from(JSON.stringify(r));
         }
-      } catch { listUnjudged(x); /* a failed scan: the original goes, unjudged */ }
+      } catch {
+        listUnjudged(x);
+        // A failed scan: the original goes, unjudged (open), or the calls it answers are refused (closed).
+        const r = failClosedReply(x);
+        if (r) out = Buffer.from(JSON.stringify(r));
+      }
     }
     if (res.destroyed) return unclaim(x, claims);
     res.writeHead(ur.statusCode, ur.statusMessage, { ...respHeaders(ur), "content-length": out.length });
@@ -601,7 +645,7 @@ function onSse(ur, res, x) {
       const scan = async (m, dispatchable) => {
         const c = claim(x, m, dispatchable);
         if (c) claims.push([m, c]);
-        try { return await guard.gateResult(m, x.toolOf(m && m.id), { paged: c ? c.paged : x.pagedOf(m && m.id), tightenOnly: !c }); } catch { listUnjudged(x); return null; }
+        try { return await guard.gateResult(m, x.toolOf(m && m.id), { paged: c ? c.paged : x.pagedOf(m && m.id), tightenOnly: !c }); } catch { listUnjudged(x); return failClosedEvent(x, m); }
       };
       if (ev.data != null) {
         const isMessage = ev.type == null || ev.type === "" || ev.type === "message";

@@ -41,9 +41,10 @@ export function sessionField(rt, raw) {
 }
 
 // One alert per frame that could not be judged in full: what was not judged (kinds and why), and what
-// --fail did about it (failed: the fail verdict decided the frame, i.e. nothing else denied it).
+// the fail mode did about it (failed: the fail verdict decided the frame, i.e. nothing else denied it),
+// and where that mode came from (failModeSource: admin | policy | default, the last being --fail).
 // Content-free.
-export function reportUnevaluated(rt, { unevaluated = [], failed, fail, shadow, session, error }) {
+export function reportUnevaluated(rt, { unevaluated = [], failed, fail, failSource, shadow, session, error }) {
   const whys = [...new Set(unevaluated.map((u) => u.why))].sort();
   const kinds = [...new Set(unevaluated.map((u) => u.kind))].sort();
   return rt.ready().then((s) => rt.reporter.post({
@@ -57,6 +58,7 @@ export function reportUnevaluated(rt, { unevaluated = [], failed, fail, shadow, 
     enforcement: ENFORCEMENT.UNEVALUATED,
     unevaluated: error ? ["error"] : whys,
     failMode: fail,
+    ...(failSource ? { failModeSource: failSource } : {}),
     contentHash: rt.hash(`inference-hook:unevaluated:${error ? "error" : whys.join(",")}`),
     ...sessionField(rt, session)
   }, { prov: { policyId: s.policyId, policySource: s.source, event: "ModelRequest" } })).catch(() => {});

@@ -19,10 +19,11 @@ const texts = (content) => {
   return content.filter((b) => b && b.type === "text" && typeof b.text === "string").map((b) => b.text);
 };
 
-// [{ kind, stage, ctx, text }] — the content this request sends the model that MoorAI scans.
+// [{ kind, stage, ctx, context?, text }] — the content this request sends the model that MoorAI scans;
+// `context: true` marks operator-authored text (context.mjs).
 export function outboundItems(body) {
   const out = [];
-  for (const t of texts(body && body.system)) out.push({ kind: "system", stage: "prompt", ctx: {}, text: t });
+  for (const t of texts(body && body.system)) out.push({ kind: "system", stage: "prompt", ctx: {}, context: true, text: t });
   for (const m of Array.isArray(body && body.messages) ? body.messages : []) {
     if (!m || m.role !== "user") continue;
     if (typeof m.content === "string") { out.push({ kind: "prompt", stage: "prompt", ctx: {}, text: m.content }); continue; }

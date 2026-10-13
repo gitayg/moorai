@@ -628,6 +628,25 @@ model's `{"function": "<name>", "arguments": {...}}` wrapper is removed before m
 key besides a name equal to the tool's own, so a wrapped shell command is still judged as `Bash`. See
 [`model-proxy/README.md`](model-proxy/README.md#function-names-and-wrapped-arguments).
 
+**Operator context is the operator's.** The model proxy scans the application's own system prompt (Anthropic
+`system`, OpenAI `system` / `developer` messages, Gemini `systemInstruction`, Ollama system messages and the
+`/api/generate` `system` field). A privacy finding there (a card number, an email address, a secret in an
+"internal data" block; threats 1, 9, 15, 18, 27, 36, 39, 44, 65) is reported at stage `context` and never
+refuses the request; one system prompt is reported once per process. Every other finding in that text
+(prompt injection #3, a reverse shell, system-prompt extraction, rendered-output exfiltration, content rules)
+is decided as in a user turn. `/api/generate`'s `prompt` is the user's: the proxy cannot split one string by
+author, so an app that puts its own data in the prompt string gets it judged as user content.
+
+**Business actions.** Plain function calls are classed by the words of their name as `money` (`issue_refund`,
+`apply_coupon`, `transfer_funds`), `bulk-data` (`export_customer_data_any`), `identity` (`reset_password`,
+`grant_admin_role`), `destructive` (`drop_table`, `purge_records`) or `delegation` (`accept_handoff`,
+`fan_out`); lookups such as `get_coupon_list`, `get_refund_status` and `validate_coupon` are not. The
+built-in action for every class is `alert`. A signed policy sets `businessToolActions: { money?,
+"bulk-data"?, identity?, destructive?, delegation? }` to `allow`, `alert`, `ask` or `block`; a
+`functionToolActions` key that names the function itself wins over its class. Alerts carry the class and the
+folded function name, never an argument. Names such as `purge_cache` or `create_agent` match a class too;
+under the default `alert` that costs a report, under `block` a call.
+
 **Gemini.** `generateContent` and `streamGenerateContent` (JSON, the JSON array sent without `alt=sse`, and
 SSE with `alt=sse`) are parsed on any route, chosen by the `…/models/<model>:generateContent` path, so the
 Gemini API and Vertex AI publisher-model endpoints are both covered. The default `/gemini` route goes to
@@ -1044,6 +1063,51 @@ or the root-owned `/etc/moorai/config.json`, never from a repo or user file:
 
 The agent runs as the same user and can delete the session record, which clears its own `read-private`
 tag. `tagActions` read nothing from it.
+
+### Fail open or fail closed: the administrator decides
+
+When a MoorAI surface cannot reach a decision (its engine throws, it runs past its decision budget, it
+cannot read the input, or it scanned only a capped prefix of what a call reads), the administrator decides
+what happens. The user cannot.
+
+Set it in the signed console policy, or in the root-owned admin binding (`/etc/moorai/config.json`,
+`%ProgramData%\MoorAI\config.json` on Windows). Both use the same shape:
+
+```json
+{ "failMode": { "default": "open", "hook": "closed", "modelProxy": "open", "mcpGateway": "closed", "inferenceHook": "closed" } }
+```
+
+The admin binding wins (its surface key, then its `default`). The signed policy comes next (its surface key,
+then its `default`), then the surface's own default. Only `"open"` and `"closed"` count; any other value is
+ignored with a warning and the next source decides. No environment variable, settings file or user-scope
+file is read, so nothing the agent can write turns a closed surface open.
+
+| Surface | Own default | Closed |
+|---|---|---|
+| Coding-agent hook (`hook`) | open: the call proceeds and the ledger records it as UNEVALUATED | The PreToolUse call is denied (exit 2, the deny JSON on stdout, the reason on stderr): an internal error, the 15 s decision budget, unreadable input, a Read past the 256 KiB scan cap. Other events (PostToolUse, UserPromptSubmit, Stop) still fail open. With no policy at all, the fail-closed offline default applies. |
+| Model proxy (`modelProxy`) | enforce mode refuses, report mode forwards | Content it cannot judge (an item past `--max-scan-chars`, more than `--max-scan-items` new items, tool-call arguments past a cap, an engine error or the evaluation budget) is refused. In report mode, only request items past a cap, which are known before forwarding. |
+| MCP stdio guard and HTTP MCP gateway (`mcpGateway`) | open: forwarded unchanged | A `tools/call` that cannot be evaluated gets an `isError` tool result and the server never receives it; a tool result whose scan failed, missed its deadline or hit its overload window is replaced by an `isError` result. A reputation threshold with no score yet refuses the call. With no policy, the fail-closed default applies. |
+| Inference hooks server (`inferenceHook`) | the operator's `--fail` flag (open unless set) | The server answers deny. |
+
+Every fail-closed refusal raises one content-free alert with `reasonCode: "FAIL_CLOSED"`, carrying
+`basisCode` (the UNEVALUATED code naming the cause), `failModeSource` (`admin`, `policy` or `default`) and
+`failWhy`. Logging, inventory and telemetry always fail open: they never block. Two things do not change with
+the setting: a package MoorAI could not fetch or verify stays REVIEW (that is the check's verdict, not a
+failure to reach one), and an operator-signed, live break-glass marker turns a hook fail-closed deny back into
+an allow, so a hook fault cannot lock a fleet out of its agents. An unenrolled device (coach mode) is never
+denied. `moorai-doctor` shows the effective mode per surface on its **Fail mode** row, and the coverage
+heartbeat (`POST /api/agent-posture`) carries it as a top-level `failMode`. For `modelProxy` the heartbeat
+reports the hook's view; the proxy's own default depends on its mode.
+
+**Malformed input.** A number or boolean where the hook reads text (`tool_input`'s `command`, `file_path`,
+`notebook_path`, `content`, `new_string`, MultiEdit `edits[].new_string`, `new_source`, `url`, `prompt`,
+`query`, `subagent_type`, and the top-level `tool_name`, plus `prompt` on UserPromptSubmit and
+`last_assistant_message` on Stop) is judged as that text: a `command` of `123` is the command `123`. An object
+or array in one of those fields, or a payload that is not a JSON object, is unreadable input
+(`UNEVALUATED_BAD_INPUT`): a PreToolUse is denied when `failMode.hook` is closed and allowed when it is open.
+An object in an envelope field (`session_id`, `cwd`, `agent_id`, `agent_type`, `permission_mode`,
+`tool_use_id`) is dropped and the call is still judged. A tool named after an `Object.prototype` member is an
+unknown tool. MCP tool arguments are free-form and are read as JSON, whatever their types.
 
 ### Exceptions: what to grant when MoorAI blocks
 

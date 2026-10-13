@@ -14,8 +14,10 @@
 // files the arguments name (opt-in per route: only meaningful when the gateway shares a disk with them) →
 // a vector-store write's documents at the "index" stage (../cli/index-tools.mjs; report-first).
 //
-// Fail-open, like the proxy: no engine, a thrown check, or a result scan past its deadline forwards the
-// original. Only an explicit deny under an enforcing device refuses; "ask" forwards (no banner exists)
+// Fail mode, like the proxy (./fail.mjs): no engine, a thrown check, a result scan that threw, missed its
+// deadline or its overload window, or a reputation threshold with no score yet forwards the original
+// (open, the default) or refuses it (closed, on an enforcing device). Otherwise only an explicit deny
+// under an enforcing device refuses; "ask" forwards (no banner exists)
 // except in server mode, where the hook's headless rule settles it (deny unless policy says
 // allow-with-report).
 import { fileURLToPath } from "node:url";
@@ -34,6 +36,7 @@ import { settleHeadlessAsk } from "../cli/server-mode.mjs";
 import { contentHash } from "../cli/content-hash.mjs";
 import { state, ensurePolicy } from "./policy.mjs";
 import { profileCheck } from "./profile.mjs";
+import { failClosed, failReason, alertFailClosed } from "./fail.mjs";
 import { CONFIG, IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, alertProfile, alertDriftCall, recordLedger } from "./report.mjs";
 
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -62,6 +65,12 @@ const DRIFT_POLICY_WAIT_MS = 2000;
 // MOORAI_TEST_TOOLSCAN_THROW=N: a test hook (the stdio guard's name) that makes judging a tools/list
 // throw from this route's N-th listing on ("1" = every listing, as in the proxy).
 const TOOLSCAN_THROW_FROM = Number(process.env.MOORAI_TEST_TOOLSCAN_THROW || 0);
+// MOORAI_TEST_GATECALL_THROW / MOORAI_TEST_RESULTSCAN_THROW / MOORAI_TEST_RESULT_STALL_MS: test hooks
+// (the last two the stdio guard's names) that make the call gate throw, the result scan throw, or the
+// result scan stall asynchronously — the faults the fail mode decides. Inert unless set.
+const GATECALL_THROW = Boolean(process.env.MOORAI_TEST_GATECALL_THROW);
+const RESULTSCAN_THROW = Boolean(process.env.MOORAI_TEST_RESULTSCAN_THROW);
+const RESULT_STALL_MS = Number(process.env.MOORAI_TEST_RESULT_STALL_MS || 0);
 
 function toPath(r) {
   try { return /^file:/i.test(r) ? fileURLToPath(r) : r; } catch { return null; }
@@ -96,16 +105,17 @@ export function createGuard(route) {
       .catch(() => null);
     return REP_READY;
   }
-  async function reputationBlocks() {
+  async function reputationBlocks(tool) {
     const rp = repPolicy();
     if (rp.enabled === false || !(Number(rp.blockBelow) > 0)) return null;
     if (!REP && REP_READY) await withDeadline(REP_READY, 3000);
-    if (!REP) return null;
+    // No score yet. Open: forward (as always). Closed: the threshold cannot be checked, so refuse.
+    if (!REP) { const fm = failClosed(); if (!fm) return null; alertFailClosed("mcp", "reputation", fm, tool, SERVER); return { reason: failReason("reputation"), failClosed: true }; }
     const action = reputationAction(REP, rp, { enforce: !state.COACH });
     if (action === "coach") { if (seenOnce(`rep-coach:${SERVER}:${REP.score}`)) coachNote(`calls to MCP server ${SERVER}`, `reputation ${reputationSummary(REP)} is below the org threshold`); return null; }
     if (action !== "block") return null;
     if (seenOnce(`rep-block:${SERVER}:${REP.score}`)) reportReputation(REP);
-    return `this MCP server's reputation (${REP.score}/100, ${REP.band}) is below your organization's threshold`;
+    return { reason: `this MCP server's reputation (${REP.score}/100, ${REP.band}) is below your organization's threshold`, failClosed: false };
   }
 
   // The client's own roots, from its answer to a legacy roots/list request (a JSON-RPC response it
@@ -118,6 +128,7 @@ export function createGuard(route) {
 
   async function gateCall(msg) {
     await ensurePolicy();
+    if (GATECALL_THROW) throw new Error("injected call-gate fault (test hook)");
     const tool = String(msg.params.name || "");
     const rawArgs = msg.params.arguments == null ? {} : msg.params.arguments;
     const args = JSON.stringify(rawArgs);
@@ -139,8 +150,8 @@ export function createGuard(route) {
         return { block: q.reason };
       }
     }
-    const rep = await reputationBlocks();
-    if (rep) { auditCall(SERVER, tool, "deny", argsHash); return { block: rep }; }
+    const rep = await reputationBlocks(tool);
+    if (rep) { auditCall(SERVER, tool, "deny", argsHash); return { block: rep.reason, failClosed: rep.failClosed }; }
 
     // Declared workload profile: report or block per the profile's action; coached when unenrolled.
     const wp = profileCheck({ policy: state.POLICY, server: SERVER, tool, serviceId: SERVER_MODE.active ? SERVER_MODE.serviceId : "", coach: state.COACH });
@@ -148,7 +159,12 @@ export function createGuard(route) {
     if (wp.rejectedAlert && seenOnce(`profile-rejected:${wp.rejectedAlert.contentHash}`)) alertProfile(SERVER, tool, wp.rejectedAlert);
     if (wp.coach) coachNote(`MCP tool call ${tool} (server ${SERVER})`, wp.coach);
     if (wp.decision === "deny") { auditCall(SERVER, tool, "deny", argsHash); return { block: wp.reason }; }
-    if (!state.ENGINE) { auditCall(SERVER, tool, "allow", argsHash); return { block: null }; }
+    if (!state.ENGINE) {
+      // No engine: open forwards (as always); closed refuses what it cannot judge.
+      const fm = failClosed();
+      if (fm) { alertFailClosed("mcp", "no-engine", fm, tool, SERVER); auditCall(SERVER, tool, "deny", argsHash); return { block: failReason("no-engine"), failClosed: true }; }
+      auditCall(SERVER, tool, "allow", argsHash); return { block: null };
+    }
 
     const { POLICY, ENGINE } = state;
     const g = mcpGateway(ENGINE, POLICY, { tool, server: SERVER, args });
@@ -301,11 +317,14 @@ export function createGuard(route) {
     obsQueue = obsQueue.then(() => observeTools(tools, opts)).catch(() => {}).finally(() => { obsInFlight--; });
   }
 
+  // → the inbound verdict, null (no text: nothing to judge), or { unjudged } when it could not run.
   async function scanResult(result) {
-    if (!state.ENGINE) { ensurePolicy(); return null; }
+    if (RESULTSCAN_THROW) throw new Error("injected result-scan fault (test hook)");
+    if (RESULT_STALL_MS > 0) await new Promise((r) => setTimeout(r, RESULT_STALL_MS));
+    if (!state.ENGINE) { ensurePolicy(); return { unjudged: "no-engine" }; }
     if (!budgetOk()) {
       if (!winSaid) { winSaid = true; reportOnce("Result scanning throttled (overload window)", "result:budget:throttled", "Info"); }
-      return null;
+      return { unjudged: "budget" };
     }
     const text = inboundText(result);
     if (!text) return null;
@@ -341,19 +360,34 @@ export function createGuard(route) {
       }
       const result = resultOfResponse(msg);
       if (!result) return null;
-      const verdict = await withDeadline(scanResult(result), CAPS.resultDeadlineMs);
-      if (!verdict || !verdict.findings.length) return null;
       const label = toolName || "mcp";
+      // null when the scan missed the deadline (withDeadline) and there was text to judge; { unjudged }
+      // when it threw or could not run. Open: forward (as always). Closed: replace what was not judged.
+      const verdict = await withDeadline(scanResult(result).catch(() => ({ unjudged: "error" })), CAPS.resultDeadlineMs);
+      let unjudged = null;
+      if (verdict === null && inboundText(result)) unjudged = "timeout";
+      else if (verdict && verdict.unjudged) unjudged = verdict.unjudged;
+      if (unjudged) return failClosedResult(msg, unjudged, label);
+      if (!verdict || !verdict.findings.length) return null;
       const blocked = !state.COACH && verdict.decision === "deny" && msg.id != null;
       if (state.COACH && verdict.decision === "deny") coachNote(`MCP tool result from ${label} (server ${SERVER})`, verdict.reasons.join(", "), verdict.alternatives);
       alertResult(SERVER, label, verdict.findings, blocked);
       if (!blocked) return null;
       return { jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: `MoorAI blocked this MCP tool result: ${verdict.reasons.join(", ") || "policy"}` }], isError: true } };
     } catch {
-      // A listing whose judgement threw goes out as the server sent it, unjudged.
-      if (msg && msg.result && typeof msg.result === "object" && Array.isArray(msg.result.tools)) listingUnjudged();
-      return null;
+      // A listing whose judgement threw goes out as the server sent it, unjudged (the drift verdicts are
+      // cleared). Any other result follows the fail mode.
+      if (msg && msg.result && typeof msg.result === "object" && Array.isArray(msg.result.tools)) { listingUnjudged(); return null; }
+      try { return resultOfResponse(msg) ? failClosedResult(msg, "error", toolName || "mcp") : null; } catch { return null; }
     }
+  }
+
+  // A result the gateway could not judge: null (open, coach, or no id to answer) or its isError replacement.
+  function failClosedResult(msg, why, label) {
+    const fm = msg && msg.id != null ? failClosed() : null;
+    if (!fm) return null;
+    alertFailClosed("result", why, fm, label, SERVER);
+    return blockedResult(msg.id, failReason(why));
   }
 
   // A tools/list response this route forwarded without judging it (over CAPS.maxLineBytes, JSON or SSE; a
@@ -363,6 +397,11 @@ export function createGuard(route) {
   function listingUnjudged() { try { DRIFT.invalidate(); } catch { /* governance, not a sandbox */ } }
 
   return { server: SERVER, gateCall, gateResult, rememberRoots, startReputation, listingUnjudged };
+}
+
+// A refused RESULT: an MCP tool result with isError and the response's id.
+export function blockedResult(id, reason) {
+  return { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `MoorAI blocked this MCP tool result: ${reason}` }], isError: true } };
 }
 
 // The refusal for a CALL: the proxy's shape, an MCP tool result with isError and the request's id —

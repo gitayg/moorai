@@ -6,9 +6,18 @@
 import { buildEngine, loadVerifiedPolicy, ratchetPosture, enforcementAllowed, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath } from "../cli/hook-core.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { isEnrolled } from "../data/enforcement.js";
+import { gatewayFailMode } from "../cli/mcp-fail.mjs";
+import { systemConfig } from "../cli/server-mode.mjs";
 import { CONFIG, SERVER_MODE, reportOnce, setTierSource } from "./report.mjs";
 
-export const state = { POLICY: null, ENGINE: null, COACH: !isEnrolled(CONFIG) && !SERVER_MODE.active, loadedAt: 0 };
+// The root-owned admin binding, read once: it decides the fail mode before any policy is verified, and
+// an admin binding that makes this gateway fail closed counts as management evidence (enforce, not coach).
+export const ADMIN = (() => { try { return systemConfig(); } catch { return null; } })();
+const adminFailMode = () => gatewayFailMode({ policy: null, admin: ADMIN, warn: () => {} });
+export const adminClosed = () => { const fm = adminFailMode(); return fm.mode === "closed" && fm.source === "admin"; };
+
+// VERIFIED: the verified org policy alone (POLICY may be the built-in OFFLINE_DEFAULT_POLICY), for the fail mode.
+export const state = { POLICY: null, VERIFIED: null, ENGINE: null, COACH: !isEnrolled(CONFIG) && !SERVER_MODE.active && !adminClosed(), loadedAt: 0 };
 setTierSource(() => (state.POLICY && state.POLICY.captureTier) || "content-free");
 
 function durablePosture() {
@@ -39,16 +48,18 @@ export async function ensurePolicy() {
     try {
       const v = await loadVerifiedPolicy(CONFIG);
       const posture = durablePosture();
-      state.COACH = !enforcementAllowed(CONFIG, { managed: posture.posture === "fail-closed" || SERVER_MODE.active });
+      state.COACH = !enforcementAllowed(CONFIG, { managed: posture.posture === "fail-closed" || SERVER_MODE.active || adminClosed() });
       reportPolicyTrust(v);
       let policy = v.policy;
+      state.VERIFIED = policy || null;
       if (!policy) {
-        if (posture.posture === "fail-closed") { reportOnce("Offline: fail-closed default applied", "offline:fail-closed", "High"); policy = OFFLINE_DEFAULT_POLICY; }
+        // An admin binding that makes this gateway fail closed selects the same reviewable default.
+        if (posture.posture === "fail-closed" || adminFailMode().mode === "closed") { reportOnce("Offline: fail-closed default applied", "offline:fail-closed", "High"); policy = OFFLINE_DEFAULT_POLICY; }
       } else if (v.source === "last-known-good") reportOnce("Enforcing last-known-good verified policy", "policy:lkg:applied", "High");
       state.POLICY = policy;
       state.ENGINE = buildEngine(policy); // buildEngine(null) still scans and reports, as in the proxy
       state.loadedAt = Date.now();
-    } catch { /* keep what we had; with no engine the gate fails open */ }
+    } catch { /* keep what we had; with no engine the gate follows the fail mode (./fail.mjs) */ }
     finally { inflight = null; }
   })();
   return inflight;

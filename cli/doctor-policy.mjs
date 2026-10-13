@@ -19,7 +19,8 @@ import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { readState } from "./state-dirs.mjs";
 import { machinePath } from "./machine-dir.mjs";
 import { makeSandbox, DEAD_SERVER } from "./doctor-sandbox.mjs";
-import { serverMode, serviceWho } from "./server-mode.mjs";
+import { serverMode, serviceWho, systemConfig } from "./server-mode.mjs";
+import { hookFailMode } from "./hook-fail.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const HOOK_FILE = join(HERE, "moorai-hook.mjs");
@@ -90,20 +91,25 @@ export function loadPolicyReadOnly(config, { offline = true, timeoutMs = 15000 }
 }
 
 // main()'s resolution, from the loaded policy to the one decideText is handed, plus coach vs enforce.
-export function resolveEffective(loaded, config) {
+// `admin`: the root-owned admin binding (default: the real one), whose failMode.hook "closed" selects the
+// fail-closed default with no policy, as the hook does (cli/hook-fail.mjs).
+export function resolveEffective(loaded, config, { admin } = {}) {
   const posture = durablePosture();
   const bg = breakGlassState(config);
+  let adminBinding = admin;
+  if (adminBinding === undefined) { try { adminBinding = systemConfig(); } catch { adminBinding = null; } }
+  const failNoPolicy = hookFailMode({ policy: null, admin: adminBinding, warn: () => {} });
   let policy = loaded && loaded.policy ? loaded.policy : null;
   let basis = policy ? `org policy (${loaded.source})` : "";
   let allowAll = false;
   if (!policy) {
-    if (posture.posture !== "fail-closed") { policy = noPolicyBaseline(); basis = "built-in defaults (no org policy)"; }
+    if (posture.posture !== "fail-closed" && failNoPolicy.mode !== "closed") { policy = noPolicyBaseline(); basis = "built-in defaults (no org policy)"; }
     else if (bg.active) { allowAll = true; basis = "break-glass active: the hook allows every call"; }
-    else { policy = OFFLINE_DEFAULT_POLICY; basis = "offline fail-closed default (no policy, fail-closed posture)"; }
+    else { policy = OFFLINE_DEFAULT_POLICY; basis = posture.posture === "fail-closed" ? "offline fail-closed default (no policy, fail-closed posture)" : `offline fail-closed default (no policy, hook fail mode closed (${failNoPolicy.source}))`; }
   } else if (offlineMode(policy) === "fail-closed" && bg.active) {
     allowAll = true; basis = "break-glass active: the hook allows every call";
   }
   const server = serverMode();
-  const coach = !enforcementAllowed(config, { managed: posture.posture === "fail-closed" || server.active || config.managed === true });
+  const coach = !enforcementAllowed(config, { managed: posture.posture === "fail-closed" || server.active || config.managed === true || (failNoPolicy.mode === "closed" && failNoPolicy.source === "admin") });
   return { policy, basis, allowAll, coach, posture, breakGlass: bg, server };
 }

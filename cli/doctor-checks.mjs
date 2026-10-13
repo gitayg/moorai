@@ -15,6 +15,7 @@ import { CACHE_FILE as REPUTATION_FILE } from "./mcp-reputation.mjs";
 import { makeSandbox, DEAD_SERVER } from "./doctor-sandbox.mjs";
 import { fingerprint, configSource } from "./doctor-policy.mjs";
 import { headlessAskMode } from "./server-mode.mjs";
+import { effectiveFailModes, FAIL_SURFACES } from "./fail-mode.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const tilde = (p) => String(p).replace(os.homedir(), "~");
@@ -100,6 +101,19 @@ export function checkPosture(eff) {
   if (p.downgradeAttempt && p.downgradeAttempt.length) return { ...base, status: "fail", summary: `${p.posture}; downgrade asserted by ${p.downgradeAttempt.join(", ")} (refused, reported as tampering)`, fix: "remove the fail-open value from the named source", details };
   if (p.evidenceMissing) return { ...base, status: "warn", summary: `${p.posture}; one user-scope posture copy is missing (reported as evidence-missing)`, details };
   return { ...base, status: "ok", summary: p.posture === "fail-closed" ? `fail-closed (hardened by ${p.hardenedBy.join(", ")})` : "fail-open (no policy → built-in defaults, never a lockout)", details };
+}
+
+// The effective fail mode per surface (cli/fail-mode.mjs): admin binding > the policy the hook would
+// enforce > the surface's default. For inferenceHook the default is that server's own --fail flag.
+export function checkFailMode(loaded, admin) {
+  const base = { id: "fail-mode", group: "policy", title: "Fail mode" };
+  const warnings = [];
+  const failMode = effectiveFailModes((loaded && loaded.policy) || null, { admin, warn: (m) => warnings.push(m) });
+  const part = (s) => `${s} ${failMode[s].mode} (${failMode[s].source === "default" && s === "inferenceHook" ? "default: the server's --fail flag decides" : failMode[s].source})`;
+  const summary = FAIL_SURFACES.map(part).join(" · ");
+  const details = { failMode };
+  if (warnings.length) return { ...base, status: "warn", summary: `${summary}; ignored: ${[...new Set(warnings)].join("; ")}`, fix: 'set each failMode value to "open" or "closed"', details };
+  return { ...base, status: "ok", summary, details };
 }
 
 export function checkBreakGlass(eff) {

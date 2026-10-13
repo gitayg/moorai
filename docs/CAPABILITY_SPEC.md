@@ -1647,6 +1647,44 @@ enabled the feature before signing secrets were required. The test cross-checks 
 verifier against an independent Python `hmac` implementation of the documented steps, when `python3` is
 present. They have not been checked against Anthropic's real signer.
 
+## Fail mode (admin-chosen fail-open / fail-closed)
+
+- **Contract.** `cli/fail-mode.mjs`: `FAIL_SURFACES = ["hook","modelProxy","mcpGateway","inferenceHook"]`;
+  `resolveFailMode(policy, surface, { admin, fallback })` returns `{ mode, source }`;
+  `effectiveFailModes()` returns all four. Precedence: admin binding `failMode[surface]`, then its
+  `default`; then the signed policy's `failMode[surface]`, then its `default`; then `fallback`. Invalid
+  values are warned about (source and key, never the value) and skipped. Never throws; never reads
+  user-writable state.
+- **Hook** (`cli/hook-fail.mjs`). Before the policy is verified, the admin binding and the cached verified
+  policy decide; after, the admin binding and the verified policy. Closed deny = exit 2 + PreToolUse deny
+  JSON + stderr, on an uncaught error, `HOOK_DECISION_BUDGET_MS` = 15000 (below the agent-hook shim's 20 s),
+  unparseable or unreadable PreToolUse input, an error in the no-policy block, and an allow over a capped
+  Read. Admin-closed counts as management evidence; with no policy it selects `OFFLINE_DEFAULT_POLICY`.
+  A live break-glass marker allows. Unsupported tools are out of scope, not "cannot decide".
+- **Model proxy.** `resolveFailMode(policy, "modelProxy", { admin, fallback: enforce ? "closed" : "open" })`
+  governs scan caps, engine errors and the evaluation budget. Not governed: a compressed response, an
+  over-size SSE event or NDJSON line, a non-JSON non-stream response, ambiguous tool arguments (refused in
+  enforce mode regardless).
+- **MCP stdio guard and HTTP gateway** (`cli/mcp-fail.mjs`, `mcp-gateway/fail.mjs`). The gate's catch, a
+  missing engine, a missing reputation score with `mcpReputation.blockBelow`, and on results a scan fault,
+  a deadline miss or the overload window: refused when closed. Not governed: oversize lines or responses
+  forwarded unscanned by design, `tools/list`. Fail-closed refusals never count toward the client cool-down.
+- **Inference hooks server.** Per request: admin > policy > `--fail` > open.
+- **Reason code.** `REASON.FAIL_CLOSED`, category prefix `Fail-closed: `; fields `basisCode`,
+  `enforcement: STRENGTHENED`, `failMode`, `failModeSource`, `failWhy`.
+- **Posture / doctor.** Heartbeat top-level `failMode: { hook, modelProxy, mcpGateway, inferenceHook }`, each
+  `{ mode, source }`; doctor check `fail-mode`.
+- **Input handling.** `cli/tool-input.mjs`: primitives are judged as text; objects in judged fields are
+  `UNEVALUATED_BAD_INPUT`; objects in envelope fields are dropped and the call judged.
+
+## Model proxy: operator context and business actions
+
+| Capability | Behaviour | Evidence |
+|---|---|---|
+| Operator-context privacy findings | Reported at stage `context` (`decision: notify`, the threat's own risk, `enforcement: LIMITED` when the policy would block or ask); never refuse. Non-privacy findings decided as before. | test/proxy-context-system.test.mjs |
+| Business-impact classes | `money`, `bulk-data`, `identity`, `destructive`, `delegation` by function-name words; built-in `alert`; `businessToolActions` per class; a specific `functionToolActions` key wins | test/proxy-business-tools.test.mjs |
+| Model-proxy fail mode | see Fail mode above | test/proxy-fail-mode.test.mjs |
+
 ## Capability tags and exceptions
 
 **Status: built and tested (`test/tool-tags.test.mjs`, `test/tool-tags-hook.test.mjs`,

@@ -277,16 +277,34 @@ counting, validation, the size cap, the cool-down bookkeeping and the profile ch
 (median 4.97). The difference is inside the run-to-run noise. Not measured: a policy with many profiles,
 or large bodies.
 
-## Policy semantics: fail-open, report-first (the proxy's)
+## Policy semantics: fail mode, report-first (the proxy's)
 
-- **Fail-open** on the gateway's own failure: no engine (no policy and no posture), a thrown check, a
-  result scan past `CAPS.resultDeadlineMs` (750 ms), a compressed upstream response other than a
+- **Fail mode** (`failMode.mcpGateway`, then `failMode.default`, from the root-owned admin binding
+  `/etc/moorai/config.json` first, then the signed policy; `cli/fail-mode.mjs`, `fail.mjs`) decides what
+  happens when the gateway cannot judge something: a call or result check that threw, no engine, a result
+  scan past `CAPS.resultDeadlineMs` (750 ms) or past its overload window, or a `mcpReputation.blockBelow`
+  threshold with no score yet.
+  - `open` (the default): forwarded unchanged and unscanned.
+  - `closed`: a `tools/call` is refused with an isError tool result (`MoorAI blocked this MCP tool call:
+    not evaluated (…), and your organization blocks what MoorAI cannot evaluate`) and the upstream never
+    receives it; a result is replaced by an isError result (`MoorAI blocked this MCP tool result: …`). A
+    JSON response whose judgement threw answers each `tools/call` id in the POST that way. One content-free
+    alert per refusal: `reasonCode: FAIL_CLOSED`, category `Fail-closed: MCP call not evaluated` /
+    `Fail-closed: MCP result not evaluated`, `basisCode`, `enforcement: STRENGTHENED`, `failMode: "closed"`,
+    `failModeSource` (`admin` / `policy`), `failWhy` (`error`, `no-engine`, `timeout`, `budget`,
+    `reputation`). A fail-closed refusal does not count toward the client's cool-down.
+  - Unenrolled (coach) never refuses: forwarded, as for every other block. An admin binding that sets this
+    gateway closed counts as management evidence (enforce without a token), and with no verified policy it
+    selects `OFFLINE_DEFAULT_POLICY`, as a fail-closed posture does.
+  - The fail mode does not govern what the gateway forwards unscanned by design (below), and a
+    `tools/list` answer is never altered by it: one that could not be judged clears the drift verdicts.
+- **Forwarded unscanned whatever the fail mode:** a compressed upstream response other than a
   `tools/list` answer, a response with no request ids, or any response while a `tools/list` is
   outstanding, in `gzip`/`deflate`/`br` (decoded and scanned), a JSON response or
   SSE event between `CAPS.maxLineBytes` (1 MB) and the size cap → forwarded unchanged and unscanned. An
   unparseable client body is refused (`SCHEMA_INVALID`, stage `json`) unless `--schema report|off`. A device whose durable posture is fail-closed gets `OFFLINE_DEFAULT_POLICY` when no policy
   verifies, exactly as in the proxy.
-- **Only an explicit deny refuses**, and only on an enforcing device. Unenrolled → coach: forwarded, with
+- **Otherwise only an explicit deny refuses**, and only on an enforcing device. Unenrolled → coach: forwarded, with
   a note on the gateway's stderr (the operator's log). "ask" (justify) forwards, because no banner exists
   — except in **server mode** (`cli/server-mode.mjs`), where the hook's headless rule settles it: deny,
   unless the system file or the org policy says `allow-with-report`. Server mode also enforces without a
@@ -298,8 +316,8 @@ or large bodies.
   yielding to other clients (~3.7 ms each, measured), and a 5,000-call batch held the gateway for 23 s.
   So is a client message nested deeper than 64 objects / arrays combined (`SCHEMA_INVALID`, stage `json`,
   path `$`, in every `--schema` mode, before any scan): the gate serialises the arguments with
-  `JSON.stringify`, which throws on deep nesting, and a failing check forwards, so arguments nested
-  100,000 levels deep reached the upstream unscanned. Other internal errors still forward.
+  `JSON.stringify`, which throws on deep nesting, and under the default open fail mode a failing check
+  forwards. Other internal errors follow the fail mode.
 
 ## Network posture
 
@@ -533,6 +551,7 @@ must turn the run red.
 | `sse.mjs` | Incremental SSE framing that keeps each event's original text. |
 | `pending-lists.mjs` | Per-route table of forwarded `tools/list` requests not yet answered, keyed as the SDK matches ids (bounded, with a TTL; an entry dropped unanswered clears the verdicts). |
 | `policy.mjs` | Verified policy + engine + coach/enforce, as the proxy loads them. |
+| `fail.mjs` | The fail mode (`failMode.mcpGateway`): refuse or forward what the gateway could not judge, and its `FAIL_CLOSED` alert. |
 | `report.mjs` | Content-free alerts and ledger lines (`gateway:<tool>`). |
 | `validate.mjs` | Staged JSON-RPC / MCP validation (C5 `SCHEMA_INVALID`). |
 | `cooldown.mjs` | Per-client cool-down (C5 `CLIENT_COOLDOWN`). |

@@ -166,8 +166,23 @@ feeds back (Anthropic `tool_result` or text `document`, OpenAI `role: "tool"`, O
 `output` with `inbound: true`, the Agent SDK's PostToolUse scan. That is where indirect injection shows
 up.
 
+- **Operator context.** Text the application itself puts in front of the model — Anthropic `system`, OpenAI
+  `system` and `developer` messages, Gemini `systemInstruction`, Ollama `system` messages and the
+  `/api/generate` `system` field — is scanned like any prompt, with one difference: a privacy finding there
+  (threats 1, 9, 15, 18, 27, 36, 39, 44 and 65: card numbers, email addresses, secrets, health data in an
+  "internal data" block) is the operator's own data given to its own model. It is reported at stage
+  `context` (`decision: "notify"`, the threat's own risk level, never `Blocked`; `enforcement: LIMITED` when
+  the policy's action for it is block or justify) and never refuses the request. Every other finding in
+  operator context — a prompt injection (#3), a reverse shell (#54), system-prompt extraction (#51),
+  rendered-output exfiltration (#71), a content rule — is decided exactly as in a user turn, because a system
+  prompt assembled from untrusted parts (a retrieved document, a ticket, a filled template) can carry one.
+  The user's turn, a tool result and the model's output are never operator context: the same card number in
+  a user turn is refused under a blocking policy, even when the identical text was operator context earlier.
+  `/api/generate` `template` and `prompt` are not operator context: the proxy cannot tell which part of one
+  string the operator wrote. Code: [`context.mjs`](context.mjs).
 - **Repeats are scanned once.** Conversations are re-sent every turn, so each item is scanned once. A
-  bounded LRU, keyed by a per-process HMAC, maps each item to its verdict.
+  bounded LRU, keyed by a per-process HMAC, maps each item to its verdict; operator context has keys of its
+  own, so one system prompt is scanned and reported once per process and policy.
 - **Not scanned:** assistant (Gemini `model`) turns, images, base64 PDFs, and the `tools` definitions.
   Gemini: `inlineData`, `fileData` URIs, `thought` parts, a `cachedContent` reference (its content was
   uploaded earlier, unparsed), and a request body that is not JSON. Ollama: `images`, `thinking`, `format`,
@@ -267,6 +282,57 @@ only content-scanned). Code: [`function-rules.mjs`](function-rules.mjs), applied
   hook, `@moorai/agent-sdk` and `moorai-serve` do not (their tool names are already the hook's vocabulary).
 - **Alert reason code.** No reason code exists for this rule, so the alerts carry the derived
   `OBSERVATION_ONLY`, as the capability-tag alerts do; the category names the rule.
+
+### Business-impact functions
+
+A function with no hook branch is classed by its **name** into an impact class
+([`business-tools.mjs`](business-tools.mjs)), so a business tool that the content scan has nothing to say about
+(`issue_refund {"order_id": "A-1009"}`) is still reported:
+
+| Class | Matches (words of the name) |
+|---|---|
+| `money` | a money action (`refund`, `payout`, `reimburse`, `disburse`, `withdraw`, `chargeback`); a money verb first (`charge`, `pay`, `wire`, `debit`, `credit`, `remit`); or a money verb beside a money object — `apply`/`add`/`redeem`/`issue`/`transfer`/`set`/`update`/`adjust` … with `coupon`, `discount`, `promo`, `voucher`, `payment`, `funds`, `money`, `price`, `pricing`, `credit`, `balance`, `wallet` … |
+| `bulk-data` | `export`, `dump`, `exfiltrate`; `all`/`any`/`every`/`bulk`/`entire`/`mass` beside `customer(s)`, `user(s)`, `client(s)`, `contact(s)`, `account(s)`, `member(s)`, `employee(s)`, `patient(s)`, `email(s)`, `pii`, `data`, `record(s)`, `database`, `table(s)`; `download`/`copy`/`extract`/`scrape`/`backup` with a quantifier (`download_all`); `everything`, `everyone` |
+| `identity` | `impersonate`, `sudo`, `login_as`; a grant verb with `role`, `permission`, `privilege`, `admin`, `superuser`, `scope`, `acl`, `owner`; a reset verb with `password`, `mfa`, `2fa`, `otp`, `totp`, `passcode`, `credential(s)`, `recovery`; a delete / disable / suspend / close / ban / lock verb with `account`, `user`, `member`, `profile`, `identity`, `login` |
+| `destructive` | `delete`, `purge`, `wipe`, `destroy`, `truncate`, `erase`, `shred`, `nuke`, `obliterate`; `drop` with `table`, `database`, `db`, `collection`, `schema`, `index`, `bucket`, `keyspace` |
+| `delegation` | `handoff`, `hand_off`, `fanout`, `fan_out`, `delegate`, `spawn`; `transfer_to_<agent>`; a call / invoke / run / dispatch / launch / start / create / assign / route / forward / send / ask / consult verb with `agent`, `subagent`, `worker`, `crew`, `swarm` |
+
+- **Words.** The name is normalized as `functionToolActions` normalizes it (NFKC, invisible characters and a
+  `functions.` / `tools.` / `default_api.` prefix removed), camelCase is split, and the result is cut into
+  lower-case words at every other character, so `IssueRefund`, `issue-refund` and `functions.issue_refund`
+  are all `money`. Matching is on whole words: `get_coupon_list` is not `apply_coupon`, `undelete_item` and
+  `get_deleted_items` are not `destructive`, `dropdown_options` is not a `drop`.
+- **Lookups are not classed.** A name whose first word is a read verb (`get`, `list`, `read`, `view`,
+  `search`, `find`, `lookup`, `query`, `check`, `validate`, `verify`, `is`, `has`, `can`, `fetch`,
+  `retrieve` …) or whose last word is a read noun (`status`, `policy`, `history`, `info`, `details`, `list`,
+  `lookup`, `summary`, `count`, `eligibility`, `preview`, `quote`, `estimate`, `options`) is a lookup:
+  `get_refund_status`, `validate_coupon`, `check_permission`, `refund_policy`. `bulk-data` is the exception
+  to the read verb, because reading everything is its impact (`get_all_users`, `fetch_all_customer_records`);
+  a read-noun ending still excludes it (`get_export_status`). A name can be in more than one class
+  (`delete_account` is `identity` and `destructive`).
+- **Action.** Built in: `alert` for every class — reported, never refused, in every mode. A signed policy
+  sets a class's action:
+
+  ```json
+  { "businessToolActions": { "money": "block", "bulk-data": "ask", "identity": "ask", "destructive": "alert", "delegation": "allow" } }
+  ```
+
+  The vocabulary is `functionToolActions`': `block`, `ask` (settled by the headless rule in enforce mode),
+  `alert`, `allow` (the class is not reported). A missing class or a value outside the vocabulary keeps
+  `alert`. A name in several classes takes the strictest of their actions.
+- **The most specific rule wins.** A `functionToolActions` key that names the function itself — an exact
+  name or a wildcard with a real prefix (`issue_*`) — decides the call and its class is not applied, `allow`
+  included: `{"functionToolActions": {"apply_coupon": "allow"}}` beside `"money": "block"` lets
+  `apply_coupon` through. A namespace-only wildcard (`tools.*`) is not specific: it and the class combine,
+  the stricter winning, so a `tools.*: alert` never loosens `money: block`. Among `functionToolActions` keys
+  the strictest still wins, as above.
+- **Content-free.** One alert per call: `Model proxy: business-impact function reported (<class>)` (`Medium`,
+  `notify`), `… denied (<class>)` (`Blocked`, `deny`) or `… requires approval (<class>)` (`High`, `ask`),
+  with `businessClass` and `functionName` (the folded name) beside `tool: "model-proxy:<function>"`; never an
+  argument. Report mode files a denied or asked class with `enforcement: LIMITED`, as every other rule. The
+  refusal reads `tool call issue_refund: function issue_refund blocked by policy (businessToolActions: money)`.
+- **Order.** As `functionToolActions`: on the name the model sent and every inner name, before the arguments
+  are read; a `block` (or settled `ask`) denies the call, otherwise the arguments are decided as before.
 
 **Wrapped arguments.** Some small models (reported for nemotron-mini) wrap a call's real arguments once more,
 as `{"function": "<name>", "arguments": {...}}` or with `parameters`, `args` or `input`. A wrapped
@@ -470,13 +536,28 @@ deny, unless the system file or the org policy says `allow-with-report`.
     `overloaded_error`, OpenAI and Gemini 503, Gemini status `UNAVAILABLE`).
   - Gemini: the Gen AI SDKs ignore `x-should-retry`. With `retryOptions` set they retry a 502; without it
     they retry nothing.
-- **Content the proxy did not fully evaluate** is refused in enforce mode and reported as
-  `UNEVALUATED_SIZE_CAP` in report mode. That covers:
+- **Content the proxy cannot judge follows the fail mode.** `cli/fail-mode.mjs resolveFailMode(policy,
+  "modelProxy", { admin, fallback })` decides it: the root-owned admin binding (`failMode` in
+  `/etc/moorai/config.json`, the machine directory on Windows) first, then the signed policy's
+  `failMode.modelProxy`, then `failMode.default`, then the proxy's own behaviour — `closed` in enforce mode,
+  `open` in report mode. The cases:
   - more than `--max-scan-items` new items in one request;
   - an item longer than `--max-scan-chars`;
   - tool-call arguments over the 1 MB hold cap;
   - content-scanned tool-call arguments (a function with no hook branch, or arguments that are not valid
     JSON) longer than `--max-scan-chars`;
+  - an engine error or the evaluation budget (`--timeout-ms`) running out, on either side.
+
+  `closed` refuses: a request with the 403 refusal (`not evaluated: over the 524288-character scan cap`, `not
+  evaluated: more than 256 new items`), a response's tool call the same way, and an engine error or timeout
+  with the retryable 529 / 503. In report mode `closed` refuses only what can be known before forwarding —
+  a request item past a cap — because report mode scans after the response has been sent. `open` forwards:
+  enforce mode scans the capped prefix (a finding there still refuses), releases arguments past the cap, and
+  forwards past an engine error or timeout. Every case is reported unevaluated, whatever the mode:
+  `UNEVALUATED_SIZE_CAP` for a cap, `UNEVALUATED_HOOK_ERROR` (`Model proxy: content not evaluated (evaluation
+  failed)`) for an error or timeout released under `open`.
+- **Content the proxy cannot read is refused in enforce mode** and reported as `UNEVALUATED_SIZE_CAP` in
+  report mode, whatever the fail mode, because a tool call could hide in it:
   - a compressed response;
   - an SSE event or an NDJSON line over 1 MB;
   - a 2xx response on a parsed path that is neither `text/event-stream` (or, on an Ollama path,
@@ -737,7 +818,8 @@ moorai-serve --model-proxy-url http://127.0.0.1:8791                    # sideca
 node --test --import ./test/hermetic-env.mjs test/model-proxy.test.mjs test/model-proxy-enforce.test.mjs test/model-proxy-credentials.test.mjs \
   test/model-proxy-toolcall.test.mjs test/model-proxy-toolcall-local.test.mjs test/model-proxy-gemini.test.mjs test/serve-unchecked.test.mjs \
   test/model-proxy-connect-timeout.test.mjs test/model-proxy-ollama.test.mjs test/model-proxy-function-rules.test.mjs \
-  test/model-proxy-differentials.test.mjs test/model-proxy-canonical.test.mjs test/model-proxy-json-strict-fuzz.test.mjs
+  test/model-proxy-differentials.test.mjs test/model-proxy-canonical.test.mjs test/model-proxy-json-strict-fuzz.test.mjs \
+  test/proxy-context-system.test.mjs test/proxy-business-tools.test.mjs test/proxy-fail-mode.test.mjs
 ```
 
 Latency the judging adds, measured on an M-series Mac, node, no console, built-in rules:

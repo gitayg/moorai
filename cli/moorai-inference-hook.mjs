@@ -9,7 +9,9 @@
 //                                          current during a rotation); else MOORAI_INFERENCE_HOOK_SECRET
 //        [--fail open|closed]              a frame MoorAI authenticated but could not judge in full
 //                                          (default open: Anthropic's own default failure handling is
-//                                          "Allow the request")
+//                                          "Allow the request"). The operator's knob for this process:
+//                                          an admin binding (/etc/moorai/config.json failMode) or the
+//                                          policy's failMode.inferenceHook / failMode.default overrides it
 //        [--shadow]                        always answer allow; report what would have been denied
 //        [--policy-file <path>] [--service-id <name>] [--headless-ask deny|allow-with-report]
 //        [--max-body 67108864] [--max-inflight 268435456] [--eval-timeout-ms 4000]
@@ -89,7 +91,8 @@ async function main() {
   const { secret, keys, ...opts } = o;
   const s = await createServer({ ...opts, keys });
   if (!isLoopback(o.host)) process.stderr.write("moorai-inference-hook: listening on a non-loopback address in plain HTTP; transcripts cross the network in clear unless TLS is terminated in front of this port on the same host or pod\n");
-  process.stdout.write(JSON.stringify({ listening: s.url, mode: o.mode, fail: o.fail, secrets: keys.length, serviceId: s.runtime.settings.serviceId }) + "\n");
+  const fm = await s.failMode();
+  process.stdout.write(JSON.stringify({ listening: s.url, mode: o.mode, fail: fm.mode, failSource: fm.source, failFlag: o.fail, secrets: keys.length, serviceId: s.runtime.settings.serviceId }) + "\n");
   const stop = async () => { await s.close(); process.exit(0); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);

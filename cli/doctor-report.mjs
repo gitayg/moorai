@@ -1,7 +1,8 @@
 // The doctor's report: runs every check in order and renders it. See cli/moorai-doctor.mjs.
 import { loadConfig } from "./config.mjs";
 import { hostTable, checkHost, checkManaged, readManagedSettings, PLUGIN_INSTALL } from "./doctor-hosts.mjs";
-import { checkNode, checkEnrollment, checkConsole, checkPolicy, checkPosture, checkBreakGlass, checkStateDir, checkSelfTest, checkHookCode, pkg } from "./doctor-checks.mjs";
+import { checkNode, checkEnrollment, checkConsole, checkPolicy, checkPosture, checkFailMode, checkBreakGlass, checkStateDir, checkSelfTest, checkHookCode, pkg } from "./doctor-checks.mjs";
+import { systemConfig } from "./server-mode.mjs";
 import { loadPolicyReadOnly, resolveEffective } from "./doctor-policy.mjs";
 import { checkServerMode } from "./doctor-server.mjs";
 
@@ -18,7 +19,7 @@ export async function runDoctor({ offline = false, selftest = true } = {}) {
   checks.push(checkEnrollment(config, eff), await checkConsole(config, { offline }));
   const server = checkServerMode(eff.server, eff);
   if (server) checks.push(server);
-  checks.push(checkPolicy(loaded, eff, config), checkPosture(eff), checkBreakGlass(eff));
+  checks.push(checkPolicy(loaded, eff, config), checkPosture(eff), checkFailMode(loaded.error ? null : loaded, (() => { try { return systemConfig(); } catch { return null; } })()), checkBreakGlass(eff));
   checks.push(checkStateDir());
   // The self-test child reads the same root-owned /etc/moorai/config.json as the hook, and a sandbox HOME
   // cannot override it: when that file binds a console, the child would post to it.

@@ -31,7 +31,7 @@ export function outboundItems(body) {
     if (!m || typeof m !== "object") continue;
     const t = texts(m.content).join("\n");
     if (!t) continue;
-    if (PROMPT_ROLES.has(m.role)) out.push({ kind: m.role === "user" ? "prompt" : "system", stage: "prompt", ctx: {}, text: t });
+    if (PROMPT_ROLES.has(m.role)) out.push(m.role === "user" ? { kind: "prompt", stage: "prompt", ctx: {}, text: t } : { kind: "system", stage: "prompt", ctx: {}, context: true, text: t });
     else if (RESULT_ROLES.has(m.role)) out.push({ kind: "tool_result", stage: "output", ctx: { inbound: true }, text: t });
   }
   return out;

@@ -52,6 +52,7 @@ export const REASON = Object.freeze({
   CLIENT_COOLDOWN: "CLIENT_COOLDOWN",             // MCP gateway: a client in a cool-down after repeated refusals (cooldownSeconds)
   MCP_TOOL_DRIFT: "MCP_TOOL_DRIFT",               // policy mcpToolDrift "block": a tool changed / was added / shadows since approval (mcp-proxy/tool-drift.mjs)
   OBSERVATION_ONLY: "OBSERVATION_ONLY",           // an event this hook records but does not judge
+  FAIL_CLOSED: "FAIL_CLOSED",                     // the surface could not decide (error, budget, scan cap) and the admin-chosen fail mode is closed: denied
   // A control that never ran for this call. Never a pass.
   UNEVALUATED_NO_POLICY: "UNEVALUATED_NO_POLICY",
   UNEVALUATED_HOOK_ERROR: "UNEVALUATED_HOOK_ERROR",
@@ -118,7 +119,8 @@ const CATEGORY_REASON = [
   [/^MCP gateway: response too large$/, REASON.RESPONSE_TOO_LARGE],
   [/^MCP gateway: client cool-down$/, REASON.CLIENT_COOLDOWN],
   [/^MCP: (tool added after approval|tool removed after approval|quarantined tool \(changed since approval\)|tool not in a checked listing)$/, REASON.MCP_TOOL_DRIFT],
-  [/^MCP tool call$/, REASON.NO_MATCH]
+  [/^MCP tool call$/, REASON.NO_MATCH],
+  [/^Fail-closed: /, REASON.FAIL_CLOSED]
 ];
 export function reasonCodeOf(alert) {
   const c = String((alert && alert.category) || "");

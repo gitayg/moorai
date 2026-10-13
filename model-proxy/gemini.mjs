@@ -65,7 +65,7 @@ export function outboundItems(body) {
   const out = [];
   if (!isObj(body)) return out;
   const sys = textsOf(pick(body, "systemInstruction", "system_instruction")).join("\n");
-  if (sys) out.push({ kind: "system", stage: "prompt", ctx: {}, text: sys });
+  if (sys) out.push({ kind: "system", stage: "prompt", ctx: {}, context: true, text: sys });
   const contents = body.contents;
   for (const c of Array.isArray(contents) ? contents : isObj(contents) ? [contents] : []) {
     if (!isObj(c) || c.role === "model") continue;

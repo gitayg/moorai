@@ -142,7 +142,7 @@ them can block.
 **Limits of blocking a result, stated plainly.** The tool has already run by the time its result exists,
 so blocking prevents the *agent* from reading the content; it does not undo whatever the tool did.
 
-**Bounds that keep fail-open true across parse-then-forward:** a **750 ms** per-message deadline
+**Bounds that keep fail-open true across parse-then-forward** (the default; see the fail mode below): a **750 ms** per-message deadline
 (`CAPS.resultDeadlineMs`), an exactly-once write latch, and a **64 KB** cap on the composed scan text
 (`CAPS.maxResultBytes`). A JSON-RPC line **over 1 MB** (`CAPS.maxLineBytes`) is forwarded entirely
 unscanned rather than buffered.
@@ -316,10 +316,26 @@ and every 30 minutes, on an unref'd timer); a failed post is retried after ten m
 device posts nothing. The host comes from the `--host` stamp the installer writes (below); an entry
 wrapped before the stamp existed reports `"unknown"` until the installer is re-run.
 
-## Governance, not a sandbox — fail OPEN
+## Governance, not a sandbox — fail open unless the administrator says closed
 
-On **any** error (unreadable/absent policy, engine build failure, an unparseable line, a network timeout)
-the message is **forwarded unchanged**. The guard never blocks work because of its own failure.
+By default, on **any** error (unreadable/absent policy, engine build failure, an unparseable line, a
+network timeout) the message is **forwarded unchanged**.
+
+The administrator can choose otherwise with `failMode.mcpGateway` (or `failMode.default`), set in the
+root-owned admin binding (`/etc/moorai/config.json`) or the signed policy. The admin binding wins, and
+nothing user-writable is read. When it is `"closed"`:
+
+- a tools/call the gate failed on, or met with no engine, gets an `isError` tool result, and the server
+  never receives it;
+- a tool result whose scan failed, missed the 750 ms deadline or hit the overload window is replaced by
+  an `isError` result;
+- with `mcpReputation.blockBelow` set and no score yet, calls are refused;
+- with no policy at all, the reviewable fail-closed default applies.
+
+Each refusal raises one content-free alert with `reasonCode: "FAIL_CLOSED"`. These pass in both modes: a
+line that is not JSON, a line over 1 MB (streamed through unparsed), and tools/list observation. An
+unenrolled device (coach mode) never refuses. The MCP package check stays fail-closed whatever the
+setting: an unverified package is REVIEW.
 
 ## Install
 

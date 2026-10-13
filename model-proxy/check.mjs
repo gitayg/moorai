@@ -1,7 +1,9 @@
 // The decisions, made by the MoorAI runtime the sidecar uses (packages/agent-sdk/src/runtime.mjs), so a
 // verdict here is the verdict moorai-serve's /v1/scan and /v1/tool-call reach for the same input.
 //
-//   outbound  each new piece of content a request sends — prompt / system text at stage "prompt", a tool
+//   outbound  each new piece of content a request sends — prompt / system text at stage "prompt" (operator
+//             context, `context: true`, has its privacy findings reported at stage "context" and never
+//             refused: context.mjs), a tool
 //             result or document fed back to the model at stage "output" with ctx {inbound: true} (the
 //             Agent SDK's PostToolUse scan) — through runtime.scan.
 //   inbound   each tool call the model asks the agent to run, mapped to the hook's tool vocabulary (below)
@@ -11,11 +13,15 @@
 // A request re-sends the whole conversation every turn, so each item is scanned once: an HMAC of
 // (policy id, stage, text) → verdict, in a bounded LRU. A repeat is neither re-scanned nor re-reported,
 // and in enforce mode a denied item stays denied. Content past the caps (more than maxItems new items in
-// one request, an item longer than itemCap) is reported unevaluated; enforce mode refuses the request.
+// one request, an item longer than itemCap) is reported unevaluated, and refused when the fail mode is closed
+// (failClosed: enforce mode's default; cli/fail-mode.mjs decides, server.mjs asks).
 //
 // Two rules on top of the hook's decision (README "Function names and wrapped arguments"):
 //   policy.functionToolActions  block / ask / alert a function by its exact name (function-rules.mjs);
 //                               applied before the arguments are read, the stricter verdict winning.
+//   businessToolActions         a function with no functionToolActions key of its own is classed by name
+//                               (money, bulk-data, identity, destructive, delegation: business-tools.mjs);
+//                               built-in action alert, raised or silenced per class by the policy.
 //   unwrapArgs                  {"function": "<name>", "arguments": {...}} (or parameters / args / input)
 //                               is unwrapped before mapTool when the call does not map as sent.
 //   readings                    every other way a client could read the same call (an object, or a JSON
@@ -29,8 +35,10 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { REASON } from "../cli/provenance.mjs";
 import { settleHeadlessAsk } from "../cli/server-mode.mjs";
-import { rulesOf, functionActionFor, normalizeName, foldName } from "./function-rules.mjs";
+import { rulesOf, functionActionFor, specificActionFor, normalizeName, foldName, ACTION_RANK } from "./function-rules.mjs";
+import { businessActionFor } from "./business-tools.mjs";
 import { parseArgs } from "./json-strict.mjs";
+import { scanContext } from "./context.mjs";
 
 export const ITEM_CAP = 524288;        // characters of one item that are scanned
 export const MAX_NEW_ITEMS = 256;      // new items scanned per request
@@ -200,7 +208,10 @@ function mapDirect(name, input = {}) {
   return null;
 }
 
-export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_NEW_ITEMS, itemCap = ITEM_CAP }) {
+// failClosed(policy): whether content this checker cannot judge (an item past the scan cap, more new items than
+// one request scans, tool-call arguments past the cap) is refused — server.mjs asks cli/fail-mode.mjs. The
+// default is enforce mode's own behaviour.
+export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_NEW_ITEMS, itemCap = ITEM_CAP, failClosed = () => enforce }) {
   const cache = new Map();
   const remember = (k, v) => { cache.delete(k); cache.set(k, v); if (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value); return v; };
   const settle = enforce;
@@ -209,13 +220,16 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
   // item a cache hit of the first. Full digest, random per-process key; it never leaves the process.
   const cacheKey = randomBytes(32);
   const keyOf = (s) => createHmac("sha256", cacheKey).update(s, "utf8").digest("base64");
+  const itemKey = (s, it) => keyOf(`${s.policyId}\0${it.stage}${it.context ? ":context" : ""}\0${it.text}`);
 
   async function checkRequest(items) {
     const s = await rt.ready();
+    const closed = failClosed(s.policy);
     const denied = [];
     let fresh = 0, skipped = 0;
     for (const it of items) {
-      const key = keyOf(`${s.policyId}\0${it.stage}\0${it.text}`);
+      // Operator context is its own key: the same text in a user turn is the user's, and judged as such.
+      const key = itemKey(s, it);
       let v = cache.get(key);
       if (v) remember(key, v);
       else {
@@ -225,41 +239,66 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
           onUnevaluated(it.kind, "request");
           // Enforce does not forward what it did not read. Chunk-scanning instead is not bounded: ≈100 ms of
           // blocked event loop per 512 K characters (measured), ≈6 s for a 32 MB body.
-          if (enforce) { denied.push({ kind: it.kind, reasons: [`not evaluated: over the ${itemCap}-character scan cap`] }); continue; }
+          if (closed) { denied.push({ kind: it.kind, reasons: [`not evaluated: over the ${itemCap}-character scan cap`] }); continue; }
         }
-        const r = await rt.scan(it.text.slice(0, itemCap), it.stage, it.ctx, { tool: it.kind, event: "ModelRequest", settle });
+        const r = it.context ? await scanContext(rt, it, it.text.slice(0, itemCap), { settle }) : await rt.scan(it.text.slice(0, itemCap), it.stage, it.ctx, { tool: it.kind, event: "ModelRequest", settle });
         v = remember(key, { decision: r.decision, reasons: r.reasons });
       }
       if (v.decision === "deny") denied.push({ kind: it.kind, reasons: v.reasons });
     }
     if (skipped) {
       onUnevaluated("request", "request");
-      if (enforce) denied.push({ kind: "request", reasons: [`not evaluated: more than ${maxItems} new items`] });
+      if (closed) denied.push({ kind: "request", reasons: [`not evaluated: more than ${maxItems} new items`] });
     }
     return { decision: denied.length ? "deny" : "allow", denied };
   }
 
-  // policy.functionToolActions for this call's name: null (no rule, or "alert", which is reported here),
-  // or the verdict the rule alone reaches — "deny" for block, and for ask once server mode's headless rule
-  // has settled it (enforce); report mode passes the ask through as configured, like every other ask.
-  // Content-free: the alert names the function and the rule kind, never an argument.
+  // What checkRequest could not judge, found without scanning anything (lengths and the cache only): for report
+  // mode under a closed fail mode, which must refuse before forwarding while its scans run after the response.
+  async function unjudged(items) {
+    const s = await rt.ready();
+    const denied = [];
+    let fresh = 0, skipped = 0;
+    for (const it of items) {
+      if (cache.has(itemKey(s, it))) continue;
+      if (fresh >= maxItems) { skipped++; continue; }
+      fresh++;
+      if (it.text.length > itemCap) { onUnevaluated(it.kind, "request"); denied.push({ kind: it.kind, reasons: [`not evaluated: over the ${itemCap}-character scan cap`] }); }
+    }
+    if (skipped) { onUnevaluated("request", "request"); denied.push({ kind: "request", reasons: [`not evaluated: more than ${maxItems} new items`] }); }
+    return denied;
+  }
+  const closedNow = async () => failClosed((await rt.ready()).policy);
+
+  // policy.functionToolActions for this call's name, or its business-impact class (business-tools.mjs) when no
+  // key names the function itself: null (no rule, or "alert", which is reported here), or the verdict the rule
+  // alone reaches — "deny" for block, and for ask once server mode's headless rule has settled it (enforce);
+  // report mode passes the ask through as configured, like every other ask. A namespace-only wildcard and a
+  // class combine, the stricter winning. Content-free: the alert names the function, the rule kind and the
+  // class, never an argument.
   async function nameRule(name) {
     const s = await rt.ready();
-    const act = functionActionFor(rulesOf(s.policy), name);
-    if (!act) return null;
+    const fn = functionActionFor(rulesOf(s.policy), name);
+    const biz = specificActionFor(s.policy, name) ? null : businessActionFor(s.policy, name);
+    const byClass = Boolean(biz) && biz.act !== "allow" && (!fn || ACTION_RANK[biz.act] >= ACTION_RANK[fn]);
+    const act = byClass ? biz.act : fn;
+    if (!act || act === "allow") return null;
     const label = String(name).replace(/[^A-Za-z0-9_.:\-]/g, "_").slice(0, 64);
+    const why = byClass ? `businessToolActions: ${biz.cls}` : "functionToolActions";
+    const kind = (verb) => (byClass ? `Model proxy: business-impact function ${verb} (${biz.cls})` : `Model proxy: function ${verb} by name (functionToolActions)`);
     const prov = { prov: { policyId: s.policyId, policySource: s.source, event: "PreToolUse" } };
-    const base = { threatId: 0, stage: "tool", tool: `model-proxy:${label}`, contentHash: rt.hash(`function-rule:${act}:${name}`) };
+    const base = { threatId: 0, stage: "tool", tool: `model-proxy:${label}`, contentHash: rt.hash(byClass ? `business-tool:${biz.cls}:${act}:${name}` : `function-rule:${act}:${name}`),
+      ...(byClass ? { businessClass: biz.cls, functionName: foldName(name).replace(/[^a-z0-9_.:\-]/g, "_").slice(0, 64) } : {}) };
     if (act === "alert") {
-      rt.reporter.post({ ...base, category: "Model proxy: function reported by name (functionToolActions)", riskLevel: "Medium", decision: "notify", reasonCode: REASON.OBSERVATION_ONLY }, prov);
+      rt.reporter.post({ ...base, category: kind("reported"), riskLevel: "Medium", decision: "notify", reasonCode: REASON.OBSERVATION_ONLY }, prov);
       return null;
     }
     if (act === "block") {
-      rt.reporter.post({ ...base, category: "Model proxy: function denied by name (functionToolActions)", riskLevel: "Blocked", decision: "deny" }, prov);
-      return { decision: "deny", reasons: [`function ${label} blocked by policy (functionToolActions)`] };
+      rt.reporter.post({ ...base, category: kind("denied"), riskLevel: "Blocked", decision: "deny" }, prov);
+      return { decision: "deny", reasons: [`function ${label} blocked by policy (${why})`] };
     }
-    rt.reporter.post({ ...base, category: "Model proxy: function requires approval by name (functionToolActions)", riskLevel: "High", decision: "ask" }, prov);
-    const reason = `needs justification function ${label} requires approval (functionToolActions)`;
+    rt.reporter.post({ ...base, category: byClass ? kind("requires approval") : "Model proxy: function requires approval by name (functionToolActions)", riskLevel: "High", decision: "ask" }, prov);
+    const reason = `needs justification function ${label} requires approval (${why})`;
     if (rt.settings.passThrough) return { decision: "ask", reasons: [reason.replace(/^needs justification /, "")] };
     const h = settleHeadlessAsk({ active: true, headless: rt.settings.headless }, s.policy, { decision: "ask", reason, tool: label });
     if (h.alert) rt.reporter.post({ ...h.alert, tool: `model-proxy:${label}`, reasonCode: REASON.HEADLESS_ASK, enforcement: h.decision === "deny" ? "STRENGTHENED" : "LIMITED" }, prov);
@@ -287,7 +326,7 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
   async function checkArgs(c, rd) {
     if (c.over) {
       onUnevaluated(c.name, "response");
-      return enforce ? { decision: "deny", reasons: ["tool call arguments exceed the scan cap"] } : { decision: "allow", reasons: [] };
+      return (await closedNow()) ? { decision: "deny", reasons: ["tool call arguments exceed the scan cap"] } : { decision: "allow", reasons: [] };
     }
     const mt = c.raw == null ? mapTool(c.name, c.input) : null;
     const m = mt && { ...mt, identity: identityTool(String(c.name || "")) && mt.tool === String(c.name || "") };
@@ -318,7 +357,7 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
     // request side does.
     if (text.length > itemCap) {
       onUnevaluated(c.name || "function", "response");
-      if (enforce) return { decision: "deny", reasons: [`not evaluated: over the ${itemCap}-character scan cap`] };
+      if (await closedNow()) return { decision: "deny", reasons: [`not evaluated: over the ${itemCap}-character scan cap`] };
     }
     const v = await rt.scan(text.slice(0, itemCap), "prompt", {}, { tool: c.name || "function", event: "PreToolUse", settle });
     // Arguments that are not a JSON object never reached the tool decision (hook branch, workload profile),
@@ -348,5 +387,5 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
     }
   }
 
-  return { checkRequest, checkToolCalls, observe, cacheSize: () => cache.size };
+  return { checkRequest, unjudged, checkToolCalls, observe, cacheSize: () => cache.size };
 }

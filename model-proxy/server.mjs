@@ -38,6 +38,8 @@ import { createUncheckedTracker, DEFAULT_MAX as UNCHECKED_MAX, MAX_ID } from "./
 import { PATH as CHECKED_PATH, MAX_BATCH as CHECKED_BATCH } from "./checked-notify.mjs";
 import { createGate } from "./credentials.mjs";
 import { maskResponse } from "./credential-mask.mjs";
+import { resolveFailMode } from "../cli/fail-mode.mjs";
+import { systemConfig } from "../cli/server-mode.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({
@@ -134,7 +136,15 @@ export async function createProxy(opts = {}) {
   await rt.ready();
   wrapReporter(rt, { enforce });
   const unevaluated = unevaluatedReporter(rt);
-  const checker = createChecker(rt, { enforce, cwd: o.cwd || process.cwd(), onUnevaluated: unevaluated, maxItems: o.maxScanItems, itemCap: o.maxScanChars });
+  // What to do with content the proxy cannot judge (an item past a scan cap, an engine error, the evaluation
+  // budget run out): cli/fail-mode.mjs decides — the root-owned admin binding, then the signed policy's
+  // failMode, then this proxy's own behaviour (enforce: closed, report: open). opts.resolveFailMode replaces
+  // the resolver (tests); opts.systemConfig is the admin binding, as for the runtime.
+  const resolveFM = typeof o.resolveFailMode === "function" ? o.resolveFailMode : resolveFailMode;
+  const admin = o.systemConfig !== undefined ? o.systemConfig : systemConfig();
+  const fallback = enforce ? "closed" : "open";
+  const failMode = (policy) => { const m = resolveFM(policy, "modelProxy", { admin, fallback })?.mode; return m === "open" || m === "closed" ? m : fallback; };
+  const checker = createChecker(rt, { enforce, cwd: o.cwd || process.cwd(), onUnevaluated: unevaluated, maxItems: o.maxScanItems, itemCap: o.maxScanChars, failClosed: (policy) => enforce && failMode(policy) === "closed" });
   const version = (() => { try { return JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version; } catch { return "unknown"; } })();
   const routes = Object.entries(o.routes).map(([prefix, base]) => ({ prefix: prefix === "/" ? "" : prefix.replace(/\/+$/, ""), base: String(base).replace(/\/+$/, "") })).sort((a, b) => b.prefix.length - a.prefix.length);
   const agents = { "http:": new http.Agent({ keepAlive: true, maxSockets: o.maxConnections }), "https:": new https.Agent({ keepAlive: true, maxSockets: o.maxConnections }) };
@@ -212,7 +222,7 @@ export async function createProxy(opts = {}) {
   const withTimeout = (p) => { let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error("evaluation timeout")), o.timeoutMs); })]).finally(() => clearTimeout(t)); };
 
   // Response side ----------------------------------------------------------------------------------------
-  async function onResponse(ur, res, api, held, later) {
+  async function onResponse(ur, res, api, held, later, fm) {
     const ct = String(ur.headers["content-type"] || "");
     const enc = String(ur.headers["content-encoding"] || "identity").toLowerCase();
     const ok = ur.statusCode >= 200 && ur.statusCode < 300;
@@ -230,8 +240,11 @@ export async function createProxy(opts = {}) {
     // A call is recorded for the skip alert once it is on its way to the agent: in enforce mode when it is
     // allowed (it is released right after), in report mode as soon as it is parsed (it is already sent).
     const nums = largeNumbers();
+    // An engine error or the evaluation budget run out: refused (closed: the caller answers it), or, under an
+    // open fail mode, reported unevaluated and released.
+    const unjudged = (e) => { if (fm !== "open") throw e; unevaluated("evaluation", "response", "error"); return ALLOW; };
     const decide = enforce
-      ? (calls) => (calls.length ? withTimeout(checker.checkToolCalls(nums.attach(calls))).then((v) => { if (v.decision === "allow") track(calls); return v; }) : Promise.resolve(ALLOW))
+      ? (calls) => (calls.length ? withTimeout(checker.checkToolCalls(nums.attach(calls))).catch(unjudged).then((v) => { if (v.decision === "allow") track(calls); return v; }) : Promise.resolve(ALLOW))
       : (calls) => { if (calls.length) { track(calls); const cs = nums.attach(calls); later.push(() => checker.checkToolCalls(cs)); } return Promise.resolve(ALLOW); };
     // The model's own text where an API has no structured tool calls (Ollama /api/generate): report-only,
     // after the response has ended, in every mode.
@@ -397,14 +410,22 @@ export async function createProxy(opts = {}) {
     let body;
     try { body = await readBody(req, api, held); } catch (e) { e.api = api; throw e; }
 
+    const fm = failMode((await rt.ready()).policy);
     if (api) {
       const json = parseJson(body);
       const items = json ? api.outboundItems(json) : [];
       if (enforce && items.length) {
-        let v;
-        try { v = await withTimeout(checker.checkRequest(items)); } catch { return send(res, busy(api), api.errorBody(busy(api), "MoorAI model-proxy: evaluation did not finish in time; retry")); }
-        if (v.decision === "deny") return refuse(res, api, v, "request");
-      } else if (items.length) later.push(() => checker.checkRequest(items));
+        let v = null;
+        try { v = await withTimeout(checker.checkRequest(items)); } catch {
+          if (fm !== "open") return send(res, busy(api), api.errorBody(busy(api), "MoorAI model-proxy: evaluation did not finish in time; retry"));
+          unevaluated("evaluation", "request", "error");
+        }
+        if (v && v.decision === "deny") return refuse(res, api, v, "request");
+      } else if (items.length) {
+        // Report mode under a closed fail mode: what cannot be judged is refused before it is forwarded.
+        if (fm === "closed") { const denied = await checker.unjudged(items); if (denied.length) return refuse(res, api, { decision: "deny", denied }, "request"); }
+        later.push(() => checker.checkRequest(items));
+      }
     }
 
     const lib = url.protocol === "https:" ? https : http;
@@ -413,7 +434,7 @@ export async function createProxy(opts = {}) {
       const up = lib.request(url, { method: req.method, headers: upstreamHeaders(req, body.length, swaps), agent: agents[url.protocol] }, (raw) => {
         const ur = creds ? maskResponse(raw, creds.secrets) : raw;
         if (ur.refuse) { send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: the upstream answered with a content coding the proxy cannot check for an echoed credential"), NO_RETRY); return resolve(); }
-        onResponse(ur, res, api, held, later).catch(() => { if (!res.headersSent) send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: upstream response failed")); else res.destroy(); }).finally(resolve);
+        onResponse(ur, res, api, held, later, fm).catch(() => { if (!res.headersSent) send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: upstream response failed")); else res.destroy(); }).finally(resolve);
       });
       up.setTimeout(o.upstreamTimeoutMs, () => up.destroy(new Error("upstream timeout")));
       // Connect budget: a fresh socket must be ready to carry the request (TCP connected; for https, the TLS
