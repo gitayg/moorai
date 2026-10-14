@@ -147,13 +147,17 @@ test("inventoryPosture: top-level fields; the second scan of an unchanged device
   t.after(() => rmTree(root));
   const home = join(root, "home"); mkdirSync(home);
   const opts = { policy: null, home, machineDir: join(root, "machine"), sample: () => ({ sockets: parseLsofTcp(LSOF), source: "lsof" }), connect: always,
-    lookup: async (h) => (h === "api.anthropic.com" ? [{ address: "160.79.104.10" }] : []), ts: "2026-10-13T10:00:00.000Z" };
+    lookup: async (h) => (h === "api.anthropic.com" ? [{ address: "160.79.104.10" }] : []), ts: "2026-10-13T10:00:00.000Z",
+    // The fixture's pids are this test's, not the host's: no executable, command line or signature is read
+    // from the OS (pid 23963 was a live Claude Code on the Mac the LSOF fixture came from).
+    procs: { exeOf: () => new Map(), argvOf: () => new Map(), sigOf: () => false } };
   const a = await inventoryPosture(opts);
   assert.deepEqual(Object.keys(a.fields).sort(), ["aiApiCallers", "decoyKeys", "localModelServers"]);
   assert.equal(a.fields.localModelServers.length, 4);
-  assert.deepEqual(a.fields.aiApiCallers, [{ processImage: "claude", provider: "anthropic", known: true }]);
+  assert.deepEqual(a.fields.aiApiCallers, [{ processImage: "claude", provider: "anthropic", known: false }], "a name with no executable path is unknown");
   assert.deepEqual(a.fields.decoyKeys, { placed: 0, source: "none" });
   assert.equal(a.alerts.filter((x) => x.reasonCode === "LOCAL_MODEL_EXPOSED").length, 4);
+  assert.deepEqual(a.alerts.filter((x) => x.reasonCode === "AI_API_CALLER_UNKNOWN").map((x) => [x.processImage, x.provider]), [["claude", "anthropic"]]);
   const b = await inventoryPosture(opts);
   assert.deepEqual(b.alerts, []);
   const ro = await inventoryPosture({ ...opts, home: join(root, "other"), write: false });

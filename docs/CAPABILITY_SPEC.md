@@ -1747,6 +1747,13 @@ Posture heartbeat (`POST /api/agent-posture`), top-level like `failMode`:
   the shell it runs in (and, for the Codex / Gemini / Copilot / Cursor adapters, the adapter's node) to reach
   the agent process, then walks up through shells, wrappers and interpreters (so sihost.exe → python → claude
   still reads as sihost.exe) to the first ancestor that is neither, at most 6 levels above the agent.
+  macOS and Linux walk on the call. Windows never walks on a call (`cli/ai-cli-parents-win-walk.mjs`): the
+  first call of a session with no cached class starts one detached PowerShell and leaves its own parent pid
+  as a request; the PowerShell warms WMI and polls for requests for 30 s; every later call of the session
+  leaves its parent pid as soon as it knows the session (before its policy load), because the shell an agent
+  runs its hook command in lives only as long as that call; the first walk that reads past that pid is
+  written as the result, and the call that finds it classifies, caches and alerts. Calls before that one are
+  judged without the parent class. A call with no session id is not walked on Windows.
 - **Classes.**
 
   | Class | What it covers | Outcome |
@@ -1771,7 +1778,8 @@ Posture heartbeat (`POST /api/agent-posture`), top-level like `failMode`:
 - **Policy.** `"block"` denies every PreToolUse call of a flagged session with a content-free reason naming
   the class; an unenrolled device is coached (alerts, never denies). The allow-list matches image names
   case-insensitively, with or without `.exe`, and is re-applied on every call, so it also releases a session
-  already classified. The alert is raised once per session.
+  already classified. The alert is raised once per session. On Windows the denial starts at the call that
+  finds the background walk's result (normally the session's second or third call), not at its first.
 - **Process table and measured cost.**
 
   | Platform | Method | Cost |
@@ -1780,7 +1788,7 @@ Posture heartbeat (`POST /api/agent-posture`), top-level like `failMode`:
   | macOS | `ps -axo pid=,ppid=,comm=` once (not used) | 58 ms quiet, 70 ms at load 56, 142 ms heavy load |
   | Linux | /proc/<pid>/stat and /proc/<pid>/exe | 0.08 ms for 3 levels (node:22-slim, arm64, Docker); used whether or not `ps` is installed |
   | Linux | `ps` per level (fallback when /proc is absent) | 122 ms (amd64 under emulation; not representative) |
-  | Windows | one `powershell.exe -NoProfile -NonInteractive` walking with filtered `Get-CimInstance Win32_Process` queries (8 s timeout); a parent created after its child is a reused pid and ends the chain | not measured |
+  | Windows | one detached `powershell.exe -NoProfile -NonInteractive` per session, walking with filtered `Get-CimInstance Win32_Process` queries in the background; a parent created after its child is a reused pid and ends the chain | on the call: 3.2 ms for the call that starts the walk, 0.9 ms median after (a request file write; measured on macOS with an 8 s stand-in for PowerShell). The walk itself is not measured on Windows; on GitHub's windows-latest runners a walk on the call ran to its 8 s timeout |
   | any | a session already classified (cache read) | 0.04 ms Linux, 0.05 ms macOS |
 
 - **Limits.** The per-session cache (`~/.moorai/ai-cli-parents.json`) is the user's own file, so a process
@@ -1792,8 +1800,10 @@ Posture heartbeat (`POST /api/agent-posture`), top-level like `failMode`:
   at that product's install location, which on Windows (Program Files, WindowsApps, C:\Windows) needs
   administrator rights but `%LOCALAPPDATA%\Programs`, `~/Applications` and `~/.local` do not. A renamed
   multiplexer, sshd, launchd / systemd or AI desktop app name is not location-checked, and any name on the
-  allow-list reads as normal. A session whose ancestry cannot be read
-  (unreadable process table, PowerShell timeout) is cached as unreadable and never alerted. `wmic` is not
+  allow-list reads as normal. A session whose ancestry cannot be read (unreadable process table) is cached as
+  unreadable and never alerted. On Windows a session whose calls all end before the background PowerShell
+  reads past their shell is not classified; after 30 s without a result the next call starts another walk.
+  The request and result files sit next to the session cache, with the same trust. `wmic` is not
   used (deprecated, absent by default on current Windows 11).
 - **Tests.** `test/ai-cli-parents.test.mjs`, `test/ai-cli-parents-hook.test.mjs`, `test/location-gates.test.mjs`.
 

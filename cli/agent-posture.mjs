@@ -261,10 +261,11 @@ export function agentPosture({ home = os.homedir(), env = process.env, cwd = nul
 // came with a console signature this device verified). commit false: the once-per-change memory is NOT
 // written here; the result carries commit(failed), which the caller runs after posting, with the alerts
 // that did not reach the console, so a lost post is raised again on the next scan instead of being forgotten.
+// procs: the process readers aiApiCallers uses ({ exeOf, argvOf, sigOf }); the OS's own by default.
 // → { fields: { localModelServers, aiApiCallers, decoyKeys }, alerts: [alert without identity], notes, commit? }
 export const INVENTORY_STATE_FILE = "inventory-detectors.json";
 export async function inventoryPosture({ policy = null, home = os.homedir(), stateDir = join(home, ".moorai"), platform = process.platform, machineDir, write = true,
-  decoys = write, commit = true, sample = () => tcpTable({ platform }), connect, lookup, resolve = true, ts = new Date().toISOString() } = {}) {
+  decoys = write, commit = true, sample = () => tcpTable({ platform }), connect, lookup, procs = {}, resolve = true, ts = new Date().toISOString() } = {}) {
   const notes = {};
   if (write && decoys) { try { notes.decoys = syncDecoys({ policy, home, platform }); } catch { /* best effort */ } }
   const decoyKeys = decoyPosture({ home, machineDir });
@@ -274,7 +275,7 @@ export async function inventoryPosture({ policy = null, home = os.homedir(), sta
   let callers = [];
   if (sockets && resolve) {
     const resolved = await resolveAiHosts({ stateDir: write ? stateDir : null, ...(lookup ? { lookup } : {}) });
-    const r = aiApiCallers(sockets, resolved);
+    const r = aiApiCallers(sockets, resolved, procs);
     callers = r.callers;
     notes.ambiguousConnections = r.ambiguous;
   }

@@ -4,10 +4,11 @@
 //   node --test --import ./test/hermetic-env.mjs test/ai-cli-parents.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyImage, inLocation, assessChain, aiCliParentStep, parentPolicy, lastParentClass, parseWinChain, winChainScript, readChainProc, readChainPs, readChainWindows, imageBase, isTempPath, AI_CLI_PARENT, AI_CLI_PARENT_CATEGORY, CACHE_FILE } from "../cli/ai-cli-parents.mjs";
+import { classifyImage, inLocation, assessChain, aiCliParentStep, aiCliParentAsk, parentPolicy, lastParentClass, parseWinChain, winChainScript, readChainProc, readChainPs, readChainWindows, imageBase, isTempPath, AI_CLI_PARENT, AI_CLI_PARENT_CATEGORY, CACHE_FILE } from "../cli/ai-cli-parents.mjs";
+import { windowsWalker, winWalkScript, walkPaths, WALK_LIFE_MS } from "../cli/ai-cli-parents-win-walk.mjs";
 import { rmTree } from "./fs-cleanup.mjs";
 
 let pid = 1000;
@@ -219,6 +220,82 @@ test("the step: alert mode alerts High and never denies; coach never denies; off
     assert.deepEqual([none.alerts.length, none.result.parentClass, lastParentClass(dir)], [0, "unreadable", "unknown"]);
     // a reader that throws is a step that does nothing
     assert.deepEqual(aiCliParentStep({ policy: {}, sessionId: "t", readChain: () => { throw new Error("x"); }, stateDir: dir }).alerts, []);
+  } finally { rmTree(dir); }
+});
+
+// The Windows walk's output for SIHOST-shaped ancestry (cli/ai-cli-parents-win-walk.mjs writes these lines).
+const WIN_SIHOST = ["4242|900|bash.exe|C:\\Program Files\\Git\\usr\\bin\\bash.exe|0", "900|812|claude.exe|C:\\Users\\u\\.local\\bin\\claude.exe|0", "812|700|sihost.exe|C:\\Windows\\System32\\sihost.exe|0"].join("\n");
+// An in-memory background walker: start/ask are recorded, take answers once `done` holds a result.
+const stubWalker = () => { const w = { started: [], asked: [], done: null, take: () => { const t = w.done; w.done = null; return t; }, ask: (k, p) => w.asked.push(p), start: (k, p) => w.started.push(p) }; return w; };
+
+test("the step, Windows: no walk on the call; one background walk per session; its result classifies, alerts once and blocks from the call that finds it", () => {
+  const dir = home();
+  try {
+    const policy = { aiCliParents: { mode: "block" } };
+    const walker = stubWalker();
+    const slow = counting(SIHOST); // a reader on the call would be this; the background path never calls it
+    const step = (o) => aiCliParentStep({ policy, sessionId: "w1", agent: "claude-code", event: "PreToolUse", walker, readChain: slow, stateDir: dir, ...o });
+    const t0 = Date.now();
+    const a = step({ startPid: 501, now: t0 });
+    assert.deepEqual([a.alerts, a.deny, a.result], [[], null, null], "the first call is judged without the parent class");
+    assert.deepEqual(walker.started, [501]);
+    assert.equal(slow.calls, 0);
+    const b = step({ startPid: 502, now: t0 + 1000 });
+    assert.deepEqual([b.alerts, b.deny, walker.started, walker.asked], [[], null, [501], [502]], "a running walk is asked, not started again");
+    aiCliParentAsk({ sessionId: "w1", walker, stateDir: dir, startPid: 503, now: t0 + 1500 });
+    assert.deepEqual(walker.asked, [502, 503], "the early ask reaches a running walk");
+    aiCliParentAsk({ sessionId: "other", walker, stateDir: dir, startPid: 504, now: t0 + 1500 });
+    assert.deepEqual(walker.asked, [502, 503], "and only a running one");
+    walker.done = WIN_SIHOST;
+    const c = step({ startPid: 505, now: t0 + 2000 });
+    assert.equal(c.alerts.length, 1);
+    assert.deepEqual([c.alerts[0].riskLevel, c.alerts[0].parentImage, c.alerts[0].parentClass, c.alerts[0].chainDepth], ["Blocked", "sihost.exe", "system-host", 1]);
+    assert.match(c.deny, /unexpected parent process \(system-host\)/);
+    const d = step({ startPid: 506, now: t0 + 3000 });
+    assert.deepEqual([d.alerts.length, !!d.deny, walker.started.length, slow.calls], [0, true, 1, 0], "cached: blocked, not alerted or walked again");
+    assert.equal(lastParentClass(dir), "system-host");
+    // a walk that never answers is started again after its lifetime; a call with no session id is never walked
+    const late = stubWalker();
+    aiCliParentStep({ policy, sessionId: "w2", walker: late, stateDir: dir, startPid: 601, now: t0 });
+    aiCliParentStep({ policy, sessionId: "w2", walker: late, stateDir: dir, startPid: 602, now: t0 + WALK_LIFE_MS + 1 });
+    assert.deepEqual(late.started, [601, 602]);
+    const anon = stubWalker();
+    assert.deepEqual(aiCliParentStep({ policy, walker: anon, stateDir: dir, startPid: 701 }), { alerts: [], deny: null, result: null });
+    assert.deepEqual([anon.started, anon.asked], [[], []]);
+    // off: nothing is started
+    const off = stubWalker();
+    aiCliParentStep({ policy: { aiCliParents: { mode: "off" } }, sessionId: "w3", walker: off, stateDir: dir });
+    assert.deepEqual(off.started, []);
+  } finally { rmTree(dir); }
+});
+
+test("the Windows walker: start leaves the request and launches one script; take hands over the result once; the call itself never waits", () => {
+  const dir = home();
+  try {
+    const launched = [];
+    const w = windowsWalker({ stateDir: dir, maxLen: 12, launch: (s) => launched.push(s) });
+    const t0 = performance.now();
+    w.start("k1", 4242);
+    const ms = performance.now() - t0;
+    assert.ok(ms < 200, `start took ${ms} ms`);
+    const { req, res } = walkPaths(dir, "k1");
+    assert.equal(readFileSync(req, "utf8"), "4242");
+    assert.equal(launched.length, 1);
+    assert.ok(launched[0].includes(`$req='${req.replace(/'/g, "''")}'`) && launched[0].includes(`$res='${res.replace(/'/g, "''")}'`));
+    assert.match(launched[0], /for\(\$i=0;\$i -lt 12;\$i\+\+\)/);
+    w.ask("k1", "77;Remove-Item x");
+    assert.equal(readFileSync(req, "utf8"), "0", "a request is a number, never text");
+    assert.equal(w.take("k1"), null);
+    writeFileSync(res, WIN_SIHOST);
+    assert.equal(w.take("k1"), WIN_SIHOST);
+    assert.equal(existsSync(res), false);
+    assert.equal(w.take("k1"), null, "handed over once");
+    assert.match(winWalkScript({ req: "C:\\it's\\r", res: "C:\\r", dir: "C:\\d", maxLen: 3 }), /\$req='C:\\it''s\\r'/, "a quote in a path stays inside the string");
+    // on win32 with no injected reader or walker, the step takes the background path: no walk, a request left
+    // (off Windows the PowerShell it launches does not exist, and that launch failure is swallowed)
+    const r = aiCliParentStep({ policy: {}, sessionId: "p1", platform: "win32", stateDir: dir, startPid: 9191 });
+    assert.equal(r.result, null);
+    assert.deepEqual(readdirSync(dir).filter((f) => f.endsWith(".req") && join(dir, f) !== req).map((f) => readFileSync(join(dir, f), "utf8")), ["9191"]);
   } finally { rmTree(dir); }
 });
 

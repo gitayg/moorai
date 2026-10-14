@@ -72,7 +72,7 @@ import { readExceptionStore, liveExceptions, matchCallExceptions, applyException
 import { agentVersionFromEnv } from "./agent-names.mjs";
 import { machinePath, machineDir } from "./machine-dir.mjs";
 import { decoyTokens, matchDecoy, DECOY_REASON } from "./decoy-keys.mjs";
-import { aiCliParentStep, parentPolicy, lastParentClass, AI_CLI_PARENT } from "./ai-cli-parents.mjs";
+import { aiCliParentStep, aiCliParentAsk, parentPolicy, lastParentClass, AI_CLI_PARENT } from "./ai-cli-parents.mjs";
 import { stampAlertSeq } from "./alert-seq.mjs";
 import { traceIdFor, newTraceId, newSpanId } from "./trace-context.mjs";
 import { recordSpawn, bindSpawnResult, parentSpanFor } from "./trace-spawns.mjs";
@@ -2411,6 +2411,9 @@ async function main() {
   }
   SESSION = contentHash(input.session_id || ""); // content-free trace/session id for baseline + lineage
   SESSION_ID = typeof input.session_id === "string" ? input.session_id : "";
+  // Windows: a running background parent walk gets this call's parent pid now, while that shell is alive
+  // (cli/ai-cli-parents.mjs). A file write, nothing waited on; elsewhere a no-op.
+  aiCliParentAsk({ sessionId: SESSION_ID });
   SESSION_TAG = SESSION_ID && SESSION !== NO_KEY ? SESSION : "";
   HEADLESS_CTX = { tool, permissionMode: typeof input.permission_mode === "string" ? input.permission_mode : "" };
   // Subagent lineage: a subagent's own tool-call payloads carry agent_id/agent_type (see ACTOR above).
@@ -2542,6 +2545,7 @@ async function main() {
   // branch below ever sees it. Detached, interval-bounded, report-only; see maybeIndexScan.
   maybeIndexScan(input.cwd);
   // AI CLI started by an unexpected parent (cli/ai-cli-parents.mjs): classified once per session, alerted once.
+  // On Windows the walk runs in a background PowerShell; no call waits for it.
   const acp = EVENT === "PreToolUse" || EVENT === "UserPromptSubmit" ? aiCliParentStep({ policy, sessionId: SESSION_ID, agent: beatHost(), event: EVENT, coach: COACH, serverMode: !!SERVER.active, shim: process.env.MOORAI_HOOK_HOST === "shim" }) : { alerts: [] };
   for (const a of acp.alerts) post({ ...a, tool: `hook:${tool || EVENT}`, ts: new Date().toISOString(), ...IDENTITY });
 
