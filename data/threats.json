@@ -1195,8 +1195,8 @@
       "id": 43,
       "category": "Output & Code",
       "threat": "Destructive command execution",
-      "example": "An agent runs an irreversible, high-impact shell or DB command (rm -rf, git push --force, DROP DATABASE/TABLE, disk format, mass delete) before a human reviews it.",
-      "response": "This prompt would have the agent run a destructive, hard-to-reverse command (e.g. rm -rf, force-push, DROP TABLE/DATABASE, format). Review the exact command and require explicit human approval before it runs.",
+      "example": "An agent runs an irreversible, high-impact shell or DB command (rm -rf, git push --force, DROP DATABASE/TABLE, disk format, shadow-copy or snapshot deletion, mass delete) before a human reviews it.",
+      "response": "This prompt would have the agent run a destructive, hard-to-reverse command (e.g. rm -rf, force-push, DROP TABLE/DATABASE, format, deleting shadow copies or snapshots). Review the exact command and require explicit human approval before it runs.",
       "saferAlternative": "Target the exact path or object, back it up first, and prefer a dry run or --force-with-lease.",
       "severity": 3,
       "likelihood": 2,
@@ -1224,6 +1224,11 @@
           "id": "T1561",
           "coverage": "partial",
           "reason": "disk format and raw-device overwrite (mkfs, dd to a device)"
+        },
+        {
+          "id": "T1490",
+          "coverage": "partial",
+          "reason": "shadow-copy, boot-recovery, Windows Server Backup, Time Machine, APFS, zfs, ESXi and cloud snapshot or recovery-point deletion via the agent's shell; stopping a backup service is not matched"
         }
       ],
       "stride": "Elevation of Privilege"

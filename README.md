@@ -1856,12 +1856,12 @@ complete tool detail, and no argument text reached the console.
 ATT&CK v20 (13 October 2026) added Direct Prompt Injection (T1699), Indirect Prompt Injection (T1698),
 AI-Enabled Exfiltration (T1700), Impair Autonomous Defenses (T1685.007) and AI Result Poisoning (T1608.007),
 and rewrote Compromise Software Dependencies and Development Tools (T1195.001) to name agent skill files and
-IDE task files. 47 of the 80 rules map to 48 v20 techniques through 74 credits: 3 full, 56 partial and 15
+IDE task files. 47 of the 80 rules map to 49 v20 techniques through 75 credits: 3 full, 57 partial and 15
 `none`. 33 rules (data classes, governance and model-error risks) have no ATT&CK counterpart, and each says why.
 
 Over the 71 v20 techniques an AI agent can perform or be aimed at (`ATTACK_SCOPE` in `data/attack.js`), 2 are
-covered, 36 partial and 33 uncovered. Of the 58 in the agent lane, the actions a hook, proxy or gateway sees,
-2 are covered, 35 partial and 21 uncovered. The other 13 are identity, email, endpoint or adversary-infrastructure
+covered, 37 partial and 32 uncovered. Of the 58 in the agent lane, the actions a hook, proxy or gateway sees,
+2 are covered, 36 partial and 20 uncovered. The other 13 are identity, email, endpoint or adversary-infrastructure
 techniques that no MoorAI surface sees. Technique ids and names come from MITRE's v20 STIX bundle, vendored as a
 slice in `data/attack-v20-techniques.json` and checked by `test/attack-v20.test.mjs`.
 

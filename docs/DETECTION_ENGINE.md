@@ -327,6 +327,24 @@ aliases with `-Recurse` and `-Force` (`-fo` is the shortest unambiguous `-Force`
 `find … -exec rm`. Only the delete family is shared: force-push, `DROP TABLE` and `mkfs` stay #43's alone,
 because in #32's sense of "runnable code" they would fire on every SQL or git tutorial a model writes.
 
+### Inhibit System Recovery inside #43
+
+`INHIBIT_RECOVERY` in `data/detectors.js` is part of `destructive-command` (#43) and credits ATT&CK T1490
+(partial). It matches the commands that remove a machine's way back: `vssadmin delete shadows`, `vssadmin
+resize shadowstorage` to a size in bytes, KB or MB, `wmic shadowcopy … delete`, `Win32_ShadowCopy` piped into
+`Delete()` or `Remove-CimInstance`; `bcdedit /set … recoveryenabled no` or `bootstatuspolicy
+ignoreallfailures`, `reagentc /disable`; `wbadmin delete catalog|systemstatebackup|backup` and `wbadmin disable
+backup`; `tmutil deletelocalsnapshots|delete|disable|disablelocal`, `diskutil apfs deleteSnapshot`; `zfs destroy`
+of a `name@snap`, `timeshift --delete[-all]`, ESXi `vim-cmd vmsvc/snapshot.remove[all]`; and `aws ec2
+delete-snapshot`, `aws rds delete-db[-cluster]-snapshot`, `aws backup delete-recovery-point|backup-vault|backup-plan`,
+`gcloud compute snapshots delete`, `gcloud sql backups delete`, `az snapshot delete` and `az backup protection
+disable --delete-backup-data true`. Listing, creating, enabling, growing (GB, % or UNBOUNDED) and rolling back
+with the same tools stay silent, and so do the names inside paths, package names and branch names. Not matched:
+stopping a backup service or agent, `tmutil thinlocalsnapshots`, and deletion through a cloud console, SDK or MCP
+tool. Like the rest of #43 it matches the text, so a `grep` for one of these commands also fires.
+`test/inhibit-recovery.test.mjs` holds 48 positives, 48 hard negatives, a per-pattern linear-time check and the
+hook end to end (no policy: the hook asks).
+
 ### Clipboard reads: one list, a read signal and a sink signal
 
 Developers copy API keys, tokens and passwords to the clipboard, and one shell command puts whatever is

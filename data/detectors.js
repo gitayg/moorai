@@ -289,6 +289,39 @@ export const RECURSIVE_FORCE_DELETE = [
   /\bfind\s[^&|\n]{0,200}?\s-exec(?:dir)?\s{1,4}(?:sudo\s{1,4})?rm\b/i
 ];
 
+// Inhibit System Recovery (ATT&CK T1490): commands that remove the machine's way back, part of
+// destructive-command (#43). Only the removing, disabling and shrinking forms count; listing, creating,
+// enabling, growing and rolling back with the same tools stay silent (test/inhibit-recovery.test.mjs).
+// The (?<![\w.-]) edge plus required whitespace after the tool name keeps the names in paths, package
+// names and branch names (`tmutil-delete.md`, `vssadmin-wrapper`) unmatched while `/usr/bin/tmutil` and
+// `C:\Windows\System32\vssadmin.exe` still count. Spans stop at ; & | or a newline, except the
+// Win32_ShadowCopy form, where the pipe into Delete()/Remove-CimInstance IS the deletion.
+export const INHIBIT_RECOVERY = [
+  // Windows Volume Shadow Copy: delete the copies, or shrink the store to a size in bytes, KB or MB so
+  // Windows drops them (the ransomware form). GB, % and UNBOUNDED sizes are ordinary tuning.
+  /(?<![\w.-])vssadmin(?:\.exe)?\s+delete\s+shadows\b/i,
+  /(?<![\w.-])vssadmin(?:\.exe)?\s+resize\s+shadowstorage\b[^;&|\n]{0,200}?\/maxsize=\s*\d+(?:\.\d+)?(?:\s*[KM]?B)?(?![\w%.]|\s+[GTPE]B\b|\s*%)/i,
+  /(?<![\w.-])wmic(?:\.exe)?\s[^;&|\n]{0,200}?\bshadowcopy\b[^;&|\n]{0,200}?\sdelete\b/i,
+  /\bWin32_ShadowCopy\b[^;\n]{0,200}?(?:\.Delete\s*\(|\bRemove-(?:CimInstance|WmiObject)\b)/i,
+  // Windows boot configuration that skips the recovery environment or ignores boot failures; Windows RE off.
+  /(?<![\w.-])bcdedit(?:\.exe)?\s[^;&|\n]{0,120}?\/set\b[^;&|\n]{0,120}?\b(?:recoveryenabled\s+(?:no|off|false|0)\b|bootstatuspolicy\s+ignoreallfailures\b)/i,
+  /(?<![\w.-])reagentc(?:\.exe)?\s+[\/-]disable\b/i,
+  // Windows Server Backup: the catalog, the backups, the scheduled backup.
+  /(?<![\w.-])wbadmin(?:\.exe)?\s+(?:delete\s+(?:catalog|systemstatebackup|backup)|disable\s+backup)\b/i,
+  // macOS: Time Machine backups and local snapshots, Time Machine off, APFS snapshots.
+  /(?<![\w.-])tmutil\s+(?:deletelocalsnapshots|delete|disable|disablelocal)\b/i,
+  /(?<![\w.-])diskutil\s+(?:apfs|ap)\s+deleteSnapshot\b/i,
+  // Linux and hypervisor snapshots: a zfs snapshot (name@snap), Timeshift, ESXi VM snapshots.
+  /(?<![\w.-])zfs\s+destroy\b[^;&|\n]{0,160}?\S@/i,
+  /(?<![\w.-])timeshift\s[^;&|\n]{0,120}?--delete(?:-all)?\b/i,
+  /(?<![\w.-])vim-cmd\s+vmsvc\/snapshot\.remove(?:all)?\b/i,
+  // Cloud snapshots, recovery points and backup vaults.
+  /(?<![\w.-])aws\s[^;&|\n]{0,80}?\b(?:ec2\s+delete-snapshot|rds\s+delete-db(?:-cluster)?-snapshot|backup\s+delete-(?:recovery-point|backup-vault|backup-plan))\b/i,
+  /(?<![\w.-])gcloud\s[^;&|\n]{0,80}?\b(?:compute\s+snapshots|sql\s+backups)\s+delete\b/i,
+  /(?<![\w.-])az\s+snapshot\s+delete\b/i,
+  /(?<![\w.-])az\s+backup\s+protection\s+disable\b[^;&|\n]{0,200}?--delete-backup-data(?:\s+|=)true\b/i
+];
+
 // Clipboard READS — the documented shell commands that print the clipboard. Developers copy API keys,
 // tokens and passwords to the clipboard, and one of these puts whatever is there into the agent's
 // context. Reading the clipboard is also ordinary in scripts, so on its own this is report-grade
@@ -694,6 +727,7 @@ export const DETECTORS = [
     hint: "Contains a destructive, hard-to-reverse command — review before it runs.",
     patterns: [
       ...RECURSIVE_FORCE_DELETE,
+      ...INHIBIT_RECOVERY,
       /\bsudo\s+rm\b/i,
       /\bgit\s+push\s+(--force\b|-f\b)/i,
       /\bgit\s+reset\s+--hard\b/i,

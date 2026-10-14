@@ -1,7 +1,7 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-14T00:16:59.650Z
+> Generated: 2026-10-14T00:58:20.098Z
 
 - **Detectors:** 109
 - **Threats:** 80
@@ -9,7 +9,7 @@
 - **OWASP LLM Top 10:** 10/10 items covered by ≥1 on-device detector
 - **OWASP Top 10 for Agentic Applications:** 1/10 covered, 6 partial, 3 uncovered
 - **OWASP MCP Top 10:** 1/10 covered, 5 partial, 4 uncovered
-- **MITRE ATT&CK v20.0 (AI-agent scope):** 2/71 covered, 36 partial, 33 uncovered (agent lane: 2/58 covered, 35 partial, 21 uncovered)
+- **MITRE ATT&CK v20.0 (AI-agent scope):** 2/71 covered, 37 partial, 32 uncovered (agent lane: 2/58 covered, 36 partial, 20 uncovered)
 
 ## OWASP LLM Top 10 (2025) coverage
 
@@ -110,7 +110,7 @@ risk, the MCP allow-list) are counted under Threats but add no detectors. Source
 | T1048.003 | Exfiltration Over Unencrypted Non-C2 Protocol | agent | 1 | 1 | ◐ partial |
 | T1485 | Data Destruction | agent | 2 | 2 | ◐ partial |
 | T1561 | Disk Wipe | agent | 1 | 1 | ◐ partial |
-| T1490 | Inhibit System Recovery | agent | 0 | 0 | — |
+| T1490 | Inhibit System Recovery | agent | 1 | 1 | ◐ partial |
 | T1070 | Indicator Removal | agent | 1 | 1 | ◐ partial |
 | T1070.003 | Clear Command History | agent | 0 | 0 | — |
 | T1690 | Prevent Command History Logging | agent | 0 | 0 | — |

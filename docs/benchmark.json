@@ -1,6 +1,6 @@
 {
   "name": "MoorAI Agent Security Benchmark",
-  "generatedAt": "2026-10-14T00:16:59.650Z",
+  "generatedAt": "2026-10-14T00:58:20.098Z",
   "engine": {
     "detectors": 109,
     "threats": 80,
@@ -202,13 +202,13 @@
     "source": "https://attack.mitre.org/resources/updates/",
     "total": 71,
     "covered": 2,
-    "partial": 36,
-    "uncovered": 33,
+    "partial": 37,
+    "uncovered": 32,
     "agentLane": {
       "total": 58,
       "covered": 2,
-      "partial": 35,
-      "uncovered": 21
+      "partial": 36,
+      "uncovered": 20
     },
     "byItem": {
       "T1698": {
@@ -471,9 +471,9 @@
       },
       "T1490": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
       },
       "T1070": {
         "lane": "agent",

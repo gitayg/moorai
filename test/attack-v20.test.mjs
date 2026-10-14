@@ -133,7 +133,7 @@ test("ATTACK-V20: the counts per coverage level", () => {
   const count = (l) => credits.filter((c) => c.coverage === l).length;
   assert.deepEqual(
     { credits: credits.length, full: count("full"), partial: count("partial"), none: count("none") },
-    { credits: 74, full: 3, partial: 56, none: 15 }
+    { credits: 75, full: 3, partial: 57, none: 15 }
   );
   const rules = (l) => threats.filter((t) => t.attack.length > 0 && attackCoverage(t) === l).length;
   assert.deepEqual(
