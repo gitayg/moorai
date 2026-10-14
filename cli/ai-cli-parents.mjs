@@ -23,6 +23,13 @@
 // "block" denies the session's PreToolUse calls (an unenrolled device is coached: alerts only).
 // The alert carries the image BASENAME only, never a path or a command line (either can carry user data).
 //
+// WHERE THE WALK RUNS. macOS and Linux walk on the call itself (ps or /proc: 7.4 ms on a quiet Mac, 0.08 ms
+// on Linux, once per session). Windows never walks on a call: a background PowerShell does
+// (cli/ai-cli-parents-win-walk.mjs), and the call that finds its result classifies, caches and alerts.
+// LIMIT (Windows): the calls of a session before that one are judged without the parent class, so "block"
+// denies from the call that finds the result (normally the session's second or third), not from its first;
+// a call with no session_id is not walked at all (its key would be its own shell's pid, new on every call).
+//
 // LIMIT: the per-session cache is in the user's own state directory, so a same-user process can pre-seed
 // a session as "normal" before the agent's first call. The root-owned helper is where this moves to.
 import { readFileSync, writeFileSync, renameSync, mkdirSync, readlinkSync, existsSync } from "node:fs";
@@ -32,6 +39,7 @@ import { join } from "node:path";
 import { STATE_DIR } from "./state-dirs.mjs";
 import { systemTool } from "./machine-dir.mjs";
 import { splitPath, within, isWithin, looksWindows, foldsCase } from "./path-within.mjs";
+import { windowsWalker, WALK_LIFE_MS } from "./ai-cli-parents-win-walk.mjs";
 
 export const AI_CLI_PARENT = "AI_CLI_PARENT";
 export const AI_CLI_PARENT_CATEGORY = "AI CLI started by an unexpected parent";
@@ -266,17 +274,46 @@ export function lastParentClass(dir = STATE_DIR) {
   return l && typeof l.c === "string" ? l.c : "";
 }
 
+const CHAIN_LEN = MAX_TO_AGENT + MAX_ABOVE_AGENT + 2;
+// The background walker (Windows), or null for a walk on the call. An injected readChain is a walk on the call.
+const walkerFor = ({ walker, readChain, platform, stateDir }) => walker || (!readChain && platform === "win32" ? windowsWalker({ stateDir, maxLen: CHAIN_LEN }) : null);
+const pending = (r, now) => !!r && typeof r.c !== "string" && now - (r.w || 0) >= 0 && now - (r.w || 0) < WALK_LIFE_MS;
+
+// As early as the hook knows the session (before its policy load): when this session's background walk is
+// running, leave this call's parent pid for it, so the walk can start while this call's shell is alive.
+export function aiCliParentAsk({ sessionId = "", startPid = process.ppid, walker = null, readChain = null, platform = process.platform, stateDir = STATE_DIR, now = Date.now() } = {}) {
+  try {
+    const bg = walkerFor({ walker, readChain, platform, stateDir });
+    if (!bg || !sessionId) return;
+    const k = sessionKey(sessionId, startPid);
+    if (pending(readCache(stateDir).sessions[k], now)) bg.ask(k, startPid);
+  } catch { /* the step asks again */ }
+}
+
 // One hook invocation's step. → { alerts: [alert-without-ts/identity], deny: reason|null, result }
-export function aiCliParentStep({ policy, sessionId = "", agent = "", event = "PreToolUse", coach = false, serverMode = false, shim = false, startPid = process.ppid, readChain = defaultReadChain(), stateDir = STATE_DIR, now = Date.now() } = {}) {
+// result is null while a background walk (Windows) has not answered: nothing is alerted or denied yet.
+export function aiCliParentStep({ policy, sessionId = "", agent = "", event = "PreToolUse", coach = false, serverMode = false, shim = false, startPid = process.ppid, readChain = null, walker = null, platform = process.platform, stateDir = STATE_DIR, now = Date.now() } = {}) {
   const out = { alerts: [], deny: null, result: null };
   try {
     const { mode, allow } = parentPolicy(policy);
     if (mode === "off") return out;
+    const bg = walkerFor({ walker, readChain, platform, stateDir });
+    if (bg && !sessionId) return out;
     const cache = readCache(stateDir);
     const k = sessionKey(sessionId, startPid);
     let r = cache.sessions[k];
     if (!r || typeof r.c !== "string") {
-      const a = assessChain(readChain(startPid, MAX_TO_AGENT + MAX_ABOVE_AGENT + 2), { shim, allow, serverMode });
+      let chain;
+      if (bg) {
+        const text = bg.take(k);
+        if (text === null) {
+          if (pending(r, now)) bg.ask(k, startPid);
+          else { cache.sessions[k] = { w: now, t: now }; writeCache(stateDir, cache, now); bg.start(k, startPid); }
+          return out;
+        }
+        chain = parseWinChain(text);
+      } else chain = (readChain || defaultReadChain(platform))(startPid, CHAIN_LEN);
+      const a = assessChain(chain, { shim, allow, serverMode });
       r = { c: a.parentClass, i: a.parentImage, d: a.chainDepth, t: now };
       cache.sessions[k] = r;
       cache.last = { c: a.parentClass === "unreadable" ? "unknown" : a.parentClass, t: now };

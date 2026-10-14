@@ -1144,7 +1144,10 @@ Outlook, PowerPoint), `script-host` (wscript, mshta, rundll32, osascript and kin
 the heartbeat, never alerted. In `"block"` mode every PreToolUse call of a flagged session is denied; an
 unenrolled device is coached. The alert carries `agentName`, `parentImage` (basename only), `parentClass` and
 `chainDepth`. Measured cost, first call of a session: 7.4 ms on a quiet Mac (82 ms under heavy load), 0.08 ms
-on Linux; 0.05 ms after. The Windows walk (one PowerShell) is not measured.
+on Linux; 0.05 ms after. On Windows no call walks: one background PowerShell per session does, and the call
+that finds its result classifies the session, so in `"block"` mode denial starts there (normally the session's
+second or third call), not at its first; the calls before it cost about 1 to 3 ms. A Windows call with no
+session id is not walked.
 
 **Decoy keys (opt-in).** With `decoyKeys.mode: "place"` in a verified signed policy, the heartbeat writes three
 never-issued keys in provider key shapes into new 0600 files that key harvesters sweep and no tool loads:
