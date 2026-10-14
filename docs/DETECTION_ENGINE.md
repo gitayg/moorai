@@ -2872,3 +2872,22 @@ results is the core of both ASI01 and MCP06. Everything else is bounded.
   finding under #7, so #7 is not credited; #25's allow-list refusal is.
 * **MCP10 Over-Sharing.** DLP keeps sensitive data out of a context; sharing between users or sessions is
   not observed, and #36 is coaching only.
+
+## 17. The ATT&CK v20 mapping
+
+- **Source.** `data/attack-v20-techniques.json` is a slice of `enterprise-attack.json` from
+  `mitre-attack/attack-stix-data` release v20.0 (collection modified 2026-10-13T17:53:10Z, sha256
+  `81113ba98afa2928f3dcff62022539f7ce30c315c32e14422f11ff95ce534352`): every credited id, every scope id, and
+  each sub-technique's parent (96 ids), plus the three v19 Impair Defenses ids (T1562, T1562.001, T1562.004)
+  revoked when Defense Evasion split into Stealth and Defense Impairment, so a mapping that reaches for one fails
+  with its replacement (T1685, T1686) named.
+- **What a credit means.** Credits are scoped to actions an AI agent takes through a surface MoorAI sees. `full`:
+  a shipped mechanism addresses the technique as an agent performs it; `partial`: part of it, with the bound in
+  `reason`; `none`: the technique corresponds but nothing ships (for example #67, whose `decideTransit` is built
+  but no hook calls it). A mechanism claim, not a detection rate.
+- **What is not credited.** A person's own disclosure to an AI tool (#1, #9, #15, #44), governance and
+  model-error risks, agent memory persistence (#22, ATLAS AML.T0080) and delegation (#66, ATLAS AML.T0118):
+  ATT&CK v20 has no technique for them.
+- **Benchmark.** `scripts/benchmark.mjs` reports coverage over `ATTACK_SCOPE`, by lane. A technique's status is
+  its best credit; detectors are counted but do not set the status, because session risk, the MCP allow-list and
+  file metadata are mechanisms outside `data/detectors.js`.

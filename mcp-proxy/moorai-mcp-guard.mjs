@@ -55,8 +55,17 @@
 //                      host and the server label, and completed days are posted content-free to
 //                      /api/mcp-usage. Absent (an install from before the stamp) or not a known id →
 //                      "unknown".
+//
+// TRACE CONTEXT. Every tools/call this proxy forwards carries a W3C trace context in
+// `params._meta.traceparent` / `params._meta.tracestate` — the keys MCP 2026-07-28 reserves for it
+// (trace-meta.mjs edits the line in place; nothing else in it changes). The call continues a valid
+// `_meta.traceparent` the client sent; else, when Claude Code's harness started this process
+// (AI_AGENT=claude-code_<v>_harness), the session's trace from CLAUDE_CODE_SESSION_ID (the id its hooks
+// get as session_id, measured on 2.1.295); else a new trace. Every alert about the call, and about its
+// result, carries traceId / spanId / parentSpanId.
 
 import { spawn } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
@@ -80,6 +89,8 @@ import { exitWhenDrained } from "../cli/exit-drain.mjs";
 import { agentNameOf, claudeCodeVersion } from "../cli/agent-names.mjs";
 import { gatewayFailMode, gatewayFailReason, gatewayFailAlert } from "../cli/mcp-fail.mjs";
 import { systemConfig } from "../cli/server-mode.mjs";
+import { createTracer, traceFields } from "../model-proxy/trace-w3c.mjs";
+import { setMetaTrace } from "./trace-meta.mjs";
 
 // ---- argv parsing: [--server label] [--host id] -- realcmd args... ----
 function parseArgv(argv) {
@@ -119,7 +130,19 @@ const AGENT = (() => {
   const agentVersion = agentName === "claude-code" ? claudeCodeVersion() : undefined;
   return agentVersion ? { agentName, agentVersion } : { agentName };
 })();
+// The span of the tools/call being gated (or of the call a result answers): read by post().
+const TRACE = new AsyncLocalStorage();
+const TRACER = createTracer({ tenantKey: CONFIG.installToken, agentName: AGENT.agentName });
+const SESSION_KEY = claudeCodeVersion() ? process.env.CLAUDE_CODE_SESSION_ID : undefined;
+function callTrace(msg) {
+  const m = msg.params._meta && typeof msg.params._meta === "object" ? msg.params._meta : {};
+  return TRACER({ traceparent: typeof m.traceparent === "string" ? m.traceparent : undefined, tracestate: typeof m.tracestate === "string" ? m.tracestate : undefined, sessionKey: SESSION_KEY });
+}
+// The line as forwarded: the call's trace in params._meta, or the line unchanged when it cannot be set.
+const traced = (rawLine) => setMetaTrace(rawLine, TRACE.getStore()) ?? rawLine;
 function post(alert) {
+  const t = TRACE.getStore();
+  if (alert && t && alert.traceId === undefined) Object.assign(alert, traceFields(t));
   if (alert && alert.agentName === undefined) Object.assign(alert, AGENT);
   // Content-free OTLP mirror — no-op unless an OTLP endpoint is configured; bounded + swallows errors,
   // so it can never touch the proxy path (same contract as the alert post below).
@@ -440,13 +463,14 @@ const MAX_CALL_TOOL = 512;
 function rememberCall(id, tool) {
   if (id == null) return;
   if (CALL_TOOL.size >= MAX_CALL_TOOL) CALL_TOOL.delete(CALL_TOOL.keys().next().value);
-  CALL_TOOL.set(String(id), String(tool || "mcp"));
+  CALL_TOOL.set(String(id), { tool: String(tool || "mcp"), trace: TRACE.getStore() });
 }
-function toolForId(id) {
-  if (id == null) return "mcp";
+// → { tool, trace }: the call's tool name and span, taken from the map.
+function takeCall(id) {
+  if (id == null) return { tool: "mcp" };
   const k = String(id);
   const v = CALL_TOOL.get(k);
-  if (v == null) return "mcp";
+  if (v == null) return { tool: "mcp" };
   CALL_TOOL.delete(k);
   return v;
 }
@@ -474,7 +498,10 @@ async function handleLine(rawLine) {
   if (msg && msg.result && Array.isArray(msg.result.roots)) rememberRoots(msg.result.roots);
   if (msg && msg.method === "tools/list") rememberList(msg);
   if (!msg || msg.method !== "tools/call" || !msg.params || typeof msg.params !== "object") { forward(rawLine); return; }
+  return TRACE.run(callTrace(msg), () => gateCall(rawLine, msg));
+}
 
+async function gateCall(rawLine, msg) {
   // This is a tool-call — the surface we gate. Counted for the usage cross-check first, blocked or not
   // (the hook counts at the top of its mcp__ branch the same way). Synchronous, content-free, fail-open.
   recordMcpCall({ path: "proxy", host: HOST, label: SERVER });
@@ -516,7 +543,7 @@ async function handleLine(rawLine) {
       // No engine: open forwards (as always); closed refuses what it cannot judge.
       const fm = failClosed();
       if (fm) { replied = true; alertFailClosed("mcp", "no-engine", fm, tool); auditCall(tool, "deny", argsHash); writeBlock(msg.id, gatewayFailReason("no-engine")); return; }
-      auditCall(tool, "allow", argsHash); rememberCall(msg.id, tool); replied = true; forward(rawLine); return;
+      auditCall(tool, "allow", argsHash); rememberCall(msg.id, tool); replied = true; forward(traced(rawLine)); return;
     }
 
     const g = mcpGateway(ENGINE, POLICY, { tool, server: SERVER, args });
@@ -542,7 +569,7 @@ async function handleLine(rawLine) {
       coachNote(`MCP tool call ${tool}`, g.reason, g.alternatives);
       auditCall(tool, "coach", argsHash);
       rememberCall(msg.id, tool);
-      replied = true; forward(rawLine);
+      replied = true; forward(traced(rawLine));
       return;
     }
 
@@ -562,7 +589,7 @@ async function handleLine(rawLine) {
     alertFindings(tool, indexFindings, false, argsHash, "index");
     auditCall(tool, g.decision, argsHash);
     rememberCall(msg.id, tool);
-    replied = true; forward(rawLine);
+    replied = true; forward(traced(rawLine));
   } catch {
     // The gate failed on this call. Open (the default): governance, not a sandbox — forward it unchanged.
     // Closed: refuse it; the server never receives a call MoorAI could not evaluate. A call already
@@ -919,7 +946,8 @@ async function gateResult(lineBuf) {
       if (!fm) return pass();
       done = true;
       process.stdout.write(blockedResultLine(msg.id, gatewayFailReason(unjudged)));
-      alertFailClosed("result", unjudged, fm, toolForId(msg.id));
+      const call = takeCall(msg.id);
+      TRACE.run(call.trace, () => alertFailClosed("result", unjudged, fm, call.tool));
       return;
     }
     if (!verdict || !verdict.findings.length) return pass();
@@ -927,13 +955,13 @@ async function gateResult(lineBuf) {
     // Report-first. Only an explicit block/kill resolution refuses; the house default for #39 is
     // "notify", so an unconfigured device reports and forwards.
     const blocked = !COACH && verdict.decision === "deny" && msg.id != null;
-    const toolName = toolForId(msg.id);
+    const call = takeCall(msg.id), toolName = call.tool;
     if (COACH && verdict.decision === "deny") coachNote(`MCP tool result from ${toolName}`, verdict.reasons.join(", "), verdict.alternatives);
     if (blocked) {
       done = true;
       process.stdout.write(blockedResultLine(msg.id, verdict.reasons.join(", ") || "policy"));
     } else pass();
-    alertResult(toolName, verdict.findings, blocked);
+    TRACE.run(call.trace, () => alertResult(toolName, verdict.findings, blocked));
   } catch {
     pass(); // governance, not a sandbox
   } finally {

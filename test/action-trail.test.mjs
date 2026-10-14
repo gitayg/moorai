@@ -41,7 +41,10 @@ const SUMMARY = "Agent session summary";
 const PATH_TEXT = "zz-trail-path-4821";
 const URL_TEXT = "trail-canary-9931.example.invalid";
 const BENIGN = `ls -la /tmp/${PATH_TEXT} && echo https://${URL_TEXT}/q?k=v9931`;
-const CONTRACT = ["ts", "session", "seq", "event", "tool", "toolTags", "mcpServer", "decision", "basis", "policyIat", "agentName", "agentVersion", "appVersion", "user", "device", "platform", "tenant", "actor", "contentHash"];
+const CONTRACT = ["ts", "session", "seq", "event", "tool", "toolTags", "mcpServer", "decision", "basis", "policyIat", "agentName", "agentVersion", "appVersion", "user", "device", "platform", "tenant", "actor", "contentHash", "traceId", "spanId", "parentSpanId", "contextRoot", "contextSize", "contextSession", "provider", "model"];
+// Fields a top-level hook call's record does not carry: parentSpanId and contextSession (a sub-agent's records
+// only), provider and model (the model proxy's records only).
+const NOT_ON_HOOK = ["parentSpanId", "contextSession", "provider", "model"];
 
 // A console: serves the policy given by state.policy (a function, so each fetch is freshly signed), and
 // records every POST. /api/actions answers state.actionsStatus after state.actionsDelayMs.
@@ -121,7 +124,7 @@ test("on: one record per allowed call with exactly the contract fields, and no a
     const recs = queued(home);
     assert.equal(recs.length, 1, `one record: ${JSON.stringify(recs)}`);
     const rec = recs[0];
-    assert.deepEqual(Object.keys(rec).sort(), CONTRACT.filter((k) => k !== "mcpServer").sort(), "exactly the contract fields (no mcpServer on a non-MCP tool)");
+    assert.deepEqual(Object.keys(rec).sort(), CONTRACT.filter((k) => k !== "mcpServer" && !NOT_ON_HOOK.includes(k)).sort(), "exactly the contract fields (no mcpServer on a non-MCP tool)");
     assert.equal(rec.event, "PreToolUse");
     assert.equal(rec.decision, "allow");
     assert.equal(rec.tool, "Bash");
@@ -332,6 +335,46 @@ test("tool name: sanitised to the console's rule before queueing, so no record i
   const fuzz = ["ﷺ".repeat(40), "é".repeat(200), "가".repeat(200), "\u{1F600}‍".repeat(200), "a b　c\u0085d"];
   for (const raw of [...Object.keys(cases), ...fuzz, "x".repeat(300)]) assert.ok(CONSOLE_TOOL_OK(t.sanitizeToolName(raw)), JSON.stringify(raw).slice(0, 40));
   assert.equal(t.buildActionRecord({ tool: "mcp__a b" }).tool, "mcp__a_b", "the record carries the sanitised name");
+});
+
+test("builder: RECORD_FIELDS is the contract; provider (enum), model (shape), event (token) and contextRoot/contextSize are validated or left out", async () => {
+  const t = await TRAIL();
+  assert.deepEqual([...t.RECORD_FIELDS].sort(), [...CONTRACT].sort());
+  const ROOT64 = "ab".repeat(32);
+  const ok = t.buildActionRecord({ tool: "model-proxy:openai", event: "ModelRequest", provider: "openai", model: "gpt-4o-mini:2024/x@v1.2-a_b", contextRoot: ROOT64, contextSize: 7 });
+  assert.deepEqual([ok.event, ok.provider, ok.model, ok.contextRoot, ok.contextSize], ["ModelRequest", "openai", "gpt-4o-mini:2024/x@v1.2-a_b", ROOT64, 7]);
+  for (const p of ["anthropic", "openai", "google", "ollama", "other"]) assert.equal(t.buildActionRecord({ provider: p }).provider, p);
+  const bad = t.buildActionRecord({ tool: "x", event: "Pre Tool<Use>", provider: "azure", model: "has space", contextRoot: ROOT64.toUpperCase(), contextSize: 3 });
+  for (const k of ["provider", "model", "contextRoot", "contextSize"]) assert.equal(k in bad, false, k);
+  assert.equal(bad.event, "PreToolUse", "an invalid event falls back to the default");
+  assert.equal(t.buildActionRecord({ tool: "x" }).event, "PreToolUse", "default event");
+  assert.equal("model" in t.buildActionRecord({ model: "m".repeat(65) }), false, "model over 64 characters is dropped");
+  assert.equal(t.buildActionRecord({ model: "m".repeat(64) }).model, "m".repeat(64));
+  assert.equal("contextRoot" in t.buildActionRecord({ contextRoot: ROOT64 }), false, "a root without a size is left out");
+  assert.equal("contextRoot" in t.buildActionRecord({ contextRoot: ROOT64, contextSize: -1 }), false);
+  assert.equal("event" in t.buildActionRecord({ event: "x".repeat(33) }) && t.buildActionRecord({ event: "x".repeat(33) }).event, "PreToolUse");
+});
+
+test("builder: contextSession (the keyed id of the tree contextRoot belongs to) is kept only alongside contextRoot, only when it is not the session, and only in the session's keyed-id form", async () => {
+  const t = await TRAIL();
+  const ROOT64 = "cd".repeat(32), SESSION = "h2:0123456789abcdef", KID = "h2:fedcba9876543210";
+  const ctx = { session: SESSION, contextRoot: ROOT64, contextSize: 4 };
+  const ok = t.buildActionRecord({ tool: "Bash", ...ctx, contextSession: KID });
+  assert.deepEqual([ok.session, ok.contextRoot, ok.contextSize, ok.contextSession], [SESSION, ROOT64, 4, KID]);
+  assert.equal(t.buildActionRecord({ tool: "Bash", contextRoot: ROOT64, contextSize: 1, contextSession: KID }).contextSession, KID, "no session on the record: still a different tree");
+  assert.equal(t.buildActionRecord({ tool: "Bash", ...ctx, contextSession: "A".repeat(128) }).contextSession, "A".repeat(128));
+  for (const [why, f] of [
+    ["the same tree as the session", { ...ctx, contextSession: SESSION }],
+    ["no contextRoot", { session: SESSION, contextSession: KID }],
+    ["a contextRoot that was dropped", { session: SESSION, contextRoot: ROOT64.toUpperCase(), contextSize: 4, contextSession: KID }],
+    ["no contextSize", { session: SESSION, contextRoot: ROOT64, contextSession: KID }],
+    ["the no-key sentinel", { ...ctx, contextSession: "h2:nokey" }],
+    ["not the keyed-id form", { ...ctx, contextSession: "h2:abc/../x" }],
+    ["a space", { ...ctx, contextSession: "h2:abc def" }],
+    ["over 128 characters", { ...ctx, contextSession: "A".repeat(129) }],
+    ["empty", { ...ctx, contextSession: "" }],
+    ["not a string", { ...ctx, contextSession: 42 }]
+  ]) assert.equal("contextSession" in t.buildActionRecord({ tool: "Bash", ...f }), false, why);
 });
 
 test("queue age: at flush time records older than 89 days are dropped and counted in actionTrailDropped, not sent to be rejected", async () => {

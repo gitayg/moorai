@@ -4,15 +4,25 @@
 //     kind for a request item (prompt, system, tool_result, document) or the tool the model called;
 //   * report-only mode: an alert whose configured outcome is a block or an ask is stamped
 //     enforcement LIMITED ("weaker than configured", cli/provenance.mjs), because the proxy forwarded the
-//     traffic unchanged. Nothing about the text, the arguments, a header or a URL is ever added.
+//     traffic unchanged. Nothing about the text, the arguments, a header or a URL is ever added;
+//   * the request's trace (trace-w3c.mjs): an alert raised while the proxy handles a request — its deferred
+//     report-only checks included — carries traceId / spanId / parentSpanId, the provider and the request's
+//     model (REQUEST, set per request by server.mjs). An alert outside any request (the unchecked-tool-call
+//     sweep) carries none.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { REASON, ENFORCEMENT } from "../cli/provenance.mjs";
+import { traceFields } from "./trace-w3c.mjs";
+
+// { trace, provider, model } of the request being handled; model is set once the body is read.
+export const REQUEST = new AsyncLocalStorage();
+const requestFields = (r) => (r ? { ...traceFields(r.trace), ...(r.provider ? { provider: r.provider } : {}), ...(r.model ? { model: r.model } : {}) } : {});
 
 const enforcing = (a) => a.riskLevel === "Blocked" || a.decision === "deny" || a.decision === "ask";
 
 export function wrapReporter(rt, { enforce }) {
   const post = rt.reporter.post;
   rt.reporter.post = (alert, opts) => {
-    const a = { ...alert };
+    const a = { ...requestFields(REQUEST.getStore()), ...alert };
     if (typeof a.tool === "string" && a.tool.startsWith("hook:")) a.tool = `model-proxy:${a.tool.slice(5)}`;
     if (!enforce && !a.enforcement && enforcing(a)) a.enforcement = ENFORCEMENT.LIMITED;
     return post(a, opts);

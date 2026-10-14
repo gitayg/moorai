@@ -27,6 +27,14 @@
 //
 // Content-free alerts (deps.report): the egressAlerts shape of cli/egress-rules.mjs (binary null, host,
 // port, method; never a path, a query, a header or a body), at most once a minute per distinct alert.
+//
+// W3C trace context (cli/trace-context.mjs). A plain-HTTP request that carries a valid traceparent goes
+// upstream with its traceparent and tracestate unchanged: the trace continues, and an alert about that request
+// carries its traceId, a fresh spanId and parentSpanId = the incoming span. A request without a valid one goes
+// upstream with a new random trace (sampled), any tracestate it carried removed, and its alerts carry that
+// trace. The proxy adds no moorai tracestate entry: it does not know which agent opened the connection. A
+// CONNECT tunnel is opaque TLS, so nothing is added inside it; its alerts carry the CONNECT request's trace
+// context when it has one, else a new trace.
 import http from "node:http";
 import net from "node:net";
 import dns from "node:dns";
@@ -36,6 +44,7 @@ import { egressReason, egressAlerts, EGRESS_RULE, EGRESS_CATEGORY } from "../cli
 import { ipOf, addressClass, isMetadataAddress, isLocalAddress } from "./address.mjs";
 import { judgeConnection, httpTarget, httpDestination, connectTarget, rejectedAlert } from "./judge.mjs";
 import { DEFAULTS } from "./config.mjs";
+import { parseTraceparent, formatTraceparent, newTraceId, newSpanId } from "../cli/trace-context.mjs";
 
 const HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade", "host"]);
 const ALERT_EVERY_MS = 60000;
@@ -43,6 +52,15 @@ const ALERT_KEYS_MAX = 4096;
 const STATUS_TEXT = { 400: "Bad Request", 403: "Forbidden", 407: "Proxy Authentication Required", 502: "Bad Gateway", 503: "Service Unavailable", 504: "Gateway Timeout" };
 
 const digest = (s) => createHash("sha256").update(String(s)).digest();
+
+// The trace context of one proxied request: { traceId, spanId, parentSpanId?, incoming? } (incoming: the valid
+// traceparent it arrived with). A repeated traceparent header is not valid.
+function requestTrace(headers = {}) {
+  const raw = headers.traceparent;
+  const inc = typeof raw === "string" ? parseTraceparent(raw) : null;
+  return inc ? { traceId: inc.traceId, spanId: newSpanId(), parentSpanId: inc.parentSpanId, incoming: raw } : { traceId: newTraceId(), spanId: newSpanId() };
+}
+const traceOf = (tc) => (tc ? { traceId: tc.traceId, spanId: tc.spanId, ...(tc.parentSpanId ? { parentSpanId: tc.parentSpanId } : {}) } : {});
 
 export function defaultResolve(host) {
   return dns.promises.lookup(host, { all: true, verbatim: true });
@@ -71,20 +89,20 @@ export function createEgressProxy(cfg = {}, deps = {}) {
   const posted = new Map();
   const rejectedSeen = new WeakSet();
 
-  function alert(a) {
+  function alert(a, tc) {
     const now = Date.now();
     const prev = posted.get(a.contentHash);
     if (prev !== undefined && now - prev < ALERT_EVERY_MS) return;
     if (posted.size >= ALERT_KEYS_MAX) posted.clear();
     posted.set(a.contentHash, now);
-    try { report({ ...a, tool: "egress-proxy", egressLayer: "network" }); } catch { /* reporting never touches the connection */ }
+    try { report({ ...a, tool: "egress-proxy", egressLayer: "network", ...traceOf(tc) }); } catch { /* reporting never touches the connection */ }
   }
-  function alertRefusal(kind, t) {
+  function alertRefusal(kind, t, tc) {
     alert({
       threatId: 0, category: EGRESS_CATEGORY, riskLevel: "Blocked", stage: "egress", decision: "deny", reasonCode: EGRESS_RULE,
       egressRefusal: kind, egressBinary: null, egressHost: t ? t.host.slice(0, 253) : null, egressPort: t ? t.port : null, egressMethod: t ? t.method : null,
       contentHash: `egress-net:${kind}:${t ? `${t.host.slice(0, 253)}:${t.port}` : "-"}`
-    });
+    }, tc);
   }
 
   function authOk(req) {
@@ -99,18 +117,18 @@ export function createEgressProxy(cfg = {}, deps = {}) {
   }
 
   // → { ok: true, address } | { ok: false, status, message }
-  async function admit(t) {
+  async function admit(t, tc) {
     let st;
     try { st = await getState(); } catch { return { ok: false, status: 503, message: "the egress policy could not be loaded" }; }
     const v = judgeConnection(t, st);
     if (v.rejected && v.rejected.length && st.policy && typeof st.policy === "object" && !rejectedSeen.has(st.policy)) {
       rejectedSeen.add(st.policy);
       const ra = rejectedAlert(v.rejected);
-      if (ra) alert(ra);
+      if (ra) alert(ra, tc);
     }
-    if (v.error) { alertRefusal("judge-error", t); return { ok: false, status: 403, message: "the egress rules could not be evaluated" }; }
+    if (v.error) { alertRefusal("judge-error", t, tc); return { ok: false, status: 403, message: "the egress rules could not be evaluated" }; }
     const verdict = { target: t, action: v.action, ref: v.ref, ...(v.ruleId ? { ruleId: v.ruleId } : {}) };
-    const ruleAlerts = () => { for (const a of egressAlerts([verdict], { coach: !!st.coach, profileId: v.profileId })) alert(a); };
+    const ruleAlerts = () => { for (const a of egressAlerts([verdict], { coach: !!st.coach, profileId: v.profileId })) alert(a, tc); };
     if (v.action === "block" && !st.coach) { ruleAlerts(); return { ok: false, status: 403, message: egressReason(verdict) }; }
 
     // A block never vouches for an address, also when coaching lets the block itself through. A *.suffix
@@ -120,7 +138,7 @@ export function createEgressProxy(cfg = {}, deps = {}) {
     let addrs;
     const literal = ipOf(t.host);
     if (literal) {
-      if (!exact) { alertRefusal("ip-literal", t); return { ok: false, status: 403, message: `egress to an IP literal (${t.host}:${t.port}) needs an egress rule that names it` }; }
+      if (!exact) { alertRefusal("ip-literal", t, tc); return { ok: false, status: 403, message: `egress to an IP literal (${t.host}:${t.port}) needs an egress rule that names it` }; }
       addrs = [{ address: literal, family: net.isIP(literal) }];
     } else {
       try { addrs = await withTimeout(Promise.resolve(resolve(t.host)), o.dnsTimeoutMs, "DNS"); }
@@ -133,13 +151,13 @@ export function createEgressProxy(cfg = {}, deps = {}) {
     for (const a of addrs) {
       const ip = String(a.address);
       const c = addressClass(ip);
-      if (c === "never") { alertRefusal("unroutable-address", t); return { ok: false, status: 403, message: `${t.host} resolves to an address the proxy never connects to` }; }
-      if (guarded && isLocalAddress(ip, local)) { alertRefusal("proxy-port", t); return { ok: false, status: 403, message: `${t.host}:${t.port} is the egress proxy or a MoorAI service beside it; the proxy never connects there` }; }
+      if (c === "never") { alertRefusal("unroutable-address", t, tc); return { ok: false, status: 403, message: `${t.host} resolves to an address the proxy never connects to` }; }
+      if (guarded && isLocalAddress(ip, local)) { alertRefusal("proxy-port", t, tc); return { ok: false, status: 403, message: `${t.host}:${t.port} is the egress proxy or a MoorAI service beside it; the proxy never connects there` }; }
       if (c !== "special") continue;
-      if (!named) { alertRefusal("private-address", t); return { ok: false, status: 403, message: `${t.host} resolves to a loopback, private or link-local address; egress there needs an egress rule that names it` }; }
+      if (!named) { alertRefusal("private-address", t, tc); return { ok: false, status: 403, message: `${t.host} resolves to a loopback, private or link-local address; egress there needs an egress rule that names it` }; }
       if (isMetadataAddress(ip)) {
-        if (!(literal && exact)) { alertRefusal("metadata-address", t); return { ok: false, status: 403, message: `${t.host} resolves to a cloud metadata address; egress there needs an egress rule that names that IP literal` }; }
-      } else if (!exact) { alertRefusal("wildcard-private-address", t); return { ok: false, status: 403, message: `${t.host} resolves to a loopback, private or link-local address; a *.suffix rule never unlocks one, egress there needs a rule that names the exact host` }; }
+        if (!(literal && exact)) { alertRefusal("metadata-address", t, tc); return { ok: false, status: 403, message: `${t.host} resolves to a cloud metadata address; egress there needs an egress rule that names that IP literal` }; }
+      } else if (!exact) { alertRefusal("wildcard-private-address", t, tc); return { ok: false, status: 403, message: `${t.host} resolves to a loopback, private or link-local address; a *.suffix rule never unlocks one, egress there needs a rule that names the exact host` }; }
     }
     if (v.action !== "allow") ruleAlerts();
     return { ok: true, address: String(addrs[0].address) };
@@ -171,15 +189,16 @@ export function createEgressProxy(cfg = {}, deps = {}) {
     if (!authOk(req)) return sendText(res, 407, "missing or wrong Proxy-Authorization", AUTH_HEADER);
     if (!/^http:\/\//i.test(req.url)) return sendText(res, 400, "only absolute http:// URLs are proxied here; https goes through CONNECT");
     const method = String(req.method).toUpperCase();
+    const tc = requestTrace(req.headers);
     const t = httpTarget(req.url, method);
     if (!t) {
       const d = httpDestination(req.url, method);
-      if (d) { alertRefusal("path-form", d); return sendText(res, 400, "the request path has an encoded separator, NUL or percent sign, a malformed escape, a backslash or a dot segment with a parameter"); }
-      alertRefusal("host-form", null);
+      if (d) { alertRefusal("path-form", d, tc); return sendText(res, 400, "the request path has an encoded separator, NUL or percent sign, a malformed escape, a backslash or a dot segment with a parameter"); }
+      alertRefusal("host-form", null, tc);
       return sendText(res, 400, "the destination host is not a form an egress rule can name");
     }
     const u = new URL(req.url);
-    const a = await admit(t);
+    const a = await admit(t, tc);
     if (!a.ok) return sendText(res, a.status, a.message);
     let sock;
     try { sock = await open(a.address, t.port); }
@@ -189,6 +208,8 @@ export function createEgressProxy(cfg = {}, deps = {}) {
     const headers = {};
     for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k) && !named.has(k)) headers[k] = v;
     headers.host = u.host;
+    if (tc.incoming) headers.traceparent = tc.incoming;
+    else { headers.traceparent = formatTraceparent({ traceId: tc.traceId, spanId: tc.spanId, sampled: true }); delete headers.tracestate; }
     const up = http.request({ method, path: `${t.path}${u.search}`, headers, createConnection: () => sock });
     res.on("close", () => { if (!res.writableFinished) up.destroy(); });
     up.on("error", () => {
@@ -211,10 +232,11 @@ export function createEgressProxy(cfg = {}, deps = {}) {
     csock.on("error", () => {});
     csock.setTimeout(o.idleTimeoutMs, () => csock.destroy());
     if (!authOk(req)) return rawReply(csock, 407, "missing or wrong Proxy-Authorization", `Proxy-Authenticate: Basic realm="MoorAI egress proxy"\r\n`);
+    const tc = requestTrace(req.headers);
     const t = connectTarget(req.url);
-    if (!t) { alertRefusal("host-form", null); return rawReply(csock, 400, "CONNECT needs host:port with a host an egress rule can name"); }
+    if (!t) { alertRefusal("host-form", null, tc); return rawReply(csock, 400, "CONNECT needs host:port with a host an egress rule can name"); }
     const { host, port } = t;
-    const a = await admit(t);
+    const a = await admit(t, tc);
     if (!a.ok) return rawReply(csock, a.status, a.message);
     if (csock.destroyed) return;
     let up;

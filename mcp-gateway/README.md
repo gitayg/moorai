@@ -46,7 +46,28 @@ included in the URI query string".
 The gateway handles **both eras** by being transparent to them: every end-to-end request header goes
 upstream as sent (`Authorization`, `Mcp-Session-Id`, `MCP-Protocol-Version`, `Mcp-*`, `Last-Event-ID`),
 every response header comes back (`Mcp-Session-Id`, `WWW-Authenticate`), and GET / DELETE / any other
-method are forwarded. Only POST bodies are gated and only responses are scanned.
+method are forwarded. Only POST bodies are gated and only responses are scanned. The exception is
+`traceparent` / `tracestate`, which carry the gateway's hop (see [Trace context](#trace-context)).
+
+## Trace context
+
+Every request the gateway forwards carries a W3C `traceparent` for its hop, so the upstream MCP server and
+its APM can join the call to the agent's trace.
+
+- **A valid incoming `traceparent`** is continued: its trace-id kept, a new span sent, its span recorded as
+  the parent, its sampled flag kept. Otherwise the request starts a new trace. The gateway knows no agent
+  session: `Mcp-Session-Id` belongs to the transport, and Claude Code sends no session header to an HTTP MCP
+  server (measured, 2.1.295).
+- **`tracestate`** gets `moorai=a:gateway` first. Any earlier `moorai` entry is removed. The other entries
+  keep their order, up to 32 in total. If adding `moorai` makes 33, one entry is dropped: an entry over 128
+  characters if there is one, otherwise the last. A client `tracestate` that is not a valid W3C list (a member
+  outside the key/value grammar, or more than 32 members) is not sent on. When a key repeats, only its first
+  entry is kept. With no valid `traceparent` the client's `tracestate` is not sent on, as W3C requires.
+- **The body is forwarded as the client sent it.** A `params._meta.traceparent` the client put there reaches
+  the server unchanged, and is not read by the gateway.
+- **Every alert the request raises**, its call side and its upstream response alike, carries `traceId`,
+  `spanId` (the span sent upstream) and `parentSpanId`. No header value is logged or reported.
+- **Cost**: about 2 µs per request (measured, n=100k).
 
 ## What it checks
 
@@ -453,6 +474,7 @@ claude mcp add --transport http github http://127.0.0.1:8848/github --header "Au
 
 ```bash
 node --test --import ./test/hermetic-env.mjs test/mcp-gateway*.test.mjs test/mcp-usage-tools.test.mjs   # incl. mcp-gateway-credentials
+node --test --import ./test/hermetic-env.mjs test/trace-gateway.test.mjs     # trace propagation
 node --test --import ./test/hermetic-env.mjs test/index-tools-mcp.test.mjs    # vector-store writes, proxy and gateway
 ```
 
@@ -552,7 +574,8 @@ must turn the run red.
 | `pending-lists.mjs` | Per-route table of forwarded `tools/list` requests not yet answered, keyed as the SDK matches ids (bounded, with a TTL; an entry dropped unanswered clears the verdicts). |
 | `policy.mjs` | Verified policy + engine + coach/enforce, as the proxy loads them. |
 | `fail.mjs` | The fail mode (`failMode.mcpGateway`): refuse or forward what the gateway could not judge, and its `FAIL_CLOSED` alert. |
-| `report.mjs` | Content-free alerts and ledger lines (`gateway:<tool>`). |
+| `report.mjs` | Content-free alerts and ledger lines (`gateway:<tool>`); each request's session and trace. |
+| `../model-proxy/trace-w3c.mjs` | W3C trace context for one hop, shared with the model proxy and the stdio guard. |
 | `validate.mjs` | Staged JSON-RPC / MCP validation (C5 `SCHEMA_INVALID`). |
 | `cooldown.mjs` | Per-client cool-down (C5 `CLIENT_COOLDOWN`). |
 | `profile.mjs` | Declared workload profiles at the gateway (C5 `PROFILE_DRIFT`). |

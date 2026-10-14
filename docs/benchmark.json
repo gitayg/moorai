@@ -1,6 +1,6 @@
 {
   "name": "MoorAI Agent Security Benchmark",
-  "generatedAt": "2026-10-10T19:18:47.034Z",
+  "generatedAt": "2026-10-14T00:16:59.650Z",
   "engine": {
     "detectors": 109,
     "threats": 80,
@@ -192,6 +192,448 @@
       "MCP10": {
         "threats": 0,
         "partialThreats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      }
+    }
+  },
+  "mitreAttackV20": {
+    "edition": "20.0",
+    "source": "https://attack.mitre.org/resources/updates/",
+    "total": 71,
+    "covered": 2,
+    "partial": 36,
+    "uncovered": 33,
+    "agentLane": {
+      "total": 58,
+      "covered": 2,
+      "partial": 35,
+      "uncovered": 21
+    },
+    "byItem": {
+      "T1698": {
+        "lane": "agent",
+        "threats": 8,
+        "detectors": 17,
+        "status": "covered"
+      },
+      "T1699": {
+        "lane": "agent",
+        "threats": 2,
+        "detectors": 9,
+        "status": "covered"
+      },
+      "T1700": {
+        "lane": "agent",
+        "threats": 4,
+        "detectors": 4,
+        "status": "partial"
+      },
+      "T1685.007": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 5,
+        "status": "partial"
+      },
+      "T1608.007": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1027.018": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 7,
+        "status": "partial"
+      },
+      "T1195.001": {
+        "lane": "agent",
+        "threats": 5,
+        "detectors": 5,
+        "status": "partial"
+      },
+      "T1059.001": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1059.004": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1059.006": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1059.013": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1027.010": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1105": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 2,
+        "status": "partial"
+      },
+      "T1204.001": {
+        "lane": "agent",
+        "threats": 3,
+        "detectors": 3,
+        "status": "partial"
+      },
+      "T1204.002": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1204.004": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1204.005": {
+        "lane": "agent",
+        "threats": 2,
+        "detectors": 3,
+        "status": "partial"
+      },
+      "T1176.002": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1677": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1053.003": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1543.001": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1546.004": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1552.001": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 2,
+        "status": "partial"
+      },
+      "T1552.003": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1552.004": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 2,
+        "status": "partial"
+      },
+      "T1552.005": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1552.008": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 20,
+        "status": "partial"
+      },
+      "T1555.001": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 2,
+        "status": "partial"
+      },
+      "T1555.003": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1003.008": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 2,
+        "status": "partial"
+      },
+      "T1528": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1074.001": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 0,
+        "status": "partial"
+      },
+      "T1560.001": {
+        "lane": "agent",
+        "threats": 2,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1030": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 0,
+        "status": "partial"
+      },
+      "T1016.001": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1567": {
+        "lane": "agent",
+        "threats": 2,
+        "detectors": 2,
+        "status": "partial"
+      },
+      "T1567.001": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1567.002": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1567.003": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1567.004": {
+        "lane": "agent",
+        "threats": 2,
+        "detectors": 2,
+        "status": "partial"
+      },
+      "T1048.003": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1485": {
+        "lane": "agent",
+        "threats": 2,
+        "detectors": 2,
+        "status": "partial"
+      },
+      "T1561": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1490": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1070": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1070.003": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1690": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1685": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1686": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1553.001": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1553.004": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1557": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1098.001": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1098.003": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1098.004": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1136.001": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1136.003": {
+        "lane": "agent",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1548.003": {
+        "lane": "agent",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1176.001": {
+        "lane": "edr",
+        "threats": 2,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1078.004": {
+        "lane": "identity",
+        "threats": 1,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1697": {
+        "lane": "identity",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1496.004": {
+        "lane": "identity",
+        "threats": 1,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1566": {
+        "lane": "email",
+        "threats": 1,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1566.004": {
+        "lane": "email",
+        "threats": 1,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1684.001": {
+        "lane": "email",
+        "threats": 2,
+        "detectors": 1,
+        "status": "uncovered"
+      },
+      "T1657": {
+        "lane": "email",
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
+      },
+      "T1682": {
+        "lane": "pre",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1683.001": {
+        "lane": "pre",
+        "threats": 2,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1683.002": {
+        "lane": "pre",
+        "threats": 2,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1588.007": {
+        "lane": "pre",
+        "threats": 0,
+        "detectors": 0,
+        "status": "uncovered"
+      },
+      "T1696": {
+        "lane": "pre",
+        "threats": 0,
         "detectors": 0,
         "status": "uncovered"
       }

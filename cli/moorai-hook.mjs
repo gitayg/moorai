@@ -74,6 +74,9 @@ import { machinePath, machineDir } from "./machine-dir.mjs";
 import { decoyTokens, matchDecoy, DECOY_REASON } from "./decoy-keys.mjs";
 import { aiCliParentStep, parentPolicy, lastParentClass, AI_CLI_PARENT } from "./ai-cli-parents.mjs";
 import { stampAlertSeq } from "./alert-seq.mjs";
+import { traceIdFor, newTraceId, newSpanId } from "./trace-context.mjs";
+import { recordSpawn, bindSpawnResult, parentSpanFor } from "./trace-spawns.mjs";
+import { leafOf, appendLeaf, sessionHead, contextTreeMode, claimUpload, flushContextTree } from "./context-tree.mjs";
 import { bindingRefusedAlert } from "./config.mjs";
 import { actionTrailMode, buildActionRecord, enqueueActionRecord, claimFlush, flushActionTrail, callFingerprintText, readTrailState } from "./action-trail.mjs";
 import { normalizeToolInput, normalizeHookInput } from "./tool-input.mjs";
@@ -515,6 +518,111 @@ let SESSION_ESC = null;
 // the child's events then all carry. Content-free: agent_type/agent_id are one-way hashed, never raw.
 let ACTOR = "";
 let SUBAGENT_LINEAGE = {};
+// W3C trace context (cli/trace-context.mjs): every alert and allow-trail record of this invocation carries
+// the session's traceId (keyed hash of session_id under the tenant key, so the model proxy and the MCP
+// surfaces that see the same session id derive the same one), a fresh spanId, and, on a sub-agent's records,
+// parentSpanId = the span of the Task / Agent call that spawned it (cli/trace-spawns.mjs). TRACE_IN is the
+// hook payload, set once main() has read it; TRACE is computed on the first record that needs it, so a call
+// that records nothing pays nothing. No install token or no session id: a random trace for this invocation.
+let TRACE_IN = null;
+let TRACE = null;
+// The Task / Agent call's pending spawn, recorded by emit() once the host is told the call may run.
+let SPAWN = null;
+function traceCtx() {
+  if (TRACE) return TRACE;
+  const inp = TRACE_IN || {};
+  const sid = typeof inp.session_id === "string" ? inp.session_id : "";
+  TRACE = { traceId: traceIdFor({ tenantKey: CONFIG.installToken, sessionKey: sid }) || newTraceId() };
+  const aid = typeof inp.agent_id === "string" ? inp.agent_id : "";
+  if (sid && aid) {
+    const p = parentSpanFor({ sessionId: sid, agentId: aid, agentType: typeof inp.agent_type === "string" ? inp.agent_type : "" });
+    if (p) TRACE.parentSpanId = p;
+  }
+  return TRACE;
+}
+function traceFields(spanId) {
+  const t = traceCtx();
+  return { traceId: t.traceId, spanId: spanId || newSpanId(), ...(t.parentSpanId ? { parentSpanId: t.parentSpanId } : {}) };
+}
+// context.tree (cli/context-tree.mjs): a per-session Merkle tree of what entered the agent's context, one
+// content-free leaf per item. CTX is set in main() once the session and the verified policy's contextTree
+// mode are known: the tree id (the keyed session id, so it equals the `session` on alerts; a sub-agent's
+// own tree is keyed on session_id and agent_id), the mode, and the root and size as of this invocation's
+// last append (null until first needed). CTX_LEAF is the leaf the running branch is judging: the
+// contextLeaf on its content and injection alerts. Leaves are built from bytes the hook already holds,
+// before the item is judged, so a record's root already covers the item that triggered it. "off", no
+// session id, or no tenant key (an unenrolled device hashes everything to h2:nokey) writes nothing and
+// stamps nothing. Best-effort throughout: nothing here can change a decision.
+let CTX = null;
+let CTX_LEAF = null;
+let READ_BUF = null; // the bytes readFileCapped last read: the Read branch's file leaf
+function ctxBegin(input, policy) {
+  CTX = null;
+  try {
+    const mode = contextTreeMode(policy);
+    const sid = typeof input.session_id === "string" ? input.session_id : "";
+    if (mode === "off" || !sid) return;
+    const aid = typeof input.agent_id === "string" ? input.agent_id : "";
+    const id = contentHash(aid ? `${sid}\u0000agent:${aid}` : sid);
+    if (!id || id === NO_KEY) return;
+    CTX = { id, mode, root: null, size: null, spawned: false };
+  } catch { CTX = null; }
+}
+// Appends one leaf; -> the contextLeaf pointer, or null (no tree, at the cap, or the lock was busy: the leaf
+// is still written then, but its index is not known). A source that does not canonicalise (a URL that does
+// not parse) is recorded with no source rather than not at all.
+function ctxEnter(stage, sourceKind, source, bytes, cwd) {
+  if (!CTX || bytes == null) return null;
+  try {
+    let leaf;
+    try { leaf = leafOf({ stage, sourceKind, source, bytes, ...(typeof cwd === "string" && cwd ? { cwd } : {}) }); } catch { leaf = leafOf({ stage, sourceKind: "none", source: "", bytes }); }
+    const r = appendLeaf(CTX.id, leaf, { upload: CTX.mode === "console" });
+    CTX.root = r.root; CTX.size = r.size;
+    if (r.uploadDue && !CTX.spawned) { CTX.spawned = true; spawnTrailFlush("context"); }
+    if (!Number.isSafeInteger(r.index)) return null;
+    return (CTX_LEAF = { index: r.index, stage: leaf.stage, sourceHash: leaf.sourceHash, blobHash: leaf.blobHash, blobHashKind: leaf.blobHashKind });
+  } catch { return null; }
+}
+// The text of a tool result as it came: the string itself, a shell call's stdout, a single text block's
+// text; anything else, the text the hook judged.
+function ctxBlob(f) {
+  const v = f.value;
+  if (typeof v === "string") return v;
+  if (v && typeof v === "object") {
+    if (typeof v.stdout === "string" && !v.stderr) return v.stdout;
+    const c = Array.isArray(v) ? v : Array.isArray(v.content) ? v.content : null;
+    if (c && c.length === 1 && c[0] && c[0].type === "text" && typeof c[0].text === "string") return c[0].text;
+  }
+  return f.text;
+}
+// The item a UserPromptSubmit or PostToolUse event carries: it is already in the agent's context (a blocked
+// prompt aside), so its leaf goes in before anything is judged or reported.
+function ctxEnterEvent(input, tool) {
+  if (!CTX) return;
+  try {
+    if (EVENT === "UserPromptSubmit") { if (typeof input.prompt === "string" && input.prompt) ctxEnter("prompt", "none", "", input.prompt); return; }
+    if (EVENT !== "PostToolUse") return;
+    const f = responseField(input, tool);
+    if (!f) return;
+    const ti = input.tool_input || {};
+    const bytes = ctxBlob(f);
+    if (tool === "WebFetch") ctxEnter("web", "url", ti.url, bytes);
+    else if (tool === "WebSearch") ctxEnter("web", "name", ti.query, bytes);
+    else if (SHELL_TOOLS.has(tool)) ctxEnter("tool-output", "name", tool, bytes);
+    else if (tool === "Agent" || tool === "Task") ctxEnter("subagent", "name", typeof ti.subagent_type === "string" && ti.subagent_type ? ti.subagent_type : tool, bytes);
+    else if (tool.startsWith("mcp__")) { const [, server, ...rest] = tool.split("__"); ctxEnter("mcp", "mcp", { server, tool: rest.join("__") }, bytes); }
+  } catch { /* evidence, never a decision */ }
+}
+// contextRoot + contextSize for a record: the tree as it stands now. contextSession: the tree's keyed id
+// when it is not the record's `session` (a sub-agent's own tree), so the console finds the leaves the root
+// belongs to; it equals the sessionHash the tree's upload carries.
+function ctxFields() {
+  if (!CTX) return null;
+  try {
+    if (typeof CTX.root !== "string" || !Number.isSafeInteger(CTX.size)) { const h = sessionHead(CTX.id); CTX.root = h.root; CTX.size = h.size; }
+    return { contextRoot: CTX.root, contextSize: CTX.size, ...(CTX.id !== SESSION_TAG ? { contextSession: CTX.id } : {}) };
+  } catch { return null; }
+}
 // The verified policy for this invocation, set in main() once it resolves. Module-scope rather than a
 // parameter because logBehavior() is the ONE chokepoint every branch already funnels through, and the
 // agent-detection hand-off hangs off it for the same reason post() and recordDestinations() do: four
@@ -545,7 +653,7 @@ function decoyUsed(text, event, tool) {
   try {
     const id = matchDecoy(text, (DECOYS ??= decoyTokens({ home: os.homedir(), machineDir: machineDir() })));
     if (!id) return null;
-    post({ threatId: 0, category: "Decoy AI key used", riskLevel: "Critical", reasonCode: DECOY_REASON, decoyId: id, where: `hook:${event}`, stage: event === "PostToolUse" ? "output" : "egress", tool: `hook:${tool}`, decision: event === "PreToolUse" ? "deny" : "notify", ts: new Date().toISOString(), contentHash: `decoy:${id}`, ...IDENTITY });
+    post({ threatId: 0, category: "Decoy AI key used", riskLevel: "Critical", reasonCode: DECOY_REASON, decoyId: id, where: `hook:${event}`, stage: event === "PostToolUse" ? "output" : "egress", tool: `hook:${tool}`, decision: event === "PreToolUse" ? "deny" : "notify", ts: new Date().toISOString(), contentHash: `decoy:${id}`, ...(event === "PostToolUse" && CTX_LEAF ? { contextLeaf: CTX_LEAF } : {}), ...IDENTITY });
     return id;
   } catch { return null; }
 }
@@ -667,6 +775,12 @@ function post(alert) {
   if (SESSION_TAG && alert && alert.session === undefined) alert.session = SESSION_TAG;
   // appVersion: MoorAI's own version (package.json), which the console's update-lag rule reads.
   if (alert && alert.appVersion === undefined && APP_VERSION) alert.appVersion = APP_VERSION;
+  // Trace context, before the seq stamp so the alert chain covers it. Only once main() has read a hook
+  // payload: the detached workers (the posture beat's LOCAL_MODEL_EXPOSED / AI_API_CALLER_UNKNOWN inventory
+  // alerts, the index scan) post device-level alerts that belong to no session, and carry none.
+  if (TRACE_IN && alert && alert.traceId === undefined) { try { Object.assign(alert, traceFields()); } catch { /* trace ids are metadata */ } }
+  // The context tree's root and size at decision time (cli/context-tree.mjs), also before the seq stamp.
+  if (CTX && alert && alert.contextRoot === undefined) { const cf = ctxFields(); if (cf) Object.assign(alert, cf); }
   stampAlert(alert, { ...PROV, coach: COACH, event: EVENT });
   // seq + chainHead (cli/alert-seq.mjs), and this invocation's count of alerts handed to the console
   // (posted now or queued for the worker), which the ledger row carries into the session summary.
@@ -754,18 +868,21 @@ function recordAllowed(tg, rewrite) {
     const exception = CALL.exc.matched.some((e) => (e.threat ? CALL.found.has(e.threat) : excused.has(e.rule)));
     const basis = exception ? "exception" : VERDICT.findings > 0 || rewrite || (tg && tg.gate && tg.gate.hits.length) ? "rule" : "default";
     const agentName = beatHost();
-    const rec = buildActionRecord({ ts: new Date().toISOString(), session: SESSION_TAG, tool, toolTags: tg && tg.tags ? tg.tags.tags : [], mcpServer: tool.startsWith("mcp__") ? serverOf(tool) : "", basis, policyIat: PROV.policyIat, agentName, agentVersion: agentName ? agentVersionFromEnv(agentName) : "", appVersion: APP_VERSION, ...IDENTITY, contentHash: contentHash(callFingerprintText(tool, CALL.ti)) });
+    const rec = buildActionRecord({ ts: new Date().toISOString(), session: SESSION_TAG, tool, toolTags: tg && tg.tags ? tg.tags.tags : [], mcpServer: tool.startsWith("mcp__") ? serverOf(tool) : "", basis, policyIat: PROV.policyIat, agentName, agentVersion: agentName ? agentVersionFromEnv(agentName) : "", appVersion: APP_VERSION, ...IDENTITY, contentHash: contentHash(callFingerprintText(tool, CALL.ti)), ...traceFields(), ...(ctxFields() || {}) });
     const r = enqueueActionRecord(rec);
     if (r.trimmed) { try { recordAction({ ts: rec.ts, threatId: 0, category: "Allow trail queue full: oldest records dropped", riskLevel: "Medium", stage: "policy", tool: "hook:action-trail", contentHash: "action-trail:dropped", actionTrailDropped: r.dropped, dropped: r.trimmed, ...IDENTITY }); } catch { /* local evidence only */ } }
     if (r.flushDue) spawnTrailFlush();
     return r.queued === true;
   } catch { return false; }
 }
-function spawnTrailFlush() {
-  try { spawn(process.execPath, [...process.execArgv, SELF, "actiontrail"], { detached: true, stdio: "ignore", env: workerEnv() }).unref(); } catch { /* the lease runs out and a later call retries */ }
+// only "context": the context tree's upload alone (contextTree "console"); the allow trail's queue is left to
+// its own lease. Every run of the worker also sends the context-tree leaves the console has not taken.
+function spawnTrailFlush(only) {
+  try { spawn(process.execPath, [...process.execArgv, SELF, "actiontrail", ...(only ? [only] : [])], { detached: true, stdio: "ignore", env: workerEnv() }).unref(); } catch { /* the lease runs out and a later call retries */ }
 }
-async function runActionTrailWorker() {
-  try { await flushActionTrail({ config: CONFIG }); } catch { /* best-effort */ }
+async function runActionTrailWorker(only) {
+  if (only !== "context") { try { await flushActionTrail({ config: CONFIG }); } catch { /* best-effort */ } }
+  try { await flushContextTree({ config: CONFIG }); } catch { /* best-effort */ }
   return exitWhenDrained(0);
 }
 // Every exit from the hook goes through here. The decision has already been written to stdout by the
@@ -792,6 +909,8 @@ function report(findings, stage, tool, blocked, tier, extras, agency) {
   for (const f of findings) { CALL.found.add(f.threatId); if (stage === "file") CALL.fileFound.add(f.threatId); }
   for (const f of findings) {
     const base = { threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool, ts: new Date().toISOString(), contentHash: contentHash(f.match || ""), ...IDENTITY };
+    // The leaf whose content this finding came from (context.tree): the patient-zero pointer.
+    if (CTX_LEAF) base.contextLeaf = CTX_LEAF;
     // Provenance: a finding whose configured action enforces (block / kill / justify / mask) is an
     // enforcing record, so a coached or PostToolUse one reads LIMITED rather than AS_CONFIGURED.
     try { if (f.threatId > 0 && ["block", "kill", "justify", "mask"].includes(threatActionFor(POLICY, f.threatId))) base.enforcing = true; } catch { /* metadata only */ }
@@ -1389,7 +1508,7 @@ function reportSkillFile(path, text, d) {
         category: injected ? "Skill-file poisoning" : drift ? "Skill-file drift" : "Skill-file intent",
         riskLevel: injected ? "High" : drift ? "Medium" : "Info",
         stage: "file", tool: `skill:${kind}`, ts: new Date().toISOString(), contentHash: fp,
-        skillKind: kind, skillIntents: intents, ...IDENTITY
+        skillKind: kind, skillIntents: intents, ...(CTX_LEAF ? { contextLeaf: CTX_LEAF } : {}), ...IDENTITY
       });
     }
   } catch { /* best-effort; never affects enforcement */ }
@@ -1498,6 +1617,7 @@ function readFileCapped(fp) {
   try {
     if (!fp) return "";
     const buf = readFileSync(fp);
+    READ_BUF = buf;
     if (buf.length > 262144) VERDICT.capped = true; // only the first 256 KiB is scanned
     return fileScanText(buf.subarray(0, 262144));
   } catch { return ""; }
@@ -1633,6 +1753,10 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
       post({ ...failClosedAlert("size-cap", fm.source), ts: new Date().toISOString(), ...IDENTITY });
     }
   }
+  // A Task / Agent call the host runs (or is asked about; a coached device runs it): its span becomes the
+  // parent of the sub-agent's records (cli/trace-spawns.mjs).
+  if (SPAWN && (COACH || decision !== "deny")) recordSpawn(SPAWN);
+  SPAWN = null;
   // The allow trail: one queued, content-free record for a call the host is told it may run.
   const tr = decision === "allow" && CALL.active ? recordAllowed(tg, rewrite) : false;
   settleRow({ ...verdictFields(decision, { rewrite: Boolean(rewrite) }), ...(tr ? { tr: 1 } : {}) });
@@ -2120,6 +2244,8 @@ function sessionSummary(rows, claimMismatches) {
 }
 async function handleStop(input) {
   const sub = EVENT === "SubagentStop";
+  // contextTree "console": the session's (or sub-agent's) unsent leaves go now.
+  if (CTX && CTX.mode === "console" && !CTX.spawned && claimUpload(CTX.id)) { CTX.spawned = true; spawnTrailFlush("context"); }
   const rows = ROW ? readSessionRows(ROW.s) : [];
   // Scope: a subagent is judged on its own calls (agent_id); the main agent on its calls since the
   // user's last prompt — the turn that this final message closes.
@@ -2224,7 +2350,7 @@ async function main() {
   // The detached alert sender (see handOffAlerts). No stdin, no decision.
   if (cmd === "alertpost") return runAlertPostWorker(process.argv[3]);
   // The detached allow-trail flusher (cli/action-trail.mjs). No stdin, no decision, no policy fetch.
-  if (cmd === "actiontrail") return runActionTrailWorker();
+  if (cmd === "actiontrail") return runActionTrailWorker(process.argv[3]);
 
   let input;
   try { RAW_INPUT = await readStdin(); input = JSON.parse(RAW_INPUT || "{}"); } catch {
@@ -2256,6 +2382,10 @@ async function main() {
   EVENT = typeof input.hook_event_name === "string" ? input.hook_event_name : "";
   PROV = { policyId: "not-loaded", policySource: "", offline: false };
   beginRow(input, tool);
+  TRACE_IN = input;
+  // PostToolUse(Agent): tool_response.agentId names the sub-agent this call spawned, which binds that
+  // child's records to the call's span exactly (a background spawn reports it at launch).
+  if (EVENT === "PostToolUse" && (tool === "Agent" || tool === "Task") && input.tool_response && typeof input.tool_response === "object") bindSpawnResult({ sessionId: input.session_id, toolUseId: input.tool_use_id, agentId: input.tool_response.agentId });
   if (nti.bad.length || nin.bad.length) {
     VERDICT.uneval = REASON.UNEVALUATED_BAD_INPUT;
     if (failClosedApplies({ event: EVENT, raw: EVENT ? "" : RAW_INPUT }) && await failClosedNow("bad-input")) return;
@@ -2296,6 +2426,10 @@ async function main() {
   let { policy, source, rejected, pin, trust, absence, lkgCopy, deferAlerts } = await verifiedPolicyLoad();
   DEFER_ALERTS = !!deferAlerts;
   VERIFIED_POLICY = policy || null;
+  // context.tree: the mode comes from the verified policy only; a prompt or a tool result is a leaf before
+  // any alert of this call is posted.
+  ctxBegin(input, VERIFIED_POLICY);
+  ctxEnterEvent(input, tool);
   // With no policy, an admin binding that sets the hook's fail mode to closed selects the fail-closed
   // default exactly as a fail-closed posture does (an open one never weakens the posture ratchet).
   const failNoPolicy = hookFailMode({ policy: null, admin: ADMIN });
@@ -2446,7 +2580,11 @@ async function main() {
   if (wp) { why(wp.reasonCode || PROFILE_DRIFT); return emit("deny", wp.reason); }
 
   if (tool === "Read") {
+    READ_BUF = null;
     const text = readFileCapped(agentPath(ti.file_path, input.cwd));
+    // context.tree: the file, from the bytes just read, before it is judged. A skill or instruction file is
+    // a "skill" leaf. Judged before the host runs the Read, so a Read denied below keeps its leaf.
+    if (READ_BUF) { const sk = isSkillSurface(ti.file_path); ctxEnter(sk ? "skill" : "file", sk ? "skill" : "path", agentPath(ti.file_path, input.cwd), READ_BUF, input.cwd); }
     const d = decideText(engine, policy, text, "file", { ctx: { template: isEnvTemplate(ti.file_path) } });
     // #55 on the PATH — what `cat <path>` gets in the Bash branch below. Merged, never downgrading.
     const pd = decideCredFileRead(engine, policy, ti.file_path);
@@ -2748,9 +2886,14 @@ async function main() {
   // entitlement envelope, and block per policy. Reports and envelopes keep the label "Task" either way.
   if (tool === "Task" || tool === "Agent") {
     const desc = JSON.stringify(ti);
+    // context.tree: the prompt this call hands the sub-agent, in the caller's tree, before it is judged.
+    if (typeof ti.prompt === "string" && ti.prompt) ctxEnter("subagent", "name", typeof ti.subagent_type === "string" && ti.subagent_type ? ti.subagent_type : tool, ti.prompt);
     const act = threatActionFor(policy, 66);
     const block = act === "block" || act === "kill";
-    post({ threatId: 66, category: "Sub-agent / A2A delegation", riskLevel: block ? "Blocked" : "Medium", stage: "behavior", tool: "hook:Task", ts: new Date().toISOString(), contentHash: contentHash((ti.subagent_type || "") + "|" + desc), subagentType: subagentTypeField(ti.subagent_type, contentHash), ...IDENTITY });
+    // This record's span is the delegation's span: the spawned sub-agent's records name it as their parent.
+    const spawnSpan = newSpanId();
+    SPAWN = typeof input.session_id === "string" && input.session_id ? { sessionId: input.session_id, caller: typeof input.agent_id === "string" ? input.agent_id : "", subagentType: typeof ti.subagent_type === "string" ? ti.subagent_type : "", toolUseId: typeof input.tool_use_id === "string" ? input.tool_use_id : "", spanId: spawnSpan } : null;
+    post({ threatId: 66, category: "Sub-agent / A2A delegation", riskLevel: block ? "Blocked" : "Medium", stage: "behavior", tool: "hook:Task", ts: new Date().toISOString(), contentHash: contentHash((ti.subagent_type || "") + "|" + desc), subagentType: subagentTypeField(ti.subagent_type, contentHash), ...traceFields(spawnSpan), ...IDENTITY });
     // Content-free handoff edge: this session (parent) is delegating to a child agent (subagent_type,
     // one-way hashed). Surfaces as cross-agent messaging in data/agent-detections.js.
     logBehavior("Task", "Task", desc, { decision: block ? "deny" : "allow", findings: [] }, "behavior", { role: "handoff", parent: SESSION, to: contentHash(ti.subagent_type || "") });

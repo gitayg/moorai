@@ -14,6 +14,7 @@ import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
 import { classifyFailures, reportAcceptedFailures } from "./accepted-failures.mjs";
 import { OWASP_AGENTIC, OWASP_MCP, owaspAgenticIds, owaspMcpIds, owaspAgenticPartialNote, owaspMcpPartialNote, frameworkEdition } from "../data/owasp-frameworks.js";
+import { ATTACK_V20, ATTACK_SCOPE, attackCredits } from "../data/attack.js";
 import { measureLatency, LATENCY_ROWS } from "./latency-bench.mjs";
 import { renderLatencyMarkdown } from "./latency.mjs";
 
@@ -65,6 +66,35 @@ function frameworkCoverage(fw, idsOf, noteOf) {
 const agenticCov = frameworkCoverage(OWASP_AGENTIC, owaspAgenticIds, owaspAgenticPartialNote);
 const mcpCov = frameworkCoverage(OWASP_MCP, owaspMcpIds, owaspMcpPartialNote);
 
+// --- MITRE ATT&CK v20 over the AI-agent scope (data/attack.js ATTACK_SCOPE) ---
+// Unlike the OWASP lists, an ATT&CK credit states its own level (full / partial / none), reviewed per rule, so
+// a technique's status is the best level any rule credits: covered (full), partial, or uncovered (only `none`
+// credits, or no rule). Detectors are counted for transparency but do not set the status: several credited
+// mechanisms (session risk, the MCP allow-list, file metadata) are not detectors in data/detectors.js.
+const ATTACK_NAMES = JSON.parse(readFileSync(join(ROOT, "data/attack-v20-techniques.json"), "utf8")).techniques;
+const attackCov = (() => {
+  const rank = { full: 2, partial: 1, none: 0 };
+  const byItem = Object.fromEntries(Object.entries(ATTACK_SCOPE).map(([id, lane]) => [id, { lane, threats: 0, detectors: 0, best: -1, status: "uncovered" }]));
+  for (const t of threats.threats) {
+    for (const c of attackCredits(t)) {
+      const it = byItem[c.id];
+      if (!it) continue;
+      it.threats += 1;
+      it.detectors += detCountByThreat.get(t.id) || 0;
+      it.best = Math.max(it.best, rank[c.coverage]);
+    }
+  }
+  for (const it of Object.values(byItem)) { it.status = it.best === 2 ? "covered" : it.best === 1 ? "partial" : "uncovered"; delete it.best; }
+  const count = (s, lane) => Object.values(byItem).filter((v) => v.status === s && (!lane || v.lane === lane)).length;
+  const agentTotal = Object.values(byItem).filter((v) => v.lane === "agent").length;
+  return {
+    edition: ATTACK_V20.version, source: ATTACK_V20.source, total: Object.keys(byItem).length,
+    covered: count("covered"), partial: count("partial"), uncovered: count("uncovered"),
+    agentLane: { total: agentTotal, covered: count("covered", "agent"), partial: count("partial", "agent"), uncovered: count("uncovered", "agent") },
+    byItem
+  };
+})();
+
 // --- adversarial corpus pass rate (mirrors redteam) ---
 let pass = 0;
 const fails = [];
@@ -88,6 +118,7 @@ const report = {
   owaspLlmTop10: { covered, total: 10, byItem: owaspCov },
   owaspAgenticTop10: agenticCov,
   owaspMcpTop10: mcpCov,
+  mitreAttackV20: attackCov,
   latency: "__LATENCY__"
 };
 
@@ -107,6 +138,9 @@ const fwRows = (fw, cov) => Object.entries(fw.items).map(([k, name]) => {
   return `| ${k} | ${name} | ${c.threats} | ${c.partialThreats} | ${c.detectors} | ${STATUS[c.status]} |`;
 }).join("\n");
 const fwLine = (cov) => `${cov.covered}/${cov.total} covered, ${cov.partial} partial, ${cov.uncovered} uncovered`;
+const attackLine = (cov) => `${fwLine(cov)} (agent lane: ${fwLine(cov.agentLane)})`;
+const attackRows = Object.entries(attackCov.byItem).map(([id, c]) =>
+  `| ${id} | ${ATTACK_NAMES[id].name} | ${c.lane} | ${c.threats} | ${c.detectors} | ${STATUS[c.status]} |`).join("\n");
 const md = `# MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with \`npm run benchmark\`.
@@ -118,6 +152,7 @@ const md = `# MoorAI Agent Security Benchmark
 - **OWASP LLM Top 10:** ${covered}/10 items covered by ≥1 on-device detector
 - **OWASP Top 10 for Agentic Applications:** ${fwLine(agenticCov)}
 - **OWASP MCP Top 10:** ${fwLine(mcpCov)}
+- **MITRE ATT&CK v${ATTACK_V20.version} (AI-agent scope):** ${attackLine(attackCov)}
 
 ## OWASP LLM Top 10 (2025) coverage
 
@@ -144,6 +179,20 @@ otherwise. Rules whose mechanism is not a detector in \`data/detectors.js\` (dri
 risk, the MCP allow-list) are counted under Threats but add no detectors. Sources:
 [${OWASP_AGENTIC.name}](${OWASP_AGENTIC.source}), [${OWASP_MCP.name}](${OWASP_MCP.source}).
 
+## MITRE ATT&CK v${ATTACK_V20.version} coverage (AI-agent scope)
+
+| Technique | Name | Lane | Threats | Detectors | Status |
+|-----------|------|------|--------:|----------:|--------|
+${attackRows}
+
+The rows are the v${ATTACK_V20.version} techniques an AI agent on an endpoint, server or AI runtime can perform or be
+aimed at (\`ATTACK_SCOPE\` in \`data/attack.js\`). **Lane** says who can see the technique: \`agent\` is an action
+an AI agent takes that a MoorAI hook, proxy or gateway sees; \`edr\`, \`identity\`, \`email\` and \`pre\` (the
+adversary's own infrastructure) are outside every MoorAI surface. Each credit in \`data/threats.json\` (\`attack\`)
+states its level and a one-line reason; a technique is *covered* when a rule credits it in full, *partial* when
+the best credit is bounded, and *—* otherwise. Coverage is a mechanism claim, not a detection rate. Technique ids
+and names: [${ATTACK_V20.name} v${ATTACK_V20.version}](${ATTACK_V20.stix}), released ${ATTACK_V20.released}.
+
 Coverage is measured, not asserted: every number above is produced by running the shipped detection
 engine (\`src/engine.js\`) against the shipped threat matrix (\`data/threats.json\`) and the adversarial
 corpus (\`test/redteam/corpus.json\`). Content-free by construction — the benchmark reasons over
@@ -167,6 +216,11 @@ for (const [label, fw, cov] of [["OWASP Agentic Top 10", OWASP_AGENTIC, agenticC
     const mark = c.status === "covered" ? g("✓") : c.status === "partial" ? "\x1b[33m◐\x1b[0m" : r("·");
     console.log(`   ${mark} ${k} ${name} ${`\x1b[2m(${c.threats} threats, ${c.partialThreats} partial, ${c.detectors} detectors)\x1b[0m`}`);
   }
+}
+console.log(`  MITRE ATT&CK v${ATTACK_V20.version} (AI-agent scope): ${attackLine(attackCov)}`);
+for (const [id, c] of Object.entries(attackCov.byItem)) {
+  const mark = c.status === "covered" ? g("✓") : c.status === "partial" ? "\x1b[33m◐\x1b[0m" : r("·");
+  console.log(`   ${mark} ${id} ${ATTACK_NAMES[id].name} ${`\x1b[2m(${c.lane}, ${c.threats} threats, ${c.detectors} detectors)\x1b[0m`}`);
 }
 if (latency.measured) {
   console.log(`  Latency (nearest-rank, ms) on ${latency.machine.cpu}, Node ${latency.machine.node}:`);

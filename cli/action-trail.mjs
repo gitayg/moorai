@@ -9,9 +9,14 @@
 // WHAT A RECORD CARRIES (RECORD_FIELDS, built by buildActionRecord, nothing else is copied): ts, the keyed
 // session hash, seq (this file's own counter, field `seq` on the wire and in the console's storage,
 // separate from the alert seq), event, the tool name (sanitizeToolName), its capability tags, the MCP server name, decision "allow", basis (rule | default | exception),
-// the signed policy's iat, the agent and MoorAI versions, the identity alerts carry, and the keyed
-// contentHash of the normalized call. Never an argument, a path, a URL, a command, prompt text or file
-// contents: the hash is one-way and keyed per tenant (cli/content-hash.mjs).
+// the signed policy's iat, the agent and MoorAI versions, the identity alerts carry, the keyed
+// contentHash of the normalized call, the call's W3C trace context (traceId, spanId, parentSpanId; hex
+// only, cli/trace-context.mjs), the session's context tree at decision time (contextRoot, 64 hex, and
+// contextSize, its leaf count; cli/context-tree.mjs) and, on a sub-agent's records, contextSession (the keyed
+// id of the sub-agent's own tree, which contextRoot belongs to; `session` names the parent session), and on a
+// model proxy's records the provider (an enum)
+// and the model string (at most 64 of [A-Za-z0-9._:/@-]). Never an argument, a path, a URL, a command, prompt
+// text or file contents: the hash is one-way and keyed per tenant (cli/content-hash.mjs).
 //
 // THE MODE COMES ONLY FROM THE SIGNED POLICY (actionTrailMode): a policy body with no signature envelope
 // reads "off", and nothing in the environment or a user config file is consulted. The policy itself is only
@@ -31,6 +36,8 @@ import { STATE_DIR } from "./state-dirs.mjs";
 import { readConsoleBackoff, backoffDelay, BACKOFF_BASE_MS, BACKOFF_CAP_MS } from "./console-backoff.mjs";
 import { normalizeCommand } from "./claim-check.mjs";
 import { TAGS } from "../data/tool-tags.js";
+import { validTraceId, validSpanId } from "./trace-context.mjs";
+import { NO_KEY } from "./content-hash.mjs";
 
 export const QUEUE_FILE = "action-trail.jsonl";
 export const STATE_FILE = "action-trail-state.json";
@@ -55,8 +62,16 @@ export const TOOL_MAX = 256;
 const LOCK_WAIT_MS = 200;
 const LOCK_STALE_MS = 5000;
 
-export const RECORD_FIELDS = Object.freeze(["ts", "session", "seq", "event", "tool", "toolTags", "mcpServer", "decision", "basis", "policyIat", "agentName", "agentVersion", "appVersion", "user", "device", "platform", "tenant", "actor", "contentHash"]);
+export const RECORD_FIELDS = Object.freeze(["ts", "session", "seq", "event", "tool", "toolTags", "mcpServer", "decision", "basis", "policyIat", "agentName", "agentVersion", "appVersion", "user", "device", "platform", "tenant", "actor", "contentHash", "traceId", "spanId", "parentSpanId", "contextRoot", "contextSize", "contextSession", "provider", "model"]);
 export const BASES = Object.freeze(["rule", "default", "exception"]);
+// A model-proxy record's provider, and the model string's shape (else the field is left out).
+export const PROVIDERS = Object.freeze(["anthropic", "openai", "google", "ollama", "other"]);
+const MODEL_RE = /^[A-Za-z0-9._:\/@-]{1,64}$/;
+// The event a record names: "PreToolUse" unless the caller names another (the model proxy: "ModelRequest").
+// A letters-only token of at most 32, else the default.
+const EVENT_RE = /^[A-Za-z]{1,32}$/;
+// A context tree's keyed id (cli/context-tree.mjs sessionFile's rule).
+const CONTEXT_SESSION_RE = /^[A-Za-z0-9_:]{1,128}$/;
 
 // "allowed" only when the policy carries a signature envelope and says so; every other value, an unsigned
 // body and no policy at all read "off".
@@ -102,7 +117,7 @@ export function buildActionRecord(f = {}) {
   const r = { ts: str(f.ts, 40) || new Date().toISOString() };
   const put = (k, v) => { if (v) r[k] = v; };
   put("session", str(f.session, 128));
-  r.event = "PreToolUse";
+  r.event = typeof f.event === "string" && EVENT_RE.test(f.event) ? f.event : "PreToolUse";
   r.tool = sanitizeToolName(f.tool);
   r.toolTags = Array.isArray(f.toolTags) ? TAGS.filter((t) => f.toolTags.includes(t)) : [];
   put("mcpServer", str(f.mcpServer, 128));
@@ -113,6 +128,20 @@ export function buildActionRecord(f = {}) {
   put("agentVersion", str(f.agentVersion, 64));
   put("appVersion", str(f.appVersion, 64));
   for (const k of ["user", "device", "platform", "tenant", "actor", "contentHash"]) put(k, str(f[k], 256));
+  // W3C trace context (cli/trace-context.mjs): lowercase hex only, else left out.
+  if (validTraceId(f.traceId)) r.traceId = f.traceId;
+  if (validSpanId(f.spanId)) r.spanId = f.spanId;
+  if (validSpanId(f.parentSpanId)) r.parentSpanId = f.parentSpanId;
+  // The context tree's root and size (cli/context-tree.mjs): 64 lowercase hex and a leaf count, together or
+  // not at all.
+  if (typeof f.contextRoot === "string" && /^[0-9a-f]{64}$/.test(f.contextRoot) && Number.isSafeInteger(f.contextSize) && f.contextSize >= 0) { r.contextRoot = f.contextRoot; r.contextSize = f.contextSize; }
+  // The tree contextRoot belongs to, when it is not the session's own (a sub-agent's tree, keyed on its
+  // session and agent id): a keyed id like `session` ([A-Za-z0-9_:], at most 128, never the no-key
+  // sentinel), only alongside contextRoot and only when it differs from `session`.
+  if (r.contextRoot && typeof f.contextSession === "string" && CONTEXT_SESSION_RE.test(f.contextSession) && f.contextSession !== NO_KEY && f.contextSession !== r.session) r.contextSession = f.contextSession;
+  // Model proxy records: provider (an enum) and the request's model string (MODEL_RE), else left out.
+  if (PROVIDERS.includes(f.provider)) r.provider = f.provider;
+  if (typeof f.model === "string" && MODEL_RE.test(f.model)) r.model = f.model;
   return r;
 }
 

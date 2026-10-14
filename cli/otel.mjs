@@ -19,6 +19,7 @@ import { contentHash } from "./content-hash.mjs";
 import { trustedEnv } from "./server-mode.mjs";
 import { nextLink } from "./record-chain.mjs";
 import { buildAttestation as buildAttestationCore } from "./moorai-attest.mjs";
+import { validTraceId, validSpanId } from "./trace-context.mjs";
 
 let VERSION = "unknown";
 try { VERSION = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")).version; } catch { /* version is cosmetic */ }
@@ -110,9 +111,13 @@ export function buildTracePayload(alert = {}, { tenant, version = VERSION, now =
       ] },
       scopeSpans: [{
         scope: { name: "moorai", version },
+        // The record's own W3C trace context (cli/trace-context.mjs), so the spans of one agent session form
+        // one trace and a sub-agent's spans hang under the Task call that spawned it. A record without one
+        // (a device-level inventory alert) gets a random trace of its own.
         spans: [{
-          traceId: randomBytes(16).toString("hex"),
-          spanId: randomBytes(8).toString("hex"),
+          traceId: validTraceId(alert.traceId) ? alert.traceId : randomBytes(16).toString("hex"),
+          spanId: validSpanId(alert.spanId) ? alert.spanId : randomBytes(8).toString("hex"),
+          ...(validTraceId(alert.traceId) && validSpanId(alert.parentSpanId) ? { parentSpanId: alert.parentSpanId } : {}),
           name: `moorai.${alert.category || alert.tool || "event"}`,
           kind: 1, // SPAN_KIND_INTERNAL
           startTimeUnixNano: nanos,

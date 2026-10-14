@@ -52,8 +52,8 @@ MCP host  ⇄  moorai-mcp-guard  ⇄  real MCP server
 - **Block** → the call is **not** forwarded; the proxy returns a JSON-RPC *result* to the host that
   is an MCP tool error (`isError: true`, using the request's `id`), so the model sees a clean refusal
   instead of a hang. The real server never receives the call.
-- **Allow / coach** → forwarded unchanged. The host has no interactive banner, so a "coach"
-  (justify) verdict is treated as **allow + record**.
+- **Allow / coach** → forwarded, unchanged except for its trace context in `params._meta` (below). The
+  host has no interactive banner, so a "coach" (justify) verdict is treated as **allow + record**.
 - **Mask** → not applied here. The proxy never rewrites a call or a result, so a threat an org set to
   `mask` resolves to `policy.maskFallback` (`notify` / `justify` / `block`), else to the action it would
   have without the mask entry. The Claude Code hook is the surface that masks.
@@ -297,6 +297,39 @@ unreachable 8, mismatch 2 (one of them a false positive after a rename, `blender
 so a package renamed after publishing reads as a mismatch. Repositories on bitbucket.org and codeberg.org
 are not verified.
 
+### Trace context in `params._meta`
+
+Every `tools/call` the guard forwards carries a W3C trace context, so the server and its APM can join the
+call to the agent's trace.
+
+- **Where.** `params._meta.traceparent` and `params._meta.tracestate`. MCP 2026-07-28 (Base Protocol,
+  "General fields: `_meta`") reserves exactly these keys, with `baggage`, "for OpenTelemetry trace context
+  propagation", as an exception to its key-prefix rule, values in W3C Trace Context format. Its own example
+  is a `tools/call` with `"_meta": {"traceparent": "00-…-01"}`. MCP 2025-11-25 and earlier name no trace keys;
+  there `_meta` is open, and an unprefixed name such as `traceparent` is a valid key.
+- **Which trace.** The client's own valid `_meta.traceparent` is continued (new span, its span the parent).
+  Otherwise, when Claude Code's harness started the guard (`AI_AGENT=claude-code_<v>_harness`), the session's
+  trace: `traceIdFor` over `CLAUDE_CODE_SESSION_ID`, which Claude Code sets for its stdio servers to the id
+  its hooks get as `session_id` (measured on 2.1.295). So the hook and the guard name the same trace.
+  Otherwise a new trace per call.
+- **`tracestate`** gets `moorai=a:<host>` first (the `--host` stamp's agent name). Any earlier `moorai` entry
+  is removed. The other entries keep their order, up to 32 in total. If adding `moorai` makes 33, one entry is
+  dropped: an entry over 128 characters if there is one, otherwise the last. A client `tracestate` that is not
+  a valid W3C list (a member outside the key/value grammar, or more than 32 members) is removed. When a key
+  repeats, only its first entry is kept. With no valid `traceparent` the client's `tracestate` is removed, as
+  W3C requires.
+- **The line is edited in place, never re-serialized.** Only the two values change, or are added. A number
+  past 2^53, a `\u` escape, key order and whitespace reach the server exactly as the client wrote them, and
+  the arguments the gate judged are the ones the server reads. A line with a repeated `params`, `_meta`,
+  `traceparent` or `tracestate` key, or a `_meta` that is not an object, is forwarded unchanged: a repeated
+  key reads differently in different parsers. A call refused, or forwarded fail-open after a gate error,
+  goes as sent.
+- **Records.** Every alert about the call, and about its result, carries `traceId`, `spanId` (the span the
+  server got) and `parentSpanId`. No `_meta` value is logged or reported.
+- **Cost**, measured (n=100k): 1.3 µs for a 124-byte call. The edit reads every `params` member to rule out a
+  repeated `_meta`, so it grows with the arguments: 192 µs for a 112 KB call, against 99 µs for the
+  `JSON.parse` the guard already does.
+
 ## Content-free by construction
 
 Only **category / risk / one-way hash / server / tool / decision** ever leave the device — the same
@@ -482,6 +515,7 @@ proxy sees nothing.
 | File | Purpose |
 |------|---------|
 | `moorai-mcp-guard.mjs`     | The stdio proxy / gateway. |
+| `trace-meta.mjs`           | Sets a forwarded `tools/call`'s `params._meta.traceparent` / `tracestate` by editing the line in place. |
 | `tool-scan.mjs`            | Caps, and the composition of the scan text for a `tools/list` entry and a `tools/call` result. |
 | `tool-baseline.mjs`        | Cross-call tool baseline — shadowing / capability-expansion drift. |
 | `tool-drift.mjs`           | `mcpToolDrift: "block"`: approved-baseline precedence, quarantine verdicts, the version mark, the fingerprint report. Shared with the HTTP gateway. |

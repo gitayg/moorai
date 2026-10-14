@@ -2114,6 +2114,205 @@ native Claude Code folder, the product table above).
   (both gates on the same pairs), `test/ai-api-callers-identity.test.mjs` (known by location, one case per
   product, signing identity, script-host executables).
 
+## End-to-end trace (v1.16.0)
+
+**Status: built and tested (`test/trace-context.test.mjs`, `test/trace-hook.test.mjs`, `test/trace-proxy.test.mjs`,
+`test/trace-proxy-trail.test.mjs`, `test/trace-gateway.test.mjs`, `test/trace-mcp-guard.test.mjs`,
+`test/action-trail.test.mjs`).** One trace per agent session, W3C Trace Context (Recommendation, 23 November
+2021). Content-free: hex ids and an agent name from `cli/agent-names.mjs` only.
+
+**Contract** (agent v1.16.0, console v0.87.0). `cli/trace-context.mjs` is the only W3C implementation; the model
+proxy, the HTTP MCP gateway and the stdio guard use it through `model-proxy/trace-w3c.mjs` (which re-exports
+`parseTraceparent` / `mergeTracestate` and builds `createTracer` on `continueOrStart`), the hook and the egress
+proxy directly.
+
+| Export | Behaviour |
+|---|---|
+| `traceIdFor({ tenantKey, sessionKey })` | HMAC-SHA-256(deriveKey(installToken), `"moorai/trace-id/v1\n" + sessionId`), first 32 hex (an all-zero result ends in `1`). `tenantKey` is the install token or the derived key; both give the same id. Null without a key or a session id. |
+| `newTraceId()` / `newSpanId()` | random 32 / 16 hex, never all zeros |
+| `parseTraceparent(header)` | `{ traceId, parentSpanId, flags, sampled }` or null. Spaces and tabs around the value are ignored. Version `00`: exactly `00-<32 hex>-<16 hex>-<2 hex>`, lowercase, 55 characters. A higher version (2 lowercase hex, not `ff`) is read by the `00` layout (W3C 3.2.4): at least 55 characters, the flags followed by the end or `-`. All-zero trace-id or parent-id: null. |
+| `formatTraceparent({ traceId, spanId, sampled })` | `"00-<traceId>-<spanId>-01"` or `-00`; null for a bad id |
+| `tracestateMoorai({ agentName })` | `"moorai=a:<agentName>"` for a name in the `cli/agent-names.mjs` vocabulary, else null |
+| `mergeTracestate(incoming, entry)` | W3C 3.3.1 grammar; spaces, tabs and empty members ignored. An incoming header with an invalid member or more than 32 members is discarded whole (W3C 4.3). A repeated key keeps its first, left-most entry. The entry goes first and an earlier entry with its key is removed. Over 32: the right-most entry over 128 characters goes, else the right-most entry; the entry itself is never dropped. |
+| `continueOrStart({ traceparent, tracestate, traceId, sampled, agentName })` | a valid incoming `traceparent` continues (its trace-id and sampled flag kept, `parentSpanId` = its span, a new span sent on as version `00`, `tracestate` merged); else `traceId` (from `traceIdFor`); else a new random trace. A `tracestate` is never sent on without a valid `traceparent`. |
+
+- **TRC-1 Records.** Every hook alert and allow-trail record carries `traceId` (32 hex), `spanId` (16 hex, fresh
+  per record) and, on a sub-agent's records, `parentSpanId`. Device inventory alerts (`LOCAL_MODEL_EXPOSED`,
+  `AI_API_CALLER_UNKNOWN`) and the detached workers' alerts (posture beat, index scan, model escalation, agent
+  scan) carry none. The allow-trail builder keeps a trace field only when it is valid lowercase hex.
+- **TRC-2 Session trace.** The hook's `traceId` is `traceIdFor(installToken, session_id)`, computed only when the
+  invocation sends a record. No install token or no session id: a random trace for that invocation.
+- **TRC-3 Sub-agents (Claude Code).** `parentSpanId` is the `spanId` of the spawning call's delegation record
+  (#66). Exact from `PostToolUse(Agent|Task).tool_response.agentId`; else inferred from exactly one unbound
+  pending spawn in the session whose `subagent_type` equals the child's `agent_type`; else absent. An exact
+  binding replaces a wrong inference. A delegation that is denied (outside coach mode) records no spawn. Spawn
+  map: `~/.moorai/trace-spawns.json` (0600, temp + rename under a lock), ids keyed with the device-local key,
+  span ids random, entries kept 24 hours, at most 256 spawns and 512 bindings.
+- **TRC-4 OTLP.** Spans use the record's `traceId`, `spanId` and `parentSpanId`; a record without a valid
+  `traceId` gets a random one.
+- **TRC-5 Model proxy → provider.** `traceparent` / `tracestate` headers on every route. Trace: a valid incoming
+  `traceparent`; else `traceIdFor` over `X-Claude-Code-Session-Id` (at most 256 characters); else new, sampled.
+  `tracestate` entry `moorai=a:model-proxy`. Alerts of the request carry the trace fields plus `provider`
+  (`anthropic` | `openai` | `google` | `ollama` | `other`) and `model` (`[A-Za-z0-9._:/@-]{1,64}`, else omitted).
+- **TRC-6 HTTP MCP gateway → upstream.** `traceparent` / `tracestate` headers; a valid incoming `traceparent`,
+  else a new trace (no session is known; `Mcp-Session-Id` belongs to the transport). Entry `moorai=a:gateway`.
+  The body, `_meta` included, is forwarded as sent.
+- **TRC-7 MCP stdio guard → server.** `params._meta.traceparent` / `params._meta.tracestate` on a forwarded
+  `tools/call`; MCP 2026-07-28 reserves `traceparent`, `tracestate` and `baggage` in `_meta` for OpenTelemetry
+  trace context. Trace: a valid `_meta.traceparent`; else `traceIdFor` over `CLAUDE_CODE_SESSION_ID` when
+  `AI_AGENT=claude-code_<v>_harness`; else new. Entry `moorai=a:<--host agent name>`. The line is edited in
+  place (`mcp-proxy/trace-meta.mjs`); a line with a repeated `params`, `_meta`, `traceparent` or `tracestate`
+  key, a `_meta` that is not an object, a refused call and a fail-open forward go as sent.
+- **TRC-8 Egress proxy, plain HTTP.** A valid incoming `traceparent` and its `tracestate` go on unchanged (a
+  higher version included); alerts carry its trace-id, a fresh span and `parentSpanId` = its span. Otherwise a
+  new sampled `traceparent` is set and `tracestate` removed. No `moorai` entry. `CONNECT` tunnels are not
+  modified; their alerts carry the `CONNECT` request's trace, else a new one. A repeated `traceparent` header is
+  invalid.
+- **TRC-9 Model proxy allow trail.** With `actionTrail: "allowed"` in the verified signed policy on an enrolled
+  device, one record per forwarded request: `event: "ModelRequest"`, tool `model-proxy:<provider>`, decision
+  `allow`, basis `default`, `agentName` (`claude-code` when the request names a Claude Code session, else
+  `model-proxy`), the trace fields, `provider`, `model`; the hook's queue, `seq` and `POST /api/actions`.
+  `buildActionRecord` validates `provider`, `model` and `event` (letters only, at most 32, default
+  `PreToolUse`) and leaves out a value that fails.
+- **No value logged.** No header or `_meta` value is logged, stored or reported on any surface.
+
+**Session signals (measured, Claude Code 2.1.295)** against a local fake Messages API, a fake HTTP MCP server
+and a fake stdio MCP server, with hooks that dumped their stdin:
+
+| Where | Session id | Sub-agent id | Call id |
+|---|---|---|---|
+| Hook stdin | `session_id` | `agent_id` + `agent_type` inside a sub-agent | `tool_use_id` |
+| Messages API request | `x-claude-code-session-id` = `session_id`; `metadata.user_id` (JSON string with `session_id`, `device_id`, `account_uuid`) | `x-claude-code-agent-id` = `agent_id` | none |
+| Stdio MCP server | `CLAUDE_CODE_SESSION_ID` = `session_id` (one server process per session) | none | `params._meta["claudecode/toolUseId"]` = `tool_use_id` |
+| HTTP MCP server | none | none | `params._meta["claudecode/toolUseId"]` |
+
+Claude Code sends no `traceparent`. Codex and Gemini CLI put no sub-agent id on tool calls, and Codex
+sub-agents share the parent's session id.
+
+**Cost.** One HMAC per recording invocation (about 2 µs). Spawn map: about 0.1 ms read with 50 pending spawns,
+0.03 ms once bound, 0.3 ms per delegation write; hook latency unchanged within noise (40 interleaved spawns per
+case). Proxies: about 2 µs per request, 4 µs with a session-derived id (n=100k). Guard edit: 1.3 µs for a
+124-byte call, 192 µs for 112 KB.
+
+**Limits.**
+- Session ids the proxies see are caller-asserted: any process that can reach a MoorAI proxy can put its
+  requests in another session's trace. It cannot change or remove that session's hook records.
+- The spawn map is user-writable; it can misdirect a sub-agent's `parentSpanId` within a session, never its
+  `traceId` or a decision.
+- Parallel spawns of one sub-agent type leave a foreground child's records without `parentSpanId` until its
+  spawning call returns.
+- Codex, Gemini CLI and Copilot CLI sub-agents' records have the session's trace and no parent.
+- Model-proxy and stdio-guard spans join the session's trace without a `parentSpanId` naming a hook record.
+- The HTTP MCP gateway starts its own trace unless the client sends a `traceparent`. HTTPS through the egress
+  proxy carries nothing MoorAI adds.
+
+## context.tree forensic anchor (v1.16.0)
+
+**Status: built and tested (`test/context-tree-leaf.test.mjs`, `test/context-tree-merkle.test.mjs` with the CT
+known-answer vectors in `test/context-tree-ct-vectors.json`, `test/context-tree-store.test.mjs`,
+`test/context-tree-hook.test.mjs`, `test/context-tree-hook-frontier.test.mjs`, `test/context-tree-cli.test.mjs`).**
+`cli/context-tree.mjs`, CLI `moorai-context-proof`. A per-session Merkle tree of what entered an agent's
+context, so an investigator can show which source carried an injected instruction.
+
+**Leaf.** `leafOf({ stage, sourceKind, source, bytes, tenantKey, ts })` →
+`{ stage, sourceKind, sourceHash, blobHash, blobHashKind, size, ts }`.
+- `stage`: `prompt` | `file` | `web` | `mcp` | `subagent` | `tool-output` | `skill` | `system`.
+- `sourceKind`: `path` | `url` | `mcp` | `skill` | `name` | `none`.
+- `sourceHash`: the tenant-keyed hash (the HMAC `contentHash` uses) of the canonical source: a normalised
+  absolute path under the platform's case rule (`cli/path-within.mjs`); a URL without fragment or credentials,
+  scheme and host lower-cased, query kept; `mcp:<server>/<tool>`; `skill:<path>`; `name:<name>`; empty for
+  `none`.
+- `blobHash`: plain SHA-256 hex when `size` ≥ 256 bytes (`blobHashKind: "sha256"`), else the tenant-keyed hash
+  (`"keyed"`). Without a tenant key the keyed fields are `h2:nokey`.
+
+**Merkle tree (RFC 6962 2.1).** Leaf hash = SHA-256(0x00 ‖ canonical JSON of the leaf), node hash =
+SHA-256(0x01 ‖ left ‖ right), empty root = SHA-256(""); canonical JSON = sorted keys, no whitespace.
+`ContextTree`: `append(leaf)` → `{ index, root }`, `root()`, `rootAt(size)`, `size()`, `proof(index[, size])`, static
+`verify(leaf, index, size, proof, root)`. Inclusion proofs work for any index at any earlier size; a proof is
+checked against a stated size, so records carry `contextSize` next to `contextRoot`.
+
+**Storage.**
+- One append-only JSONL file per session, `~/.moorai/context-tree/<keyed session id>.jsonl` (`:` written as
+  `-`), 0600 in a 0700 directory; leaves only, the root recomputed. Each leaf is one write of one line.
+- Lock: per session, `cli/alert-seq.mjs` `withFileLock`, 200 ms wait. An append that cannot get it writes its
+  line without it and reports no index.
+- Frontier: `<file>.frontier` caches the leaf count, the session file's byte length and one subtree hash per
+  set bit of the count. An append reads it, writes its line, folds the leaf in and replaces it (temp + rename),
+  all under the lock. Missing, unreadable, wrongly shaped or with another byte length: rebuilt once from the
+  file. When a lock-less line lands between a locked append's stat and its write, that append takes its index
+  and root from the file and leaves the frontier for the next append to rebuild.
+- Recovery: a torn last line or a line that is not a valid leaf is skipped and reported, never rewritten.
+- Cap: 50,000 leaves per session; at the cap appends stop and report `capped`, no earlier leaf is dropped.
+- Retention: session, frontier, upload and lock files older than 30 days are deleted by a sweep that runs when a
+  session's first leaf is written.
+
+**Hook wiring.** The tree id is the keyed session id (the alerts' `session`); a sub-agent's tree id is
+`contentHash(session_id + "\0agent:" + agent_id)`. Leaves are built from bytes the hook already holds, before
+the item is judged; the hook reads no file to build one.
+
+| Event | Item | Stage | Source |
+|---|---|---|---|
+| UserPromptSubmit | the prompt | prompt | none |
+| PreToolUse Read | the buffer read for scanning | file, or skill for a skill surface | path / `skill:<path>` |
+| PostToolUse WebFetch | the result | web | URL |
+| PostToolUse WebSearch | the result | web | `name:<query>` |
+| PostToolUse `mcp__*` | the result | mcp | `mcp:<server>/<tool>` |
+| PostToolUse Bash / PowerShell | the output | tool-output | `name:<tool>` |
+| PreToolUse Task / Agent | `tool_input.prompt` | subagent | `name:<subagent_type>` |
+| PostToolUse Task / Agent | the report | subagent | `name:<subagent_type>` |
+
+The result blob is a string result as it is, a shell call's stdout when stderr is empty, or a single text
+block's text; any other shape is the text MoorAI judged.
+
+**Records.**
+- Every alert and allow-trail record: `contextRoot` (64 hex) and `contextSize` (leaf count) at decision time,
+  sent together or not at all.
+- `contextSession` (`^[A-Za-z0-9_:]{1,128}$`, never `h2:nokey`): the keyed id of the tree `contextRoot` belongs
+  to, only on a sub-agent's records, only with `contextRoot`, only when it differs from `session`. It equals
+  the `sessionHash` of that tree's upload. Look up a record's leaves under `contextSession ?? session`.
+- Content and injection alerts (detector findings on the item, skill-file poisoning, a decoy key in a tool
+  result): `contextLeaf { index, stage, sourceHash, blobHash, blobHashKind }`.
+- Hashes, enums and integers only.
+
+**Policy.** `contextTree: "off" | "local" | "console"` from the verified policy, default `"local"`. `"console"`
+needs a policy with a signature envelope (`policySig.sig`); without one it reads `"local"`. `"off"` writes
+nothing and stamps nothing.
+
+**Console upload (`"console"`).** `POST /api/context-tree { v: 1, sessionHash, leaves: [{ index, ...leaf }] }`,
+up to 500 leaves per request, sent by the allow trail's detached worker, never on the decision path. Per-session
+state in `<file>.upload`; `sent` advances only on a 2xx. Triggers: 50 unsent leaves, an unsent leaf older than
+30 seconds, or Stop / SubagentStop; the trigger takes a lease. Retries 1, 2 and 4 minutes, capped at 5; nothing
+is sent during the console back-off.
+
+**CLI `moorai-context-proof`.**
+- `--session <keyed id> --index <n> [--size <m>]`: JSON `{ session, index, size, leaf, leafHash, proof, root,
+  verified }`; `--size` proves against the root of the first `m` leaves (a recorded `contextSize`).
+- `--verify <file|-> (--session <keyed id> | --all)`: hashes the blob the way `leafOf` does and lists every
+  matching leaf with its proof against the session's current root. A blob under 256 bytes on a device with no
+  key is refused (it would match every short leaf). The argument is never echoed.
+- `--home <dir>`. Exit 0 printed or found, 1 no leaf or no match, 2 usage.
+
+**Cost** (Apple M5 Max). Append p50 0.26 ms / p95 0.38 ms at 5,000 leaves, p50 0.28 ms / p95 0.40 ms at 50,000
+(a full reload per append took 14.9 ms and 146 ms). Frontier rebuild: 18 ms at 5,000, 149 ms at 50,000.
+
+**Limits.**
+- Tamper-evident, not tamper-proof: the session file is in the user's home, where the agent can write. A
+  rewritten history yields a root that no longer matches the roots on records; nothing stops the rewrite
+  itself until the privileged helper signs roots.
+- The SHA-256 of a blob of 256 bytes or more lets anyone holding the original confirm it entered the context.
+- Short blobs and sources need the tenant key; keyed hashes are 64 bits, as `contentHash`. An unenrolled
+  device keeps no tree.
+- The tree names the source kind, not the source: naming it takes a candidate path or URL hashed under the
+  tenant key.
+- Files a host loads without a tool call (CLAUDE.md at start-up, rules files) get no leaf; a Read of them does.
+- A web leaf matches the host's processed text (WebFetch's result), not the page on the server. A file leaf
+  matches the file on disk.
+- PreToolUse is the only Read event, so a Read MoorAI then denies keeps its leaf; so do a Task / Agent prompt
+  and a prompt a prompt-scan policy blocks.
+- A sub-agent's first prompt is a leaf in the caller's tree.
+- A session's `.upload` state remains after the policy moves from `"console"` to `"local"`; the leaves recorded
+  while `"console"` was in force are still sent.
+
 ## Capability tags and exceptions
 
 **Status: built and tested (`test/tool-tags.test.mjs`, `test/tool-tags-hook.test.mjs`,

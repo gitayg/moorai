@@ -5,7 +5,8 @@
 // Every request header except hop-by-hop ones, Host and X-MoorAI-Proxy-Token goes upstream as sent —
 // x-api-key, Authorization, anthropic-version / -beta, OpenAI-Organization: the client's own credentials,
 // never read, stored, logged or reported. Accept-Encoding is replaced by "identity" so a response can be
-// parsed. Every response header except hop-by-hop ones comes back.
+// parsed, and traceparent / tracestate by this hop's trace (below). Every response header except hop-by-hop
+// ones comes back.
 //
 // With placeholder credentials configured (opts.credentials, credentials.mjs) a header carrying a
 // `moorai-ph:<name>` placeholder has its whole value replaced by the bound secret, on the bound route only;
@@ -15,6 +16,12 @@
 // Only POST …/messages (Anthropic), POST …/chat/completions (OpenAI), POST …/models/{model}:generateContent
 // / :streamGenerateContent (Gemini, on any route) and POST …/api/chat / …/api/generate (Ollama's native API,
 // on any route; NDJSON streams) are parsed; any other path or method is forwarded unparsed.
+//
+// Every forwarded request carries the agent session's W3C trace (trace-w3c.mjs): `traceparent` is set to
+// this request's span — continuing a valid incoming traceparent, else the session's trace when the client
+// names its session in X-Claude-Code-Session-Id (Claude Code sends the same id its hooks get), else a new
+// trace — and the moorai entry is merged into `tracestate`. Every alert raised for the request carries
+// traceId / spanId / parentSpanId, the provider and the request's model (report.mjs REQUEST).
 import http from "node:http";
 import https from "node:https";
 import { once } from "node:events";
@@ -22,7 +29,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { timingSafeEqual, createHash } from "node:crypto";
-import { createMoorAI } from "../packages/agent-sdk/src/runtime.mjs";
+import { createMoorAI, resolveSettings } from "../packages/agent-sdk/src/runtime.mjs";
+import { createTracer, applyTraceHeaders, cleanModel } from "./trace-w3c.mjs";
+import { createTrail } from "./trail.mjs";
 import { REASON } from "../cli/provenance.mjs";
 import { isLoopback } from "../cli/moorai-serve.mjs";
 import * as anthropic from "./anthropic.mjs";
@@ -33,7 +42,7 @@ import { createSplitter } from "./sse.mjs";
 import { createLineSplitter } from "./ndjson.mjs";
 import { strictBytes, PROBLEM_TEXT } from "./json-strict.mjs";
 import { createChecker } from "./check.mjs";
-import { wrapReporter, unevaluatedReporter, uncheckedReporter, refusalMessage } from "./report.mjs";
+import { wrapReporter, unevaluatedReporter, uncheckedReporter, refusalMessage, REQUEST } from "./report.mjs";
 import { createUncheckedTracker, DEFAULT_MAX as UNCHECKED_MAX, MAX_ID } from "./unchecked.mjs";
 import { PATH as CHECKED_PATH, MAX_BATCH as CHECKED_BATCH } from "./checked-notify.mjs";
 import { createGate } from "./credentials.mjs";
@@ -60,6 +69,9 @@ export function defaultRoutes(host) {
   return r;
 }
 export const TOKEN_HEADER = "x-moorai-proxy-token";
+// The agent session a request belongs to, as Claude Code states it to its model endpoint (measured, Claude
+// Code 2.1.295: the same id as its hooks' session_id). Read for the trace id only; forwarded as sent.
+export const SESSION_HEADER = "x-claude-code-session-id";
 export const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER]);
 const HOP_RES = new Set(["connection", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"]);
 
@@ -117,6 +129,15 @@ function largeNumbers() {
     attach: (calls) => (list.length ? calls.map((c) => ({ ...c, numbers: [...(c.numbers || []), ...list] })) : calls)
   };
 }
+// The provider a request goes to, by the API it speaks, else by the default route it took.
+const PROVIDER_OF = { anthropic: "anthropic", openai: "openai", gemini: "google", ollama: "ollama" };
+const PROVIDER_OF_ROUTE = { "/anthropic": "anthropic", "/openai": "openai", "/gemini": "google", "/ollama": "ollama" };
+const providerOf = (api, prefix) => (api && PROVIDER_OF[api.NAME]) || PROVIDER_OF_ROUTE[prefix] || "other";
+// The request's model: Gemini names it in the path (…/models/{model}:generateContent), the others in the body.
+function modelOf(api, rest, json) {
+  if (api === gemini) { let p = rest; try { p = decodeURIComponent(rest); } catch { /* as sent */ } const m = /\/(?:models|tunedModels|endpoints)\/([^/]+):[A-Za-z]+$/.exec(p); return cleanModel(m && m[1]); }
+  return cleanModel(json && json.model);
+}
 const parseJson = (buf) => { try { const v = JSON.parse(buf.toString("utf8")); return v && typeof v === "object" ? v : null; } catch { return null; } };
 
 // Proxy-generated errors on a parsed path take that provider's documented error shape; elsewhere a shape
@@ -137,6 +158,8 @@ export async function createProxy(opts = {}) {
   const rt = await createMoorAI({ policyFile: o.policyFile, policy: o.policy, serviceId: o.serviceId, headlessAsk: enforce ? o.headlessAsk : "pass-through", console: o.console, fetch: o.fetch, env: o.env, systemConfig: o.systemConfig, surface: "model-proxy" });
   await rt.ready();
   wrapReporter(rt, { enforce });
+  const consoleConfig = resolveSettings({ console: o.console }, { env: o.env || process.env, system: o.systemConfig }).config;
+  const tracer = createTracer({ tenantKey: consoleConfig.installToken, agentName: rt.identity.agentName });
   const unevaluated = unevaluatedReporter(rt);
   // What to do with content the proxy cannot judge (an item past a scan cap, an engine error, the evaluation
   // budget run out): cli/fail-mode.mjs decides — the root-owned admin binding, then the signed policy's
@@ -156,6 +179,8 @@ export async function createProxy(opts = {}) {
   };
   const checker = createChecker(rt, { enforce, cwd: o.cwd || process.cwd(), onUnevaluated: unevaluated, maxItems: o.maxScanItems, itemCap: o.maxScanChars, failClosed: (policy) => enforce && failMode(policy) === "closed", contextPrivacy });
   const version = (() => { try { return JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version; } catch { return "unknown"; } })();
+  // The allow trail (trail.mjs): one record per forwarded model request, when the signed policy turns it on.
+  const trail = createTrail(rt, { config: consoleConfig, appVersion: version });
   const routes = Object.entries(o.routes).map(([prefix, base]) => ({ prefix: prefix === "/" ? "" : prefix.replace(/\/+$/, ""), base: String(base).replace(/\/+$/, "") })).sort((a, b) => b.prefix.length - a.prefix.length);
   const agents = { "http:": new http.Agent({ keepAlive: true, maxSockets: o.maxConnections }), "https:": new https.Agent({ keepAlive: true, maxSockets: o.maxConnections }) };
   const loopbackBind = isLoopback(o.host);
@@ -218,11 +243,12 @@ export async function createProxy(opts = {}) {
     });
   }
 
-  function upstreamHeaders(req, length, swaps) {
+  function upstreamHeaders(req, length, swaps, trace) {
     const h = {};
     for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k)) h[k] = v;
     // After the hop-by-hop strip, so a swapped value is never dropped; the keys are lower-case, as Node's.
     if (swaps) for (const [k, v] of swaps) h[k] = v;
+    applyTraceHeaders(h, trace);
     h["accept-encoding"] = "identity";
     h["content-length"] = String(length);
     return h;
@@ -407,6 +433,10 @@ export async function createProxy(opts = {}) {
     const rest = path.slice(route.prefix.length) || "/";
     const api = apiFor(req.method, rest);
     const url = new URL(route.base + rest + query);
+    const current = REQUEST.getStore();
+    current.trace = tracer({ traceparent: req.headers.traceparent, tracestate: req.headers.tracestate, sessionKey: req.headers[SESSION_HEADER] });
+    current.provider = providerOf(api, route.prefix);
+    if (api === gemini) current.model = modelOf(api, rest, null);
     const dh = decoy.request(req.rawHeaders, query);
     if (dh) { req.resume(); return refuseDecoy(res, api, dh, "header"); }
     let swaps = null;
@@ -430,6 +460,7 @@ export async function createProxy(opts = {}) {
     const fm = failMode((await rt.ready()).policy);
     if (api) {
       const json = parseJson(body);
+      if (api !== gemini) current.model = modelOf(api, rest, json);
       const items = json ? api.outboundItems(json) : [];
       if (enforce && items.length) {
         let v = null;
@@ -446,9 +477,10 @@ export async function createProxy(opts = {}) {
     }
 
     const lib = url.protocol === "https:" ? https : http;
+    if (api) trail.record(await rt.ready(), current, req.headers[SESSION_HEADER] ? "claude-code" : rt.identity.agentName);
     stats.forwarded++;
     await new Promise((resolve) => {
-      const up = lib.request(url, { method: req.method, headers: upstreamHeaders(req, body.length, swaps), agent: agents[url.protocol] }, (raw) => {
+      const up = lib.request(url, { method: req.method, headers: upstreamHeaders(req, body.length, swaps, current.trace), agent: agents[url.protocol] }, (raw) => {
         const ur = creds ? maskResponse(raw, creds.secrets) : raw;
         if (ur.refuse) { send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: the upstream answered with a content coding the proxy cannot check for an echoed credential"), NO_RETRY); return resolve(); }
         onResponse(ur, res, api, held, later, fm).catch(() => { if (!res.headersSent) send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: upstream response failed")); else res.destroy(); }).finally(resolve);
@@ -481,7 +513,7 @@ export async function createProxy(opts = {}) {
   const server = http.createServer(async (req, res) => {
     const t0 = performance.now();
     res.on("finish", () => log(req, res.statusCode, t0));
-    try { await handle(req, res); } catch (e) {
+    try { await REQUEST.run({}, () => handle(req, res)); } catch (e) {
       const status = e instanceof HttpError ? e.status : 500;
       if (status === 413 || status === 529 || status === 503) req.resume();
       send(res, status, errorPayload(e.api, status, e instanceof HttpError ? `MoorAI model-proxy: ${e.message}` : "MoorAI model-proxy: internal error"));
@@ -494,6 +526,6 @@ export async function createProxy(opts = {}) {
   await new Promise((res, rej) => { server.once("error", rej); server.listen(o.port, o.host, () => { server.off("error", rej); res(); }); });
   const addr = server.address();
   const url = `http://${addr.family === "IPv6" ? `[${addr.address}]` : addr.address}:${addr.port}`;
-  const close = async () => { await new Promise((r) => server.close(() => r())); server.closeAllConnections?.(); for (const a of Object.values(agents)) a.destroy(); if (tracker) tracker.stop(); await rt.flush(); };
+  const close = async () => { await new Promise((r) => server.close(() => r())); server.closeAllConnections?.(); for (const a of Object.values(agents)) a.destroy(); if (tracker) tracker.stop(); await trail.close(); await rt.flush(); };
   return { server, url, runtime: rt, close, stats: () => ({ ...stats, inflight, cache: checker.cacheSize(), ...(tracker ? { unchecked: tracker.stats() } : {}) }) };
 }

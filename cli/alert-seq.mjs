@@ -53,11 +53,11 @@ function breakIfAbandoned(lock) {
   } catch { /* gone already, or not removable: wait it out */ }
 }
 
-function acquire(lock) {
-  const until = Date.now() + LOCK_WAIT_MS;
+function acquire(lock, waitMs, mode) {
+  const until = Date.now() + waitMs;
   for (;;) {
     try {
-      const fd = openSync(lock, "wx");
+      const fd = mode === undefined ? openSync(lock, "wx") : openSync(lock, "wx", mode);
       try { writeSync(fd, String(process.pid)); } catch { /* an empty lock still holds */ }
       return fd;
     } catch (e) {
@@ -69,18 +69,27 @@ function acquire(lock) {
   }
 }
 
-// Runs fn() holding the lock and returns its result, or returns null without running it.
-function withLock(dir, fn) {
-  const lock = join(dir, `.chain-${ALERT_CHAIN}.lock`);
-  try { mkdirSync(dir, { recursive: true }); } catch { /* the open below reports it */ }
-  const fd = acquire(lock);
-  if (fd === null) return null;
-  try { return fn(); } finally {
+// The lock discipline above, for any lock file: runs fn() holding `lock` and returns { held: true, value },
+// or { held: false } without running it when the lock is not had within waitMs. A lock is broken only when
+// its holder is gone (breakIfAbandoned). `mode` is the lock file's creation mode (default: the process
+// umask). cli/context-tree.mjs takes its per-session append lock through this.
+export function withFileLock(lock, fn, { waitMs = LOCK_WAIT_MS, mode } = {}) {
+  const fd = acquire(lock, waitMs, mode);
+  if (fd === null) return { held: false };
+  try { return { held: true, value: fn() }; } finally {
     let mine = false;
     try { mine = sameFile(fstatSync(fd), lstatSync(lock)); } catch { /* gone */ }
     try { closeSync(fd); } catch { /* closed */ }
     if (mine) { try { unlinkSync(lock); } catch { /* gone */ } }
   }
+}
+
+// Runs fn() holding the lock and returns its result, or returns null without running it.
+function withLock(dir, fn) {
+  const lock = join(dir, `.chain-${ALERT_CHAIN}.lock`);
+  try { mkdirSync(dir, { recursive: true }); } catch { /* the open below reports it */ }
+  const r = withFileLock(lock, fn);
+  return r.held ? r.value : null;
 }
 
 // Stamps `alert` in place with { seq, chainHead } and returns it. `dir` is injectable for tests.

@@ -51,7 +51,8 @@ or `GOOGLE_VERTEX_BASE_URL`), or a gateway in front of either.
 The client's own API key goes upstream untouched. That covers `x-api-key`, `Authorization`,
 `anthropic-version`, `anthropic-beta`, `OpenAI-Organization` and `x-goog-api-key`. The proxy never reads, stores, logs or
 reports them. The exception is `--credentials`: the agent then holds a placeholder instead of the key, and
-the proxy swaps the real key in (see [Placeholder credentials](#placeholder-credentials)).
+the proxy swaps the real key in (see [Placeholder credentials](#placeholder-credentials)). The other
+exception is `traceparent` and `tracestate`, which carry this hop's trace (see [Trace context](#trace-context)).
 
 ## Provider APIs it parses
 
@@ -842,9 +843,65 @@ moorai-serve --model-proxy-url http://127.0.0.1:8791                    # sideca
   model and the tool. A lost batch (`moorai-serve` restarted, proxy busy) costs a false alert, never a
   verdict. Both processes keep their state in memory, so a restart forgets it.
 
+## Trace context
+
+Every request the proxy forwards, on every route and provider, carries a W3C Trace Context
+([www.w3.org/TR/trace-context](https://www.w3.org/TR/trace-context/)) for its hop, so the provider side, an
+APM and the console can join the agent's action, this model call and what follows from it.
+
+- **`traceparent`** is set to a new span of:
+  - the incoming trace, when the request carries a valid `traceparent` (its trace-id kept, its parent-id
+    becoming the span's parent, its sampled flag kept). A version above `00` is read by the `00` layout;
+  - else the agent session's trace, when the request names its session in `X-Claude-Code-Session-Id`.
+    Claude Code sends that header on every model request, with the same id its hooks receive as
+    `session_id` (measured on Claude Code 2.1.295). The trace-id is `traceIdFor` (`cli/trace-context.mjs`): a
+    keyed hash under the install token, the same id the hook derives for that session, never the id itself;
+  - else a new trace, sent sampled.
+- **`tracestate`** gets the entry `moorai=a:model-proxy` first. Any earlier `moorai` entry is removed. The
+  other entries keep their order, up to 32 in total. If adding `moorai` makes 33, one entry is dropped: an
+  entry over 128 characters if there is one, otherwise the last. A client `tracestate` that is not a valid W3C
+  list (a member outside the key/value grammar, or more than 32 members) is not sent on. When a key repeats,
+  only its first entry is kept.
+- **An invalid or missing `traceparent`** starts a new trace, and the client's `tracestate` is not sent on.
+  W3C: a `tracestate` with no valid `traceparent` "MUST be discarded". Those two header values are the only
+  ones the client sent that do not reach the provider as sent. `X-Claude-Code-Session-Id` goes on unchanged.
+- **Every alert of the request** (its report-only checks, which run after the response, included) carries
+  `traceId`, `spanId` (the span sent upstream), `parentSpanId` (the incoming span, when there was one),
+  `provider` (`anthropic`, `openai`, `google`, `ollama` by the API the request speaks, else by its default
+  route, else `other`) and `model`: the request's model string (the body's `model`, or the Gemini path's
+  `models/<model>`), sent only if it is at most 64 characters of `[A-Za-z0-9._:/@-]`. An alert outside a
+  request (the skip alert's sweep) carries none. No header value is ever logged or reported.
+- **Providers accept it.** A recipient "SHOULD ignore unrecognized header" fields (RFC 9110 §5.1). With fake keys, the
+  Anthropic, OpenAI and Gemini APIs answered the same status with and without `traceparent` / `tracestate`
+  (401, 401, 400). A real Ollama `/api/chat` through the proxy answered 200.
+- **Cost**, measured (M-series Mac, node 22, n=100k): about 2 µs per request, or 4 µs when the trace-id is
+  derived from the session id.
+
+## Allow trail
+
+With the allow trail on (`actionTrail: "allowed"`, read only from the console-signed policy the device
+verified; a `--policy-file` or options policy never turns it on), the proxy queues one record per model
+request it forwards, so the console sees which agent used which model, and how often, and not only the
+requests that raised an alert. It uses the hook's allow trail (`cli/action-trail.mjs`): the same record
+builder, the same queue in `~/.moorai` with one `seq` shared with the hook's records, and the same flush to
+`POST /api/actions`. The flush runs in the proxy's process, when enqueue says one is due, on the queue's age
+rule (checked every 30 s), and at shutdown.
+
+- **A record** carries tool `model-proxy:<provider>`, `provider`, `model` (validated as on alerts),
+  decision `allow`, basis `default`, the signed policy's `iat`, `agentName` (`claude-code` when the request
+  names a Claude Code session, else `model-proxy`), MoorAI's version, the device identity alerts carry, and
+  `traceId` / `spanId` / `parentSpanId`. Never content, a header value, a session id or a hash of one.
+- **Which requests.** A model request on a parsed path (Messages, Chat Completions, generateContent, Ollama
+  chat / generate) that was forwarded. A request the proxy refused is an alert, not a trail record. An
+  unparsed path (`GET /v1/models`, say) is not recorded.
+- **Off** with the trail off, with an unverified policy, or on an unenrolled device: nothing is queued.
+- **Cost**, measured: 160 µs per forwarded request with the trail on (the locked append to the queue file),
+  nothing with it off.
+
 ## Tests
 
 ```bash
+node --test --import ./test/hermetic-env.mjs test/trace-proxy.test.mjs test/trace-proxy-trail.test.mjs
 node --test --import ./test/hermetic-env.mjs test/model-proxy.test.mjs test/model-proxy-enforce.test.mjs test/model-proxy-credentials.test.mjs \
   test/model-proxy-toolcall.test.mjs test/model-proxy-toolcall-local.test.mjs test/model-proxy-gemini.test.mjs test/serve-unchecked.test.mjs \
   test/model-proxy-connect-timeout.test.mjs test/model-proxy-ollama.test.mjs test/model-proxy-function-rules.test.mjs \

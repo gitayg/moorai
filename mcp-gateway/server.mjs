@@ -5,13 +5,19 @@
 //     Mcp-Method, Mcp-Name, Mcp-Param-*); no sessions, no GET stream, no resumption.
 //   * 2025-03-26 .. 2025-11-25: Mcp-Session-Id on the initialize response and every later request,
 //     DELETE to end a session, GET for a server-initiated SSE stream, Last-Event-ID resumption.
-// Every end-to-end header goes upstream as the client sent it (Authorization included, never logged);
+// Every end-to-end header goes upstream as the client sent it (Authorization included, never logged),
+// but traceparent / tracestate, which carry this hop's trace (below);
 // every response header comes back (Mcp-Session-Id, WWW-Authenticate included). Only POST bodies are
 // gated, and only responses are scanned — the JSON body, or each SSE event before it is forwarded.
 // With placeholder credentials configured (cfg.credentials, ../model-proxy/credentials.mjs), a header
 // holding `moorai-ph:<name>` has its value replaced by the bound secret on the bound route only, any other
 // placeholder use is refused before the body is read, and every upstream response is masked for the bound
 // secrets (../model-proxy/credential-mask.mjs) before anything reads it. Without them, nothing changes.
+// Every request forwarded upstream carries a W3C traceparent for this hop (../model-proxy/trace-w3c.mjs):
+// the client's valid traceparent is continued (new span, its span the parent), anything else starts a new
+// trace; the moorai entry is merged into tracestate. The gateway knows no agent session (Mcp-Session-Id is
+// the transport's, and Claude Code sends no session header to an HTTP MCP server), so it never derives
+// the session's trace itself. The body, `_meta` included, is forwarded as the client sent it.
 import http from "node:http";
 import https from "node:https";
 import { pipeline } from "node:stream";
@@ -24,7 +30,8 @@ import { maskResponse } from "../model-proxy/credential-mask.mjs";
 import { createGuard, blockedCall } from "./guard.mjs";
 import { failClosed, failReason, alertFailClosed } from "./fail.mjs";
 import { createSseFramer, sseEvent } from "./sse.mjs";
-import { reportOnce, alertSchema, alertTooLarge, alertCooldown, withSession, auditCall } from "./report.mjs";
+import { reportOnce, alertSchema, alertTooLarge, alertCooldown, withSession, withTrace, auditCall, CONFIG, IDENTITY } from "./report.mjs";
+import { createTracer, applyTraceHeaders } from "../model-proxy/trace-w3c.mjs";
 import { parseBody, parseLenient, validateClientBody, validateHeaderPv, validateServerMessage, MAX_DEPTH } from "./validate.mjs";
 import { createCooldown } from "./cooldown.mjs";
 import { countCall } from "./usage.mjs";
@@ -200,7 +207,9 @@ export function createGatewayServer(cfg) {
     if (cooldown.noteRefusal(ck)) alertCooldown(route.server, cooldown.seconds);
   }
 
-  async function handle(req, res) {
+  const tracer = createTracer({ tenantKey: CONFIG.installToken, agentName: IDENTITY.agentName });
+
+  async function handle(req, res, trace) {
     // DNS rebinding: a loopback-only gateway answers only to loopback Host names and loopback / listed
     // browser Origins (spec: "Servers MUST validate the Origin header").
     if (!cfg.allowRemote && !hostOk(req.headers.host)) return sendJson(res, 403, rpcError(null, -32600, "Forbidden: Host is not loopback"));
@@ -331,6 +340,7 @@ export function createGatewayServer(cfg) {
     const headers = {};
     for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k)) headers[k] = v;
     if (swaps) for (const [k, v] of swaps) headers[k] = v; // after the hop-by-hop strip; keys lower-case, as Node's
+    applyTraceHeaders(headers, trace);
     headers["accept-encoding"] = "identity"; // a compressed body could not be scanned
     if (body.length || req.method === "POST") headers["content-length"] = String(body.length);
     const lib = target.protocol === "https:" ? https : http;
@@ -357,9 +367,10 @@ export function createGatewayServer(cfg) {
   }
 
   // Every alert this request raises, its upstream response included, carries the keyed hash of its
-  // Mcp-Session-Id (report.mjs withSession); a request without one carries none.
+  // Mcp-Session-Id (report.mjs withSession); a request without one carries none. And this hop's span.
   const server = http.createServer((req, res) => {
-    withSession(req.headers["mcp-session-id"], () => handle(req, res)).catch(() => { if (!res.headersSent) sendJson(res, 500, rpcError(null, -32603, "Gateway error")); else res.destroy(); });
+    const trace = tracer({ traceparent: req.headers.traceparent, tracestate: req.headers.tracestate });
+    withSession(req.headers["mcp-session-id"], () => withTrace(trace, () => handle(req, res, trace))).catch(() => { if (!res.headersSent) sendJson(res, 500, rpcError(null, -32603, "Gateway error")); else res.destroy(); });
   });
   server.guards = [...routes.values()].map((e) => e.guard);
   return server;

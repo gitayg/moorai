@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "1.15.3",
+  "version": "1.16.0",
   "license": "MIT",
   "description": "MoorAI agent — AI security at the point. Runtime guardrails for AI agents, apps and APIs (community edition, MIT)",
   "type": "module",
@@ -20,6 +20,7 @@
     "moorai-shadow": "cli/moorai-shadow.mjs",
     "moorai-compliance": "cli/moorai-compliance.mjs",
     "moorai-verify-chain": "cli/moorai-verify-chain.mjs",
+    "moorai-context-proof": "cli/moorai-context-proof.mjs",
     "moorai-stix": "cli/moorai-stix.mjs",
     "moorai-honeytokens": "cli/moorai-honeytokens.mjs",
     "moorai-attest": "cli/moorai-attest.mjs",

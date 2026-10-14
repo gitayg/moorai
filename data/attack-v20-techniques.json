@@ -1,0 +1,724 @@
+{
+  "_source": "MITRE ATT&CK Enterprise v20.0, enterprise-attack.json from https://github.com/mitre-attack/attack-stix-data/releases/tag/v20.0 (x-mitre-collection version 20.0, modified 2026-10-13T17:53:10.145Z; sha256 81113ba98afa2928f3dcff62022539f7ce30c315c32e14422f11ff95ce534352). Release notes: https://attack.mitre.org/resources/updates/ (v20, 2026-10-13). Regenerate from that file; do not hand-edit.",
+  "_note": "A slice, not the whole matrix: every technique id data/threats.json credits under `attack`, every id in data/attack.js ATTACK_SCOPE, and the parent of each sub-technique. `created` is MITRE's object creation date (2026-09 marks the v20 additions). `revoked` lists the v19 Impair Defenses ids, revoked when Defense Evasion split into Stealth and Defense Impairment, so a mapping that reaches for one fails with its replacement named.",
+  "version": "20.0",
+  "domain": "enterprise-attack",
+  "counts": {
+    "activeTechniques": 227,
+    "activeSubTechniques": 479,
+    "inSlice": 96
+  },
+  "techniques": {
+    "T1003": {
+      "name": "OS Credential Dumping",
+      "tactics": [
+        "credential-access"
+      ],
+      "created": "2017-05-31"
+    },
+    "T1003.008": {
+      "name": "/etc/passwd and /etc/shadow",
+      "tactics": [
+        "credential-access"
+      ],
+      "created": "2020-02-11"
+    },
+    "T1016": {
+      "name": "System Network Configuration Discovery",
+      "tactics": [
+        "discovery"
+      ],
+      "created": "2017-05-31"
+    },
+    "T1016.001": {
+      "name": "Internet Connection Discovery",
+      "tactics": [
+        "discovery"
+      ],
+      "created": "2021-03-17"
+    },
+    "T1027": {
+      "name": "Obfuscated Files or Information",
+      "tactics": [
+        "stealth"
+      ],
+      "created": "2017-05-31"
+    },
+    "T1027.010": {
+      "name": "Command Obfuscation",
+      "tactics": [
+        "stealth"
+      ],
+      "created": "2023-03-14"
+    },
+    "T1027.018": {
+      "name": "Invisible Unicode",
+      "tactics": [
+        "stealth"
+      ],
+      "created": "2026-04-22"
+    },
+    "T1030": {
+      "name": "Data Transfer Size Limits",
+      "tactics": [
+        "exfiltration"
+      ],
+      "created": "2017-05-31"
+    },
+    "T1048": {
+      "name": "Exfiltration Over Alternative Protocol",
+      "tactics": [
+        "exfiltration"
+      ],
+      "created": "2017-05-31"
+    },
+    "T1048.003": {
+      "name": "Exfiltration Over Unencrypted Non-C2 Protocol",
+      "tactics": [
+        "exfiltration"
+      ],
+      "created": "2020-03-15"
+    },
+    "T1053": {
+      "name": "Scheduled Task/Job",
+      "tactics": [
+        "execution",
+        "persistence",
+        "privilege-escalation"
+      ],
+      "created": "2017-05-31"
+    },
+    "T1053.003": {
+      "name": "Cron",
+      "tactics": [
+        "execution",
+        "persistence",
+        "privilege-escalation"
+      ],
+      "created": "2019-12-03"
+    },
+    "T1059": {
+      "name": "Command and Scripting Interpreter",
+      "tactics": [
+        "execution"
+      ],
+      "created": "2017-05-31"
+    },
+    "T1059.001": {
+      "name": "PowerShell",
+      "tactics": [
+        "execution"
+      ],
+      "created": "2020-03-09"
+    },
+    "T1059.004": {
+      "name": "Unix Shell",
+      "tactics": [
+        "execution"
+      ],
+      "created": "2020-03-09"
+    },
+    "T1059.006": {
+      "name": "Python",
+      "tactics": [
+        "execution"
+      ],
+      "created": "2020-03-09"
+    },
+    "T1059.013": {
+      "name": "Container CLI/API",
+      "tactics": [
+        "execution"
+      ],
+      "created": "2025-06-15"
+    },
+    "T1070": {
+      "name": "Indicator Removal",
+      "tactics": [
+        "stealth"
+      ],
+      "created": "2017-05-31"
+    },
+    "T1070.003": {
+      "name": "Clear Command History",
+      "tactics": [
+        "stealth"
+      ],
+      "created": "2020-01-31"
+    },
+    "T1074": {
+      "name": "Data Staged",
+      "tactics": [
+        "collection"
+      ],
+      "created": "2017-05-31"
+    },
+    "T1074.001": {
+      "name": "Local Data Staging",
+      "tactics": [
+        "collection"
+      ],
+      "created": "2020-03-13"
+    },
+    "T1078": {
+      "name": "Valid Accounts",
+      "tactics": [
+        "stealth",
+        "persistence",
+        "privilege-escalation",
+        "initial-access"
+      ],
+      "created": "2017-05-31"
+    },
+    "T1078.004": {
+      "name": "Cloud Accounts",
+      "tactics": [
+        "stealth",
+        "persistence",
+        "privilege-escalation",
+        "initial-access"
+      ],
+      "created": "2020-03-13"
+    },
+    "T1098": {
+      "name": "Account Manipulation",
+      "tactics": [
+        "persistence",
+        "privilege-escalation"
+      ],
+      "created": "2017-05-31"
+    },
+    "T1098.001": {
+      "name": "Additional Cloud Credentials",
+      "tactics": [
+        "persistence",
+        "privilege-escalation"
+      ],
+      "created": "2020-01-19"
+    },
+    "T1098.003": {
+      "name": "Additional Cloud Roles",
+      "tactics": [
+        "persistence",
+        "privilege-escalation"
+      ],
+      "created": "2020-01-19"
+    },
+    "T1098.004": {
+      "name": "SSH Authorized Keys",
+      "tactics": [
+        "persistence",
+        "privilege-escalation"
+      ],
+      "created": "2020-06-24"
+    },
+    "T1105": {
+      "name": "Ingress Tool Transfer",
+      "tactics": [
+        "command-and-control"
+      ],
+      "created": "2017-05-31"
+    },
+    "T1136": {
+      "name": "Create Account",
+      "tactics": [
+        "persistence"
+      ],
+      "created": "2017-12-14"
+    },
+    "T1136.001": {
+      "name": "Local Account",
+      "tactics": [
+        "persistence"
+      ],
+      "created": "2020-01-28"
+    },
+    "T1136.003": {
+      "name": "Cloud Account",
+      "tactics": [
+        "persistence"
+      ],
+      "created": "2020-01-29"
+    },
+    "T1176": {
+      "name": "Software Extensions",
+      "tactics": [
+        "persistence"
+      ],
+      "created": "2018-01-16"
+    },
+    "T1176.001": {
+      "name": "Browser Extensions",
+      "tactics": [
+        "persistence"
+      ],
+      "created": "2025-03-30"
+    },
+    "T1176.002": {
+      "name": "IDE Extensions",
+      "tactics": [
+        "persistence"
+      ],
+      "created": "2025-03-30"
+    },
+    "T1195": {
+      "name": "Supply Chain Compromise",
+      "tactics": [
+        "initial-access"
+      ],
+      "created": "2018-04-18"
+    },
+    "T1195.001": {
+      "name": "Compromise Software Dependencies and Development Tools",
+      "tactics": [
+        "initial-access"
+      ],
+      "created": "2020-03-11"
+    },
+    "T1204": {
+      "name": "User Execution",
+      "tactics": [
+        "execution"
+      ],
+      "created": "2018-04-18"
+    },
+    "T1204.001": {
+      "name": "Malicious Link",
+      "tactics": [
+        "execution"
+      ],
+      "created": "2020-03-11"
+    },
+    "T1204.002": {
+      "name": "Malicious File",
+      "tactics": [
+        "execution"
+      ],
+      "created": "2020-03-11"
+    },
+    "T1204.004": {
+      "name": "Malicious Copy and Paste",
+      "tactics": [
+        "execution"
+      ],
+      "created": "2025-03-18"
+    },
+    "T1204.005": {
+      "name": "Malicious Library",
+      "tactics": [
+        "execution"
+      ],
+      "created": "2025-05-22"
+    },
+    "T1485": {
+      "name": "Data Destruction",
+      "tactics": [
+        "impact"
+      ],
+      "created": "2019-03-14"
+    },
+    "T1490": {
+      "name": "Inhibit System Recovery",
+      "tactics": [
+        "impact"
+      ],
+      "created": "2019-04-02"
+    },
+    "T1496": {
+      "name": "Resource Hijacking",
+      "tactics": [
+        "impact"
+      ],
+      "created": "2019-04-17"
+    },
+    "T1496.004": {
+      "name": "Cloud Service Hijacking",
+      "tactics": [
+        "impact"
+      ],
+      "created": "2024-09-25"
+    },
+    "T1528": {
+      "name": "Steal Application Access Token",
+      "tactics": [
+        "credential-access"
+      ],
+      "created": "2019-09-04"
+    },
+    "T1543": {
+      "name": "Create or Modify System Process",
+      "tactics": [
+        "persistence",
+        "privilege-escalation"
+      ],
+      "created": "2020-01-10"
+    },
+    "T1543.001": {
+      "name": "Launch Agent",
+      "tactics": [
+        "persistence",
+        "privilege-escalation"
+      ],
+      "created": "2020-01-17"
+    },
+    "T1546": {
+      "name": "Event Triggered Execution",
+      "tactics": [
+        "privilege-escalation",
+        "persistence"
+      ],
+      "created": "2020-01-22"
+    },
+    "T1546.004": {
+      "name": "Unix Shell Configuration Modification",
+      "tactics": [
+        "privilege-escalation",
+        "persistence"
+      ],
+      "created": "2020-01-24"
+    },
+    "T1548": {
+      "name": "Abuse Elevation Control Mechanism",
+      "tactics": [
+        "privilege-escalation"
+      ],
+      "created": "2020-01-30"
+    },
+    "T1548.003": {
+      "name": "Sudo and Sudo Caching",
+      "tactics": [
+        "privilege-escalation"
+      ],
+      "created": "2020-01-30"
+    },
+    "T1552": {
+      "name": "Unsecured Credentials",
+      "tactics": [
+        "credential-access"
+      ],
+      "created": "2020-02-04"
+    },
+    "T1552.001": {
+      "name": "Credentials In Files",
+      "tactics": [
+        "credential-access"
+      ],
+      "created": "2020-02-04"
+    },
+    "T1552.003": {
+      "name": "Shell History",
+      "tactics": [
+        "credential-access"
+      ],
+      "created": "2020-02-04"
+    },
+    "T1552.004": {
+      "name": "Private Keys",
+      "tactics": [
+        "credential-access"
+      ],
+      "created": "2020-02-04"
+    },
+    "T1552.005": {
+      "name": "Cloud Instance Metadata API",
+      "tactics": [
+        "credential-access"
+      ],
+      "created": "2020-02-11"
+    },
+    "T1552.008": {
+      "name": "Chat Messages",
+      "tactics": [
+        "credential-access"
+      ],
+      "created": "2023-03-14"
+    },
+    "T1553": {
+      "name": "Subvert Trust Controls",
+      "tactics": [
+        "defense-impairment"
+      ],
+      "created": "2020-02-05"
+    },
+    "T1553.001": {
+      "name": "Gatekeeper Bypass",
+      "tactics": [
+        "defense-impairment"
+      ],
+      "created": "2020-02-05"
+    },
+    "T1553.004": {
+      "name": "Install Root Certificate",
+      "tactics": [
+        "defense-impairment"
+      ],
+      "created": "2020-02-21"
+    },
+    "T1555": {
+      "name": "Credentials from Password Stores",
+      "tactics": [
+        "credential-access"
+      ],
+      "created": "2020-02-11"
+    },
+    "T1555.001": {
+      "name": "Keychain",
+      "tactics": [
+        "credential-access"
+      ],
+      "created": "2020-02-12"
+    },
+    "T1555.003": {
+      "name": "Credentials from Web Browsers",
+      "tactics": [
+        "credential-access"
+      ],
+      "created": "2020-02-12"
+    },
+    "T1557": {
+      "name": "Adversary-in-the-Middle",
+      "tactics": [
+        "credential-access",
+        "collection"
+      ],
+      "created": "2020-02-11"
+    },
+    "T1560": {
+      "name": "Archive Collected Data",
+      "tactics": [
+        "collection"
+      ],
+      "created": "2020-02-20"
+    },
+    "T1560.001": {
+      "name": "Archive via Utility",
+      "tactics": [
+        "collection"
+      ],
+      "created": "2020-02-20"
+    },
+    "T1561": {
+      "name": "Disk Wipe",
+      "tactics": [
+        "impact"
+      ],
+      "created": "2020-02-20"
+    },
+    "T1566": {
+      "name": "Phishing",
+      "tactics": [
+        "initial-access"
+      ],
+      "created": "2020-03-02"
+    },
+    "T1566.004": {
+      "name": "Spearphishing Voice",
+      "tactics": [
+        "initial-access"
+      ],
+      "created": "2023-09-07"
+    },
+    "T1567": {
+      "name": "Exfiltration Over Web Service",
+      "tactics": [
+        "exfiltration"
+      ],
+      "created": "2020-03-09"
+    },
+    "T1567.001": {
+      "name": "Exfiltration to Code Repository",
+      "tactics": [
+        "exfiltration"
+      ],
+      "created": "2020-03-09"
+    },
+    "T1567.002": {
+      "name": "Exfiltration to Cloud Storage",
+      "tactics": [
+        "exfiltration"
+      ],
+      "created": "2020-03-09"
+    },
+    "T1567.003": {
+      "name": "Exfiltration to Text Storage Sites",
+      "tactics": [
+        "exfiltration"
+      ],
+      "created": "2023-02-27"
+    },
+    "T1567.004": {
+      "name": "Exfiltration Over Webhook",
+      "tactics": [
+        "exfiltration"
+      ],
+      "created": "2023-07-20"
+    },
+    "T1588": {
+      "name": "Obtain Capabilities",
+      "tactics": [
+        "resource-development"
+      ],
+      "created": "2020-10-01"
+    },
+    "T1588.007": {
+      "name": "Artificial Intelligence",
+      "tactics": [
+        "resource-development"
+      ],
+      "created": "2024-03-11"
+    },
+    "T1608": {
+      "name": "Stage Capabilities",
+      "tactics": [
+        "resource-development"
+      ],
+      "created": "2021-03-17"
+    },
+    "T1608.007": {
+      "name": "AI Result Poisoning",
+      "tactics": [
+        "resource-development"
+      ],
+      "created": "2026-09-21"
+    },
+    "T1657": {
+      "name": "Financial Theft",
+      "tactics": [
+        "impact"
+      ],
+      "created": "2023-08-18"
+    },
+    "T1677": {
+      "name": "Poisoned Pipeline Execution",
+      "tactics": [
+        "execution"
+      ],
+      "created": "2025-05-22"
+    },
+    "T1682": {
+      "name": "Query Public AI Services",
+      "tactics": [
+        "reconnaissance"
+      ],
+      "created": "2026-03-25"
+    },
+    "T1683": {
+      "name": "Generate Content",
+      "tactics": [
+        "resource-development"
+      ],
+      "created": "2026-03-25"
+    },
+    "T1683.001": {
+      "name": "Written Content",
+      "tactics": [
+        "resource-development"
+      ],
+      "created": "2026-03-25"
+    },
+    "T1683.002": {
+      "name": "Audio-Visual Content",
+      "tactics": [
+        "resource-development"
+      ],
+      "created": "2026-03-25"
+    },
+    "T1684": {
+      "name": "Social Engineering",
+      "tactics": [
+        "stealth"
+      ],
+      "created": "2026-04-14"
+    },
+    "T1684.001": {
+      "name": "Impersonation",
+      "tactics": [
+        "stealth"
+      ],
+      "created": "2026-04-14"
+    },
+    "T1685": {
+      "name": "Disable or Modify Tools",
+      "tactics": [
+        "defense-impairment"
+      ],
+      "created": "2026-04-14"
+    },
+    "T1685.007": {
+      "name": "Impair Autonomous Defenses",
+      "tactics": [
+        "defense-impairment"
+      ],
+      "created": "2026-09-22"
+    },
+    "T1686": {
+      "name": "Disable or Modify System Firewall",
+      "tactics": [
+        "defense-impairment"
+      ],
+      "created": "2026-04-14"
+    },
+    "T1690": {
+      "name": "Prevent Command History Logging",
+      "tactics": [
+        "defense-impairment"
+      ],
+      "created": "2026-04-14"
+    },
+    "T1696": {
+      "name": "Anti-Automation Evasion",
+      "tactics": [
+        "stealth"
+      ],
+      "created": "2026-09-16"
+    },
+    "T1697": {
+      "name": "Steal Application Specific Passwords",
+      "tactics": [
+        "credential-access"
+      ],
+      "created": "2026-09-17"
+    },
+    "T1698": {
+      "name": "Indirect Prompt Injection",
+      "tactics": [
+        "execution"
+      ],
+      "created": "2026-09-18"
+    },
+    "T1699": {
+      "name": "Direct Prompt Injection",
+      "tactics": [
+        "execution"
+      ],
+      "created": "2026-09-18"
+    },
+    "T1700": {
+      "name": "AI-Enabled Exfiltration",
+      "tactics": [
+        "exfiltration"
+      ],
+      "created": "2026-09-22"
+    }
+  },
+  "revoked": {
+    "T1562": {
+      "name": "Impair Defenses",
+      "revokedBy": [
+        "T1685"
+      ]
+    },
+    "T1562.001": {
+      "name": "Disable or Modify Tools",
+      "revokedBy": [
+        "T1685"
+      ]
+    },
+    "T1562.004": {
+      "name": "Disable or Modify System Firewall",
+      "revokedBy": [
+        "T1686"
+      ]
+    }
+  }
+}

@@ -8,6 +8,9 @@
 // 2025-03-26 .. 2025-11-25 transport) also carries `session`: the keyed hash of that id (withSession).
 // A request without one (initialize, the 2026-07-28 transport) and work outside any request (the
 // reputation lookup, the usage flush) send no `session`.
+// Every alert raised while the gateway handles a request, its upstream response included, carries that
+// request's span (withTrace, ../model-proxy/trace-w3c.mjs): traceId, spanId and parentSpanId — the trace
+// the request carried in its traceparent header, or a new one. Hex only.
 import os from "node:os";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { loadConfig } from "../cli/config.mjs";
@@ -17,6 +20,7 @@ import { recordAction } from "../cli/signals.mjs";
 import { contentHash, actorHash, NO_KEY } from "../cli/content-hash.mjs";
 import { emitOtel } from "../cli/otel.mjs";
 import { serverMode, serviceWho, workloadIdentity } from "../cli/server-mode.mjs";
+import { traceFields } from "../model-proxy/trace-w3c.mjs";
 
 export const CONFIG = loadConfig();
 export const SERVER_MODE = serverMode();
@@ -39,7 +43,12 @@ export function sessionTag(raw) {
 // callbacks included) reads; a request with no session id runs with none, never an earlier request's.
 export function withSession(raw, fn) { return SESSION.run(sessionTag(raw), fn); }
 
-export function post(alert) {
+const TRACE = new AsyncLocalStorage();
+// Runs fn with the request's span (createTracer's result) as the trace every post() under it reads.
+export function withTrace(trace, fn) { return TRACE.run(trace, fn); }
+
+export function post(raw) {
+  const alert = { ...traceFields(TRACE.getStore()), ...raw };
   try { emitOtel(alert, { config: CONFIG, identity: IDENTITY }); } catch { /* telemetry is never enforcement */ }
   if (!isEnrolled(CONFIG)) return;
   const session = SESSION.getStore();

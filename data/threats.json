@@ -20,7 +20,9 @@
       "owaspAgentic": "string[] — every OWASP Top 10 for Agentic Applications (2026) risk, ASI01–ASI10, the rule's own mechanism addresses. Always an array; [] is a reviewed \"no credit\". Ids and titles: data/owasp-frameworks.js.",
       "owaspAgenticPartial": "optional { ASIxx: limit } — a bounded credit, as atlasPartial: the risk is addressed only over part of what the OWASP entry covers. Every key must also appear in owaspAgentic.",
       "owaspMcp": "string[] — every OWASP MCP Top 10 (2025, beta) risk, MCP01–MCP10, the rule's own mechanism addresses. Always an array; [] is a reviewed \"no credit\". Ids and titles: data/owasp-frameworks.js.",
-      "owaspMcpPartial": "optional { MCPxx: limit } — a bounded credit, as atlasPartial. Every key must also appear in owaspMcp."
+      "owaspMcpPartial": "optional { MCPxx: limit } — a bounded credit, as atlasPartial. Every key must also appear in owaspMcp.",
+      "attack": "{ id, coverage, reason }[] — every MITRE ATT&CK Enterprise v20 technique the threat genuinely corresponds to. coverage: full (a shipped mechanism addresses the technique as an AI agent MoorAI watches performs it), partial (part of it; reason states the bound) or none (the technique corresponds, but MoorAI ships no runtime mechanism for it). Coverage is a mechanism claim, not a detection rate. Always an array; [] is a reviewed \"no technique corresponds\". Ids come from data/attack-v20-techniques.json; read the tag through data/attack.js.",
+      "attackNote": "string, present only when `attack` is [] — one line on why no ATT&CK v20 technique corresponds to the threat."
     }
   },
   "sources": {
@@ -72,6 +74,8 @@
       "atlas": "AML.T0057",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "A person sharing data with an AI tool is not an adversary technique; the agent-driven exfiltration routes are credited on #59, #65, #71 and #78.",
       "stride": "Information Disclosure"
     },
     {
@@ -101,6 +105,13 @@
         "ASI01": "jailbreak and override phrasing typed into the prompt only"
       },
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1699",
+          "coverage": "full",
+          "reason": "eight prompt-stage detectors match override, jailbreak-template, prefix-forcing, persona and persuasion prompts typed to the model"
+        }
+      ],
       "stride": "Tampering"
     },
     {
@@ -134,6 +145,13 @@
       "owaspMcp": [
         "MCP06"
       ],
+      "attack": [
+        {
+          "id": "T1698",
+          "coverage": "full",
+          "reason": "override directives in fetched pages, files, command output, MCP results and sub-agent reports are scanned after the tool runs"
+        }
+      ],
       "stride": "Tampering"
     },
     {
@@ -155,6 +173,18 @@
       "atlas": "AML.T0053",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1195.001",
+          "coverage": "none",
+          "reason": "coaching entry only; the runtime scan of auto-loaded skill files is credited on #60"
+        },
+        {
+          "id": "T1176.001",
+          "coverage": "none",
+          "reason": "MoorAI does not inventory or judge browser extensions it did not ship"
+        }
+      ],
       "stride": "Elevation of Privilege"
     },
     {
@@ -176,6 +206,8 @@
       "atlas": "AML.T0053",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Over-broad plugin scopes are a configuration weakness, not an adversary technique.",
       "stride": "Elevation of Privilege"
     },
     {
@@ -196,6 +228,8 @@
       "atlas": "AML.T0053",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "An AI product surfacing documents a user may technically open is an authorisation gap, not an adversary technique.",
       "stride": "Information Disclosure"
     },
     {
@@ -217,6 +251,8 @@
       "atlas": "AML.T0010",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Unsanctioned AI use by an employee is not an adversary technique; an unknown process calling an AI API is reported by the posture heartbeat, outside this rule.",
       "stride": "Information Disclosure"
     },
     {
@@ -237,6 +273,8 @@
       "atlas": "AML.T0048",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Model error, not adversary behaviour.",
       "stride": "Repudiation"
     },
     {
@@ -258,6 +296,8 @@
       "atlas": "AML.T0057",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "A person sharing intellectual property with an AI tool is not an adversary technique.",
       "stride": "Information Disclosure"
     },
     {
@@ -279,6 +319,18 @@
       "atlas": "AML.T0048",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1566",
+          "coverage": "none",
+          "reason": "coaching only; MoorAI does not inspect inbound mail"
+        },
+        {
+          "id": "T1683.001",
+          "coverage": "none",
+          "reason": "the adversary's own content generation happens off the victim's devices"
+        }
+      ],
       "stride": "Spoofing"
     },
     {
@@ -300,6 +352,18 @@
       "atlas": "AML.T0048",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1657",
+          "coverage": "partial",
+          "reason": "bec-payment coaches when payment or bank-detail change wording reaches an AI tool; no sender or identity check"
+        },
+        {
+          "id": "T1684.001",
+          "coverage": "none",
+          "reason": "the impersonation itself is not detected"
+        }
+      ],
       "stride": "Spoofing"
     },
     {
@@ -321,6 +385,18 @@
       "atlas": "AML.T0048",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1683.002",
+          "coverage": "none",
+          "reason": "synthetic voice and video are not analysed"
+        },
+        {
+          "id": "T1684.001",
+          "coverage": "none",
+          "reason": "impersonation by call or video reaches the person, not an agent"
+        }
+      ],
       "stride": "Spoofing"
     },
     {
@@ -342,6 +418,13 @@
       "atlas": "AML.T0048",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1566.004",
+          "coverage": "none",
+          "reason": "voice and SMS lures reach the person, not an agent"
+        }
+      ],
       "stride": "Spoofing"
     },
     {
@@ -363,6 +446,8 @@
       "atlas": "AML.T0053",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "An agent acting for its user is the product working; the risky action classes are credited on #43, #47, #48 and #56.",
       "stride": "Elevation of Privilege"
     },
     {
@@ -384,6 +469,8 @@
       "atlas": "AML.T0057",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "A privacy obligation, not an adversary technique.",
       "stride": "Information Disclosure"
     },
     {
@@ -404,6 +491,8 @@
       "atlas": "AML.T0048",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Output bias is not adversary behaviour.",
       "stride": "Repudiation"
     },
     {
@@ -424,6 +513,13 @@
       "atlas": "AML.T0011",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1204.001",
+          "coverage": "partial",
+          "reason": "out-links warns on every link in a reply; it does not judge the destination (#75 does for deceptive ones)"
+        }
+      ],
       "stride": "Tampering"
     },
     {
@@ -445,6 +541,8 @@
       "atlas": "AML.T0057",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Data retention in a conversation is a governance risk, not an adversary technique.",
       "stride": "Information Disclosure"
     },
     {
@@ -466,6 +564,8 @@
       "atlas": "AML.T0057",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Meeting transcription by an approved assistant is a governance risk, not an adversary technique.",
       "stride": "Information Disclosure"
     },
     {
@@ -487,6 +587,8 @@
       "atlas": "AML.T0057",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Over-inclusive summaries are a governance risk, not an adversary technique.",
       "stride": "Information Disclosure"
     },
     {
@@ -513,6 +615,13 @@
         "ASI06": "content scanned before it is embedded; the store is not read at retrieval"
       },
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1698",
+          "coverage": "partial",
+          "reason": "rag-poisoning scans content headed into an index before it is embedded; content already indexed, or embedded without a MoorAI call, is not seen"
+        }
+      ],
       "stride": "Tampering"
     },
     {
@@ -542,6 +651,8 @@
         "ASI06": "instructions an agent writes into its own memory and instruction files"
       },
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "ATT&CK v20 has no technique for persistence through an agent's memory; ATLAS AML.T0080 covers it.",
       "stride": "Tampering"
     },
     {
@@ -563,6 +674,8 @@
       "atlas": "AML.T0053",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Over-permissioned agent design is a configuration weakness, not an adversary technique.",
       "stride": "Elevation of Privilege"
     },
     {
@@ -583,6 +696,8 @@
       "atlas": "AML.T0053",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "A tool misused through misinterpretation is not adversary behaviour; injected misuse is credited on #3, #40 and #59.",
       "stride": "Elevation of Privilege"
     },
     {
@@ -617,6 +732,13 @@
       "owaspMcpPartial": {
         "MCP09": "calls to servers off the approved allow-list; no discovery of deployed servers"
       },
+      "attack": [
+        {
+          "id": "T1195.001",
+          "coverage": "partial",
+          "reason": "server allow-list, first-launch reputation and tool-drift quarantine bound which MCP servers an agent loads; a new malicious package with a clean name scores good"
+        }
+      ],
       "stride": "Elevation of Privilege"
     },
     {
@@ -638,6 +760,13 @@
       "atlas": "AML.T0012",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1078.004",
+          "coverage": "none",
+          "reason": "MoorAI does not see sign-ins to an AI provider; identity-provider territory"
+        }
+      ],
       "stride": "Spoofing"
     },
     {
@@ -659,6 +788,8 @@
       "atlas": "AML.T0057",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Data left in history or workspace is a governance risk, not an adversary technique.",
       "stride": "Information Disclosure"
     },
     {
@@ -680,6 +811,13 @@
       "atlas": "AML.T0053",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1176.001",
+          "coverage": "none",
+          "reason": "MoorAI does not judge third-party browser extensions"
+        }
+      ],
       "stride": "Information Disclosure"
     },
     {
@@ -700,6 +838,8 @@
       "atlas": "AML.T0048",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Fabricated sources are model error; adversary-planted answers are T1608.007, credited on #70.",
       "stride": "Repudiation"
     },
     {
@@ -721,6 +861,13 @@
       "atlas": "AML.T0048",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1683.001",
+          "coverage": "none",
+          "reason": "generated invoices are not inspected and bank details are not verified"
+        }
+      ],
       "stride": "Spoofing"
     },
     {
@@ -742,6 +889,13 @@
       "atlas": "AML.T0048",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1683.002",
+          "coverage": "none",
+          "reason": "synthetic personas, photos and voices are not analysed"
+        }
+      ],
       "stride": "Spoofing"
     },
     {
@@ -763,6 +917,13 @@
       "atlas": "AML.T0011",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1204.004",
+          "coverage": "partial",
+          "reason": "out-code-exec flags runnable code and risky commands in a reply (code fences, PowerShell, curl to a shell) before a person pastes them; the terminal is not watched"
+        }
+      ],
       "stride": "Elevation of Privilege"
     },
     {
@@ -784,6 +945,8 @@
       "atlas": "AML.T0057",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Data residency is a governance obligation, not an adversary technique.",
       "stride": "Information Disclosure"
     },
     {
@@ -804,6 +967,8 @@
       "atlas": "AML.T0048",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Model error, not adversary behaviour.",
       "stride": "Repudiation"
     },
     {
@@ -824,6 +989,8 @@
       "atlas": "AML.T0048",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Human over-reliance, not adversary behaviour.",
       "stride": "Repudiation"
     },
     {
@@ -844,6 +1011,8 @@
       "atlas": "AML.T0057",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Context mixing inside one conversation is model behaviour, not an adversary technique.",
       "stride": "Information Disclosure"
     },
     {
@@ -865,6 +1034,8 @@
       "atlas": "AML.T0057",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Over-sharing an AI answer is a governance risk, not an adversary technique.",
       "stride": "Information Disclosure"
     },
     {
@@ -891,6 +1062,13 @@
         "ASI02": "runaway loops, call rate and session call budget only"
       },
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1496.004",
+          "coverage": "none",
+          "reason": "LLMjacking runs stolen keys from the adversary's own infrastructure, which no hook sees; the circuit breaker stops a looping agent, not a hijacker"
+        }
+      ],
       "stride": "Denial of Service"
     },
     {
@@ -917,6 +1095,13 @@
       "owaspMcpPartial": {
         "MCP01": "secret values in prompts and output; token lifetime and storage are not assessed"
       },
+      "attack": [
+        {
+          "id": "T1552.008",
+          "coverage": "partial",
+          "reason": "secret detectors keep a credential out of the AI conversation, where T1552.008 would collect it; the provider's chat store is not watched"
+        }
+      ],
       "stride": "Information Disclosure"
     },
     {
@@ -948,6 +1133,18 @@
       "owaspMcp": [
         "MCP06"
       ],
+      "attack": [
+        {
+          "id": "T1698",
+          "coverage": "full",
+          "reason": "inj-untrusted-directive fires at the file, index and tool-output stages: an imperative planted in a ticket, form or data source a later agent reads"
+        },
+        {
+          "id": "T1685.007",
+          "coverage": "partial",
+          "reason": "ingested content telling the agent to stop analysing or to mark a sample safe is flagged; only for an analysing agent that runs under MoorAI"
+        }
+      ],
       "stride": "Tampering"
     },
     {
@@ -968,6 +1165,8 @@
       "atlas": "AML.T0048",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Legal drafting guidance, not an adversary technique.",
       "stride": "Repudiation"
     },
     {
@@ -988,6 +1187,8 @@
       "atlas": "AML.T0048",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "HR drafting guidance, not an adversary technique.",
       "stride": "Repudiation"
     },
     {
@@ -1013,6 +1214,18 @@
         "ASI02": "irreversible shell commands only"
       },
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1485",
+          "coverage": "partial",
+          "reason": "destructive-command matches rm -rf, DROP DATABASE/TABLE, force-push and mass delete issued through the agent's shell"
+        },
+        {
+          "id": "T1561",
+          "coverage": "partial",
+          "reason": "disk format and raw-device overwrite (mkfs, dd to a device)"
+        }
+      ],
       "stride": "Elevation of Privilege"
     },
     {
@@ -1034,6 +1247,8 @@
       "atlas": "AML.T0057",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "A health-data obligation, not an adversary technique.",
       "stride": "Information Disclosure"
     },
     {
@@ -1054,6 +1269,8 @@
       "atlas": "AML.T0048",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Licence contamination is a legal risk, not an adversary technique.",
       "stride": "Repudiation"
     },
     {
@@ -1084,6 +1301,28 @@
       "owaspMcpPartial": {
         "MCP02": "IAM, sudo and security-setting changes, gated on human approval"
       },
+      "attack": [
+        {
+          "id": "T1686",
+          "coverage": "partial",
+          "reason": "ufw, firewalld and netsh advfirewall off, and security-group 0.0.0.0/0 openings; iptables and nft flushes are not matched"
+        },
+        {
+          "id": "T1685",
+          "coverage": "partial",
+          "reason": "Defender real-time protection off and Set-MpPreference -Disable*; stopping an EDR or audit daemon (launchctl unload, systemctl stop auditd) is not matched"
+        },
+        {
+          "id": "T1553.001",
+          "coverage": "partial",
+          "reason": "spctl --master-disable; quarantine-attribute removal (xattr -d com.apple.quarantine) is not matched"
+        },
+        {
+          "id": "T1098.003",
+          "coverage": "partial",
+          "reason": "IAM AdministratorAccess or attach-policy, az role assignment and gcloud add-iam-policy-binding"
+        }
+      ],
       "stride": "Elevation of Privilege"
     },
     {
@@ -1115,6 +1354,18 @@
         "ASI02": "send-message tool families, gated on human approval"
       },
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1700",
+          "coverage": "partial",
+          "reason": "send-message tools, SMTP, SendGrid, Twilio and chat-webhook calls are held for human approval: the sanctioned-tool channel T1700 names"
+        },
+        {
+          "id": "T1567.004",
+          "coverage": "partial",
+          "reason": "Slack and Discord webhook posts"
+        }
+      ],
       "stride": "Information Disclosure"
     },
     {
@@ -1145,6 +1396,23 @@
       "owaspMcpPartial": {
         "MCP02": "identity and credential creation, gated on human approval"
       },
+      "attack": [
+        {
+          "id": "T1136.001",
+          "coverage": "partial",
+          "reason": "useradd, adduser and New-LocalUser; net user with a password before /add is not matched"
+        },
+        {
+          "id": "T1136.003",
+          "coverage": "partial",
+          "reason": "aws iam create-user and service-account creation"
+        },
+        {
+          "id": "T1098.001",
+          "coverage": "partial",
+          "reason": "aws iam create-access-key and gcloud service-account key creation"
+        }
+      ],
       "stride": "Elevation of Privilege"
     },
     {
@@ -1170,6 +1438,8 @@
         "ASI02": "production deploy commands, gated on human approval"
       },
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "An authorised production deploy is not an adversary technique; MoorAI gates it for approval.",
       "stride": "Tampering"
     },
     {
@@ -1207,6 +1477,13 @@
         "MCP03": "hidden characters in MCP tool metadata only",
         "MCP06": "hidden-text channel only"
       },
+      "attack": [
+        {
+          "id": "T1027.018",
+          "coverage": "partial",
+          "reason": "zero-width, bidi, Unicode tag-block and variation-selector runs in text an agent reads, receives or writes; files the agent never touches are not scanned"
+        }
+      ],
       "stride": "Tampering"
     },
     {
@@ -1227,6 +1504,13 @@
       "atlas": "AML.T0056",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1699",
+          "coverage": "partial",
+          "reason": "sysprompt-extract matches system-prompt extraction probes only"
+        }
+      ],
       "stride": "Information Disclosure"
     },
     {
@@ -1247,6 +1531,8 @@
       "atlas": "AML.T0056",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Instruction leakage maps to ATLAS AML.T0056; ATT&CK v20 has no equivalent.",
       "stride": "Information Disclosure"
     },
     {
@@ -1267,6 +1553,8 @@
       "atlas": "AML.T0034",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "An oversized prompt is a cost and availability risk; ATT&CK v20 has no technique for model input size.",
       "stride": "Denial of Service"
     },
     {
@@ -1301,6 +1589,23 @@
       "owaspMcpPartial": {
         "MCP05": "reverse-shell / remote-exec payloads only"
       },
+      "attack": [
+        {
+          "id": "T1059.004",
+          "coverage": "partial",
+          "reason": "bash /dev/tcp, nc -e and socat exec reverse shells"
+        },
+        {
+          "id": "T1059.001",
+          "coverage": "partial",
+          "reason": "PowerShell TCPClient reverse shells"
+        },
+        {
+          "id": "T1059.006",
+          "coverage": "partial",
+          "reason": "Python socket reverse shells"
+        }
+      ],
       "stride": "Elevation of Privilege"
     },
     {
@@ -1335,6 +1640,28 @@
       "owaspMcpPartial": {
         "MCP01": "local credential files and keychain only"
       },
+      "attack": [
+        {
+          "id": "T1552.001",
+          "coverage": "partial",
+          "reason": ".env, cloud credential files, .npmrc, .git-credentials, .netrc, .pgpass, kube and gcloud config; gh CLI tokens (hosts.yml) are not on the list"
+        },
+        {
+          "id": "T1552.004",
+          "coverage": "partial",
+          "reason": "SSH private keys read through a tool"
+        },
+        {
+          "id": "T1555.001",
+          "coverage": "partial",
+          "reason": "security find-generic-password; security dump-keychain is not matched"
+        },
+        {
+          "id": "T1003.008",
+          "coverage": "partial",
+          "reason": "reads of /etc/shadow"
+        }
+      ],
       "stride": "Information Disclosure"
     },
     {
@@ -1361,6 +1688,13 @@
         "ASI02": "irreversible tool and MCP operations only"
       },
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1485",
+          "coverage": "partial",
+          "reason": "dropDatabase or deleteMany, aws s3 rb, terminate-instances, kubectl delete --all and gh repo delete issued through a tool"
+        }
+      ],
       "stride": "Tampering"
     },
     {
@@ -1392,6 +1726,18 @@
       "owaspMcpPartial": {
         "MCP05": "remote scripts piped to a shell and installs from untrusted sources"
       },
+      "attack": [
+        {
+          "id": "T1105",
+          "coverage": "partial",
+          "reason": "curl or wget piped to a shell, Invoke-WebRequest into iex, and download-then-run in one command"
+        },
+        {
+          "id": "T1204.005",
+          "coverage": "partial",
+          "reason": "pip, npm, cargo and go installs from a URL, git or an alternate index, and auto-yes npx"
+        }
+      ],
       "stride": "Tampering"
     },
     {
@@ -1411,6 +1757,8 @@
       "atlas": "AML.T0051",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "A second-opinion verdict; the technique is the one on the rule it escalates.",
       "stride": "Tampering"
     },
     {
@@ -1442,6 +1790,28 @@
       "owaspMcpPartial": {
         "MCP06": "outbound calls after injection-class content, within one session"
       },
+      "attack": [
+        {
+          "id": "T1700",
+          "coverage": "partial",
+          "reason": "an injection-class finding on ingested content, then an outbound action within 30 minutes; report-only by default"
+        },
+        {
+          "id": "T1030",
+          "coverage": "partial",
+          "reason": "five or more transfers of up to 8 KB to one destination summing 16 KB within 30 minutes"
+        },
+        {
+          "id": "T1074.001",
+          "coverage": "partial",
+          "reason": "a credential read staged (copied, written or encoded) and then sent out in the same session"
+        },
+        {
+          "id": "T1560.001",
+          "coverage": "partial",
+          "reason": "an archive created and then sent out in the same session"
+        }
+      ],
       "stride": "Information Disclosure"
     },
     {
@@ -1481,6 +1851,18 @@
       "owaspMcpPartial": {
         "MCP03": "description and schema text only"
       },
+      "attack": [
+        {
+          "id": "T1195.001",
+          "coverage": "partial",
+          "reason": "auto-loaded agent config and skill files (SKILL.md, rules, .mcp.json, hooks) are scanned for directives and drift; IDE auto-run task files (.vscode/tasks.json) are not on the skill surface"
+        },
+        {
+          "id": "T1698",
+          "coverage": "partial",
+          "reason": "directives in MCP tool descriptions and schemas the model reads"
+        }
+      ],
       "stride": "Tampering"
     },
     {
@@ -1506,6 +1888,8 @@
         "ASI05": "exploitable constructs in code the agent writes; nothing is executed"
       },
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Vulnerable code the agent writes is a defect, not an adversary technique.",
       "stride": "Tampering"
     },
     {
@@ -1535,6 +1919,18 @@
         "ASI05": "package names in install commands only"
       },
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1195.001",
+          "coverage": "partial",
+          "reason": "install-time offline check of the package name against known-bad and near-miss lists; a novel malicious name passes"
+        },
+        {
+          "id": "T1204.005",
+          "coverage": "partial",
+          "reason": "the agent's install command is the user-execution step; judged by name only"
+        }
+      ],
       "stride": "Tampering"
     },
     {
@@ -1555,6 +1951,13 @@
       "atlas": "AML.T0024",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1567",
+          "coverage": "partial",
+          "reason": "a model base-URL override or a direct call to a non-approved model provider, judged by host"
+        }
+      ],
       "stride": "Information Disclosure"
     },
     {
@@ -1581,6 +1984,18 @@
       },
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1557",
+          "coverage": "none",
+          "reason": "decideTransit is built and unit-tested, but no shipped hook calls it, so proxy and CA overrides are not reported"
+        },
+        {
+          "id": "T1553.004",
+          "coverage": "none",
+          "reason": "a CA override set by environment variable subverts the same trust; not reported until the transit check is wired"
+        }
+      ],
       "stride": "Information Disclosure"
     },
     {
@@ -1616,6 +2031,8 @@
         "MCP02": "actions checked against a declared envelope; granted scopes are not reviewed",
         "MCP06": "lexical check that a risky call's targets were named in the task"
       },
+      "attack": [],
+      "attackNote": "An out-of-envelope action is a policy signal, not one ATT&CK technique; each action class carries its own credit.",
       "stride": "Elevation of Privilege"
     },
     {
@@ -1652,6 +2069,13 @@
       "owaspMcpPartial": {
         "MCP01": "known local secret values in egress, MCP tool arguments included"
       },
+      "attack": [
+        {
+          "id": "T1700",
+          "coverage": "partial",
+          "reason": "a local secret value appearing verbatim in an outbound command, MCP argument or prompt; non-secret data is not fingerprinted"
+        }
+      ],
       "stride": "Information Disclosure"
     },
     {
@@ -1686,6 +2110,8 @@
         "ASI07": "sub-agent handoffs on one host, logged and scanned for injection; no message authentication"
       },
       "owaspMcp": [],
+      "attack": [],
+      "attackNote": "ATT&CK v20 has no agent-delegation technique; ATLAS AML.T0118 covers it.",
       "stride": "Elevation of Privilege"
     },
     {
@@ -1720,6 +2146,13 @@
         "ASI06": "memory writes carried in a crafted assistant link only"
       },
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1204.001",
+          "coverage": "partial",
+          "reason": "links that open an assistant with a prompt prefilled through ?q= and ask it to persist"
+        }
+      ],
       "stride": "Tampering"
     },
     {
@@ -1741,6 +2174,13 @@
       "atlas": "AML.T0133",
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1698",
+          "coverage": "partial",
+          "reason": "ingested content asking the agent to enumerate its tools, permissions or reachable paths"
+        }
+      ],
       "stride": "Information Disclosure"
     },
     {
@@ -1775,6 +2215,18 @@
       "owaspMcpPartial": {
         "MCP06": "content addressed only to AI readers"
       },
+      "attack": [
+        {
+          "id": "T1698",
+          "coverage": "partial",
+          "reason": "blocks addressed only to AI readers that contradict the visible page"
+        },
+        {
+          "id": "T1608.007",
+          "coverage": "partial",
+          "reason": "the AI-audience cloaking form of result poisoning, when an agent MoorAI watches fetches the page; plain fabricated content and AI search engines are out of reach"
+        }
+      ],
       "stride": "Spoofing"
     },
     {
@@ -1799,6 +2251,13 @@
       },
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1700",
+          "coverage": "partial",
+          "reason": "markdown images and link previews whose URL carries conversation data, fetched by the client while rendering"
+        }
+      ],
       "stride": "Information Disclosure"
     },
     {
@@ -1833,6 +2292,13 @@
       "owaspMcpPartial": {
         "MCP06": "file-metadata channel only"
       },
+      "attack": [
+        {
+          "id": "T1698",
+          "coverage": "partial",
+          "reason": "directives in EXIF, XMP, ID3 and PDF metadata fields only"
+        }
+      ],
       "stride": "Tampering"
     },
     {
@@ -1867,6 +2333,13 @@
       "owaspMcpPartial": {
         "MCP08": "tampering with local agent transcript files only"
       },
+      "attack": [
+        {
+          "id": "T1070",
+          "coverage": "partial",
+          "reason": "delete, truncate or rewrite of the agent's own transcript and prompt-history stores; shell history (T1070.003) is not covered"
+        }
+      ],
       "stride": "Repudiation"
     },
     {
@@ -1898,6 +2371,13 @@
       "owaspMcpPartial": {
         "MCP06": "self-replication directives only"
       },
+      "attack": [
+        {
+          "id": "T1698",
+          "coverage": "partial",
+          "reason": "ingested instructions telling the model to copy themselves into replies, files, commits or other agents"
+        }
+      ],
       "stride": "Tampering"
     },
     {
@@ -1927,6 +2407,13 @@
         "ASI09": "deceptive links in output only"
       },
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1204.001",
+          "coverage": "partial",
+          "reason": "a link whose shown address differs from its real host, a userinfo-hidden host, or bidi or zero-width characters inside the URL"
+        }
+      ],
       "stride": "Spoofing"
     },
     {
@@ -1956,6 +2443,13 @@
         "ASI05": "load calls only"
       },
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1204.002",
+          "coverage": "partial",
+          "reason": "model-load calls that execute code from the file (pickle loads, weights_only=False, trust_remote_code)"
+        }
+      ],
       "stride": "Elevation of Privilege"
     },
     {
@@ -1985,6 +2479,18 @@
         "ASI02": "model files and caches, one command"
       },
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1560.001",
+          "coverage": "partial",
+          "reason": "model weights or datasets archived into a temp directory"
+        },
+        {
+          "id": "T1567",
+          "coverage": "partial",
+          "reason": "model weights or datasets piped into an upload or pushed to a model hub"
+        }
+      ],
       "stride": "Information Disclosure"
     },
     {
@@ -2014,6 +2520,18 @@
         "ASI02": "listed collection hosts only"
       },
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1567.004",
+          "coverage": "partial",
+          "reason": "data sent to webhook.site, Pipedream and other public request-capture hosts"
+        },
+        {
+          "id": "T1048.003",
+          "coverage": "partial",
+          "reason": "data carried in a DNS lookup to interactsh-style OAST hosts"
+        }
+      ],
       "stride": "Information Disclosure"
     },
     {
@@ -2038,6 +2556,13 @@
       },
       "owaspAgentic": [],
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1016.001",
+          "coverage": "partial",
+          "reason": "a bare GET, DNS lookup or ping to a known request-capture host"
+        }
+      ],
       "stride": "Information Disclosure"
     },
     {
@@ -2067,6 +2592,13 @@
         "ASI05": "a repository checkout run in the same command"
       },
       "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1195.001",
+          "coverage": "partial",
+          "reason": "a cloned repository's install or start scripts run in the same command (notify mode)"
+        }
+      ],
       "stride": "Tampering"
     }
   ]

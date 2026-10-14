@@ -52,7 +52,7 @@ That's the exact trade MoorAI refuses.
 - **MITRE ATLAS agent techniques (v2026.09)** — a link that opens an assistant with a prompt already filled in through `?q=` (`AML.T0131`), ingested content that asks the agent to enumerate its own tools and permissions (`AML.T0133`), a block addressed only to AI clients that contradicts the visible page (`AML.T0134`), markup that renders steering text invisible — same colour as its background, zero font size, a hidden element (`AML.T0068`), an image or link preview whose URL carries conversation data (`AML.T0077`), and directives planted in a file's EXIF, XMP, ID3 or PDF metadata (`AML.T0129`) — the part of a binary file that carries a sentence. Each needs two independent signals to fire, so an ordinary assistant link, a hidden template row or a CI badge stays silent. Cloaking's server-side differential, and instructions hidden in image pixels, audio or video, are **not** covered — see [DETECTION_ENGINE.md §14](docs/DETECTION_ENGINE.md).
 - **Jailbreak & injection detection** — high-precision detectors for direct jailbreaks (DAN lineage, developer/god-mode, named personas, chat-template control-token injection) scoped so normal dev prompts don't trip them, with opportunistic local-model escalation on ambiguity.
 - **Coach · alert · mask · block · justify · kill** — per policy, per tenant, per device. Nudge, warn, replace a secret or PII span with a content-free tag and let the call proceed, hard-block, require a signed justification, or **kill the session** — terminate the running agent (not just deny the one call) on a critical finding, in both the `-p` guard and the interactive host.
-- **Framework crosswalks** — every rule in [`data/threats.json`](data/threats.json) is mapped to the OWASP Top 10 for LLM Applications, MITRE ATLAS, the OWASP Top 10 for Agentic Applications 2026 (`owaspAgentic`, ASI01–ASI10) and the OWASP MCP Top 10 (`owaspMcp`, MCP01–MCP10, still a beta list), with partial credit and its reason recorded where a rule covers a risk only in part. Coverage per framework is in [`docs/BENCHMARK.md`](docs/BENCHMARK.md); the mapping rules and the rejected credits are in [`docs/DETECTION_ENGINE.md`](docs/DETECTION_ENGINE.md) §16.
+- **Framework crosswalks** — every rule in [`data/threats.json`](data/threats.json) is mapped to the OWASP Top 10 for LLM Applications, MITRE ATLAS, MITRE ATT&CK Enterprise v20 (`attack`), the OWASP Top 10 for Agentic Applications 2026 (`owaspAgentic`, ASI01–ASI10) and the OWASP MCP Top 10 (`owaspMcp`, MCP01–MCP10, still a beta list), with partial credit and its reason recorded where a rule covers a risk only in part. An ATT&CK credit states its level (`full`, `partial`, or `none` when the technique corresponds but MoorAI ships no mechanism for it) and a one-line reason; a rule with no corresponding technique says why in `attackNote`. Coverage per framework is in [`docs/BENCHMARK.md`](docs/BENCHMARK.md); the mapping rules and the rejected credits are in [`docs/DETECTION_ENGINE.md`](docs/DETECTION_ENGINE.md) §16 and §17.
 - **SAF-MCP, agentic AI guidance and ATF crosswalks** — three more frameworks are mapped from their own lists to MoorAI, each in [`data/crosswalks/`](data/crosswalks): the 78 active SAF-MCP techniques (OpenSSF SIG, commit `d3d4029`), the 140 recommendations of *Careful adoption of agentic AI services* (ASD's ACSC with CISA, NSA, the Canadian Centre for Cyber Security, NCSC-NZ and NCSC-UK, 1 May 2026) and the 25 core requirements of the Agentic Trust Framework 0.9.1 (published through the Cloud Security Alliance). Every credit names the MoorAI component and file that earn it; partial credits state their limit, gaps their reason, and organisational items are marked not applicable. `node scripts/crosswalk-report.mjs` prints the counts; the tables, sources and rejected credits are in [`docs/CROSSWALKS.md`](docs/CROSSWALKS.md).
 - **Latency and escalation coverage, measured** — [`docs/BENCHMARK.md`](docs/BENCHMARK.md) publishes p50, p95 and p99 (at n ≥ 1000) for in-process scanning, the Agent SDK decision and the hook's whole per-call process, with the Node startup floor beside it. `node scripts/drop-rate.mjs` reports, per surface, which attacks the rules catch, which a miss hands to the on-device model, and which no path routes anywhere, with the reason; method and results are in [`docs/DROP_RATE.md`](docs/DROP_RATE.md).
 - **Coach-as-literacy (EU AI Act Art. 4)** — each time MoorAI coaches a developer at the point of use (the *why* + *what-to-do*, mapped to OWASP LLM Top 10 / MITRE ATLAS), it records a **content-free "literacy touchpoint"** (topic + actor hash, never content). The console rolls these into a coverage view — demonstrable evidence of "measures taken" for a training program, not a substitute for one.
@@ -1262,6 +1262,167 @@ MoorAI's model proxy may reach ([Ollama FAQ](https://docs.ollama.com/faq)):
 
 Detail per detector: [`docs/CAPABILITY_SPEC.md`](docs/CAPABILITY_SPEC.md) (Living off the AI detectors).
 
+### End-to-end trace: one session, one W3C trace
+
+Every agent session is one W3C trace ([Trace Context](https://www.w3.org/TR/trace-context/)). Each alert and
+allow-trail record MoorAI sends carries `traceId` (32 lowercase hex), `spanId` (16 hex, fresh per record) and,
+where there is one, `parentSpanId`. The console, an OTLP backend or a provider's own logs can join an agent
+action, the model call it made, the MCP call that followed and the HTTP request that reached a destination.
+Only hex ids and an agent name leave.
+
+`traceId` is an HMAC-SHA-256 under the tenant key (the key `contentHash` uses, derived from the install token)
+over a trace-only label and the agent's session id. Every MoorAI surface that holds the install token and sees
+the same session id derives the same `traceId`. The session id is not in it and cannot be recovered from it
+without the key.
+
+**What joins.** A valid incoming `traceparent` always wins: the trace continues and the incoming span becomes
+`parentSpanId`. Otherwise a surface that knows the session uses the session's `traceId`, and one that does not
+starts a new sampled trace.
+
+| Surface | How it knows the session | What it sends on |
+|---|---|---|
+| Hook | `session_id` on hook stdin | records only |
+| Model proxy → provider | `X-Claude-Code-Session-Id` | `traceparent`, `tracestate` headers |
+| MCP stdio guard → server | `CLAUDE_CODE_SESSION_ID`, when Claude Code's harness started the guard | `params._meta.traceparent` / `tracestate` on `tools/call` (the keys MCP 2026-07-28 reserves for trace context) |
+| HTTP MCP gateway → upstream | it does not | `traceparent`, `tracestate` headers |
+| Egress proxy → destination, plain HTTP | it does not | a valid incoming `traceparent` / `tracestate` unchanged, else a new `traceparent` |
+
+What Claude Code itself sends, measured on 2.1.295 against a local fake Messages API and fake HTTP and stdio
+MCP servers:
+
+| Where | Session id | Sub-agent id | Call id |
+|---|---|---|---|
+| Hook stdin (PreToolUse / PostToolUse) | `session_id` | `agent_id` + `agent_type` inside a sub-agent | `tool_use_id` |
+| Messages API request | `x-claude-code-session-id` header, equal to `session_id`; also inside `metadata.user_id` | `x-claude-code-agent-id`, equal to `agent_id` | none |
+| Stdio MCP server | `CLAUDE_CODE_SESSION_ID` in its environment, equal to `session_id` | none | `params._meta["claudecode/toolUseId"]`, equal to `tool_use_id` |
+| HTTP MCP server | none | none | `params._meta["claudecode/toolUseId"]` |
+
+Claude Code sends no `traceparent` of its own.
+
+**Sub-agents.** A Claude Code sub-agent's calls carry the parent's `session_id`, so they join the parent's
+trace. Their `parentSpanId` is the `spanId` of the delegation record of the Task / Agent call that spawned
+them. The link is exact once `PostToolUse` on that call returns the child's `agentId` (a background sub-agent
+reports it at launch, a foreground one only after it finishes). Until then the hook infers it from the one
+pending spawn in the session whose `subagent_type` equals the child's `agent_type`; with none or several, the
+record has no `parentSpanId`. A delegation that is denied, and so never runs, records no spawn.
+
+**OpenTelemetry and the allow trail.** Each exported span uses the record's own `traceId`, `spanId` and
+`parentSpanId`, so a session's spans form one trace in Datadog, Dynatrace, Grafana Tempo, Jaeger or any OTLP
+backend, with a sub-agent's spans under the Task span. With `actionTrail: "allowed"` the model proxy adds one
+allow-trail record per forwarded model request (`event: "ModelRequest"`, tool `model-proxy:<provider>`,
+`provider`, `model` and the request's trace fields), so clean model calls appear in the trace as well.
+
+**W3C rules.** Every surface uses one implementation, `cli/trace-context.mjs`. A `traceparent` above version
+`00` is read by the `00` layout; an invalid `tracestate` (a member off the grammar, more than 32 members) is
+discarded whole, and none is sent on without a valid `traceparent`.
+
+**What does not join.**
+- The HTTP MCP gateway knows no session. Its spans start their own trace unless the client sends a
+  `traceparent`.
+- HTTPS through the egress proxy is an opaque `CONNECT` tunnel: nothing is added to it. The egress proxy adds
+  no `moorai` entry, because it does not know which agent opened the connection.
+- A model-proxy or stdio-guard span joins the session's trace but names no hook record as its parent.
+- Codex, Gemini CLI and Copilot CLI put no sub-agent id on tool calls, so their sub-agents' records have the
+  session's trace and no `parentSpanId`.
+- An unenrolled device has no tenant key: each hook invocation starts its own random trace.
+- Device inventory alerts (`LOCAL_MODEL_EXPOSED`, `AI_API_CALLER_UNKNOWN`) and the detached workers' alerts
+  (posture beat, index scan, model escalation, agent scan) carry no trace fields.
+
+**Cost.** The hook computes trace fields only when it sends a record: one HMAC, about 2 µs. A sub-agent's
+first record reads the spawn map (about 0.1 ms with 50 pending spawns), and a delegation writes one row
+(about 0.3 ms). The proxies add about 2 µs per request (4 µs when the id comes from the session
+id). The stdio guard edits the call line in place: 1.3 µs for a small call, 192 µs for 112 KB of arguments.
+
+**Limits.**
+- Session ids the proxies see are caller-asserted. Any process that can reach a MoorAI proxy can claim another
+  session's id and put its own requests in that trace. It cannot change or remove that session's hook records.
+- The spawn map (`~/.moorai/trace-spawns.json`, ids keyed with the device-local key) is user-writable. A
+  same-user process can point a child's records at another delegation span of the same session, or at none. It
+  cannot move a record to another trace, and it never affects a decision.
+- Parallel foreground spawns of one sub-agent type leave the children's records without `parentSpanId` until
+  the spawning call returns.
+
+Detail: [`docs/CAPABILITY_SPEC.md`](docs/CAPABILITY_SPEC.md) (End-to-end trace).
+
+### Forensic evidence: context.tree
+
+When an injected instruction leads to an action, the question is which source carried it. MoorAI keeps a
+per-session Merkle tree of what entered the agent's context, one content-free leaf per item: `stage`,
+`sourceKind`, a tenant-keyed hash of the source, a hash of the bytes, the size and a timestamp. No path, URL,
+server name or content is stored. The tree uses Certificate Transparency hashing (RFC 6962) and passes the
+published CT known-answer vectors.
+
+**Leaves per event.** The Claude Code hook writes a leaf for each item before MoorAI judges it, from bytes it
+already holds. It reads no file in order to build a leaf.
+
+| Hook event | Item | Stage | Source (stored only as a keyed hash) |
+|---|---|---|---|
+| UserPromptSubmit | the prompt | prompt | none |
+| PreToolUse Read | the file's bytes as read | file, or skill for a skill or instruction file | the path (`skill:<path>` for a skill) |
+| PostToolUse WebFetch | the result | web | the URL |
+| PostToolUse WebSearch | the result | web | `name:<query>` |
+| PostToolUse mcp__* | the result | mcp | `mcp:<server>/<tool>` |
+| PostToolUse Bash / PowerShell | the output | tool-output | `name:Bash` / `name:PowerShell` |
+| PreToolUse Task / Agent | the prompt handed to the sub-agent | subagent | `name:<subagent type>` |
+| PostToolUse Task / Agent | the sub-agent's report | subagent | `name:<subagent type>` |
+
+A blob of 256 bytes or more is hashed with plain SHA-256, so anyone holding the original can check it. A
+shorter blob uses the tenant-keyed hash, because short text can be confirmed by guessing.
+
+**Root on every record.** Every alert and allow-trail record the hook sends carries `contextRoot` (64 hex)
+and `contextSize`: the tree as it stood when the decision was made, including the item being judged. A
+content or injection alert also carries `contextLeaf { index, stage, sourceHash, blobHash, blobHashKind }`,
+the leaf whose content triggered it.
+
+**Patient zero.** Hash the original file or page against every session on the device:
+
+    moorai-context-proof --verify suspicious-README.md --all
+
+It lists every leaf whose hash matches, each with its session, index and RFC 6962 inclusion proof. To check
+that leaf against the root on a record:
+
+    moorai-context-proof --session <keyed session id> --index <n> --size <contextSize>
+
+The printed root equals the record's `contextRoot`, which shows that this blob was in the agent's context when
+the decision was made and what kind of source carried it. Output holds hashes only.
+
+**Policy.** Set `contextTree` in the signed policy:
+
+- `"local"` (the default): the tree stays on the device and records carry its root.
+- `"console"`: the hook's detached worker also sends the leaves to the console (`POST /api/context-tree`), in
+  batches of up to 500, never while the hook is deciding. It needs a policy with a signature envelope;
+  without one it reads `"local"`.
+- `"off"`: nothing is written and records carry no root.
+
+**Sub-agent trees.** A sub-agent's own calls go into its own tree, keyed on the session id and the
+sub-agent's id. Its records carry the parent's `session`, so they add `contextSession`, the keyed id of the
+tree their `contextRoot` belongs to (the `sessionHash` of that tree's upload). The prompt a Task / Agent call
+hands over is a leaf in the caller's tree; the sub-agent's tree starts with what it takes in itself.
+
+**Storage and cost.** One append-only file per session, `~/.moorai/context-tree/<keyed session id>.jsonl`
+(0600), leaves only, at most 50,000 leaves (appends then stop, and no earlier leaf is dropped). A cached
+compact range next to it keeps appends O(log n): p50 0.26 ms at 5,000 leaves and 0.28 ms at 50,000 on an Apple
+M5 Max. A missing or stale cache is rebuilt once from the file (18 ms at 5,000 leaves, 149 ms at 50,000). A
+torn last line is skipped and reported, never rewritten. Session files older than 30 days are deleted.
+
+**Limits.**
+- **Tamper-evident, not tamper-proof.** The session file lives in the user's home, where the agent can write.
+  A rewritten history yields a different root that no longer matches the roots already on records, but
+  nothing stops the rewrite itself until the privileged helper signs roots.
+- **A long blob can be confirmed by anyone who holds it.** The SHA-256 of a blob of 256 bytes or more lets
+  anyone with a copy of the original confirm from the leaf that it entered the context. That is what makes
+  the lookup work without a key.
+- **Host-loaded files have no leaf.** Files a host loads without a tool call (CLAUDE.md at start-up, rules
+  files) never reach the hook, so they get no leaf. A Read of them does.
+- **Web leaves match the processed text.** WebFetch returns the host's processed page, so a web leaf matches
+  the result text in the transcript, not the page on the server. A file leaf matches the file on disk.
+- **A Read is judged before it runs.** A Read, a Task / Agent prompt or a prompt that MoorAI then blocks keeps
+  its leaf.
+- **The source kind is named, not the source.** Naming the exact source takes a candidate path or URL hashed
+  under the tenant key. Short blobs and sources need that key: an unenrolled device keeps no tree.
+
+Detail: [`docs/CAPABILITY_SPEC.md`](docs/CAPABILITY_SPEC.md) (context.tree forensic anchor).
+
 ### Exceptions: what to grant when MoorAI blocks
 
 When the hook denies or asks, the message names the exact exception a person could grant: the threat id
@@ -1318,10 +1479,13 @@ also gets one content-free record per allowed tool call, delivered in batches to
 (`{ v: 1, records: [...] }`, up to 500 per batch, same install token as `/api/alerts`).
 
 - **A record carries:** `ts`, `session` (keyed hash), `seq` (its own per-device counter), `event`
-  (`PreToolUse`), `tool` (sanitised to the console's rule: NFKC, each control, format or whitespace character
+  (`PreToolUse`; `ModelRequest` on a model-proxy record), `tool` (sanitised to the console's rule: NFKC, each control, format or whitespace character
   replaced by `_`, at most 256 characters), `toolTags`, `mcpServer` (MCP tools), `decision: "allow"`, `basis`
   (`rule` / `default` / `exception`), `policyIat`, `agentName`, `agentVersion`, `appVersion`, the identity alerts
   carry (`user`, `device`, `platform`, `tenant`, `actor`) and the keyed `contentHash` of the normalized call.
+  Also the W3C trace fields (`traceId`, `spanId`, `parentSpanId`), the context tree's `contextRoot` and
+  `contextSize` (with `contextSession` on a sub-agent's record), and on a model-proxy record `provider` and
+  `model`. Each is validated and left out when it does not fit its shape.
 - **Never:** arguments, commands, paths, URLs, prompt text or file contents.
 - **No per-call latency:** the hook appends to `~/.moorai/action-trail.jsonl` (0600) and a detached worker
   flushes at 200 records or 30 s, one flush at a time, and at session end. It respects the console back-off,
@@ -1471,6 +1635,7 @@ npx moorai-shadow --strict                    # find unsanctioned AI (models · 
 npx moorai-compliance --framework eu-ai-act   # evidence pack mapped to EU AI Act / NIST AI RMF / ISO 42001 controls
 npx moorai-compliance --format stix           # export the same findings as a STIX 2.1 bundle for SIEM/TIP interchange
 npx moorai-verify-chain                       # tamper-evidence check — detect a deleted, reordered, or edited evidence-log record
+npx moorai-context-proof --verify ./README.md --all   # patient zero — which leaf of which session's context tree this file matches
 npx moorai-honeytokens register               # register a content-free canary (only its one-way hash is stored)
 npx moorai-attest                             # export governed records as an in-toto / SLSA provenance attestation (SSCS interchange)
 npx moorai-aibom --format cyclonedx           # export the AI Bill of Materials as a CycloneDX 1.6 SBOM (also --format spdx)
@@ -1488,6 +1653,7 @@ npx moorai-scan --package github:owner/repo   # a whole source repository — an
 - **AIBOM: MCP server reputation.** `moorai-aibom` reports each MCP server's first-seen reputation (`{score, band, reasons}`, a 0-100 score, band good/fair/poor/bad and category codes such as `mcp-typosquat` or `pkg-install-script-remote`), scored offline from the package name and the copy npx already installed, and counts poor and bad servers in `summary.mcpLowReputation`. `moorai-shadow` carries the same reputation, and an unsanctioned server with a poor or bad band ranks high whatever its inferred scope. The scoring, the opt-in registry lookup and feed, and the `blockBelow` policy are documented in [`mcp-proxy/README.md`](mcp-proxy/README.md).
 - **`moorai-compliance`** maps the device's existing content-free signals to framework controls and marks each **covered / partial / not-covered honestly** — the evidence layer a cost-pressured SOC can actually keep. `--format stix` emits the findings as a STIX 2.1 bundle (custom `x-moorai-finding` objects + hash-keyed indicators) for threat-intel interchange.
 - **`moorai-verify-chain`** walks each on-device evidence log and verifies its prev-hash chain — a deleted, reordered, or in-place-edited record breaks the chain and is reported. Every log line and every emitted OTel span is chain-stamped (`cli/record-chain.mjs`), so the record hash proves each record and the chain proves the *sequence* (immutable once streamed to your SIEM). A record whose chain head could not be read or saved is stamped `seq` 0, linked to the genesis, and shows as a break.
+- **`moorai-context-proof`** reads the on-device context trees (see [Forensic evidence: context.tree](#forensic-evidence-contexttree)). `--verify <file|-> (--session <keyed id> | --all)` hashes a file or stdin and lists every leaf whose blob hash matches, each with its RFC 6962 inclusion proof; `--session <keyed id> --index <n> [--size <m>]` prints one leaf, its proof and the root of the first `m` leaves, which equals a record's `contextRoot` when `m` is its `contextSize`. Hashes only; exit 0 found, 1 no match, 2 usage.
 - **`moorai-honeytokens`** registers content-free canaries — a decoy value nobody should ever touch; only its one-way hash is stored, and a later hit is a high-signal alert with zero content at rest.
 - **`moorai-attest`** emits the governed record chain as an **in-toto attestation / SLSA provenance predicate**, built only from the content-free fields (tool · category · risk · decision · stage · tenant + the one-way hashes + chain seq/prev/chash) — so an agent's action evidence plugs into the software-supply-chain attestation ecosystem without carrying any content. The AIBOM also exports as a standard **CycloneDX 1.6** or **SPDX 2.3** SBOM (`moorai-aibom --format cyclonedx|spdx`).
 - **`moorai-receipt`** emits a signed, content-free **per-verdict decision receipt** — a strict-allowlist payload (tool · category · risk · decision · stage · tenant + the one-way hashes + chain seq/prev/chash), a SHA-256 digest bound only to those fields, and an ed25519 signature from the same per-device agency key as the MCP-approval tokens. `moorai-verify-chain --offline <file>` verifies a receipt (or an in-toto attestation) with **no network** — recomputing the digest to reject tampered payloads and checking the signature against a pinned key. Generation is fail-open (a null signer yields a valid unsigned receipt); verification is fail-closed.
@@ -1684,6 +1850,24 @@ each server entry carries the tool names as called with their counts (the 64 bus
 the identity is user `service`, device `svc:<serviceId>`. The console's MCP map (console v0.73.0) shows
 them. Measured end to end against a real local console: six calls arrived with exact per-tool counts and
 complete tool detail, and no argument text reached the console.
+
+### MITRE ATT&CK v20
+
+ATT&CK v20 (13 October 2026) added Direct Prompt Injection (T1699), Indirect Prompt Injection (T1698),
+AI-Enabled Exfiltration (T1700), Impair Autonomous Defenses (T1685.007) and AI Result Poisoning (T1608.007),
+and rewrote Compromise Software Dependencies and Development Tools (T1195.001) to name agent skill files and
+IDE task files. 47 of the 80 rules map to 48 v20 techniques through 74 credits: 3 full, 56 partial and 15
+`none`. 33 rules (data classes, governance and model-error risks) have no ATT&CK counterpart, and each says why.
+
+Over the 71 v20 techniques an AI agent can perform or be aimed at (`ATTACK_SCOPE` in `data/attack.js`), 2 are
+covered, 36 partial and 33 uncovered. Of the 58 in the agent lane, the actions a hook, proxy or gateway sees,
+2 are covered, 35 partial and 21 uncovered. The other 13 are identity, email, endpoint or adversary-infrastructure
+techniques that no MoorAI surface sees. Technique ids and names come from MITRE's v20 STIX bundle, vendored as a
+slice in `data/attack-v20-techniques.json` and checked by `test/attack-v20.test.mjs`.
+
+For a SIEM: alerts carry `threatId` (CEF Signature ID, OpenTelemetry `moorai.threat_id`). Join it to `attack`
+in `data/threats.json` to get technique ids, coverage and reason. The console's SIEM event carries `owasp`,
+`atlas` and `atlasAll` today, not ATT&CK.
 
 ### Keeping up with the agent hosts
 

@@ -1,7 +1,7 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-10T19:18:47.034Z
+> Generated: 2026-10-14T00:16:59.650Z
 
 - **Detectors:** 109
 - **Threats:** 80
@@ -9,6 +9,7 @@
 - **OWASP LLM Top 10:** 10/10 items covered by ≥1 on-device detector
 - **OWASP Top 10 for Agentic Applications:** 1/10 covered, 6 partial, 3 uncovered
 - **OWASP MCP Top 10:** 1/10 covered, 5 partial, 4 uncovered
+- **MITRE ATT&CK v20.0 (AI-agent scope):** 2/71 covered, 36 partial, 33 uncovered (agent lane: 2/58 covered, 35 partial, 21 uncovered)
 
 ## OWASP LLM Top 10 (2025) coverage
 
@@ -61,6 +62,90 @@ rule crediting it in full has an on-device detector, *partial* when only bounded
 otherwise. Rules whose mechanism is not a detector in `data/detectors.js` (drift, delegation, session
 risk, the MCP allow-list) are counted under Threats but add no detectors. Sources:
 [OWASP Top 10 for Agentic Applications](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/), [OWASP MCP Top 10](https://github.com/OWASP/www-project-mcp-top-10).
+
+## MITRE ATT&CK v20.0 coverage (AI-agent scope)
+
+| Technique | Name | Lane | Threats | Detectors | Status |
+|-----------|------|------|--------:|----------:|--------|
+| T1698 | Indirect Prompt Injection | agent | 8 | 17 | ✅ covered |
+| T1699 | Direct Prompt Injection | agent | 2 | 9 | ✅ covered |
+| T1700 | AI-Enabled Exfiltration | agent | 4 | 4 | ◐ partial |
+| T1685.007 | Impair Autonomous Defenses | agent | 1 | 5 | ◐ partial |
+| T1608.007 | AI Result Poisoning | agent | 1 | 1 | ◐ partial |
+| T1027.018 | Invisible Unicode | agent | 1 | 7 | ◐ partial |
+| T1195.001 | Compromise Software Dependencies and Development Tools | agent | 5 | 5 | ◐ partial |
+| T1059.001 | PowerShell | agent | 1 | 1 | ◐ partial |
+| T1059.004 | Unix Shell | agent | 1 | 1 | ◐ partial |
+| T1059.006 | Python | agent | 1 | 1 | ◐ partial |
+| T1059.013 | Container CLI/API | agent | 0 | 0 | — |
+| T1027.010 | Command Obfuscation | agent | 0 | 0 | — |
+| T1105 | Ingress Tool Transfer | agent | 1 | 2 | ◐ partial |
+| T1204.001 | Malicious Link | agent | 3 | 3 | ◐ partial |
+| T1204.002 | Malicious File | agent | 1 | 1 | ◐ partial |
+| T1204.004 | Malicious Copy and Paste | agent | 1 | 1 | ◐ partial |
+| T1204.005 | Malicious Library | agent | 2 | 3 | ◐ partial |
+| T1176.002 | IDE Extensions | agent | 0 | 0 | — |
+| T1677 | Poisoned Pipeline Execution | agent | 0 | 0 | — |
+| T1053.003 | Cron | agent | 0 | 0 | — |
+| T1543.001 | Launch Agent | agent | 0 | 0 | — |
+| T1546.004 | Unix Shell Configuration Modification | agent | 0 | 0 | — |
+| T1552.001 | Credentials In Files | agent | 1 | 2 | ◐ partial |
+| T1552.003 | Shell History | agent | 0 | 0 | — |
+| T1552.004 | Private Keys | agent | 1 | 2 | ◐ partial |
+| T1552.005 | Cloud Instance Metadata API | agent | 0 | 0 | — |
+| T1552.008 | Chat Messages | agent | 1 | 20 | ◐ partial |
+| T1555.001 | Keychain | agent | 1 | 2 | ◐ partial |
+| T1555.003 | Credentials from Web Browsers | agent | 0 | 0 | — |
+| T1003.008 | /etc/passwd and /etc/shadow | agent | 1 | 2 | ◐ partial |
+| T1528 | Steal Application Access Token | agent | 0 | 0 | — |
+| T1074.001 | Local Data Staging | agent | 1 | 0 | ◐ partial |
+| T1560.001 | Archive via Utility | agent | 2 | 1 | ◐ partial |
+| T1030 | Data Transfer Size Limits | agent | 1 | 0 | ◐ partial |
+| T1016.001 | Internet Connection Discovery | agent | 1 | 1 | ◐ partial |
+| T1567 | Exfiltration Over Web Service | agent | 2 | 2 | ◐ partial |
+| T1567.001 | Exfiltration to Code Repository | agent | 0 | 0 | — |
+| T1567.002 | Exfiltration to Cloud Storage | agent | 0 | 0 | — |
+| T1567.003 | Exfiltration to Text Storage Sites | agent | 0 | 0 | — |
+| T1567.004 | Exfiltration Over Webhook | agent | 2 | 2 | ◐ partial |
+| T1048.003 | Exfiltration Over Unencrypted Non-C2 Protocol | agent | 1 | 1 | ◐ partial |
+| T1485 | Data Destruction | agent | 2 | 2 | ◐ partial |
+| T1561 | Disk Wipe | agent | 1 | 1 | ◐ partial |
+| T1490 | Inhibit System Recovery | agent | 0 | 0 | — |
+| T1070 | Indicator Removal | agent | 1 | 1 | ◐ partial |
+| T1070.003 | Clear Command History | agent | 0 | 0 | — |
+| T1690 | Prevent Command History Logging | agent | 0 | 0 | — |
+| T1685 | Disable or Modify Tools | agent | 1 | 1 | ◐ partial |
+| T1686 | Disable or Modify System Firewall | agent | 1 | 1 | ◐ partial |
+| T1553.001 | Gatekeeper Bypass | agent | 1 | 1 | ◐ partial |
+| T1553.004 | Install Root Certificate | agent | 1 | 0 | — |
+| T1557 | Adversary-in-the-Middle | agent | 1 | 0 | — |
+| T1098.001 | Additional Cloud Credentials | agent | 1 | 1 | ◐ partial |
+| T1098.003 | Additional Cloud Roles | agent | 1 | 1 | ◐ partial |
+| T1098.004 | SSH Authorized Keys | agent | 0 | 0 | — |
+| T1136.001 | Local Account | agent | 1 | 1 | ◐ partial |
+| T1136.003 | Cloud Account | agent | 1 | 1 | ◐ partial |
+| T1548.003 | Sudo and Sudo Caching | agent | 0 | 0 | — |
+| T1176.001 | Browser Extensions | edr | 2 | 0 | — |
+| T1078.004 | Cloud Accounts | identity | 1 | 0 | — |
+| T1697 | Steal Application Specific Passwords | identity | 0 | 0 | — |
+| T1496.004 | Cloud Service Hijacking | identity | 1 | 0 | — |
+| T1566 | Phishing | email | 1 | 0 | — |
+| T1566.004 | Spearphishing Voice | email | 1 | 0 | — |
+| T1684.001 | Impersonation | email | 2 | 1 | — |
+| T1657 | Financial Theft | email | 1 | 1 | ◐ partial |
+| T1682 | Query Public AI Services | pre | 0 | 0 | — |
+| T1683.001 | Written Content | pre | 2 | 0 | — |
+| T1683.002 | Audio-Visual Content | pre | 2 | 0 | — |
+| T1588.007 | Artificial Intelligence | pre | 0 | 0 | — |
+| T1696 | Anti-Automation Evasion | pre | 0 | 0 | — |
+
+The rows are the v20.0 techniques an AI agent on an endpoint, server or AI runtime can perform or be
+aimed at (`ATTACK_SCOPE` in `data/attack.js`). **Lane** says who can see the technique: `agent` is an action
+an AI agent takes that a MoorAI hook, proxy or gateway sees; `edr`, `identity`, `email` and `pre` (the
+adversary's own infrastructure) are outside every MoorAI surface. Each credit in `data/threats.json` (`attack`)
+states its level and a one-line reason; a technique is *covered* when a rule credits it in full, *partial* when
+the best credit is bounded, and *—* otherwise. Coverage is a mechanism claim, not a detection rate. Technique ids
+and names: [MITRE ATT&CK Enterprise v20.0](https://github.com/mitre-attack/attack-stix-data/releases/tag/v20.0), released 2026-10-13.
 
 Coverage is measured, not asserted: every number above is produced by running the shipped detection
 engine (`src/engine.js`) against the shipped threat matrix (`data/threats.json`) and the adversarial
