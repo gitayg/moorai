@@ -17,7 +17,7 @@ import { DETECTORS, CLIPBOARD_READ, OUTBOUND_UPLOAD } from "../data/detectors.js
 import { agentStateWriteProbe } from "../data/agent-state-paths.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { effectiveContentPolicy } from "../data/content-defaults.js";
-import { extractEndpointHosts, endpointApproved, extractTransitOverrides, proxyApproved } from "../data/model-endpoints.js";
+import { extractEndpointHosts, endpointApproved, extractTransitOverrides, proxyApproved, PROXY_ENV_VARS, CA_ENV_VARS } from "../data/model-endpoints.js";
 import { statePath, latchPath, breadcrumbPath } from "./state-dirs.mjs";
 import { machinePath, systemTool } from "./machine-dir.mjs";
 import { readConsoleBackoff, backoffSkipsFetch, recordConsoleFailure, clearConsoleBackoff } from "./console-backoff.mjs";
@@ -326,6 +326,15 @@ export function decideAgentStateWrite(engine, policy, path) {
   return decideText(engine, policy, agentStateWriteProbe(path), "prompt", { only: [id] });
 }
 
+// #48 / ATT&CK T1098.004 for the Write/Edit family. A Write/Edit into an authorized_keys file installs a
+// login key — the same act as `tee -a ~/.ssh/authorized_keys` at a shell, which the command scan already
+// catches. The target is only in file_path, so the write branch probes the path as that append command
+// and consults only #48, so a filename cannot trip any other prompt detector.
+export function decideAuthorizedKeysWrite(engine, policy, path) {
+  if (typeof path !== "string" || !path || /[\r\n]/.test(path)) return decideText(engine, policy, "", "prompt");
+  return decideText(engine, policy, `tee -a ${JSON.stringify(path)}`, "prompt", { only: [48] });
+}
+
 // What the text detectors get to see of a file's first 256 KB (the hook's readFileCapped calls this).
 //
 // It used to be `if (slice.includes(0)) return ""` — git's "a NUL means binary" rule — and that made a
@@ -534,6 +543,45 @@ export function decideTransit(policy, text) {
     caVars.length ? `CA trust override: ${caVars.join(", ")}` : ""
   ].filter(Boolean).join("; ");
   return { decision: armed && bad.length ? "deny" : "allow", proxies, caVars, bad, reason };
+}
+
+// T1027.010 — decode a base64/hex payload the agent pipes straight into a shell, so the command detectors
+// run on the REAL payload rather than the encoder. The matching shape is flagged separately by the
+// obf-command-encoding detector (#50); this returns the decoded script text for the Bash branch to re-scan
+// like any embedded script. Bounded and fail-open: a malformed or non-printable decode is dropped.
+const B64_EXEC = /(?:echo|printf)\s+(?:-[A-Za-z]+\s+)*["']?([A-Za-z0-9+/=][A-Za-z0-9+/=\s]{14,}={0,2})["']?\s*\|\s*(?:base64\s+(?:-d|--decode|-D)|openssl\s+(?:base64\s+-d|enc\s+-(?:base64|a)\s+-d))\s*\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b/i;
+const B64_HERE = /(?:base64\s+(?:-d|--decode|-D)|openssl\s+(?:base64\s+-d|enc\s+-(?:base64|a)\s+-d))\s*<<<\s*["']?([A-Za-z0-9+/=][A-Za-z0-9+/=\s]{14,}={0,2})["']?\s*\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b/i;
+const HEX_EXEC = /(?:echo|printf)\s+(?:-[A-Za-z]+\s+)*["']?((?:[0-9a-fA-F]{2}[\s]?){8,})["']?\s*\|\s*xxd\s+-r\s*-p\s*\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b/i;
+const MOSTLY_PRINTABLE = (s) => { let bad = 0; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if (c === 0 || (c < 9) || (c > 13 && c < 32) || c === 127) bad++; } return s.length > 0 && bad / s.length < 0.1; };
+export function decodedCommandPayloads(command) {
+  const out = [];
+  try {
+    const cmd = String(command || "");
+    if (!cmd || cmd.length > 20000) return out;
+    for (const [re, kind] of [[B64_EXEC, "b64"], [B64_HERE, "b64"], [HEX_EXEC, "hex"]]) {
+      const m = cmd.match(re);
+      if (!m || !m[1]) continue;
+      const raw = m[1].replace(/\s+/g, "");
+      let dec = "";
+      try { dec = Buffer.from(raw, kind === "hex" ? "hex" : "base64").toString("utf8"); } catch { continue; }
+      if (dec && dec.length <= 20000 && MOSTLY_PRINTABLE(dec) && !out.includes(dec)) out.push(dec);
+    }
+  } catch { /* fail-open */ }
+  return out;
+}
+
+// #67 on the agent's own environment. A hook process inherits the environment of the agent that ran it,
+// so a proxy or CA override set when the agent was launched is visible here on every call. Rebuilt as
+// `NAME=value` text over the proxy and CA variables only, so decideTransit reads it exactly as it reads
+// a command; nothing else in the environment is looked at, and only the proxy host and the variable
+// names leave decideTransit.
+export function transitEnvText(env) {
+  const parts = [];
+  const val = (v) => (env && typeof env[v] === "string" ? env[v].trim() : "");
+  // The proxy URL is what names the host; a CA variable counts by being set (its path is never read).
+  for (const v of PROXY_ENV_VARS) if (val(v) && !/[\s"';]/.test(val(v))) parts.push(`${v}=${val(v)}`);
+  for (const v of CA_ENV_VARS) if (val(v)) parts.push(`${v}=set`);
+  return parts.join(" ");
 }
 
 // T1-5 / #64 — agent entitlement envelope. policy.entitlements = { tools:[], paths:[], mcp:[] } declares

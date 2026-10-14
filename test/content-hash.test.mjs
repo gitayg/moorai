@@ -298,7 +298,15 @@ const EXPECTED_DJB2_ARGS = {
     "epD.hosts.join(\",\")",                     // Write/Edit/MultiEdit/NotebookEdit (on the text being committed)
     "epD.hosts.join(\",\")",                     // WebFetch                 (on ti.url)
     "epD.hosts.join(\",\")",                     // MCP tool args            (on the serialized args)
-    "server"                                    // MCP server name
+    "server",                                   // MCP server name
+    // ---- threat #67 on the agent's own environment (transitEnvStep's once-per-session seenOnce key; the
+    // key stays in the local seen-state file and is never posted). REVIEWED for v1.17.0: td.proxies is
+    // proxyHostOf() output (scheme, userinfo, port, path and query stripped) and td.caVars is names from
+    // the fixed CA_ENV_VARS list (a CA variable's value is never read). Measured: an environment with
+    //   HTTPS_PROXY=http://alice:S3cr3t-pw@proxy.corp.example:8080/path?token=sk-proj-abc123
+    //   NODE_EXTRA_CA_CERTS=/Users/alice/secret-ca.pem   AWS_SECRET_ACCESS_KEY=…
+    // reduces to exactly "proxy.corp.example,NODE_EXTRA_CA_CERTS". Content-free: host and variable names.
+    "[...td.proxies, ...td.caVars].join(\",\")"  // transit override set (#67, agent environment)
   ],
   "cli/moorai-guard.mjs": [
     "epD.hosts.join(\",\")"

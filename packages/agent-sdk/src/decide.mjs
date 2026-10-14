@@ -1,7 +1,8 @@
 // The PreToolUse decision for one tool call, in-process, composed ONLY from the decision functions the
 // shell hook (cli/moorai-hook.mjs main()) composes — decideText, decideCredFileRead, decideFileMetadata,
-// decideAgentStateWrite, extractReadPaths, decideEndpoints, mcpGateway, mcpFloor, decideEnvelope,
-// threatActionFor, saferAlternativesFor from cli/hook-core.mjs; scanMcpFileArgs; egressHits — in the
+// decideAgentStateWrite, decideAuthorizedKeysWrite, decodedCommandPayloads, decideTransit, decideThreat,
+// extractReadPaths, decideEndpoints, mcpGateway, mcpFloor, decideEnvelope, threatActionFor,
+// saferAlternativesFor from cli/hook-core.mjs; scanMcpFileArgs; egressHits — in the
 // same order, with the same merge rule (deny > ask > allow, never downgrading) and the same reason text.
 //
 // WHY A COMPOSITION AND NOT A CALL. The hook's branch logic lives in main(), which runs at module scope
@@ -14,15 +15,21 @@
 // NOT_EVALUATED and returned on every result so a caller can see them: the runaway circuit breaker,
 // session-risk escalation, cumulative deletion volume, intent alignment, learned drift, MCP server
 // reputation, model escalation, honeytokens and the mask rewrite (a "mask" policy resolves to its
-// fallback here, as threatActionFor does for every caller that cannot rewrite). With no policy, all of
-// these are report-only in the hook too, so the verdict matches; with a policy that arms one of them,
-// the hook can be stricter than this function.
+// fallback here, as threatActionFor does for every caller that cannot rewrite). Also not here, by design:
+// the hook's transit check on the AGENT'S OWN environment ("transit-env", #67 transitEnvStep). The hook
+// process inherits the environment of the agent that launched it, so a proxy or CA override there is the
+// agent's; this runtime also backs the moorai-serve sidecar, whose environment is not the agent's, so it
+// has no reliable view of it (and the hook reports it once per session from state on disk). A proxy or CA
+// override a shell COMMAND sets is a property of the call and is decided below, as in the hook. With no
+// policy, all of these are report-only in the hook too, so the verdict matches; with a policy that arms
+// one of them (transitAllow for "transit-env"), the hook can be stricter than this function.
 import { readFileSync } from "node:fs";
 import { basename, isAbsolute, resolve } from "node:path";
 import { hookCore, mcpFileArgs, secretEgress, modelEndpoints, outboundUpload, serverModeLib, toolTagsLib, exceptionsLib } from "./core.mjs";
 
 const {
-  decideText, decideCredFileRead, decideFileMetadata, decideAgentStateWrite, isEnvTemplate, fileScanText,
+  decideText, decideCredFileRead, decideFileMetadata, decideAgentStateWrite, decideAuthorizedKeysWrite, isEnvTemplate, fileScanText,
+  decodedCommandPayloads, decideTransit, decideThreat,
   decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, mcpFloor,
   saferAlternativesFor, PS_OUTBOUND_UPLOAD, evaluateProfile, rejectedAlert, readRootOwned
 } = hookCore;
@@ -39,7 +46,7 @@ export const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
 export const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 // Cursor's alias, as the hook maps it (TOOL_ALIASES).
 const TOOL_ALIASES = { Shell: "Bash" };
-export const NOT_EVALUATED = Object.freeze(["circuit-breaker", "session-risk", "deletion-volume", "intent-alignment", "learned-drift", "mcp-reputation", "model-escalation", "honeytokens", "mask-rewrite", "tag-rules"]);
+export const NOT_EVALUATED = Object.freeze(["circuit-breaker", "session-risk", "deletion-volume", "intent-alignment", "learned-drift", "mcp-reputation", "model-escalation", "honeytokens", "mask-rewrite", "tag-rules", "transit-env"]);
 const FILE_CAP = 262144;
 
 function readFileCapped(fp) {
@@ -176,6 +183,18 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
       if (ps) merge(decideCredFileRead(engine, policy, p));
     }
     merge(decideText(engine, policy, ti.command, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" } }));
+    // Base64/hex payloads the command decodes straight into a shell (T1027.010), as the hook adds them to
+    // the scripts it re-scans: a pure function of the command, so decided here exactly as there.
+    const scripts = decodedCommandPayloads(command);
+    // #67 — the command starts a program behind a proxy or a CA override; the hook's same step and merge.
+    const trD = decideTransit(policy, [command, ...scripts].join("\n"));
+    if (trD.proxies.length || trD.caVars.length) {
+      const xd = decideThreat(policy, 67, "transit-override");
+      finds.push(...xd.findings);
+      if (trD.decision === "deny" && dec !== "deny") { dec = "deny"; reasons = [trD.reason]; alts = saferAlternativesFor([67]); }
+      else if (RANK[xd.decision] > RANK[dec]) { dec = xd.decision; reasons = xd.reasons; alts = xd.alternatives; }
+    }
+    for (const script of scripts) merge(decideText(engine, policy, script, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" } }));
     const epD = decideEndpoints(policy, ti.command);
     if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); endpointSignal(epD, signals); }
     if (secretEgressBlocks(policy, ti.command, cwd, "egress", signals) && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); }
@@ -192,6 +211,11 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
     d.findings.push(...sd.findings);
     if (RANK[sd.decision] > RANK[dec]) { dec = sd.decision; reasons = sd.reasons; alts = sd.alternatives; }
     if (sd.kill) { d.kill = true; d.killIds.push(...sd.killIds); }
+    // #48 — the target is an authorized_keys file (ATT&CK T1098.004): the hook's same step on the path.
+    const kd = decideAuthorizedKeysWrite(engine, policy, path);
+    d.findings.push(...kd.findings);
+    if (RANK[kd.decision] > RANK[dec]) { dec = kd.decision; reasons = kd.reasons; alts = kd.alternatives; }
+    if (kd.kill) { d.kill = true; d.killIds.push(...kd.killIds); }
     const epD = decideEndpoints(policy, text);
     if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); endpointSignal(epD, signals); }
     if (secretEgressBlocks(policy, text, cwd, "file", signals) && dec === "allow") { dec = "ask"; reasons = ["local secret written to a new file"]; alts = saferAlternativesFor([65]); }

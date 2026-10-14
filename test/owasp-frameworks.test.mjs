@@ -201,7 +201,7 @@ test("OWASP-MAP: the credits the review rejected stay uncredited", () => {
     [32, "owaspAgentic", "ASI05", "out-code-exec fires on every code fence"],
     [24, "owaspAgentic", "ASI02", "coaching rule with no detection or enforcement behind it"],
     [63, "owaspAgentic", "ASI04", "decides the destination host of model traffic, not a component's provenance"],
-    [67, "owaspAgentic", "ASI07", "not wired, and agent-to-provider transit is not inter-agent communication"],
+    [67, "owaspAgentic", "ASI07", "agent-to-provider transit is not inter-agent communication"],
     [79, "owaspAgentic", "ASI02", "a contact without a payload moves no data through a tool"],
     [74, "owaspAgentic", "ASI08", "OWASP files the initial defect under its own entry and ASI08 only for measured fan-out"],
     [38, "owaspAgentic", "ASI08", "one session's loop and call rate, not propagation across agents"],

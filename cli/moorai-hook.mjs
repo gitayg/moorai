@@ -19,7 +19,7 @@ import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideCredFileRead, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, policyIatIso, policyAgeMs, policyFreshByIat, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision, evaluateProfile, rejectedAlert, PROFILE_DRIFT, decideThreat } from "./hook-core.mjs";
+import { buildEngine, decideText, decideCredFileRead, decideTransit, transitEnvText, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideAuthorizedKeysWrite, decodedCommandPayloads, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, policyIatIso, policyAgeMs, policyFreshByIat, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision, evaluateProfile, rejectedAlert, PROFILE_DRIFT, decideThreat } from "./hook-core.mjs";
 import { fetchExecFacts } from "../data/net-exec.js";
 import { fetchedExecHit, recordFetched } from "./fetch-exec-state.mjs";
 import { maskValue, maskNote } from "./mask.mjs";
@@ -1811,6 +1811,22 @@ function seenOnce(key, ttl = Infinity) {
     return false;
   } catch { return true; }
 }
+// #67 / ATT&CK T1557, T1553.004 — the agent itself runs behind a proxy or a CA override. The hook inherits
+// the agent's environment, so the override is read here (cli/hook-core.mjs transitEnvText) on every
+// PreToolUse and UserPromptSubmit. Reported once per session and override set (report-first: a corporate
+// proxy is ordinary); when policy.transitAllow is set and the proxy is not on it, every PreToolUse call of
+// the session is denied. Content-free: proxy host and variable names only.
+function transitEnvStep(policy, tool) {
+  try {
+    const td = decideTransit(policy, transitEnvText(process.env));
+    if (!td.proxies.length && !td.caVars.length) return null;
+    const deny = td.decision === "deny";
+    if (!seenOnce(`transit:${localHash(SESSION_ID || "")}:${djb2([...td.proxies, ...td.caVars].join(","))}`, 86400000)) {
+      report(decideThreat(policy, 67, "transit-env", "egress").findings, "egress", `hook:${tool}`, deny && EVENT === "PreToolUse", policy.captureTier, {});
+    }
+    return deny ? td : null;
+  } catch { return null; }
+}
 // Live exceptions for this call (console policy, and the root-owned local store when switched on). Each
 // local grant is recorded in the action ledger the first time the hook sees it, and a local grant present
 // while local exceptions are off is reported once. Returns the policy this call is decided under.
@@ -2548,6 +2564,7 @@ async function main() {
   // On Windows the walk runs in a background PowerShell; no call waits for it.
   const acp = EVENT === "PreToolUse" || EVENT === "UserPromptSubmit" ? aiCliParentStep({ policy, sessionId: SESSION_ID, agent: beatHost(), event: EVENT, coach: COACH, serverMode: !!SERVER.active, shim: process.env.MOORAI_HOOK_HOST === "shim" }) : { alerts: [] };
   for (const a of acp.alerts) post({ ...a, tool: `hook:${tool || EVENT}`, ts: new Date().toISOString(), ...IDENTITY });
+  const transitDeny = EVENT === "PreToolUse" || EVENT === "UserPromptSubmit" ? transitEnvStep(policy, tool || EVENT) : null;
 
   // ROUTE BY EVENT FIRST. A PostToolUse WebFetch carries tool_name "WebFetch" just as the PreToolUse one
   // does, so without this the inbound payload would fall into the OUTBOUND WebFetch branch below and be
@@ -2558,6 +2575,7 @@ async function main() {
   // Its ledger row is the turn boundary the Stop check reads.
   if (input.hook_event_name === "UserPromptSubmit") return handlePrompt(input, policy, engine);
   if (EVENT === "Stop" || EVENT === "SubagentStop") return handleStop(input);
+  if (EVENT === "PreToolUse" && transitDeny) { why(REASON.DETECTOR_MATCH); return emit("deny", `blocked via ${tool} — the agent runs behind a proxy not on the transit allow-list (${transitDeny.bad.join(", ")})`, saferAlternativesFor([67])); }
   // This call, for the tag gate and the exception hint in emit(), and the exceptions that cover it: a live
   // one turns its threat into "notify" for this call only (cli/exceptions.mjs).
   Object.assign(CALL, { active: true, tool, ti, cwd: typeof input.cwd === "string" ? input.cwd : "", system: parseRootOwnedJson(systemConfigPath()) });
@@ -2626,7 +2644,9 @@ async function main() {
     // the one the agent's shell inherited.
     const readPaths = extractReadPaths(ti.command, { ...(ps ? { shell: "powershell" } : {}), env: process.env, home: os.homedir(), insensitive: process.platform === "win32" });
     // Scripts the command carries (-EncodedCommand, an Invoke-Expression string): scanned as commands too.
-    const scripts = embeddedScripts(ti.command, ps ? { shell: "powershell" } : undefined);
+    // Plus base64/hex payloads the command decodes straight into a shell (T1027.010): decoded and re-scanned
+    // so the real payload, not the encoder, meets the command detectors.
+    const scripts = [...embeddedScripts(ti.command, ps ? { shell: "powershell" } : undefined), ...decodedCommandPayloads(ti.command)];
     const shellText = [ti.command || "", ...scripts].join("\n");
     // A file an UPLOAD command reads is leaving the device; the command text itself is outbound when it
     // uploads or names a host. Only these carry ctx.egress (instr-leak-egress is opt-in on it).
@@ -2664,6 +2684,16 @@ async function main() {
     finds.push(...cmdD.findings);
     if (cmdD.kill) killIds.push(...cmdD.killIds);
     if (RANK[cmdD.decision] > RANK[dec]) { dec = cmdD.decision; reasons = cmdD.reasons; alts = cmdD.alternatives; }
+    // #67 — the command starts a program behind a proxy or a CA override (`HTTPS_PROXY=… NODE_EXTRA_CA_CERTS=…
+    // claude -p`, `export SSL_CERT_FILE=…`). Report-first; denied when policy.transitAllow is set and the
+    // proxy is not on it. Proxy host and variable names only.
+    const trD = decideTransit(policy, shellText);
+    if (trD.proxies.length || trD.caVars.length) {
+      const xd = decideThreat(policy, 67, "transit-override");
+      finds.push(...xd.findings);
+      if (trD.decision === "deny" && dec !== "deny") { dec = "deny"; reasons = [trD.reason]; alts = saferAlternativesFor([67]); }
+      else if (RANK[xd.decision] > RANK[dec]) { dec = xd.decision; reasons = xd.reasons; alts = xd.alternatives; }
+    }
     // #22 — a shell write INTO a memory / auto-loaded instruction file (echo/printf >> CLAUDE.md, tee -a
     // AGENTS.md, a heredoc into .cursorrules, Add-Content): the written text gets the verdict a Write of the
     // same text to the same path gets, and only #22 is consulted (the command scan above already ran the
@@ -2750,6 +2780,12 @@ async function main() {
     d.findings.push(...sd.findings);
     if (RANK[sd.decision] > RANK[dec]) { dec = sd.decision; reasons = sd.reasons; alts = sd.alternatives; }
     if (sd.kill) { d.kill = true; d.killIds.push(...sd.killIds); }
+    // #48 — the target is an authorized_keys file: a Write/Edit that installs an SSH login key
+    // (ATT&CK T1098.004), the tool-call equivalent of `tee -a ~/.ssh/authorized_keys`.
+    const kd = decideAuthorizedKeysWrite(engine, policy, path);
+    d.findings.push(...kd.findings);
+    if (RANK[kd.decision] > RANK[dec]) { dec = kd.decision; reasons = kd.reasons; alts = kd.alternatives; }
+    if (kd.kill) { d.kill = true; d.killIds.push(...kd.killIds); }
     if (dec !== "allow") why(detectorReason(d.findings));
     report(d.findings, "output", `hook:${tool}`, dec === "deny", policy.captureTier, { filePath: path, toolName: tool });
     logBehavior(tool, path || tool, text, d, "output");

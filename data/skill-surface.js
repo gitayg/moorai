@@ -139,7 +139,21 @@ const SURFACE = [
   [/(^|[/\\])\.clinerules([/\\].+)?$/i, ".clinerules", false],
   [/(^|[/\\])(\.cline[/\\]rules|Cline[/\\]Rules)[/\\].+\.md$/i, "cline-rule", false],
   [/(^|[/\\])\.github[/\\]copilot-instructions\.md$/i, "copilot-instructions", false],
-  [/(^|[/\\])\.codex[/\\]config\.toml$/i, "codex-config", false]
+  [/(^|[/\\])\.codex[/\\]config\.toml$/i, "codex-config", false],
+
+  // ---- IDE auto-run surfaces — files an editor or container runtime executes when a folder opens, which
+  //      ATT&CK v20 names under T1195.001 (Compromise Software Dependencies and Development Tools) ----
+  // VS Code: a task with `"runOptions": { "runOn": "folderOpen" }` runs its shell command on open.
+  //   (code.visualstudio.com/docs/editor/tasks#_run-behavior).
+  [/(^|[/\\])\.vscode[/\\]tasks\.json$/i, "vscode-tasks", false],
+  // JetBrains run configurations — shell/other commands launched from the IDE — live in .idea/workspace.xml
+  //   and .idea/runConfigurations/*.xml (jetbrains.com/help/idea/run-debug-configuration.html).
+  [/(^|[/\\])\.idea[/\\]workspace\.xml$/i, "idea-workspace", false],
+  [/(^|[/\\])\.idea[/\\]runConfigurations[/\\][^/\\]+\.xml$/i, "idea-run-config", false],
+  // Dev Containers: onCreate/postCreate/postStart commands run a shell when the container is built or
+  //   attached (containers.dev/implementors/json_reference).
+  [/(^|[/\\])\.devcontainer([/\\][^/\\]+)?[/\\]devcontainer\.json$/i, "devcontainer", false],
+  [/(^|[/\\])\.devcontainer\.json$/i, "devcontainer", false]
 ];
 
 export const SKILL_SURFACE_KINDS = [...new Set(SURFACE.map(([, kind]) => kind))];

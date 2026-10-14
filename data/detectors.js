@@ -15,10 +15,14 @@ import { AGENT_STATE_DETECTORS } from "./detectors-agent-state.js";
 import { ARTIFACT_DETECTORS } from "./detectors-artifacts.js";
 import { INSTRUCTION_LEAK_DETECTORS } from "./detectors-instruction-leak.js";
 import { TOOL_CREDPATH_DETECTORS } from "./detectors-tool-credpaths.js";
+import { CLOUD_METADATA_DETECTORS } from "./detectors-cloud-metadata.js";
 import { poisoningDetectors } from "./detectors-poisoning.js";
 import { netExecDetectors } from "./detectors-net-exec.js";
 import { withRestart } from "../src/regex-restart.js";
 import { TAG_SMUGGLING, SUPPLEMENT_VS_SMUGGLING, BASIC_VS_SMUGGLING, BIDI_MARK_RUN, wellFormedSelectorSequence } from "./invisible-selectors.js";
+import { SECURITY_TOOLING_DISABLE } from "./security-tooling.js";
+import { ciPipelinePoisoningHit } from "./ci-pipeline.js";
+import { persistenceHit } from "./persistence.js";
 
 // ---------------------------------------------------------------------------------------------------
 // Content-free helpers for the additive detectors appended at the end of DETECTORS. All pure,
@@ -320,6 +324,95 @@ export const INHIBIT_RECOVERY = [
   /(?<![\w.-])gcloud\s[^;&|\n]{0,80}?\b(?:compute\s+snapshots|sql\s+backups)\s+delete\b/i,
   /(?<![\w.-])az\s+snapshot\s+delete\b/i,
   /(?<![\w.-])az\s+backup\s+protection\s+disable\b[^;&|\n]{0,200}?--delete-backup-data(?:\s+|=)true\b/i
+];
+
+// Install Root Certificate (ATT&CK T1553.004): commands that add a certificate to a system, user or
+// runtime TRUST store, part of action-security-config (#46). A trusted root lets whoever holds its key
+// mint certificates every client on the machine accepts. Listing, viewing and verifying stay silent, and
+// so does refreshing the bundle on its own (`update-ca-certificates` after installing ca-certificates);
+// placing a file in an anchor directory is the act. The anchor directory must be the LAST argument, so
+// copying a certificate OUT of one is not matched (test/root-ca-install.test.mjs).
+const CA_ANCHOR_DIR = String.raw`(?:\/usr\/local\/share\/ca-certificates|\/etc\/pki\/ca-trust\/source\/anchors|\/etc\/ca-certificates\/trust-source\/anchors|\/usr\/share\/pki\/trust\/anchors)`;
+export const ROOT_CA_INSTALL = [
+  // macOS: add-trusted-cert (admin or user domain).
+  /(?<![\w.-])security\s+add-trusted-cert\b/i,
+  // Windows: certutil into the Root / AuthRoot store, Import-Certificate into a Root store.
+  /(?<![\w.-])certutil(?:\.exe)?\s[^;&|\n]{0,80}?-addstore\s+(?:-[a-z]+\s+){0,3}["']?(?:Auth)?Root\b/i,
+  /\bImport-Certificate\b[^;|\n]{0,300}?Cert:\\(?:LocalMachine|CurrentUser)\\(?:Auth)?Root\b/i,
+  // Linux: a certificate placed in a trust-anchor directory, or handed to p11-kit's trust anchor.
+  new RegExp(String.raw`(?<![\w.-])(?:cp|mv|install|tee|ln)\s(?:[^;&|\n]{0,300}?\s)?${CA_ANCHOR_DIR}(?:\/[^\s;&|]{0,200})?\s*(?:$|[;&|\n])`, "im"),
+  new RegExp(String.raw`>{1,2}\s*["']?${CA_ANCHOR_DIR}\/`, "i"),
+  /(?<![\w.-])trust\s+anchor\s+(?!--remove\b)\S/i,
+  // Java: a certificate imported into the JDK's cacerts store.
+  /(?<![\w.-])keytool(?:\.exe)?\s[^;&|\n]{0,200}?-import(?:cert)?\b[^;&|\n]{0,200}?(?:-cacerts\b|[\/\\]cacerts\b)/i
+];
+
+// Sudo and Sudo Caching (ATT&CK T1548.003): the agent grants itself or another account passwordless or
+// broader sudo by editing the sudoers policy. Part of action-security-config (#46). A WRITE to
+// /etc/sudoers or a file under /etc/sudoers.d/, a `visudo -f` of such a file, or a NOPASSWD rule being
+// written. Reading, listing and validating (`visudo -c`, `sudo -l`) stay silent
+// (test/sudoers-write.test.mjs).
+export const SUDOERS_WRITE = [
+  />>?\s*\|?\s*["']?[^\s"';|&>]{0,120}?\/etc\/sudoers(?:\.d)?\b/i,
+  /(?<![\w-])tee\b[^\n;|&]{0,120}?\/etc\/sudoers(?:\.d)?\b/i,
+  /(?<![\w-])visudo\b(?![^\n;|&]{0,80}?\s-c\b)[^\n;|&]{0,60}?\s-f\b/i,
+  /(?:>>?|(?<![\w-])(?:tee|echo|printf)\b)[^\n]{0,160}?\bNOPASSWD\s*:/i
+];
+
+// Container CLI host escape (ATT&CK T1059.013): the agent runs a container configured to break out onto
+// the host — a privileged container, the host root filesystem mounted in, the host PID namespace, a
+// SYS_ADMIN/ALL capability grant, `nsenter` into PID 1's namespaces, or a kubectl pod with those. Part of
+// action-security-config (#46): ask before the security boundary is crossed. Ordinary container use
+// (bind-mounting the project dir, publishing a port, plain `docker run ubuntu bash`) stays silent
+// (test/container-escape.test.mjs).
+const CT = String.raw`(?:docker|podman|nerdctl)\s+(?:run|create)\b`;
+export const CONTAINER_ESCAPE = [
+  new RegExp(String.raw`(?<![\w-])${CT}[^\n;|&]{0,300}?--privileged\b`, "i"),
+  new RegExp(String.raw`(?<![\w-])${CT}[^\n;|&]{0,300}?--pid[=\s]+host\b`, "i"),
+  new RegExp(String.raw`(?<![\w-])${CT}[^\n;|&]{0,300}?--cap-add[=\s]+["']?(?:SYS_ADMIN|ALL)\b`, "i"),
+  // Host root bind-mounted into the container: `-v /:/host`, `--volume /:/mnt`, `--mount … source=/,…`.
+  /(?<![\w-])(?:-v|--volume)\s+["']?\/:[\/a-z]/i,
+  /(?<![\w-])--mount\b[^\n;|&]{0,80}?source=\/(?=[,\s"'])/i,
+  // nsenter into init's namespaces — the classic privileged-container breakout.
+  /(?<![\w-])nsenter\b[^\n;|&]{0,80}?(?:-t|--target)[=\s]+1\b/i,
+  // A kubectl pod requesting host namespaces or privilege.
+  /(?<![\w-])kubectl\s+(?:run|create|apply|debug)\b[^\n]{0,400}?(?:--privileged\b|hostPID|hostPath|"privileged"\s*:\s*true)/i
+];
+
+// IDE Extensions (ATT&CK T1176.002): the agent side-loads an editor extension from a local .vsix or a URL
+// rather than the vetted marketplace, or writes one straight into the extensions directory. An extension
+// runs with the editor's privileges and persists across sessions. Part of pkg-install-untrusted (#57).
+// Installing a marketplace extension by its publisher.name id (`code --install-extension ms-python.python`)
+// is routine and stays silent (test/ide-extension-install.test.mjs).
+export const IDE_EXTENSION_INSTALL = [
+  /(?<![\w-])(?:code|code-insiders|cursor|windsurf|codium|vscodium)\b[^\n;|&]{0,60}?--install-extension\s+["']?(?:https?:\/\/|[^\s"';|&]{0,200}?\.vsix\b)/i,
+  /(?<![\w-])(?:cp|mv|unzip|tar|bsdtar|ditto|Copy-Item|Expand-Archive|Move-Item)\b[^\n;|&]{0,200}?[\/\\]\.(?:vscode|vscode-server|vscode-insiders|cursor|windsurf)[\/\\]extensions\b/i
+];
+
+// Command Obfuscation (ATT&CK T1027.010): the agent runs a command whose real payload is base64- or
+// hex-encoded and decoded straight into a shell, so a literal scan of the command sees only the encoder.
+// This flags the SHAPE (threat #50); the hook separately DECODES the payload and re-runs the command
+// detectors on it (cli/hook-core.mjs decodedCommandPayloads), so a reverse shell or credential read hidden
+// inside is still caught on its own threat. Encoding to a FILE, or decoding without piping into a shell,
+// is not this (test/command-obfuscation.test.mjs).
+export const OBFUSCATED_EXEC = [
+  /(?:base64\s+(?:-d|--decode|-D)|openssl\s+(?:base64\s+-d|enc\s+-(?:base64|a)\s+-d)|xxd\s+-r\s*-p|xxd\s+-rp)\s*(?:<<<[^\n|]{0,400})?\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b/i,
+  /\beval\s+["'`]?\$\(\s*(?:echo|printf)\b[^\n]{0,300}?\|\s*(?:base64\s+(?:-d|--decode|-D)|xxd\s+-r\s*-p)/i,
+  /(?<![\w-])(?:powershell|pwsh)(?:\.exe)?\b[^\n]{0,80}?\s-[eE][a-zA-Z]*\s+["']?[A-Za-z0-9+/]{16,}={0,2}/
+];
+
+// SSH Authorized Keys (ATT&CK T1098.004): the agent adds a public key to an authorized_keys file, which
+// grants key-based login without a password — persistent access. Part of action-credential-create (#48).
+// Only a WRITE / APPEND to the file counts: a `>>`/`>` redirect, `tee`, a PowerShell Add-Content /
+// Set-Content / Out-File, or ssh-copy-id to the local host (which installs the key). Reading, listing and
+// fixing the file's permissions stay silent (test/ssh-authorized-keys.test.mjs). The Write/Edit family
+// reaches this through decideAuthorizedKeysWrite, which probes the target path as `tee -a <path>`, so a
+// tool-call write to the file gets the same verdict a shell append gets.
+export const SSH_AUTHORIZED_KEYS = [
+  />>?\s*\|?\s*["']?[^\s"';|&>]{0,200}?authorized_keys\b/i,
+  /\btee\b[^\n;|&]{0,200}?authorized_keys\b/i,
+  /\b(?:Add-Content|Set-Content|Out-File)\b[^\n;|]{0,200}?authorized_keys\b/i,
+  /\bssh-copy-id\b[^\n]{0,200}?@(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1)(?![\w.])/i
 ];
 
 // Clipboard READS — the documented shell commands that print the clipboard. Developers copy API keys,
@@ -788,7 +881,11 @@ export const DETECTORS = [
       /\bufw\s+disable\b|netsh\s+advfirewall.*\boff\b|Set-MpPreference\s+-Disable|csrutil\s+disable|spctl\s+--master-disable/i,
       /\b(iam|role|policy)\b.{0,40}\b(AdministratorAccess|full[- ]?access|\*:\*|grant all|attach.*policy)\b/i,
       /\b(0\.0\.0\.0\/0|::\/0)\b.{0,25}\b(ingress|inbound|security ?group|allow)\b/i,
-      /\bchmod\s+777\b|add\b.{0,15}\bsudoers\b|\baws\s+iam\b|\baz\s+role\s+assignment\b|gcloud\s+(iam|projects add-iam)/i
+      /\bchmod\s+777\b|add\b.{0,15}\bsudoers\b|\baws\s+iam\b|\baz\s+role\s+assignment\b|gcloud\s+(iam|projects add-iam)/i,
+      ...ROOT_CA_INSTALL,
+      ...SUDOERS_WRITE,
+      ...SECURITY_TOOLING_DISABLE,
+      ...CONTAINER_ESCAPE
     ]
   },
   {
@@ -816,7 +913,8 @@ export const DETECTORS = [
       /\b(create|add|provision|generate|mint|issue)\b.{0,25}\b(service account|api[- ]?key|access[- ]?key|personal access token|oauth client|client secret|credential)\b/i,
       /\baws\s+iam\s+create-(access-key|user)\b|gcloud\s+iam\s+service-accounts\s+keys?\s+create/i,
       /\b(adduser|useradd|New-LocalUser)\b|net\s+user\s+\S+\s+\/add/i,
-      /\bssh-keygen\b|openssl\s+genrsa\b/i
+      /\bssh-keygen\b|openssl\s+genrsa\b/i,
+      ...SSH_AUTHORIZED_KEYS
     ]
   },
   {
@@ -936,7 +1034,7 @@ export const DETECTORS = [
     mode: "warn",
     hint: "Reads a credential / secret file (.env, cloud creds, SSH key, /etc/shadow).",
     patterns: [
-      /(?<=\b(?:cat|less|more|head|tail|type|Get-Content|xxd|base64|strings|nano|vi|vim|open)\b[^\n]{0,50}[\s"'`;|&<>()])[^\s"'`;|&<>()]{0,512}?(?:\.env\b(?!\.(?:example|sample|template)\b)|\.aws[\/\\]credentials|\.ssh[\/\\]id_[a-z0-9]+|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.pgpass\b|\.docker[\/\\]config\.json|\.kube[\/\\]config)/i,
+      /(?<=\b(?:cat|less|more|head|tail|type|Get-Content|xxd|base64|strings|nano|vi|vim|open)\b[^\n]{0,50}[\s"'`;|&<>()])[^\s"'`;|&<>()]{0,512}?(?:\.env\b(?!\.(?:example|sample|template)\b)|\.aws[\/\\]credentials|\.ssh[\/\\]id_[a-z0-9]+|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.pgpass\b|\.docker[\/\\]config\.json|\.kube[\/\\]config|\.config[\/\\]gh[\/\\]hosts\.yml|msal_token_cache(?:\.bin)?|access_tokens\.db)/i,
       // Lookbehind: start only at the first ~ or / of a run, the one start that could win. Without it each
       // "/" of "a/a/a…" was a start (60k: 1.5s, now 0.2ms). See test/cred-file-access-redos.test.mjs.
       /(?<![~\/][^\s"']*?)[~\/][^\s"']*\.aws[\/\\]credentials\b/i,
@@ -945,7 +1043,16 @@ export const DETECTORS = [
       /\.git-credentials\b/i,
       /\bsecurity\s+find-generic-password\b/i,
       /\bgcloud\s+auth\s+(print-access-token|application-default\s+print-access-token)\b/i,
-      /\b(printenv|env)\b[^\n]{0,20}\|\s*grep\s+-i[^\n]{0,20}\b(secret|token|key|password|aws)\b/i
+      /\b(printenv|env)\b[^\n]{0,20}\|\s*grep\s+-i[^\n]{0,20}\b(secret|token|key|password|aws)\b/i,
+      // Browser credential / cookie / token stores, anchored to a recognizable browser profile directory so
+      // "Cookies" and "Login Data" cannot match in ordinary prose (T1555.003 Credentials from Web Browsers;
+      // T1528 Steal Application Access Token). Copying the store OUT is the act, so this is verb-independent.
+      /(?:Google[\/\\]Chrome|Chromium|BraveSoftware|Microsoft[\/\\ ]Edge|Vivaldi|Opera Software|Mozilla[\/\\]Firefox|Firefox[\/\\]Profiles)[\/\\][^\n"']{0,160}?(?:Login Data|Web Data|Cookies|Local State|key4\.db|logins\.json|cookies\.sqlite|signons\.sqlite)\b/i,
+      // macOS keychain dump — the whole store, not one item (T1555.001).
+      /\bsecurity\s+dump-keychain\b/i,
+      // Shell command history mined for secrets, both pipe directions (T1552.003 Credentials in Shell History).
+      /\bgrep\b[^\n|]{0,40}?-i[^\n|]{0,40}?(?:password|passwd|secret|token|api[_-]?key|aws)[^\n]{0,60}?(?:\.bash_history|\.zsh_history|\.sh_history)\b/i,
+      /(?:\.bash_history|\.zsh_history|\.sh_history)\b[^\n]{0,40}?\|\s*grep\b[^\n]{0,60}?(?:password|passwd|secret|token|api[_-]?key|aws)/i
     ]
   },
   {
@@ -986,7 +1093,8 @@ export const DETECTORS = [
       // into iex, or iex over a download (irm/iwr, or WebClient.DownloadString). The pipe must follow the
       // download within one statement (no `;` or newline between them).
       /(?<![\w-])(irm|iwr|Invoke-RestMethod|Invoke-WebRequest)(?![\w-])[^\n;|]{0,200}\|\s*(iex|Invoke-Expression)(?![\w-])/i,
-      /(?<![\w-])(iex|Invoke-Expression)\s*\(+\s*(?:(irm|iwr|Invoke-RestMethod|Invoke-WebRequest)(?![\w-])|New-Object\s+(?:System\.)?Net\.WebClient\s*\)\s*\.\s*DownloadString\b)/i
+      /(?<![\w-])(iex|Invoke-Expression)\s*\(+\s*(?:(irm|iwr|Invoke-RestMethod|Invoke-WebRequest)(?![\w-])|New-Object\s+(?:System\.)?Net\.WebClient\s*\)\s*\.\s*DownloadString\b)/i,
+      ...IDE_EXTENSION_INSTALL
     ]
   },
   // #4 / #61 (LLM05) — on-device output screening for INSECURE CODE the agent generates. Distinct from
@@ -1628,10 +1736,46 @@ export const DETECTORS = [
     ],
     refine: (_m, text) => renderedExfilHit(text)
   },
+  {
+    // T1677 Poisoned Pipeline Execution — a Write/Edit into a CI/CD config that adds a fetch-to-shell step,
+    // exfiltrates a pipeline secret, or switches a trigger to pull_request_target. Output stage (a write),
+    // path-gated on ctx.targetPath. A second detector on #32; the engine dedups by threat.
+    detectorId: "ci-pipeline-poisoning",
+    threatId: 32,
+    stages: ["output"],
+    mode: "warn",
+    hint: "Writes a CI/CD pipeline step that runs fetched code, exfiltrates a pipeline secret, or switches a trigger to pull_request_target (poisoned pipeline execution).",
+    patterns: [/^[\s\S]/],
+    refine: (_m, text, ctx) => ciPipelinePoisoningHit(text, ctx)
+  },
+  {
+    // T1027.010 Command Obfuscation — a base64/hex payload decoded straight into a shell, or a PowerShell
+    // -EncodedCommand. Flags the shape on threat #50; the hook decodes the payload and re-scans it for the
+    // underlying threat (cli/hook-core.mjs decodedCommandPayloads).
+    detectorId: "obf-command-encoding",
+    threatId: 50,
+    stages: ["prompt"],
+    mode: "warn",
+    hint: "A command decodes a base64/hex payload straight into a shell, or runs a PowerShell -EncodedCommand (command obfuscation).",
+    patterns: OBFUSCATED_EXEC
+  },
+  {
+    // T1053.003 / T1543.001 / T1546.004 — a persistence foothold the agent installs (cron, launch agent,
+    // an rc file made to fetch/exec, a systemd --user unit, Windows schtasks /create or a Run key).
+    // data/persistence.js; held for approval as a host-level change (#46).
+    detectorId: "agent-persistence",
+    threatId: 46,
+    stages: ["prompt"],
+    mode: "warn",
+    hint: "Installs a persistence foothold (crontab, Launch Agent, an rc file that fetches/executes, a systemd --user unit, schtasks /create or a Run key).",
+    patterns: [/^[\s\S]/],
+    refine: (_m, text) => persistenceHit(text)
+  },
   ...AGENT_STATE_DETECTORS,
   ...ARTIFACT_DETECTORS,
   ...INSTRUCTION_LEAK_DETECTORS,
-  ...TOOL_CREDPATH_DETECTORS
+  ...TOOL_CREDPATH_DETECTORS,
+  ...CLOUD_METADATA_DETECTORS
 ];
 
 // #22 memory poisoning and #21 RAG poisoning reuse detectors from the array above, so they are appended

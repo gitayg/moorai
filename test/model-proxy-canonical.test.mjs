@@ -121,7 +121,7 @@ const callChunk = (extra) => chunk(`{"id":"c","object":"chat.completion.chunk","
 // Each case: the upstream answer, whether the client streams, and the reason enforce gives.
 const CASES = {
   // Content the scan passes, so the refusal can only be the strictness (with PIPE the content scan refuses too).
-  "args: keys that differ only in case (Go binds `Command` to the `command` field)": [(res) => sendJson(res, withArgs("run_shell", JSON.stringify({ command: "ls -la", Command: "history -c" }))), false, /differ only in case/],
+  "args: keys that differ only in case (Go binds `Command` to the `command` field)": [(res) => sendJson(res, withArgs("run_shell", JSON.stringify({ command: "ls -la", Command: "git status" }))), false, /differ only in case/],
   "args: an unpaired surrogate (Go reads U+FFFD, serde refuses, JSON.parse keeps it)": [(res) => sendJson(res, withArgs("run_shell", '{"command":"ls -la","x\\ud800":"a","x\\udc00":"b"}')), false, /unpaired surrogate/],
   "body: `choices` and `Choices`": [(res) => sendJson(res, `{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"Choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"run_shell","arguments":${JSON.stringify(JSON.stringify({ command: PIPE }))}}}]},"finish_reason":"tool_calls"}]}`), false, /differ only in case/],
   "body: invalid UTF-8 inside the arguments": [(res) => sendRaw(res, Buffer.concat([Buffer.from(JSON.stringify(withArgs("run_shell", '{"command":"ls -la #"}')).split("#")[0]), Buffer.from([0xff]), Buffer.from(JSON.stringify(withArgs("run_shell", '{"command":"ls -la #"}')).split("#")[1])])), false, /not valid UTF-8/],
@@ -130,7 +130,7 @@ const CASES = {
   "dispatcher naming a blocked function, string arguments": [(res) => sendJson(res, withArgs("call_tool", JSON.stringify({ name: "delete_project_files", arguments: "{}" }))), false, /blocked by policy \(functionToolActions\)/],
   "dispatcher naming a blocked function, no wrapper": [(res) => sendJson(res, withArgs("call_tool", JSON.stringify({ tool_name: "delete_project_files", confirm: true }))), false, /blocked by policy \(functionToolActions\)/],
   "prefix rule tools* and the name tools.delete_all": [(res) => sendJson(res, withArgs("tools.delete_all", "{}")), false, /blocked by policy \(functionToolActions\)/],
-  "a JSON object string under a wrapper beside a top-level command (a client that parses `input` runs the other one)": [(res) => sendJson(res, withArgs("run_shell", JSON.stringify({ command: "ls -la", input: JSON.stringify({ command: "history -c" }) }))), false, /can be read more than one way/],
+  "a JSON object string under a wrapper beside a top-level command (a client that parses `input` runs the other one)": [(res) => sendJson(res, withArgs("run_shell", JSON.stringify({ command: "ls -la", input: JSON.stringify({ command: "git status" }) }))), false, /can be read more than one way/],
   "Bash {cmd: …}": [(res) => sendJson(res, withArgs("Bash", JSON.stringify({ cmd: PIPE }))), false, /#57/],
   "Bash {command: ls, cmd: …}": [(res) => sendJson(res, withArgs("Bash", JSON.stringify({ command: "ls -la", cmd: PIPE }))), false, /can be read more than one way/]
 };

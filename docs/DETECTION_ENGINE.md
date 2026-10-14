@@ -345,6 +345,173 @@ tool. Like the rest of #43 it matches the text, so a `grep` for one of these com
 `test/inhibit-recovery.test.mjs` holds 48 positives, 48 hard negatives, a per-pattern linear-time check and the
 hook end to end (no policy: the hook asks).
 
+### Shell command-history tampering inside #73
+
+`SHELL_HISTORY_TAMPER` in `data/shell-history-tamper.js` is a second detector on threat #73 (alongside
+`agent-history-tamper`, which covers the agent's own transcript stores). It credits ATT&CK T1070.003 (Clear
+Command History) and T1690 (Prevent Command History Logging). It matches `history -c`, `Clear-History`; `set +o
+history`, `unset HISTFILE`, `HISTFILE=/dev/null` or empty, a zero `HISTSIZE`/`HISTFILESIZE`/`SAVEHIST`, PSReadLine
+`-HistorySaveStyle SaveNothing` and a `Remove-Item` of its `HistorySavePath`; and a delete, shred, truncate or
+overwrite-to-empty (`: >`, `cat /dev/null >`, `echo -n >`, `printf '' >`) of `~/.bash_history`, `~/.zsh_history`,
+`fish_history`, `~/.sh_history`, `~/.histfile` or the PSReadLine `ConsoleHost_history.txt`. Reading, listing,
+copying, growing the history (`HISTSIZE=10000`) and re-enabling it (`set -o history`, `SaveIncrementally`) stay
+silent — those are the hard negatives. The two #73 detectors dedup by threat in the engine, so a command that
+trips both counts once; #73 is justify, so with no policy the hook asks. Not matched: a shell configured to a
+non-default history file the agent then clears, and `HISTCONTROL`/`HISTIGNORE` filtering (which drops some lines,
+not the file). `test/shell-history-tamper.test.mjs` holds 25 positives, 20 hard negatives, a per-pattern
+linear-time check and the hook end to end.
+
+### SSH authorized_keys inside #48
+
+`SSH_AUTHORIZED_KEYS` in `data/detectors.js` is part of `action-credential-create` (#48) and credits ATT&CK
+T1098.004. It matches a public key *written or appended* to an authorized_keys file: a `>>` or `>` redirect to it,
+`tee`, PowerShell `Add-Content`/`Set-Content`/`Out-File`, and `ssh-copy-id` to the local host. The Windows
+OpenSSH `administrators_authorized_keys` is covered by the same `authorized_keys` tail. Reading, listing, copying
+and `chmod` of the file stay silent. The Write/Edit family reaches the same credit through
+`decideAuthorizedKeysWrite` (`cli/hook-core.mjs`), which probes the target `file_path` as `tee -a <path>` and
+consults only #48 — so a tool-call write to the file gets the verdict the shell append gets. #48 is justify, so with
+no policy the hook asks. Not matched: `ssh-copy-id` to a remote host (ordinary devops) and a key placed via a
+configuration-management tool. `test/ssh-authorized-keys.test.mjs` holds 10 positives, 8 hard negatives, a
+per-pattern linear-time check and the hook end to end for both a shell append and a Write.
+
+### Sudoers edits inside #46
+
+`SUDOERS_WRITE` in `data/detectors.js` is part of `action-security-config` (#46) and credits ATT&CK T1548.003.
+It matches a write to `/etc/sudoers` or a file under `/etc/sudoers.d/` (a `>>`/`>` redirect or `tee`), a `visudo
+-f` that is not a `-c` validation, and a NOPASSWD rule being written (`echo`/`printf`/`tee`/redirect carrying
+`NOPASSWD:`). Reading, listing and validating (`sudo cat /etc/sudoers`, `grep NOPASSWD`, `visudo -c`, `sudo -l`)
+stay silent, and `sudo <cmd>` to run an ordinary command is untouched. #46 is justify. Not matched: sudo-token
+reuse (editing the timestamp cache) and a sudoers change made by a configuration-management tool.
+`test/sudoers-write.test.mjs` holds 9 positives, 10 hard negatives, a per-pattern linear-time check and the hook
+end to end.
+
+### Disabling defensive tooling inside #46
+
+`SECURITY_TOOLING_DISABLE` in `data/security-tooling.js` extends `action-security-config` (#46) past its first
+bounds and widens the existing T1685, T1686 and T1553.001 credits. It matches stopping, unloading, disabling or
+masking a known EDR or audit daemon (`launchctl bootout`, `systemctl stop|disable|mask`, `service … stop`, `sc
+stop`, `Stop-Service`) where the service is on the reviewable `EDR_AUDIT_SERVICES` list (CrowdStrike, SentinelOne,
+Carbon Black, osqueryd, auditd, Wazuh/OSSEC, Microsoft Defender/mdatp, Elastic Endpoint); a Defender exclusion
+(`Add-MpPreference -ExclusionPath|Process|Extension`); a host-firewall flush or disable (`iptables`/`ip6tables
+-F`, `nft flush ruleset`, `pfctl -d` / `-F all`); and removing macOS Gatekeeper's quarantine attribute (`xattr -d
+com.apple.quarantine`, `xattr -cr`). Status, list, start and restart stay silent, and the service names are daemon
+identifiers so a project called `falcon` or `osquery` does not match. #46 is justify. Not matched: an EDR stopped
+through its own management console, and a firewall rule narrowed rather than flushed. `test/security-tooling-disable.test.mjs`
+holds 17 positives, 17 hard negatives, a per-pattern linear-time check and the hook end to end.
+
+### Credential stores inside #55
+
+`cred-file-access` (#55) grew four credential homes beyond .env, cloud creds, SSH keys and /etc/shadow, and now
+credits ATT&CK T1552.003, T1555.003 and T1528 and names `security dump-keychain` under T1555.001. The lookbehind-
+anchored read pattern gained the gh CLI `hosts.yml`, the Azure `msal_token_cache` and the gcloud `access_tokens.db`
+token stores (the ReDoS-bounded start is unchanged — see `test/cred-file-access-redos.test.mjs`). Four new patterns
+follow: a browser Login Data / Cookies / Local State / key4.db / logins.json store, anchored to a Chrome, Edge,
+Brave, Vivaldi, Opera or Firefox profile directory so the generic names cannot match prose (and verb-independent,
+because copying the store out is the act); `security dump-keychain`; and a secret-mining read of `~/.bash_history`,
+`~/.zsh_history` or `~/.sh_history` in either pipe direction (`grep -i password <hist>`, `<hist> | grep secret`).
+Reading shell history without a secret filter, a file merely named `Cookies.md`, and `security find-certificate`
+stay silent. #55 is justify. `test/cred-store-access.test.mjs` holds 12 positives, 10 hard negatives, a linear-time
+check over the detector's patterns and the hook end to end.
+
+### Cloud instance-metadata access inside #55
+
+`cloud-metadata-access` in `data/detectors-cloud-metadata.js` is a detector on threat #55 crediting ATT&CK
+T1552.005. It flags a command that reaches a cloud or container metadata endpoint — AWS/Azure/GCP IMDS
+(169.254.169.254, metadata.google.internal, [fd00:ec2::254]), the ECS/EKS credential endpoints (169.254.170.2,
+169.254.170.23), the Azure WireServer (168.63.129.16) and Alibaba (100.100.100.200) — where the machine serves
+its own role credentials. The host set and the obfuscated-spelling reader (decimal `2852039166`, hex, octal,
+IPv6-embedded) are `data/metadata-hosts.js`, shared with the egress proxy (`egress-proxy/address.mjs`) and pinned
+to it. A cheap prefilter avoids the host scan on ordinary text; the decision is `metadataHost()` on each extracted
+host, so a nearby `169.254.1.1`, `100.100.100.201` or `metadata.example.com` does not match. Until now only the
+egress proxy refused these, and only where deployed; this flags the command on the hook, proxy and gateway. #55 is
+justify. `test/cloud-metadata-access.test.mjs` holds 10 positives, 9 hard negatives, a linear-time check and the
+hook end to end.
+
+### Container host escape inside #46
+
+`CONTAINER_ESCAPE` in `data/detectors.js` is part of `action-security-config` (#46) and credits ATT&CK
+T1059.013. It matches a container the agent runs that is configured to break out onto the host: a
+`docker`/`podman`/`nerdctl run` with `--privileged`, `--pid=host`, `--cap-add=SYS_ADMIN|ALL`, or the host root
+bind-mounted in (`-v /:/host`, `--volume /:/mnt`, `--mount … source=/`); `nsenter` into PID 1's namespaces; and a
+`kubectl` pod requesting `--privileged`, `hostPID` or `hostPath`. Ordinary container work — bind-mounting the
+project directory (`-v $(pwd):/app`), publishing a port, `docker build`, `docker ps`, `kubectl get` — stays
+silent, and `--network=host` (common and far weaker) is not matched. #46 is justify. `test/container-escape.test.mjs`
+holds 13 positives, 12 hard negatives, a per-pattern linear-time check and the hook end to end.
+
+### IDE extension side-loads inside #57
+
+`IDE_EXTENSION_INSTALL` in `data/detectors.js` is part of `pkg-install-untrusted` (#57) and credits ATT&CK
+T1176.002. It matches an editor extension installed from a local `.vsix` or a URL (`code`, `code-insiders`,
+`cursor`, `windsurf`, `codium` `--install-extension <path.vsix|https://…>`) and an extension written straight
+into an extensions directory (`unzip`/`cp`/`Expand-Archive` into `~/.vscode/extensions`, `~/.cursor/extensions`,
+`~/.vscode-server/extensions`). Installing a marketplace extension by its `publisher.name` id
+(`code --install-extension ms-python.python`), `code .`, `--version` and reading the extensions directory stay
+silent. #57 is justify. `test/ide-extension-install.test.mjs` holds 9 positives, 10 hard negatives, a per-pattern
+linear-time check and the hook end to end.
+
+### IDE auto-run surfaces on the skill surface (#60)
+
+ATT&CK v20 rewrote T1195.001 to name IDE task files alongside agent skill files. `data/skill-surface.js` now
+classifies the IDE auto-run surfaces: `.vscode/tasks.json` (a task with `runOptions.runOn: "folderOpen"` runs a
+shell command on open), JetBrains run configurations (`.idea/workspace.xml`, `.idea/runConfigurations/*.xml`) and
+Dev Container `onCreate`/`postCreate`/`postStart` commands (`.devcontainer/devcontainer.json`, `.devcontainer.json`).
+They get the same directive scan and drift fingerprint as `SKILL.md`, so an injected instruction or a planted
+auto-run command in one is found at the `index`/`file` stage (threat #60, which credits T1195.001). `.vscode/settings.json`,
+`launch.json`, `extensions.json`, a bare `tasks.json` outside `.vscode`, and other `.idea/*.xml` do not classify.
+`test/ide-task-surface.test.mjs` holds 6 classifying paths, 9 benign siblings, an injected-vs-clean tasks.json scan
+and the #60 credit.
+
+### Poisoned pipeline execution inside #32
+
+`ci-pipeline-poisoning` in `data/ci-pipeline.js` is a detector on threat #32 crediting ATT&CK T1677. It fires on
+a Write/Edit whose target is a CI/CD configuration (`.github/workflows/*.yml`, `.gitlab-ci.yml`, `Jenkinsfile`,
+`azure-pipelines.yml`, `.circleci/config.yml`, `bitbucket-pipelines.yml`) when the content adds a dangerous shape:
+a fetch-to-shell step (`curl … | bash`), a pipeline secret handed to a network client (`curl -d …${{ secrets.X
+}}…`), or a `pull_request_target` trigger (which runs with repository secrets on fork pull requests). It is
+path-gated on the Write branch's `ctx.targetPath`, so the same content in a non-CI file does not fire it, and an
+ordinary workflow — checkout, `npm ci && npm test`, a secret used as a publish env var, a plain `curl -o` download
+— stays silent. #32 is report-only (notify), so the write proceeds and a content-free alert is posted.
+`test/ci-pipeline-poisoning.test.mjs` holds the three dangerous shapes, non-CI and benign negatives, a linear-time
+check and the hook end to end (alert posted for the poisoned file, none for the benign).
+
+### Command obfuscation: flag the shape, decode the payload (#50 + the Bash branch)
+
+Two halves close T1027.010. `obf-command-encoding` in `data/detectors.js` (threat #50) flags the SHAPE: a
+base64/hex payload decoded straight into a shell (`… | base64 -d | sh`, `base64 -d <<< … | sh`, `… | xxd -r -p
+| sh`, `eval $(echo … | base64 -d)`) or a PowerShell `-EncodedCommand`. Encoding to a file or decoding without
+piping into a shell is not matched. The second half is `decodedCommandPayloads` (`cli/hook-core.mjs`): the Bash
+branch decodes the payload and re-scans it like any embedded script, so the REAL command — not the encoder —
+meets the command detectors. This matters for the detectors the engine's normalize pass does not already re-run
+over decoded variants: the injection and reverse-shell families are covered by that pass, but destructive
+commands (#43), credential reads (#55), installs (#57) and the action-* detectors are caught only here. A decode
+to a file yields no payload. `test/command-obfuscation.test.mjs` holds the shapes, hard negatives, the decode
+recovery, a per-pattern linear-time check, and the hook end to end (a base64-wrapped `rm -rf /` is caught on the
+decoded payload as #43 ask, proving the rescan is load-bearing).
+
+### Install Root Certificate inside #46, and transit overrides on every call (#67)
+
+`ROOT_CA_INSTALL` in `data/detectors.js` is part of `action-security-config` (#46) and credits ATT&CK T1553.004
+(partial). It matches a certificate added to a trust store: `security add-trusted-cert`, `certutil -addstore
+[-f|-enterprise] Root|AuthRoot`, `Import-Certificate … Cert:\LocalMachine\Root` (or `CurrentUser\Root`), a `cp`,
+`mv`, `install`, `tee` or `ln` whose last argument is a Linux CA anchor directory (`/usr/local/share/ca-certificates`,
+`/etc/pki/ca-trust/source/anchors`, `/etc/ca-certificates/trust-source/anchors`, `/usr/share/pki/trust/anchors`), a
+redirect into one, `trust anchor <file>`, and `keytool -import[cert]` into `cacerts`. Listing, viewing and verifying
+stay silent, and so does `update-ca-certificates` on its own, a copy out of an anchor directory, `trust anchor
+--remove` and a certificate imported into a personal (`My`) store or an application keystore. #46 is justify, so
+with no policy the hook asks.
+
+The transit check (`decideTransit`, `cli/hook-core.mjs`) runs in two places in the hook. Every PreToolUse and
+UserPromptSubmit call reads the hook's own environment, which is the agent's: `transitEnvText` rebuilds the proxy
+variables as `NAME=url` and each set CA variable as `NAME=set` (the CA path is never read), and a hit is reported as
+#67 once per session and override set. The Bash and PowerShell branches also run it over the command and the
+scripts it carries, so `HTTPS_PROXY=… NODE_EXTRA_CA_CERTS=… node app.js` or `export SSL_CERT_FILE=…` is a #67
+finding. #67 is notify by default; with `policy.transitAllow` set, a proxy not on it denies the command, and an
+agent launched behind one has every PreToolUse call denied. This credits T1557 and T1553.004 (partial) on #67.
+Not read: system proxy settings (networksetup, WinINET, PAC files), and a CA trusted through an IDE setting or a
+tool's own config file. `test/root-ca-install.test.mjs` holds 15 positives, 19 hard negatives, a per-pattern
+linear-time check and the hook end to end (ask on an install; deny under `transitAllow` for a command and for an
+agent environment; one content-free #67 alert per session).
+
 ### Clipboard reads: one list, a read signal and a sink signal
 
 Developers copy API keys, tokens and passwords to the clipboard, and one shell command puts whatever is
@@ -2576,8 +2743,8 @@ Stated rather than papered over.
   (for example `MOORAI_LOCAL_MODEL`) are still read from the environment. A container with no `/etc/moorai/policy.pub` or `MOORAI_POLICY_PUBKEY` starts every run
   unpinned, so it trusts the first policy it fetches. The in-process forms (`@moorai/agent-sdk`,
   `moorai-serve`) do not evaluate the circuit breaker, session risk, deletion volume, intent alignment,
-  learned drift, MCP reputation, model escalation, honeytokens or the `mask` rewrite (each result lists
-  them in `notEvaluated`). The SDK's `PostToolUse` resolves results under the hook's inbound rules (§7). The SDK's
+  learned drift, MCP reputation, model escalation, honeytokens, the `mask` rewrite or the #67 check of the
+  agent's own environment (`transit-env`) (each result lists them in `notEvaluated`). The SDK's `PostToolUse` resolves results under the hook's inbound rules (§7). The SDK's
   `UserPromptSubmit` scans every prompt at stage `prompt`, not the hook's `file`-stage scan of
   event-triggered prompts. `moorai-serve`'s `/v1/tool-call` reads paths on the sidecar's own filesystem, so
   an authenticated client can learn whether a file there holds secrets, and its secret-egress fingerprint
@@ -2803,7 +2970,7 @@ appends a bounded credit's limit in parentheses.
 | #62 Hallucinated / typosquatted dependency | **T0060** (was T0010) | `inspectInstall` classifies the package *name* offline as known-bad or a typosquat near-miss — the adversary-registered entity behind a hallucination |
 | #65 Local secret value egress | T0024, **T0086** | the secret-value fingerprint is matched against MCP *tool arguments*, an egress channel that never touches the inference API |
 | #66 Sub-agent / A2A delegation | T0053, **T0118** | `data/agent-detections.js` reconstructs the spawn/handoff graph and flags orphan subagents and agent-to-agent messages, independent of any tool call |
-| #67 Transit interception | T0024, **T0081** | not wired: `decideTransit` is built and tested but no shipped hook calls it, so no transit override is reported today |
+| #67 Transit interception | T0024, **T0081** | the hook reads the agent's own environment and every shell command it runs for a proxy or CA override (`decideTransit`), by proxy host and variable name only |
 | #68 Crafted AI assistant link | T0131, **T0080** | `craftedAssistantLink` requires the decoded payload to ask for *persistence* — a durable cross-session memory write — as a condition separate from the link shape |
 | #70 Content aimed only at the AI client | T0134, **T0130** | `steeringDirectiveHit` is a separately required half: a clause aimed at what the agent will *say*, which involves no contradiction and no cloaking |
 
@@ -2901,8 +3068,8 @@ results is the core of both ASI01 and MCP06. Everything else is bounded.
   with its replacement (T1685, T1686) named.
 - **What a credit means.** Credits are scoped to actions an AI agent takes through a surface MoorAI sees. `full`:
   a shipped mechanism addresses the technique as an agent performs it; `partial`: part of it, with the bound in
-  `reason`; `none`: the technique corresponds but nothing ships (for example #67, whose `decideTransit` is built
-  but no hook calls it). A mechanism claim, not a detection rate.
+  `reason`; `none`: the technique corresponds but nothing ships (for example #4, a coaching entry whose runtime
+  scan is credited on #60). A mechanism claim, not a detection rate.
 - **What is not credited.** A person's own disclosure to an AI tool (#1, #9, #15, #44), governance and
   model-error risks, agent memory persistence (#22, ATLAS AML.T0080) and delegation (#66, ATLAS AML.T0118):
   ATT&CK v20 has no technique for them.

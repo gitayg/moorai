@@ -1,28 +1,28 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-14T00:58:20.098Z
+> Generated: 2026-10-14T09:28:25.037Z
 
-- **Detectors:** 109
+- **Detectors:** 114
 - **Threats:** 80
 - **Adversarial corpus:** 102/102 passed (100.0%)
 - **OWASP LLM Top 10:** 10/10 items covered by ≥1 on-device detector
 - **OWASP Top 10 for Agentic Applications:** 1/10 covered, 6 partial, 3 uncovered
 - **OWASP MCP Top 10:** 1/10 covered, 5 partial, 4 uncovered
-- **MITRE ATT&CK v20.0 (AI-agent scope):** 2/71 covered, 37 partial, 32 uncovered (agent lane: 2/58 covered, 36 partial, 20 uncovered)
+- **MITRE ATT&CK v20.0 (AI-agent scope):** 2/71 covered, 54 partial, 15 uncovered (agent lane: 2/58 covered, 53 partial, 3 uncovered)
 
 ## OWASP LLM Top 10 (2025) coverage
 
 | Item | Name | Threats | Detectors | Status |
 |------|------|--------:|----------:|--------|
 | LLM01 | Prompt Injection | 8 | 21 | ✅ covered |
-| LLM02 | Sensitive Information Disclosure | 20 | 39 | ✅ covered |
+| LLM02 | Sensitive Information Disclosure | 20 | 40 | ✅ covered |
 | LLM03 | Supply Chain | 8 | 5 | ✅ covered |
 | LLM04 | Data & Model Poisoning | 1 | 1 | ✅ covered |
-| LLM05 | Improper Output Handling | 7 | 15 | ✅ covered |
-| LLM06 | Excessive Agency | 15 | 6 | ✅ covered |
+| LLM05 | Improper Output Handling | 7 | 16 | ✅ covered |
+| LLM06 | Excessive Agency | 15 | 8 | ✅ covered |
 | LLM07 | System Prompt Leakage | 3 | 6 | ✅ covered |
-| LLM08 | Vector & Embedding Weaknesses | 3 | 11 | ✅ covered |
+| LLM08 | Vector & Embedding Weaknesses | 3 | 12 | ✅ covered |
 | LLM09 | Misinformation | 13 | 4 | ✅ covered |
 | LLM10 | Unbounded Consumption | 2 | 1 | ✅ covered |
 
@@ -30,12 +30,12 @@
 
 | Item | Name | Threats | Partial | Detectors | Status |
 |------|------|--------:|--------:|----------:|--------|
-| ASI01 | Agent Goal Hijack | 9 | 7 | 28 | ✅ covered |
+| ASI01 | Agent Goal Hijack | 9 | 7 | 29 | ✅ covered |
 | ASI02 | Tool Misuse and Exploitation | 9 | 9 | 7 | ◐ partial |
-| ASI03 | Identity and Privilege Abuse | 4 | 4 | 4 | ◐ partial |
-| ASI04 | Agentic Supply Chain Vulnerabilities | 3 | 3 | 10 | ◐ partial |
+| ASI03 | Identity and Privilege Abuse | 4 | 4 | 6 | ◐ partial |
+| ASI04 | Agentic Supply Chain Vulnerabilities | 3 | 3 | 11 | ◐ partial |
 | ASI05 | Unexpected Code Execution (RCE) | 6 | 6 | 14 | ◐ partial |
-| ASI06 | Memory & Context Poisoning | 4 | 4 | 4 | ◐ partial |
+| ASI06 | Memory & Context Poisoning | 4 | 4 | 5 | ◐ partial |
 | ASI07 | Insecure Inter-Agent Communication | 1 | 1 | 0 | — |
 | ASI08 | Cascading Failures | 0 | 0 | 0 | — |
 | ASI09 | Human-Agent Trust Exploitation | 1 | 1 | 1 | ◐ partial |
@@ -45,14 +45,14 @@
 
 | Item | Name | Threats | Partial | Detectors | Status |
 |------|------|--------:|--------:|----------:|--------|
-| MCP01 | Token Mismanagement & Secret Exposure | 3 | 3 | 23 | ◐ partial |
-| MCP02 | Privilege Escalation via Scope Creep | 3 | 3 | 2 | ◐ partial |
-| MCP03 | Tool Poisoning | 2 | 2 | 10 | ◐ partial |
+| MCP01 | Token Mismanagement & Secret Exposure | 3 | 3 | 24 | ◐ partial |
+| MCP02 | Privilege Escalation via Scope Creep | 3 | 3 | 3 | ◐ partial |
+| MCP03 | Tool Poisoning | 2 | 2 | 11 | ◐ partial |
 | MCP04 | Software Supply Chain Attacks & Dependency Tampering | 0 | 0 | 0 | — |
 | MCP05 | Command Injection & Execution | 2 | 2 | 3 | ◐ partial |
-| MCP06 | Intent Flow Subversion | 8 | 6 | 19 | ✅ covered |
+| MCP06 | Intent Flow Subversion | 8 | 6 | 20 | ✅ covered |
 | MCP07 | Insufficient Authentication & Authorization | 0 | 0 | 0 | — |
-| MCP08 | Lack of Audit and Telemetry | 1 | 1 | 1 | ◐ partial |
+| MCP08 | Lack of Audit and Telemetry | 1 | 1 | 2 | ◐ partial |
 | MCP09 | Shadow MCP Servers | 1 | 1 | 0 | — |
 | MCP10 | Context Injection & Over-Sharing | 0 | 0 | 0 | — |
 
@@ -72,32 +72,32 @@ risk, the MCP allow-list) are counted under Threats but add no detectors. Source
 | T1700 | AI-Enabled Exfiltration | agent | 4 | 4 | ◐ partial |
 | T1685.007 | Impair Autonomous Defenses | agent | 1 | 5 | ◐ partial |
 | T1608.007 | AI Result Poisoning | agent | 1 | 1 | ◐ partial |
-| T1027.018 | Invisible Unicode | agent | 1 | 7 | ◐ partial |
+| T1027.018 | Invisible Unicode | agent | 1 | 8 | ◐ partial |
 | T1195.001 | Compromise Software Dependencies and Development Tools | agent | 5 | 5 | ◐ partial |
 | T1059.001 | PowerShell | agent | 1 | 1 | ◐ partial |
 | T1059.004 | Unix Shell | agent | 1 | 1 | ◐ partial |
 | T1059.006 | Python | agent | 1 | 1 | ◐ partial |
-| T1059.013 | Container CLI/API | agent | 0 | 0 | — |
-| T1027.010 | Command Obfuscation | agent | 0 | 0 | — |
+| T1059.013 | Container CLI/API | agent | 1 | 2 | ◐ partial |
+| T1027.010 | Command Obfuscation | agent | 1 | 8 | ◐ partial |
 | T1105 | Ingress Tool Transfer | agent | 1 | 2 | ◐ partial |
 | T1204.001 | Malicious Link | agent | 3 | 3 | ◐ partial |
 | T1204.002 | Malicious File | agent | 1 | 1 | ◐ partial |
-| T1204.004 | Malicious Copy and Paste | agent | 1 | 1 | ◐ partial |
+| T1204.004 | Malicious Copy and Paste | agent | 1 | 2 | ◐ partial |
 | T1204.005 | Malicious Library | agent | 2 | 3 | ◐ partial |
-| T1176.002 | IDE Extensions | agent | 0 | 0 | — |
-| T1677 | Poisoned Pipeline Execution | agent | 0 | 0 | — |
-| T1053.003 | Cron | agent | 0 | 0 | — |
-| T1543.001 | Launch Agent | agent | 0 | 0 | — |
-| T1546.004 | Unix Shell Configuration Modification | agent | 0 | 0 | — |
-| T1552.001 | Credentials In Files | agent | 1 | 2 | ◐ partial |
-| T1552.003 | Shell History | agent | 0 | 0 | — |
-| T1552.004 | Private Keys | agent | 1 | 2 | ◐ partial |
-| T1552.005 | Cloud Instance Metadata API | agent | 0 | 0 | — |
+| T1176.002 | IDE Extensions | agent | 1 | 2 | ◐ partial |
+| T1677 | Poisoned Pipeline Execution | agent | 1 | 2 | ◐ partial |
+| T1053.003 | Cron | agent | 1 | 2 | ◐ partial |
+| T1543.001 | Launch Agent | agent | 1 | 2 | ◐ partial |
+| T1546.004 | Unix Shell Configuration Modification | agent | 1 | 2 | ◐ partial |
+| T1552.001 | Credentials In Files | agent | 1 | 3 | ◐ partial |
+| T1552.003 | Shell History | agent | 1 | 3 | ◐ partial |
+| T1552.004 | Private Keys | agent | 1 | 3 | ◐ partial |
+| T1552.005 | Cloud Instance Metadata API | agent | 1 | 3 | ◐ partial |
 | T1552.008 | Chat Messages | agent | 1 | 20 | ◐ partial |
-| T1555.001 | Keychain | agent | 1 | 2 | ◐ partial |
-| T1555.003 | Credentials from Web Browsers | agent | 0 | 0 | — |
-| T1003.008 | /etc/passwd and /etc/shadow | agent | 1 | 2 | ◐ partial |
-| T1528 | Steal Application Access Token | agent | 0 | 0 | — |
+| T1555.001 | Keychain | agent | 1 | 3 | ◐ partial |
+| T1555.003 | Credentials from Web Browsers | agent | 1 | 3 | ◐ partial |
+| T1003.008 | /etc/passwd and /etc/shadow | agent | 1 | 3 | ◐ partial |
+| T1528 | Steal Application Access Token | agent | 1 | 3 | ◐ partial |
 | T1074.001 | Local Data Staging | agent | 1 | 0 | ◐ partial |
 | T1560.001 | Archive via Utility | agent | 2 | 1 | ◐ partial |
 | T1030 | Data Transfer Size Limits | agent | 1 | 0 | ◐ partial |
@@ -111,20 +111,20 @@ risk, the MCP allow-list) are counted under Threats but add no detectors. Source
 | T1485 | Data Destruction | agent | 2 | 2 | ◐ partial |
 | T1561 | Disk Wipe | agent | 1 | 1 | ◐ partial |
 | T1490 | Inhibit System Recovery | agent | 1 | 1 | ◐ partial |
-| T1070 | Indicator Removal | agent | 1 | 1 | ◐ partial |
-| T1070.003 | Clear Command History | agent | 0 | 0 | — |
-| T1690 | Prevent Command History Logging | agent | 0 | 0 | — |
-| T1685 | Disable or Modify Tools | agent | 1 | 1 | ◐ partial |
-| T1686 | Disable or Modify System Firewall | agent | 1 | 1 | ◐ partial |
-| T1553.001 | Gatekeeper Bypass | agent | 1 | 1 | ◐ partial |
-| T1553.004 | Install Root Certificate | agent | 1 | 0 | — |
-| T1557 | Adversary-in-the-Middle | agent | 1 | 0 | — |
+| T1070 | Indicator Removal | agent | 1 | 2 | ◐ partial |
+| T1070.003 | Clear Command History | agent | 1 | 2 | ◐ partial |
+| T1690 | Prevent Command History Logging | agent | 1 | 2 | ◐ partial |
+| T1685 | Disable or Modify Tools | agent | 1 | 2 | ◐ partial |
+| T1686 | Disable or Modify System Firewall | agent | 1 | 2 | ◐ partial |
+| T1553.001 | Gatekeeper Bypass | agent | 1 | 2 | ◐ partial |
+| T1553.004 | Install Root Certificate | agent | 2 | 2 | ◐ partial |
+| T1557 | Adversary-in-the-Middle | agent | 1 | 0 | ◐ partial |
 | T1098.001 | Additional Cloud Credentials | agent | 1 | 1 | ◐ partial |
-| T1098.003 | Additional Cloud Roles | agent | 1 | 1 | ◐ partial |
-| T1098.004 | SSH Authorized Keys | agent | 0 | 0 | — |
+| T1098.003 | Additional Cloud Roles | agent | 1 | 2 | ◐ partial |
+| T1098.004 | SSH Authorized Keys | agent | 1 | 1 | ◐ partial |
 | T1136.001 | Local Account | agent | 1 | 1 | ◐ partial |
 | T1136.003 | Cloud Account | agent | 1 | 1 | ◐ partial |
-| T1548.003 | Sudo and Sudo Caching | agent | 0 | 0 | — |
+| T1548.003 | Sudo and Sudo Caching | agent | 1 | 2 | ◐ partial |
 | T1176.001 | Browser Extensions | edr | 2 | 0 | — |
 | T1078.004 | Cloud Accounts | identity | 1 | 0 | — |
 | T1697 | Steal Application Specific Passwords | identity | 0 | 0 | — |

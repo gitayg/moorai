@@ -2,8 +2,22 @@
 // (MITRE ATLAS AML.T0092) and self-replicating prompts (AML.T0061). Spread into DETECTORS.
 import { agentStateTamperHit } from "./agent-state-paths.js";
 import { selfReplicationHit } from "./self-replication.js";
+import { SHELL_HISTORY_TAMPER } from "./shell-history-tamper.js";
 
 export const AGENT_STATE_DETECTORS = [
+  {
+    // T1070.003 / T1690 — the agent clears, deletes or disables its SHELL command history
+    // (data/shell-history-tamper.js). A second detector on threat #73, like agent-history-tamper: the
+    // engine dedups by threat, so the two never double-count. Prompt stage, where the Bash/PowerShell
+    // command text is scanned. Plain patterns (no refine): reading, listing or growing the history stays
+    // silent. Threat #73.
+    detectorId: "shell-history-tamper",
+    threatId: 73,
+    stages: ["prompt"],
+    mode: "warn",
+    hint: "Clears, deletes or disables the shell's command history (history -c, rm/truncate of ~/.bash_history or ~/.zsh_history, unset HISTFILE, set +o history, PSReadLine SaveNothing).",
+    patterns: SHELL_HISTORY_TAMPER
+  },
   {
     // AML.T0092 — a tool call that deletes, truncates, rewrites, moves or fabricates the agent's own
     // transcripts (data/agent-state-paths.js has the per-agent store and what counts as a write). Stage

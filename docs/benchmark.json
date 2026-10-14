@@ -1,8 +1,8 @@
 {
   "name": "MoorAI Agent Security Benchmark",
-  "generatedAt": "2026-10-14T00:58:20.098Z",
+  "generatedAt": "2026-10-14T09:28:25.037Z",
   "engine": {
-    "detectors": 109,
+    "detectors": 114,
     "threats": 80,
     "corpusCases": 102
   },
@@ -21,7 +21,7 @@
       },
       "LLM02": {
         "threats": 20,
-        "detectors": 39
+        "detectors": 40
       },
       "LLM03": {
         "threats": 8,
@@ -33,11 +33,11 @@
       },
       "LLM05": {
         "threats": 7,
-        "detectors": 15
+        "detectors": 16
       },
       "LLM06": {
         "threats": 15,
-        "detectors": 6
+        "detectors": 8
       },
       "LLM07": {
         "threats": 3,
@@ -45,7 +45,7 @@
       },
       "LLM08": {
         "threats": 3,
-        "detectors": 11
+        "detectors": 12
       },
       "LLM09": {
         "threats": 13,
@@ -68,7 +68,7 @@
       "ASI01": {
         "threats": 9,
         "partialThreats": 7,
-        "detectors": 28,
+        "detectors": 29,
         "status": "covered"
       },
       "ASI02": {
@@ -80,13 +80,13 @@
       "ASI03": {
         "threats": 4,
         "partialThreats": 4,
-        "detectors": 4,
+        "detectors": 6,
         "status": "partial"
       },
       "ASI04": {
         "threats": 3,
         "partialThreats": 3,
-        "detectors": 10,
+        "detectors": 11,
         "status": "partial"
       },
       "ASI05": {
@@ -98,7 +98,7 @@
       "ASI06": {
         "threats": 4,
         "partialThreats": 4,
-        "detectors": 4,
+        "detectors": 5,
         "status": "partial"
       },
       "ASI07": {
@@ -138,19 +138,19 @@
       "MCP01": {
         "threats": 3,
         "partialThreats": 3,
-        "detectors": 23,
+        "detectors": 24,
         "status": "partial"
       },
       "MCP02": {
         "threats": 3,
         "partialThreats": 3,
-        "detectors": 2,
+        "detectors": 3,
         "status": "partial"
       },
       "MCP03": {
         "threats": 2,
         "partialThreats": 2,
-        "detectors": 10,
+        "detectors": 11,
         "status": "partial"
       },
       "MCP04": {
@@ -168,7 +168,7 @@
       "MCP06": {
         "threats": 8,
         "partialThreats": 6,
-        "detectors": 19,
+        "detectors": 20,
         "status": "covered"
       },
       "MCP07": {
@@ -180,7 +180,7 @@
       "MCP08": {
         "threats": 1,
         "partialThreats": 1,
-        "detectors": 1,
+        "detectors": 2,
         "status": "partial"
       },
       "MCP09": {
@@ -202,13 +202,13 @@
     "source": "https://attack.mitre.org/resources/updates/",
     "total": 71,
     "covered": 2,
-    "partial": 37,
-    "uncovered": 32,
+    "partial": 54,
+    "uncovered": 15,
     "agentLane": {
       "total": 58,
       "covered": 2,
-      "partial": 36,
-      "uncovered": 20
+      "partial": 53,
+      "uncovered": 3
     },
     "byItem": {
       "T1698": {
@@ -244,7 +244,7 @@
       "T1027.018": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 7,
+        "detectors": 8,
         "status": "partial"
       },
       "T1195.001": {
@@ -273,15 +273,15 @@
       },
       "T1059.013": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 2,
+        "status": "partial"
       },
       "T1027.010": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 8,
+        "status": "partial"
       },
       "T1105": {
         "lane": "agent",
@@ -304,7 +304,7 @@
       "T1204.004": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 1,
+        "detectors": 2,
         "status": "partial"
       },
       "T1204.005": {
@@ -315,57 +315,57 @@
       },
       "T1176.002": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 2,
+        "status": "partial"
       },
       "T1677": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 2,
+        "status": "partial"
       },
       "T1053.003": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 2,
+        "status": "partial"
       },
       "T1543.001": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 2,
+        "status": "partial"
       },
       "T1546.004": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 2,
+        "status": "partial"
       },
       "T1552.001": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 2,
+        "detectors": 3,
         "status": "partial"
       },
       "T1552.003": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 3,
+        "status": "partial"
       },
       "T1552.004": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 2,
+        "detectors": 3,
         "status": "partial"
       },
       "T1552.005": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 3,
+        "status": "partial"
       },
       "T1552.008": {
         "lane": "agent",
@@ -376,26 +376,26 @@
       "T1555.001": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 2,
+        "detectors": 3,
         "status": "partial"
       },
       "T1555.003": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 3,
+        "status": "partial"
       },
       "T1003.008": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 2,
+        "detectors": 3,
         "status": "partial"
       },
       "T1528": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 3,
+        "status": "partial"
       },
       "T1074.001": {
         "lane": "agent",
@@ -478,50 +478,50 @@
       "T1070": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 1,
+        "detectors": 2,
         "status": "partial"
       },
       "T1070.003": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 2,
+        "status": "partial"
       },
       "T1690": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 2,
+        "status": "partial"
       },
       "T1685": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 1,
+        "detectors": 2,
         "status": "partial"
       },
       "T1686": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 1,
+        "detectors": 2,
         "status": "partial"
       },
       "T1553.001": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 1,
+        "detectors": 2,
         "status": "partial"
       },
       "T1553.004": {
         "lane": "agent",
-        "threats": 1,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 2,
+        "detectors": 2,
+        "status": "partial"
       },
       "T1557": {
         "lane": "agent",
         "threats": 1,
         "detectors": 0,
-        "status": "uncovered"
+        "status": "partial"
       },
       "T1098.001": {
         "lane": "agent",
@@ -532,14 +532,14 @@
       "T1098.003": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 1,
+        "detectors": 2,
         "status": "partial"
       },
       "T1098.004": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial"
       },
       "T1136.001": {
         "lane": "agent",
@@ -555,9 +555,9 @@
       },
       "T1548.003": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 2,
+        "status": "partial"
       },
       "T1176.001": {
         "lane": "edr",

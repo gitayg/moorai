@@ -24,6 +24,9 @@ for (const v of ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "APPDATA", "LOCALAPPDATA"]
 // The agent's own version on an alert (`agentVersion`, cli/agent-names.mjs) is read from these. A suite run
 // from inside Claude Code or Cursor inherits them; a test that wants one sets it on the child it spawns.
 for (const v of ["AI_AGENT", "CURSOR_VERSION"]) delete process.env[v];
+// A proxy or CA override in the developer's shell is the agent environment the hook reports as transit
+// interception (#67, cli/hook-core.mjs transitEnvText); hook runs spawned with process.env must not inherit it.
+for (const v of ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy", "NPM_CONFIG_PROXY", "NPM_CONFIG_HTTPS_PROXY", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "AWS_CA_BUNDLE", "GIT_SSL_CAINFO"]) delete process.env[v];
 
 // HOME itself, for the same reason. Every module that resolves a state path at IMPORT time
 // (cli/state-dirs.mjs: `STATE_DIR = join(os.homedir(), ".moorai")`) and is imported by a test IN-PROCESS

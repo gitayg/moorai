@@ -922,6 +922,11 @@
           "id": "T1204.004",
           "coverage": "partial",
           "reason": "out-code-exec flags runnable code and risky commands in a reply (code fences, PowerShell, curl to a shell) before a person pastes them; the terminal is not watched"
+        },
+        {
+          "id": "T1677",
+          "coverage": "partial",
+          "reason": "a Write/Edit into a CI/CD config adding a fetch-to-shell step, a pipeline-secret exfiltration, or a pull_request_target trigger; report-only"
         }
       ],
       "stride": "Elevation of Privilege"
@@ -1310,22 +1315,52 @@
         {
           "id": "T1686",
           "coverage": "partial",
-          "reason": "ufw, firewalld and netsh advfirewall off, and security-group 0.0.0.0/0 openings; iptables and nft flushes are not matched"
+          "reason": "ufw, firewalld and netsh advfirewall off, security-group 0.0.0.0/0 openings, and iptables -F / nft flush ruleset / pfctl -d"
         },
         {
           "id": "T1685",
           "coverage": "partial",
-          "reason": "Defender real-time protection off and Set-MpPreference -Disable*; stopping an EDR or audit daemon (launchctl unload, systemctl stop auditd) is not matched"
+          "reason": "Defender off (Set-MpPreference -Disable, Add-MpPreference -Exclusion) and stopping an EDR or audit daemon (launchctl bootout, systemctl stop auditd/falcon-sensor, sc stop)"
         },
         {
           "id": "T1553.001",
           "coverage": "partial",
-          "reason": "spctl --master-disable; quarantine-attribute removal (xattr -d com.apple.quarantine) is not matched"
+          "reason": "spctl --master-disable and quarantine-attribute removal (xattr -d com.apple.quarantine, xattr -cr)"
         },
         {
           "id": "T1098.003",
           "coverage": "partial",
           "reason": "IAM AdministratorAccess or attach-policy, az role assignment and gcloud add-iam-policy-binding"
+        },
+        {
+          "id": "T1553.004",
+          "coverage": "partial",
+          "reason": "security add-trusted-cert, certutil -addstore Root, Import-Certificate into a Root store, copies into a Linux CA anchor directory and keytool imports into cacerts"
+        },
+        {
+          "id": "T1548.003",
+          "coverage": "partial",
+          "reason": "a write to /etc/sudoers or /etc/sudoers.d/, visudo -f, or a NOPASSWD rule written through the agent's shell; sudo-token reuse is not observed"
+        },
+        {
+          "id": "T1059.013",
+          "coverage": "partial",
+          "reason": "a host-escape container the agent runs: --privileged, host-root bind mount, --pid=host, SYS_ADMIN/ALL cap, nsenter into PID 1, or a privileged kubectl pod"
+        },
+        {
+          "id": "T1053.003",
+          "coverage": "partial",
+          "reason": "a crontab install or edit, or a write to a system cron location, run through the agent's shell; listing a crontab is allowed"
+        },
+        {
+          "id": "T1543.001",
+          "coverage": "partial",
+          "reason": "a plist written into a LaunchAgents or LaunchDaemons folder, or loaded with launchctl, through the agent's shell"
+        },
+        {
+          "id": "T1546.004",
+          "coverage": "partial",
+          "reason": "a shell rc file written by a command that also fetches or executes; an ordinary alias or PATH edit is not flagged"
         }
       ],
       "stride": "Elevation of Privilege"
@@ -1416,6 +1451,11 @@
           "id": "T1098.001",
           "coverage": "partial",
           "reason": "aws iam create-access-key and gcloud service-account key creation"
+        },
+        {
+          "id": "T1098.004",
+          "coverage": "partial",
+          "reason": "a public key appended to an authorized_keys file through the agent's shell or a Write/Edit tool call, and ssh-copy-id to the local host"
         }
       ],
       "stride": "Elevation of Privilege"
@@ -1487,6 +1527,11 @@
           "id": "T1027.018",
           "coverage": "partial",
           "reason": "zero-width, bidi, Unicode tag-block and variation-selector runs in text an agent reads, receives or writes; files the agent never touches are not scanned"
+        },
+        {
+          "id": "T1027.010",
+          "coverage": "partial",
+          "reason": "a base64/hex payload decoded straight into a shell, or a PowerShell -EncodedCommand; the hook decodes it and re-scans the real payload"
         }
       ],
       "stride": "Tampering"
@@ -1649,7 +1694,7 @@
         {
           "id": "T1552.001",
           "coverage": "partial",
-          "reason": ".env, cloud credential files, .npmrc, .git-credentials, .netrc, .pgpass, kube and gcloud config; gh CLI tokens (hosts.yml) are not on the list"
+          "reason": ".env, cloud credential files, .npmrc, .git-credentials, .netrc, .pgpass, kube, docker and gcloud config, and gh CLI hosts.yml"
         },
         {
           "id": "T1552.004",
@@ -1659,12 +1704,32 @@
         {
           "id": "T1555.001",
           "coverage": "partial",
-          "reason": "security find-generic-password; security dump-keychain is not matched"
+          "reason": "security find-generic-password and security dump-keychain through the agent's shell"
         },
         {
           "id": "T1003.008",
           "coverage": "partial",
           "reason": "reads of /etc/shadow"
+        },
+        {
+          "id": "T1552.003",
+          "coverage": "partial",
+          "reason": "a secret-mining read of ~/.bash_history, ~/.zsh_history or ~/.sh_history (grep for password/token/secret/key)"
+        },
+        {
+          "id": "T1555.003",
+          "coverage": "partial",
+          "reason": "a Chrome, Edge, Brave or Firefox Login Data, Cookies, Local State, key4.db or logins.json store read or copied from its profile directory"
+        },
+        {
+          "id": "T1528",
+          "coverage": "partial",
+          "reason": "OAuth/access-token stores read: gh hosts.yml, docker config.json, Azure msal_token_cache, gcloud access_tokens.db"
+        },
+        {
+          "id": "T1552.005",
+          "coverage": "partial",
+          "reason": "a command reaching a cloud or container metadata endpoint (169.254.169.254, metadata.google.internal, 169.254.170.2, and obfuscated spellings); the shared host set is data/metadata-hosts.js"
         }
       ],
       "stride": "Information Disclosure"
@@ -1741,6 +1806,11 @@
           "id": "T1204.005",
           "coverage": "partial",
           "reason": "pip, npm, cargo and go installs from a URL, git or an alternate index, and auto-yes npx"
+        },
+        {
+          "id": "T1176.002",
+          "coverage": "partial",
+          "reason": "an editor extension side-loaded from a local .vsix or URL (code/cursor/windsurf --install-extension), or written into the extensions directory; marketplace installs by id pass"
         }
       ],
       "stride": "Tampering"
@@ -1860,7 +1930,7 @@
         {
           "id": "T1195.001",
           "coverage": "partial",
-          "reason": "auto-loaded agent config and skill files (SKILL.md, rules, .mcp.json, hooks) are scanned for directives and drift; IDE auto-run task files (.vscode/tasks.json) are not on the skill surface"
+          "reason": "agent config and skill files (SKILL.md, rules, .mcp.json, hooks) and IDE auto-run surfaces (.vscode/tasks.json, .idea run configs, devcontainer) scanned for directives and drift"
         },
         {
           "id": "T1698",
@@ -1970,7 +2040,7 @@
       "category": "Data Exposure",
       "threat": "Transit interception (proxy / CA environment injection)",
       "example": "An attacker with no special privileges sets HTTPS_PROXY and NODE_EXTRA_CA_CERTS (or SSL_CERT_FILE / REQUESTS_CA_BUNDLE) on the agent process. The destination is unchanged — the agent still connects to its approved provider — but every request now transits an interceptor that reads the prompt, the generated code, and the API key in cleartext. Because the injected CA makes the forged certificate legitimately trusted, the client reports the connection as verified and nothing appears wrong.",
-      "response": "Treat proxy and CA-trust environment overrides as egress-affecting configuration, not developer convenience. MoorAI's decision function for this (decideTransit) is built and tested but not yet wired into a shipped hook, so MoorAI does not report proxy or CA overrides today; when wired it reports by host and variable NAME only, content-free, and denies an unsanctioned proxy when policy.transitAllow is set. Distinct from #63, which checks the destination and passes this by design.",
+      "response": "Treat proxy and CA-trust environment overrides as egress-affecting configuration, not developer convenience. MoorAI's hook reads the agent's own environment on every call and every shell command the agent runs for these overrides (decideTransit); it reports by host and variable NAME only, content-free, once per session for the environment, and denies an unsanctioned proxy when policy.transitAllow is set. Distinct from #63, which checks the destination and passes this by design.",
       "saferAlternative": "Use the organization's sanctioned proxy, or ask IT to add this proxy to the approved list.",
       "severity": 5,
       "likelihood": 3,
@@ -1985,20 +2055,20 @@
         "AML.T0081"
       ],
       "atlasPartial": {
-        "AML.T0081": "not wired: decideTransit is built and tested but no shipped hook calls it"
+        "AML.T0081": "the agent's environment and its shell commands are read for proxy and CA overrides; a CA trusted in a system store or set in an IDE or config file is not"
       },
       "owaspAgentic": [],
       "owaspMcp": [],
       "attack": [
         {
           "id": "T1557",
-          "coverage": "none",
-          "reason": "decideTransit is built and unit-tested, but no shipped hook calls it, so proxy and CA overrides are not reported"
+          "coverage": "partial",
+          "reason": "a proxy plus CA override in the agent's environment or in a command it runs is reported, and denied when off policy.transitAllow; system proxy settings are not read"
         },
         {
           "id": "T1553.004",
-          "coverage": "none",
-          "reason": "a CA override set by environment variable subverts the same trust; not reported until the transit check is wired"
+          "coverage": "partial",
+          "reason": "a CA override set by environment variable on the agent or in its commands is reported; a CA added to a system trust store is #46's"
         }
       ],
       "stride": "Information Disclosure"
@@ -2343,6 +2413,16 @@
           "id": "T1070",
           "coverage": "partial",
           "reason": "delete, truncate or rewrite of the agent's own transcript and prompt-history stores; shell history (T1070.003) is not covered"
+        },
+        {
+          "id": "T1070.003",
+          "coverage": "partial",
+          "reason": "history -c, Clear-History, and deletion or truncation of ~/.bash_history, ~/.zsh_history, fish_history or the PSReadLine file through the agent's shell"
+        },
+        {
+          "id": "T1690",
+          "coverage": "partial",
+          "reason": "session logging turned off: set +o history, unset HISTFILE, HISTFILE=/dev/null, a zero HISTSIZE/SAVEHIST, or PSReadLine HistorySaveStyle SaveNothing"
         }
       ],
       "stride": "Repudiation"

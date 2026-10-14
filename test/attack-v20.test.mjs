@@ -133,12 +133,12 @@ test("ATTACK-V20: the counts per coverage level", () => {
   const count = (l) => credits.filter((c) => c.coverage === l).length;
   assert.deepEqual(
     { credits: credits.length, full: count("full"), partial: count("partial"), none: count("none") },
-    { credits: 75, full: 3, partial: 57, none: 15 }
+    { credits: 91, full: 3, partial: 75, none: 13 }
   );
   const rules = (l) => threats.filter((t) => t.attack.length > 0 && attackCoverage(t) === l).length;
   assert.deepEqual(
     { full: rules("full"), partial: rules("partial"), none: rules("none"), unmapped: threats.filter((t) => t.attack.length === 0).length },
-    { full: 2, partial: 35, none: 10, unmapped: 33 }
+    { full: 2, partial: 36, none: 9, unmapped: 33 }
   );
 });
 
@@ -155,8 +155,8 @@ test("ATTACK-V20: the credits for the techniques v20 added", () => {
   assert.deepEqual(who("T1195.001"), ["4:none", "25:partial", "60:partial", "62:partial", "80:partial"]);
 });
 
-test("ATTACK-V20: transit interception stays uncredited until a shipped hook calls decideTransit", () => {
-  assert.deepEqual(byId.get(67).attack.map((c) => [c.id, c.coverage]), [["T1557", "none"], ["T1553.004", "none"]]);
+test("ATTACK-V20: transit interception is credited partial now that the hook calls decideTransit", () => {
+  assert.deepEqual(byId.get(67).attack.map((c) => [c.id, c.coverage]), [["T1557", "partial"], ["T1553.004", "partial"]]);
 });
 
 test("ATTACK-V20: helpers read the tag the same way everywhere", () => {
@@ -164,6 +164,6 @@ test("ATTACK-V20: helpers read the tag the same way everywhere", () => {
   assert.equal(attackCoverage({ attack: [] }), "none");
   assert.equal(attackCoverage(byId.get(3)), "full");
   assert.equal(attackCoverage(byId.get(40)), "partial");
-  assert.equal(attackCoverage(byId.get(67)), "none");
+  assert.equal(attackCoverage(byId.get(67)), "partial");
   assert.equal(attackLabel(byId.get(40)), "T1698 · T1685.007 (partial)");
 });
