@@ -18,11 +18,12 @@
 // child's records point at another Task span of the same session, or at none. It cannot change which
 // trace a record joins (the traceId comes from the session id in the hook payload), and nothing here
 // decides enforcement. Best-effort: every error leaves the record without a parentSpanId.
-import { readFileSync, writeFileSync, renameSync, openSync, closeSync, unlinkSync, statSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { STATE_DIR } from "./state-dirs.mjs";
 import { localHash } from "./session-ledger.mjs";
 import { validSpanId } from "./trace-context.mjs";
+import { withFileLock } from "./alert-seq.mjs";
 
 export const SPAWNS_FILE = "trace-spawns.json";
 const LOCK = ".trace-spawns.lock";
@@ -30,9 +31,6 @@ export const SPAWN_TTL_MS = 24 * 3600 * 1000;
 export const MAX_SPAWNS = 256;
 export const MAX_BINDS = 512;
 const LOCK_WAIT_MS = 100;
-const LOCK_STALE_MS = 5000;
-const SLEEP = new Int32Array(new SharedArrayBuffer(4));
-const nap = (ms) => { try { Atomics.wait(SLEEP, 0, 0, ms); } catch { /* best-effort */ } };
 
 function read(dir) {
   try {
@@ -51,21 +49,13 @@ function write(dir, st) {
   writeFileSync(tmp, JSON.stringify(st), { mode: 0o600 });
   renameSync(tmp, p);
 }
-// fn runs only while holding the lock; → fn's value, or undefined when the lock could not be had.
+// fn runs only while holding the lock; → fn's value, or undefined when the lock could not be had. The shared
+// withFileLock bounds every wait (a symlink, a directory or a live holder at the lock path costs at most
+// LOCK_WAIT_MS, never a spin) and never breaks a live holder's lock.
 function locked(dir, fn) {
-  const lock = join(dir, LOCK);
-  let fd = null;
-  const until = Date.now() + LOCK_WAIT_MS;
-  try { mkdirSync(dir, { recursive: true }); } catch { /* the open fails too */ }
-  while (fd === null) {
-    try { fd = openSync(lock, "wx"); } catch (e) {
-      if (!e || e.code !== "EEXIST") return undefined;
-      try { if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) { unlinkSync(lock); continue; } } catch { continue; }
-      if (Date.now() >= until) return undefined;
-      nap(2);
-    }
-  }
-  try { return fn(); } finally { try { closeSync(fd); } catch { /* closed */ } try { unlinkSync(lock); } catch { /* gone */ } }
+  try { mkdirSync(dir, { recursive: true }); } catch { /* the lock fails too */ }
+  const r = withFileLock(join(dir, LOCK), fn, { waitMs: LOCK_WAIT_MS, mode: 0o600 });
+  return r.held ? r.value : undefined;
 }
 
 // A Task / Agent call the host was told it may run. caller: the calling sub-agent's agent_id ("" for the
