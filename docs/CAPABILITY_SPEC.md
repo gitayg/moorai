@@ -1377,6 +1377,31 @@ resolved through `~`, `$HOME`, `${VAR}`, `%VAR%`, `$env:VAR` (profile and app-da
 call's cwd and `..`. A bare rc name after a `cd` counts. A string test, so a path built at run time walks past it,
 and a command that reads one of these files while writing elsewhere is denied with it.
 
+**Write guard path canonicalization (v1.18.3).** `resolveTarget` and the guard's comparison use
+`cli/win-canon.mjs` (pure, no filesystem): `winCanon` gives the Win32-canonical absolute path and `canonUnder`
+compares. Rules: `/` and `\` alike, repeated separators collapsed, case-insensitive comparison (upper-cased, case
+kept in the string); `\\?\C:\`, `\\.\C:\`, `\??\C:\` to `C:\`; `\\?\UNC\s\sh` and `\\.\UNC\s\sh` to `\\s\sh`; an admin
+share `\\<any host>\<letter>$` to `<letter>:\`; `\\?\Volume{guid}\` and `\\?\GLOBALROOT\Device\HarddiskVolumeN\` to the
+wildcard root `*:\`, which matches every drive; any other device path is unknown; `\x` is rooted on cwd's drive and
+`C:x` is relative to cwd only when cwd is on `C:`; trailing dots and spaces and an NTFS stream suffix (`:s`,
+`::$DATA`, `:$I30:$INDEX_ALLOCATION`) are dropped from every segment (Win32 trims only the last segment and skips
+normalisation under `\\?\`; trimming everywhere can only make more spellings meet); `.` and `..` fold and never climb
+past the root; `%VAR%` (so `%HOMEDRIVE%%HOMEPATH%`), `$env:VAR` and `${env:VAR}` in any case, `${VAR}`, `$VAR` and a
+leading `~` expand from env, `$HOME` and `~` meaning `USERPROFILE`; a variable that is unset or empty makes the path
+unknown (`""`, not denied) unless folding drops it (inside a stream suffix, or a segment a `..` removes). A
+`Write`/`Edit` path and every shell word is also read literally, as a file API would take it, so
+`C:\Users\me\%USERPROFILE%\..\.bashrc` is seen. The protected paths themselves are canonicalized from env.
+Shell words add each quoted string whole and a PowerShell `-Path:value`'s value. **8.3 short names:** a segment of
+8.3 shape whose base ends in `~digits` (`MOORAI~1`, `BASHRC~1`, `BASH~1.BAS`) matches any segment at the same
+position, on either side, since which long name it stands for is on disk. False-positive cost: a write to any
+short-named entry directly in `%USERPROFILE%` or `%LOCALAPPDATA%`, or one level into `~\.claude` or the Git root's
+`etc`, is denied, as is a write command with a `~digit` word (`git reset HEAD~1`) run from the profile directory. The
+guard's gate adds, locally (`GUARD_WRITE`, not `data/tool-tags.js`), the write forms `shellWrites` misses:
+`cp`/`mv`/`tee`/`install`/`rsync`/`dd` path-qualified, `.exe`, quoted or `\`-escaped; the PowerShell aliases `sc`,
+`ac`, `ni`, `cpi`, `copy`, `mi`, `move` and `Tee-Object`; redirects after a digit or `&` and `>|`. Still not seen: a
+path assembled at run time, a glob, a junction, symlink or `subst` drive, and Git Bash's own `/etc/...` mount
+(resolved on cwd's drive, not the Git root). Tests: `test/containment-guard-paths.test.mjs`.
+
 Wrap impossible (`wrapWhy`): `powershell-tool`, `monitor-tool` (v1.18.2), `host-cannot-rewrite` (coach, shim or
 an aliased tool), `not-capable`, `no-wxc-exec`, `no-git-bash`, `no-workspace`, `workspace-overlaps-state` (v1.18.2:
 the workspace is inside, or contains, `~/.claude`, `~/.claude.json`, `CLAUDE_CONFIG_DIR`, `~/.moorai`,
@@ -1392,11 +1417,17 @@ per session. Exception: a command that arrived in wrapped form is denied in ever
 **Fail mode (v1.18.2).** Under `containmentRequired: "block"`, a `Bash` / `PowerShell` / `Monitor` PreToolUse from a
 host it governs (Codex, Copilot CLI, an unknown host, or Claude Code with the wrap on) that the hook could not
 decide is denied with `CONTAINMENT_UNAVAILABLE`, exit 2, deny JSON on stdout and the reason on stderr, and one
-alert (`wrapWhy: "hook-error"`, `"hook-budget"` or `"hook-bad-input"`), whatever the fail mode and even with a live
-break-glass marker (`containmentBlockApplies` / `containmentFailDeny`, checked first in `failClosedNow`, so it covers
-an exception in `wrapIntake` or `containmentStep`, an uncaught error anywhere in the call, and the decision-budget
-timer). Break-glass lifts the fail mode, not `containmentRequired`; an administrator lifts that in the signed policy
-or the admin binding. An exception while `emit` builds or writes the config under `"block"` (or for a command that
+alert (`wrapWhy: "hook-error"`, `"hook-budget"` or `"hook-bad-input"`), whatever the fail mode
+(`containmentBlockApplies` / `containmentFailDeny`, checked first in `failClosedNow`, so it covers an exception in
+`wrapIntake` or `containmentStep`, an uncaught error anywhere in the call, and the decision-budget timer).
+**Break-glass wins (v1.18.3).** An operator-signed, live break-glass marker lifts every `"block"` deny of a command
+MoorAI cannot contain (`breakGlassLiftsContainment`): in `failClosedNow` (the call proceeds, ledger `BREAK_GLASS`,
+the fail mode lifted with it), in `wrapUnavailableVerdict` (the wrap fallback and the emit-stage `wrap-error`), and
+in `containmentStep` (`unknown-host` and every wrap-impossible token). The command runs uncontained and one alert per
+call posts: category `Break-glass active (fail-open override)`, `containmentReason: "CONTAINMENT_UNAVAILABLE"`,
+`containmentRequired: "block"`, `host`, `wrapWhy`. Not lifted: a command that arrived in wrapped form and cannot be
+recovered or wrapped again (every mode), an agent wxc-exec launch and the write guard (`POLICY_TAMPER`), and
+`CONTAINMENT_MISSING` (a Codex / Copilot configuration the policy decided on). An exception while `emit` builds or writes the config under `"block"` (or for a command that
 arrived in wrapped form) is the wrap-fallback deny (`wrap-error`). Under `"alert"` / `"off"` the fail mode decides as
 before: an exception in the check goes to `failClosedNow("error")` (closed: exit 2 `FAIL_CLOSED`; open: the call
 proceeds), and one in `emit` is a `FAIL_CLOSED` deny when closed and "wrap impossible" (`wrap-error`, alert, the

@@ -1094,12 +1094,31 @@ Two refusals apply on Windows whatever the wrap does (v1.18.2):
   `etc\bash.bashrc`, `etc\profile.d`). The shell check is a string test: a command that writes anything and names
   one of these paths is denied (so is `cat ~/.bashrc > notes.txt`), and a path built at run time walks past it.
 
+Since v1.18.3 the write guard compares paths the way the Win32 file APIs resolve them
+([`cli/win-canon.mjs`](cli/win-canon.mjs), no filesystem access): case and `/` versus `\` do not matter;
+`\\?\C:\`, `\\.\C:\` and `\??\C:\` are `C:\`, `\\?\UNC\server\share` is `\\server\share`, an admin share
+(`\\host\c$`) is `C:\` and a volume GUID path matches any drive; a trailing dot or space on a segment and an NTFS
+stream suffix (`.bashrc.`, `.bashrc::$DATA`) are dropped; `.` and `..` fold; `%HOMEDRIVE%%HOMEPATH%`, `%VAR%`,
+`$env:VAR`, `${env:VAR}`, `$VAR` and a leading `~` expand from the environment, and a variable that is not set makes
+the path unknown, which is not denied. An 8.3 short name (`MOORAI~1`, `BASHRC~1`) cannot be resolved without the
+disk, so a segment shaped like one matches any protected name at its position. The cost is false positives: a write
+to any short-named entry directly in the profile (`~\NOTES~1`) or in `%LOCALAPPDATA%` is denied, and so is a write
+command whose argument is a `~digit` word (`git reset HEAD~1`) when it runs in the profile directory. The guard also
+recognises write forms `shellWrites` misses: `cp`, `mv`, `tee`, `install`, `rsync`, `dd` given with a path, `.exe`,
+quotes or a backslash; PowerShell's `sc`, `ac`, `ni`, `cpi`, `copy`, `mi`, `move` and `Tee-Object`; and `1>`, `2>>`,
+`&>`, `>|` redirects. The remaining limit is unchanged: a path assembled at run time (`$a/.bashrc` with `a` set in
+the same command, a glob, a junction or symlink) is not seen.
+
 Alerts are content-free: host, `containmentKind`, `containmentSource`, `mxcCapable`, the mode, and for the
 wrap a fixed `wrapWhy` token. Alerts that are not denies are posted once per session. Under `"block"`, a
 command tool call the hook could not decide (an error in the check, an error writing the wrap, a run past the
-hook's decision budget) is denied with `CONTAINMENT_UNAVAILABLE` and exit code 2, whatever the fail mode and
-even while a break-glass marker is live: the command never runs unwrapped. Break-glass lifts the fail mode,
-not `containmentRequired`; an administrator lifts that in the signed policy or the admin binding. Under
+hook's decision budget) is denied with `CONTAINMENT_UNAVAILABLE` and exit code 2, whatever the fail mode.
+Since v1.18.3 an operator-signed, live break-glass marker wins over `"block"`: wherever `"block"` would deny a
+command MoorAI cannot put in MXC (a call the hook could not decide, a wrap that cannot be applied or written, an
+unknown host), the command runs uncontained and the break-glass alert (`Break-glass active (fail-open
+override)`) posts with `containmentReason: "CONTAINMENT_UNAVAILABLE"` and the `wrapWhy` token, once per call.
+Break-glass does not lift a command that arrived in wrapped form and cannot be recovered or wrapped again (denied
+in every mode), an agent's own wxc-exec launch, the write guard, or `CONTAINMENT_MISSING` for Codex and Copilot. Under
 `"alert"` or `"off"` an error follows the hook's fail mode: closed denies with `FAIL_CLOSED`, open lets the
 call proceed. The
 heartbeat adds `containmentRequired` (the effective mode) and `claudeCodeWrap` (`"on"`, `"off"` or

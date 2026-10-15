@@ -20,8 +20,13 @@
 // run time walks past it, and a read that also writes elsewhere (`cat ~/.bashrc > x`) is denied with it. The
 // real boundary for a wrapped Bash command is the container, which grants none of these.
 //
+// Paths are compared in Win32-canonical form (cli/win-canon.mjs, v1.18.3): case, / and \, device and namespace
+// prefixes, trailing dots and spaces, NTFS streams, . and .., environment forms, and 8.3 short names (a ~digit
+// segment matches any protected name at its position). Not mxc-policy.mjs winNorm: that one is pinned to the
+// Rust launcher (src-tauri/src/mxc.rs) by shared golden cases.
+//
 // Content-free: what leaves the device is the class id, never the path.
-import { winNorm, isAbsoluteWin, isUnder } from "./mxc-policy.mjs";
+import { winCanon, canonUnder, canonSegment } from "./win-canon.mjs";
 import { findGitBash } from "./containment-enforce.mjs";
 import { shellWrites } from "../data/tool-tags.js";
 
@@ -36,7 +41,7 @@ function envGet(env, name) {
   const k = Object.keys(env || {}).find((x) => x.toLowerCase() === name.toLowerCase());
   return k ? String(env[k] ?? "") : "";
 }
-const abs = (v) => (isAbsoluteWin(v) ? winNorm(v) : "");
+const abs = (v) => winCanon(v, { literal: true });
 
 // The protected locations for this environment: [{ cls, path }].
 export function guardTargets(env) {
@@ -52,43 +57,32 @@ export function guardTargets(env) {
   return out;
 }
 
-// A path as the agent wrote it, made absolute (Windows): quotes dropped; ~, $HOME, ${VAR}, %VAR% and $env:VAR
-// for the profile and app-data variables expanded; an MSYS /c/... path mapped to C:\...; a relative path
-// joined to cwd; . and .. folded. "" when it cannot be made absolute.
-const VARS = ["HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "CLAUDE_CONFIG_DIR"];
-export function resolveTarget(p, { env = {}, cwd = "" } = {}) {
-  let s = String(p ?? "").trim().replace(/^["']+|["']+$/g, "").replace(/["']/g, "");
-  if (!s || s.length > 4096) return "";
-  const home = abs(envGet(env, "USERPROFILE"));
-  const val = (name) => (name.toUpperCase() === "HOME" ? home : abs(envGet(env, name)));
-  for (const v of VARS) {
-    const re = new RegExp(`\\$\\{${v}\\}|\\$env:${v}\\b|%${v}%|\\$${v}\\b`, "gi");
-    s = s.replace(re, () => val(v) || "\u0000");
-  }
-  if (s.includes("\u0000")) return "";
-  if (/^~(?=$|[\\/])/.test(s)) { if (!home) return ""; s = home + s.slice(1); }
-  const msys = /^\/(?:(?:cygdrive|mnt)\/)?([A-Za-z])(?=$|\/)/.exec(s);
-  if (msys) s = `${msys[1]}:${s.slice(msys[0].length) || "\\"}`;
-  if (!isAbsoluteWin(s)) {
-    if (!isAbsoluteWin(cwd)) return "";
-    s = `${winNorm(cwd)}\\${s}`;
-  }
-  const parts = [];
-  for (const seg of winNorm(s).split("\\")) {
-    if (seg === "" || seg === ".") continue;
-    if (seg === "..") { if (parts.length > 1) parts.pop(); continue; }
-    parts.push(seg);
-  }
-  return winNorm(parts.length === 1 ? `${parts[0]}\\` : parts.join("\\"));
+// A path as the agent wrote it, made absolute and Win32-canonical (cli/win-canon.mjs winCanon): quotes dropped,
+// variables and ~ expanded from env, an MSYS /c/... path mapped to C:\..., a relative path joined to cwd.
+// "" when it cannot be made absolute. literal: no variable or ~ expansion.
+export function resolveTarget(p, { env = {}, cwd = "", literal = false } = {}) {
+  return winCanon(p, { env, cwd, literal });
 }
 
-const classOf = (path, targets) => (path ? (targets.find((t) => isUnder(path, t.path)) || {}).cls || null : null);
+const classOf = (path, targets) => (path ? (targets.find((t) => canonUnder(path, t.path)) || {}).cls || null : null);
+// A string as the guard reads it: expanded, and literally (a file API takes %X%\..\ as text, and .. folds it away).
+const classOfWord = (w, env, cwd, targets) =>
+  classOf(resolveTarget(w, { env, cwd }), targets) || classOf(resolveTarget(w, { env, cwd, literal: true }), targets);
 
 // The words of a command that could be paths (split on whitespace and shell punctuation, `=` included so
-// `of=~/.bashrc` and `--file=x` give their value).
+// `of=~/.bashrc` and `--file=x` give their value), each quoted string whole (a path with a space), and the value
+// of a PowerShell `-Path:x`.
 function words(command) {
-  return command.split(/[\s;&|()<>=,`]+/).filter(Boolean);
+  const quoted = [...command.matchAll(/"([^"]*)"|'([^']*)'/g)].map((m) => m[1] ?? m[2]).filter(Boolean);
+  const split = command.split(/[\s;&|()<>=,`]+/).filter(Boolean);
+  const colon = split.map((w) => /^-[A-Za-z]+:(.+)$/.exec(w)?.[1]).filter(Boolean);
+  return [...split, ...quoted, ...colon];
 }
+
+// File-writing forms data/tool-tags.js shellWrites misses, for this gate only: cp/mv/tee/install/rsync/dd
+// path-qualified, .exe, quoted or \-escaped; the PowerShell aliases of the write cmdlets (sc, ac, ni, cpi, copy,
+// mi, move) and Tee-Object; redirects after a digit or & (1>, 2>>, &>, &>>) and >|.
+const GUARD_WRITE = /(?:^|[\s;&|(`{])["']?(?:[^\s;&|()'"]*[\\/])?(?:cp|mv|tee|install|rsync|dd|Tee-Object|sc|ac|ni|cpi|copy|mi|move)(?:\.exe)?["']?(?=\s|$)|[0-9&]>{1,2}(?!&)|>\|/i;
 
 // → the guard class the call writes into, or null. tool: the Claude Code tool name. ti: its tool_input.
 export function guardHit({ tool, ti, env = {}, cwd = "" } = {}) {
@@ -97,11 +91,11 @@ export function guardHit({ tool, ti, env = {}, cwd = "" } = {}) {
   if (!targets.length) return null;
   if (WRITE_TOOLS.has(tool)) {
     const p = input.file_path || input.notebook_path;
-    return typeof p === "string" ? classOf(resolveTarget(p, { env, cwd }), targets) : null;
+    return typeof p === "string" ? classOfWord(p, env, cwd, targets) : null;
   }
   if (!SHELLS.has(tool) || typeof input.command !== "string") return null;
   const cmd = input.command.slice(0, 65536);
-  if (!shellWrites(cmd) && !INTERPRETER.test(cmd)) return null;
+  if (!shellWrites(cmd) && !GUARD_WRITE.test(cmd) && !INTERPRETER.test(cmd)) return null;
   // The two directory names no ordinary command needs to write: matched as text too, so a quoted path with a
   // space (…\MoorAI Host\…) that the word split breaks still counts.
   const flat = cmd.replace(/["'`\\]/g, "/").replace(/\/+/g, "/");
@@ -109,10 +103,10 @@ export function guardHit({ tool, ti, env = {}, cwd = "" } = {}) {
   if (/(?:^|[\s/])\.claude\/shell-snapshots(?:$|\/|\s)/i.test(flat) || (envGet(env, "CLAUDE_CONFIG_DIR") && /(?:^|[\s/])shell-snapshots(?:$|\/|\s)/i.test(flat))) return "shell-snapshots";
   const dirChange = DIR_CHANGE.test(cmd);
   for (const w of words(cmd)) {
-    const c = classOf(resolveTarget(w, { env, cwd }), targets);
+    const c = classOfWord(w, env, cwd, targets);
     if (c) return c;
     // `cd ~ && echo x >> .bashrc`: a bare rc name after a directory change may be the profile's.
-    const bare = w.replace(/["']/g, "");
+    const bare = /[\\/]/.test(w) ? "" : canonSegment(w);
     if (dirChange && GIT_BASH_RC.some((f) => f.toLowerCase() === bare.toLowerCase())) return "shell-rc";
   }
   return null;

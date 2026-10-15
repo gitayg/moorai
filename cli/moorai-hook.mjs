@@ -1781,6 +1781,8 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
   let wrapped = null;
   if (WRAP && decision !== "deny" && !COACH && CALL.active && EVENT === "PreToolUse") {
     const base = rewrite ? rewrite.value : CALL.ti;
+    // block: wrapFallback denies, unless a live break-glass marker lifts it (wrapUnavailableVerdict); a command
+    // that arrived in wrapped form: denied whatever break-glass says.
     const force = WRAP.wrappedIn || WRAP.mode === "block";
     try {
       const c = wrapConfig(WRAP.plan, base && base.command, wrapConfigOpts());
@@ -1788,7 +1790,7 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
       else ({ decision, reason, alternatives, rewrite } = wrapUnavailableVerdict(c.why, { decision, reason, alternatives, rewrite }, { force: WRAP.wrappedIn }));
     } catch {
       const fm = hookFailMode({ policy: VERIFIED_POLICY ?? null, admin: ADMIN });
-      if (force) ({ decision, reason, alternatives, rewrite } = wrapUnavailableVerdict("wrap-error", { decision, reason, alternatives, rewrite }, { force: true }));
+      if (force) ({ decision, reason, alternatives, rewrite } = wrapUnavailableVerdict("wrap-error", { decision, reason, alternatives, rewrite }, { force: WRAP.wrappedIn }));
       else if (fm.mode === "closed") {
         VERDICT.basis = REASON.UNEVALUATED_HOOK_ERROR; why(REASON.FAIL_CLOSED); VERDICT.enforcement = ENFORCEMENT.STRENGTHENED;
         decision = "deny"; reason = failReason("error"); alternatives = []; rewrite = null;
@@ -2127,11 +2129,37 @@ function wrapConfigOpts() {
   const p = VERIFIED_POLICY && typeof VERIFIED_POLICY === "object" ? VERIFIED_POLICY : {};
   return { env: process.env, nodeDir: dirname(process.execPath), egressRules: p.egressRules, egressDefault: p.egressDefault };
 }
+// An operator-signed, live break-glass marker wins over containmentRequired "block" (v1.18.3, the owner's
+// decision): where "block" would deny a command MoorAI cannot put in MXC (CONTAINMENT_UNAVAILABLE: a call the hook
+// could not decide, the wrap fallback, the wrap failing at emit, an unknown host), the command runs uncontained and
+// the break-glass alert posts, carrying the containment reason. Not lifted: a command that arrived in wrapped form
+// and cannot be recovered or wrapped again (denied in every mode; allowing it would run the wxc-exec launch as it
+// stands, with a config MoorAI did not write), the agent's own wxc-exec launch and the write guard (POLICY_TAMPER),
+// and CONTAINMENT_MISSING (a Codex / Copilot configuration the policy decided on). One alert per invocation.
+// → true when break-glass lifted the deny.
+let BG_CONTAIN = null; // this invocation's break-glass verdict for containment, read once
+let BG_CONTAIN_POSTED = false;
+function breakGlassLiftsContainment({ host, tool, why: whyToken }) {
+  if (BG_CONTAIN === null) { try { BG_CONTAIN = breakGlassVerdict().active === true; } catch { BG_CONTAIN = false; } }
+  if (!BG_CONTAIN) return false;
+  if (!BG_CONTAIN_POSTED) {
+    BG_CONTAIN_POSTED = true;
+    post({
+      threatId: 0, category: "Break-glass active (fail-open override)", riskLevel: "High", stage: "policy", tool: "hook:policy", decision: "allow",
+      containmentReason: REASON.CONTAINMENT_UNAVAILABLE, containmentRequired: "block", host: host || "unknown", containmentTool: tool || "Bash",
+      ...(whyToken ? { wrapWhy: whyToken } : {}), contentHash: `breakglass:active:containment:${host || "unknown"}${whyToken ? `:${whyToken}` : ""}`,
+      ts: new Date().toISOString(), ...IDENTITY
+    });
+  }
+  return true;
+}
 // The wrap could not be applied: containmentRequired's mode with CONTAINMENT_UNAVAILABLE. → the verdict to emit.
-// force: deny whatever the mode (a command that arrived in wrapped form, or block).
+// force: deny whatever the mode and whatever break-glass says (a command that arrived in wrapped form). Under
+// "block" the deny gives way to a live break-glass marker (breakGlassLiftsContainment).
 function wrapUnavailableVerdict(whyToken, v, { force = false } = {}) {
   const mode = containmentConfig().required.mode;
   const d = force ? { action: "deny", reasonCode: REASON.CONTAINMENT_UNAVAILABLE } : wrapFallback(mode);
+  if (d.action === "deny" && !force && breakGlassLiftsContainment({ host: "claude-code", tool: CALL.tool || "Bash", why: whyToken })) return v;
   postContainment(containmentAlert({ host: "claude-code", tool: CALL.tool || "Bash", decision: d.action, reasonCode: d.reasonCode, mode, why: whyToken }));
   if (d.action !== "deny") return v;
   why(d.reasonCode); VERDICT.basis = null;
@@ -2189,9 +2217,10 @@ async function wrapIntake(tool, ti, cwd) {
 // translated call naming no agent this hook knows) is the wrap-impossible case: block denies it, otherwise one
 // alert per session. Claude Code with "wrap": wrapIntake's plan is checked against the (recovered) command;
 // emit() writes the wrap. A command that arrived in wrapped form and cannot be wrapped again is denied in
-// every mode: allowing it would run the wxc-exec launch as it stands. An unexpected error goes to failClosedNow:
-// under containmentRequired "block" the wrap-fallback deny whatever the fail mode (containmentBlockApplies),
-// otherwise the hook's fail mode.
+// every mode: allowing it would run the wxc-exec launch as it stands. A block deny of the wrap fallback gives way
+// to a live break-glass marker (breakGlassLiftsContainment). An unexpected error goes to failClosedNow: under
+// containmentRequired "block" the wrap-fallback deny whatever the fail mode (containmentBlockApplies) unless
+// break-glass is live, otherwise the hook's fail mode.
 async function containmentStep(tool, ti, cwd) {
   if (process.platform !== "win32" || EVENT !== "PreToolUse") return null;
   try {
@@ -2210,6 +2239,7 @@ async function containmentStep(tool, ti, cwd) {
     if (!host) {
       if (mode === "off" && cfg.claudeCode.mode !== "wrap") return null;
       const d = wrapFallback(mode);
+      if (d.action === "deny" && breakGlassLiftsContainment({ host: "unknown", tool, why: "unknown-host" })) return null;
       postContainment(containmentAlert({ host: "unknown", tool, decision: d.action, reasonCode: d.reasonCode, mode, why: "unknown-host" }));
       return d.action === "deny" ? { deny: denyReason(d.reasonCode, "claude-code"), reasonCode: d.reasonCode } : null;
     }
@@ -2222,6 +2252,7 @@ async function containmentStep(tool, ti, cwd) {
       whyToken = c.why;
     }
     const d = WRAPPED_IN ? { action: "deny", reasonCode: REASON.CONTAINMENT_UNAVAILABLE } : wrapFallback(mode);
+    if (d.action === "deny" && !WRAPPED_IN && breakGlassLiftsContainment({ host: "claude-code", tool, why: whyToken })) return null;
     postContainment(containmentAlert({ host: "claude-code", tool, decision: d.action, reasonCode: d.reasonCode, mode, why: whyToken }));
     return d.action === "deny" ? { deny: denyReason(d.reasonCode, "claude-code"), reasonCode: d.reasonCode } : null;
   } catch {
@@ -2487,7 +2518,15 @@ async function failClosedNow(why) {
   let policy = VERIFIED_POLICY;
   if (policy === undefined) { try { policy = (await verifiedPolicyLoad()).policy || null; } catch { policy = null; } }
   if (DECIDED || FAIL_EXIT) return false;
-  if (!COACH && containmentBlockApplies(policy)) return containmentFailDeny(why);
+  if (!COACH && containmentBlockApplies(policy)) {
+    // A live break-glass marker wins (v1.18.3): the call proceeds uncontained, the fail mode lifted with it.
+    if (breakGlassLiftsContainment({ host: beatHost() || "unknown", tool: CUR_TOOL || "Bash", why: `hook-${why}` })) {
+      settleRow({ ...unevaluated(REASON.BREAK_GLASS), basisCode: why === "budget" ? REASON.UNEVALUATED_EARLY_EXIT : why === "bad-input" ? REASON.UNEVALUATED_BAD_INPUT : REASON.UNEVALUATED_HOOK_ERROR });
+      try { await flushAlerts(); } catch { /* telemetry never gates a verdict */ }
+      return false;
+    }
+    return containmentFailDeny(why);
+  }
   const fm = hookFailMode({ policy, admin: ADMIN });
   if (fm.mode !== "closed" || COACH) return false;
   let bg = { active: false };
@@ -2513,9 +2552,9 @@ async function failClosedNow(why) {
 
 // containmentRequired "block" on a command tool call of a host it governs (Codex, Copilot CLI, an unknown host,
 // or Claude Code with the wrap on): a call the hook could not decide is never run uncontained, whatever the
-// fail mode and whether or not a break-glass marker is live (break-glass lifts the fail mode, not
-// containmentRequired; an administrator lifts that in the admin binding or the signed policy). Under alert /
-// off the fail mode decides, as before. policy: the verified policy, or null.
+// fail mode, unless an operator-signed live break-glass marker is present (v1.18.3: break-glass wins, the call
+// runs uncontained with the break-glass alert; failClosedNow checks it). Under alert / off the fail mode decides,
+// as before. policy: the verified policy, or null.
 function containmentBlockApplies(policy) {
   try {
     if (process.platform !== "win32" || !failClosedApplies({ event: EVENT, raw: EVENT ? "" : RAW_INPUT })) return false;
