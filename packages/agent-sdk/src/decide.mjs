@@ -23,6 +23,11 @@
 // override a shell COMMAND sets is a property of the call and is decided below, as in the hook. With no
 // policy, all of these are report-only in the hook too, so the verdict matches; with a policy that arms
 // one of them (transitAllow for "transit-env"), the hook can be stricter than this function.
+// "mxc-containment" (v1.18.0, cli/containment-enforce.mjs) is hook-only too. containmentRequired judges the
+// Codex / Copilot CLI host the shim names and that host's own config files on a Windows device;
+// containmentClaudeCode "wrap" rewrites a Bash call through updatedInput, which this runtime cannot do
+// ("mask-rewrite"). Neither is a function of the call, and an SDK host is neither of those CLIs. The pure
+// decision (containmentDecision) is shared code the hook imports; off Windows both are inert in the hook too.
 import { readFileSync } from "node:fs";
 import { basename, isAbsolute, resolve } from "node:path";
 import { hookCore, mcpFileArgs, secretEgress, modelEndpoints, outboundUpload, serverModeLib, toolTagsLib, exceptionsLib } from "./core.mjs";
@@ -46,7 +51,7 @@ export const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
 export const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 // Cursor's alias, as the hook maps it (TOOL_ALIASES).
 const TOOL_ALIASES = { Shell: "Bash" };
-export const NOT_EVALUATED = Object.freeze(["circuit-breaker", "session-risk", "deletion-volume", "intent-alignment", "learned-drift", "mcp-reputation", "model-escalation", "honeytokens", "mask-rewrite", "tag-rules", "transit-env"]);
+export const NOT_EVALUATED = Object.freeze(["circuit-breaker", "session-risk", "deletion-volume", "intent-alignment", "learned-drift", "mcp-reputation", "model-escalation", "honeytokens", "mask-rewrite", "tag-rules", "transit-env", "mxc-containment"]);
 const FILE_CAP = 262144;
 
 function readFileCapped(fp) {

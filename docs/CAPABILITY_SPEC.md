@@ -941,8 +941,9 @@ is validated against.
     - Gemini and Cursor: no field. Non-Windows: neither field.
 
     `mxcCapable` is the build (`os.release()`) plus the registry `UBR`, compared with 26100/26200.9278,
-    26300.9550 and 28000.2804. It is read with `reg.exe` in the heartbeat worker only and cached about a
-    day per release. It is `null` for unlisted builds or a missing value.
+    26300.9550 and 28000.2804. The heartbeat worker reads it with `reg.exe` and caches it for about a day
+    per release. It is `null` for unlisted builds or a missing value. The hook reads it too, uncached,
+    under `containmentRequired: "block"` (v1.18.0, see "Windows: requiring MXC for agent commands").
 
     Detected vs assumed:
     - The values come from config. Nothing observes a running container, and MXC documents no way to.
@@ -950,7 +951,9 @@ is validated against.
     - A capable build may still have MXC switched off by Microsoft's gradual rollout.
     - Codex and Copilot contain only the commands the agent runs, not the agent.
 
-    Report-only, fail-open, and changes no verdict. Not run on a real Windows host yet.
+    The detection is report-only, fails open and changes no verdict. Enforcement is opt-in through
+    `containmentRequired` / `containmentClaudeCode` (v1.18.0, "Windows: requiring MXC for agent commands").
+    Not run on a real Windows host yet.
 17f. **Declared workload profiles** — [`cli/workload-profile.mjs`](../cli/workload-profile.mjs). The signed
     policy may carry `workloadProfiles`: per workload (`match.serviceId`) or repository (`match.repo`, the
     normalised git remote of the call's cwd), the expected `tools`, `mcpServers` and `hosts` as allow-lists
@@ -1188,6 +1191,190 @@ Known gaps:
 - The per-user install path.
 
 The plan is in the MXC test plan (scratchpad `mxc/TEST-PLAN.md`).
+
+## Windows: requiring MXC for agent commands (v1.18.0)
+
+**Status: code and unit tests only. Nothing here has run on Windows.** Files:
+[`cli/containment-enforce.mjs`](../cli/containment-enforce.mjs) (decision, wrap),
+[`cli/mxc-policy.mjs`](../cli/mxc-policy.mjs) (`scope: "commands"`), `cli/moorai-hook.mjs` (`containmentStep`, `emit`,
+posture beat). Tests: `test/containment-enforce.test.mjs`, `test/containment-enforce-hook.test.mjs` (the real hook,
+with the test-only preload `test/fixtures/fake-win32.mjs` reporting `win32` / `10.0.26100`).
+
+**Contract (frozen with the console).**
+- Signed policy fields: `containmentRequired`: `"off"` (default) | `"alert"` | `"block"`;
+  `containmentClaudeCode`: `"off"` (default) | `"wrap"`. Source precedence is that of `failMode`: the root-owned
+  admin binding (top-level key), then the verified policy (`VERIFIED_POLICY`, the copy `hookFailMode` reads),
+  then `"off"`. Exact lowercase values only. An invalid value produces a warning that names the source and key,
+  never the value, and the next source decides. On macOS and Linux both fields resolve to `"off"`
+  (source `"platform"`).
+- Reason codes (`cli/provenance.mjs` `REASON`): `CONTAINMENT_MISSING` (an agent that can use MXC is not set to)
+  and `CONTAINMENT_UNAVAILABLE` (MXC cannot be used here while it is required). Categories:
+  `Containment: agent commands not in MXC` and `Containment: MXC unavailable`.
+- Posture heartbeat, top level: `containmentRequired` (effective mode) and `claudeCodeWrap` (`"on"` | `"off"` |
+  `"unavailable"`, from static prerequisites only: `wxc-exec.exe`, Git Bash, and `mxcCapable !== false`).
+- Alert fields: `host`, `containmentRequired`, `containmentKind`, `containmentSource` (mxc-detect's fixed lists),
+  `mxcCapable`, `wrapWhy` (fixed token), `decision`, `reasonCode`. Alerts that are not denies are deduped once per
+  session and reason (`seenOnce`, 24 h). Denies alert every call.
+
+**Codex / Copilot (`containmentRequired`).** The agent-hook shim runs `cli/moorai-hook.mjs` with
+`MOORAI_HOOK_HOST=shim` and `MOORAI_HOOK_AGENT=<id>` (`cli/moorai-agent-hook.mjs`). The adapters map Codex's command
+tool to `Bash` (`cli/agent-hooks/codex.mjs` `MATCHER`), and Copilot's `bash` / `powershell` to `Bash` / `PowerShell`.
+So the check runs at the top of the hook's `SHELL_TOOLS` branch, only for `PreToolUse` and only on win32.
+Decision (`containmentDecision`, pure):
+
+| containment kind | `mxcCapable` | alert mode | block mode |
+|---|---|---|---|
+| `mxc` | any | allow | allow |
+| any but `mxc` | `false` | alert `UNAVAILABLE` | alert `UNAVAILABLE` |
+| `none` / `other` | `true` / `null` | alert `MISSING` | **deny** `MISSING` |
+| `unknown` | `true` | alert `MISSING` | **deny** `MISSING` |
+| `unknown` | `null` | alert `MISSING` | alert `MISSING` |
+
+Why: a device that cannot run MXC is never denied for it, because the user could not fix that. A host that is
+not set to MXC at all is denied in block mode even when capability is unknown, because setting it is the fix.
+`unknown` means the host may pick MXC at run time (Codex `prefer_mxc`), or the host's default is undocumented
+(Copilot `sandbox.enabled` unset). That is denied only where MXC can certainly run.
+Codex layers (`hostKind`): MXC counts only when the user layer alone and the user + project layers both say `mxc`.
+Codex loads a project `.codex/config.toml` only when the project is trusted, which the hook cannot see.
+
+**Capability cache.** `~/.moorai/mxc-capable.json` is user-writable. Under block, `capableForHook` passes no
+state dir to `mxcCapable`, so the cache is neither read nor written. The build comes from `os.release()` (a
+build below 26100 is `false` with no I/O), and the UBR comes from `reg.exe` at its absolute System32 path. That
+call happens only when the host is not set to `mxc`, and it is memoised per process. Under alert the cache is
+used, because there it can change only which reason an alert carries. Measured on macOS (Apple M5 Max): `hostKind`
+for codex, both layers, p50 0.038 ms; copilot p50 0.011 ms; a `spawnSync` of `/usr/bin/true` p50 0.82 ms. The
+hook wall time for a Codex Bash call set to `mxc` was p50 153 ms with containment off and p50 154 ms with block (15
+runs each). `reg.exe`'s cost on Windows was **not** measured.
+
+**Claude Code wrap (`containmentClaudeCode: "wrap"`).** Sources, fetched 2026-10-14:
+- code.claude.com/docs/en/hooks, PreToolUse decision control, `updatedInput`: "Modifies the tool's input parameters
+  before execution. Replaces the entire input object, so include unchanged fields alongside modified ones. Claude
+  Code evaluates permission rules and a Bash command's auto-background eligibility against the input your hook
+  returns, not the input Claude sent. Combine with `"allow"` to auto-approve, or `"ask"` to show the modified
+  input to the user. For `"defer"`, ignored". And from the same page: "`PreToolUse`: `updatedInput` directly
+  under `hookSpecificOutput` replaces a tool's arguments before it runs." The page does not say what happens
+  with no `permissionDecision`. MoorAI already relies on that case for masks (cli/moorai-hook.mjs `emit`: the
+  2.1.265 binary applies it and then runs the normal permission flow), and the wrap uses the same shape.
+- Bash tool input fields (same page): `command`, `description`, `timeout`, `run_in_background`.
+- code.claude.com/docs/en/setup: "**With Git for Windows**, Claude Code uses Git Bash for the Bash tool. If
+  Claude Code can't find Git Bash, set the path" (`CLAUDE_CODE_GIT_BASH_PATH`); "**Without Git for Windows**,
+  Claude Code runs shell commands via the PowerShell tool." code.claude.com/docs/en/tools-reference: "The Bash tool
+  runs each command in a separate process." The page also says a `cd` carries over between commands, and that
+  Claude Code sources the user's startup file and applies the captured aliases and functions to every command.
+
+Flow: `containmentStep` (before scanning) runs `planWrap`. That finds `wxc-exec.exe` on `PATH` under Program Files
+only (the rule of `mxc_launch.rs wxc_location_allowed`, without the desktop host's install directory), Git Bash
+(`CLAUDE_CODE_GIT_BASH_PATH`, else `%ProgramFiles%\Git\bin\bash.exe`), the workspace (`CLAUDE_PROJECT_DIR`, else
+the hook's cwd) and the wrap directory. If the command is already in wrapped form, it is unwrapped (below). Then
+the config is built once, to fail early. `emit` takes the final command (masked, if a mask applied), writes the
+config and returns `updatedInput` = every original field plus the new `command`, with `additionalContext` and no
+`permissionDecision`. On `"ask"` the rewrite rides with the ask. On a deny nothing is written.
+
+Config (`buildMxcPolicy` `scope: "commands"`, Node-only; the Rust copy and the golden cases do not cover it):
+read-write is the workspace only. Not `~/.claude` or `~/.moorai`, because a contained command that could write
+them could remove the hook or rewrite its state. Read-only: the Git root, the node dir, the toolchain list and
+CA files. Denied paths are as for agents. The network is `egress.default: deny` with host loopback, plus numeric
+`egressRules` from the verified policy. `allowDaclMutation: false`. `process.cwd` is the hook's cwd when it is
+inside the workspace, else the workspace. Env: `NODE_OPTIONS` preserve-symlinks, `safe.directory` for the
+workspace, and `MOORAI_WRAP_CMD=<command>`. There is no `TEMP`/`TMP` and no model-proxy variable.
+
+Quoting design. Three layers. The command runs only from the third, a JSON string; the first shows it:
+1. Outer (what Claude Code's Git Bash runs): ``: '<original>' ; MSYS_NO_PATHCONV=1 '<wxc-exec, forward slashes>'
+   --config '<config path>'``. All three are POSIX single-quoted words (`'` becomes `'\''`). The `: '<original>'`
+   prefix is display only, so Claude Code's permission prompt shows what is being approved. `:` is bash's no-op
+   builtin, and a single-quoted word is never expanded. The list's exit status is wxc-exec's. The executable uses
+   forward slashes because bash looks up a name with no `/` on `PATH`. `MSYS_NO_PATHCONV=1` stops Git Bash from
+   converting either argument. Length: the outer command, quoted once more as Claude Code's wrapper would,
+   must fit 32,767 − 4,096 characters (`WRAP_OUTER_MAX`; the 4,096-character reserve for Claude Code's
+   undocumented wrapper is an assumption). Otherwise the wrap is impossible (`command-line-too-long`).
+2. `process.commandLine` (MSVC argv rules, `quoteArgWin` = `mxc_launch.rs quote_arg`):
+   `"<bash.exe>" --noprofile --norc -c "__moorai_c=$MOORAI_WRAP_CMD; unset MOORAI_WRAP_CMD; eval \"$__moorai_c\""`.
+   It is a fixed string with no user content and no backslash besides the `\"` escapes.
+3. The command: `process.env` entry `MOORAI_WRAP_CMD=<command>`, JSON-encoded, so every byte except NUL survives.
+   `eval` runs it the way `bash -c` would. A NUL byte, or a command longer than the 32,767-character variable
+   limit, makes the wrap impossible.
+Tests: under the real bash, 15 hostile originals in the display prefix stay inert (`$( )`, backticks, quotes
+breaking out, newlines, `;`, `&&`, `|`, `&`, redirections, process substitution, `${IFS}`). This holds both run
+directly and wrapped in `eval '<outer>'` as Claude Code would wrap it. A stand-in for wxc-exec runs exactly once,
+with `MSYS_NO_PATHCONV=1` and `--config <path>`, and its exit code is the command's. `quoteArgWin` round-trips through an MSVC argv parser, and `innerCommandLine` parses to exactly
+`[bash, --noprofile, --norc, -c, WRAP_SCRIPT]`. `bashQuote` reads back byte for byte under the real bash.
+`WRAP_SCRIPT` gives the same stdout and exit code as `bash -c` under the real bash (5.3) for quotes, `&`, `|`, `%`,
+`^`, `!`, newlines, CRLF, backslashes, `$( )`, backticks, heredocs, `exit n` and unicode. The variable does not
+leak to children. Measured difference: macOS's bash 3.2 exits 1 under `eval` and 2 under `-c` for a command it
+cannot parse; bash 5.3 exits 2 in both cases.
+
+Config location: `%LOCALAPPDATA%\MoorAI Host\wrap`. The `moorai-host` path class is never granted and is denied
+where the host can deny, so no contained command can pre-plant a file there. Both levels must be plain
+directories before and after creation: not a file, a symlink or a junction (Node reports a junction as a link).
+These are the v1.6.1 `ensureDirs` checks. Files are `wrap-<32 hex>.json`, created with `flag: "wx"` (nothing
+pre-planted at the name is written through). They are swept after 10 minutes, because wxc-exec reads its config
+at start. The `--log-file` is not passed: wxc-exec's log holds the whole policy.
+
+Idempotence: `unwrapCommand` recognises only the exact outer shape (display prefix included), with this
+device's `wxc-exec` and a `wrap-<hex>.json` that is a regular file in the wrap dir. It returns the
+`MOORAI_WRAP_CMD` the config carries. The displayed `: '…'` text is never read as the command: a display edited
+to `ls` around a config holding a reverse shell is judged as the reverse shell (test). The launch without the
+prefix, or a prefix that smuggles a second statement, is not the wrapped form and is wrapped whole. That
+original is what the hook scans, and it is wrapped again in a fresh config, one level only. A command in wrapped
+form that cannot be recovered (another wxc-exec, a config elsewhere, missing or symlinked) makes the wrap
+impossible. A command that merely starts with the shape (`…json' ; curl x`) is not in wrapped form, so it is
+wrapped whole.
+
+Wrap impossible (`wrapWhy`): `powershell-tool`, `host-cannot-rewrite` (coach, shim or an aliased tool),
+`not-capable`, `no-wxc-exec`, `no-git-bash`, `no-workspace`, `wrap-dir-unsafe`, `wrapped-unrecoverable`,
+`command-nul`, `command-too-long`, `command-line-too-long`, `empty-command`, `policy-<reasonCode>` (for example
+`policy-workspace-is-profile`) and `wrap-error`. `containmentRequired` then decides with `UNAVAILABLE`:
+`"block"` denies; `"alert"` and `"off"` allow and alert once per session.
+
+**Fail mode.** An exception in `containmentStep` goes to `failClosedNow("error")`: closed means exit 2 with
+`FAIL_CLOSED`, open means the call proceeds. An exception while `emit` builds or writes the config: closed means
+a deny with `FAIL_CLOSED` (as for the size cap); open falls to "wrap impossible" (`wrap-error`), never a
+silent allow.
+
+**SDK.** Not mirrored. `NOT_EVALUATED` gains `"mxc-containment"`. The check depends on the host CLI that the shim
+names, that host's config files and the Windows device, not on the call. The wrap is a rewrite, which the SDK
+cannot do (`"mask-rewrite"`).
+
+**Known gaps (by design or not fixable here).**
+- Shipped as a documented limit, with no fix in v1.18.0 (the wrap is opt-in, default off). With the wrap on,
+  Claude Code checks its own `Bash(...)` allow and deny rules against the rewritten command, not the original
+  one. A user's deny rule such as `Bash(curl *)` therefore no longer matches, and auto-allowed commands may
+  prompt again. MoorAI's own checks still judge the original command. The permission prompt shows the original
+  through the `: '…'` display prefix.
+- With `containmentClaudeCode: "wrap"` and `containmentRequired: "block"`, every Claude Code `PowerShell` tool
+  call is denied (`CONTAINMENT_UNAVAILABLE`, `wrapWhy: "powershell-tool"`; test). On Windows without Git Bash,
+  that leaves Claude Code no shell tool.
+- An unenrolled (coached) device is coached, as for every deny, and the wrap needs `canRewrite()`, which is false
+  while coaching.
+- The wrap covers `Bash` only, not `Read`/`Write`/`Edit`/`WebFetch`/MCP or the `PowerShell` tool. Claude Code
+  runs uncontained, so its `Write` tool can write into the wrap dir. A config planted there is not trusted: an
+  unwrapped command is re-wrapped in a fresh config. Between the hook writing a config and wxc-exec reading it,
+  an uncontained process with the user's rights could still replace it.
+- Inside the container: `cd` does not carry over, the user's shell snapshot is not loaded, `--add-dir`
+  directories and the rest of the profile are not readable, and hostnames are unreachable without a CONNECT
+  proxy.
+- Codex and Copilot are judged by their config files. `codex -c …`, `copilot --no-sandbox`, Codex profiles and
+  managed settings are not visible.
+- The hook does not check wxc-exec's Authenticode signature (the desktop host does), only that it is under
+  Program Files.
+
+**Not proven (runtime on Windows).** None of the following has been run:
+- Claude Code on native Windows applying `updatedInput` with no `permissionDecision` to a Bash call, and passing
+  the rewritten command to Git Bash unchanged.
+- Git Bash running `: '…' ; MSYS_NO_PATHCONV=1 'C:/…/wxc-exec.exe' --config 'C:\…'`, and MSYS2 passing both
+  arguments through unchanged. Claude Code's permission prompt rendering the display prefix legibly, and the
+  real length of Claude Code's own wrapper (the 4,096-character reserve).
+- wxc-exec relaying the contained child's stdout/stderr and exit code to Git Bash; its behaviour with no
+  `--log-file`; whether it writes a log anywhere by default.
+- MSYS2's command-line parser reading the fixed `-c` argument as `__moorai_c=…; eval "$__moorai_c"` (it is
+  tested only against MSVC rules).
+- An environment value with newlines passing through MXC's `process.env` to the child.
+- Git for Windows' `bin\bash.exe` launcher, and `usr\bin\bash.exe`, running inside BaseContainer with only the
+  Git root read-only.
+- `reg.exe` cost on the hook path; registry UBR read from inside a contained Codex/Copilot hook process.
+- Codex and Copilot hook payloads carrying `cwd` and `CODEX_HOME` / `COPILOT_HOME` as the adapters assume, on
+  Windows.
+- The posture fields reaching the console (the console side is built in parallel against this contract).
 
 ## Windows: JS agent exit and action-audit compaction
 

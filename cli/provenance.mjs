@@ -53,6 +53,8 @@ export const REASON = Object.freeze({
   MCP_TOOL_DRIFT: "MCP_TOOL_DRIFT",               // policy mcpToolDrift "block": a tool changed / was added / shadows since approval (mcp-proxy/tool-drift.mjs)
   OBSERVATION_ONLY: "OBSERVATION_ONLY",           // an event this hook records but does not judge
   FAIL_CLOSED: "FAIL_CLOSED",                     // the surface could not decide (error, budget, scan cap) and the admin-chosen fail mode is closed: denied
+  CONTAINMENT_MISSING: "CONTAINMENT_MISSING",     // containmentRequired (Windows): an agent that can run its commands in MXC is not set to (cli/containment-enforce.mjs)
+  CONTAINMENT_UNAVAILABLE: "CONTAINMENT_UNAVAILABLE", // containment is required but MXC cannot be used here: build not capable, wxc-exec missing, wrap impossible
   // A control that never ran for this call. Never a pass.
   UNEVALUATED_NO_POLICY: "UNEVALUATED_NO_POLICY",
   UNEVALUATED_HOOK_ERROR: "UNEVALUATED_HOOK_ERROR",
@@ -120,7 +122,9 @@ const CATEGORY_REASON = [
   [/^MCP gateway: client cool-down$/, REASON.CLIENT_COOLDOWN],
   [/^MCP: (tool added after approval|tool removed after approval|quarantined tool \(changed since approval\)|tool not in a checked listing)$/, REASON.MCP_TOOL_DRIFT],
   [/^MCP tool call$/, REASON.NO_MATCH],
-  [/^Fail-closed: /, REASON.FAIL_CLOSED]
+  [/^Fail-closed: /, REASON.FAIL_CLOSED],
+  [/^Containment: agent commands not in MXC$/, REASON.CONTAINMENT_MISSING],
+  [/^Containment: MXC unavailable$/, REASON.CONTAINMENT_UNAVAILABLE]
 ];
 export function reasonCodeOf(alert) {
   const c = String((alert && alert.category) || "");

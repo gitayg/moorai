@@ -1020,6 +1020,85 @@ What this detects and what it assumes:
 The console raises `Coverage: agent running without containment` for a Windows host whose kind is
 `"none"`, or `"unknown"` on an MXC-capable device. It is report-only and changes no verdict.
 
+**Requiring MXC (v1.18.0).** Two signed-policy fields let the administrator require containment instead of
+only reporting it ([`cli/containment-enforce.mjs`](cli/containment-enforce.mjs)). They take effect only from
+the verified signed policy or the root-owned admin binding, the same rule as `failMode`; a user-writable file
+never turns them on or off. They are Windows-only: on macOS and Linux both are ignored and the heartbeat
+reports them as `"off"`.
+
+- `containmentRequired`: `"off"` (default), `"alert"` or `"block"`. It governs Codex CLI and Copilot CLI. On
+  each command tool call (`Bash`, and Copilot's `powershell`), MoorAI's hook reads that host's containment
+  with the same rules as the heartbeat:
+  - `"mxc"`: allowed.
+  - `"none"` or `"other"`: `CONTAINMENT_MISSING`. Alerted in `"alert"` mode and denied in `"block"` mode.
+  - `"unknown"` (Codex `features.prefer_mxc`, Copilot `sandbox.enabled` unset or unreadable): `CONTAINMENT_MISSING`.
+    Denied in `"block"` mode only when the device is known to be MXC-capable; otherwise alerted.
+  - A build that cannot run MXC (`mxcCapable: false`): `CONTAINMENT_UNAVAILABLE`, alerted, never denied.
+
+  For Codex, a project's `.codex/config.toml` counts only together with the user's own config: MXC is
+  believed only when both layers say `mxc`, because Codex loads a project config only after the user trusts
+  the project. Under `"block"` the hook reads the Windows build from the registry on every check (one
+  `reg.exe` call, only on builds 26100 and later and only when the host is not set to MXC) instead of the
+  user-writable `~/.moorai/mxc-capable.json`, so editing that file to "incapable" cannot turn a deny into an
+  alert.
+- `containmentClaudeCode`: `"off"` (default) or `"wrap"`. Claude Code has no MXC setting, so MoorAI puts its
+  commands in MXC itself. The PreToolUse hook rewrites each `Bash` call through
+  `hookSpecificOutput.updatedInput`, so the command runs through `wxc-exec.exe` with a per-command MXC
+  config. The rewritten command is `: '<original>' ; MSYS_NO_PATHCONV=1 '<wxc-exec>' --config '<config>'`.
+  The first part is display only, so Claude Code's permission prompt shows what is being approved: `:` is the
+  shell's no-op, and its single-quoted argument is never expanded or run. The command that runs travels in
+  the config's environment and is run with `eval` by Git Bash inside the container, which is how Claude Code
+  runs a Bash command. The config grants read-write
+  access to the project directory only (`CLAUDE_PROJECT_DIR`, else the hook's cwd), read-only access to Git
+  for Windows and the usual toolchain, and no network beyond loopback and numeric allows from `egressRules`.
+  It is written to `%LOCALAPPDATA%\MoorAI Host\wrap`. No contained command can write to that directory, and
+  it must be a plain directory, not a link or junction. The other fields of the call (`description`,
+  `timeout`, `run_in_background`) are kept. The rewrite carries no `permissionDecision`, so the normal
+  permission flow still applies. A command that arrives already in wrapped form is recognised and never
+  wrapped twice: its command is read back from the config file (never from the displayed text), scanned, and
+  wrapped once in a fresh config. When the wrap is impossible (a `PowerShell` tool call, no `wxc-exec.exe`
+  under Program Files on `PATH`, no Git Bash, a build that cannot run MXC, Claude Code started in the profile
+  root, a command with a NUL byte or over the 32,767-character environment limit, a command too long to fit
+  Windows' command-line limit once shown in the prompt as well, an unsafe wrap directory),
+  `containmentRequired` decides with `CONTAINMENT_UNAVAILABLE`: `"block"` denies the call, and `"alert"` or
+  `"off"` allow it with one alert per session.
+
+Alerts are content-free: host, `containmentKind`, `containmentSource`, `mxcCapable`, the mode, and for the
+wrap a fixed `wrapWhy` token. Alerts that are not denies are posted once per session. An error inside the
+check follows the hook's fail mode: closed denies with `FAIL_CLOSED`, open lets the call proceed. The
+heartbeat adds `containmentRequired` (the effective mode) and `claudeCodeWrap` (`"on"`, `"off"` or
+`"unavailable"`).
+
+Limits, stated plainly:
+- **None of this has run on Windows.** It is code and unit tests, run on macOS with Windows paths and a
+  test-only preload that reports `win32`.
+- **Config-based detection.** Codex and Copilot are judged by what their config files say. A command-line
+  override (`codex -c windows.sandbox=…`, `copilot --no-sandbox`), a Codex profile, or enterprise-managed
+  settings can change what actually runs, and the hook sees none of them.
+- **Capable is not enabled.** `mxcCapable: true` means the build meets MXC's minimum. Microsoft rolls MXC out
+  gradually, so the feature may still be off. A wrapped command then fails to start; it does not run
+  uncontained.
+- **The wrap covers `Bash` only.** It does not cover Claude Code's `Read`, `Write`, `Edit`, `WebFetch` or
+  MCP tools. Claude Code itself runs uncontained, with the user's rights.
+- **PowerShell is refused under `"block"`.** Claude Code's `PowerShell` tool is not wrapped. With
+  `containmentClaudeCode: "wrap"` and `containmentRequired: "block"`, every `PowerShell` tool call is denied
+  (`CONTAINMENT_UNAVAILABLE`, `wrapWhy: "powershell-tool"`). On Windows without Git Bash, where `PowerShell`
+  is the only shell tool, that means Claude Code can run no shell commands. Under `"alert"` or `"off"` a
+  `PowerShell` call runs uncontained, with one alert per session.
+- **Claude Code's own permission rules no longer see the original command.** The wrap is opt-in (default
+  off). With it on, Claude Code checks its own `Bash(...)` allow and deny rules against the rewritten command,
+  not the original one. The hooks reference says Claude Code "evaluates permission rules ... against the
+  input your hook returns, not the input Claude sent". So a user's deny rule such as `Bash(curl *)` no longer
+  matches, and commands that were auto-allowed may prompt again. MoorAI's own checks still judge the original
+  command. There is no fix for this in v1.18.0.
+- **An unenrolled device is coached, as for every other deny.** A `"block"` verdict there becomes a note to the
+  user and the agent, and the call runs.
+- **What a wrapped command does not get:** directory changes do not carry over to the next command, the
+  aliases and functions Claude Code snapshots from the user's shell are not loaded, `--add-dir` directories
+  and the rest of the profile are not readable, and hostnames are unreachable without a CONNECT proxy.
+- **No signature check on the hook path.** The desktop host requires `wxc-exec.exe` to be Microsoft-signed.
+  The hook checks only that the file sits under Program Files, which only an administrator can write.
+
 ### Download-then-run, secret-file uploads and collection hosts
 
 A backdoored model in a coding agent can download a script to a file, run it, and have the script post

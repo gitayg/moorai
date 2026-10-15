@@ -2,8 +2,9 @@
 // runs are contained by Microsoft Execution Containers (MXC, github.com/microsoft/mxc), plus whether
 // the device's Windows build meets MXC's documented minimum. Report-only and content-free: it changes
 // no verdict, reads config files and one registry value, and fails open (any error = field left out or
-// "unknown"). Called only from cli/agent-posture.mjs, which runs in the daily posture-beat worker
-// (cli/moorai-hook.mjs runPostureBeatWorker), never on a hook's verdict path.
+// "unknown"). hostContainment is called only from cli/agent-posture.mjs, which runs in the daily posture-beat worker
+// (cli/moorai-hook.mjs runPostureBeatWorker). Enforcement (v1.18.0) is cli/containment-enforce.mjs, which
+// calls codexContainment / copilotContainment / mxcCapable on the hook path when containmentRequired is set.
 //
 // What leaves the device, per host: { kind, scope, source } from the fixed lists below. Per device:
 // mxcCapable true | false | null. Never a path, a config value outside those lists, or a build number.

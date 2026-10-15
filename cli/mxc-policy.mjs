@@ -205,10 +205,20 @@ const fail = (reasonCode, reason) => ({ ok: false, reasonCode, reason });
 // install can sit at %LOCALAPPDATA%\MoorAI, the same directory as the hook's breadcrumb leg.
 // exists(path) -> bool: the host's view of which paths exist (tests inject it).
 // Returns { ok:true, policy, ensureDirs, egressUnexpressed? } or { ok:false, reasonCode, reason }.
+//
+// scope "commands" (cli/containment-enforce.mjs, the Claude Code Bash wrap): one command, not an agent.
+// The agent itself runs uncontained and MoorAI's hook runs outside the container, so nothing but the
+// workspace is read-write: no agent state, no MoorAI state legs (a contained command that could write
+// ~/.claude or ~/.moorai could remove the hook or rewrite its state), no TEMP/TMP entries (MXC sets its
+// own) and no model-proxy variables. Inputs used only here: processCwd (inside the workspace, else the
+// workspace), extraReadonly[] (the Git for Windows root that runs the command) and extraEnv[] ("NAME=value").
+// Node-only: the desktop host never launches this scope, so src-tauri/src/mxc.rs has no copy of it and the
+// shared golden cases do not cover it (test/containment-enforce.test.mjs does).
 export function buildMxcPolicy(input, { exists = () => true } = {}) {
   const i = input || {};
-  const agent = String(i.agent || "");
-  if (!SUPPORTED_AGENTS.includes(agent)) return fail("unsupported-agent", `agent must be one of ${SUPPORTED_AGENTS.join(", ")}`);
+  const commands = i.scope === "commands";
+  const agent = commands ? "" : String(i.agent || "");
+  if (!commands && !SUPPORTED_AGENTS.includes(agent)) return fail("unsupported-agent", `agent must be one of ${SUPPORTED_AGENTS.join(", ")}`);
   const t = tokens(i.env, i.workspace);
   if (!t.HOME) return fail("no-profile", "USERPROFILE is not an absolute path");
   if (!String(i.workspace || "").trim()) return fail("workspace-unset", "no agent workspace is configured; MXC grants one project directory, never the whole profile");
@@ -244,7 +254,7 @@ export function buildMxcPolicy(input, { exists = () => true } = {}) {
   if (bad !== undefined) return fail("egress-not-numeric", "egress allow entries must be numeric CIDRs; MXC rules cannot name hosts (networking.md, 1.1 Out of GA scope)");
 
   const agentTmp = expand(AGENT_TMP, t);
-  const ensureDirs = dedupe([
+  const ensureDirs = commands ? [] : dedupe([
     ...MOORAI_STATE.map((x) => expand(x, t)),
     agentTmp,
     expand(AGENT_STATE[agent][0], t)
@@ -252,7 +262,7 @@ export function buildMxcPolicy(input, { exists = () => true } = {}) {
   const ensured = (p) => ensureDirs.some((d) => key(d) === key(p));
   const present = (p) => p && (ensured(p) || exists(p));
 
-  const rw = dedupe([
+  const rw = commands ? [ws] : dedupe([
     ws,
     ...AGENT_STATE[agent].map((x) => expand(x, t)),
     ...MOORAI_STATE.map((x) => expand(x, t))
@@ -263,10 +273,10 @@ export function buildMxcPolicy(input, { exists = () => true } = {}) {
   const agentBinDir = isAbsoluteWin(i.agentBin) ? winDirname(i.agentBin) : "";
   const roCandidates = dedupe([
     agentBinDir,
-    ...AGENT_RO[agent].map((x) => expand(x, t)),
+    ...(commands ? [] : AGENT_RO[agent].map((x) => expand(x, t))),
     isAbsoluteWin(i.nodeDir) ? winNorm(i.nodeDir) : "",
     ...TOOLCHAIN_RO.map((x) => expand(x, t)),
-    ...(i.hookRoots || []).map((p) => (isAbsoluteWin(p) ? winNorm(p) : "")),
+    ...(commands ? (i.extraReadonly || []) : (i.hookRoots || [])).map((p) => (isAbsoluteWin(p) ? winNorm(p) : "")),
     ...caFiles
   ]);
   const denyClassPaths = PATH_CLASSES.filter((c) => c.deny).flatMap((c) => c.paths.map((x) => expand(x, t))).filter(Boolean);
@@ -289,7 +299,7 @@ export function buildMxcPolicy(input, { exists = () => true } = {}) {
   // The host's install dir is denied explicitly too (reads included: the agent has no use for it).
   const denied = dedupe([...denyClassPaths, appDir].filter((d) => d && exists(d) && (i.fsDenySupported === true || overlapping(d))));
 
-  const env = [`TEMP=${agentTmp}`, `TMP=${agentTmp}`, `NODE_OPTIONS=${nodeOptions(i.env)}`];
+  const env = commands ? [`NODE_OPTIONS=${nodeOptions(i.env)}`] : [`TEMP=${agentTmp}`, `TMP=${agentTmp}`, `NODE_OPTIONS=${nodeOptions(i.env)}`];
   if (agent === "claude") {
     env.push(`ANTHROPIC_BASE_URL=http://127.0.0.1:${port}/anthropic`);
     env.push("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1");
@@ -307,6 +317,7 @@ export function buildMxcPolicy(input, { exists = () => true } = {}) {
   // operator's extra roots; SSL_CERT_FILE replaces OpenSSL's bundle and is only passed through if the
   // user already exported it (granted read above).
   if (isAbsoluteWin(i.extraCaCerts)) env.push(`NODE_EXTRA_CA_CERTS=${winNorm(i.extraCaCerts)}`);
+  if (commands) for (const e of i.extraEnv || []) if (typeof e === "string" && /^[A-Za-z_][A-Za-z0-9_]*=/.test(e)) env.push(e);
 
   // Direct mode with host loopback: the agent reaches moorai-model-proxy (a base-URL reverse proxy, not a
   // WinHTTP/CONNECT proxy, so it cannot be runtimeConfig.networkProxy) on 127.0.0.1. egress.default stays
@@ -330,7 +341,7 @@ export function buildMxcPolicy(input, { exists = () => true } = {}) {
   const policy = {
     version: MXC_SCHEMA_VERSION,
     containment: "processcontainer",
-    process: { commandLine, cwd: ws, env, inheritDefaultEnv: true },
+    process: { commandLine, cwd: commands && isAbsoluteWin(i.processCwd) && isUnder(i.processCwd, ws) ? winNorm(i.processCwd) : ws, env, inheritDefaultEnv: true },
     filesystem: { readwritePaths: rw, readonlyPaths: ro, deniedPaths: denied },
     // Never let MXC rewrite host ACLs: refusing Tier 3 makes a host without BaseContainer fail the
     // launch instead of silently weakening it (docs/schema.md "Fallback Policy").

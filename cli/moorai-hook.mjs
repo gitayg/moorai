@@ -80,6 +80,8 @@ import { leafOf, appendLeaf, sessionHead, contextTreeMode, claimUpload, flushCon
 import { bindingRefusedAlert } from "./config.mjs";
 import { actionTrailMode, buildActionRecord, enqueueActionRecord, claimFlush, flushActionTrail, callFingerprintText, readTrailState } from "./action-trail.mjs";
 import { normalizeToolInput, normalizeHookInput } from "./tool-input.mjs";
+import { resolveContainment, containmentDecision, wrapFallback, hostKind, capableForHook, containmentAlert, denyReason, planWrap, unwrapCommand, wrapConfig, writeWrap, wrappedInput, claudeCodeWrapState, ENFORCED_HOSTS, WRAP_NOTE } from "./containment-enforce.mjs";
+import { mxcCapable } from "./mxc-detect.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -1273,6 +1275,14 @@ async function runPostureBeatWorker(host, mode, cwd) {
     // inferenceHook a "default" source means the operator's --fail flag on that server decides.
     let failMode, aiCliParents, v = null;
     try { v = await loadVerifiedPolicy(CONFIG, { network: false }); failMode = effectiveFailModes(v.policy || null, { admin: ADMIN, warn: () => {} }); aiCliParents = { mode: parentPolicy(v.policy || null).mode, lastParentClass: lastParentClass() }; } catch { failMode = undefined; }
+    // MXC enforcement (cli/containment-enforce.mjs): the effective containmentRequired mode and whether the
+    // Claude Code wrap can run here. Both "off" off Windows. Content-free.
+    let containment = null;
+    try {
+      const cc = resolveContainment((v && v.policy) || null, { admin: ADMIN, warn: () => {} });
+      const capable = process.platform === "win32" ? mxcCapable({ release: os.release(), stateDir: STATE_DIR }) : null;
+      containment = { containmentRequired: cc.required.mode, claudeCodeWrap: claudeCodeWrapState({ mode: cc.claudeCode.mode, capable }) };
+    } catch { containment = null; }
     // Inventory detectors (cli/agent-posture.mjs inventoryPosture): localModelServers, aiApiCallers and decoyKeys
     // at the top level, gated by the same verified load `v`. Decoy files are placed or removed only when that
     // policy carried a console signature this device verified (anchor or pin): a policy from an unpinned device
@@ -1283,7 +1293,7 @@ async function runPostureBeatWorker(host, mode, cwd) {
       const signed = !!(v && v.policy && v.trust && Array.isArray(v.trust.keys) && v.trust.keys.length);
       inventory = await inventoryPosture({ policy: (v && v.policy) || null, decoys: signed, commit: false });
     } catch { inventory = null; }
-    const body = { user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture, ...(failMode ? { failMode } : {}), ...(aiCliParents ? { aiCliParents } : {}), ...(inventory ? inventory.fields : {}) };
+    const body = { user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture, ...(failMode ? { failMode } : {}), ...(containment || {}), ...(aiCliParents ? { aiCliParents } : {}), ...(inventory ? inventory.fields : {}) };
     const r = await fetch(`${CONFIG.serverUrl}/api/agent-posture`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) }).catch(() => null);
     // On failure the pending mark stays, so the next try is BEAT_RETRY_MS away rather than one per tool call.
     if (r && r.ok) writeBeat(host, { day, bypass: (st.day === day && !!st.bypass) || mode === "bypassPermissions" });
@@ -1753,26 +1763,51 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
       post({ ...failClosedAlert("size-cap", fm.source), ts: new Date().toISOString(), ...IDENTITY });
     }
   }
+  // MXC wrap (cli/containment-enforce.mjs, containmentClaudeCode "wrap"): the final command — masked, if a
+  // mask applied — goes into a per-command MXC config and the call's command becomes the wxc-exec launch.
+  // Nothing is written for a deny. A config that cannot be built or written falls to containmentRequired's
+  // mode (CONTAINMENT_UNAVAILABLE); an unexpected error follows the hook's fail mode, never a silent allow
+  // under closed.
+  let wrapped = null;
+  if (WRAP && decision !== "deny" && !COACH && CALL.active && EVENT === "PreToolUse") {
+    const base = rewrite ? rewrite.value : CALL.ti;
+    try {
+      const c = wrapConfig(WRAP.plan, base && base.command, wrapConfigOpts());
+      if (c.ok) wrapped = wrappedInput(base, writeWrap(WRAP.plan, c.config, base.command).command);
+      else ({ decision, reason, alternatives, rewrite } = wrapUnavailableVerdict(c.why, { decision, reason, alternatives, rewrite }));
+    } catch {
+      const fm = hookFailMode({ policy: VERIFIED_POLICY ?? null, admin: ADMIN });
+      if (fm.mode === "closed") {
+        VERDICT.basis = REASON.UNEVALUATED_HOOK_ERROR; why(REASON.FAIL_CLOSED); VERDICT.enforcement = ENFORCEMENT.STRENGTHENED;
+        decision = "deny"; reason = failReason("error"); alternatives = []; rewrite = null;
+        post({ ...failClosedAlert("error", fm.source), ts: new Date().toISOString(), ...IDENTITY });
+      } else ({ decision, reason, alternatives, rewrite } = wrapUnavailableVerdict("wrap-error", { decision, reason, alternatives, rewrite }));
+    }
+    WRAP = null;
+  }
   // A Task / Agent call the host runs (or is asked about; a coached device runs it): its span becomes the
   // parent of the sub-agent's records (cli/trace-spawns.mjs).
   if (SPAWN && (COACH || decision !== "deny")) recordSpawn(SPAWN);
   SPAWN = null;
   // The allow trail: one queued, content-free record for a call the host is told it may run.
   const tr = decision === "allow" && CALL.active ? recordAllowed(tg, rewrite) : false;
-  settleRow({ ...verdictFields(decision, { rewrite: Boolean(rewrite) }), ...(tr ? { tr: 1 } : {}) });
+  settleRow({ ...verdictFields(decision, { rewrite: Boolean(rewrite) }), ...(tr ? { tr: 1 } : {}), ...(wrapped ? { wrap: 1 } : {}) });
   // The call ran unless the host was told deny (a coached device was told nothing): only then do its tags
   // join the session record.
   if (tg) recordSessionTags({ sessionId: SESSION_ID, tags: COACH || decision !== "deny" ? tg.tags.tags : [], fired: tg.fired });
   if (CALL.active) recordExceptionUse(tg);
   const hint = CALL.active && decision !== "allow" && !COACH && !SERVER.active ? hintFor(reason, tg) : "";
-  const note = rewrite ? maskNote("this tool call's input", rewrite.count, rewrite.ids) : "";
+  const mnote = rewrite ? maskNote("this tool call's input", rewrite.count, rewrite.ids) : "";
+  const note = [mnote, wrapped ? WRAP_NOTE : ""].filter(Boolean).join(" ");
+  const updated = wrapped || (rewrite ? rewrite.value : null);
   if (COACH && decision !== "allow") process.stdout.write(coachOut("PreToolUse", reason, alternatives));
   else if (COACH && (LEAK_COACH || PROFILE_COACH)) process.stdout.write(coachOut("PreToolUse", (LEAK_COACH || PROFILE_COACH).reason, (LEAK_COACH || PROFILE_COACH).alts));
   else if (decision !== "allow") {
-    const upd = rewrite && decision === "ask" ? { updatedInput: rewrite.value, additionalContext: note } : {};
+    const upd = updated && decision === "ask" ? { updatedInput: updated, additionalContext: note } : {};
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision === "deny" ? "deny" : "ask", permissionDecisionReason: `MoorAI: ${withSafer(reason, alternatives)}${hint ? ` ${hint}` : ""}`, ...upd } }));
-  } else if (rewrite) {
-    process.stdout.write(JSON.stringify({ systemMessage: note, hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: rewrite.value, additionalContext: note } }));
+  } else if (updated) {
+    // No permissionDecision: a wrap, like a mask, must not auto-approve the call (see MASK above).
+    process.stdout.write(JSON.stringify({ ...(mnote ? { systemMessage: mnote } : {}), hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: updated, additionalContext: note } }));
   }
   return exitHook();
 }
@@ -2068,6 +2103,73 @@ const ingestNoun = (tool) => INGEST_NOUN[tool] || "MCP tool result";
 // hooks under its own tool names ("Shell") and whether it honours updatedInput is unmeasured.
 let HOST_REWRITES = true;
 function canRewrite() { return HOST_REWRITES && !COACH && process.env.MOORAI_HOOK_HOST !== "shim"; }
+
+// ---- MXC enforcement on Windows (cli/containment-enforce.mjs) ----
+// containmentRequired / containmentClaudeCode come from the admin binding and the verified policy only
+// (VERIFIED_POLICY, the copy the fail mode reads), never from user-writable state. Non-deny alerts are posted
+// once per session and reason; a deny alerts every time, like every other deny.
+let WRAP = null; // { plan, mode }: this Bash call is wrapped in emit()
+let CONTAIN = null;
+function containmentConfig() { return (CONTAIN ??= resolveContainment(VERIFIED_POLICY ?? null, { admin: ADMIN })); }
+function postContainment(a) {
+  if (a.decision !== "deny" && seenOnce(`containment:${SESSION_ID || "-"}:${a.contentHash}`, 86400000)) return;
+  post({ ...a, ts: new Date().toISOString(), ...IDENTITY });
+}
+function wrapConfigOpts() {
+  const p = VERIFIED_POLICY && typeof VERIFIED_POLICY === "object" ? VERIFIED_POLICY : {};
+  return { env: process.env, nodeDir: dirname(process.execPath), egressRules: p.egressRules, egressDefault: p.egressDefault };
+}
+// The wrap could not be applied: containmentRequired's mode with CONTAINMENT_UNAVAILABLE. → the verdict to emit.
+function wrapUnavailableVerdict(whyToken, v) {
+  const mode = containmentConfig().required.mode;
+  const d = wrapFallback(mode);
+  postContainment(containmentAlert({ host: "claude-code", tool: CALL.tool || "Bash", decision: d.action, reasonCode: d.reasonCode, mode, why: whyToken }));
+  if (d.action !== "deny") return v;
+  why(d.reasonCode); VERDICT.basis = null;
+  return { decision: "deny", reason: denyReason(d.reasonCode, "claude-code"), alternatives: [], rewrite: null };
+}
+// A command tool call (Bash / PowerShell) on Windows. → null (go on) | { deny, reasonCode } | "exit" (a
+// fail-closed deny was written). Codex / Copilot: the host's containment kind is decided here. Claude Code
+// with "wrap": the wrap is planned (and a command already in wrapped form is unwrapped, so the original is
+// what gets scanned and re-wrapped); emit() writes it. An error follows the hook's fail mode.
+async function containmentStep(tool, ti, cwd) {
+  if (process.platform !== "win32" || EVENT !== "PreToolUse") return null;
+  try {
+    const cfg = containmentConfig();
+    const host = beatHost();
+    const mode = cfg.required.mode;
+    if (ENFORCED_HOSTS.includes(host)) {
+      if (mode === "off") return null;
+      const k = hostKind(host, { home: os.homedir(), env: process.env, cwd: typeof cwd === "string" && cwd ? cwd : null });
+      const capable = k.kind === "mxc" ? null : capableForHook({ mode, release: os.release(), stateDir: STATE_DIR });
+      const d = containmentDecision({ mode, kind: k.kind, capable });
+      if (d.action === "allow") return null;
+      postContainment(containmentAlert({ host, tool, decision: d.action, reasonCode: d.reasonCode, mode, kind: k.kind, source: k.source, capable }));
+      return d.action === "deny" ? { deny: denyReason(d.reasonCode, host), reasonCode: d.reasonCode } : null;
+    }
+    if (host !== "claude-code" || cfg.claudeCode.mode !== "wrap") return null;
+    const capable = capableForHook({ mode: mode === "block" ? "block" : "alert", release: os.release(), stateDir: STATE_DIR });
+    const plan = planWrap({ tool, canRewrite: canRewrite(), env: process.env, cwd: typeof cwd === "string" ? cwd : "", capable });
+    let whyToken = plan.ok ? null : plan.why;
+    if (plan.ok) {
+      const orig = unwrapCommand(ti.command, { wxc: plan.wxc, wrapDir: plan.wrapDir });
+      if (orig === false) whyToken = "wrapped-unrecoverable";
+      else {
+        if (typeof orig === "string") ti.command = orig;
+        const c = wrapConfig(plan, ti.command, wrapConfigOpts());
+        if (c.ok) { WRAP = { plan, mode }; return null; }
+        whyToken = c.why;
+      }
+    }
+    const d = wrapFallback(mode);
+    postContainment(containmentAlert({ host: "claude-code", tool, decision: d.action, reasonCode: d.reasonCode, mode, why: whyToken }));
+    return d.action === "deny" ? { deny: denyReason(d.reasonCode, "claude-code"), reasonCode: d.reasonCode } : null;
+  } catch {
+    WRAP = null;
+    if (await failClosedNow("error")) return "exit";
+    return null;
+  }
+}
 
 // Apply a mask to `value` and prove it took: every string leaf rewritten, then the rewritten scan text
 // re-scanned for the masked threats. Any survivor (a normalised/encoded match, a non-span detector, a
@@ -2637,6 +2739,10 @@ async function main() {
     return emit(rdec, `${d.kill ? "killed session" : "blocked Read"} of ${basename(ti.file_path || "file")} — ${rreasons.join(", ")}`, ralts);
   }
   if (SHELL_TOOLS.has(tool)) {
+    // MXC containment (Windows): Codex / Copilot hosts not set to MXC, and the Claude Code wrap plan.
+    const cs = await containmentStep(tool, ti, input.cwd);
+    if (cs === "exit") return;
+    if (cs && cs.deny) { why(cs.reasonCode); return emit("deny", cs.deny); }
     let dec = "allow", reasons = [], alts = [], finds = [], btext = "", killIds = [];
     // PowerShell runs this same branch; only the grammar of the parsers differs (see SHELL_TOOLS).
     const ps = tool === "PowerShell";
