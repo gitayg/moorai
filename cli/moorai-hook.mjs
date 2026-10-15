@@ -65,6 +65,7 @@ import { hookFailMode, failClosedApplies, failClosedOutput, failClosedVerdict, f
 import { effectiveFailModes } from "./fail-mode.mjs";
 import { recordMcpCall, scheduleMcpUsageFlush } from "./mcp-usage-beat.mjs";
 import { REASON, ENFORCEMENT, policyIdOf, stampAlert } from "./provenance.mjs";
+import { seenOnce as seenOnceIn } from "./seen-once.mjs";
 import { recordRow, readSessionRows, localHash } from "./session-ledger.mjs";
 import { commandClass, normalizeCommand, verifyFamily, outcomeOfResponse, outcomeOfFailure, assessTurn } from "./claim-check.mjs";
 import { callTags, sessionTagsOf, recordSessionTags, tagGate, applyTagGate, tagHitAlert } from "./tool-tags.mjs";
@@ -1836,15 +1837,7 @@ function tagStep() {
 }
 // A key in ~/.moorai/exceptions-seen.json: false the first time (and every `ttl` ms), true after.
 function seenOnce(key, ttl = Infinity) {
-  try {
-    const st = readStateJson(EXCEPTIONS_SEEN_FILE) || {};
-    if (Date.now() - (Number(st[key]) || 0) < ttl) return true;
-    const now = Date.now();
-    const out = Object.fromEntries(Object.entries(st).filter(([, v]) => now - Number(v) < 7 * 86400000).slice(-400));
-    out[key] = now;
-    writeStateJson(EXCEPTIONS_SEEN_FILE, out);
-    return false;
-  } catch { return true; }
+  return seenOnceIn(key, ttl, { read: () => readStateJson(EXCEPTIONS_SEEN_FILE), write: (o) => writeStateJson(EXCEPTIONS_SEEN_FILE, o) });
 }
 // #67 / ATT&CK T1557, T1553.004 — the agent itself runs behind a proxy or a CA override. The hook inherits
 // the agent's environment, so the override is read here (cli/hook-core.mjs transitEnvText) on every

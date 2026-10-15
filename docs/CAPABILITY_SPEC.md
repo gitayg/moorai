@@ -2547,7 +2547,8 @@ console policy (enrolled), or in it or the root-owned config (unenrolled). Local
 at most 24 h to `expires`. User-scope files are never read. Ledger and alerts: "Local exception granted"
 (first sight), "Exception applied" (it changed the outcome), "Local exception ignored (local exceptions are
 off)", "Agent attempted to grant a MoorAI exception"; each carries the exception id and a keyed pattern
-hash, never the pattern.
+hash, never the pattern. "Granted" and "ignored" post once per exception id (`cli/seen-once.mjs`, records kept 7 days);
+before v1.18.1 a missing record read as seen, so neither ever posted.
 
 **Deny/ask message**: `Exception: …` appended after the safer line, naming the threat ids from the reason
 (#65 for the two secret-egress reasons) or the tag rule ids, and a suggested pattern that masks quoted
