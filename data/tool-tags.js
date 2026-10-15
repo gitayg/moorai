@@ -34,7 +34,8 @@ export const BUILTIN_TOOL_TAGS = Object.freeze({
   WebFetch: ["network"],
   WebSearch: ["network"],
   Bash: ["exec"],
-  PowerShell: ["exec"]
+  PowerShell: ["exec"],
+  Monitor: ["exec"]
 });
 
 // A path that names a credential or secret store. The locations #55 (cred-file-access) and the #55

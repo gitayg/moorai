@@ -83,7 +83,7 @@ export function globMatch(pattern, subject, { shell = false } = {}) {
 }
 
 // What an exception's pattern is matched against, per tool.
-export const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
+export const SHELL_TOOLS = new Set(["Bash", "PowerShell", "Monitor"]);
 export function subjectOf({ tool = "", toolInput, cwd = "", home = os.homedir() } = {}) {
   const ti = toolInput && typeof toolInput === "object" ? toolInput : {};
   // A path with its `.` and `..` folded, so `/w/proj/../../etc/x` is matched as /etc/x.
@@ -255,7 +255,7 @@ export function exceptionHint({ threats = [], rules = [], tool = "", toolInput, 
 const SELF_GRANT = /\bmoorai[-_ ]allow\b|[\/\\]etc[\/\\]moorai[\/\\]exceptions\.json\b|MoorAI[\/\\]+exceptions\.json\b/i;
 export function selfExceptionAttempt({ tool = "", toolInput } = {}) {
   const ti = toolInput && typeof toolInput === "object" ? toolInput : {};
-  if (tool === "Bash" || tool === "PowerShell") return typeof ti.command === "string" && SELF_GRANT.test(ti.command);
+  if (SHELL_TOOLS.has(tool)) return typeof ti.command === "string" && SELF_GRANT.test(ti.command);
   if (["Write", "Edit", "MultiEdit", "NotebookEdit"].includes(tool)) return typeof (ti.file_path || ti.notebook_path) === "string" && SELF_GRANT.test(ti.file_path || ti.notebook_path);
   return false;
 }

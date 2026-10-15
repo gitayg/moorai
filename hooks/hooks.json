@@ -30,6 +30,15 @@
         ]
       },
       {
+        "matcher": "Monitor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/cli/moorai-hook.mjs\" --plugin"
+          }
+        ]
+      },
+      {
         "matcher": "mcp__.*",
         "hooks": [
           {

@@ -124,7 +124,8 @@ const CATEGORY_REASON = [
   [/^MCP tool call$/, REASON.NO_MATCH],
   [/^Fail-closed: /, REASON.FAIL_CLOSED],
   [/^Containment: agent commands not in MXC$/, REASON.CONTAINMENT_MISSING],
-  [/^Containment: MXC unavailable$/, REASON.CONTAINMENT_UNAVAILABLE]
+  [/^Containment: MXC unavailable$/, REASON.CONTAINMENT_UNAVAILABLE],
+  [/^Containment: (agent launched wxc-exec|write to a protected location)$/, REASON.POLICY_TAMPER]
 ];
 export function reasonCodeOf(alert) {
   const c = String((alert && alert.category) || "");

@@ -61,7 +61,7 @@ const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const TOOL_RE = /^[A-Za-z0-9_*.:-]{1,256}$/;
 const HOST_RE = /^(\*|(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*\.?)$/;
 const MAX_PROFILES = 256, MAX_ENTRIES = 512, MAX_ID = 128;
-const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
+const SHELL_TOOLS = new Set(["Bash", "PowerShell", "Monitor"]);
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 const FORGES = { "github.com": "github", "gitlab.com": "gitlab", "bitbucket.org": "bitbucket" };
 

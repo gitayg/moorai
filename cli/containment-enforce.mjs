@@ -9,7 +9,8 @@
 //                         the command through wxc-exec.exe in a per-command MXC config scoped to the workspace.
 //
 // WHO DECIDES. Only the root-owned admin binding and the verified signed policy, in that order, exactly as
-// failMode (cli/fail-mode.mjs). A user-writable file never turns either field on or off. Exact lowercase
+// failMode (cli/fail-mode.mjs). On a pinned device a user-writable file never turns either field on or off; on
+// an unpinned device the verified policy is the user-scope copy, as it is for failMode. Exact lowercase
 // values only; anything else is warned about by source and key (never the value) and the next source decides.
 //
 // WINDOWS ONLY. On macOS and Linux both fields are ignored and the effective modes are "off".
@@ -19,15 +20,16 @@
 import { lstatSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync, existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { codexContainment, copilotContainment, mxcCapable, readUbrFromRegistry } from "./mxc-detect.mjs";
-import { buildMxcPolicy, winNorm, isAbsoluteWin, isUnder, winDirname } from "./mxc-policy.mjs";
+import { buildMxcPolicy, winNorm, isAbsoluteWin, isUnder, winDirname, tokens, expand, MOORAI_STATE } from "./mxc-policy.mjs";
 import { REASON } from "./provenance.mjs";
 
 export const CONTAINMENT_REQUIRED_MODES = Object.freeze(["off", "alert", "block"]);
 export const CLAUDE_CODE_WRAP_MODES = Object.freeze(["off", "wrap"]);
 // The hosts containmentRequired governs: the two whose own config can put their commands in MXC.
 export const ENFORCED_HOSTS = Object.freeze(["codex", "copilot"]);
-// Tool names (Claude Code's, which the agent-hook shim translates to) that run a command.
-export const COMMAND_TOOLS = Object.freeze(["Bash", "PowerShell"]);
+// Tool names (Claude Code's, which the agent-hook shim translates to) that run a command. Monitor: "Runs a
+// command in the background and feeds each output line back to Claude" (code.claude.com/docs/en/tools-reference).
+export const COMMAND_TOOLS = Object.freeze(["Bash", "PowerShell", "Monitor"]);
 // The env variable that carries the wrapped command into the container (see wrapScript).
 export const WRAP_ENV = "MOORAI_WRAP_CMD";
 // Windows caps one environment variable at 32,767 characters including "NAME=" and the terminator.
@@ -179,15 +181,20 @@ export const WRAP_SCRIPT = `__moorai_c=$${WRAP_ENV}; unset ${WRAP_ENV}; eval "$_
 export function innerCommandLine(bash) { return `${quoteArgWin(bash)} --noprofile --norc -c ${quoteArgWin(WRAP_SCRIPT)}`; }
 
 // What Claude Code's Git Bash runs in place of the command:
-//   : '<original>' ; MSYS_NO_PATHCONV=1 '<wxc-exec>' --config '<config>'
-// The first part is display only, so Claude Code's permission prompt shows what is being approved: `:` is the
-// shell's no-op builtin and its single-quoted argument is never expanded or executed (bashQuote is exact for
-// every byte but NUL, which is refused earlier). The command that runs is the one in the config's env, inside
-// the container. The exit status is wxc-exec's, the last command of the list. The executable is written with
-// forward slashes so bash treats it as a path (a name with no "/" is looked up on PATH); the config path is a
-// Windows path for wxc-exec, and MSYS_NO_PATHCONV=1 keeps Git Bash from converting either argument.
+//   __moorai_show='<original>'; MSYS_NO_PATHCONV=1 '<wxc-exec>' --config '<config>'
+// The first statement is display only, so Claude Code's permission prompt shows what is being approved. It is
+// an assignment and nothing else: no command word, so no function, alias, builtin or PATH lookup can receive
+// the text (v1.18.2; the v1.18.0 form `: '<original>' ;` handed it to `:`, and a function named `:` defined in
+// a shell snapshot ran it on the host, measured under bash 3.2 and 5.3). It is a statement of its own, not a
+// prefix of the launch, so the text is not exported into wxc-exec's environment. The single-quoted value is
+// never expanded (bashQuote is exact for every byte but NUL, which is refused earlier). The command that runs
+// is the one in the config's env, inside the container. The exit status is wxc-exec's, the last command of
+// the list. The executable is written with forward slashes so bash treats it as a path (a name with no "/"
+// is looked up as a function, a builtin, then on PATH); the config path is a Windows path for wxc-exec, and
+// MSYS_NO_PATHCONV=1 keeps Git Bash from converting either argument.
+export const SHOW_VAR = "__moorai_show";
 export function outerCommand(wxc, configPath, original) {
-  return `: ${bashQuote(original)} ; MSYS_NO_PATHCONV=1 ${bashQuote(winNorm(wxc).replace(/\\/g, "/"))} --config ${bashQuote(winNorm(configPath))}`;
+  return `${SHOW_VAR}=${bashQuote(original)}; MSYS_NO_PATHCONV=1 ${bashQuote(winNorm(wxc).replace(/\\/g, "/"))} --config ${bashQuote(winNorm(configPath))}`;
 }
 // Whether an outer command fits WRAP_OUTER_MAX after Claude Code quotes it once more.
 export function outerFits(outer) { return bashQuote(outer).length <= WRAP_OUTER_MAX; }
@@ -245,10 +252,15 @@ export function ensureWrapDir(dir, { lstat = lstatSync, mkdir = mkdirSync } = {}
 
 // Recover the original command from a command already in wrapped form, so it is scanned and re-wrapped
 // (never wrapped twice). Only the exact shape outerCommand produces, with this device's wxc-exec and a
-// config of ours (wrap-<32 hex>.json in the wrap dir, a regular file). The displayed `: '…'` text is never
-// read as the command: the command comes from the config file. → string | null (not wrapped form) | false
-// (wrapped form whose command cannot be recovered: the caller treats the wrap as impossible).
-const WRAPPED = /^: (?:(?:'[^']*'|\\')+) ; MSYS_NO_PATHCONV=1 ((?:'[^']*'|\\')+) --config ((?:'[^']*'|\\')+)$/;
+// config of ours (wrap-<32 hex>.json in the wrap dir, a regular file). The displayed text is never read as
+// the command: the command comes from the config file. → string | null (not wrapped form) | false (wrapped
+// form whose command cannot be recovered: the caller denies it, in every mode, because the host would
+// otherwise run that wxc-exec launch, with a config MoorAI never judged, as it stands).
+// The wrap dir is user-writable, so a config there may be the agent's own: a recovered command that
+// wrapConfig would refuse (empty, NUL, too long, too long for the command line) is false too, never a
+// command the hook "re-wraps" by failing and letting the original launch through. A recovered command is
+// only ever re-wrapped into a fresh config; the agent's config never runs.
+const WRAPPED = new RegExp(`^${SHOW_VAR}=(?:(?:'[^']*'|\\\\')+); MSYS_NO_PATHCONV=1 ((?:'[^']*'|\\\\')+) --config ((?:'[^']*'|\\\\')+)$`);
 export function unwrapCommand(command, { wxc, wrapDir, read = (p) => readFileSync(p, "utf8"), lstat = lstatSync } = {}) {
   const m = WRAPPED.exec(String(command || ""));
   if (!m) return null;
@@ -261,17 +273,58 @@ export function unwrapCommand(command, { wxc, wrapDir, read = (p) => readFileSyn
     if (!st.isFile() || st.isSymbolicLink()) return false;
     const env = JSON.parse(read(winNorm(cfg)))?.process?.env;
     const e = Array.isArray(env) ? env.find((x) => typeof x === "string" && x.startsWith(`${WRAP_ENV}=`)) : null;
-    return e ? e.slice(WRAP_ENV.length + 1) : false;
+    if (!e) return false;
+    const cmd = e.slice(WRAP_ENV.length + 1);
+    return commandWrapWhy({ wxc, wrapDir }, cmd) ? false : cmd;
   } catch { return false; }
+}
+
+// Why a command cannot go into a wrap, from the command alone (the checks wrapConfig makes before it builds
+// the MXC policy), or null. plan: { wxc, wrapDir }.
+export function commandWrapWhy(plan, command) {
+  const cmd = String(command ?? "");
+  if (!cmd.trim()) return "empty-command";
+  if (cmd.includes("\0")) return "command-nul";
+  if (cmd.length > WRAP_MAX_CHARS) return "command-too-long";
+  if (!outerFits(outerCommand(plan.wxc, `${plan.wrapDir}\\wrap-${"0".repeat(32)}.json`, cmd))) return "command-line-too-long";
+  return null;
+}
+
+// A command that starts wxc-exec itself, in any form: wxc-exec runs OUTSIDE the container with the user's full
+// rights, and its config (named by --config, positionally, or replaced by a `--` tail; src-tauri/src/mxc_launch.rs)
+// chooses the policy and the command line. MoorAI does not judge such a config, it refuses the launch: the file
+// can be rewritten between the hook's read and wxc-exec's (a background command, another tool call), and its
+// name can come from a variable, a cd or a glob, so a read-and-judge would judge a different file than the
+// one that runs. MoorAI's own wrap never needs the agent to start wxc-exec. A string test on the command with
+// quotes and backslashes removed (`w''xc-exec`, `wxc\-exec`): a name the shell builds at run time (`${a}c-exec`,
+// a glob) walks past it. → boolean.
+export function launchesWxcExec(command) {
+  if (typeof command !== "string" || !command) return false;
+  return /wxc-exec/i.test(command.slice(0, 65536).replace(/['"\\`]/g, ""));
+}
+
+// The MoorAI and agent state a workspace must not overlap (inside it, or containing it): the wrap grants the
+// workspace read-write to the contained command, and a command that could write ~/.claude or ~/.moorai could
+// remove the hook or rewrite its state. CLAUDE_CONFIG_DIR moves ~/.claude.
+export function stateDirsOf(env) {
+  const t = tokens(env);
+  const cfgDir = envGet(env, "CLAUDE_CONFIG_DIR");
+  return [
+    ...["{HOME}\\.claude", "{HOME}\\.claude.json", "{LOCALAPPDATA}\\MoorAI Host", "{PROGRAMDATA}\\MoorAI", ...MOORAI_STATE].map((x) => expand(x, t)),
+    isAbsoluteWin(cfgDir) ? winNorm(cfgDir) : ""
+  ].filter(Boolean);
 }
 
 // Everything the wrap needs that does not depend on the final command, or why it cannot be done.
 // → { ok: true, wxc, bash, wrapDir, workspace, cwd } | { ok: false, why }
-// why is a fixed token: not-windows, powershell-tool, host-cannot-rewrite, no-wxc-exec, not-capable,
-// no-git-bash, no-workspace, wrap-dir-unsafe.
+// why is a fixed token: not-windows, powershell-tool, monitor-tool, host-cannot-rewrite, no-wxc-exec,
+// not-capable, no-git-bash, no-workspace, workspace-overlaps-state, cwd-outside-workspace, wrap-dir-unsafe.
+// monitor-tool: Claude Code's Monitor tool runs a command too, and whether its updatedInput is honoured the
+// way Bash's is has not been measured, so it is never wrapped.
 export function planWrap({ platform = process.platform, tool, canRewrite, env = process.env, cwd = "", capable = null, exists = existsSync, lstat = lstatSync, mkdir = mkdirSync } = {}) {
   if (platform !== "win32") return { ok: false, why: "not-windows" };
   if (tool === "PowerShell") return { ok: false, why: "powershell-tool" };
+  if (tool === "Monitor") return { ok: false, why: "monitor-tool" };
   if (tool !== "Bash") return { ok: false, why: "not-a-command" };
   if (!canRewrite) return { ok: false, why: "host-cannot-rewrite" };
   if (capable === false) return { ok: false, why: "not-capable" };
@@ -282,6 +335,10 @@ export function planWrap({ platform = process.platform, tool, canRewrite, env = 
   const proj = envGet(env, "CLAUDE_PROJECT_DIR");
   const workspace = isAbsoluteWin(proj) ? winNorm(proj) : isAbsoluteWin(cwd) ? winNorm(cwd) : "";
   if (!workspace) return { ok: false, why: "no-workspace" };
+  if (stateDirsOf(env).some((d) => isUnder(workspace, d) || isUnder(d, workspace))) return { ok: false, why: "workspace-overlaps-state" };
+  // Claude Code's cwd outside the workspace: the command would run at the workspace root instead, which is not
+  // the command the user approved (a relative path would name a different file).
+  if (isAbsoluteWin(cwd) && !isUnder(cwd, workspace)) return { ok: false, why: "cwd-outside-workspace" };
   const wrapDir = wrapDirOf(env);
   if (!wrapDir || !ensureWrapDir(wrapDir, { lstat, mkdir })) return { ok: false, why: "wrap-dir-unsafe" };
   return { ok: true, wxc, bash, wrapDir, workspace, cwd: isAbsoluteWin(cwd) ? winNorm(cwd) : workspace };
@@ -290,10 +347,8 @@ export function planWrap({ platform = process.platform, tool, canRewrite, env = 
 // The MXC config for one command (pure). → { ok: true, config } | { ok: false, why }
 export function wrapConfig(plan, command, { env = process.env, nodeDir = "", egressRules, egressDefault, exists = existsSync } = {}) {
   const cmd = String(command ?? "");
-  if (!cmd.trim()) return { ok: false, why: "empty-command" };
-  if (cmd.includes("\0")) return { ok: false, why: "command-nul" };
-  if (cmd.length > WRAP_MAX_CHARS) return { ok: false, why: "command-too-long" };
-  if (!outerFits(outerCommand(plan.wxc, `${plan.wrapDir}\\wrap-${"0".repeat(32)}.json`, cmd))) return { ok: false, why: "command-line-too-long" };
+  const bad = commandWrapWhy(plan, cmd);
+  if (bad) return { ok: false, why: bad };
   const r = buildMxcPolicy({
     scope: "commands", workspace: plan.workspace, processCwd: plan.cwd, env, agentBin: plan.bash.exe,
     nodeDir, extraReadonly: [plan.bash.root], commandLine: innerCommandLine(plan.bash.exe),

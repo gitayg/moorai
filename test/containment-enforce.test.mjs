@@ -348,13 +348,13 @@ test("claudeCodeWrapState: on / off / unavailable", () => {
   assert.equal(claudeCodeWrapState({ platform: "win32", mode: "wrap", env: { ...ENV, PATH: "" }, exists: fs.exists }), "unavailable");
 });
 
-// ---- the display prefix (": '<original>' ; …") ----
+// ---- the display prefix ("__moorai_show='<original>'; …") ----
 test("display prefix: the outer command shows the original, and the display text is never taken as the command", () => {
   const fs = memfs();
   const p = plan0(fs);
   const orig = "rm -rf build && echo 'done'";
   const w = wrapOnce(fs, p, orig);
-  assert.ok(w.command.startsWith(`: ${bashQuote(orig)} ; MSYS_NO_PATHCONV=1 `), w.command);
+  assert.ok(w.command.startsWith(`__moorai_show=${bashQuote(orig)}; MSYS_NO_PATHCONV=1 `), w.command);
   // The display edited to something harmless: the config's command is what comes back (and gets scanned).
   const lying = w.command.replace(bashQuote(orig), bashQuote("ls"));
   assert.notEqual(lying, w.command);
@@ -363,7 +363,10 @@ test("display prefix: the outer command shows the original, and the display text
   const bare = w.command.slice(w.command.indexOf("MSYS_NO_PATHCONV=1"));
   assert.equal(unwrapCommand(bare, { wxc: p.wxc, wrapDir: p.wrapDir, read: fs.read, lstat: fs.lstat }), null);
   // A display that smuggles a second statement is not the wrapped form either.
-  assert.equal(unwrapCommand(`: 'x' ; touch pwned ; ${bare}`, { wxc: p.wxc, wrapDir: p.wrapDir, read: fs.read, lstat: fs.lstat }), null);
+  assert.equal(unwrapCommand(`__moorai_show='x'; touch pwned ; ${bare}`, { wxc: p.wxc, wrapDir: p.wrapDir, read: fs.read, lstat: fs.lstat }), null);
+  assert.equal(unwrapCommand(`__moorai_show='x' touch pwned; ${bare}`, { wxc: p.wxc, wrapDir: p.wrapDir, read: fs.read, lstat: fs.lstat }), null);
+  // The v1.18.0/1 shape (": '<original>' ;") is not MoorAI's any more: an ordinary command, judged as written.
+  assert.equal(unwrapCommand(`: 'x' ; ${bare}`, { wxc: p.wxc, wrapDir: p.wrapDir, read: fs.read, lstat: fs.lstat }), null);
 });
 
 test("display prefix: a command whose doubled length no longer fits the command line is 'wrap impossible'", () => {

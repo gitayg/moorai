@@ -5,71 +5,14 @@
 //   node --test --import ./test/hermetic-env.mjs test/containment-enforce-hook.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import http from "node:http";
+import { join } from "node:path";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
 import { policyCanonical, policyDigest, POLICY_SIG_VERSION, publicKeyId } from "../cli/hook-core.mjs";
 import { rmTree } from "./fs-cleanup.mjs";
 import { SENTINEL, FAULT_MARK } from "./fixtures/hook-fault.mjs";
-
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
-const WIN = pathToFileURL(join(ROOT, "test", "fixtures", "fake-win32.mjs")).href;
-const FAULT = pathToFileURL(join(ROOT, "test", "fixtures", "hook-fault.mjs")).href;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function until(fn, ms = 6000) { const end = Date.now() + ms; while (Date.now() < end) { if (fn()) return true; await sleep(100); } return false; }
-
-async function consoleStub(t, { signed = null } = {}) {
-  const st = { alerts: [], posture: [], down: false };
-  const srv = http.createServer((req, res) => {
-    let b = "";
-    req.on("data", (c) => (b += c));
-    req.on("end", () => {
-      if (req.method === "POST" && req.url === "/api/alerts") { try { st.alerts.push(JSON.parse(b)); } catch { /* ignore */ } res.writeHead(200); return res.end("{}"); }
-      if (req.url === "/api/agent-posture") { try { st.posture.push(JSON.parse(b)); } catch { /* ignore */ } res.writeHead(201); return res.end("{}"); }
-      if (signed && !st.down && req.url.startsWith("/api/policy/pubkey")) { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(signed.pubkey); }
-      if (signed && !st.down && req.url.startsWith("/api/policy")) { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(signed.policy()); }
-      res.writeHead(503); res.end("offline");
-    });
-  });
-  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
-  t.after(() => new Promise((r) => srv.close(r)));
-  st.url = `http://127.0.0.1:${srv.address().port}`;
-  return st;
-}
-
-function sandbox(t, url, policy) {
-  const home = mkdtempSync(join(tmpdir(), "moorai-contain-"));
-  t.after(() => rmTree(home));
-  mkdirSync(join(home, ".moorai"), { recursive: true });
-  writeFileSync(join(home, ".moorai", "config.json"), JSON.stringify({ serverUrl: url, tenant: "ct-test", installToken: "tok-contain" }));
-  if (policy) writeFileSync(join(home, ".moorai", "hook-policy.json"), JSON.stringify(policy));
-  return home;
-}
-
-// host: "claude-code" | "codex" | "copilot". win: load the Windows preload. fault: load the fault preload.
-function run(home, payload, { host = "codex", win = true, fault = false, env = {} } = {}) {
-  const base = { PATH: process.env.PATH || "/usr/bin:/bin", HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_STATE_HOME: join(home, ".local", "state") };
-  const hostEnv = host === "claude-code" ? {} : { MOORAI_HOOK_HOST: "shim", MOORAI_HOOK_AGENT: host };
-  const args = [...(win ? ["--import", WIN] : []), ...(fault ? ["--import", FAULT] : []), HOOK];
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath, args, { env: { ...base, ...hostEnv, ...env }, cwd: home, stdio: ["pipe", "pipe", "pipe"] });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", (c) => (stdout += c));
-    child.stderr.on("data", (c) => (stderr += c));
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
-    child.stdin.end(JSON.stringify({ session_id: "s-contain", cwd: home, hook_event_name: "PreToolUse", ...payload }));
-  });
-}
-const BASH = (command, extra = {}) => ({ tool_name: "Bash", tool_input: { command, ...extra } });
-const out = (stdout) => { try { return JSON.parse(stdout.trim()); } catch { return {}; } };
-const hso = (stdout) => out(stdout).hookSpecificOutput || {};
-const lastRow = (home) => readFileSync(join(home, ".moorai", "session-ledger.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).at(-1);
-const containAlerts = (st) => st.alerts.filter((a) => String(a.reasonCode || "").startsWith("CONTAINMENT_"));
+import { sleep, until, consoleStub, sandbox, run, BASH, out, hso, lastRow, containAlerts, fakeWindowsTree, configsIn, wrappedForm, wrapCfgName } from "./containment-hook-harness.mjs";
 
 test("Codex, block, no MXC in its config → denied CONTAINMENT_MISSING with one content-free alert", async (t) => {
   const c = await consoleStub(t);
@@ -226,23 +169,7 @@ test("Claude Code wrap impossible (no wxc-exec under Program Files): block → d
   assert.equal(allows[0].host, "claude-code");
 });
 
-// The success path, end to end on macOS: every Windows path the wrap uses is a RELATIVE name with
-// backslashes, which on a POSIX filesystem is one flat file name in the hook's cwd (the sandbox). So
-// existsSync("C:\\Program Files\\Microsoft MXC\\wxc-exec.exe") finds a file the test created, and the
-// config is written next to it. Nothing here runs wxc-exec.
-function fakeWindowsTree(home) {
-  const f = (name, dir = false) => { const p = join(home, name); if (dir) mkdirSync(p); else writeFileSync(p, ""); };
-  f("C:\\Program Files\\Microsoft MXC\\wxc-exec.exe");
-  f("C:\\Program Files\\Git\\bin\\bash.exe");
-  f("C:\\Program Files\\Git", true);
-  f("C:\\src\\proj", true);
-  return {
-    ProgramFiles: "C:\\Program Files", PATH: `${process.env.PATH};C:\\Program Files\\Microsoft MXC`, LOCALAPPDATA: "C:\\Users\\dev\\AppData\\Local",
-    APPDATA: "C:\\Users\\dev\\AppData\\Roaming", SystemRoot: "C:\\Windows", ProgramData: "C:\\ProgramData", CLAUDE_PROJECT_DIR: "C:\\src\\proj"
-  };
-}
-const configsIn = (home) => readdirSync(home).filter((n) => /MoorAI Host\\wrap\\wrap-[0-9a-f]{32}\.json$/.test(n));
-
+// The success path, end to end on macOS: see fakeWindowsTree in test/containment-hook-harness.mjs.
 test("Claude Code wrap: the Bash call becomes a wxc-exec launch, other fields kept, no permissionDecision; the config carries the command", async (t) => {
   const c = await consoleStub(t);
   const home = sandbox(t, c.url, { captureTier: "content-free", containmentClaudeCode: "wrap", containmentRequired: "block" });
@@ -258,8 +185,8 @@ test("Claude Code wrap: the Bash call becomes a wxc-exec launch, other fields ke
   assert.equal(h.updatedInput.description, "Echo things");
   assert.equal(h.updatedInput.timeout, 120000);
   assert.equal(h.updatedInput.run_in_background, false);
-  assert.ok(h.updatedInput.command.startsWith(`: '${cmd.replace(/'/g, "'\\''")}' ; `), "the prompt shows the original");
-  const m = /' ; MSYS_NO_PATHCONV=1 'C:\/Program Files\/Microsoft MXC\/wxc-exec\.exe' --config '(C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\wrap\\wrap-[0-9a-f]{32}\.json)'$/.exec(h.updatedInput.command);
+  assert.ok(h.updatedInput.command.startsWith(`__moorai_show='${cmd.replace(/'/g, "'\\''")}'; `), "the prompt shows the original");
+  const m = /'; MSYS_NO_PATHCONV=1 'C:\/Program Files\/Microsoft MXC\/wxc-exec\.exe' --config '(C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\wrap\\wrap-[0-9a-f]{32}\.json)'$/.exec(h.updatedInput.command);
   assert.ok(m, h.updatedInput.command);
   const cfg = JSON.parse(readFileSync(join(home, m[1]), "utf8"));
   assert.ok(cfg.process.env.includes(`MOORAI_WRAP_CMD=${cmd}`), "the command rides in the config env, byte for byte");
@@ -272,7 +199,7 @@ test("Claude Code wrap: the Bash call becomes a wxc-exec launch, other fields ke
   // Idempotence: the wrapped command sent back is unwrapped, scanned as the original and wrapped ONCE again.
   const r2 = await run(home, BASH(h.updatedInput.command), { host: "claude-code", env });
   const h2 = hso(r2.stdout);
-  assert.ok(h2.updatedInput.command.startsWith(`: '${cmd.replace(/'/g, "'\\''")}' ; MSYS_NO_PATHCONV=1 'C:/Program Files/Microsoft MXC/wxc-exec.exe' --config '`), h2.updatedInput.command);
+  assert.ok(h2.updatedInput.command.startsWith(`__moorai_show='${cmd.replace(/'/g, "'\\''")}'; MSYS_NO_PATHCONV=1 'C:/Program Files/Microsoft MXC/wxc-exec.exe' --config '`), h2.updatedInput.command);
   assert.equal((h2.updatedInput.command.match(/MSYS_NO_PATHCONV=1/g) || []).length, 1, "one level, never two");
   assert.notEqual(h2.updatedInput.command, h.updatedInput.command);
   const m2 = /--config '([^']+)'$/.exec(h2.updatedInput.command);
@@ -289,11 +216,10 @@ test("Claude Code wrap: a dangerous command sent in wrapped form is judged as th
   const r = await run(home, BASH(evil), { host: "claude-code", env });
   assert.equal(hso(r.stdout).permissionDecision, "deny", "denied in plain form");
   // Hand-build the wrapped form around a config of ours that carries the reverse shell.
-  const cfgName = `C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\wrap\\wrap-${"b".repeat(32)}.json`;
+  const cfgName = wrapCfgName("b");
   writeFileSync(join(home, cfgName), JSON.stringify({ process: { env: [`MOORAI_WRAP_CMD=${evil}`] } }));
   // The display claims a harmless command; the config's command is what is judged.
-  const wrappedForm = `: 'ls' ; MSYS_NO_PATHCONV=1 'C:/Program Files/Microsoft MXC/wxc-exec.exe' --config '${cfgName}'`;
-  const r2 = await run(home, BASH(wrappedForm), { host: "claude-code", env });
+  const r2 = await run(home, BASH(wrappedForm("ls", cfgName)), { host: "claude-code", env });
   assert.equal(hso(r2.stdout).permissionDecision, "deny", `wrapped form must not hide the command: ${r2.stdout}`);
 });
 

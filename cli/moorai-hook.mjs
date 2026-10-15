@@ -81,7 +81,8 @@ import { leafOf, appendLeaf, sessionHead, contextTreeMode, claimUpload, flushCon
 import { bindingRefusedAlert } from "./config.mjs";
 import { actionTrailMode, buildActionRecord, enqueueActionRecord, claimFlush, flushActionTrail, callFingerprintText, readTrailState } from "./action-trail.mjs";
 import { normalizeToolInput, normalizeHookInput } from "./tool-input.mjs";
-import { resolveContainment, containmentDecision, wrapFallback, hostKind, capableForHook, containmentAlert, denyReason, planWrap, unwrapCommand, wrapConfig, writeWrap, wrappedInput, claudeCodeWrapState, ENFORCED_HOSTS, WRAP_NOTE } from "./containment-enforce.mjs";
+import { resolveContainment, containmentDecision, wrapFallback, hostKind, capableForHook, containmentAlert, denyReason, planWrap, unwrapCommand, wrapConfig, writeWrap, wrappedInput, claudeCodeWrapState, launchesWxcExec, ENFORCED_HOSTS, WRAP_NOTE } from "./containment-enforce.mjs";
+import { guardHit, guardAlert, guardReason } from "./containment-guard.mjs";
 import { mxcCapable } from "./mxc-detect.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
@@ -100,9 +101,9 @@ const RANK = { allow: 1, ask: 2, deny: 3 };
 // Both are plain array literals so test/hook-tool-coverage.test.mjs can READ them out of this file and
 // assert every dispatched tool has a matcher covering it. It reads rather than imports because main()
 // runs at module scope and awaits stdin, so an `import()` of this module never resolves.
-const PRETOOL_MATCHERS = ["Read", "Bash", "PowerShell", "mcp__.*", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"];
+const PRETOOL_MATCHERS = ["Read", "Bash", "PowerShell", "Monitor", "mcp__.*", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"];
 // One representative name per branch in main(); "mcp__github__create_issue" stands for the mcp__* family.
-const DISPATCHED_TOOLS = ["Read", "Bash", "PowerShell", "mcp__github__create_issue", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"];
+const DISPATCHED_TOOLS = ["Read", "Bash", "PowerShell", "Monitor", "mcp__github__create_issue", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"];
 // The Cursor CLI runs these same Claude Code hooks but renames the tools it hands them. Measured in
 // cursor-agent 2026.05.27: its Claude-compat map is {Bash:"Shell", Edit:"Write", ...} and the Shell
 // input is {command, cwd, timeout?}, so a "Shell" payload is a Bash payload under another name and was
@@ -119,7 +120,12 @@ const TOOL_ALIASES = Object.assign(Object.create(null), { Shell: "Bash" }); // n
 // is Claude Code itself, whose updatedInput / updatedToolOutput are validated against the tool's own
 // schema ("returned updatedInput that failed schema validation"), which the mask preserves. It keeps its
 // own name, so reports read hook:PowerShell and the command parsers get the PowerShell grammar.
-const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
+// Monitor (v1.18.2): "Runs a command in the background and feeds each output line back to Claude", and "When
+// Monitor runs a command, it uses the same permission rules as Bash" (code.claude.com/docs/en/tools-reference).
+// Its command is in `command`; a WebSocket watch takes `ws` instead and runs no command, so only a Monitor
+// call with a command string takes the shell branch. PreToolUse only: its output reaches Claude as events,
+// not as a PostToolUse response this hook has measured.
+const SHELL_TOOLS = new Set(["Bash", "PowerShell", "Monitor"]);
 
 // ---- the INBOUND surface (PostToolUse) ----
 //
@@ -1769,16 +1775,21 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
   // Nothing is written for a deny. A config that cannot be built or written falls to containmentRequired's
   // mode (CONTAINMENT_UNAVAILABLE); an unexpected error follows the hook's fail mode, never a silent allow
   // under closed.
+  // A command that arrived in wrapped form, or containmentRequired "block": a wrap that cannot be written is a
+  // deny, never the command run as it stands (v1.18.2). Under alert / off an unexpected error follows the
+  // fail mode as before.
   let wrapped = null;
   if (WRAP && decision !== "deny" && !COACH && CALL.active && EVENT === "PreToolUse") {
     const base = rewrite ? rewrite.value : CALL.ti;
+    const force = WRAP.wrappedIn || WRAP.mode === "block";
     try {
       const c = wrapConfig(WRAP.plan, base && base.command, wrapConfigOpts());
       if (c.ok) wrapped = wrappedInput(base, writeWrap(WRAP.plan, c.config, base.command).command);
-      else ({ decision, reason, alternatives, rewrite } = wrapUnavailableVerdict(c.why, { decision, reason, alternatives, rewrite }));
+      else ({ decision, reason, alternatives, rewrite } = wrapUnavailableVerdict(c.why, { decision, reason, alternatives, rewrite }, { force: WRAP.wrappedIn }));
     } catch {
       const fm = hookFailMode({ policy: VERIFIED_POLICY ?? null, admin: ADMIN });
-      if (fm.mode === "closed") {
+      if (force) ({ decision, reason, alternatives, rewrite } = wrapUnavailableVerdict("wrap-error", { decision, reason, alternatives, rewrite }, { force: true }));
+      else if (fm.mode === "closed") {
         VERDICT.basis = REASON.UNEVALUATED_HOOK_ERROR; why(REASON.FAIL_CLOSED); VERDICT.enforcement = ENFORCEMENT.STRENGTHENED;
         decision = "deny"; reason = failReason("error"); alternatives = []; rewrite = null;
         post({ ...failClosedAlert("error", fm.source), ts: new Date().toISOString(), ...IDENTITY });
@@ -2099,9 +2110,13 @@ function canRewrite() { return HOST_REWRITES && !COACH && process.env.MOORAI_HOO
 
 // ---- MXC enforcement on Windows (cli/containment-enforce.mjs) ----
 // containmentRequired / containmentClaudeCode come from the admin binding and the verified policy only
-// (VERIFIED_POLICY, the copy the fail mode reads), never from user-writable state. Non-deny alerts are posted
+// (VERIFIED_POLICY, the copy the fail mode reads): on a pinned device never from user-writable state (on an
+// unpinned one the verified policy is the user-scope copy, as for the fail mode). Non-deny alerts are posted
 // once per session and reason; a deny alerts every time, like every other deny.
-let WRAP = null; // { plan, mode }: this Bash call is wrapped in emit()
+let WRAP = null; // { plan, mode, wrappedIn }: this Bash call is wrapped in emit()
+let WRAP_PLAN = null; // wrapIntake's plan for this call (planWrap), reused by containmentStep
+let WRAPPED_IN = false; // this call's command arrived in wrapped form and was recovered from its config
+let CUR_TOOL = ""; // this invocation's tool name, for a failure before CALL is set
 let CONTAIN = null;
 function containmentConfig() { return (CONTAIN ??= resolveContainment(VERIFIED_POLICY ?? null, { admin: ADMIN })); }
 function postContainment(a) {
@@ -2113,18 +2128,70 @@ function wrapConfigOpts() {
   return { env: process.env, nodeDir: dirname(process.execPath), egressRules: p.egressRules, egressDefault: p.egressDefault };
 }
 // The wrap could not be applied: containmentRequired's mode with CONTAINMENT_UNAVAILABLE. → the verdict to emit.
-function wrapUnavailableVerdict(whyToken, v) {
+// force: deny whatever the mode (a command that arrived in wrapped form, or block).
+function wrapUnavailableVerdict(whyToken, v, { force = false } = {}) {
   const mode = containmentConfig().required.mode;
-  const d = wrapFallback(mode);
+  const d = force ? { action: "deny", reasonCode: REASON.CONTAINMENT_UNAVAILABLE } : wrapFallback(mode);
   postContainment(containmentAlert({ host: "claude-code", tool: CALL.tool || "Bash", decision: d.action, reasonCode: d.reasonCode, mode, why: whyToken }));
   if (d.action !== "deny") return v;
   why(d.reasonCode); VERDICT.basis = null;
   return { decision: "deny", reason: denyReason(d.reasonCode, "claude-code"), alternatives: [], rewrite: null };
 }
-// A command tool call (Bash / PowerShell) on Windows. → null (go on) | { deny, reasonCode } | "exit" (a
-// fail-closed deny was written). Codex / Copilot: the host's containment kind is decided here. Claude Code
-// with "wrap": the wrap is planned (and a command already in wrapped form is unwrapped, so the original is
-// what gets scanned and re-wrapped); emit() writes it. An error follows the hook's fail mode.
+// Before any check reads the call (v1.18.2): a Claude Code Bash command already in wrapped form is recovered
+// from its config, so every check — exceptions, the self-grant refusal, decoys, drift, the circuit breaker, the
+// workload profile and the command scan — judges the command that would run, not the wxc-exec launch. Then, on
+// Windows in every mode: a command that starts wxc-exec itself is refused (containment-enforce.mjs
+// launchesWxcExec), and while containment or the wrap is on, a write into MoorAI's containment state, Claude
+// Code's shell snapshots or a bash startup file is refused (cli/containment-guard.mjs).
+// → null (go on) | { deny, reasonCode } | "exit" (a deny was written).
+async function wrapIntake(tool, ti, cwd) {
+  WRAP_PLAN = null; WRAPPED_IN = false;
+  if (process.platform !== "win32" || EVENT !== "PreToolUse") return null;
+  const shell = SHELL_TOOLS.has(tool) && typeof ti.command === "string";
+  let cfg = null;
+  try {
+    cfg = containmentConfig();
+    if (shell && beatHost() === "claude-code" && cfg.claudeCode.mode === "wrap") {
+      const mode = cfg.required.mode;
+      const capable = capableForHook({ mode: mode === "block" ? "block" : "alert", release: os.release(), stateDir: STATE_DIR });
+      WRAP_PLAN = planWrap({ tool, canRewrite: canRewrite(), env: process.env, cwd: typeof cwd === "string" ? cwd : "", capable });
+      if (WRAP_PLAN.ok) {
+        const orig = unwrapCommand(ti.command, { wxc: WRAP_PLAN.wxc, wrapDir: WRAP_PLAN.wrapDir });
+        if (orig === false) {
+          const d = wrapUnavailableVerdict("wrapped-unrecoverable", {}, { force: true });
+          return { deny: d.reason, reasonCode: REASON.CONTAINMENT_UNAVAILABLE };
+        }
+        if (typeof orig === "string") { ti.command = orig; WRAPPED_IN = true; }
+      }
+    }
+  } catch {
+    WRAP_PLAN = null;
+    if (await failClosedNow("error")) return "exit";
+  }
+  if (shell && launchesWxcExec(ti.command)) {
+    post({ threatId: 0, category: "Containment: agent launched wxc-exec", riskLevel: "Blocked", stage: "policy", tool: `hook:${tool}`, decision: "deny", reasonCode: REASON.POLICY_TAMPER, contentHash: "containment:wxc-exec", ts: new Date().toISOString(), ...IDENTITY });
+    return { deny: "this command starts wxc-exec, the Microsoft Execution Container launcher, with a configuration MoorAI did not write; wxc-exec runs outside the container with your full rights, so MoorAI starts it only for its own wrap", reasonCode: REASON.POLICY_TAMPER };
+  }
+  try {
+    if (cfg && (cfg.required.mode !== "off" || cfg.claudeCode.mode === "wrap")) {
+      const cls = guardHit({ tool, ti, env: process.env, cwd: typeof cwd === "string" ? cwd : "" });
+      if (cls) {
+        post({ ...guardAlert({ tool, cls }), reasonCode: REASON.POLICY_TAMPER, ts: new Date().toISOString(), ...IDENTITY });
+        return { deny: guardReason(cls), reasonCode: REASON.POLICY_TAMPER };
+      }
+    }
+  } catch { if (await failClosedNow("error")) return "exit"; }
+  return null;
+}
+
+// A command tool call (Bash / PowerShell / Monitor) on Windows. → null (go on) | { deny, reasonCode } | "exit"
+// (a deny was written). Codex / Copilot: the host's containment kind is decided here. An unknown host (a
+// translated call naming no agent this hook knows) is the wrap-impossible case: block denies it, otherwise one
+// alert per session. Claude Code with "wrap": wrapIntake's plan is checked against the (recovered) command;
+// emit() writes the wrap. A command that arrived in wrapped form and cannot be wrapped again is denied in
+// every mode: allowing it would run the wxc-exec launch as it stands. An unexpected error goes to failClosedNow:
+// under containmentRequired "block" the wrap-fallback deny whatever the fail mode (containmentBlockApplies),
+// otherwise the hook's fail mode.
 async function containmentStep(tool, ti, cwd) {
   if (process.platform !== "win32" || EVENT !== "PreToolUse") return null;
   try {
@@ -2140,21 +2207,21 @@ async function containmentStep(tool, ti, cwd) {
       postContainment(containmentAlert({ host, tool, decision: d.action, reasonCode: d.reasonCode, mode, kind: k.kind, source: k.source, capable }));
       return d.action === "deny" ? { deny: denyReason(d.reasonCode, host), reasonCode: d.reasonCode } : null;
     }
+    if (!host) {
+      if (mode === "off" && cfg.claudeCode.mode !== "wrap") return null;
+      const d = wrapFallback(mode);
+      postContainment(containmentAlert({ host: "unknown", tool, decision: d.action, reasonCode: d.reasonCode, mode, why: "unknown-host" }));
+      return d.action === "deny" ? { deny: denyReason(d.reasonCode, "claude-code"), reasonCode: d.reasonCode } : null;
+    }
     if (host !== "claude-code" || cfg.claudeCode.mode !== "wrap") return null;
-    const capable = capableForHook({ mode: mode === "block" ? "block" : "alert", release: os.release(), stateDir: STATE_DIR });
-    const plan = planWrap({ tool, canRewrite: canRewrite(), env: process.env, cwd: typeof cwd === "string" ? cwd : "", capable });
+    const plan = WRAP_PLAN || { ok: false, why: "no-plan" };
     let whyToken = plan.ok ? null : plan.why;
     if (plan.ok) {
-      const orig = unwrapCommand(ti.command, { wxc: plan.wxc, wrapDir: plan.wrapDir });
-      if (orig === false) whyToken = "wrapped-unrecoverable";
-      else {
-        if (typeof orig === "string") ti.command = orig;
-        const c = wrapConfig(plan, ti.command, wrapConfigOpts());
-        if (c.ok) { WRAP = { plan, mode }; return null; }
-        whyToken = c.why;
-      }
+      const c = wrapConfig(plan, ti.command, wrapConfigOpts());
+      if (c.ok) { WRAP = { plan, mode, wrappedIn: WRAPPED_IN }; return null; }
+      whyToken = c.why;
     }
-    const d = wrapFallback(mode);
+    const d = WRAPPED_IN ? { action: "deny", reasonCode: REASON.CONTAINMENT_UNAVAILABLE } : wrapFallback(mode);
     postContainment(containmentAlert({ host: "claude-code", tool, decision: d.action, reasonCode: d.reasonCode, mode, why: whyToken }));
     return d.action === "deny" ? { deny: denyReason(d.reasonCode, "claude-code"), reasonCode: d.reasonCode } : null;
   } catch {
@@ -2420,6 +2487,7 @@ async function failClosedNow(why) {
   let policy = VERIFIED_POLICY;
   if (policy === undefined) { try { policy = (await verifiedPolicyLoad()).policy || null; } catch { policy = null; } }
   if (DECIDED || FAIL_EXIT) return false;
+  if (!COACH && containmentBlockApplies(policy)) return containmentFailDeny(why);
   const fm = hookFailMode({ policy, admin: ADMIN });
   if (fm.mode !== "closed" || COACH) return false;
   let bg = { active: false };
@@ -2440,6 +2508,41 @@ async function failClosedNow(why) {
   } catch { /* the ledger never gates a verdict */ }
   try { post({ ...failClosedAlert(why, fm.source), ts: new Date().toISOString(), ...IDENTITY }); await flushAlerts(); } catch { /* telemetry never gates a verdict */ }
   exitWhenDrained(out.code);
+  return true;
+}
+
+// containmentRequired "block" on a command tool call of a host it governs (Codex, Copilot CLI, an unknown host,
+// or Claude Code with the wrap on): a call the hook could not decide is never run uncontained, whatever the
+// fail mode and whether or not a break-glass marker is live (break-glass lifts the fail mode, not
+// containmentRequired; an administrator lifts that in the admin binding or the signed policy). Under alert /
+// off the fail mode decides, as before. policy: the verified policy, or null.
+function containmentBlockApplies(policy) {
+  try {
+    if (process.platform !== "win32" || !failClosedApplies({ event: EVENT, raw: EVENT ? "" : RAW_INPUT })) return false;
+    const tool = CUR_TOOL || (/"tool_name"\s*:\s*"(Bash|PowerShell|Monitor)"/.exec(String(RAW_INPUT).slice(0, 4096)) || [])[1] || "";
+    if (!SHELL_TOOLS.has(tool)) return false;
+    const cc = resolveContainment(policy, { admin: ADMIN, warn: () => {} });
+    if (cc.required.mode !== "block") return false;
+    const host = beatHost();
+    return !host || ENFORCED_HOSTS.includes(host) || (host === "claude-code" && cc.claudeCode.mode === "wrap");
+  } catch { return false; }
+}
+// The wrap-fallback deny for a call containmentBlockApplies covers: CONTAINMENT_UNAVAILABLE, exit 2, the deny
+// JSON on stdout and the reason on stderr (the same delivery as a fail-closed deny), one alert.
+async function containmentFailDeny(why) {
+  FAIL_EXIT = true;
+  const tool = CUR_TOOL || "Bash";
+  const reason = `MoorAI: ${denyReason(REASON.CONTAINMENT_UNAVAILABLE, "claude-code")}`;
+  try { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } })); } catch { /* exit 2 still blocks */ }
+  try { process.stderr.write(`${reason}\n`); } catch { /* the stdout deny still stands */ }
+  const v = { ...failClosedVerdict(why), reasonCode: REASON.CONTAINMENT_UNAVAILABLE };
+  try {
+    if (ROW) settleRow({ ...v, ...provBase() });
+    else recordRow({ ts: new Date().toISOString(), s: "", a: "", ev: "unknown", tool: "", ...v, policyId: "not-loaded" });
+  } catch { /* the ledger never gates a verdict */ }
+  try { post({ ...containmentAlert({ host: beatHost() || "unknown", tool, decision: "deny", reasonCode: REASON.CONTAINMENT_UNAVAILABLE, mode: "block", why: `hook-${why}` }), ts: new Date().toISOString(), ...IDENTITY }); } catch { /* telemetry never gates a verdict */ }
+  try { await flushAlerts(); } catch { /* telemetry never gates a verdict */ }
+  exitWhenDrained(2);
   return true;
 }
 
@@ -2484,6 +2587,7 @@ async function main() {
   // MCP usage cross-check (cli/mcp-usage-beat.mjs): completed days go to a detached worker, at most once a day.
   scheduleMcpUsageFlush({ config: CONFIG, path: "hook", host: beatHost() || "unknown" });
   const tool = TOOL_ALIASES[input.tool_name] || input.tool_name || "";
+  CUR_TOOL = typeof tool === "string" ? tool : "";
   // A string field holding a number / boolean is judged as its text; an object / array there is
   // unreadable input (cli/tool-input.mjs).
   const nti = normalizeToolInput(tool, input.tool_input);
@@ -2674,6 +2778,11 @@ async function main() {
   // This call, for the tag gate and the exception hint in emit(), and the exceptions that cover it: a live
   // one turns its threat into "notify" for this call only (cli/exceptions.mjs).
   Object.assign(CALL, { active: true, tool, ti, cwd: typeof input.cwd === "string" ? input.cwd : "", system: parseRootOwnedJson(systemConfigPath()) });
+  // MXC containment intake (Windows): recover a wrapped command before any check reads it; refuse an agent
+  // wxc-exec launch and a write that would undo the containment from outside it. See wrapIntake.
+  const wi = await wrapIntake(tool, ti, CALL.cwd);
+  if (wi === "exit") return;
+  if (wi && wi.deny) { why(wi.reasonCode); return emit("deny", wi.deny); }
   policy = exceptionStep(policy, tool, ti, CALL.cwd);
   POLICY = policy;
   // The agent granting its own exception: refused whatever else the call is (cli/exceptions.mjs).
@@ -2731,7 +2840,7 @@ async function main() {
     if (rdec !== "deny") await maybeEscalate(policy, text, "file", "hook:Read", d, engine);
     return emit(rdec, `${d.kill ? "killed session" : "blocked Read"} of ${basename(ti.file_path || "file")} — ${rreasons.join(", ")}`, ralts);
   }
-  if (SHELL_TOOLS.has(tool)) {
+  if (SHELL_TOOLS.has(tool) && (tool !== "Monitor" || typeof ti.command === "string")) {
     // MXC containment (Windows): Codex / Copilot hosts not set to MXC, and the Claude Code wrap plan.
     const cs = await containmentStep(tool, ti, input.cwd);
     if (cs === "exit") return;
@@ -2779,7 +2888,8 @@ async function main() {
     // mask: the command string is the one field here the host lets us rewrite (updatedInput). The file
     // scans above stay mask-less — a secret inside a file the command reads is not in the input at all,
     // so "mask" resolves to its fallback there (threatActionFor).
-    const cmdD = decideText(engine, policy, ti.command, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" }, mask: canRewrite() });
+    // Monitor: whether Claude Code applies updatedInput to it is unmeasured, so a mask there resolves to its fallback.
+    const cmdD = decideText(engine, policy, ti.command, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" }, mask: canRewrite() && tool !== "Monitor" });
     finds.push(...cmdD.findings);
     if (cmdD.kill) killIds.push(...cmdD.killIds);
     if (RANK[cmdD.decision] > RANK[dec]) { dec = cmdD.decision; reasons = cmdD.reasons; alts = cmdD.alternatives; }

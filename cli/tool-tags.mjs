@@ -38,7 +38,7 @@ export function callTags({ tool = "", toolInput, cwd = "", home = os.homedir(), 
   try {
     if (tool === "Read" || tool === "NotebookRead") {
       if (isCredentialPath(ti.file_path || ti.notebook_path) || priv.length) tags.add("read-private");
-    } else if (tool === "Bash" || tool === "PowerShell") {
+    } else if (tool === "Bash" || tool === "PowerShell" || tool === "Monitor") {
       const cmd = typeof ti.command === "string" ? ti.command : "";
       const ps = tool === "PowerShell";
       const paths = extractReadPaths(cmd, { ...(ps ? { shell: "powershell" } : {}), env: process.env, home, insensitive: process.platform === "win32" });

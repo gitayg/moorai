@@ -414,7 +414,7 @@ export function egressTargets(tool, toolInput) {
   const t = String(tool || "");
   const ti = toolInput && typeof toolInput === "object" ? toolInput : {};
   let out = [], overflow = false;
-  if (t === "Bash" || t === "PowerShell") {
+  if (t === "Bash" || t === "PowerShell" || t === "Monitor") {
     const cmd = typeof ti.command === "string" ? ti.command : "";
     if (!cmd) return [];
     const acc = { targets: [], attributed: [], binaries: new Set(), heredocs: [] };

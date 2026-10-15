@@ -1192,24 +1192,31 @@ Known gaps:
 
 The plan is in the MXC test plan (scratchpad `mxc/TEST-PLAN.md`).
 
-## Windows: requiring MXC for agent commands (v1.18.0)
+## Windows: requiring MXC for agent commands (v1.18.0, hardened in v1.18.2)
 
 **Status: code and unit tests only. Nothing here has run on Windows.** Files:
 [`cli/containment-enforce.mjs`](../cli/containment-enforce.mjs) (decision, wrap),
-[`cli/mxc-policy.mjs`](../cli/mxc-policy.mjs) (`scope: "commands"`), `cli/moorai-hook.mjs` (`containmentStep`, `emit`,
-posture beat). Tests: `test/containment-enforce.test.mjs`, `test/containment-enforce-hook.test.mjs` (the real hook,
-with the test-only preload `test/fixtures/fake-win32.mjs` reporting `win32` / `10.0.26100`).
+[`cli/containment-guard.mjs`](../cli/containment-guard.mjs) (write guard, v1.18.2),
+[`cli/mxc-policy.mjs`](../cli/mxc-policy.mjs) (`scope: "commands"`), `cli/moorai-hook.mjs` (`wrapIntake`,
+`containmentStep`, `emit`, `failClosedNow`, posture beat). Tests: `test/containment-enforce.test.mjs`,
+`test/containment-hardening.test.mjs`, `test/containment-enforce-hook.test.mjs` and
+`test/containment-hardening-hook.test.mjs` (the real hook, with the test-only preload
+`test/fixtures/fake-win32.mjs` reporting `win32` / `10.0.26100`; shared harness `test/containment-hook-harness.mjs`).
 
 **Contract (frozen with the console).**
 - Signed policy fields: `containmentRequired`: `"off"` (default) | `"alert"` | `"block"`;
   `containmentClaudeCode`: `"off"` (default) | `"wrap"`. Source precedence is that of `failMode`: the root-owned
   admin binding (top-level key), then the verified policy (`VERIFIED_POLICY`, the copy `hookFailMode` reads),
-  then `"off"`. Exact lowercase values only. An invalid value produces a warning that names the source and key,
+  then `"off"`. On a pinned device (policy-key pin or root-owned `policy.pub`) a user-writable file cannot
+  change them. On an unpinned device the verified policy is the user-scope `~/.moorai` copy, so the user, or an
+  agent running as the user, can; that is `failMode`'s trust model too. Exact lowercase values only. An invalid value produces a warning that names the source and key,
   never the value, and the next source decides. On macOS and Linux both fields resolve to `"off"`
   (source `"platform"`).
 - Reason codes (`cli/provenance.mjs` `REASON`): `CONTAINMENT_MISSING` (an agent that can use MXC is not set to)
   and `CONTAINMENT_UNAVAILABLE` (MXC cannot be used here while it is required). Categories:
-  `Containment: agent commands not in MXC` and `Containment: MXC unavailable`.
+  `Containment: agent commands not in MXC` and `Containment: MXC unavailable`. v1.18.2 adds two categories
+  that carry `POLICY_TAMPER`: `Containment: agent launched wxc-exec` and `Containment: write to a protected
+  location` (field `guardClass`: `moorai-host` | `shell-snapshots` | `shell-rc`).
 - Posture heartbeat, top level: `containmentRequired` (effective mode) and `claudeCodeWrap` (`"on"` | `"off"` |
   `"unavailable"`, from static prerequisites only: `wxc-exec.exe`, Git Bash, and `mxcCapable !== false`).
 - Alert fields: `host`, `containmentRequired`, `containmentKind`, `containmentSource` (mxc-detect's fixed lists),
@@ -1256,13 +1263,25 @@ runs each). `reg.exe`'s cost on Windows was **not** measured.
   with no `permissionDecision`. MoorAI already relies on that case for masks (cli/moorai-hook.mjs `emit`: the
   2.1.265 binary applies it and then runs the normal permission flow), and the wrap uses the same shape.
 - Bash tool input fields (same page): `command`, `description`, `timeout`, `run_in_background`.
+- code.claude.com/docs/en/tools-reference (fetched 2026-10-14), the tool table: `Bash` "Executes shell commands
+  in your environment", `PowerShell` "Executes PowerShell commands natively", and `Monitor` "Runs a command in the
+  background and feeds each output line back to Claude, so it can react to log entries, file changes, or polled
+  status mid-conversation. Can also open a WebSocket and treat each incoming message as an event." The Monitor
+  section: "When Monitor runs a command, it uses the same permission rules as Bash", and "A WebSocket watch takes
+  a `ws` input in place of `command`". No other tool in the table runs a command (LSP talks to configured
+  language servers; Workflow runs subagents, whose own tool calls reach the hook).
 - code.claude.com/docs/en/setup: "**With Git for Windows**, Claude Code uses Git Bash for the Bash tool. If
   Claude Code can't find Git Bash, set the path" (`CLAUDE_CODE_GIT_BASH_PATH`); "**Without Git for Windows**,
   Claude Code runs shell commands via the PowerShell tool." code.claude.com/docs/en/tools-reference: "The Bash tool
   runs each command in a separate process." The page also says a `cd` carries over between commands, and that
   Claude Code sources the user's startup file and applies the captured aliases and functions to every command.
 
-Flow: `containmentStep` (before scanning) runs `planWrap`. That finds `wxc-exec.exe` on `PATH` under Program Files
+Flow (v1.18.2): `wrapIntake` runs before any check reads the call (before `exceptionStep`,
+`selfExceptionAttempt`, `decoyUsed`, `observeLearnedDrift`, `circuitStep`, `profileStep` and the command scan). For a
+Claude Code `Bash` call with the wrap on it runs `planWrap` and, if the command is in wrapped form, replaces
+`tool_input.command` with the command recovered from the config, so every check judges that. It then refuses an
+agent wxc-exec launch and applies the write guard (below). `containmentStep` (top of the shell branch) checks the
+plan against the recovered command. `planWrap` That finds `wxc-exec.exe` on `PATH` under Program Files
 only (the rule of `mxc_launch.rs wxc_location_allowed`, without the desktop host's install directory), Git Bash
 (`CLAUDE_CODE_GIT_BASH_PATH`, else `%ProgramFiles%\Git\bin\bash.exe`), the workspace (`CLAUDE_PROJECT_DIR`, else
 the hook's cwd) and the wrap directory. If the command is already in wrapped form, it is unwrapped (below). Then
@@ -1279,10 +1298,15 @@ inside the workspace, else the workspace. Env: `NODE_OPTIONS` preserve-symlinks,
 workspace, and `MOORAI_WRAP_CMD=<command>`. There is no `TEMP`/`TMP` and no model-proxy variable.
 
 Quoting design. Three layers. The command runs only from the third, a JSON string; the first shows it:
-1. Outer (what Claude Code's Git Bash runs): ``: '<original>' ; MSYS_NO_PATHCONV=1 '<wxc-exec, forward slashes>'
-   --config '<config path>'``. All three are POSIX single-quoted words (`'` becomes `'\''`). The `: '<original>'`
-   prefix is display only, so Claude Code's permission prompt shows what is being approved. `:` is bash's no-op
-   builtin, and a single-quoted word is never expanded. The list's exit status is wxc-exec's. The executable uses
+1. Outer (what Claude Code's Git Bash runs): ``__moorai_show='<original>'; MSYS_NO_PATHCONV=1 '<wxc-exec, forward
+   slashes>' --config '<config path>'``. All three are POSIX single-quoted words (`'` becomes `'\''`). The
+   `__moorai_show='<original>'` statement is display only, so Claude Code's permission prompt shows what is being
+   approved. It is an assignment with no command word: no function, alias, builtin or PATH lookup takes place, so
+   nothing a shell snapshot defines can receive the text. It is its own statement, not a prefix of the launch, so the
+   text is not exported into wxc-exec's environment (measured with a stand-in). v1.18.0/1 used ``: '<original>' ;``:
+   measured under bash 3.2 and 5.3, a snapshot that defines `:() { eval "$1"; }` runs the original on the host
+   (`test/containment-hardening.test.mjs` keeps that as its control). A single-quoted word is never expanded. The
+   list's exit status is wxc-exec's. The executable uses
    forward slashes because bash looks up a name with no `/` on `PATH`. `MSYS_NO_PATHCONV=1` stops Git Bash from
    converting either argument. Length: the outer command, quoted once more as Claude Code's wrapper would,
    must fit 32,767 − 4,096 characters (`WRAP_OUTER_MAX`; the 4,096-character reserve for Claude Code's
@@ -1310,46 +1334,108 @@ These are the v1.6.1 `ensureDirs` checks. Files are `wrap-<32 hex>.json`, create
 pre-planted at the name is written through). They are swept after 10 minutes, because wxc-exec reads its config
 at start. The `--log-file` is not passed: wxc-exec's log holds the whole policy.
 
-Idempotence: `unwrapCommand` recognises only the exact outer shape (display prefix included), with this
+Idempotence: `unwrapCommand` recognises only the exact outer shape (display statement included), with this
 device's `wxc-exec` and a `wrap-<hex>.json` that is a regular file in the wrap dir. It returns the
-`MOORAI_WRAP_CMD` the config carries. The displayed `: '…'` text is never read as the command: a display edited
-to `ls` around a config holding a reverse shell is judged as the reverse shell (test). The launch without the
-prefix, or a prefix that smuggles a second statement, is not the wrapped form and is wrapped whole. That
-original is what the hook scans, and it is wrapped again in a fresh config, one level only. A command in wrapped
-form that cannot be recovered (another wxc-exec, a config elsewhere, missing or symlinked) makes the wrap
-impossible. A command that merely starts with the shape (`…json' ; curl x`) is not in wrapped form, so it is
-wrapped whole.
+`MOORAI_WRAP_CMD` the config carries. The displayed text is never read as the command: a display edited to `ls`
+around a config holding a reverse shell is judged as the reverse shell (test). The launch without the display
+statement, or one that smuggles a second statement, is not the wrapped form. That original is what the hook
+scans, and it is wrapped again in a fresh config, one level only; the config that came with it never runs.
+The wrap dir is user-writable, so a config there may be the agent's own (R1 of the v1.18.1 review): a
+`MOORAI_WRAP_CMD` that is missing, empty, holds a NUL, or is too long for the environment or the command line
+(`commandWrapWhy`, the same checks `wrapConfig` makes) is unrecoverable. A command in wrapped form that cannot
+be recovered (another wxc-exec, a config elsewhere, missing or symlinked, or the above) or that `wrapConfig`
+then refuses is **denied in every mode** (`wrapWhy: "wrapped-unrecoverable"`, or the `wrapConfig` token), in
+`wrapIntake`, `containmentStep` and `emit`: allowing it would run that wxc-exec launch, with a config MoorAI never
+judged, as it stands. A command that merely starts with the shape (`…json' ; curl x`) is not in wrapped form; it
+names wxc-exec, so it is refused as an agent wxc-exec launch.
 
-Wrap impossible (`wrapWhy`): `powershell-tool`, `host-cannot-rewrite` (coach, shim or an aliased tool),
-`not-capable`, `no-wxc-exec`, `no-git-bash`, `no-workspace`, `wrap-dir-unsafe`, `wrapped-unrecoverable`,
-`command-nul`, `command-too-long`, `command-line-too-long`, `empty-command`, `policy-<reasonCode>` (for example
-`policy-workspace-is-profile`) and `wrap-error`. `containmentRequired` then decides with `UNAVAILABLE`:
-`"block"` denies; `"alert"` and `"off"` allow and alert once per session.
+With `containmentClaudeCode: "off"` the unwrap path does not run at all (`wrapIntake` plans the wrap only when it
+is on). v1.18.1 therefore judged an agent-built wrapped form, with the wrap off, as an ordinary command (the
+display text and the wxc-exec launch), never the config's `process.commandLine`. v1.18.2 closes that with the
+next rule, which does not depend on the wrap.
 
-**Fail mode.** An exception in `containmentStep` goes to `failClosedNow("error")`: closed means exit 2 with
-`FAIL_CLOSED`, open means the call proceeds. An exception while `emit` builds or writes the config: closed means
-a deny with `FAIL_CLOSED` (as for the size cap); open falls to "wrap impossible" (`wrap-error`), never a
-silent allow.
+**Agent wxc-exec launches (v1.18.2).** On Windows, in every mode and with the wrap on or off, a command tool call
+whose command (recovered, if it was in wrapped form) names `wxc-exec` is denied (`launchesWxcExec`, `POLICY_TAMPER`).
+Chosen over reading and judging the config: wxc-exec takes its config by `--config`, positionally
+(`wxc-exec.exe --log-file .\mxc-audit.log .\config.json`) or with a `--` tail that replaces `process.commandLine`
+(`src-tauri/src/mxc_launch.rs`), the name can come from a variable, a `cd` or a glob, and the file can be rewritten
+by a background command between the hook's read and wxc-exec's, so the hook would judge a different file than the
+one that runs. The policy part of a config (grants, network) is not something a command scan can judge either.
+MoorAI's own wrap never needs the agent to start wxc-exec. The test strips quotes, backslashes and backticks first
+(`w''xc-exec`); a name the shell builds at run time walks past it. Off Windows the name alone is not a finding.
+
+**Write guard (v1.18.2).** While `containmentRequired` is not `"off"` or `containmentClaudeCode` is `"wrap"`,
+`wrapIntake` denies (`POLICY_TAMPER`) a `Write` / `Edit` / `MultiEdit` / `NotebookEdit` whose resolved target, or a
+`Bash` / `PowerShell` / `Monitor` command that writes (`data/tool-tags.js` `shellWrites`, or an interpreter such as
+`python`, `node`, `pwsh`) and names a path, under: `%LOCALAPPDATA%\MoorAI Host` (`moorai-host`); Claude Code's
+shell snapshots, `~/.claude/shell-snapshots` or under `CLAUDE_CONFIG_DIR` (`shell-snapshots`), which Claude Code
+sources on the host before each command, before the wrap's launch; and the bash startup files Git Bash reads
+(`shell-rc`: `~/.bashrc`, `~/.bash_profile`, `~/.bash_login`, `~/.profile`, `~/.bash_logout`, and the Git root's
+`etc\profile`, `etc\bash.bashrc`, `etc\profile.d`). The first three rc files are `mxc-policy.mjs`'s `shell-profile`
+class, and `data/persistence.js` names the same files for #46 (it has no exported list to reuse). Paths are
+resolved through `~`, `$HOME`, `${VAR}`, `%VAR%`, `$env:VAR` (profile and app-data variables), MSYS `/c/…`, the
+call's cwd and `..`. A bare rc name after a `cd` counts. A string test, so a path built at run time walks past it,
+and a command that reads one of these files while writing elsewhere is denied with it.
+
+Wrap impossible (`wrapWhy`): `powershell-tool`, `monitor-tool` (v1.18.2), `host-cannot-rewrite` (coach, shim or
+an aliased tool), `not-capable`, `no-wxc-exec`, `no-git-bash`, `no-workspace`, `workspace-overlaps-state` (v1.18.2:
+the workspace is inside, or contains, `~/.claude`, `~/.claude.json`, `CLAUDE_CONFIG_DIR`, `~/.moorai`,
+`%APPDATA%\MoorAI`, `%LOCALAPPDATA%\MoorAI`, `%LOCALAPPDATA%\MoorAI Host` or `%ProgramData%\MoorAI`),
+`cwd-outside-workspace` (v1.18.2: Claude Code's cwd is an absolute path outside the workspace; the command would
+otherwise run at the workspace root, which is not the command the user approved), `wrap-dir-unsafe`,
+`wrapped-unrecoverable`, `command-nul`, `command-too-long`, `command-line-too-long`, `empty-command`,
+`policy-<reasonCode>` (for example `policy-workspace-is-profile`), `wrap-error` and `unknown-host` (v1.18.2: a
+command tool call with `MOORAI_HOOK_HOST=shim` and no known `MOORAI_HOOK_AGENT`, judged when either field is on).
+`containmentRequired` then decides with `UNAVAILABLE`: `"block"` denies; `"alert"` and `"off"` allow and alert once
+per session. Exception: a command that arrived in wrapped form is denied in every mode (above).
+
+**Fail mode (v1.18.2).** Under `containmentRequired: "block"`, a `Bash` / `PowerShell` / `Monitor` PreToolUse from a
+host it governs (Codex, Copilot CLI, an unknown host, or Claude Code with the wrap on) that the hook could not
+decide is denied with `CONTAINMENT_UNAVAILABLE`, exit 2, deny JSON on stdout and the reason on stderr, and one
+alert (`wrapWhy: "hook-error"`, `"hook-budget"` or `"hook-bad-input"`), whatever the fail mode and even with a live
+break-glass marker (`containmentBlockApplies` / `containmentFailDeny`, checked first in `failClosedNow`, so it covers
+an exception in `wrapIntake` or `containmentStep`, an uncaught error anywhere in the call, and the decision-budget
+timer). Break-glass lifts the fail mode, not `containmentRequired`; an administrator lifts that in the signed policy
+or the admin binding. An exception while `emit` builds or writes the config under `"block"` (or for a command that
+arrived in wrapped form) is the wrap-fallback deny (`wrap-error`). Under `"alert"` / `"off"` the fail mode decides as
+before: an exception in the check goes to `failClosedNow("error")` (closed: exit 2 `FAIL_CLOSED`; open: the call
+proceeds), and one in `emit` is a `FAIL_CLOSED` deny when closed and "wrap impossible" (`wrap-error`, alert, the
+command runs unwrapped) when open. Not covered: Claude Code's own hook timeout firing before the 15 s budget (the
+default is 600 s, so it cannot unless a settings file lowers it), and a hook process that is killed.
 
 **SDK.** Not mirrored. `NOT_EVALUATED` gains `"mxc-containment"`. The check depends on the host CLI that the shim
 names, that host's config files and the Windows device, not on the call. The wrap is a rewrite, which the SDK
 cannot do (`"mask-rewrite"`).
 
 **Known gaps (by design or not fixable here).**
-- Shipped as a documented limit, with no fix in v1.18.0 (the wrap is opt-in, default off). With the wrap on,
-  Claude Code checks its own `Bash(...)` allow and deny rules against the rewritten command, not the original
-  one. A user's deny rule such as `Bash(curl *)` therefore no longer matches, and auto-allowed commands may
-  prompt again. MoorAI's own checks still judge the original command. The permission prompt shows the original
-  through the `: '…'` display prefix.
+- Shipped as a documented limit, with no fix in v1.18.2 (the wrap is opt-in, default off). With the wrap on,
+  Claude Code checks its own `Bash(...)` allow, ask and deny rules against the rewritten command, not the
+  original one. A deny rule such as `Bash(curl *)` therefore no longer matches, whether it is the user's, the
+  project's or a managed (enterprise) settings rule, and auto-allowed commands may prompt again. Claude Code's
+  built-in validators that read the command (its path checks for commands touching files outside the working
+  directory, read-only command detection) see the rewritten form too. "Don't ask again" on a wrapped command may
+  save a rule for the wxc-exec launch that approves later wrapped commands without a prompt (unmeasured; the
+  launch differs per command only in the config file name). MoorAI's own checks still judge the original
+  command. The permission prompt shows the original through the `__moorai_show='…'` display statement; how
+  Claude Code's prompt renders it was not observed on Windows.
+- `Monitor` (v1.18.2): registered on PreToolUse (`hooks/hooks.json`, `PRETOOL_MATCHERS`) and scanned in the shell
+  branch like `Bash` (also by the self-grant refusal, exceptions, the workload profile, egress rules and capability
+  tags). Never wrapped, because whether `updatedInput` applies to it was not measured: denied under wrap + block,
+  alerted under alert / off. Its output arrives as events, not a PostToolUse response, so it gets no PostToolUse
+  matcher.
 - With `containmentClaudeCode: "wrap"` and `containmentRequired: "block"`, every Claude Code `PowerShell` tool
   call is denied (`CONTAINMENT_UNAVAILABLE`, `wrapWhy: "powershell-tool"`; test). On Windows without Git Bash,
   that leaves Claude Code no shell tool.
 - An unenrolled (coached) device is coached, as for every deny, and the wrap needs `canRewrite()`, which is false
   while coaching.
-- The wrap covers `Bash` only, not `Read`/`Write`/`Edit`/`WebFetch`/MCP or the `PowerShell` tool. Claude Code
-  runs uncontained, so its `Write` tool can write into the wrap dir. A config planted there is not trusted: an
-  unwrapped command is re-wrapped in a fresh config. Between the hook writing a config and wxc-exec reading it,
-  an uncontained process with the user's rights could still replace it.
+- The wrap covers `Bash` only, not `Read`/`Write`/`Edit`/`WebFetch`/MCP or the `PowerShell` / `Monitor` tools.
+  Claude Code runs uncontained. Since v1.18.2 the write guard denies its `Write`/`Edit` tools and shell commands
+  writing into the wrap dir, and a config planted there is not trusted anyway (a recovered command is re-wrapped
+  in a fresh config, an unrecoverable one is denied). Residual (F5 of the review): between the hook writing a
+  config and wxc-exec reading it, Claude Code's permission prompt may wait for the user, and any process running
+  as the user that the guard does not see (a `PowerShell` call under alert, a program started earlier, another
+  application) could replace the file. The guard narrows that to processes outside the agent's tool calls; it is
+  a same-user race and is not closed. Unmeasured.
 - Inside the container: `cd` does not carry over, the user's shell snapshot is not loaded, `--add-dir`
   directories and the rest of the profile are not readable, and hostnames are unreachable without a CONNECT
   proxy.
