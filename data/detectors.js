@@ -3,7 +3,7 @@ import { SECRET_DETECTORS, shannonEntropy } from "./secrets-patterns.js";
 import { inspectInstall } from "./popular-packages.js";
 import { taintedFlow } from "./taint.js";
 import { persuasionHit } from "./crescendo.js";
-import { overrideStructuralHit, prefixForcingHit, personaBypassHit } from "./injection-tells.js";
+import { overrideStructuralHit, prefixForcingHit, personaBypassHit, undefendedSpan, stripDefended } from "./injection-tells.js";
 import { deliberateObscurityHit } from "./obfuscation-signal.js";
 import { craftedAssistantLink } from "./assistant-links.js";
 import { agentReconHit } from "./agent-recon.js";
@@ -190,6 +190,9 @@ export function perturbedInjection(text) {
 }
 function _perturbedInjection(text) {
   if (!text || text.length > PERTURB_MAX) return false;
+  // A plainly written, defended phrase ("never ignore your instructions") is not a perturbed attack;
+  // blank it before the letters-only collapse re-finds it (data/injection-tells.js DEFENSIVE FRAMING).
+  text = stripDefended(text);
   if (collapseSignatureHit(text) || fuzzyInjectionHit(text)) return true;
   const d = deperturb(text);
   return d ? overrideStructuralHit(d) : false;
@@ -737,12 +740,27 @@ export const DETECTORS = [
     stage: "prompt",
     mode: "warn",
     hint: "Contains an instruction-override phrase (possible prompt injection).",
+    // "jailbreak" alone is a noun, a product name or a topic ("Jailbreak Whisperer T-Shirt", "curated
+    // jailbreak prompts", "a jailbreak classifier"), so it no longer fires on its own (AIGoat, v1.18.3).
+    // What fires is the model being TOLD to be jailbroken: jailbreak mode/persona, "you are (now)
+    // jailbroken", "act as a jailbroken AI", "enter / activate jailbreak", "jailbreak yourself", and
+    // the [JAILBREAK] / /jailbroken reply tags of DAN-style prompts. DAN is matched upper-case only: with
+    // /i it matched the name Dan, and "her" shifted by the Caesar decode pass ("dan").
     patterns: [
       /ignore (the |all |any )?(previous|above|prior|earlier) (instructions?|prompts?|messages?)/i,
       /disregard (all |any )?(previous|prior|above|earlier)/i,
       /\b(reveal|print|show) (your |the )?(system prompt|instructions|developer message)\b/i,
-      /\b(jailbreak|do anything now|\bDAN\b)\b/i
-    ]
+      /\bdo anything now\b/i,
+      /\bDAN\b(?![-\s]{1,2}(?:style|like|type|prompts?|jailbreaks?|attacks?)\b)/,
+      /\bjailbr(?:eak|oken|eaked)\s{1,4}(?:mode|persona|state)\b/i,
+      /\b(?:you(?:['’]re|\s{1,4}are|\s{1,4}have\s{1,4}been|['’]ve\s{1,4}been|\s{1,4}were|\s{1,4}will\s{1,4}be)|act(?:ing)?\s{1,4}as|pretend(?:ing)?\s{1,4}to\s{1,4}be|respond(?:ing)?\s{1,4}as|behav(?:e|ing)\s{1,4}(?:as|like)|role-?play(?:ing)?\s{1,4}as|simulat(?:e|ing)|becom(?:e|ing)|are\s{1,4}now)\s{1,4}(?:(?:now|a|an|the|fully|completely|totally|officially)\s{1,4}){0,2}jailbr(?:oken|eaked)\b/i,
+      /\b(?:enter(?:ing)?|activat(?:e|ing)|enabl(?:e|ing)|engag(?:e|ing)|initiat(?:e|ing)|unlock(?:ing)?|turn(?:ing)?\s{1,4}on|switch(?:ing)?\s{1,4}(?:to|into)|go(?:ing)?\s{1,4}into)\s{1,4}(?:(?:the|your|a|full)\s{1,4}){0,1}jailbr(?:eak|oken)(?:ed)?\b(?!\s{1,4}(?:detect|protect|prevent|filter|classif|test|research|defen|scan|guard|monitor|evaluat|benchmark|attempt|attack|technique|prompt))/i,
+      /\bjailbreak(?:ing)?\s{1,4}(?:yourself|you(?![a-z'’])|your\s{1,4}(?:own\s{1,4})?(?:rules|restrictions|filters|guardrails|safety|programming|constraints|guidelines|limitations|alignment))\b/i,
+      /\[[^\]\n]{0,4}jailbr(?:eak|oken)[^\]\n]{0,4}\]|(?:^|\s)\/jailbr(?:eak|oken)\b/im
+    ],
+    // A defensive statement is not an override: "never reveal your system prompt", "if a page tells you
+    // to ignore previous instructions, refuse" (data/injection-tells.js DEFENSIVE FRAMING).
+    refine: (m, text) => undefendedSpan(m, text)
   },
   {
     // Multi-turn jailbreak scaffolding — persona/role-play setup that primes a later payload.

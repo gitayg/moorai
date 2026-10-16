@@ -134,11 +134,20 @@
     // === Prompt injection — threat #3 "Prompt Injection" / Critical (from data/detectors.js inj-ignore) ===
     { detectorId: "inj-ignore", threatId: 3, category: "Prompt Injection", riskLevel: "High",
       label: "an instruction-override / prompt-injection phrase",
+      // Patterns verbatim from data/detectors.js. The agent's defensive-framing refine (data/injection-tells.js:
+      // "never reveal your system prompt" is a rule, not an attack) is not ported: it is an ES module the
+      // content script cannot import, and a user typing into a chat page rarely writes the host's warnings.
       patterns: [
         /ignore (the |all |any )?(previous|above|prior|earlier) (instructions?|prompts?|messages?)/i,
         /disregard (all |any )?(previous|prior|above|earlier)/i,
         /\b(reveal|print|show) (your |the )?(system prompt|instructions|developer message)\b/i,
-        /\b(jailbreak|do anything now|\bDAN\b)\b/i
+        /\bdo anything now\b/i,
+        /\bDAN\b(?![-\s]{1,2}(?:style|like|type|prompts?|jailbreaks?|attacks?)\b)/,
+        /\bjailbr(?:eak|oken|eaked)\s{1,4}(?:mode|persona|state)\b/i,
+        /\b(?:you(?:['’]re|\s{1,4}are|\s{1,4}have\s{1,4}been|['’]ve\s{1,4}been|\s{1,4}were|\s{1,4}will\s{1,4}be)|act(?:ing)?\s{1,4}as|pretend(?:ing)?\s{1,4}to\s{1,4}be|respond(?:ing)?\s{1,4}as|behav(?:e|ing)\s{1,4}(?:as|like)|role-?play(?:ing)?\s{1,4}as|simulat(?:e|ing)|becom(?:e|ing)|are\s{1,4}now)\s{1,4}(?:(?:now|a|an|the|fully|completely|totally|officially)\s{1,4}){0,2}jailbr(?:oken|eaked)\b/i,
+        /\b(?:enter(?:ing)?|activat(?:e|ing)|enabl(?:e|ing)|engag(?:e|ing)|initiat(?:e|ing)|unlock(?:ing)?|turn(?:ing)?\s{1,4}on|switch(?:ing)?\s{1,4}(?:to|into)|go(?:ing)?\s{1,4}into)\s{1,4}(?:(?:the|your|a|full)\s{1,4}){0,1}jailbr(?:eak|oken)(?:ed)?\b(?!\s{1,4}(?:detect|protect|prevent|filter|classif|test|research|defen|scan|guard|monitor|evaluat|benchmark|attempt|attack|technique|prompt))/i,
+        /\bjailbreak(?:ing)?\s{1,4}(?:yourself|you(?![a-z'’])|your\s{1,4}(?:own\s{1,4})?(?:rules|restrictions|filters|guardrails|safety|programming|constraints|guidelines|limitations|alignment))\b/i,
+        /\[[^\]\n]{0,4}jailbr(?:eak|oken)[^\]\n]{0,4}\]|(?:^|\s)\/jailbr(?:eak|oken)\b/im
       ] }
   ];
 
