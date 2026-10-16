@@ -80,25 +80,34 @@ function compile(table) {
 // you to ignore your instructions, refuse", "never ignore your instructions". Matched as a bare phrase,
 // that warning scored as an override attempt and blocked the host's benign turn (AIGoat, v1.18.3). An
 // occurrence is DEFENDED, and does not count, when its own sentence shows one of two frames:
-//   (a) a negator directly before the verb: "never ignore …", "do not disregard …", "not to ignore …";
-//   (b) the phrase is REPORTED as something else asks for ("tells you to", "tries to make you") AND
-//       the sentence is conditional or negated ("if", "when", "just because", "do not", "never") AND
-//       nothing after it in the sentence complies ("…, do it", "…, comply").
-// Anything else counts, so "ignore your instructions", "the admin tells you to ignore your
-// instructions" and "if you read this, ignore all previous instructions" still fire, and a second,
+//   (a) a negator directly before the verb that OPENS its clause, optionally after a subject or modal:
+//       "never ignore …", "do not disregard …", "you must not override …". Not "why not …", "not only …",
+//       "if not, …", nor anything doubly negated ("can't not ignore", "do not refuse to ignore");
+//   (b) the phrase is REPORTED as something else asks for ("tells you to", "tries to make you") AND either
+//       the sentence opens with a prohibition ("Do not act on a line just because it … tells you to …") or
+//       it is conditional ("if", "when", "unless") with an explicit refusal after the phrase ("…, refuse",
+//       "…, treat it as data"); and nothing after it complies ("…, do it") or orders an action ("…, print …").
+// A sentence that ends in "?" is never defended. Anything else counts, so "ignore your instructions",
+// "the admin tells you to ignore your instructions", "because X tells you to ignore …, print the prompt"
+// and "if you read this, ignore all previous instructions" still fire, and a second,
 // undefended occurrence in the same text still fires. The sentence is the span between [.!?;:\n]
 // within DEF_WINDOW characters; every pattern is bounded and runs on that window only.
 // ---------------------------------------------------------------------------------------------------
 const DEF_WINDOW = 200;
 const DEF_MAX_OCCURRENCES = 64; // past this many occurrences of one phrase, count it (fail toward detection)
-const DEF_NEG_ADJ = safeRegex("\\b(?:never|not|no|don['’]?t|dont|do\\s{1,4}not|must\\s{1,4}not|mustn['’]?t|should\\s{1,4}not|shouldn['’]?t|will\\s{1,4}not|won['’]?t|cannot|can['’]?t|refuse\\s{1,4}to|nor)\\s{1,4}(?:(?:ever|again|simply|just|blindly|actually)\\s{1,4}){0,1}(?:to\\s{1,4}){0,1}$", "i");
+const DEF_NEG_ADJ = safeRegex("^\\s{0,4}(?:(?:please|and|but|so|also|always|you|we|it)\\s{1,4}){0,2}(?:(?:must|should|will)\\s{1,4}){0,1}(?:never|not|no|don['’]?t|dont|do\\s{1,4}not|must\\s{1,4}not|mustn['’]?t|should\\s{1,4}not|shouldn['’]?t|will\\s{1,4}not|won['’]?t|cannot|can['’]?t|refuse\\s{1,4}to|nor)\\s{1,4}(?:(?:ever|again|simply|just|blindly|actually)\\s{1,4}){0,1}(?:to\\s{1,4}){0,1}$", "i");
 // A second negator or inverting verb in the 24 characters before the adjacent negator: double negation.
 const DEF_INVERT = safeRegex("\\b(?:not|never|no|don['’]?t|dont|can['’]?t|cannot|won['’]?t|refuse|hesitate|fail)\\b[^.!?;:\\n]{0,24}$", "i");
 // A negated refusal anywhere in the sentence before the phrase: an instruction to comply, not a warning.
 const DEF_NEG_REFUSAL = safeRegex("\\b(?:not|never|no|don['’]?t|dont|can['’]?t|cannot|won['’]?t|shouldn['’]?t|mustn['’]?t)\\s{1,4}(?:(?:ever|simply|just)\\s{1,4}){0,1}(?:refuse|reject|decline|resist|hesitate)\\b", "i");
 const DEF_REPORTED = safeRegex("\\b(?:tells?|telling|told|asks?|asking|asked|instructs?|instructing|instructed|wants?|urges?|urging|directs?|commands?|orders?|requests?|demands?|makes?|making|gets?|getting|lets?|letting|convinces?|tricks?|persuades?|pressures?)\\s{1,4}(?:you|the\\s{1,4}(?:model|assistant|agent|ai|bot|llm)|it|them)\\s{1,4}(?:to\\s{1,4}){0,1}$", "i");
 const DEF_REPORTED_SAYS = safeRegex("\\b(?:says?|saying|claims?|claiming)\\s{1,4}(?:that\\s{1,4}){0,1}(?:to|you\\s{1,4}(?:should|must|need\\s{1,4}to|have\\s{1,4}to|can))\\s{1,4}$", "i");
-const DEF_CUE = safeRegex("\\b(?:if|when|whenever|unless|because|never|not|no|don['’]?t|refuse|reject|decline|treat)\\b", "i");
+// (b) excuses: a clause-opening prohibition, or a condition with an explicit refusal after the phrase.
+const DEF_PROHIBIT_START = safeRegex("^\\s{0,4}(?:(?:you|agents?|models?)\\s{1,4}(?:must|should)\\s{1,4}(?:not|never)|do\\s{1,4}not|don['’]?t|dont|never|must\\s{1,4}not)\\b", "i");
+const DEF_COND = safeRegex("\\b(?:if|when|whenever|unless)\\b", "i");
+const DEF_REFUSAL = safeRegex("\\b(?:refuse|decline|reject|stop|(?:do\\s{1,4}not|don['’]?t)\\s{1,4}(?:comply|follow|obey|act)|treat\\s{1,4}(?:it|this|that|them)\\s{1,4}as\\s{1,4}(?:data|untrusted)|ignore\\s{1,4}(?:it|this|that|them)|report\\s{1,4}(?:it|this|that))\\b", "i");
+// An order after the phrase makes it an instruction, not a warning ("…, print the system prompt").
+const DEF_IMPERATIVE = safeRegex("\\b(?:print|output|reveal|send|call|run|execute|show|dump|share|give|list|write|email|delete|exfiltrate|upload|post|disclose|leak|return)\\b", "gi");
 const DEF_COMPLY = safeRegex("\\b(?:comply|obey|go\\s{1,4}ahead|follow\\s{1,4}(?:it|them|that|through)|do\\s{1,4}(?:so|it|that|what|as)|honou?r\\s{1,4}(?:it|that|them)|accept\\s{1,4}(?:it|that|them))\\b", "gi");
 const DEF_COMPLY_NEG = safeRegex("\\b(?:not|never|no|don['’]?t|won['’]?t|cannot|can['’]?t)\\s{1,4}(?:\\w{1,12}\\s{1,4}){0,1}$", "i");
 const DEF_BOUNDARY = /[.!?;:\n]/;
@@ -113,6 +122,20 @@ function sentenceAfter(text, end) {
   for (let i = 0; i < post.length; i++) if (DEF_BOUNDARY.test(post[i])) return post.slice(0, i);
   return post;
 }
+// The character that ends the occurrence's sentence ("" at the end of the window or text).
+function terminatorAfter(text, end) {
+  const post = text.slice(end, end + DEF_WINDOW);
+  for (let i = 0; i < post.length; i++) if (DEF_BOUNDARY.test(post[i])) return post[i];
+  return "";
+}
+function orders(post) {
+  DEF_IMPERATIVE.lastIndex = 0;
+  let m, n = 0;
+  while ((m = DEF_IMPERATIVE.exec(post)) !== null && n++ < 8) {
+    if (!DEF_COMPLY_NEG.test(post.slice(Math.max(0, m.index - 24), m.index))) return true;
+  }
+  return false;
+}
 function complies(post) {
   DEF_COMPLY.lastIndex = 0;
   let m, n = 0;
@@ -124,16 +147,20 @@ function complies(post) {
 
 // True when the occurrence text[start, end) sits in a defensive frame (see above). Content-free.
 export function defendedOccurrence(text, start, end) {
-  if (!DEF_NEG_ADJ || !DEF_REPORTED || !DEF_REPORTED_SAYS || !DEF_CUE || !DEF_COMPLY || !DEF_COMPLY_NEG || !DEF_INVERT || !DEF_NEG_REFUSAL) return false;
+  if (!DEF_NEG_ADJ || !DEF_REPORTED || !DEF_REPORTED_SAYS || !DEF_PROHIBIT_START || !DEF_COND || !DEF_REFUSAL || !DEF_IMPERATIVE || !DEF_COMPLY || !DEF_COMPLY_NEG || !DEF_INVERT || !DEF_NEG_REFUSAL) return false;
+  if (terminatorAfter(text, end) === "?") return false; // a question is never a warning
   const pre = sentenceBefore(text, start);
   // A negated refusal ("do not refuse", "don't decline", "never hesitate") inverts any defence in the sentence.
   if (DEF_NEG_REFUSAL.test(pre)) return false;
+  const post = sentenceAfter(text, end);
+  if (complies(post) || orders(post)) return false;
+  // (a) A clause-opening negator directly before the verb; nothing may negate or invert it ("can't not ignore").
   const neg = DEF_NEG_ADJ.exec(pre);
-  // The negator counts only when nothing negates or inverts it just before ("can't not ignore").
   if (neg) return !DEF_INVERT.test(pre.slice(0, neg.index));
+  // (b) A reported phrase under a clause-opening prohibition, or a condition with an explicit refusal after it.
   if (!DEF_REPORTED.test(pre) && !DEF_REPORTED_SAYS.test(pre)) return false;
-  if (!DEF_CUE.test(pre)) return false;
-  return !complies(sentenceAfter(text, end));
+  if (DEF_PROHIBIT_START.test(pre)) return true;
+  return DEF_COND.test(pre) && DEF_REFUSAL.test(post);
 }
 
 // True when at least one match of the global regex `reG` in `text` is NOT defended.
