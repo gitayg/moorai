@@ -202,6 +202,34 @@ A later report that differs shows "tools changed since approval — awaiting re-
 accepts the new fingerprints. So the order of operations for an org is: set `mcpToolDrift` to `block`,
 let devices report, then approve (or re-approve) the server to pin its tools.
 
+**A stale client is judged against a fresh listing.** Drift is judged from `tools/list` responses, and a
+server can change a tool after the client's last listing; a client that does not list again would then
+call the changed tool with nothing compared. So in block mode, when the last whole listing the guard
+judged for the server is older than the signed policy's `mcpToolRecheckSeconds` (default 300; 0 =
+before every call; an integer of at least 0, anything else is the default, more than 86,400 is taken as
+86,400), a `tools/call` first makes the guard send its **own** `tools/list` to the server, walk every
+page, and judge it like any block-mode listing ([`tool-recheck.mjs`](tool-recheck.mjs)). Then the call
+is decided: an unchanged tool is forwarded, one that drifted or that the server no longer lists is
+refused. The server's `notifications/tools/list_changed` marks the listing stale at once (the
+notification is still forwarded). The guard's request uses a string id with a per-process random nonce
+(`moorai-recheck-<24 hex>-<n>`), which no client id can collide with; its answer is consumed and never
+forwarded, including one that arrives after the wait ended. The request and the client's are each one
+whole line on the server's stdin, so the client's own requests and answers are untouched. One re-list is
+in flight per server and concurrent calls share it; the whole re-list (every page) has a 2 s budget. A
+re-list that fails (an error answer, an unreadable or over-1 MB answer, a looping cursor, the budget)
+follows the admin's fail mode for the MCP surface (`failMode.mcpGateway`, [`../cli/fail-mode.mjs`](../cli/fail-mode.mjs)):
+closed refuses the call (`Fail-closed: MCP call not evaluated`, `failWhy: "recheck"`), open forwards it
+to the rest of the gate with an alert (`MCP: tool list re-check failed`, Medium, `decision: "allow"`,
+`failMode: "open"`, `failWhy: "timeout" | "error"`). Alerts about drift found by a re-list, and a call
+refused on one, carry `driftCheck: "recheck"`; a re-list's fingerprints are not posted to the console,
+whose view of a server stays the listings its clients received. Alert mode never re-lists: no extra
+request, byte-identical traffic.
+
+The re-list shows what the server tells MoorAI. A server that answers MoorAI's request differently from
+the client's is not caught by it; the client's own listings are still judged as they pass. And while
+the client may hold a listing MoorAI could not judge (the rows below that clear every verdict), every
+call is refused until a client listing is judged again, so no re-list is sent then.
+
 **Re-approval releases the tool without a re-list.** A quarantined tool is re-judged on every call
 against the policy in force at that moment (refreshed every 60 s), so the first call after the new policy
 arrives goes through. A released tool is recorded in the local baseline.
@@ -231,6 +259,8 @@ so deleting it removes this second layer and leaves the first.
 | The policy switches from `alert` to `block` during a session | tools listed under `alert` are judged on their first call, against the approved baseline if there is one; a tool that passes keeps working without a re-list |
 | The judgement throws | the listing is forwarded unfiltered; every verdict for that server is cleared, so calls are refused (closed) until a listing is judged again |
 | The fingerprint post to the console fails | nothing changes on the device; the console has nothing new to pin until the next report |
+| The server changed a tool after the client's last listing, and the client calls it without listing again | past `mcpToolRecheckSeconds` (or after `notifications/tools/list_changed`) the guard re-lists first: the changed or vanished tool is refused (closed) |
+| The guard's own re-list fails or runs out of its 2 s budget | `failMode.mcpGateway`: closed refuses the call, open forwards it with an alert. The client is never held past the budget |
 | A paginated listing | each page is judged; a removal is not reported and fingerprints are not posted, so a paginated server cannot be pinned and stays on the local baseline. On a server's first sighting every page of that first listing is a first sighting (a page-2 tool is not "added after" page 1); a page over 1 MB clears the server's verdicts as above |
 
 ### first sight: the server's REPUTATION
@@ -518,7 +548,8 @@ proxy sees nothing.
 | `trace-meta.mjs`           | Sets a forwarded `tools/call`'s `params._meta.traceparent` / `tracestate` by editing the line in place. |
 | `tool-scan.mjs`            | Caps, and the composition of the scan text for a `tools/list` entry and a `tools/call` result. |
 | `tool-baseline.mjs`        | Cross-call tool baseline — shadowing / capability-expansion drift. |
-| `tool-drift.mjs`           | `mcpToolDrift: "block"`: approved-baseline precedence, quarantine verdicts, the version mark, the fingerprint report. Shared with the HTTP gateway. |
+| `tool-drift.mjs`           | `mcpToolDrift: "block"`: approved-baseline precedence, quarantine verdicts, the version mark, the fingerprint report, per-server listing freshness. Shared with the HTTP gateway. |
+| `tool-recheck.mjs`         | `mcpToolRecheckSeconds`: the re-list before a block-mode call when the last judged listing is stale (every page, 2 s budget, one in flight per server). Shared with the HTTP gateway. |
 | `install.mjs`              | Wrap / uninstall / status a host's MCP config, per the `HOSTS` table (pure transforms exported for tests). |
 | `test-proxy.mjs`           | Self-verification (proxy behavior + install rewrite). |
 | `test-fake-mcp-server.mjs` | Tiny fake MCP server used by the test. |

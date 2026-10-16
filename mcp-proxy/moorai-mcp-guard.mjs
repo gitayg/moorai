@@ -65,6 +65,7 @@
 // result, carries traceId / spanId / parentSpanId.
 
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,6 +76,7 @@ import { CAPS, toolsOfResponse, toolScanText, toolIdentity, resultOfResponse } f
 import { decideInbound, inboundText } from "../cli/inbound.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "./tool-baseline.mjs";
 import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON } from "./tool-drift.mjs";
+import { createRecheck, RECHECK_SOURCE, RECHECK_FAILED_CATEGORY } from "./tool-recheck.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
@@ -525,12 +527,25 @@ async function gateCall(rawLine, msg) {
 
     // Block-mode tool drift (tool-drift.mjs): a tool that changed since approval, was added after it, or
     // shadows another server's tool is refused until an admin re-approves it. Re-judged against the
-    // policy in force now, so a re-approval releases it without a fresh tools/list.
+    // policy in force now, so a re-approval releases it without a fresh tools/list. When the server's
+    // last judged listing is older than the policy's window, the guard lists the server itself first
+    // (tool-recheck.mjs), so a tool changed after the client's last listing is caught here.
     if (driftBlocking()) {
+      let rechecked = false;
+      if (RECHECK.due(POLICY)) {
+        judgeOwed(); // a listing forwarded before the policy loaded is older than the re-list: judged first
+        const rc = await RECHECK.ensureFresh({ policy: POLICY, fetchPage: relistPage, judge: judgeRecheck });
+        if (!rc.ok) {
+          // Closed: refused, the server never receives a call MoorAI could not check. Open: forwarded, with an alert.
+          const fm = failClosed();
+          if (fm) { alertFailClosed("mcp", "recheck", fm, tool); auditCall(tool, "deny", argsHash); replied = true; writeBlock(msg.id, gatewayFailReason("recheck")); return; }
+          alertRecheckFailed(tool, rc.why, argsHash);
+        } else rechecked = rc.rechecked;
+      }
       if (!DRIFT.has(tool) && obsInFlight) await withDeadline(obsQueue, CAPS.resultDeadlineMs);
       const q = DRIFT.checkCall(tool, { policy: POLICY });
       if (q) {
-        alertDriftCall(tool, q, argsHash);
+        alertDriftCall(tool, q, argsHash, rechecked);
         auditCall(tool, "deny", argsHash);
         replied = true; writeBlock(msg.id, q.reason);
         return;
@@ -629,14 +644,14 @@ function seenOnce(token) {
   return true;
 }
 
-function alertTool(toolName, { category, riskLevel, threatId = 0, hash, decision = "notify", reasonCode }) {
-  post({ threatId, category, riskLevel, stage: "tool", tool: `desktop:${toolName}`, decision, ...(reasonCode ? { reasonCode } : {}), mcpServer: SERVER, ts: new Date().toISOString(), contentHash: hash, ...IDENTITY });
+function alertTool(toolName, { category, riskLevel, threatId = 0, hash, decision = "notify", reasonCode, driftCheck }) {
+  post({ threatId, category, riskLevel, stage: "tool", tool: `desktop:${toolName}`, decision, ...(reasonCode ? { reasonCode } : {}), ...(driftCheck ? { driftCheck } : {}), mcpServer: SERVER, ts: new Date().toISOString(), contentHash: hash, ...IDENTITY });
   if (riskLevel === "High" || riskLevel === "Critical" || riskLevel === "Blocked") {
     try { post({ ...literacyTouchpoint({ threatId, category, tool: `desktop:${toolName}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
   }
   try {
     recordAction(applyCaptureTier({
-      threatId, category, riskLevel, stage: "tool", tool: `desktop:${toolName}`, decision, ...(reasonCode ? { reasonCode } : {}),
+      threatId, category, riskLevel, stage: "tool", tool: `desktop:${toolName}`, decision, ...(reasonCode ? { reasonCode } : {}), ...(driftCheck ? { driftCheck } : {}),
       mcpServer: SERVER, ts: new Date().toISOString(), contentHash: hash, ...IDENTITY
     }, {}, (POLICY && POLICY.captureTier) || "content-free"));
   } catch { /* ledger is best-effort */ }
@@ -772,7 +787,7 @@ async function observeTools(tools, { driftDone = false, shape = { complete: fals
 const EMPTY = Buffer.alloc(0);
 let obsQueue = Promise.resolve(); // the OFF-path tools/list observation chain (see the bottom of this file)
 let outPending = EMPTY;   // bytes of the current, incomplete line
-let outRaw = false;       // this line blew past maxLineBytes: stream it through raw until its newline
+let outRaw = false;       // this line blew past maxLineBytes: stream it through raw ("drop": discard) until its newline
 let outQueue = Promise.resolve(); // ONE ordered write queue; nothing writes to stdout outside it
 
 function emitRaw(buf) { outQueue = outQueue.then(() => { process.stdout.write(buf); }, () => {}); }
@@ -790,9 +805,11 @@ function onServerChunk(chunk) {
     if (process.env.MOORAI_TEST_OBSERVE_THROW) throw new Error("injected synchronous observer fault (test hook)");
     let buf = chunk;
     if (outRaw) {
+      // "drop": the rest of an over-cap line that carries the guard's own re-list id (never forwarded).
+      const drop = outRaw === "drop";
       const nl = buf.indexOf(0x0a);
-      if (nl < 0) { emitted = true; emitRaw(buf); return; }
-      emitted = true; emitRaw(buf.subarray(0, nl + 1));
+      if (nl < 0) { emitted = true; if (!drop) emitRaw(buf); return; }
+      emitted = true; if (!drop) emitRaw(buf.subarray(0, nl + 1));
       outRaw = false;
       buf = buf.subarray(nl + 1);
       if (!buf.length) return;
@@ -808,7 +825,9 @@ function onServerChunk(chunk) {
     if (rest.length > CAPS.maxLineBytes) {
       // A line with no newline in sight, past the cap. Buffering further is exactly what a hostile
       // server wants; forward what we have and pass the remainder through raw. Unscanned, never stuck.
-      outRaw = true; outPending = EMPTY; emitted = true; listingUnjudged(); emitRaw(Buffer.from(rest));
+      emitted = true; listingUnjudged(); outPending = EMPTY;
+      if (rest.indexOf(RELIST_NONCE) >= 0) { outRaw = "drop"; relistUnreadable(); }
+      else { outRaw = true; emitRaw(Buffer.from(rest)); }
     } else outPending = rest.length ? Buffer.from(rest) : EMPTY;
   } catch {
     listingUnjudged();
@@ -897,14 +916,23 @@ async function gateResult(lineBuf) {
   let done = false;
   const pass = () => { if (!done) { done = true; process.stdout.write(lineBuf); } };
   try {
-    // Over the line cap: never parsed, never buffered further — forwarded and declared unscanned.
-    if (lineBuf.length > CAPS.maxLineBytes) { listingUnjudged(); return pass(); }
+    // Over the line cap: never parsed, never buffered further — forwarded and declared unscanned. One
+    // that carries the guard's own re-list id is the answer to a request the client never sent: dropped.
+    if (lineBuf.length > CAPS.maxLineBytes) {
+      if (lineBuf.indexOf(RELIST_NONCE) >= 0) { done = true; relistUnreadable(); return; }
+      listingUnjudged(); return pass();
+    }
     const s = lineBuf.toString("utf8");
     // Only a RESPONSE can carry either stage's payload. A "\u0072esult" key is the same key to every
-    // JSON parser, so a line with any \u escape is parsed too rather than skipped.
-    if (!s.trim() || (s.indexOf("\"result\"") < 0 && s.indexOf("\\u") < 0)) return pass();
+    // JSON parser, so a line with any \u escape is parsed too rather than skipped. So is an answer to the
+    // guard's own re-list (an error response has no "result") and a tools/list_changed notification.
+    if (!s.trim() || (s.indexOf("\"result\"") < 0 && s.indexOf("\\u") < 0 && s.indexOf(RELIST_NONCE) < 0 && s.indexOf("list_changed") < 0)) return pass();
     let msg;
-    try { msg = JSON.parse(s); } catch { listingUnjudged(); return pass(); }
+    try { msg = JSON.parse(s); } catch { if (s.indexOf(RELIST_NONCE) >= 0) { done = true; relistUnreadable(); return; } listingUnjudged(); return pass(); }
+    // The answer to the guard's own tools/list (tool-recheck.mjs): consumed here, never forwarded.
+    if (ownRelistAnswer(msg)) { done = true; return; }
+    // The server says its tool list changed: the next block-mode call re-lists first. Forwarded as ever.
+    if (msg && msg.method === "notifications/tools/list_changed") DRIFT.markStale();
     if (msg && msg.id != null) LIST_OPEN.delete(String(msg.id));
 
     // The tool stage stays FORWARD-FIRST by default: a tools/list response is never altered, delayed
@@ -1041,26 +1069,74 @@ function judgeOwed() {
 }
 
 // Judge one listing in block mode: quarantine verdicts, alerts, and the content-free fingerprint
-// report the console pins on approval. → { changed, names } or null when it could not run.
-function judgeListing(tools, shape) {
+// report the console pins on approval. `driftCheck` "recheck" marks the alerts of a listing the guard
+// requested itself. → { changed, names } or null when it could not run.
+function judgeListing(tools, shape, driftCheck) {
   try {
     const ev = DRIFT.evaluateListing(tools, { policy: POLICY, ...shape });
     for (const q of ev.quarantined) {
       for (const sig of q.signals) {
         if (!seenOnce(`quarantine|${sig.token}`)) continue;
-        alertTool(q.name, { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "quarantine", reasonCode: TOOL_DRIFT_REASON });
+        alertTool(q.name, { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "quarantine", reasonCode: TOOL_DRIFT_REASON, driftCheck });
       }
     }
     for (const sig of ev.removed) {
-      if (seenOnce(sig.token)) alertTool("mcp", { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "notify", reasonCode: TOOL_DRIFT_REASON });
+      if (seenOnce(sig.token)) alertTool("mcp", { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "notify", reasonCode: TOOL_DRIFT_REASON, driftCheck });
     }
-    reportFingerprints({ config: CONFIG, server: SERVER, fingerprints: ev.fingerprints, enrolled: isEnrolled(CONFIG), actor: IDENTITY.actor });
+    if (!driftCheck) reportFingerprints({ config: CONFIG, server: SERVER, fingerprints: ev.fingerprints, enrolled: isEnrolled(CONFIG), actor: IDENTITY.actor });
     return { changed: ev.changed, names: new Set(ev.quarantined.map((q) => q.name)) };
   } catch { try { DRIFT.invalidate(); } catch { /* nothing to clear */ } return null; } // a failed judgement forwards the list; its calls are refused
 }
 
-function alertDriftCall(tool, q, argsHash) {
-  post({ threatId: 0, category: q.category, riskLevel: "Blocked", stage: "mcp", tool: `desktop:${tool}`, decision: "deny", reasonCode: TOOL_DRIFT_REASON, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: argsHash, ...IDENTITY });
+function alertDriftCall(tool, q, argsHash, rechecked = false) {
+  post({ threatId: 0, category: q.category, riskLevel: "Blocked", stage: "mcp", tool: `desktop:${tool}`, decision: "deny", reasonCode: TOOL_DRIFT_REASON, ...(rechecked ? { driftCheck: RECHECK_SOURCE } : {}), mcpServer: SERVER, ts: new Date().toISOString(), contentHash: argsHash, ...IDENTITY });
+}
+
+// ---- the guard's own tools/list before a block-mode call (tool-recheck.mjs) ----
+// Its ids are strings the client cannot produce: a per-process random nonce plus a counter. Its answers
+// are consumed in gateResult and never forwarded; one that arrives after its wait ended (the budget ran
+// out) is still consumed. Each request is one whole line written to the server's stdin, as the client's
+// are, so the two never interleave inside a line; the client's own requests and answers are untouched.
+const RECHECK = createRecheck({ tracker: DRIFT });
+const RELIST_NONCE = randomBytes(12).toString("hex");
+const RELIST_PREFIX = `moorai-recheck-${RELIST_NONCE}-`;
+const RELIST_WAIT = new Map(); // id → settle(msg | null)
+let relistSeq = 0;
+function relistPage(cursor, { signal }) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(new Error("aborted")); return; }
+    const id = RELIST_PREFIX + (++relistSeq);
+    const onAbort = () => settle(null);
+    function settle(m) {
+      RELIST_WAIT.delete(id);
+      signal.removeEventListener("abort", onAbort);
+      if (m && !m.error && m.result && typeof m.result === "object" && Array.isArray(m.result.tools)) resolve({ tools: m.result.tools, nextCursor: m.result.nextCursor });
+      else reject(new Error("re-list failed"));
+    }
+    RELIST_WAIT.set(id, settle);
+    signal.addEventListener("abort", onAbort, { once: true });
+    try { child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method: "tools/list", params: cursor == null ? {} : { cursor } }) + "\n"); }
+    catch { settle(null); }
+  });
+}
+// A server line → true when it is a response to one of the guard's own ids (waited for or not).
+function ownRelistAnswer(msg) {
+  if (!msg || typeof msg !== "object" || Array.isArray(msg) || msg.method !== undefined) return false;
+  if (typeof msg.id !== "string" || !msg.id.startsWith(RELIST_PREFIX)) return false;
+  const settle = RELIST_WAIT.get(msg.id);
+  if (settle) settle(msg);
+  return true;
+}
+// A server line that may be the answer to a pending re-list could not be read: the re-list fails.
+function relistUnreadable() { for (const settle of [...RELIST_WAIT.values()]) settle(null); }
+// The re-list is a whole listing the guard asked for: complete, and a tool it no longer carries loses
+// its verdict (a call to it is refused as not in a checked listing).
+const judgeRecheck = (tools) => judgeListing(tools, { complete: true, continued: false, last: true, own: true }, RECHECK_SOURCE);
+// Open fail mode: the call goes on to the rest of the gate, and this says the re-list did not happen.
+function alertRecheckFailed(tool, why, argsHash) {
+  const a = { threatId: 0, category: RECHECK_FAILED_CATEGORY, riskLevel: "Medium", stage: "mcp", tool: `desktop:${tool}`, decision: "allow", reasonCode: TOOL_DRIFT_REASON, driftCheck: RECHECK_SOURCE, failMode: "open", failWhy: why === "timeout" ? "timeout" : "error", mcpServer: SERVER, ts: new Date().toISOString(), contentHash: `mcp:tool:recheck-failed:${why === "timeout" ? "timeout" : "error"}`, ...IDENTITY };
+  post(a);
+  try { recordAction(applyCaptureTier({ ...a }, {}, (POLICY && POLICY.captureTier) || "content-free")); } catch { /* ledger is best-effort */ }
 }
 
 // ---- newline-delimited framing of Claude Desktop → proxy stdin. Buffer partial lines; a tool-call must

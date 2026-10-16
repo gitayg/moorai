@@ -1,7 +1,8 @@
 // The MCP gateway surfaces' fail mode (cli/fail-mode.mjs, surface "mcpGateway"): what the stdio guard
 // (mcp-proxy/moorai-mcp-guard.mjs) does with a tools/call or a tool result it could not judge — the gate
 // threw, there was no engine, the result scan missed its deadline or its overload window, or a
-// reputation threshold is set and no score exists yet.
+// reputation threshold is set and no score exists yet, or a block-mode tool-drift re-list before a
+// tools/call failed or ran out of time (mcp-proxy/tool-recheck.mjs).
 //
 //   open   (the default) forward it unchanged, as the guard always has.
 //   closed refuse it: a tools/call gets an isError tool result and never reaches the server; a result is
@@ -23,9 +24,10 @@ const WHY = {
   "no-engine": "no MoorAI policy engine was available",
   timeout: "MoorAI did not finish evaluating it in time",
   budget: "MoorAI's scan budget was exhausted",
-  reputation: "the MCP server's reputation could not be established"
+  reputation: "the MCP server's reputation could not be established",
+  recheck: "MoorAI could not re-check the MCP server's current tool list"
 };
-const BASIS = { error: REASON.UNEVALUATED_HOOK_ERROR, "no-engine": REASON.UNEVALUATED_NO_POLICY, timeout: REASON.UNEVALUATED_EARLY_EXIT, budget: REASON.UNEVALUATED_EARLY_EXIT, reputation: REASON.UNEVALUATED_EARLY_EXIT };
+const BASIS = { error: REASON.UNEVALUATED_HOOK_ERROR, "no-engine": REASON.UNEVALUATED_NO_POLICY, timeout: REASON.UNEVALUATED_EARLY_EXIT, budget: REASON.UNEVALUATED_EARLY_EXIT, reputation: REASON.UNEVALUATED_EARLY_EXIT, recheck: REASON.UNEVALUATED_EARLY_EXIT };
 const known = (why) => (Object.prototype.hasOwnProperty.call(WHY, why) ? why : "error");
 
 // The isError text after the guard's own "MoorAI blocked this MCP tool call: " / "... tool result: ".

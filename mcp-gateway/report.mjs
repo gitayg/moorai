@@ -114,8 +114,8 @@ export function alertEgress(server, tool, hits, blocked) {
   post({ threatId: 65, category: "Local secret value egress", riskLevel: blocked ? "Blocked" : "Critical", stage: "egress", tool: t(tool), mcpServer: server, ts: now(), contentHash: "egress:" + hits.join("."), ...IDENTITY });
 }
 
-export function alertTool(server, toolName, { category, riskLevel, threatId = 0, hash, decision = "notify", reasonCode }) {
-  const a = { threatId, category, riskLevel, stage: "tool", tool: t(toolName), decision, ...(reasonCode ? { reasonCode } : {}), mcpServer: server, ts: now(), contentHash: hash, ...IDENTITY };
+export function alertTool(server, toolName, { category, riskLevel, threatId = 0, hash, decision = "notify", reasonCode, driftCheck }) {
+  const a = { threatId, category, riskLevel, stage: "tool", tool: t(toolName), decision, ...(reasonCode ? { reasonCode } : {}), ...(driftCheck ? { driftCheck } : {}), mcpServer: server, ts: now(), contentHash: hash, ...IDENTITY };
   post(a);
   if (riskLevel === "High" || riskLevel === "Critical" || riskLevel === "Blocked") {
     try { post({ ...literacyTouchpoint({ threatId, category, tool: t(toolName) }), ...IDENTITY }); } catch { /* evidence */ }
@@ -135,8 +135,18 @@ export function alertResult(server, toolName, findings, blocked) {
 }
 
 // A tools/call refused because block-mode tool drift quarantined the tool (mcp-proxy/tool-drift.mjs).
-export function alertDriftCall(server, tool, category, argsHash) {
-  const a = { threatId: 0, category, riskLevel: "Blocked", stage: "mcp", tool: t(tool), decision: "deny", reasonCode: "MCP_TOOL_DRIFT", mcpServer: server, ts: now(), contentHash: argsHash, ...IDENTITY };
+// `rechecked`: the verdict came from a re-list the gateway made before the call (driftCheck "recheck").
+export function alertDriftCall(server, tool, category, argsHash, rechecked = false) {
+  const a = { threatId: 0, category, riskLevel: "Blocked", stage: "mcp", tool: t(tool), decision: "deny", reasonCode: "MCP_TOOL_DRIFT", ...(rechecked ? { driftCheck: "recheck" } : {}), mcpServer: server, ts: now(), contentHash: argsHash, ...IDENTITY };
+  post(a);
+  ledger(a);
+}
+
+// The re-list before a block-mode tools/call failed or ran out of time, and the fail mode is open: the
+// call goes on to the rest of the gate (mcp-proxy/tool-recheck.mjs). Content-free: the cause only.
+export function alertRecheckFailed(server, tool, why, argsHash) {
+  const w = why === "timeout" ? "timeout" : "error";
+  const a = { threatId: 0, category: "MCP: tool list re-check failed", riskLevel: "Medium", stage: "mcp", tool: t(tool), decision: "allow", reasonCode: "MCP_TOOL_DRIFT", driftCheck: "recheck", failMode: "open", failWhy: w, mcpServer: server, ts: now(), contentHash: `mcp:tool:recheck-failed:${w}`, ...IDENTITY };
   post(a);
   ledger(a);
 }

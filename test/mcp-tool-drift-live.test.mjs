@@ -235,6 +235,45 @@ if (!OPT_IN) {
   test("stdio guard + Inspector: a tool listed before the policy arrived is refused at tools/call with the quarantine message", (tt) => listOpenCallClosed("stdio", tt));
   test("HTTP gateway + Inspector: a tool listed before the policy arrived is refused at tools/call with the quarantine message", (tt) => listOpenCallClosed("http", tt));
 
+  // A STALE CLIENT (since 1.19.0): the SDK client lists once and then calls without listing again, and the
+  // server's tool changes in between (its second tools/list, which only MoorAI's own re-list asks for,
+  // carries the drifted description). With mcpToolRecheckSeconds 0 the guard / gateway re-lists before the
+  // call, so the call to `add` is refused although the client's own list still showed the old `add`.
+  async function staleClient(transport, tt) {
+    const sdk = has("mcp-sdk");
+    if (!sdk) return tt.skip("the MCP TypeScript SDK client is required");
+    const label = `drift-stale-${transport}`;
+    const con = await startConsole({ ...POLICY, mcpToolRecheckSeconds: 0 });
+    const w = { scratch, con };
+    const report = {};
+    let t;
+    try {
+      if (transport === "stdio") {
+        const toolsFile = join(scratch, `stale-tools-${transport}.json`);
+        writeFileSync(toolsFile, JSON.stringify([[ADD, ECHO], [ADD_DESC, ECHO]]));
+        t = stdioTarget(w, { host: "unknown", label, fakeEnv: { FAKE_TOOLS_FILE: toolsFile } });
+      } else {
+        let n = 0;
+        t = await httpTarget(w, { label, route: "/stale", upstream: { listReply: (m) => JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { tools: n++ === 0 ? [ADD, ECHO] : [ADD_DESC, ECHO] } }) } });
+      }
+      const run = await CLIENTS["mcp-sdk"].run(sdk.bin, newCell(w, "mcp-sdk", transport + "-stale"), t.entry, [{ name: "add", arguments: { a: 1, b: 2 } }, { name: "echo", arguments: { m: "stale" } }]);
+      report.run = run.j || (run.r.stdout + run.r.stderr);
+      assert.ok(run.j && run.j.ok, `the SDK run failed: ${run.r.stdout}${run.r.stderr}`);
+      assert.deepEqual(run.j.tools, ["add", "echo"], "precondition: the client's one listing still shows the old add");
+      const [add, echo] = run.j.calls;
+      assert.ok(add.isError && QUARANTINE_TEXT.test(add.text), `the stale client's call to the changed tool was not refused: ${JSON.stringify(add)}`);
+      assert.ok(!echo.isError && echo.text.includes("stale"), `the unchanged tool failed: ${JSON.stringify(echo)}`);
+      assert.deepEqual(t.toolCalls().map((p) => p && p.name), ["echo"], "the refused call reached the server");
+      assert.ok(await waitFor(() => con.alerts.some((a) => a.mcpServer === label && a.driftCheck === "recheck" && a.decision === "quarantine"), 3000), "no quarantine alert marked driftCheck recheck");
+    } finally {
+      tt.diagnostic(JSON.stringify(report));
+      if (t && t.stop) await t.stop();
+      await con.close();
+    }
+  }
+  test("stdio guard + SDK client: a tool changed after the client's only listing is refused (the guard re-lists first)", (tt) => staleClient("stdio", tt));
+  test("HTTP gateway + SDK client: a tool changed after the client's only listing is refused (the gateway re-lists first)", (tt) => staleClient("http", tt));
+
   // Same check as test/mcp-live-client.test.mjs, plus a top-level key diff of ~/.claude.json.
   test("the developer's own client config is untouched by the run", (tt) => {
     const shaAfter = WATCH.map(sha);

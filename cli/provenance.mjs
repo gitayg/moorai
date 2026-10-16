@@ -120,7 +120,7 @@ const CATEGORY_REASON = [
   [/^MCP gateway: invalid message$/, REASON.SCHEMA_INVALID],
   [/^MCP gateway: response too large$/, REASON.RESPONSE_TOO_LARGE],
   [/^MCP gateway: client cool-down$/, REASON.CLIENT_COOLDOWN],
-  [/^MCP: (tool added after approval|tool removed after approval|quarantined tool \(changed since approval\)|tool not in a checked listing)$/, REASON.MCP_TOOL_DRIFT],
+  [/^MCP: (tool added after approval|tool removed after approval|quarantined tool \(changed since approval\)|tool not in a checked listing|tool list re-check failed)$/, REASON.MCP_TOOL_DRIFT],
   [/^MCP tool call$/, REASON.NO_MATCH],
   [/^Fail-closed: /, REASON.FAIL_CLOSED],
   [/^Containment: agent commands not in MXC$/, REASON.CONTAINMENT_MISSING],

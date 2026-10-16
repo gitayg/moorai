@@ -1,7 +1,9 @@
 // The per-route gate: what the stdio proxy (mcp-proxy/moorai-mcp-guard.mjs) does to each JSON-RPC
 // message, minus the stdio transport. One guard per route (= one remote MCP server label).
 //
-//   gateCall(msg)        a tools/call REQUEST → { block: null } (forward) or { block: "<reason>" }
+//   gateCall(msg, { fetchPage })  a tools/call REQUEST → { block: null } (forward) or { block: "<reason>" };
+//                        fetchPage (./relist.mjs) sends the route's own tools/list upstream when block
+//                        mode needs a fresher listing first (../mcp-proxy/tool-recheck.mjs)
 //   observeTools(tools)  a tools/list RESULT  → alerts, baseline drift, quarantine; alters the list only
 //                        under policy mcpToolDrift "block" (../mcp-proxy/tool-drift.mjs), and then only
 //                        to leave out a quarantined tool
@@ -26,6 +28,7 @@ import { CAPS, toolScanText, toolIdentity, resultOfResponse } from "../mcp-proxy
 import { decideInbound, inboundText } from "../cli/inbound.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "../mcp-proxy/tool-baseline.mjs";
 import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON } from "../mcp-proxy/tool-drift.mjs";
+import { createRecheck, RECHECK_SOURCE } from "../mcp-proxy/tool-recheck.mjs";
 import { isEnrolled } from "../data/enforcement.js";
 import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
 import { indexWriteScan } from "../cli/index-tools.mjs";
@@ -37,7 +40,7 @@ import { contentHash } from "../cli/content-hash.mjs";
 import { state, ensurePolicy } from "./policy.mjs";
 import { profileCheck } from "./profile.mjs";
 import { failClosed, failReason, alertFailClosed } from "./fail.mjs";
-import { CONFIG, IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, alertProfile, alertDriftCall, recordLedger } from "./report.mjs";
+import { CONFIG, IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, alertProfile, alertDriftCall, alertRecheckFailed, recordLedger } from "./report.mjs";
 
 const RANK = { allow: 1, ask: 2, deny: 3 };
 
@@ -83,6 +86,7 @@ export function createGuard(route) {
   let clientRoots = [];
   const REP_DECL = { url: route.url };
   const DRIFT = createDriftTracker({ server: SERVER });
+  const RECHECK = createRecheck({ tracker: DRIFT });
   // Coach (unenrolled, unmanaged) never blocks, so block mode degrades to today's alert path there.
   const driftBlocking = () => !state.COACH && toolDriftMode(state.POLICY) === "block";
   let REP = null;
@@ -126,7 +130,7 @@ export function createGuard(route) {
     clientRoots = out;
   }
 
-  async function gateCall(msg) {
+  async function gateCall(msg, { fetchPage = null } = {}) {
     await ensurePolicy();
     if (GATECALL_THROW) throw new Error("injected call-gate fault (test hook)");
     const tool = String(msg.params.name || "");
@@ -140,12 +144,27 @@ export function createGuard(route) {
       return { block: "this tool's advertised metadata was blocked by policy (MCP tool poisoning)" };
     }
     // Block-mode tool drift: re-judged against the policy in force now, so a console re-approval
-    // releases the tool without the client listing again.
+    // releases the tool without the client listing again. When the route's last judged listing is older
+    // than the policy's window, the gateway lists the upstream itself first, with the client's session
+    // headers (./relist.mjs), so a tool changed after the client's last listing is caught here. One
+    // re-list in flight per route, shared by concurrent calls.
     if (driftBlocking()) {
+      let rechecked = false;
+      if (fetchPage && RECHECK.due(state.POLICY)) {
+        // a listing observed off-path (forwarded before the policy loaded) is older: judged first
+        if (obsInFlight) await withDeadline(obsQueue, CAPS.resultDeadlineMs);
+        const rc = await RECHECK.ensureFresh({ policy: state.POLICY, fetchPage, judge: (tools) => judgeListing(tools, { complete: true, continued: false, last: true, own: true }, RECHECK_SOURCE) });
+        if (!rc.ok) {
+          // Closed: refused, the upstream never receives a call MoorAI could not check. Open: forwarded, with an alert.
+          const fm = failClosed();
+          if (fm) { alertFailClosed("mcp", "recheck", fm, tool, SERVER); auditCall(SERVER, tool, "deny", argsHash); return { block: failReason("recheck"), failClosed: true }; }
+          alertRecheckFailed(SERVER, tool, rc.why, argsHash);
+        } else rechecked = rc.rechecked;
+      }
       if (!DRIFT.has(tool) && obsInFlight) await withDeadline(obsQueue, CAPS.resultDeadlineMs);
       const q = DRIFT.checkCall(tool, { policy: state.POLICY });
       if (q) {
-        alertDriftCall(SERVER, tool, q.category, argsHash);
+        alertDriftCall(SERVER, tool, q.category, argsHash, rechecked);
         auditCall(SERVER, tool, "deny", argsHash);
         return { block: q.reason };
       }
@@ -232,20 +251,21 @@ export function createGuard(route) {
     return { block: null };
   }
 
-  // Judge one listing in block mode → { changed, names } or null when it could not run.
-  function judgeListing(tools, shape) {
+  // Judge one listing in block mode → { changed, names } or null when it could not run. `driftCheck`
+  // "recheck" marks the alerts of a listing the gateway requested itself.
+  function judgeListing(tools, shape, driftCheck) {
     try {
       const ev = DRIFT.evaluateListing(tools, { policy: state.POLICY, ...shape });
       for (const q of ev.quarantined) {
         for (const sig of q.signals) {
           if (!seenOnce(`${SERVER}|quarantine|${sig.token}`)) continue;
-          alertTool(SERVER, q.name, { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "quarantine", reasonCode: TOOL_DRIFT_REASON });
+          alertTool(SERVER, q.name, { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "quarantine", reasonCode: TOOL_DRIFT_REASON, driftCheck });
         }
       }
       for (const sig of ev.removed) {
-        if (seenOnce(`${SERVER}|${sig.token}`)) alertTool(SERVER, "mcp", { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "notify", reasonCode: TOOL_DRIFT_REASON });
+        if (seenOnce(`${SERVER}|${sig.token}`)) alertTool(SERVER, "mcp", { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "notify", reasonCode: TOOL_DRIFT_REASON, driftCheck });
       }
-      reportFingerprints({ config: CONFIG, server: SERVER, fingerprints: ev.fingerprints, enrolled: isEnrolled(CONFIG), actor: IDENTITY.actor });
+      if (!driftCheck) reportFingerprints({ config: CONFIG, server: SERVER, fingerprints: ev.fingerprints, enrolled: isEnrolled(CONFIG), actor: IDENTITY.actor });
       return { changed: ev.changed, names: new Set(ev.quarantined.map((q) => q.name)) };
     } catch { try { DRIFT.invalidate(); } catch { /* nothing to clear */ } return null; }
   }
@@ -340,6 +360,8 @@ export function createGuard(route) {
   // but it can only quarantine a tool, never clear one (tool-drift.mjs evaluateListing).
   async function gateResult(msg, toolName, { paged = false, tightenOnly = false } = {}) {
     try {
+      // The upstream says its tool list changed: the next block-mode call re-lists first. Forwarded as ever.
+      if (msg && msg.method === "notifications/tools/list_changed") { DRIFT.markStale(); return null; }
       const r = msg && msg.result;
       if (r && typeof r === "object" && Array.isArray(r.tools)) {
         const tools = r.tools.filter((x) => x && typeof x === "object" && !Array.isArray(x) && typeof x.name === "string");

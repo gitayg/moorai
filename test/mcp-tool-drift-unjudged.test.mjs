@@ -78,6 +78,7 @@ test("PROXY: a listing whose result key is spelled \\u0072esult is judged like a
 // ---- the HTTP gateway ----
 const env = { MOORAI_TEST_POLICY_REFRESH_MS: "0" };
 const list = (base, id) => rpc(base, { jsonrpc: "2.0", id, method: "tools/list", params: {} });
+const ownRelist = (m) => String(m.id).startsWith("moorai-gw-recheck-");
 const names = (r) => r.json.result.tools.map((t) => t.name);
 const refused = (r) => !!(r.json && r.json.result && r.json.result.isError === true && /MoorAI blocked this MCP tool call/.test(r.json.result.content[0].text));
 const notChecked = (r) => refused(r) && /not in a tool listing MoorAI could check/.test(r.json.result.content[0].text);
@@ -87,7 +88,9 @@ test("GATEWAY: a tool that passed a clean listing is refused after a JSON listin
   const home = makeHome(con.url);
   let i = 0;
   const batches = [[ADD, ECHO], [ADD_DESC, ECHO, PAD]];
-  const listReply = (m) => JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { tools: batches[Math.min(i++, batches.length - 1)] } });
+  // The gateway's own re-list before a block-mode call (since 1.19.0) reads the server's current batch; only
+  // the client's listings move it on.
+  const listReply = (m) => JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { tools: batches[Math.min(ownRelist(m) ? i : i++, batches.length - 1)] } });
   try {
     await scenario({ con, home, upstream: { listReply }, env }, async ({ base, up }) => {
       assert.ok(notChecked(await rpc(base, call(1, "__prime__"))));
@@ -115,7 +118,7 @@ async function sseListUpstream(batches) {
       if (m.id == null) { res.writeHead(202); res.end(); return; }
       if (m.method === "tools/list") {
         res.writeHead(200, { "Content-Type": "text/event-stream" });
-        res.end(`id: e1\nevent: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { tools: batches[Math.min(i++, batches.length - 1)] } })}\n\n`);
+        res.end(`id: e1\nevent: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { tools: batches[Math.min(ownRelist(m) ? i : i++, batches.length - 1)] } })}\n\n`);
         return;
       }
       if (m.method === "tools/call") calls.push(m.params.name);

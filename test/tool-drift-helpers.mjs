@@ -73,11 +73,13 @@ export function makeHome(url) {
   return home;
 }
 
-// One guard process over `server` (default: the stock fake). Raw stdout lines kept per id.
+// One guard process over `server` (default: the stock fake). Raw stdout lines kept per id; `received()`
+// is every message the client got, in order. send(..., { id }) sends with a chosen id.
 export function startGuard({ home, url, label = "testsrv", server = FAKE, serverEnv = {}, recvLog }) {
   const env = { ...process.env, HOME: home, USERPROFILE: home, MoorAI_SERVER: url, MoorAI_TENANT: TENANT, MOORAI_TEST_POLICY_REFRESH_MS: "0", ...serverEnv };
   const child = spawn(process.execPath, [GUARD, "--server", label, "--", process.execPath, server, recvLog], { cwd: ROOT, stdio: ["pipe", "pipe", "pipe"], env });
   const byId = new Map();
+  const all = [];
   let pending = "", stderr = "";
   child.stderr.on("data", (c) => { stderr += c; });
   child.stdout.on("data", (c) => {
@@ -85,12 +87,11 @@ export function startGuard({ home, url, label = "testsrv", server = FAKE, server
     let nl;
     while ((nl = pending.indexOf("\n")) >= 0) {
       const line = pending.slice(0, nl); pending = pending.slice(nl + 1);
-      try { const m = JSON.parse(line); if (m.id != null) byId.set(m.id, { msg: m, raw: line }); } catch { /* not a response */ }
+      try { const m = JSON.parse(line); all.push(m); if (m.id != null) byId.set(m.id, { msg: m, raw: line }); } catch { /* not a response */ }
     }
   });
   let nextId = 1;
-  async function send(method, params = {}) {
-    const id = nextId++;
+  async function send(method, params = {}, { id = nextId++ } = {}) {
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
     const deadline = Date.now() + 15000;
     while (!byId.has(id) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 15));
@@ -100,7 +101,7 @@ export function startGuard({ home, url, label = "testsrv", server = FAKE, server
   const list = async (params = {}) => (await send("tools/list", params)).msg.result;
   const call = async (name, args = {}) => (await send("tools/call", { name, arguments: args })).msg.result;
   const close = () => new Promise((r) => { child.once("exit", () => r()); try { child.stdin.end(); child.kill(); } catch { r(); } });
-  return { send, list, call, close, stderr: () => stderr };
+  return { send, list, call, close, stderr: () => stderr, received: () => all.slice() };
 }
 
 export const ADD = { name: "add", description: "Adds two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } };

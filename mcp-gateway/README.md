@@ -78,7 +78,7 @@ Same engine, detectors, policy and alert shapes as the stdio proxy; the call ord
 | client → server | every POST body | **staged JSON-RPC / MCP validation** (below) | refused with `SCHEMA_INVALID` (`--schema enforce`, the default) |
 | | any request | client in a **cool-down** (below; off by default) | refused with `CLIENT_COOLDOWN` |
 | | `tools/call` | tool quarantined at list time (policy blocked its metadata) | refused |
-| | | `mcpToolDrift: "block"`: the tool changed, was added, or shadows another server's tool since the approved baseline; or it was never in a listing the gateway checked | refused, `MCP_TOOL_DRIFT`; released when the console re-approves |
+| | | `mcpToolDrift: "block"`: the tool changed, was added, or shadows another server's tool since the approved baseline; or it was never in a listing the gateway checked. Past `mcpToolRecheckSeconds` (or after `notifications/tools/list_changed`) the gateway lists the upstream itself first, so a tool changed after the client's last listing is caught | refused, `MCP_TOOL_DRIFT`; released when the console re-approves. A re-list that fails follows `failMode.mcpGateway` |
 | | | server reputation below `mcpReputation.blockBelow` (identity: the upstream URL) | refused on an enforcing device |
 | | | **declared workload profile** (`workloadProfiles`, below) | report or block per profile; `PROFILE_DRIFT` |
 | | | `mcpGateway`: server allow-list (#3) → per-tool argument rules (#18) → argument content scan (#2) | per policy |
@@ -135,8 +135,19 @@ one tracker per route: the approved baseline from the signed policy (`mcpToolBas
 label>]`) or else the first-seen baseline, quarantine on description / schema drift, an added tool and
 shadowing (across routes of one gateway too), an alert only for a removed tool, the baseline held until
 re-approval, the per-server version mark, the fingerprint report to `POST /api/mcp/tools`, and the same
-failure directions. See "Tool drift: block until re-approved" in
-[`../mcp-proxy/README.md`](../mcp-proxy/README.md). One gateway-specific line: a JSON response between
+failure directions, and the re-list before a call when the route's last judged listing is older than
+`mcpToolRecheckSeconds` or the upstream sent `notifications/tools/list_changed`. See "Tool drift: block
+until re-approved" in [`../mcp-proxy/README.md`](../mcp-proxy/README.md). Here the re-list
+([`relist.mjs`](relist.mjs)) is a separate upstream POST built from the headers of the request that
+carries the `tools/call`, exactly as the forward path builds them (hop-by-hop stripped, placeholder
+credentials swapped, this hop's traceparent): `Mcp-Session-Id` (2025-03-26 .. 2025-11-25),
+`MCP-Protocol-Version` and `Authorization` go as the client sent them; it sends `Accept: application/json,
+text/event-stream`, `Mcp-Method: tools/list` when the client sends the 2026-07-28 metadata headers (no
+`Mcp-Name` / `Mcp-Param-*` / `Last-Event-ID`), and the call's `io.modelcontextprotocol/*` `_meta` keys. Its
+id is `moorai-gw-recheck-<24 hex>-<n>`; the answer (JSON or SSE, masked for bound credentials, capped at
+the response limit) is read by the gateway and never reaches a client. One re-list per route is in flight
+at a time, shared by concurrent calls (including those of other sessions on the route, whose call is then
+decided on the first caller's re-list). One gateway-specific line: a JSON response between
 1 MB and the response cap (or an SSE event over 1 MB) is forwarded unscanned, so its tools are not
 filtered, and when the request was a `tools/list` every verdict for that route is cleared: calls are
 refused as not checked until a listing is judged again, including tools an earlier listing passed. The

@@ -16,6 +16,7 @@
 !mcp-proxy/tool-scan.mjs
 !mcp-proxy/tool-baseline.mjs
 !mcp-proxy/tool-drift.mjs
+!mcp-proxy/tool-recheck.mjs
 !cloud/
 !packages/agent-sdk/src/
 !docker/server/entrypoint.sh

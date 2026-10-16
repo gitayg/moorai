@@ -824,7 +824,18 @@ is validated against.
    outstanding `tools/list`; every other listing, a late duplicate for an id already answered included,
    is judged tighten-only: it can quarantine a tool but never clear one
    ([`mcp-gateway/README.md`](../mcp-gateway/README.md)).
-   Paginated servers are judged page by page and cannot be pinned. The full failure table is in
+   Paginated servers are judged page by page and cannot be pinned. A stale client is judged against a
+   fresh listing ([`mcp-proxy/tool-recheck.mjs`](../mcp-proxy/tool-recheck.mjs)): in block mode, when the
+   last whole listing judged for a server is older than the signed policy's `mcpToolRecheckSeconds`
+   (default 300, 0 = before every call, an integer of at least 0, capped at 86,400), or the server sent
+   `notifications/tools/list_changed`, a `tools/call` first makes the guard or gateway send its own
+   `tools/list` upstream (every page; a nonce id no client can collide with; the answer never reaches the
+   client; the gateway's request carries the client's session headers), judge it, and then forward an
+   unchanged tool or refuse one that drifted or vanished. One re-list per server is in flight, shared by
+   concurrent calls, within a 2 s budget; a failed or timed-out re-list follows `failMode.mcpGateway`
+   (closed refuses, `failWhy: "recheck"`; open forwards with a `MCP: tool list re-check failed` alert).
+   Alerts from a re-list carry `driftCheck: "recheck"`, and its fingerprints are not reported. Alert mode
+   never re-lists. The full failure table is in
    [`mcp-proxy/README.md`](../mcp-proxy/README.md).
 
 11h. **Event-triggered and headless prompts** — [`cli/prompt-scan.mjs`](../cli/prompt-scan.mjs). A

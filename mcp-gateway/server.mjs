@@ -36,6 +36,7 @@ import { parseBody, parseLenient, validateClientBody, validateHeaderPv, validate
 import { createCooldown } from "./cooldown.mjs";
 import { countCall } from "./usage.mjs";
 import { createPendingLists, idKey, PENDING_LIST_MAX, PENDING_LIST_TTL_MS } from "./pending-lists.mjs";
+import { createRelistFetcher, relistHeaders, relistMeta } from "./relist.mjs";
 
 export const MAX_REQUEST_BYTES = 16 * 1048576;
 // Messages in one client batch. Each tools/call in a batch is gated in turn without yielding to other
@@ -309,7 +310,10 @@ export function createGatewayServer(cfg) {
           // write is synchronous, so it runs after this request's own work is under way.
           { const tool = m.params.name; setImmediate(() => countCall(route.server, tool)); }
           try {
-            const d = await guard.gateCall(m);
+            // Block mode may first list the upstream itself (./relist.mjs), with this request's session.
+            const target = upstreamUrl(route, req.url);
+            const fetchPage = createRelistFetcher({ target, headers: relistHeaders(req.headers, { swaps, trace }), agent: AGENTS[target.protocol], creds, meta: relistMeta(m), maxBytes: cfg.maxResponseBytes });
+            const d = await guard.gateCall(m, { fetchPage });
             if (d.block) { blocked.set(m, d.block); if (!d.failClosed) policyRefused = true; }
           } catch {
             // The gate failed on this call. Open (the default): governance, not a sandbox — it forwards.
