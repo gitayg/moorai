@@ -225,8 +225,10 @@ refused on one, carry `driftCheck: "recheck"`; a re-list's fingerprints are not 
 whose view of a server stays the listings its clients received. Alert mode never re-lists: no extra
 request, byte-identical traffic.
 
-The re-list shows what the server tells MoorAI. A server that answers MoorAI's request differently from
-the client's is not caught by it; the client's own listings are still judged as they pass. And while
+The re-list shows what the server tells MoorAI, which a server can tell apart from the client's request.
+So it only tightens: it can quarantine a tool or drop one the server no longer lists, but it never passes a
+tool, never releases a quarantine a client listing set, and moves no baseline. A server that shows MoorAI
+a clean list and the client a drifted one is still caught on the client's listing as it passes. And while
 the client may hold a listing MoorAI could not judge (the rows below that clear every verdict), every
 call is refused until a client listing is judged again, so no re-list is sent then.
 

@@ -180,8 +180,9 @@ export function createDriftTracker({ server, dir = STATE_DIR }) {
   // already answered, a message the MCP SDK would not dispatch, an id no outstanding tools/list carried):
   // it can quarantine a tool, never pass one, and moves neither the baseline nor the paging state.
   // `own` = a whole listing MoorAI requested itself (tool-recheck.mjs): a tool name it no longer carries
-  // loses its verdict, so a call to a tool the server dropped is refused as not in a checked listing; and
-  // after an unjudged listing (invalidate) it is judged tighten-only until a client listing is judged.
+  // loses its verdict, so a call to a tool the server dropped is refused as not in a checked listing. It is
+  // always tighten-only for verdicts: it can quarantine a tool, never pass one or release a quarantine, and
+  // it moves no baseline; after an unjudged listing (invalidate) it is fully tighten-only.
   // → { keep, quarantined: [{ name, signals }], removed: [signal], fingerprints | null, changed }.
   function evaluateListing(tools, { policy, complete, continued = false, last = true, tightenOnly = false, own: ownListing = false }) {
     if (ownListing) { continued = false; last = true; if (cleared) tightenOnly = true; }
@@ -208,7 +209,9 @@ export function createDriftTracker({ server, dir = STATE_DIR }) {
       seen.add(cur.key);
       fingerprints.push(cur);
       const signals = judgeTool(cur, ctx);
-      if (tightenOnly && !signals.length) { keep.push(tool); continue; }
+      // MoorAI's own listing never vouches: a server can answer it differently from the client, so a clean
+      // tool there neither replaces a quarantine the client's listing set nor moves the baseline.
+      if ((tightenOnly || ownListing) && !signals.length) { keep.push(tool); continue; }
       remember(name, { cur, signals });
       if (signals.length) { quarantined.push({ name, signals }); continue; }
       keep.push(tool);

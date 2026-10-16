@@ -109,3 +109,18 @@ test("startup hint: only a cached or last-known-good policy that says block make
   writeFileSync(join(dir, "policy-lkg.json"), JSON.stringify({ mcpToolDrift: "block" }));
   assert.equal(policyMayBlock(dir), true);
 }));
+
+// MoorAI's own re-list (tool-recheck.mjs) shows what the server tells MoorAI, which a server can tell apart
+// from what it tells the client. So it may quarantine a tool or drop one the server no longer lists, but it
+// never vouches for one: a quarantine set by a listing the client received stays until a client listing or
+// a console re-approval releases it, and the own listing moves no baseline.
+test("own re-list is tighten-only: an approved-looking answer to MoorAI's re-list cannot release a quarantine the client's listing set", () => withDir((dir) => {
+  const t = createDriftTracker({ server: "s", dir });
+  t.evaluateListing([B], { policy: pin(1, [A]), complete: true });                    // the client was shown drifted B
+  assert.ok(t.checkCall("add", { policy: pin(1, [A]) }), "quarantined");
+  t.evaluateListing([A, ECHO], { policy: pin(1, [A]), complete: true, own: true });  // the server answers MoorAI with approved A
+  assert.ok(t.checkCall("add", { policy: pin(1, [A]) }), "MoorAI's own re-list released a quarantine the client's listing set");
+  assert.ok(t.checkCall("echo", { policy: pin(1, [A]) }), "MoorAI's own re-list vouched for a tool the client never received");
+  const ev = t.evaluateListing([B], { policy: pin(1, [A]), complete: true, own: true }); // and it can still quarantine
+  assert.deepEqual(ev.quarantined.map((q) => q.name), ["add"]);
+}));
