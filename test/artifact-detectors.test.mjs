@@ -332,11 +332,16 @@ for (const [name, payload, threatId, tool] of E2E) {
 test("hook e2e: benign twins stay silent on the same surfaces", async () => {
   await withServer(async (port, alerts) => {
     const home = makeHome(port);
+    const mine = new Set(ARTIFACT_DETECTORS.map((d) => d.threatId));
     try {
+      // A model DOWNLOAD is not collection (#77) and not a load. Since the static model scanner it is reported
+      // as #76 by its own detector, model-download (data/detectors-model-download.js, test/model-scan-posture.test.mjs),
+      // so that one report is expected here and nothing else.
       await runHook(home, { tool_name: "Bash", tool_input: { command: "huggingface-cli download meta-llama/Llama-3-8B --local-dir ./m" } });
+      const download = alerts.splice(0).filter((a) => mine.has(a.threatId));
+      assert.deepEqual([...new Set(download.map((a) => a.threatId))], [76], JSON.stringify(download.map((a) => [a.threatId, a.category])));
       await runHook(home, { tool_name: "Write", tool_input: { file_path: "/tmp/x/load.py", content: "state = torch.load(ckpt_path, weights_only=True)\n" } });
       await runHook(home, { hook_event_name: "PostToolUse", tool_name: "WebFetch", tool_input: { url: "https://github.com/acme/app" }, tool_response: "[![CI][ci-badge]][ci]\n\n[ci-badge]: https://github.com/acme/app/actions/workflows/ci.yml/badge.svg\n[ci]: https://github.com/acme/app/actions\n" });
-      const mine = new Set(ARTIFACT_DETECTORS.map((d) => d.threatId));
       const got = alerts.filter((a) => mine.has(a.threatId));
       assert.deepEqual(got.map((a) => [a.threatId, a.category, a.tool]), []);
     } finally { rmTree(home); }

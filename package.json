@@ -30,6 +30,7 @@
     "moorai-doctor": "cli/moorai-doctor.mjs",
     "moorai-explain": "cli/moorai-explain.mjs",
     "moorai-mcp-check": "cli/moorai-mcp-check.mjs",
+    "moorai-model-scan": "cli/moorai-model-scan.mjs",
     "moorai-inference-hook": "cli/moorai-inference-hook.mjs",
     "moorai-allow": "cli/moorai-allow.mjs",
     "moorai-ingest": "cli/moorai-ingest.mjs",

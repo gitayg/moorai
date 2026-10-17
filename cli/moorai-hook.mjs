@@ -84,6 +84,7 @@ import { normalizeToolInput, normalizeHookInput } from "./tool-input.mjs";
 import { resolveContainment, containmentDecision, wrapFallback, hostKind, capableForHook, containmentAlert, denyReason, planWrap, unwrapCommand, wrapConfig, writeWrap, wrappedInput, claudeCodeWrapState, launchesWxcExec, ENFORCED_HOSTS, WRAP_NOTE } from "./containment-enforce.mjs";
 import { guardHit, guardAlert, guardReason } from "./containment-guard.mjs";
 import { mxcCapable } from "./mxc-detect.mjs";
+import { queueModelDownload, modelScanDue } from "./model-scan-queue.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -1312,6 +1313,34 @@ async function runPostureBeatWorker(host, mode, cwd) {
       inventory.commit(failed);
     }
   } catch { /* console unreachable: retried after BEAT_RETRY_MS */ }
+  return exitWhenDrained(0);
+}
+
+// ---- static model scan of downloads (cli/model-scan-queue.mjs, cli/model-scan-posture.mjs) ----
+// The Bash branch queues what a model download fetches (detector model-download, #76, report-only); any
+// later hook event spawns this worker once the queue has an entry past its settle time. The scan never
+// runs on the hook's own path. Enrolled devices only: the result is a console alert.
+function maybeModelScan() {
+  try {
+    if (!isEnrolled(CONFIG) || !modelScanDue({ stateDir: STATE_DIR })) return;
+    spawn(process.execPath, [...process.execArgv, SELF, "modelscan"], { detached: true, stdio: "ignore", env: workerEnv() }).unref();
+  } catch { /* the model scan is advisory; fail-open */ }
+}
+async function runModelScanWorker() {
+  try {
+    if (!isEnrolled(CONFIG)) return exitHook();
+    let policy = null;
+    try { ({ policy } = await loadVerifiedPolicy(CONFIG, { network: false })); } catch { policy = null; }
+    const { modelScanPosture } = await import("./model-scan-posture.mjs");
+    // Downloads only: the store inventory belongs to the daily posture worker.
+    const ms = (policy && typeof policy.modelScan === "object" && policy.modelScan) || {};
+    const r = modelScanPosture({ policy: { modelScan: { ...ms, inventory: "off" } }, stateDir: STATE_DIR });
+    if (r) {
+      const failed = [];
+      await Promise.all(r.alerts.map(async (a) => { let res = null; try { res = await post({ ...a, ...IDENTITY }); } catch { res = null; } if (!res || !res.ok) failed.push(a); }));
+      r.commit(failed);
+    }
+  } catch { /* advisory; the posture worker drains the queue too */ }
   return exitWhenDrained(0);
 }
 
@@ -2600,6 +2629,8 @@ async function main() {
   if (cmd === "indexscan") return runIndexScanWorker(process.argv[3]);
   // The detached coverage heartbeat (see maybePostureBeat). No stdin, no decision.
   if (cmd === "posturebeat") return runPostureBeatWorker(process.argv[3], process.argv[4], process.argv[5]);
+  // The detached static model scanner for downloads the hook queued (see maybeModelScan). No stdin, no decision.
+  if (cmd === "modelscan") return runModelScanWorker();
   // The detached alert sender (see handOffAlerts). No stdin, no decision.
   if (cmd === "alertpost") return runAlertPostWorker(process.argv[3]);
   // The detached allow-trail flusher (cli/action-trail.mjs). No stdin, no decision, no policy fetch.
@@ -2623,6 +2654,7 @@ async function main() {
   if (process.env.MOORAI_HOOK_HOST !== "shim" && !AS_PLUGIN) convergeHooks();
   if (AS_PLUGIN && settingsCovers(input.hook_event_name)) return exitHook();
   maybePostureBeat(input);
+  maybeModelScan();
   // MCP usage cross-check (cli/mcp-usage-beat.mjs): completed days go to a detached worker, at most once a day.
   scheduleMcpUsageFlush({ config: CONFIG, path: "hook", host: beatHost() || "unknown" });
   const tool = TOOL_ALIASES[input.tool_name] || input.tool_name || "";
@@ -2995,6 +3027,11 @@ async function main() {
     recordDestinations(tool, "host", extractHosts(ti.command), dec);
     // What this call downloads, for a later call that runs it. A denied call downloads nothing.
     if (dec !== "deny") recordFetched({ sessionId: SESSION_ID, fetched: fx.fetched });
+    // A model download: queue its target for the detached static model scanner (maybeModelScan). The
+    // download itself is only reported (#76 notify); nothing is scanned here.
+    if (dec !== "deny" && finds.some((f) => f.detectorId === "model-download") && isEnrolled(CONFIG) && !(policy.modelScan && policy.modelScan.downloads === "off")) {
+      queueModelDownload(ti.command, { cwd: typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd(), stateDir: STATE_DIR });
+    }
     return emit(dec, `${killIds.length ? "killed session" : "blocked"} via ${tool} — ${reasons.join(", ")}`, alts, bmask);
   }
   // ---- the write family: Write / Edit / MultiEdit / NotebookEdit ----
