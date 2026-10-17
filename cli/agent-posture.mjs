@@ -47,7 +47,7 @@
 // also carries `containment: { kind, scope, source }` (is the agent's command execution inside a
 // Microsoft Execution Container), and the report carries the device's `mxcCapable`. Other platforms
 // get neither field: there the sandbox story is the existing sandboxOff / sandboxFullAccess flags.
-import { readFileSync, readdirSync, statSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, mkdirSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
@@ -262,10 +262,12 @@ export function agentPosture({ home = os.homedir(), env = process.env, cwd = nul
 // written here; the result carries commit(failed), which the caller runs after posting, with the alerts
 // that did not reach the console, so a lost post is raised again on the next scan instead of being forgotten.
 // procs: the process readers aiApiCallers uses ({ exeOf, argvOf, sigOf }); the OS's own by default.
-// → { fields: { localModelServers, aiApiCallers, decoyKeys }, alerts: [alert without identity], notes, commit? }
+// modelScan: the static model-file scan (cli/model-scan-posture.mjs): queued downloads, and the model stores when
+// the signed policy opts in (modelScan.inventory "scan"). Adds `modelFiles` only when a scan ran.
+// → { fields: { localModelServers, aiApiCallers, decoyKeys, modelFiles? }, alerts: [alert without identity], notes, commit? }
 export const INVENTORY_STATE_FILE = "inventory-detectors.json";
 export async function inventoryPosture({ policy = null, home = os.homedir(), stateDir = join(home, ".moorai"), platform = process.platform, machineDir, write = true,
-  decoys = write, commit = true, sample = () => tcpTable({ platform }), connect, lookup, procs = {}, resolve = true, ts = new Date().toISOString() } = {}) {
+  decoys = write, commit = true, sample = () => tcpTable({ platform }), connect, lookup, procs = {}, resolve = true, ts = new Date().toISOString(), modelScan = null } = {}) {
   const notes = {};
   if (write && decoys) { try { notes.decoys = syncDecoys({ policy, home, platform }); } catch { /* best effort */ } }
   const decoyKeys = decoyPosture({ home, machineDir });
@@ -280,6 +282,15 @@ export async function inventoryPosture({ policy = null, home = os.homedir(), sta
     notes.ambiguousConnections = r.ambiguous;
   }
   const fields = { localModelServers, aiApiCallers: callerPosture(callers), decoyKeys };
+  // Loaded only when there is something to scan (a queued download, or the store scan turned on), so the
+  // daily worker pays nothing for the scanner otherwise.
+  let ms = null;
+  try {
+    let run = modelScan;
+    if (!run && write && ((policy && policy.modelScan && policy.modelScan.inventory === "scan") || existsSync(join(stateDir, "model-scan-queue.json")))) run = (await import("./model-scan-posture.mjs")).modelScanPosture;
+    if (run) ms = run({ policy, home, stateDir, platform, write, ts });
+  } catch { ms = null; }
+  if (ms) fields.modelFiles = ms.field;
   if (!write) return { fields, alerts: [], notes };
   const file = join(stateDir, INVENTORY_STATE_FILE);
   let prev = {};
@@ -296,9 +307,10 @@ export async function inventoryPosture({ policy = null, home = os.homedir(), sta
       writeFileSync(tmp, JSON.stringify({ exposed, callers: seen }), { mode: 0o600 });
       renameSync(tmp, file);
     } catch { /* a lost state file costs one repeated alert */ }
+    if (ms) { try { ms.commit(failed); } catch { /* one rescan, one repeated alert */ } }
   };
   if (commit) save();
-  return { fields, alerts: [...ex.alerts, ...ca.alerts], notes, ...(commit ? {} : { commit: save }) };
+  return { fields, alerts: [...ex.alerts, ...ca.alerts, ...(ms ? ms.alerts : [])], notes, ...(commit ? {} : { commit: save }) };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

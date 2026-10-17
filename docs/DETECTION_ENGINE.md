@@ -2966,6 +2966,7 @@ the standard a credit has to pass.
 | AML.T0061 LLM Prompt Self-Replication | `inj-self-replication` | #74 | file, index, output |
 | AML.T0067 LLM Trusted Output Components Manipulation (links only) | `out-link-deceptive` | #75 | output |
 | AML.T0011.000 Unsafe AI Artifacts (load calls only) | `model-unsafe-load` | #76 | prompt, output |
+| AML.T0011.000 Unsafe AI Artifacts (downloads, report-only; the files are scanned off the hook path) | `model-download` | #76 | prompt (Bash only) |
 | AML.T0035 AI Artifact Collection (one command) | `model-artifact-collection` | #77 | prompt |
 | AML.T0086 Exfiltration via AI Agent Tool Invocation (listed collection hosts only) | `oast-exfil` | #78 | prompt, output |
 | AML.T0086 Exfiltration via AI Agent Tool Invocation (listed hosts, contact without a payload) | `oast-contact` | #79 | prompt, output |
@@ -2994,6 +2995,15 @@ download or temp path, on pickle / joblib / dill / cloudpickle / `read_pickle` o
 `weights_only=True` and safetensors are silent. A bare `torch.load` of a local path is silent because
 PyTorch 2.6 and later default to `weights_only=True` (PyTorch 2.6.0 release notes: the deprecation
 "flipped `torch.load` to use `weights_only=True` by default").
+
+**A model download is a report and a hand-off, not a scan.** `model-download`
+(`data/detectors-model-download.js`, `data/model-download.js`) fires on a Bash command that fetches model
+weights: `ollama pull`, `huggingface-cli download` / `hf download`, `git lfs pull`, a `git clone` from the
+Hugging Face hub, and `curl` / `wget` of a URL ending in a model extension that lands in a file. It is
+`notify` on #76 and yields to `model-unsafe-load`. The hook queues the download's target; the static model
+scanner (`cli/model-scan.mjs`) reads the files in a detached worker after the download settles. The scan's
+own verdicts are posture alerts (`MODEL_FILE_UNSAFE` / `MODEL_FILE_SUSPICIOUS`, #76), described in
+docs/CAPABILITY_SPEC.md "Static model-file scanning".
 
 Each of the five detectors is a broad prefilter plus a `refine` that carries the decision, and each
 `refine` requires **two** independent things, for the reason §3 and `obf-deliberate-obscurity` already

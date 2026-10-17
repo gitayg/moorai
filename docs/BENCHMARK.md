@@ -1,9 +1,9 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-17T15:59:08.761Z
+> Generated: 2026-10-17T17:23:27.479Z
 
-- **Detectors:** 115
+- **Detectors:** 116
 - **Threats:** 80
 - **Adversarial corpus:** 102/102 passed (100.0%)
 - **OWASP LLM Top 10:** 10/10 items covered by ≥1 on-device detector
@@ -17,7 +17,7 @@
 |------|------|--------:|----------:|--------|
 | LLM01 | Prompt Injection | 8 | 21 | ✅ covered |
 | LLM02 | Sensitive Information Disclosure | 20 | 40 | ✅ covered |
-| LLM03 | Supply Chain | 8 | 5 | ✅ covered |
+| LLM03 | Supply Chain | 8 | 6 | ✅ covered |
 | LLM04 | Data & Model Poisoning | 1 | 1 | ✅ covered |
 | LLM05 | Improper Output Handling | 7 | 16 | ✅ covered |
 | LLM06 | Excessive Agency | 15 | 8 | ✅ covered |
@@ -34,7 +34,7 @@
 | ASI02 | Tool Misuse and Exploitation | 9 | 9 | 7 | ◐ partial |
 | ASI03 | Identity and Privilege Abuse | 4 | 4 | 6 | ◐ partial |
 | ASI04 | Agentic Supply Chain Vulnerabilities | 3 | 3 | 11 | ◐ partial |
-| ASI05 | Unexpected Code Execution (RCE) | 6 | 6 | 14 | ◐ partial |
+| ASI05 | Unexpected Code Execution (RCE) | 6 | 6 | 15 | ◐ partial |
 | ASI06 | Memory & Context Poisoning | 4 | 4 | 6 | ◐ partial |
 | ASI07 | Insecure Inter-Agent Communication | 1 | 1 | 0 | — |
 | ASI08 | Cascading Failures | 0 | 0 | 0 | — |
@@ -81,7 +81,7 @@ risk, the MCP allow-list) are counted under Threats but add no detectors. Source
 | T1027.010 | Command Obfuscation | agent | 1 | 8 | ◐ partial |
 | T1105 | Ingress Tool Transfer | agent | 1 | 2 | ◐ partial |
 | T1204.001 | Malicious Link | agent | 3 | 3 | ◐ partial |
-| T1204.002 | Malicious File | agent | 1 | 1 | ◐ partial |
+| T1204.002 | Malicious File | agent | 1 | 2 | ◐ partial |
 | T1204.004 | Malicious Copy and Paste | agent | 1 | 2 | ◐ partial |
 | T1204.005 | Malicious Library | agent | 2 | 3 | ◐ partial |
 | T1176.002 | IDE Extensions | agent | 1 | 2 | ◐ partial |

@@ -14,6 +14,7 @@ import { agentDirected, zeroWidthInterleave } from "./agent-directed.js";
 import { ROLE_SPOOF_DIRECTIVES } from "./role-spoof.js";
 import { AGENT_STATE_DETECTORS } from "./detectors-agent-state.js";
 import { ARTIFACT_DETECTORS } from "./detectors-artifacts.js";
+import { MODEL_DOWNLOAD_DETECTORS } from "./detectors-model-download.js";
 import { INSTRUCTION_LEAK_DETECTORS } from "./detectors-instruction-leak.js";
 import { TOOL_CREDPATH_DETECTORS } from "./detectors-tool-credpaths.js";
 import { CLOUD_METADATA_DETECTORS } from "./detectors-cloud-metadata.js";
@@ -1796,6 +1797,7 @@ export const DETECTORS = [
   },
   ...AGENT_STATE_DETECTORS,
   ...ARTIFACT_DETECTORS,
+  ...MODEL_DOWNLOAD_DETECTORS,
   ...INSTRUCTION_LEAK_DETECTORS,
   ...TOOL_CREDPATH_DETECTORS,
   ...CLOUD_METADATA_DETECTORS

@@ -1870,6 +1870,79 @@ Limits: renamed or copied downloads, variable paths, `scp`/`rsync`/`httpie` uplo
 file, and unlisted hosts are not seen. Benign corpora were unchanged (v2 20/602) but barely exercise these
 shapes (2 of 610 samples contain curl/wget). Tested on macOS only.
 
+## Static model-file scanning (backlog #13, part a)
+
+`cli/model-scan.mjs` and its format readers inspect model files without loading or executing them. One
+verdict per file: format, findings `{ class, severity, count, details }`, severity, sha256. `details` are short
+local strings for the CLI (an import name, an op name, a domain); they never leave the device.
+
+- **Pickle** (`cli/model-scan-pickle.mjs`): an opcode walker for protocols 0-5 (table from CPython
+  `Lib/pickletools.py`) with a symbolic stack and memo, so `STACK_GLOBAL` resolves memoised strings.
+  Classes: `dangerous-import` critical (deny list of modules and `builtins` names, dunder segments, dotted
+  `pathlib` methods), `indirect-call` high (a callable that is not an imported global),
+  `unresolved-global` medium (`STACK_GLOBAL` on a computed string, `EXT*`), `nested-load` medium
+  (`torch.load`, `torch.storage._load_from_bytes`, `numpy.load`), `unknown-import` low, `malformed` medium,
+  `too-large` medium (20 M opcodes / 2 GiB), `partial-parse` medium (joblib inline array data).
+- **PyTorch zip** (`cli/model-scan-zip.mjs`): central directory with ZIP64; every `*.pkl` entry, stored
+  (walked in place) or deflated (inflated up to 1 GiB).
+- **Keras** (`cli/model-scan-keras.mjs`): `.keras` `config.json`; HDF5 by a bounded byte search for
+  `{"class_name"` in the first 256 MB and a balanced-JSON parse (no HDF5 library). `lambda-code` critical,
+  `lambda-function` medium, `dangerous-import` critical, `custom-object` low, `lambda-layer` high (a Lambda
+  name with no parseable config), `no-config` low.
+- **TF SavedModel / ONNX** (`cli/model-scan-proto.mjs`): a protobuf walker that follows only the message
+  paths naming ops, domains and external-data locations. `tf-python-op` high, `tf-file-op` medium,
+  `custom-op-domain` medium, `runtime-contrib-domain` low, `external-data-escape` high. Heuristics.
+- **GGUF** (`cli/model-scan-gguf.mjs`, `cli/model-scan-template.mjs`): header and metadata per the GGUF spec
+  (v1-v3); chat templates get `jinja-python-internals` critical, `jinja-obfuscated-access` high,
+  `jinja-gadget-global` medium, `template-instructions` high, `template-url` medium, `hidden-text` high,
+  `obfuscated-text` medium; metadata gets `duplicate-key`, `bad-key`, `template-not-string`,
+  `unknown-version`, `malformed`. `namespace()` alone is not flagged.
+- **SafeTensors** (`cli/model-scan-safetensors.mjs`): header validation only (100 MB header cap, dtypes,
+  offsets, sizes, overlaps, `offset-gap` low). A valid header is clean by design.
+- **Caps** (`SCAN_LIMITS`): 64 GiB per file (over it: `unscanned`, `size-limit`, not hashed), 2000 files and
+  256 GiB per walk, depth 12, 200 000 directory entries. Symlinked directories are not followed.
+
+**Surfaces.**
+
+- `moorai-model-scan <path|dir> [--json] [--allow <sha256>] [--policy file.json]` (`cli/model-scan-cli.mjs`).
+  Exit 0 / 1 (unsafe or suspicious) / 2 (usage).
+- **Downloads** (`data/model-download.js`, `data/detectors-model-download.js`): detector `model-download`
+  → **#76** (stage prompt, Bash commands only, `notify`; it yields to `model-unsafe-load`). #76 was chosen over
+  #57 (AML.T0010, default `justify`, which would ask on every `ollama pull` and is about package installs) and
+  #80 (clone-and-run): a downloaded model is the unsafe artifact of AML.T0011.000, the scan's findings are
+  exactly that technique, and #76 already reports by default. No threat in the catalogue carries AML.T0018,
+  and none was added. The PreToolUse Bash branch only appends the target to `~/.moorai/model-scan-queue.json`
+  (`cli/model-scan-queue.mjs`); `maybeModelScan` on a later event spawns `moorai-hook.mjs modelscan` once an
+  entry is a minute old (at most once per 5 minutes), and the worker scans a target only after nothing in it
+  changed for a minute and no partial file (`*.incomplete`, `*-partial*`, `*.part`) remains.
+- **Posture** (`cli/model-scan-posture.mjs`, called from `inventoryPosture`): drains the queue and, with
+  `modelScan.inventory: "scan"`, scans `modelStoreDirs` (`cli/local-ai-inventory.mjs`: `OLLAMA_MODELS` or
+  `~/.ollama/models`, `/usr/share/ollama/.ollama/models` on Linux, `~/.lmstudio/models`,
+  `~/.cache/lm-studio/models`, the Hugging Face hub cache). Verdicts are remembered in
+  `~/.moorai/model-scan-state.json` keyed by a hash of path, size and mtime.
+
+**Policy.** `modelScan: { inventory: "off" | "scan" (default off), downloads: "scan" | "off" (default scan),
+allowHashes: [sha256], maxGiBPerRun: number (default 32) }`.
+
+**What leaves the device.** Heartbeat `modelFiles: { inventory, downloads, stores, scanned, unsafe, suspicious,
+clean, allowed, unscanned, pending, pendingDownloads, byFormat, byClass }`. Alerts once per sha256:
+`threatId 76`, `reasonCode MODEL_FILE_UNSAFE | MODEL_FILE_SUSPICIOUS`, `stage "inventory"`, `tool
+"download:model-scan" | "inventory:model-scan"`, `modelFile: { format, verdict, severity, classes, sha256 }`.
+The memory is written after the posts, minus the alerts the console did not accept.
+
+**Limits.** Static only: an input-triggered backdoor, and trojaned or tampered weights, are not detectable this
+way, and the dynamic half of #13 is not built. The TF and ONNX checks are heuristics (names, not behaviour).
+joblib files with inline numpy arrays are read up to the first array. HDF5 configs that are compressed or past
+256 MB are not seen. A cached verdict is not re-evaluated when the allow-list changes until the file changes.
+The console does not yet know the `modelFiles` field or the two reason codes. Tested on macOS only.
+
+**Cost** (dev Mac, synthetic 1 GiB GGUF): 1.03 s with the sha256, under 1 ms for the header and template
+parse alone. The hash dominates, so a store scan costs about one second per GiB the first time and nothing
+for an unchanged file afterwards.
+
+**Tests.** `test/model-scan.test.mjs`, `test/model-scan-posture.test.mjs` (fixtures in
+`test/model-scan-fixtures.mjs`, all synthetic).
+
 ## Egress proxy (egressRules on real connections)
 
 **Status: built and unit-tested (`test/egress-proxy.test.mjs`, `test/egress-proxy-address.test.mjs`,
