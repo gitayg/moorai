@@ -47,6 +47,24 @@ test("pickle: builtins.eval through STACK_GLOBAL with memoised module and name i
   assert.ok(f);
   assert.deepEqual(f.details, ["builtins.eval"]);
 });
+test("pickle: protocol-0 STRING and UNICODE escapes are decoded before the deny list (\\x, octal, \\U)", () => {
+  const P = (...parts) => Buffer.concat([Buffer.from([0x80, 0x04]), ...parts.map((p) => (typeof p === "string" ? Buffer.from(p, "latin1") : Buffer.from(p))), Buffer.from(".")]);
+  const call = [0x93], tail = (arg) => [arg, [0x85, 0x52]];
+  const hex = P("S'\\x6fs'\n", "S'sys\\x74em'\n", call, ...tail("S'id'\n"));
+  const oct = P("S'\\157s'\n", "S'system'\n", call, ...tail("S'id'\n"));
+  const uniU = P("V\\U0000006fs\n", "Vsystem\n", call, ...tail("Vid\n"));
+  for (const buf of [hex, oct, uniU]) {
+    const f = pickleOf(buf).findings.find((x) => x.class === "dangerous-import");
+    assert.ok(f && f.severity === "critical", "escaped os.system must be a dangerous import");
+    assert.deepEqual(f.details, ["os.system"]);
+  }
+});
+test("pickle: a STRING escape the decoder cannot read leaves the global unresolved, never unknown-and-low", () => {
+  const buf = Buffer.concat([Buffer.from([0x80, 0x04]), Buffer.from("S'o\\qs'\nS'system'\n", "latin1"), Buffer.from([0x93]), Buffer.from("S'id'\n", "latin1"), Buffer.from([0x85, 0x52, 0x2e])]);
+  const r = pickleOf(buf);
+  assert.ok(has(r, "unresolved-global"));
+  assert.ok(!r.findings.some((f) => f.severity === "low" && /o\\?q?s\.system/.test(String(f.details))));
+});
 test("pickle: subprocess.Popen is flagged", () => {
   assert.deepEqual(pickleOf(PICKLES.subprocessPopen).findings.find((x) => x.class === "dangerous-import").details, ["subprocess.Popen"]);
 });

@@ -130,9 +130,33 @@ const textOps = new Set(["STRING", "UNICODE", "BINSTRING", "SHORT_BINSTRING", "B
 function strValue(name, raw) {
   if (raw.length > STR_KEEP) return { t: "str", v: null };
   let s = name === "BINUNICODE" || name === "SHORT_BINUNICODE" || name === "BINUNICODE8" ? raw.toString("utf8") : raw.toString("latin1");
-  if (name === "STRING") s = s.replace(/^(['"])(.*)\1$/s, "$2");
-  if (name === "UNICODE") s = s.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+  if (name === "STRING") s = unescapeRepr(s.replace(/^(['"])(.*)\1$/s, "$2"));
+  if (name === "UNICODE") s = unescapeRawUnicode(s);
   return { t: "str", v: s };
+}
+
+// CPython's escape_decode, as pickle's STRING uses it. Any escape it does not cover returns null, so the global
+// stays unresolved (medium) rather than reading as an unknown, low-severity name.
+const SIMPLE_ESC = { n: "\n", t: "\t", r: "\r", "\\": "\\", "'": "'", '"': '"', a: "\x07", b: "\b", f: "\f", v: "\v", "\n": "" };
+function unescapeRepr(s) {
+  if (!s.includes("\\")) return s;
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== "\\") { out += s[i]; continue; }
+    const c = s[++i];
+    if (c in SIMPLE_ESC) { out += SIMPLE_ESC[c]; continue; }
+    if (c === "x" && /^[0-9a-fA-F]{2}$/.test(s.slice(i + 1, i + 3))) { out += String.fromCharCode(parseInt(s.slice(i + 1, i + 3), 16)); i += 2; continue; }
+    const oct = /^[0-7]{1,3}/.exec(s.slice(i));
+    if (oct) { out += String.fromCharCode(parseInt(oct[0], 8) & 0xff); i += oct[0].length - 1; continue; }
+    return null;
+  }
+  return out;
+}
+// raw-unicode-escape, as pickle's UNICODE uses it: only \uXXXX and \UXXXXXXXX are escapes.
+function unescapeRawUnicode(s) {
+  try {
+    return s.replace(/\\u([0-9a-fA-F]{4})|\\U([0-9a-fA-F]{8})/g, (_, u, U) => (u ? String.fromCharCode(parseInt(u, 16)) : String.fromCodePoint(parseInt(U, 16))));
+  } catch { return null; }
 }
 
 // Walks every pickle in [start, end). → { findings, globals: [{ module, name, kind }], ops, protocol, pickles }
