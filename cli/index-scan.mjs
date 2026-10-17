@@ -38,7 +38,7 @@
 // Pure apart from the engine: no I/O, no reporting. The caller reports, content-free.
 import { decideText, decideThreat, threatActionFor } from "./hook-core.mjs";
 import { promptBlockers } from "./prompt-scan.mjs";
-import { businessClaims } from "../data/business-claims.js";
+import { businessClaims, OVERSIZE_CLAIM } from "../data/business-claims.js";
 
 export const INDEX_CHUNK_CAP = 262144;   // characters of one chunk that are scanned (256 KB)
 export const INDEX_MAX_CHUNKS = 4096;    // chunks one call may submit
@@ -132,6 +132,8 @@ export function decideIndexChunk(engine, policy, value, opts = {}) {
   let claims = [], claim = null;
   if (mode !== "off" && (src.trust === "untrusted" || src.trust === "unknown")) {
     claims = businessClaims(text, { detectorIds: findings.map((f) => f.detectorId) });
+    // An untrusted chunk longer than the scanned span has a tail nothing read: fail toward detection.
+    if (chunkText(value, INDEX_CHUNK_CAP + 1).length > INDEX_CHUNK_CAP) claims = [...claims, OVERSIZE_CLAIM];
     // decideThreat resolves #21 through the policy like any finding: "disabled" silences it.
     const t = claims.length ? decideThreat(policy, 21, CLAIM_DETECTOR, "index") : null;
     if (t && t.findings.length) {

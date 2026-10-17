@@ -10,10 +10,14 @@
 //
 // Content-free: returns claim KINDS from the fixed vocabulary below, never a span. Pure, size-capped, and
 // every pattern is bounded (no unbounded quantifier), so the cost is linear in the text.
-const MAX = 64_000;
+// The same span the index engine scans of one chunk (cli/index-scan.mjs INDEX_CHUNK_CAP, 256 KB), so padding
+// a chunk cannot push a claim past a smaller window. A longer chunk is the caller's to treat as oversize.
+const MAX = 262_144;
 const cap = (s) => (typeof s === "string" ? (s.length > MAX ? s.slice(0, MAX) : s) : "");
 
 export const CLAIM_KINDS = Object.freeze(["price", "policy", "payment", "authority"]);
+// Not a claim found in the text: an untrusted chunk longer than the scanned span (cli/index-scan.mjs).
+export const OVERSIZE_CLAIM = "oversize";
 
 const PRICE = [
   // "now costs", "currently priced at", "today only sells for"

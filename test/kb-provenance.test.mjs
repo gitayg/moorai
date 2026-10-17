@@ -243,3 +243,20 @@ test("linear time: the extractor and the classifier on adversarial text at 4x th
     assert.ok(r.ratio < 20, `${JSON.stringify(u)}: ${r.ratio.toFixed(2)}x`);
   }
 });
+
+// The claim check reads the same span the index engine scans (INDEX_CHUNK_CAP), so padding an untrusted chunk
+// past a smaller window cannot hide a claim; and an untrusted chunk longer than even that is reported as
+// "oversize" (fail toward detection) instead of passing with an unread tail. A trusted one is never read.
+test("an untrusted claim past 64 KB is still found, and an untrusted chunk past the index cap is flagged oversize", () => {
+  const e = buildEngine(REPORT);
+  const padded = "The hoodie is soft and warm. ".repeat(2600) + CTF3;            // ~75 KB, the claim at the end
+  const r = decideIndexChunk(e, REPORT, padded, { source: { trust: "untrusted" } });
+  assert.equal(r.verdict, "flag", "a claim after 64 KB was not read");
+  assert.deepEqual(r.claims, ["price", "authority"]);
+  const huge = "Kafka consumers read events from the orders topic. ".repeat(6000); // ~306 KB, no claim at all
+  const o = decideIndexChunk(e, REPORT, huge, { source: { trust: "unknown" } });
+  assert.equal(o.verdict, "flag");
+  assert.deepEqual(o.claims, ["oversize"]);
+  // A trusted chunk is never claim-checked (its #53 oversized-input finding is a separate rule).
+  assert.deepEqual(decideIndexChunk(e, REPORT, huge, { source: { trust: "trusted" } }).claims, [], "a trusted chunk is never claim-checked");
+});
