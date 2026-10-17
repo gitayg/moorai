@@ -91,18 +91,27 @@ export function indexSourceProblem(source) {
 // count, depth and the character cap; never JSON.stringify, which would escape newlines and quotes and
 // hide line-anchored patterns.
 export function chunkText(value, cap = INDEX_CHUNK_CAP) {
-  if (typeof value === "string") return value.length > cap ? value.slice(0, cap) : value;
-  if (!value || typeof value !== "object") return "";
+  return chunkWalk(value, cap).text;
+}
+
+// chunkText plus whether anything was left unread: the character cap, the node budget or the depth limit
+// cut the walk short. A truncated chunk from an untrusted author is reported as oversize (decideIndexChunk),
+// so nesting or padding cannot hide a claim where the walk does not reach.
+export function chunkWalk(value, cap = INDEX_CHUNK_CAP) {
+  if (typeof value === "string") return value.length > cap ? { text: value.slice(0, cap), truncated: true } : { text: value, truncated: false };
+  if (!value || typeof value !== "object") return { text: "", truncated: false };
   const out = [];
-  let size = 0, nodes = WALK_NODES;
+  let size = 0, nodes = WALK_NODES, truncated = false;
   (function walk(v, depth) {
-    if (size >= cap || nodes-- <= 0 || depth > WALK_DEPTH || v == null) return;
+    if (v == null) return;
+    if (size >= cap || nodes <= 0 || depth > WALK_DEPTH) { if (typeof v === "string" ? v : typeof v === "object") truncated = true; return; }
+    nodes--;
     if (typeof v === "string") { if (v) { out.push(v); size += v.length + 1; } return; }
     if (typeof v !== "object") return;
-    for (const x of Array.isArray(v) ? v : Object.values(v)) { if (size >= cap) return; walk(x, depth + 1); }
+    for (const x of Array.isArray(v) ? v : Object.values(v)) walk(x, depth + 1);
   })(value, 0);
   const t = out.join("\n");
-  return t.length > cap ? t.slice(0, cap) : t;
+  return t.length > cap ? { text: t.slice(0, cap), truncated: true } : { text: t, truncated };
 }
 
 // An engine whose scan() is scanForIndex, so decideText — the hook's own policy resolution (disabled,
@@ -132,8 +141,8 @@ export function decideIndexChunk(engine, policy, value, opts = {}) {
   let claims = [], claim = null;
   if (mode !== "off" && (src.trust === "untrusted" || src.trust === "unknown")) {
     claims = businessClaims(text, { detectorIds: findings.map((f) => f.detectorId) });
-    // An untrusted chunk longer than the scanned span has a tail nothing read: fail toward detection.
-    if (chunkText(value, INDEX_CHUNK_CAP + 1).length > INDEX_CHUNK_CAP) claims = [...claims, OVERSIZE_CLAIM];
+    // An untrusted chunk the walk did not read in full (cap, node budget or depth): fail toward detection.
+    if (chunkWalk(value).truncated) claims = [...claims, OVERSIZE_CLAIM];
     // decideThreat resolves #21 through the policy like any finding: "disabled" silences it.
     const t = claims.length ? decideThreat(policy, 21, CLAIM_DETECTOR, "index") : null;
     if (t && t.findings.length) {

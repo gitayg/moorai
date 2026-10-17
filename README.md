@@ -565,8 +565,9 @@ the author decides. `source` is a string label, as before, or `{ name?, trust?: 
 claim from an untrusted source", with the claim kinds in `claims`). `policy.indexProvenance.untrustedClaims`
 decides what happens: `"report"` (default: flagged, kept), `"ask"` (verdict `hold`: listed in `held`, and
 `guardEmbed` does not embed it, so the app can queue it for review), `"block"` (denied) or `"off"`. The claim check reads the
-same 256 KB of a chunk the index scan reads, and an untrusted chunk longer than that is reported with the claim kind
-`oversize`, so padding cannot hide a claim in an unread tail. A trusted
+same 256 KB of a chunk the index scan reads, and an untrusted chunk the walk cannot read in full (longer than that, or a
+structured chunk past the node budget or depth limit) is reported with the claim kind `oversize`, so padding
+or nesting cannot hide a claim where the walk does not reach. A trusted
 author's claim passes; a caller that states no trust (a string `source`, or none) is not checked, so existing
 integrations see the verdicts they saw before. An MCP vector-store write cannot say who wrote its documents
 (the model writes the arguments), so the org states it: `policy.indexProvenance.mcpWriteTrust`; unset, MCP

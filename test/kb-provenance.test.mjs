@@ -260,3 +260,18 @@ test("an untrusted claim past 64 KB is still found, and an untrusted chunk past 
   // A trusted chunk is never claim-checked (its #53 oversized-input finding is a separate rule).
   assert.deepEqual(decideIndexChunk(e, REPORT, huge, { source: { trust: "trusted" } }).claims, [], "a trusted chunk is never claim-checked");
 });
+
+// A structured chunk is walked with a node budget and a depth limit as well as the character cap. A claim
+// nested past the depth limit, or behind more nodes than the budget, is not read, so the chunk is reported
+// as oversize instead of passing; an ordinary record is read in full and is not.
+test("an untrusted structured chunk the walk cannot read in full is flagged oversize; an ordinary record is not", () => {
+  const e = buildEngine(REPORT);
+  let deep = CTF3;
+  for (let i = 0; i < 12; i++) deep = { child: deep };                       // the claim 12 levels down
+  const d = decideIndexChunk(e, REPORT, deep, { source: { trust: "untrusted" } });
+  assert.ok(d.claims.includes("oversize"), JSON.stringify(d.claims));
+  const wide = { items: Array.from({ length: 5000 }, (_, i) => `item ${i}`), note: CTF3 };   // past the node budget
+  assert.ok(decideIndexChunk(e, REPORT, wide, { source: { trust: "untrusted" } }).claims.includes("oversize"));
+  const record = { title: "Hoodie", body: "Soft and warm.", tags: ["apparel"] };
+  assert.deepEqual(decideIndexChunk(e, REPORT, record, { source: { trust: "untrusted" } }).claims, []);
+});
