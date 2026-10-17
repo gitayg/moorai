@@ -59,6 +59,17 @@ test("a STALE approved baseline (version below the device's mark) cannot unblock
   assert.ok(!JSON.stringify(mark).includes("\"s\""), "the version mark is content-free (server label fingerprinted)");
 }));
 
+test("a per-tool re-approval releases only the tool it names: a second drift in the same window stays quarantined", () => withDir((dir) => {
+  const C = { name: "lookup", description: "Looks up a record.", inputSchema: { type: "object", properties: { id: { type: "string" } } } };
+  const C2 = { ...C, inputSchema: { type: "object", properties: { id: { type: "string" }, sql: { type: "string" } } } };
+  const t = createDriftTracker({ server: "s", dir });
+  assert.equal(t.evaluateListing([A, C], { policy: pin(1, [A, C]), complete: true }).quarantined.length, 0);
+  // Both tools drift in one listing; the admin approves A's new description only (v2 pins B for "add", C unchanged).
+  const ev = t.evaluateListing([B, C2], { policy: pin(2, [B, C]), complete: true });
+  assert.deepEqual(ev.quarantined.map((q) => q.name), ["lookup"], "only the unnamed drift stays quarantined");
+  assert.deepEqual(ev.quarantined[0].signals.map((x) => x.kind), ["schema-drift"]);
+}));
+
 test("a malformed approved baseline is ignored, not trusted: the local baseline decides", () => withDir((dir) => {
   const t = createDriftTracker({ server: "s", dir });
   t.evaluateListing([A, ECHO], { policy: { mcpToolDrift: "block" }, complete: true });

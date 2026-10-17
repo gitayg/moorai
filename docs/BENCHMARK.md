@@ -1,9 +1,9 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-17T17:23:27.479Z
+> Generated: 2026-10-17T18:57:27.781Z
 
-- **Detectors:** 116
+- **Detectors:** 118
 - **Threats:** 80
 - **Adversarial corpus:** 102/102 passed (100.0%)
 - **OWASP LLM Top 10:** 10/10 items covered by ≥1 on-device detector
@@ -16,7 +16,7 @@
 | Item | Name | Threats | Detectors | Status |
 |------|------|--------:|----------:|--------|
 | LLM01 | Prompt Injection | 8 | 21 | ✅ covered |
-| LLM02 | Sensitive Information Disclosure | 20 | 40 | ✅ covered |
+| LLM02 | Sensitive Information Disclosure | 20 | 42 | ✅ covered |
 | LLM03 | Supply Chain | 8 | 6 | ✅ covered |
 | LLM04 | Data & Model Poisoning | 1 | 1 | ✅ covered |
 | LLM05 | Improper Output Handling | 7 | 16 | ✅ covered |
@@ -45,7 +45,7 @@
 
 | Item | Name | Threats | Partial | Detectors | Status |
 |------|------|--------:|--------:|----------:|--------|
-| MCP01 | Token Mismanagement & Secret Exposure | 3 | 3 | 24 | ◐ partial |
+| MCP01 | Token Mismanagement & Secret Exposure | 3 | 3 | 26 | ◐ partial |
 | MCP02 | Privilege Escalation via Scope Creep | 3 | 3 | 3 | ◐ partial |
 | MCP03 | Tool Poisoning | 2 | 2 | 11 | ◐ partial |
 | MCP04 | Software Supply Chain Attacks & Dependency Tampering | 0 | 0 | 0 | — |
@@ -93,7 +93,7 @@ risk, the MCP allow-list) are counted under Threats but add no detectors. Source
 | T1552.003 | Shell History | agent | 1 | 3 | ◐ partial |
 | T1552.004 | Private Keys | agent | 1 | 3 | ◐ partial |
 | T1552.005 | Cloud Instance Metadata API | agent | 1 | 3 | ◐ partial |
-| T1552.008 | Chat Messages | agent | 1 | 20 | ◐ partial |
+| T1552.008 | Chat Messages | agent | 1 | 22 | ◐ partial |
 | T1555.001 | Keychain | agent | 1 | 3 | ◐ partial |
 | T1555.003 | Credentials from Web Browsers | agent | 1 | 3 | ◐ partial |
 | T1003.008 | /etc/passwd and /etc/shadow | agent | 1 | 3 | ◐ partial |

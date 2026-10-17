@@ -60,6 +60,117 @@ export function looksLikeAssignedSecret(v, ctx) {
   return core.length >= 16 && shannonEntropy(core) >= 3.5;
 }
 
+// ---- Labeled credentials (no entropy bar) ----
+// A credential written as a labeled line (a "Master Password:" or "API Key:" line in a memo or a config
+// dump) carries an unknown prefix and low entropy, so neither the provider prefixes nor the entropy gate see it.
+// The label is the evidence instead, and the value gate below carries the false-positive burden:
+// placeholders, references, code, type names (a bare word), URLs, paths, versions, dates and prose never pass.
+const VALUE_PLACEHOLDER = [
+  /^<[^>]*>?$/, /…|\.{3}/, /\$\{|\{\{|\}\}|%\(|%[sd]\b/, /^\$[A-Za-z_({]/, /\{\}|\{\d{1,2}\}|\{[A-Za-z_]\w{0,40}\}/, /^\[[^\]]*\]?$/, /^x{3,}/i, /^\*{3,}/, /^\.{3,}/,
+  /change[_-]?me|your[_-]|[_-]here\b|example|sample|placeholder|redacted|dummy|fake|insert[_-]|replace[_-]?(?:me|with)|\btodo\b|\btbd\b/i,
+  /^test/i,
+  /^(?:none|null|nil|true|false|undefined|empty|admin|root|user|guest|demo|default|pass|letmein|qwerty)\d*[!.]?$/i,
+  /pass(?:wor)?d|passwd|secret|token|api[_-]?key|apikey/i // a reference to another variable, or the label itself
+];
+const VALUE_NOT_SECRET = [
+  /^[A-Za-z]+(?:[-_.][A-Za-z]+)*[-_.!]?$/,                // a word, or words joined by - _ .
+  /^--?[A-Za-z]/,                                        // a command-line flag
+  /\?\.|\?\?|\]\{\d|\\[dwsbDWS\][]/,                       // optional chaining, ??, regex syntax
+  /\w\(|\w\[/,                                           // a call or an index: os.environ.get(…), Optional[str]
+  /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/,           // member access (self.token) or a hostname
+  /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/,                     // a CONSTANT_NAME reference
+  /:\/\//, /^(?:~|\.{1,2})?\//,                          // a URL or a path
+  /^[^@\s]+@[\w-]+(?:\.[\w-]+)+$/,                       // an email address
+  /^v?\d+(?:\.\d+)+(?:[-+.][\w.]+)?$/i,                  // a version
+  /^\d{4}-\d{2}-\d{2}/,                                  // a date or timestamp
+  /^[\d.,:/+-]+$/                                        // a number, a ratio, a phone number
+];
+// Strip the quoting and trailing punctuation a value picks up in JSON, YAML, INI and Markdown.
+const cleanValue = (v) => String(v).replace(/^[\s*"'`]+/, "").replace(/["'`]?[,;})\]]*[*"'`]*$/, "");
+// A base64 value that decodes to printable text is judged on the text too: a Kubernetes Secret manifest
+// in a tutorial carries `password: cGxhY2Vob2xkZXI=`, which is "placeholder".
+function decodedPlaceholder(v) {
+  if (v.length % 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(v) || typeof atob !== "function") return false;
+  let d;
+  try { d = atob(v); } catch { return false; }
+  if (!/^[\x20-\x7e]+$/.test(d)) return false;
+  return VALUE_PLACEHOLDER.some((r) => r.test(d)) || VALUE_NOT_SECRET[0].test(d);
+}
+export function plausibleLabeledSecret(raw) {
+  const v = cleanValue(raw);
+  if (v.length < 8 || v.length > 256 || /\s/.test(v)) return false;
+  if (new Set(v.toLowerCase()).size < 5) return false;     // aaaaaaaa, a1a1a1a1
+  if (SEQUENTIAL.test(v) || looksBenign(v)) return false;   // UUID, git SHA, digest, timestamp
+  if (VALUE_PLACEHOLDER.some((r) => r.test(v)) || VALUE_NOT_SECRET.some((r) => r.test(v))) return false;
+  return !decodedPlaceholder(v);
+}
+// A token label with a non-credential prefix: pagination cursors, CSRF and request nonces.
+const NON_CREDENTIAL_TOKEN = /(?:^|[_\s-])(?:page|next|prev(?:ious)?|csrf|xsrf|continuation|cursor|sync|pagination|nonce|state|request|idempotency|resume)[_\s-]?token$/i;
+// One labeled pair, re-run over the matched span so a pair that the pattern's tail swallowed is still read.
+const LABELED_PAIR = /\b(?:[A-Za-z0-9]{1,30}[_-]){0,4}(?:pass(?:wor)?d|pwd|secret|api[ _-]?key|apikey|access[ _-]?key|(?:auth[ _-]?)?token|private[ _-]?key|client[ _-]?secret|credentials?)["'*_]{0,3}[ \t]{0,4}[:=](?!=)[ \t*]{0,6}["'`]?[^\s"'`<>]{8,128}/gi;
+// Text straight after the value that reads as a continuation ("abc12345 is the default") is prose or code.
+const PROSE_TAIL = /^[ \t]+[A-Za-z]{2,}/;
+// `text` is the full scanned text: it tells a value the 60-character tail cut short from one that ends there.
+export function labeledSecretIn(span, text) {
+  span = String(span);
+  const at = typeof text === "string" ? text.indexOf(span) : -1;
+  const cutShort = at >= 0 && /[^\s"'`<>]/.test(text[at + span.length] || "");
+  for (const m of span.matchAll(LABELED_PAIR)) {
+    const cut = m[0].search(/[:=]/);
+    const label = m[0].slice(0, cut).replace(/["'*_\s]+$/, "");
+    if (NON_CREDENTIAL_TOKEN.test(label)) continue;
+    const rest = m[0].slice(cut + 1).replace(/^[\s*"'`]+/, "");
+    const value = (/^[^\s"'`<>]+/.exec(rest) || [""])[0];
+    // A later pair whose value the pattern's tail cut short is unreadable.
+    if (cutShort && m.index > 0 && m.index + m[0].length >= span.length) continue;
+    const after = span.slice(m.index + cut + 1).replace(/^[\s*"'`]+/, "").slice(value.length).replace(/^["'`*]+/, "");
+    if (PROSE_TAIL.test(after)) continue;
+    if (plausibleLabeledSecret(value)) return true;
+  }
+  return false;
+}
+
+// ---- Heading-scoped credential lists ----
+// "Current Production API Keys:\n- Main API: api_prod_…" — the label names a service, not a secret, so
+// the heading is the evidence. Its scope is the list that follows; it ends at a blank line followed by a
+// non-list line, or at the next heading. A heading-scoped value must also look generated (three or more
+// letter/digit transitions), because the entry label says nothing about it.
+const CRED_HEADING_WORD = /\b(?:api[ _-]?keys|credentials|passwords|secrets|tokens)\b/i;
+const LIST_MARK = /^[ \t]*(?:[-*+•]|\d{1,3}[.)])[ \t]+/;
+const LIST_ENTRY = /^[ \t]*(?:[-*+•]|\d{1,3}[.)])[ \t]+[*_`]{0,2}[A-Za-z][\w .()/&'-]{0,40}?[*_`]{0,2}[ \t]{0,4}[:=](?!=)[ \t]*[*_`"']{0,3}([^\s"'`<>]{8,256})(.*)$/;
+const words = (t) => t.split(/\s+/).filter(Boolean).length;
+const UNDERLINE = /^[ \t]*(?:={3,}|-{3,})[ \t]*$/;
+function headingKind(line, next) {
+  const t = line.trim();
+  if (!t || t.length > 100 || LIST_MARK.test(line) || UNDERLINE.test(line)) return null;
+  if (/^#{1,6}\s/.test(t) || UNDERLINE.test(next || "")) return "section";
+  if (/^(?:\*\*|__)[^*_]{1,80}(?:\*\*|__):?$/.test(t) && words(t) <= 10) return "section";
+  if (t === t.toUpperCase() && /[A-Z]{3}/.test(t) && words(t) <= 10) return "section";
+  if (/^[^:]{1,80}:$/.test(t) && words(t) <= 6) return "label";
+  return null;
+}
+const transitions = (v) => (v.match(/[A-Za-z](?=\d)|\d(?=[A-Za-z])/g) || []).length;
+export function headingScopedSecretIn(span) {
+  const lines = String(span).split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (!headingKind(lines[i], lines[i + 1]) || !CRED_HEADING_WORD.test(lines[i])) continue;
+    let blank = false;
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j];
+      if (j === i + 1 && UNDERLINE.test(line)) continue;
+      if (!line.trim()) { blank = true; continue; }
+      const e = LIST_ENTRY.exec(line);
+      if (e) {
+        if (!PROSE_TAIL.test(e[2].replace(/^["'`*]+/, "")) && plausibleLabeledSecret(e[1]) && transitions(cleanValue(e[1])) >= 3) return true;
+      } else if (LIST_MARK.test(line)) {
+        // a list entry without a value: still inside the list
+      } else if (headingKind(line, lines[j + 1]) === "section" || blank) break;
+      blank = false;
+    }
+  }
+  return false;
+}
+
 const S = (detectorId, hint, patterns, refine) => {
   const d = { detectorId, threatId: 39, stage: "prompt", stages: ["prompt", "output"], mode: "warn", hint, patterns };
   if (refine) d.refine = refine;
@@ -109,5 +220,17 @@ export const SECRET_DETECTORS = [
   // code carry high-entropy values that are not credentials.
   S("secret-named-assignment", "High-entropy value assigned to a named secret variable (…_API_KEY, …_TOKEN, …).", [
     /\b(?:[A-Z0-9_]{0,60}_)?(?:SECRET_ACCESS_KEY|SECRET_KEY|API_KEY|TOKEN|PASSWORD)["']?\s{0,8}[:=]\s{0,8}["']?[A-Za-z0-9\-_.\/+=]{20,512}["']?/
-  ], (m, _t, ctx) => looksLikeAssignedSecret(assignedValue(m), ctx))
+  ], (m, _t, ctx) => looksLikeAssignedSecret(assignedValue(m), ctx)),
+  // ---- Labeled credentials, below the entropy bar ----
+  // Patterns are bounded throughout: the refine routes them through safeRegex (one unbounded quantifier
+  // at most, 400 characters). The trailing [^\n]{0,60} hands the refine the rest of the line, so prose
+  // after the value can be told apart from a credential.
+  S("secret-labeled-prose", "A credential written as a labeled value (Password: …, API key: …, token = …).", [
+    /\b(?:[A-Za-z0-9]{1,30}[_-]){0,4}(?:pass(?:wor)?d|pwd|secret|api[ _-]?key|apikey|access[ _-]?key|(?:auth[ _-]?)?token|private[ _-]?key|client[ _-]?secret|credentials?)["'*_]{0,3}[ \t]{0,4}[:=](?!=)[ \t*]{0,6}["'`]?[^\s"'`<>]{8,128}[^\n]{0,60}/i
+  ], (m, text) => labeledSecretIn(m, text)),
+  // A heading naming API keys / credentials / passwords / secrets / tokens, and up to 40 lines after it;
+  // the refine walks the heading's scope and reads its `- label: value` entries.
+  S("secret-heading-list", "A list of credentials under an API keys / credentials / passwords heading.", [
+    /^[ \t]{0,12}(?:#{1,6}[ \t]{1,4})?[^\n:]{0,60}\b(?:api[ _-]?keys|credentials|passwords|secrets|tokens)\b[^\n]{0,40}(?:\n[^\n]{0,300}){1,40}/im
+  ], (m) => headingScopedSecretIn(m))
 ];

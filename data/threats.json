@@ -1625,19 +1625,19 @@
       "owasp": "LLM05",
       "atlas": "AML.T0112",
       "atlasPartial": {
-        "AML.T0112": "reverse-shell / remote-exec payloads only"
+        "AML.T0112": "reverse-shell / remote-exec payloads, and shell-command injection in MCP tool arguments"
       },
       "owaspAgentic": [
         "ASI05"
       ],
       "owaspAgenticPartial": {
-        "ASI05": "reverse-shell / remote-exec payloads only"
+        "ASI05": "reverse-shell / remote-exec payloads, and shell-command injection in MCP tool arguments"
       },
       "owaspMcp": [
         "MCP05"
       ],
       "owaspMcpPartial": {
-        "MCP05": "reverse-shell / remote-exec payloads only"
+        "MCP05": "reverse-shell / remote-exec payloads, and shell-command injection in MCP tool arguments"
       },
       "attack": [
         {

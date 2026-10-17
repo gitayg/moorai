@@ -26,6 +26,7 @@ import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { compilePacks } from "../data/detector-packs.js";
 import { fileMetadataText } from "../data/file-metadata.js";
 import { credAlternative } from "../data/cred-alternatives.js";
+import { mcpArgCommandInjection } from "../data/detectors-mcp-arg-injection.js";
 // Declared workload profiles (cli/workload-profile.mjs), re-exported so every surface that composes this
 // core — the hook, @moorai/agent-sdk, its vendored copy — reaches the same evaluation.
 export { evaluateProfile, profilesFrom, rejectedAlert, normalizeRepo, PROFILE_DRIFT } from "./workload-profile.mjs";
@@ -510,7 +511,29 @@ export function mcpGateway(engine, policy, { tool, server, args, mask = false })
   const ad = decideMcpArgs(policy, tool, args);
   if (ad.decision === "deny") return { gate: "args", decision: "deny", reason: ad.reason, findings: [], kill: false, killIds: [], maskIds: [] };
   const d = decideText(engine, policy, args, "prompt", { ctx: { egress: true }, mask });
+  mergeArgInjection(d, policy, tool, args);
   return { gate: d.decision === "allow" ? null : "content", decision: d.decision, reason: d.reasons.join(", "), findings: d.findings, kill: d.kill, killIds: d.killIds, alternatives: d.alternatives, maskIds: d.maskIds };
+}
+
+// #54 / OWASP MCP05 — a data argument (host, path, file name, id) with a shell command appended
+// (data/detectors-mcp-arg-injection.js). Read on the PARSED arguments, because which key a value sits
+// under decides whether a separator is an injection or the command itself. Skipped when the text scan
+// already raised #54, so a call is reported once. Merged by rank into the content decision; the finding
+// is content-free (empty match) and its reason names the argument key and the operator kind.
+function mergeArgInjection(d, policy, tool, args) {
+  if (d.findings.some((f) => f.threatId === 54)) return;
+  let parsed;
+  try { parsed = typeof args === "string" ? JSON.parse(args) : args; } catch { return; }
+  const hit = mcpArgCommandInjection(tool, parsed);
+  if (!hit) return;
+  const t = decideThreat(policy, 54, "mcp-arg-command-injection", "mcp");
+  if (!t.findings.length) return;
+  d.findings.push(...t.findings);
+  const key = hit.key.replace(/[^\w.-]/g, "") || "argument";
+  if (t.decision !== "allow") d.reasons.push(`${t.reasons[0]}: command injection in MCP argument "${key}" (${hit.op})`);
+  if (RANK[t.decision] > RANK[d.decision]) d.decision = t.decision;
+  if (t.kill) { d.kill = true; d.killIds.push(54); }
+  for (const a of t.alternatives) if (!d.alternatives.includes(a)) d.alternatives.push(a);
 }
 
 // T1-1 / #63 — model-endpoint allow-list. Enforce only when policy.endpointAllow is set; a referenced
