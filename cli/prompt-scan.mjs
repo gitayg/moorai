@@ -66,8 +66,14 @@ export function promptScanPlan(policy, input, { server = false } = {}) {
   return { scan, mode, origin, source: promptSource(input), action: promptScanAction(policy) };
 }
 
+// #21 findings that state a FACT problem rather than an instruction: conflicting facts in the text
+// (data/kb-facts.js) and a business-value claim from an untrusted author (cli/index-scan.mjs). They carry
+// no instruction, so INSTRUCTION_THREATS does not make them blockers; only an action the policy resolves
+// to block / kill does (or, for the second, policy.indexProvenance).
+export const FACT_DETECTORS = new Set(["kb-fact-conflict", "kb-untrusted-claim"]);
+
 // The findings that block a prompt under promptScanAction "block". `actionOf(id)` is the hook's
 // threatActionFor(policy, id).
 export function promptBlockers(findings, actionOf) {
-  return (findings || []).filter((f) => f.threatId > 0 && (INSTRUCTION_THREATS.has(f.threatId) || ["block", "kill"].includes(actionOf(f.threatId))));
+  return (findings || []).filter((f) => f.threatId > 0 && ((INSTRUCTION_THREATS.has(f.threatId) && !FACT_DETECTORS.has(f.detectorId)) || ["block", "kill"].includes(actionOf(f.threatId))));
 }

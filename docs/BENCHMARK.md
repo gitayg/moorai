@@ -1,9 +1,9 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-14T09:28:25.037Z
+> Generated: 2026-10-17T15:59:08.761Z
 
-- **Detectors:** 114
+- **Detectors:** 115
 - **Threats:** 80
 - **Adversarial corpus:** 102/102 passed (100.0%)
 - **OWASP LLM Top 10:** 10/10 items covered by ≥1 on-device detector
@@ -22,7 +22,7 @@
 | LLM05 | Improper Output Handling | 7 | 16 | ✅ covered |
 | LLM06 | Excessive Agency | 15 | 8 | ✅ covered |
 | LLM07 | System Prompt Leakage | 3 | 6 | ✅ covered |
-| LLM08 | Vector & Embedding Weaknesses | 3 | 12 | ✅ covered |
+| LLM08 | Vector & Embedding Weaknesses | 3 | 13 | ✅ covered |
 | LLM09 | Misinformation | 13 | 4 | ✅ covered |
 | LLM10 | Unbounded Consumption | 2 | 1 | ✅ covered |
 
@@ -35,7 +35,7 @@
 | ASI03 | Identity and Privilege Abuse | 4 | 4 | 6 | ◐ partial |
 | ASI04 | Agentic Supply Chain Vulnerabilities | 3 | 3 | 11 | ◐ partial |
 | ASI05 | Unexpected Code Execution (RCE) | 6 | 6 | 14 | ◐ partial |
-| ASI06 | Memory & Context Poisoning | 4 | 4 | 5 | ◐ partial |
+| ASI06 | Memory & Context Poisoning | 4 | 4 | 6 | ◐ partial |
 | ASI07 | Insecure Inter-Agent Communication | 1 | 1 | 0 | — |
 | ASI08 | Cascading Failures | 0 | 0 | 0 | — |
 | ASI09 | Human-Agent Trust Exploitation | 1 | 1 | 1 | ◐ partial |
@@ -67,7 +67,7 @@ risk, the MCP allow-list) are counted under Threats but add no detectors. Source
 
 | Technique | Name | Lane | Threats | Detectors | Status |
 |-----------|------|------|--------:|----------:|--------|
-| T1698 | Indirect Prompt Injection | agent | 8 | 17 | ✅ covered |
+| T1698 | Indirect Prompt Injection | agent | 8 | 18 | ✅ covered |
 | T1699 | Direct Prompt Injection | agent | 2 | 9 | ✅ covered |
 | T1700 | AI-Enabled Exfiltration | agent | 4 | 4 | ◐ partial |
 | T1685.007 | Impair Autonomous Defenses | agent | 1 | 5 | ◐ partial |

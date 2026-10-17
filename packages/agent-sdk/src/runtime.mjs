@@ -27,7 +27,7 @@ const { hashWithKey, deriveKey, NO_KEY } = contentHashLib;
 const { policyIdOf, REASON } = provenance;
 const { OFFLINE_DEFAULT_POLICY } = offlineDefault;
 const { decideInbound, surfaceOf, inboundText } = inboundLib;
-const { decideIndexChunk, indexScanAction, INDEX_MAX_CHUNKS } = indexScanLib;
+const { decideIndexChunk, indexScanAction, indexSource, INDEX_MAX_CHUNKS } = indexScanLib;
 
 // The hook's NO_POLICY_BASELINE, byte for byte: no threat configuration, so threatActionFor falls through
 // to BUILTIN_DEFAULT_ACTIONS (cli/moorai-hook.mjs explains why this differs from the offline default).
@@ -168,27 +168,33 @@ export async function createMoorAI(options = {}) {
   }
 
   // The index stage (cli/index-scan.mjs): chunks an application is about to embed, one verdict each —
-  // "allow" (no finding), "flag" (reported, kept) or "deny" (policy.indexScanAction "block" and an
-  // instruction-carrying or blocked threat). Report-first: no policy, no deny. Never settled by the
-  // headless rule — nothing here asks. Content-free: one alert per finding (threat, category, risk,
-  // stage "index", a keyed hash of the matched span, and a keyed hash of `source` — never the source
-  // name itself, which is often a path or a URL). The verdicts never carry chunk text.
+  // "allow" (no finding), "flag" (reported, kept), "hold" (a business-value claim from an untrusted or
+  // unknown author under policy.indexProvenance.untrustedClaims "ask": keep it out of the index until a
+  // person reviews it) or "deny" (policy.indexScanAction "block" and an instruction-carrying or blocked
+  // threat, or untrustedClaims "block"). Report-first: no policy, no deny. Never settled by the headless
+  // rule — nothing here asks a person. Content-free: one alert per finding (threat, category, risk, stage
+  // "index", a keyed hash of the matched span, and a keyed hash of the source name — never the name
+  // itself, which is often a path or a URL). The verdicts never carry chunk text; a claim verdict carries
+  // its claim kinds (price, policy, payment, authority).
+  // source: a string label, or { name?, trust?: "trusted" | "untrusted" | "unknown", kind? } (indexSource).
   async function scanForIndex(chunks, { source, session } = {}) {
     if (!Array.isArray(chunks)) throw new TypeError("chunks must be an array");
     if (chunks.length > INDEX_MAX_CHUNKS) throw new RangeError(`at most ${INDEX_MAX_CHUNKS} chunks per call`);
     const s = await ready();
-    const sourceHash = typeof source === "string" && source ? hash(`index-source:${source}`) : undefined;
+    const src = indexSource(source);
+    const sourceHash = src.name ? hash(`index-source:${src.name}`) : undefined;
     const sess = sessionOf(session);
-    const results = [], allowed = [], flagged = [], denied = [];
+    const results = [], allowed = [], flagged = [], held = [], denied = [];
+    const decisionOf = { deny: "deny", hold: "ask" };
     for (let i = 0; i < chunks.length; i++) {
-      const r = decideIndexChunk(s.engine, s.policy, chunks[i]);
+      const r = decideIndexChunk(s.engine, s.policy, chunks[i], { source });
       for (const f of r.findings) {
-        reporter.post({ threatId: f.threatId, category: f.category, riskLevel: r.verdict === "deny" ? "Blocked" : f.riskLevel, stage: "index", tool: "index:embed", decision: r.verdict === "deny" ? "deny" : "notify", contentHash: hash(f.match || ""), ...(sourceHash ? { indexSource: sourceHash } : {}), ...sess }, { prov: prov(s, "IndexScan") });
+        reporter.post({ threatId: f.threatId, category: f.category, riskLevel: r.verdict === "deny" ? "Blocked" : f.riskLevel, stage: "index", tool: "index:embed", decision: decisionOf[r.verdict] || "notify", contentHash: hash(f.match || ""), ...(sourceHash ? { indexSource: sourceHash } : {}), ...sess }, { prov: prov(s, "IndexScan") });
       }
-      (r.verdict === "deny" ? denied : r.verdict === "flag" ? flagged : allowed).push(i);
-      results.push({ index: i, verdict: r.verdict, ...summary(r.findings), reasons: r.reasons, findings: contentFree(r.findings) });
+      ({ deny: denied, hold: held, flag: flagged }[r.verdict] || allowed).push(i);
+      results.push({ index: i, verdict: r.verdict, ...summary(r.findings), reasons: r.reasons, findings: contentFree(r.findings), ...(r.claims.length ? { claims: r.claims } : {}) });
     }
-    return { action: indexScanAction(s.policy), policyId: s.policyId, results, allowed, flagged, denied };
+    return { action: indexScanAction(s.policy), policyId: s.policyId, results, allowed, flagged, held, denied };
   }
 
   return { identity, config: { serverUrl: config.serverUrl, tenant: config.tenant, enrolled: reporter.enrolled }, settings: { serviceId: sm.serviceId, serviceIdSource: options.serviceId ? "options" : sm.serviceIdSource, headless: sm.headless, passThrough: settings.passThrough }, ready, scan, toolCall, scanForIndex, flush: () => reporter.flush(), reporter, hash, RANK };

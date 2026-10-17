@@ -577,6 +577,7 @@ async function gateCall(rawLine, msg) {
     // are not reported twice.
     const ix = g.gate === "server" || g.gate === "args" || g.decision === "deny" ? null : indexWriteScan(ENGINE, POLICY, { tool, server: SERVER, args: msg.params.arguments });
     if (ix && ix.verdict === "deny") { g.decision = "deny"; g.gate = "index"; g.reason = `${tool} — vector-store write: ${ix.reasons.join(", ")}`; g.alternatives = []; }
+    else if (ix && ix.verdict === "hold" && g.decision === "allow") { g.decision = "ask"; g.gate = "index"; g.reason = `${tool} — vector-store write held for review: ${ix.reasons.join(", ")}`; }
     const seenIds = new Set((g.findings || []).map((f) => f.threatId));
     const indexFindings = ix ? ix.findings.filter((f) => !seenIds.has(f.threatId)) : [];
 

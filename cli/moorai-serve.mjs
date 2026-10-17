@@ -11,7 +11,10 @@
 //                                                     moorai-model-proxy for its skip alert when
 //                                                     --model-proxy-url is set, and otherwise ignored
 //   POST /v1/index-scan { chunks, source?, session? } -> one content-free verdict per chunk about to be
-//                                                     embedded (allow / flag / deny), index stage
+//                                                     embedded (allow / flag / hold / deny), index stage;
+//                                                     source: a string label, or { name?, trust?:
+//                                                     "trusted" | "untrusted" | "unknown", kind? } (the
+//                                                     author: cli/index-scan.mjs PROVENANCE)
 //   session (optional, every POST): the caller's own session / conversation id. Only its keyed hash
 //   leaves, as the `session` field of each console alert the request raises; omitted, no field.
 //   GET  /healthz                                  -> { status, version, policyId }
@@ -192,7 +195,8 @@ export async function createServer(opts = {}) {
         if (typeof c === "string") { if (c.length > MAX_TEXT) throw new HttpError(413, "chunk too long"); }
         else if (!c || typeof c !== "object") throw new HttpError(400, "each chunk must be a string or an object");
       }
-      if (source != null && (typeof source !== "string" || source.length > 1024)) throw new HttpError(400, "source must be a string of at most 1024 characters");
+      const bad = indexScanLib.indexSourceProblem(source);
+      if (bad) throw new HttpError(400, bad);
       return withTimeout(rt.scanForIndex(chunks, { source, session }), o.timeoutMs);
     }
     if (typeof body.tool !== "string" || !body.tool || body.tool.length > 256) throw new HttpError(400, "tool must be a non-empty string");

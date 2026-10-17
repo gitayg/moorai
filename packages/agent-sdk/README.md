@@ -28,8 +28,11 @@ read back into a later user's context with no tool call; these helpers scan each
 ```js
 const report = await scanBeforeEmbed(chunks, { source: "kb/handbook" });
 // { action: "report" | "block", policyId,
-//   results: [{ index, verdict: "allow" | "flag" | "deny", threatIds, categories, reasons, findings }],
-//   allowed: [0, …], flagged: [2], denied: [] }
+//   results: [{ index, verdict: "allow" | "flag" | "hold" | "deny", threatIds, categories, reasons, findings, claims? }],
+//   allowed: [0, …], flagged: [2], held: [], denied: [] }
+
+// Who wrote the chunks (v1.20.0): a business-value claim from an untrusted or unknown author is #21.
+await scanBeforeEmbed(reviews, { source: { name: "kb/reviews", trust: "untrusted", kind: "customer" } });
 
 const addDocs = guardEmbed((docs) => vectorStore.addDocuments(docs), {
   source: "kb/handbook",
@@ -45,8 +48,14 @@ await addDocs(docs);
   #50, #51, #60, #68, #70, #72, #74) or a threat whose configured action is block or kill. The default is
   `"report"`: nothing is dropped. `findings` are content-free (`threatId`, `category`, `riskLevel`,
   `stage: "index"`, `detectorId`).
+- **Provenance.** `source` is a string label or `{ name?, trust?: "trusted" | "untrusted" | "unknown",
+  kind? }`. When the author is untrusted or unknown, a price or discount, a policy change, account or
+  payment details, or an authority claim ("confirmed by management") raises #21 (`kb-untrusted-claim`;
+  `claims` lists the kinds). `policy.indexProvenance.untrustedClaims`: `"report"` (default, `flag`), `"ask"`
+  (`hold`: listed in `held`, and `guardEmbed` does not embed it), `"block"` (`deny`) or `"off"`. A trusted
+  author, or a call that states no trust, is not checked.
 - **`guardEmbed(embedFn, opts)`** returns `async (chunks, ...rest) => embedFn(kept, ...rest)`. Denied
-  chunks are removed from the array `embedFn` receives; the report's indexes refer to the original array,
+  (and held) chunks are removed from the array `embedFn` receives; the report's indexes refer to the original array,
   so drop the matching ids in `onReport`. When every chunk is denied, `embedFn` is not called and the
   wrapper resolves to `[]`. Wrap the step that takes documents (`addDocuments`, an embeddings call whose
   output you store), not a layer whose caller expects one vector per input. `guarded.flush()` drains the
