@@ -2111,7 +2111,7 @@ IDE task files. 47 of the 80 rules map to 64 v20 techniques through 91 credits: 
 
 Over the 71 v20 techniques an AI agent can perform or be aimed at (`ATTACK_SCOPE` in `data/attack.js`), 2 are
 covered, 54 partial and 15 uncovered. Of the 58 in the agent lane, the actions a hook, proxy or gateway sees,
-2 are covered, 53 partial and 3 uncovered. The other 13 are identity, email, endpoint or adversary-infrastructure
+2 are covered, 53 partial and 3 uncovered; of those 53 partial, 8 are bounded by design and 45 are open gaps. The other 13 are identity, email, endpoint or adversary-infrastructure
 techniques that no MoorAI surface sees directly; one of them, Financial Theft (T1657), is partly covered: the
 payment-fraud detector coaches when payment or bank-detail change wording reaches an AI tool. Technique ids and names come from MITRE's v20 STIX bundle, vendored as a
 slice in `data/attack-v20-techniques.json` and checked by `test/attack-v20.test.mjs`.
@@ -2120,6 +2120,16 @@ The detectors behind these credits match the common shapes of each technique in 
 a command, a path, a file's content. A variant written another way, such as a different path spelling, an
 encoding the decoder does not unwrap, or a step split across several commands, is not matched. That is why
 most credits are `partial`: a coverage level is a mechanism claim, not a detection rate.
+
+A partial credit can say why it is partial. `bound: "design"`, with a one-line `boundReason`, marks a credit
+whose uncaught forms are either indistinguishable from an agent's legitimate work (running a shell, Python or
+PowerShell at all; downloading a file; a connectivity check to an ordinary host), or outside anything an
+agent-side hook, proxy or gateway observes (the provider's chat store, AI search engines, a person pasting into
+their own terminal). Every other partial credit is an open gap, either `bound: "gap"` or no field: detection
+MoorAI has not built yet. Nine credits carry the design bound today, and `docs/BENCHMARK.md` reports partial
+techniques split into "bounded by design" and "open gap" (`partialDesign` and `partialGap` in
+`docs/benchmark.json`, plus `partialBound` per technique). A technique counts as bounded by design when any of
+its partial credits is, since that credit's uncaught forms contain the technique's.
 
 For a SIEM: alerts carry `threatId` (CEF Signature ID, OpenTelemetry `moorai.threat_id`). Join it to `attack`
 in `data/threats.json` to get technique ids, coverage and reason. The console's SIEM event carries `owasp`,

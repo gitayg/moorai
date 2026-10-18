@@ -3231,9 +3231,15 @@ results is the core of both ASI01 and MCP06. Everything else is bounded.
   a shipped mechanism addresses the technique as an agent performs it; `partial`: part of it, with the bound in
   `reason`; `none`: the technique corresponds but nothing ships (for example #4, a coaching entry whose runtime
   scan is credited on #60). A mechanism claim, not a detection rate.
+- **Why a credit is partial.** A partial credit may carry `bound: "design"` and a one-line `boundReason` when the
+  forms it does not catch are indistinguishable from an agent's legitimate work, or outside anything an agent-side
+  hook, proxy or gateway observes. `bound: "gap"`, or no field, means MoorAI has not built the detection. When in
+  doubt a credit is a gap. `data/attack.js` `attackBound()` reads it, and `test/attack-v20.test.mjs` pins the
+  reviewed list of design-bounded credits.
 - **What is not credited.** A person's own disclosure to an AI tool (#1, #9, #15, #44), governance and
   model-error risks, agent memory persistence (#22, ATLAS AML.T0080) and delegation (#66, ATLAS AML.T0118):
   ATT&CK v20 has no technique for them.
 - **Benchmark.** `scripts/benchmark.mjs` reports coverage over `ATTACK_SCOPE`, by lane. A technique's status is
   its best credit; detectors are counted but do not set the status, because session risk, the MCP allow-list and
-  file metadata are mechanisms outside `data/detectors.js`.
+  file metadata are mechanisms outside `data/detectors.js`. Partial techniques are split into bounded by design
+  (any partial credit carries the design bound) and open gap (`attackSummary()` in `data/attack.js`).

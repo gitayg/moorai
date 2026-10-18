@@ -21,7 +21,7 @@
       "owaspAgenticPartial": "optional { ASIxx: limit } — a bounded credit, as atlasPartial: the risk is addressed only over part of what the OWASP entry covers. Every key must also appear in owaspAgentic.",
       "owaspMcp": "string[] — every OWASP MCP Top 10 (2025, beta) risk, MCP01–MCP10, the rule's own mechanism addresses. Always an array; [] is a reviewed \"no credit\". Ids and titles: data/owasp-frameworks.js.",
       "owaspMcpPartial": "optional { MCPxx: limit } — a bounded credit, as atlasPartial. Every key must also appear in owaspMcp.",
-      "attack": "{ id, coverage, reason }[] — every MITRE ATT&CK Enterprise v20 technique the threat genuinely corresponds to. coverage: full (a shipped mechanism addresses the technique as an AI agent MoorAI watches performs it), partial (part of it; reason states the bound) or none (the technique corresponds, but MoorAI ships no runtime mechanism for it). Coverage is a mechanism claim, not a detection rate. Always an array; [] is a reviewed \"no technique corresponds\". Ids come from data/attack-v20-techniques.json; read the tag through data/attack.js.",
+      "attack": "{ id, coverage, reason }[] — every MITRE ATT&CK Enterprise v20 technique the threat genuinely corresponds to. coverage: full (a shipped mechanism addresses the technique as an AI agent MoorAI watches performs it), partial (part of it; reason states the bound) or none (the technique corresponds, but MoorAI ships no runtime mechanism for it). Coverage is a mechanism claim, not a detection rate. Always an array; [] is a reviewed \"no technique corresponds\". Ids come from data/attack-v20-techniques.json; read the tag through data/attack.js. Optional on a partial credit: bound \"design\" with a one-line boundReason when the forms it does not catch are indistinguishable from an agent's legitimate work or outside anything an agent-side hook, proxy or gateway observes; bound \"gap\", or no field, when MoorAI has not built the detection. Read it through data/attack.js attackBound().",
       "attackNote": "string, present only when `attack` is [] — one line on why no ATT&CK v20 technique corresponds to the threat."
     }
   },
@@ -619,7 +619,9 @@
         {
           "id": "T1698",
           "coverage": "partial",
-          "reason": "rag-poisoning scans content headed into an index before it is embedded; content already indexed, or embedded without a MoorAI call, is not seen"
+          "reason": "rag-poisoning scans content headed into an index before it is embedded; content already indexed, or embedded without a MoorAI call, is not seen",
+          "bound": "design",
+          "boundReason": "Content indexed before MoorAI was installed, or embedded by a pipeline that never calls MoorAI, never passes any agent-side hook, proxy or gateway."
         }
       ],
       "stride": "Tampering"
@@ -921,7 +923,9 @@
         {
           "id": "T1204.004",
           "coverage": "partial",
-          "reason": "out-code-exec flags runnable code and risky commands in a reply (code fences, PowerShell, curl to a shell) before a person pastes them; the terminal is not watched"
+          "reason": "out-code-exec flags runnable code and risky commands in a reply (code fences, PowerShell, curl to a shell) before a person pastes them; the terminal is not watched",
+          "bound": "design",
+          "boundReason": "A person pasting into their own terminal from a page, chat or document no agent handled is outside every agent-side hook, proxy or gateway."
         },
         {
           "id": "T1677",
@@ -1104,7 +1108,9 @@
         {
           "id": "T1552.008",
           "coverage": "partial",
-          "reason": "secret detectors keep a credential out of the AI conversation, where T1552.008 would collect it; the provider's chat store is not watched"
+          "reason": "secret detectors keep a credential out of the AI conversation, where T1552.008 would collect it; the provider's chat store is not watched",
+          "bound": "design",
+          "boundReason": "Credentials already stored in the provider's chat history or a messaging workspace are read there, outside any agent-side hook, proxy or gateway."
         }
       ],
       "stride": "Information Disclosure"
@@ -1643,17 +1649,23 @@
         {
           "id": "T1059.004",
           "coverage": "partial",
-          "reason": "bash /dev/tcp, nc -e and socat exec reverse shells"
+          "reason": "bash /dev/tcp, nc -e and socat exec reverse shells",
+          "bound": "design",
+          "boundReason": "Running a Unix shell is the agent's ordinary work, so the shell itself is not judged; its malicious uses are judged by their own rules, such as reverse shells here."
         },
         {
           "id": "T1059.001",
           "coverage": "partial",
-          "reason": "PowerShell TCPClient reverse shells"
+          "reason": "PowerShell TCPClient reverse shells",
+          "bound": "design",
+          "boundReason": "Running PowerShell is the agent's ordinary work, so the interpreter itself is not judged; its malicious uses are judged by their own rules, such as reverse shells here."
         },
         {
           "id": "T1059.006",
           "coverage": "partial",
-          "reason": "Python socket reverse shells"
+          "reason": "Python socket reverse shells",
+          "bound": "design",
+          "boundReason": "Running Python is the agent's ordinary work, so the interpreter itself is not judged; its malicious uses are judged by their own rules, such as reverse shells here."
         }
       ],
       "stride": "Elevation of Privilege"
@@ -1800,7 +1812,9 @@
         {
           "id": "T1105",
           "coverage": "partial",
-          "reason": "curl or wget piped to a shell, Invoke-WebRequest into iex, and download-then-run in one command"
+          "reason": "curl or wget piped to a shell, Invoke-WebRequest into iex, and download-then-run in one command",
+          "bound": "design",
+          "boundReason": "Downloading files and tools is the agent's ordinary work, so a plain download is not judged; one that is then run, or installed from an untrusted source, is."
         },
         {
           "id": "T1204.005",
@@ -2299,7 +2313,9 @@
         {
           "id": "T1608.007",
           "coverage": "partial",
-          "reason": "the AI-audience cloaking form of result poisoning, when an agent MoorAI watches fetches the page; plain fabricated content and AI search engines are out of reach"
+          "reason": "the AI-audience cloaking form of result poisoning, when an agent MoorAI watches fetches the page; plain fabricated content and AI search engines are out of reach",
+          "bound": "design",
+          "boundReason": "AI search engines retrieve and rank pages on the provider's side, and whether ordinary page text is true is beyond what an agent-side hook can judge."
         }
       ],
       "stride": "Spoofing"
@@ -2645,7 +2661,9 @@
         {
           "id": "T1016.001",
           "coverage": "partial",
-          "reason": "a bare GET, DNS lookup or ping to a known request-capture host"
+          "reason": "a bare GET, DNS lookup or ping to a known request-capture host",
+          "bound": "design",
+          "boundReason": "A connectivity check to an ordinary host is the agent's everyday work, so only contact with a known request-capture host is judged."
         }
       ],
       "stride": "Information Disclosure"

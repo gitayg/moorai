@@ -69,3 +69,47 @@ export function attackCoverage(threat) {
 export function attackLabel(threat) {
   return attackCredits(threat).map((c) => (c.coverage === "full" ? c.id : `${c.id} (${c.coverage})`)).join(" · ");
 }
+
+// Why a partial credit is partial, read the same way everywhere:
+//   design  the forms it does not catch are indistinguishable from an agent's legitimate work (judging them
+//           would mean blocking the agent's job), or are outside anything an agent-side hook, proxy or
+//           gateway observes; `boundReason` says which, in one line
+//   gap     MoorAI has not built the detection yet; the default when a partial credit carries no `bound`
+// null for a full or none credit.
+export const BOUND_LEVELS = ["design", "gap"];
+export function attackBound(credit) {
+  if (!credit || credit.coverage !== "partial") return null;
+  return credit.bound === "design" ? "design" : "gap";
+}
+
+// Coverage over ATTACK_SCOPE: a technique is covered when any rule credits it full, partial when the best
+// credit is partial, uncovered otherwise. A partial technique is bounded by design when any of its partial
+// credits is (that credit's uncaught forms are out of reach, and the technique's uncaught forms are a subset
+// of them), and an open gap otherwise. scripts/benchmark.mjs and test/attack-v20.test.mjs both read it.
+export function attackSummary(threats) {
+  const rank = { full: 2, partial: 1, none: 0 };
+  const byItem = Object.fromEntries(Object.entries(ATTACK_SCOPE).map(([id, lane]) => [id, { lane, best: -1, design: false }]));
+  for (const t of threats || []) {
+    for (const c of attackCredits(t)) {
+      const it = byItem[c.id];
+      if (!it) continue;
+      it.best = Math.max(it.best, rank[c.coverage] ?? -1);
+      if (attackBound(c) === "design") it.design = true;
+    }
+  }
+  const out = {};
+  for (const [id, it] of Object.entries(byItem)) {
+    const status = it.best === 2 ? "covered" : it.best === 1 ? "partial" : "uncovered";
+    out[id] = status === "partial" ? { lane: it.lane, status, partialBound: it.design ? "design" : "gap" } : { lane: it.lane, status };
+  }
+  const split = (list) => ({
+    total: list.length,
+    covered: list.filter((v) => v.status === "covered").length,
+    partial: list.filter((v) => v.status === "partial").length,
+    uncovered: list.filter((v) => v.status === "uncovered").length,
+    partialDesign: list.filter((v) => v.partialBound === "design").length,
+    partialGap: list.filter((v) => v.partialBound === "gap").length
+  });
+  const all = Object.values(out);
+  return { scope: split(all), agentLane: split(all.filter((v) => v.lane === "agent")), byItem: out };
+}

@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { ATTACK_V20, ATTACK_SCOPE, COVERAGE_LEVELS, attackCredits, attackIds, attackCoverage, attackLabel } from "../data/attack.js";
+import { ATTACK_V20, ATTACK_SCOPE, COVERAGE_LEVELS, BOUND_LEVELS, attackCredits, attackIds, attackCoverage, attackLabel, attackBound, attackSummary } from "../data/attack.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const { meta, threats } = JSON.parse(readFileSync(join(ROOT, "data/threats.json"), "utf8"));
@@ -78,7 +78,9 @@ test("ATTACK-V20: every credit is { id, coverage, reason } with a one-line reaso
   for (const t of threats) {
     const ids = [];
     for (const c of t.attack) {
-      assert.deepEqual(Object.keys(c).sort(), ["coverage", "id", "reason"], `#${t.id} credit keys`);
+      const extra = Object.keys(c).filter((k) => !["coverage", "id", "reason"].includes(k));
+      assert.deepEqual(extra.filter((k) => !["bound", "boundReason"].includes(k)), [], `#${t.id} ${c.id} unknown credit keys`);
+      assert.ok(["coverage", "id", "reason"].every((k) => k in c), `#${t.id} credit keys`);
       assert.match(c.id, ID_RE, `#${t.id} malformed id ${c.id}`);
       assert.ok(COVERAGE_LEVELS.includes(c.coverage), `#${t.id} ${c.id} coverage ${c.coverage}`);
       assert.equal(typeof c.reason, "string");
@@ -157,6 +159,56 @@ test("ATTACK-V20: the credits for the techniques v20 added", () => {
 
 test("ATTACK-V20: transit interception is credited partial now that the hook calls decideTransit", () => {
   assert.deepEqual(byId.get(67).attack.map((c) => [c.id, c.coverage]), [["T1557", "partial"], ["T1553.004", "partial"]]);
+});
+
+// A partial credit may say WHY it is partial: bound "design" when the forms it does not catch are either
+// indistinguishable from an agent's legitimate work or outside anything an agent-side hook, proxy or gateway
+// observes, with a one-line boundReason; bound "gap" (or no field) when MoorAI has not built the detection.
+test("ATTACK-V20: a bound is only on a partial credit, and a design bound says why in one line", () => {
+  assert.deepEqual(BOUND_LEVELS, ["design", "gap"]);
+  assert.ok(/\bboundReason\b/.test(meta.schema.attack) && /"design"/.test(meta.schema.attack), "meta.schema.attack documents bound and boundReason");
+  for (const t of threats) {
+    for (const c of t.attack) {
+      if (!("bound" in c)) { assert.ok(!("boundReason" in c), `#${t.id} ${c.id} boundReason without bound`); continue; }
+      assert.equal(c.coverage, "partial", `#${t.id} ${c.id} bound on a ${c.coverage} credit`);
+      assert.ok(BOUND_LEVELS.includes(c.bound), `#${t.id} ${c.id} bound ${c.bound}`);
+      if (c.bound === "design") {
+        assert.equal(typeof c.boundReason, "string", `#${t.id} ${c.id} design bound needs boundReason`);
+        assert.ok(c.boundReason.length > 10 && c.boundReason.length <= 200 && !/\n/.test(c.boundReason), `#${t.id} ${c.id} boundReason one short line`);
+      }
+    }
+  }
+  assert.equal(attackBound({ coverage: "partial" }), "gap");
+  assert.equal(attackBound({ coverage: "partial", bound: "gap" }), "gap");
+  assert.equal(attackBound({ coverage: "partial", bound: "design", boundReason: "x".repeat(20) }), "design");
+  assert.equal(attackBound({ coverage: "full", bound: "design" }), null);
+  assert.equal(attackBound({ coverage: "none" }), null);
+});
+
+// The reviewed list of partial-by-design credits. Widening it must be a deliberate, reviewed edit.
+test("ATTACK-V20: the partial-by-design credits", () => {
+  const design = threats.flatMap((t) => t.attack.filter((c) => c.bound === "design").map((c) => `${t.id}:${c.id}`));
+  assert.deepEqual(design, ["21:T1698", "32:T1204.004", "39:T1552.008", "54:T1059.004", "54:T1059.001", "54:T1059.006", "57:T1105", "70:T1608.007", "79:T1016.001"]);
+});
+
+// The benchmark splits partial into bounded-by-design and open-gap. The numbers are recomputed here from the
+// data and compared with the regenerated docs/benchmark.json, never typed in.
+test("ATTACK-V20: the benchmark's partial split agrees with the data", () => {
+  const bench = JSON.parse(readFileSync(join(ROOT, "docs/benchmark.json"), "utf8")).mitreAttackV20;
+  const sum = attackSummary(threats);
+  for (const [name, got, want] of [["scope", bench, sum.scope], ["agent lane", bench.agentLane, sum.agentLane]]) {
+    for (const k of ["total", "covered", "partial", "uncovered", "partialDesign", "partialGap"]) assert.equal(got[k], want[k], `${name} ${k}`);
+    assert.equal(got.partialDesign + got.partialGap, got.partial, `${name} split sums to partial`);
+  }
+  for (const [id, it] of Object.entries(bench.byItem)) {
+    assert.equal(it.status, sum.byItem[id].status, `${id} status`);
+    assert.equal(it.partialBound, it.status === "partial" ? sum.byItem[id].partialBound : undefined, `${id} partialBound`);
+  }
+  // A technique is bounded by design when any of its partial credits is: that credit's uncaught forms are out
+  // of reach, and the technique's uncaught forms are a subset of them.
+  assert.equal(sum.byItem["T1059.004"].partialBound, "design");
+  assert.equal(sum.byItem["T1552.004"].partialBound, "gap");
+  assert.equal(sum.byItem["T1698"].partialBound, undefined);
 });
 
 test("ATTACK-V20: helpers read the tag the same way everywhere", () => {

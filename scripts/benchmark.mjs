@@ -14,7 +14,7 @@ import { CONTENT_RULES } from "../data/content-rules.js";
 import { DetectionEngine } from "../src/engine.js";
 import { classifyFailures, reportAcceptedFailures } from "./accepted-failures.mjs";
 import { OWASP_AGENTIC, OWASP_MCP, owaspAgenticIds, owaspMcpIds, owaspAgenticPartialNote, owaspMcpPartialNote, frameworkEdition } from "../data/owasp-frameworks.js";
-import { ATTACK_V20, ATTACK_SCOPE, attackCredits } from "../data/attack.js";
+import { ATTACK_V20, ATTACK_SCOPE, attackCredits, attackSummary } from "../data/attack.js";
 import { measureLatency, LATENCY_ROWS } from "./latency-bench.mjs";
 import { renderLatencyMarkdown } from "./latency.mjs";
 
@@ -71,6 +71,9 @@ const mcpCov = frameworkCoverage(OWASP_MCP, owaspMcpIds, owaspMcpPartialNote);
 // a technique's status is the best level any rule credits: covered (full), partial, or uncovered (only `none`
 // credits, or no rule). Detectors are counted for transparency but do not set the status: several credited
 // mechanisms (session risk, the MCP allow-list, file metadata) are not detectors in data/detectors.js.
+// A partial technique is also split by why it is partial (data/attack.js attackSummary): bounded by design,
+// when a partial credit says its uncaught forms are indistinguishable from an agent's legitimate work or
+// outside every agent-side surface (`bound: "design"`), or an open gap otherwise.
 const ATTACK_NAMES = JSON.parse(readFileSync(join(ROOT, "data/attack-v20-techniques.json"), "utf8")).techniques;
 const attackCov = (() => {
   const rank = { full: 2, partial: 1, none: 0 };
@@ -84,13 +87,18 @@ const attackCov = (() => {
       it.best = Math.max(it.best, rank[c.coverage]);
     }
   }
-  for (const it of Object.values(byItem)) { it.status = it.best === 2 ? "covered" : it.best === 1 ? "partial" : "uncovered"; delete it.best; }
+  const sum = attackSummary(threats.threats);
+  for (const [id, it] of Object.entries(byItem)) {
+    it.status = it.best === 2 ? "covered" : it.best === 1 ? "partial" : "uncovered"; delete it.best;
+    if (it.status === "partial") it.partialBound = sum.byItem[id].partialBound;
+  }
   const count = (s, lane) => Object.values(byItem).filter((v) => v.status === s && (!lane || v.lane === lane)).length;
   const agentTotal = Object.values(byItem).filter((v) => v.lane === "agent").length;
   return {
     edition: ATTACK_V20.version, source: ATTACK_V20.source, total: Object.keys(byItem).length,
     covered: count("covered"), partial: count("partial"), uncovered: count("uncovered"),
-    agentLane: { total: agentTotal, covered: count("covered", "agent"), partial: count("partial", "agent"), uncovered: count("uncovered", "agent") },
+    partialDesign: sum.scope.partialDesign, partialGap: sum.scope.partialGap,
+    agentLane: { total: agentTotal, covered: count("covered", "agent"), partial: count("partial", "agent"), uncovered: count("uncovered", "agent"), partialDesign: sum.agentLane.partialDesign, partialGap: sum.agentLane.partialGap },
     byItem
   };
 })();
@@ -133,14 +141,16 @@ const rows = Object.entries(OWASP).map(([k, name]) => {
   return `| ${k} | ${name} | ${c.threats} | ${c.detectors} | ${status} |`;
 }).join("\n");
 const STATUS = { covered: "✅ covered", partial: "◐ partial", uncovered: "—" };
+const ATTACK_STATUS = (c) => (c.status === "partial" ? `◐ partial (${c.partialBound === "design" ? "by design" : "open gap"})` : STATUS[c.status]);
 const fwRows = (fw, cov) => Object.entries(fw.items).map(([k, name]) => {
   const c = cov.byItem[k];
   return `| ${k} | ${name} | ${c.threats} | ${c.partialThreats} | ${c.detectors} | ${STATUS[c.status]} |`;
 }).join("\n");
 const fwLine = (cov) => `${cov.covered}/${cov.total} covered, ${cov.partial} partial, ${cov.uncovered} uncovered`;
-const attackLine = (cov) => `${fwLine(cov)} (agent lane: ${fwLine(cov.agentLane)})`;
+const splitLine = (cov) => `${cov.covered}/${cov.total} covered, ${cov.partial} partial (${cov.partialDesign} bounded by design, ${cov.partialGap} open gap), ${cov.uncovered} uncovered`;
+const attackLine = (cov) => `${splitLine(cov)} (agent lane: ${splitLine(cov.agentLane)})`;
 const attackRows = Object.entries(attackCov.byItem).map(([id, c]) =>
-  `| ${id} | ${ATTACK_NAMES[id].name} | ${c.lane} | ${c.threats} | ${c.detectors} | ${STATUS[c.status]} |`).join("\n");
+  `| ${id} | ${ATTACK_NAMES[id].name} | ${c.lane} | ${c.threats} | ${c.detectors} | ${ATTACK_STATUS(c)} |`).join("\n");
 const md = `# MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with \`npm run benchmark\`.
@@ -190,7 +200,10 @@ aimed at (\`ATTACK_SCOPE\` in \`data/attack.js\`). **Lane** says who can see the
 an AI agent takes that a MoorAI hook, proxy or gateway sees; \`edr\`, \`identity\`, \`email\` and \`pre\` (the
 adversary's own infrastructure) are outside every MoorAI surface. Each credit in \`data/threats.json\` (\`attack\`)
 states its level and a one-line reason; a technique is *covered* when a rule credits it in full, *partial* when
-the best credit is bounded, and *—* otherwise. Coverage is a mechanism claim, not a detection rate. Technique ids
+the best credit is bounded, and *—* otherwise. A partial technique is *by design* when one of its partial credits
+carries \`bound: "design"\`: the forms it does not catch are indistinguishable from an agent's legitimate work, or
+outside anything an agent-side hook, proxy or gateway observes, and \`boundReason\` says which. Every other partial
+technique is an *open gap*: detection MoorAI has not built yet. Coverage is a mechanism claim, not a detection rate. Technique ids
 and names: [${ATTACK_V20.name} v${ATTACK_V20.version}](${ATTACK_V20.stix}), released ${ATTACK_V20.released}.
 
 Coverage is measured, not asserted: every number above is produced by running the shipped detection

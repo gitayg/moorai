@@ -1,6 +1,6 @@
 {
   "name": "MoorAI Agent Security Benchmark",
-  "generatedAt": "2026-10-17T18:57:27.781Z",
+  "generatedAt": "2026-10-18T23:49:19.449Z",
   "engine": {
     "detectors": 118,
     "threats": 80,
@@ -204,11 +204,15 @@
     "covered": 2,
     "partial": 54,
     "uncovered": 15,
+    "partialDesign": 8,
+    "partialGap": 46,
     "agentLane": {
       "total": 58,
       "covered": 2,
       "partial": 53,
-      "uncovered": 3
+      "uncovered": 3,
+      "partialDesign": 8,
+      "partialGap": 45
     },
     "byItem": {
       "T1698": {
@@ -227,205 +231,239 @@
         "lane": "agent",
         "threats": 4,
         "detectors": 4,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1685.007": {
         "lane": "agent",
         "threats": 1,
         "detectors": 5,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1608.007": {
         "lane": "agent",
         "threats": 1,
         "detectors": 1,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "design"
       },
       "T1027.018": {
         "lane": "agent",
         "threats": 1,
         "detectors": 8,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1195.001": {
         "lane": "agent",
         "threats": 5,
         "detectors": 5,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1059.001": {
         "lane": "agent",
         "threats": 1,
         "detectors": 1,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "design"
       },
       "T1059.004": {
         "lane": "agent",
         "threats": 1,
         "detectors": 1,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "design"
       },
       "T1059.006": {
         "lane": "agent",
         "threats": 1,
         "detectors": 1,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "design"
       },
       "T1059.013": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1027.010": {
         "lane": "agent",
         "threats": 1,
         "detectors": 8,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1105": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "design"
       },
       "T1204.001": {
         "lane": "agent",
         "threats": 3,
         "detectors": 3,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1204.002": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1204.004": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "design"
       },
       "T1204.005": {
         "lane": "agent",
         "threats": 2,
         "detectors": 3,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1176.002": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1677": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1053.003": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1543.001": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1546.004": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1552.001": {
         "lane": "agent",
         "threats": 1,
         "detectors": 3,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1552.003": {
         "lane": "agent",
         "threats": 1,
         "detectors": 3,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1552.004": {
         "lane": "agent",
         "threats": 1,
         "detectors": 3,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1552.005": {
         "lane": "agent",
         "threats": 1,
         "detectors": 3,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1552.008": {
         "lane": "agent",
         "threats": 1,
         "detectors": 22,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "design"
       },
       "T1555.001": {
         "lane": "agent",
         "threats": 1,
         "detectors": 3,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1555.003": {
         "lane": "agent",
         "threats": 1,
         "detectors": 3,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1003.008": {
         "lane": "agent",
         "threats": 1,
         "detectors": 3,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1528": {
         "lane": "agent",
         "threats": 1,
         "detectors": 3,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1074.001": {
         "lane": "agent",
         "threats": 1,
         "detectors": 0,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1560.001": {
         "lane": "agent",
         "threats": 2,
         "detectors": 1,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1030": {
         "lane": "agent",
         "threats": 1,
         "detectors": 0,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1016.001": {
         "lane": "agent",
         "threats": 1,
         "detectors": 1,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "design"
       },
       "T1567": {
         "lane": "agent",
         "threats": 2,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1567.001": {
         "lane": "agent",
@@ -449,115 +487,134 @@
         "lane": "agent",
         "threats": 2,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1048.003": {
         "lane": "agent",
         "threats": 1,
         "detectors": 1,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1485": {
         "lane": "agent",
         "threats": 2,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1561": {
         "lane": "agent",
         "threats": 1,
         "detectors": 1,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1490": {
         "lane": "agent",
         "threats": 1,
         "detectors": 1,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1070": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1070.003": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1690": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1685": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1686": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1553.001": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1553.004": {
         "lane": "agent",
         "threats": 2,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1557": {
         "lane": "agent",
         "threats": 1,
         "detectors": 0,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1098.001": {
         "lane": "agent",
         "threats": 1,
         "detectors": 1,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1098.003": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1098.004": {
         "lane": "agent",
         "threats": 1,
         "detectors": 1,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1136.001": {
         "lane": "agent",
         "threats": 1,
         "detectors": 1,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1136.003": {
         "lane": "agent",
         "threats": 1,
         "detectors": 1,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1548.003": {
         "lane": "agent",
         "threats": 1,
         "detectors": 2,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1176.001": {
         "lane": "edr",
@@ -605,7 +662,8 @@
         "lane": "email",
         "threats": 1,
         "detectors": 1,
-        "status": "partial"
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1682": {
         "lane": "pre",
