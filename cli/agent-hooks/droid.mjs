@@ -60,19 +60,29 @@ const abs = (p, cwd) => (p && cwd && !isAbsolute(p) ? resolve(cwd, p) : p);
 
 // A unified diff, one entry per file. Hunks are read by their `@@ -a,b +c,d @@` counts, and `---` / `+++`
 // are headers only outside a hunk: inside one, "--- x" is a removed line and "+++ x" an added line, so a
-// patch cannot open a fake file mid-hunk. `+++ b/<path>` names the file (its `--- a/<path>` when the
+// patch cannot open a fake file mid-hunk. A hunk also ends at the next `@@` or `diff --git` line, so an
+// inflated count cannot swallow the next file. `+++ b/<path>` names the file (its `--- a/<path>` when the
 // target is /dev/null, a deletion). No added line is ever dropped: an entry with no name keeps its lines.
+// `named` is every path any `---` / `+++` / `diff --git` line names, inside a hunk or not: whichever
+// reading the applier takes, each of those paths is path-checked.
+const HEADER_PATH = /^(?:---|\+\+\+) (?:[ab]\/)?(.+?)\s*$/;
+const GIT_PATHS = /^diff --git a\/(\S+) b\/(\S+)\s*$/;
 function unifiedDiff(text) {
-  const files = [];
+  const files = [], named = new Set();
   let src = "", cur = null, oldLeft = 0, newLeft = 0;
   const open = (file) => { cur = { file, added: [] }; files.push(cur); };
   for (const line of text.split(/\r?\n/)) {
+    const hp = HEADER_PATH.exec(line), gp = GIT_PATHS.exec(line);
+    if (hp && hp[1] !== "/dev/null") named.add(hp[1]);
+    if (gp) { named.add(gp[1]); named.add(gp[2]); }
+    if ((oldLeft > 0 || newLeft > 0) && (line.startsWith("@@") || gp)) { oldLeft = 0; newLeft = 0; }
     if (oldLeft > 0 || newLeft > 0) {
       if (line.startsWith("+")) { newLeft--; cur.added.push(line.slice(1)); }
       else if (line.startsWith("-")) oldLeft--;
       else if (!line.startsWith("\\")) { oldLeft--; newLeft--; }
       continue;
     }
+    if (gp) continue;
     const h = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
     if (h) { oldLeft = h[1] === undefined ? 1 : Number(h[1]); newLeft = h[2] === undefined ? 1 : Number(h[2]); if (!cur) open(""); continue; }
     const from = /^--- (?:a\/)?(.+?)\s*$/.exec(line);
@@ -81,7 +91,7 @@ function unifiedDiff(text) {
     if (to) { open(to[1] !== "/dev/null" ? to[1] : src !== "/dev/null" ? src : ""); continue; }
     if (line.startsWith("+")) { if (!cur) open(""); cur.added.push(line.slice(1)); }
   }
-  return files;
+  return { files, named: [...named] };
 }
 
 function patchTool(text, cwd) {
@@ -90,8 +100,11 @@ function patchTool(text, cwd) {
   if (calls.length) return calls;
   // Not an envelope: each file of a unified diff with its added lines, or the whole text when nothing names a file.
   // Plus the whole text once, so a diff the parser misreads is still content-scanned.
-  const diff = unifiedDiff(text).map((f) => ["MultiEdit", { file_path: a(f.file), edits: [{ old_string: "", new_string: f.added.join("\n") }] }]);
-  return [...diff, ["MultiEdit", { file_path: a(""), edits: [{ old_string: "", new_string: text }] }]];
+  const { files, named } = unifiedDiff(text);
+  const diff = files.map((f) => ["MultiEdit", { file_path: a(f.file), edits: [{ old_string: "", new_string: f.added.join("\n") }] }]);
+  const covered = new Set(diff.map(([, ti]) => ti.file_path));
+  const paths = named.map(a).filter((p) => !covered.has(p)).map((p) => ["Write", { file_path: p, content: "" }]);
+  return [...diff, ...paths, ["MultiEdit", { file_path: a(""), edits: [{ old_string: "", new_string: text }] }]];
 }
 
 // Droid documents only Execute's and Create's tool_input, so the others are read under several plausible
