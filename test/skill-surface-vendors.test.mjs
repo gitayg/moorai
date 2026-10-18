@@ -52,6 +52,15 @@ const CASES = [
   [".gemini/settings.json", "gemini-settings"],
   ["etc/gemini-cli/settings.json", "gemini-settings"],
   ["Library/Application Support/GeminiCli/system-defaults.json", "gemini-settings"],
+  // Factory Droid — docs.factory.com reference/hooks-reference, droid-cli/settings, enterprise hierarchical settings:
+  //   hooks.json and settings(.local).json at user and project scope, the legacy hooks/hooks.json, the managed file.
+  [".factory/hooks.json", "droid-settings"],
+  [".factory/settings.json", "droid-settings"],
+  [".factory/settings.local.json", "droid-settings"],
+  [".factory/hooks/hooks.json", "droid-settings"],
+  ["etc/factory/settings.json", "droid-settings"],
+  ["Library/Application Support/Factory/settings.json", "droid-settings"],
+  ["Program Files/Factory/settings.json", "droid-settings"],
   // Cline — docs.cline.bot/features/cline-rules; workflows per cline.bot/blog/stop-adding-rules-when-you-need-workflows
   [".clinerules/coding.md", ".clinerules"],
   [".clinerules/workflows/pr-review.md", "cline-workflow"],
@@ -91,6 +100,8 @@ const BENIGN_SIBLINGS = [
   "src/opencode/commands/x.md",          // not .opencode/ nor ~/.config/opencode/
   "opencode.json.bak",
   ".amp/cache.json",
+  "src/factory/settings.json",            // a repo dir named factory, not ~/.factory or a managed path
+  ".factory/notes.json",
   "agents/review.md"
 ];
 

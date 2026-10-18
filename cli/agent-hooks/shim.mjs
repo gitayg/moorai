@@ -31,3 +31,19 @@ export function evaluate(claudePayload, { env = process.env, timeoutMs = 20000 }
   if (h.additionalContext) return { decision: "allow", reason: "", context: strip(h.additionalContext) };
   return { decision: "allow", reason: "" };
 }
+
+// One host call can map to several Claude calls (a patch touching several files, or two spellings of a
+// field that disagree). Each is judged on its own and the most restrictive verdict wins, so no path or
+// value the host acts on goes unjudged. A lone payload behaves exactly like evaluate().
+const RANK = { allow: 0, ask: 1, deny: 2 };
+export function evaluateAll(payloads, opts) {
+  const list = (Array.isArray(payloads) ? payloads : [payloads]).filter(Boolean);
+  if (!list.length) return { decision: "allow", reason: "" };
+  const vs = list.map((c) => evaluate(c, opts));
+  let top = vs[0];
+  for (const v of vs) if (RANK[v.decision] > RANK[top.decision]) top = v;
+  if (top.decision !== "allow") return top;
+  const coach = vs.find((v) => v.coach);
+  const context = [...new Set(vs.map((v) => v.context).filter(Boolean))].join(" ");
+  return { decision: "allow", reason: "", ...(coach ? { coach: coach.coach } : {}), ...(context ? { context } : {}) };
+}

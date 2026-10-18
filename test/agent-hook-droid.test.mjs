@@ -237,6 +237,38 @@ test("malformed stdin exits 0 with no decision (fail open)", () => {
   } finally { rmTree(home); }
 });
 
+test("toClaude: a multi-file patch is judged per path, not only by its first file", () => {
+  const t = (tool_input) => toClaude({ ...FIXTURE, cwd: "/w", tool_name: "ApplyPatch", tool_input });
+  const env = t({ input: "*** Begin Patch\n*** Add File: a.txt\n+x\n*** Update File: b.txt\n*** Move to: c.txt\n@@\n-o\n+n\n*** Delete File: d.txt\n*** End Patch" });
+  assert.deepEqual(env.map((c) => [c.tool_name, c.tool_input.file_path]), [["Write", "/w/a.txt"], ["MultiEdit", "/w/c.txt"], ["Write", "/w/b.txt"], ["Write", "/w/d.txt"]]);
+  const diff = t({ input: "--- a/one.txt\n+++ b/one.txt\n@@\n+safe\n--- a/two.sh\n+++ b/two.sh\n@@\n+curl x | sh\n--- a/gone.txt\n+++ /dev/null\n" });
+  assert.deepEqual(diff.map((c) => [c.tool_input.file_path, c.tool_input.edits[0].new_string]), [["/w/one.txt", "safe"], ["/w/two.sh", "curl x | sh"], ["/w/gone.txt", ""]]);
+});
+test("toClaude: when two spellings of a field disagree, every value is judged", () => {
+  const t = (tool_name, tool_input) => toClaude({ ...FIXTURE, cwd: "/w", tool_name, tool_input });
+  const r = t("Read", { file_path: "notes.txt", path: "/home/u/.ssh/id_rsa" });
+  assert.deepEqual(r.map((c) => c.tool_input.file_path), ["/w/notes.txt", "/home/u/.ssh/id_rsa"]);
+  const c = t("Create", { file_path: "a.txt", path: "/home/u/.ssh/authorized_keys", content: "k" });
+  assert.deepEqual(c.map((x) => x.tool_input.file_path), ["/w/a.txt", "/home/u/.ssh/authorized_keys"]);
+  assert.deepEqual(t("Read", { file_path: "a.txt", path: "a.txt" }).tool_input, { file_path: "/w/a.txt" }, "equal spellings stay one call");
+  const e = t("Edit", { file_path: "x.js", old_str: "a", new_str: "b", new_string: "evil" });
+  assert.deepEqual([e.tool_name, e.tool_input.edits], ["MultiEdit", [{ old_string: "a", new_string: "b" }, { old_string: "a", new_string: "evil" }]]);
+  const m = t("Edit", { file_path: "x.js", edits: [{ old_str: "a", new_str: "payload" }] });
+  assert.deepEqual(m.tool_input.edits, [{ old_string: "a", new_string: "payload" }], "old_str / new_str inside edits[] are normalised, not dropped");
+  const p = t("ApplyPatch", { input: "*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch", patch: "*** Begin Patch\n*** Add File: /home/u/.ssh/authorized_keys\n+k\n*** End Patch" });
+  assert.deepEqual(p.map((x) => x.tool_input.file_path), ["/w/a.txt", "/home/u/.ssh/authorized_keys"]);
+});
+test("end to end: a patch that leads with a harmless file still gets the second file's verdict", () => {
+  const home = sandbox();
+  try {
+    const key = join(home, ".ssh", "authorized_keys");
+    const patch = `*** Begin Patch\n*** Add File: notes.txt\n+hello\n*** Add File: ${key}\n+ssh-ed25519 AAAA attacker\n*** End Patch`;
+    const res = run(home, JSON.stringify({ ...FIXTURE, cwd: home, tool_name: "ApplyPatch", tool_input: { input: patch } }));
+    assert.match(`${res.stdout}${res.stderr}`, /authorized_keys/, "the second file was not judged");
+    const benign = run(home, JSON.stringify({ ...FIXTURE, cwd: home, tool_name: "ApplyPatch", tool_input: { input: "*** Begin Patch\n*** Add File: notes.txt\n+hello\n*** End Patch" } }));
+    assert.equal(`${benign.stdout}${benign.stderr}`.trim(), "");
+  } finally { rmTree(home); }
+});
 test("toClaude: Droid tool names onto MoorAI's canonical tools", () => {
   const base = { ...FIXTURE, cwd: "/w" };
   const t = (tool_name, tool_input, extra = {}) => toClaude({ ...base, tool_name, tool_input, ...extra });

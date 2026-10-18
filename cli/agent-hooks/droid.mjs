@@ -44,7 +44,7 @@
 // in settings switches every hook off; allowManagedHooksOnly (org) ignores user hooks.
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { join, dirname, isAbsolute, resolve } from "node:path";
-import { parsePatch } from "./codex.mjs";
+import { patchCalls } from "./codex.mjs";
 
 export const id = "droid";
 export const label = "Factory Droid";
@@ -58,59 +58,73 @@ const OWN = /moorai-agent-hook\.mjs"?\s+droid(\s|$)/;
 const str = (v) => (typeof v === "string" ? v : "");
 const abs = (p, cwd) => (p && cwd && !isAbsolute(p) ? resolve(cwd, p) : p);
 
-// A unified diff: `+++ b/<path>` names the file, `+` lines are what gets written.
+// A unified diff, one entry per file: `+++ b/<path>` names the file (its `--- a/<path>` when the target is
+// /dev/null, a deletion) and the `+` lines after it are what gets written there. Every file is returned,
+// not only the first, so each one is judged.
 function unifiedDiff(text) {
-  let file = "";
-  const added = [];
+  const files = [];
+  let src = "", cur = null;
   for (const line of text.split(/\r?\n/)) {
-    const m = /^\+\+\+ (?:b\/)?(.+?)\s*$/.exec(line);
-    if (m) { if (!file && m[1] !== "/dev/null") file = m[1]; continue; }
-    if (line.startsWith("+")) added.push(line.slice(1));
+    const from = /^--- (?:a\/)?(.+?)\s*$/.exec(line);
+    if (from) { src = from[1]; continue; }
+    const to = /^\+\+\+ (?:b\/)?(.+?)\s*$/.exec(line);
+    if (to) { cur = { file: to[1] !== "/dev/null" ? to[1] : src !== "/dev/null" ? src : "", added: [] }; files.push(cur); continue; }
+    if (cur && line.startsWith("+")) cur.added.push(line.slice(1));
   }
-  return { file, content: added.join("\n") };
+  return files.filter((f) => f.file);
 }
 
 function patchTool(text, cwd) {
-  const files = parsePatch(text).filter((f) => f.op !== "Delete");
-  if (files.length === 1 && files[0].op === "Add") return ["Write", { file_path: abs(files[0].path, cwd), content: files[0].lines.join("\n") }];
-  if (files.length) {
-    const edits = [];
-    for (const f of files) {
-      if (f.op === "Add") edits.push({ old_string: "", new_string: f.lines.join("\n") });
-      else for (const h of f.hunks) edits.push({ old_string: h.old.join("\n"), new_string: h.new.join("\n") });
-    }
-    return ["MultiEdit", { file_path: abs(files[0].moveTo || files[0].path, cwd), edits }];
-  }
-  // Not an envelope: scan the added lines of a unified diff, or the whole text when nothing names a file.
-  const d = unifiedDiff(text);
-  return ["MultiEdit", { file_path: abs(d.file, cwd), edits: [{ old_string: "", new_string: d.file ? d.content : text }] }];
+  const a = (p) => abs(p, cwd);
+  const calls = patchCalls(text, a).map((c) => [c.tool_name, c.tool_input]);
+  if (calls.length) return calls;
+  // Not an envelope: each file of a unified diff with its added lines, or the whole text when nothing names a file.
+  const diff = unifiedDiff(text);
+  if (diff.length) return diff.map((f) => ["MultiEdit", { file_path: a(f.file), edits: [{ old_string: "", new_string: f.added.join("\n") }] }]);
+  return [["MultiEdit", { file_path: a(""), edits: [{ old_string: "", new_string: text }] }]];
 }
 
+// Droid documents only Execute's and Create's tool_input, so the others are read under several plausible
+// names. When a call carries more than one of them with different values, MoorAI cannot know which one
+// Droid acts on, so every distinct value is judged (each() fans out; the most restrictive verdict wins).
+const distinct = (...vals) => [...new Set(vals.map(str).filter(Boolean))];
+const each = (vals, mk) => (vals.length ? vals : [""]).map(mk);
+const editPair = (e) => {
+  const olds = distinct(e && e.old_str, e && e.old_string), news = distinct(e && e.new_str, e && e.new_string);
+  const out = [];
+  for (const o of olds.length ? olds : [""]) for (const n of news.length ? news : [""]) out.push({ old_string: o, new_string: n });
+  return out;
+};
+
 function preTool(name, ti, cwd) {
+  const paths = () => distinct(ti.file_path, ti.path);
   switch (name) {
     case "Execute":
-      return typeof ti.command === "string" ? ["Bash", { command: ti.command }] : null;
+      return typeof ti.command === "string" ? [["Bash", { command: ti.command }]] : null;
     case "Read": {
-      const p = str(ti.file_path) || str(ti.path);
-      return p ? ["Read", { file_path: abs(p, cwd) }] : null;
+      const ps = paths();
+      return ps.length ? ps.map((p) => ["Read", { file_path: abs(p, cwd) }]) : null;
     }
     case "Create":
-      return ["Write", { file_path: abs(str(ti.file_path) || str(ti.path), cwd), content: str(ti.content) }];
+      return each(paths(), (p) => ["Write", { file_path: abs(p, cwd), content: str(ti.content) }]);
     case "Edit": {
-      const file_path = abs(str(ti.file_path) || str(ti.path), cwd);
-      if (Array.isArray(ti.edits)) return ["MultiEdit", { file_path, edits: ti.edits }];
-      return ["Edit", { file_path, old_string: str(ti.old_str) || str(ti.old_string), new_string: str(ti.new_str) || str(ti.new_string) }];
+      if (Array.isArray(ti.edits)) {
+        const edits = ti.edits.flatMap(editPair);
+        return each(paths(), (p) => ["MultiEdit", { file_path: abs(p, cwd), edits }]);
+      }
+      const pairs = editPair(ti);
+      return each(paths(), (p) => (pairs.length === 1 ? ["Edit", { file_path: abs(p, cwd), ...pairs[0] }] : ["MultiEdit", { file_path: abs(p, cwd), edits: pairs }]));
     }
     case "ApplyPatch": {
-      const text = [ti.input, ti.patch, ti.patch_text, ti.command].find((v) => typeof v === "string" && v);
-      return text ? patchTool(text, cwd) : null;
+      const texts = distinct(ti.input, ti.patch, ti.patch_text, ti.command);
+      return texts.length ? texts.flatMap((t) => patchTool(t, cwd)) : null;
     }
     case "FetchUrl":
-      return ["WebFetch", { url: str(ti.url), prompt: str(ti.prompt) }];
+      return [["WebFetch", { url: str(ti.url), prompt: str(ti.prompt) }]];
     case "Task":
-      return ["Task", { subagent_type: str(ti.subagent_type), prompt: str(ti.prompt), description: str(ti.description) }];
+      return [["Task", { subagent_type: str(ti.subagent_type), prompt: str(ti.prompt), description: str(ti.description) }]];
     default:
-      return /^mcp__[^_].*__./.test(name) ? [name, ti] : null;
+      return /^mcp__[^_].*__./.test(name) ? [[name, ti]] : null;
   }
 }
 
@@ -133,7 +147,9 @@ export function toClaude(payload) {
     return { hook_event_name: "PostToolUse", tool_name: t, tool_input, tool_response: payload.tool_response, ...base };
   }
   const m = preTool(name, ti, cwd);
-  return m ? { hook_event_name: "PreToolUse", tool_name: m[0], tool_input: m[1], ...base } : null;
+  if (!m || !m.length) return null;
+  const calls = m.map(([tool_name, tool_input]) => ({ hook_event_name: "PreToolUse", tool_name, tool_input, ...base }));
+  return calls.length === 1 ? calls[0] : calls;
 }
 
 const tag = (s, dflt) => `MoorAI: ${String(s || "").trim().replace(/\.+$/, "") || dflt}`;

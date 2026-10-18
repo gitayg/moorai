@@ -250,6 +250,8 @@ agents' configs do not converge on their own. Copilot's `powershell` tool maps t
 
 All five fail open if the hook crashes, like the Claude Code hook; Codex, Copilot CLI, Gemini CLI and Cursor also fail open on a timeout.
 
+A patch (Codex `apply_patch`, Droid `ApplyPatch`) is judged per path: every file it adds, updates, moves or deletes gets the checks a direct write of that file gets, and the most restrictive verdict decides the call. Where Droid's `tool_input` carries two spellings of a field with different values (`file_path` and `path`, `old_str` and `old_string`), every value is judged. Droid's hook and settings files (`.factory/hooks.json`, `settings.json`, `settings.local.json`, the legacy `hooks/hooks.json`, the managed `settings.json`) are on the skill surface, so what an agent writes into them is scanned and drift is reported.
+
 `WebFetch` is covered on **both** surfaces, and the split is the point. `PreToolUse` fires *before* the
 fetch, so `tool_input` is `{url, prompt}` and the page does not exist yet — that surface scans the
 **outbound request** at the **`prompt`** stage and can deny it.

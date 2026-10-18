@@ -1185,7 +1185,7 @@ const INDEX_SCAN_STAMP = "index-scan.stamp";
 const INDEX_SCAN_INTERVAL_MS = 900000; // 15 min — auto-loaded context changes rarely
 const INDEX_SEEN_FILE = "index-scan-seen.json";
 const INDEX_SEEN_CAP = 200;
-const INDEX_MAX_FILES = 16;
+const INDEX_MAX_FILES = 20;
 // [base, relative path]. "project" = the agent's cwd: the payload's `cwd` when the host sent one (handed
 // to the worker on its argv), else the directory the hook and its worker were started in.
 const INDEX_SURFACE = [
@@ -1203,7 +1203,11 @@ const INDEX_SURFACE = [
   ["home", join(".claude", "CLAUDE.md")],
   ["home", join(".claude", "settings.json")],
   ["home", join(".gemini", "GEMINI.md")],
-  ["home", join(".gemini", "settings.json")]
+  ["home", join(".gemini", "settings.json")],
+  ["project", join(".factory", "hooks.json")],
+  ["project", join(".factory", "settings.json")],
+  ["home", join(".factory", "hooks.json")],
+  ["home", join(".factory", "settings.json")]
 ];
 function indexScanEnabled(policy) {
   const v = policy && policy.indexScan;

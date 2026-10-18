@@ -35,7 +35,8 @@ test("session-start scan list includes the documented single-file instruction an
   const block = /const INDEX_SURFACE = \[([\s\S]*?)\n\];/.exec(src);
   assert.ok(block, "INDEX_SURFACE not found");
   for (const want of ['["project", "GEMINI.md"]', '["project", "AGENTS.override.md"]', '["project", join(".gemini", "settings.json")]',
-    '["project", join(".github", "copilot-instructions.md")]', '["home", join(".gemini", "GEMINI.md")]', '["home", join(".gemini", "settings.json")]']) {
+    '["project", join(".github", "copilot-instructions.md")]', '["home", join(".gemini", "GEMINI.md")]', '["home", join(".gemini", "settings.json")]',
+    '["project", join(".factory", "hooks.json")]', '["project", join(".factory", "settings.json")]', '["home", join(".factory", "hooks.json")]', '["home", join(".factory", "settings.json")]']) {
     assert.ok(block[1].includes(want), `INDEX_SURFACE lacks ${want}`);
   }
 });

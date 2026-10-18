@@ -29,6 +29,14 @@ const SURFACE = [
   [/(^|[/\\])managed-settings\.json$/i, "claude-managed-settings", false],
   [/(^|[/\\])\.claude[/\\]settings(\.local)?\.json$/i, "claude-settings", true],
   [/(^|[/\\])\.claude[/\\]hooks([/\\].+)?$/i, "claude-hook", true],
+  // Factory Droid hooks run shell commands at lifecycle events (docs.factory.com reference/hooks-reference,
+  //   droid-cli/settings, enterprise/hierarchical-settings-and-org-control): ~/.factory/hooks.json and
+  //   .factory/hooks.json, the `hooks` key of settings.json / settings.local.json beside them, the legacy
+  //   .factory/hooks/hooks.json, and the org-managed settings.json (/etc/factory, /Library/Application
+  //   Support/Factory, C:\Program Files\Factory). Before the generic plugin-hooks entry: first match wins.
+  [/(^|[/\\])\.factory[/\\](hooks|settings(\.local)?)\.json$/i, "droid-settings", false],
+  [/(^|[/\\])\.factory[/\\]hooks[/\\]hooks\.json$/i, "droid-settings", false],
+  [/(^|[/\\])(etc[/\\]factory|Application Support[/\\]Factory|Program Files[/\\]Factory)[/\\]settings\.json$/i, "droid-settings", false],
   [/(^|[/\\])hooks[/\\]hooks\.json$/i, "plugin-hooks", false],
   // Gemini CLI settings carry `hooks` and `mcpServers` (geminicli.com/docs/hooks, /docs/reference/configuration):
   //   .gemini/settings.json, ~/.gemini/settings.json, /etc/gemini-cli/settings.json,

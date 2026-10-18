@@ -6,10 +6,11 @@
 // Each adapter in cli/agent-hooks/<agent>.mjs translates the agent's hook payload to Claude Code's
 // shape, and MoorAI's verdict back to what that agent accepts. Adapter contract:
 //   id, label
-//   toClaude(payload) -> Claude hook payload | null   (null = not a tool event MoorAI decides; allow)
+//   toClaude(payload) -> Claude hook payload | payload[] | null   (null = not a tool event MoorAI decides;
+//     allow. An array is several calls, every one judged, most restrictive wins: shim.mjs evaluateAll)
 //   fromVerdict(verdict, payload) -> { stdout?: string, stderr?: string, exitCode: number }
 //   install({ home, command }) / uninstall({ home })   idempotent; touch only MoorAI's own entries
-import { evaluate } from "./agent-hooks/shim.mjs";
+import { evaluateAll } from "./agent-hooks/shim.mjs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -33,7 +34,7 @@ async function main() {
   try { payload = JSON.parse((await readStdin()) || "{}"); } catch { process.exit(0); }
   const claude = a.toClaude(payload);
   process.env.MOORAI_HOOK_AGENT = id; // which host this is, for the core hook's coverage heartbeat
-  const verdict = claude ? evaluate(claude) : { decision: "allow", reason: "" };
+  const verdict = claude ? evaluateAll(claude) : { decision: "allow", reason: "" };
   const o = a.fromVerdict(verdict, payload);
   if (o.stdout) process.stdout.write(o.stdout);
   if (o.stderr) process.stderr.write(o.stderr);

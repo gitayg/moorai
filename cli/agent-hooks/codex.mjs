@@ -61,21 +61,26 @@ export function parsePatch(text) {
   return files;
 }
 
+// One Claude call per path a patch touches, so every path gets the path checks a direct write gets (a
+// single call named only the first file, and a patch that led with a harmless file slipped the rest
+// past them). Add -> Write; Update -> MultiEdit of that file's hunks at its destination; the source of a
+// move and a deleted file -> an empty Write, which runs the same path checks. Shared with droid.mjs.
+export function patchCalls(text, abs) {
+  const calls = [];
+  for (const f of parsePatch(text)) {
+    if (f.op === "Add") { calls.push({ tool_name: "Write", tool_input: { file_path: abs(f.path), content: f.lines.join("\n") } }); continue; }
+    if (f.op === "Delete") { calls.push({ tool_name: "Write", tool_input: { file_path: abs(f.path), content: "" } }); continue; }
+    const edits = f.hunks.map((h) => ({ old_string: h.old.join("\n"), new_string: h.new.join("\n") }));
+    calls.push({ tool_name: "MultiEdit", tool_input: { file_path: abs(f.moveTo || f.path), edits } });
+    if (f.moveTo && f.moveTo !== f.path) calls.push({ tool_name: "Write", tool_input: { file_path: abs(f.path), content: "" } });
+  }
+  return calls;
+}
+
 function patchToClaude(patch, cwd) {
   const abs = (p) => (isAbsolute(p) || !cwd ? p : resolve(cwd, p));
-  const files = parsePatch(patch).filter((f) => f.op !== "Delete");
-  if (!files.length) return null;
-  if (files.length === 1 && files[0].op === "Add") {
-    return { tool_name: "Write", tool_input: { file_path: abs(files[0].path), content: files[0].lines.join("\n") } };
-  }
-  // One payload per call: every file's new text goes into one MultiEdit so all of it is scanned.
-  // file_path is the first file's (the envelope check sees only that path).
-  const edits = [];
-  for (const f of files) {
-    if (f.op === "Add") edits.push({ old_string: "", new_string: f.lines.join("\n") });
-    else for (const h of f.hunks) edits.push({ old_string: h.old.join("\n"), new_string: h.new.join("\n") });
-  }
-  return { tool_name: "MultiEdit", tool_input: { file_path: abs(files[0].moveTo || files[0].path), edits } };
+  const calls = patchCalls(patch, abs);
+  return calls.length ? (calls.length === 1 ? calls[0] : calls) : null;
 }
 
 function mapTool(name, input, cwd) {
@@ -104,7 +109,8 @@ export function toClaude(payload) {
   const cwd = typeof payload.cwd === "string" ? payload.cwd : undefined;
   const mapped = mapTool(payload.tool_name, payload.tool_input, cwd);
   if (!mapped) return null;
-  return { hook_event_name: "PreToolUse", ...mapped, session_id: String(payload.session_id || ""), ...(cwd ? { cwd } : {}) };
+  const wrap = (m) => ({ hook_event_name: "PreToolUse", ...m, session_id: String(payload.session_id || ""), ...(cwd ? { cwd } : {}) });
+  return Array.isArray(mapped) ? mapped.map(wrap) : wrap(mapped);
 }
 
 export function fromVerdict(verdict, payload) {
