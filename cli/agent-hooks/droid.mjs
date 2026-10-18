@@ -58,20 +58,30 @@ const OWN = /moorai-agent-hook\.mjs"?\s+droid(\s|$)/;
 const str = (v) => (typeof v === "string" ? v : "");
 const abs = (p, cwd) => (p && cwd && !isAbsolute(p) ? resolve(cwd, p) : p);
 
-// A unified diff, one entry per file: `+++ b/<path>` names the file (its `--- a/<path>` when the target is
-// /dev/null, a deletion) and the `+` lines after it are what gets written there. Every file is returned,
-// not only the first, so each one is judged.
+// A unified diff, one entry per file. Hunks are read by their `@@ -a,b +c,d @@` counts, and `---` / `+++`
+// are headers only outside a hunk: inside one, "--- x" is a removed line and "+++ x" an added line, so a
+// patch cannot open a fake file mid-hunk. `+++ b/<path>` names the file (its `--- a/<path>` when the
+// target is /dev/null, a deletion). No added line is ever dropped: an entry with no name keeps its lines.
 function unifiedDiff(text) {
   const files = [];
-  let src = "", cur = null;
+  let src = "", cur = null, oldLeft = 0, newLeft = 0;
+  const open = (file) => { cur = { file, added: [] }; files.push(cur); };
   for (const line of text.split(/\r?\n/)) {
+    if (oldLeft > 0 || newLeft > 0) {
+      if (line.startsWith("+")) { newLeft--; cur.added.push(line.slice(1)); }
+      else if (line.startsWith("-")) oldLeft--;
+      else if (!line.startsWith("\\")) { oldLeft--; newLeft--; }
+      continue;
+    }
+    const h = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+    if (h) { oldLeft = h[1] === undefined ? 1 : Number(h[1]); newLeft = h[2] === undefined ? 1 : Number(h[2]); if (!cur) open(""); continue; }
     const from = /^--- (?:a\/)?(.+?)\s*$/.exec(line);
     if (from) { src = from[1]; continue; }
     const to = /^\+\+\+ (?:b\/)?(.+?)\s*$/.exec(line);
-    if (to) { cur = { file: to[1] !== "/dev/null" ? to[1] : src !== "/dev/null" ? src : "", added: [] }; files.push(cur); continue; }
-    if (cur && line.startsWith("+")) cur.added.push(line.slice(1));
+    if (to) { open(to[1] !== "/dev/null" ? to[1] : src !== "/dev/null" ? src : ""); continue; }
+    if (line.startsWith("+")) { if (!cur) open(""); cur.added.push(line.slice(1)); }
   }
-  return files.filter((f) => f.file);
+  return files;
 }
 
 function patchTool(text, cwd) {
@@ -79,9 +89,9 @@ function patchTool(text, cwd) {
   const calls = patchCalls(text, a).map((c) => [c.tool_name, c.tool_input]);
   if (calls.length) return calls;
   // Not an envelope: each file of a unified diff with its added lines, or the whole text when nothing names a file.
-  const diff = unifiedDiff(text);
-  if (diff.length) return diff.map((f) => ["MultiEdit", { file_path: a(f.file), edits: [{ old_string: "", new_string: f.added.join("\n") }] }]);
-  return [["MultiEdit", { file_path: a(""), edits: [{ old_string: "", new_string: text }] }]];
+  // Plus the whole text once, so a diff the parser misreads is still content-scanned.
+  const diff = unifiedDiff(text).map((f) => ["MultiEdit", { file_path: a(f.file), edits: [{ old_string: "", new_string: f.added.join("\n") }] }]);
+  return [...diff, ["MultiEdit", { file_path: a(""), edits: [{ old_string: "", new_string: text }] }]];
 }
 
 // Droid documents only Execute's and Create's tool_input, so the others are read under several plausible

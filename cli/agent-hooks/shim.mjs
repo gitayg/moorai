@@ -20,7 +20,7 @@ export function evaluate(claudePayload, { env = process.env, timeoutMs = 20000 }
     timeout: timeoutMs,
   });
   const out = (r.stdout || "").trim();
-  if (!out) return { decision: "allow", reason: "" };
+  if (!out) return { decision: "allow", reason: "", ...(r.error && r.error.code === "ETIMEDOUT" ? { timedOut: true } : {}) };
   let j;
   try { j = JSON.parse(out); } catch { return { decision: "allow", reason: "" }; }
   const strip = (s) => String(s || "").replace(/^MoorAI:\s*/, "");
@@ -35,11 +35,38 @@ export function evaluate(claudePayload, { env = process.env, timeoutMs = 20000 }
 // One host call can map to several Claude calls (a patch touching several files, or two spellings of a
 // field that disagree). Each is judged on its own and the most restrictive verdict wins, so no path or
 // value the host acts on goes unjudged. A lone payload behaves exactly like evaluate().
+// BOUNDED: each call is one hook process, in sequence, inside the host's hook timeout, and a host treats a
+// timed-out hook as non-blocking, so an unbounded batch would fail open. Duplicates are judged once; more
+// than BATCH_MAX distinct calls, or a batch that outruns deadlineMs or has a call time out, is held for
+// the user's confirmation (ask) instead. Hosts that cannot prompt turn ask into a deny (codex.mjs).
+export const BATCH_MAX = 32;
+export const BATCH_DEADLINE_MS = 20000;
 const RANK = { allow: 0, ask: 1, deny: 2 };
-export function evaluateAll(payloads, opts) {
-  const list = (Array.isArray(payloads) ? payloads : [payloads]).filter(Boolean);
+export function batchOf(payloads) {
+  const seen = new Set(), out = [];
+  for (const p of Array.isArray(payloads) ? payloads : [payloads]) {
+    if (!p) continue;
+    const k = JSON.stringify([p.tool_name, p.tool_input]);
+    if (!seen.has(k)) { seen.add(k); out.push(p); }
+  }
+  return out;
+}
+export function evaluateAll(payloads, opts = {}) {
+  const list = batchOf(payloads);
   if (!list.length) return { decision: "allow", reason: "" };
-  const vs = list.map((c) => evaluate(c, opts));
+  if (list.length === 1) return evaluate(list[0], opts);
+  if (list.length > BATCH_MAX) return { decision: "ask", reason: `one call touches too many files to check (${list.length}, limit ${BATCH_MAX}); confirm it yourself` };
+  const end = Date.now() + (opts.deadlineMs ?? BATCH_DEADLINE_MS);
+  const held = { decision: "ask", reason: "the checks for this call ran out of time; confirm it yourself" };
+  const vs = [];
+  for (const c of list) {
+    const left = end - Date.now();
+    if (left <= 0) return held;
+    const v = evaluate(c, { ...opts, timeoutMs: Math.min(opts.timeoutMs ?? 20000, left) });
+    if (v.timedOut) return held;
+    if (v.decision === "deny") return v;
+    vs.push(v);
+  }
   let top = vs[0];
   for (const v of vs) if (RANK[v.decision] > RANK[top.decision]) top = v;
   if (top.decision !== "allow") return top;
