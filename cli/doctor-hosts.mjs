@@ -8,6 +8,7 @@ import { spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { join, dirname, isAbsolute } from "node:path";
 import os from "node:os";
+import { configTarget as droidTarget, eventMap as droidEvents } from "./agent-hooks/droid.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, "moorai-hook.mjs");
@@ -44,8 +45,16 @@ export function hostTable(home = os.homedir(), env = process.env) {
     { id: "codex", label: "OpenAI Codex CLI", dir: codexHome, file: join(codexHome, "hooks.json"), rel: [".codex", "hooks.json"], ours: agentOurs("codex"), install: [AGENT_HOOK, "codex", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} codex install` },
     { id: "cursor", label: "Cursor", dir: join(home, ".cursor"), file: join(home, ".cursor", "hooks.json"), rel: [".cursor", "hooks.json"], ours: agentOurs("cursor"), install: [AGENT_HOOK, "cursor", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} cursor install` },
     { id: "gemini", label: "Gemini CLI", dir: join(home, ".gemini"), file: join(home, ".gemini", "settings.json"), rel: [".gemini", "settings.json"], comments: true, ours: agentOurs("gemini"), install: [AGENT_HOOK, "gemini", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} gemini install` },
-    { id: "copilot", label: "GitHub Copilot CLI", dir: copilotHome, file: join(copilotHome, "hooks", "moorai.json"), rel: [".copilot", "hooks", "moorai.json"], ours: agentOurs("copilot"), install: [AGENT_HOOK, "copilot", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} copilot install` }
+    { id: "copilot", label: "GitHub Copilot CLI", dir: copilotHome, file: join(copilotHome, "hooks", "moorai.json"), rel: [".copilot", "hooks", "moorai.json"], ours: agentOurs("copilot"), install: [AGENT_HOOK, "copilot", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} copilot install` },
+    droidHost(home)
   ];
+}
+// Droid: the installer picks ~/.factory/hooks.json, the legacy hooks/hooks.json or settings.json
+// (cli/agent-hooks/droid.mjs configTarget); hooks.json is keyed by event name, so `view` wraps it in the
+// `{ hooks }` shape the surface readers below take.
+function droidHost(home) {
+  const t = droidTarget(home);
+  return { id: "droid", label: "Factory Droid", dir: join(home, ".factory"), file: t.file, rel: [".factory", "hooks.json"], view: (d) => ({ hooks: droidEvents(d, t.kind) }), viewRel: (d) => ({ hooks: droidEvents(d, "hooks") }), ours: agentOurs("droid"), install: [AGENT_HOOK, "droid", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} droid install` };
 }
 function agentOurs(id) {
   const re = new RegExp(`moorai-agent-hook\\.mjs["']?\\s+${id}(\\s|$)`);
@@ -118,7 +127,7 @@ export function expectedSurface(host) {
     if (r.status !== 0) return { error: `installer exited ${r.status}` };
     const { data } = readJson(join(home, ...host.rel), { comments: host.comments });
     if (!data) return { error: "installer wrote nothing readable" };
-    return { surface: ourSurface(data, host.ours) };
+    return { surface: ourSurface(host.viewRel ? host.viewRel(data) : data, host.ours) };
   } finally { rmSync(home, { recursive: true, force: true }); }
 }
 
@@ -171,8 +180,9 @@ function checkPlugin(base, host, plug, exp) {
 export function checkHost(host, { managedHooks = null, managedPlugins = [], env = process.env, home = os.homedir() } = {}) {
   const base = { id: `host:${host.id}`, group: "hosts", title: host.label };
   const hostPresent = existsSync(host.dir);
-  const { exists, data, error } = readJson(host.file, { comments: host.comments });
-  if (exists && !data) return { ...base, status: "fail", summary: `${pathOf(host.file)} is ${error}; the host may ignore every hook in it`, fix: `repair the JSON in ${pathOf(host.file)}` };
+  const { exists, data: raw, error } = readJson(host.file, { comments: host.comments });
+  if (exists && !raw) return { ...base, status: "fail", summary: `${pathOf(host.file)} is ${error}; the host may ignore every hook in it`, fix: `repair the JSON in ${pathOf(host.file)}` };
+  const data = raw && host.view ? host.view(raw) : raw;
   let have = data ? ourSurface(data, host.ours) : {};
   let where = pathOf(host.file);
   let scripts = data ? hookScripts(data, host.ours) : [];
@@ -213,6 +223,7 @@ export function checkHost(host, { managedHooks = null, managedPlugins = [], env 
   const other = scripts.filter((s) => existsSync(s) && s !== HOOK && s !== AGENT_HOOK);
   if (host.id === "claude-code" && data && data.disableAllHooks === true) problems.push(`disableAllHooks is true in ${pathOf(host.file)}`);
   if (host.id === "gemini" && data && data.hooksConfig && data.hooksConfig.enabled === false) problems.push("hooksConfig.enabled is false");
+  if (host.id === "droid") for (const f of ["settings.json", "settings.local.json"]) if ((readJson(join(host.dir, f)).data || {}).hooksDisabled === true) problems.push(`hooksDisabled is true in ${pathOf(join(host.dir, f))}`);
   if (problems.length) return { ...base, status: "fail", summary: `${problems.join("; ")}${both ? `; ${both}` : ""}`, fix: host.fix, details, installed: true };
   if (both) return { ...base, status: "warn", summary: both, fix: bothFix, details, installed: true };
   const notes = [];

@@ -68,6 +68,8 @@ export function isTested(host, version, manifest = loadManifest()) {
 //                CURSOR_VERSION: globalContext.cursor_version, ...}; cursor.com/docs/hooks.md lists
 //                cursor_version among the common input fields. In the IDE it is the IDE's version.
 //   codex, gemini, copilot: no version in hook env or payload (see the per-host notes below).
+//   droid: no version in hook env or payload in Factory's hooks docs (only FACTORY_PROJECT_DIR and the
+//                common input fields are named); the PATH probe reads the npm package `droid`.
 const ENV_SOURCES = {
   "claude-code": (env) => {
     const m = /^claude-code[_/](\d+(?:-\d+){1,3})(?:_|$)/.exec(String(env.AI_AGENT || ""));

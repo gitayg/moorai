@@ -5,7 +5,7 @@
 // started the agent.
 //
 // Once per agent session (cached per session_id) the hook walks its own process ancestry: past the shell
-// the agent ran the hook command in (and, for Codex / Gemini / Copilot / Cursor, the adapter's node) to the
+// the agent ran the hook command in (and, for Codex / Gemini / Copilot / Cursor / Droid, the adapter's node) to the
 // agent process, then up from the agent through shells and interpreters to the first ancestor that is
 // neither, and classifies that one by image name and path:
 //   normal               a terminal or an IDE whose image path is an expected install location for it
@@ -57,7 +57,7 @@ const set = (s) => new Set(s.split(/\s*,\s*/).filter(Boolean));
 const TRANSPARENT = set("sh,bash,zsh,fish,dash,ksh,mksh,tcsh,csh,ash,nu,xonsh,elvish,cmd,powershell,pwsh,login,sudo,doas,su,env,nohup,timeout,script,nice,caffeinate,time,xargs,stdbuf,npm,npx,pnpm,pnpx,yarn,bunx,node,nodejs,bun,deno,python,python3,pythonw,py,ruby,perl,uv,uvx,pipx,wsl,winpty,winpty-agent,disclaimer,git-bash");
 // What an agent runs its hook command in: skipped on the way from the hook up to the agent process.
 const SHELLS = set("sh,bash,zsh,fish,dash,ksh,mksh,tcsh,csh,ash,nu,cmd,powershell,pwsh,env,winpty,git-bash");
-const AGENTS = set("claude,codex,gemini,copilot,cursor-agent,aider,opencode,goose,amp,qwen,crush");
+const AGENTS = set("claude,codex,gemini,copilot,cursor-agent,droid,aider,opencode,goose,amp,qwen,crush");
 // Terminals and IDEs are normal only at an expected install location (inLocation): a name alone is a claim
 // any program can make.
 const TERMINALS = set("terminal,iterm2,iterm,wezterm,wezterm-gui,alacritty,kitty,ghostty,warp,stable,hyper,tabby,konsole,gnome-terminal,gnome-terminal-server,gnome-terminal-,xterm,uxterm,urxvt,rxvt,st,foot,footclient,tilix,terminator,xfce4-terminal,mate-terminal,lxterminal,qterminal,terminology,guake,yakuake,rio,contour,windowsterminal,openconsole,conhost,conemu,conemu64,conemuc,conemuc64,mintty,cmder,termius,waveterm");

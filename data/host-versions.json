@@ -106,6 +106,17 @@
         ],
         "source": "gemini-cli v0.63.0 docs/cli/headless.md (-p), packages/cli/src/config/config.ts (--yolo), README (GEMINI_API_KEY)"
       }
+    },
+    "droid": {
+      "label": "Factory Droid",
+      "verifiedAgainst": "docs.factory.com hooks reference, hooks guide and harness/hooks pages (fetched 2026-10-18; release notes newest v0.244.0); no droid binary run, so no tested version is recorded",
+      "bin": "droid",
+      "npm": "droid",
+      "adapter": "cli/agent-hooks/droid.mjs",
+      "tests": [
+        "test/agent-hook-droid.test.mjs"
+      ],
+      "liveNote": "no live tier: no droid run has been made; the auth env var for a headless turn is not taken from the docs yet"
     }
   }
 }

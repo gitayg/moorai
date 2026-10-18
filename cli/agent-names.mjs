@@ -6,6 +6,8 @@
 // AGENT_NAMES), or the console stores null for the extra values. test/agent-kind-version.test.mjs
 // checks that whenever the console checkout is next to this repo.
 //   hosts with a hook adapter   claude-code, codex, cursor, gemini, copilot
+//                               (droid has an adapter too, but is not here until the console's list has it:
+//                               its alerts carry no agentName, like a shim caller this hook cannot name)
 //   MCP client hosts            claude-desktop (the stdio MCP proxy's `--host` stamp)
 //   MoorAI surfaces             agent-sdk, serve, model-proxy, inference-hook, gateway
 export const AGENT_NAMES = Object.freeze(["claude-code", "codex", "cursor", "gemini", "copilot", "claude-desktop", "agent-sdk", "serve", "model-proxy", "inference-hook", "gateway"]);
@@ -38,7 +40,7 @@ export function cursorVersion(env = process.env) {
 }
 
 // The version of the agent that ran this process, only where that agent states it to its children.
-// Codex, Gemini CLI and Copilot CLI put no version in their hook payload or hook environment (their
+// Codex, Gemini CLI, Copilot CLI and Droid put no version in their hook payload or hook environment (their
 // hook references; data/host-versions.json), and a PATH probe names whichever binary is on PATH, not
 // necessarily the one that made the call, so for them, and for every MoorAI surface, it is undefined.
 export function agentVersionFromEnv(kind, env = process.env) {

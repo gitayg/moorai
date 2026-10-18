@@ -58,6 +58,7 @@ const PRODUCT_CASES = {
   windsurf: [["darwin", "Windsurf", "/Applications/Windsurf.app/Contents/MacOS/Windsurf"], ["win32", "Windsurf.exe", String.raw`C:\Users\u\AppData\Local\Programs\Windsurf\Windsurf.exe`]],
   copilot: [["darwin", "copilot", "/opt/homebrew/Caskroom/copilot-cli/0.0.400/copilot"], ["darwin", "Copilot", "/Applications/Copilot.app/Contents/MacOS/Copilot"],
     ["win32", "copilot.exe", String.raw`C:\Users\u\AppData\Local\Microsoft\WinGet\Packages\GitHub.Copilot_Microsoft.Winget.Source_8wekyb3d8bbwe\copilot.exe`]],
+  droid: [["darwin", "droid", "/opt/homebrew/Caskroom/droid/0.244.0/droid"], ["linux", "droid", "/home/u/.npm-global/lib/node_modules/droid/bin/droid"]],
   ollama: [["darwin", "ollama", "/Applications/Ollama.app/Contents/Resources/ollama"], ["linux", "ollama", "/usr/local/bin/ollama"], ["win32", "ollama app.exe", String.raw`C:\Users\u\AppData\Local\Programs\Ollama\ollama app.exe`]],
   "lm-studio": [["darwin", "LM Studio", "/Applications/LM Studio.app/Contents/MacOS/LM Studio"], ["darwin", "lms", "/Users/u/.lmstudio/bin/lms"], ["win32", "LM Studio.exe", String.raw`C:\Users\u\AppData\Local\Programs\lm-studio\LM Studio.exe`]],
   opencode: [["darwin", "opencode", "/Users/u/.opencode/bin/opencode"]],

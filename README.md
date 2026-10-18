@@ -8,7 +8,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-e4e4ef.svg)](#install)
 [![Build: Windows](https://github.com/gitayg/moorai/actions/workflows/release-windows.yml/badge.svg)](https://github.com/gitayg/moorai/actions)
 
-**Runtime guardrails for AI agents, apps and APIs.** MoorAI checks what goes into an agent and what the agent reads, runs and replies, where it happens: in coding agents (Claude Code, Codex, Copilot CLI, Gemini CLI, Cursor) through their hooks, in Claude Agent SDK services in-process, in any agent framework or app through a localhost sidecar (`moorai-serve`), in front of remote MCP servers (`moorai-mcp-gateway`) and between an agent and its model API (`moorai-model-proxy`). Secrets, PII, and source code are never sent anywhere to be checked. Your security team sees content-free signals, never the prompts.
+**Runtime guardrails for AI agents, apps and APIs.** MoorAI checks what goes into an agent and what the agent reads, runs and replies, where it happens: in coding agents (Claude Code, Codex, Copilot CLI, Gemini CLI, Cursor, Factory Droid) through their hooks, in Claude Agent SDK services in-process, in any agent framework or app through a localhost sidecar (`moorai-serve`), in front of remote MCP servers (`moorai-mcp-gateway`) and between an agent and its model API (`moorai-model-proxy`). Secrets, PII, and source code are never sent anywhere to be checked. Your security team sees content-free signals, never the prompts.
 
 Let your engineers use AI freely. Keep your data in-house.
 
@@ -49,7 +49,7 @@ That's the exact trade MoorAI refuses.
 - **Static model-file scanning** — `moorai-model-scan` inspects pickle / PyTorch, Keras, TensorFlow SavedModel, ONNX, GGUF and SafeTensors files without loading them: dangerous pickle imports, Lambda-layer bytecode, Python-calling TF ops, custom ONNX op domains and escaping external-data paths, GGUF chat templates that reach Python internals or carry instructions, malformed SafeTensors headers. Model downloads an agent runs are reported (#76) and scanned in the background, and the local model stores can be scanned on the daily posture run. Static only: input-triggered backdoors and trojaned weights are out of reach. See [Model file scanning](#model-file-scanning).
 - **Local secret-egress detection** — fingerprints your local secret values (`.env`, cloud creds) on-device as keyed one-way hashes and blocks an outbound command or tool-call that carries one verbatim — catching a real secret leaving even when it isn't in a recognizable token shape. Only the hash + a verdict leave.
 - **Insecure-defaults screening** — flags misconfigurations agents habitually emit (SSRF, path traversal, XXE, JWT `alg=none`, TLS-verify-off, wildcard CORS, `debug=True`, insecure randomness for tokens, hardcoded creds, world-writable perms, open redirect) — on top of the SQLi/XSS/RCE/deserialization coverage.
-- **Sub-agent / A2A oversight** — records agent-to-agent delegation (sub-agent spawns), scans the delegated prompt for injection, and applies the parent's entitlement envelope to the child so a delegated action can't slip past the parent's controls. The delegation alert names a Claude Code built-in sub-agent type (`general-purpose`, `Explore`, `Plan` …) in clear; a custom type's name, which can say what the user is working on, travels only as the tenant-keyed hash. Every alert also says which agent it is about (`agentName`: `claude-code` from the hook and `moorai-guard`, or `codex` / `cursor` / `gemini` / `copilot` through `moorai-agent-hook`; the MCP client the stdio MCP proxy was installed into, `claude-code` / `cursor` / `claude-desktop`; `gateway` from the HTTP MCP gateway; `agent-sdk`, `serve`, `model-proxy` or `inference-hook` from those surfaces), which the console shows as `agent_name`, and, where the agent states it, that agent product's own version (`agentVersion`, e.g. `2.1.295`; never MoorAI's version). Only Claude Code (`AI_AGENT=claude-code_<v>_harness` in the hook and stdio MCP server environment) and Cursor (`CURSOR_VERSION` in the hook environment) state one; Codex, Gemini CLI and Copilot CLI put no version in their hook payload or environment, so their alerts carry none, and a version is never probed or guessed on the verdict path. The value must match `^[0-9A-Za-z.+-]{1,32}$` on both sides or it is dropped. [`cli/agent-names.mjs`](cli/agent-names.mjs) holds the vocabulary, which must stay a subset of the console's.
+- **Sub-agent / A2A oversight** — records agent-to-agent delegation (sub-agent spawns), scans the delegated prompt for injection, and applies the parent's entitlement envelope to the child so a delegated action can't slip past the parent's controls. The delegation alert names a Claude Code built-in sub-agent type (`general-purpose`, `Explore`, `Plan` …) in clear; a custom type's name, which can say what the user is working on, travels only as the tenant-keyed hash. Every alert also says which agent it is about (`agentName`: `claude-code` from the hook and `moorai-guard`, or `codex` / `cursor` / `gemini` / `copilot` through `moorai-agent-hook` (a Factory Droid alert carries no `agentName` until the console's vocabulary has `droid`); the MCP client the stdio MCP proxy was installed into, `claude-code` / `cursor` / `claude-desktop`; `gateway` from the HTTP MCP gateway; `agent-sdk`, `serve`, `model-proxy` or `inference-hook` from those surfaces), which the console shows as `agent_name`, and, where the agent states it, that agent product's own version (`agentVersion`, e.g. `2.1.295`; never MoorAI's version). Only Claude Code (`AI_AGENT=claude-code_<v>_harness` in the hook and stdio MCP server environment) and Cursor (`CURSOR_VERSION` in the hook environment) state one; Codex, Gemini CLI, Copilot CLI and Droid put no version in their hook payload or environment, so their alerts carry none, and a version is never probed or guessed on the verdict path. The value must match `^[0-9A-Za-z.+-]{1,32}$` on both sides or it is dropped. [`cli/agent-names.mjs`](cli/agent-names.mjs) holds the vocabulary, which must stay a subset of the console's.
 - **MITRE ATLAS agent techniques (v2026.09)** — a link that opens an assistant with a prompt already filled in through `?q=` (`AML.T0131`), ingested content that asks the agent to enumerate its own tools and permissions (`AML.T0133`), a block addressed only to AI clients that contradicts the visible page (`AML.T0134`), markup that renders steering text invisible — same colour as its background, zero font size, a hidden element (`AML.T0068`), an image or link preview whose URL carries conversation data (`AML.T0077`), and directives planted in a file's EXIF, XMP, ID3 or PDF metadata (`AML.T0129`) — the part of a binary file that carries a sentence. Each needs two independent signals to fire, so an ordinary assistant link, a hidden template row or a CI badge stays silent. Cloaking's server-side differential, and instructions hidden in image pixels, audio or video, are **not** covered — see [DETECTION_ENGINE.md §14](docs/DETECTION_ENGINE.md).
 - **Jailbreak & injection detection** — high-precision detectors for direct jailbreaks (DAN lineage, developer/god-mode, named personas, chat-template control-token injection) scoped so normal dev prompts don't trip them, with opportunistic local-model escalation on ambiguity.
 - **Coach · alert · mask · block · justify · kill** — per policy, per tenant, per device. Nudge, warn, replace a secret or PII span with a content-free tag and let the call proceed, hard-block, require a signed justification, or **kill the session** — terminate the running agent (not just deny the one call) on a critical finding, in both the `-p` guard and the interactive host.
@@ -222,15 +222,20 @@ are not followed; reads inside an encoded command over 8,000 characters are not 
 is still scanned, up to 64 KB); a POSIX `~` in a `Bash` command is not expanded; and no live PowerShell run
 has been made, so Windows PowerShell 5.1's tie-breaking and its acceptance of `/enc` are unverified.
 
-**Other agents.** `node cli/moorai-agent-hook.mjs <codex|copilot|gemini|cursor> install` registers a
+**Other agents.** `node cli/moorai-agent-hook.mjs <codex|copilot|gemini|cursor|droid> install` registers a
 pre-tool hook and a prompt hook in that agent's own config (`~/.codex/hooks.json`, `~/.copilot/hooks/moorai.json`,
-`~/.gemini/settings.json`, `~/.cursor/hooks.json`); `uninstall` removes only MoorAI's entries. Each
+`~/.gemini/settings.json`, `~/.cursor/hooks.json`, `~/.factory/hooks.json`); `uninstall` removes only MoorAI's entries.
+For Droid, the installer writes `~/.factory/hooks.json` when it exists, else the legacy `~/.factory/hooks/hooks.json`
+when that exists, else `~/.factory/settings.json` when it already declares `hooks` (Factory's docs say Droid reads
+settings.json hooks when hooks.json is absent, so a new hooks.json could hide them), else a new `~/.factory/hooks.json`;
+uninstall deletes a hooks.json it leaves empty. Droid reads hooks at startup, so the hook takes effect in the next
+session, after the user reviews it in `/hooks`. Each
 adapter in [`cli/agent-hooks/`](cli/agent-hooks) translates the agent's hook payload into the Claude
 Code shape, runs the same hook (same engine, policy and telemetry), and translates the verdict back.
 Each was built from that vendor's documentation and published source, and is tested against fixture
 payloads in the documented shape; none has yet been run end to end against the live agent. The prompt
 hook (Codex `UserPromptSubmit`, Cursor `beforeSubmitPrompt`, Gemini `BeforeAgent`, Copilot
-`userPromptSubmitted`) forwards the prompt for intent alignment and never answers with anything the
+`userPromptSubmitted`, Droid `UserPromptSubmit`) forwards the prompt for intent alignment and never answers with anything the
 model sees; those payloads carry no `source`, so the prompt scan below runs on them only under
 `promptScan: "all"`, and reports without blocking. Adapter installs made before it existed get it only when `install` is re-run; the other
 agents' configs do not converge on their own. Copilot's `powershell` tool maps to `PowerShell`. Per agent:
@@ -241,8 +246,9 @@ agents' configs do not converge on their own. Copilot's `powershell` tool maps t
 | GitHub Copilot CLI | yes | passed through (Copilot's own prompt; denied when no user is present) | `grep`/`glob` results, skill and agent-messaging tools unmapped; long MCP names can be truncated by Copilot |
 | Gemini CLI | yes | passed through (Gemini's confirmation prompt) | `glob`/`grep_search`/`list_directory` unmapped; only web results are scanned after the tool runs |
 | Cursor (IDE and `cursor-agent`) | yes, for shell, MCP, file reads, writes, fetch and subagents | shell and MCP only; `cursor-agent` lets an MCP "ask" through | several `preToolUse` tools unmapped; fails open on a hook crash |
+| Factory Droid | yes, for `Execute`, `Read`, `Create`, `Edit`, `ApplyPatch`, `FetchUrl`, `Task` and MCP tools; a deny exits 2 and also answers `permissionDecision: "deny"` | passed through (Droid's own confirmation prompt) | built from Factory's docs only, which document `tool_input` for `Execute` and `Create` alone, so the other tools' fields are read tolerantly; `LS`/`Glob`/`Grep` unmapped; only web results are scanned after the tool runs; ignored when `hooksDisabled` is set or an org sets `allowManagedHooksOnly`; what Droid does on a hook timeout is not documented |
 
-All four fail open if the hook crashes or times out, like the Claude Code hook.
+All five fail open if the hook crashes, like the Claude Code hook; Codex, Copilot CLI, Gemini CLI and Cursor also fail open on a timeout.
 
 `WebFetch` is covered on **both** surfaces, and the split is the point. `PreToolUse` fires *before* the
 fetch, so `tool_input` is `{url, prompt}` and the page does not exist yet — that surface scans the
@@ -995,8 +1001,9 @@ size-capped prefix. The codes are listed in [`docs/DETECTION_ENGINE.md`](docs/DE
 **Coverage integrity.** Hooks post only on findings, so a console cannot tell "nothing happened" from
 "MoorAI was not in the path". The hook sends a content-free heartbeat to the console at most once per agent
 host per UTC day (and on the day's first `bypassPermissions` session), retried after 10 minutes on failure,
-carrying [`cli/agent-posture.mjs`](cli/agent-posture.mjs)'s posture for Claude Code, Codex, Gemini, Cursor
-and Copilot: whether MoorAI's hook is registered and current (as `moorai-doctor` judges it), when the host
+carrying [`cli/agent-posture.mjs`](cli/agent-posture.mjs)'s posture for Claude Code, Codex, Gemini, Cursor,
+Copilot and Droid (the console ignores the Droid entry until it knows the host; Droid's own hook sends no
+heartbeat yet): whether MoorAI's hook is registered and current (as `moorai-doctor` judges it), when the host
 was last used (rounded to the hour), the host's `version` and whether it is the `tested` one (*Keeping up
 with the agent hosts* below), and the settings that weaken protection — `hooksDisabled`,
 `mooraiHookDisabled`, `managedHooksOnly`, `bypassPermissionsDefault`, `sessionBypassPermissions`,
@@ -1553,7 +1560,7 @@ discarded whole, and none is sent on without a valid `traceparent`.
 - HTTPS through the egress proxy is an opaque `CONNECT` tunnel: nothing is added to it. The egress proxy adds
   no `moorai` entry, because it does not know which agent opened the connection.
 - A model-proxy or stdio-guard span joins the session's trace but names no hook record as its parent.
-- Codex, Gemini CLI and Copilot CLI put no sub-agent id on tool calls, so their sub-agents' records have the
+- Codex, Gemini CLI, Copilot CLI and Droid put no sub-agent id on tool calls, so their sub-agents' records have the
   session's trace and no `parentSpanId`.
 - An unenrolled device has no tenant key: each hook invocation starts its own random trace.
 - Device inventory alerts (`LOCAL_MODEL_EXPOSED`, `AI_API_CALLER_UNKNOWN`) and the detached workers' alerts
@@ -1973,7 +1980,7 @@ shapes and a fake AWS CLI only, not yet against a real AWS account. See [`cloud/
 
 | | |
 |---|---|
-| **Agents** | Claude Code (full hook enforcement) · **Codex CLI, GitHub Copilot CLI, Gemini CLI and Cursor: pre-tool hook enforcement** through `cli/moorai-agent-hook.mjs` (see *Other agents* below) · Claude Desktop · VS Code / Copilot · any project `.mcp.json` consumer (MCP stdio proxy — **enforcement, host-independently**, but only over MCP; see the bound below) · remote MCP servers (HTTP gateway) · Claude Agent SDK services in process and other agent loops through a localhost sidecar (*Server mode: Agent SDK and sidecar*) · any agent that calls the Anthropic Messages or OpenAI Chat Completions API through an SDK with a configurable base URL (model proxy) |
+| **Agents** | Claude Code (full hook enforcement) · **Codex CLI, GitHub Copilot CLI, Gemini CLI, Cursor and Factory Droid: pre-tool hook enforcement** through `cli/moorai-agent-hook.mjs` (see *Other agents* below) · Claude Desktop · VS Code / Copilot · any project `.mcp.json` consumer (MCP stdio proxy — **enforcement, host-independently**, but only over MCP; see the bound below) · remote MCP servers (HTTP gateway) · Claude Agent SDK services in process and other agent loops through a localhost sidecar (*Server mode: Agent SDK and sidecar*) · any agent that calls the Anthropic Messages or OpenAI Chat Completions API through an SDK with a configurable base URL (model proxy) |
 | **Surfaces** | prompts · AI outputs · files read into context · **files the agent writes or edits** · MCP tool calls · **MCP tool listings and tool results** · **outbound `WebFetch` requests** · **what comes back from `Bash`, `PowerShell`, MCP tools and sub-agents (Claude Code)** · pasted images (on-device OCR) · the agent's auto-loaded context files (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`, …) · **content an app is about to embed into a vector store (SDK, sidecar) and MCP vector-store writes** · the agent's auto-loaded skill surface (skills, subagents, commands, MCP configs, hook-bearing settings) · **the session as a whole: failed tool calls, the agent's end-of-turn claim, compactions (Claude Code)** · **model calls: what an agent sends to the provider and the tool calls the model returns (model proxy)** |
 | **Platforms** | macOS · Windows · Linux (on-device OCR is a second-class tier — see below) |
 | **Detects** | secrets · PII / PHI · source-code leakage · prompt injection · destructive commands · second-order/hidden-instruction injection · skill-surface poisoning & drift · the agent's rules files leaving the device · risky actions outside the user's stated task · low-reputation MCP servers · MCP tool descriptions that ask for a credential file · outbound actions after untrusted content, multi-step and slow exfiltration · runaway loops · success claims over failed tool calls · agents running without MoorAI's hook or with weakened settings · agents running a host version MoorAI's adapter was not tested against |
@@ -2003,8 +2010,8 @@ categories (self-harm, drugs, eating disorders, hate, harassment, grooming) stay
 
 **Coverage layers.** MoorAI sees agent activity through three layers, each independent of the others.
 
-- **Hooks: the deepest view, tied to each host's format.** In Claude Code, Codex, Copilot CLI, Cursor and
-  Gemini CLI, MoorAI's hook runs inside the host and sees each tool call before it runs (the shell
+- **Hooks: the deepest view, tied to each host's format.** In Claude Code, Codex, Copilot CLI, Cursor,
+  Gemini CLI and Factory Droid, MoorAI's hook runs inside the host and sees each tool call before it runs (the shell
   command, the file being written, the MCP arguments, the prompt), and can deny it. Each adapter in
   [`cli/agent-hooks/`](cli/agent-hooks) translates that host's hook payload into one shape, so a hook works
   only while the host keeps the payload fields, event names and answer format the adapter was written for.
@@ -2118,7 +2125,7 @@ in `data/threats.json` to get technique ids, coverage and reason. The console's 
 
 ### Keeping up with the agent hosts
 
-MoorAI hooks into five hosts, and each changes its hook interface on its own release schedule.
+MoorAI hooks into six hosts, and each changes its hook interface on its own release schedule.
 [`data/host-versions.json`](data/host-versions.json) is the single record of which version of each host the
 adapter was last tested against:
 
@@ -2129,6 +2136,7 @@ adapter was last tested against:
 | Copilot CLI | 1.0.63 |
 | Cursor (`cursor-agent`) | 2026.05.27-fe9a6e2 |
 | Gemini CLI | 0.60.0 |
+| Factory Droid | none: built from Factory's hooks docs (fetched 2026-10-18, newest release v0.244.0); no `droid` run yet |
 
 ```bash
 node scripts/host-drift.mjs                           # every host, against whatever is installed locally
@@ -2153,6 +2161,8 @@ node scripts/host-drift.mjs --installed gemini=0.63.0 --skip-tests   # check a v
     the fields the hook reads, and that `AI_AGENT` still carries the version `claude --version` prints.
   - **Copilot CLI:** none. Copilot publishes no hook schema and its bundle is not readable JS after 1.0.63,
     so only the conformance tests run.
+  - **Factory Droid:** none. Factory publishes no hook schema, so only the conformance tests run. Droid is
+    not in the nightly workflow's install matrix.
 
   It writes a JSON report and exits 1 when a check fails.
 - **Nightly in CI** ([`.github/workflows/host-drift.yml`](.github/workflows/host-drift.yml)). The job installs

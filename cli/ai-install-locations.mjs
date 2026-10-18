@@ -172,6 +172,9 @@ export const PRODUCTS = Object.freeze([
   { id: "windsurf", names: ["windsurf"], mac: ["app:Windsurf.app"], win: ["%L/Programs/Windsurf"], linux: ["/usr/share/windsurf"] },
   { id: "copilot", names: ["copilot", "github-copilot"], mac: ["app:Copilot.app", "brew:copilot-cli", "npm:@github/copilot"], linux: ["npm:@github/copilot"],
     win: ["%L/Programs/Copilot", "%WA/Microsoft.Copilot_*", "%L/Microsoft/WinGet/Packages/GitHub.Copilot_*", "npm:@github/copilot"], sign: { team: "UBF8T346G9", ids: ["com.microsoft.copilot-mac"] } },
+  // Droid (docs.factory.com/droid-cli/quickstart.md): "brew install --cask droid", "npm install -g droid"; the
+  // `curl -fsSL https://app.factory.ai/cli | sh` install location is not documented, so it is not listed.
+  { id: "droid", names: ["droid"], mac: ["brew:droid", "npm:droid"], linux: ["npm:droid"], win: ["npm:droid"] },
   { id: "ollama", names: ["ollama", "ollama app"], mac: ["app:Ollama.app", "brew:ollama"], win: ["%L/Programs/Ollama"],
     linux: ["/usr/local/bin|ollama", "/usr/bin|ollama", "/usr/local/lib/ollama", "/usr/lib/ollama", "/snap/ollama"] },
   { id: "lm-studio", names: ["lm studio", "lms", "llmster"], mac: ["app:LM Studio.app", "~/.lmstudio"], win: ["%L/Programs/lm-studio", "%L/Programs/LM Studio", "~/.lmstudio"], linux: ["~/.lmstudio"] },

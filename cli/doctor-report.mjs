@@ -14,7 +14,7 @@ export async function runDoctor({ offline = false, selftest = true } = {}) {
   const table = hostTable();
   const hosts = table.map((h) => checkHost(h, { managedHooks: managed.managedHooks, managedPlugins: managed.managedPlugins }));
   checks.push(managed, ...hosts);
-  if (!hosts.some((h) => h.installed)) checks.push({ id: "hosts:any", group: "hosts", title: "Any host", status: "fail", summary: "MoorAI is not registered in any agent host on this machine: nothing calls the hook", fix: `${table[0].fix} (or: node ${JSON.stringify(table[1].install[0])} <codex|cursor|gemini|copilot> install; or the Claude Code plugin: ${PLUGIN_INSTALL})` });
+  if (!hosts.some((h) => h.installed)) checks.push({ id: "hosts:any", group: "hosts", title: "Any host", status: "fail", summary: "MoorAI is not registered in any agent host on this machine: nothing calls the hook", fix: `${table[0].fix} (or: node ${JSON.stringify(table[1].install[0])} <codex|cursor|gemini|copilot|droid> install; or the Claude Code plugin: ${PLUGIN_INSTALL})` });
   const loaded = loadPolicyReadOnly(config, { offline });
   const eff = loaded.error ? resolveEffective(null, config) : resolveEffective(loaded, config);
   checks.push(checkEnrollment(config, eff), await checkConsole(config, { offline }));

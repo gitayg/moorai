@@ -17,6 +17,8 @@
 //                the IDE's Cursor/User/{globalStorage,workspaceStorage/<id>}/state.vscdb (measured).
 //   Gemini CLI   ~/.gemini/tmp/<project_hash>/chats/ (docs: session management).
 //   Copilot CLI  ~/.copilot/session-state and ~/.copilot/history-session-state (CLI changelog 0.0.342).
+//   Droid        ~/.factory/projects/** (docs.factory.com/harness/hooks, example transcript_path
+//                "/Users/.../.factory/projects/.../session.jsonl"; not measured on disk).
 //   Not listed:  VS Code Copilot Chat's storage — not confirmed from a primary source.
 //
 // A HISTORY path is any of the above; a CONTAINER is a directory that holds one (the tool's home dir,
@@ -85,6 +87,10 @@ export function agentStateKind(path) {
     }
     if (s === ".copilot") {
       if (n1 === "session-state" || n1 === "history-session-state") return "history";
+      return rootOnly && anchored ? "container" : null;
+    }
+    if (s === ".factory") {
+      if (n1 === "projects" && anchored) return "history";
       return rootOnly && anchored ? "container" : null;
     }
     if (s === "cursor" && n1 === "user") {
@@ -190,14 +196,14 @@ function pipelineHit(cmds) {
 
 // Interpreter one-liner or heredoc: an interpreter, a history path literal and a write API, all in
 // the same command. Checked on the whole (capped) text because the program text spans quotes and lines.
-const PATH_LITERAL = /[^\s"'`(),;]{0,200}\.(?:claude|codex|cursor|gemini|copilot)\/[^\s"'`(),;]{0,300}|[^\s"'`(),;]{0,200}Cursor\/User\/[^\s"'`(),;]{0,300}/gi;
+const PATH_LITERAL = /[^\s"'`(),;]{0,200}\.(?:claude|codex|cursor|gemini|copilot|factory)\/[^\s"'`(),;]{0,300}|[^\s"'`(),;]{0,200}Cursor\/User\/[^\s"'`(),;]{0,300}/gi;
 function interpreterHit(text) {
   if (!INTERP.test(text) || !WRITE_API.test(text)) return false;
   PATH_LITERAL.lastIndex = 0;
   let m, n = 0;
   while ((m = PATH_LITERAL.exec(text)) !== null && n++ < 64) {
     // `process.env.HOME + '/.claude/...'` leaves the literal unanchored; any history path is enough.
-    if (hist(m[0]) || hist("~/" + m[0].replace(/^[^.]*?(?=\.(?:claude|codex|cursor|gemini|copilot)\/)/i, ""))) return true;
+    if (hist(m[0]) || hist("~/" + m[0].replace(/^[^.]*?(?=\.(?:claude|codex|cursor|gemini|copilot|factory)\/)/i, ""))) return true;
   }
   return false;
 }

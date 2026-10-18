@@ -42,6 +42,13 @@
 //     "unrestricted"; sandbox.mode — documented key, values not documented ("disabled" is what the CLI
 //     writes; observed on disk). Hooks: ~/.cursor/hooks.json, <project>/.cursor/hooks.json.
 //   GitHub Copilot CLI: hook registration only; no weakening setting is read.
+//   Factory Droid (docs.factory.com/droid-cli/settings.md, /enterprise/hierarchical-settings-and-org-control.md,
+//     fetched 2026-10-18): hooksDisabled "Globally disable all hooks execution"; allowManagedHooksOnly (org)
+//     "only org-managed hooks and hooks from org-enabled plugins are loaded". Files: ~/.factory/settings.json,
+//     settings.local.json beside it ("Its values merge on top"), <project>/.factory/ the same, and the managed
+//     file (macOS /Library/Application Support/Factory/settings.json, /etc/factory/settings.json,
+//     C:\Program Files\Factory\settings.json). Sessions: ~/.factory/projects/ (the hooks docs' example
+//     transcript_path "/Users/.../.factory/projects/.../session.jsonl").
 //
 // CONTAINMENT (Windows only, cli/mxc-detect.mjs): on win32 each Claude Code, Codex and Copilot entry
 // also carries `containment: { kind, scope, source }` (is the agent's command execution inside a
@@ -101,7 +108,8 @@ export const SESSION_DIRS = {
   codex: (home, env) => [[join(env.CODEX_HOME || join(home, ".codex"), "sessions"), 4]],
   gemini: (home) => [[join(home, ".gemini", "tmp"), 3]],
   cursor: (home) => [[join(home, ".cursor", "chats"), 3]],
-  copilot: (home, env) => [[join(env.COPILOT_HOME || join(home, ".copilot"), "session-state"), 2]]
+  copilot: (home, env) => [[join(env.COPILOT_HOME || join(home, ".copilot"), "session-state"), 2]],
+  droid: (home) => [[join(home, ".factory", "projects"), 3]]
 };
 function newest(dir, depth, k = 8) {
   let entries;
@@ -220,7 +228,28 @@ function cursorFlags({ home, cwd }) {
   return flags;
 }
 
-const SETTINGS = { "claude-code": claudeFlags, codex: codexFlags, gemini: geminiFlags, cursor: cursorFlags };
+export function droidSystemFile(platform = process.platform) {
+  if (platform === "darwin") return "/Library/Application Support/Factory/settings.json";
+  if (platform === "win32") return "C:\\Program Files\\Factory\\settings.json";
+  return "/etc/factory/settings.json";
+}
+function droidFlags({ home, cwd, systemFiles }) {
+  const flags = {};
+  const files = [["user", join(home, ".factory", "settings.json")], ["user", join(home, ".factory", "settings.local.json")]];
+  if (cwd) files.push(["project", join(cwd, ".factory", "settings.json")], ["local", join(cwd, ".factory", "settings.local.json")]);
+  const sys = systemFiles.droid ?? droidSystemFile();
+  files.push(["system", sys]);
+  for (const [scope, f] of files) {
+    const d = readJson(f).data;
+    if (!d || typeof d !== "object") continue;
+    if (d.hooksDisabled === true) add(flags, "hooksDisabled", scope);
+    // MoorAI deployed among the org's own hooks still runs; a user-level install does not.
+    if (f === sys && d.allowManagedHooksOnly === true && !/moorai-agent-hook\.mjs\\?["']?\s+droid/.test(JSON.stringify(d.hooks || {}))) add(flags, "managedHooksOnly", "managed");
+  }
+  return flags;
+}
+
+const SETTINGS = { "claude-code": claudeFlags, codex: codexFlags, gemini: geminiFlags, cursor: cursorFlags, droid: droidFlags };
 
 // The whole posture. `caller` is the host whose hook is asking (always reported: it is running), and
 // `permissionMode` that hook's permission_mode (Claude Code only).

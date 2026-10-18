@@ -96,7 +96,7 @@ export const AI_API_HOSTS = Object.freeze([
 export const CONTROL_HOSTS = Object.freeze(["www.googleapis.com", "storage.googleapis.com", "oauth2.googleapis.com", "www.cloudflare.com", "discord.com"]);
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
-export const KNOWN_AGENTS = Object.freeze(["claude", "codex", "gemini", "cursor", "cursor-agent", "copilot", "github-copilot", "aider", "opencode", "goose", "amp", "crush", "qwen", "kiro", "trae", "zed", "windsurf", "code", "code - insiders", "ollama", "lm studio", "lms", "llmster", "jan", "msty"]);
+export const KNOWN_AGENTS = Object.freeze(["claude", "codex", "gemini", "cursor", "cursor-agent", "copilot", "github-copilot", "droid", "aider", "opencode", "goose", "amp", "crush", "qwen", "kiro", "trae", "zed", "windsurf", "code", "code - insiders", "ollama", "lm studio", "lms", "llmster", "jan", "msty"]);
 export const BROWSERS = Object.freeze(["google chrome", "chrome", "chromium", "firefox", "safari", "com.apple.webkit.networking", "msedge", "microsoft edge", "brave", "brave browser", "arc", "opera", "vivaldi", "dia", "comet", "chatgpt atlas", "iexplore"]);
 export const MOORAI_IMAGES = Object.freeze(["moorai", "moorai-desktop"]);
 export const MOORAI_PORTS = Object.freeze([8791, 8790]); // model-proxy/server.mjs, cli/moorai-serve.mjs DEFAULTS.port

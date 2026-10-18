@@ -342,6 +342,7 @@ export async function checkHost(id, m, opts = {}) {
     }
     if (live) add("live-turn", await liveImpl(id, m, { bin: inst.bin }));
     if (id === "copilot") add("no-model-smoke", { status: "skip", detail: "Copilot CLI publishes no hook schema and its bundle is no longer readable JS after 1.0.63; conformance tests only" });
+    if (id === "droid") add("no-model-smoke", { status: "skip", detail: "Factory publishes no hook schema; the adapter was built from the hooks docs and has not been run against a droid binary; conformance tests only" });
   } catch (e) {
     add("smoke", { status: "fail", detail: String(e && e.message || e).slice(0, 300) });
   }
