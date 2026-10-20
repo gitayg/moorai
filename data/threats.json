@@ -1111,6 +1111,13 @@
           "reason": "secret detectors keep a credential out of the AI conversation, where T1552.008 would collect it; the provider's chat store is not watched",
           "bound": "design",
           "boundReason": "Credentials already stored in the provider's chat history or a messaging workspace are read there, outside any agent-side hook, proxy or gateway."
+        },
+        {
+          "id": "T1697",
+          "coverage": "partial",
+          "reason": "an application-specific password read, typed or sent through an agent, a tool or a model call is kept out of the AI conversation",
+          "bound": "design",
+          "boundReason": "Creating or using an app password at the identity provider, or a person handing one over outside an AI tool, happens outside any agent-side hook."
         }
       ],
       "stride": "Information Disclosure"

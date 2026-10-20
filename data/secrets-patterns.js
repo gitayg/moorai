@@ -171,6 +171,48 @@ export function headingScopedSecretIn(span) {
   return false;
 }
 
+// ---- Application-specific passwords (MITRE ATT&CK T1697) ----
+// 16 lowercase letters: Google shows four groups of four joined by spaces, Apple joins them with hyphens,
+// Microsoft prints them contiguous. Letters only, so the entropy bar and the labeled-prose value gate (which
+// reads a letter run as a word) never see one. A label carries the evidence; an unlabeled hyphenated token
+// must also hold a group with no vowel, which an English slug never does. Unlabeled spaced or contiguous
+// letters are ordinary text and never fire.
+const ASP_SEP = /[ \t]{0,4}[:=](?!=)|[ \t]{1,4}is:?(?=[ \t])/i;
+const ASP_VALUE = /^[\s*"'`]*([A-Za-z]{4}([ -]?)[A-Za-z]{4}\2[A-Za-z]{4}\2[A-Za-z]{4})(?![A-Za-z0-9])/;
+// Common four-letter words: a group that is one is prose or a slug, not a generated password.
+const COMMON4 = new Set(("this that with from have they will what when your been were them more some than into only over also such each " +
+  "make like just know take come time year good very well back much then here even want look most give need find tell work call case same " +
+  "both part used uses sure mean does done many must open read keep show seem left feel high long last next home name real line text font " +
+  "bold gray size type file data user code test flow docs feat auth main page view form list item node path true null void base mode safe " +
+  "sign mail send note link info help zero full free fast slow easy hard best tips pros news blog post edit save load copy move wait stop " +
+  "push pull tags once pass word apps step turn days able away down").split(" "));
+const vowelless = (g) => !/[aeiouy]/.test(g);
+// The value gate every app-password form shares: lowercase, varied, not typed in sequence, not a placeholder.
+function plausibleAppPassword(value) {
+  if (!/^[a-z]{4}([ -]?)[a-z]{4}\1[a-z]{4}\1[a-z]{4}$/.test(value)) return false;
+  const letters = value.replace(/[ -]/g, "");
+  if (new Set(letters).size < 8 || SEQUENTIAL.test(letters)) return false;
+  if (VALUE_PLACEHOLDER.some((r) => r.test(value) || r.test(letters))) return false;
+  return !letters.match(/.{4}/g).some((g) => COMMON4.has(g));
+}
+export function appPasswordIn(span) {
+  const s = String(span);
+  const sep = ASP_SEP.exec(s);
+  if (!sep) return false;
+  const v = ASP_VALUE.exec(s.slice(sep.index + sep[0].length));
+  if (!v || !plausibleAppPassword(v[1])) return false;
+  const tail = s.slice(sep.index + sep[0].length + v[0].length);
+  if (/^[-_.][A-Za-z0-9]/.test(tail)) return false;                              // part of a longer identifier
+  if (v[2] === " " && /^ [a-z]{4}(?![A-Za-z0-9])/.test(tail) && !COMMON4.has(tail.slice(1, 5))) return false; // a fifth group
+  // Spaced groups followed by more words: only a group with no vowel tells random letters from English.
+  if (v[2] === " " && /^[ \t]+[A-Za-z0-9]/.test(tail)) return v[1].split(" ").some(vowelless);
+  return true;
+}
+export function hyphenatedAppPasswordIn(span) {
+  const v = String(span);
+  return plausibleAppPassword(v) && v.split("-").some(vowelless);
+}
+
 const S = (detectorId, hint, patterns, refine) => {
   const d = { detectorId, threatId: 39, stage: "prompt", stages: ["prompt", "output"], mode: "warn", hint, patterns };
   if (refine) d.refine = refine;
@@ -232,5 +274,14 @@ export const SECRET_DETECTORS = [
   // the refine walks the heading's scope and reads its `- label: value` entries.
   S("secret-heading-list", "A list of credentials under an API keys / credentials / passwords heading.", [
     /^[ \t]{0,12}(?:#{1,6}[ \t]{1,4})?[^\n:]{0,60}\b(?:api[ _-]?keys|credentials|passwords|secrets|tokens)\b[^\n]{0,40}(?:\n[^\n]{0,300}){1,40}/im
-  ], (m) => headingScopedSecretIn(m))
+  ], (m) => headingScopedSecretIn(m)),
+  // An application-specific password (T1697): an app-password label, then `:`, `=` or "is", then 16 letters,
+  // contiguous or 4x4 joined by spaces or hyphens. The refine requires lowercase and rejects placeholders.
+  S("secret-app-password", "Looks like an application-specific password (app password).", [
+    /\b(?:[A-Za-z0-9]{1,30}[_-]){0,4}app(?:lication)?[ _-]?(?:specific[ _-]?)?(?:pass(?:wor)?d|passwd|pwd)["'*_]{0,3}(?:[ \t]{0,4}[:=](?!=)|[ \t]{1,4}is:?[ \t])[ \t*]{0,6}["'`]?[a-z]{4}[ -]?[a-z]{4}[ -]?[a-z]{4}[ -]?[a-z]{4}(?![a-z0-9])[^\n]{0,40}/i
+  ], (m) => appPasswordIn(m)),
+  // An Apple-style 4-4-4-4 hyphenated lowercase token with no label; a group with no vowel is required.
+  S("secret-app-password-hyphenated", "Looks like an application-specific password (xxxx-xxxx-xxxx-xxxx).", [
+    /(?<![A-Za-z0-9_.\/-])[a-z]{4}-[a-z]{4}-[a-z]{4}-[a-z]{4}(?![A-Za-z0-9_\/-]|\.[A-Za-z0-9])/
+  ], (m) => hyphenatedAppPasswordIn(m))
 ];

@@ -135,7 +135,7 @@ test("ATTACK-V20: the counts per coverage level", () => {
   const count = (l) => credits.filter((c) => c.coverage === l).length;
   assert.deepEqual(
     { credits: credits.length, full: count("full"), partial: count("partial"), none: count("none") },
-    { credits: 91, full: 3, partial: 75, none: 13 }
+    { credits: 92, full: 3, partial: 76, none: 13 }
   );
   const rules = (l) => threats.filter((t) => t.attack.length > 0 && attackCoverage(t) === l).length;
   assert.deepEqual(
@@ -152,7 +152,7 @@ test("ATTACK-V20: the credits for the techniques v20 added", () => {
   assert.deepEqual(who("T1685.007"), ["40:partial"]);
   assert.deepEqual(who("T1608.007"), ["70:partial"]);
   assert.deepEqual(who("T1696"), []);
-  assert.deepEqual(who("T1697"), []);
+  assert.deepEqual(who("T1697"), ["39:partial"]);
   // T1195.001 is the one major-version change in v20 Enterprise: it now names agent skill files and IDE task files.
   assert.deepEqual(who("T1195.001"), ["4:none", "25:partial", "60:partial", "62:partial", "80:partial"]);
 });
@@ -188,7 +188,7 @@ test("ATTACK-V20: a bound is only on a partial credit, and a design bound says w
 // The reviewed list of partial-by-design credits. Widening it must be a deliberate, reviewed edit.
 test("ATTACK-V20: the partial-by-design credits", () => {
   const design = threats.flatMap((t) => t.attack.filter((c) => c.bound === "design").map((c) => `${t.id}:${c.id}`));
-  assert.deepEqual(design, ["21:T1698", "32:T1204.004", "39:T1552.008", "54:T1059.004", "54:T1059.001", "54:T1059.006", "57:T1105", "70:T1608.007", "79:T1016.001"]);
+  assert.deepEqual(design, ["21:T1698", "32:T1204.004", "39:T1552.008", "39:T1697", "54:T1059.004", "54:T1059.001", "54:T1059.006", "57:T1105", "70:T1608.007", "79:T1016.001"]);
 });
 
 // The benchmark splits partial into bounded-by-design and open-gap. The numbers are recomputed here from the
@@ -208,6 +208,8 @@ test("ATTACK-V20: the benchmark's partial split agrees with the data", () => {
   // of reach, and the technique's uncaught forms are a subset of them.
   assert.equal(sum.byItem["T1059.004"].partialBound, "design");
   assert.equal(sum.byItem["T1552.004"].partialBound, "gap");
+  // T1697 stays in the identity lane: creating or using an app password at the provider is out of reach.
+  assert.deepEqual(sum.byItem["T1697"], { lane: "identity", status: "partial", partialBound: "design" });
   assert.equal(sum.byItem["T1698"].partialBound, undefined);
 });
 

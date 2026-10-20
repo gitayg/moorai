@@ -1,22 +1,22 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-18T23:49:19.449Z
+> Generated: 2026-10-20T15:22:00.940Z
 
-- **Detectors:** 118
+- **Detectors:** 120
 - **Threats:** 80
 - **Adversarial corpus:** 102/102 passed (100.0%)
 - **OWASP LLM Top 10:** 10/10 items covered by ≥1 on-device detector
 - **OWASP Top 10 for Agentic Applications:** 1/10 covered, 6 partial, 3 uncovered
 - **OWASP MCP Top 10:** 1/10 covered, 5 partial, 4 uncovered
-- **MITRE ATT&CK v20.0 (AI-agent scope):** 2/71 covered, 54 partial (8 bounded by design, 46 open gap), 15 uncovered (agent lane: 2/58 covered, 53 partial (8 bounded by design, 45 open gap), 3 uncovered)
+- **MITRE ATT&CK v20.0 (AI-agent scope):** 2/71 covered, 55 partial (9 bounded by design, 46 open gap), 14 uncovered (agent lane: 2/58 covered, 53 partial (8 bounded by design, 45 open gap), 3 uncovered)
 
 ## OWASP LLM Top 10 (2025) coverage
 
 | Item | Name | Threats | Detectors | Status |
 |------|------|--------:|----------:|--------|
 | LLM01 | Prompt Injection | 8 | 21 | ✅ covered |
-| LLM02 | Sensitive Information Disclosure | 20 | 42 | ✅ covered |
+| LLM02 | Sensitive Information Disclosure | 20 | 44 | ✅ covered |
 | LLM03 | Supply Chain | 8 | 6 | ✅ covered |
 | LLM04 | Data & Model Poisoning | 1 | 1 | ✅ covered |
 | LLM05 | Improper Output Handling | 7 | 16 | ✅ covered |
@@ -45,7 +45,7 @@
 
 | Item | Name | Threats | Partial | Detectors | Status |
 |------|------|--------:|--------:|----------:|--------|
-| MCP01 | Token Mismanagement & Secret Exposure | 3 | 3 | 26 | ◐ partial |
+| MCP01 | Token Mismanagement & Secret Exposure | 3 | 3 | 28 | ◐ partial |
 | MCP02 | Privilege Escalation via Scope Creep | 3 | 3 | 3 | ◐ partial |
 | MCP03 | Tool Poisoning | 2 | 2 | 11 | ◐ partial |
 | MCP04 | Software Supply Chain Attacks & Dependency Tampering | 0 | 0 | 0 | — |
@@ -93,7 +93,7 @@ risk, the MCP allow-list) are counted under Threats but add no detectors. Source
 | T1552.003 | Shell History | agent | 1 | 3 | ◐ partial (open gap) |
 | T1552.004 | Private Keys | agent | 1 | 3 | ◐ partial (open gap) |
 | T1552.005 | Cloud Instance Metadata API | agent | 1 | 3 | ◐ partial (open gap) |
-| T1552.008 | Chat Messages | agent | 1 | 22 | ◐ partial (by design) |
+| T1552.008 | Chat Messages | agent | 1 | 24 | ◐ partial (by design) |
 | T1555.001 | Keychain | agent | 1 | 3 | ◐ partial (open gap) |
 | T1555.003 | Credentials from Web Browsers | agent | 1 | 3 | ◐ partial (open gap) |
 | T1003.008 | /etc/passwd and /etc/shadow | agent | 1 | 3 | ◐ partial (open gap) |
@@ -127,7 +127,7 @@ risk, the MCP allow-list) are counted under Threats but add no detectors. Source
 | T1548.003 | Sudo and Sudo Caching | agent | 1 | 2 | ◐ partial (open gap) |
 | T1176.001 | Browser Extensions | edr | 2 | 0 | — |
 | T1078.004 | Cloud Accounts | identity | 1 | 0 | — |
-| T1697 | Steal Application Specific Passwords | identity | 0 | 0 | — |
+| T1697 | Steal Application Specific Passwords | identity | 1 | 24 | ◐ partial (by design) |
 | T1496.004 | Cloud Service Hijacking | identity | 1 | 0 | — |
 | T1566 | Phishing | email | 1 | 0 | — |
 | T1566.004 | Spearphishing Voice | email | 1 | 0 | — |
