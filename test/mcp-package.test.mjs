@@ -365,3 +365,64 @@ test("CLI: config scan lists packages (json + md) without network; bad --package
   const bad = spawnSync(process.execPath, [CLI, "--package", "cargo:serde"], { encoding: "utf8", env });
   assert.equal(bad.status, 64);
 });
+
+// ---- known-bad indicators: Knostic advisory on the malicious PyPI MCP server iflow-mcp_cmpxchg16-reddit-mcp ----
+
+test("known-bad PyPI name: every PEP 503 spelling of iflow-mcp_cmpxchg16-reddit-mcp is malicious", async () => {
+  const { classifyPackage, inspectInstall } = await import("../data/popular-packages.js");
+  const { nameFindings } = await import("../cli/mcp-package/heuristics.mjs");
+  for (const n of ["iflow-mcp_cmpxchg16-reddit-mcp", "iflow-mcp-cmpxchg16-reddit-mcp", "IFLOW_MCP.cmpxchg16_reddit-mcp", "iflow-mcp__cmpxchg16--reddit-mcp"]) {
+    assert.equal(classifyPackage(n, "pypi"), "malicious", n);
+  }
+  const f = nameFindings({ ecosystem: "pypi", name: "iflow_mcp_cmpxchg16_reddit_mcp" });
+  assert.deepEqual(f.map((x) => [x.threatId, x.tier]), [["pkg-known-malicious", "block"]]);
+  assert.equal((inspectInstall("pip install iflow-mcp-cmpxchg16-reddit-mcp==0.1.0") || {}).verdict, "malicious");
+  assert.equal(classifyPackage("iflow-mcp-cmpxchg16-reddit-mcp-pro", "pypi"), "ok", "only the documented name, not a prefix");
+});
+
+test("known-bad artifact list holds exactly the five full sha256 values the advisory published", async () => {
+  const { KNOWN_BAD_SHA256, isKnownBadSha256 } = await import("../data/known-bad-artifacts.js");
+  const vals = [...KNOWN_BAD_SHA256.keys()].sort();
+  assert.deepEqual(vals, [
+    "0012b35b2dc2213c720c92476aa2abca4c6a08052ed4d20692a6c0b970ba847e",
+    "163293b10474b29f53e568c6c070de287b057ad1acf89fa755d224262af39478",
+    "5e77fa2a506e1ce6f0726faa502a5bdd0fccd598bd835c7cd6b69963de550198",
+    "7568ca4fd110561020373fbfeb0fa6a36aaf241a59cd5e621a275199e64aa520",
+    "970659f5132d021aaf2ff12dfcf1b098a3a956c5c4dbc608da229b40d94a8453"
+  ]);
+  assert.equal(isKnownBadSha256("5E77FA2A506E1CE6F0726FAA502A5BDD0FCCD598BD835C7CD6B69963DE550198"), true, "case-insensitive");
+  assert.equal(isKnownBadSha256("5e77fa2a"), false, "a prefix is never a match");
+  assert.equal(isKnownBadSha256(""), false);
+});
+
+test("a downloaded artifact whose sha256 is on the known-bad list → pkg-known-malicious (block), wheel and npm tarball", async () => {
+  const { sha256hex } = await import("./fixtures/mcp-package/build.mjs");
+  const whl = makeZip([{ name: "benignmcp/__init__.py", data: "x = 1\n" }]);
+  const tgz = makeTgz(NPM_FIXTURES["clean-mcp-server"]);
+  const { fetchImpl } = registryStub({ benignmcp: { ecosystem: "pypi", kind: "wheel", artifact: whl }, "clean-mcp-server": { ecosystem: "npm", artifact: tgz } });
+  const clean = await analyzePackage({ ecosystem: "pypi", name: "benignmcp", version: null }, { fetchImpl, engine });
+  assert.equal(clean.verdict, "CLEAN", JSON.stringify(clean.findings));
+  for (const [ref, art] of [[{ ecosystem: "pypi", name: "benignmcp", version: null }, whl], [{ ecosystem: "npm", name: "clean-mcp-server", version: null }, tgz]]) {
+    const r = await analyzePackage(ref, { fetchImpl, engine, knownBadSha256: new Set([sha256hex(art)]) });
+    const hit = r.findings.filter((f) => f.threatId === "pkg-known-malicious");
+    assert.deepEqual(hit.map((f) => [f.relativePath, f.tier]), [[null, "block"]], `${ref.name}: ${JSON.stringify(r.findings)}`);
+    assert.equal(r.verdict, "DO-NOT-INSTALL");
+  }
+});
+
+test("an extracted file whose sha256 is on the known-bad list → pkg-known-malicious (block) on that path, never capped", async () => {
+  const { packageHeuristics } = await import("../cli/mcp-package/heuristics.mjs");
+  const { sha256hex } = await import("./fixtures/mcp-package/build.mjs");
+  const { mkdirSync } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const SERVER = "def main():\n    return 1\n";
+  const root = mkdtempSync(join(tmpdir(), "moorai-kbf-"));
+  const files = { "reddit_mcp/server.py": SERVER, "tests/fixture.py": SERVER, "reddit_mcp/other.py": "y = 2\n", "assets/logo.png": "\x89PNG not really" };
+  for (const [f, t] of Object.entries(files)) { mkdirSync(dirname(join(root, f)), { recursive: true }); writeFileSync(join(root, f), t); }
+  const abs = Object.keys(files).map((f) => join(root, f));
+  const hit = (set) => packageHeuristics(root, abs, { knownBadSha256: set }).filter((f) => f.threatId === "pkg-known-malicious").map((f) => [f.relativePath, f.tier]).sort();
+  assert.deepEqual(hit(new Set([sha256hex(Buffer.from(SERVER))])), [["reddit_mcp/server.py", "block"], ["tests/fixture.py", "block"]]);
+  assert.deepEqual(hit(new Set([sha256hex(Buffer.from("\x89PNG not really"))])), [["assets/logo.png", "block"]], "any file, not only code");
+  assert.deepEqual(hit(new Set(["0".repeat(64)])), []);
+  assert.deepEqual(packageHeuristics(root, abs).filter((f) => f.threatId === "pkg-known-malicious"), [], "the bundled list does not match benign files");
+});

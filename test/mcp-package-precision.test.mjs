@@ -420,3 +420,37 @@ test("a vendor-installer pipe-to-shell in a developer script is review, not a ve
   // CI/tooling directories downgrade in every mode.
   assert.equal(notRuntimeReason(".github/workflows/ci.sh"), "repo-tooling");
 });
+
+// ---- pkg-throwaway-host: a hard-coded fetch from a free throwaway web host is a WARNING, never a verdict ----
+
+test("pkg-throwaway-host: live fetch from a free throwaway host is notify; normal hosts, comments, lookalikes and no-egress are silent", async () => {
+  const { packageHeuristics, HEURISTICS } = await import("../cli/mcp-package/heuristics.mjs");
+  const { dirname } = await import("node:path");
+  const run = (files) => {
+    const root = mkdtempSync(join(tmpdir(), "pkg-throwaway-"));
+    for (const [f, t] of Object.entries(files)) { mkdirSync(dirname(join(root, f)), { recursive: true }); writeFileSync(join(root, f), t); }
+    return packageHeuristics(root, Object.keys(files).map((f) => join(root, f))).filter((x) => x.threatId === "pkg-throwaway-host").map((x) => [x.relativePath, x.tier]);
+  };
+  assert.equal(HEURISTICS["pkg-throwaway-host"].tier, "notify", "owner decision: a warning, never block or justify");
+  // The advisory's shape: a server that fetches an image from a tiiny.site subdomain.
+  assert.deepEqual(run({ "reddit_mcp/server.py": "import requests\nIMG = 'https://orange-sarene-41.tiiny.site/reddit.png'\nr = requests.get(IMG)\n" }), [["reddit_mcp/server.py", "notify"]]);
+  assert.deepEqual(run({ "dist/index.js": "const u = \"https://quiet-fox.trycloudflare.com/p\";\nawait fetch(u);\n" }), [["dist/index.js", "notify"]]);
+  assert.deepEqual(run({ "dist/a.js": "await fetch('https://tiiny.site/x');\n" }), [["dist/a.js", "notify"]], "the apex host itself");
+  assert.deepEqual(run({ "dist/b.js": "await fetch('https://pastebin.com/raw/abc');\n" }), [["dist/b.js", "notify"]]);
+  // Silent:
+  assert.deepEqual(run({ "dist/c.js": "await fetch('https://api.github.com/repos/x/y');\n" }), [], "a normal domain");
+  assert.deepEqual(run({ "dist/d.js": "// mirror: https://pastebin.com/raw/abc\nawait fetch('https://api.example.com/v1');\n" }), [], "throwaway host only in a comment");
+  assert.deepEqual(run({ "src/e.py": "\"\"\"Do not use https://x.tiiny.site/a\"\"\"\nimport requests\nrequests.get('https://api.example.com')\n" }), [], "throwaway host only in a docstring");
+  assert.deepEqual(run({ "dist/f.js": "await fetch('https://nottiiny.site.example.com/x');\n" }), [], "lookalike: the host only contains the domain");
+  assert.deepEqual(run({ "dist/g.js": "await fetch('https://eviltiiny.site/x');\n" }), [], "lookalike: suffix without a label boundary");
+  assert.deepEqual(run({ "dist/h.js": "await fetch('https://api.example.com/?next=https%3A%2F%2Fx.tiiny.site');\n" }), [], "the throwaway host only inside another URL's query");
+  assert.deepEqual(run({ "dist/i.js": "export const DOCS = 'https://pastebin.com/raw/abc';\n" }), [], "no egress call in the file");
+});
+
+test("pkg-throwaway-host alone is one notify finding (CAUTION at most), category remote-code", async () => {
+  const { packageHeuristics } = await import("../cli/mcp-package/heuristics.mjs");
+  const root = mkdtempSync(join(tmpdir(), "pkg-throwaway-v-"));
+  writeFileSync(join(root, "server.py"), "import requests\nrequests.get('https://abc.ngrok-free.app/payload.png')\n");
+  const fs = packageHeuristics(root, [join(root, "server.py")]);
+  assert.deepEqual(fs.map((f) => [f.threatId, f.tier, f.category]), [["pkg-throwaway-host", "notify", "remote-code"]]);
+});

@@ -1295,6 +1295,10 @@ async function runPostureBeatWorker(host, mode, cwd) {
       const capable = process.platform === "win32" ? mxcCapable({ release: os.release(), stateDir: STATE_DIR }) : null;
       containment = { containmentRequired: cc.required.mode, claudeCodeWrap: claudeCodeWrapState({ mode: cc.claudeCode.mode, capable }) };
     } catch { containment = null; }
+    // mcpServerSandbox (mcp-proxy/sandbox-spawn.mjs): the effective mode and whether the stdio guard can apply
+    // it here ("on" | "unavailable" | "off"), from static prerequisites only. Content-free.
+    let mcpServerSandbox = null;
+    try { const { serverSandboxPosture } = await import("../mcp-proxy/sandbox-spawn.mjs"); mcpServerSandbox = serverSandboxPosture((v && v.policy) || null, { admin: ADMIN }); } catch { mcpServerSandbox = null; }
     // Inventory detectors (cli/agent-posture.mjs inventoryPosture): localModelServers, aiApiCallers and decoyKeys
     // at the top level, gated by the same verified load `v`. Decoy files are placed or removed only when that
     // policy carried a console signature this device verified (anchor or pin): a policy from an unpinned device
@@ -1305,7 +1309,7 @@ async function runPostureBeatWorker(host, mode, cwd) {
       const signed = !!(v && v.policy && v.trust && Array.isArray(v.trust.keys) && v.trust.keys.length);
       inventory = await inventoryPosture({ policy: (v && v.policy) || null, decoys: signed, commit: false });
     } catch { inventory = null; }
-    const body = { user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture, ...(failMode ? { failMode } : {}), ...(containment || {}), ...(aiCliParents ? { aiCliParents } : {}), ...(inventory ? inventory.fields : {}) };
+    const body = { user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture, ...(failMode ? { failMode } : {}), ...(containment || {}), ...(mcpServerSandbox ? { mcpServerSandbox } : {}), ...(aiCliParents ? { aiCliParents } : {}), ...(inventory ? inventory.fields : {}) };
     const r = await fetch(`${CONFIG.serverUrl}/api/agent-posture`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) }).catch(() => null);
     // On failure the pending mark stays, so the next try is BEAT_RETRY_MS away rather than one per tool call.
     if (r && r.ok) writeBeat(host, { day, bypass: (st.day === day && !!st.bypass) || mode === "bypassPermissions" });

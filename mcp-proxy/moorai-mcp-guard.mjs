@@ -93,6 +93,7 @@ import { gatewayFailMode, gatewayFailReason, gatewayFailAlert } from "../cli/mcp
 import { systemConfig } from "../cli/server-mode.mjs";
 import { createTracer, traceFields } from "../model-proxy/trace-w3c.mjs";
 import { setMetaTrace } from "./trace-meta.mjs";
+import { planServerSpawn, serverSandboxNotes, serverSandboxAlerts, refusedChild } from "./sandbox-spawn.mjs";
 
 // ---- argv parsing: [--server label] [--host id] -- realcmd args... ----
 function parseArgv(argv) {
@@ -349,8 +350,24 @@ async function reputationGate(msg, tool, argsHash) {
   return true;
 }
 
-// ---- spawn the real MCP server ----
-const child = spawn(REAL_CMD, REAL_ARGS, { stdio: ["pipe", "pipe", "pipe"], env: process.env });
+// ---- spawn the real MCP server, under the network sandbox when mcpServerSandbox asks (./sandbox-spawn.mjs) ----
+// Planned from the admin binding and the verified policy's LOCAL copies (no fetch, so start-up is not held
+// on the console). Off: the spawn below is the real command, unchanged. Refused (requested, no backend,
+// fail mode closed): nothing is started and the guard ends with code 1, as when a spawn fails.
+async function serverSpawnPlan() {
+  let policy = null;
+  try { policy = (await loadVerifiedPolicy(CONFIG, { network: false })).policy || null; } catch { policy = null; }
+  const fm = gatewayFailMode({ policy, admin: ADMIN, warn: () => {} });
+  const coach = !enforcementAllowed(CONFIG, { managed: durablePosture().posture === "fail-closed" || adminClosed() });
+  const plan = planServerSpawn({ cmd: REAL_CMD, args: REAL_ARGS, policy, admin: ADMIN, failMode: fm.mode, coach });
+  for (const line of serverSandboxNotes(plan, SERVER)) { try { process.stderr.write(line + "\n"); } catch { /* a note */ } }
+  for (const a of serverSandboxAlerts(plan, { server: SERVER, failModeSource: fm.source })) {
+    try { post({ ...a, ts: new Date().toISOString(), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
+  }
+  return plan;
+}
+const SPAWN_PLAN = await serverSpawnPlan();
+const child = SPAWN_PLAN.state === "refused" ? refusedChild() : spawn(SPAWN_PLAN.cmd, SPAWN_PLAN.args, { stdio: ["pipe", "pipe", "pipe"], env: process.env });
 
 child.on("error", (e) => {
   // The real server could not be spawned. Fail loudly to Claude Desktop's stderr (visible in its logs)

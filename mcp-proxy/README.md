@@ -402,6 +402,95 @@ line that is not JSON, a line over 1 MB (streamed through unparsed), and tools/l
 unenrolled device (coach mode) never refuses. The MCP package check stays fail-closed whatever the
 setting: an unverified package is REVIEW.
 
+## Network sandbox for the server process (`mcpServerSandbox`, macOS)
+
+**Experimental.** It restricts the server process's own network connections and DNS, not its files or
+processes: a sandboxed server can still write a LaunchAgent or cron job, edit MCP-client or MoorAI config, or
+run `launchctl`, and work scheduled that way runs later outside the sandbox. Treat it as one layer, not
+containment.
+
+Everything above judges JSON-RPC. What the server's own code does with the network (a dependency that
+phones home, a tool that opens a socket its description never mentions) never crosses the wire the guard
+reads. `mcpServerSandbox: "network"` starts the real server under a kernel network sandbox built from the
+same `egressRules` / `egressDefault` MoorAI's egress check uses ([`sandbox-spawn.mjs`](sandbox-spawn.mjs),
+profile from [`../cli/sandbox-policy.mjs`](../cli/sandbox-policy.mjs)).
+
+| `mcpServerSandbox` | What the guard starts |
+|---|---|
+| `"off"` (default) | the real command, exactly as before |
+| `"network"` | macOS: `/usr/bin/sandbox-exec -p <profile> <cmd> <args...>`. Same command, arguments, environment and stdio pipes; the profile is `(allow default)` plus the generated network section |
+
+**Who decides.** The root-owned admin binding (`/etc/moorai/config.json`, top-level key), then the verified
+signed policy, then `"off"` — the precedence of `failMode`. The guard reads both before it starts the
+server, from local copies only (the cached verified policy, never a fetch, so start-up is not held on the
+console). A value other than exact lowercase `"off"` / `"network"` is ignored with a warning naming the
+source and key. Trust model as for `failMode`: on a pinned device a user-writable file cannot change it; on
+an unpinned device the verified policy is the user-scope copy, so the user can.
+
+**Which rules.** The policy's `egressRules`, then the admin binding's (first match decides); the policy's
+`egressDefault`, else the admin binding's — the order MoorAI's own egress check reads them in. Workload
+profiles' rules are not used.
+
+**What "network" restricts — read this before turning it on.** Seatbelt can name only loopback
+(`sandbox-exec` rejects `(remote ip "1.2.3.4:443")` and hostnames: "host must be * or localhost"). So:
+
+- **With `egressDefault: "block"`**, every outbound connection except loopback (and `AF_UNIX`) is refused by
+  the kernel (`EPERM`). That includes hosts your `egressRules` allow: an allow rule for an internet host
+  cannot be written into the profile, so it is reported `omitted` and stays denied. A server that needs an
+  API, and a server launched as `npx -y <pkg>` / `uvx <pkg>` that fetches its own code at start, fail.
+  Use it for servers that work on local data only, or reach their upstream through a loopback proxy.
+  The profile also denies, in this mode only:
+  - name resolution: the `mDNSResponder` socket and mach services (`com.apple.mDNSResponder`,
+    `com.apple.mDNSResponderHelper`), so a public name does not resolve and DNS cannot carry data out;
+    `localhost` still resolves;
+  - the `nsurlsessiond`, `launchservicesd` and `lsd` mach services, and sending AppleEvents;
+  - exec of `/usr/bin/open` and `/usr/bin/osascript` (`EPERM`).
+- **With any other `egressDefault`** (or none), no non-loopback host and no DNS is restricted; only loopback
+  port rules apply. The guard says so on stderr.
+
+**What it is not.** The sandbox restricts the server process's own network connections and DNS. It is not
+full containment: file and process access are not restricted, so the server can read and write what the
+user can and run other programs. Handing work to another app is closed only where measured: AppleEvents and
+exec of `/usr/bin/open` / `/usr/bin/osascript`. Denying the LaunchServices mach services alone did not stop
+`open` (measured: it still exited 0), and other routes to LaunchServices (a program that calls it directly)
+were not measured.
+
+Every rule the profile cannot express (`unexpressed` from `sandboxPolicy`) is written to stderr, one line
+each with its source (`policy` / `admin`) and index, and sent as one content-free alert,
+`Containment: MCP server sandbox rules not expressed` (Medium; `unexpressed: [{ index, source, id?,
+action, fields, effect, reason }]`, `unexpressedCount`, `blocksNonLoopback`). Never a host value. Nothing
+unexpressed is widened.
+
+**When it cannot run** (Linux, Windows, `/usr/bin/sandbox-exec` missing, or a profile that could not be
+built), the guard never starts the server silently unsandboxed. The `mcpGateway` fail mode decides, as for
+everything else the guard cannot do:
+
+| `failMode.mcpGateway` | What happens | Alert (`reasonCode: "CONTAINMENT_UNAVAILABLE"`, category `Containment: MCP server sandbox unavailable`) |
+|---|---|---|
+| `"open"` (default) | the server starts unsandboxed; stderr: `... runs UNSANDBOXED: ...` | High, `decision: "notify"`, `failMode: "open"` |
+| `"closed"` | the server is **not started**; stderr: `... was not started: ...`; the guard exits 1, as when a spawn fails, and the MCP client shows the server as failed | Blocked, `decision: "deny"`, `enforcement: "STRENGTHENED"` |
+
+Both carry `sandboxWhy` (`platform`, `no-sandbox-exec`, `profile-error`), `sandboxMode`, `sandboxSource`,
+`failModeSource` and `mcpServer`. Coach mode (unenrolled, unmanaged) never refuses. One alert per launch:
+each launch of the server is one guard process.
+
+**Status.** The coverage heartbeat carries `mcpServerSandbox: { mode, state }`, state `"on"` (requested and
+`sandbox-exec` present: the network profile can be applied, which is not full containment), `"unavailable"`
+(requested, no backend) or `"off"`, from static prerequisites only.
+
+**Measured** (macOS 27.0, `test/mcp-server-sandbox-guard.test.mjs`): through the real guard, a fixture
+server's connect to TEST-NET `192.0.2.1:443` times out with the sandbox off and fails with `EPERM` under
+`"network"` + `egressDefault: "block"`, while a loopback connect still succeeds. In the same mode
+`dns.lookup("example.com")` is `ENOTFOUND`, `localhost` resolves, and exec of `/usr/bin/open` and
+`/usr/bin/osascript` is `EPERM`. Measured by hand with `sandbox-exec`: python `getaddrinfo` of a public name
+fails, and node, python, `npx --version` and their child processes start.
+
+**Not covered.** Linux and Windows (no backend). Servers a host launches without the guard (not wrapped by
+`install.mjs`). Remote (HTTP) servers: their process is not on this machine ([`../mcp-gateway/`](../mcp-gateway/README.md)
+judges their traffic only). Files and processes are not restricted, and app hand-off is closed only for
+AppleEvents and the two binaries above. A server already running when the policy changes keeps the profile
+it started with until it is restarted.
+
 ## Install
 
 ```bash
@@ -552,6 +641,7 @@ proxy sees nothing.
 | `tool-baseline.mjs`        | Cross-call tool baseline — shadowing / capability-expansion drift. |
 | `tool-drift.mjs`           | `mcpToolDrift: "block"`: approved-baseline precedence, quarantine verdicts, the version mark, the fingerprint report, per-server listing freshness. Shared with the HTTP gateway. |
 | `tool-recheck.mjs`         | `mcpToolRecheckSeconds`: the re-list before a block-mode call when the last judged listing is stale (every page, 2 s budget, one in flight per server). Shared with the HTTP gateway. |
+| `sandbox-spawn.mjs`        | `mcpServerSandbox`: plans the server's spawn (off / under `sandbox-exec` / unavailable / refused), the stderr notes, the alerts and the heartbeat field. |
 | `install.mjs`              | Wrap / uninstall / status a host's MCP config, per the `HOSTS` table (pure transforms exported for tests). |
 | `test-proxy.mjs`           | Self-verification (proxy behavior + install rewrite). |
 | `test-fake-mcp-server.mjs` | Tiny fake MCP server used by the test. |

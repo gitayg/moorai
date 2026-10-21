@@ -367,6 +367,10 @@ or large bodies.
 - Content-free: alerts go to the console's `/api/alerts` with `tool: "gateway:<tool>"` and
   `mcpServer: "<route label>"`; one audit line per call goes to the local ledger. No argument, result,
   header or URL leaves.
+- The gateway starts no server process, so the policy key `mcpServerSandbox` (a kernel network sandbox
+  around a local stdio server) does not apply here. It is applied by the stdio guard: see
+  [`../mcp-proxy/README.md`](../mcp-proxy/README.md) "Network sandbox for the server process". The
+  `sandbox-exec` in the live tests below wraps the MCP clients under test, not a server.
 
 ## Placeholder credentials
 

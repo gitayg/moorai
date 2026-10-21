@@ -1681,6 +1681,74 @@ comes from the deployment's network policy, which is being built separately unde
 - A `deny_rules` entry on one OpenShell endpoint can also deny requests that another overlapping rule
   allows (narrower, not reported).
 
+## MCP server network sandbox (`mcpServerSandbox`)
+
+**Status: built; unit tests (`test/mcp-server-sandbox.test.mjs`) and real-guard tests
+(`test/mcp-server-sandbox-guard.test.mjs`, the kernel check on macOS only). Linux and Windows have no backend.**
+Files: [`mcp-proxy/sandbox-spawn.mjs`](../mcp-proxy/sandbox-spawn.mjs) (plan, notes, alerts, heartbeat field),
+[`mcp-proxy/moorai-mcp-guard.mjs`](../mcp-proxy/moorai-mcp-guard.mjs) (`serverSpawnPlan`, the spawn), the
+heartbeat in `cli/moorai-hook.mjs`. User docs: [`mcp-proxy/README.md`](../mcp-proxy/README.md) "Network sandbox
+for the server process".
+
+**Contract.**
+- Policy field (signed policy, and the root-owned admin binding as a top-level key): `mcpServerSandbox`:
+  `"off"` (default) | `"network"`. Precedence that of `failMode`: admin binding, then the verified policy,
+  then `"off"`. Exact lowercase values only; an invalid value is warned about by source and key (never the
+  value) and the next source decides. The stdio guard reads both before it starts the server, from local
+  copies only (`loadVerifiedPolicy(CONFIG, { network: false })`).
+- `"network"` on macOS with `/usr/bin/sandbox-exec`: the guard spawns `sandbox-exec -p <profile> <cmd>
+  <args...>` with the same environment and stdio pipes. Profile: `(version 1)`, `(allow default)`, then
+  `sandboxPolicy({ egressRules, egressDefault }, "seatbelt").policy` (section above). Rules: the policy's
+  `egressRules`, then the admin binding's; default: the policy's `egressDefault`, else the admin binding's
+  (the order of `cli/egress-rules.mjs` `egressFrom`).
+- **Effect.** Seatbelt names loopback only. With `egressDefault: "block"` every non-loopback outbound
+  connection is refused by the kernel (`EPERM`), including hosts an allow rule names (reported `omitted`,
+  `seatbelt-host`): servers that need an internet API, and `npx -y` / `uvx` launches that fetch code at start,
+  fail. In that mode only, the profile ends with (measured on macOS 27.0: without them a public name still
+  resolves through mDNSResponder, and osascript / open reach other apps):
+  `(deny mach-lookup (global-name "com.apple.mDNSResponder") (global-name "com.apple.mDNSResponderHelper")
+  (global-name "com.apple.nsurlsessiond") (global-name "com.apple.coreservices.launchservicesd")
+  (global-name "com.apple.lsd.mapdb") (global-name "com.apple.lsd.open"))`, `(deny appleevent-send)`,
+  `(deny network-outbound (literal "/private/var/run/mDNSResponder"))` (after the unix-socket allow; the last
+  filtered match wins) and `(deny process-exec (literal "/usr/bin/open") (literal "/usr/bin/osascript"))`.
+  Measured with them: a public `dns.lookup` is `ENOTFOUND`, python `getaddrinfo` fails, `localhost` resolves,
+  loopback connects, node / python / `npx --version` and child processes start, exec of `open` / `osascript`
+  is `EPERM`. Measured without the exec deny: `open -g -R /tmp` still exits 0 with the LaunchServices mach
+  services denied. With any other default no non-loopback host and no DNS is restricted.
+- **Scope, stated in the docs and on stderr.** Experimental. The sandbox restricts the server process's own network
+  connections and DNS. It is not full containment: file and process access are not restricted (a server can
+  still write a LaunchAgent or cron job, edit MCP-client or MoorAI config, or run `launchctl`, and that work
+  runs later outside the sandbox), and handing
+  work to another app is closed only for AppleEvents and exec of those two binaries (other routes to
+  LaunchServices were not measured).
+- **Unexpressed rules.** Each `unexpressed` entry is written to the server's stderr and listed in one alert,
+  category `Containment: MCP server sandbox rules not expressed`, Medium, `decision: "notify"`, fields
+  `unexpressed: [{ index, source: "policy" | "admin" | "default", id?, action?, fields, effect, reason }]`
+  (at most 64), `unexpressedCount`, `blocksNonLoopback`. `index` is the rule's index in its own document.
+- **No backend** (not darwin, `sandbox-exec` missing, profile not built): `failMode.mcpGateway` decides.
+  Closed: the server is not started, the guard exits 1, alert category `Containment: MCP server sandbox
+  unavailable`, `riskLevel: "Blocked"`, `decision: "deny"`, `reasonCode: CONTAINMENT_UNAVAILABLE`,
+  `enforcement: STRENGTHENED`, `failMode: "closed"`. Open (default): the server starts unsandboxed, the same
+  category with `riskLevel: "High"`, `decision: "notify"`, `failMode: "open"`, and a stderr line. Both carry
+  `sandboxWhy` (`platform` | `no-sandbox-exec` | `profile-error`), `sandboxMode`, `sandboxSource`,
+  `failModeSource`, `mcpServer`, `stage: "mcp"`, `tool: "desktop:mcp-sandbox"`. Coach mode never refuses.
+  Why this and not the desktop host's behaviour (which runs unsandboxed when it cannot write its profile):
+  every other guard capability that cannot run follows `failMode.mcpGateway`, and a silent fallback would
+  hide that the requested protection is missing.
+- Posture heartbeat, top level: `mcpServerSandbox: { mode: "off" | "network", state: "on" | "unavailable" |
+  "off" }`, from static prerequisites (platform and `sandbox-exec` present), not from a running server. `"on"`
+  means the network profile can be applied, not that the server is contained.
+
+**Not covered.** Linux (a bwrap/landlock or network-namespace backend) and Windows (MXC) are not wired.
+Servers a host starts without the guard. Remote (HTTP) servers behind `mcp-gateway`: no local process.
+Files and processes inside the sandbox are unrestricted; app hand-off is closed only as above. A running
+server keeps the profile it started with.
+**Not proven:** a real third-party MCP server under the profile (only the fixture server was run); how a
+real MCP client presents a server the guard refused (only the exit code was measured). The mDNSResponder
+mach-lookup and `appleevent-send` denies are checked on the profile text only: in the real test the socket
+deny alone already stops `dns.lookup`, and the exec deny already stops `osascript`, so neither line was
+shown necessary on its own.
+
 ## Placeholder credentials (model proxy and MCP gateway)
 
 **Status: built and unit-tested (`test/model-proxy-credentials.test.mjs`,
@@ -2127,7 +2195,8 @@ policy only.
 
 Posture heartbeat (`POST /api/agent-posture`), top-level like `failMode`:
 `aiCliParents: { mode, lastParentClass }`, `localModelServers: [{ runtime, port, bind, viaProxy }]`,
-`aiApiCallers: [{ processImage, provider, known }]`, `decoyKeys: { placed, source: "admin" | "agent" | "none" }`.
+`aiApiCallers: [{ processImage, provider, known }]`, `decoyKeys: { placed, source: "admin" | "agent" | "none" }`,
+`mcpServerSandbox: { mode, state }` ("MCP server network sandbox" above).
 
 ### AI CLI started by an unexpected parent (`cli/ai-cli-parents.mjs`)
 

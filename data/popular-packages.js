@@ -18,8 +18,14 @@ export const KNOWN_BAD_PACKAGES = new Set([
   "huggingface-cli","css-color-stop","dns-sd","dom-ains","colourama","jeillyfish","jeillyfish","python3-dateutil",
   "torchtriton","fabrice","paysafe-sdk","paysafe-payments","paysafe-api","crossenv","loadsh","lodahs","mongose",
   "twilio-npm","babelcli","noblox.js-proxy","paysafe-checkout","paysafe-node","paysafe-js","rustdecimal",
-  "ethers-provider2","mumpy","openvc","diango","faster_log"
+  "ethers-provider2","mumpy","openvc","diango","faster_log",
+  // Knostic advisory (2026-10): PyPI MCP server that fetches a tiiny.site image and runs Python hidden in it.
+  "iflow-mcp_cmpxchg16-reddit-mcp"
 ].map((s) => s.toLowerCase()));
+// PyPI treats runs of "-", "_" and "." as one separator, case-insensitively (PEP 503), so every spelling
+// of a documented name installs the same project.
+const pep503 = (s) => s.replace(/[-_.]+/g, "-");
+const KNOWN_BAD_PYPI = new Set([...KNOWN_BAD_PACKAGES].map(pep503));
 
 const ALIASES = { js: "npm", javascript: "npm", node: "npm", py: "pypi", python: "pypi", pip: "pypi", rs: "crates", rust: "crates", cargo: "crates" };
 const POP = { npm: new Set(POPULAR_PACKAGES.npm), pypi: new Set(POPULAR_PACKAGES.pypi), crates: new Set(POPULAR_PACKAGES.crates) };
@@ -49,7 +55,7 @@ export function classifyPackage(name, ecosystem) {
   const n = String(name || "").toLowerCase().trim();
   if (!n || n.length < 2) return "ok";
   const eco = ALIASES[ecosystem] || ecosystem;
-  if (KNOWN_BAD_PACKAGES.has(n)) return "malicious";
+  if (KNOWN_BAD_PACKAGES.has(n) || (eco === "pypi" && KNOWN_BAD_PYPI.has(pep503(n)))) return "malicious";
   const pop = POP[eco];
   if (pop && pop.has(n)) return "ok";
   // exact match to a popular name in ANOTHER ecosystem while installing here = ecosystem confusion
