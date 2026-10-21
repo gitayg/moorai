@@ -10,7 +10,10 @@ import { CONTENT_RULES } from "../data/content-rules.js";
 import { effectiveContentPolicy } from "../data/content-defaults.js";
 import { DetectionEngine } from "../src/engine.js";
 import { loadConfig } from "./config.mjs";
-import { calibrateRisk, decideEndpoints, enforcementAllowed, coachMessage } from "./hook-core.mjs";
+import { calibrateRisk, decideEndpoints, enforcementAllowed, coachMessage, loadVerifiedPolicy, ratchetPosture, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath } from "./hook-core.mjs";
+import { hookFailMode } from "./hook-fail.mjs";
+import { systemConfig, trustedEnv } from "./server-mode.mjs";
+import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { recordExposure, recordIntent } from "./signals.mjs";
 import { contentHash, actorHash } from "./content-hash.mjs";
 import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
@@ -18,20 +21,18 @@ import { takeEscalationOutcomes } from "../data/model-escalation.mjs";
 import { atlasIds } from "../data/atlas.js";
 import { credAlternative } from "../data/cred-alternatives.js";
 import { exitWhenDrained } from "./exit-drain.mjs";
+import { enqueueAlerts, claimOutboxFlush } from "./alert-outbox.mjs";
+import { guardOrigin } from "./origin.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = loadConfig();
 const SERVER = CONFIG.serverUrl;
 // Coach vs enforce — the shared rule (data/enforcement.js). Unenrolled: the findings are shown with the
 // why and the safer way, and the prompt goes through; nothing is aborted, blocked, killed or posted.
-const ENFORCE = enforcementAllowed(CONFIG);
+// Re-decided once the policy is resolved (resolvePolicy), with the same management evidence the hook uses.
+let ENFORCE = enforcementAllowed(CONFIG);
 const threatData = JSON.parse(readFileSync(join(ROOT, "data/threats.json"), "utf8"));
 const engine = new DetectionEngine(threatData, DETECTORS, CONTENT_RULES);
-
-async function getPolicy() {
-  try { return await fetch(`${SERVER}/api/policy?tenant=${encodeURIComponent(CONFIG.tenant)}`, { signal: AbortSignal.timeout(2000) }).then((r) => r.json()); }
-  catch { return null; }
-}
 
 const C = { red: "\x1b[31m", org: "\x1b[33m", blue: "\x1b[34m", green: "\x1b[32m", dim: "\x1b[2m", bold: "\x1b[1m", off: "\x1b[0m" };
 const color = (lvl) => (lvl === "Critical" ? C.red : lvl === "High" ? C.org : C.blue);
@@ -54,9 +55,87 @@ function djb2(s) { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5
 // agentVersion: the guard runs before Claude Code starts, so any AI_AGENT it sees belongs to its own parent.
 const IDENTITY = { user: os.userInfo().username, device: os.hostname(), platform: os.platform(), tenant: CONFIG.tenant, actor: actorHash(os.userInfo().username, os.hostname()), agentName: "claude-code" };
 
+// The console authenticates an alert by its install token (POST /api/alerts answers 401 without one). A post
+// the console does not take (no answer, a 5xx, a 429, a 401 or a 403; a 400 is never retried) goes to the
+// alert outbox (cli/alert-outbox.mjs), unnumbered: the guard takes no alert seq. The hook's detached worker
+// delivers it.
+const TOKEN = typeof CONFIG.installToken === "string" ? CONFIG.installToken.trim() : "";
+const POST_TIMEOUT_MS = 5000;
+function queueAlert(alert) {
+  try {
+    enqueueAlerts([alert], { via: "direct-failed" });
+    if (claimOutboxFlush()) spawn(process.execPath, [join(ROOT, "cli", "moorai-hook.mjs"), "alertpost"], { detached: true, stdio: "ignore" }).unref();
+  } catch { /* the local ledgers still hold what they hold */ }
+}
+// Posts still in flight. exitWhenDrained destroys every open TCP socket, so exiting with one pending made its
+// fetch reject after the console had stored the alert: the alert went to the outbox and was delivered twice
+// (unnumbered, so the console cannot tell the retry apart). Every exit waits for them first (bounded by
+// POST_TIMEOUT_MS).
+const PENDING = new Set();
 function post(alert) {
-  if (!ENFORCE) return Promise.resolve(); // no console to post to on an unenrolled device
-  return fetch(`${SERVER}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(alert) }).catch(() => {});
+  if (!ENFORCE || !TOKEN) return Promise.resolve(); // no console to post to on an unenrolled device
+  const p = fetch(`${SERVER}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json", "X-Install-Token": TOKEN }, body: JSON.stringify(alert), signal: AbortSignal.timeout(POST_TIMEOUT_MS) })
+    .then((r) => { if (!r.ok && r.status !== 400) queueAlert(alert); return r; }, () => { queueAlert(alert); });
+  PENDING.add(p);
+  p.then(() => PENDING.delete(p));
+  return p;
+}
+async function exitAfterPosts(code) {
+  await Promise.allSettled([...PENDING]);
+  return exitWhenDrained(code);
+}
+
+// ---- policy load ----
+//
+// The same loader the hook and the MCP guard use (cli/hook-core.mjs loadVerifiedPolicy): the policy fetch
+// carries X-Install-Token (the console answers 401 without it), every candidate is verified against the
+// anchor (/etc/moorai/policy.pub, MOORAI_POLICY_PUBKEY) or this device's TOFU pin, a verified fresh policy
+// is cached and becomes last-known-good, and with the console down the cache, then the last-known-good
+// copy, is enforced. A policy that does not verify is no policy. The fetches are bounded (1500 ms, in
+// parallel) and skipped while the console back-off is active.
+//
+// No verified policy: the posture rule the hook and the MCP guard share. A fail-closed posture (the
+// root-owned latch, MOORAI_OFFLINE_MODE, or one a verified policy recorded) or an admin binding that makes
+// the hook fail closed selects the reviewable built-in default (data/offline-default.js); otherwise no
+// policy, as before. Break-glass is not honoured here, as in the MCP guard: the safe direction.
+const ADMIN = (() => { try { return systemConfig(); } catch { return null; } })();
+function durablePosture() {
+  return ratchetPosture({
+    system: readRootOwned(systemPosturePath()),
+    state: readText(POSTURE_STATE),
+    latch: readText(POSTURE_LATCH),
+    legacy: readText(POSTURE_LEGACY),
+    env: trustedEnv("MOORAI_OFFLINE_MODE")
+  });
+}
+function postPolicy(category, hash, riskLevel) {
+  return post({ threatId: 0, category, riskLevel, stage: "policy", tool: "claude -p", ts: new Date().toISOString(), contentHash: hash, ...IDENTITY });
+}
+// The content-free trust signals the hook and the MCP guard emit, under the same tokens: source names and
+// failure statuses only, never a byte of the policy.
+function reportPolicyTrust({ rejected, pin, trust, absence }) {
+  for (const r of rejected || []) postPolicy(`Policy signature rejected (${r.status})`, `policy:${r.source}:${r.status}`, "Critical");
+  if (trust && trust.mode === "rebind") postPolicy("Policy key pin tenant rebind refused", "policy:pin:tenant-rebind", "Critical");
+  if (pin && pin.corrupt) postPolicy("Policy key pin unreadable", "policy:pin:corrupt", "Critical");
+  else if (pin && pin.evidenceMissing) postPolicy("Policy key pin evidence missing", "policy:pin:evidence-missing", "High");
+  if (absence && absence.suspicious) postPolicy("Policy key pin absent on a device with prior operation", "policy:pin:absent-operational", "Critical");
+}
+async function resolvePolicy() {
+  let v;
+  try { v = await loadVerifiedPolicy(CONFIG); } catch { v = { policy: null, source: "none" }; }
+  const posture = durablePosture();
+  const failNoPolicy = hookFailMode({ policy: null, admin: ADMIN, warn: () => {} });
+  ENFORCE = enforcementAllowed(CONFIG, { managed: posture.posture === "fail-closed" || (failNoPolicy.mode === "closed" && failNoPolicy.source === "admin") });
+  reportPolicyTrust(v);
+  if (v.policy) {
+    if (v.source === "last-known-good") postPolicy("Enforcing last-known-good verified policy", "policy:lkg:applied", "High");
+    return v.policy;
+  }
+  if (posture.posture === "fail-closed" || failNoPolicy.mode === "closed") {
+    postPolicy("Offline: fail-closed default applied", "offline:fail-closed", "High");
+    return OFFLINE_DEFAULT_POLICY;
+  }
+  return null;
 }
 
 // Content-free advisory post for one escalate/escalateMiss finding: only the model's short category
@@ -217,7 +296,7 @@ async function main() {
   const { decide: decideFlag, prompt } = parseArgs(process.argv.slice(2));
   if (!prompt) { console.error("usage: moorai-guard [--decide proceed|redact|abort] <prompt>"); process.exit(2); }
 
-  const policy = await getPolicy();
+  const policy = await resolvePolicy();
   // #5 — consent-visible banner: never let an elevated capture tier run silently on the device.
   if (policy && policy.captureTier && policy.captureTier !== "content-free") {
     process.stderr.write(`\x1b[33m⚠ MoorAI capture: ${policy.captureTier} — this policy records ${policy.captureTier === "full-capture" ? "prompt / argument text" : "metadata (file paths, tool names, command shape)"}.\x1b[0m\n`);
@@ -248,7 +327,7 @@ async function main() {
 
   if (!findings.length && !content.length) {
     console.error(`${C.green}✓ MoorAI: clean — forwarding to claude -p${C.off}\n`);
-    return exitWhenDrained(await runClaude(prompt, policy, action));
+    return exitAfterPosts(await runClaude(prompt, policy, action));
   }
 
   if (findings.length) { printFindings(findings); await Promise.allSettled(findings.map((f) => reportTouchpoint(f))); }
@@ -268,7 +347,7 @@ async function main() {
     const verb = killFindings.length ? "killed" : "blocked";
     console.error(`${C.red}✗ ${verb} by ${parts.join(" + ")} — nothing sent to claude -p${C.off}`);
     if (killFindings.length) await reportSessionKill("prompt", killFindings);
-    return exitWhenDrained(3);
+    return exitAfterPosts(3);
   }
 
   // Unenrolled: coach and send. The findings above already carry the why and the safer way; this line
@@ -280,7 +359,7 @@ async function main() {
     console.error(`${C.org}${coachMessage(`flagged ${ids.length} issue(s) in this prompt — ${ids.join(", ")}`, safer)}${C.off}\n`);
   }
   const choice = ENFORCE ? await decide(decideFlag) : "coach";
-  if (choice === "abort") { console.error(`${C.red}✗ aborted — nothing sent to claude -p${C.off}`); return exitWhenDrained(1); }
+  if (choice === "abort") { console.error(`${C.red}✗ aborted — nothing sent to claude -p${C.off}`); return exitAfterPosts(1); }
 
   let final = prompt;
   if (choice === "redact") {
@@ -302,7 +381,8 @@ async function main() {
       contentHash: contentHash(prompt), ...IDENTITY
     };
     recordIntent(intent);
-    post({ threatId: 0, category: "Intent: user override", riskLevel: "Info", stage: "egress", tool: "claude -p", ts: intent.ts, contentHash: intent.contentHash, ...IDENTITY });
+    // origin: a person answered the TTY prompt (observed), or --decide was passed (a person or a script: inferred).
+    post({ threatId: 0, category: "Intent: user override", riskLevel: "Info", stage: "egress", tool: "claude -p", ts: intent.ts, contentHash: intent.contentHash, origin: guardOrigin({ interactive: !decideFlag }), ...IDENTITY });
   }
   // Started here (same point in the sequence as before, so the F-301 ordering is unchanged: past every
   // block/exit) but NOT awaited before the forward call. The guard's escalation is advisory too, and the
@@ -314,7 +394,7 @@ async function main() {
   const code = await runClaude(final, policy, action);
   await escalation;
   // Not process.exit(): on Windows that aborts the process (0xC0000409) after fetch() — see cli/exit-drain.mjs.
-  return exitWhenDrained(code);
+  return exitAfterPosts(code);
 }
 
 main();

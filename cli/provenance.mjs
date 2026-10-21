@@ -55,6 +55,8 @@ export const REASON = Object.freeze({
   FAIL_CLOSED: "FAIL_CLOSED",                     // the surface could not decide (error, budget, scan cap) and the admin-chosen fail mode is closed: denied
   CONTAINMENT_MISSING: "CONTAINMENT_MISSING",     // containmentRequired (Windows): an agent that can run its commands in MXC is not set to (cli/containment-enforce.mjs)
   CONTAINMENT_UNAVAILABLE: "CONTAINMENT_UNAVAILABLE", // containment is required but MXC cannot be used here: build not capable, wxc-exec missing, wrap impossible
+  ASK_OUTCOME: "ASK_OUTCOME",                     // what became of a call MoorAI asked on: ran, failed, did not run, or cannot be followed (cli/ask-outcome.mjs)
+  OUTBOX_DROPPED: "OUTBOX_DROPPED",               // the alert outbox dropped entries before delivery (full, aged, rejected, oversize; cli/alert-outbox.mjs)
   // A control that never ran for this call. Never a pass.
   UNEVALUATED_NO_POLICY: "UNEVALUATED_NO_POLICY",
   UNEVALUATED_HOOK_ERROR: "UNEVALUATED_HOOK_ERROR",

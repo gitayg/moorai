@@ -19,7 +19,7 @@ export const KNOWN_BAD_PACKAGES = new Set([
   "torchtriton","fabrice","paysafe-sdk","paysafe-payments","paysafe-api","crossenv","loadsh","lodahs","mongose",
   "twilio-npm","babelcli","noblox.js-proxy","paysafe-checkout","paysafe-node","paysafe-js","rustdecimal",
   "ethers-provider2","mumpy","openvc","diango","faster_log",
-  // Knostic advisory (2026-10): PyPI MCP server that fetches a tiiny.site image and runs Python hidden in it.
+  // Public research write-up (2026-10): PyPI MCP server that fetches a tiiny.site image and runs Python hidden in it.
   "iflow-mcp_cmpxchg16-reddit-mcp"
 ].map((s) => s.toLowerCase()));
 // PyPI treats runs of "-", "_" and "." as one separator, case-insensitively (PEP 503), so every spelling

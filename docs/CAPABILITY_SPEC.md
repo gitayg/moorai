@@ -111,6 +111,14 @@ to the cloud for its own reasoning.
 - **MoorAI Guard (CLI)** — `moorai-guard` wraps `claude -p`: captures the prompt at the submit
   boundary, runs the local review, and forwards only the approved/redacted prompt to the real
   `claude -p`. The runnable proof that the harness reviews egress before the agent. (`npm run guard`.)
+  Its policy comes from the same verified loader as the hook and the MCP guard
+  (`loadVerifiedPolicy`, [`cli/hook-core.mjs`](../cli/hook-core.mjs)): fetched with `X-Install-Token`,
+  enforced only when its signature verifies (anchor, else TOFU pin), cache then last-known-good while the
+  console is down, a refused policy reported as `policy:<source>:<status>`. No verified policy: the
+  fail-closed default (`data/offline-default.js`) on a fail-closed posture or an admin binding that makes the
+  hook fail closed, else no policy. Break-glass is not honoured by the guard. It resolves each finding from
+  `threatPolicy` alone (else notify), not `tierPolicy` or the built-in default actions
+  ([`test/guard-policy.test.mjs`](../test/guard-policy.test.mjs)).
 - **MoorAI Server** — distributes policy + rule-base to clients, ingests redacted alerts, and serves
   the security-team dashboard. The client's default endpoint is `http://localhost:8787`, overridable
   via the `MoorAI_SERVER` env var or `serverUrl` in the config ([`cli/config.mjs`](../cli/config.mjs)).
@@ -268,8 +276,12 @@ word, an hour-rounded timestamp, a host version string and a tested boolean — 
 words — §B3 11h), the MCP usage counts sent to `POST /api/mcp-usage` (a day, a path, a host id, server
 labels and call counts, and from the HTTP gateway MCP tool names with their counts — Coverage & blind
 spots) and the cloud inventory records (keyed-hash ids, closed-list
-statuses, coarse attributes, risk-flag names — Coverage & blind spots). All are names, categories and
-counts, never content. The invariant is asserted empirically rather than
+statuses, coarse attributes, risk-flag names — Coverage & blind spots), the origin of an action (`origin` —
+enums, a keyed sub-agent type and seq numbers; Origin of an action), an egress destination's class
+(`destClass` — `throwaway-host` or `other`, never the host), the outbox delivery stamp (`delivery` — `via`,
+an `oid`, an attempt count, a queued time, `captureStripped` and a 32-hex `rhash`), the outbox drop report
+(`outboxDropped` — counts and seq ranges) and the posture body's `alertOutbox` (counts, seq ranges and two
+hour-rounded times; Alert outbox). All are names, categories and counts, never content. The invariant is asserted empirically rather than
 declared: `test/skill-analysis.test.mjs` and `test/destinations.test.mjs` each plant a unique canary in
 a fixture, capture every byte the hook POSTs plus the on-device ledgers, and fail if the canary, a
 matched span, a verbatim source line, a URL path, a query string or a request header appears in either.
@@ -291,7 +303,9 @@ token header `/api/alerts` uses ([`cli/action-trail.mjs`](../cli/action-trail.mj
   the configured action still let the call run, `default` when nothing fired; a tool no branch reads counts
   as `default`), `policyIat`, `agentName`, `agentVersion`, `appVersion`, `user` / `device` / `platform` /
   `tenant` / `actor` as alerts stamp them, and `contentHash` (the tenant-keyed hash of the normalized call:
-  tool name plus the whitespace-collapsed command, or the input as sorted-key JSON).
+  tool name plus the whitespace-collapsed command, or the input as sorted-key JSON), and `origin` (where the
+  call came from, enums only, kind and status re-derived from the basis table by `sanitizeOrigin`; Origin of
+  an action).
 - **Never included:** arguments, commands, paths, URLs, prompt text, file contents, the capture-tier
   extras. Denied and asked calls are not in the trail (they are alerts already), nor is PostToolUse.
 - **No per-call network.** The hook appends the record to `~/.moorai/action-trail.jsonl` (0600) under a
@@ -328,9 +342,10 @@ fetch gets no HTTP response (timeout, refused, DNS), it records the failure time
 doubling per consecutive failure to at most 5 minutes, and the policy resolves exactly as after a failed
 fetch (cache, then last-known-good, then the offline default). Inside the window one call in eight still
 fetches, chosen by the hook's own crypto RNG. A call that gets no HTTP answer of its own (it skipped the
-fetch, or its fetch failed) hands its alert POSTs to a detached worker (`moorai-hook.mjs alertpost`, a 0600
-job file in `~/.moorai`, 10 s per post) instead of waiting on them, so the decision path stays fast and every
-alert is still sent. Any HTTP response clears the file. It is not used while the pin looks erased, where
+fetch, or its fetch failed) queues its alerts in the alert outbox (`~/.moorai/alert-outbox.jsonl`, 0600)
+instead of waiting on them, and the detached `moorai-hook.mjs alertpost` worker delivers them (10 s per
+request, never reading the back-off file; Alert outbox), so the decision path stays fast and every alert is
+still sent. Any HTTP response clears the file. It is not used while the pin looks erased, where
 every call fetches. Only the hook's decision path fetches the policy and writes the file: the detached scan workers
 (`moorai-hook.mjs agentscan` / `indexscan`) re-check their gate from the verified local copies (cache, then
 last-known-good) and never fetch, so a worker that outlives a console connection can no longer record a
@@ -3013,7 +3028,101 @@ trust state and, on macOS, the app's pasteboard-access setting in the tooltip. N
 - Windows is compile-checked only; the toast needs the installer's AppUserModelID, else it falls back to
   PowerShell's.
 
+## Alert outbox (store-and-forward)
+
+[`cli/alert-outbox.mjs`](../cli/alert-outbox.mjs). An alert the hook could not deliver on its own invocation
+is kept until the console acknowledges it.
+
+- **Entries.** One JSON line per alert in `~/.moorai/alert-outbox.jsonl` (0600): `v`, `oid` (32 random hex),
+  `seq` (the alert's own, or null when it went out unnumbered), `queuedAt`, `via` (`deferred`: the call got
+  no HTTP answer from the console; `direct-failed`: its direct POST got no answer, a 5xx, a 429, a 401 or a
+  403; a 400 is never retried), `attempts`, `lastAttemptAt`, `captureStripped`, `rhash` (when stripped) and the
+  `alert` as stamped. The dedup key is `seq` when it is a positive integer, else `oid`: a key already queued
+  is not queued again. State (counts, lease, retry time, drop counters, last delivered seq) is in
+  `alert-outbox-state.json` (0600); the file is the truth, and a size that does not match the state resyncs it.
+- **Content-free on disk.** The capture-tier fields (`matchText`, `filePath`, `cmdShape`, `argText`) are
+  removed before an entry is written; `rhash` = `recordRhash` of the alert minus `seq` and `chainHead`, so the
+  chain link stays checkable.
+- **Delivery.** The detached worker (`moorai-hook.mjs alertpost`) takes a 60 s lease (single-flight, renewed
+  per batch), sends in ascending `seq` with unnumbered entries after them by `queuedAt`, at most 64 alerts and
+  256 KiB per `POST /api/alerts/batch`, each alert with `delivery: { v: 1, via: "outbox", oid, attempt,
+  queuedAt, captureStripped, rhash? }`. Per-entry results `stored` / `duplicate` remove the entry; `rejected`
+  removes it and counts it (`dropped.rejected`, with its seq range). A result counts only when its index names
+  an entry of the batch and it names that entry's `oid` or `seq`. A 404 or 405, or a 2xx whose body has no
+  `results` array, falls back to one `POST /api/alerts` per entry (2xx stored, 400 rejected, anything else
+  kept), remembered for 24 h. No answer, a 5xx, a 429, a 401, a 403, or a batch only partly acknowledged
+  keeps what is left (attempts + 1) and retries it after `backoffDelay(rejects)` (1, 2, 4, then 5 minutes).
+  A retry waits; a first attempt does not: inside the retry window, and after a failed batch in the same
+  run, the worker still sends every entry never attempted, and a hook call that queued one may claim the
+  lease for it. A whole batch taken ends the window. Delivery is at-least-once: a lost 2xx is re-sent and the
+  console de-duplicates it. The hook appends after the decision is written and spawns the worker when it
+  takes the lease; one `statSync` per exit otherwise.
+- **The back-off file has no say.** The worker never reads `hook-console-backoff.json`. Its own `retryAt` and
+  lease are honoured only when no further ahead than this module writes (5 minutes, 60 s), so a planted
+  value cannot hold the queue until it ages out (`test/alert-outbox.test.mjs`, `test/alert-outbox-hook.test.mjs`).
+- **Bounds.** 5,000 entries, 4 MiB, 16 KiB per entry, 30 days. Full: the oldest go down to 90% of each bound
+  (`dropped.full`). Older than 30 days at send time: dropped (`dropped.aged`). Over 16 KiB after stripping:
+  never queued (`dropped.oversize`). A malformed line: removed and counted in `dropped.full`. The counters are
+  cumulative; the newest 8 merged dropped seq ranges are kept. New drops go to the console once as "Alert
+  outbox: entries dropped before delivery" (Medium, `OUTBOX_DROPPED`, `contentHash alert-outbox:dropped:<n>`,
+  `outboxDropped: { full, aged, rejected, oversize, ranges }`) and to the local action audit.
+- **Heartbeat.** The posture body carries `alertOutbox: { v, state (empty | pending | retrying | full),
+  pending, bytes, oldestQueuedAt, lastDeliveredSeq, lastDeliveredAt, dropped, droppedRanges }`, times rounded
+  down to the hour.
+- **Device bundle** (`moorai-outbox export --out <file.zip> [--include-trail]`, [`cli/moorai-outbox.mjs`](../cli/moorai-outbox.mjs)).
+  A stored zip: `manifest.json` (`schema: "moorai.device-bundle/1"`, tenant, identity as on the wire, seq
+  summary with the chain head at export, the drop counters, each file's SHA-256), `manifest.mac` (base64
+  HMAC-SHA256 keyed with the install token over `moorai-device-bundle|v1|<sha256 hex of manifest.json>`),
+  `VERIFY.txt` (the OpenSSL commands), `alerts.jsonl` (each entry's alert with `delivery.via: "bundle"`) and,
+  with `--include-trail`, `actions.jsonl`. Token-authenticated, the same assurance as a live POST: the device
+  holds no signing key. Export copies; it removes nothing. Golden fixture: `test/fixtures/device-bundle/golden.json`.
+- **Trust.** Agent-writable, at the level of the alert counter (`cli/alert-seq.mjs`): an agent can delete or
+  edit a queued entry, and a deleted numbered entry shows at the console as a seq gap. `moorai-guard` posts
+  carry `X-Install-Token` and queue their failures here unnumbered.
+
+## Origin of an action
+
+[`cli/origin.mjs`](../cli/origin.mjs). `origin: { v: 1, kind, status, basis, thread, hostPrompt?,
+parentBinding?, subagentType?, exception?, intent?, resolves? }` on hook alerts (stamped in `post()` before
+the seq, so the chain covers it) and on allow-trail records. `ORIGIN_BASES` fixes the kind and status of
+each basis; the console pins the same literal and downgrades a stronger claim.
+
+- **Bases.** `bypass-mode` (agent, observed: Claude Code `permission_mode` `bypassPermissions`, `hostPrompt:
+  not-shown`), `headless` (agent, observed: server mode), `no-moorai-ask` (agent, inferred: Claude Code main
+  thread otherwise, `hostPrompt: unknown`), `host-no-thread-id` (agent, inferred: every shim host, `thread:
+  not-distinguishable`), `subagent-id` (delegated, observed: `agent_id` in the payload; `parentBinding` exact
+  when PostToolUse(Agent) bound the child, inferred when the only pending spawn of its type matched, none
+  otherwise; `subagentType` per `cli/subagent-type.mjs`), `policy-exception` (override, observed: a console
+  exception excused the finding), `local-exception` (override, inferred: who wrote the root-owned store is not
+  provable), `break-glass` and `jit-elevation` (override, observed), `guard-tty` (override, observed) and
+  `guard-flag` (override, inferred), `post-after-ask` and `failure-after-ask` (approved-ask, inferred),
+  `no-execution-before-stop`, `ask-pending`, `ask-not-trackable` and `unrecognised` (unknown, not
+  established; the agent sends neither `ask-pending` nor `unrecognised`, which the console uses). Precedence:
+  override, then delegated, then agent. `intent: "mismatch"` only when `INTENT_MISMATCH` fired.
+- **Ask outcomes** ([`cli/ask-outcome.mjs`](../cli/ask-outcome.mjs)). Claude Code only, tracked tools only
+  (WebFetch, WebSearch, Bash, PowerShell, Agent, Task, `mcp__*`): an ask is remembered in
+  `~/.moorai/ask-pending.json` (ids keyed with the device-local key, 256 at most, 24 h) with its seq range,
+  and resolved by PostToolUse (`post-after-ask`) or PostToolUseFailure (`failure-after-ask`) with the same
+  `tool_use_id`, one-shot, or by Stop / SubagentStop (`no-execution-before-stop`, at most 16 records, the rest
+  as the summary's `asksUnresolved`). Each is an Info alert with `reasonCode: ASK_OUTCOME` and
+  `origin.resolves: { seqFrom, seqTo }`. Any other ask posts one `ask-not-trackable` record at once. The
+  PostToolUse matchers are not widened (a hook process per edit). No call fingerprint is used to infer an
+  approval on a shim host.
+- **Finding alerts** are stamped before the call's verdict is known: on a call MoorAI then asked about, a
+  finding still reads its thread basis (`no-moorai-ask` on the Claude Code main thread). The ask-outcome
+  record for its seq range records the ask.
+- **destClass.** Egress alerts with `EGRESS_RULE` (over the rule's parsed host), `ENDPOINT_NOT_ALLOWED` (the
+  hosts the endpoint check found) and `SECRET_EGRESS` (hosts `extractHosts` finds in the same text) carry
+  `destClass: "throwaway-host" | "other"` from `data/throwaway-hosts.js`; with no parsed host the field is
+  left out.
+
 ## Coverage & blind spots
+
+- **Origin and ask outcomes on shim hosts and untracked tools are unknown.** Codex, Copilot, Cursor, Gemini
+  and Droid forward no agent id and no call id back, so their records read `host-no-thread-id` and every ask
+  there reads `ask-not-trackable`; on Claude Code, an ask on Write, Edit, MultiEdit, Read or NotebookEdit
+  reads `ask-not-trackable` too. Device-level alerts from the detached workers (posture inventory, index scan,
+  the outbox drop report) carry no origin.
 
 - **Strong, native, in-band** for AI work done *inside* the host.
 - **Agentic tool-calls** are covered by the shipped MCP middleware ([`mcp-proxy/`](../mcp-proxy/)),

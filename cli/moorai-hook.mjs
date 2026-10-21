@@ -76,7 +76,11 @@ import { decoyTokens, matchDecoy, DECOY_REASON } from "./decoy-keys.mjs";
 import { aiCliParentStep, aiCliParentAsk, parentPolicy, lastParentClass, AI_CLI_PARENT } from "./ai-cli-parents.mjs";
 import { stampAlertSeq } from "./alert-seq.mjs";
 import { traceIdFor, newTraceId, newSpanId } from "./trace-context.mjs";
-import { recordSpawn, bindSpawnResult, parentSpanFor } from "./trace-spawns.mjs";
+import { recordSpawn, bindSpawnResult, parentSpanFor, parentBindingOf } from "./trace-spawns.mjs";
+import { enqueueAlerts, claimOutboxFlush, flushAlertOutbox, takeDropReport, importLegacyJobs, outboxPosture, OUTBOX_FILE } from "./alert-outbox.mjs";
+import { originFor, askOutcomeOrigin } from "./origin.mjs";
+import { askTrackable, recordAsk, takeAsk, takeUnresolvedAsks } from "./ask-outcome.mjs";
+import { throwawayHost } from "../data/throwaway-hosts.js";
 import { leafOf, appendLeaf, sessionHead, contextTreeMode, claimUpload, flushContextTree } from "./context-tree.mjs";
 import { bindingRefusedAlert } from "./config.mjs";
 import { actionTrailMode, buildActionRecord, enqueueActionRecord, claimFlush, flushActionTrail, callFingerprintText, readTrailState } from "./action-trail.mjs";
@@ -764,7 +768,39 @@ function beginRow(input, tool) {
 }
 // Alerts this invocation handed to the console so far (post()); settleRow records them on the row as
 // al (all) / ad (of those, queued for the detached worker), and the Stop summary adds them up per session.
-const ALERT_COUNT = { emitted: 0, deferred: 0 };
+const ALERT_COUNT = { emitted: 0, deferred: 0, seqFrom: 0, seqTo: 0 };
+// ---- origin (cli/origin.mjs): where the action an alert is about came from ----
+// Set once in main() from the hook payload; null in the detached workers, whose device-level alerts belong
+// to no invocation and carry no origin. Per-alert facts (an exception that excused the finding, break-glass,
+// a JIT elevation, an intent mismatch) are added in post().
+let ORIGIN_CTX = null;
+function originCtx(input) {
+  const s = (v) => (typeof v === "string" ? v : "");
+  return { host: beatHost(), shim: process.env.MOORAI_HOOK_HOST === "shim", agentId: s(input.agent_id), agentType: s(input.agent_type), permissionMode: s(input.permission_mode), serverMode: !!SERVER.active, sessionId: s(input.session_id) };
+}
+// The sub-agent facts, read once per invocation and only on a sub-agent's records: how its parent span is
+// bound (cli/trace-spawns.mjs) and its type (a built-in name, or the keyed hash of a user-defined one).
+let ORIGIN_SUB = null;
+function originSub() {
+  if (ORIGIN_SUB) return ORIGIN_SUB;
+  const c = ORIGIN_CTX || {};
+  if (c.shim || !c.agentId) return (ORIGIN_SUB = {});
+  try { traceCtx(); } catch { /* the binding reads "none" */ }
+  return (ORIGIN_SUB = { parentBinding: parentBindingOf({ sessionId: c.sessionId, agentId: c.agentId }), subagentType: subagentTypeField(c.agentType, contentHash) });
+}
+function originOf(alert, facts = {}) {
+  const rc = alert.reasonCode;
+  return originFor({ ...ORIGIN_CTX, ...originSub(), exception: facts.exception === "console" || facts.exception === "local" ? facts.exception : null, breakGlass: rc === REASON.BREAK_GLASS, jitElevation: rc === REASON.JIT_ELEVATION, intentMismatch: rc === REASON.INTENT_MISMATCH || VERDICT.reason === REASON.INTENT_MISMATCH });
+}
+// destClass on an egress alert (a closed enum, never the host): "throwaway-host" when a host the check
+// parsed is on data/throwaway-hosts.js, "other" when it parsed hosts and none is. No parsed host: omitted.
+function destClassOf(hosts) {
+  const h = (Array.isArray(hosts) ? hosts : [hosts]).filter((x) => typeof x === "string" && x);
+  if (!h.length) return undefined;
+  return h.some((x) => throwawayHost(x)) ? "throwaway-host" : "other";
+}
+// Spread form: no key at all when there is no class (an undefined value would change the alert's rhash).
+function destField(hosts) { const d = destClassOf(hosts); return d ? { destClass: d } : {}; }
 function settleRow(fields) {
   if (!ROW || ROW.done) return;
   const r = { ...ROW, ...fields, ...(ALERT_COUNT.emitted ? { al: ALERT_COUNT.emitted } : {}), ...(ALERT_COUNT.deferred ? { ad: ALERT_COUNT.deferred } : {}) };
@@ -772,7 +808,7 @@ function settleRow(fields) {
   delete r.done;
   recordRow(r);
 }
-function post(alert) {
+function post(alert, facts) {
   if (WORKLOAD && alert && !alert.workload) alert.workload = WORKLOAD;
   // The agent the verdict is about, in the console's agent_name vocabulary: claude-code, or the adapter that
   // ran the hook (cli/moorai-agent-hook.mjs sets MOORAI_HOOK_AGENT). Omitted for a shim caller it cannot name.
@@ -792,12 +828,16 @@ function post(alert) {
   // The context tree's root and size at decision time (cli/context-tree.mjs), also before the seq stamp.
   if (CTX && alert && alert.contextRoot === undefined) { const cf = ctxFields(); if (cf) Object.assign(alert, cf); }
   stampAlert(alert, { ...PROV, coach: COACH, event: EVENT });
+  // origin and destClass, before the seq stamp so the alert chain covers them.
+  if (ORIGIN_CTX && alert && alert.origin === undefined) { try { alert.origin = originOf(alert, facts); } catch { /* origin is evidence, never delivery */ } }
+  if (alert && alert.destClass === undefined && alert.reasonCode === REASON.EGRESS_RULE && typeof alert.egressHost === "string") { const dc = destClassOf(alert.egressHost); if (dc) alert.destClass = dc; }
   // seq + chainHead (cli/alert-seq.mjs), and this invocation's count of alerts handed to the console
   // (posted now or queued for the worker), which the ledger row carries into the session summary.
   if (isEnrolled(CONFIG)) {
     stampAlertSeq(alert, { tenant: CONFIG.tenant });
     ALERT_COUNT.emitted++;
     if (DEFER_ALERTS) ALERT_COUNT.deferred++;
+    if (Number.isSafeInteger(alert.seq) && alert.seq > 0) { if (!ALERT_COUNT.seqFrom || alert.seq < ALERT_COUNT.seqFrom) ALERT_COUNT.seqFrom = alert.seq; if (alert.seq > ALERT_COUNT.seqTo) ALERT_COUNT.seqTo = alert.seq; }
   } else if (CONFIG.managed === true) {
     // A MANAGED device with no install token (the user's file lost it): the console would reject the post,
     // so nothing is sent, but the alert still takes its sequence number. When the token is back, the
@@ -808,9 +848,11 @@ function post(alert) {
   }
   // An unenrolled device has no console, so nothing is posted to one — not even to a server that
   // answers at the configured URL. The OTLP mirror below is the user's own collector, not a console.
-  // DEFER_ALERTS: no HTTP answer from the console on this invocation, so the post goes to the detached
-  // worker at exit (handOffAlerts) rather than burning its 1.5s timeout on the decision path.
-  const p = !isEnrolled(CONFIG) ? Promise.resolve() : DEFER_ALERTS ? (DEFERRED.push(alert), Promise.resolve()) : fetch(`${CONFIG.serverUrl}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(alert), signal: AbortSignal.timeout(1500) }).catch(() => {});
+  // DEFER_ALERTS: no HTTP answer from the console on this invocation, so the post goes to the alert outbox
+  // at exit (handOffAlerts) rather than burning its 1.5s timeout on the decision path. A direct post that
+  // gets no answer, a 5xx, a 429, a 401 or a 403 goes there too (FAILED); a 400 is deterministic and is not
+  // retried.
+  const p = !isEnrolled(CONFIG) ? Promise.resolve() : DEFER_ALERTS ? (DEFERRED.push(alert), Promise.resolve()) : fetch(`${CONFIG.serverUrl}/api/alerts`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(alert), signal: AbortSignal.timeout(1500) }).then((r) => { if (!r.ok && r.status !== 400) FAILED.push(alert); return r; }, () => { FAILED.push(alert); });
   PENDING.push(p);
   // Content-free OTLP mirror of the same governance event — no-op unless an OTLP endpoint is
   // configured. Same chokepoint as the alert so it can't be forgotten; same bounded, drained,
@@ -823,9 +865,13 @@ function post(alert) {
 // get here, and nothing enqueues during the drain — the loop is cheap insurance, not a workaround.
 async function flushAlerts() {
   while (PENDING.length) await Promise.allSettled(PENDING.splice(0));
-  if (DEFERRED.length) handOffAlerts(DEFERRED.splice(0));
+  if (DEFERRED.length) handOffAlerts(DEFERRED.splice(0), "deferred");
+  if (FAILED.length) handOffAlerts(FAILED.splice(0), "direct-failed");
   if (UNDELIVERED.length) noteUndelivered(UNDELIVERED.splice(0));
+  maybeFlushOutbox();
 }
+// Direct posts the console did not take (see post()), queued at exit.
+const FAILED = [];
 // Alert sequence numbers taken by alerts a managed, token-less device could not post (see post()).
 const UNDELIVERED = [];
 function noteUndelivered(seqs) {
@@ -836,33 +882,46 @@ function noteUndelivered(seqs) {
 // MoorAI's own version, read once from the package.json next to this file ("" if unreadable).
 const APP_VERSION = (() => { try { const v = JSON.parse(readFileSync(join(dirname(SELF), "..", "package.json"), "utf8")).version; return typeof v === "string" && /^\d{1,4}\.\d{1,4}\.\d{1,6}(?:[-+][0-9A-Za-z.-]{1,24})?$/.test(v) ? v : ""; } catch { return ""; } })();
 
-// The deferred alerts go to `moorai-hook.mjs alertpost <job>`, a detached worker, through a 0600 job file
-// in the state directory (a pipe could truncate a large batch as this process exits). The worker reads the
-// console URL and install token from the config itself, so neither is written to the job. Same hand-off as
-// maybeEscalate; a failed write or spawn leaves the findings in the local audit log, as before.
-const ALERT_JOB_PREFIX = "alertpost-";
-const ALERT_WORKER_TIMEOUT_MS = 10000;
-function handOffAlerts(alerts) {
+// Undelivered alerts go to the alert outbox (cli/alert-outbox.mjs): bounded, content-free on disk, kept until
+// the console acknowledges each one. The append runs at exit, after the decision is on stdout. The
+// detached `moorai-hook.mjs alertpost` worker sends the queue; this process never waits on it. The worker
+// reads the console URL and install token from the config itself.
+function handOffAlerts(alerts, via) {
+  try { enqueueAlerts(alerts, { via }); } catch { /* the local audit log already holds every finding */ }
+}
+// One statSync when the outbox is empty. Otherwise the call that takes the outbox's lease (none in flight,
+// the retry time passed) spawns the worker.
+function maybeFlushOutbox() {
   try {
-    mkdirSync(STATE_DIR, { recursive: true });
-    sweepEscalationJobs(ALERT_JOB_PREFIX);
-    const jobPath = join(STATE_DIR, `${ALERT_JOB_PREFIX}${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.json`);
-    writeFileSync(jobPath, JSON.stringify({ alerts }), { mode: 0o600 });
-    spawn(process.execPath, [...process.execArgv, SELF, "alertpost", jobPath], { detached: true, stdio: "ignore", env: workerEnv() }).unref();
-  } catch { /* the local audit log already holds every finding */ }
+    if (!isEnrolled(CONFIG)) return;
+    let size = 0;
+    try { size = statSync(join(STATE_DIR, OUTBOX_FILE)).size; } catch { return; }
+    if (size > 0 && claimOutboxFlush()) spawn(process.execPath, [...process.execArgv, SELF, "alertpost"], { detached: true, stdio: "ignore", env: workerEnv() }).unref();
+  } catch { /* the lease runs out and a later call retries */ }
 }
 
-// The detached worker: posts each alert once, with a longer budget than the decision path can afford.
-async function runAlertPostWorker(jobPath) {
+// The detached worker: job files a pre-1.27.0 hook left are moved into the outbox, then the outbox is sent.
+// New drops since the last report go to the console as one alert (through the outbox, like any other) and to
+// the local action audit. Never reads the hook's console back-off file. `alertpost <job>` from an older hook
+// still works: its job file is one of the legacy files imported here.
+const OUTBOX_DROPPED_CATEGORY = "Alert outbox: entries dropped before delivery";
+async function runAlertPostWorker() {
   try {
-    const raw = readFileSync(jobPath, "utf8");
-    try { unlinkSync(jobPath); } catch { /* already gone */ }
-    const { alerts } = JSON.parse(raw);
-    if (Array.isArray(alerts) && isEnrolled(CONFIG)) {
-      const headers = { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) };
-      await Promise.allSettled(alerts.map((a) => fetch(`${CONFIG.serverUrl}/api/alerts`, { method: "POST", headers, body: JSON.stringify(a), signal: AbortSignal.timeout(ALERT_WORKER_TIMEOUT_MS) })));
+    if (isEnrolled(CONFIG)) {
+      importLegacyJobs();
+      await flushAlertOutbox({ config: CONFIG });
+      const d = takeDropReport();
+      if (d) {
+        const total = d.full + d.aged + d.rejected + d.oversize;
+        const body = { threatId: 0, category: OUTBOX_DROPPED_CATEGORY, riskLevel: "Medium", stage: "policy", tool: "hook:alert-outbox", ts: new Date().toISOString(), contentHash: `alert-outbox:dropped:${total}`, reasonCode: REASON.OUTBOX_DROPPED, outboxDropped: { full: d.full, aged: d.aged, rejected: d.rejected, oversize: d.oversize, ranges: d.ranges }, ...IDENTITY };
+        DEFER_ALERTS = true;
+        post(body);
+        try { recordAction(body); } catch { /* local evidence only */ }
+        handOffAlerts(DEFERRED.splice(0), "deferred");
+        await flushAlertOutbox({ config: CONFIG });
+      }
     }
-  } catch { /* best-effort, like every alert post */ }
+  } catch { /* best-effort: the outbox keeps what was not sent */ }
   return exitWhenDrained(0);
 }
 // ---- the allow trail (cli/action-trail.mjs) ----
@@ -875,10 +934,11 @@ function recordAllowed(tg, rewrite) {
     if (TRAIL !== "allowed" || EVENT !== "PreToolUse" || COACH || !(isEnrolled(CONFIG) || CONFIG.managed === true)) return false;
     const tool = CALL.tool;
     const excused = new Set(tg ? tg.excused : []);
-    const exception = CALL.exc.matched.some((e) => (e.threat ? CALL.found.has(e.threat) : excused.has(e.rule)));
+    const used = CALL.exc.matched.find((e) => (e.threat ? CALL.found.has(e.threat) : excused.has(e.rule)));
+    const exception = !!used;
     const basis = exception ? "exception" : VERDICT.findings > 0 || rewrite || (tg && tg.gate && tg.gate.hits.length) ? "rule" : "default";
     const agentName = beatHost();
-    const rec = buildActionRecord({ ts: new Date().toISOString(), session: SESSION_TAG, tool, toolTags: tg && tg.tags ? tg.tags.tags : [], mcpServer: tool.startsWith("mcp__") ? serverOf(tool) : "", basis, policyIat: PROV.policyIat, agentName, agentVersion: agentName ? agentVersionFromEnv(agentName) : "", appVersion: APP_VERSION, ...IDENTITY, contentHash: contentHash(callFingerprintText(tool, CALL.ti)), ...traceFields(), ...(ctxFields() || {}) });
+    const rec = buildActionRecord({ ts: new Date().toISOString(), session: SESSION_TAG, tool, toolTags: tg && tg.tags ? tg.tags.tags : [], mcpServer: tool.startsWith("mcp__") ? serverOf(tool) : "", basis, policyIat: PROV.policyIat, agentName, agentVersion: agentName ? agentVersionFromEnv(agentName) : "", appVersion: APP_VERSION, ...IDENTITY, contentHash: contentHash(callFingerprintText(tool, CALL.ti)), ...traceFields(), ...(ctxFields() || {}), ...(ORIGIN_CTX ? { origin: originFor({ ...ORIGIN_CTX, ...originSub(), exception: used ? used.source : null }) } : {}) });
     const r = enqueueActionRecord(rec);
     if (r.trimmed) { try { recordAction({ ts: rec.ts, threatId: 0, category: "Allow trail queue full: oldest records dropped", riskLevel: "Medium", stage: "policy", tool: "hook:action-trail", contentHash: "action-trail:dropped", actionTrailDropped: r.dropped, dropped: r.trimmed, ...IDENTITY }); } catch { /* local evidence only */ } }
     if (r.flushDue) spawnTrailFlush();
@@ -895,12 +955,63 @@ async function runActionTrailWorker(only) {
   try { await flushContextTree({ config: CONFIG }); } catch { /* best-effort */ }
   return exitWhenDrained(0);
 }
+// ---- ask outcomes (cli/ask-outcome.mjs) ----
+// ASK_IN: this invocation's session, call and agent ids (raw, in memory only; keyed before anything is
+// written). An ask MoorAI answered on a tool Claude Code reports back on (PostToolUse / PostToolUseFailure)
+// is remembered with its seq range and resolved by that event or by Stop. Any other ask (a tool with no
+// PostToolUse matcher, a shim host, no tool_use_id) cannot be followed: one ask-outcome record says so at
+// once. All of it runs after the decision is on stdout.
+let ASK_IN = null;
+let ASK_RESOLVED = false;
+const ASK_RAN = "Ask outcome: the call started after MoorAI asked";
+const ASK_NONE = "Ask outcome: no execution before the turn ended";
+const ASK_UNTRACKED = "Ask outcome: not trackable on this host or tool";
+const askThread = () => (ORIGIN_CTX && ORIGIN_CTX.shim ? "not-distinguishable" : ORIGIN_CTX && ORIGIN_CTX.agentId ? "subagent" : "main");
+const rangeOf = (from, to) => (Number.isSafeInteger(from) && from > 0 && Number.isSafeInteger(to) && to >= from ? { seqFrom: from, seqTo: to } : undefined);
+function postAskOutcome(category, contentHashValue, event, resolves, extra = {}) {
+  const origin = askOutcomeOrigin({ event, thread: askThread(), resolves, ...originSub() });
+  post({ threatId: 0, category, riskLevel: "Info", stage: "lifecycle", tool: `hook:${EVENT}`, ts: new Date().toISOString(), contentHash: contentHashValue, reasonCode: REASON.ASK_OUTCOME, enforcement: ENFORCEMENT.AS_CONFIGURED, origin, ...extra, ...IDENTITY });
+}
+function askStep(decision) {
+  try {
+    if (decision !== "ask" || COACH || EVENT !== "PreToolUse" || !isEnrolled(CONFIG) || !ASK_IN) return;
+    const range = rangeOf(ALERT_COUNT.seqFrom, ALERT_COUNT.seqTo);
+    const host = ORIGIN_CTX || {};
+    if (!host.shim && host.host === "claude-code" && askTrackable(CUR_TOOL) && ASK_IN.sessionId && ASK_IN.toolUseId
+      && recordAsk({ sessionId: ASK_IN.sessionId, agentId: ASK_IN.agentId, toolUseId: ASK_IN.toolUseId, seqFrom: range && range.seqFrom, seqTo: range && range.seqTo })) return;
+    postAskOutcome(ASK_UNTRACKED, "ask-outcome:untracked", "untracked", range);
+  } catch { /* evidence, never a decision */ }
+}
+function resolveAsk() {
+  try {
+    if (ASK_RESOLVED || !ASK_IN || !isEnrolled(CONFIG) || (ORIGIN_CTX && ORIGIN_CTX.shim)) return;
+    ASK_RESOLVED = true;
+    const hit = takeAsk({ sessionId: ASK_IN.sessionId, toolUseId: ASK_IN.toolUseId });
+    if (!hit) return;
+    // A PostToolUse / PostToolUseFailure that left before the policy load has not heard from the console on
+    // this invocation: the record goes to the outbox rather than a 1.5 s direct post.
+    const prev = DEFER_ALERTS;
+    if (PROV.policyId === "not-loaded") DEFER_ALERTS = true;
+    try { postAskOutcome(ASK_RAN, "ask-outcome:ran", EVENT, rangeOf(hit.seqFrom, hit.seqTo)); } finally { DEFER_ALERTS = prev; }
+  } catch { /* evidence, never a decision */ }
+}
+// Stop / SubagentStop: asks of this session (or sub-agent) that neither event resolved. At most
+// MAX_UNRESOLVED_PER_STOP records; → how many more there were.
+function resolveStopAsks(sub) {
+  try {
+    if (!ASK_IN || !isEnrolled(CONFIG) || (ORIGIN_CTX && ORIGIN_CTX.shim)) return 0;
+    const u = takeUnresolvedAsks({ sessionId: ASK_IN.sessionId, agentId: sub ? ASK_IN.agentId : "" });
+    u.asks.forEach((a, i) => postAskOutcome(ASK_NONE, "ask-outcome:none", EVENT, rangeOf(a.seqFrom, a.seqTo), sub && u.more && i === u.asks.length - 1 ? { asksUnresolved: u.more } : {}));
+    return u.more;
+  } catch { return 0; }
+}
 // Every exit from the hook goes through here. The decision has already been written to stdout by the
 // time this runs (see emit) — telemetry never gates the enforcement output.
 async function exitHook() {
   if (FAIL_EXIT) return new Promise(() => {});
   DECIDED = true;
   settleRow(unevaluated(VERDICT.uneval || REASON.UNEVALUATED_EARLY_EXIT));
+  if (EVENT === "PostToolUse" || EVENT === "PostToolUseFailure") resolveAsk();
   await flushAlerts();
   // Not process.exit(): on Windows that aborts the process (0xC0000409) after fetch() — see cli/exit-drain.mjs.
   return exitWhenDrained(0);
@@ -912,6 +1023,11 @@ let LEAK_COACH = null; // set by report() when an unenrolled device sees an inst
 // reaches the PreToolUse decision path, so emit() applies the tag gate and the exception hint only there.
 const CALL = { active: false, tool: "", ti: {}, cwd: "", found: new Set(), fileFound: new Set(), exc: { threats: new Set(), rules: new Set(), matched: [] }, localAllowed: false, system: null };
 const EXCEPTIONS_SEEN_FILE = "exceptions-seen.json";
+// The store of the live exception that excused this threat on this call ("console" | "local"), or null.
+function excusedBy(threatId) {
+  const e = CALL.exc.matched.find((x) => x.threat && x.threat === threatId);
+  return e ? e.source : null;
+}
 function report(findings, stage, tool, blocked, tier, extras, agency) {
   if (COACH && !LEAK_COACH && findings.some((f) => String(f.detectorId || "").startsWith("instr-leak-"))) LEAK_COACH = { reason: "flagged #52 protected instructions (CLAUDE.md / AGENTS.md / rules) leaving in output", alts: saferAlternativesFor([52]) };
   if (COACH) blocked = false; // coached, not blocked: the local ledger records what actually happened
@@ -929,7 +1045,7 @@ function report(findings, stage, tool, blocked, tier, extras, agency) {
     // server independently re-strips above the device's stored tier, so this is one of two backstops.
     const alert = applyCaptureTier(base, { ...extras, matchText: f.match }, tier || "content-free");
     if (agency) Object.assign(alert, agency); // #20 — content-free signed approval token (metadata)
-    post(alert);            // → server → SIEM (address configured server-side, #1)
+    post(alert, CALL.active ? { exception: excusedBy(f.threatId) } : undefined); // → server → SIEM (address configured server-side, #1)
     recordExposure(alert);  // → local content-free exposure ledger; ignores non-secret categories
     recordAction(alert);    // → local searchable action-audit log (#5), already tier-gated
     // Coach-as-literacy: a finding that reaches the developer (blocked, or surfaced as "ask" with the
@@ -1309,7 +1425,10 @@ async function runPostureBeatWorker(host, mode, cwd) {
       const signed = !!(v && v.policy && v.trust && Array.isArray(v.trust.keys) && v.trust.keys.length);
       inventory = await inventoryPosture({ policy: (v && v.policy) || null, decoys: signed, commit: false });
     } catch { inventory = null; }
-    const body = { user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture, ...(failMode ? { failMode } : {}), ...(containment || {}), ...(mcpServerSandbox ? { mcpServerSandbox } : {}), ...(aiCliParents ? { aiCliParents } : {}), ...(inventory ? inventory.fields : {}) };
+    // The alert outbox (cli/alert-outbox.mjs): queued, dropped and last delivered, content-free counts.
+    let alertOutbox = null;
+    try { alertOutbox = outboxPosture(); } catch { alertOutbox = null; }
+    const body = { user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture, ...(failMode ? { failMode } : {}), ...(containment || {}), ...(mcpServerSandbox ? { mcpServerSandbox } : {}), ...(aiCliParents ? { aiCliParents } : {}), ...(inventory ? inventory.fields : {}), ...(alertOutbox ? { alertOutbox } : {}) };
     const r = await fetch(`${CONFIG.serverUrl}/api/agent-posture`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) }).catch(() => null);
     // On failure the pending mark stays, so the next try is BEAT_RETRY_MS away rather than one per tool call.
     if (r && r.ok) writeBeat(host, { day, bypass: (st.day === day && !!st.bypass) || mode === "bypassPermissions" });
@@ -1718,7 +1837,7 @@ function checkSecretEgress(policy, text, tool, stage) {
     if (!hits.length) return false;
     const act = threatActionFor(policy, 65);
     const block = act === "block" || act === "kill";
-    post({ threatId: 65, category: "Local secret value egress", riskLevel: block ? "Blocked" : "Critical", stage, tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "egress:" + hits.join("."), ...IDENTITY });
+    post({ threatId: 65, category: "Local secret value egress", riskLevel: block ? "Blocked" : "Critical", stage, tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "egress:" + hits.join("."), ...destField(extractHosts(text)), ...IDENTITY });
     return block;
   } catch { return false; }
 }
@@ -1860,6 +1979,7 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
     // No permissionDecision: a wrap, like a mask, must not auto-approve the call (see MASK above).
     process.stdout.write(JSON.stringify({ ...(mnote ? { systemMessage: mnote } : {}), hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: updated, additionalContext: note } }));
   }
+  askStep(decision);
   return exitHook();
 }
 
@@ -1942,7 +2062,7 @@ function recordExceptionUse(tg) {
     for (const e of CALL.exc.matched) {
       if (e.threat ? !CALL.found.has(e.threat) : !excused.has(e.rule)) continue;
       const body = { threatId: e.threat || 0, category: "Exception applied", riskLevel: "Medium", stage: "policy", tool: `hook:${CALL.tool}`, ts, contentHash: `exception:${e.id}`, exception: exceptionMeta(e), ...IDENTITY };
-      post(body);
+      post(body, { exception: e.source });
       try { recordAction(body); } catch { /* ledger is best-effort */ }
     }
   } catch { /* best-effort */ }
@@ -2512,10 +2632,13 @@ async function handleStop(input) {
   if (fresh) {
     post({ threatId: 0, category: CLAIM_CATEGORY, riskLevel: "Medium", stage: "lifecycle", tool: `hook:${EVENT}`, ts, contentHash: `claim:${cc.claim}:${cc.lastOutcome}`, claimCheck: { claim: cc.claim, lastOutcome: cc.lastOutcome, calls: cc.calls, failed: cc.failed, denied: cc.denied, interrupted: cc.interrupted, unresolved: cc.unresolved, scope: sub ? "subagent" : "turn" }, reasonCode: REASON.CLAIM_MISMATCH, enforcement: ENFORCEMENT.AS_CONFIGURED, ...IDENTITY });
   }
+  // Asks MoorAI answered in this turn whose call never started (neither PostToolUse nor PostToolUseFailure came).
+  const asksUnresolved = resolveStopAsks(sub);
   let sum = null;
   if (!sub) {
     const prior = rows.filter((r) => r.ev === "stop" && r.claimFlag).length;
     sum = sessionSummary(rows, prior + (fresh ? 1 : 0));
+    if (asksUnresolved) sum.asksUnresolved = asksUnresolved;
     // This invocation's own alerts so far (a claim-check alert above) are not in the ledger yet.
     sum.alertsEmitted += ALERT_COUNT.emitted;
     sum.alertsDeferred += ALERT_COUNT.deferred;
@@ -2640,7 +2763,7 @@ async function main() {
   // The detached static model scanner for downloads the hook queued (see maybeModelScan). No stdin, no decision.
   if (cmd === "modelscan") return runModelScanWorker();
   // The detached alert sender (see handOffAlerts). No stdin, no decision.
-  if (cmd === "alertpost") return runAlertPostWorker(process.argv[3]);
+  if (cmd === "alertpost") return runAlertPostWorker();
   // The detached allow-trail flusher (cli/action-trail.mjs). No stdin, no decision, no policy fetch.
   if (cmd === "actiontrail") return runActionTrailWorker(process.argv[3]);
 
@@ -2677,6 +2800,8 @@ async function main() {
   PROV = { policyId: "not-loaded", policySource: "", offline: false };
   beginRow(input, tool);
   TRACE_IN = input;
+  ORIGIN_CTX = originCtx(input);
+  ASK_IN = { sessionId: typeof input.session_id === "string" ? input.session_id : "", toolUseId: typeof input.tool_use_id === "string" ? input.tool_use_id : "", agentId: typeof input.agent_id === "string" ? input.agent_id : "" };
   // PostToolUse(Agent): tool_response.agentId names the sub-agent this call spawned, which binds that
   // child's records to the call's span exactly (a background spawn reports it at launch).
   if (EVENT === "PostToolUse" && (tool === "Agent" || tool === "Task") && input.tool_response && typeof input.tool_response === "object") bindSpawnResult({ sessionId: input.session_id, toolUseId: input.tool_use_id, agentId: input.tool_response.agentId });
@@ -3012,7 +3137,7 @@ async function main() {
     if (dec !== "allow") why(detectorReason(finds));
     // T1-1 — model-endpoint allow-list: a base-URL override / direct call to a non-approved LLM host.
     const epD = decideEndpoints(policy, ti.command);
-    if (epD.decision === "deny") { why(REASON.ENDPOINT_NOT_ALLOWED); dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); }
+    if (epD.decision === "deny") { why(REASON.ENDPOINT_NOT_ALLOWED); dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...destField(epD.hosts), ...IDENTITY }); }
     report(finds, "file", `hook:${tool}`, dec === "deny", policy.captureTier, { toolName: tool, cmdShape: commandShape(ti.command) });
     logBehavior(tool, ti.command || "bash", btext, { decision: dec, findings: finds }, "file", clipboardSignals(ti.command));
     if (killIds.length) killSession(tool, killIds, "file");
@@ -3086,7 +3211,7 @@ async function main() {
     // T1-1 — a rogue LLM base-URL being written INTO a config/source file is the same threat as one
     // typed at a shell; inert unless the org set endpointAllow, so it costs nothing by default.
     const epD = decideEndpoints(policy, text);
-    if (epD.decision === "deny") { why(REASON.ENDPOINT_NOT_ALLOWED); dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); }
+    if (epD.decision === "deny") { why(REASON.ENDPOINT_NOT_ALLOWED); dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...destField(epD.hosts), ...IDENTITY }); }
     // Tier-2 / #65 — a real local credential being written verbatim into a new file. This is the FIRST
     // half of stage-then-exfiltrate (corpus v4-chain-005): the value lands on disk under an innocuous
     // name and the second step ships the file, so a hook that only watches the shipping step sees a
@@ -3135,7 +3260,7 @@ async function main() {
     logBehavior("WebFetch", url || "WebFetch", `${url}\n${prompt}`, d, "egress");
     if (d.kill) killSession("WebFetch", d.killIds, "egress");
     const epD = decideEndpoints(policy, url);
-    if (epD.decision === "deny") { why(REASON.ENDPOINT_NOT_ALLOWED); dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: "hook:WebFetch", ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); }
+    if (epD.decision === "deny") { why(REASON.ENDPOINT_NOT_ALLOWED); dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: "hook:WebFetch", ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...destField(epD.hosts), ...IDENTITY }); }
     if (checkSecretEgress(policy, `${url}\n${prompt}`, "WebFetch", "egress") && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); why(REASON.SECRET_EGRESS); }
     if (reportEnvelope(policy, "WebFetch", { tool: "WebFetch" }, "egress") && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; alts = saferAlternativesFor([64]); why(REASON.ENVELOPE); }
     let fmask;
@@ -3179,7 +3304,7 @@ async function main() {
     if (reportEnvelope(policy, tool, { tool, mcpServer: server }, "egress")) { why(REASON.ENVELOPE); audit("deny"); return emit("deny", `${tool} — out-of-envelope MCP server`, saferAlternativesFor([64])); }
     // T1-1 — model-endpoint allow-list on the serialized args (a tool arg pointing at a rogue LLM host).
     const epD = decideEndpoints(policy, args);
-    if (epD.decision === "deny") { why(REASON.ENDPOINT_NOT_ALLOWED); post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...IDENTITY }); audit("deny"); return emit("deny", epD.reason, saferAlternativesFor([63])); }
+    if (epD.decision === "deny") { why(REASON.ENDPOINT_NOT_ALLOWED); post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...destField(epD.hosts), ...IDENTITY }); audit("deny"); return emit("deny", epD.reason, saferAlternativesFor([63])); }
     // Tier-2 / #65 — a local secret value shipped as an MCP tool argument.
     if (checkSecretEgress(policy, args, tool, "egress")) { why(REASON.SECRET_EGRESS); audit("deny"); return emit("deny", `${tool} — local secret egress`, saferAlternativesFor([65])); }
     // Files the arguments NAME. An upload / attach / send / filesystem tool that takes a path reads the

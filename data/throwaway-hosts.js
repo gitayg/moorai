@@ -1,7 +1,7 @@
 // Free throwaway web hosts for pkg-throwaway-host (cli/mcp-package/heuristics.mjs). The criterion for a
 // domain here: anyone can publish content, a tunnel or a request-capture endpoint under it in minutes,
 // for free and with no identity check, and the URL is disposable. That makes it a cheap, deniable place
-// for a second-stage payload or a drop box (the Knostic advisory's malicious MCP server fetched its
+// for a second-stage payload or a drop box (a PyPI MCP server described in a public research write-up, October 2026, fetched its
 // payload image from a tiiny.site subdomain). A published package rarely needs to hard-code one, so a
 // live fetch from one is a WARNING (notify), never a verdict: a demo or a test helper can do it too.
 //

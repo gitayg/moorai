@@ -15,7 +15,8 @@
 // contextSize, its leaf count; cli/context-tree.mjs) and, on a sub-agent's records, contextSession (the keyed
 // id of the sub-agent's own tree, which contextRoot belongs to; `session` names the parent session), and on a
 // model proxy's records the provider (an enum)
-// and the model string (at most 64 of [A-Za-z0-9._:/@-]). Never an argument, a path, a URL, a command, prompt
+// and the model string (at most 64 of [A-Za-z0-9._:/@-]), and origin (where the call came from, enums only,
+// cli/origin.mjs). Never an argument, a path, a URL, a command, prompt
 // text or file contents: the hash is one-way and keyed per tenant (cli/content-hash.mjs).
 //
 // THE MODE COMES ONLY FROM THE SIGNED POLICY (actionTrailMode): a policy body with no signature envelope
@@ -38,6 +39,7 @@ import { normalizeCommand } from "./claim-check.mjs";
 import { TAGS } from "../data/tool-tags.js";
 import { validTraceId, validSpanId } from "./trace-context.mjs";
 import { NO_KEY } from "./content-hash.mjs";
+import { sanitizeOrigin } from "./origin.mjs";
 
 export const QUEUE_FILE = "action-trail.jsonl";
 export const STATE_FILE = "action-trail-state.json";
@@ -62,7 +64,7 @@ export const TOOL_MAX = 256;
 const LOCK_WAIT_MS = 200;
 const LOCK_STALE_MS = 5000;
 
-export const RECORD_FIELDS = Object.freeze(["ts", "session", "seq", "event", "tool", "toolTags", "mcpServer", "decision", "basis", "policyIat", "agentName", "agentVersion", "appVersion", "user", "device", "platform", "tenant", "actor", "contentHash", "traceId", "spanId", "parentSpanId", "contextRoot", "contextSize", "contextSession", "provider", "model"]);
+export const RECORD_FIELDS = Object.freeze(["ts", "session", "seq", "event", "tool", "toolTags", "mcpServer", "decision", "basis", "policyIat", "agentName", "agentVersion", "appVersion", "user", "device", "platform", "tenant", "actor", "contentHash", "traceId", "spanId", "parentSpanId", "contextRoot", "contextSize", "contextSession", "provider", "model", "origin"]);
 export const BASES = Object.freeze(["rule", "default", "exception"]);
 // A model-proxy record's provider, and the model string's shape (else the field is left out).
 export const PROVIDERS = Object.freeze(["anthropic", "openai", "google", "ollama", "other"]);
@@ -142,6 +144,9 @@ export function buildActionRecord(f = {}) {
   // Model proxy records: provider (an enum) and the request's model string (MODEL_RE), else left out.
   if (PROVIDERS.includes(f.provider)) r.provider = f.provider;
   if (typeof f.model === "string" && MODEL_RE.test(f.model)) r.model = f.model;
+  // Where the call came from (cli/origin.mjs): enums only, kind and status re-derived from the basis table.
+  const origin = sanitizeOrigin(f.origin);
+  if (origin) r.origin = origin;
   return r;
 }
 

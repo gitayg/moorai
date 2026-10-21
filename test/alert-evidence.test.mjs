@@ -2,8 +2,8 @@
 // alertsEmitted / alertsDeferred, pinned to the contract the console (RAISEME-server evidence-ingest.js)
 // builds against:
 //   1. seq is one counter per device per OS user, strictly +1 per alert;
-//   2. seq is taken only by alerts handed to the console (posted now, or queued and posted later by the
-//      alertpost worker, keeping the number it was given); an unenrolled device takes none;
+//   2. seq is taken only by alerts handed to the console (posted now, or queued in the alert outbox and posted
+//      later by the alertpost worker, keeping the number it was given); an unenrolled device takes none;
 //   3. alertsEmitted counts the session's alerts that carry its `session` key, not the summary itself.
 //
 //   node --test --import ./test/hermetic-env.mjs test/alert-evidence.test.mjs
@@ -116,7 +116,8 @@ test("stampAlertSeq: a lock path that is a dangling symlink or a directory costs
 });
 
 // A console whose /api/policy can be made to drop the connection (no HTTP answer at all): the hook then
-// defers that invocation's alerts to the detached alertpost worker, which posts them with their seq.
+// defers that invocation's alerts to the alert outbox, whose detached worker posts them with their seq
+// (POST /api/alerts/batch, acknowledged per entry).
 async function consoleServer() {
   const alerts = [];
   const state = { dropPolicy: false };
@@ -124,6 +125,12 @@ async function consoleServer() {
     let body = "";
     req.on("data", (d) => (body += d));
     req.on("end", () => {
+      if (req.method === "POST" && req.url === "/api/alerts/batch") {
+        const b = JSON.parse(body);
+        alerts.push(...b.alerts);
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ v: 1, results: b.alerts.map((a, i) => ({ i, seq: a.seq ?? null, oid: a.delivery.oid, status: "stored" })) }));
+      }
       if (req.method === "POST") { try { if (req.url === "/api/alerts") alerts.push(JSON.parse(body)); } catch { /* ignore */ } res.writeHead(201); return res.end("{}"); }
       if (state.dropPolicy) return req.socket.destroy(); // policy and pubkey alike: no HTTP answer at all
       if (req.url.startsWith("/api/policy/pubkey")) { res.writeHead(404); return res.end(); }
@@ -168,7 +175,7 @@ test("E2E: alerts across two calls, a deferred call and Stop carry seq n, n+1, â
     c.state.dropPolicy = true;
     assert.equal((await runHook(home, pre)).status, 0);
     assert.ok(await until(() => c.alerts.length > direct), "the deferred alerts never arrived");
-    // The worker posts its batch in parallel: wait until nothing new has arrived for a second.
+    // Wait until nothing new has arrived for a second.
     for (let n = -1; n !== c.alerts.length;) { n = c.alerts.length; await new Promise((r) => setTimeout(r, 1000)); }
     const deferred = c.alerts.length - direct;
     c.state.dropPolicy = false;

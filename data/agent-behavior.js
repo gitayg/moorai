@@ -1,7 +1,7 @@
 // Autonomous-agent-behavior signature (the "is this an agent gone rogue?" analyzer).
 //
 // Encodes the 8 behavioral tells the Hugging Face team used to conclude their July 2026 incident was
-// a FULLY AUTONOMOUS attack, as documented in the CSA/SANS/[un]prompted/RSAC/Knostic/FIRST community
+// a FULLY AUTONOMOUS attack, as documented in the CSA/SANS/[un]prompted/RSAC/FIRST community
 // post-mortem ("Hugging Face Incident Initial Post-Mortem", §IV Observations). Two layers:
 //
 //   contentTells(text)        — per-event text heuristics (#5 benchmark strings, #6 hallucinated/

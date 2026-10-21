@@ -152,6 +152,16 @@ npm run guard -- "here is my key sk-ant-api03-... please debug the charge"
 # enrolled, #39 set to block: ✗ blocked by threat policy (#39) — nothing sent to claude -p
 ```
 
+The guard loads the tenant policy the way the hook and the MCP guard do (`loadVerifiedPolicy` in
+[`cli/hook-core.mjs`](cli/hook-core.mjs)): the fetch carries `X-Install-Token`, the policy is enforced only if
+its signature verifies against the anchor or this device's pin, and with the console down the cached copy,
+then the last-known-good copy, is enforced. A policy that does not verify is not applied and is reported
+(`policy:<source>:<status>`, Critical). With no verified policy, a fail-closed device (posture latch,
+`MOORAI_OFFLINE_MODE`, or an admin binding that makes the hook fail closed) gets the built-in fail-closed
+default; otherwise the guard runs with no policy, every finding a notify, as before. Break-glass is not
+honoured by the guard. Its action per finding is the policy's `threatPolicy` entry or notify: it does not
+apply `tierPolicy` or the hook's built-in default actions.
+
 ### Wire the context-interception hooks into Claude Code
 
 ```bash
@@ -838,10 +848,11 @@ with a `--route` to a model inside the network decide on-device, and a device wh
 enforcing its cached policy, then its last-known-good verified policy, then the offline default. When the
 hook's policy fetch gets no answer, it backs off: later calls skip the policy fetch for 60 s, doubling to
 at most 5 minutes, except one call in eight, and the first answer from the console resets it. A call that
-has no answer from the console hands its alert posts to a detached worker instead of waiting on them, so
-every alert is still sent. Only the tool call's own decision fetches the policy; the detached scan workers read the verified local
+has no answer from the console queues its alerts in the alert outbox instead of waiting on them, and a
+detached worker delivers them once the console answers (see [Store-and-forward alerts](#store-and-forward-alerts)).
+Only the tool call's own decision fetches the policy; the detached scan workers read the verified local
 copy and never fetch. The back-off file is in `~/.moorai`, where the agent can write it, so it can
-delay a policy refresh by about eight calls and cannot stop an alert. Measured, 40 calls each, same
+delay a policy refresh by about eight calls and cannot stop an alert: the outbox worker never reads it. Measured, 40 calls each, same
 decisions, with the console at an address that drops packets (192.0.2.1): an allowed call takes 0.12 s
 (p50) and a denied one 0.09 s, against 3.17 s and 4.64 s when every call fetches; p95 is 1.67 s and 1.63 s,
 the calls that draw the forced fetch. To configure:
@@ -856,6 +867,14 @@ the calls that draw the forced fetch. To configure:
   that a user, project or local Claude Code settings file sets in its `env` block is ignored, so a cloned
   repository cannot redirect or switch off that lookup;
 - `MOORAI_OTLP_ENDPOINT` left unset, or pointed at a collector inside the network.
+
+A device that never reaches its console hands its alerts over by file: `moorai-outbox export --out
+bundle.zip` writes a device bundle (a stored zip: `manifest.json`, `manifest.mac`, `VERIFY.txt`,
+`alerts.jsonl`, and `actions.jsonl` with `--include-trail`). `manifest.mac` is an HMAC-SHA256 keyed with the
+device's install token over `moorai-device-bundle|v1|<sha256 of manifest.json>`, the same assurance as a live
+post, and `VERIFY.txt` gives the OpenSSL commands that check it. A console of version 0.95.0 or later imports
+it; the same alerts delivered online later are deduplicated. The bundle names the device's user and host as
+a live alert does, so handle the file like the device's config.
 
 These stay off: provider escalation (`semanticEscalation: "provider"`) and the OCR provider fallback, which
 both call the AI provider directly; on-device escalation through a loopback model still works. The
@@ -1740,6 +1759,88 @@ also gets one content-free record per allowed tool call, delivered in batches to
   regression. The Agent SDK and `moorai-serve` do not record the trail yet. Details:
   [`docs/CAPABILITY_SPEC.md`](docs/CAPABILITY_SPEC.md) (Allow trail).
 
+### Store-and-forward alerts
+
+An alert the hook cannot deliver on its own invocation is kept in the **alert outbox**
+(`~/.moorai/alert-outbox.jsonl`, 0600) until the console acknowledges it
+([`cli/alert-outbox.mjs`](cli/alert-outbox.mjs)).
+
+- **What is queued:** the alerts of a call that got no HTTP answer from the console (`via: "deferred"`), and an
+  alert whose direct post got no answer, a 5xx, a 429, a 401 or a 403 (`via: "direct-failed"`). A 400 is
+  never retried. `moorai-guard` alerts go there too when their post fails (unnumbered: the guard takes no
+  `seq`). The guard waits for its in-flight posts (at most the 5 s post timeout) before it exits, so a post
+  the console already stored is never cut off and queued a second time.
+- **Duplicates, not collisions:** an alert already queued is not queued twice (same `seq`, or same outbox id when
+  unnumbered, and the same content). A *different* alert on a queued `seq` (a reset counter, or an entry planted
+  in the outbox file) is kept and sent, never dropped as a duplicate; the console then sees two alerts on one
+  `seq` and raises its counter-reset finding. The outbox counts these locally (`seqCollisions`).
+- **No per-call latency:** the hook appends after its decision is on stdout and starts the detached
+  `moorai-hook.mjs alertpost` worker; it never waits on the network for the outbox. Measured in
+  `test/alert-outbox-hook.test.mjs`: with the console taking 5 s per request, the decision reached stdout in
+  183 ms.
+- **Delivery:** the worker posts up to 64 alerts (256 KiB) per request to `POST /api/alerts/batch`, in
+  ascending `seq`, and removes an entry only when the console answers `stored`, `duplicate` or `rejected` for
+  it by its `seq` or `oid`. An answer that names an entry it was not sent removes nothing. A console without
+  the batch route (404 or 405, before 0.95.0, or a 2xx with no per-entry results) gets one `POST /api/alerts`
+  per alert, remembered for 24 h. No answer, a 5xx, a 429, a 401 or a 403 keeps the entries and waits 1, 2, 4,
+  then 5 minutes before retrying them; an alert queued meanwhile still gets its first attempt at once. Each sent alert
+  carries `delivery` (`via: "outbox"`, its `oid`, the attempt number and when it was queued); the console
+  de-duplicates a re-send by `seq`. The worker never reads the hook's console back-off file, so a planted file
+  cannot delay an alert.
+- **Bounds:** 5,000 entries, 4 MiB, 16 KiB per entry, 30 days. A full outbox drops its oldest entries down to
+  90% of each bound; an entry older than 30 days is dropped before the next batch; an entry over 16 KiB is
+  never queued; a line that does not parse is removed. Every drop is counted (`full`, `aged`, `rejected`,
+  `oversize`, cumulative) with the dropped seq ranges (the newest 8), reported to the console as one alert
+  ("Alert outbox: entries dropped before delivery", `OUTBOX_DROPPED`, Medium) and in the local action audit.
+- **Content-free on disk:** the capture-tier fields (`matchText`, `filePath`, `cmdShape`, `argText`) are
+  removed before an entry is written. The entry then records `captureStripped` and `rhash`, the alert's chain
+  hash input, so the console can still check its `chainHead`.
+- **`moorai-outbox status [--json]`** shows what is queued, dropped and last delivered; **`moorai-outbox
+  flush`** starts the worker now; **`moorai-outbox export --out <file.zip> [--include-trail]`** writes a
+  device bundle (see [Air-gapped deployment](#air-gapped-deployment)). The posture heartbeat carries the same
+  counts as `alertOutbox`.
+- **Trust:** the outbox is in `~/.moorai`, which the agent can write. A deleted numbered entry shows at the
+  console as a gap in `seq`, the same evidence as the alert counter itself. Downgrading to 1.26.0 leaves the
+  outbox unread, and its numbered alerts read as a gap. A console before 0.95.0 can store an alert twice when a
+  2xx was lost; its seq accounting already ignores the repeat.
+
+### Where an action came from
+
+Each hook alert and allow-trail record carries `origin` ([`cli/origin.mjs`](cli/origin.mjs)): a `kind`
+(`agent`, `approved-ask`, `override`, `delegated`, `unknown`), a `basis`, a `status` that says how it is known
+(`observed`, `inferred`, `not-established`; fixed per basis, never upgraded), the `thread` (`main`, `subagent`,
+`not-distinguishable`) and `hostPrompt` (`not-shown` or `unknown`). Enums only, and the alert chain covers it.
+
+| basis | kind | status | when |
+|---|---|---|---|
+| `bypass-mode` | agent | observed | Claude Code in `bypassPermissions`: the host shows no prompt |
+| `headless` | agent | observed | server mode: no approver exists |
+| `no-moorai-ask` | agent | inferred | Claude Code main thread otherwise: whether Claude Code's own prompt was shown is not in the payload |
+| `host-no-thread-id` | agent | inferred | Codex, Copilot, Cursor, Gemini, Droid: the adapters forward no agent id, so a sub-agent's call cannot be told from the main agent's |
+| `subagent-id` | delegated | observed | Claude Code sub-agent (`agent_id` in the payload), with `parentBinding` (`exact`, `inferred`, `none`) and `subagentType` |
+| `policy-exception` / `local-exception` | override | observed / inferred | a console or root-owned local exception excused the finding |
+| `break-glass`, `jit-elevation` | override | observed | a verified break-glass marker or JIT elevation decided |
+| `guard-tty` / `guard-flag` | override | observed / inferred | `moorai-guard`: a person answered the prompt / `--decide` was passed |
+| `post-after-ask`, `failure-after-ask` | approved-ask | inferred | Claude Code: PostToolUse or PostToolUseFailure with the same call id after MoorAI asked (who approved is not in the payload) |
+| `no-execution-before-stop` | unknown | not-established | Claude Code: MoorAI asked and neither event came before Stop (declined, interrupted or cancelled) |
+| `ask-not-trackable` | unknown | not-established | an ask on a tool with no PostToolUse matcher (Write, Edit, Read, ...) or on any shim host |
+
+`approved-ask`, `no-execution-before-stop` and `ask-not-trackable` ride on an **ask-outcome record** (an Info
+alert, `ASK_OUTCOME`) whose `origin.resolves` names the seq range of the ask's alerts. On Claude Code the ask
+is remembered, keyed, in `~/.moorai/ask-pending.json` (256 at most, 24 h) for the tracked tools (WebFetch,
+WebSearch, Bash, PowerShell, Agent, Task, `mcp__*`); at most 16 unresolved asks are recorded per Stop and the
+rest are counted in the session summary as `asksUnresolved`. Per agent: Claude Code gives everything in the
+table above; Codex receives MoorAI's ask as a deny; Copilot, Gemini and Droid pass it to their own prompt
+with no call id back; Cursor maps it to allow or deny per event and the hook cannot tell which. On every shim
+host the outcome of an ask is unknown. A finding alert is stamped before the call's verdict is known, so a
+finding on a call MoorAI then asked about still reads `no-moorai-ask`; the ask-outcome record for its seq
+range is what records the ask.
+
+Egress alerts (`EGRESS_RULE`, `SECRET_EGRESS`, `ENDPOINT_NOT_ALLOWED`) also carry `destClass`:
+`throwaway-host` when a host the check parsed is on the free throwaway-host list
+([`data/throwaway-hosts.js`](data/throwaway-hosts.js)), `other` when it parsed hosts and none is, and no field
+when it parsed none.
+
 ### Skill Analysis — what is your agent actually being told to do?
 
 No separate command: the analysis runs inside the same PreToolUse hooks. Whenever the agent loads a
@@ -1899,6 +2000,7 @@ npx moorai-scan --package github:owner/repo   # a whole source repository — an
 - **`moorai-receipt`** emits a signed, content-free **per-verdict decision receipt** — a strict-allowlist payload (tool · category · risk · decision · stage · tenant + the one-way hashes + chain seq/prev/chash), a SHA-256 digest bound only to those fields, and an ed25519 signature from the same per-device agency key as the MCP-approval tokens. `moorai-verify-chain --offline <file>` verifies a receipt (or an in-toto attestation) with **no network** — recomputing the digest to reject tampered payloads and checking the signature against a pinned key. Generation is fail-open (a null signer yields a valid unsigned receipt); verification is fail-closed.
 - **`moorai-scan`** is a **pre-install skill gate** — MoorAI's on-device, content-free answer to a cloud "skill scanner". Point it at a skill/agent artifact on disk (a directory, a `SKILL.md`, a `.mcp.json`, a `.claude/agents/*.md`, …) *before* you install it and it walks the path, classifies each file's skill-surface kind (`data/skill-surface.js`), and runs MoorAI's **own shipped detection engine** over each text file at stage `file` (and `tool` for JSON MCP configs). The **verdict is derived from the engine's own allow/ask/deny decisions — never an invented 0-100 score**: any `deny` → `DO-NOT-INSTALL`, any `ask` → `REVIEW`, low findings only → `CAUTION`, nothing → `CLEAN` (the worst across all files). No external scanner is bundled or invoked, and **no enrollment is required** (it runs before you install, possibly before you enroll). Output is JSON (or `--format md`) and is **content-free** — per finding only `{relativePath, surfaceKind, threatId, category, intentLabels, contentHash, tier}`, never the matched text or file contents — so it never becomes the exfiltration channel a cloud scanner is. Exit codes slot into CI: `0` for CLEAN/CAUTION, non-zero for REVIEW/DO-NOT-INSTALL, tunable with `--fail-on <tier>`. With `--package` / `--packages`, `--offline` (or `MOORAI_OFFLINE=1`) makes no request: each package is reported `not-checked (offline)` and stays REVIEW, at once. Registry mirrors: `MOORAI_NPM_REGISTRY`, `MOORAI_PYPI_URL` and `MOORAI_GITHUB_CODELOAD_URL` (https only; artifacts must then come from the mirror's own host). Each registry request and download gives up after 30 s without response headers or body progress.
 - **`moorai-mcp-check <package>`** runs ten pre-install checks on an MCP server from registry metadata and published manifests only; the package is never downloaded or run, and the reputation cache is not written. Each check is pass, warn, fail or not checked, with a one-line reason: (1) publisher identity and typosquat (the name lists and the repository link), (2) package age (`new-package`, under 30 days), (3) maintainers (npm `maintainers`, PyPI `ownership.roles`), (4) npm install scripts from the version manifest, (5) authentication and (7) credential names, both from the `server.json` the package publishes to the official MCP Registry (npm `mcpName`, PyPI `mcp-name:`), (6) a remote endpoint's HTTPS, hostname rather than bare IP, and fit with the policy's `egressRules`, (8) tool descriptions through the tool-stage engine when you pass `--tools <tools/list JSON>`, (9) whether the spec pins a version, and (10) whether this machine routes MCP through MoorAI (hook, stdio proxy or gateway). It also prints a metadata-only reputation score and band, and the SkillTriage verdict when `mcpReputation.feed` is on. Input: `npm:name@1.2.3`, `pypi:name==1.0`, a bare npm name, a launch command (`"npx -y name@1.2.3"`) or an `https://` URL (parsed, never contacted). Policy comes from `--policy file.json`, or the verified policy already on the device (read offline, as `moorai-doctor` does); `--no-policy`; `--json`. Exit 1 if any check fails. `--offline` (or `MOORAI_OFFLINE=1`) makes no request: the registry, repository and MCP Registry checks and the SkillTriage feed report `not-checked (offline)`, and the name, pinning, tools and runtime checks still run. Mirrors: `MOORAI_NPM_REGISTRY`, `MOORAI_PYPI_URL`, `MOORAI_MCP_REGISTRY` and `MOORAI_GITHUB_RAW_URL`; an invalid one (not https, or carrying credentials, a query or a fragment) is refused with exit 2 rather than replaced by the public host. **Limits.** PyPI install-time code (setup.py, build backends) is not visible in its JSON API, so that check is not checked for PyPI. Authentication, credentials and transport for a package need a published `server.json`; most packages have none. MCP OAuth is negotiated at connect time and is not probed. The tool list is only known from a running server unless you supply it. An npm semver range is not resolved: install scripts are read from the latest version, and the report says so.
+- **`moorai-outbox`** shows and sends the alert outbox (`status [--json]`, `flush`) and writes a device bundle for a console the device cannot reach (`export --out <file.zip> [--include-trail]`). See [Store-and-forward alerts](#store-and-forward-alerts).
 - **`moorai-model-scan <path|dir>`** inspects model files without loading or executing them and gives each one a verdict (unsafe, suspicious, clean, allowed, unscanned), its format, findings and sha256. See [Model file scanning](#model-file-scanning).
 
   **Package code (`--packages`, `--package`).** With `--packages`, each MCP server whose config launches a package (`npx`, `pnpm dlx`, `bunx`, `yarn dlx`, `uvx`, `uv tool run`, `pipx run`) is downloaded from the public registry, its digest checked (npm `sha512` integrity, PyPI `sha256`; a mismatch fails closed), extracted into a temporary directory with traversal, link and size guards, and analysed statically — nothing in it is executed. Only the package name and version leave the device, and only with the flag (or `MOORAI_SCAN_PACKAGES=1`); without it the packages are listed as not analysed. Package code gets its own checks — install scripts that download or run remote code, runtime self-install, environment or credential harvesting next to a network send, obfuscated `eval`, socket reverse shells, typosquatted names, known-malicious packages (by name, PyPI names compared in their PEP 503 form, and by the exact published SHA-256 of a known-bad artifact or of any extracted file, `data/known-bad-artifacts.js`: `pkg-known-malicious`, block), and a hard-coded fetch from a free throwaway web host such as `tiiny.site`, a paste site or an anonymous tunnel (`pkg-throwaway-host`, a `CAUTION` warning only, never a verdict; the host is matched as a suffix of the parsed hostname against `data/throwaway-hosts.js`, and only in live code that also makes a network call) — and the prompt-oriented detectors are scoped by file type: in code and docs they report at most `CAUTION`, because an MCP server spawning processes or calling APIs is expected. `DO-NOT-INSTALL` needs concrete evidence of malicious or unsafe-by-construction behaviour. Docker images and remote-only servers are reported as not analysed.

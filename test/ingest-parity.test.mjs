@@ -39,7 +39,7 @@ function hookDecision(out) {
 // The (threatId, category) findings the live hook posted to the console, minus the records that are not
 // detections of this one call (literacy touchpoints, behaviour and session signals). A replay must post
 // exactly these: the same decision for different findings would still be drift.
-const NOT_A_DETECTION = /^(Literacy|Agent |Autonomous|Lethal|Session|Clipboard|Cross-server|MCP tool call)/;
+const NOT_A_DETECTION = /^(Literacy|Agent |Autonomous|Lethal|Session|Clipboard|Cross-server|MCP tool call|Ask outcome)/;
 const settle = () => new Promise((r) => setTimeout(r, 150));
 async function liveFindings(con) {
   await settle();

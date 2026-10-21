@@ -366,7 +366,7 @@ test("CLI: config scan lists packages (json + md) without network; bad --package
   assert.equal(bad.status, 64);
 });
 
-// ---- known-bad indicators: Knostic advisory on the malicious PyPI MCP server iflow-mcp_cmpxchg16-reddit-mcp ----
+// ---- known-bad indicators: PyPI MCP server iflow-mcp_cmpxchg16-reddit-mcp, remote code fetch-and-execute (public research write-up, Oct 2026) ----
 
 test("known-bad PyPI name: every PEP 503 spelling of iflow-mcp_cmpxchg16-reddit-mcp is malicious", async () => {
   const { classifyPackage, inspectInstall } = await import("../data/popular-packages.js");
