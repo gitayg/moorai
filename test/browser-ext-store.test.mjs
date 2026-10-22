@@ -180,7 +180,14 @@ test("background: nothing is sent with no server URL, with reporting off, or wit
 
 // ---- store text -------------------------------------------------------------------------------------
 
-const FORBIDDEN = /\b(itay|glick|opswat|nvidia|argus|panorays|prismor|gartner|knostic)\b/i;
+// Names public copy must never carry are kept OUT of this public repository (a list here would itself
+// name them): point MOORAI_COPY_DENYLIST at a local file of words, one per line, to run the check.
+function namesIn(text) {
+  let deny = [];
+  try { deny = readFileSync(process.env.MOORAI_COPY_DENYLIST, "utf8").split(/\s+/).filter(Boolean).map((w) => w.toLowerCase()); } catch { return []; }
+  const words = new Set(String(text).toLowerCase().match(/[a-z0-9]+/g) || []);
+  return deny.filter((w) => words.has(w));
+}
 
 test("store listing: single purpose, a justification for every permission and host, and the data disclosure", () => {
   const l = read("store/listing.md");
@@ -189,7 +196,7 @@ test("store listing: single purpose, a justification for every permission and ho
   for (const p of [...m.permissions, ...m.host_permissions, ...m.optional_host_permissions]) assert.ok(l.includes(`\`${p}\``), `justification for ${p}`);
   assert.match(l, /## Data usage/);
   assert.match(l, /owner/i, "the listing says the store submission is the owner's step");
-  assert.ok(!FORBIDDEN.test(l));
+  assert.deepEqual(namesIn(l), []);
 });
 
 test("privacy policy: states what leaves the browser (and that prompt text never does)", () => {
@@ -197,7 +204,7 @@ test("privacy policy: states what leaves the browser (and that prompt text never
   assert.match(p, /never leaves your browser/i);
   assert.match(p, /keyed one-way hash/i);
   assert.match(p, /host/i);
-  assert.ok(!FORBIDDEN.test(p));
+  assert.deepEqual(namesIn(p), []);
 });
 
 // ---- packaging ---------------------------------------------------------------------------------------

@@ -10,12 +10,13 @@
 import { readFileSync } from "node:fs";
 import { verifyCatalogue, catalogueTrustKeys, readCatalogue } from "./mcp-catalogue.mjs";
 
-function summary(status, cat, keyId) {
+function summary(status, cat, keyId, expired) {
   const entries = cat && Array.isArray(cat.entries) ? cat.entries : [];
   return {
     status,
     ...(cat ? { seq: cat.seq, issuedAt: cat.issuedAt, expiresAt: cat.expiresAt || null, entries: entries.length, doNotInstall: entries.filter((e) => e && e.status === "do-not-install").length } : {}),
-    ...(keyId ? { keyId } : {})
+    ...(keyId ? { keyId } : {}),
+    ...(typeof expired === "boolean" ? { expired } : {})
   };
 }
 
@@ -31,7 +32,7 @@ if (cmd === "verify" && rest[0]) {
   out(summary(v.status, v.trusted ? cat : null, v.keyId), v.trusted ? 0 : 1);
 } else if (cmd === "status") {
   const r = readCatalogue({});
-  out(summary(r.status, r.catalogue, r.keyId), 0);
+  out(summary(r.status, r.catalogue, r.keyId, r.expired), 0);
 } else {
   process.stdout.write("usage: moorai-mcp-catalogue verify <file> [--pubkey <base64 SPKI DER>] | status\n");
   process.exit(cmd === "--help" || cmd === "-h" ? 0 : 2);

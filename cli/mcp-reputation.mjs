@@ -311,7 +311,7 @@ function catalogueFor(id, version, cat) {
   if (!cat || cat.status === "absent" || cat.status === "disabled") return { signals: [], evidence: [] };
   if (cat.status !== "ok") return { signals: [], evidence: [`catalogue-${cat.status}`] };
   const c = catalogueSignals(cat.catalogue, id, version);
-  return { signals: c.signals, evidence: ["catalogue-verified", ...c.evidence] };
+  return { signals: c.signals, evidence: ["catalogue-verified", ...(cat.expired ? ["catalogue-expired"] : []), ...c.evidence] };
 }
 
 function present(id, entry, feed, flags, cat) {
@@ -356,7 +356,7 @@ export function assessServerSync(decl, opts = {}) {
   const r = core(decl, opts, null);
   if (!r.flags.cached) { r.cache.servers[r.id.key] = r.entry; saveCache(stateDir, r.cache); }
   const f = readFeedFile(stateDir);
-  return present(r.id, r.entry, f ? f.feed : null, r.flags, readCatalogue({ stateDir, policy: opts.catalogue }));
+  return present(r.id, r.entry, f ? f.feed : null, r.flags, readCatalogue({ stateDir, policy: opts.catalogue, now: opts.now }));
 }
 
 // The proxy / hook path. Network only when the org policy opts in (lookup and/or feed).
@@ -377,8 +377,8 @@ export async function assessServer(decl, opts = {}) {
   const url = feedUrl(policy);
   const feed = url ? await refreshFeed(url, opts, stateDir) : (readFeedFile(stateDir) || {}).feed || null;
   const cat = opts.catalogue && typeof opts.catalogue === "object" && opts.catalogue.url
-    ? await refreshCatalogue({ stateDir, policy: opts.catalogue, fetchImpl: opts.fetchImpl, now: opts.now }).catch(() => readCatalogue({ stateDir, policy: opts.catalogue }))
-    : readCatalogue({ stateDir, policy: opts.catalogue });
+    ? await refreshCatalogue({ stateDir, policy: opts.catalogue, fetchImpl: opts.fetchImpl, now: opts.now }).catch(() => readCatalogue({ stateDir, policy: opts.catalogue, now: opts.now }))
+    : readCatalogue({ stateDir, policy: opts.catalogue, now: opts.now });
   const rep = present(r.id, r.entry, feed, r.flags, cat);
   if (offlineSkip) rep.evidence = [...rep.evidence, "registry-not-checked-offline"].sort();
   return rep;
@@ -395,7 +395,7 @@ export function addToolSignals(decl, findings, opts = {}) {
   r.entry.tools = [...have].sort();
   if (changed || !r.flags.cached) { r.cache.servers[r.id.key] = r.entry; saveCache(stateDir, r.cache); }
   const f = readFeedFile(stateDir);
-  return { ...present(r.id, r.entry, f ? f.feed : null, r.flags, readCatalogue({ stateDir, policy: opts.catalogue })), changed };
+  return { ...present(r.id, r.entry, f ? f.feed : null, r.flags, readCatalogue({ stateDir, policy: opts.catalogue, now: opts.now })), changed };
 }
 
 // ---- config lookup: a hook sees `mcp__<server>__<tool>`, i.e. only the label ----------------------

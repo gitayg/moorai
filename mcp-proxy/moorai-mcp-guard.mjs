@@ -734,7 +734,7 @@ async function observeTools(tools, { driftDone = false, shape = { complete: fals
   // (c) the server's reputation: its own tool metadata is a first-sight signal too.
   if (repFindings.length) {
     try {
-      const rep = addToolSignals(REP_DECL, repFindings.map((f) => ({ threatId: f.threatId, riskLevel: f.riskLevel })));
+      const rep = addToolSignals(REP_DECL, repFindings.map((f) => ({ threatId: f.threatId, riskLevel: f.riskLevel })), { catalogue: POLICY && POLICY.mcpCatalogue });
       REP = rep;
       if (rep.changed) reportReputation(rep);
     } catch { /* reputation is evidence; never let it touch the tool stage */ }

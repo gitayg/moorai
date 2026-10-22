@@ -7,7 +7,11 @@
 // /etc/moorai/catalogue.pub, or data/mcp-catalogue-keys.js (empty until the owner publishes a key). With
 // no key at all a catalogue is NOT trusted (unlike a policy, which is "unanchored"): nothing breaks
 // without it, so there is no compatibility reason to accept an unverifiable one. The cached copy lives in
-// the user's writable state, so it is re-verified on every read.
+// the user's writable state, so it is re-verified on every read, and nothing in that file decides freshness
+// on its own: a fetch time in the future or a passed signed expiresAt makes the copy stale, and a copy
+// whose seq is below the highest seq this device accepted from that key (mcp-catalogue.seq.json) is
+// refused. The mark sits in the same writable directory, so a local user who rewrites both files can
+// still hold an older signed catalogue until the next refresh, at most 24 h.
 //
 // ONE DIRECTION. A catalogue only ever ADDS risk signals (do-not-install, review, caution). A
 // "no-findings" verdict is evidence only and never raises a score, so deleting or withholding the
@@ -26,8 +30,10 @@ import { CATALOGUE_FORMAT, CATALOGUE_VERSION, CATALOGUE_SIG_VERSION, catalogueCa
 import { BUILTIN_CATALOGUE_KEYS } from "../data/mcp-catalogue-keys.js";
 
 export const CATALOGUE_FILE = "mcp-catalogue.json";
+export const CATALOGUE_SEQ_FILE = "mcp-catalogue.seq.json";
 export const DEFAULT_ANCHOR_FILE = "/etc/moorai/catalogue.pub";
 const TTL_MS = 24 * 3600 * 1000;
+const SKEW_MS = 5 * 60 * 1000;
 const MAX_BYTES = 16 * 1024 * 1024;
 
 // ---- sign / verify ------------------------------------------------------------------------------
@@ -148,8 +154,20 @@ function writeAtomic(path, obj) {
 const pol = (p) => (p && typeof p === "object" ? p : {});
 const keysFor = (o) => catalogueTrustKeys({ policyKeys: pol(o.policy).publicKeys, env: o.env || process.env, anchorFile: o.anchorFile === undefined ? DEFAULT_ANCHOR_FILE : o.anchorFile, builtin: o.builtin || BUILTIN_CATALOGUE_KEYS });
 
+// The highest seq accepted per publisher key: { "<keyId>": seq }.
+function readMarks(stateDir) { const m = readJson(join(stateDir, CATALOGUE_SEQ_FILE)); return m && typeof m === "object" && !Array.isArray(m) ? m : {}; }
+function markOf(stateDir, keyId) { const n = readMarks(stateDir)[keyId]; return Number.isInteger(n) ? n : -1; }
+function raiseMark(stateDir, keyId, seq) {
+  const m = readMarks(stateDir);
+  if (Number.isInteger(m[keyId]) && m[keyId] >= seq) return;
+  m[keyId] = seq;
+  writeAtomic(join(stateDir, CATALOGUE_SEQ_FILE), m);
+}
+const isExpired = (cat, now) => !!(cat && cat.expiresAt != null && Date.parse(cat.expiresAt) <= now);
+
 const MEMO = new Map();
-// → { status, catalogue|null, keyId?, fetchedAt?, url? }  status: absent | ok | <verifyCatalogue status>
+// → { status, catalogue|null, keyId?, fetchedAt?, url?, expired? }
+//   status: absent | disabled | ok | rollback-refused | <verifyCatalogue status>
 export function readCatalogue(opts = {}) {
   const stateDir = opts.stateDir || STATE_DIR;
   if (pol(opts.policy).enabled === false) return { status: "disabled", catalogue: null };
@@ -158,14 +176,19 @@ export function readCatalogue(opts = {}) {
   try { st = statSync(path); } catch { return { status: "absent", catalogue: null }; }
   const keys = keysFor(opts);
   const memoKey = `${path}\0${st.mtimeMs}\0${st.size}\0${keys.map(publicKeyId).join(",")}`;
-  if (MEMO.has(memoKey)) return MEMO.get(memoKey);
-  const f = readJson(path);
-  const cat = f && f.catalogue;
-  const v = verifyCatalogue(cat, { keys });
-  const out = v.trusted ? { status: "ok", catalogue: cat, keyId: v.keyId, fetchedAt: f.fetchedAt, url: f.url } : { status: v.status, catalogue: null };
-  MEMO.clear();
-  MEMO.set(memoKey, out);
-  return out;
+  let out = MEMO.get(memoKey);
+  if (!out) {
+    const f = readJson(path);
+    const cat = f && f.catalogue;
+    const v = verifyCatalogue(cat, { keys });
+    out = v.trusted ? { status: "ok", catalogue: cat, keyId: v.keyId, fetchedAt: f.fetchedAt, url: f.url } : { status: v.status, catalogue: null };
+    MEMO.clear();
+    MEMO.set(memoKey, out);
+  }
+  if (out.status !== "ok") return out;
+  if (out.catalogue.seq < markOf(stateDir, out.keyId)) return { status: "rollback-refused", catalogue: null };
+  raiseMark(stateDir, out.keyId, out.catalogue.seq);
+  return { ...out, expired: isExpired(out.catalogue, opts.now || Date.now()) };
 }
 
 export function catalogueUrl(p) {
@@ -186,7 +209,9 @@ export async function refreshCatalogue(opts = {}) {
   const url = catalogueUrl(p);
   if (!url || p.enabled === false) return { ...cur, refresh: "skipped" };
   const now = opts.now || Date.now();
-  if (cur.catalogue && cur.url === url && now - (cur.fetchedAt || 0) < TTL_MS) return { ...cur, refresh: "fresh" };
+  const at = Number(cur.fetchedAt);
+  const fresh = cur.catalogue && cur.url === url && !cur.expired && Number.isFinite(at) && at <= now + SKEW_MS && now - at < TTL_MS;
+  if (fresh) return { ...cur, refresh: "fresh" };
   if (isOffline()) return { ...cur, refresh: "offline" };
   let text;
   try {
@@ -199,7 +224,8 @@ export async function refreshCatalogue(opts = {}) {
   try { cat = JSON.parse(text); } catch { return { ...cur, refresh: "unparseable" }; }
   const v = verifyCatalogue(cat, { keys: keysFor(opts) });
   if (!v.trusted) return { ...cur, refresh: v.status };
-  if (cur.catalogue && cat.seq < cur.catalogue.seq) return { ...cur, refresh: "rollback-refused" };
+  if ((cur.catalogue && cat.seq < cur.catalogue.seq) || cat.seq < markOf(stateDir, v.keyId)) return { ...cur, refresh: "rollback-refused" };
   writeAtomic(join(stateDir, CATALOGUE_FILE), { url, fetchedAt: now, catalogue: cat });
-  return { status: "ok", catalogue: cat, keyId: v.keyId, fetchedAt: now, url, refresh: "ok" };
+  raiseMark(stateDir, v.keyId, cat.seq);
+  return { status: "ok", catalogue: cat, keyId: v.keyId, fetchedAt: now, url, expired: isExpired(cat, now), refresh: "ok" };
 }

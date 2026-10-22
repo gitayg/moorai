@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -39,7 +39,7 @@ const E_PY = { kind: "mcp-server", ecosystem: "pypi", name: "mcp-server-fetch", 
 
 // ---- format + signature ----------------------------------------------------------------------------
 
-test("signed bytes are pinned literally (a wire format shared with every published catalogue)", () => {
+test("signed bytes are pinned literally (changing them would break every signature issued once one is published)", () => {
   assert.equal(catalogueCanonical({ v: 1, seq: 7, issuedAt: "2026-10-21T00:00:00.000Z", digest: "ab" }), "moorai-mcp-catalogue|v1|7|2026-10-21T00:00:00.000Z|ab");
   const b = body([E_FS]);
   const d = catalogueDigest({ ...b, sig: { sig: "x" } });
@@ -187,6 +187,63 @@ test("refreshCatalogue: the request is a bare GET that names no server; http (no
   const r = await refreshCatalogue({ policy: { url: "http://feed.example/c.json", publicKeys: [K1.b64] }, stateDir: tmp("http"), fetchImpl: f2, env: {}, anchorFile: null, now: 1 });
   assert.equal(f2.calls.length, 0);
   assert.equal(r.status, "absent");
+});
+
+// ---- the cache is user-writable: freshness, expiry and rollback must not be decided by it -------------
+
+const NOW = Date.parse("2026-10-21T12:00:00.000Z");
+const POL = { url: "https://feed.example/c.json", publicKeys: [K1.b64] };
+function plant(stateDir, catalogue, fetchedAt) {
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(join(stateDir, CATALOGUE_FILE), JSON.stringify({ url: POL.url, fetchedAt, catalogue }));
+}
+const R = (sd, fetchImpl, now = NOW) => refreshCatalogue({ policy: POL, stateDir: sd, fetchImpl, env: {}, anchorFile: null, now });
+
+test("refreshCatalogue: a fetchedAt in the future does not make a planted older catalogue fresh", async () => {
+  const sd = tmp("future");
+  plant(sd, signCatalogue(body([], { seq: 1, expiresAt: "2027-06-01T00:00:00.000Z" }), K1.privateKey), NOW + 10 * 365 * 24 * 3600e3);
+  const f = fakeFetch(signCatalogue(body([E_BAD], { seq: 2 }), K1.privateKey));
+  const r = await R(sd, f);
+  assert.equal(f.calls.length, 1, "a future fetch time is not a fresh cache");
+  assert.deepEqual([r.refresh, r.catalogue.seq], ["ok", 2]);
+  const sd2 = tmp("skew");
+  plant(sd2, signCatalogue(body([], { seq: 1 }), K1.privateKey), NOW + 60e3);
+  const f2 = fakeFetch(signCatalogue(body([], { seq: 2 }), K1.privateKey));
+  assert.equal((await R(sd2, f2)).refresh, "fresh", "a minute of clock skew is still fresh");
+  assert.equal(f2.calls.length, 0);
+});
+
+test("an expired catalogue is never fresh: it is fetched again; while it cannot be, its risk signals still apply and it reads expired", async () => {
+  const sd = tmp("expired"), home = tmp("exphome");
+  plant(sd, signCatalogue(body([E_BAD], { seq: 3, expiresAt: "2026-10-02T00:00:00.000Z" }), K1.privateKey), NOW - 3600e3);
+  const read = readCatalogue({ stateDir: sd, policy: POL, env: {}, anchorFile: null, now: NOW });
+  assert.deepEqual([read.status, read.expired], ["ok", true]);
+  const down = fakeFetch({}, { status: 503 });
+  const r1 = await R(sd, down);
+  assert.equal(down.calls.length, 1, "an expired catalogue is not served as fresh");
+  assert.deepEqual([r1.refresh, r1.catalogue.seq, r1.expired], ["fetch-failed", 3, true]);
+  const rep = assessServerSync({ command: "npx", args: ["-y", "evil-mcp-thing@1.0.0"] }, { stateDir: sd, home, catalogue: POL, now: NOW });
+  assert.ok(rep.reasons.includes("catalogue-do-not-install"), "expiry never removes a risk signal");
+  assert.ok(rep.evidence.includes("catalogue-expired"), `evidence: ${rep.evidence}`);
+  const r2 = await R(sd, fakeFetch(signCatalogue(body([E_BAD], { seq: 4, expiresAt: "2027-01-01T00:00:00.000Z" }), K1.privateKey)));
+  assert.deepEqual([r2.refresh, r2.catalogue.seq, r2.expired], ["ok", 4, false]);
+});
+
+test("seq high-water mark: a planted older signed cache is refused on read and refetched; an older fetch is refused with no cache", async () => {
+  const sd = tmp("hwm");
+  assert.equal((await R(sd, fakeFetch(signCatalogue(body([E_BAD], { seq: 5 }), K1.privateKey)))).refresh, "ok");
+  plant(sd, signCatalogue(body([], { seq: 4 }), K1.privateKey), NOW);
+  const read = readCatalogue({ stateDir: sd, policy: POL, env: {}, anchorFile: null, now: NOW });
+  assert.deepEqual([read.status, read.catalogue], ["rollback-refused", null]);
+  const f = fakeFetch(signCatalogue(body([E_BAD], { seq: 5 }), K1.privateKey));
+  const r = await R(sd, f);
+  assert.equal(f.calls.length, 1, "a refused cache is not fresh");
+  assert.deepEqual([r.refresh, r.catalogue.seq], ["ok", 5]);
+  rmSync(join(sd, CATALOGUE_FILE));
+  const r2 = await R(sd, fakeFetch(signCatalogue(body([], { seq: 4 }), K1.privateKey)));
+  assert.deepEqual([r2.refresh, r2.catalogue], ["rollback-refused", null]);
+  const other = await refreshCatalogue({ policy: { ...POL, publicKeys: [K2.b64] }, stateDir: sd, fetchImpl: fakeFetch(signCatalogue(body([], { seq: 1 }), K2.privateKey)), env: {}, anchorFile: null, now: NOW });
+  assert.equal(other.refresh, "ok", "the mark is kept per publisher key");
 });
 
 // ---- feeds MCP reputation ---------------------------------------------------------------------------
@@ -366,6 +423,7 @@ test("moorai-mcp-catalogue status: reports the cached catalogue's verification s
   const r = cli(["status"], { HOME: home, MOORAI_CATALOGUE_PUBKEY: K1.b64 });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(JSON.parse(r.stdout).status, "ok");
+  assert.equal(JSON.parse(r.stdout).expired, false);
   const r2 = cli(["status"], { HOME: home, MOORAI_CATALOGUE_PUBKEY: K2.b64 });
   assert.equal(JSON.parse(r2.stdout).status, "untrusted");
 });

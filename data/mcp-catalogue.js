@@ -37,7 +37,8 @@ export function catalogueDigest(cat) {
   return createHash("sha256").update(canonicalJson(b)).digest("hex");
 }
 
-// The exact bytes signed: a wire format shared with every catalogue already published.
+// The exact bytes signed. No catalogue or publisher key is published yet; once one is, changing these
+// bytes breaks every signature already issued, so the format is pinned by a test.
 export function catalogueCanonical(s) {
   return `moorai-mcp-catalogue|v${s.v}|${s.seq}|${s.issuedAt}|${s.digest}`;
 }
