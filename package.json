@@ -40,6 +40,7 @@
     "moorai-helper": "cli/moorai-helper.mjs",
     "moorai-serve": "cli/moorai-serve.mjs",
     "moorai-native-settings": "cli/moorai-native-settings.mjs",
+    "moorai-cloud-setup": "cli/moorai-cloud-setup.mjs",
     "moorai-mcp-gateway": "mcp-gateway/moorai-mcp-gateway.mjs",
     "moorai-model-proxy": "model-proxy/moorai-model-proxy.mjs",
     "moorai-egress-proxy": "egress-proxy/moorai-egress-proxy.mjs",

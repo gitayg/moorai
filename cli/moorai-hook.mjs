@@ -22,6 +22,7 @@ import { loadConfig } from "./config.mjs";
 import { buildEngine, decideText, decideCredFileRead, decideTransit, transitEnvText, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideAuthorizedKeysWrite, decodedCommandPayloads, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, policyIatIso, policyAgeMs, policyFreshByIat, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision, evaluateProfile, rejectedAlert, PROFILE_DRIFT, decideThreat } from "./hook-core.mjs";
 import { fetchExecFacts } from "../data/net-exec.js";
 import { fetchedExecHit, recordFetched } from "./fetch-exec-state.mjs";
+import { otShellCheck, scriptReader, OT_PROTOCOL_CLIENT } from "./ot-protocol-client.mjs";
 import { maskValue, maskNote } from "./mask.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
@@ -60,7 +61,7 @@ import { readStateJson, writeStateJson, repoIdentity, LEARNED_DRIFT_FILE, DELETI
 import { sessionRiskStep, circuitStep, circuitOutcome } from "./session-state.mjs";
 import { captureTask, judgeAction, CLASS_TEXT } from "./intent-alignment.mjs";
 import { promptScanPlan, promptBlockers } from "./prompt-scan.mjs";
-import { serverMode, serviceWho, settleHeadlessAsk, settleBypassAsk, tamperAlert, trustedEnv, refusedTrustEnv, systemConfigPath, systemConfig, workloadIdentity, workerEnv, hookProcessEnvName } from "./server-mode.mjs";
+import { serverMode, cloudAgentPosture, serviceWho, settleHeadlessAsk, settleBypassAsk, tamperAlert, trustedEnv, refusedTrustEnv, systemConfigPath, systemConfig, workloadIdentity, workerEnv, hookProcessEnvName } from "./server-mode.mjs";
 import { hookFailMode, failClosedApplies, failClosedOutput, failClosedVerdict, failClosedAlert, failReason, HOOK_DECISION_BUDGET_MS } from "./hook-fail.mjs";
 import { effectiveFailModes } from "./fail-mode.mjs";
 import { recordMcpCall, scheduleMcpUsageFlush } from "./mcp-usage-beat.mjs";
@@ -1437,7 +1438,9 @@ async function runPostureBeatWorker(host, mode, cwd) {
     // items, then the field, so the body stays under the console's 16384-byte posture cap.
     let credExposure = null;
     try { credExposure = credentialExposure({ cwd: cwd || "", stateDir: STATE_DIR }); } catch { credExposure = null; }
-    const body = fitPostureBody({ user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture, ...(failMode ? { failMode } : {}), ...(containment || {}), ...(mcpServerSandbox ? { mcpServerSandbox } : {}), ...(aiCliParents ? { aiCliParents } : {}), ...(inventory ? inventory.fields : {}), ...(alertOutbox ? { alertOutbox } : {}), ...(credExposure ? { credentialExposure: credExposure } : {}) });
+    // cloudAgent (cli/server-mode.mjs): { host, attestation } for a cloud coding agent in server mode, else absent.
+    const cloudAgent = cloudAgentPosture(SERVER);
+    const body = fitPostureBody({ user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture, ...(cloudAgent ? { cloudAgent } : {}), ...(failMode ? { failMode } : {}), ...(containment || {}), ...(mcpServerSandbox ? { mcpServerSandbox } : {}), ...(aiCliParents ? { aiCliParents } : {}), ...(inventory ? inventory.fields : {}), ...(alertOutbox ? { alertOutbox } : {}), ...(credExposure ? { credentialExposure: credExposure } : {}) });
     const r = await fetch(`${CONFIG.serverUrl}/api/agent-posture`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) }).catch(() => null);
     // On failure the pending mark stays, so the next try is BEAT_RETRY_MS away rather than one per tool call.
     if (r && r.ok) writeBeat(host, { day, bypass: (st.day === day && !!st.bypass) || mode === "bypassPermissions" });
@@ -3081,7 +3084,9 @@ async function main() {
     // Scripts the command carries (-EncodedCommand, an Invoke-Expression string): scanned as commands too.
     // Plus base64/hex payloads the command decodes straight into a shell (T1027.010): decoded and re-scanned
     // so the real payload, not the encoder, meets the command detectors.
-    const scripts = [...embeddedScripts(ti.command, ps ? { shell: "powershell" } : undefined), ...decodedCommandPayloads(ti.command)];
+    const embedded = embeddedScripts(ti.command, ps ? { shell: "powershell" } : undefined);
+    const decodedPayloads = decodedCommandPayloads(ti.command);
+    const scripts = [...embedded, ...decodedPayloads];
     const shellText = [ti.command || "", ...scripts].join("\n");
     // A file an UPLOAD command reads is leaving the device; the command text itself is outbound when it
     // uploads or names a host. Only these carry ctx.egress (instr-leak-egress is opt-in on it).
@@ -3165,6 +3170,9 @@ async function main() {
     logBehavior(tool, ti.command || "bash", btext, { decision: dec, findings: finds }, "file", clipboardSignals(ti.command));
     if (killIds.length) killSession(tool, killIds, "file");
     if (checkSecretEgress(policy, ti.command, tool, "egress") && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); why(REASON.SECRET_EGRESS); }
+    // OT protocol clients (cli/ot-protocol-client.mjs): the command and every script decoded from it (embedded
+    // scripts are PowerShell, base64/hex payloads go to a POSIX shell); the strictest result is kept.
+    { const ot = otShellCheck({ command: ti.command, shell: ps ? "ps" : "sh", scripts: [...embedded.map((text) => ({ text, shell: "ps" })), ...decodedPayloads.map((text) => ({ text, shell: "sh" }))], policy, readScript: scriptReader(typeof input.cwd === "string" ? input.cwd : process.cwd()), tool }); if (ot) { post({ ...ot.alert, ts: new Date().toISOString(), ...IDENTITY }); if (ot.kill) killSession(tool, ot.killIds, "file"); if (RANK[ot.decision] > RANK[dec]) { dec = ot.decision; reasons = [ot.reason]; alts = []; why(OT_PROTOCOL_CLIENT); } } }
     if (reportEnvelope(policy, tool, { tool: "Bash", paths: readPaths }, "file") && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; alts = saferAlternativesFor([64]); why(REASON.ENVELOPE); }
     // Cumulative deletion volume: the first deletion after this session crossed the threshold asks. Only
     // ever allow -> ask (or adds the reason to an existing ask); never touches a deny.
