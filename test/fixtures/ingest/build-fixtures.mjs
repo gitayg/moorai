@@ -90,7 +90,9 @@ put(`gemini/tmp/placeholderhash/chats/session-2026-09-05T09-00-${G1.slice(0, 8)}
   ] },
   { $set: { lastUpdated: "2026-09-05T09:00:04.000Z" } },
   { id: "m3", timestamp: "2026-09-05T09:00:05.000Z", type: "gemini", content: "", toolCalls: [gtc("tc4", "write_file", { file_path: "a.txt", content: AWS_PLACEHOLDER }, { status: "executing" })] },
-  { $patch: { id: "m3", toolCalls: [gtc("tc4", "write_file", { file_path: "a.txt", content: AWS_PLACEHOLDER }, { result: fr("tc4", "write_file", "ok") })] } },
+  // The patch carries only what changed (status and result), so the call's name and args must come from the
+  // first record: merged by id, not replaced.
+  { $patch: { id: "m3", toolCalls: [{ id: "tc4", status: "success", result: fr("tc4", "write_file", "ok") }] } },
   "{\"id\": \"m9\", \"type\": truncated",
   { id: "m4", timestamp: "2026-09-05T09:00:06.000Z", type: "info", content: "placeholder info" }
 ]);

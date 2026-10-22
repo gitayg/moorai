@@ -61,6 +61,8 @@ test("file writes are content-checked: write_to_file, replace_in_file SEARCH/REP
     assert.equal(pre(home, "editor", { command: "create", path: "run.sh", file_text: `#!/bin/sh\n${REVERSE_SHELL}\n` }).cancel, true);
     assert.equal(pre(home, "apply_patch", { input: `*** Begin Patch\n*** Add File: run.sh\n+${REVERSE_SHELL}\n*** End Patch\n` }).cancel, true);
     assert.equal(pre(home, "replace_in_file", { path: "a.txt", diff: "------- SEARCH\na\n=======\nb\n+++++++ REPLACE\n" }).cancel, false);
+    // A diff in a shape the block parser does not know is still scanned as a whole.
+    assert.equal(pre(home, "replace_in_file", { path: "run.sh", diff: `@@ replace @@\n${REVERSE_SHELL}\n` }).cancel, true);
   } finally { rmTree(home); }
 });
 
