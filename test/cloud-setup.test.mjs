@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,7 +49,7 @@ test("copilot: server-mode system file, wrappers, and a repository hooks file th
   assert.equal(h.version, 1);
   for (const ev of ["preToolUse", "postToolUse", "userPromptSubmitted"]) {
     assert.equal(h.hooks[ev].length, 1, ev);
-    assert.equal(h.hooks[ev][0].bash, "/opt/moorai/bin/moorai-agent-hook copilot");
+    assert.equal(h.hooks[ev][0].bash, 'if [ -x /opt/moorai/bin/moorai-agent-hook ]; then exec /opt/moorai/bin/moorai-agent-hook copilot; fi; [ "$GITHUB_ACTIONS" != "true" ]');
     assert.equal(h.hooks[ev][0].powershell, undefined);
   }
   // The system file it writes resolves to a cloud agent in server mode.
@@ -71,6 +71,21 @@ test("claude-code-web: a managed-settings hooks block that calls the wrapper for
   assert.ok(cmds.length > 4);
   for (const c of cmds) assert.match(c, /^\/opt\/moorai\/bin\/moorai-hook(?: |$)/, c);
   assert.ok(h.PreToolUse.some((e) => e.matcher === "Bash"));
+});
+
+test("copilot hook command: runs the wrapper when present; with no wrapper, no verdict off a runner and a failure on one", () => {
+  const root = mkdtempSync(join(tmpdir(), "moorai-cloud-cmd-"));
+  try {
+    const cmd = JSON.parse(hooksFor("copilot-coding-agent", join(root, "opt-moorai")).content).hooks.preToolUse[0].bash;
+    const sh = (env) => spawnSync("/bin/sh", ["-c", cmd], { env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME, ...env }, encoding: "utf8" });
+    assert.equal(sh({}).status, 0);
+    assert.equal(sh({ GITHUB_ACTIONS: "true" }).status, 1);
+    mkdirSync(join(root, "opt-moorai", "bin"), { recursive: true });
+    writeFileSync(join(root, "opt-moorai", "bin", "moorai-agent-hook"), "#!/bin/sh\necho \"ran $1\"\n", { mode: 0o755 });
+    const r = sh({ GITHUB_ACTIONS: "true" });
+    assert.equal(r.status, 0);
+    assert.equal(r.stdout, "ran copilot\n");
+  } finally { rmTree(root); }
 });
 
 test("the committed examples are what the installer generates for /opt/moorai", async () => {

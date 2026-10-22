@@ -80,7 +80,12 @@ export function hooksFor(host, installDir = DEFAULT_INSTALL_DIR) {
   const home = mkdtempSync(join(tmpdir(), "moorai-cloud-hooks-"));
   try {
     if (kind === "copilot") {
-      const file = copilotInstall({ home, command: `${bin}/moorai-agent-hook copilot` });
+      // Copilot CLI on a developer's machine also loads repository hooks, and a failing command preToolUse
+      // hook denies the call. So the committed command runs the wrapper when the setup step wrote it, exits
+      // 0 (no verdict) on a machine that is not a GitHub Actions runner, and exits 1 (Copilot denies) on a
+      // runner where the setup step did not run.
+      const w = `${bin}/moorai-agent-hook`;
+      const file = copilotInstall({ home, command: `if [ -x ${w} ]; then exec ${w} copilot; fi; [ "$GITHUB_ACTIONS" != "true" ]` });
       const cfg = JSON.parse(readFileSync(file, "utf8"));
       for (const entries of Object.values(cfg.hooks || {})) for (const e of entries) delete e.powershell;
       return { target: ".github/hooks/moorai.json", content: JSON.stringify(cfg, null, 2) + "\n" };

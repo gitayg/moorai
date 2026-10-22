@@ -66,10 +66,12 @@ printed only as a sha256 fingerprint. An OIDC-minted token lives as long as the 
    `MOORAI_WORKLOAD_ID` for OIDC) or the secret `MOORAI_INSTALL_TOKEN`.
 2. Copy [`copilot-setup-steps.yml`](copilot-setup-steps.yml) to `.github/workflows/copilot-setup-steps.yml`
    on the default branch.
-3. Copy [`copilot-hooks.json`](copilot-hooks.json) to `.github/hooks/moorai.json`. It calls
-   `/opt/moorai/bin/moorai-agent-hook copilot`, a wrapper the setup step writes. Without the setup step the
-   wrapper is missing, the command fails, and Copilot denies every tool call (command `preToolUse` hooks
-   fail closed).
+3. Copy [`copilot-hooks.json`](copilot-hooks.json) to `.github/hooks/moorai.json`. It runs
+   `/opt/moorai/bin/moorai-agent-hook copilot`, a wrapper the setup step writes. Where the wrapper is missing,
+   the command gives no verdict unless `GITHUB_ACTIONS` is `true`, so Copilot CLI on a developer's machine
+   (which also loads repository hooks) is not blocked; on a runner where the setup step did not run it
+   fails, and Copilot denies the call (command `preToolUse` hooks fail closed). That `GITHUB_ACTIONS` is set
+   in the Copilot agent's hook environment is not verified.
 4. Add the console host to Settings > Copilot > Internet access > Custom allowlist.
 
 ## Claude Code cloud sessions

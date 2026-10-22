@@ -4,21 +4,21 @@
     "preToolUse": [
       {
         "type": "command",
-        "bash": "/opt/moorai/bin/moorai-agent-hook copilot",
+        "bash": "if [ -x /opt/moorai/bin/moorai-agent-hook ]; then exec /opt/moorai/bin/moorai-agent-hook copilot; fi; [ \"$GITHUB_ACTIONS\" != \"true\" ]",
         "timeoutSec": 30
       }
     ],
     "postToolUse": [
       {
         "type": "command",
-        "bash": "/opt/moorai/bin/moorai-agent-hook copilot",
+        "bash": "if [ -x /opt/moorai/bin/moorai-agent-hook ]; then exec /opt/moorai/bin/moorai-agent-hook copilot; fi; [ \"$GITHUB_ACTIONS\" != \"true\" ]",
         "timeoutSec": 30
       }
     ],
     "userPromptSubmitted": [
       {
         "type": "command",
-        "bash": "/opt/moorai/bin/moorai-agent-hook copilot",
+        "bash": "if [ -x /opt/moorai/bin/moorai-agent-hook ]; then exec /opt/moorai/bin/moorai-agent-hook copilot; fi; [ \"$GITHUB_ACTIONS\" != \"true\" ]",
         "timeoutSec": 30
       }
     ]
