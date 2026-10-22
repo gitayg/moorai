@@ -1584,14 +1584,30 @@ an admin setting can change what a probe sees.
 | `mcp-gateway-hook` | mcp | no | An MCP call to a server outside `mcpAllow` is denied. |
 | `mcp-gateway-http` | mcp | no | The HTTP MCP gateway refuses a call carrying a credential; the remote server sees no call. |
 | `egress-hook` | egress | no | An egress block rule denies an upload command to the blocked host. |
-| `egress-proxy` | egress | no | The egress proxy answers 403 for a blocked host, before any DNS lookup. |
+| `egress-proxy` | egress | no | The egress proxy answers 403 for a blocked host and does not forward the request. |
 | `mxc-detect-config` | mxc | no | The MXC detector reads Codex `windows.sandbox = "mxc"` as contained and an unset config as not. |
 | `mxc-registry` | mxc | yes | `reg.exe` gives this build's UBR, so `mxcCapable` comes from the real registry. |
 | `mxc-enforce` | mxc | yes | With `containmentRequired: "block"`, a Codex shell call whose config does not use MXC is denied (alerted only where `mxcCapable` is false). |
-| `alert-delivery` | alerts | no | Each passing block probe's alert reached the console with the expected reason code (`MCP_SERVER_NOT_ALLOWED`, `EGRESS_RULE`, `CONTAINMENT_*`), and no alert contained the probes' content. |
+| `alert-delivery` | alerts | no | Each passing block probe's alert reached the console with the expected reason code (`MCP_SERVER_NOT_ALLOWED`, `EGRESS_RULE`, `CONTAINMENT_*`), and no alert contained the run's marker or a listed payload piece (see below). |
 
-Every command, URL and argument a probe sends carries a random marker made for that run. `alert-delivery`
-fails if any alert contains it. The marker is never written to the report.
+**What the content-free check looks for.** `alert-delivery` fails, and the report's `alerts.contentFree`
+is false, if any alert's serialized form contains one of these strings:
+
+- the run's random marker, which is appended to every command, URL and argument a probe sends;
+- `PAYLOAD_NEEDLES` in `cli/windows-validate-probes.mjs`, the distinctive pieces of the payloads
+  themselves: `bash -i`, `/dev/tcp/198.51.100.7`, `198.51.100.7`, the example AWS key id and secret,
+  `@notes.txt` and `Get-ChildItem`.
+
+The marker alone is not enough. It sits after each payload, outside the span a detector matches, so an
+alert that carried the matched span (for example `/dev/tcp/198.51.100.7/4444`) would not contain it. With
+`captureTier: "full-capture"` the hook's alert does carry that span, and a test runs the probes that way
+and checks that `alert-delivery` reads `leaked` and the verdict is `fail`.
+
+Scope of the check: it finds only these strings, not every possible rendering of a payload (a re-encoded
+or truncated form would not match). The blocked destination host (`drop.paste.example`), the tool name and
+the egress binary (`curl`) are not checked, because content-free egress and MCP alerts report them by
+design (`egressHost`, `tool`, `egressBinary`). Neither the marker nor a payload piece is written to the
+report.
 
 **The report** (`moorai-windows-validation/1`) holds only: an hour-rounded `generatedAt`; `agentVersion`;
 `platform`, `arch`, the Windows build number (`osBuild`), the Node major version and `mxcCapable`;
@@ -1624,7 +1640,10 @@ real-host counterpart.
 **Not proven.** No probe has run on Windows: the workflow has not run (the branch has not been pushed),
 and no Windows machine was used. In particular these are unverified: `powershell.exe` piping the payload
 to the hook (`[Console]::In.ReadToEnd() | & node hook`), `reg.exe` output on `windows-latest`, the
-`mxc-enforce` decision on a real build, and whether the first Windows run of the MXC test files passes.
+`mxc-enforce` decision on a real build, and whether the first Windows run of the MXC test files passes. The
+`egress-proxy` probe does not show that the block comes before a DNS lookup: the proxy's code returns a
+rule block before it resolves the address (`admit` in `egress-proxy/server.mjs`), but the blocked host
+never resolves, so a run would look the same either way.
 
 ## Sandbox egress policies from egressRules
 

@@ -16,7 +16,7 @@ export const PROBE_TABLE = Object.freeze([
   { id: "egress-hook", surface: "egress", windowsOnly: false,
     proves: "An egress block rule in the signed policy denies a shell command that uploads to the blocked host." },
   { id: "egress-proxy", surface: "egress", windowsOnly: false,
-    proves: "The egress proxy process refuses a request to a host the signed policy blocks (HTTP 403) before any DNS lookup." },
+    proves: "The egress proxy process refuses a request to a host the signed policy blocks with HTTP 403 and does not forward it." },
   { id: "mxc-detect-config", surface: "mxc", windowsOnly: false,
     proves: "The MXC detector reads a Codex config that sets windows.sandbox to mxc as contained, and an unset one as not contained." },
   { id: "mxc-registry", surface: "mxc", windowsOnly: true,
@@ -24,7 +24,7 @@ export const PROBE_TABLE = Object.freeze([
   { id: "mxc-enforce", surface: "mxc", windowsOnly: true,
     proves: "With containmentRequired set to block, a Codex shell command whose config does not use MXC is denied, or alerted where the build cannot run MXC." },
   { id: "alert-delivery", surface: "alerts", windowsOnly: false,
-    proves: "The blocks above reached the console as alerts, and no alert carried a command, URL or argument from the probes." }
+    proves: "The blocks above reached the console as alerts, and no alert carried the run's marker or a listed piece of a probe's command or argument." }
 ]);
 export const PROBE_INFO = Object.freeze(Object.fromEntries(PROBE_TABLE.map((p) => [p.id, p])));
 
