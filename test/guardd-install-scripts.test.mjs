@@ -261,31 +261,178 @@ test("windows: install.ps1 resolves ProgramData from HKLM ProfileList, never %Pr
   assert.match(t, /\[switch\]\$DryRun/);
 });
 
-// Contract §4.2: <PD>\\MoorAI\\state is owner SYSTEM with a protected DACL, SYSTEM F only; <PD>\\MoorAI\\run is
-// SYSTEM F + Administrators F + Users R. <PD>\\MoorAI itself grants Users read (config.json), inheritable, so
-// the state directory must break inheritance or it would inherit Users read over device.key.
-function icaclsGrants(t, dirVar) {
-  const lines = t.split("\n").filter((l) => new RegExp(`& \\$Icacls \\$${dirVar} `).test(l));
-  return lines.map((l) => ({ line: l, sids: [...l.matchAll(/'\*(S-1-5-[0-9-]+):([^']*)'/g)].map((m) => [m[1], m[2]]) }));
+// Contract §4.1/§4.2 DACLs on <PD>\MoorAI, as SDDL constants install.ps1 applies as the WHOLE DACL.
+const ACL_PS1 = join(PKG, "windows", "acl-checks.ps1");
+// install.ps1 without comments (the <# #> header and # lines), so an order or absence check reads code only.
+const psCode = (t) => t.replace(/<#[\s\S]*?#>/g, "").split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+const sddlVar = (t, name) => new RegExp(`\\$${name}\\s*=\\s*'([^']+)'`).exec(t)?.[1];
+const RIGHTS = { FA: 0x1f01ff, FR: 0x120089 };
+const ACE_FLAGS = ["OI", "CI", "NP", "IO", "ID"];
+function parseDacl(sddl) {
+  const m = /^D:([A-Z]*)((?:\([^)]*\))*)$/.exec(sddl || "");
+  assert.ok(m, `a DACL-only SDDL: ${sddl}`);
+  const aces = [...m[2].matchAll(/\(([^)]*)\)/g)].map((x) => {
+    const [type, flags, rights, , , sid] = x[1].split(";");
+    const mask = RIGHTS[rights] ?? (/^0x[0-9a-f]+$/i.test(rights) ? parseInt(rights, 16) : NaN);
+    return { type, flags: flags.match(/../g) || [], mask, sid };
+  });
+  for (const a of aces) {
+    assert.ok(Number.isInteger(a.mask), `numeric or known rights in ${sddl}`);
+    for (const f of a.flags) assert.ok(ACE_FLAGS.includes(f), `known ACE flag ${f}`);
+  }
+  return { protected: m[1].includes("P"), aces };
 }
+// Any right that adds, changes, deletes or re-permissions (same set as acl-checks.ps1 $WriteMask).
+const WRITE_BITS = [0x2, 0x4, 0x10, 0x40, 0x100, 0x10000, 0x40000, 0x80000, 0x10000000, 0x40000000];
+const writes = (mask) => WRITE_BITS.some((b) => (mask & b) !== 0);
+const inherits = (a) => a.flags.includes("OI") || a.flags.includes("CI");
 
-test("windows: install.ps1 creates the state directory owned by SYSTEM with a protected SYSTEM-only DACL", () => {
+test("windows: <PD>\\MoorAI grants Users read on the folder itself only, never inherited by state, secret or any later file", () => {
   const t = readFileSync(PS1, "utf8");
-  assert.match(t, /\$StateDir\s*=\s*Join-Path \$DataDir 'state'/);
-  const g = icaclsGrants(t, "StateDir");
-  assert.ok(g.length >= 1, "an icacls call on the state dir");
-  const grant = g.find((x) => /\/grant:r/.test(x.line));
-  assert.ok(grant && /\/inheritance:r/.test(grant.line), "inheritance removed (protected DACL)");
-  assert.deepEqual(grant.sids.map((s) => s[0]), ["S-1-5-18"], "SYSTEM is the only principal");
-  assert.ok(g.some((x) => /\/setowner \*S-1-5-18/.test(x.line)), "owner SYSTEM");
+  const d = parseDacl(sddlVar(t, "DataDirSddl"));
+  assert.ok(d.protected, "protected: ProgramData's Users create rights are not inherited");
+  const by = Object.fromEntries(d.aces.map((a) => [a.sid, a]));
+  assert.deepEqual(Object.keys(by).sort(), ["BA", "BU", "SY"]);
+  for (const s of ["SY", "BA"]) assert.deepEqual([by[s].type, by[s].mask, by[s].flags.sort()], ["A", 0x1f01ff, ["CI", "OI"]], s);
+  assert.equal(by.BU.type, "A");
+  assert.deepEqual(by.BU.flags, [], "Users read applies to the folder itself, no OI/CI");
+  assert.ok(!writes(by.BU.mask), "Users read only");
+  // No icacls call hands Users (or anyone) an inheritable grant on the data directory.
+  assert.ok(!/& \$Icacls \$DataDir\b/.test(psCode(t)), "the data-dir DACL is not set with icacls");
 });
 
-test("windows: install.ps1 creates the run directory with SYSTEM F, Administrators F and Users R", () => {
+test("windows: state is SYSTEM-only and protected, run is SYSTEM/Administrators full + Users read, secret.json SYSTEM/Administrators only", () => {
   const t = readFileSync(PS1, "utf8");
+  const st = parseDacl(sddlVar(t, "StateDirSddl"));
+  assert.ok(st.protected);
+  assert.deepEqual(st.aces.map((a) => [a.type, a.sid, a.mask, a.flags.sort().join("")]), [["A", "SY", 0x1f01ff, "CIOI"]]);
+  const run = parseDacl(sddlVar(t, "RunDirSddl"));
+  assert.ok(run.protected);
+  assert.deepEqual(Object.fromEntries(run.aces.map((a) => [a.sid, [a.mask, a.flags.sort().join("")]])),
+    { SY: [0x1f01ff, "CIOI"], BA: [0x1f01ff, "CIOI"], BU: [0x120089, "CIOI"] });
+  const sec = parseDacl(sddlVar(t, "SecretSddl"));
+  assert.ok(sec.protected);
+  assert.deepEqual(sec.aces.map((a) => [a.sid, a.mask]).sort(), [["BA", 0x1f01ff], ["SY", 0x1f01ff]]);
+  assert.match(t, /\$StateDir\s*=\s*Join-Path \$DataDir 'state'/);
   assert.match(t, /\$RunDir\s*=\s*Join-Path \$DataDir 'run'/);
-  const grant = icaclsGrants(t, "RunDir").find((x) => /\/grant:r/.test(x.line));
-  assert.ok(grant && /\/inheritance:r/.test(grant.line));
-  assert.deepEqual(Object.fromEntries(grant.sids), { "S-1-5-18": "(OI)(CI)F", "S-1-5-32-544": "(OI)(CI)F", "S-1-5-32-545": "(OI)(CI)R" });
+  assert.match(t, /\$SecretPath\s*=\s*Join-Path \$DataDir 'secret\.json'/);
+});
+
+test("windows: every MoorAI data DACL replaces the whole DACL (never icacls /grant:r, which keeps other entries) and owner is SYSTEM", () => {
+  const t = readFileSync(PS1, "utf8");
+  const c = psCode(t);
+  for (const v of ["DataDir", "StateDir", "RunDir", "SecretPath"]) {
+    assert.ok(!new RegExp(`\\$Icacls \\$${v}\\b[^\\n]*/grant:r`).test(c), `${v}: no /grant:r`);
+    const sddl = v === "SecretPath" ? "SecretSddl" : `${v}Sddl`;
+    assert.match(c, new RegExp(`Set-ExactDacl \\$${v} \\$${sddl}\\b`), `${v} gets the whole ${sddl}`);
+    assert.match(c, new RegExp(`Invoke-Icacls \\$${v} /setowner '\\*S-1-5-18'`), `${v}: owner SYSTEM`);
+  }
+  for (const v of ["StateDir", "RunDir"]) assert.match(c, new RegExp(`Invoke-Icacls \\$${v} /setowner '\\*S-1-5-18' /T`), `${v}: owner SYSTEM below too`);
+  const body = /function Set-ExactDacl[\s\S]*?\n}\n/.exec(c)?.[0] || "";
+  assert.match(body, /SetAccessControl/);
+  assert.match(body, /ReparsePoint/);
+  const nso = /function New-SecurityObject[\s\S]*?\n}\n/.exec(c)?.[0] || "";
+  assert.match(nso, /SetSecurityDescriptorSddlForm\(\$Sddl, \[System\.Security\.AccessControl\.AccessControlSections\]::Access\)/);
+  // A missing directory is created with its DACL in place, never with New-Item (which inherits
+  // ProgramData's Users create rights until the DACL lands).
+  for (const v of ["DataDir", "StateDir", "RunDir"]) {
+    assert.match(c, new RegExp(`New-DirWithDacl \\$${v} \\$${v}Sddl`), v);
+    assert.ok(!new RegExp(`New-Item[^\\n]*-Path \\$${v}\\b`).test(c), `${v}: no New-Item`);
+  }
+});
+
+test("windows: install.ps1 refuses a pre-existing data tree that is a reparse point, not admin-owned or writable by others, before changing anything", () => {
+  const t = readFileSync(PS1, "utf8");
+  const c = psCode(t);
+  const fn = /function Assert-NotSquatted[\s\S]*?\n}\n/.exec(c)?.[0] || "";
+  assert.match(fn, /if \(Test-IsReparsePoint \$i\) \{ [^}]*reparse point[^}]*\} else \{ Get-SquatProblem/, "every entry is checked for a reparse point");
+  assert.match(fn, /Get-SquatProblem \(Get-LiveSddl \$i\.FullName\)/, "every entry's owner and DACL is checked");
+  assert.match(fn, /Get-ChildItem -LiteralPath \$Path -Recurse -Force/, "everything below, hidden entries included");
+  assert.ok(!/FollowSymlink/.test(c), "never follows a junction or symbolic link");
+  assert.match(fn, /throw/);
+  assert.match(c, /function Test-IsReparsePoint[\s\S]*?\[System\.IO\.FileAttributes\]::ReparsePoint/);
+  // The first check runs before anything changes: the service, the binary and every ACL.
+  const first = c.indexOf("Assert-NotSquatted $DataDir");
+  assert.ok(first > 0);
+  for (const later of ["$Sc stop", "Copy-Item", "New-DirWithDacl $DataDir", "Set-ExactDacl $DataDir", "Reset-ChildAcls $DataDir"]) {
+    assert.ok(c.indexOf(later) > first, `${later} after the first check`);
+  }
+  // And again after creating the directory (another user could have created it first), before its DACL.
+  const step = c.slice(c.indexOf("New-DirWithDacl $DataDir"));
+  assert.ok(step.indexOf("Assert-NotSquatted $DataDir") >= 0 && step.indexOf("Assert-NotSquatted $DataDir") < step.indexOf("Set-ExactDacl $DataDir"));
+  assert.match(t, /^\. \(Join-Path \$PSScriptRoot 'acl-checks\.ps1'\)$/m);
+});
+
+test("windows: acl-checks.ps1 Get-SquatProblem refuses any owner but SYSTEM/Administrators and any write-type right for anyone else", () => {
+  const a = psCode(readFileSync(ACL_PS1, "utf8"));
+  assert.match(a, /\$script:AdminSids = @\('S-1-5-18', 'S-1-5-32-544'\)/);
+  const expr = /\$script:WriteMask = ([^\n]+)/.exec(a)?.[1] || "";
+  const mask = expr.split("-bor").map((x) => parseInt(x.trim(), 16)).reduce((x, y) => x | y, 0);
+  for (const b of WRITE_BITS) assert.ok(mask & b, `WriteMask has 0x${b.toString(16)}`);
+  for (const r of [0x1, 0x8, 0x20, 0x80, 0x20000, 0x100000]) assert.equal(mask & r, 0, `read-type 0x${r.toString(16)} is not a write`);
+  const fn = /function Get-SquatProblem[\s\S]*?\n}\n/.exec(a)?.[0] || "";
+  assert.match(fn, /\$script:AdminSids -notcontains \$sd\.Owner\.Value/, "owner check");
+  assert.match(fn, /Get-NullDaclProblem/, "a NULL DACL is refused");
+  assert.match(fn, /\$ace\.AccessMask -band \$script:WriteMask/, "write rights for a non-admin principal");
+  assert.ok(!/InheritOnly/.test(fn), "inherit-only ACEs are not skipped");
+});
+
+test("windows: install.ps1 resets every ACL under <PD>\\MoorAI, then sets state's protected DACL, and checks the result", () => {
+  const c = psCode(readFileSync(PS1, "utf8"));
+  const fn = /function Reset-ChildAcls[\s\S]*?\n}\n/.exec(c)?.[0] || "";
+  assert.match(fn, /Invoke-Icacls \(Join-Path \$Path '\*'\) \/reset \/T/);
+  assert.ok(!/\/C\b/.test(fn), "a failure stops the install (no /C)");
+  const reset = c.indexOf("Reset-ChildAcls $DataDir");
+  assert.ok(reset > 0 && reset < c.indexOf("Set-ExactDacl $StateDir"), "the data-dir reset would otherwise undo state's DACL");
+  assert.ok(reset < c.indexOf("Set-ExactDacl $RunDir") && reset < c.indexOf("Set-ExactDacl $SecretPath"));
+  for (const v of ["StateDir", "RunDir"]) assert.match(c, new RegExp(`Reset-ChildAcls \\$${v}`));
+  for (const v of ["DataDir", "StateDir", "RunDir"]) assert.match(c, new RegExp(`\\$${v} = \\$${v}Sddl`), `${v} verified`);
+  assert.match(c, /Get-DaclMismatch \(Get-LiveSddl \$d\) \$want\[\$d\] 'S-1-5-18'/);
+  assert.match(c, /Get-DaclMismatch \(Get-LiveSddl \$SecretPath\) \$SecretSddl 'S-1-5-18'/);
+  assert.match(c, /Get-AccessProblem \(Get-LiveSddl \$i\.FullName\) @\('S-1-5-18'\)/, "every state entry SYSTEM only");
+  // The secret's prior exposure is read before anything changes, and reported.
+  const pre = c.indexOf("$SecretWasExposed = Get-AccessProblem (Get-LiveSddl $SecretPath) $script:AdminSids");
+  assert.ok(pre > 0 && pre < c.indexOf("$Sc stop"));
+  assert.match(c, /if \(\$SecretWasExposed\) \{\s*Write-Warning/);
+});
+
+test("windows: Users read goes to the public admin inputs one file at a time, never to secret.json", () => {
+  const t = readFileSync(PS1, "utf8");
+  const list = /\$PublicInputs = @\(([^)]*)\)/.exec(t)?.[1] || "";
+  const names = [...list.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  assert.ok(names.includes("config.json"));
+  assert.ok(!names.some((n) => /secret|state|run|device/.test(n)), names.join(","));
+  const c = psCode(t);
+  assert.match(c, /Invoke-Icacls \$p \/grant '\*S-1-5-32-545:\(R\)'/);
+  const usersGrants = [...c.matchAll(/'\*S-1-5-32-545:([^']*)'/g)].map((m) => m[1]);
+  assert.deepEqual(usersGrants.filter((g) => /\(OI\)|\(CI\)/.test(g)), ["(OI)(CI)RX"], "the only inherited Users grant is on Program Files\\MoorAI (the binary)");
+});
+
+// Runs the checks themselves; .NET's security-descriptor types exist on Windows only.
+const PWSH = IS_WIN ? ["pwsh", "powershell"].find((x) => spawnSync(x, ["-NoProfile", "-Command", "1"], { encoding: "utf8" }).status === 0) : null;
+test("windows: acl-checks.ps1 verdicts on real descriptors (squatted, hardened, extra ACE, unprotected)", { skip: !PWSH && "needs PowerShell on Windows" }, () => {
+  const cases = {
+    hardenedByMdm: ["Get-SquatProblem", "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"],
+    userOwned: ["Get-SquatProblem", "O:S-1-5-21-1-2-3-1001D:P(A;OICI;FA;;;SY)"],
+    programDataDefault: ["Get-SquatProblem", "O:BAD:AI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICIIO;GA;;;CO)(A;OICI;0x1200a9;;;BU)(A;CI;0x116;;;BU)"],
+    everyoneFull: ["Get-SquatProblem", "O:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;WD)"],
+    nullDacl: ["Get-SquatProblem", "O:SYD:NO_ACCESS_CONTROL"],
+  };
+  const lines = Object.entries(cases).map(([k, [fn, s]]) => `$r['${k}'] = [string](${fn} '${s}')`);
+  lines.push("$r['secretUsersRead'] = [string](Get-AccessProblem 'O:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)' @('S-1-5-18','S-1-5-32-544'))");
+  lines.push("$r['secretOk'] = [string](Get-AccessProblem 'O:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)' @('S-1-5-18','S-1-5-32-544'))");
+  lines.push("$r['exact'] = [string](Get-DaclMismatch 'O:SYG:SYD:PAI(A;OICI;FA;;;SY)' 'D:P(A;OICI;FA;;;SY)' 'S-1-5-18')");
+  lines.push("$r['extra'] = [string](Get-DaclMismatch 'O:SYD:P(A;OICI;FA;;;SY)(A;OICI;FR;;;BU)' 'D:P(A;OICI;FA;;;SY)' 'S-1-5-18')");
+  lines.push("$r['unprotected'] = [string](Get-DaclMismatch 'O:SYD:(A;OICI;FA;;;SY)' 'D:P(A;OICI;FA;;;SY)' 'S-1-5-18')");
+  lines.push("$r['adminOwner'] = [string](Get-DaclMismatch 'O:BAD:P(A;OICI;FA;;;SY)' 'D:P(A;OICI;FA;;;SY)' 'S-1-5-18')");
+  const script = `$ErrorActionPreference='Stop'; . '${ACL_PS1.replace(/'/g, "''")}'; $r=[ordered]@{}; ${lines.join("; ")}; $r | ConvertTo-Json -Compress`;
+  const r = spawnSync(PWSH, ["-NoProfile", "-Command", script], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  const v = JSON.parse(r.stdout.trim());
+  assert.equal(v.hardenedByMdm, "");
+  for (const k of ["userOwned", "programDataDefault", "everyoneFull", "nullDacl", "secretUsersRead", "extra", "unprotected", "adminOwner"]) assert.notEqual(v[k], "", k);
+  assert.equal(v.secretOk, "");
+  assert.equal(v.exact, "");
 });
 
 test("the guardd-install CI contract paths exist (one script per OS)", () => {
