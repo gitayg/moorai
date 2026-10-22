@@ -135,7 +135,7 @@ test("fromVerdict: deny and ask cancel with errorMessage and contextModification
   for (const v of [{ decision: "deny" }, { decision: "ask" }, { decision: "allow" }]) assert.equal(fromVerdict(v, p).exitCode, 0);
 });
 
-test("install writes executable PreToolUse and UserPromptSubmit scripts into ~/.cline/hooks; idempotent; uninstall removes them; a user's own script is never overwritten", { skip: process.platform === "win32" }, () => {
+test("install writes executable PreToolUse and UserPromptSubmit scripts into ~/Documents/Cline/Hooks; idempotent; uninstall removes them; a user's own script is never overwritten", { skip: process.platform === "win32" }, () => {
   const home = box();
   try {
     const dir = hooksDir(home);
@@ -260,7 +260,7 @@ test("doctor: a MoorAI script left in ~/.cline/hooks is reported", { skip: proce
     mkdirSync(legacy, { recursive: true });
     writeFileSync(join(legacy, "PreToolUse"), readFileSync(join(hooksDir(home), "PreToolUse"), "utf8"), { mode: 0o755 });
     const r = checkHost(hostTable(home, {}).find((h) => h.id === "cline"), { home, env: {} });
-    assert.equal(r.status, "warn", r.summary);
+    assert.equal(r.status, "fail", r.summary);
     assert.match(r.summary, /\.cline\/hooks/);
   } finally { rmTree(home); }
 });

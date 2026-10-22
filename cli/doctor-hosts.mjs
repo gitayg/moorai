@@ -53,7 +53,7 @@ export function hostTable(home = os.homedir(), env = process.env) {
     antigravityHost(home),
     { id: "windsurf", label: "Windsurf (Cascade)", dir: join(home, ".codeium", "windsurf"), file: join(home, ".codeium", "windsurf", "hooks.json"), rel: [".codeium", "windsurf", "hooks.json"], ours: agentOurs("windsurf"), install: [AGENT_HOOK, "windsurf", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} windsurf install` },
     kiroHost(home),
-    { id: "cline", label: "Cline", dir: join(home, ".cline"), file: clineDir(home), rel: [".cline", "hooks"], read: () => clineHooks(home), readRel: (h) => clineHooks(h), ours: agentOurs("cline"), install: [AGENT_HOOK, "cline", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} cline install (and switch hooks on in Cline's settings)` }
+    { id: "cline", label: "Cline", dir: existsSync(join(home, "Documents", "Cline")) ? join(home, "Documents", "Cline") : join(home, ".cline"), file: clineDir(home), rel: ["Documents", "Cline", "Hooks"], read: () => clineHooks(home), readRel: (h) => clineHooks(h), problems: (raw) => (raw.core && raw.core.length ? [`MoorAI hook script(s) in ~/.cline/hooks (${raw.core.join(", ")}) also run under ClineCore, a second time; run the install again to remove them`] : []), ours: agentOurs("cline"), install: [AGENT_HOOK, "cline", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} cline install (hooks are on by default; check that Enable Hooks is not switched off in Cline's settings)` }
   ];
 }
 // Kiro: MoorAI's own V3 hook file ~/.kiro/hooks/moorai.json, a `hooks` ARRAY of { trigger, matcher,
