@@ -30,6 +30,7 @@ import { fixtureRunner, localMcpListeners } from "./aibom-runtime.mjs";
 import { localAiInventory, runCmd } from "./local-ai-inventory.mjs";
 import { localModelSafety, parseOllamaTags, SAFETY_REMOVED_TOKENS } from "./local-model-names.mjs";
 import { assessServerSync } from "./mcp-reputation.mjs";
+import { scanIdeExtensions } from "./ide-extensions.mjs";
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
 const MODEL_SAFETY_TOKENS = SAFETY_REMOVED_TOKENS.map((t) => t.token).join(", ");
@@ -133,6 +134,15 @@ function editorExtensions() {
   }
   return out;
 }
+// Installed IDE extensions (cli/ide-extensions.mjs): every VS Code-family extension and JetBrains plugin,
+// checked for published malicious ids, typosquats, invisible-Unicode code and side-loads. Report-only.
+// The AIBOM keeps the flagged ones and the AI ones; the counts cover all of them.
+function ideScan() {
+  try {
+    const r = scanIdeExtensions({ home: HOME });
+    return { scanned: r.scanned, ai: r.ai, flagged: r.flagged, truncated: r.truncated, extensions: r.extensions.filter((x) => x.ai || x.codes.length) };
+  } catch { return { scanned: 0, ai: 0, flagged: 0, truncated: false, extensions: [], error: "scan-failed" }; }
+}
 function agentSkills() {
   const out = [];
   for (const [dir, kind] of [[".claude/plugins", "plugin"], [".claude/skills", "skill"], [".claude/commands", "command"]])
@@ -185,6 +195,7 @@ async function buildAibom() {
   const decls = [];
   const prov = providers(), local = localModels(), mcp = mcpServers(decls);
   const ext = editorExtensions(), skills = agentSkills();
+  const ides = ideScan();
   const use = usage(prov);
   const keys = scanKeysAtRest().findings;
   const ai = localAi();
@@ -204,10 +215,11 @@ async function buildAibom() {
     summary: { providers: new Set(prov.map((p) => p.provider)).size, models: models.length, localModels: local.length, agents: new Set(prov.map((p) => p.agent)).size, mcpServers: mcp.length, mcpHighRisk: mcp.filter((s) => s.level === "high").length, mcpLowReputation: mcp.filter((s) => s.reputation && (s.reputation.band === "poor" || s.reputation.band === "bad")).length, editorAiExtensions: ext.length, skills: skills.length, calls: use ? use.events : 0, roughSpendUsd: use ? use.roughSpendUsd : null,
       apiKeysAtRest: keys.length, runningLocalRuntimes: runtimes.length, localMcpRunning: mcpLive.filter((m) => m.running === true).length,
       networkLocalRuntimes: runtimes.filter((r) => r.listening === "network").length, installedLocalRuntimes: ai.installed.length,
-      localModelsSafetyRemovedByName: safety ? safety.count : 0 },
+      localModelsSafetyRemovedByName: safety ? safety.count : 0,
+      ideExtensionsScanned: ides.scanned, ideExtensionsFlagged: ides.flagged },
     providers: prov, localModels: local, mcpServers: mcp, editorExtensions: ext, skills, usage: use,
     apiKeysAtRest: keys, localRuntimes: runtimes, localRuntimesInstalled: ai.installed, ...(ai.windowsAi ? { windowsAi: ai.windowsAi } : {}),
-    localMcpListeners: mcpLive, runtimeProbe: ai.status, ...(safety ? { localModelSafety: safety } : {}), components
+    ideExtensionScan: ides, localMcpListeners: mcpLive, runtimeProbe: ai.status, ...(safety ? { localModelSafety: safety } : {}), components
   };
 }
 
@@ -241,6 +253,7 @@ function toMarkdown(d) {
         + (d.localModelSafety.truncated || d.localModelSafety.timedOut ? `\n\nPartial: the scan hit its ${d.localModelSafety.timedOut ? "time" : "entry"} bound.` : "") : "")
     + (d.localMcpListeners.length ? `\n\n## Local MCP servers over HTTP/SSE\n\n| Server | Scope | Transport | Port | Running |\n|---|---|---|---|---|\n` + d.localMcpListeners.map((m) => `| ${m.name} | ${m.scope} | ${m.transport} | ${m.port} | ${m.running == null ? "unknown" : m.running ? "yes" : "no"} |`).join("\n") : "")
     + (d.editorExtensions.length ? `\n\n## Editor AI extensions (harness + version)\n\n| Editor | Extension | Version |\n|---|---|---|\n` + d.editorExtensions.map((x) => `| ${x.editor} | ${x.id} | ${x.version || "—"} |`).join("\n") : "")
+    + (d.ideExtensionScan && d.ideExtensionScan.scanned ? `\n\n## IDE extension scan\n\n${d.ideExtensionScan.scanned} installed extensions scanned, ${d.ideExtensionScan.flagged} flagged, ${d.ideExtensionScan.ai} AI. Report-only.${d.ideExtensionScan.truncated ? " Partial: a read bound was hit." : ""}\n\n| Editor | Extension | Version | AI | Findings | Risk |\n|---|---|---|---|---|---|\n` + (d.ideExtensionScan.extensions.map((x) => `| ${x.editor} | ${x.id} | ${x.version || "—"} | ${x.ai ? "yes" : "no"} | ${x.codes.join(", ") || "—"}${x.advisories ? ` (${x.advisories.join(", ")})` : ""} | ${x.risk} |`).join("\n") || "| — | — | — | — | — | — |") : "")
     + (d.skills.length ? `\n\n## Agent skills & plugins\n\n| Kind | Name |\n|---|---|\n` + d.skills.map((x) => `| ${x.kind} | ${x.name} |`).join("\n") : "")
     + (d.usage ? `\n\n## Usage & cost signal (OWASP LLM10 — content-free)\n\n`
         + `**${d.usage.events}** guarded agent calls`
@@ -278,6 +291,12 @@ never the contents of any credential file):
   ~/.ollama/models/manifests/.../library/          local Ollama model names (directory listing)
   ~/.lmstudio/models, ~/.cache/lm-studio/models    local LM Studio model names (directory listing)
   ~/.vscode/extensions, ~/.cursor/extensions, …    editor AI extensions + versions (the "harness"; dir listing)
+  IDE extension scan (cli/ide-extensions.mjs, report-only): ~/.vscode, ~/.vscode-insiders, ~/.vscode-server,
+  ~/.vscode-oss, ~/.cursor, ~/.windsurf, ~/.kiro extensions (package.json, extensions.json install source,
+  bundled .js/.cjs/.mjs read in memory for invisible-Unicode runs, bounded) and JetBrains plugin dirs
+  (META-INF/plugin.xml inside the plugin jar). Emits editor, id, version, AI flag, finding codes, risk and
+  advisory ids: ide-ext-known-malicious, ide-ext-invisible-code, ide-ext-typosquat,
+  ide-ext-publisher-impersonation, ide-ext-sideloaded. Never a path or file contents.
   ~/.claude/plugins, ~/.claude/skills, ~/.claude/commands   agent skills / plugins / commands (names only)
   ~/.moorai/agent-events.jsonl                     content-free call counts for the usage/cost signal (OWASP LLM10)
 
