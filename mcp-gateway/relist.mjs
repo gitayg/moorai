@@ -51,7 +51,7 @@ export function relistMeta(callMsg) {
 }
 
 // → fetchPage(cursor, { signal }) for tool-recheck.mjs: resolves { tools, nextCursor }, rejects otherwise.
-export function createRelistFetcher({ target, headers, agent, creds = null, meta = null, maxBytes = DEFAULT_MAX_RESPONSE_BYTES }) {
+export function createRelistFetcher({ target, headers, agent, creds = null, meta = null, maxBytes = DEFAULT_MAX_RESPONSE_BYTES, lookup }) {
   const cap = maxBytes || DEFAULT_MAX_RESPONSE_BYTES;
   return (cursor, { signal } = {}) => new Promise((resolve, reject) => {
     const id = RELIST_ID_PREFIX + (++seq);
@@ -74,7 +74,7 @@ export function createRelistFetcher({ target, headers, agent, creds = null, meta
     // the message answering this id, from a parsed JSON body or SSE data (a batch array included)
     const take = (v) => { for (const x of Array.isArray(v) ? v : [v]) if (x && typeof x === "object" && x.id === id && x.method === undefined) { answer(x); return; } };
     try {
-      req = lib.request(target, { method: "POST", headers: { ...headers, "content-length": String(body.length) }, agent, ...(signal ? { signal } : {}) });
+      req = lib.request(target, { method: "POST", headers: { ...headers, "content-length": String(body.length) }, agent, ...(lookup ? { lookup } : {}), ...(signal ? { signal } : {}) });
     } catch { fail(); return; }
     req.on("error", fail);
     req.on("response", (raw) => {

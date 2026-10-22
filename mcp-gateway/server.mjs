@@ -37,6 +37,10 @@ import { createCooldown } from "./cooldown.mjs";
 import { countCall } from "./usage.mjs";
 import { createPendingLists, idKey, PENDING_LIST_MAX, PENDING_LIST_TTL_MS } from "./pending-lists.mjs";
 import { createRelistFetcher, relistHeaders, relistMeta } from "./relist.mjs";
+import { upstreamTarget, judgeUpstream, egressLookup, EGRESS_CODE } from "./egress.mjs";
+import { state as policyState, ensurePolicy } from "./policy.mjs";
+import { systemConfig as gatewaySystemConfig } from "./profile.mjs";
+import { alertProfile, seenOnce, SERVER_MODE as GW_SERVER_MODE } from "./report.mjs";
 
 export const MAX_REQUEST_BYTES = 16 * 1048576;
 // Messages in one client batch. Each tools/call in a batch is gated in turn without yielding to other
@@ -174,6 +178,18 @@ function upstreamUrl(route, reqUrl) {
   return u;
 }
 
+// → { block: null | reason, lookup } for one request to the route's upstream (./egress.mjs). Alerts are
+// posted once per distinct alert per process, with the route's server label and tool "upstream".
+async function upstreamEgress(route, target, method) {
+  try { await ensurePolicy(); } catch { /* no policy: no rules */ }
+  const st = { policy: policyState.POLICY, system: gatewaySystemConfig(), serviceId: GW_SERVER_MODE.active ? GW_SERVER_MODE.serviceId || "" : "", coach: policyState.COACH };
+  const t = upstreamTarget(target, method);
+  const post = (a) => { if (seenOnce(`egress-upstream:${route.server}:${a.contentHash}:${a.decision}`)) alertProfile(route.server, "upstream", a); };
+  const j = judgeUpstream(t, st);
+  for (const a of j.alerts) post(a);
+  return { block: j.block, lookup: egressLookup(t, st, post) };
+}
+
 function readBody(req, limit) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -243,6 +259,9 @@ export function createGatewayServer(cfg) {
     // Keyed by idKey(id): the id as the MCP SDK client matches a response to it (Number(id)).
     const ctx = { idTool: new Map(), idMethod: new Map(), paged: new Set(), requestIds: [], route, guard, pending, cfg, httpMethod: req.method };
     const ckey = clientKey(route, req);
+    // F23: the egress rules on the gateway's own upstream connection (./egress.mjs): by name before the
+    // request is sent, then on each address the socket's lookup returns (eg.lookup, also for a re-list).
+    const eg = await upstreamEgress(route, upstreamUrl(route, req.url), req.method);
     if (req.method === "POST" && body.length) {
       const enforce = cfg.schemaValidation === "enforce";
       const validating = cfg.schemaValidation !== "off";
@@ -312,7 +331,7 @@ export function createGatewayServer(cfg) {
           try {
             // Block mode may first list the upstream itself (./relist.mjs), with this request's session.
             const target = upstreamUrl(route, req.url);
-            const fetchPage = createRelistFetcher({ target, headers: relistHeaders(req.headers, { swaps, trace }), agent: AGENTS[target.protocol], creds, meta: relistMeta(m), maxBytes: cfg.maxResponseBytes });
+            const fetchPage = createRelistFetcher({ target, headers: relistHeaders(req.headers, { swaps, trace }), agent: AGENTS[target.protocol], creds, meta: relistMeta(m), maxBytes: cfg.maxResponseBytes, lookup: eg.lookup });
             const d = await guard.gateCall(m, { fetchPage });
             if (d.block) { blocked.set(m, d.block); if (!d.failClosed) policyRefused = true; }
           } catch {
@@ -341,6 +360,7 @@ export function createGatewayServer(cfg) {
 
     // ---- forward ----
     const target = upstreamUrl(route, req.url);
+    if (eg.block) return sendJson(res, 403, rpcError(!ctx.batch && ctx.requestIds.length === 1 ? ctx.requestIds[0] : null, -32600, `MoorAI MCP gateway: ${eg.block}`));
     const headers = {};
     for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k)) headers[k] = v;
     if (swaps) for (const [k, v] of swaps) headers[k] = v; // after the hop-by-hop strip; keys lower-case, as Node's
@@ -348,11 +368,12 @@ export function createGatewayServer(cfg) {
     headers["accept-encoding"] = "identity"; // a compressed body could not be scanned
     if (body.length || req.method === "POST") headers["content-length"] = String(body.length);
     const lib = target.protocol === "https:" ? https : http;
-    const up = lib.request(target, { method: req.method, headers, agent: AGENTS[target.protocol] });
+    const up = lib.request(target, { method: req.method, headers, agent: AGENTS[target.protocol], lookup: eg.lookup });
     res.on("close", () => { if (!res.writableFinished) up.destroy(); }); // client went away = cancellation
-    up.on("error", () => {
+    up.on("error", (e) => {
       if (res.writableEnded) return; // already answered (e.g. an oversized response refused, then dropped)
-      if (!res.headersSent) sendJson(res, 502, rpcError(null, -32603, "Upstream MCP server unreachable"));
+      if (!res.headersSent && e && e.code === EGRESS_CODE) sendJson(res, 403, rpcError(null, -32600, `MoorAI MCP gateway: ${e.message}`));
+      else if (!res.headersSent) sendJson(res, 502, rpcError(null, -32603, "Upstream MCP server unreachable"));
       else res.destroy();
     });
     up.on("response", (raw) => {

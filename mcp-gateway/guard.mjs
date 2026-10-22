@@ -173,7 +173,7 @@ export function createGuard(route) {
     if (rep) { auditCall(SERVER, tool, "deny", argsHash); return { block: rep.reason, failClosed: rep.failClosed }; }
 
     // Declared workload profile: report or block per the profile's action; coached when unenrolled.
-    const wp = profileCheck({ policy: state.POLICY, server: SERVER, tool, serviceId: SERVER_MODE.active ? SERVER_MODE.serviceId : "", coach: state.COACH });
+    const wp = profileCheck({ policy: state.POLICY, server: SERVER, tool, args: rawArgs, serviceId: SERVER_MODE.active ? SERVER_MODE.serviceId : "", coach: state.COACH });
     for (const a of wp.alerts) alertProfile(SERVER, tool, a);
     if (wp.rejectedAlert && seenOnce(`profile-rejected:${wp.rejectedAlert.contentHash}`)) alertProfile(SERVER, tool, wp.rejectedAlert);
     if (wp.coach) coachNote(`MCP tool call ${tool} (server ${SERVER})`, wp.coach);

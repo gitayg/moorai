@@ -90,7 +90,8 @@ import { recordMcpCall, flushMcpUsage, usageHost, usageIdentity } from "../cli/m
 import { exitWhenDrained } from "../cli/exit-drain.mjs";
 import { agentNameOf, claudeCodeVersion } from "../cli/agent-names.mjs";
 import { gatewayFailMode, gatewayFailReason, gatewayFailAlert } from "../cli/mcp-fail.mjs";
-import { systemConfig } from "../cli/server-mode.mjs";
+import { systemConfig, serverMode } from "../cli/server-mode.mjs";
+import { evaluateEgress } from "../cli/workload-profile.mjs";
 import { createTracer, traceFields } from "../model-proxy/trace-w3c.mjs";
 import { setMetaTrace } from "./trace-meta.mjs";
 import { planServerSpawn, serverSandboxNotes, serverSandboxAlerts, refusedChild } from "./sandbox-spawn.mjs";
@@ -295,6 +296,20 @@ function alertFindings(tool, findings, blocked, argsHash, stage = "mcp") {
       try { post({ ...literacyTouchpoint({ threatId: f.threatId, category: f.category, tool: `desktop:${tool}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
     }
   }
+}
+
+// ---- egress rules on the destinations a call's arguments name (F23) ----
+// → true when the call was refused (answered here). The alerts are the hook's egress alerts (binary, host,
+// port, method; never a path, a query or an argument) with this proxy's tool and server.
+const SERVICE_ID = (() => { try { const sm = serverMode(); return sm.active ? sm.serviceId || "" : ""; } catch { return ""; } })();
+function egressGate(msg, tool, argsHash) {
+  const r = evaluateEgress({ policy: POLICY, system: ADMIN, serviceId: SERVICE_ID, cwd: process.cwd(), tool: `mcp__${SERVER}__${tool}`, toolInput: msg.params.arguments, coach: COACH });
+  for (const a of r.alerts) post({ ...a, tool: `desktop:${tool}`, mcpServer: SERVER, ts: new Date().toISOString(), ...IDENTITY });
+  if (r.coach) coachNote(`MCP tool call ${tool}`, r.coach);
+  if (r.decision !== "deny") return false;
+  auditCall(tool, "deny", argsHash);
+  writeBlock(msg.id, r.reason);
+  return true;
 }
 
 // ---- first-seen server reputation (cli/mcp-reputation.mjs, data/mcp-reputation.js) ----
@@ -570,6 +585,11 @@ async function gateCall(rawLine, msg) {
     }
 
     if (await reputationGate(msg, tool, argsHash)) { replied = true; return; }
+
+    // Egress rules (cli/egress-rules.mjs, F23): every destination the arguments name, judged by the hook's
+    // own function for mcp__<server>__<tool>, from the verified policy and the root-owned machine-wide
+    // config. Coached (forwarded, noted) on an unenrolled device.
+    if (egressGate(msg, tool, argsHash)) { replied = true; return; }
 
     if (!ENGINE) {
       // No engine: open forwards (as always); closed refuses what it cannot judge.

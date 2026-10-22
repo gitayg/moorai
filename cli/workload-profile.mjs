@@ -315,6 +315,26 @@ export function evaluateProfile({ policy = null, system = null, serviceId = "", 
   }
 }
 
+// The egress half of evaluateProfile alone, for a surface that runs no profile drift check (the stdio MCP
+// proxy): the same profile match, rule chain and verdict, so a call is judged there as the hook judges it.
+// → { decision: "allow"|"deny", reason, alerts, coach? }. Never throws (fail-open, as evaluateProfile).
+export function evaluateEgress({ policy = null, system = null, serviceId = "", cwd = "", tool = "", toolInput = {}, coach = false, deps = {} } = {}) {
+  const none = { decision: "allow", reason: "", alerts: [] };
+  try {
+    const set = (d, k) => d && typeof d === "object" && d[k] !== undefined && d[k] !== null;
+    const hasAny = (d) => set(d, "workloadProfiles") || set(d, "egressRules") || set(d, "egressDefault");
+    if (!hasAny(policy) && !hasAny(system)) return none;
+    const { profiles } = cachedProfiles(policy, system);
+    const profile = matchProfile(profiles, { serviceId: typeof serviceId === "string" ? serviceId : "", repo: () => repoOf(cwd, deps) });
+    const egress = judgeEgress(profile, cachedEgress(policy, system), tool, toolInput, coach);
+    if (!egress) return none;
+    const block = egress.worst === "block";
+    return { decision: block && !coach ? "deny" : "allow", reason: block ? egress.reason : "", alerts: egress.alerts, ...(block && coach ? { coach: egress.reason } : {}) };
+  } catch {
+    return none;
+  }
+}
+
 // The egress verdict for one call, or null when no rule and no non-allow default is in force, or when
 // every destination the call names is allowed (allow verdicts raise no alert).
 function judgeEgress(profile, eg, tool, toolInput, coach) {
