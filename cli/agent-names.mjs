@@ -6,8 +6,9 @@
 // AGENT_NAMES), or the console stores null for the extra values. test/agent-kind-version.test.mjs
 // checks that whenever the console checkout is next to this repo.
 //   hosts with a hook adapter   claude-code, codex, cursor, gemini, copilot
-//                               (droid has an adapter too, but is not here until the console's list has it:
-//                               its alerts carry no agentName, like a shim caller this hook cannot name)
+//                               (droid, antigravity, windsurf, kiro and cline have adapters too, but are not
+//                               here until the console's list has them: their alerts carry no agentName,
+//                               like a shim caller this hook cannot name)
 //   MCP client hosts            claude-desktop (the stdio MCP proxy's `--host` stamp)
 //   MoorAI surfaces             agent-sdk, serve, model-proxy, inference-hook, gateway
 export const AGENT_NAMES = Object.freeze(["claude-code", "codex", "cursor", "gemini", "copilot", "claude-desktop", "agent-sdk", "serve", "model-proxy", "inference-hook", "gateway"]);

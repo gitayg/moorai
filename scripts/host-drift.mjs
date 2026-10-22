@@ -287,6 +287,14 @@ export function runConformance(files) {
   return { status: r.status === 0 ? "pass" : "fail", detail: `pass ${n("pass")} fail ${n("fail")}${failed.length ? ": " + failed.join(" | ") : ""}` };
 }
 
+// Adapters built from vendor documentation only, with no published hook schema to validate against.
+const DOCS_ONLY = {
+  antigravity: "Google publishes no hook schema; the adapter was built from antigravity.google/docs/hooks and has not been run against an agy binary; conformance tests only",
+  windsurf: "the Cascade Hooks reference publishes no schema file; the adapter was built from it and has not been run in Windsurf; conformance tests only",
+  kiro: "Kiro publishes no hook schema; the adapter was built from the hooks docs and has not been run against kiro-cli or the IDE; conformance tests only",
+  cline: "Cline's current docs no longer describe the file-hook contract; the adapter was built from the hooks announcement and has not been run in Cline; conformance tests only"
+};
+
 // One host. `opts.exec` / `opts.fetch` exist so the tests can drive this without hosts or network.
 export async function checkHost(id, m, opts = {}) {
   const { installed: forced, latest: wantLatest = false, offline = false, skipTests = false, fetch: fetchImpl = globalThis.fetch, conformance = runConformance, probe = installedVersion, latestOf = npmLatest, claudeSmoke = claudeHookEnvSmoke, live = false, liveImpl = liveTurn } = opts;
@@ -343,6 +351,7 @@ export async function checkHost(id, m, opts = {}) {
     if (live) add("live-turn", await liveImpl(id, m, { bin: inst.bin }));
     if (id === "copilot") add("no-model-smoke", { status: "skip", detail: "Copilot CLI publishes no hook schema and its bundle is no longer readable JS after 1.0.63; conformance tests only" });
     if (id === "droid") add("no-model-smoke", { status: "skip", detail: "Factory publishes no hook schema; the adapter was built from the hooks docs and has not been run against a droid binary; conformance tests only" });
+    if (DOCS_ONLY[id]) add("no-model-smoke", { status: "skip", detail: DOCS_ONLY[id] });
   } catch (e) {
     add("smoke", { status: "fail", detail: String(e && e.message || e).slice(0, 300) });
   }

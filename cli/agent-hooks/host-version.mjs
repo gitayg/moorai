@@ -70,6 +70,8 @@ export function isTested(host, version, manifest = loadManifest()) {
 //   codex, gemini, copilot: no version in hook env or payload (see the per-host notes below).
 //   droid: no version in hook env or payload in Factory's hooks docs (only FACTORY_PROJECT_DIR and the
 //                common input fields are named); the PATH probe reads the npm package `droid`.
+//   antigravity, windsurf, kiro: no version in the documented hook input or environment. cline: the
+//                payload's `clineVersion` (hooks announcement); not read, as no tested version exists.
 const ENV_SOURCES = {
   "claude-code": (env) => {
     const m = /^claude-code[_/](\d+(?:-\d+){1,3})(?:_|$)/.exec(String(env.AI_AGENT || ""));

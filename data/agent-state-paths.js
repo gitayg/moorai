@@ -19,6 +19,13 @@
 //   Copilot CLI  ~/.copilot/session-state and ~/.copilot/history-session-state (CLI changelog 0.0.342).
 //   Droid        ~/.factory/projects/** (docs.factory.com/harness/hooks, example transcript_path
 //                "/Users/.../.factory/projects/.../session.jsonl"; not measured on disk).
+//   Antigravity  ~/.gemini/{antigravity,antigravity-cli,antigravity-ide}/brain/<conversationId>/
+//                .system_generated/logs/transcript.jsonl (antigravity.google/docs/hooks; not measured).
+//   Windsurf     ~/.windsurf/transcripts/{trajectory_id}.jsonl (docs.devin.ai/desktop/cascade/hooks,
+//                post_cascade_response_with_transcript; not measured).
+//   Cline        ~/.cline/data/sessions/ "One folder of messages per session" (docs.cline.bot/getting-started/
+//                config; not measured). Kiro keeps sessions in a SQLite database in ~/.kiro/ whose file name
+//                is not documented, so it is not listed.
 //   Not listed:  VS Code Copilot Chat's storage — not confirmed from a primary source.
 //
 // A HISTORY path is any of the above; a CONTAINER is a directory that holds one (the tool's home dir,
@@ -82,6 +89,7 @@ export function agentStateKind(path) {
     }
     if (s === ".gemini") {
       if (n1 === "tmp" && n3 === "chats") return "history";
+      if (/^antigravity(-cli|-ide)?$/.test(n1) && String(n2 || "").toLowerCase() === "brain") return "history";
       if (n1 === "tmp" && anchored && (!n2 || n2 === "*" || !n3)) return "container";
       return rootOnly && anchored ? "container" : null;
     }
@@ -92,6 +100,14 @@ export function agentStateKind(path) {
     if (s === ".factory") {
       if (n1 === "projects" && anchored) return "history";
       return rootOnly && anchored ? "container" : null;
+    }
+    if (s === ".windsurf" && anchored) {
+      if (n1 === "transcripts") return "history";
+      return rootOnly ? "container" : null;
+    }
+    if (s === ".cline" && anchored) {
+      if (n1 === "data" && String(n2 || "").toLowerCase() === "sessions") return "history";
+      return rootOnly ? "container" : null;
     }
     if (s === "cursor" && n1 === "user") {
       const tail = segs.slice(i + 2).map((x) => x.toLowerCase());
@@ -196,14 +212,14 @@ function pipelineHit(cmds) {
 
 // Interpreter one-liner or heredoc: an interpreter, a history path literal and a write API, all in
 // the same command. Checked on the whole (capped) text because the program text spans quotes and lines.
-const PATH_LITERAL = /[^\s"'`(),;]{0,200}\.(?:claude|codex|cursor|gemini|copilot|factory)\/[^\s"'`(),;]{0,300}|[^\s"'`(),;]{0,200}Cursor\/User\/[^\s"'`(),;]{0,300}/gi;
+const PATH_LITERAL = /[^\s"'`(),;]{0,200}\.(?:claude|codex|cursor|gemini|copilot|factory|windsurf|cline)\/[^\s"'`(),;]{0,300}|[^\s"'`(),;]{0,200}Cursor\/User\/[^\s"'`(),;]{0,300}/gi;
 function interpreterHit(text) {
   if (!INTERP.test(text) || !WRITE_API.test(text)) return false;
   PATH_LITERAL.lastIndex = 0;
   let m, n = 0;
   while ((m = PATH_LITERAL.exec(text)) !== null && n++ < 64) {
     // `process.env.HOME + '/.claude/...'` leaves the literal unanchored; any history path is enough.
-    if (hist(m[0]) || hist("~/" + m[0].replace(/^[^.]*?(?=\.(?:claude|codex|cursor|gemini|copilot|factory)\/)/i, ""))) return true;
+    if (hist(m[0]) || hist("~/" + m[0].replace(/^[^.]*?(?=\.(?:claude|codex|cursor|gemini|copilot|factory|windsurf|cline)\/)/i, ""))) return true;
   }
   return false;
 }
