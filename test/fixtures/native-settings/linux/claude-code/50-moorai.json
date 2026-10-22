@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash",
+      "Monitor",
+      "PowerShell",
+      "WebFetch(domain:evil.example.com)"
+    ],
+    "ask": [
+      "WebFetch",
+      "WebSearch"
+    ]
+  },
+  "allowedMcpServers": [
+    {
+      "serverName": "github"
+    }
+  ],
+  "allowManagedMcpServersOnly": true,
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "network": {
+      "allowedDomains": [
+        "*.example.com:443",
+        "api.partner.test",
+        "registry.npmjs.org"
+      ],
+      "deniedDomains": [
+        "203.0.113.9:22",
+        "203.0.113.9:2222",
+        "evil.example.com"
+      ],
+      "allowManagedDomainsOnly": true
+    }
+  }
+}

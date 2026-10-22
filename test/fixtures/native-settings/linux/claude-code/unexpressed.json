@@ -1,0 +1,80 @@
+[
+  {
+    "source": "tagActions",
+    "item": "exec",
+    "effect": "coarsened",
+    "reason": "tag-beyond-builtin-tools"
+  },
+  {
+    "source": "tagActions",
+    "item": "network",
+    "effect": "coarsened",
+    "reason": "tag-beyond-builtin-tools"
+  },
+  {
+    "source": "tagActions",
+    "item": "read-private",
+    "effect": "omitted",
+    "reason": "tag-decided-from-content"
+  },
+  {
+    "source": "mcpAllow",
+    "effect": "narrowed",
+    "reason": "claude-code-server-name-charset"
+  },
+  {
+    "source": "egressRules",
+    "index": 1,
+    "fields": [
+      "host"
+    ],
+    "effect": "approximated",
+    "reason": "claude-code-wildcard-semantics-unstated"
+  },
+  {
+    "source": "egressRules",
+    "index": 2,
+    "fields": [
+      "path"
+    ],
+    "effect": "coarsened",
+    "reason": "claude-code-request-fields"
+  },
+  {
+    "source": "egressRules",
+    "index": 3,
+    "fields": [
+      "method"
+    ],
+    "effect": "omitted",
+    "reason": "claude-code-request-fields"
+  },
+  {
+    "source": "egressRules",
+    "index": 5,
+    "fields": [
+      "binary"
+    ],
+    "effect": "coarsened",
+    "reason": "claude-code-request-fields"
+  },
+  {
+    "source": "egressRules",
+    "index": 4,
+    "fields": [
+      "port"
+    ],
+    "effect": "coarsened",
+    "reason": "claude-code-webfetch-no-port"
+  },
+  {
+    "source": "egressDefault",
+    "effect": "coarsened",
+    "reason": "claude-code-webfetch-not-sandboxed"
+  },
+  {
+    "source": "egressDefault",
+    "effect": "narrowed",
+    "reason": "claude-code-sandbox-filesystem"
+  }
+]

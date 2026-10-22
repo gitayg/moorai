@@ -1,0 +1,100 @@
+[
+  {
+    "source": "tagActions",
+    "item": "exec",
+    "effect": "coarsened",
+    "reason": "tag-beyond-builtin-tools"
+  },
+  {
+    "source": "tagActions",
+    "item": "network",
+    "effect": "coarsened",
+    "reason": "tag-beyond-builtin-tools"
+  },
+  {
+    "source": "tagActions",
+    "item": "read-private",
+    "effect": "omitted",
+    "reason": "tag-decided-from-content"
+  },
+  {
+    "source": "tagActions",
+    "tool": "Bash",
+    "effect": "omitted",
+    "reason": "codex-no-tool-deny"
+  },
+  {
+    "source": "tagActions",
+    "tool": "Monitor",
+    "effect": "omitted",
+    "reason": "codex-tool-not-mapped"
+  },
+  {
+    "source": "tagActions",
+    "tool": "PowerShell",
+    "effect": "omitted",
+    "reason": "codex-tool-not-mapped"
+  },
+  {
+    "source": "tagActions",
+    "tool": "WebFetch",
+    "effect": "omitted",
+    "reason": "codex-tool-not-mapped"
+  },
+  {
+    "source": "tagActions",
+    "tool": "WebSearch",
+    "effect": "omitted",
+    "reason": "codex-no-tool-ask"
+  },
+  {
+    "source": "mcpAllow",
+    "effect": "narrowed",
+    "reason": "codex-mcp-identity-required"
+  },
+  {
+    "source": "egressRules",
+    "index": 1,
+    "fields": [
+      "port"
+    ],
+    "effect": "coarsened",
+    "reason": "codex-no-port-syntax"
+  },
+  {
+    "source": "egressRules",
+    "index": 2,
+    "fields": [
+      "path"
+    ],
+    "effect": "coarsened",
+    "reason": "codex-request-fields"
+  },
+  {
+    "source": "egressRules",
+    "index": 3,
+    "fields": [
+      "method"
+    ],
+    "effect": "omitted",
+    "reason": "codex-request-fields"
+  },
+  {
+    "source": "egressRules",
+    "index": 4,
+    "fields": [
+      "port"
+    ],
+    "effect": "omitted",
+    "reason": "codex-no-port-syntax"
+  },
+  {
+    "source": "egressRules",
+    "index": 5,
+    "fields": [
+      "binary"
+    ],
+    "effect": "coarsened",
+    "reason": "codex-request-fields"
+  }
+]

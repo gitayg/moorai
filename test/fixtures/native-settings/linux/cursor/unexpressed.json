@@ -1,0 +1,115 @@
+[
+  {
+    "source": "tagActions",
+    "item": "exec",
+    "effect": "coarsened",
+    "reason": "tag-beyond-builtin-tools"
+  },
+  {
+    "source": "tagActions",
+    "item": "network",
+    "effect": "coarsened",
+    "reason": "tag-beyond-builtin-tools"
+  },
+  {
+    "source": "tagActions",
+    "item": "read-private",
+    "effect": "omitted",
+    "reason": "tag-decided-from-content"
+  },
+  {
+    "source": "tagActions",
+    "tool": "Monitor",
+    "effect": "omitted",
+    "reason": "cursor-tool-not-mapped"
+  },
+  {
+    "source": "tagActions",
+    "tool": "PowerShell",
+    "effect": "omitted",
+    "reason": "cursor-tool-not-mapped"
+  },
+  {
+    "source": "tagActions",
+    "tool": "WebFetch",
+    "effect": "omitted",
+    "reason": "cursor-no-tool-ask"
+  },
+  {
+    "source": "tagActions",
+    "tool": "WebSearch",
+    "effect": "omitted",
+    "reason": "cursor-no-tool-ask"
+  },
+  {
+    "source": "tagActions",
+    "tool": "Bash",
+    "effect": "approximated",
+    "reason": "cursor-wildcard-form-unverified"
+  },
+  {
+    "source": "mcpAllow",
+    "effect": "coarsened",
+    "reason": "cursor-mcp-allowlist-no-file"
+  },
+  {
+    "source": "egressRules",
+    "index": 1,
+    "fields": [
+      "port"
+    ],
+    "effect": "coarsened",
+    "reason": "cursor-no-port-syntax"
+  },
+  {
+    "source": "egressRules",
+    "index": 2,
+    "fields": [
+      "path"
+    ],
+    "effect": "coarsened",
+    "reason": "cursor-request-fields"
+  },
+  {
+    "source": "egressRules",
+    "index": 3,
+    "fields": [
+      "method"
+    ],
+    "effect": "omitted",
+    "reason": "cursor-request-fields"
+  },
+  {
+    "source": "egressRules",
+    "index": 4,
+    "fields": [
+      "port"
+    ],
+    "effect": "omitted",
+    "reason": "cursor-no-port-syntax"
+  },
+  {
+    "source": "egressRules",
+    "index": 5,
+    "fields": [
+      "binary"
+    ],
+    "effect": "coarsened",
+    "reason": "cursor-request-fields"
+  },
+  {
+    "source": "egressRules",
+    "index": 0,
+    "id": "no-evil",
+    "fields": [
+      "binary"
+    ],
+    "effect": "coarsened",
+    "reason": "cursor-webfetch-only"
+  },
+  {
+    "source": "egressDefault",
+    "effect": "omitted",
+    "reason": "cursor-no-default-deny"
+  }
+]
