@@ -97,3 +97,12 @@ test("sandbox targets: MXC expresses a cidr natively; Seatbelt and OpenShell rep
   assert.deepEqual(Object.keys(os.policy.network_policies), []);
   assert.ok(os.unexpressed.some((u) => u.index === 1 && u.reason === "openshell-cidr"));
 });
+
+test("cidr match reads the numeric IPv4 spellings a URL parser and inet_aton read as an address (hex, octal, one number, short dotted), directly and on a bare ssh / nc host", () => {
+  const r = validateEgressRule({ cidr: ["10.0.0.0/8"], action: "block" }).rule;
+  for (const h of ["0x0a.1", "167772161", "10.1", "012.0.0.1", "0xa000001"]) assert.equal(ipInCidr(r.cidr, h), true, h);
+  for (const h of ["0x0b.1", "184549377", "11.1", "013.0.0.1", "1e1", "deadbeef.example"]) assert.equal(ipInCidr(r.cidr, h), false, h);
+  const rules = [{ id: "rfc1918", cidr: "10.0.0.0/8", action: "block" }];
+  assert.equal(judge(rules, "Bash", { command: "ssh admin@0x0a.1" }).worst, "block", "ssh to a hex spelling");
+  assert.equal(judge(rules, "Bash", { command: "nc 167772161 22" }).worst, "block", "nc to a one-number spelling");
+});
