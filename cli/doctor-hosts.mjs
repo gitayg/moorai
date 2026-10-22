@@ -48,7 +48,8 @@ export function hostTable(home = os.homedir(), env = process.env) {
     { id: "gemini", label: "Gemini CLI", dir: join(home, ".gemini"), file: join(home, ".gemini", "settings.json"), rel: [".gemini", "settings.json"], comments: true, ours: agentOurs("gemini"), install: [AGENT_HOOK, "gemini", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} gemini install` },
     { id: "copilot", label: "GitHub Copilot CLI", dir: copilotHome, file: join(copilotHome, "hooks", "moorai.json"), rel: [".copilot", "hooks", "moorai.json"], ours: agentOurs("copilot"), install: [AGENT_HOOK, "copilot", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} copilot install` },
     droidHost(home),
-    antigravityHost(home)
+    antigravityHost(home),
+    { id: "windsurf", label: "Windsurf (Cascade)", dir: join(home, ".codeium", "windsurf"), file: join(home, ".codeium", "windsurf", "hooks.json"), rel: [".codeium", "windsurf", "hooks.json"], ours: agentOurs("windsurf"), install: [AGENT_HOOK, "windsurf", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} windsurf install` }
   ];
 }
 // Antigravity: ~/.gemini/config/hooks.json is keyed by hook NAME, each holding its events
