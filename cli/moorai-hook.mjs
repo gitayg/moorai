@@ -91,6 +91,7 @@ import { resolveContainment, containmentDecision, wrapFallback, hostKind, capabl
 import { guardHit, guardAlert, guardReason } from "./containment-guard.mjs";
 import { mxcCapable } from "./mxc-detect.mjs";
 import { queueModelDownload, modelScanDue } from "./model-scan-queue.mjs";
+import { approvalGate } from "./approval-routing.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -334,7 +335,7 @@ let VERIFIED_POLICY;
 // reached the load must be the mode main would have enforced: a network-free read takes the cache or a
 // last-known-good copy however old, both in the user's write scope (test/fail-mode-hook-preverify).
 let POLICY_LOAD = null;
-const verifiedPolicyLoad = () => (POLICY_LOAD ??= loadVerifiedPolicy(CONFIG));
+const verifiedPolicyLoad = () => (POLICY_LOAD ??= loadVerifiedPolicy(CONFIG, { actor: (() => { try { return IDENTITY.actor; } catch { return ""; } })() }));
 // DECIDED: a verdict for this call has been written (emit) or the hook is exiting (exitHook), so a late
 // fail-closed deny must not write a second one. FAIL_EXIT: a fail-closed deny was written, so nothing
 // else may write or set the exit code.
@@ -1025,6 +1026,8 @@ let LEAK_COACH = null; // set by report() when an unenrolled device sees an inst
 // reaches the PreToolUse decision path, so emit() applies the tag gate and the exception hint only there.
 const CALL = { active: false, tool: "", ti: {}, cwd: "", found: new Set(), fileFound: new Set(), exc: { threats: new Set(), rules: new Set(), matched: [] }, localAllowed: false, system: null };
 const EXCEPTIONS_SEEN_FILE = "exceptions-seen.json";
+// Just-in-time approval routing (cli/approval-routing.mjs): a routable deny / ask is held and requested, then released by a signed grant.
+const APPROVALS = approvalGate({ load: verifiedPolicyLoad, tenant: CONFIG.tenant, enabled: isEnrolled(CONFIG), hash: contentHash, threatAction: (id) => threatActionFor(POLICY, id), post: (a) => post({ ...a, ts: new Date().toISOString(), ...IDENTITY }), stateDir: STATE_DIR });
 // The store of the live exception that excused this threat on this call ("console" | "local"), or null.
 function excusedBy(threatId) {
   const e = CALL.exc.matched.find((x) => x.threat && x.threat === threatId);
@@ -1893,6 +1896,8 @@ function coachOut(hookEventName, reason, alternatives) {
 async function emit(decision, reason, alternatives = [], rewrite = null) {
   if (FAIL_EXIT) return new Promise(() => {});
   DECIDED = true;
+  const held = CALL.active && EVENT === "PreToolUse" && !COACH ? await APPROVALS.overlay({ decision, reason, alternatives, rewrite }, { tool: CALL.tool, ti: CALL.ti, found: CALL.found, basis: VERDICT.reason, killOnCritical: POLICY?.killOnCritical === true }) : null;
+  if (held) { VERDICT.basis = VERDICT.reason || REASON.DETECTOR_MATCH; why(held.reasonCode); ({ decision, reason, alternatives, rewrite } = held); }
   // Capability tags (cli/tool-tags.mjs): tagActions and tagRules, the stricter verdict winning. Before the
   // session-risk escalation, so an escalation's reason still appends to the gate's.
   const tg = CALL.active ? tagStep() : null;
@@ -3025,7 +3030,7 @@ async function main() {
   // Declared workload profile (cli/workload-profile.mjs): a tool, MCP server or host outside it is drift.
   // The same call judges egress rules (cli/egress-rules.mjs): binary, host, port, method, path.
   const wp = profileStep(policy, tool, ti, input.cwd);
-  if (wp) { why(wp.reasonCode || PROFILE_DRIFT); return emit("deny", wp.reason); }
+  if (wp && !(await APPROVALS.liftEgress(wp, { tool, ti }))) { why(wp.reasonCode || PROFILE_DRIFT); return emit("deny", wp.reason); }
 
   if (tool === "Read") {
     READ_BUF = null;

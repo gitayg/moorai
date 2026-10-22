@@ -2126,7 +2126,9 @@ function writePolicyPin(config, pin, keys, mark) {
 // tool call then skipped the fetch that would have delivered a new policy (measured under CPU
 // contention: test/console-backoff.test.mjs WORKER). Without network the worker writes nothing: no
 // back-off, no cache, no pin, no last-known-good.
-export async function loadVerifiedPolicy(config, { backoffDraw, network = true } = {}) {
+// actor: the device's keyed actor (h2:, cli/content-hash.mjs actorHash), named on the fetch so the console can add
+// this device's decided approvals to the signed policy (cli/approval-routing.mjs). Never a hostname or login.
+export async function loadVerifiedPolicy(config, { backoffDraw, network = true, actor = "" } = {}) {
   const anchorKeys = policyKeys();    // explicit anchor: root-owned /etc/moorai/policy.pub or MDM env
   const pin = readPolicyPin();        // this device's own TOFU record
   const trust = policyTrust({ anchorKeys, pin, tenant: config.tenant });
@@ -2220,7 +2222,7 @@ export async function loadVerifiedPolicy(config, { backoffDraw, network = true }
     // only on an UNPINNED device (first contact). Anchored devices have the stronger statement; a pinned
     // one must never learn from an unsigned answer, so it does not ask (policyKeysToLearn).
     const [raw, published] = await Promise.all([
-      q(`/api/policy?tenant=${encodeURIComponent(config.tenant)}`),
+      q(`/api/policy?tenant=${encodeURIComponent(config.tenant)}${typeof actor === "string" && /^h2:[0-9a-f]{16,64}$/.test(actor) ? `&actor=${encodeURIComponent(actor)}` : ""}`),
       trust.mode === "unpinned" ? q("/api/policy/pubkey") : Promise.resolve("")
     ]);
     // Any HTTP response means the console is reachable; only a fetch with no response backs off.
