@@ -204,11 +204,13 @@ test("TIMEOUT E2E: a model that always times out neither delays the hook nor cha
 // failures in this repo's first CI run, and the ONLY one that also reproduced in a clean Linux
 // container with nothing else changed. A test whose verdict depends on an unrelated daemon is not
 // evidence either way, so the stub supplies exactly the state the assertion is about — a backend that
-// is PRESENT (/api/tags answers) and never ANSWERS (/api/generate hangs) — on every machine.
+// is PRESENT (/api/tags answers and lists the configured model) and never ANSWERS (/api/generate hangs) —
+// on every machine. An empty model list now means "model not installed" (data/model-escalation.mjs
+// localModelAvailable), which is the "unavailable" case, not this one.
 async function stallingBackend() {
   const held = [];
   const srv = http.createServer((req, res) => {
-    if (req.url.startsWith("/api/tags")) { res.setHeader("content-type", "application/json"); return res.end(JSON.stringify({ models: [] })); }
+    if (req.url.startsWith("/api/tags")) { res.setHeader("content-type", "application/json"); return res.end(JSON.stringify({ models: [{ name: process.env.MOORAI_LOCAL_MODEL || "llama3:latest" }] })); }
     held.push(res); // /api/generate: accepted, never answered
   });
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));

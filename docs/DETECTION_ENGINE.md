@@ -648,6 +648,10 @@ scan, and each is wrapped so that a failure inside it leaves the boolean verdict
    (`test/escalation-ordering.test.mjs`, F-301). Only `semantic-persuasion` opts in today, on the
    `detect` gate; the `confirm` gate (a model verdict dropping a finding) has no production detector, and
    the hook could not honour a drop anyway because it has already posted its findings by then.
+   The local backend runs only when the configured model is listed by Ollama's `/api/tags`, and its
+   verdicts are kept in a bounded on-device cache keyed by an HMAC of model + text
+   ([`data/escalation-cache.mjs`](../data/escalation-cache.mjs); 24 h, 2,000 entries, verdicts only,
+   never a failure), so the same text is not sent to the model twice.
 
 ---
 

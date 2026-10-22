@@ -239,9 +239,19 @@ Cheapest-and-most-private first; the escalation order *is* the privacy order.
    decision.
 2. **Tier 2 — local model** — on ambiguity, opportunistic and policy-gated
    ([`data/model-escalation.mjs`](../data/model-escalation.mjs)). Ollama on the loopback interface
-   (`127.0.0.1:11434`, default `llama3.2:1b`) — deliberately not configurable to a remote host, so
-   nothing leaves the device. Fail-open: no model, timeout or error yields no verdict and never
-   changes enforcement.
+   (`127.0.0.1:11434`, default model `llama3:latest`, set with `MOORAI_LOCAL_MODEL`) — deliberately not
+   configurable to a remote host, so nothing leaves the device. Fail-open: no model, timeout or error
+   yields no verdict and never changes enforcement. The configured model must be **installed**: an
+   Ollama whose `/api/tags` does not list it is treated as unavailable (outcome `unavailable`) instead of
+   paying a `/api/generate` call that fails with "model not found" (a bare name matches its `:latest`
+   tag; an unreadable tag list counts as present). Verdicts are **cached on the device**
+   ([`data/escalation-cache.mjs`](../data/escalation-cache.mjs), `~/.moorai/escalation-cache.json`,
+   0600): the key is an HMAC of model + text under a random per-device key
+   (`~/.moorai/escalation-cache.key`), the value is the content-free verdict (flag, short category,
+   confidence, time); entries expire after 24 hours and at most 2,000 are kept. Only verdicts a model
+   returned are cached, never a timeout or an error. A cache hit is recorded as outcome `answered` with
+   backend `local-cache`. The escalation worker is a new process per tool call, which is why the cache
+   is on disk. Tests: `test/escalation-cache.test.mjs` (fake Ollama on 127.0.0.1, temporary HOME).
 3. **Tier 2b — device-side provider inference** — when no local model is present
    ([`data/device-inference.mjs`](../data/device-inference.mjs)). Reuses the API key **already on the
    developer's machine** (`ANTHROPIC_API_KEY` or an admin key file), so no new third party and no new
