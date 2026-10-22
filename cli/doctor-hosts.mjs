@@ -10,6 +10,7 @@ import { join, dirname, isAbsolute } from "node:path";
 import os from "node:os";
 import { configTarget as droidTarget, eventMap as droidEvents } from "./agent-hooks/droid.mjs";
 import { hooksFile as antigravityFile, eventView as antigravityView } from "./agent-hooks/antigravity.mjs";
+import { hookFile as kiroFile, eventView as kiroView } from "./agent-hooks/kiro.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, "moorai-hook.mjs");
@@ -49,8 +50,16 @@ export function hostTable(home = os.homedir(), env = process.env) {
     { id: "copilot", label: "GitHub Copilot CLI", dir: copilotHome, file: join(copilotHome, "hooks", "moorai.json"), rel: [".copilot", "hooks", "moorai.json"], ours: agentOurs("copilot"), install: [AGENT_HOOK, "copilot", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} copilot install` },
     droidHost(home),
     antigravityHost(home),
-    { id: "windsurf", label: "Windsurf (Cascade)", dir: join(home, ".codeium", "windsurf"), file: join(home, ".codeium", "windsurf", "hooks.json"), rel: [".codeium", "windsurf", "hooks.json"], ours: agentOurs("windsurf"), install: [AGENT_HOOK, "windsurf", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} windsurf install` }
+    { id: "windsurf", label: "Windsurf (Cascade)", dir: join(home, ".codeium", "windsurf"), file: join(home, ".codeium", "windsurf", "hooks.json"), rel: [".codeium", "windsurf", "hooks.json"], ours: agentOurs("windsurf"), install: [AGENT_HOOK, "windsurf", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} windsurf install` },
+    kiroHost(home)
   ];
+}
+// Kiro: MoorAI's own V3 hook file ~/.kiro/hooks/moorai.json, a `hooks` ARRAY of { trigger, matcher,
+// action.command } (cli/agent-hooks/kiro.mjs); `view` groups it by trigger.
+function kiroHost(home) {
+  const view = (d) => ({ hooks: kiroView(d).hooks });
+  const problems = (raw) => kiroView(raw).disabled.map((n) => `the "${n}" hook has enabled is false in ${pathOf(kiroFile(home))}`);
+  return { id: "kiro", label: "Kiro", dir: join(home, ".kiro"), file: kiroFile(home), rel: [".kiro", "hooks", "moorai.json"], view, viewRel: view, problems, ours: agentOurs("kiro"), install: [AGENT_HOOK, "kiro", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} kiro install` };
 }
 // Antigravity: ~/.gemini/config/hooks.json is keyed by hook NAME, each holding its events
 // (cli/agent-hooks/antigravity.mjs); `view` merges every named hook's groups per event. ~/.gemini/config
