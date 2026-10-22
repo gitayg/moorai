@@ -68,7 +68,7 @@ export const RECORD_FIELDS = Object.freeze(["ts", "session", "seq", "event", "to
 export const BASES = Object.freeze(["rule", "default", "exception"]);
 // A model-proxy record's provider, and the model string's shape (else the field is left out).
 export const PROVIDERS = Object.freeze(["anthropic", "openai", "google", "ollama", "other"]);
-const MODEL_RE = /^[A-Za-z0-9._:\/@-]{1,64}$/;
+export const MODEL_RE = /^[A-Za-z0-9._:\/@-]{1,64}$/;
 // The event a record names: "PreToolUse" unless the caller names another (the model proxy: "ModelRequest").
 // A letters-only token of at most 32, else the default.
 const EVENT_RE = /^[A-Za-z]{1,32}$/;
