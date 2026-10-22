@@ -1731,19 +1731,26 @@ per host in [`cli/native-settings/`](../cli/native-settings/); the portable subs
 
 | Host | Path (darwin / linux / win32) | Merge | Carried | Not carried (reason codes) |
 |---|---|---|---|---|
-| Claude Code | `…/ClaudeCode/managed-settings.d/50-moorai.json` | whole (MoorAI's own drop-in) | `permissions.deny` / `ask`; `allowedMcpServers` `{ serverName }` + `allowManagedMcpServersOnly`; `sandbox.network.allowedDomains` / `deniedDomains` (`host:port` per port); `WebFetch(domain:…)` denies; with `egressDefault: "block"`: `sandbox.enabled`, `failIfUnavailable`, `allowUnsandboxedCommands: false`, `network.allowManagedDomainsOnly` | names outside `[A-Za-z0-9_-]` (`claude-code-server-name-charset`, narrowed); WebFetch to unlisted hosts (`claude-code-webfetch-not-sandboxed`); the sandbox's file confinement (`claude-code-sandbox-filesystem`, narrowed); domain lists with the sandbox off (`claude-code-sandbox-off`, may-be-inert); `*.x` apex matching unstated (approximated) |
+| Claude Code | `…/ClaudeCode/managed-settings.d/50-moorai.json` | whole (MoorAI's own drop-in) | `permissions.deny` / `ask`; `allowedMcpServers` `{ serverName }` + `allowManagedMcpServersOnly`; `sandbox.network.allowedDomains` / `deniedDomains` (`host:port` per port); `WebFetch(domain:…)` denies; with `egressDefault: "block"`: `sandbox.enabled`, `autoAllowBashIfSandboxed: false`, `failIfUnavailable`, `allowUnsandboxedCommands: false`, `network.allowManagedDomainsOnly` | names outside `[A-Za-z0-9_-]` (`claude-code-server-name-charset`, narrowed); WebFetch to unlisted hosts (`claude-code-webfetch-not-sandboxed`); the sandbox's file confinement (`claude-code-sandbox-filesystem`, narrowed); domain lists with the sandbox off (`claude-code-sandbox-off`, may-be-inert); `*.x` apex matching unstated (approximated) |
 | Codex | `/etc/codex/requirements.toml`; `C:\ProgramData\OpenAI\Codex\requirements.toml` | whole | `allowed_web_search_modes = []`; `[allowed_permission_profiles] ":read-only" = true` when every write tool is refused (approximated: it also refuses shell writes); `[mcp_servers.<name>] identity = { command | url }` from `--mcp-identities`, `[mcp_servers]` empty for nothing approved; `[experimental_network]` + `.domains` | shell, read and agent tools have no deny (`codex-no-tool-deny`); asks (`codex-no-tool-ask`); a server with no identity (`codex-mcp-identity-required`: narrowed when others are listed, coarsened when none can be); ports (`codex-no-port-syntax`); unlisted-domain behaviour without the managed lock is unstated (approximated); the section is experimental |
 | Copilot CLI | `/Library/Application Support/GitHubCopilot/managed-settings.json`; `/etc/github-copilot/…`; `C:\Program Files\GitHubCopilot\…` | keys | `permissions.deny` / `ask` (`Shell(*)`, `PowerShell(*)`, `Read(**)`, `Write(**)`, `Edit(**)`, `Domain(…)`); `permissions.limitTo` (allowed domains with a block default; `[]` when web tools are refused); `allowedMcpServers` | `Shell(*)` form unverified (approximated); `limitTo` and `Domain()` do not cover shell (coarsened); first-party servers exempt (coarsened); the managed `sandbox` network shape is unpublished |
 | Cursor | `~/.cursor/cli-config.json` (user scope) | keys | `permissions.deny` (`Shell(*)`, `Read(**)`, `Write(**)`, `WebFetch(*)`, `WebFetch(host)`) | no managed file, no MCP allow-list file (`cursor-mcp-allowlist-no-file`), no ask list, no default deny (`cursor-no-default-deny`); allow entries are never written (they auto-approve) |
 | Gemini CLI | `…/GeminiCli/policies/moorai.toml` (admin tier) and `…/GeminiCli/settings.json` | whole / keys | `[[rule]]` deny (priority 900) and `ask_user` (800) by tool name (`run_shell_command` + `read_many_files` for Bash, `read_file`, `write_file`, `replace`, `web_fetch`, `google_web_search`, `invoke_agent`); `mcpName = "*"` deny for nothing approved; `mcp.allowed` | no network policy (`gemini-no-network-policy`); server names with `_` (approximated); tools MoorAI's adapter does not map (`gemini-tool-not-mapped`) |
 
-No host compiler writes an allow rule that removes a prompt (Gemini `allow`, Cursor `allow`, Copilot `allow`).
+No host compiler writes an allow rule that removes a prompt (Gemini `allow`, Cursor `allow`, Copilot `allow`),
+and no compiled switch removes one: Claude Code's sandbox auto-allow defaults to on ("`autoAllowBashIfSandboxed`
+still defaults to `true`"), and with it a bare `Bash` ask rule is skipped for sandboxed commands, so the
+Claude Code file sets it to `false` whenever it turns the sandbox on. Set in managed settings, a lower
+settings level cannot change it. Copilot's empty `allowedMcpServers` is the documented deny-all ("an empty
+array denies all of them").
 
 **Drift.** `nativeDrift(compiled, { root, home, read })` reads each file (under `root` for tests) and compares:
 whole-file TOML byte for byte (`content-changed`); JSON by owned key path, lists as sets (`missing-entries`,
 `extra-entries`), scalars (`value-changed`), deleted keys (`key-absent`) and, for files MoorAI owns whole, keys
 added by hand (`extra-key`). Each finding says whether it `weakens` the file (a missing deny or ask entry, an
-extra allow-list entry, a changed switch, an added key). `nativeSettingsPosture({ policy, platform })` →
+extra allow-list entry, a changed switch, an added key). A missing owned file is state `absent` and a file
+that is not JSON (or not a file) is `unreadable`; neither has findings, so `check` judges them by state: exit 3
+for `drift` or `unreadable`, 4 for `absent`, 0 when in sync. `nativeSettingsPosture({ policy, platform })` →
 `{ v:1, hosts:{ <host>: { state, files, findings, weakening, unexpressed } } }`, counts only.
 
 **Not wired here.** The posture heartbeat is built in `cli/moorai-hook.mjs` and `cli/agent-posture.mjs`, which
@@ -1754,6 +1761,8 @@ platform: process.platform })` in the heartbeat body; until it lands, drift is r
 **Not proven.**
 - Only the Claude Code MCP allow-list was read by a real host, and only through `--settings`, not from the
   managed drop-in directory. The permission, sandbox and drop-in keys are taken from the docs.
+- `autoAllowBashIfSandboxed: false` keeping a Bash ask prompting under the sandbox is taken from the docs; no
+  Claude Code session was run with the compiled sandbox on (that needs a model call).
 - Codex `requirements.toml`, Copilot CLI managed settings and Gemini CLI policy files were not loaded by those
   hosts (none is installed here). `Shell(*)` / `PowerShell(*)` in Copilot and Cursor are unverified forms.
 - The CLI verifies a signature only when `--pubkey` is given; it does not use the device's pin.

@@ -14,7 +14,8 @@
 //
 // unexpressed lines: { source, item?|index?|id?, tool?, effect, reason } — the same effects as
 // cli/sandbox-policy.mjs (omitted, coarsened, narrowed, approximated, may-be-inert, invalid). Content-free:
-// sources, tag names, tool names and rule indexes only, never a host, path or server name.
+// sources, tag names, tool names, rule indexes and the egress rule id the admin wrote (printed as written),
+// never a rule's host, a path or a server name.
 
 import { BUILTIN_TOOL_TAGS, tagActionsFrom } from "../../data/tool-tags.js";
 import { validateEgressRule, validEgressDefault } from "../egress-rules.mjs";

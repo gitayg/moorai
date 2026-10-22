@@ -2087,7 +2087,7 @@ tools with that tag), `entitlements` with `entitlementMode: "block"` (an allow-o
 
 | Host | File written | What it carries |
 |---|---|---|
-| Claude Code | `managed-settings.d/50-moorai.json` in the managed settings directory | `permissions.deny` / `ask`, `allowedMcpServers` + `allowManagedMcpServersOnly`, the Bash sandbox's `network.allowedDomains` / `deniedDomains` (with `egressDefault: "block"`: sandbox on, `failIfUnavailable`, no unsandboxed retry, managed domains only), `WebFetch(domain:…)` denies |
+| Claude Code | `managed-settings.d/50-moorai.json` in the managed settings directory | `permissions.deny` / `ask`, `allowedMcpServers` + `allowManagedMcpServersOnly`, the Bash sandbox's `network.allowedDomains` / `deniedDomains` (with `egressDefault: "block"`: sandbox on with its auto-allow off (`autoAllowBashIfSandboxed: false`, so a Bash ask still prompts), `failIfUnavailable`, no unsandboxed retry, managed domains only), `WebFetch(domain:…)` denies |
 | Codex | `/etc/codex/requirements.toml` (Windows: `%ProgramData%\OpenAI\Codex\`) | `allowed_web_search_modes = []`, a read-only `allowed_permission_profiles` when every write tool is refused, the `mcp_servers` identity allow-list, `experimental_network` domains |
 | Copilot CLI | the root-owned `managed-settings.json` | `permissions.deny` / `ask` (`Shell(*)`, `Read(**)`, `Domain(…)`), `permissions.limitTo`, `allowedMcpServers` |
 | Cursor | the user's `~/.cursor/cli-config.json` (the only file Cursor documents) | `permissions.deny` (`Shell(*)`, `Read(**)`, `Write(**)`, `WebFetch(…)`) |
@@ -2096,15 +2096,20 @@ tools with that tag), `entitlements` with `entitlementMode: "block"` (an allow-o
 Every part of the policy a host's file cannot carry is listed in `unexpressed`, one entry per rule or tool:
 `{ source, index? | item? | tool?, effect, reason }`, with the effects `omitted`, `coarsened` (the host lets
 more through, and MoorAI's own check still judges it), `narrowed` (the host refuses something MoorAI allows),
-`approximated`, `may-be-inert` and `invalid`. Nothing is widened silently. Examples: Codex matches MCP servers
+`approximated`, `may-be-inert` and `invalid`. No compiled file removes a prompt: Claude Code's sandbox would
+run sandboxed shell commands without asking by default, so MoorAI turns that auto-allow off whenever it turns
+the sandbox on. Examples: Codex matches MCP servers
 by command or URL, so `--mcp-identities` supplies those for the names in `mcpAllow`; Cursor has no MCP
 allow-list file; Gemini CLI has no domain list; a `binary`, `method` or `path` field on an egress rule cannot
-be expressed by any host's domain list. The report holds sources, indexes, tag and tool names only, never a
-host name or server name.
+be expressed by any host's domain list. The report holds sources, rule indexes, tag and tool names, and the
+egress rule `id` exactly as the administrator wrote it (an id that spells a host name is printed as written);
+it never copies a rule's host or a server name.
 
 `check` compares each host's file with what MoorAI compiles: `in-sync`, `drift`, `absent`, `unreadable` or
 `not-applicable`, with findings by key path (`missing-entries`, `extra-entries`, `key-absent`,
-`value-changed`, `extra-key`, `content-changed`) and whether each one lets more through. It exits 3 on drift.
+`value-changed`, `extra-key`, `content-changed`) and whether each one lets more through. It exits 3 when a
+file has drifted or cannot be read (not JSON, or not a file), 4 when a file is missing, and 0 when every file
+is in sync.
 `nativeSettingsPosture()` returns the same result as a content-free record per host (state and counts only).
 
 The native file is a second layer next to MoorAI's own hook. A file in a user-writable place (Cursor's) can be
