@@ -3135,7 +3135,23 @@ each basis; the console pins the same literal and downgrades a stronger claim.
   gateway pass it to `assessServer`, which fetches an https (or loopback http) URL with one bare GET, at most
   once in 24 h, `redirect: "error"`, 5 s timeout, 16 MB cap; `MOORAI_OFFLINE=1` serves the cache. The verified
   file is cached in `~/.moorai/mcp-catalogue.json` and re-verified on every read (it is in the user's writable
-  state). A fetched catalogue with a lower `seq` than the verified cache is refused (`rollback-refused`).
+  state). Nothing in that file decides freshness on its own: the cache is fresh only when its `url` matches,
+  its `fetchedAt` is at most 5 minutes in the future and under 24 h old, and its signed `expiresAt` has not
+  passed. `~/.moorai/mcp-catalogue.seq.json` holds the highest `seq` accepted per publisher keyId (raised on
+  every accepted fetch and every verified read). A cached catalogue below it reads `rollback-refused` (no
+  catalogue, so the next refresh fetches), and a fetched catalogue below it or below the verified cache is
+  refused (`refresh: "rollback-refused"`). The mark is in the same writable directory: a local user who
+  rewrites both files can hold an older signed catalogue until the next refresh, at most 24 h.
+  `readCatalogue` returns `expired: true` for a verified catalogue past its `expiresAt`. It is not fresh, so
+  every refresh fetches; while none succeeds its risk signals still apply (dropping them would let the
+  clock or a withheld download weaken a control) and reputation evidence names `catalogue-expired`.
+  `moorai-mcp-catalogue status` prints `expired`.
+- **Tool-stage re-score.** The stdio guard and the gateway pass the same `mcpCatalogue` to `addToolSignals`,
+  so a re-score after `tools/list` keeps the catalogue verdict (before, it read the cache with no policy
+  keys, and a server whose only anchor was the policy dropped `catalogue-do-not-install` on re-score).
+  Tested end to end through the stdio guard (`test/mcp-catalogue-wiring.test.mjs`). The gateway's servers are
+  remote: `catalogueSignals` matches npm and PyPI only, so for the gateway the pass-through changes evidence,
+  not the score, and no test observes it.
 - **Reputation.** `catalogueSignals`: a name-level `do-not-install` adds `catalogue-do-not-install` to any
   version; a version's `do-not-install` / `review` / `caution` adds `catalogue-do-not-install` (70) /
   `catalogue-review` (20) / `catalogue-caution` (5); `no-findings`, `not-scanned`, an unlisted version and an
