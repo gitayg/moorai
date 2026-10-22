@@ -583,7 +583,7 @@ function pathMatch(p, path) {
 // Does one rule match one target? See UNKNOWN FIELDS and BINARY ATTRIBUTION above.
 export function ruleMatches(rule, t) {
   const allow = rule.action === "allow";
-  if (rule.cidr ? !ipInCidr(rule.cidr, t.host) : !hostMatch(rule.host, t.host)) return false;
+  if (rule.cidr ? !ipInCidr(rule.cidr, t.addr != null ? t.addr : t.host) : !hostMatch(rule.host, t.host)) return false;
   if (rule.binary) {
     if (allow) { if (!t.binary || !rule.binary.some((re) => re.test(t.binary))) return false; }
     else if (t.binary) {

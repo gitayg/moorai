@@ -42,7 +42,8 @@ import os from "node:os";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { egressReason, egressAlerts, EGRESS_RULE, EGRESS_CATEGORY } from "../cli/egress-rules.mjs";
 import { ipOf, addressClass, isMetadataAddress, isLocalAddress } from "./address.mjs";
-import { judgeConnection, httpTarget, httpDestination, connectTarget, rejectedAlert } from "./judge.mjs";
+import { judgeConnection, judgeAddresses, hasCidrRules, networkTarget, httpTarget, httpDestination, connectTarget, rejectedAlert } from "./judge.mjs";
+import { sniffClientHello } from "./sni.mjs";
 import { DEFAULTS } from "./config.mjs";
 import { parseTraceparent, formatTraceparent, newTraceId, newSpanId } from "../cli/trace-context.mjs";
 
@@ -120,31 +121,42 @@ export function createEgressProxy(cfg = {}, deps = {}) {
   async function admit(t, tc) {
     let st;
     try { st = await getState(); } catch { return { ok: false, status: 503, message: "the egress policy could not be loaded" }; }
-    const v = judgeConnection(t, st);
+    let v = judgeConnection(t, st);
     if (v.rejected && v.rejected.length && st.policy && typeof st.policy === "object" && !rejectedSeen.has(st.policy)) {
       rejectedSeen.add(st.policy);
       const ra = rejectedAlert(v.rejected);
       if (ra) alert(ra, tc);
     }
     if (v.error) { alertRefusal("judge-error", t, tc); return { ok: false, status: 403, message: "the egress rules could not be evaluated" }; }
-    const verdict = { target: t, action: v.action, ref: v.ref, ...(v.ruleId ? { ruleId: v.ruleId } : {}) };
-    const ruleAlerts = () => { for (const a of egressAlerts([verdict], { coach: !!st.coach, profileId: v.profileId })) alert(a, tc); };
-    if (v.action === "block" && !st.coach) { ruleAlerts(); return { ok: false, status: 403, message: egressReason(verdict) }; }
-
-    // A block never vouches for an address, also when coaching lets the block itself through. A *.suffix
-    // rule never vouches for one either: only a rule naming the exact host or IP literal does.
-    const named = v.explicit && v.action !== "block";
-    const exact = named && v.exactHost;
-    let addrs;
     const literal = ipOf(t.host);
-    if (literal) {
-      if (!exact) { alertRefusal("ip-literal", t, tc); return { ok: false, status: 403, message: `egress to an IP literal (${t.host}:${t.port}) needs an egress rule that names it` }; }
-      addrs = [{ address: literal, family: net.isIP(literal) }];
-    } else {
+    // With a cidr rule in force a name's verdict depends on its addresses (F23): it is resolved first and
+    // judged per resolved address (judgeAddresses). Without one, a blocked name is refused before any DNS.
+    const byAddress = !literal && hasCidrRules(st);
+    let verdict = { target: t, action: v.action, ref: v.ref, ...(v.ruleId ? { ruleId: v.ruleId } : {}) };
+    const ruleAlerts = () => { for (const a of egressAlerts([verdict], { coach: !!st.coach, profileId: v.profileId })) alert(a, tc); };
+    if (!byAddress && v.action === "block" && !st.coach) { ruleAlerts(); return { ok: false, status: 403, message: egressReason(verdict) }; }
+
+    let addrs;
+    if (literal) addrs = [{ address: literal, family: net.isIP(literal) }];
+    else {
       try { addrs = await withTimeout(Promise.resolve(resolve(t.host)), o.dnsTimeoutMs, "DNS"); }
       catch (e) { return { ok: false, status: e && e.timeout ? 504 : 502, message: `${t.host} could not be resolved` }; }
       if (!Array.isArray(addrs) || !addrs.length || addrs.some((a) => !a || !net.isIP(String(a.address)))) return { ok: false, status: 502, message: `${t.host} could not be resolved` };
     }
+    if (byAddress) {
+      v = judgeAddresses(t, addrs.map((a) => String(a.address)), st);
+      if (v.error) { alertRefusal("judge-error", t, tc); return { ok: false, status: 403, message: "the egress rules could not be evaluated" }; }
+      verdict = { target: t, action: v.action, ref: v.ref, ...(v.ruleId ? { ruleId: v.ruleId } : {}) };
+      if (v.action === "block" && !st.coach) { ruleAlerts(); return { ok: false, status: 403, message: egressReason(verdict) }; }
+    }
+
+    // A block never vouches for an address, also when coaching lets the block itself through. A *.suffix
+    // rule never vouches for one either: only a rule naming the exact host or IP literal, or a cidr rule
+    // whose range holds the address, does. A cloud metadata address needs a host rule naming the IP literal.
+    const named = v.explicit && v.action !== "block";
+    const exact = named && v.exactHost;
+    const hostExact = named && v.hostExact;
+    if (literal && !exact) { alertRefusal("ip-literal", t, tc); return { ok: false, status: 403, message: `egress to an IP literal (${t.host}:${t.port}) needs an egress rule that names it` }; }
     const own = server.address();
     const guarded = siblingPorts.has(t.port) || (own && typeof own === "object" && own.port === t.port);
     const local = guarded ? [...(own && typeof own === "object" ? [own.address] : []), ...localAddresses()] : null;
@@ -156,11 +168,30 @@ export function createEgressProxy(cfg = {}, deps = {}) {
       if (c !== "special") continue;
       if (!named) { alertRefusal("private-address", t, tc); return { ok: false, status: 403, message: `${t.host} resolves to a loopback, private or link-local address; egress there needs an egress rule that names it` }; }
       if (isMetadataAddress(ip)) {
-        if (!(literal && exact)) { alertRefusal("metadata-address", t, tc); return { ok: false, status: 403, message: `${t.host} resolves to a cloud metadata address; egress there needs an egress rule that names that IP literal` }; }
+        if (!(literal && hostExact)) { alertRefusal("metadata-address", t, tc); return { ok: false, status: 403, message: `${t.host} resolves to a cloud metadata address; egress there needs an egress rule that names that IP literal` }; }
       } else if (!exact) { alertRefusal("wildcard-private-address", t, tc); return { ok: false, status: 403, message: `${t.host} resolves to a loopback, private or link-local address; a *.suffix rule never unlocks one, egress there needs a rule that names the exact host` }; }
     }
     if (v.action !== "allow") ruleAlerts();
-    return { ok: true, address: String(addrs[0].address) };
+    return { ok: true, address: String(addrs[0].address), st };
+  }
+
+  // The first client bytes of a CONNECT tunnel (sni.mjs): a TLS ClientHello's server name must be the
+  // CONNECT host; on a CONNECT to an IP literal the server name is judged by the egress rules beside that
+  // address. A ClientHello with no server name, or a first byte that is not TLS, is judged on the CONNECT
+  // line alone. A malformed handshake is refused. → null (forward) | { kind, host } (refuse).
+  function judgeHello(hello, t, st, tc) {
+    if (hello.error) return { kind: "tls-unparsed", host: t.host };
+    if (!hello.tls || hello.sni === null) return null;
+    const literal = ipOf(t.host);
+    if (!literal) return hello.sni === t.host ? null : { kind: "sni-mismatch", host: hello.sni };
+    if (net.isIP(hello.sni)) return hello.sni === literal ? null : { kind: "sni-mismatch", host: hello.sni };
+
+    const target = { ...networkTarget({ scheme: "connect", host: hello.sni, port: t.port }), addr: literal };
+    const v = judgeConnection(target, st);
+    if (v.error) return { kind: "judge-error", host: hello.sni };
+    const verdict = { target, action: v.action, ref: v.ref, ...(v.ruleId ? { ruleId: v.ruleId } : {}) };
+    if (v.action !== "allow") for (const a of egressAlerts([verdict], { coach: !!st.coach, profileId: v.profileId })) alert(a, tc);
+    return v.action === "block" && !st.coach ? { kind: "rule", host: hello.sni } : null;
   }
 
   function open(address, port) {
@@ -248,9 +279,28 @@ export function createEgressProxy(cfg = {}, deps = {}) {
     up.on("close", () => csock.destroy());
     csock.on("close", () => up.destroy());
     csock.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-    if (head && head.length) up.write(head);
     up.pipe(csock);
-    csock.pipe(up);
+    // Nothing the client sends goes upstream until its first bytes are judged (judgeHello). The server's
+    // bytes flow at once, so a protocol where the server speaks first still works.
+    let buf = head && head.length ? Buffer.from(head) : Buffer.alloc(0);
+    const settle = () => {
+      const hello = sniffClientHello(buf);
+      if (hello.need) return false;
+      csock.removeListener("data", onData);
+      const refused = judgeHello(hello, t, a.st, tc);
+      if (refused) {
+        if (refused.kind !== "rule") alertRefusal(refused.kind, { host: refused.host, port, method: null }, tc);
+        up.destroy();
+        csock.destroy();
+        return true;
+      }
+      if (buf.length) up.write(buf);
+      buf = null;
+      csock.pipe(up);
+      return true;
+    };
+    const onData = (c) => { buf = Buffer.concat([buf, c]); settle(); };
+    if (!buf.length || !settle()) csock.on("data", onData);
   }
 
   const server = http.createServer({ maxHeaderSize: o.maxHeaderBytes, connectionsCheckingInterval: Math.min(1000, o.headersTimeoutMs) }, (req, res) => {

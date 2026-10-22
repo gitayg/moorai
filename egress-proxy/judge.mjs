@@ -38,6 +38,38 @@ export function networkTarget({ scheme, host, port, method = null, path = null }
   return { binary: null, binaries: new Set(), scheme, host, port, method, path };
 }
 
+// Does any rule in force (the profile's, the policy's, the machine-wide config's) carry a cidr? Only then
+// does a resolved address change a verdict, so only then is a name resolved before it is judged.
+export function hasCidrRules({ policy = null, system = null, serviceId = "" } = {}) {
+  try {
+    const eg = cachedEgress(policy, system);
+    const { profiles } = profilesOf(policy, system);
+    const profile = serviceId ? matchProfile(profiles, { serviceId, repo: "" }) : null;
+    return egressChain(profile, eg).chain.some((s) => s.rules.some((r) => r.cidr));
+  } catch { return true; }
+}
+
+// A connection to a name, judged once per resolved address: each address is judged as that IP literal
+// beside the name (a host rule reads the name, a cidr rule the address; first match in order decides), and
+// the strictest of them stands. Grants (explicit, exactHost, hostExact) hold only when they hold for every
+// address. Same result shape as judgeConnection.
+export function judgeAddresses(target, addresses, state) {
+  let out = null;
+  for (const ip of addresses) {
+    const v = judgeConnection({ ...target, addr: ip }, state);
+    if (v.error) return v;
+    if (!out) { out = v; continue; }
+    const worse = RANK[v.action] > RANK[out.action];
+    out = {
+      ...(worse ? v : out),
+      explicit: out.explicit && v.explicit,
+      exactHost: out.exactHost && v.exactHost,
+      hostExact: out.hostExact && v.hostExact
+    };
+  }
+  return out || judgeConnection(target, state);
+}
+
 // A plain-HTTP request in absolute form → a target, or null when it is not one the proxy accepts: not
 // http://, a host no rule could name, a port outside 1-65535, a URL that cli/egress-rules.mjs's two
 // parsers read with different hosts (urlTargets returns both; the proxy would connect to one of them), or
@@ -90,10 +122,14 @@ export function judgeConnection(target, { policy = null, system = null, serviceI
     const ch = egressChain(profile, eg);
     const strict = { dflt: ch.dflt, chain: ch.chain.map((s) => ({ ...s, rules: s.rules.filter((r) => !(r.action === "alert" && leansOnUnknown(r, target))) })) };
     // The same chain with every *.suffix allow / alert rule set aside: what an exact host grants alone.
-    const exactOnly = { dflt: strict.dflt, chain: strict.chain.map((s) => ({ ...s, rules: s.rules.filter((r) => r.action === "block" || r.host.exact !== undefined) })) };
+    // A cidr rule names addresses, so it counts as exact here; hostOnly sets it aside too: a cloud metadata
+    // address needs a host rule naming that IP literal itself, never a range.
+    const exactOnly = { dflt: strict.dflt, chain: strict.chain.map((s) => ({ ...s, rules: s.rules.filter((r) => r.action === "block" || r.cidr || r.host.exact !== undefined) })) };
+    const hostOnly = { dflt: strict.dflt, chain: strict.chain.map((s) => ({ ...s, rules: s.rules.filter((r) => r.action === "block" || (!r.cidr && r.host.exact !== undefined)) })) };
     const v1 = judgeTargets([target], ch).verdicts[0];
     const v2 = judgeTargets([target], strict).verdicts[0];
     const v3 = judgeTargets([target], exactOnly).verdicts[0];
+    const v4 = judgeTargets([target], hostOnly).verdicts[0];
     const granted = (v) => v.action !== "block" && v.ref !== "default" && v.ref !== "loopback";
     // v1 differs from v2 only when an alert rule that leans on an unknown field decided v1.
     const top = RANK[v1.action] > RANK[v2.action] ? v1 : v2;
@@ -104,12 +140,13 @@ export function judgeConnection(target, { policy = null, system = null, serviceI
       grant: v2.ref,
       explicit: granted(v2),
       exactHost: granted(v2) && granted(v3),
+      hostExact: granted(v2) && granted(v4),
       ...(profile ? { profileId: profile.id } : {}),
       rejected: eg.rejected.length ? [...rejected, ...eg.rejected] : rejected
     };
     return out;
   } catch (e) {
-    return { action: "block", ref: "error", grant: "error", explicit: false, exactHost: false, rejected: [], error: String((e && e.message) || e).slice(0, 200) };
+    return { action: "block", ref: "error", grant: "error", explicit: false, exactHost: false, hostExact: false, rejected: [], error: String((e && e.message) || e).slice(0, 200) };
   }
 }
 
