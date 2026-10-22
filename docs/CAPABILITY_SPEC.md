@@ -3811,7 +3811,7 @@ version into `docs/conformance/`.
   Response-side enforcement (withholding a denied tool call, streaming and non-streaming, Anthropic and OpenAI shapes, including truncated streams, arguments that are not a JSON object and a dropped upstream connection) is tested against a fake provider; it has not been run with the real SDKs or a real provider. In Anthropic streams a tool call is held one block at a time, so an allowed call that comes before a denied one in the same turn has already been released when the turn is refused. **Blind spots:** an SDK that talks HTTPS to the provider directly bypasses
   it (no TLS interception); Anthropic Messages, OpenAI Chat Completions, the OpenAI Responses API
   (`POST …/responses`) and embeddings are parsed, while Bedrock, Vertex and `GET …/responses/{id}` pass
-  unchecked (see the Responses API and embeddings entries below); assistant turns, images, PDFs, tool definitions and
+  unchecked (see the Responses API and embeddings entries); assistant turns, images, PDFs, tool definitions and
   server-side tools are not scanned; not exercised with the real SDKs or a paid provider. The live
   conformance tier (above) has run it in enforce mode against a real local model server (Ollama 0.40.3,
   `llama3.2:latest`) through the OpenAI-compatible (JSON and SSE), Anthropic-compatible and native Ollama
