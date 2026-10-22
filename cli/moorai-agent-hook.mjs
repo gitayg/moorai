@@ -14,7 +14,7 @@ import { evaluateAll } from "./agent-hooks/shim.mjs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-const ADAPTERS = ["codex", "copilot", "gemini", "cursor", "droid"];
+const ADAPTERS = ["codex", "copilot", "gemini", "cursor", "droid", "antigravity", "windsurf", "kiro", "cline"];
 
 async function load(id) {
   if (!ADAPTERS.includes(id)) throw new Error(`unknown agent '${id}' (known: ${ADAPTERS.join(", ")})`);

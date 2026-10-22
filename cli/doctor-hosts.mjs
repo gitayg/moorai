@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { join, dirname, isAbsolute } from "node:path";
 import os from "node:os";
 import { configTarget as droidTarget, eventMap as droidEvents } from "./agent-hooks/droid.mjs";
+import { hooksFile as antigravityFile, eventView as antigravityView } from "./agent-hooks/antigravity.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, "moorai-hook.mjs");
@@ -46,8 +47,18 @@ export function hostTable(home = os.homedir(), env = process.env) {
     { id: "cursor", label: "Cursor", dir: join(home, ".cursor"), file: join(home, ".cursor", "hooks.json"), rel: [".cursor", "hooks.json"], ours: agentOurs("cursor"), install: [AGENT_HOOK, "cursor", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} cursor install` },
     { id: "gemini", label: "Gemini CLI", dir: join(home, ".gemini"), file: join(home, ".gemini", "settings.json"), rel: [".gemini", "settings.json"], comments: true, ours: agentOurs("gemini"), install: [AGENT_HOOK, "gemini", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} gemini install` },
     { id: "copilot", label: "GitHub Copilot CLI", dir: copilotHome, file: join(copilotHome, "hooks", "moorai.json"), rel: [".copilot", "hooks", "moorai.json"], ours: agentOurs("copilot"), install: [AGENT_HOOK, "copilot", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} copilot install` },
-    droidHost(home)
+    droidHost(home),
+    antigravityHost(home)
   ];
+}
+// Antigravity: ~/.gemini/config/hooks.json is keyed by hook NAME, each holding its events
+// (cli/agent-hooks/antigravity.mjs); `view` merges every named hook's groups per event. ~/.gemini/config
+// also holds Antigravity's global mcp_config.json, so it marks the host as present (~/.gemini alone is
+// Gemini CLI's home too).
+function antigravityHost(home) {
+  const view = (d) => ({ hooks: antigravityView(d).hooks });
+  const problems = (raw) => antigravityView(raw).disabled.map((n) => `the "${n}" hook has enabled is false in ${pathOf(antigravityFile(home))}`);
+  return { id: "antigravity", label: "Google Antigravity", dir: join(home, ".gemini", "config"), file: antigravityFile(home), rel: [".gemini", "config", "hooks.json"], view, viewRel: view, problems, ours: agentOurs("antigravity"), install: [AGENT_HOOK, "antigravity", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} antigravity install` };
 }
 // Droid: the installer picks ~/.factory/hooks.json, the legacy hooks/hooks.json or settings.json
 // (cli/agent-hooks/droid.mjs configTarget); hooks.json is keyed by event name, so `view` wraps it in the
@@ -223,6 +234,7 @@ export function checkHost(host, { managedHooks = null, managedPlugins = [], env 
   const other = scripts.filter((s) => existsSync(s) && s !== HOOK && s !== AGENT_HOOK);
   if (host.id === "claude-code" && data && data.disableAllHooks === true) problems.push(`disableAllHooks is true in ${pathOf(host.file)}`);
   if (host.id === "gemini" && data && data.hooksConfig && data.hooksConfig.enabled === false) problems.push("hooksConfig.enabled is false");
+  if (host.problems && raw) problems.push(...host.problems(raw));
   if (host.id === "droid") for (const f of ["settings.json", "settings.local.json"]) if ((readJson(join(host.dir, f)).data || {}).hooksDisabled === true) problems.push(`hooksDisabled is true in ${pathOf(join(host.dir, f))}`);
   if (problems.length) return { ...base, status: "fail", summary: `${problems.join("; ")}${both ? `; ${both}` : ""}`, fix: host.fix, details, installed: true };
   if (both) return { ...base, status: "warn", summary: both, fix: bothFix, details, installed: true };
