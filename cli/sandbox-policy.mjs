@@ -33,7 +33,7 @@
 
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { validateEgressRule, normBinary, validEgressDefault } from "./egress-rules.mjs";
+import { validateEgressRule, normBinary, validEgressDefault, ipInCidr } from "./egress-rules.mjs";
 
 export const SANDBOX_TARGETS = Object.freeze(["mxc", "seatbelt", "openshell"]);
 const MAX_RULES = 512; // cli/egress-rules.mjs validateEgressRules reads at most this many
@@ -45,7 +45,9 @@ const V4 = /^\d+\.\d+\.\d+\.\d+$/; // WHATWG serialises every IPv4 host as four 
 // The validated host -> { kind, host }. kind: "ip4" | "ip6" | "name" | "suffix". `host` is the WHATWG form
 // MoorAI's own check compares against (cli/egress-rules.mjs ruleHost), so two spellings of one address are
 // one address here too.
+// A cidr rule (F23) is kind "cidr" with host null and `cidrs`, its normalised prefixes.
 function hostOf(v) {
+  if (v.cidr) return { kind: "cidr", host: null, cidrs: v.cidrs };
   if (v.host.suffix) return { kind: "suffix", host: v.host.suffix };
   const h = v.host.exact;
   if (h.startsWith("[")) return { kind: "ip6", host: h };
@@ -53,6 +55,13 @@ function hostOf(v) {
   return { kind: "name", host: h };
 }
 const isLoopbackName = (h) => h === "localhost" || h === "127.0.0.1" || h === "[::1]";
+// Can two address-bearing entries (an IP literal or a cidr rule) name a common address? Names: never here.
+const netOf = (c) => c.split("/")[0];
+function addrOverlap(a, b) {
+  if (a.kind === "cidr" && b.kind === "cidr") return a.v.rule.cidr.some((x) => ipInCidr(b.v.rule.cidr, netOf(x.text))) || b.v.rule.cidr.some((x) => ipInCidr(a.v.rule.cidr, netOf(x.text)));
+  const [c, x] = a.kind === "cidr" ? [a, b] : [b, a];
+  return c.kind === "cidr" && (x.kind === "ip4" || x.kind === "ip6") && ipInCidr(c.v.rule.cidr, x.host);
+}
 const isLoopbackRange = (k, h) => (k === "ip4" && h.startsWith("127.")) || (k === "ip6" && h === "[::1]") || (k === "name" && h === "localhost");
 
 // { entries, slots, list } — entries: the valid rules in order; slots[index]: report lines for that rule;
@@ -154,17 +163,23 @@ export function mxcEgress({ egressRules, egressDefault } = {}) {
   const d = readDefault(egressDefault, tail);
   if (d !== "block") tail.push({ index: -1, fields: ["egressDefault"], effect: "narrowed", reason: "mxc-default-deny" });
   const byAddr = new Map();
+  const placed = [];
   for (const e of st.entries) {
     if (isLoopbackRange(e.kind, e.host)) { note(st, e, ["host"], "omitted", "mxc-loopback"); continue; }
     if (e.kind === "name" || e.kind === "suffix") { note(st, e, ["host"], "omitted", "mxc-host-name"); continue; }
     if (e.cond.length) note(st, e, e.cond, e.allow ? "coarsened" : "omitted", "mxc-l7-fields");
-    if (e.allow && isPrivate(e.kind, e.host)) note(st, e, ["host"], "may-be-inert", "mxc-private-network");
-    if (!byAddr.has(e.host)) byAddr.set(e.host, []);
-    byAddr.get(e.host).push(e);
+    if (e.allow && e.kind !== "cidr" && isPrivate(e.kind, e.host)) note(st, e, ["host"], "may-be-inert", "mxc-private-network");
+    // A cidr rule is its own destination group. MXC's deny takes precedence over allow while MoorAI's first
+    // match decides, so an earlier allow that shares an address with a later unconditional block is narrowed.
+    if (!e.allow && !e.cond.length) for (const p of placed) if (p.allow && (p.kind === "cidr" || e.kind === "cidr") && addrOverlap(p, e)) note(st, p, ["host"], "narrowed", "mxc-deny-precedence");
+    placed.push(e);
+    const key = e.kind === "cidr" ? `cidr:${e.cidrs.join(",")}` : e.host;
+    if (!byAddr.has(key)) byAddr.set(key, []);
+    byAddr.get(key).push(e);
   }
   const allow = [], deny = [];
   for (const [host, list] of byAddr) {
-    const to = [{ cidr: host.startsWith("[") ? `${host.slice(1, -1)}/128` : `${host}/32` }];
+    const to = host.startsWith("cidr:") ? list[0].cidrs.map((cidr) => ({ cidr })) : [{ cidr: host.startsWith("[") ? `${host.slice(1, -1)}/128` : `${host}/32` }];
     const a = atoms(list, "deny", st, "mxc");
     const allowed = a.ports.filter((x) => x.v === "allow").map((x) => x.port);
     const ruleDenied = a.ports.filter((x) => x.v === "deny" && x.by === "rule").map((x) => x.port);
@@ -209,6 +224,8 @@ export function seatbeltEgress({ egressRules, egressDefault } = {}) {
   const d = readDefault(egressDefault, tail) === "block" ? "deny" : "allow";
   const lo = [];
   for (const e of st.entries) {
+    // Measured on macOS 27.0 (26A428): (remote ip "10.0.0.0/8:*") -> "host must be * or localhost in network address".
+    if (e.kind === "cidr") { note(st, e, ["cidr"], "omitted", "seatbelt-cidr"); continue; }
     if (e.kind === "suffix" || !isLoopbackName(e.host)) { note(st, e, ["host"], "omitted", "seatbelt-host"); continue; }
     if (e.host !== "localhost") note(st, e, ["host"], e.allow ? "coarsened" : "narrowed", "seatbelt-localhost-alias");
     if (e.cond.length) note(st, e, e.cond, e.allow ? "coarsened" : "omitted", "seatbelt-l7-fields");
@@ -241,7 +258,9 @@ const CONTROL_PLANE = [2379, 2380, 6443, 10250, 10255];
 const GLOB_CHARS = /[*?[\]]/;
 const NOT_EXECUTABLE = (b) => b === "webfetch" || b === "websearch" || b.includes("__") || b === "invoke-webrequest" || b === "invoke-restmethod";
 
+// OpenShell's endpoint host is "Hostname, IP address, or wildcard pattern": no address range.
 function osHost(e) {
+  if (e.kind === "cidr") return { reason: "openshell-cidr" };
   if (e.kind === "suffix") {
     const labels = e.host.slice(1).split(".");
     return labels.length >= 2 ? { host: `**${e.host}` } : { reason: "openshell-wildcard-labels" };
@@ -264,12 +283,15 @@ function binCovers(b, a) {
   return !!x && literal(x) && literal(y) && x.every((n) => y.includes(n));
 }
 function hostOverlap(a, b) {
+  if (a.kind === "cidr" || b.kind === "cidr") return addrOverlap(a, b);
   if (a.kind !== "suffix" && b.kind !== "suffix") return a.host === b.host;
   if (a.kind === "suffix" && b.kind === "suffix") return a.host.endsWith(b.host) || b.host.endsWith(a.host);
   const [s, x] = a.kind === "suffix" ? [a, b] : [b, a];
   return x.host.endsWith(s.host);
 }
 function hostCovers(b, a) {
+  if (b.kind === "cidr") return (a.kind === "ip4" || a.kind === "ip6") && ipInCidr(b.v.rule.cidr, a.host);
+  if (a.kind === "cidr") return false;
   if (b.kind !== "suffix") return a.kind !== "suffix" && a.host === b.host;
   return a.host.endsWith(b.host);
 }
@@ -294,6 +316,8 @@ export function openshellEgress({ egressRules, egressDefault } = {}) {
   for (const e of st.entries) {
     if (!e.allow) {
       if (isLoopbackRange(e.kind, e.host)) note(st, e, ["host"], "omitted", "openshell-loopback");
+      // A cidr block has no OpenShell form; it still removes a later IP-literal allow it covers (fail-safe).
+      if (e.kind === "cidr") note(st, e, ["cidr"], "omitted", "openshell-cidr");
       blocks.push(e);
       continue;
     }

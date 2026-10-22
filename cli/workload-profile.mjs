@@ -156,6 +156,10 @@ export function validateProfile(p) {
   if (p.egressRules !== undefined || p.egressDefault !== undefined) {
     const e = p.egressRules === undefined ? { rules: [], errors: [] } : validateEgressRules(p.egressRules);
     if (e.errors.length) return { error: e.errors[0].index >= 0 ? `${e.errors[0].reason} (rule ${e.errors[0].index})` : e.errors[0].reason };
+    // An agent older than 1.28.0 drops a whole profile that carries a cidr rule (unknown key), so cidr rules
+    // stay out of profiles until the fleet minimum is set (CONTRACT-F28 6.1); top-level cidr rules apply.
+    const ci = e.rules.findIndex((r) => r.cidr);
+    if (ci >= 0) return { error: `egressRules: cidr rules are not accepted inside a workload profile (rule ${e.rules[ci].index})` };
     if (p.egressDefault !== undefined && !validEgressDefault(p.egressDefault)) return { error: "egressDefault is not allow, alert or block" };
     profile.egress = { rules: e.rules, default: p.egressDefault };
   }

@@ -4,9 +4,19 @@
 //
 // POLICY SHAPE. In the verified console policy, in the root-owned machine-wide config, and inside a
 // declared workload profile (cli/workload-profile.mjs), which is where they compose:
-//   egressRules:   [{ id?, binary?, host, port?, method?, path?, action: "allow"|"alert"|"block" }]
+//   egressRules:   [{ id?, binary?, host | cidr, port?, method?, path?, action: "allow"|"alert"|"block" }]
 //   egressDefault: "allow" | "alert" | "block"
 //   * host     exact name, or `*.suffix` (any name strictly under suffix). Nothing else: no `*`, no URL.
+//   * cidr     instead of host (exactly one of the two): an address range or a list of up to 64,
+//              `a.b.c.d/n` (n 0-32) or IPv6 `x::/n` (n 0-128), normalised to network form; a prefix with
+//              host bits set is refused, not masked; `/0` only with action alert or block. An IPv4-mapped
+//              IPv6 prefix (::ffff:0:0/96 and longer) is the IPv4 prefix. A target matches when its host
+//              IS an address inside the range (IPv4, IPv6, IPv4-mapped IPv6 read as IPv4, and the numeric
+//              IPv4 spellings WHATWG reads as an address). A host NAME never matches a cidr rule here: this
+//              judge reads text and does no DNS. That is a stated exception to UNKNOWN FIELDS below, which
+//              would make every cidr block rule block every name. Network-layer surfaces
+//              (egress-proxy/judge.mjs, the MCP gateway's upstream connection) also judge the resolved
+//              connect address, as an IP literal, at connect time.
 //   * binary   the command word (`curl`, `/usr/bin/curl`, `curl.exe` → curl), or for a non-shell call the
 //              tool name (`WebFetch`, `mcp__fetch__get`). One name or a list; `*` is a glob. Case-blind.
 //   * port     an integer or a list. method: one verb or a list (case-blind). path: `/exact` or `/prefix*`.
@@ -29,6 +39,7 @@
 // Content-free: alerts carry the binary, host, port and method, never a path, query, command or argument.
 // Pure. Never throws to the caller (workload-profile.mjs wraps it fail-open).
 
+import net from "node:net";
 import { MAX_CMD, MAX_DEPTH, normBinary, splitShell, commandOf, scanArgs, has, val, HOSTLIKE, SHELLS, PWSH, CURL_SHORT, CURL_LONG, WGET_SHORT, WGET_LONG, IWR_VALUED } from "../data/shell-parse.js";
 export { normBinary };
 
@@ -36,7 +47,7 @@ export const EGRESS_RULE = "EGRESS_RULE";
 export const EGRESS_ACTIONS = Object.freeze(["allow", "alert", "block"]);
 export const EGRESS_CATEGORY = "Egress rule";
 const RANK = { allow: 0, alert: 1, block: 2 };
-const RULE_KEYS = new Set(["id", "binary", "host", "port", "method", "path", "action", "description"]);
+const RULE_KEYS = new Set(["id", "binary", "host", "cidr", "port", "method", "path", "action", "description"]);
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const RULE_HOST_RE = /^(\*\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)*)$/;
 const IPV6_HOST_RE = /^\[[0-9a-f:.]+\]$/;
@@ -84,6 +95,84 @@ function rulePath(raw) {
   return star === -1 ? { exact: norm } : { prefix: norm };
 }
 
+// ---- address ranges ----
+const OCTET = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
+const V4_CIDR = new RegExp(`^(${OCTET}(?:\\.${OCTET}){3})/(3[0-2]|[12]?\\d)$`);
+const V6_CIDR = /^([0-9A-Fa-f:.]{2,45})\/(12[0-8]|1[01]\d|[1-9]?\d)$/;
+const MAPPED_HI = 0xffffn; // ::ffff:0:0/96, the top 96 bits of an IPv4-mapped address
+const CIDR_ERROR = "cidr is not an a.b.c.d/n or IPv6 x::/n prefix or a list of them";
+
+function v4Big(ip) { return ip.split(".").reduce((a, o) => (a << 8n) | BigInt(Number(o)), 0n); }
+function v6Big(ip) {
+  let s = ip.toLowerCase();
+  const tail = /(\d+\.\d+\.\d+\.\d+)$/.exec(s);
+  if (tail) { const v = v4Big(tail[1]); s = `${s.slice(0, -tail[1].length)}${(v >> 16n).toString(16)}:${(v & 0xffffn).toString(16)}`; }
+  const halves = s.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const rest = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const words = [...head, ...Array(Math.max(0, halves.length === 2 ? 8 - head.length - rest.length : 0)).fill("0"), ...rest];
+  if (words.length !== 8 || words.some((w) => !/^[0-9a-f]{1,4}$/.test(w))) return null;
+  return words.reduce((a, w) => (a << 16n) | BigInt(parseInt(w, 16)), 0n);
+}
+const v4Text = (n) => [24n, 16n, 8n, 0n].map((k) => String((n >> k) & 255n)).join(".");
+function v6Text(n) {
+  const words = [];
+  for (let k = 112n; k >= 0n; k -= 16n) words.push(((n >> k) & 0xffffn).toString(16));
+  try { return new URL(`http://[${words.join(":")}]/`).hostname.slice(1, -1); } catch { return words.join(":"); }
+}
+
+// One prefix string → { fam, net, bits, text } | { error }.
+function parseCidr(raw) {
+  if (typeof raw !== "string") return { error: CIDR_ERROR };
+  const s = raw.trim();
+  let m = V4_CIDR.exec(s);
+  let fam, n, bits;
+  if (m) { fam = 4; n = v4Big(m[1]); bits = Number(m[2]); }
+  else {
+    m = V6_CIDR.exec(s);
+    if (!m || net.isIP(m[1]) !== 6) return { error: CIDR_ERROR };
+    const v = v6Big(m[1]);
+    if (v === null) return { error: CIDR_ERROR };
+    fam = 6; n = v; bits = Number(m[2]);
+    // ::ffff:a.b.c.d/96 and longer is the IPv4 range it maps.
+    if (bits >= 96 && (n >> 32n) === MAPPED_HI) { fam = 4; n &= 0xffffffffn; bits -= 96; }
+  }
+  const width = fam === 4 ? 32n : 128n;
+  if (n & ((1n << (width - BigInt(bits))) - 1n)) return { error: "cidr has host bits set" };
+  return { fam, net: n, bits, text: `${fam === 4 ? v4Text(n) : v6Text(n)}/${bits}` };
+}
+
+// A host as an address → { fam, n } or null (a name). Brackets, IPv4-mapped IPv6 (read as IPv4) and the
+// numeric IPv4 spellings WHATWG and inet_aton read as an address (`0x0a.1`, `167772161`, `10.1`).
+function addressOf(host) {
+  let h = String(host == null ? "" : host).trim().toLowerCase();
+  if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1);
+  if (!h) return null;
+  if (net.isIP(h) !== 4 && /^[0-9a-fx.]+$/.test(h) && /\d/.test(h)) {
+    try { const w = new URL(`http://${h}/`).hostname; if (net.isIP(w) === 4) h = w; } catch { /* a name */ }
+  }
+  const fam = net.isIP(h);
+  if (fam === 4) return { fam: 4, n: v4Big(h) };
+  if (fam !== 6) return null;
+  const n = v6Big(h);
+  if (n === null) return null;
+  if ((n >> 32n) === MAPPED_HI) return { fam: 4, n: n & 0xffffffffn };
+  return { fam: 6, n };
+}
+
+// Is this host an address inside one of the compiled prefixes? A name never is.
+export function ipInCidr(list, host) {
+  const a = addressOf(host);
+  if (!a || !Array.isArray(list)) return false;
+  for (const c of list) {
+    if (c.fam !== a.fam) continue;
+    const shift = BigInt((c.fam === 4 ? 32 : 128) - c.bits);
+    if ((a.n >> shift) === (c.net >> shift)) return true;
+  }
+  return false;
+}
+
 function globRe(p) {
   return new RegExp(`^${p.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
 }
@@ -94,9 +183,24 @@ export function validateEgressRule(r) {
   if (Object.keys(r).some((k) => !RULE_KEYS.has(k))) return { error: "unknown key" };
   if (!EGRESS_ACTIONS.includes(r.action)) return { error: "action is not allow, alert or block" };
   if (r.id !== undefined && (typeof r.id !== "string" || !ID_RE.test(r.id))) return { error: "id is not a short slug" };
-  const host = ruleHost(r.host);
-  if (!host) return { error: "host is not a host name, IP or *.suffix" };
-  const rule = { action: r.action, host, ...(r.id ? { id: r.id } : {}) };
+  if ((r.host === undefined) === (r.cidr === undefined)) return { error: "host or cidr is required, not both" };
+  let rule;
+  if (r.cidr !== undefined) {
+    const l = asList(r.cidr);
+    if (!l.length || l.length > MAX_LIST) return { error: CIDR_ERROR };
+    const cidr = [];
+    for (const c of l) {
+      const p = parseCidr(c);
+      if (p.error) return { error: p.error };
+      if (!cidr.some((x) => x.text === p.text)) cidr.push(p);
+    }
+    if (r.action === "allow" && cidr.some((c) => c.bits === 0)) return { error: "cidr /0 is accepted only with action alert or block" };
+    rule = { action: r.action, cidr, cidrs: cidr.map((c) => c.text), ...(r.id ? { id: r.id } : {}) };
+  } else {
+    const host = ruleHost(r.host);
+    if (!host) return { error: "host is not a host name, IP or *.suffix" };
+    rule = { action: r.action, host, ...(r.id ? { id: r.id } : {}) };
+  }
   if (r.binary !== undefined) {
     const l = asList(r.binary);
     if (!l.length || l.length > MAX_LIST || l.some((b) => typeof b !== "string" || !BINARY_RE.test(b.trim()))) return { error: "binary is not a name or list of names" };
@@ -479,7 +583,7 @@ function pathMatch(p, path) {
 // Does one rule match one target? See UNKNOWN FIELDS and BINARY ATTRIBUTION above.
 export function ruleMatches(rule, t) {
   const allow = rule.action === "allow";
-  if (!hostMatch(rule.host, t.host)) return false;
+  if (rule.cidr ? !ipInCidr(rule.cidr, t.host) : !hostMatch(rule.host, t.host)) return false;
   if (rule.binary) {
     if (allow) { if (!t.binary || !rule.binary.some((re) => re.test(t.binary))) return false; }
     else if (t.binary) {
