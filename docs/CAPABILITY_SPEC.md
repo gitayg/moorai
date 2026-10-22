@@ -207,7 +207,8 @@ Claude Code GitHub Action, an Agent SDK service in a container
   `MOORAI_OIDC` / system `oidc` (`github` only, and only with a workload id), `MOORAI_CLOUD_HOST` / system
   `cloudHost` (`copilot-coding-agent`, `codex-cloud`, `claude-code-web`, `ci`, `other`), with
   `CLAUDE_CODE_REMOTE=true` detected as `claude-code-web` (a label only). `cloudAgentPosture(sm)` gives the
-  heartbeat field `cloudAgent: { host, attestation }`; `attestation` is `github-oidc` only when the root-owned
+  top-level field `cloudAgent: { host, attestation }` that the hook's posturebeat worker adds to the
+  `POST /api/agent-posture` body in server mode (absent otherwise; `test/cloud-agent-heartbeat.test.mjs`); `attestation` is `github-oidc` only when the root-owned
   file records it next to an `mwt_` token it supplies, else `static-token`. **OIDC exchange**
   ([`cli/workload-token.mjs`](../cli/workload-token.mjs)): with `MOORAI_WORKLOAD_ID` and `MOORAI_OIDC=github`
   the installer requests the job's GitHub ID token (`ACTIONS_ID_TOKEN_REQUEST_URL&audience=moorai:<tenant>`,
@@ -2005,13 +2006,15 @@ agents that can reach controllers and never sits inside a PLC or safety system.
 - **Verdict**: `OT_THREAT.read` (81: read and unknown) and `OT_THREAT.write` (82), both resolved through
   `policy.threatPolicy[id]` (`notify` → allow, `justify` → ask, `block` → deny, `disabled` → nothing; `mask`
   falls back to `maskFallback`). With no entry both are `notify`: the built-in block tier needs zero measured
-  benign fires first. The Industrial/OT preset sets 82 to `block`, which its `ot-shell-write` approval rule
-  holds (CONTRACT-F28 §6.2). The two ids are proposed, not yet in `data/threats.json`.
+  benign fires first. The console's Industrial/OT preset is specified to set 82 to `block`, which its
+  `ot-shell-write` approval rule holds (CONTRACT-F28 §6.2); that preset is not in a released console yet. The
+  two ids are proposed, not yet in `data/threats.json`.
 - **Alert** (content-free): `threatId`, `category` "OT protocol client run from a shell", `riskLevel`
   (Blocked on deny, High for a write, Medium otherwise), `stage` `prompt`, `tool` `hook:<tool>`, `decision`,
   `reasonCode` `OT_PROTOCOL_CLIENT`, `otProtocol`, `otOp`, `contentHash` `ot:<protocol>:<op>`.
-- **Hook**: one call in the Bash branch of `cli/moorai-hook.mjs` (integrator-owned); the end-to-end test
-  `test/ot-protocol-client-hook.test.mjs` is skipped until it lands.
+- **Hook**: one call in the Bash/PowerShell branch of `cli/moorai-hook.mjs` posts the alert and raises the
+  verdict when the check's decision ranks higher; `test/ot-protocol-client-hook.test.mjs` runs it end to end
+  (a write denied under `threatPolicy` 82 `block`, a read reported and allowed, a write reported with no policy).
 
 Limits: a client under another name, a script outside the session directory or past 64 KiB, code assembled at
 run time or imported indirectly, a read misread as a write when a library's generic `write(` name also matches

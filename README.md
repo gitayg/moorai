@@ -475,8 +475,9 @@ hooks do not run under cloud orchestration, so the installer refuses it. It writ
 `/etc/moorai/config.json` (with `cloudHost` and `workloadAttestation`) and two wrappers under the install
 directory, and prints the host's hook registration. The token is a scoped workload token (`mwt_…`), either
 static or minted from the setup job's GitHub OIDC ID token (`MOORAI_WORKLOAD_ID` + `MOORAI_OIDC=github`,
-[`cli/workload-token.mjs`](cli/workload-token.mjs)). Server mode resolves the heartbeat's
-`cloudAgent: { host, attestation }` field from that file (`cloudAgentPosture`).
+[`cli/workload-token.mjs`](cli/workload-token.mjs)). The hook's coverage heartbeat (`POST /api/agent-posture`)
+then carries the top-level field `cloudAgent: { host, attestation }`, which server mode resolves from that file
+(`cloudAgentPosture`); a laptop's heartbeat has no such field.
 In a cloud VM the agent runs as root or with sudo, so MoorAI's files there are not a tamper boundary. Neither
 host has been run end to end with MoorAI yet.
 
@@ -1275,8 +1276,9 @@ inline, in a heredoc or in a script file inside the session directory (first 64 
 pyModbusTCP, minimalmodbus, opcua/asyncua, snap7, pycomm3, pylogix, BAC0, bacpypes, pydnp3, c104,
 modbus-serial, jsmodbus, node-opcua, node-snap7, bacstack or st-ethernet-ip; the library's write calls
 (`write_register`, `write_value`, `db_write`, `plc_stop`, `DirectOperate`, …) make it a write. Read and
-unknown are threat 81, write is threat 82 (proposed ids); both report by default, and the Industrial/OT preset
-sets 82 to block. The alert carries the two enums only, never the command, a host, a register or a value.
+unknown are threat 81, write is threat 82 (proposed ids, not yet in `data/threats.json`); both report by
+default, and a policy's `threatPolicy` can set 82 to `block` (a console Industrial/OT preset that does so is
+not in a released console yet). The alert carries the two enums only, never the command, a host, a register or a value.
 Not seen: a client under another name, a script outside the session directory or past 64 KiB, code built at
 run time, and connections the agent makes without a shell (MCP tools are the preset's function rules;
 connections into OT subnets are the egress rule `cidr` field).
