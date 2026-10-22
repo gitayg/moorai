@@ -317,6 +317,7 @@ test("structured commands: every args element is judged whatever its type, and t
   assert.equal(got[0], `bash -c 42 '{"x":1}' 'it'\\''s here' null`);
   for (const a of ["-c", "42", '{"x":1}', "it's here"]) assert.ok(got.includes(a), `${a} in ${JSON.stringify(got)}`);
   assert.ok(t({ commands: [{ command: "bash", args: `-c '${REVERSE_SHELL}'` }] }).some((c) => c.includes("/dev/tcp/")), "args given as one string");
+  assert.equal(t({ commands: [{ command: "echo", args: "a b" }] })[0], "echo 'a b'", "a string args is one argv element of the rebuilt line");
   const home = box();
   try {
     assert.equal(clineVerdict(run(home, core(home, "run_commands", { commands: [{ command: "bash", args: `-c '${REVERSE_SHELL}'` }] }))).cancel, true);

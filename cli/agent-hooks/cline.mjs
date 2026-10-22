@@ -26,15 +26,18 @@
 //     preToolUse copy, and "prompt_submit" with userPromptSubmit (sdk/packages/core/src/hooks/subprocess.ts,
 //     hook-file-hooks.ts). Its prompt hooks run detached, so their answer is never read.
 //   - parameters is a Record<string,string>: every value that is not a string arrives JSON-stringified
-//     (toStringRecord in the extension, mapParams in the SDK). So list-valued keys (files, paths,
-//     file_paths, commands, requests, urls) are decoded from JSON when they hold a JSON array or object;
-//     a value that does not decode is kept as typed. tool_call.input, when present, is used as it is.
+//     (toStringRecord in the extension, mapParams in the SDK). So only the list-valued keys (files, paths,
+//     file_paths, commands, requests, urls, queries) are decoded from JSON when they hold a JSON array or
+//     object, and their raw text is judged too; a scalar key (command, cmd, path, url) is judged exactly
+//     as typed, and every string field of a decoded object is judged. tool_call.input, when present, is
+//     used as it is.
 //
 // Tools. The extension now runs on the SDK and names tools as ClineCore does (ctx.toolCall.toolName):
 // read_files, run_commands, editor, apply_patch, fetch_web_content, search_codebase, skills, ask_question,
 // submit_and_exit (sdk/packages/core/src/extensions/tools/constants.ts), with the input shapes of
 // schemas.ts. The older extension names are still mapped.
 //   run_commands / execute_command  commands[] (string or {command,args}) | command | cmd -> Bash per command
+//                                   ({command,args}: the line rebuilt shell-quoted, plus each element alone)
 //   read_files / read_file          files[] ({path} or string) | paths | file_paths | path -> Read per path
 //   editor                          path, old_text, new_text, insert_line (ClineCore); command, file_text,
 //                                   old_str, new_str (older) -> Edit when old_text or insert_line, else Write
@@ -42,8 +45,13 @@
 //   replace_in_file                 path, diff (SEARCH/REPLACE blocks)  -> MultiEdit (blocks + whole diff)
 //   apply_patch                     input | patch                       -> per-file calls (Codex envelope)
 //   use_mcp_tool                    server_name, tool_name, arguments (object or JSON string) -> mcp__s__t
-//   fetch_web_content               requests[] ({url, prompt})                             -> WebFetch per url
+//   fetch_web_content               requests[] ({url, prompt})                  -> WebFetch per url, with prompt
 //   web_fetch / browser_action      url | urls[]                                           -> WebFetch
+//   search_codebase / search_files  queries[] | regex                                      -> Grep per query
+//   list_files                      path                                                   -> LS
+//   skills                          skill, args                                            -> Skill
+//   ask_question, submit_and_exit   (act on nothing MoorAI judges)                         -> proceed
+//   any other name                  held: cancelled with an ask-the-user reason, never allowed unread
 // A call carrying several different values is judged once per value.
 //
 // Answer: { cancel, errorMessage, contextModification }. On cancel both runtimes stop the call and use
