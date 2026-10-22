@@ -60,7 +60,7 @@ import { readStateJson, writeStateJson, repoIdentity, LEARNED_DRIFT_FILE, DELETI
 import { sessionRiskStep, circuitStep, circuitOutcome } from "./session-state.mjs";
 import { captureTask, judgeAction, CLASS_TEXT } from "./intent-alignment.mjs";
 import { promptScanPlan, promptBlockers } from "./prompt-scan.mjs";
-import { serverMode, serviceWho, settleHeadlessAsk, settleBypassAsk, tamperAlert, trustedEnv, refusedTrustEnv, systemConfigPath, systemConfig, workloadIdentity, workerEnv, hookProcessEnvName } from "./server-mode.mjs";
+import { serverMode, cloudAgentPosture, serviceWho, settleHeadlessAsk, settleBypassAsk, tamperAlert, trustedEnv, refusedTrustEnv, systemConfigPath, systemConfig, workloadIdentity, workerEnv, hookProcessEnvName } from "./server-mode.mjs";
 import { hookFailMode, failClosedApplies, failClosedOutput, failClosedVerdict, failClosedAlert, failReason, HOOK_DECISION_BUDGET_MS } from "./hook-fail.mjs";
 import { effectiveFailModes } from "./fail-mode.mjs";
 import { recordMcpCall, scheduleMcpUsageFlush } from "./mcp-usage-beat.mjs";
@@ -1428,7 +1428,9 @@ async function runPostureBeatWorker(host, mode, cwd) {
     // The alert outbox (cli/alert-outbox.mjs): queued, dropped and last delivered, content-free counts.
     let alertOutbox = null;
     try { alertOutbox = outboxPosture(); } catch { alertOutbox = null; }
-    const body = { user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture, ...(failMode ? { failMode } : {}), ...(containment || {}), ...(mcpServerSandbox ? { mcpServerSandbox } : {}), ...(aiCliParents ? { aiCliParents } : {}), ...(inventory ? inventory.fields : {}), ...(alertOutbox ? { alertOutbox } : {}) };
+    // cloudAgent (cli/server-mode.mjs): { host, attestation } for a cloud coding agent in server mode, else absent.
+    const cloudAgent = cloudAgentPosture(SERVER);
+    const body = { user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture, ...(cloudAgent ? { cloudAgent } : {}), ...(failMode ? { failMode } : {}), ...(containment || {}), ...(mcpServerSandbox ? { mcpServerSandbox } : {}), ...(aiCliParents ? { aiCliParents } : {}), ...(inventory ? inventory.fields : {}), ...(alertOutbox ? { alertOutbox } : {}) };
     const r = await fetch(`${CONFIG.serverUrl}/api/agent-posture`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) }).catch(() => null);
     // On failure the pending mark stays, so the next try is BEAT_RETRY_MS away rather than one per tool call.
     if (r && r.ok) writeBeat(host, { day, bypass: (st.day === day && !!st.bypass) || mode === "bypassPermissions" });
