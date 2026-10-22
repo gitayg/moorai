@@ -1912,12 +1912,20 @@ the framework ever asks.
   and Ollama's non-chat endpoints are forwarded unparsed.
 - **OpenAI Responses API** ([`model-proxy/openai-responses.mjs`](../model-proxy/openai-responses.mjs), shapes
   from the official SDK's types): `instructions`, user / system / developer input and fed-back
-  `function_call_output` / `custom_tool_call_output` are scanned; `function_call`, `custom_tool_call` (its
-  free-text `input` scanned as `{ input }`) and `mcp_approval_request` (named `mcp__<server_label>__<name>`)
-  are decided. Server-run calls (`mcp_call`, web search) and reasoning items are not decided. A stream is
+  `function_call_output` / `custom_tool_call_output` / `local_shell_call_output` / `shell_call_output` /
+  `apply_patch_call_output` are scanned (`computer_call_output` is a screenshot, not text); `function_call`,
+  `custom_tool_call` (its free-text `input` scanned as `{ input }`) and `mcp_approval_request` (named
+  `mcp__<server_label>__<name>`) are decided, and so are the built-in tools the client runs:
+  `local_shell_call` (argv `action.command`, with `action.env`) and `shell_call` (`action.commands`) as
+  `Bash`, `apply_patch_call` as `Write` (`create_file`, `delete_file`) or `Edit` (`update_file`) of
+  `operation.path` with the diff as content, and `computer_call` content-scanned under the name `computer`
+  (a workload profile's tool list does not restrict it). A shell call without a list of command strings, or
+  an unknown patch operation, is refused in enforce mode. Server-run calls (`mcp_call`, web search, code
+  interpreter) and reasoning items are not decided. A stream is
   held from the first event that carries a call until `response.completed` / `.incomplete` / `.failed`;
   every distinct reading of a call (the item as added and as done, the concatenated argument deltas, the
-  `.done` arguments, the terminal response's output) is decided, and a denied one ends the stream with an
+  `.done` arguments, a `shell_call`'s commands rebuilt from `response.shell_call_command.*` events and their
+  `.done` values, the terminal response's output) is decided, and a denied one ends the stream with an
   `error` event (`code: "moorai_policy_denied"`). A stream that ends while a call is held is refused. With
   `--denied-tool-call replace`, a non-streaming response has its call items removed and a refusal message
   added; a stream is refused instead (rewriting the event sequence is not implemented). Measured with the

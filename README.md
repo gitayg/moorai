@@ -711,10 +711,16 @@ enforce mode. Tested against a fake Gemini upstream only. `--unchecked-window-ms
 alerts, content-free, on a forwarded call that the framework never checked with its `toolCallId`. This
 judging covers Anthropic Messages, Chat Completions, the OpenAI Responses API, Gemini `generateContent` and Ollama `/api/chat`
 traffic that goes through the proxy. **Responses API** (`POST …/responses`): `instructions`, user / system /
-developer input and tool outputs fed back (`function_call_output`, `custom_tool_call_output`) are scanned, and
-each `function_call`, `custom_tool_call` and `mcp_approval_request` (named `mcp__<server_label>__<name>`) is
-judged; in a stream every event from the first call on is held until `response.completed` (or `.incomplete` /
-`.failed`), every reading of a call (the output items, the argument deltas, the final response) is judged,
+developer input and tool outputs fed back (`function_call_output`, `custom_tool_call_output`,
+`local_shell_call_output`, `shell_call_output`, `apply_patch_call_output`) are scanned, and each
+`function_call`, `custom_tool_call` and `mcp_approval_request` (named `mcp__<server_label>__<name>`) is
+judged, as are the built-in tools the client runs: `local_shell_call` and `shell_call` are judged as `Bash`
+(the argv, or the commands, as the command), `apply_patch_call` as `Write` (create or delete a file) or
+`Edit` (update a file) of its path, and `computer_call` has its action content-scanned under the name
+`computer` (no hook tool reads clicks and keystrokes, so a workload profile does not restrict it by tool
+name); a shell call without a list of command strings or a patch operation the proxy cannot read is refused
+in enforce mode. `computer_call_output` is a screenshot and is not scanned. In a stream every event from the first call on is held until `response.completed` (or `.incomplete` /
+`.failed`), every reading of a call (the output items, the argument deltas, a shell call's streamed commands, the final response) is judged,
 and a denied call ends the stream with an `error` event. **Embeddings** (`POST …/embeddings`): string inputs are
 scanned as prompt content; token-id inputs are not text and are not scanned. Bedrock, Gemini's Interactions
 and Live APIs, Vertex partner models and the OpenAI Realtime API are forwarded unparsed. See

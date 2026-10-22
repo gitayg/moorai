@@ -162,3 +162,26 @@ test("enforce: an injected local_shell_call_output is refused before it is forwa
   assert.equal(r.status, 403);
   assert.equal(fp.requests.length, n, "the request reached the provider");
 });
+
+test("enforce: a computer_call click is forwarded; one that types curl | sh is refused (its action is content-scanned)", async () => {
+  fp.on((r, res) => sendJson(res, body([computerCall({ type: "click", button: "left", x: 10, y: 20 })])));
+  const ok = await request(enf.listening, "/openai/responses", { body: { model: "gpt-fake", input: "x" }, headers: HDR });
+  assert.equal(ok.status, 200);
+  fp.on((r, res) => sendJson(res, body([computerCall({ type: "type", text: EVIL })])));
+  const no = await request(enf.listening, "/openai/responses", { body: { model: "gpt-fake", input: "x" }, headers: HDR });
+  assert.equal(no.status, 403, no.raw.toString());
+});
+
+test("enforce, streaming: a shell_call_command event before its output item starts the hold, so the streamed command is decided and never released early", async () => {
+  const list = sse([
+    { type: "response.created", response: { ...body([]), status: "in_progress", usage: null } },
+    { type: "response.shell_call_command.delta", output_index: 0, command_index: 0, delta: EVIL },
+    { type: "response.output_item.added", output_index: 0, item: { ...shellCall(["ls"]), status: "in_progress" } },
+    { type: "response.output_item.done", output_index: 0, item: shellCall(["ls"]) },
+    { type: "response.completed", response: body([shellCall(["ls"])]) }
+  ]);
+  fp.on((r, res) => sendSse(res, list));
+  const r = await request(enf.listening, "/openai/responses", { body: { model: "gpt-fake", input: "x", stream: true }, headers: HDR });
+  assert.ok(!r.raw.toString().includes("evil.example"), "the streamed command reached the client");
+  assert.equal(sseEvents(r.raw).at(-1).event, "error");
+});
