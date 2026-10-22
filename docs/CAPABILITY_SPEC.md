@@ -4005,7 +4005,9 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   paths, redirect, `sed -i` / `perl -pi`, `tee`, `yq -i`, `Set-Content` targets) is judged and added to the
   protected-path check both as resolved against the tracked directory and as written relative to the project.
   A `cd` with no target or to one that is not literal (`$`, a glob, `{ }`, a subshell, a leading `~`, `-`), or a
-  `popd` with nothing pushed, also makes the directory unknown; judging a relative path under it raises
+  `popd` with nothing pushed, or an `eval` / `source` / `.` (which re-parse text in this shell), also makes the
+  directory unknown, and a move of oversight after a link made earlier in the same command (`ln`, `mklink`,
+  `New-Item -ItemType SymbolicLink`) is judged a removal; judging a relative path under it raises
   `analysis-incomplete` (a later segment that judges no path, `cd "$DIR" && git status` or `cd x; npm test`,
   stays clean). A move (`mv`, `git mv`, `move`,
   `Move-Item`, `Rename-Item`; `-t DIR`, `-tDIR`, `--target-directory[=]DIR`, `-T`, `-S SUFFIX`, PowerShell

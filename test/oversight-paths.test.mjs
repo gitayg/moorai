@@ -229,3 +229,12 @@ test("round-4 benign: a same-directory rename, cd and an unrelated edit, a doc s
   ]) assert.deepEqual(sh(cmd), [], cmd);
   assert.deepEqual(oversightEditSignals({ path: join(proj, "guide.md"), before: "## Monitor\nno_notify = False\n", after: "no_notify = True\n", cwd: proj }), []);
 });
+
+test("round-5: eval / source / . re-parse in this shell, so the directory is unknown; a link made earlier in the command makes a monitor move a removal", () => {
+  for (const cmd of ["eval \"$GO\"; rm scope.py", "eval \"$GO\" && rm scope.py", "source ./env.sh && rm scope.py", ". ./env.sh && rm scope.py"])
+    has(sh(cmd), "analysis-incomplete", cmd);
+  for (const cmd of ["ln -s /tmp ops/keep && mv src/alerting.py ops/keep/alerting.py", "ln -sfn /tmp monitoring/x && mv monitoring/drift.py monitoring/x/drift.py"])
+    has(sh(cmd), "wiring-removed", cmd);
+  // A link elsewhere in the command does not touch an unrelated, non-oversight move.
+  assert.deepEqual(sh("ln -s ../shared lib/shared && mv src/util.py src/util2.py"), []);
+});

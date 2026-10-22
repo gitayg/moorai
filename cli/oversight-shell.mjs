@@ -161,7 +161,7 @@ function judgeMove(bin, args, git, opts, ctx, out, touched) {
       if (!kinds.size) continue;
       if (!destAbs) { keeps = false; continue; }
       const final = m.rename ? join(dirname(srcAbs), m.dest) : dirDest ? join(destAbs, basename(srcAbs)) : destAbs;
-      if (!keepsAt(final, kinds, ctx)) keeps = false;
+      if (opts.linkedEarlier || !keepsAt(final, kinds, ctx)) keeps = false;
     }
     if (!keeps) removalSignal(s, out, ctx);
   }
@@ -352,9 +352,21 @@ const unknownDir = (state) => { state.dir = null; state.moved = true; return tru
 // as the literal first command word (after env assignments, `command` or `builtin`); behind any other
 // wrapper (sudo, env, time, eval …) or last in a pipeline (zsh, bash lastpipe run it in this shell) the
 // directory is unknown.
+const REPARSE_BINS = new Set(["eval", "source", "."]);
+// A link made earlier in the same command can move a destination's real path after realOf read it, so a move of
+// oversight after one is judged as a removal.
+const LINK_BINS = new Set(["ln", "link", "mklink"]);
+function makesLink(seg) {
+  const c = commandOf(seg.tokens, seg.ps);
+  if (!c) return false;
+  if (LINK_BINS.has(c.binary)) return true;
+  return c.binary === "new-item" && seg.tokens.some((t) => /^(?:symboliclink|junction|hardlink)$/i.test(t));
+}
 function changeDir(seg, prev, state) {
   const c = commandOf(seg.tokens, seg.ps);
-  if (c && c.binary === "eval" && seg.tokens.slice(c.at + 1).some((t) => CD_WORD.test(t))) return unknownDir(state);
+  // eval, source and . re-parse text in this shell, so any cd inside them is invisible here: unknown.
+  const first = seg.tokens.find((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t));
+  if (REPARSE_BINS.has(first) || (c && REPARSE_BINS.has(c.binary))) return unknownDir(state);
   if (!c || !CD_BINS.has(c.binary)) return false;
   if (!seg.ps && (seg.sep === "|" || seg.sep === "&")) return true;
   if (!seg.ps && prev && prev.sep === "|") return unknownDir(state);
@@ -399,6 +411,7 @@ export function oversightCommandSignals(command, { ps = false, surfaces = null, 
       const state = dirState(dirs, scope, project);
       if (changeDir(seg, segs[i - 1], state)) { dirs.set(scope, state); continue; }
       judgeSegment(seg, segs, i, opts, out, touched, pathCtx(project, state.dir, out));
+      if (makesLink(seg)) opts.linkedEarlier = true;
     } catch { /* one segment never sinks the rest */ }
   }
   if (!out.has(INCOMPLETE) && now() > deadline) out.add(INCOMPLETE);

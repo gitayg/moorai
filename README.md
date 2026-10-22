@@ -1397,11 +1397,12 @@ for shell redirect, `sed -i` and `tee` targets). In a command, `cd`, `pushd` / `
 paths of the segments joined to them by `&&`, and every deleted, moved or written path is judged relative to
 the project as well as as written (`cd monitoring && rm scope.py` is a removed monitor). The directory is
 treated as unknown when it is not certain: after `;`, a newline, `||` or `&` following a `cd` (the `cd` may have
-failed), for a `cd` behind a wrapper other than `command` / `builtin` (`sudo`, `env`, `time`, `eval` …), for a
+failed), for a `cd` behind a wrapper other than `command` / `builtin` (`sudo`, `env`, `time`, `eval` …), after `eval`, `source` or `.` (they re-parse text in this shell, so a `cd` inside is invisible), for a
 `cd` that ends a pipeline (zsh runs it in the current shell), and for a `cd` to a target that is not literal
 (`$DIR`, a glob, `$( … )`, `~`, `-`). Judging a relative path under an unknown directory is held as an
 incomplete analysis, so `cd build; rm -rf dist` asks where `cd build && rm -rf dist` does not. A `cd` inside a
-subshell, at the start of a pipeline or in a background job does not move the shell around it. A move (`mv`,
+subshell, at the start of a pipeline or in a background job does not move the shell around it. After a link is made earlier in the same command (`ln`, `mklink`, `New-Item -ItemType SymbolicLink`), a move of
+oversight is a removal, since the link can move the destination's real path. A move (`mv`,
 `git mv`, `Move-Item`, `Rename-Item`, `-t` / `--target-directory` included) is a rename only when the
 destination keeps an oversight word, stays inside the project, keeps the source's class (runtime code or test)
 and keeps an importable name, both lexically and through its real path (a symlinked directory that leads
