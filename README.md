@@ -967,7 +967,9 @@ HTTPS_PROXY=http://127.0.0.1:8850 HTTP_PROXY=http://127.0.0.1:8850 http_proxy=ht
   Bearer. `--sibling-ports <list>` replaces the sibling port list (`""` for none; the proxy's own port is
   always refused). Flags set the limits: `--max-connections` (256), `--headers-timeout-ms` (10 s),
   `--request-timeout-ms` (60 s), `--idle-timeout-ms` (120 s, also for tunnels), `--connect-timeout-ms`
-  (10 s) and `--dns-timeout-ms` (5 s). An error while judging, or a policy that cannot be loaded, refuses
+  (10 s), `--dns-timeout-ms` (5 s) and `--hello-timeout-ms` (5 s: from a CONNECT client's first byte, a TLS
+  ClientHello still incomplete then closes the tunnel, `egressRefusal: "tls-timeout"`; the ClientHello may
+  span at most 16 TLS records). An error while judging, or a policy that cannot be loaded, refuses
   the connection.
 - **Alerts.** Alerts are content-free, sent to the console and OpenTelemetry the way the MCP gateway
   sends them: category `Egress rule`, `reasonCode` `EGRESS_RULE`, `egressBinary: null`, host, port and

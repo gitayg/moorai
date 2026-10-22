@@ -9,7 +9,8 @@ import assert from "node:assert/strict";
 import net from "node:net";
 import tls from "node:tls";
 import { startUpstream, startEcho, fakeResolver, fakeConnect, startProxy, stateOf, viaProxy, connectVia } from "../egress-proxy/test/harness.mjs";
-import { sniffClientHello } from "../egress-proxy/sni.mjs";
+import * as SNI from "../egress-proxy/sni.mjs";
+const { sniffClientHello } = SNI;
 
 const PUBLIC = "93.184.216.34";
 let up, echo;
@@ -230,5 +231,73 @@ test("cidr: EVERY resolved address is judged as an IP literal, so a blocked publ
     }
     assert.equal(p.connect.calls.length, 0);
     assert.equal((await viaProxy(p.port, "http://api.example.com/")).status, 200, "a name with no address in the range goes");
+  } finally { await p.close(); }
+});
+
+// A ClientHello carrying a padding extension (21) of padLen bytes, its handshake message cut into TLS records
+// of at most recLen bytes.
+function paddedHello(name, padLen, recLen = 16384) {
+  const nm = Buffer.from(name, "latin1");
+  const entry = Buffer.concat([Buffer.from([0, nm.length >> 8, nm.length & 255]), nm]);
+  const sniData = Buffer.concat([Buffer.from([entry.length >> 8, entry.length & 255]), entry]);
+  const sni = Buffer.concat([Buffer.from([0, 0, sniData.length >> 8, sniData.length & 255]), sniData]);
+  const pad = Buffer.concat([Buffer.from([0, 21, padLen >> 8, padLen & 255]), Buffer.alloc(padLen)]);
+  const exts = Buffer.concat([sni, pad]);
+  const body = Buffer.concat([Buffer.from([3, 3]), Buffer.alloc(32), Buffer.from([0, 0, 2, 0x13, 0x01, 1, 0]), Buffer.from([exts.length >> 8, exts.length & 255]), exts]);
+  const hs = Buffer.concat([Buffer.from([1, body.length >> 16, (body.length >> 8) & 255, body.length & 255]), body]);
+  const recs = [];
+  for (let o = 0; o < hs.length; o += recLen) { const f = hs.subarray(o, o + recLen); recs.push(Buffer.from([0x16, 3, 1, f.length >> 8, f.length & 255]), f); }
+  return Buffer.concat(recs);
+}
+
+test("createHelloSniffer: a ClientHello pushed one byte at a time is read incrementally, each byte copied a bounded number of times (no reparse per chunk)", () => {
+  const h = paddedHello("api.example.com", 60000);
+  assert.ok(h.length > 60000 && h.length < 65536);
+  const concat = Buffer.concat;
+  let copied = 0;
+  Buffer.concat = function (list, n) { const b = concat.call(Buffer, list, n); copied += b.length; return b; };
+  let v;
+  try {
+    const s = SNI.createHelloSniffer();
+    for (let i = 0; i < h.length; i++) { v = s.push(h.subarray(i, i + 1)); if (i < h.length - 1) assert.deepEqual(v, { need: true }, `byte ${i}`); }
+  } finally { Buffer.concat = concat; }
+  assert.deepEqual(v, { tls: true, sni: "api.example.com" });
+  assert.ok(copied <= 3 * h.length, `${copied} bytes copied for a ${h.length}-byte ClientHello`);
+  assert.deepEqual(sniffClientHello(h), { tls: true, sni: "api.example.com" }, "the one-buffer form agrees");
+});
+
+test("sniffClientHello: at most MAX_HELLO_RECORDS (16) TLS records before the ClientHello completes; one more is refused", async () => {
+  assert.equal(SNI.MAX_HELLO_RECORDS, 16);
+  const h = await realHello("api.example.com");
+  const body = h.subarray(5);
+  const cut = (n) => { const step = Math.ceil(body.length / n); const out = []; for (let o = 0; o < body.length; o += step) { const f = body.subarray(o, o + step); out.push(Buffer.from([0x16, 3, 1, f.length >> 8, f.length & 255]), f); } assert.equal(out.length / 2, n); return Buffer.concat(out); };
+  assert.deepEqual(sniffClientHello(cut(16)), { tls: true, sni: "api.example.com" });
+  assert.match(String(sniffClientHello(cut(17)).error), /records/);
+  const s = SNI.createHelloSniffer();
+  const r17 = cut(17);
+  let v;
+  for (let i = 0; i < r17.length; i += 7) { v = s.push(r17.subarray(i, i + 7)); if (!v.need) break; }
+  assert.match(String(v.error), /records/, "pushed in pieces too");
+});
+
+test("CONNECT: a TLS first flight that does not complete its ClientHello within the deadline closes the tunnel; a client that has sent nothing yet is not cut", async () => {
+  const resolve = fakeResolver(TABLE);
+  const connect = fakeConnect({ httpPort: up.port, echoPort: echo.port });
+  const p = await startProxy({ helloTimeoutMs: 200 }, { getState: stateOf({ egressRules: [{ host: "api.example.com", port: 443, action: "allow" }], egressDefault: "block" }), resolve, connect });
+  try {
+    let c = await connectVia(p.port, "api.example.com:443");
+    assert.equal(c.status, 200);
+    const outcome = await new Promise((done) => {
+      const t = setTimeout(() => done("open"), 1500);
+      c.socket.on("close", () => { clearTimeout(t); done("closed"); });
+      c.socket.on("error", () => {});
+      c.socket.write(Buffer.from([0x16, 3, 1]));
+    });
+    c.socket.destroy();
+    assert.equal(outcome, "closed", "a stalled ClientHello held the tunnel open past the deadline");
+    assert.equal(p.reports.filter((r) => r.egressRefusal).at(-1).egressRefusal, "tls-timeout");
+    c = await connectVia(p.port, "api.example.com:443");
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(await tunnelOutcome(c.socket, [Buffer.from("SSH-2.0-x\r\n")]), "echoed", "the deadline starts with the client's first byte");
   } finally { await p.close(); }
 });

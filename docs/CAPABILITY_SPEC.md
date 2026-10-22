@@ -2119,8 +2119,12 @@ on the connections it carries, using that module's own parsing, matching and ale
   unenrolled device, like the other form checks); on a CONNECT to an IP literal the server name is judged by
   the rules beside that address. No server name, or a first byte that is not 0x16, is judged on the CONNECT
   line alone; a handshake record that is not a well-formed ClientHello (a repeated extension or host_name,
-  a bad length) is refused (`tls-unparsed`). Not read: an Encrypted Client Hello's inner name, and TLS that
-  starts later in a plaintext tunnel (STARTTLS).
+  a bad length) is refused (`tls-unparsed`). The ClientHello is read incrementally (`createHelloSniffer`:
+  each byte is copied a bounded number of times however the client cuts its writes) and may span at most
+  16 records (`MAX_HELLO_RECORDS`) and 65,576 bytes; more is `tls-unparsed`. From the client's first byte,
+  a ClientHello still incomplete after `--hello-timeout-ms` (5 s) closes the tunnel (`tls-timeout`); a
+  client that has sent nothing yet is not timed. Not read: an Encrypted Client Hello's inner name, and TLS
+  that starts later in a plaintext tunnel (STARTTLS).
 - **Addresses.** Resolve once and connect to that address. Special ranges and IP literals need an
   explicit allow or alert grant from a rule whose host is exact (a name or an IP literal):
   `judgeConnection` re-judges with every `*.suffix` allow / alert rule set aside, and the grant must

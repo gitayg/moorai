@@ -20,10 +20,12 @@
 //   { tls: false }              the first byte is not a TLS handshake record: not TLS, nothing to read
 //   { tls: true, sni }          a complete ClientHello; sni is the lower-cased host_name, or null when the
 //                               client sent no server_name extension
-//   { error }                   a handshake record that is not a well-formed ClientHello (the caller refuses)
-// Pure. Never throws.
+//   { error }                   a handshake record that is not a well-formed ClientHello, one spread over more
+//                               than MAX_HELLO_RECORDS records, or more than MAX_HELLO_BYTES (the caller refuses)
+// Pure. Never throws. createHelloSniffer() reads the same incrementally, one chunk at a time.
 
 export const MAX_HELLO_BYTES = 65536 + 5 * 8;
+export const MAX_HELLO_RECORDS = 16;
 const HOST_RE = /^[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63})*$/;
 
 function parseHello(b) {
@@ -76,32 +78,80 @@ function parseHello(b) {
   return { tls: true, sni };
 }
 
-export function sniffClientHello(buf) {
-  try {
-    if (!buf || !buf.length) return { need: true };
-    if (buf[0] !== 0x16) return { tls: false };
-    const frags = [];
-    let off = 0, total = 0;
-    while (true) {
-      if (buf.length < off + 5) return buf.length > MAX_HELLO_BYTES ? { error: "ClientHello too large" } : { need: true };
-      if (buf[off] !== 0x16) return { error: "a non-handshake record before the ClientHello ended" };
-      if (buf[off + 1] !== 3) return { error: "not a TLS record version" };
-      const len = buf.readUInt16BE(off + 3);
-      if (len === 0 || len > 16384) return { error: "bad record length" };
-      if (buf.length < off + 5 + len) return buf.length > MAX_HELLO_BYTES ? { error: "ClientHello too large" } : { need: true };
-      frags.push(buf.subarray(off + 5, off + 5 + len));
-      total += len;
-      off += 5 + len;
-      const hs = Buffer.concat(frags, total);
-      if (hs.length >= 1 && hs[0] !== 1) return { error: "the first handshake message is not a ClientHello" };
-      if (hs.length >= 4) {
-        const hl = hs.readUIntBE(1, 3);
-        if (hl > 65536) return { error: "ClientHello too large" };
-        if (hs.length >= 4 + hl) return parseHello(hs.subarray(4, 4 + hl));
-      }
-      if (off > MAX_HELLO_BYTES) return { error: "ClientHello too large" };
+// An incremental reader: push(chunk) → the same results as sniffClientHello, decided once (every later push
+// returns the same object). Each byte is copied a bounded number of times however the client cuts its first
+// flight: unread bytes wait as the chunks they arrived in, a record is taken off them once, and the
+// handshake message is joined once, when it is complete. At most MAX_HELLO_RECORDS records may carry the
+// ClientHello and at most MAX_HELLO_BYTES bytes may arrive before it completes.
+export function createHelloSniffer() {
+  const q = []; // unread chunks, q[head] first
+  let head = 0, qlen = 0, total = 0, records = 0, hsLen = 0, hl = -1, done = null;
+  const frags = [];
+  const byteAt = (i) => { for (let k = head; k < q.length; k++) { if (i < q[k].length) return q[k][i]; i -= q[k].length; } return -1; };
+  function take(n) {
+    if (q[head].length >= n) {
+      const b = q[head].subarray(0, n);
+      q[head] = q[head].subarray(n);
+      if (!q[head].length) head++;
+      qlen -= n;
+      return b;
     }
-  } catch {
-    return { error: "unparsed ClientHello" };
+    const parts = [];
+    let left = n;
+    while (left > 0) {
+      const c = q[head];
+      if (c.length <= left) { parts.push(c); left -= c.length; head++; }
+      else { parts.push(c.subarray(0, left)); q[head] = c.subarray(left); left = 0; }
+    }
+    qlen -= n;
+    return Buffer.concat(parts, n);
   }
+  const finish = (v) => { done = v; q.length = 0; frags.length = 0; return v; };
+  function step() {
+    while (qlen >= 5) {
+      if (byteAt(0) !== 0x16) return finish({ error: "a non-handshake record before the ClientHello ended" });
+      if (byteAt(1) !== 3) return finish({ error: "not a TLS record version" });
+      const len = (byteAt(3) << 8) | byteAt(4);
+      if (len === 0 || len > 16384) return finish({ error: "bad record length" });
+      if (qlen < 5 + len) break;
+      take(5);
+      const frag = take(len);
+      records++;
+      if (hsLen === 0 && frag[0] !== 1) return finish({ error: "the first handshake message is not a ClientHello" });
+      frags.push(frag);
+      hsLen += len;
+      if (hl < 0 && hsLen >= 4) {
+        const h4 = frags.length === 1 ? frag : Buffer.concat(frags, hsLen);
+        hl = h4.readUIntBE(1, 3);
+        if (hl > 65536) return finish({ error: "ClientHello too large" });
+      }
+      if (hl >= 0 && hsLen >= 4 + hl) {
+        const hs = frags.length === 1 ? frags[0] : Buffer.concat(frags, hsLen);
+        return finish(parseHello(hs.subarray(4, 4 + hl)));
+      }
+      if (records >= MAX_HELLO_RECORDS) return finish({ error: `the ClientHello spans more than ${MAX_HELLO_RECORDS} records` });
+    }
+    if (head > 1024) { q.splice(0, head); head = 0; }
+    return total > MAX_HELLO_BYTES ? finish({ error: "ClientHello too large" }) : NEED;
+  }
+  return {
+    push(chunk) {
+      if (done) return done;
+      try {
+        if (!chunk || !chunk.length) return NEED;
+        if (total === 0 && chunk[0] !== 0x16) return finish({ tls: false });
+        total += chunk.length;
+        q.push(chunk);
+        qlen += chunk.length;
+        return step();
+      } catch {
+        return finish({ error: "unparsed ClientHello" });
+      }
+    }
+  };
+}
+const NEED = Object.freeze({ need: true });
+
+export function sniffClientHello(buf) {
+  return createHelloSniffer().push(buf);
 }

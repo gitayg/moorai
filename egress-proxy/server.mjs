@@ -45,7 +45,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { egressReason, egressAlerts, EGRESS_RULE, EGRESS_CATEGORY } from "../cli/egress-rules.mjs";
 import { ipOf, addressClass, isMetadataAddress, isLocalAddress } from "./address.mjs";
 import { judgeConnection, judgeAddresses, hasCidrRules, blockHoldsForEveryAddress, networkTarget, httpTarget, httpDestination, connectTarget, rejectedAlert } from "./judge.mjs";
-import { sniffClientHello } from "./sni.mjs";
+import { createHelloSniffer } from "./sni.mjs";
 import { DEFAULTS } from "./config.mjs";
 import { parseTraceparent, formatTraceparent, newTraceId, newSpanId } from "../cli/trace-context.mjs";
 
@@ -284,26 +284,34 @@ export function createEgressProxy(cfg = {}, deps = {}) {
     csock.write("HTTP/1.1 200 Connection Established\r\n\r\n");
     up.pipe(csock);
     // Nothing the client sends goes upstream until its first bytes are judged (judgeHello). The server's
-    // bytes flow at once, so a protocol where the server speaks first still works.
-    let buf = head && head.length ? Buffer.from(head) : Buffer.alloc(0);
-    const settle = () => {
-      const hello = sniffClientHello(buf);
-      if (hello.need) return false;
+    // bytes flow at once, so a protocol where the server speaks first still works. The ClientHello is read
+    // incrementally (sni.mjs createHelloSniffer) and the held chunks are forwarded as they came, never joined.
+    // From the client's first byte, a ClientHello still incomplete after helloTimeoutMs closes the tunnel.
+    const sniffer = createHelloSniffer();
+    const held = [];
+    let timer = null;
+    const drop = () => { up.destroy(); csock.destroy(); };
+    const onData = (c) => {
+      held.push(c);
+      const hello = sniffer.push(c);
+      if (hello.need) {
+        if (!timer) timer = setTimeout(() => { csock.removeListener("data", onData); alertRefusal("tls-timeout", { host: t.host, port, method: null }, tc); drop(); }, o.helloTimeoutMs);
+        return;
+      }
+      clearTimeout(timer);
       csock.removeListener("data", onData);
       const refused = judgeHello(hello, t, a.st, tc);
       if (refused) {
         if (refused.kind !== "rule") alertRefusal(refused.kind, { host: refused.host, port, method: null }, tc);
-        up.destroy();
-        csock.destroy();
-        return true;
+        return drop();
       }
-      if (buf.length) up.write(buf);
-      buf = null;
+      for (const b of held) up.write(b);
+      held.length = 0;
       csock.pipe(up);
-      return true;
     };
-    const onData = (c) => { buf = Buffer.concat([buf, c]); settle(); };
-    if (!buf.length || !settle()) csock.on("data", onData);
+    csock.on("close", () => clearTimeout(timer));
+    csock.on("data", onData);
+    if (head && head.length) onData(Buffer.from(head));
   }
 
   const server = http.createServer({ maxHeaderSize: o.maxHeaderBytes, connectionsCheckingInterval: Math.min(1000, o.headersTimeoutMs) }, (req, res) => {
