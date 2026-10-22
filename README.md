@@ -1391,6 +1391,18 @@ a recipient, tuning a threshold; vendor telemetry opt-outs (`NEXT_TELEMETRY_DISA
 env files (`.env.test`); an inline env prefix or `export` for one run (`OTEL_SDK_DISABLED=true npm test`);
 CI workflow files and UI components. On a hand-built benign near-miss set of 42 edits and commands, 0 fired.
 
+**Where the change lands.** A written path is classified both as written and through its real target, and the
+stricter class wins: a `notes.md` or fixture-named symlink to `src/alerting.py` is judged as runtime code (also
+for shell redirect, `sed -i` and `tee` targets). In a command, `cd`, `pushd` / `popd` and `Set-Location` move the
+paths of the segments after them, and every path is judged relative to the project as well as as written
+(`cd monitoring && rm scope.py` is a removed monitor). A `cd` inside a subshell, a pipeline or a background job
+does not move the shell around it. A `cd` to a target that is not literal (`$DIR`, a glob, `$( … )`, `~`, `-`)
+leaves later relative paths unknown, and judging one of them is held as an incomplete analysis. A move (`mv`,
+`git mv`, `Move-Item`, `Rename-Item`, `-t` / `--target-directory` included) is a rename only when the
+destination keeps an oversight word, stays inside the project, keeps the source's class (runtime code or test)
+and keeps an importable name. A move to `/tmp` or anywhere outside the project, to a docs or fixture path, to a
+`.bak` / `.disabled` / `.old` / `.orig` name, or to a destination that is not literal is a removal.
+
 **Default: ask** (`justify`), never silent. `threatPolicy["84"]` can set it to `notify`, `block` or `kill` (84, not
 81: 81 and 82 are the OT protocol client read and write ids from 1.28.0, so `threatPolicy["81"]` never touches
 this check), and an

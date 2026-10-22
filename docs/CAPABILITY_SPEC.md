@@ -3967,15 +3967,16 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
 [`cli/oversight-surfaces.mjs`](../cli/oversight-surfaces.mjs) (policy), [`cli/oversight-disclosure.mjs`](../cli/oversight-disclosure.mjs)
 (Stop / SubagentStop), wired into [`cli/moorai-hook.mjs`](../cli/moorai-hook.mjs) through `decideOversight`
 ([`cli/hook-core.mjs`](../cli/hook-core.mjs)). Tests: `test/oversight-signals.test.mjs`,
-`test/oversight-disclosure.test.mjs`, `test/oversight-hook.test.mjs`, `test/oversight-hardening.test.mjs` (fixtures
-in `test/oversight-fixtures.mjs`).
+`test/oversight-disclosure.test.mjs`, `test/oversight-hook.test.mjs`, `test/oversight-hardening.test.mjs`,
+`test/oversight-paths.test.mjs` (symlinks, `cd`, moves; real symlinks in a temp dir) (fixtures in
+`test/oversight-fixtures.mjs`).
 
 - **What it catches.** An agent's own write or command that weakens the project's monitoring, alerting, audit
   logging or safety tests. Signals (local only, on the session-ledger row as `ov`; never on an alert):
   suppression flag set or made a requirement (`no_notify = True`, `alerting.enabled: false`, a raise on the flag,
   `amtool silence add`); recipient list or on-call / pager route emptied or deleted; monitor, alerting, audit-log
   or telemetry wiring removed or commented out (identifiers with an oversight stem that the write drops and does
-  not replace), a monitor module deleted or moved to a name without an oversight word, a monitoring CRD deleted,
+  not replace), a monitor module deleted or moved away (see Where a path lands), a monitoring CRD deleted,
   a monitoring component stopped, scaled to zero, uninstalled or removed; a test that guards oversight deleted,
   skipped or changed to assert absence; a key or persistent env var (`setx`, `launchctl setenv`, `kubectl set
   env`, `heroku config:set`, `fly secrets set`, `SetEnvironmentVariable`) that turns monitoring, audit logging or
@@ -3985,6 +3986,25 @@ in `test/oversight-fixtures.mjs`).
   get only the test signal. Repository tooling (`.github`, `.gitlab`, …) and UI component files (`.tsx`, `.vue`,
   `.html`, …) are not judged. A new file (nothing before) gets only the protected-surface check. The current file
   is read up to 1 MiB; an Edit whose `old_string` is not in it, or of a file over 1 MiB, is judged on the snippets.
+- **Where a path lands.** The class is read from the path as written (relative to cwd) and from the target's
+  real path relative to cwd's real path (`oversight-surfaces.mjs` `realOf`: the real path, or for a path that
+  does not exist yet its nearest existing ancestor's plus the rest; absolute when outside cwd). When the two
+  differ both are judged, so the stricter wins: a doc- or fixture-named symlink to runtime code gets the runtime
+  signals, a code-named symlink to a doc keeps them. The same applies to shell redirect, `sed -i` / `perl -pi`,
+  `tee`, `yq -i` and `Set-Content` targets. In a command, the working directory is tracked across segments:
+  `cd`, `chdir`, `pushd` / `popd`, `Set-Location` / `sl`, `Push-Location` / `Pop-Location` with a literal target
+  move the paths of the later segments, per subshell scope (`shell-parse.js` `seg.scope`: a `cd` inside `( … )`,
+  `$( … )` or backticks stays inside it; in POSIX a `cd` in a pipeline or a background job moves nothing).
+  Deleted and moved paths are judged as written and as resolved relative to the project. A `cd` with no target
+  or to one that is not literal (`$`, a glob, `{ }`, a subshell, a leading `~`, `-`), or a `popd` with nothing
+  pushed, makes the directory unknown; judging a relative path under it raises `analysis-incomplete` (a later
+  segment that judges no path, `cd "$DIR" && git status`, stays clean). A move (`mv`, `git mv`, `move`,
+  `Move-Item`, `Rename-Item`; `-t DIR`, `-tDIR`, `--target-directory[=]DIR`, `-T`, `-S SUFFIX`, PowerShell
+  `-Destination` / `-NewName` / `-Path` read; a directory destination is a trailing slash, several sources or an
+  existing directory) of a monitor or a guarding test is a rename only when the destination is literal, keeps an
+  oversight word, resolves inside the project, keeps the source's class (code or test) and does not end in
+  `.bak`, `.disabled`, `.old`, `.orig` or `~`. Anything else (`/tmp`, `../`, `/dev/null`, `docs/`, `$TRASH`,
+  `~/…`) is a removal.
 - **Bounds (fail closed).** Every pattern is linear: the `sed` / `perl` `s///` and `/re/d` parsers are scanners
   (a backslash takes the next character, the first unescaped delimiter ends a field, a backslash or line
   terminator is never a delimiter) and the quoted-prose scanner remembers each position per quote kind; the
@@ -3999,7 +4019,9 @@ in `test/oversight-fixtures.mjs`).
   renaming or adding a recipient, tuning a threshold, a dead unrelated feature flag removed, README / CHANGELOG /
   docs / comment / fixture mentions, re-enabling notifications, vendor telemetry opt-outs, `.env.test`, a UI
   `<Alert>`, `notify_on_success: false`, `disable_web_page_preview`, an inline env prefix for one test run,
-  `export`, a rename via `git mv`, reads). The set is hand-built; no field corpus has been run.
+  `export`, a rename via `git mv`, reads). The set is hand-built; no field corpus has been run. The path tests
+  also hold clean a same-directory rename, a move into another runtime monitoring directory, `cd` into a
+  directory followed by an unrelated edit or removal, and a doc symlink to a doc.
 - **Threat id.** 84. Not 81: 81 (read and unknown) and 82 (write) are the OT protocol client ids that shipped
   in 1.28.0, which live agents send and console policies may set; `threatPolicy["81"]` never changes this verdict.
 - **Default and action.** `APPROVAL_THREATS` includes 84, so `threatActionFor` resolves it to `justify` (ask);
@@ -4040,7 +4062,8 @@ in `test/oversight-fixtures.mjs`).
 - **Not covered.** It judges the agent's own tool calls on this device. Changes made elsewhere (CI, a person,
   another tool, an MCP server that writes files, a web console), a monitor renamed or rewritten so that no
   oversight word remains, a test that weakens an assertion without an absence form or a skip, the full text of
-  an Edit to a file over 1 MiB (only its snippets are judged), NotebookEdit cells (no before), paths held in shell variables, and an unenrolled device's Stop (no console, no
+  an Edit to a file over 1 MiB (only its snippets are judged), NotebookEdit cells (no before), paths held in shell variables (a `cd` to one fails closed when a later path is judged), a move to a new name in
+  the same directory that keeps an oversight word (`alerting.py` to `alerting_unused.py`), and an unenrolled device's Stop (no console, no
   coaching message) are not covered. No engine detector carries #84, so the MCP proxy, model proxy and
   `scan.mjs` do not raise it.
 

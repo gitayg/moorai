@@ -88,7 +88,7 @@ function norm(path, cwd) {
 }
 const real = (p) => { try { return realpathSync(p); } catch { return null; } };
 // The real path of p, or of its nearest existing ancestor joined with the part that does not exist yet.
-function realOf(abs) {
+export function realOf(abs) {
   let cur = abs, rest = "";
   for (let i = 0; i < 64; i++) {
     const r = real(cur);

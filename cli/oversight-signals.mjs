@@ -25,8 +25,9 @@
 //
 // Linear time: every pattern here is free of overlapping quantifiers (the quote scanner below replaces a
 // backtracking regex), so with the MAX size bound the analysis of one write is bounded in time too.
+import { resolve, relative, isAbsolute } from "node:path";
 import { notRuntimeReason, TOOLING_PATH } from "./mcp-package/paths.mjs";
-import { protectedPathHit, protectedKeyChanged } from "./oversight-surfaces.mjs";
+import { protectedPathHit, protectedKeyChanged, realOf } from "./oversight-surfaces.mjs";
 import { words, switchKind, listKind, wiringFamily, TEST_GUARD_WORDS, valueKind } from "./oversight-vocab.mjs";
 
 export const OVERSIGHT_SIGNALS = Object.freeze(["suppression-flag", "recipients-emptied", "wiring-removed", "safety-test-weakened", "monitoring-off", "protected-surface", "analysis-incomplete"]);
@@ -59,6 +60,23 @@ export function pathClass(path, cwd = "") {
   if (notRuntimeReason(rel) === "test-code" || TEST_EXTRA.test(rel)) return "test";
   if (UI_EXT.test(base)) return "ui";
   return "code";
+}
+// The target's real path, relative to cwd's real path when it is inside it, else absolute.
+function realRel(path, cwd) {
+  if (typeof path !== "string" || !path || /[\r\n\0]/.test(path)) return null;
+  const base = typeof cwd === "string" && cwd ? cwd : process.cwd();
+  let r = null, rb = null;
+  try { r = realOf(resolve(base, path)); rb = realOf(resolve(base)); } catch { return null; }
+  if (!r) return null;
+  const rel = rb ? relative(rb, r).replace(/\\/g, "/") : "";
+  return rb && rel && rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel) ? rel : r.replace(/\\/g, "/");
+}
+// → [{ cls, rel }]: the path as written, then its real target when that gets a different class.
+export function pathClasses(path, cwd = "") {
+  const out = [{ cls: pathClass(path, cwd), rel: relPath(path, cwd) }];
+  const r = realRel(path, cwd);
+  if (r !== null) { const cls = pathClass(r); if (cls !== out[0].cls) out.push({ cls, rel: r }); }
+  return out;
 }
 
 // ---- before / after of a write ----
@@ -277,16 +295,17 @@ function testSignals(path, before, after) {
 // incomplete. Over MAX on either side is incomplete too: nothing is cut and then judged clean.
 export function oversightEditSignals({ path = "", before = null, after = "", surfaces = null, cwd = "", beforeUnread = false } = {}) {
   const out = new Set();
-  const cls = pathClass(path, cwd);
-  const judged = cls === "test" || cls === "code";
+  const classes = pathClasses(path, cwd);
+  const code = classes.find((c) => c.cls === "code"), tst = classes.find((c) => c.cls === "test");
+  const judged = Boolean(code || tst);
   const over = (typeof after === "string" && after.length > MAX) || (typeof before === "string" && before.length > MAX);
   const aft = typeof after === "string" ? after.slice(0, MAX) : "";
   const bef = typeof before === "string" ? before.slice(0, MAX) : null;
   if (surfaces && (protectedPathHit(path, surfaces, { cwd, real: true }) || protectedKeyChanged(bef ?? "", aft, surfaces))) out.add("protected-surface");
   if (judged && (bef === null ? beforeUnread : over)) { out.add(INCOMPLETE); return order(out); }
   if (bef === null) return order(out);
-  if (cls === "test") { if (testSignals(relPath(path, cwd), bef, aft)) out.add("safety-test-weakened"); }
-  else if (cls === "code") runtimeSignals(bef, aft, relPath(path, cwd), out);
+  if (tst && testSignals(tst.rel, bef, aft)) out.add("safety-test-weakened");
+  if (code) runtimeSignals(bef, aft, code.rel, out);
   return order(out);
 }
 
@@ -294,11 +313,12 @@ export function oversightEditSignals({ path = "", before = null, after = "", sur
 // set, a recipient list or monitoring sink set empty. Runtime code and config paths only.
 export function assignedSignals(text, path = "", cwd = "") {
   const out = new Set();
-  if (pathClass(path, cwd) !== "code") return [];
+  const code = pathClasses(path, cwd).find((c) => c.cls === "code");
+  if (!code) return [];
   for (const a of assignments(codeLines(text))) {
     const sw = switchKind(a.key, a.parent, a.value);
     if (sw) out.add(sw);
-    const lk = listKind(a.key, `${a.parent} ${relPath(path, cwd)}`);
+    const lk = listKind(a.key, `${a.parent} ${code.rel}`);
     if (lk && valueKind(a.value) === "empty") out.add(lk === "sink" ? "monitoring-off" : "recipients-emptied");
   }
   return order(out);
