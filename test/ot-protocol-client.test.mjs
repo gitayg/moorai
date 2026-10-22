@@ -66,8 +66,12 @@ test("a script file the command runs is read (bounded) when a reader is given", 
     const readScript = scriptReader(dir);
     assert.deepEqual(facts("python3 tools/setpoint.py --dry", { readScript }), { otProtocol: "modbus", otOp: "write" });
     assert.deepEqual(facts("python3 ./tools/setpoint.py", { readScript }), { otProtocol: "modbus", otOp: "write" });
-    // A path outside the session directory is not read.
-    assert.equal(facts("python3 ../outside.py", { readScript }), null);
+    // A path outside the session directory is not read, even when the file exists and imports a client.
+    mkdirSync(join(dir, "proj"));
+    writeFileSync(join(dir, "outside.py"), "import pymodbus\nc.write_register(1, 2)\n");
+    assert.equal(facts("python3 ../outside.py", { readScript: scriptReader(join(dir, "proj")) }), null);
+    assert.equal(facts(`python3 ${join(dir, "outside.py")}`, { readScript: scriptReader(join(dir, "proj")) }), null);
+    assert.deepEqual(facts("python3 outside.py", { readScript }), { otProtocol: "modbus", otOp: "write" });
     assert.deepEqual(facts("node poll.js", { readScript }), { otProtocol: "modbus", otOp: "read" });
     assert.equal(facts("python3 plain.py", { readScript }), null);
     assert.equal(facts("python3 missing.py", { readScript }), null);

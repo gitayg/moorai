@@ -72,7 +72,8 @@ test("exchange refusals: a 401 reason code from the closed list, anything else i
   }
   await assert.rejects(exchangeWorkloadToken({ serverUrl: "https://c.example", workloadId: WID, idToken: JWT, fetchImpl: fakeFetch([["https://c.example", () => json(401, { error: `claim ${JWT}` })]]) }), (e) => { noSecrets(e); return e.code === "exchange-refused"; });
   await assert.rejects(exchangeWorkloadToken({ serverUrl: "https://c.example", workloadId: WID, idToken: JWT, fetchImpl: fakeFetch([["https://c.example", () => json(404, {})]]) }), (e) => e.code === "exchange-unsupported");
-  await assert.rejects(exchangeWorkloadToken({ serverUrl: "https://c.example", workloadId: WID, idToken: JWT, fetchImpl: fakeFetch([["https://c.example", () => json(200, { token: "mwt_bad", expiresAt: "x" })]]) }), (e) => { noSecrets(e); return e.code === "bad-response"; });
+  await assert.rejects(exchangeWorkloadToken({ serverUrl: "https://c.example", workloadId: WID, idToken: JWT, fetchImpl: fakeFetch([["https://c.example", () => json(200, { token: "mwt_bad", expiresAt: "2026-10-21T18:00:00.000Z" })]]) }), (e) => { noSecrets(e); return e.code === "bad-response"; });
+  await assert.rejects(exchangeWorkloadToken({ serverUrl: "https://c.example", workloadId: WID, idToken: JWT, fetchImpl: fakeFetch([["https://c.example", () => json(200, { token: MWT, expiresAt: "soon" })]]) }), (e) => { noSecrets(e); return e.code === "bad-response"; });
   await assert.rejects(exchangeWorkloadToken({ serverUrl: "https://c.example", workloadId: "wkl-nothex", idToken: JWT, fetchImpl: fakeFetch([]) }), (e) => e.code === "bad-workload-id");
   await assert.rejects(exchangeWorkloadToken({ serverUrl: "ftp://c.example", workloadId: WID, idToken: JWT, fetchImpl: fakeFetch([]) }), (e) => e.code === "bad-server-url");
 });

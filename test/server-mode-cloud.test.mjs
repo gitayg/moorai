@@ -57,6 +57,8 @@ test("cloudAgent heartbeat field: host plus attestation, null when not a cloud a
   assert.deepEqual(cloudAgentPosture(resolveServerMode({ env: base, system: sys })), { host: "copilot-coding-agent", attestation: "github-oidc" });
   // github-oidc from the environment is not believed: the environment is not where a minted token is recorded.
   assert.deepEqual(cloudAgentPosture(resolveServerMode({ env: { ...base, MOORAI_CLOUD_HOST: "ci", MOORAI_INSTALL_TOKEN: MWT, MOORAI_WORKLOAD_ATTESTATION: "github-oidc" } })), { host: "ci", attestation: "static-token" });
+  // github-oidc recorded in the file while the token in force came from the environment is not believed.
+  assert.deepEqual(cloudAgentPosture(resolveServerMode({ env: { ...base, MOORAI_INSTALL_TOKEN: MWT }, system: { mode: "server", cloudHost: "copilot-coding-agent", workloadAttestation: "github-oidc" } })), { host: "copilot-coding-agent", attestation: "static-token" });
   // github-oidc without an mwt_ token in force is not believed either.
   assert.deepEqual(cloudAgentPosture(resolveServerMode({ env: base, system: { ...sys, installToken: "classic-install-token" } })), { host: "copilot-coding-agent", attestation: "static-token" });
 });
