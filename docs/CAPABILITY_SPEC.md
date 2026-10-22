@@ -1696,6 +1696,69 @@ comes from the deployment's network policy, which is being built separately unde
 - A `deny_rules` entry on one OpenShell endpoint can also deny requests that another overlapping rule
   allows (narrower, not reported).
 
+## Native settings from one policy
+
+**Status: built and unit-tested (`test/native-settings.test.mjs`, `test/native-settings-drift.test.mjs`,
+`test/native-settings-cli.test.mjs`, goldens in `test/fixtures/native-settings/linux/`). One part was run
+against a real host: Claude Code 2.1.295, given the compiled file through `--settings`, refused
+`claude mcp add` for a server not on the compiled `allowedMcpServers` ("not allowed by enterprise policy") and
+accepted it from a file that listed it. No compiled file has been placed at a managed path, and no Codex,
+Copilot CLI, Gemini CLI or Cursor run has read one. The heartbeat field is not wired yet (below).**
+
+[`cli/native-settings.mjs`](../cli/native-settings.mjs) `nativeSettings(policy, host, { platform, mcpIdentities })`
+→ `{ ok, host, platform, files:[{ path, format, scope, merge, content }], unexpressed, notes }`. Pure. One module
+per host in [`cli/native-settings/`](../cli/native-settings/); the portable subset is
+[`intent.mjs`](../cli/native-settings/intent.mjs), the egress-to-domain-list mapping is
+[`egress.mjs`](../cli/native-settings/egress.mjs). CLI: [`cli/moorai-native-settings.mjs`](../cli/moorai-native-settings.mjs)
+(`compile`, `check`). Drift: [`cli/native-settings-drift.mjs`](../cli/native-settings-drift.mjs).
+
+**The portable subset.** Tool names are Claude Code's, which every MoorAI host adapter translates into.
+- `tagActions`: `block` → deny and `ask` → ask, for the built-in tools whose tag is fixed
+  (`data/tool-tags.js BUILTIN_TOOL_TAGS`). Always reported `coarsened` (`tag-beyond-builtin-tools`): the tag also
+  lands on MCP tools and on parsed shell commands. `read-private` is decided from content: `omitted`. A console
+  exception for `tag:<tag>` lets calls through MoorAI that the native deny refuses: `narrowed`.
+- `entitlements` with `entitlementMode: "block"`: `tools` → an allow-only list (each host denies every other
+  built-in it can name; reported `coarsened` for tools the list cannot name); `mcp` narrows the MCP list. A JIT
+  elevation in `elevations` is `narrowed`. `alert` mode allows, so nothing is compiled.
+- `mcpAllow` / `mcpGate`: exactly `decideMcpServer` — gate on: the list (empty = none); gate off: a non-empty
+  list, else no list.
+- `egressRules` / `egressDefault`: validated by `validateEgressRule`. Rules are first-match; host domain lists
+  are unordered with deny winning. So: an allow followed by an overlapping block is `narrowed`
+  (`<host>-deny-wins`); a `binary`, `method` or `path` field makes an allow `coarsened` and a block `omitted`
+  (a domain-wide block would refuse traffic the rule allows); a port on a host with no port syntax does the same.
+
+**Per host, with the schema quoted in each module's header** (docs read 2026-10-21):
+
+| Host | Path (darwin / linux / win32) | Merge | Carried | Not carried (reason codes) |
+|---|---|---|---|---|
+| Claude Code | `…/ClaudeCode/managed-settings.d/50-moorai.json` | whole (MoorAI's own drop-in) | `permissions.deny` / `ask`; `allowedMcpServers` `{ serverName }` + `allowManagedMcpServersOnly`; `sandbox.network.allowedDomains` / `deniedDomains` (`host:port` per port); `WebFetch(domain:…)` denies; with `egressDefault: "block"`: `sandbox.enabled`, `failIfUnavailable`, `allowUnsandboxedCommands: false`, `network.allowManagedDomainsOnly` | names outside `[A-Za-z0-9_-]` (`claude-code-server-name-charset`, narrowed); WebFetch to unlisted hosts (`claude-code-webfetch-not-sandboxed`); the sandbox's file confinement (`claude-code-sandbox-filesystem`, narrowed); domain lists with the sandbox off (`claude-code-sandbox-off`, may-be-inert); `*.x` apex matching unstated (approximated) |
+| Codex | `/etc/codex/requirements.toml`; `C:\ProgramData\OpenAI\Codex\requirements.toml` | whole | `allowed_web_search_modes = []`; `[allowed_permission_profiles] ":read-only" = true` when every write tool is refused (approximated: it also refuses shell writes); `[mcp_servers.<name>] identity = { command | url }` from `--mcp-identities`, `[mcp_servers]` empty for nothing approved; `[experimental_network]` + `.domains` | shell, read and agent tools have no deny (`codex-no-tool-deny`); asks (`codex-no-tool-ask`); a server with no identity (`codex-mcp-identity-required`: narrowed when others are listed, coarsened when none can be); ports (`codex-no-port-syntax`); unlisted-domain behaviour without the managed lock is unstated (approximated); the section is experimental |
+| Copilot CLI | `/Library/Application Support/GitHubCopilot/managed-settings.json`; `/etc/github-copilot/…`; `C:\Program Files\GitHubCopilot\…` | keys | `permissions.deny` / `ask` (`Shell(*)`, `PowerShell(*)`, `Read(**)`, `Write(**)`, `Edit(**)`, `Domain(…)`); `permissions.limitTo` (allowed domains with a block default; `[]` when web tools are refused); `allowedMcpServers` | `Shell(*)` form unverified (approximated); `limitTo` and `Domain()` do not cover shell (coarsened); first-party servers exempt (coarsened); the managed `sandbox` network shape is unpublished |
+| Cursor | `~/.cursor/cli-config.json` (user scope) | keys | `permissions.deny` (`Shell(*)`, `Read(**)`, `Write(**)`, `WebFetch(*)`, `WebFetch(host)`) | no managed file, no MCP allow-list file (`cursor-mcp-allowlist-no-file`), no ask list, no default deny (`cursor-no-default-deny`); allow entries are never written (they auto-approve) |
+| Gemini CLI | `…/GeminiCli/policies/moorai.toml` (admin tier) and `…/GeminiCli/settings.json` | whole / keys | `[[rule]]` deny (priority 900) and `ask_user` (800) by tool name (`run_shell_command` + `read_many_files` for Bash, `read_file`, `write_file`, `replace`, `web_fetch`, `google_web_search`, `invoke_agent`); `mcpName = "*"` deny for nothing approved; `mcp.allowed` | no network policy (`gemini-no-network-policy`); server names with `_` (approximated); tools MoorAI's adapter does not map (`gemini-tool-not-mapped`) |
+
+No host compiler writes an allow rule that removes a prompt (Gemini `allow`, Cursor `allow`, Copilot `allow`).
+
+**Drift.** `nativeDrift(compiled, { root, home, read })` reads each file (under `root` for tests) and compares:
+whole-file TOML byte for byte (`content-changed`); JSON by owned key path, lists as sets (`missing-entries`,
+`extra-entries`), scalars (`value-changed`), deleted keys (`key-absent`) and, for files MoorAI owns whole, keys
+added by hand (`extra-key`). Each finding says whether it `weakens` the file (a missing deny or ask entry, an
+extra allow-list entry, a changed switch, an added key). `nativeSettingsPosture({ policy, platform })` →
+`{ v:1, hosts:{ <host>: { state, files, findings, weakening, unexpressed } } }`, counts only.
+
+**Not wired here.** The posture heartbeat is built in `cli/moorai-hook.mjs` and `cli/agent-posture.mjs`, which
+this package does not edit. The one-line integration is `nativeSettings: nativeSettingsPosture({ policy,
+platform: process.platform })` in the heartbeat body; until it lands, drift is reported by
+`moorai-native-settings check` only, and the console shows nothing.
+
+**Not proven.**
+- Only the Claude Code MCP allow-list was read by a real host, and only through `--settings`, not from the
+  managed drop-in directory. The permission, sandbox and drop-in keys are taken from the docs.
+- Codex `requirements.toml`, Copilot CLI managed settings and Gemini CLI policy files were not loaded by those
+  hosts (none is installed here). `Shell(*)` / `PowerShell(*)` in Copilot and Cursor are unverified forms.
+- The CLI verifies a signature only when `--pubkey` is given; it does not use the device's pin.
+- Formats change often; the docs were read on 2026-10-21.
+
 ## MCP server network sandbox (`mcpServerSandbox`)
 
 **Status: built; unit tests (`test/mcp-server-sandbox.test.mjs`) and real-guard tests

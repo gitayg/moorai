@@ -72,6 +72,12 @@ test("check: in-sync after the compiled files are placed under a root, drift aft
   assert.equal(JSON.parse(r.stdout).hosts["claude-code"].state, "drift");
 });
 
+test("package: moorai-native-settings is a published bin", () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+  assert.equal(pkg.bin["moorai-native-settings"], "cli/moorai-native-settings.mjs");
+  assert.ok(pkg.files.includes("cli/"));
+});
+
 test("signature: with --pubkey a signed policy compiles, a tampered one is refused", () => {
   const key = generateKeyPairSync("ed25519");
   const policy = JSON.parse(readFileSync(join(FIX, "policy.json"), "utf8"));

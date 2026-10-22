@@ -80,6 +80,19 @@ test("drift: a scalar flipped and a key deleted", () => {
   assert.deepEqual(f, [{ key: "allowManagedMcpServersOnly", kind: "key-absent", weakens: true }, { key: "sandbox.enabled", kind: "value-changed", weakens: true }]);
 });
 
+test("drift: a key added by hand to a file MoorAI owns whole is reported", () => {
+  const { root, home, r } = rootWith("claude-code", {
+    mutate: (r, at) => {
+      const p = at(r.files[0]);
+      const c = JSON.parse(readFileSync(p, "utf8"));
+      c.permissions.allow = ["Bash(curl *)"];
+      c.sandbox.excludedCommands = ["curl *"];
+      writeFileSync(p, JSON.stringify(c));
+    }
+  });
+  assert.deepEqual(nativeDrift(r, { root, home }).files[0].findings, [{ key: "permissions.allow", kind: "extra-key", weakens: true }, { key: "sandbox.excludedCommands", kind: "extra-key", weakens: true }]);
+});
+
 test("drift: a whole-file TOML edited by hand is content-changed", () => {
   const { root, home, r } = rootWith("codex", {
     mutate: (r, at) => { const p = at(r.files[0]); writeFileSync(p, readFileSync(p, "utf8").replace('"deny"', '"allow"')); }

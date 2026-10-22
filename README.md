@@ -2069,6 +2069,52 @@ calls, so:
 
 Details and limits: [CAPABILITY_SPEC.md](docs/CAPABILITY_SPEC.md#sandbox-egress-policies-from-egressrules).
 
+### One policy, each agent's own settings files
+
+Each agent host also has its own settings file. An administrator running four agents would otherwise keep
+four policy formats. `moorai-native-settings` compiles the part of the MoorAI policy a host's own file can
+carry into that file, and checks later whether the file on the machine still says the same thing:
+
+```bash
+moorai-native-settings compile --policy policy.json --host all --platform linux --out ./native
+moorai-native-settings check   --policy policy.json --host all
+```
+
+What it reads from the policy: `tagActions` (`block` / `ask` on a tag become deny / ask rules for the built-in
+tools with that tag), `entitlements` with `entitlementMode: "block"` (an allow-only tool and MCP list),
+`mcpAllow` / `mcpGate` (the MCP server allow-list, with the same meaning as MoorAI's own check) and
+`egressRules` / `egressDefault`.
+
+| Host | File written | What it carries |
+|---|---|---|
+| Claude Code | `managed-settings.d/50-moorai.json` in the managed settings directory | `permissions.deny` / `ask`, `allowedMcpServers` + `allowManagedMcpServersOnly`, the Bash sandbox's `network.allowedDomains` / `deniedDomains` (with `egressDefault: "block"`: sandbox on, `failIfUnavailable`, no unsandboxed retry, managed domains only), `WebFetch(domain:…)` denies |
+| Codex | `/etc/codex/requirements.toml` (Windows: `%ProgramData%\OpenAI\Codex\`) | `allowed_web_search_modes = []`, a read-only `allowed_permission_profiles` when every write tool is refused, the `mcp_servers` identity allow-list, `experimental_network` domains |
+| Copilot CLI | the root-owned `managed-settings.json` | `permissions.deny` / `ask` (`Shell(*)`, `Read(**)`, `Domain(…)`), `permissions.limitTo`, `allowedMcpServers` |
+| Cursor | the user's `~/.cursor/cli-config.json` (the only file Cursor documents) | `permissions.deny` (`Shell(*)`, `Read(**)`, `Write(**)`, `WebFetch(…)`) |
+| Gemini CLI | `policies/moorai.toml` (admin tier) and the system `settings.json` | deny / `ask_user` rules per tool, `mcpName = "*"` deny, `mcp.allowed` |
+
+Every part of the policy a host's file cannot carry is listed in `unexpressed`, one entry per rule or tool:
+`{ source, index? | item? | tool?, effect, reason }`, with the effects `omitted`, `coarsened` (the host lets
+more through, and MoorAI's own check still judges it), `narrowed` (the host refuses something MoorAI allows),
+`approximated`, `may-be-inert` and `invalid`. Nothing is widened silently. Examples: Codex matches MCP servers
+by command or URL, so `--mcp-identities` supplies those for the names in `mcpAllow`; Cursor has no MCP
+allow-list file; Gemini CLI has no domain list; a `binary`, `method` or `path` field on an egress rule cannot
+be expressed by any host's domain list. The report holds sources, indexes, tag and tool names only, never a
+host name or server name.
+
+`check` compares each host's file with what MoorAI compiles: `in-sync`, `drift`, `absent`, `unreadable` or
+`not-applicable`, with findings by key path (`missing-entries`, `extra-entries`, `key-absent`,
+`value-changed`, `extra-key`, `content-changed`) and whether each one lets more through. It exits 3 on drift.
+`nativeSettingsPosture()` returns the same result as a content-free record per host (state and counts only).
+
+The native file is a second layer next to MoorAI's own hook. A file in a user-writable place (Cursor's) can be
+edited by the user or by an agent running as the user; `check` reports that edit, it does not prevent it.
+`compile` never writes a system path: `--out` writes into the directory you give, and you or your MDM place
+the files. With `--pubkey <file> --tenant <id>` the policy's signature is verified first.
+
+Details, the schema quotes from each host's docs, and what was run against a real host:
+[CAPABILITY_SPEC.md](docs/CAPABILITY_SPEC.md#native-settings-from-one-policy).
+
 ### Cloud AI platforms (Amazon Bedrock inventory)
 
 `moorai-cloud-inventory bedrock --run --regions us-east-1 --post` reads, read-only, the agents, knowledge

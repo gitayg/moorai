@@ -173,6 +173,13 @@ test("codex: requirements.toml carries web search, the MCP identity allow-list a
   assert.ok(unexp(nativeSettings({ tagActions: { exec: "block" } }, "codex", { platform: "linux" }), (u) => u.source === "tagActions" && u.effect === "omitted" && u.reason === "codex-no-tool-deny").length);
 });
 
+test("codex: blocks with an allow default do not lock the proxy to managed domains, and say the unlisted case is unstated", () => {
+  const r = nativeSettings({ egressRules: [{ host: "evil.example.com", action: "block" }] }, "codex", { platform: "linux" });
+  assert.match(r.files[0].content, /^\[experimental_network\]\nenabled = true\nmanaged_allowed_domains_only = false$/m);
+  assert.ok(unexp(r, (u) => u.source === "egressDefault" && u.effect === "approximated" && u.reason === "codex-unlisted-domain-unstated").length);
+  assert.ok(r.notes.some((n) => n.reason === "codex-network-experimental"));
+});
+
 test("codex: no identity known for any allowed server leaves the list out and says it is wider", () => {
   const r = nativeSettings({ mcpAllow: ["github"] }, "codex", { platform: "linux" });
   assert.deepEqual(r.files, []);
