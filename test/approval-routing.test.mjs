@@ -5,14 +5,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateKeyPairSync, sign as edSign } from "node:crypto";
+import { generateKeyPairSync, sign as edSign, createHash } from "node:crypto";
 import { policyCanonical, policyDigest, POLICY_SIG_VERSION } from "../cli/hook-core.mjs";
 import { approvalRules, ruleMatches, matchRule, newRequestId, mcpToolOf, actionHashOf, signedApprovals, decideHeld, emptyState, readApprovalState, writeApprovalState, approvalAlert, approvalGate, REQUEST_ID_RE, PENDING_MAX, RULES_MAX, APPROVALS_FILE } from "../cli/approval-routing.mjs";
 import { rmTree } from "./fs-cleanup.mjs";
 
 const RULE = { id: "ot-setpoint", label: "OT setpoint or mode change", match: { threatId: [43, 46] }, holds: ["block", "ask"], group: "ot-approvers" };
 const valid = (r) => approvalRules({ approvalRouting: { v: 1, rules: [r] } }, { warn: () => {} });
-const hash = (s) => `h2:${Buffer.from(String(s)).toString("hex").padEnd(16, "0").slice(0, 16)}`;
+const hash = (s) => `h2:${createHash("sha256").update(String(s)).digest("hex").slice(0, 16)}`;
 
 test("rules: defaults applied; a malformed rule is dropped with a warning naming its id and never a value", () => {
   const [r] = valid(RULE);
@@ -188,5 +188,29 @@ test("gate: unenrolled, unroutable reasons, kill actions and killOnCritical are 
     const mixed = approvalGate({ load: async () => ({ policy, trust: { keys: [] } }), tenant: "acme", hash, threatAction: (id) => (id === 7 ? "notify" : "block"), post: () => {}, stateDir: dir, warn: () => {} });
     assert.ok(await mixed.overlay(v, { tool: "Bash", ti: { command: "y" }, found: [43, 7] }));
     assert.equal(await mixed.overlay(v, { tool: "Bash", ti: { command: "z" }, found: [43, 3] }), null);
+  } finally { rmTree(dir); }
+});
+
+test("gate: an egress grant is honoured at the early egress check only, never at the final verdict", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "moorai-approvals-egress-"));
+  try {
+    const rule = { ...RULE, id: "ot-egress", grant: "ttl", match: { egressRuleId: ["ot-subnets"], reasonCode: ["EGRESS_RULE"] } };
+    const ti = { command: "curl https://hist.plant.example/" };
+    const ah = actionHashOf("Bash", ti, hash);
+    const g = { requestId: "apr_0000000000000000000000000C", ruleId: "ot-egress", actionHash: ah, decision: "approve", grant: "ttl", decidedAt: new Date().toISOString(), validUntil: new Date(Date.now() + 600000).toISOString() };
+    const policy = signedPolicy({ approvalRouting: { v: 1, rules: [rule] }, approvals: [g] });
+    const posts = [];
+    const mk = () => approvalGate({ load: async () => ({ policy, trust: { keys: [key.publicKey] } }), tenant: "acme", hash, post: (a) => posts.push(a), stateDir: dir, warn: () => {} });
+    const wp = { decision: "deny", reasonCode: "EGRESS_RULE", alerts: [{ reasonCode: "EGRESS_RULE", egressAction: "block", egressRuleId: "ot-subnets" }] };
+    const gate = mk();
+    assert.equal(await gate.liftEgress(wp, { tool: "Bash", ti }), true, "lifted at the egress check");
+    assert.equal(posts.filter((a) => a.reasonCode === "APPROVAL_USED").length, 1);
+    // The same grant reaching the final verdict with an EGRESS_RULE basis (the egress stop came first) never allows.
+    const gate2 = mk();
+    await gate2.liftEgress({ ...wp, alerts: [{ ...wp.alerts[0] }] }, { tool: "Bash", ti: { command: "other" } });
+    const v = await gate2.overlay({ decision: "deny", reason: "egress", alternatives: [], rewrite: null }, { tool: "Bash", ti, found: [], basis: "EGRESS_RULE" });
+    assert.equal(v.decision, "deny", JSON.stringify(v));
+    // A default-block (no rule id) is not matched by an egressRuleId rule.
+    assert.equal(await mk().liftEgress({ ...wp, alerts: [{ reasonCode: "EGRESS_RULE", egressAction: "block" }] }, { tool: "Bash", ti }), false);
   } finally { rmTree(dir); }
 });
