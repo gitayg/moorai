@@ -73,6 +73,7 @@ Because you can read the code. The agent is **MIT and open source** — the whol
 
 **macOS (Apple silicon)** — download the `.dmg` from [app.moorai.dev/download/app](https://app.moorai.dev/download/app) (it is not attached to GitHub Releases), or `brew install --cask gitayg/tap/moorai` — see [packaging/README.md](packaging/README.md). The app updates itself in place.
 **Windows** — download the signed `-setup.exe` from [Releases](https://github.com/gitayg/moorai/releases) (built in the open by CI).
+**Linux** — build the `.deb` and tarball from a checkout with `node scripts/build-linux-package.mjs` (see [Linux package](#linux-package)); they are not attached to Releases yet.
 
 Community edition: runs standalone, no account required. **Without enrollment MoorAI coaches**: it runs the
 same detection and built-in defaults, and shows you (and, where the agent's hook protocol allows, the agent)
@@ -143,6 +144,44 @@ test connectivity use a check like nc -z or curl. Not blocked: this device is no
 ```
 
 Enroll the device (below) to have the same finding denied, held for sign-off, or end the session, per policy.
+
+### Linux package
+
+```bash
+node scripts/build-linux-package.mjs --out dist/linux
+sudo dpkg -i dist/linux/moorai_<version>_all.deb   # or: tar -xzf moorai-<version>-linux.tar.gz && sudo sh moorai-<version>/install.sh
+moorai-install-hooks                               # as each user: registers the hooks in ~/.claude/settings.json
+sudo systemctl --global enable moorai-hooks.service        # optional: register them at every user's login
+systemctl --user enable --now moorai-serve.service         # optional: the loopback engine sidecar
+```
+
+The package puts the agent under `/usr/lib/moorai`, links every `moorai-*` command into `/usr/bin`, and ships two
+systemd user units (both disabled until you enable them). It needs Node.js 18 or newer, which it recommends rather
+than depends on; without it, `dpkg -i` succeeds with a warning and `moorai-install-hooks` refuses. The builder also
+writes `moorai.spec` for `rpmbuild` (not yet built or tested on an rpm distribution). Builds are reproducible for a
+given commit. As everywhere, the hooks coach until the device is enrolled or the administrator writes `fail-closed`
+to the root-owned `/etc/moorai/offline-posture`. Run `moorai-hook uninstall` as each user before removing the
+package. Tested on Debian 12 and Ubuntu 24.04 containers (arm64); systemd itself and RHEL were not exercised.
+
+### Privileged helper (moorai-guardd)
+
+`moorai-guardd` is the root-owned helper that holds the device key, the policy cache and the alert queue where the
+user cannot delete or read them (design: [`docs/proposals/guardd-contract.md`](docs/proposals/guardd-contract.md)).
+Installers, one per OS, run as root or elevated:
+
+```bash
+sudo sh guardd/packaging/linux/install.sh /abs/path/moorai-guardd   # systemd service + socket
+sudo sh guardd/packaging/macos/install.sh /abs/path/moorai-guardd   # LaunchDaemon (build-pkg.sh builds a .pkg)
+pwsh -File guardd/packaging/windows/install.ps1 -Binary C:\path\moorai-guardd.exe   # MoorAIGuard service
+node scripts/build-linux-package.mjs --guardd <binary> --guardd-arch amd64          # moorai-guardd .deb
+moorai-helper status [--json]                                     # installed? running? valid device-key proof?
+```
+
+Each installer refuses a binary built with test-only path injection and never writes `/etc/moorai/config.json` or
+`secret.json` (those come from the administrator or MDM). On Windows only SYSTEM and Administrators can stop or
+reconfigure the service. `moorai-helper status` reports `healthy` only when the endpoint passes the root-ownership
+check and the helper proves it holds the key published in `device.pub`. The helper's per-OS platform layer is not
+implemented yet, so an installed helper exits at start today; the install path and the status check are what ship.
 
 ### Try the CLI guard in 30 seconds
 
@@ -2001,6 +2040,7 @@ npx moorai-scan --package github:owner/repo   # a whole source repository — an
 - **`moorai-scan`** is a **pre-install skill gate** — MoorAI's on-device, content-free answer to a cloud "skill scanner". Point it at a skill/agent artifact on disk (a directory, a `SKILL.md`, a `.mcp.json`, a `.claude/agents/*.md`, …) *before* you install it and it walks the path, classifies each file's skill-surface kind (`data/skill-surface.js`), and runs MoorAI's **own shipped detection engine** over each text file at stage `file` (and `tool` for JSON MCP configs). The **verdict is derived from the engine's own allow/ask/deny decisions — never an invented 0-100 score**: any `deny` → `DO-NOT-INSTALL`, any `ask` → `REVIEW`, low findings only → `CAUTION`, nothing → `CLEAN` (the worst across all files). No external scanner is bundled or invoked, and **no enrollment is required** (it runs before you install, possibly before you enroll). Output is JSON (or `--format md`) and is **content-free** — per finding only `{relativePath, surfaceKind, threatId, category, intentLabels, contentHash, tier}`, never the matched text or file contents — so it never becomes the exfiltration channel a cloud scanner is. Exit codes slot into CI: `0` for CLEAN/CAUTION, non-zero for REVIEW/DO-NOT-INSTALL, tunable with `--fail-on <tier>`. With `--package` / `--packages`, `--offline` (or `MOORAI_OFFLINE=1`) makes no request: each package is reported `not-checked (offline)` and stays REVIEW, at once. Registry mirrors: `MOORAI_NPM_REGISTRY`, `MOORAI_PYPI_URL` and `MOORAI_GITHUB_CODELOAD_URL` (https only; artifacts must then come from the mirror's own host). Each registry request and download gives up after 30 s without response headers or body progress.
 - **`moorai-mcp-check <package>`** runs ten pre-install checks on an MCP server from registry metadata and published manifests only; the package is never downloaded or run, and the reputation cache is not written. Each check is pass, warn, fail or not checked, with a one-line reason: (1) publisher identity and typosquat (the name lists and the repository link), (2) package age (`new-package`, under 30 days), (3) maintainers (npm `maintainers`, PyPI `ownership.roles`), (4) npm install scripts from the version manifest, (5) authentication and (7) credential names, both from the `server.json` the package publishes to the official MCP Registry (npm `mcpName`, PyPI `mcp-name:`), (6) a remote endpoint's HTTPS, hostname rather than bare IP, and fit with the policy's `egressRules`, (8) tool descriptions through the tool-stage engine when you pass `--tools <tools/list JSON>`, (9) whether the spec pins a version, and (10) whether this machine routes MCP through MoorAI (hook, stdio proxy or gateway). It also prints a metadata-only reputation score and band, and the SkillTriage verdict when `mcpReputation.feed` is on. Input: `npm:name@1.2.3`, `pypi:name==1.0`, a bare npm name, a launch command (`"npx -y name@1.2.3"`) or an `https://` URL (parsed, never contacted). Policy comes from `--policy file.json`, or the verified policy already on the device (read offline, as `moorai-doctor` does); `--no-policy`; `--json`. Exit 1 if any check fails. `--offline` (or `MOORAI_OFFLINE=1`) makes no request: the registry, repository and MCP Registry checks and the SkillTriage feed report `not-checked (offline)`, and the name, pinning, tools and runtime checks still run. Mirrors: `MOORAI_NPM_REGISTRY`, `MOORAI_PYPI_URL`, `MOORAI_MCP_REGISTRY` and `MOORAI_GITHUB_RAW_URL`; an invalid one (not https, or carrying credentials, a query or a fragment) is refused with exit 2 rather than replaced by the public host. **Limits.** PyPI install-time code (setup.py, build backends) is not visible in its JSON API, so that check is not checked for PyPI. Authentication, credentials and transport for a package need a published `server.json`; most packages have none. MCP OAuth is negotiated at connect time and is not probed. The tool list is only known from a running server unless you supply it. An npm semver range is not resolved: install scripts are read from the latest version, and the report says so.
 - **`moorai-outbox`** shows and sends the alert outbox (`status [--json]`, `flush`) and writes a device bundle for a console the device cannot reach (`export --out <file.zip> [--include-trail]`). See [Store-and-forward alerts](#store-and-forward-alerts).
+- **`moorai-helper status [--json]`** reports whether the privileged helper `moorai-guardd` is installed, running and answering with a valid device-key proof, as a content-free status (`healthy`, `not-ready`, `installed-not-running`, `untrusted`, …). See [Privileged helper (moorai-guardd)](#privileged-helper-moorai-guardd).
 - **`moorai-model-scan <path|dir>`** inspects model files without loading or executing them and gives each one a verdict (unsafe, suspicious, clean, allowed, unscanned), its format, findings and sha256. See [Model file scanning](#model-file-scanning).
 
   **Package code (`--packages`, `--package`).** With `--packages`, each MCP server whose config launches a package (`npx`, `pnpm dlx`, `bunx`, `yarn dlx`, `uvx`, `uv tool run`, `pipx run`) is downloaded from the public registry, its digest checked (npm `sha512` integrity, PyPI `sha256`; a mismatch fails closed), extracted into a temporary directory with traversal, link and size guards, and analysed statically — nothing in it is executed. Only the package name and version leave the device, and only with the flag (or `MOORAI_SCAN_PACKAGES=1`); without it the packages are listed as not analysed. Package code gets its own checks — install scripts that download or run remote code, runtime self-install, environment or credential harvesting next to a network send, obfuscated `eval`, socket reverse shells, typosquatted names, known-malicious packages (by name, PyPI names compared in their PEP 503 form, and by the exact published SHA-256 of a known-bad artifact or of any extracted file, `data/known-bad-artifacts.js`: `pkg-known-malicious`, block), and a hard-coded fetch from a free throwaway web host such as `tiiny.site`, a paste site or an anonymous tunnel (`pkg-throwaway-host`, a `CAUTION` warning only, never a verdict; the host is matched as a suffix of the parsed hostname against `data/throwaway-hosts.js`, and only in live code that also makes a network call) — and the prompt-oriented detectors are scoped by file type: in code and docs they report at most `CAUTION`, because an MCP server spawning processes or calling APIs is expected. `DO-NOT-INSTALL` needs concrete evidence of malicious or unsafe-by-construction behaviour. Docker images and remote-only servers are reported as not analysed.
