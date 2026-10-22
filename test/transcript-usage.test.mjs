@@ -12,7 +12,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, read
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runTranscriptUsage, TRANSCRIPT_INSTANCE, TRANSCRIPT_STATE } from "../cli/transcript-usage.mjs";
+import { runTranscriptUsage, TRANSCRIPT_INSTANCE, TRANSCRIPT_STATE, TRANSCRIPT_STAMP } from "../cli/transcript-usage.mjs";
 import { makeSandbox } from "../cli/doctor-sandbox.mjs";
 import { rmTree } from "./fs-cleanup.mjs";
 
@@ -151,9 +151,10 @@ test("HOOK: an enrolled Claude Code hook call starts the transcript usage worker
   assert.equal(c.usage.length, 1, "usage posted");
   assert.equal(c.usage[0].source, "transcript");
   assert.equal(c.usage[0].buckets[0].in, 10);
+  appendFileSync(join(b.home, ".claude", "projects", "-p", "s.jsonl"), asst("msg_2", "claude-opus-5-5", new Date().toISOString(), U1));
   b.run();
-  await sleep(1500);
-  assert.equal(c.usage.length, 1, "no second run inside the hour");
+  await sleep(2500);
+  assert.equal(c.usage.length, 1, "no second run inside the hour, though there is new usage to send");
 });
 
 test("HOOK: an unenrolled device never reads transcripts", async (t) => {
@@ -163,4 +164,5 @@ test("HOOK: an unenrolled device never reads transcripts", async (t) => {
   await sleep(1500);
   assert.equal(c.usage.length, 0);
   assert.equal(existsSync(join(b.home, ".moorai", TRANSCRIPT_STATE)), false);
+  assert.equal(existsSync(join(b.home, ".moorai", TRANSCRIPT_STAMP)), false, "the worker is not even started");
 });

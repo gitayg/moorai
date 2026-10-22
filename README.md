@@ -44,6 +44,8 @@ That's the exact trade MoorAI refuses.
 - **Claimed success vs reality** — at the end of a turn, when the agent's final message says the work succeeded while the turn's commands or MCP calls failed, were denied or were interrupted and were not redone, MoorAI reports `Agent reported success but tool calls failed` (Medium). The message is read in memory, never stored or sent. Report-only, and tuned for precision: on a locked split of a blind-labelled corpus, 100% precision (17 of 17) and 54.8% recall.
 - **Verdict provenance** — every alert and every on-device ledger row says which policy decided (`policyId`), which branch decided (`reasonCode`), and whether the verdict was enforced as configured (`AS_CONFIGURED`, `STRENGTHENED`, `LIMITED`, or `UNEVALUATED`). A control that never ran — unreadable input, a hook error, a size cap, break-glass — is recorded as `UNEVALUATED`, never as a pass.
 - **Coverage integrity** — the hook sends a content-free daily heartbeat per agent host with the settings that weaken or switch off protection (hooks disabled, `bypassPermissions`, Codex `approval_policy = "never"`, a sandbox off, …), and the desktop app reports when each agent host was last used, independent of every hook. The console raises a finding for an agent in use with no MoorAI hook traffic, a weakened setting, and a hook removed or gone stale.
+- **Credential exposure map** — the daily heartbeat says, by class only, which credentials an agent on the device can reach (cloud CLIs, SSH keys, kubeconfig, `gh`, `.npmrc`, `.netrc`, MCP configs, project `.env` files, allow-listed env var names, AI keys at rest by keyed hash), which ones an agent read, whether a profile name looks like production, and the destination class the session reached within 10 minutes of the read. Never a path, a value or a name it was not told it may send. See [Credential exposure map](#credential-exposure-map).
+- **Token usage and usage budgets** — the model proxy reads the token counts each provider returns, and a Claude Code device reads the usage Claude Code records in its own transcripts; both go to the console as content-free hourly totals per agent, model and keyed project. A signed usage budget the console marks exceeded is answered 429 by the model proxy in enforce mode. See [Token usage and usage budgets](#token-usage-and-usage-budgets).
 - **Protected-instruction leak detection (#52)** — reports the rules files an agent runs under (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, Copilot, Cursor, Windsurf and Cline rules) leaving the device through the agent: reproduced in what it writes or sends, or uploaded by path (`curl -d "$(cat CLAUDE.md)"`, `gh gist create AGENTS.md`). The files are fingerprinted on-device as keyed hashes of 7-word shingles; no text is stored. Editing the rules file itself, quoting a line or two, and template boilerplate stay silent.
 - **MCP server reputation** — scores an MCP server 0-100 the first time it is seen (bands good / fair / poor / bad) from its package name, its launch command and the copy npx already installed, plus, opt-in, a registry lookup (which also checks that the package's declared repository is really its own, from registry provenance or the repository's own manifest, and counts the accounts that can publish it: one is `single-maintainer`, a weak signal at weight 5) and SkillTriage's published verdicts. `moorai-mcp-check <package>` runs ten pre-install checks on a server you have not installed yet. A content-free alert carries the score, band and reason codes; `mcpReputation.blockBelow` refuses a low-scoring server. Details in [`mcp-proxy/README.md`](mcp-proxy/README.md).
 - **Static model-file scanning** — `moorai-model-scan` inspects pickle / PyTorch, Keras, TensorFlow SavedModel, ONNX, GGUF and SafeTensors files without loading them: dangerous pickle imports, Lambda-layer bytecode, Python-calling TF ops, custom ONNX op domains and escaping external-data paths, GGUF chat templates that reach Python internals or carry instructions, malformed SafeTensors headers. Model downloads an agent runs are reported (#76) and scanned in the background, and the local model stores can be scanned on the daily posture run. Static only: input-triggered backdoors and trojaned weights are out of reach. See [Model file scanning](#model-file-scanning).
@@ -646,6 +648,10 @@ back at stage `output` as inbound content, where indirect injection shows up; a 
 scanned once, through a bounded cache) and decides each tool call the model returns as `/v1/tool-call` would. The client's own API
 key and headers go upstream untouched and are never logged, stored or reported. Alerts use surface
 `model-proxy` with the existing reason codes and are content-free.
+
+**Token usage and budgets.** The proxy reads each response's token counts and posts content-free hourly totals to
+the console, and answers 429 `budget_exceeded` in enforce mode while a signed usage budget with `action: "block"`
+is exceeded. See [Token usage and usage budgets](#token-usage-and-usage-budgets).
 
 **Placeholder credentials** (`--credentials <file>`, opt-in). The agent holds `moorai-ph:<name>` instead
 of the key. The proxy, running as another user or in another container, swaps in the real key only on the
@@ -1803,6 +1809,52 @@ An alert the hook cannot deliver on its own invocation is kept in the **alert ou
   console as a gap in `seq`, the same evidence as the alert counter itself. Downgrading to 1.26.0 leaves the
   outbox unread, and its numbered alerts read as a gap. A console before 0.95.0 can store an alert twice when a
   2xx was lost; its seq accounting already ignores the repeat.
+
+### Credential exposure map
+
+The posture heartbeat carries `credentialExposure`
+([`cli/credential-exposure.mjs`](cli/credential-exposure.mjs)), a content-free map of the credential classes an
+agent on this device can reach and use. It is heuristic, and says so (`coverage: "heuristic"`).
+
+- **Reachable:** a stat and a read-permission check on fixed locations per kind (`aws`, `ssh`, `kube`, `npm`, `git`,
+  `docker`, `gcloud`, `azure`, `gh`, `netrc`, `pgpass`), the session project's top-level `.env*`, `.npmrc`,
+  `.netrc`, `.pgpass` and `.git-credentials`, and MCP client configs holding a credential-shaped key under a
+  server's `env` or `headers`. AI keys at rest come from the AIBOM's keys-at-rest scan, one item per keyed hash.
+- **Env var names:** only names on the fixed list in [`data/credential-env-names.js`](data/credential-env-names.js)
+  are sent; any other credential-shaped name is counted (`envOtherCount`).
+- **prodLike:** true when an AWS profile, a kubeconfig name or a gcloud configuration name matches `/prod/i`. The
+  name itself never leaves the device.
+- **Reads and where data went next:** a PreToolUse Read, shell command or MCP call that names a credential location
+  is logged by kind and scope (`home`, `project`, `outside-project`, `system`) in
+  `~/.moorai/credential-exposure.jsonl` (0600, at most 2000 entries). The map adds, per agent host, the read
+  count, the hour of the last read, reads from outside the session's project, and the destination classes
+  (`throwaway-host`, `ai-provider`, `private-range`, `other`) the same session reached within 10 minutes after
+  the read. A read MoorAI then denied still counts.
+- **Size:** at most 64 items. The console refuses a heartbeat over 16384 bytes, so the lowest-priority items are
+  dropped until the body is at most 15360 bytes (`truncated: true`). Measured in a throwaway home with every kind
+  and 40 AI keys at rest: 58 items, 10441 bytes.
+- **Scope:** credentials in the OS keychain, behind a credential helper or in locations off the fixed list are not
+  seen, and a shell command that builds a path at run time is not resolved.
+
+### Token usage and usage budgets
+
+Token counts go to the console as content-free hourly totals (`POST /api/token-usage`,
+[`cli/token-usage.mjs`](cli/token-usage.mjs)): hour, agent name, provider, model id, a keyed project hash or null,
+request count, requests without usage, input, output, cache-read and cache-write tokens. Each total is cumulative,
+so a resend never double-counts. Never prompt or response text, a path or a key.
+
+- **Model proxy:** reads the usage each provider returns in the response it already parses (Anthropic, OpenAI,
+  Gemini, Ollama; JSON, SSE and NDJSON) and posts every 5 minutes and at shutdown. It does not change requests to
+  get usage: an OpenAI stream sent without `stream_options.include_usage` counts as a request with no usage.
+- **Claude Code transcripts:** on an enrolled device, Claude Code's hook starts a detached worker at most once an
+  hour that reads the usage Claude Code records per assistant message in `~/.claude/projects/**/*.jsonl`,
+  incrementally (64 MiB a run), counting each message once. Other hosts' transcripts are not read.
+- **Budgets:** the signed policy can carry `usageBudgets` and the console's `budgetState`. When a budget with
+  `action: "block"` is `exceeded`, the model proxy in enforce mode answers 429
+  `{ "error": { "type": "budget_exceeded", "budgetId": "…" } }` without forwarding and raises one
+  `BUDGET_EXCEEDED` alert per budget and period. Report mode forwards and alerts. A missing, unsigned or stale
+  (over 1 hour) budget state never blocks. Hooks cannot stop a model call, so they never block on budget.
+- Details: [`docs/CAPABILITY_SPEC.md`](docs/CAPABILITY_SPEC.md) (Token usage and usage budgets).
 
 ### Where an action came from
 

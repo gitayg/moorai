@@ -3116,6 +3116,104 @@ each basis; the console pins the same literal and downgrades a stronger claim.
   `destClass: "throwaway-host" | "other"` from `data/throwaway-hosts.js`; with no parsed host the field is
   left out.
 
+## Agent identity inputs
+
+The console derives each agent's identity, `agentId = "agt-" + HMAC(tenantKey, "agent:" + agentName + "|" + anchor)`,
+from fields the agent already sends: `agentName` (the `cli/agent-names.mjs` vocabulary) and the device, actor or
+workload anchor. The agent sends no new identity field. The records added below name the agent the same way: the
+credential exposure read log keys each read by the hook's agent host (`claude-code`, an adapter's host, or
+`unknown`), and each usage bucket carries `agentName` (`claude-code` for transcript usage and for proxy requests
+that name a Claude Code session, else the proxy's own `model-proxy`). Pinned by `test/agent-identity-inputs.test.mjs`.
+
+## Credential exposure map (`cli/credential-exposure.mjs`)
+
+A content-free map of which credential **classes** an agent on the device can reach, which ones an agent read,
+and to which destination class that session sent data next. It rides the daily posture heartbeat
+(`POST /api/agent-posture`) as the top-level field `credentialExposure`:
+
+```json
+{ "v": 1, "coverage": "heuristic", "window": { "from": "…T11:00:00Z", "to": "…T11:00:00Z" },
+  "items": [ { "kind": "aws", "locationClass": "home-config", "scope": "home", "reachable": true, "keyHash": null,
+               "envNames": [], "envOtherCount": 0, "prodLike": true,
+               "byHost": { "claude-code": { "reads": 1, "lastReadAt": "…T10:00:00Z", "outsideProjectReads": 0, "sentTo": ["throwaway-host"] } } } ],
+  "truncated": false }
+```
+
+- **Kinds:** `aws`, `ssh`, `kube`, `npm`, `git`, `docker`, `gcloud`, `azure`, `env`, `gh`, `netrc`, `pgpass`,
+  `mcp-config`, `ai-key`. Location classes `home-config`, `project-file`, `system`, `env`, `mcp-config`; scopes
+  `home`, `project`, `outside-project`, `system`, `env`.
+- **Reachable** is a stat plus `access(R_OK)` on a fixed list of home-config files per kind (for example
+  `~/.aws/credentials`, `~/.ssh/id_*` without `.pub`, `~/.kube/config`, `~/.config/gh/hosts.yml`, `~/.netrc`), the
+  session cwd's top-level `.env*` (templates excluded), `.npmrc`, `.netrc`, `.pgpass` and `.git-credentials`, and
+  the MCP client configs (`~/.claude.json`, `~/.cursor/mcp.json`, Windsurf, Gemini CLI, Claude Desktop, and the
+  project's `.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`).
+- **Read only for a derived bit:** section headers and `name:` lines of `~/.aws/config`, `~/.aws/credentials` and
+  `~/.kube/config`, and the file names under `~/.config/gcloud/configurations`, for `prodLike` (a name matching
+  `/prod/i`); the key names under each MCP server's `env` and `headers`, to tell whether one is credential-shaped.
+  Names and values stay on the device. AI keys at rest come from the existing keys-at-rest scan
+  (`cli/aibom-keys.mjs`), one item per keyed `keyHash` (`h2:`).
+- **Env names:** only the allow-list in `data/credential-env-names.js` is sent by name; any other name ending in
+  TOKEN, SECRET, PASSWORD, API_KEY, PRIVATE_KEY, ACCESS_KEY or CREDENTIALS is counted in `envOtherCount`.
+- **Reads:** at PreToolUse, a Read path, a shell command or an MCP call's string arguments that name a credential
+  location (#55's kind table plus `gh`, `netrc`, `pgpass`) are logged by kind, scope class, agent host, the
+  session's keyed hash and time in `~/.moorai/credential-exposure.jsonl` (0600; at most 2000 entries after
+  compaction, 8 days). A call MoorAI then denied still counts as a read attempt. Scope: under the session cwd is
+  `project`; a dot entry at the top of home is `home`; `/etc`, `/var`, `/usr` and the like are `system`; anything
+  else, including another project under home, is `outside-project`.
+- **Sent to:** the destination classes (`throwaway-host`, `ai-provider`, `private-range`, `other`) of every
+  egress target the same session names within 10 minutes after a read. Hosts are classed on the device and never
+  stored.
+- **Bounds and size:** at most 64 items (`truncated: true` past that), 16 env names per item, 6 hosts per item.
+  The console refuses a posture body over 16384 bytes, so the worker drops items from the lowest priority (no
+  reads, not prod-like, no outside-project reads) until the body is at most 15360 bytes, and drops the field when
+  nothing fits. Measured in throwaway homes: 957 bytes of heartbeat without the field (one host), 1299 bytes with
+  four hosts, and 10441 bytes for a 58-item map (every kind, 40 AI keys at rest), 11762 bytes in total.
+- **Scope:** heuristic. Credentials in other locations, in the OS keychain or behind a credential helper are not
+  seen; a shell command that builds a path at run time is not resolved.
+
+## Token usage and usage budgets
+
+Token counts (metadata only) go to `POST /api/token-usage` as cumulative hourly buckets
+(`cli/token-usage.mjs`):
+
+```json
+{ "v": 1, "user": "…", "device": "…", "platform": "darwin", "source": "model-proxy", "instance": "mp-7f3a9c2e",
+  "buckets": [ { "hour": "2026-10-21T10:00:00Z", "agentName": "claude-code", "provider": "anthropic", "model": "claude-opus-5-5",
+                 "projectKey": null, "requests": 14, "requestsNoUsage": 1, "in": 120345, "out": 8012, "cacheRead": 90000, "cacheWrite": 4000 } ] }
+```
+
+- **Cumulative:** a bucket is the running total for (hour, agentName, provider, model, projectKey) within one
+  instance, so the console's MAX upsert never double-counts a resend. At most 500 buckets and 60000 bytes per
+  body. A 404 or 405 (a console without the route) pauses posting for 24 hours; other failures are resent with
+  the running total.
+- **Field mapping** (from each provider's documentation): Anthropic `input_tokens`, `output_tokens`,
+  `cache_read_input_tokens`, `cache_creation_input_tokens` ("The token counts shown in the usage field of the
+  message_delta event are cumulative", so a stream's largest value per field is its total); OpenAI
+  `prompt_tokens − prompt_tokens_details.cached_tokens` → `in`, `completion_tokens` → `out`, `cached_tokens` →
+  `cacheRead`; Gemini `promptTokenCount − cachedContentTokenCount` → `in`, `candidatesTokenCount +
+  thoughtsTokenCount` → `out`; Ollama `prompt_eval_count` → `in`, `eval_count` → `out` (final `done: true`
+  object). `in` never includes cached input.
+- **Model proxy** (`model-proxy/token-usage.mjs`): usage is read from the JSON body, SSE events or NDJSON lines the
+  proxy already parses; an event's text is parsed only when it can hold a usage field. Instance `mp-<8 hex>`,
+  random per process start; buckets are flushed every 5 minutes and at shutdown; enrolled proxies only. The proxy
+  does not add `stream_options.include_usage`: an OpenAI stream without it, an error answer or a response cut
+  short counts in `requestsNoUsage`. `projectKey` is null.
+- **Claude Code transcripts** (`cli/transcript-usage.mjs`): a detached hook worker, at most once an hour on an
+  enrolled device and only from Claude Code's own hook, reads `~/.claude/projects/**/*.jsonl` (and
+  `$CLAUDE_CONFIG_DIR/projects`) from a saved offset in 1 MiB chunks, up to 64 MiB a run, files touched in the last
+  35 days. Each assistant message is counted once by `message.id` (Claude Code writes one line per content block,
+  each repeating the usage; measured: 291 repeats, none different). `<synthetic>` messages are skipped. Source
+  `transcript`, instance `tr-<8 hex>` fixed, `projectKey` is the keyed hash of the message's `cwd`. The state file
+  (`~/.moorai/token-usage-transcript.json`, 0600) keys files by a digest of their path. Codex and other hosts'
+  transcripts are not read.
+- **Budgets** (`model-proxy/budget.mjs`): the signed policy's `usageBudgets` and the console-computed
+  `budgetState`. In enforce mode, a model request while a budget with `action: "block"` is `exceeded` is answered
+  HTTP 429 `{ "error": { "type": "budget_exceeded", "budgetId": "…", "message": "…" } }` with
+  `x-should-retry: false`, is not forwarded, and raises one `BUDGET_EXCEEDED` alert (Medium, `budgetId`) per budget
+  and period. Report mode forwards the request and the alert says `notify`. A policy that is not the verified
+  signed policy, no state, a state older than 1 hour or dated in the future, an ended period, `warn`/`ok`, or
+  `action: "alert"` never blocks, whatever failMode says. Hooks never block on budget.
+
 ## Coverage & blind spots
 
 - **Origin and ask outcomes on shim hosts and untracked tools are unknown.** Codex, Copilot, Cursor, Gemini
