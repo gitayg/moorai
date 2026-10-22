@@ -178,3 +178,56 @@ test("CLI: --only, --out and --strict; --require-windows makes a skipped Windows
     assert.equal(c.status, 2, c.stderr);
   } finally { rmTree(dir); }
 });
+
+// The content-free check must see probe content, not only the run's marker: the marker sits after each
+// payload, outside the span a detector matches, so a leaked matched span would never contain it.
+const harness = await import("../cli/windows-validate-harness.mjs").catch(() => ({}));
+
+test("content-free check: with captureTier full-capture the hook's alert carries the matched command span, and alert-delivery reads leaked, contentFree false, verdict fail", async () => {
+  const r = await probes.runValidation({ agentRoot: ROOT, marker: MARKER, only: ["hook-bash-block", "alert-delivery"], policyOverlay: { captureTier: "full-capture" } });
+  assert.equal(r.probes.find((p) => p.id === "hook-bash-block").status, "pass");
+  const ad = r.probes.find((p) => p.id === "alert-delivery");
+  assert.deepEqual([ad.status, ad.observed], ["fail", "leaked"], JSON.stringify(ad));
+  assert.equal(r.alerts.contentFree, false, "a full-capture alert must read as not content-free");
+  assert.equal(r.summary.verdict, "fail");
+  assert.ok(!JSON.stringify(r).includes("198.51.100.7"), "the payload must not enter the report");
+});
+
+test("summarizeAlerts: a payload piece without the marker reads as a leak; a destination host and a tool name do not", () => {
+  const { summarizeAlerts, PAYLOAD_NEEDLES } = { ...reportMod, ...probes };
+  assert.ok(Array.isArray(PAYLOAD_NEEDLES) && PAYLOAD_NEEDLES.length >= 4, "PAYLOAD_NEEDLES is not exported");
+  const needles = [MARKER, ...PAYLOAD_NEEDLES];
+  for (const n of PAYLOAD_NEEDLES) assert.equal(summarizeAlerts([{ reasonCode: "DETECTOR_MATCH", matchText: `x${n}y` }], needles).contentFree, false, n);
+  assert.equal(summarizeAlerts([{ reasonCode: "EGRESS_RULE", egressHost: "drop.paste.example", tool: "gateway:send_note" }], needles).contentFree, true);
+  assert.equal(reportMod.buildReport({ probes: [], alerts: [{ matchText: "/dev/tcp/198.51.100.7/4444" }], marker: MARKER, needles: PAYLOAD_NEEDLES }).alerts.contentFree, false, "buildReport passes the needles on");
+});
+
+test("alert-delivery probe: an alert carrying probe content fails the probe as leaked, even when every expected alert arrived", async () => {
+  assert.equal(typeof probes.alertDelivery, "function", "alertDelivery is not exported");
+  const results = [{ id: "hook-bash-block", status: "pass" }];
+  const mk = (alerts) => ({ console: { alerts, alertsFor: () => alerts }, marker: MARKER, needles: [MARKER, ...probes.PAYLOAD_NEEDLES], alertWaitMs: 0 });
+  const clean = await probes.alertDelivery(mk([{ reasonCode: "DETECTOR_MATCH", decision: "deny" }]), results);
+  assert.deepEqual([clean.status, clean.observed], ["pass", "delivered"]);
+  const leak = await probes.alertDelivery(mk([{ reasonCode: "DETECTOR_MATCH", decision: "deny", matchText: "/dev/tcp/198.51.100.7/4444" }]), results);
+  assert.deepEqual([leak.status, leak.observed], ["fail", "leaked"]);
+  const markerLeak = await probes.alertDelivery(mk([{ reasonCode: "DETECTOR_MATCH", decision: "deny", note: MARKER }]), results);
+  assert.deepEqual([markerLeak.status, markerLeak.observed], ["fail", "leaked"]);
+});
+
+test("childEnv: built from scratch, so none of the operator's MOORAI_*, proxy or Node variables reach a child", () => {
+  assert.equal(typeof harness.childEnv, "function");
+  const planted = { MOORAI_SERVER_URL: "http://203.0.113.9", MOORAI_TENANT: "operator", HTTPS_PROXY: "http://203.0.113.9:3128", http_proxy: "http://203.0.113.9:3128", NO_PROXY: "*", NODE_OPTIONS: "--require /x.js", ANTHROPIC_API_KEY: "sk-planted", HOME: "/operator/home" };
+  const saved = Object.fromEntries(Object.keys(planted).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, planted);
+  try {
+    const sb = { home: join(tmpdir(), "wv-sb"), proj: join(tmpdir(), "wv-sb", "proj"), tenant: "wv-x" };
+    const env = harness.childEnv(sb, { MOORAI_HOOK_HOST: "shim" });
+    for (const k of Object.keys(planted)) if (k !== "HOME") assert.equal(env[k], undefined, `${k} reached the child`);
+    assert.equal(env.HOME, sb.home);
+    assert.equal(env.USERPROFILE, sb.home);
+    assert.equal(env.MOORAI_HOOK_HOST, "shim", "a probe's own extra variable is kept");
+    assert.ok(!Object.values(env).some((v) => String(v).includes("203.0.113.9")), "an operator value reached the child");
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});

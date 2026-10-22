@@ -40,20 +40,31 @@ function cleanProbe(p) {
   };
 }
 
+const needleList = (needles) => (Array.isArray(needles) ? needles : [needles]).filter((n) => typeof n === "string" && n.length > 0);
+
+// true if any alert's serialized form contains one of the needles (the run's marker and the distinctive
+// pieces of the probes' payloads), or cannot be serialized.
+export function alertsLeak(alerts, needles) {
+  const ns = needleList(needles);
+  return (Array.isArray(alerts) ? alerts : []).some((a) => {
+    let s;
+    try { s = JSON.stringify(a); } catch { return true; }
+    return ns.some((n) => s.includes(n));
+  });
+}
+
 // The alerts the loopback console received: counted by decision and by reasonCode only. contentFree is
-// false if any alert's serialized form contains the run's marker (a string planted in every command, URL
-// and argument the probes send).
-export function summarizeAlerts(alerts, marker) {
+// false if any alert contains one of the needles (alertsLeak).
+export function summarizeAlerts(alerts, needles) {
   const list = Array.isArray(alerts) ? alerts : [];
   const byReasonCode = {};
-  let deny = 0, leaked = false;
+  let deny = 0;
   for (const a of list) {
     if (!a || typeof a !== "object") continue;
     if (a.decision === "deny") deny++;
     if (typeof a.reasonCode === "string" && REASON_CODE_RE.test(a.reasonCode)) byReasonCode[a.reasonCode] = (byReasonCode[a.reasonCode] || 0) + 1;
-    if (marker) { try { if (JSON.stringify(a).includes(marker)) leaked = true; } catch { leaked = true; } }
   }
-  return { received: list.length, deny, contentFree: !leaked, byReasonCode };
+  return { received: list.length, deny, contentFree: !alertsLeak(list, needles), byReasonCode };
 }
 
 // pass: nothing failed and (Windows not required, or nothing skipped). incomplete: Windows required and a
@@ -73,7 +84,7 @@ function osBuildOf(platform, rel) {
   return m ? Number(m[1]) : null;
 }
 
-// raw: { probes: [{ id, status, expected, observed, reason, ms }], alerts: [alert bodies], marker, meta }.
+// raw: { probes: [{ id, status, expected, observed, reason, ms }], alerts: [alert bodies], marker, needles, meta }.
 export function buildReport(raw = {}) {
   const meta = raw.meta || {};
   const probes = (Array.isArray(raw.probes) ? raw.probes : []).map(cleanProbe).filter(Boolean);
@@ -94,7 +105,7 @@ export function buildReport(raw = {}) {
     machineAnchor: bool(meta.machineAnchor),
     requireWindows,
     probes,
-    alerts: summarizeAlerts(raw.alerts, raw.marker),
+    alerts: summarizeAlerts(raw.alerts, [raw.marker, ...needleList(raw.needles || [])]),
     summary: { pass: count("pass"), fail: count("fail"), skipped: count("skipped"), error: count("error"), verdict: verdictOf(probes, { requireWindows }) },
     notCovered: NOT_COVERED.map((n) => ({ ...n }))
   };
