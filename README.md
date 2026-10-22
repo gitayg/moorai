@@ -72,13 +72,13 @@ Because you can read the code. The agent is **MIT and open source** — the whol
 ## Install
 
 **macOS (Apple silicon)** — download the `.dmg` from [app.moorai.dev/download/app](https://app.moorai.dev/download/app) (it is not attached to GitHub Releases), or `brew install --cask gitayg/tap/moorai` — see [packaging/README.md](packaging/README.md). The app updates itself in place.
-**Windows** — download the signed `-setup.exe` from [Releases](https://github.com/gitayg/moorai/releases) (built in the open by CI).
+**Windows** — download the `-setup.exe` from [Releases](https://github.com/gitayg/moorai/releases) (built in the open by CI). The installer is not Authenticode-signed yet, so Windows SmartScreen may warn on first run; in-app updates are verified with the updater signature.
 
 Community edition: runs standalone, no account required. **Without enrollment MoorAI coaches**: it runs the
 same detection and built-in defaults, and shows you (and, where the agent's hook protocol allows, the agent)
 what it caught and the safer way to do it — it never blocks, never asks for sign-off, never ends a session
 and posts nothing anywhere. **Blocking, sign-off and session kill apply once the device is enrolled** in a
-MoorAI console (free up to 200 users).
+MoorAI console (free to self-host with no user limit; the hosted console is a free trial).
 
 ### Enroll a device in a management account
 
@@ -2441,7 +2441,7 @@ so internal files can move without breaking consumers.
 
 ## How it works
 
-A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against a 77-threat matrix (17 categories) + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is MIT; the console is commercial.
+A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against an 80-threat matrix (17 categories) + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is MIT; the console is commercial.
 
 ## Learn more
 
