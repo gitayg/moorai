@@ -1,0 +1,16 @@
+# systemd user unit: register the MoorAI hooks for this user at login (Claude Code ~/.claude/settings.json).
+# Installed disabled. One user:      systemctl --user enable --now moorai-hooks.service
+#                     Every user:    sudo systemctl --global enable moorai-hooks.service
+# Re-running it is harmless: it replaces only MoorAI's own entries and keeps every other hook.
+[Unit]
+Description=Register MoorAI hooks for this user's AI coding agents
+Documentation=https://github.com/gitayg/moorai#install
+ConditionPathExists=/usr/lib/moorai/cli/moorai-hook.mjs
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/moorai/linux/moorai-install-hooks
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

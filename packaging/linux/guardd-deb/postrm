@@ -1,0 +1,14 @@
+#!/bin/sh
+# moorai-guardd postrm: reload systemd after the units are gone. `purge` also deletes the helper's state
+# (/var/lib/moorai: the device key and any undelivered alerts). /etc/moorai is the administrator's and stays.
+set -e
+case "$1" in
+  remove)
+    if [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
+    ;;
+  purge)
+    rm -rf /var/lib/moorai
+    if [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
+    ;;
+esac
+exit 0
