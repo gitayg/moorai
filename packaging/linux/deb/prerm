@@ -1,0 +1,13 @@
+#!/bin/sh
+# moorai prerm: on removal, take the user units out of the global (all-users) enablement. Per-user
+# enablements and the hook entries in each user's settings.json are the user's; the postinst says how to
+# remove them.
+set -e
+case "$1" in
+  remove|deconfigure)
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl --global disable moorai-hooks.service moorai-serve.service >/dev/null 2>&1 || true
+    fi
+    ;;
+esac
+exit 0

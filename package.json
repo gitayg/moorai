@@ -35,6 +35,7 @@
     "moorai-allow": "cli/moorai-allow.mjs",
     "moorai-ingest": "cli/moorai-ingest.mjs",
     "moorai-outbox": "cli/moorai-outbox.mjs",
+    "moorai-helper": "cli/moorai-helper.mjs",
     "moorai-serve": "cli/moorai-serve.mjs",
     "moorai-mcp-gateway": "mcp-gateway/moorai-mcp-gateway.mjs",
     "moorai-model-proxy": "model-proxy/moorai-model-proxy.mjs",

@@ -1,0 +1,11 @@
+#!/bin/sh
+# Register the MoorAI hooks for the current user (Claude Code ~/.claude/settings.json), using the package's
+# own copy of the hook. Run it as the user whose agent should be covered (root only for root's own agent,
+# as in a CI container). The systemd user unit moorai-hooks.service runs it at login. The hook command
+# written to settings.json names node by absolute path.
+set -eu
+SELF=$0
+if command -v readlink >/dev/null 2>&1 && readlink -f "$SELF" >/dev/null 2>&1; then SELF=$(readlink -f "$SELF"); fi
+HERE=$(cd "$(dirname "$SELF")" && pwd)
+LIB=$(cd "$HERE/.." && pwd)
+exec sh "$HERE/moorai-node" "$LIB/cli/moorai-hook.mjs" install

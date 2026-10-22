@@ -3116,6 +3116,136 @@ each basis; the console pins the same literal and downgrades a stronger claim.
   `destClass: "throwaway-host" | "other"` from `data/throwaway-hosts.js`; with no parsed host the field is
   left out.
 
+## Privileged helper install path (`moorai-guardd`)
+
+[`guardd/packaging/`](../guardd/packaging/), [`cli/guardd-install.mjs`](../cli/guardd-install.mjs),
+[`cli/moorai-helper.mjs`](../cli/moorai-helper.mjs). The installers for the helper of
+[`docs/proposals/guardd-contract.md`](proposals/guardd-contract.md) §4.3, and the agent-side check of whether it
+is installed and healthy.
+
+- **Linux.** `guardd/packaging/linux/install.sh <abs binary>` (root) installs `/usr/sbin/moorai-guardd` (0755),
+  `moorai-guardd.service` and `moorai-guardd.socket` under `/usr/lib/systemd/system` (0644) and `/etc/moorai`
+  (root 0755), tightens an existing `secret.json` to root 0600 and `config.json` to root 0644, then runs
+  `systemctl daemon-reload`, `enable --now` on both units and a restart, and waits up to 10 s for both to be
+  active. The socket unit listens on `/run/moorai/hook.sock` (root, 0666, directory 0755). The service runs as
+  root with no arguments and no `Environment=`, under `ProtectSystem=strict`, `ProtectHome=read-only`,
+  `NoNewPrivileges`, `PrivateTmp`, `PrivateDevices`, `RestrictNamespaces`, `MemoryDenyWriteExecute`,
+  `StateDirectory=moorai` (0700), `RuntimeDirectory=moorai` (0755, preserved across restarts because the socket
+  lives there), `UMask=0077`, `ReadWritePaths=-/etc/moorai` (the helper removes `enrollSecret` after a bound
+  registration) and `CapabilityBoundingSet=CAP_KILL CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_NET_ADMIN`. That
+  set is proposed for quarantine and is not yet reviewed against a Linux platform layer. Exit 3 means the files
+  are installed but systemd is not running (a container). `uninstall.sh` removes the binary and units and keeps
+  `/etc/moorai` and `/var/lib/moorai`. The units go under `/usr/lib/systemd/system`, not the `/lib/systemd/system`
+  of contract §4.3, so a `.deb` does not ship files under an aliased `/lib`; the agent-side check accepts both.
+- **macOS.** `guardd/packaging/macos/install.sh <abs binary>` (root) installs
+  `/Library/PrivilegedHelperTools/moorai-guardd` (root:wheel 0755), the LaunchDaemon plist in
+  `/Library/LaunchDaemons` (root:wheel 0644; `RunAtLoad`, `KeepAlive`, `ThrottleInterval` 10, no `UserName`, no
+  `EnvironmentVariables`, one program argument), `/Library/Logs/MoorAI` (root:admin 0750, log 0640) and
+  `/etc/moorai`, then `launchctl bootout` / `bootstrap` / `enable` / `kickstart -k` and waits for `state =
+  running`. `build-pkg.sh <abs binary> <out.pkg> [version]` builds an installer package whose payload is what
+  `install.sh` stages, with a `preinstall` that boots a running daemon out and a `postinstall` that sets owners
+  and modes and bootstraps it. The package is unsigned (signing needs a Developer ID Installer identity).
+- **Windows.** `guardd/packaging/windows/install.ps1 -Binary <exe>` (elevated) copies the binary to
+  `<Program Files>\MoorAI\moorai-guardd.exe` (SYSTEM and Administrators full, Users read and execute) and
+  sets up `<ProgramData>\MoorAI`, with `<ProgramData>` read from HKLM ProfileList (never `%ProgramData%`).
+  Before it changes anything (the service included) it refuses a pre-existing `<ProgramData>\MoorAI`, or any
+  entry under it, that is a reparse point (junction or symbolic link), is owned by anyone but SYSTEM or
+  Administrators, has no DACL, or grants anyone else a right to add, change, delete or re-permission entries
+  (inherit-only entries included); it names the entry and leaves its ACLs alone, and the administrator removes
+  the directory and reruns. A missing directory is created with its DACL in place. Each DACL is then written
+  whole, so no earlier or extra entry survives: `<ProgramData>\MoorAI` owner SYSTEM,
+  `D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;0x120089;;;BU)` (Users read the folder itself, never inherited),
+  then every ACL under it is reset to inherit that; `state` owner SYSTEM, `D:P(A;OICI;FA;;;SY)` with its
+  contents reset to inherit it; `run` owner SYSTEM, SYSTEM and Administrators full and Users read, inherited by
+  `device.pub`; an existing `secret.json` owner SYSTEM, `D:P(A;;FA;;;SY)(A;;FA;;;BA)`, with a warning to issue
+  a new install token and enrolment secret when it was readable by anyone else before the run. Each existing
+  public admin input the agent reads as the signed-in user (`config.json`, `policy.pub`, `breakglass.pub`,
+  `offline-posture`, `policy-hwm.json`, `policy-lkg.json`, `exceptions.json`, `decoys.json`) gets an explicit
+  Users read; one MDM writes later needs that grant from MDM, because the folder no longer hands Users read
+  down. It then reads the descriptors back and stops unless they match. The checks are in
+  `guardd/packaging/windows/acl-checks.ps1`. It registers `MoorAIGuard` (auto start, LocalSystem, restart after
+  1 s, 5 s, then every 60 s), sets the service DACL
+  `D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;AU)` (only SYSTEM and
+  Administrators can start, stop, reconfigure or re-permission it; any signed-in user can query it), starts it
+  and waits for Running. `-DryRun` prints the plan. `moorai-guardd.exe` does not yet call the Service Control
+  Manager's dispatcher (`guardd/src/main.rs`), so Windows reports a start timeout for it until that is added.
+  The script is checked by reading its text (`test/guardd-install-scripts.test.mjs`); it has not been run on
+  Windows here, and the test that runs the ACL checks on real descriptors runs on Windows only.
+- **Every installer** refuses a relative or missing binary path and a binary whose `--build-info` does not say
+  `test-injection=false` (contract §10.2, §11.2), and none writes the content of `config.json` or `secret.json`
+  (the administrator's or MDM's, §4.1; the Windows script sets their ACLs as above). `MOORAI_GUARDD_STAGE=<dir>` (Linux and macOS scripts) lays the files out under
+  `<dir>` without chown or a service manager and prints the skipped steps as `plan:` lines; the helper itself
+  still reads no environment.
+- **Is it installed and healthy.** `helperInstallStatus()` returns a content-free object:
+  `{state, binary, service, endpoint, devicePub, hello, helperVersion?}`. `endpoint` and `devicePub` come from
+  the contract §3.6 ownership walk, `checkOwnedPath` in `cli/guardd-client.mjs` (the same function behind the
+  hook-side `verifyEndpointOwnership`, uid 0 only): from `/` to the file, no symlinks, every directory owned by root and not
+  writable by group or others (group-writable only for gid 0, or gid 1 on macOS for `/private/var/run`), the
+  endpoint a socket owned by root, `device.pub` a regular root-owned file that is not group- or world-writable
+  and holds an ed25519 SPKI key. Only then does it send one `hello` (default budget 250 ms; the status command
+  uses 1000 ms) and check that the reply names that key's id and that the proof verifies. States:
+  `not-installed`, `partial`, `installed-not-running`, `running-unprobed`, `healthy`, `not-ready` (no console
+  binding yet), `unreachable`, `untrusted` (a failed ownership check, an invalid `device.pub`, a wrong key id or
+  a bad proof), `unverified` (no `device.pub`). On Windows the service state comes from `sc.exe query
+  MoorAIGuard` by absolute path and the endpoint check is the proof alone (a pipe has no owner walk). No path,
+  tenant, device id or key id is in the result. `moorai-helper status [--json]` prints it; it takes no path or
+  root option. The posture heartbeat does not carry it yet: that is one insertion in `cli/moorai-hook.mjs`
+  (field `helperInstall`).
+- **What runs today.** The helper's per-OS platform layer (`guardd/src/platform/*`: process table, boot and
+  machine ids, suspend, network block) is still a stub that panics, so on every OS the installed service
+  exits at start (on macOS and Linux after it has created its state directory and device key; on Windows
+  before, while resolving ProgramData) and its service manager's restart policy applies. The install path, the unit and plist contents and the
+  agent-side check are tested; a running helper is not. Proven by tests with temp roots (`test/guardd-install-scripts.test.mjs`,
+  `test/guardd-install-status.test.mjs`) and, on Debian 12 in Docker, by installing the packages as root and
+  running `moorai-helper status` as an unprivileged user against a stand-in helper that root started at
+  `/run/moorai/hook.sock` (`healthy`), one signing with another key (`untrusted`, `bad-proof`) and one a
+  non-root user started at a path that user owned (`untrusted`, endpoint refused before any connect). The
+  PowerShell script has not been run or parsed by PowerShell; its ACL lines are checked as text only.
+- **Not demonstrated.** That a non-admin user cannot delete the alert chain or read the device key is the goal
+  of this helper and is not shown on any OS yet, because no real `moorai-guardd` has run.
+- **CI.** `.github/workflows/guardd-install.yml` installs a release build as root and waits for the service.
+  Its gate, `scripts/guardd-ci-ready.mjs <linux|macos|windows>`, says ready only when that OS's install script
+  exists, no `todo!()` or `unimplemented!()` is left in the code compiled for it (its `guardd/src/platform/<os>`
+  directory and shared code not `cfg`-gated to another OS), and on Windows `main.rs` has a service control
+  dispatcher. Today it reports not ready on all three, so the install and agent-side steps skip with a notice
+  and the agent-side step is still a placeholder (`test/guardd-ci-ready.test.mjs`).
+
+## Linux agent package
+
+[`scripts/build-linux-package.mjs`](../scripts/build-linux-package.mjs), [`packaging/linux/`](../packaging/linux/).
+`node scripts/build-linux-package.mjs [--out dist/linux] [--guardd <binary> --guardd-arch amd64|arm64]` writes:
+
+- **`moorai_<version>_all.deb`.** The files `package.json` `files` ships (tracked files only), plus
+  `package.json`, `README.md` and `LICENSE`, under `/usr/lib/moorai`; one `/usr/bin` link per `package.json`
+  `bin` plus `moorai-install-hooks`; the helpers `moorai-node` (runs a script with the first Node 18 or newer it
+  finds: PATH, then `/usr/bin/node`, then `/usr/local/bin/node`) and `moorai-install-hooks` (runs
+  `moorai-hook install` for the calling user from the package's copy); and two systemd user units,
+  `moorai-hooks.service` (oneshot at login that registers the hooks) and `moorai-serve.service` (the loopback
+  engine sidecar, restart on failure). `Recommends: nodejs (>= 18)`, not `Depends`, because fleets often install
+  Node from a tarball or a version manager; the postinst warns when no Node 18 is found. The postinst creates
+  `/etc/moorai` (0755) and enables no unit; the prerm takes the user units out of the global enablement. Every
+  entry is uid 0 / gid 0, every timestamp is `SOURCE_DATE_EPOCH` (else the last commit's time), gzip carries no
+  timestamp, and `md5sums` is included, so a rebuild of the same commit gives the same bytes.
+- **`moorai-<version>-linux.tar.gz`.** The same tree under `root/`, with `install.sh` (into `/` as root, or into
+  `MOORAI_ROOT`) and `uninstall.sh`.
+- **`moorai.spec`.** An rpmbuild spec (`noarch`, `Recommends: nodejs >= 18`) that packages the tarball with the
+  same post-install message. Not built here: no `rpmbuild` was available.
+- **`moorai-guardd_<v>_<arch>.deb`** (with `--guardd`). The files `guardd/packaging/linux/install.sh` stages, so
+  the package and the script cannot differ; the binary must pass the same `--build-info` check. The postinst
+  enforces the `/etc/moorai` modes and runs `systemctl enable --now` only when `/run/systemd/system` exists;
+  prerm disables on removal; purge deletes `/var/lib/moorai`.
+- **Hooks block only with management evidence.** As on every OS, an unenrolled device coaches; it enforces once
+  enrolled or when the administrator writes `fail-closed` to the root-owned `/etc/moorai/offline-posture`.
+- **Measured.** `test/linux-package.test.mjs` reads the archives back with the system `tar`, installs the
+  tarball into a temp root, runs the installed hook installer and runs the installed hook on a credential-file
+  Read (`deny` under the fail-closed posture) and a source-file Read (allowed). In Docker (images already on the
+  build machine, arm64): on Debian 12 with Node 22, `dpkg -i` of both packages, `moorai-install-hooks` as a
+  non-root user, a credential-file Read denied under the root-owned fail-closed posture and a source-file Read
+  allowed, then `dpkg --purge` / `dpkg -r`; on Ubuntu 24.04 without Node, `dpkg -i` succeeds with the warning,
+  `moorai-install-hooks` refuses with a clear message, and the tarball installs into `/` and uninstalls. Not run:
+  systemd (no container ran it), RHEL or any rpm, Ubuntu 22.04, amd64, Wayland or X11 (there is no Linux
+  clipboard guard or desktop app).
+
 ## Coverage & blind spots
 
 - **Origin and ask outcomes on shim hosts and untracked tools are unknown.** Codex, Copilot, Cursor, Gemini

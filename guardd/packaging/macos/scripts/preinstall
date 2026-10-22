@@ -1,0 +1,4 @@
+#!/bin/sh
+# pkg preinstall: stop a running moorai-guardd before the payload replaces its binary.
+launchctl bootout system/run.glick.moorai.guardd 2>/dev/null || true
+exit 0
