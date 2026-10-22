@@ -1394,14 +1394,20 @@ CI workflow files and UI components. On a hand-built benign near-miss set of 42 
 **Where the change lands.** A written path is classified both as written and through its real target, and the
 stricter class wins: a `notes.md` or fixture-named symlink to `src/alerting.py` is judged as runtime code (also
 for shell redirect, `sed -i` and `tee` targets). In a command, `cd`, `pushd` / `popd` and `Set-Location` move the
-paths of the segments after them, and every path is judged relative to the project as well as as written
-(`cd monitoring && rm scope.py` is a removed monitor). A `cd` inside a subshell, a pipeline or a background job
-does not move the shell around it. A `cd` to a target that is not literal (`$DIR`, a glob, `$( … )`, `~`, `-`)
-leaves later relative paths unknown, and judging one of them is held as an incomplete analysis. A move (`mv`,
+paths of the segments joined to them by `&&`, and every deleted, moved or written path is judged relative to
+the project as well as as written (`cd monitoring && rm scope.py` is a removed monitor). The directory is
+treated as unknown when it is not certain: after `;`, a newline, `||` or `&` following a `cd` (the `cd` may have
+failed), for a `cd` behind a wrapper other than `command` / `builtin` (`sudo`, `env`, `time`, `eval` …), for a
+`cd` that ends a pipeline (zsh runs it in the current shell), and for a `cd` to a target that is not literal
+(`$DIR`, a glob, `$( … )`, `~`, `-`). Judging a relative path under an unknown directory is held as an
+incomplete analysis, so `cd build; rm -rf dist` asks where `cd build && rm -rf dist` does not. A `cd` inside a
+subshell, at the start of a pipeline or in a background job does not move the shell around it. A move (`mv`,
 `git mv`, `Move-Item`, `Rename-Item`, `-t` / `--target-directory` included) is a rename only when the
 destination keeps an oversight word, stays inside the project, keeps the source's class (runtime code or test)
-and keeps an importable name. A move to `/tmp` or anywhere outside the project, to a docs or fixture path, to a
-`.bak` / `.disabled` / `.old` / `.orig` name, or to a destination that is not literal is a removal.
+and keeps an importable name, both lexically and through its real path (a symlinked directory that leads
+outside the project or into `docs/` counts as where it leads). A move to `/tmp` or anywhere outside the project,
+to a docs or fixture path, to a `.bak` / `.disabled` / `.old` / `.orig` name, or to a destination that is not
+literal is a removal.
 
 **Default: ask** (`justify`), never silent. `threatPolicy["84"]` can set it to `notify`, `block` or `kill` (84, not
 81: 81 and 82 are the OT protocol client read and write ids from 1.28.0, so `threatPolicy["81"]` never touches

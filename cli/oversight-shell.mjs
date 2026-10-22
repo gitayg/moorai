@@ -33,7 +33,7 @@ import { statSync } from "node:fs";
 import { resolve, relative, isAbsolute, dirname, basename, join } from "node:path";
 import { splitShell, commandOf } from "../data/shell-parse.js";
 import { oversightEditSignals, assignedSignals, pathClass, pathClasses, OVERSIGHT_SIGNALS, INCOMPLETE } from "./oversight-signals.mjs";
-import { protectedPathHit, protectedKeyInCommand } from "./oversight-surfaces.mjs";
+import { protectedPathHit, protectedKeyInCommand, realOf } from "./oversight-surfaces.mjs";
 import { words, switchKind, listKind, valueKind, WIRING_FAMILIES, TEST_GUARD_WORDS } from "./oversight-vocab.mjs";
 
 const MAX = 262144;
@@ -53,9 +53,12 @@ const oversightPath = (p) => words(p).some((w) => familyWord(w));
 const guardPath = (p) => words(p).some((w) => TEST_GUARD_WORDS.test(w));
 const positional = (args) => args.filter((t) => !/^-/.test(t) && !/^\$/.test(t));
 
-// Paths of one segment: resolved against its working directory (dir; null when a cd target was not literal),
-// and relative to the project. at(p) → the absolute path (marks the analysis incomplete when p is relative and
-// dir is unknown); rel(abs) → abs relative to the project when inside it, else abs.
+// Paths of one segment: resolved against its working directory (dir; null when it is not certain), and
+// relative to the project. at(p) → the absolute path (marks the analysis incomplete when p is relative and
+// dir is unknown); written(p) → p as written, against the project; both(p) → the two, deduplicated (every
+// sink is judged at both, as removalSignal does); rel(abs) → abs relative to the project when inside it, else
+// abs; realRel(abs) → abs's real path relative to the project's real path when inside it, else null.
+const inside = (r) => Boolean(r) && r !== ".." && !r.startsWith("../") && !isAbsolute(r);
 function pathCtx(project, dir, out) {
   const at = (p) => {
     const s = String(p);
@@ -63,8 +66,18 @@ function pathCtx(project, dir, out) {
     if (dir === null) { out.add(INCOMPLETE); return resolve(project, s); }
     return resolve(dir, s);
   };
-  const rel = (abs) => { const r = relative(project, abs).replace(/\\/g, "/"); return r && r !== ".." && !r.startsWith("../") && !isAbsolute(r) ? r : abs.replace(/\\/g, "/"); };
-  return { project, at, rel };
+  const written = (p) => resolve(project, String(p));
+  const both = (p) => [...new Set([at(p), written(p)])];
+  const rel = (abs) => { const r = relative(project, abs).replace(/\\/g, "/"); return inside(r) ? r : abs.replace(/\\/g, "/"); };
+  let realProject;
+  const realRel = (abs) => {
+    if (realProject === undefined) realProject = realOf(project);
+    const r = realOf(abs);
+    if (!r || !realProject) return null;
+    const rr = relative(realProject, r).replace(/\\/g, "/");
+    return inside(rr) ? rr : null;
+  };
+  return { project, at, written, both, rel, realRel };
 }
 const srcClass = (p) => { const cls = pathClass(p); return (cls === "test" && guardPath(p)) ? "test" : cls === "code" && oversightPath(p) ? "code" : ""; };
 // A path deleted or moved away: what it was, as written and as resolved relative to the project.
@@ -119,24 +132,36 @@ function moveParts(bin, args, git, ps) {
   return { sources: pos.slice(0, -1), dest: pos[pos.length - 1], destIsDir: noTarget ? false : null, rename: false };
 }
 const isDir = (abs) => { try { return statSync(abs).isDirectory(); } catch { return false; } };
+// A destination keeps the source when, lexically and through its real path, it stays inside the project with
+// one of the source's classes and an importable name.
+function keepsAt(final, kinds, ctx) {
+  const fr = ctx.rel(final);
+  if (isAbsolute(fr) || !kinds.has(srcClass(fr)) || NON_IMPORTABLE.test(fr)) return false;
+  const rr = ctx.realRel(final);
+  return rr !== null && kinds.has(srcClass(rr)) && !NON_IMPORTABLE.test(rr);
+}
+// Judged twice, the tracked directory's pair (source and destination resolved) and the as-written pair: a
+// source of oversight that either pair takes away is removed.
 function judgeMove(bin, args, git, opts, ctx, out, touched) {
   const m = moveParts(bin, args, git, opts.ps);
-  if (!m) { for (const p of args.filter((t) => !t.startsWith("-"))) touched.add(ctx.at(p)); return; }
+  if (!m) { for (const p of args.filter((t) => !t.startsWith("-"))) ctx.both(p).forEach((a) => touched.add(a)); return; }
   const literal = m.dest && !NOT_LITERAL.test(m.dest) && m.dest !== "/dev/null";
-  const destAbs = literal ? ctx.at(m.dest) : null;
-  if (destAbs) touched.add(destAbs);
-  const dirDest = m.destIsDir ?? (m.sources.length > 1 || /[\/\\]$/.test(m.dest) || (destAbs !== null && isDir(destAbs)));
+  const pairs = [ctx.at, ctx.written].map((place) => {
+    const destAbs = literal ? place(m.dest) : null;
+    if (destAbs) touched.add(destAbs);
+    const dirDest = m.destIsDir ?? (m.sources.length > 1 || /[\/\\]$/.test(m.dest) || (destAbs !== null && isDir(destAbs)));
+    return { place, destAbs, dirDest };
+  });
   for (const s of m.sources) {
-    const srcAbs = ctx.at(s);
-    touched.add(srcAbs);
-    const kinds = new Set([srcClass(ctx.rel(srcAbs)), srcClass(s)].filter(Boolean));
-    if (!kinds.size) continue;
-    let keeps = false;
-    if (destAbs) {
+    let keeps = true;
+    for (const { place, destAbs, dirDest } of pairs) {
+      const srcAbs = place(s);
+      touched.add(srcAbs);
+      const kinds = new Set([srcClass(ctx.rel(srcAbs)), srcClass(s)].filter(Boolean));
+      if (!kinds.size) continue;
+      if (!destAbs) { keeps = false; continue; }
       const final = m.rename ? join(dirname(srcAbs), m.dest) : dirDest ? join(destAbs, basename(srcAbs)) : destAbs;
-      const fr = ctx.rel(final);
-      const inside = !isAbsolute(fr);
-      keeps = inside && kinds.has(srcClass(fr)) && !NON_IMPORTABLE.test(fr);
+      if (!keepsAt(final, kinds, ctx)) keeps = false;
     }
     if (!keeps) removalSignal(s, out, ctx);
   }
@@ -231,20 +256,19 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
     if (bin === "echo" || bin === "printf") text = pos.join(" ").replace(/\\n/g, "\n");
     else if (seg.heredoc) text = seg.heredoc;
     if (!text && !opts.surfacePaths && !isAbsolute(w)) { touched.add(resolve(P, w)); continue; }
-    const abs = ctx.at(w);
-    touched.add(abs);
-    if (text) for (const s of assignedSignals(text, abs, P)) out.add(s);
+    for (const abs of ctx.both(w)) { touched.add(abs); if (text) for (const s of assignedSignals(text, abs, P)) out.add(s); }
   }
   if (!c) return;
-  if (DELETE_BINS.has(bin)) { for (const p of pos) { touched.add(ctx.at(p)); removalSignal(p, out, ctx); } return; }
-  if (bin === "truncate" && /-s\s*0|--size=0/.test(args.join(" "))) { for (const p of pos.filter((x) => x !== "0")) { touched.add(ctx.at(p)); removalSignal(p, out, ctx); } return; }
-  if (bin === "git" && lower[0] === "rm") { for (const p of pos.slice(1)) { touched.add(ctx.at(p)); removalSignal(p, out, ctx); } return; }
+  const removed = (p) => { ctx.both(p).forEach((a) => touched.add(a)); removalSignal(p, out, ctx); };
+  if (DELETE_BINS.has(bin)) { pos.forEach(removed); return; }
+  if (bin === "truncate" && /-s\s*0|--size=0/.test(args.join(" "))) { pos.filter((x) => x !== "0").forEach(removed); return; }
+  if (bin === "git" && lower[0] === "rm") { pos.slice(1).forEach(removed); return; }
   if (MOVE_BINS.has(bin)) { judgeMove(bin, args, false, opts, ctx, out, touched); return; }
   if (bin === "git" && lower[0] === "mv") { judgeMove("mv", args.slice(args.findIndex((t) => t.toLowerCase() === "mv") + 1), true, opts, ctx, out, touched); return; }
   if (bin === "sed" || bin === "gsed" || bin === "perl") {
     const { inPlace, scripts, files } = sedParts(bin, args);
     if (!inPlace) return;
-    const abs = files.map((f) => ctx.at(f));
+    const abs = [...new Set(files.flatMap((f) => ctx.both(f)))];
     abs.forEach((f) => touched.add(f));
     if (scripts.some((sc) => sc.length > MAX_SCRIPT)) { out.add(INCOMPLETE); return; }
     for (const f of abs) for (const sc of scripts) for (const e of sedEdits(sc)) for (const s of oversightEditSignals({ path: f, before: e.before, after: e.after, cwd: P })) out.add(s);
@@ -255,17 +279,17 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
     if (!inPlace) return;
     const rest = pos.filter((t) => !/^(?:e|eval|eval-all|ea)$/.test(t));
     const expr = rest.find((t) => /=/.test(t)) || "";
-    const files = rest.filter((t) => t !== expr).map((f) => ctx.at(f));
-    files.forEach((f) => touched.add(f));
-    const target = files[0] || ((seg.writes || [])[0] ? ctx.at(seg.writes[0]) : "");
-    if (target && pathClasses(target, P).some((x) => x.cls === "code")) classifyPairs(exprAssignments(expr), ctx.rel(target), out);
+    const files = rest.filter((t) => t !== expr);
+    files.flatMap((f) => ctx.both(f)).forEach((f) => touched.add(f));
+    const first = files[0] ?? (seg.writes || [])[0];
+    for (const target of first ? ctx.both(first) : []) if (pathClasses(target, P).some((x) => x.cls === "code")) classifyPairs(exprAssignments(expr), ctx.rel(target), out);
     return;
   }
   if (bin === "tee") {
     const prev = all[idx - 1];
     const pc = prev && prev.sep === "|" ? commandOf(prev.tokens, prev.ps) : null;
     const text = pc && (pc.binary === "echo" || pc.binary === "printf") ? positional(prev.tokens.slice(pc.at + 1)).join(" ").replace(/\\n/g, "\n") : prev && prev.heredoc ? prev.heredoc : "";
-    for (const f of pos) { const abs = ctx.at(f); touched.add(abs); if (text) for (const s of assignedSignals(text, abs, P)) out.add(s); }
+    for (const abs of new Set(pos.flatMap((f) => ctx.both(f)))) { touched.add(abs); if (text) for (const s of assignedSignals(text, abs, P)) out.add(s); }
     return;
   }
   if (bin === "amtool" && lower[0] === "silence" && (lower[1] === "add" || lower[1] === "import")) { out.add("suppression-flag"); return; }
@@ -292,25 +316,50 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
   if (bin === "set-content" || bin === "add-content" || bin === "out-file") {
     const p = (() => { for (let i = 0; i < args.length; i++) if (/^-(?:path|filepath|literalpath)$/i.test(args[i])) return args[i + 1]; return pos[0]; })();
     const v = (() => { for (let i = 0; i < args.length; i++) if (/^-value$/i.test(args[i])) return args[i + 1]; return pos[1] || ""; })();
-    if (p) { const abs = ctx.at(p); touched.add(abs); if (v) for (const s of assignedSignals(String(v).replace(/`n/g, "\n"), abs, P)) out.add(s); }
+    if (p) for (const abs of ctx.both(p)) { touched.add(abs); if (v) for (const s of assignedSignals(String(v).replace(/`n/g, "\n"), abs, P)) out.add(s); }
   }
 }
 
 // The working directory a segment runs in: the nearest enclosing subshell scope that changed it, else the
-// project. A copy, so a change is stored only under the segment's own scope.
+// project. A copy, so a change is stored only under the segment's own scope. moved: a cd ran in that scope
+// (or around it), so a later separator that does not make the cd certain leaves the directory unknown.
 function dirState(dirs, scope, project) {
   for (let s = scope; ; s = s.includes("/") ? s.slice(0, s.lastIndexOf("/")) : "") {
     const st = dirs.get(s);
-    if (st) return { dir: st.dir, stack: [...st.stack] };
-    if (!s) return { dir: project, stack: [] };
+    if (st) return { dir: st.dir, stack: [...st.stack], moved: st.moved };
+    if (!s) return { dir: project, stack: [], moved: false };
   }
 }
-// A cd / pushd / popd / Set-Location segment: updates state and → true. Run in a pipeline or in the background
-// (POSIX) it changes nothing around it, but it is still not a command to judge.
+// Only && carries a cd to the next segment (it ran only if the cd succeeded), and | (a pipeline runs after the
+// && before it), and the end of a $( … ) back into the command that holds it. After ; a newline || & ( ) or
+// { } the cd may have failed, or run in the background: the directory of prev's scope is unknown (after `)`,
+// whose following separator the parser drops, of every scope around it too).
+const CARRIES = new Set(["&&", "|"]);
+const parentScope = (s) => (s.includes("/") ? s.slice(0, s.lastIndexOf("/")) : "");
+function afterSeparator(prev, seg, dirs) {
+  const ps = prev.scope || "";
+  if (CARRIES.has(prev.sep) || (prev.sep === "" && ps !== (seg.scope || ""))) return;
+  for (let sc = ps; ; sc = parentScope(sc)) {
+    const st = dirs.get(sc);
+    if (st && st.moved) st.dir = null;
+    if (prev.sep !== ")" || !sc) return;
+  }
+}
+const CD_WORD = /^\s*(?:cd|chdir|pushd|popd|set-location|sl|push-location|pop-location)(?:\s|$)/i;
+const unknownDir = (state) => { state.dir = null; state.moved = true; return true; };
+// A cd / pushd / popd / Set-Location segment: updates state and → true. Run first in a pipeline or in the
+// background (POSIX) it changes nothing around it, but it is still not a command to judge. A cd is read only
+// as the literal first command word (after env assignments, `command` or `builtin`); behind any other
+// wrapper (sudo, env, time, eval …) or last in a pipeline (zsh, bash lastpipe run it in this shell) the
+// directory is unknown.
 function changeDir(seg, prev, state) {
   const c = commandOf(seg.tokens, seg.ps);
+  if (c && c.binary === "eval" && seg.tokens.slice(c.at + 1).some((t) => CD_WORD.test(t))) return unknownDir(state);
   if (!c || !CD_BINS.has(c.binary)) return false;
-  if (!seg.ps && (seg.sep === "|" || seg.sep === "&" || (prev && prev.sep === "|"))) return true;
+  if (!seg.ps && (seg.sep === "|" || seg.sep === "&")) return true;
+  if (!seg.ps && prev && prev.sep === "|") return unknownDir(state);
+  if (seg.tokens.slice(0, c.at).some((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t) && !["command", "builtin"].includes(t))) return unknownDir(state);
+  state.moved = true;
   const args = seg.tokens.slice(c.at + 1);
   if (c.binary === "popd" || c.binary === "pop-location") { state.dir = state.stack.length ? state.stack.pop() : null; return true; }
   let target = null;
@@ -345,6 +394,8 @@ export function oversightCommandSignals(command, { ps = false, surfaces = null, 
     const seg = segs[i];
     const scope = seg.scope || "";
     try {
+      const prev = segs[i - 1];
+      if (prev) afterSeparator(prev, seg, dirs);
       const state = dirState(dirs, scope, project);
       if (changeDir(seg, segs[i - 1], state)) { dirs.set(scope, state); continue; }
       judgeSegment(seg, segs, i, opts, out, touched, pathCtx(project, state.dir, out));

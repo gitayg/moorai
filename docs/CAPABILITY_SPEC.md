@@ -3994,17 +3994,28 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   `tee`, `yq -i` and `Set-Content` targets. In a command, the working directory is tracked across segments:
   `cd`, `chdir`, `pushd` / `popd`, `Set-Location` / `sl`, `Push-Location` / `Pop-Location` with a literal target
   move the paths of the later segments, per subshell scope (`shell-parse.js` `seg.scope`: a `cd` inside `( … )`,
-  `$( … )` or backticks stays inside it; in POSIX a `cd` in a pipeline or a background job moves nothing).
-  Deleted and moved paths are judged as written and as resolved relative to the project. A `cd` with no target
-  or to one that is not literal (`$`, a glob, `{ }`, a subshell, a leading `~`, `-`), or a `popd` with nothing
-  pushed, makes the directory unknown; judging a relative path under it raises `analysis-incomplete` (a later
-  segment that judges no path, `cd "$DIR" && git status`, stays clean). A move (`mv`, `git mv`, `move`,
+  `$( … )` or backticks stays inside it; in POSIX a `cd` first in a pipeline or in a background job moves
+  nothing). A `cd` carries only over `&&` (and `|`, and the end of a `$( … )` back into its command): once a
+  scope has run a `cd`, a `;`, newline, `||`, `&`, `(`, `{` or `}` after one of its segments makes that scope's
+  directory unknown, and a `)` makes the enclosing scopes' unknown too (the parser drops the separator after it);
+  a later `cd` to an absolute path makes it known again. A segment is a `cd` only when the `cd` word is the
+  first command word (after env assignments, `command` or `builtin`); a `cd` behind any other wrapper (`sudo`,
+  `env`, `time`, `nohup`, `exec`, `xargs` …), an `eval` whose arguments start with a `cd` word, and in POSIX a
+  `cd` that ends a pipeline (zsh, bash `lastpipe`) make the directory unknown. Every sink (deleted and moved
+  paths, redirect, `sed -i` / `perl -pi`, `tee`, `yq -i`, `Set-Content` targets) is judged and added to the
+  protected-path check both as resolved against the tracked directory and as written relative to the project.
+  A `cd` with no target or to one that is not literal (`$`, a glob, `{ }`, a subshell, a leading `~`, `-`), or a
+  `popd` with nothing pushed, also makes the directory unknown; judging a relative path under it raises
+  `analysis-incomplete` (a later segment that judges no path, `cd "$DIR" && git status` or `cd x; npm test`,
+  stays clean). A move (`mv`, `git mv`, `move`,
   `Move-Item`, `Rename-Item`; `-t DIR`, `-tDIR`, `--target-directory[=]DIR`, `-T`, `-S SUFFIX`, PowerShell
   `-Destination` / `-NewName` / `-Path` read; a directory destination is a trailing slash, several sources or an
   existing directory) of a monitor or a guarding test is a rename only when the destination is literal, keeps an
   oversight word, resolves inside the project, keeps the source's class (code or test) and does not end in
-  `.bak`, `.disabled`, `.old`, `.orig` or `~`. Anything else (`/tmp`, `../`, `/dev/null`, `docs/`, `$TRASH`,
-  `~/…`) is a removal.
+  `.bak`, `.disabled`, `.old`, `.orig` or `~`, both lexically and through its real path (`realOf`, relative to
+  the project's real path: a destination under a symlink to a directory outside the project or to `docs/` is
+  judged where it leads), and for both the resolved source / destination pair and the as-written pair.
+  Anything else (`/tmp`, `../`, `/dev/null`, `docs/`, `$TRASH`, `~/…`) is a removal.
 - **Bounds (fail closed).** Every pattern is linear: the `sed` / `perl` `s///` and `/re/d` parsers are scanners
   (a backslash takes the next character, the first unescaped delimiter ends a field, a backslash or line
   terminator is never a delimiter) and the quoted-prose scanner remembers each position per quote kind; the
@@ -4020,8 +4031,9 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   docs / comment / fixture mentions, re-enabling notifications, vendor telemetry opt-outs, `.env.test`, a UI
   `<Alert>`, `notify_on_success: false`, `disable_web_page_preview`, an inline env prefix for one test run,
   `export`, a rename via `git mv`, reads). The set is hand-built; no field corpus has been run. The path tests
-  also hold clean a same-directory rename, a move into another runtime monitoring directory, `cd` into a
-  directory followed by an unrelated edit or removal, and a doc symlink to a doc.
+  also hold clean a same-directory rename, a move into another runtime monitoring directory (also through an
+  in-project symlink), `cd` into a directory followed by `&&` and an unrelated edit or removal, and a doc
+  symlink to a doc. A `cd` followed by `;` and a path-judging command (`cd build; rm -rf dist`) asks by design.
 - **Threat id.** 84. Not 81: 81 (read and unknown) and 82 (write) are the OT protocol client ids that shipped
   in 1.28.0, which live agents send and console policies may set; `threatPolicy["81"]` never changes this verdict.
 - **Default and action.** `APPROVAL_THREATS` includes 84, so `threatActionFor` resolves it to `justify` (ask);
