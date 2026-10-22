@@ -1,15 +1,25 @@
-// MoorAI Browser Guard — options page logic. Stores config in chrome.storage.sync and, when a server
-// URL is set, requests the runtime host permission for that origin so the content script can POST to it
-// (kept out of the always-on host_permissions to honor least privilege).
+// MoorAI Browser Guard — options page logic. Stores the user's config in chrome.storage.sync and, when a
+// server URL is set, requests the runtime host permission for that origin so the background worker can
+// POST to it (kept out of the always-on host_permissions to honor least privilege).
+// Values an administrator set through browser policy (chrome.storage.managed, see config.js) are shown
+// and win over anything saved here; with lockSettings they are read-only.
 
-const DEFAULTS = { mode: "coach", serverUrl: "", installToken: "", reportEnabled: true };
+const FIELDS = { serverUrl: "serverUrl", installToken: "installToken", reportEnabled: "reportEnabled" };
 
 function load() {
-  chrome.storage.sync.get(DEFAULTS, (cfg) => {
+  globalThis.MoorAIConfig.load((cfg) => {
     document.getElementById(cfg.mode === "block" ? "mode-block" : "mode-coach").checked = true;
     document.getElementById("serverUrl").value = cfg.serverUrl || "";
     document.getElementById("installToken").value = cfg.installToken || "";
     document.getElementById("reportEnabled").checked = cfg.reportEnabled !== false;
+    const managed = new Set(cfg.managedKeys || []);
+    const note = document.getElementById("managed");
+    if (managed.size) note.hidden = false;
+    if (cfg.locked) note.textContent = "These settings are managed by your organization and cannot be changed here.";
+    const lock = (id) => { const el = document.getElementById(id); if (el) el.disabled = true; };
+    if (cfg.locked || managed.has("mode")) { lock("mode-block"); lock("mode-coach"); }
+    for (const [k, id] of Object.entries(FIELDS)) if (cfg.locked || managed.has(k)) lock(id);
+    if (cfg.locked) lock("save");
   });
 }
 

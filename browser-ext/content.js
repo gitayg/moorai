@@ -99,14 +99,12 @@
   // synchronous, so the key is pushed in whenever config loads or changes rather than fetched at
   // scan time. No token yet → hashes come out as the explicit NO_KEY sentinel, never reversible.
   function applyKey() { try { globalThis.MoorAIContentHash.setKey(CONFIG.installToken || ""); } catch { /* keyless */ } }
+  // config.js merges the administrator's managed policy over the user's options-page values.
   function loadConfig() {
     try {
-      chrome.storage.sync.get({ mode: "coach", serverUrl: "", installToken: "", reportEnabled: true }, (cfg) => { CONFIG = cfg || CONFIG; applyKey(); });
-      chrome.storage.onChanged.addListener((changes, area) => {
-        if (area !== "sync") return;
-        for (const k in changes) CONFIG[k] = changes[k].newValue;
-        applyKey();
-      });
+      const reload = () => globalThis.MoorAIConfig.load((cfg) => { CONFIG = cfg || CONFIG; applyKey(); });
+      reload();
+      chrome.storage.onChanged.addListener((changes, area) => { if (area === "sync" || area === "managed") reload(); });
     } catch { /* storage unavailable — keep defaults (coach) */ }
   }
   loadConfig();

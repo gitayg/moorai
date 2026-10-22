@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<policyDefinitionResources xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" revision="1.0" schemaVersion="1.0" xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <displayName>MoorAI Browser Guard</displayName>
+  <description>Managed settings for MoorAI Browser Guard (extension __EXTENSION_ID__) in Google Chrome and Microsoft Edge.</description>
+  <resources>
+    <stringTable>
+      <string id="SUPPORTED_CHROMIUM_102">Google Chrome or Microsoft Edge 102 or later</string>
+      <string id="MoorAI">MoorAI</string>
+      <string id="BrowserGuardChrome">Browser Guard (Google Chrome)</string>
+      <string id="BrowserGuardEdge">Browser Guard (Microsoft Edge)</string>
+      <string id="ServerUrl">MoorAI console URL</string>
+      <string id="ServerUrl_Explain">Where Browser Guard posts content-free signals (POST &lt;URL&gt;/api/alerts). The extension posts only when it holds host permission for this origin: use a self-hosted build packaged with --console-origin, or let users grant it on the options page.</string>
+      <string id="InstallToken">Install token</string>
+      <string id="InstallToken_Explain">Sent as X-Install-Token and used as the key for the one-way content hash. Local users can read registry policy values.</string>
+      <string id="Mode">Mode</string>
+      <string id="Mode_Explain">Coach warns and lets the user proceed. Block prevents a high-severity send (secrets, keys, cards).</string>
+      <string id="Mode_Coach">Coach</string>
+      <string id="Mode_Block">Block</string>
+      <string id="ReportEnabled">Send content-free signals</string>
+      <string id="ReportEnabled_Explain">Master switch for reporting to the console.</string>
+      <string id="LockSettings">Lock settings</string>
+      <string id="LockSettings_Explain">Shows the managed values read-only on the options page.</string>
+    </stringTable>
+    <presentationTable>
+      <presentation id="ServerUrl">
+        <textBox refId="ServerUrl">
+          <label>Console URL</label>
+        </textBox>
+      </presentation>
+      <presentation id="InstallToken">
+        <textBox refId="InstallToken">
+          <label>Install token</label>
+        </textBox>
+      </presentation>
+      <presentation id="Mode">
+        <dropdownList refId="Mode" noSort="true" defaultItem="0">Mode</dropdownList>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>

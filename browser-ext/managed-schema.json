@@ -1,0 +1,31 @@
+{
+  "type": "object",
+  "properties": {
+    "serverUrl": {
+      "title": "MoorAI console URL",
+      "description": "Where content-free signals are posted (POST <serverUrl>/api/alerts). Leave unset for local-only use.",
+      "type": "string"
+    },
+    "installToken": {
+      "title": "Install token",
+      "description": "Sent as X-Install-Token and used as the key for the one-way content hash, the same token the MoorAI agent uses.",
+      "type": "string"
+    },
+    "mode": {
+      "title": "Mode",
+      "description": "coach warns and lets the user proceed; block prevents a high-severity send.",
+      "type": "string",
+      "enum": ["coach", "block"]
+    },
+    "reportEnabled": {
+      "title": "Send signals",
+      "description": "Master switch for reporting to the console.",
+      "type": "boolean"
+    },
+    "lockSettings": {
+      "title": "Lock settings",
+      "description": "When true, the options page shows the managed values read-only.",
+      "type": "boolean"
+    }
+  }
+}
