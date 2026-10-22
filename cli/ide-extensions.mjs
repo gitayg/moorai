@@ -86,13 +86,17 @@ const POPULAR = new Set(POPULAR_IDE_EXTENSIONS);
 const POPULAR_BY_NAME = new Map();
 for (const id of POPULAR_IDE_EXTENSIONS) { const n = id.slice(id.indexOf(".") + 1); POPULAR_BY_NAME.set(n, [...(POPULAR_BY_NAME.get(n) || []), id]); }
 const IMPERSONATION_MIN_NAME = 8;
+// An editor's own publisher ships forks of popular extensions under the same name inside that editor.
+// Measured: Cursor ships anysphere.remote-ssh. Exempt only inside that editor's own extensions directory.
+const EDITOR_PUBLISHERS = { cursor: new Set(["anysphere"]) };
 
 // id (publisher.name) → [] | ["ide-ext-typosquat"] | ["ide-ext-publisher-impersonation"]
-export function classifyExtensionId(id) {
+export function classifyExtensionId(id, { editor = null } = {}) {
   const k = String(id || "").toLowerCase();
   const dot = k.indexOf(".");
   if (dot < 1 || POPULAR.has(k)) return [];
   const name = k.slice(dot + 1);
+  if (editor && EDITOR_PUBLISHERS[editor] && EDITOR_PUBLISHERS[editor].has(k.slice(0, dot))) return [];
   if (name.length >= IMPERSONATION_MIN_NAME && POPULAR_BY_NAME.has(name)) return ["ide-ext-publisher-impersonation"];
   const max = k.length >= 12 ? 2 : 1;
   for (const p of POPULAR) if (withinEdit(k, p, max)) return ["ide-ext-typosquat"];
@@ -190,7 +194,7 @@ function vscodeRoot(root, lim, budget, seen) {
     const bad = knownBadExtension(id, version);
     const codes = new Set();
     if (bad.length) codes.add("ide-ext-known-malicious");
-    for (const c of classifyExtensionId(id)) codes.add(c);
+    for (const c of classifyExtensionId(id, { editor: root.editor })) codes.add(c);
     if (source === "vsix") codes.add("ide-ext-sideloaded");
     if (invisibleScan(dir, lim, budget)) codes.add("ide-ext-invisible-code");
     const ordered = CODE_ORDER.filter((c) => codes.has(c));

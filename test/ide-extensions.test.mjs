@@ -105,6 +105,16 @@ test("typosquat: a near-miss of a popular id, and a popular name under another p
   assert.deepEqual(classifyExtensionId("acme.python"), [], "a short generic name is not an impersonation on its own");
 });
 
+test("an editor's own built-in forks are not impersonation inside that editor (measured: Cursor ships anysphere.remote-ssh)", () => {
+  const home = tmp("fork");
+  vsext(home, ".cursor/extensions", "anysphere", "remote-ssh", "1.0.49");
+  vsext(home, ".vscode/extensions", "anysphere", "remote-ssh", "1.0.49");
+  const m = byId(scanIdeExtensions({ home, platform: "darwin" }));
+  assert.deepEqual(m["cursor:anysphere.remote-ssh@1.0.49"].codes, []);
+  assert.deepEqual(m["vscode:anysphere.remote-ssh@1.0.49"].codes, ["ide-ext-publisher-impersonation"], "outside Cursor the same id is still reported");
+  assert.deepEqual(classifyExtensionId("anysphere.remote-ssh", { editor: "cursor" }), []);
+});
+
 test("the popular reference list has no internal near-collisions (so a listed id is never flagged as another's typosquat)", () => {
   for (const id of POPULAR_IDE_EXTENSIONS) assert.deepEqual(classifyExtensionId(id), [], id);
 });

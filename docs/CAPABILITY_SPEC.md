@@ -3175,8 +3175,9 @@ each basis; the console pins the same literal and downgrades a stronger claim.
   `ide-ext-invisible-code` (high): a `.js`/`.cjs`/`.mjs` file with a run of >= 16 code points in
   U+FE00-FE0F or U+E0000-E01EF. `ide-ext-typosquat` (medium): Damerau-Levenshtein distance <= 2 (ids of 12+
   characters, else 1) from `data/popular-ide-extensions.js`. `ide-ext-publisher-impersonation` (medium): a
-  listed extension name of 8+ characters under another publisher. `ide-ext-sideloaded` (low): install source
-  `vsix`. AI classification from `data/ai-catalog.json` keywords.
+  listed extension name of 8+ characters under another publisher (an editor's own publisher is exempt inside
+  that editor: `anysphere` in Cursor, measured on a real install where Cursor ships `anysphere.remote-ssh`).
+  `ide-ext-sideloaded` (low): install source `vsix`. AI classification from `data/ai-catalog.json` keywords.
 - **Bounds.** 2,000 extensions per root, 400 script files and depth 10 per extension, 8 MB per file, 48 MB
   per extension, 512 MB per run; a skipped file sets `truncated`.
 - **Output.** `{ scanned, ai, flagged, truncated, extensions: [{ editor, id, version, ai, source?, codes,
