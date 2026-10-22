@@ -13,8 +13,8 @@
 //   limitTo: "Only `Domain(...)` entries are supported in `limitTo`." "Any agent network request to a domain
 //     outside the list is denied without prompting." "An empty `limitTo` list denies every domain request."
 //     "`limitTo` doesn't restrict `shell`, `read`, or `write` operations by themselves."
-//   allowedMcpServers / deniedMcpServers: { "serverName": ... } | { "serverUrl": ... }; "Unset
-//     `allowedMcpServers` allows all non-default servers."; "Trusted first-party servers (for example, the
+//   allowedMcpServers / deniedMcpServers: { "serverName": ... } | { "serverUrl": ... }; "Leaving this key
+//     unset allows all non-default servers; an empty array denies all of them."; "Trusted first-party servers (for example, the
 //     built-in GitHub MCP server) are always exempt from both lists."
 //   "Most managed keys lock the entire row", so MoorAI owns the keys it writes and merges by key.
 //   The managed `sandbox` key's network rule shape (`userPolicy.*`) is not published, so egress goes to
@@ -66,7 +66,6 @@ export function copilot(intent, { platform }) {
   if (intent.mcp.allowOnly) {
     out.allowedMcpServers = intent.mcp.allowOnly.map((serverName) => ({ serverName }));
     unexpressed.push({ source: "mcpAllow", effect: "coarsened", reason: `${TAG}-first-party-servers-exempt` });
-    if (!intent.mcp.allowOnly.length) unexpressed.push({ source: "mcpAllow", effect: "approximated", reason: `${TAG}-empty-list-unstated` });
   }
   const files = Object.keys(out).length ? [{ path: PATH[platform], format: "json", scope: "managed", merge: "keys", content: out }] : [];
   return { files, unexpressed, notes: [{ reason: `${TAG}-root-owned-file-required` }] };

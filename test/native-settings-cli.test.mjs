@@ -72,6 +72,24 @@ test("check: in-sync after the compiled files are placed under a root, drift aft
   assert.equal(JSON.parse(r.stdout).hosts["claude-code"].state, "drift");
 });
 
+test("check: a deleted owned file exits 4 (not in place), a corrupted one exits 3 like drift", () => {
+  const root = mkdtempSync(join(tmpdir(), "moorai-native-root-"));
+  const args = ["check", "--host", "cursor", "--policy", join(FIX, "policy.json"), "--platform", "linux", "--root", root, "--home", root];
+  let r = run(args);
+  assert.equal(r.status, 4, r.stdout + r.stderr);
+  assert.equal(JSON.parse(r.stdout).hosts.cursor.state, "absent");
+  const c = run(["compile", "--host", "cursor", "--policy", join(FIX, "policy.json"), "--platform", "linux"]);
+  const f = JSON.parse(c.stdout).hosts[0].files[0];
+  const p = join(root, f.path.slice(2));
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, f.text);
+  assert.equal(run(args).status, 0);
+  writeFileSync(p, "{bad");
+  r = run(args);
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.equal(JSON.parse(r.stdout).hosts.cursor.state, "unreadable");
+});
+
 test("package: moorai-native-settings is a published bin", () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
   assert.equal(pkg.bin["moorai-native-settings"], "cli/moorai-native-settings.mjs");

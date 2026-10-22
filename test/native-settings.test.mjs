@@ -126,6 +126,20 @@ test("claude-code: permissions, MCP allow-list and the sandbox from one policy",
   assert.equal(r.files[0].merge, "whole");
 });
 
+test("claude-code: turning the sandbox on also turns its auto-allow off, so a Bash ask still prompts", () => {
+  // code.claude.com/docs/en/sandboxing: "`autoAllowBashIfSandboxed` still defaults to `true`, so sandboxed
+  // commands keep running without prompts"; "A bare `Bash` ask rule ... is skipped for commands that run
+  // sandboxed". Set in managed settings, the key cannot be changed by a lower settings level.
+  for (const p of [{ tagActions: { exec: "ask" }, egressDefault: "block" }, { egressDefault: "block" }, POLICY]) {
+    const s = nativeSettings(p, "claude-code", { platform: "linux" }).files[0].content.sandbox;
+    assert.equal(s.enabled, true);
+    assert.equal(s.autoAllowBashIfSandboxed, false, JSON.stringify(p));
+  }
+  // MoorAI does not turn the sandbox on without a block default, so it does not write the key either.
+  const off = nativeSettings({ egressRules: [{ host: "evil.example.com", action: "block" }] }, "claude-code", { platform: "linux" }).files[0].content.sandbox;
+  assert.equal(off.autoAllowBashIfSandboxed, undefined);
+});
+
 test("claude-code: an allow followed by an overlapping block is narrowed natively (deny wins there)", () => {
   const r = nativeSettings({ egressRules: [{ host: "*.example.com", action: "allow" }, { host: "evil.example.com", action: "block" }], egressDefault: "block" }, "claude-code", { platform: "linux" });
   assert.ok(unexp(r, (u) => u.source === "egressRules" && u.index === 0 && u.effect === "narrowed").length);
@@ -187,6 +201,26 @@ test("codex: no identity known for any allowed server leaves the list out and sa
   // nothing approved under the gate: an empty mcp_servers table disables every server, which is exact.
   const g = nativeSettings({ mcpGate: true }, "codex", { platform: "linux" });
   assert.match(g.files[0].content, /^\[mcp_servers\]$/m);
+});
+
+test("copilot: refused web tools are an empty limitTo (every domain request denied), with or without egress rules", () => {
+  // docs.github.com cli-config-dir-reference: "An empty `limitTo` list denies every domain request."
+  for (const p of [{ tagActions: { network: "block" } }, { tagActions: { network: "block" }, egressRules: [{ host: "*.example.com", action: "allow" }], egressDefault: "block" }, { tagActions: { network: "block" }, egressRules: [{ host: "evil.example.com", action: "block" }] }]) {
+    const c = nativeSettings(p, "copilot", { platform: "linux" }).files[0].content;
+    assert.deepEqual(c.permissions.limitTo, [], JSON.stringify(p));
+  }
+  // an ask on web tools is not a refusal: no limitTo without a block default.
+  assert.equal(nativeSettings({ tagActions: { network: "ask" } }, "copilot", { platform: "linux" }).files[0]?.content.permissions?.limitTo, undefined);
+});
+
+test("copilot: an empty allowedMcpServers is the documented deny-all, not an approximation", () => {
+  // docs.github.com cli-config-dir-reference: "Leaving this key unset allows all non-default servers; an
+  // empty array denies all of them."
+  const r = nativeSettings({ mcpGate: true }, "copilot", { platform: "linux" });
+  assert.deepEqual(r.files[0].content.allowedMcpServers, []);
+  assert.equal(unexp(r, (u) => u.source === "mcpAllow" && u.effect === "approximated").length, 0);
+  // the built-in first-party servers stay exempt from the list, which is still reported.
+  assert.ok(unexp(r, (u) => u.source === "mcpAllow" && u.effect === "coarsened" && u.reason === "copilot-first-party-servers-exempt").length);
 });
 
 test("copilot: managed permissions, MCP allow-list and limitTo", () => {
@@ -264,10 +298,13 @@ function intentMcp(p, s) {
 }
 // Claude Code, from code.claude.com/docs/en/permissions + managed-mcp: deny > ask > allow; a bare tool name
 // matches every use of it; allowedMcpServers unset = all, [] = none, serverName exact.
+// code.claude.com/docs/en/sandboxing: with the sandbox on, autoAllowBashIfSandboxed defaults to true and a
+// bare Bash ask rule is skipped for sandboxed commands (the shell tools: Bash, PowerShell, Monitor).
+const SANDBOXED = new Set(["Bash", "PowerShell", "Monitor"]);
 function claudeTool(c, t) {
   const p = c.permissions || {};
   if ((p.deny || []).includes(t)) return "deny";
-  if ((p.ask || []).includes(t)) return "ask";
+  if ((p.ask || []).includes(t)) return SANDBOXED.has(t) && c.sandbox?.enabled === true && c.sandbox.autoAllowBashIfSandboxed !== false ? "allow" : "ask";
   return "allow";
 }
 function claudeMcp(c, s) {
@@ -281,8 +318,18 @@ const PROPERTY_POLICIES = [
   { tagActions: { write: "block", read: "ask" } },
   { entitlementMode: "block", entitlements: { tools: ["Read", "Bash"], mcp: ["github"] }, mcpAllow: ["github", "jira"] },
   { entitlementMode: "alert", entitlements: { tools: ["Read"] }, mcpGate: true, mcpAllow: ["x_y", "ok-1"] },
-  { tagActions: { network: "block", exec: "ask" }, mcpAllow: ["has.dot", "fine"] }
+  { tagActions: { network: "block", exec: "ask" }, mcpAllow: ["has.dot", "fine"] },
+  { tagActions: { exec: "ask" }, egressDefault: "block" }
 ];
+
+test("never widen: a Claude Code shell ask is never dropped by the file MoorAI compiles", () => {
+  // The tag-level coarsened line covers MCP tools and parsed shell commands, not a built-in shell tool the
+  // native file names: that one must decide exactly as MoorAI does.
+  for (const p of PROPERTY_POLICIES) {
+    const c = nativeSettings(p, "claude-code", { platform: "linux" }).files[0]?.content || {};
+    for (const t of SANDBOXED) assert.equal(claudeTool(c, t), intentTool(p, t), `${t}: ${JSON.stringify(p)}`);
+  }
+});
 
 test("never widen: Claude Code tools and MCP servers are never looser than MoorAI unless reported", () => {
   for (const p of PROPERTY_POLICIES) {

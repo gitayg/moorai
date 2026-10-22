@@ -20,6 +20,9 @@
 //     port on that host"; "if `allowManagedDomainsOnly` is set in managed settings, non-allowed domains are
 //     blocked automatically instead of prompting"; failIfUnavailable: "Refuse to start when the sandbox
 //     can't, instead of running unsandboxed"; allowUnsandboxedCommands false disables the unsandboxed retry.
+//     "`autoAllowBashIfSandboxed` still defaults to `true`, so sandboxed commands keep running without
+//     prompts. Set it to `false` to prompt for sandboxed commands."; "A bare `Bash` ask rule, or the
+//     equivalent `Bash(*)` form, is skipped for commands that run sandboxed".
 //     "`allowedDomains` doesn't limit WebFetch" — WebFetch(domain:...) permission rules do.
 //     The docs do not say whether "*.example.com" also matches example.com itself (MoorAI's does not).
 
@@ -66,7 +69,9 @@ export function claudeCode(intent, { platform }) {
     }
     const sandbox = {};
     if (eg.dflt === "block") {
-      Object.assign(sandbox, { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false });
+      // autoAllowBashIfSandboxed defaults to true, which runs sandboxed commands with no prompt and skips a
+      // bare Bash ask rule for them: false keeps every Bash/PowerShell/Monitor prompt the user would get anyway.
+      Object.assign(sandbox, { enabled: true, autoAllowBashIfSandboxed: false, failIfUnavailable: true, allowUnsandboxedCommands: false });
       network.allowManagedDomainsOnly = true;
       // allowManagedDomainsOnly governs sandboxed commands; WebFetch to an unlisted host is MoorAI's alone,
       // and the sandbox also confines file writes, which MoorAI's egress default does not.

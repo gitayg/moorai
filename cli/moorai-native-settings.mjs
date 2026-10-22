@@ -8,7 +8,8 @@
 //   moorai-native-settings check   --policy <file> [--host ...] [--platform ...] [--root <dir>] [--home <dir>]
 //
 // Exit codes: 0 ok, 1 bad arguments (unknown host or platform), 2 the policy cannot be read or its
-// signature does not verify, 3 (check) a host's file has drifted.
+// signature does not verify, 3 (check) a host's file has drifted or cannot be read, 4 (check) no file where
+// MoorAI's should be (and none drifted).
 
 import { readFileSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -27,6 +28,7 @@ const HELP = `moorai-native-settings — one MoorAI policy as each agent host's 
   check --policy <file> [--host ...] [--platform ...] [--root <dir>] [--home <dir>]
       Compares each host's file on this machine (under --root when given) with what MoorAI compiles.
       Prints { v, hosts:{ <host>: { state, files, findings, weakening, unexpressed } }, detail }.
+      Exits 3 when a file has drifted or cannot be read, 4 when a file is missing, 0 when all are in sync.
 
 <file> is the policy JSON (the console's signed policy works; give --pubkey to verify its signature).
 --mcp-identities is { "<server name>": { "command": "..." } | { "url": "..." } } for Codex, which matches MCP
@@ -94,7 +96,9 @@ function main(argv) {
   const detail = {};
   for (const host of hosts) detail[host] = nativeDrift(nativeSettings(lp.policy, host, { platform, mcpIdentities }), opts).files;
   process.stdout.write(JSON.stringify({ ...posture, detail }, null, 2) + "\n");
-  return Object.values(posture.hosts).some((h) => h.state === "drift") ? 3 : 0;
+  const states = Object.values(posture.hosts).map((h) => h.state);
+  if (states.some((x) => x === "drift" || x === "unreadable")) return 3;
+  return states.includes("absent") ? 4 : 0;
 }
 
 const isMain = (() => { try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } })();
