@@ -109,7 +109,12 @@ export const SESSION_DIRS = {
   gemini: (home) => [[join(home, ".gemini", "tmp"), 3]],
   cursor: (home) => [[join(home, ".cursor", "chats"), 3]],
   copilot: (home, env) => [[join(env.COPILOT_HOME || join(home, ".copilot"), "session-state"), 2]],
-  droid: (home) => [[join(home, ".factory", "projects"), 3]]
+  droid: (home) => [[join(home, ".factory", "projects"), 3]],
+  // Documented stores, not measured (data/agent-state-paths.js has the sources). Kiro's session database
+  // file name in ~/.kiro is not documented, so Kiro shows only once its hook is registered.
+  antigravity: (home) => ["antigravity", "antigravity-cli", "antigravity-ide"].map((d) => [join(home, ".gemini", d, "brain"), 4]),
+  windsurf: (home) => [[join(home, ".windsurf", "transcripts"), 1]],
+  cline: (home) => [[join(home, ".cline", "data", "sessions"), 2]]
 };
 function newest(dir, depth, k = 8) {
   let entries;

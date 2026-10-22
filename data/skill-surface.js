@@ -46,6 +46,19 @@ const SURFACE = [
   // Kiro hooks run shell commands at session events (kiro.dev/docs/hooks): "Each hook file is a standalone
   //   JSON file at `.kiro/hooks/<id>.json`."
   [/(^|[/\\])\.kiro[/\\]hooks[/\\].+$/i, "kiro-hook", false],
+  // Antigravity hooks (antigravity.google/docs/hooks): workspace `.agents/hooks.json`, global
+  //   `~/.gemini/config/hooks.json`, and for the CLI a `hooks` entry in ~/.gemini/antigravity-cli/settings.json.
+  [/(^|[/\\])(\.gemini[/\\]config|\.agents)[/\\]hooks\.json$/i, "antigravity-hooks", false],
+  [/(^|[/\\])\.gemini[/\\]antigravity-cli[/\\]settings\.json$/i, "antigravity-hooks", false],
+  // Windsurf / Devin Desktop Cascade hooks (docs.devin.ai/desktop/cascade/hooks): user ~/.codeium/windsurf/
+  //   hooks.json (JetBrains ~/.codeium/hooks.json), workspace .devin/hooks.json (legacy .windsurf/hooks.json),
+  //   system /Library/Application Support/{Devin,Windsurf}, /etc/{devin,windsurf}, C:\ProgramData\{Devin,Windsurf}.
+  [/(^|[/\\])(\.codeium[/\\]windsurf|\.codeium|\.devin|\.windsurf)[/\\]hooks\.json$/i, "windsurf-hooks", false],
+  [/(^|[/\\])(etc[/\\](devin|windsurf)|Application Support[/\\](Devin|Windsurf)|ProgramData[/\\](Devin|Windsurf))[/\\]hooks\.json$/i, "windsurf-hooks", false],
+  // Cline hook scripts, one executable per hook type (cline.bot/blog/cline-v3-36-hooks; dirs from
+  //   docs.cline.bot/getting-started/config): ~/.cline/hooks/, ~/Documents/Cline/Hooks/, .cline/hooks/ and the
+  //   legacy .clinerules/hooks/. Before the generic .clinerules entry: first match wins.
+  [/(^|[/\\])(\.cline[/\\]hooks|Cline[/\\]Hooks|\.clinerules[/\\]hooks)[/\\][^/\\]+$/i, "cline-hook", false],
 
   // ---- MCP server configuration (which tools and data sources the agent can reach at all) ----
   [/(^|[/\\])managed-mcp\.json$/i, "managed-mcp", false],
@@ -136,6 +149,9 @@ const SURFACE = [
   [/(^|[/\\])\.?amazonq[/\\]mcp\.json$/i, "amazon-q-mcp", false],
   // Kiro: workspace .kiro/settings/mcp.json or user ~/.kiro/settings/mcp.json.
   [/(^|[/\\])\.kiro[/\\]settings[/\\]mcp\.json$/i, "kiro-mcp", false],
+  // Antigravity (antigravity.google/docs/cli/gcli-migration): global ~/.gemini/config/mcp_config.json,
+  //   workspace .agents/mcp_config.json.
+  [/(^|[/\\])(\.gemini[/\\]config|\.agents)[/\\]mcp_config\.json$/i, "antigravity-mcp", false],
 
   [/(^|[/\\])\.windsurfrules$/i, ".windsurfrules", false],
   // Windsurf rules (docs.devin.ai/desktop/cascade/memories): .devin/rules/*.md, .windsurf/rules/*.md, the

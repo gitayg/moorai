@@ -9,6 +9,9 @@ import { fileURLToPath } from "node:url";
 import { join, dirname, isAbsolute } from "node:path";
 import os from "node:os";
 import { configTarget as droidTarget, eventMap as droidEvents } from "./agent-hooks/droid.mjs";
+import { hooksFile as antigravityFile, eventView as antigravityView } from "./agent-hooks/antigravity.mjs";
+import { hookFile as kiroFile, eventView as kiroView } from "./agent-hooks/kiro.mjs";
+import { hooksDir as clineDir, readHooks as clineHooks } from "./agent-hooks/cline.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, "moorai-hook.mjs");
@@ -46,8 +49,28 @@ export function hostTable(home = os.homedir(), env = process.env) {
     { id: "cursor", label: "Cursor", dir: join(home, ".cursor"), file: join(home, ".cursor", "hooks.json"), rel: [".cursor", "hooks.json"], ours: agentOurs("cursor"), install: [AGENT_HOOK, "cursor", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} cursor install` },
     { id: "gemini", label: "Gemini CLI", dir: join(home, ".gemini"), file: join(home, ".gemini", "settings.json"), rel: [".gemini", "settings.json"], comments: true, ours: agentOurs("gemini"), install: [AGENT_HOOK, "gemini", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} gemini install` },
     { id: "copilot", label: "GitHub Copilot CLI", dir: copilotHome, file: join(copilotHome, "hooks", "moorai.json"), rel: [".copilot", "hooks", "moorai.json"], ours: agentOurs("copilot"), install: [AGENT_HOOK, "copilot", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} copilot install` },
-    droidHost(home)
+    droidHost(home),
+    antigravityHost(home),
+    { id: "windsurf", label: "Windsurf (Cascade)", dir: join(home, ".codeium", "windsurf"), file: join(home, ".codeium", "windsurf", "hooks.json"), rel: [".codeium", "windsurf", "hooks.json"], ours: agentOurs("windsurf"), install: [AGENT_HOOK, "windsurf", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} windsurf install` },
+    kiroHost(home),
+    { id: "cline", label: "Cline", dir: existsSync(join(home, "Documents", "Cline")) ? join(home, "Documents", "Cline") : join(home, ".cline"), file: clineDir(home), rel: ["Documents", "Cline", "Hooks"], read: () => clineHooks(home), readRel: (h) => clineHooks(h), problems: (raw) => (raw.core && raw.core.length ? [`MoorAI hook script(s) in ~/.cline/hooks (${raw.core.join(", ")}) also run under ClineCore, a second time; run the install again to remove them`] : []), ours: agentOurs("cline"), install: [AGENT_HOOK, "cline", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} cline install (hooks are on by default; check that Enable Hooks is not switched off in Cline's settings)` }
   ];
+}
+// Kiro: MoorAI's own V3 hook file ~/.kiro/hooks/moorai.json, a `hooks` ARRAY of { trigger, matcher,
+// action.command } (cli/agent-hooks/kiro.mjs); `view` groups it by trigger.
+function kiroHost(home) {
+  const view = (d) => ({ hooks: kiroView(d).hooks });
+  const problems = (raw) => kiroView(raw).disabled.map((n) => `the "${n}" hook has enabled is false in ${pathOf(kiroFile(home))}`);
+  return { id: "kiro", label: "Kiro", dir: join(home, ".kiro"), file: kiroFile(home), rel: [".kiro", "hooks", "moorai.json"], view, viewRel: view, problems, ours: agentOurs("kiro"), install: [AGENT_HOOK, "kiro", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} kiro install` };
+}
+// Antigravity: ~/.gemini/config/hooks.json is keyed by hook NAME, each holding its events
+// (cli/agent-hooks/antigravity.mjs); `view` merges every named hook's groups per event. ~/.gemini/config
+// also holds Antigravity's global mcp_config.json, so it marks the host as present (~/.gemini alone is
+// Gemini CLI's home too).
+function antigravityHost(home) {
+  const view = (d) => ({ hooks: antigravityView(d).hooks });
+  const problems = (raw) => antigravityView(raw).disabled.map((n) => `the "${n}" hook has enabled is false in ${pathOf(antigravityFile(home))}`);
+  return { id: "antigravity", label: "Google Antigravity", dir: join(home, ".gemini", "config"), file: antigravityFile(home), rel: [".gemini", "config", "hooks.json"], view, viewRel: view, problems, ours: agentOurs("antigravity"), install: [AGENT_HOOK, "antigravity", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} antigravity install` };
 }
 // Droid: the installer picks ~/.factory/hooks.json, the legacy hooks/hooks.json or settings.json
 // (cli/agent-hooks/droid.mjs configTarget); hooks.json is keyed by event name, so `view` wraps it in the
@@ -125,7 +148,7 @@ export function expectedSurface(host) {
     for (const k of ["CODEX_HOME", "COPILOT_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "APPDATA", "LOCALAPPDATA"]) delete env[k];
     const r = spawnSync(process.execPath, host.install, { env, encoding: "utf8", timeout: 15000, input: "" });
     if (r.status !== 0) return { error: `installer exited ${r.status}` };
-    const { data } = readJson(join(home, ...host.rel), { comments: host.comments });
+    const { data } = host.readRel ? host.readRel(home) : readJson(join(home, ...host.rel), { comments: host.comments });
     if (!data) return { error: "installer wrote nothing readable" };
     return { surface: ourSurface(host.viewRel ? host.viewRel(data) : data, host.ours) };
   } finally { rmSync(home, { recursive: true, force: true }); }
@@ -180,7 +203,7 @@ function checkPlugin(base, host, plug, exp) {
 export function checkHost(host, { managedHooks = null, managedPlugins = [], env = process.env, home = os.homedir() } = {}) {
   const base = { id: `host:${host.id}`, group: "hosts", title: host.label };
   const hostPresent = existsSync(host.dir);
-  const { exists, data: raw, error } = readJson(host.file, { comments: host.comments });
+  const { exists, data: raw, error } = host.read ? host.read() : readJson(host.file, { comments: host.comments });
   if (exists && !raw) return { ...base, status: "fail", summary: `${pathOf(host.file)} is ${error}; the host may ignore every hook in it`, fix: `repair the JSON in ${pathOf(host.file)}` };
   const data = raw && host.view ? host.view(raw) : raw;
   let have = data ? ourSurface(data, host.ours) : {};
@@ -223,6 +246,7 @@ export function checkHost(host, { managedHooks = null, managedPlugins = [], env 
   const other = scripts.filter((s) => existsSync(s) && s !== HOOK && s !== AGENT_HOOK);
   if (host.id === "claude-code" && data && data.disableAllHooks === true) problems.push(`disableAllHooks is true in ${pathOf(host.file)}`);
   if (host.id === "gemini" && data && data.hooksConfig && data.hooksConfig.enabled === false) problems.push("hooksConfig.enabled is false");
+  if (host.problems && raw) problems.push(...host.problems(raw));
   if (host.id === "droid") for (const f of ["settings.json", "settings.local.json"]) if ((readJson(join(host.dir, f)).data || {}).hooksDisabled === true) problems.push(`hooksDisabled is true in ${pathOf(join(host.dir, f))}`);
   if (problems.length) return { ...base, status: "fail", summary: `${problems.join("; ")}${both ? `; ${both}` : ""}`, fix: host.fix, details, installed: true };
   if (both) return { ...base, status: "warn", summary: both, fix: bothFix, details, installed: true };

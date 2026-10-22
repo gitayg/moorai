@@ -99,6 +99,36 @@ function mcpServers(decls = []) {
   const claude = readJson(join(HOME, ".claude.json"));
   if (claude) { add(claude.mcpServers, "claude"); if (claude.projects) for (const p of Object.values(claude.projects)) add(p.mcpServers, "claude"); }
   add(readJson(join(HOME, ".cursor", "mcp.json"))?.mcpServers, "cursor");
+  for (const [scope, rel] of HOST_MCP) add(readJson(join(HOME, ...rel))?.mcpServers, scope);
+  return out;
+}
+
+// Agent hosts MoorAI has a hook adapter for but no provider/model setting to read, found by the homes their
+// vendors document (names only; never a file's contents), and their user MCP config files:
+//   antigravity  ~/.gemini/config/ (global hooks.json + mcp_config.json) and ~/.gemini/antigravity{,-cli,-ide}/
+//                (antigravity.google/docs/hooks, /docs/cli/gcli-migration)
+//   windsurf     ~/.codeium/windsurf/ (docs.devin.ai/desktop/cascade/hooks; mcp_config.json there)
+//   kiro         ~/.kiro/ (kiro.dev/docs; ~/.kiro/settings/mcp.json)
+//   cline        ~/.cline/ and ~/Documents/Cline/ (docs.cline.bot/getting-started/config;
+//                ~/.cline/data/settings/cline_mcp_settings.json, as data/skill-surface.js notes)
+const HOST_HOMES = [
+  ["antigravity", [[".gemini", "config"], [".gemini", "antigravity"], [".gemini", "antigravity-cli"], [".gemini", "antigravity-ide"]]],
+  ["windsurf", [[".codeium", "windsurf"]]],
+  ["kiro", [[".kiro"]]],
+  ["cline", [[".cline"], ["Documents", "Cline"]]]
+];
+const HOST_MCP = [
+  ["antigravity", [".gemini", "config", "mcp_config.json"]],
+  ["windsurf", [".codeium", "windsurf", "mcp_config.json"]],
+  ["kiro", [".kiro", "settings", "mcp.json"]],
+  ["cline", [".cline", "data", "settings", "cline_mcp_settings.json"]]
+];
+function agentHosts() {
+  const out = [];
+  for (const [agent, homes] of HOST_HOMES) {
+    const hit = homes.find((rel) => listDir(join(HOME, ...rel)).length > 0);
+    if (hit) out.push({ agent, source: `~/${hit.join("/")}` });
+  }
   return out;
 }
 
@@ -184,7 +214,8 @@ function modelSafety() {
 async function buildAibom() {
   const decls = [];
   const prov = providers(), local = localModels(), mcp = mcpServers(decls);
-  const ext = editorExtensions(), skills = agentSkills();
+  const ext = editorExtensions(), skills = agentSkills(), hosts = agentHosts();
+  const agents = [...new Set([...prov.map((p) => p.agent), ...hosts.map((h) => h.agent)])];
   const use = usage(prov);
   const keys = scanKeysAtRest().findings;
   const ai = localAi();
@@ -194,18 +225,18 @@ async function buildAibom() {
     ...local.map((m) => ({ name: m.name, provider: m.runtime, local: true }))];
   const components = [
     ...models.map((m) => ({ type: "model", name: m.name, provider: m.provider, local: m.local })),
-    ...[...new Set(prov.map((p) => p.agent))].map((a) => ({ type: "agent", name: a })),
+    ...agents.map((a) => ({ type: "agent", name: a })),
     ...mcp.map((s) => ({ type: "mcp-server", name: s.name, riskLevel: s.level, capabilities: s.caps, transport: s.transport, reputation: s.reputation })),
     ...ext.map((x) => ({ type: "editor-extension", name: x.id, editor: x.editor, version: x.version })),
     ...skills.map((s) => ({ type: "skill", name: s.name, kind: s.kind }))
   ];
   return {
     bomFormat: "MoorAI-AIBOM", specVersion: "1.0", scope: "device", device: hostname(), generatedAt: new Date().toISOString(),
-    summary: { providers: new Set(prov.map((p) => p.provider)).size, models: models.length, localModels: local.length, agents: new Set(prov.map((p) => p.agent)).size, mcpServers: mcp.length, mcpHighRisk: mcp.filter((s) => s.level === "high").length, mcpLowReputation: mcp.filter((s) => s.reputation && (s.reputation.band === "poor" || s.reputation.band === "bad")).length, editorAiExtensions: ext.length, skills: skills.length, calls: use ? use.events : 0, roughSpendUsd: use ? use.roughSpendUsd : null,
+    summary: { providers: new Set(prov.map((p) => p.provider)).size, models: models.length, localModels: local.length, agents: agents.length, mcpServers: mcp.length, mcpHighRisk: mcp.filter((s) => s.level === "high").length, mcpLowReputation: mcp.filter((s) => s.reputation && (s.reputation.band === "poor" || s.reputation.band === "bad")).length, editorAiExtensions: ext.length, skills: skills.length, calls: use ? use.events : 0, roughSpendUsd: use ? use.roughSpendUsd : null,
       apiKeysAtRest: keys.length, runningLocalRuntimes: runtimes.length, localMcpRunning: mcpLive.filter((m) => m.running === true).length,
       networkLocalRuntimes: runtimes.filter((r) => r.listening === "network").length, installedLocalRuntimes: ai.installed.length,
       localModelsSafetyRemovedByName: safety ? safety.count : 0 },
-    providers: prov, localModels: local, mcpServers: mcp, editorExtensions: ext, skills, usage: use,
+    providers: prov, agentHosts: hosts, localModels: local, mcpServers: mcp, editorExtensions: ext, skills, usage: use,
     apiKeysAtRest: keys, localRuntimes: runtimes, localRuntimesInstalled: ai.installed, ...(ai.windowsAi ? { windowsAi: ai.windowsAi } : {}),
     localMcpListeners: mcpLive, runtimeProbe: ai.status, ...(safety ? { localModelSafety: safety } : {}), components
   };
@@ -275,6 +306,10 @@ never the contents of any credential file):
   ~/.aider.conf.yml                                model for Aider
   ~/.claude.json                                   configured MCP servers (global + per-project)
   ~/.cursor/mcp.json                               configured MCP servers for Cursor
+  ~/.gemini/config/mcp_config.json, ~/.codeium/windsurf/mcp_config.json, ~/.kiro/settings/mcp.json,
+  ~/.cline/data/settings/cline_mcp_settings.json   configured MCP servers for Antigravity, Windsurf, Kiro, Cline
+  ~/.gemini/config, ~/.gemini/antigravity*, ~/.codeium/windsurf, ~/.kiro, ~/.cline, ~/Documents/Cline
+                                                   agent hosts present (directory listing only)
   ~/.ollama/models/manifests/.../library/          local Ollama model names (directory listing)
   ~/.lmstudio/models, ~/.cache/lm-studio/models    local LM Studio model names (directory listing)
   ~/.vscode/extensions, ~/.cursor/extensions, …    editor AI extensions + versions (the "harness"; dir listing)

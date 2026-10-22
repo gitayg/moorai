@@ -275,20 +275,36 @@ are not followed; reads inside an encoded command over 8,000 characters are not 
 is still scanned, up to 64 KB); a POSIX `~` in a `Bash` command is not expanded; and no live PowerShell run
 has been made, so Windows PowerShell 5.1's tie-breaking and its acceptance of `/enc` are unverified.
 
-**Other agents.** `node cli/moorai-agent-hook.mjs <codex|copilot|gemini|cursor|droid> install` registers a
+**Other agents.** `node cli/moorai-agent-hook.mjs <codex|copilot|gemini|cursor|droid|antigravity|windsurf|kiro|cline> install` registers a
 pre-tool hook and a prompt hook in that agent's own config (`~/.codex/hooks.json`, `~/.copilot/hooks/moorai.json`,
-`~/.gemini/settings.json`, `~/.cursor/hooks.json`, `~/.factory/hooks.json`); `uninstall` removes only MoorAI's entries.
+`~/.gemini/settings.json`, `~/.cursor/hooks.json`, `~/.factory/hooks.json`, `~/.gemini/config/hooks.json`,
+`~/.codeium/windsurf/hooks.json`, `~/.kiro/hooks/moorai.json`, `~/Documents/Cline/Hooks/`); `uninstall` removes only MoorAI's entries.
+Antigravity gets a pre-tool hook only: none of its hook inputs carries the user's prompt.
 For Droid, the installer writes `~/.factory/hooks.json` when it exists, else the legacy `~/.factory/hooks/hooks.json`
 when that exists, else `~/.factory/settings.json` when it already declares `hooks` (Factory's docs say Droid reads
 settings.json hooks when hooks.json is absent, so a new hooks.json could hide them), else a new `~/.factory/hooks.json`;
 uninstall deletes a hooks.json it leaves empty. Droid reads hooks at startup, so the hook takes effect in the next
-session, after the user reviews it in `/hooks`. Each
+session, after the user reviews it in `/hooks`.
+For Antigravity, the installer adds a hook named `moorai` to the global `~/.gemini/config/hooks.json`, which the
+Antigravity App, CLI (`agy`) and IDE all read (antigravity.google/docs/hooks), next to the user's own named hooks.
+For Windsurf, it appends to the five pre-hook events in `~/.codeium/windsurf/hooks.json` with a `powershell` form
+for Windows. For Kiro, it writes its own V3 hook file `~/.kiro/hooks/moorai.json` (a `PreToolUse` hook on `*` and a
+`UserPromptSubmit` hook), which Kiro CLI V3 loads globally; Kiro's docs describe workspace `.kiro/hooks/*.json` for
+the IDE and do not say the IDE reads `~/.kiro/hooks/`, so in the IDE the hook may run only from a copy in a
+workspace's `.kiro/hooks/`; CLI 2.x hooks embedded in agent configs are not edited. For Cline, it writes executable
+`PreToolUse` and `UserPromptSubmit` scripts into `~/Documents/Cline/Hooks/` on macOS and Linux, the global folder
+both Cline runtimes read (the VS Code extension reads only that one, plus `.clinerules/hooks/` and `--hooks-dir`;
+ClineCore, the SDK the `cline` CLI is built on, also reads `~/.cline/hooks/`), removes MoorAI's own scripts from
+`~/.cline/hooks/` so ClineCore does not run them twice, and refuses to replace a script of the user's. On Linux the
+extension uses the XDG documents folder when `xdg-user-dir` reports one, which can differ from `~/Documents`.
+Cline's hooks are on by default. Each
 adapter in [`cli/agent-hooks/`](cli/agent-hooks) translates the agent's hook payload into the Claude
 Code shape, runs the same hook (same engine, policy and telemetry), and translates the verdict back.
 Each was built from that vendor's documentation and published source, and is tested against fixture
 payloads in the documented shape; none has yet been run end to end against the live agent. The prompt
 hook (Codex `UserPromptSubmit`, Cursor `beforeSubmitPrompt`, Gemini `BeforeAgent`, Copilot
-`userPromptSubmitted`, Droid `UserPromptSubmit`) forwards the prompt for intent alignment and never answers with anything the
+`userPromptSubmitted`, Droid `UserPromptSubmit`, Windsurf `pre_user_prompt`, Kiro `UserPromptSubmit`, Cline
+`UserPromptSubmit`) forwards the prompt for intent alignment and never answers with anything the
 model sees; those payloads carry no `source`, so the prompt scan below runs on them only under
 `promptScan: "all"`, and reports without blocking. Adapter installs made before it existed get it only when `install` is re-run; the other
 agents' configs do not converge on their own. Copilot's `powershell` tool maps to `PowerShell`. Per agent:
@@ -300,10 +316,14 @@ agents' configs do not converge on their own. Copilot's `powershell` tool maps t
 | Gemini CLI | yes | passed through (Gemini's confirmation prompt) | `glob`/`grep_search`/`list_directory` unmapped; only web results are scanned after the tool runs |
 | Cursor (IDE and `cursor-agent`) | yes, for shell, MCP, file reads, writes, fetch and subagents | shell and MCP only; `cursor-agent` lets an MCP "ask" through | several `preToolUse` tools unmapped; fails open on a hook crash |
 | Factory Droid | yes, for `Execute`, `Read`, `Create`, `Edit`, `ApplyPatch`, `FetchUrl`, `Task` and MCP tools; a deny exits 2 and also answers `permissionDecision: "deny"` | passed through (Droid's own confirmation prompt) | built from Factory's docs only, which document `tool_input` for `Execute` and `Create` alone, so the other tools' fields are read tolerantly; `LS`/`Glob`/`Grep` unmapped; only web results are scanned after the tool runs; ignored when `hooksDisabled` is set or an org sets `allowManagedHooksOnly`; what Droid does on a hook timeout is not documented |
+| Google Antigravity (App, `agy` CLI, IDE) | yes, for `run_command`, `view_file`, `write_to_file`, `replace_file_content`, `multi_replace_file_content`, `read_url_content`, `invoke_subagent` and MCP tools named `mcp_<server>_<tool>`; a deny answers `decision: "deny"` | `force_ask` (Antigravity's prompt, ignoring an earlier "Always Allow") | built from Google's docs only; no `agy` run yet; MCP tool naming is not documented; the PostToolUse input carries no tool result, so nothing is scanned after a call; no prompt capture; exit codes and what happens when a hook fails or times out are not documented |
+| Windsurf (Cascade) | yes, for commands, file reads, file writes and MCP tools (`pre_run_command`, `pre_read_code`, `pre_write_code`, `pre_mcp_tool_use`); a deny exits 2 with the reason on stderr | not supported by Windsurf; becomes a block whose reason asks the agent to get the user's confirmation | built from the Cascade Hooks reference only; no Windsurf run yet; no web fetch or search hook, so web results are not scanned; post-hooks cannot block |
+| Kiro (IDE and `kiro-cli`) | yes, for shell, file read and write, web fetch, `use_aws` (judged as the equivalent `aws` command line), subagents and MCP tools (`@server/tool` or `mcp_<server>_<tool>`); a deny exits 2 with the reason on stderr | not supported by Kiro; becomes a block whose reason asks the agent to get the user's confirmation | built from Kiro's docs and its open-source predecessor's hook reference; no Kiro run yet; V3 does not document its stdin field names, so they are read tolerantly; only `~/.kiro/hooks/` is written |
+| Cline (VS Code extension and ClineCore/`cline` CLI) | yes, for `run_commands`, `read_files`, `editor`, `apply_patch`, `fetch_web_content`, `use_mcp_tool` and the older `execute_command`, `read_file`, `write_to_file`, `replace_in_file`, `web_fetch`; `search_codebase` is judged as Claude Code's `Grep` (capability `read`) and `skills` as Claude Code's `Skill`, which MoorAI's own engine allows unread unless a capability-tag policy applies; any other tool name except `ask_question` and `submit_and_exit` is cancelled with a reason that asks the agent to get the user's confirmation, never allowed unread; both payload forms are read (the extension's `PreToolUse` with `preToolUse.parameters`, whose non-string values Cline JSON-stringifies, and ClineCore's `tool_call` with the raw `tool_call.input`); only list-valued parameters are decoded from JSON, and their raw text, a scalar value as typed (`command`, `path`, `url`) and every string field of a decoded object are judged too; a structured command's `args` are each judged and the rebuilt line is shell-quoted; a deny answers `cancel: true` | not supported by Cline; becomes a cancel whose reason asks the agent to get the user's confirmation | partial: Cline's docs no longer describe the file-hook contract, so the input keys, hook folders, parameter encoding and tool shapes are taken from Cline's source (github.com/cline/cline, read 2026-10-22); macOS and Linux only; ClineCore runs prompt hooks detached, so its prompts are captured but never held; no Cline run yet |
 
-All five fail open if the hook crashes, like the Claude Code hook; Codex, Copilot CLI, Gemini CLI and Cursor also fail open on a timeout.
+Codex, Copilot CLI, Gemini CLI, Cursor and Droid fail open if the hook crashes, like the Claude Code hook, and the first four also on a timeout. Windsurf runs the action on any exit code other than 0 and 2. Cline fails open in both runtimes, by its source rather than its docs: the extension treats a non-zero exit without a JSON answer as a hook error that does not block the tool, and ClineCore logs a failed, timed-out or unparseable hook and goes on. Kiro's docs disagree with each other: the hook actions page says a Pre Tool Use is blocked on any non-zero exit, so a crashed hook would fail closed there, while the IDE 1.0 hooks page says only exit 2 blocks and the CLI 2.x reference shows other exit codes as a warning; which one a given Kiro build follows has not been measured. What Antigravity does on a hook failure is not documented.
 
-A patch (Codex `apply_patch`, Droid `ApplyPatch`) is judged per path: every file it adds, updates, moves or deletes gets the checks a direct write of that file gets, and the most restrictive verdict decides the call. The checks are bounded so they cannot run past the host's hook timeout (which the host treats as non-blocking): identical checks run once, and a call needing more than 32 distinct checks, or whose checks run past 20 seconds or time out, is refused with a request to split it into smaller patches (an ask would let an agent pad a call to turn a deny into a prompt). A unified diff is read by its hunk counts, ending a hunk at the next `@@` or `diff --git` line, so a `---` or `+++` line inside a hunk is content, not a new file; every path any `---`, `+++` or `diff --git` line names is path-checked wherever it appears, and the whole text is scanned once more besides. Where Droid's `tool_input` carries two spellings of a field with different values (`file_path` and `path`, `old_str` and `old_string`), every value is judged. Droid's hook and settings files (`.factory/hooks.json`, `settings.json`, `settings.local.json`, the legacy `hooks/hooks.json`, the managed `settings.json`) are on the skill surface, so what an agent writes into them is scanned and drift is reported.
+A patch (Codex `apply_patch`, Droid `ApplyPatch`) is judged per path: every file it adds, updates, moves or deletes gets the checks a direct write of that file gets, and the most restrictive verdict decides the call. The checks are bounded so they cannot run past the host's hook timeout (which the host treats as non-blocking): identical checks run once, and a call needing more than 32 distinct checks, or whose checks run past 20 seconds or time out, is refused with a request to split it into smaller patches (an ask would let an agent pad a call to turn a deny into a prompt). A unified diff is read by its hunk counts, ending a hunk at the next `@@` or `diff --git` line, so a `---` or `+++` line inside a hunk is content, not a new file; every path any `---`, `+++` or `diff --git` line names is path-checked wherever it appears, and the whole text is scanned once more besides. Where Droid's `tool_input` carries two spellings of a field with different values (`file_path` and `path`, `old_str` and `old_string`), every value is judged. Droid's hook and settings files (`.factory/hooks.json`, `settings.json`, `settings.local.json`, the legacy `hooks/hooks.json`, the managed `settings.json`) are on the skill surface, so what an agent writes into them is scanned and drift is reported. So are Antigravity's `hooks.json` (global and `.agents/`), `~/.gemini/antigravity-cli/settings.json` and `mcp_config.json`; Windsurf's user, workspace and system `hooks.json`; and Cline's hook scripts in `~/Documents/Cline/Hooks/`, `~/.cline/hooks/`, `.cline/hooks/` and `.clinerules/hooks/` (Kiro's `.kiro/hooks/` already was). Each host's own transcript store (Antigravity `brain/`, Windsurf `~/.windsurf/transcripts/`, Cline `~/.cline/data/sessions/`) is agent history, so a tool call that deletes or rewrites it is flagged.
 
 `WebFetch` is covered on **both** surfaces, and the split is the point. `PreToolUse` fires *before* the
 fetch, so `tool_input` is `{url, prompt}` and the page does not exist yet — that surface scans the
@@ -1066,8 +1086,8 @@ size-capped prefix. The codes are listed in [`docs/DETECTION_ENGINE.md`](docs/DE
 "MoorAI was not in the path". The hook sends a content-free heartbeat to the console at most once per agent
 host per UTC day (and on the day's first `bypassPermissions` session), retried after 10 minutes on failure,
 carrying [`cli/agent-posture.mjs`](cli/agent-posture.mjs)'s posture for Claude Code, Codex, Gemini, Cursor,
-Copilot and Droid (the console ignores the Droid entry until it knows the host; Droid's own hook sends no
-heartbeat yet): whether MoorAI's hook is registered and current (as `moorai-doctor` judges it), when the host
+Copilot and Droid, and Antigravity, Windsurf, Kiro and Cline (the console ignores the entries of hosts it
+does not know yet; their own hooks send no heartbeat yet): whether MoorAI's hook is registered and current (as `moorai-doctor` judges it), when the host
 was last used (rounded to the hour), the host's `version` and whether it is the `tested` one (*Keeping up
 with the agent hosts* below), and the settings that weaken protection — `hooksDisabled`,
 `mooraiHookDisabled`, `managedHooksOnly`, `bypassPermissionsDefault`, `sessionBypassPermissions`,
@@ -1913,7 +1933,7 @@ otherwise.
 ### What would MoorAI have caught in your past sessions? — transcript ingest
 
 ```bash
-node cli/moorai-ingest.mjs --discover                         # last 30 days of Claude Code + Codex sessions
+node cli/moorai-ingest.mjs --discover                         # last 30 days of Claude Code, Codex and Gemini CLI sessions
 node cli/moorai-ingest.mjs --discover --policy candidate.json # the same history under a candidate policy
 node cli/moorai-ingest.mjs ~/.claude/projects/<project> --agent claude-code --coverage
 node cli/moorai-ingest.mjs --discover --report                # send historical alerts to your console
@@ -1921,13 +1941,15 @@ node cli/moorai-ingest.mjs --discover --report                # send historical 
 
 Day one, before the hook has seen anything: `moorai-ingest` reads the transcripts your agents already
 keep on this machine (Claude Code `~/.claude/projects/<project>/<session>.jsonl` and its sub-agent files;
-Codex `~/.codex/sessions/**/rollout-*.jsonl`, `.jsonl.zst` and `archived_sessions/`) and replays every
+Codex `~/.codex/sessions/**/rollout-*.jsonl`, `.jsonl.zst` and `archived_sessions/`; Gemini CLI
+`~/.gemini/tmp/<project_hash>/chats/session-*.jsonl`, the legacy `session-*.json` and sub-agent sessions in
+`chats/<session>/`) and replays every
 recorded tool call, tool result and prompt through the live hook's own decision functions, under the
 policy in force or a candidate (`--policy`). The output is what **enforce mode** would have done.
 
 - **Content-free by default**: counts by threat, by agent and by decision, sessions affected, the
   most-flagged categories, and how many sessions ran without the MoorAI hook (`--coverage` lists them;
-  Claude Code only, because Codex does not record hook runs in its rollout). No prompt, command, path,
+  Claude Code only, because Codex and Gemini CLI do not record hook runs in their transcripts). No prompt, command, path,
   URL, matched text or session id is printed. `--show-local` prints the findings with their content, and
   only to an interactive terminal.
 - **Local**: nothing is sent unless you pass `--report`. Then each finding becomes one alert marked
@@ -1943,6 +1965,17 @@ policy in force or a candidate (`--policy`). The output is what **enforce mode**
   alignment, capability tags, model escalation and the ask-to-deny settlement of server mode and
   `bypassPermissions`. A Codex call is replayed as the Codex hook would have seen it
   (PreToolUse and prompts only), with no result scan.
+- **Gemini CLI** sessions are read in the format Gemini CLI's chat recorder writes (`chatRecordingTypes.ts`
+  and `chatRecordingService.ts` in its source): a metadata line, message lines, and `$set`, `$patch` and
+  `$rewindTo` update lines. A tool call recorded before it finished and updated later counts once. Each
+  call goes through the Gemini hook adapter as a `BeforeTool` call, and a `web_fetch` result is scanned as
+  the `AfterTool` hook would scan it. `google_web_search` results are not replayed (the hook registers that
+  tool only after the call, and the replay needs the call first), and the format was read from source and
+  tested on fixtures, not on a session file from an installed Gemini CLI.
+- **Other hosts are not read.** Antigravity (`brain/<conversationId>/.system_generated/logs/transcript.jsonl`)
+  and Windsurf (`~/.windsurf/transcripts/<trajectory_id>.jsonl`) document where their transcripts are but
+  not what a line holds; Kiro keeps sessions in an undocumented SQLite database in `~/.kiro/`; Cline's
+  `~/.cline/data/sessions/` format is not documented; Cursor, Copilot CLI and Droid do not document theirs.
 
 ### Review what was exposed — on-device, no server
 
@@ -2034,6 +2067,7 @@ npx moorai-scan --package github:owner/repo   # a whole source repository — an
 - **AIBOM: AI provider keys at rest.** `moorai-aibom` looks for Anthropic, OpenAI, Hugging Face, Perplexity and Google keys (shapes from gitleaks' published rules; a Google key counts only in an AI context, because the same shape is used by Maps and Firebase) in a fixed, bounded set of places. It checks shell startup files (`~/.zshrc`, `~/.zshenv`, `~/.bashrc`, `~/.bash_profile`, `~/.profile`, `~/.config/fish/config.fish`), the config dirs of known AI CLIs (`~/.config/aichat`, `~/.config/shell_gpt`, `~/.config/io.datasette.llm`, `~/.config/fabric`, `~/.config/mods`, `~/.gemini`, `~/Library/Application Support/io.datasette.llm`; depth 2 or less, 25 files or fewer per dir), and `.env` files at the top level of `~` and of each immediate child of `~/code`, `~/src`, `~/dev`, `~/projects`, `~/workspace`, `~/repos`, `~/git` and `~/Developer`. Templates are skipped, and so are files over 1 MB, binary files and unreadable files. It does not walk the disk. Each finding is `{provider, locationClass, location, keyHash}`: `location` is set only for a fixed well-known path (a project `.env` reports none), and `keyHash` is the agent's **keyed**, per-tenant `h2:` hash — the same fingerprint an alert carries — so the console can tell an org-issued key from a personal one. The key, any part of it, and the file contents are never output. An unenrolled device reports `h2:nokey`.
 - **AIBOM: running local model servers and local MCP servers.** `moorai-aibom` also reports which local model servers are **running**, not only installed. The probe runs `lsof +c 0 -iTCP -sTCP:LISTEN -nP` + `ps -A -o comm=` on macOS/Linux and `netstat -ano` + `tasklist /FO CSV /NH` on Windows, and keeps only process names and ports; it never reads process arguments or environment. It knows Ollama (process name, or a listener on its documented default port 11434), LM Studio (process name; LM Studio documents no fixed default port), llama.cpp `llama-server` and vLLM (process name; their documented defaults 8080/8000 are too generic to count alone). Each is reported as `{runtime, ports, bind: loopback|network, detectedBy}`. MCP servers declared with a localhost `http(s)` URL in the configs the AIBOM already reads are matched to a listener on that port and reported as `{name, scope, transport: http|sse, port, running}` (`running: null` when the probe could not run). The URL is never echoed, because its query string can carry a token. In `moorai-shadow` these appear as `local-runtime` items (sanction with `sanctioned.runtimes`; a server listening beyond loopback ranks high) and `api-key` items (sanction with `sanctioned.apiKeyHashes`, an exact list of the org's issued keys' `h2:` hashes; `h2:nokey` never sanctions). The desktop host reports both signals to the console too: its device report's `aiAssets` now carries `apiKeysAtRest`, `localRuntimes` and `localMcpListeners` with the same shapes, produced by Rust mirrors of these collectors (`src-tauri/src/ai_keys.rs`, `ai_runtime.rs`, `content_hash.rs`). `test/aibom-rust-parity.test.mjs` pins the Rust tables to the JS ones, and `test/fixtures/content-hash-parity.json` is asserted by both `cargo test` and Node so the host's `keyHash` is byte-identical to the agent's. The console stores them with the rest of `aiAssets` but does not display them yet.
 - **AIBOM: local models with safety training removed (by name).** `moorai-aibom` reads local model **names** in memory and reports, per runtime, how many there are and how many have a name that says their safety training was removed, plus one boolean (`localModelSafety`, and `summary.localModelsSafetyRemovedByName`). Names come from Ollama's manifests directory and its `/api/tags` on `127.0.0.1:11434` only (`OLLAMA_HOST` is not followed), LM Studio's and Jan's `<publisher>/<model>` folders, GPT4All's model folder, the llama.cpp `-hf` cache and the Hugging Face hub cache (`models--<org>--<name>`). A model counts when a word of its name is `abliterated`, `obliterated`, `uncensored`, `decensored`, `unaligned`, `jailbroken` or `heretic`. Words are split at separators, case changes and letter/digit changes, so `jailbreak-classifier`, `Llama-Guard`, `heretical` and `aligned` do not match. A name, path, org, tag or digest is never output. The scan stops at 2 s and 5,000 directory entries (1,000 from one directory) and says so (`truncated`, `timedOut`). This is name-based only: it does not prove or disprove a backdoor, and a renamed model is not caught. The source of each token is in `cli/local-model-names.mjs`; tests are in `test/local-model-names.test.mjs`. The desktop host builds the same block (`src-tauri/src/local_model_names.rs`, identical output on the shared fixture `test/fixtures/local-ai/model-names.json`) and sends it with its device report, so the console shows the counts.
+- **AIBOM: agent hosts without a model setting.** `moorai-aibom` lists Google Antigravity, Windsurf, Kiro and Cline in `agentHosts` (`{agent, source}`) and as `agent` components when the home their vendor documents has entries (`~/.gemini/config` or `~/.gemini/antigravity{,-cli,-ide}`, `~/.codeium/windsurf`, `~/.kiro`, `~/.cline` or `~/Documents/Cline`; a directory listing only), and reads their user MCP configs (`~/.gemini/config/mcp_config.json`, `~/.codeium/windsurf/mcp_config.json`, `~/.kiro/settings/mcp.json`, `~/.cline/data/settings/cline_mcp_settings.json`) into `mcpServers` with the same content-free shape as the others: server name, scope, transport, capability flags, risk level and reputation, never an env value or URL.
 - **AIBOM: MCP server reputation.** `moorai-aibom` reports each MCP server's first-seen reputation (`{score, band, reasons}`, a 0-100 score, band good/fair/poor/bad and category codes such as `mcp-typosquat` or `pkg-install-script-remote`), scored offline from the package name and the copy npx already installed, and counts poor and bad servers in `summary.mcpLowReputation`. `moorai-shadow` carries the same reputation, and an unsanctioned server with a poor or bad band ranks high whatever its inferred scope. The scoring, the opt-in registry lookup and feed, and the `blockBelow` policy are documented in [`mcp-proxy/README.md`](mcp-proxy/README.md).
 - **`moorai-compliance`** maps the device's existing content-free signals to framework controls and marks each **covered / partial / not-covered honestly** — the evidence layer a cost-pressured SOC can actually keep. `--format stix` emits the findings as a STIX 2.1 bundle (custom `x-moorai-finding` objects + hash-keyed indicators) for threat-intel interchange.
 - **`moorai-verify-chain`** walks each on-device evidence log and verifies its prev-hash chain — a deleted, reordered, or in-place-edited record breaks the chain and is reported. Every log line and every emitted OTel span is chain-stamped (`cli/record-chain.mjs`), so the record hash proves each record and the chain proves the *sequence* (immutable once streamed to your SIEM). A record whose chain head could not be read or saved is stamped `seq` 0, linked to the genesis, and shows as a break.
@@ -2180,7 +2214,7 @@ shapes and a fake AWS CLI only, not yet against a real AWS account. See [`cloud/
 
 | | |
 |---|---|
-| **Agents** | Claude Code (full hook enforcement) · **Codex CLI, GitHub Copilot CLI, Gemini CLI, Cursor and Factory Droid: pre-tool hook enforcement** through `cli/moorai-agent-hook.mjs` (see *Other agents* below) · Claude Desktop · VS Code / Copilot · any project `.mcp.json` consumer (MCP stdio proxy — **enforcement, host-independently**, but only over MCP; see the bound below) · remote MCP servers (HTTP gateway) · Claude Agent SDK services in process and other agent loops through a localhost sidecar (*Server mode: Agent SDK and sidecar*) · any agent that calls the Anthropic Messages or OpenAI Chat Completions API through an SDK with a configurable base URL (model proxy) |
+| **Agents** | Claude Code (full hook enforcement) · **Codex CLI, GitHub Copilot CLI, Gemini CLI, Cursor and Factory Droid: pre-tool hook enforcement** through `cli/moorai-agent-hook.mjs` (see *Other agents* below) · **Google Antigravity, Windsurf and Kiro: pre-tool hook adapters built from their vendors' docs, not yet run against the live hosts; Cline: a partial file-hook adapter** · Claude Desktop · VS Code / Copilot · any project `.mcp.json` consumer (MCP stdio proxy — **enforcement, host-independently**, but only over MCP; see the bound below) · remote MCP servers (HTTP gateway) · Claude Agent SDK services in process and other agent loops through a localhost sidecar (*Server mode: Agent SDK and sidecar*) · any agent that calls the Anthropic Messages or OpenAI Chat Completions API through an SDK with a configurable base URL (model proxy) |
 | **Surfaces** | prompts · AI outputs · files read into context · **files the agent writes or edits** · MCP tool calls · **MCP tool listings and tool results** · **outbound `WebFetch` requests** · **what comes back from `Bash`, `PowerShell`, MCP tools and sub-agents (Claude Code)** · pasted images (on-device OCR) · the agent's auto-loaded context files (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`, …) · **content an app is about to embed into a vector store (SDK, sidecar) and MCP vector-store writes** · the agent's auto-loaded skill surface (skills, subagents, commands, MCP configs, hook-bearing settings) · **the session as a whole: failed tool calls, the agent's end-of-turn claim, compactions (Claude Code)** · **model calls: what an agent sends to the provider and the tool calls the model returns (model proxy)** |
 | **Platforms** | macOS · Windows · Linux (on-device OCR is a second-class tier — see below) |
 | **Detects** | secrets · PII / PHI · source-code leakage · prompt injection · destructive commands · second-order/hidden-instruction injection · skill-surface poisoning & drift · the agent's rules files leaving the device · risky actions outside the user's stated task · low-reputation MCP servers · MCP tool descriptions that ask for a credential file · outbound actions after untrusted content, multi-step and slow exfiltration · runaway loops · success claims over failed tool calls · agents running without MoorAI's hook or with weakened settings · agents running a host version MoorAI's adapter was not tested against |
@@ -2211,7 +2245,8 @@ categories (self-harm, drugs, eating disorders, hate, harassment, grooming) stay
 **Coverage layers.** MoorAI sees agent activity through three layers, each independent of the others.
 
 - **Hooks: the deepest view, tied to each host's format.** In Claude Code, Codex, Copilot CLI, Cursor,
-  Gemini CLI and Factory Droid, MoorAI's hook runs inside the host and sees each tool call before it runs (the shell
+  Gemini CLI and Factory Droid (and, through adapters built from docs and not yet run live, Antigravity,
+  Windsurf, Kiro and Cline), MoorAI's hook runs inside the host and sees each tool call before it runs (the shell
   command, the file being written, the MCP arguments, the prompt), and can deny it. Each adapter in
   [`cli/agent-hooks/`](cli/agent-hooks) translates that host's hook payload into one shape, so a hook works
   only while the host keeps the payload fields, event names and answer format the adapter was written for.
@@ -2349,6 +2384,10 @@ adapter was last tested against:
 | Cursor (`cursor-agent`) | 2026.05.27-fe9a6e2 |
 | Gemini CLI | 0.60.0 |
 | Factory Droid | none: built from Factory's hooks docs (fetched 2026-10-18, newest release v0.244.0); no `droid` run yet |
+| Google Antigravity | none: built from antigravity.google/docs/hooks (fetched 2026-10-21); no `agy` run yet |
+| Windsurf (Cascade) | none: built from the Cascade Hooks reference (fetched 2026-10-21); no Windsurf run yet |
+| Kiro | none: built from Kiro's hooks docs and its predecessor's hook reference (fetched 2026-10-21); no `kiro-cli` run yet |
+| Cline | none: built from Cline's hooks announcement and its source (github.com/cline/cline main at c441897, extension 4.1.25, read 2026-10-22); no Cline run yet |
 
 ```bash
 node scripts/host-drift.mjs                           # every host, against whatever is installed locally
@@ -2375,6 +2414,8 @@ node scripts/host-drift.mjs --installed gemini=0.63.0 --skip-tests   # check a v
     so only the conformance tests run.
   - **Factory Droid:** none. Factory publishes no hook schema, so only the conformance tests run. Droid is
     not in the nightly workflow's install matrix.
+  - **Antigravity, Windsurf, Kiro, Cline:** none. None publishes a hook schema file, so only the conformance
+    tests run. None of them is in the nightly workflow's install matrix.
 
   It writes a JSON report and exits 1 when a check fails.
 - **Nightly in CI** ([`.github/workflows/host-drift.yml`](.github/workflows/host-drift.yml)). The job installs

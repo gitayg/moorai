@@ -5,6 +5,26 @@ import { discover } from "./discover.mjs";
 import { boundedLines, ZSTD_SUPPORTED } from "./lines.mjs";
 import { ClaudeCodeParser } from "./claude-code.mjs";
 import { CodexParser } from "./codex.mjs";
+import { GeminiParser } from "./gemini.mjs";
+import { open } from "node:fs/promises";
+
+const PARSERS = { "claude-code": ClaudeCodeParser, codex: CodexParser, gemini: GeminiParser };
+
+// A legacy Gemini CLI .json session is one (often pretty-printed) JSON document, not lines: read whole,
+// within the same per-file and shared byte budgets. A file over the per-file cap is skipped and counted.
+async function readDocument(path, { maxFileBytes, budget, state }) {
+  const fh = await open(path, "r");
+  try {
+    const { size } = await fh.stat();
+    if (size > maxFileBytes) { state.cutByFile = true; return { tooLarge: true }; }
+    if (size > budget.bytesLeft) { state.cutByBudget = true; return { tooLarge: true }; }
+    const buf = Buffer.alloc(size);
+    const { bytesRead } = await fh.read(buf, 0, size, 0);
+    budget.bytesLeft -= bytesRead;
+    state.bytes = bytesRead;
+    return { text: buf.subarray(0, bytesRead).toString("utf8") };
+  } finally { await fh.close(); }
+}
 import { createReplayer } from "./replay.mjs";
 import { createSummary } from "./summary.mjs";
 import { historicalAlert } from "./report.mjs";
@@ -75,9 +95,24 @@ export async function runIngest(opts) {
     if (clock() > deadline) { S.truncated.time = true; break; }
     if (budget.bytesLeft <= 0) { S.truncated.bytes = true; break; }
     if (f.path.endsWith(".zst") && !ZSTD_SUPPORTED) { S.skipped.compressedUnsupported++; continue; }
-    const parser = f.agent === "codex" ? new CodexParser() : new ClaudeCodeParser();
-    S.files[f.agent]++;
+    const parser = new (PARSERS[f.agent] || ClaudeCodeParser)();
+    S.files[f.agent] = (S.files[f.agent] || 0) + 1;
     const st = {};
+    if (f.agent === "gemini" && f.path.endsWith(".json")) {
+      try {
+        const d = await readDocument(f.path, { maxFileBytes: bounds.maxFileBytes, budget, state: st });
+        if (!d.tooLarge) {
+          let doc;
+          try { doc = JSON.parse(d.text); } catch { S.skipped.malformedLines++; }
+          if (doc) for (const ev of parser.pushDocument(doc)) handle(ev);
+        }
+      } catch { S.skipped.unreadableFiles++; }
+      S.bytesRead += st.bytes || 0;
+      if (st.cutByFile) S.truncated.filesCut++;
+      if (st.cutByBudget) S.truncated.bytes = true;
+      finish(parser);
+      continue;
+    }
     try {
       for await (const item of boundedLines(f.path, { maxFileBytes: bounds.maxFileBytes, maxLineBytes: bounds.maxLineBytes, budget, state: st })) {
         if (clock() > deadline) { S.truncated.time = true; S.bytesRead += st.bytes || 0; finish(parser); break outer; }

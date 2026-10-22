@@ -117,6 +117,45 @@
         "test/agent-hook-droid.test.mjs"
       ],
       "liveNote": "no live tier: no droid run has been made; the auth env var for a headless turn is not taken from the docs yet"
+    },
+    "antigravity": {
+      "label": "Google Antigravity",
+      "verifiedAgainst": "antigravity.google/docs/hooks and /docs/cli/gcli-migration (fetched 2026-10-21); no agy binary run, so no tested version is recorded",
+      "bin": "agy",
+      "adapter": "cli/agent-hooks/antigravity.mjs",
+      "tests": [
+        "test/agent-hook-antigravity.test.mjs"
+      ],
+      "liveNote": "no live tier: no agy run has been made (not installed here); exit codes and the hook failure mode are not documented"
+    },
+    "windsurf": {
+      "label": "Windsurf (Cascade)",
+      "verifiedAgainst": "docs.devin.ai/desktop/cascade/hooks (fetched 2026-10-21); no Windsurf install run, so no tested version is recorded",
+      "adapter": "cli/agent-hooks/windsurf.mjs",
+      "tests": [
+        "test/agent-hook-windsurf.test.mjs"
+      ],
+      "liveNote": "no live tier: Windsurf is an editor with no headless agent turn documented, and none has been run"
+    },
+    "kiro": {
+      "label": "Kiro",
+      "verifiedAgainst": "kiro.dev/docs/hooks, /docs/cli/v3/hooks-migration, /docs/cli/2x-reference, /docs/reference/built-in-tools and the open-source predecessor's docs/hooks.md and tool_index.json (fetched 2026-10-21); no kiro-cli run, so no tested version is recorded",
+      "bin": "kiro-cli",
+      "adapter": "cli/agent-hooks/kiro.mjs",
+      "tests": [
+        "test/agent-hook-kiro.test.mjs"
+      ],
+      "liveNote": "no live tier: no kiro-cli run has been made (not installed here); V3's stdin field names are not documented"
+    },
+    "cline": {
+      "label": "Cline",
+      "verifiedAgainst": "cline.bot/blog/cline-v3-36-hooks, docs.cline.bot/getting-started/config and the Cline changelog (fetched 2026-10-21; newest 4.1.25); the current docs no longer describe the file-hook contract; no Cline run, so no tested version is recorded",
+      "npm": "cline",
+      "adapter": "cli/agent-hooks/cline.mjs",
+      "tests": [
+        "test/agent-hook-cline.test.mjs"
+      ],
+      "liveNote": "no live tier: no Cline run has been made; tool parameter names are not documented"
     }
   }
 }

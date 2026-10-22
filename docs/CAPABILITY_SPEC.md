@@ -3055,6 +3055,22 @@ it can test a policy change but not score a detector.
   `custom_tool_call` (`apply_patch`) and `local_shell_call`; prompts are `event_msg` `user_message` or
   `item_completed` `UserMessage`. Each call becomes the payload Codex hands a PreToolUse hook and goes
   through the same adapter the live Codex hook uses (`cli/agent-hooks/codex.mjs toClaude`).
+- *Gemini CLI*: `~/.gemini/tmp/<project_hash>/chats/session-<ts>-<id8>.jsonl`, the legacy `session-*.json`
+  (one ConversationRecord, read whole within the per-file and total byte bounds) and sub-agent sessions
+  `chats/<parent session>/<id>.jsonl`; only files under a `chats` folder count
+  (`cli/ingest/discover.mjs`). Format from gemini-cli `packages/core/src/services/chatRecordingTypes.ts`
+  and `chatRecordingService.ts`: a metadata line `{sessionId, projectHash, startTime, lastUpdated, kind?,
+  directories?}`, message lines `{id, timestamp, type, content, toolCalls?}` with ToolCallRecord `{id, name,
+  args, result?, status, timestamp}`, and `$set`, `$patch` and `$rewindTo` lines. Tool calls are merged by
+  id (a call recorded before it finished and patched later counts once) and emitted at end of file; each
+  goes through `cli/agent-hooks/gemini.mjs toClaude` as `BeforeTool`, and a successful `web_fetch` result
+  is replayed as the `AfterTool` scan. User turns in a `kind: "subagent"` session are the parent's
+  delegation and are not replayed as prompts. Read from source and tested on fixtures
+  (`test/ingest-gemini.test.mjs`); no session file from an installed Gemini CLI was read.
+- *Not read*: Antigravity and Windsurf document where their transcripts are (`<app_data_dir>/brain/
+  <conversationId>/.system_generated/logs/transcript.jsonl`; `~/.windsurf/transcripts/<trajectory_id>.jsonl`)
+  but not their line format; Kiro uses an undocumented SQLite file in `~/.kiro/`; Cline's
+  `~/.cline/data/sessions/` format is not documented; Cursor, Copilot CLI and Droid document none.
 
 **Decision path.** `cli/ingest/replay.mjs` calls the hook's functions — `decideText`,
 `decideCredFileRead`, `decideAgentStateWrite`, `decideEndpoints`, `decideEnvelope`, `mcpGateway`,
@@ -3089,11 +3105,49 @@ and a bounded directory walk. Malformed lines and unparseable Codex arguments ar
   ask-to-deny settlement of server mode and `bypassPermissions`.
 - A Read is judged on the content the transcript recorded (`toolUseResult.file.content`), which is the
   file as it was then, not as the hook would read it now.
-- Codex hook coverage cannot be told: Codex does not persist hook runs to the rollout. Claude Code
-  coverage is "unknown" for a session that recorded no hook trace at all.
+- Codex and Gemini CLI hook coverage cannot be told: neither persists hook runs to its transcript. Claude
+  Code coverage is "unknown" for a session that recorded no hook trace at all.
+- Gemini CLI `google_web_search` results are not replayed: the live hook registers that tool after the
+  call only, and the replay loop scans a result only behind a replayed call.
 - The legacy Codex `shell` argv is turned into a command string by this tool; what the Codex hook sent
   for it was not observed. Prompts are scanned only as `promptScan` allows, as in the live hook: a typed
   prompt is not scanned under the default.
+
+## Hook adapters built from vendor docs: Antigravity, Windsurf, Kiro, Cline
+
+`cli/moorai-agent-hook.mjs <antigravity|windsurf|kiro|cline>` runs the same shim as the other adapters
+(`cli/agent-hooks/shim.mjs evaluateAll`: one Claude-shaped payload per call or per path, most restrictive
+verdict wins, bounded at 32 checks and 20 s). None of these hosts is installed on the build machine, so no
+adapter has been run against its host; each is tested on payloads in the documented shape
+(`test/fixtures/agent-hooks/<host>/`, `test/agent-hook-<host>.test.mjs`), and `data/host-versions.json` records
+no tested version for any of them.
+
+| Host | Hook contract (source) | Input → MoorAI | Answer | Install |
+|---|---|---|---|---|
+| Antigravity | antigravity.google/docs/hooks: PreToolUse input `toolCall {name, args}`, `conversationId`, `workspacePaths`; output `decision` allow / auto_approve / deny / ask / force_ask / deny_unless_prior_grant, `reason`, `overwrite`, `permissionOverrides` | `run_command` → Bash, `view_file` → Read, `write_to_file` → Write, `replace_file_content` → Edit, `multi_replace_file_content` → MultiEdit (every string scanned), `read_url_content` → WebFetch, `invoke_subagent` → Task, `mcp_<s>_<t>` → `mcp__s__t` | deny → `deny`; ask → `force_ask`; allow → `allow` (hands the call to Antigravity's policy); never `auto_approve`, `overwrite` or `permissionOverrides`; exit 0 | hook `moorai` in `~/.gemini/config/hooks.json` |
+| Windsurf | docs.devin.ai/desktop/cascade/hooks: `agent_action_name`, `trajectory_id`, `tool_info`; exit 2 blocks a pre-hook and the agent sees stderr; other non-zero exits let the action run | `pre_run_command` → Bash, `pre_read_code` → Read, `pre_write_code` → MultiEdit, `pre_mcp_tool_use` → `mcp__s__t`, `pre_user_prompt` → UserPromptSubmit (captured) | deny and ask → exit 2 with the reason on stderr (ask's reason tells the agent to get the user's confirmation); allow → exit 0 | appended to the five pre-hook events in `~/.codeium/windsurf/hooks.json`, with `powershell: "& <command>"` |
+| Kiro | kiro.dev/docs/hooks, /docs/cli/v3/hooks-migration, /docs/cli/2x-reference, and the predecessor's docs/hooks.md: stdin `hook_event_name`, `cwd`, `tool_name`, `tool_input`; exit 2 blocks PreToolUse and stderr goes to the model | `execute_bash`/`shell` → Bash, `fs_read`/`read` → Read per operation path, `fs_write`/`write` → Write or Edit per command, `web_fetch` → WebFetch, `use_aws` → Bash `aws <service> <op> ...`, `use_subagent`/`delegate` → Task, `@s/t` or `mcp_<s>_<t>` → `mcp__s__t`; `UserPromptSubmit` captured | deny and ask → exit 2 with the reason on stderr; allow → exit 0 and empty stdout; coach → stdout | `~/.kiro/hooks/moorai.json` (V3 file: PreToolUse on `*`, UserPromptSubmit) |
+| Cline (partial) | The answer `{cancel, errorMessage, contextModification}` is in cline.bot/blog/cline-v3-36-hooks; the rest is from Cline's source (github.com/cline/cline main at c441897, read 2026-10-22), as the docs no longer describe it. Extension (`apps/vscode/src/sdk/hooks-adapter.ts`, `core/hooks/hook-factory.ts`): `hookName` `PreToolUse` / `UserPromptSubmit`, `taskId`, `workspaceRoots`, `preToolUse {toolName, parameters}`, `userPromptSubmit {prompt}`. ClineCore (`sdk/packages/core/src/hooks/subprocess.ts`, `hook-file-hooks.ts`): `hookName` `tool_call` with `tool_call {id, name, input}` plus the same `preToolUse` copy, and `prompt_submit` (run detached). `parameters` is a string record: non-string values are JSON-stringified (`toStringRecord`, `mapParams`). Tool names and input shapes: `sdk/packages/core/src/extensions/tools/constants.ts`, `schemas.ts` | `run_commands`/`execute_command` → Bash per command (string or `{command, args}`), `read_files`/`read_file` → Read per path (`files[]`, `paths`, `file_paths`, `path`), `editor` → Edit when `old_text` or `insert_line`, else Write (`new_text`; the older `command`/`file_text`/`old_str`/`new_str` too), `write_to_file` → Write, `replace_in_file` → MultiEdit (SEARCH/REPLACE blocks + whole diff), `apply_patch` → per-file calls, `use_mcp_tool` → `mcp__s__t`, `fetch_web_content` `requests[]` (`url`, with every other string field as the prompt) / `web_fetch` / `browser_action` → WebFetch, `search_codebase`/`search_files` → Grep per query, `list_files` → LS, `skills` → Skill; only the list-valued keys (`files`, `paths`, `file_paths`, `commands`, `requests`, `urls`, `queries`, and a non-object `tool_call.input`) are decoded from JSON, and the raw text is judged as well; a scalar key (`command`, `cmd`, `path`, `url`) is judged exactly as typed; every string field of a decoded object is judged; a structured command `{command, args}` is rebuilt with each element shell-quoted whatever its type, and each element is judged on its own; MCP `arguments` that do not decode to an object are judged as `{arguments}`. Any other tool name (except `ask_question`, `submit_and_exit` and the older `ask_followup_question`, `attempt_completion`, `plan_mode_respond`) is held: `cancel: true` with a reason that asks the agent to get the user's confirmation | deny and ask → `cancel: true` with the reason in `errorMessage` (both runtimes use it as the stop reason and never inject a cancelling hook's `contextModification`, which carries the same text as the fallback); allow → `cancel: false`; exit 0. Both runtimes fail open on a crashed, timed-out or unparseable hook | executable `PreToolUse` and `UserPromptSubmit` scripts in `~/Documents/Cline/Hooks/` (macOS, Linux), the global folder both runtimes read (extension: `disk.ts` `getGlobalHooksDir`; ClineCore: `sdk/packages/shared/src/storage/paths.ts` `resolveHooksConfigSearchPaths`, which also reads `~/.cline/hooks/`); MoorAI's own scripts in `~/.cline/hooks/` are removed so ClineCore does not run them twice; never replaces a user's script |
+
+**Discovery.** `moorai-doctor` checks each host's registration (Antigravity: a `moorai` hook with
+`enabled: false` fails; Kiro: a MoorAI hook with `enabled: false` fails; Cline: reads the hook scripts in `~/Documents/Cline/Hooks/`, and a MoorAI script left in `~/.cline/hooks/` fails),
+and the posture heartbeat includes them through the same host table. `agy`, `kiro-cli` and `cline` are
+agent processes for the AI-CLI parent walk, and `Kiro` / `Kiro Helper` count as an IDE at its install
+location; `cli/ai-install-locations.mjs` lists the documented install locations of `agy`
+(`~/.local/bin`, `%LOCALAPPDATA%\agy\bin`), `kiro-cli` (Homebrew, `~/.local/bin`) and `cline` (npm). The
+hosts' hook and MCP config files are on the skill surface (`antigravity-hooks`, `antigravity-mcp`,
+`windsurf-hooks`, `cline-hook`), their transcript stores are agent state (Antigravity `brain/`, Windsurf
+`~/.windsurf/transcripts/`, Cline `~/.cline/data/sessions/`), and `moorai-aibom` lists them in
+`agentHosts` and reads their MCP configs. The alerts these adapters raise carry no `agentName` until the
+console's agent list has these hosts.
+
+**Not proven.** No live run of any of the four hosts; Antigravity's exit-code and failure semantics and its
+MCP tool naming; Kiro V3's stdin field names (taken from 2.x and its predecessor); whether the Kiro IDE reads
+`~/.kiro/hooks/` (the docs say Kiro CLI V3 does, and describe workspace `.kiro/hooks/` for the IDE), and which of
+Kiro's conflicting failure rules a build follows (the hook actions page: any non-zero exit blocks a Pre Tool Use;
+the IDE 1.0 page and the CLI 2.x reference: only exit 2 blocks); Cline's payloads and hook folders are read from
+its source, not from a running Cline, and the Linux XDG documents folder case is not handled; the
+process names the parent walk uses for these hosts (documented binaries, not measured in a process table).
 
 ## Clipboard guard (desktop app)
 
@@ -3474,8 +3528,8 @@ version into `docs/conformance/`.
 
 ## Coverage & blind spots
 
-- **Origin and ask outcomes on shim hosts and untracked tools are unknown.** Codex, Copilot, Cursor, Gemini
-  and Droid forward no agent id and no call id back, so their records read `host-no-thread-id` and every ask
+- **Origin and ask outcomes on shim hosts and untracked tools are unknown.** Codex, Copilot, Cursor, Gemini,
+  Droid, Antigravity, Windsurf, Kiro and Cline forward no agent id and no call id back, so their records read `host-no-thread-id` and every ask
   there reads `ask-not-trackable`; on Claude Code, an ask on Write, Edit, MultiEdit, Read or NotebookEdit
   reads `ask-not-trackable` too. Device-level alerts from the detached workers (posture inventory, index scan,
   the outbox drop report) carry no origin.

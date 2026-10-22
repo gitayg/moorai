@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// moorai-ingest — replay your past agent sessions (Claude Code and Codex transcripts on this machine)
+// moorai-ingest — replay your past agent sessions (Claude Code, Codex and Gemini CLI transcripts on this machine)
 // through the live hook's decision functions, so a new install shows on day one what MoorAI would have
 // flagged and what enforce mode would have blocked. The transcript-side twin of moorai-backtest, which
 // replays only the content-free action-audit log and therefore cannot score detectors.
@@ -27,7 +27,7 @@ export const HELP = `moorai-ingest — what MoorAI would have flagged in your pa
 
 Usage:
   moorai-ingest --discover [options]
-  moorai-ingest <file-or-dir>... --agent claude-code|codex [options]
+  moorai-ingest <file-or-dir>... --agent claude-code|codex|gemini [options]
 
 Reads the transcripts your agents already keep on this machine and replays every recorded tool call,
 tool result and prompt through the same decision functions the live MoorAI hook uses, under the policy
@@ -38,10 +38,13 @@ Transcripts read:
                 (<project>/<session>.jsonl and <session>/subagents/*.jsonl; $CLAUDE_CONFIG_DIR moves it)
   codex         ${roots.codex.join(", ")}
                 (rollout-*.jsonl and rollout-*.jsonl.zst; $CODEX_HOME moves it)
+  gemini        ${roots.gemini.join(", ")}
+                (Gemini CLI: <project_hash>/chats/session-*.jsonl, legacy session-*.json, and sub-agent
+                sessions in chats/<session>/)
 
 Options:
   --discover            find transcripts in the locations above
-  --agent NAME          agent of the explicit paths: claude-code | codex
+  --agent NAME          agent of the explicit paths: claude-code | codex | gemini
   --policy FILE         candidate policy JSON (the shape /api/policy returns); default: the policy in force
   --days N              only transcripts modified in the last N days (default 30; 0 = any age)
   --max-files N         newest N transcript files (default ${DEFAULT_BOUNDS.maxFiles})
@@ -50,7 +53,8 @@ Options:
   --max-line-bytes N    skip (and count) any line longer than N bytes (default ${DEFAULT_BOUNDS.maxLineBytes})
   --max-seconds N       stop after N seconds (default ${DEFAULT_BOUNDS.maxSeconds})
   --coverage            list sessions that ran other hooks but not MoorAI's (Claude Code only; Codex
-                        does not record hook runs in its transcript, so its sessions show as unknown)
+                        and Gemini CLI do not record hook runs in their transcripts, so their sessions
+                        show as unknown)
   --json                machine-readable summary
   --show-local          also print each finding WITH its content (prompt, command, path, matched text)
                         to this terminal; refused unless stdout is a terminal

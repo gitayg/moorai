@@ -175,6 +175,14 @@ export const PRODUCTS = Object.freeze([
   // Droid (docs.factory.com/droid-cli/quickstart.md): "brew install --cask droid", "npm install -g droid"; the
   // `curl -fsSL https://app.factory.ai/cli | sh` install location is not documented, so it is not listed.
   { id: "droid", names: ["droid"], mac: ["brew:droid", "npm:droid"], linux: ["npm:droid"], win: ["npm:droid"] },
+  // Antigravity CLI (antigravity.google/docs/getting-started?tab=cli): "~/.local/bin/agy" on macOS / Linux,
+  // "C:\Users\<username>\AppData\Local\agy\bin" on Windows.
+  { id: "antigravity-cli", names: ["agy"], mac: ["~/.local/bin|agy"], linux: ["~/.local/bin|agy"], win: ["%L/agy/bin"] },
+  // Kiro CLI (kiro.dev/docs/getting-started/installation): `brew install kiro-cli`; the zip install puts files in
+  // ~/.local/bin. Where the install script puts it is not documented, so it is not listed separately.
+  { id: "kiro-cli", names: ["kiro-cli"], mac: ["brew:kiro-cli", "~/.local/bin|kiro-cli"], linux: ["~/.local/bin|kiro-cli"] },
+  // Cline CLI (docs.cline.bot/usage/cli-overview): `npm i -g cline`.
+  { id: "cline", names: ["cline"], mac: ["npm:cline"], linux: ["npm:cline"], win: ["npm:cline"] },
   { id: "ollama", names: ["ollama", "ollama app"], mac: ["app:Ollama.app", "brew:ollama"], win: ["%L/Programs/Ollama"],
     linux: ["/usr/local/bin|ollama", "/usr/bin|ollama", "/usr/local/lib/ollama", "/usr/lib/ollama", "/snap/ollama"] },
   { id: "lm-studio", names: ["lm studio", "lms", "llmster"], mac: ["app:LM Studio.app", "~/.lmstudio"], win: ["%L/Programs/lm-studio", "%L/Programs/LM Studio", "~/.lmstudio"], linux: ["~/.lmstudio"] },
