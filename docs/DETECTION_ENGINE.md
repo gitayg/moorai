@@ -33,7 +33,7 @@ by `decideText` / `threatActionFor` in [`cli/hook-core.mjs`](../cli/hook-core.mj
 enforcement are two layers on purpose: the same finding is advisory on one surface and blocking on
 another, and only the caller knows which surface it is.
 
-Rules live in [`data/detectors.js`](../data/detectors.js) — **107 detectors** binding to **79 threats**
+Rules live in [`data/detectors.js`](../data/detectors.js) — **120 detectors** binding to **80 threats**
 in [`data/threats.json`](../data/threats.json) (counts from [BENCHMARK.md](BENCHMARK.md), regenerated
 with `npm run benchmark`; both were re-counted out of the shipped modules while writing this file and
 agree). Detectors are a JavaScript module, not data, because a detector's real decision is a `refine()`
@@ -889,7 +889,7 @@ rules, so it is not a held-out number. `test:scorers` does not see content rules
 ### Enrollment is the line
 
 - **Unenrolled** (no install token) — **coach**. Without enrollment MoorAI shows what it caught and the
-  safer way; blocking and sign-off apply once the device is enrolled in a console (free up to 200 users).
+  safer way; blocking and sign-off apply once the device is enrolled in a console (free to self-host with no user limit; the hosted console is a free trial).
   `enforcementAllowed()` in [`data/enforcement.js`](../data/enforcement.js) is the single rule, used by
   the hook (and through it every agent adapter), the `claude -p` guard, the Claude Desktop MCP proxy and
   the desktop app. The same engine and `BUILTIN_DEFAULT_ACTIONS` run (or a policy on disk, if present);
@@ -2684,7 +2684,7 @@ Recorded because a confidently wrong document is what created the task to rewrit
 | Latency budget: Tier-1 < 20 ms, Tier-2 ≈ 800 ms | Measured Tier-1 is 0.26–2.47 ms per scan (§11). The semantic guard is 3500 ms by default, not 800. |
 | `detectors.json` and `threats.json` are versioned and the engine pins a schema version | `data/threats.json` has a `meta` block; the engine pins no schema version and validates none. |
 | "Every detector ships positive/negative test cases" | There is no per-detector fixture requirement. Evidence is corpus-level (`test/redteam/`) and the promotion bar in §5 is stated in terms of corpora, not fixtures. |
-| Detectability map over ~40 threats | The matrix is 77 threats. The map is stale and has been dropped rather than half-updated; [BENCHMARK.md](BENCHMARK.md) carries measured coverage instead. |
+| Detectability map over ~40 threats | The matrix is 80 threats. The map is stale and has been dropped rather than half-updated; [BENCHMARK.md](BENCHMARK.md) carries measured coverage instead. |
 
 ---
 
