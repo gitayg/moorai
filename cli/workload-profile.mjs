@@ -156,6 +156,10 @@ export function validateProfile(p) {
   if (p.egressRules !== undefined || p.egressDefault !== undefined) {
     const e = p.egressRules === undefined ? { rules: [], errors: [] } : validateEgressRules(p.egressRules);
     if (e.errors.length) return { error: e.errors[0].index >= 0 ? `${e.errors[0].reason} (rule ${e.errors[0].index})` : e.errors[0].reason };
+    // An agent older than 1.28.0 drops a whole profile that carries a cidr rule (unknown key), so cidr rules
+    // stay out of profiles until the fleet minimum is set (CONTRACT-F28 6.1); top-level cidr rules apply.
+    const ci = e.rules.findIndex((r) => r.cidr);
+    if (ci >= 0) return { error: `egressRules: cidr rules are not accepted inside a workload profile (rule ${e.rules[ci].index})` };
     if (p.egressDefault !== undefined && !validEgressDefault(p.egressDefault)) return { error: "egressDefault is not allow, alert or block" };
     profile.egress = { rules: e.rules, default: p.egressDefault };
   }
@@ -308,6 +312,26 @@ export function evaluateProfile({ policy = null, system = null, serviceId = "", 
     };
   } catch (e) {
     return { ...none, error: String((e && e.message) || e).slice(0, 200) };
+  }
+}
+
+// The egress half of evaluateProfile alone, for a surface that runs no profile drift check (the stdio MCP
+// proxy): the same profile match, rule chain and verdict, so a call is judged there as the hook judges it.
+// → { decision: "allow"|"deny", reason, alerts, coach? }. Never throws (fail-open, as evaluateProfile).
+export function evaluateEgress({ policy = null, system = null, serviceId = "", cwd = "", tool = "", toolInput = {}, coach = false, deps = {} } = {}) {
+  const none = { decision: "allow", reason: "", alerts: [] };
+  try {
+    const set = (d, k) => d && typeof d === "object" && d[k] !== undefined && d[k] !== null;
+    const hasAny = (d) => set(d, "workloadProfiles") || set(d, "egressRules") || set(d, "egressDefault");
+    if (!hasAny(policy) && !hasAny(system)) return none;
+    const { profiles } = cachedProfiles(policy, system);
+    const profile = matchProfile(profiles, { serviceId: typeof serviceId === "string" ? serviceId : "", repo: () => repoOf(cwd, deps) });
+    const egress = judgeEgress(profile, cachedEgress(policy, system), tool, toolInput, coach);
+    if (!egress) return none;
+    const block = egress.worst === "block";
+    return { decision: block && !coach ? "deny" : "allow", reason: block ? egress.reason : "", alerts: egress.alerts, ...(block && coach ? { coach: egress.reason } : {}) };
+  } catch {
+    return none;
   }
 }
 

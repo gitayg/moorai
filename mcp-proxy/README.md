@@ -29,6 +29,13 @@ MCP host  ⇄  moorai-mcp-guard  ⇄  real MCP server
 
 ### agent → server: the tool CALL
 
+- **Egress rules first** (after quarantine, tool drift and reputation): every destination the call's
+  arguments name is judged by the hook's own egress rules for `mcp__<server>__<tool>`
+  (`evaluateEgress` in [`../cli/workload-profile.mjs`](../cli/workload-profile.mjs), the egress half of
+  `evaluateProfile`), from the verified policy and the root-owned machine-wide config. A block refuses
+  the call (coached when unenrolled) with an `EGRESS_RULE` alert carrying the binary, host, port and
+  method, never a path, a query or an argument. A `cidr` rule matches an IP literal in the arguments; a
+  host name is not resolved here.
 - Every JSON-RPC message with `method === "tools/call"` is gated through `mcpGateway()`
   (from `cli/hook-core.mjs`), in this order, steps 1–3 short-circuiting on the first deny:
   1. **server allow-list** (#3) — is this MCP server allowed at all?

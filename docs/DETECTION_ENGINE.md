@@ -1715,9 +1715,13 @@ rate depends entirely on those rules and was not measured.
   a file (`echo https://x >> README`) or sent as a header. Under `egressDefault: "block"` that is a false
   positive, the same property the profile's `hosts` list has.
 - Binary attribution follows the command line, not the process (above).
-- The HTTP MCP gateway (`mcp-gateway/`) calls `evaluateProfile()` with empty arguments, so it judges no
-  egress rules, and the MCP stdio proxy does not run the profile or the egress check at all. The hook
-  covers MCP calls made by Claude Code; other clients behind the stdio proxy are not covered.
+- The HTTP MCP gateway (`mcp-gateway/`) passes a `tools/call`'s arguments to `evaluateProfile()`, and the
+  MCP stdio proxy runs `evaluateEgress()` (the egress half), both for `mcp__<server>__<tool>`, so MCP calls
+  from any client behind either are judged as the hook judges Claude Code's. The gateway also judges its own
+  connection to the remote server, cidr rules on the addresses its DNS lookup returns.
+- `cidr` rules match an IP literal in the call's text (IPv4, IPv6 with any zone id `%eth0` / `%25eth0` set
+  aside, IPv4-mapped IPv6, the numeric IPv4 spellings WHATWG accepts, an unbracketed IPv6 `ssh` destination); a host name never matches one here, because the hook does no DNS. The egress
+  proxy and the gateway's upstream connection match them on resolved addresses.
 - `PreToolUse` only. Tested on macOS only.
 
 Tests: `test/egress-rules.test.mjs` (validation, destinations from every parser, host, port, method and
@@ -2934,7 +2938,8 @@ Stated rather than papered over.
   a `serviceId` can come from `~/.moorai/config.json`; both are in the agent's write scope. Tested on
   macOS only.
 - **Egress rules** (above) judge only destinations written in the call's text, on `PreToolUse`, in the hook,
-  the SDK and `moorai-serve`. The HTTP MCP gateway and the MCP stdio proxy do not judge them. The binary is
+  the SDK and `moorai-serve`, and on MCP `tools/call` arguments at the HTTP MCP gateway and the MCP stdio
+  proxy. A `cidr` rule never matches a host name in text (no DNS in the hook). The binary is
   the command word the line names, not the process that opens the socket. Every URL in a shell command
   counts, including one that is only printed. Tested on macOS only.
 - **The lifecycle events, the claim check, the session signals and provenance are tested through the real

@@ -126,7 +126,34 @@ These are the documented shapes the code is built against (read 2026-10-06):
     clients raise on such a line (ollama-python `_client.py`: `if err := part.get('error'): raise
     ResponseError(err)`; ollama-js `src/utils.ts`: `if ('error' in message) throw new Error(message.error)`).
 
-Any other path or method (`/v1/models`, `count_tokens`, embeddings, the OpenAI Responses API, Bedrock,
+- **OpenAI Responses API** `POST …/responses` ([`openai-responses.mjs`](openai-responses.mjs), from the
+  official SDK's types, openai-node `src/resources/responses/responses.ts`): request `instructions`, `input`
+  (a string, or items: messages of role user / system / developer with `input_text` parts;
+  `function_call_output`, `custom_tool_call_output`, `local_shell_call_output` ("A JSON string of the
+  output"), `shell_call_output` (its `stdout` / `stderr`) and `apply_patch_call_output` fed back) are
+  scanned; the model's own earlier items are not, and `computer_call_output` is a screenshot, not text.
+  Response `output[]` items `function_call` ("A JSON string of the arguments to pass to the function"),
+  `custom_tool_call` (free-text `input`) and `mcp_approval_request` (named `mcp__<server_label>__<name>`)
+  are decided, and so are the built-in tools the client runs: `local_shell_call` ("A tool call to run a
+  command on the local shell"; `action.command` is an argv list, `action.env` its environment) as `Bash`
+  with the env assignments and the argv joined by spaces; `shell_call` (`action.commands`, decided whatever
+  its `environment`) as `Bash` with the commands joined by newlines; `apply_patch_call` (`operation` with
+  `path` and `diff`) as `Write` for `create_file` (content: the diff) and `delete_file` (empty content) and
+  as `Edit` for `update_file` (new_string: the diff); `computer_call` (`action` / `actions`) under the name
+  `computer`, its action JSON content-scanned (no hook tool reads clicks and keys, so a workload profile's
+  tool list does not restrict it). A shell call without a list of command strings, or a patch operation
+  other than those three, is kept raw and refused in enforce mode. Stream: `event: <type>` SSE; a call
+  appears in `response.output_item.added` / `.done`, `response.function_call_arguments.delta` / `.done`,
+  `response.custom_tool_call_input.delta` / `.done`, `response.shell_call_command.added` / `.delta` /
+  `.done` (`output_index`, `command_index`; the commands are rebuilt from these and decided too) and the
+  terminal `response.completed` /
+  `.incomplete` / `.failed`. Every reading is decided; a denied call ends the stream with an `error` event
+  (ResponseErrorEvent: `{ type: "error", code, message, param, sequence_number }`).
+- **OpenAI embeddings** `POST …/embeddings` ([`openai-embeddings.mjs`](openai-embeddings.mjs)): string inputs
+  ("Input text to embed, encoded as a string or array of tokens") are scanned as prompt content; token ids
+  are not.
+
+Any other path or method (`/v1/models`, `count_tokens`, `GET …/responses/{id}`, Bedrock,
 Gemini's Interactions API, `countTokens`, `embedContent`, batch, cached contents, Ollama's `/api/tags`,
 `/api/show`, `/api/embed`, `/api/pull` and the rest of its model management) is **forwarded unparsed and
 unchecked**.
@@ -138,7 +165,9 @@ unchecked**.
 | Anthropic Messages `POST …/messages`, JSON and SSE | yes: client `tool_use` blocks |
 | OpenAI Chat Completions `POST …/chat/completions`, JSON and SSE | yes: `tool_calls`, deprecated `function_call` |
 | a local OpenAI-compatible server (Ollama, LM Studio, llama.cpp server, vLLM) at its `…/v1/chat/completions`, routed with `--route /local=http://127.0.0.1:<port>/v1` | yes, the Chat Completions parser; tested against a fake only (see [Local models](#local-models)) |
-| OpenAI Responses API (`/responses`), Assistants, Realtime | **no** — forwarded unparsed |
+| OpenAI Responses API `POST …/responses`, JSON and SSE | yes: `function_call`, `custom_tool_call`, `mcp_approval_request`, and the client-run `local_shell_call`, `shell_call` (as `Bash`), `apply_patch_call` (as `Write` / `Edit`) and `computer_call` (content-scanned); tested against a fake provider and with the official OpenAI Node SDK 4.104.0 against that fake (allowed stream intact; denied call raised `PermissionDeniedError` / `APIError`); the client-run built-in tools against the fake provider only |
+| OpenAI Responses API server-run items (`mcp_call`, `web_search_call`, `code_interpreter_call`), `GET …/responses/{id}` (background mode), Assistants, Realtime | **no** — they run at the provider, or are not parsed |
+| OpenAI embeddings `POST …/embeddings` | no tool calls exist; string inputs are scanned |
 | Gemini API `POST …/models/<m>:generateContent` and `:streamGenerateContent`, JSON, JSON array (no `alt=sse`) and SSE (`alt=sse`) | yes: `functionCall` parts; tested against a fake upstream only |
 | Vertex AI `…/publishers/google/models/<m>:generateContent` / `:streamGenerateContent` (and tuned `…/endpoints/<id>:…`) | yes, the same parser: the documented request fields and response type are the Gemini API's; tested against a fake upstream only |
 | Vertex AI streamed `partialArgs` (`streamFunctionCallArguments`) | judged as unparsed arguments: content-scanned, **refused in enforce mode** |

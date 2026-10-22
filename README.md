@@ -37,7 +37,7 @@ That's the exact trade MoorAI refuses.
 - **Per-agent destination map** — the observed counterpart to your allow-lists: for each agent/tool, *which external destinations it actually reached*. **Hosts** (never a URL path or query string — they are not captured in the first place) and **MCP server names**, with call counts, first/last-seen, and the allow/ask/deny verdict each call actually got. Kept in an on-device ledger; the console gets one content-free alert the first time an agent touches a new destination, over the existing alert path. View it with `moorai-destinations`.
 - **Agent entitlement envelope** — declare each agent's authorized tools / path-prefixes / MCP servers; an action outside the envelope is flagged as **entitlement drift** and alerted or blocked — least-privilege for agents, content-free.
 - **Declared workload profiles** — write down what a workload is expected to use: tools, MCP servers and destination hosts, per service (`serviceId`) or per repository (`github:owner/name`). A call outside the profile is reported as `PROFILE_DRIFT` (the kind, the out-of-profile tool, server or host, and the profile id; never a path, command or argument), or denied when the profile says `"action": "block"`; an unenrolled device coaches instead. Profiles live in the signed console policy or the root-owned machine-wide config, never in the repository. A repository match follows the git remote, which the agent can change, so block on `serviceId`. The hook, `@moorai/agent-sdk` and `moorai-serve` evaluate them, and so does the HTTP MCP gateway on every `tools/call` (tool and MCP-server kinds; the tool is named `mcp__<route>__<tool>`, as the hook names it). Details: [DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md#declared-workload-profiles).
-- **Egress rules** — `egressRules: [{ binary?, host, port?, method?, path?, action }]` plus `egressDefault`, with `action` one of `allow`, `alert` or `block`. They say which binary may reach which host, port, HTTP method and path. They can apply fleet-wide (top level of the signed policy or the root-owned machine-wide config) or per workload profile. `host` is exact or `*.suffix`. The first matching rule decides, and with no match the default applies. An allow rule never matches a field the call does not reveal (no method on `git clone`, no path on `ssh`). The hook, `@moorai/agent-sdk` and `moorai-serve` read the destinations a Bash/PowerShell command, WebFetch or MCP call names: URLs, curl/wget/httpie/Invoke-WebRequest methods, ssh/scp/rsync/git/nc hosts, and nested `sh -c` / `-EncodedCommand` / `$( … )`. A block denies the call (coached when unenrolled). Alert and block post a content-free `EGRESS_RULE` alert (binary, host, port, method, rule; never a path or query). The binary is the command word the line names, not the process that opens the socket. The HTTP MCP gateway and the stdio proxy do not judge egress rules. Details: [DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md#egress-rules).
+- **Egress rules** — `egressRules: [{ binary?, host | cidr, port?, method?, path?, action }]` plus `egressDefault`, with `action` one of `allow`, `alert` or `block`. They say which binary may reach which host or address range, port, HTTP method and path. They can apply fleet-wide (top level of the signed policy or the root-owned machine-wide config) or per workload profile. `host` is exact or `*.suffix`. `cidr` (instead of `host`) is one range or a list of up to 64 (`10.0.0.0/8`, `fd00:20::/32`); a prefix with host bits set is refused, and `/0` is accepted only for `alert` or `block`. From a call's text a cidr rule matches an IP literal inside the range (IPv4, IPv6 with or without a zone id such as `%eth0`, IPv4-mapped IPv6); it never matches a host name there, because the hook does no DNS. The egress proxy and the MCP gateway's own upstream connection match it on the resolved address. Agents older than 1.28.0 drop a cidr rule as an unknown key, and cidr rules are not accepted inside a workload profile. The first matching rule decides, and with no match the default applies. An allow rule never matches a field the call does not reveal (no method on `git clone`, no path on `ssh`). The hook, `@moorai/agent-sdk` and `moorai-serve` read the destinations a Bash/PowerShell command, WebFetch or MCP call names: URLs, curl/wget/httpie/Invoke-WebRequest methods, ssh/scp/rsync/git/nc hosts, and nested `sh -c` / `-EncodedCommand` / `$( … )`. A block denies the call (coached when unenrolled). Alert and block post a content-free `EGRESS_RULE` alert (binary, host, port, method, rule; never a path or query). The binary is the command word the line names, not the process that opens the socket. The HTTP MCP gateway and the stdio MCP proxy judge the destinations a `tools/call`'s arguments name by the same function (the tool named `mcp__<server>__<tool>`), so a deny holds the same way in the hook, the gateway and the stdio proxy; the gateway also judges its own connection to each remote MCP server (host, port, method and path, and cidr rules on the address its DNS lookup returns). Details: [DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md#egress-rules).
 - **Intent alignment** — flags a risky agent action aimed at something the user's own request never mentioned: an upload to a host the prompt never named, a destructive command or credential read on paths it never named, an MCP write to a service it never named. The `UserPromptSubmit` hook keeps only keyed, device-local hashes of the sites, paths, service names and three labels (*credentials*, *destructive*, *mcp-write*) a prompt mentions — never the prompt. Report-only by default (`policy.intentAlignment: "ask"` raises the call to ask, `"off"` disables it). Lexical; the prompt is captured in Claude Code, Codex, Cursor, Gemini and Copilot — limits below.
 - **Session-level escalation** — what one call cannot show, the session can. An injection-class finding on content the agent ingested (a fetched page, a command's output, an MCP result, a file it read) taints the session for 30 minutes, and an outbound action or credential-file read inside that window raises `Agent behavior: outbound action after untrusted content` (#59). Also across calls: a credential read that was staged (copied, written, encoded or archived) and then sent out; an archive then sent out; a mass read (30 distinct files) then an upload of 4 KB or more to a destination new to the session; and slow exfiltration (5 or more transfers of up to 8 KB each to one destination, summing 16 KB or more). A decaying per-session score posts one alert when it crosses its threshold. Report-only by default (`policy.sessionRisk.mode: "ask"` raises the outbound call to ask, `"off"` disables it). The state on disk is keyed hashes and counts only.
 - **Runaway circuit breaker** — an agent stuck in a loop: the same call 15 times in 5 minutes with an unchanged result, or a 2–4 call cycle repeated 5 times with unchanged results, raises `Agent behavior: runaway loop` (#38). A result that changes is progress, so `npm test` re-run while the agent fixes the code never trips it. Report-only by default; `policy.circuitBreaker.mode: "deny"` pauses the session's tool calls for 15 minutes. Token spend is not measured: no hook event carries usage.
@@ -775,9 +775,21 @@ ends the stream, which both Gen AI SDKs raise) or, with `replace`, becomes one t
 `finishReason: "STOP"`. Vertex's streamed `partialArgs` have no documented assembly rule and are refused in
 enforce mode. Tested against a fake Gemini upstream only. `--unchecked-window-ms` with `moorai-serve --model-proxy-url`
 alerts, content-free, on a forwarded call that the framework never checked with its `toolCallId`. This
-judging covers only Anthropic Messages, Chat Completions, Gemini `generateContent` and Ollama `/api/chat`
-traffic that goes through the proxy. The Responses API, Bedrock, Gemini's Interactions and Live APIs and Vertex partner models
-are forwarded unparsed. See
+judging covers Anthropic Messages, Chat Completions, the OpenAI Responses API, Gemini `generateContent` and Ollama `/api/chat`
+traffic that goes through the proxy. **Responses API** (`POST …/responses`): `instructions`, user / system /
+developer input and tool outputs fed back (`function_call_output`, `custom_tool_call_output`,
+`local_shell_call_output`, `shell_call_output`, `apply_patch_call_output`) are scanned, and each
+`function_call`, `custom_tool_call` and `mcp_approval_request` (named `mcp__<server_label>__<name>`) is
+judged, as are the built-in tools the client runs: `local_shell_call` and `shell_call` are judged as `Bash`
+(the argv, or the commands, as the command), `apply_patch_call` as `Write` (create or delete a file) or
+`Edit` (update a file) of its path, and `computer_call` has its action content-scanned under the name
+`computer` (no hook tool reads clicks and keystrokes, so a workload profile does not restrict it by tool
+name); a shell call without a list of command strings or a patch operation the proxy cannot read is refused
+in enforce mode. `computer_call_output` is a screenshot and is not scanned. In a stream every event from the first call on is held until `response.completed` (or `.incomplete` /
+`.failed`), every reading of a call (the output items, the argument deltas, a shell call's streamed commands, the final response) is judged,
+and a denied call ends the stream with an `error` event. **Embeddings** (`POST …/embeddings`): string inputs are
+scanned as prompt content; token-id inputs are not text and are not scanned. Bedrock, Gemini's Interactions
+and Live APIs, Vertex partner models and the OpenAI Realtime API are forwarded unparsed. See
 [`model-proxy/README.md`](model-proxy/README.md#exact-coverage-of-tool-call-judging).
 
 - **Report-only by default.** Bytes are forwarded as received and streaming is fully pass-through; the
@@ -800,9 +812,10 @@ governed by `--upstream-timeout-ms` (idle, default 600000) as before. Measured a
 (192.0.2.1): a 502 after 75 s before, a 504 after 10.0 s with the default.
 
 Limits: the agent must use a plain `http://127.0.0.1` base URL, because the proxy does not intercept TLS
-(an SDK pinned to the provider's HTTPS URL bypasses it). Only `POST …/messages` and
-`POST …/chat/completions` are parsed; the OpenAI Responses API, embeddings, `count_tokens`, Bedrock and
-Vertex are forwarded unchecked. Assistant turns, images, base64 PDFs, tool definitions and server-side tool
+(an SDK pinned to the provider's HTTPS URL bypasses it). `POST …/messages`, `POST …/chat/completions`,
+`POST …/responses` and `POST …/embeddings` are parsed (plus Gemini and Ollama, above); `count_tokens`, Bedrock,
+Vertex and the Responses API's `GET …/responses/{id}` (background mode) are forwarded unchecked, and with
+`--denied-tool-call replace` a Responses stream with a denied call is refused rather than rewritten. Assistant turns, images, base64 PDFs, tool definitions and server-side tool
 blocks are not scanned. It has been tested against a fake provider and a fake console, not with the real
 SDKs or a real provider.
 
@@ -967,13 +980,26 @@ HTTPS_PROXY=http://127.0.0.1:8850 HTTP_PROXY=http://127.0.0.1:8850 http_proxy=ht
   reads policy from a flag, the environment or a repository file. `egressDefault` applies. Until the first
   policy load succeeds, every connection gets 503; a later load that fails keeps the last one.
 - **What it sees.** For plain HTTP (`GET http://host/path`) it judges host, port, method and path. For
-  HTTPS (`CONNECT host:443`) it judges host and port only: TLS is not decrypted, so **method and path rules
-  apply to plain HTTP only**. Node's `fetch` tunnels even `http://` URLs through CONNECT (measured on Node
+  HTTPS (`CONNECT host:443`) it judges host and port, and the TLS server name: nothing the client sends goes
+  upstream until its first bytes are read. A TLS ClientHello whose server name (SNI) differs from the CONNECT
+  host is refused (the tunnel closes; `egressRefusal: "sni-mismatch"`), so a tunnel opened to an allowed name
+  cannot carry a session for another name on a shared address. On a CONNECT to an IP literal the server name
+  is judged by the rules beside that address. A ClientHello without a server name, or a first byte that is
+  not TLS, is judged on the CONNECT line alone; a malformed handshake is refused (`tls-unparsed`). TLS is not
+  decrypted, so **method and path rules apply to plain HTTP only**, an Encrypted Client Hello is judged by its
+  outer server name, and TLS started later inside a plaintext tunnel (STARTTLS) is not read. Node's `fetch` tunnels even `http://` URLs through CONNECT (measured on Node
   22.22), so they are judged by host and port too.
 - **The binary is unknown.** A socket does not say which program opened it. An `allow` rule that sets
   `binary` never matches here, and neither does one that sets `method` / `path` on a tunnel. A `block` rule
   matches on the destination alone. An `alert` rule that sets an unknown field is reported but cannot
   open a connection the rest of the chain closes.
+- **Address ranges.** With a `cidr` rule in force, a name is resolved first and judged once per resolved
+  address (a host rule reads the name, a cidr rule the address; the first match in order decides), and the
+  strictest outcome stands, so one address inside a blocked range refuses the connection. A cidr `allow` or
+  `alert` rule whose range holds the address opens a private address too, as an exact host rule does; a cloud
+  metadata address still needs a host rule naming that IP literal. A blocked name is refused before any DNS
+  lookup (a lookup is itself egress) when no cidr rule is in force, and also when one is but no cidr `allow`
+  or `alert` rule is read before the blocking rule (or at all, when the block default decided).
 - **Addresses.** DNS is resolved once, and the proxy connects to exactly the address it checked, so a
   second DNS answer cannot redirect it (DNS rebinding). Loopback (`localhost` is not exempt here), private,
   carrier-grade NAT, link-local and unique-local destinations need an `allow` or `alert` rule whose host
@@ -1007,13 +1033,15 @@ HTTPS_PROXY=http://127.0.0.1:8850 HTTP_PROXY=http://127.0.0.1:8850 http_proxy=ht
   Bearer. `--sibling-ports <list>` replaces the sibling port list (`""` for none; the proxy's own port is
   always refused). Flags set the limits: `--max-connections` (256), `--headers-timeout-ms` (10 s),
   `--request-timeout-ms` (60 s), `--idle-timeout-ms` (120 s, also for tunnels), `--connect-timeout-ms`
-  (10 s) and `--dns-timeout-ms` (5 s). An error while judging, or a policy that cannot be loaded, refuses
+  (10 s), `--dns-timeout-ms` (5 s) and `--hello-timeout-ms` (5 s: from a CONNECT client's first byte, a TLS
+  ClientHello still incomplete then closes the tunnel, `egressRefusal: "tls-timeout"`; the ClientHello may
+  span at most 16 TLS records). An error while judging, or a policy that cannot be loaded, refuses
   the connection.
 - **Alerts.** Alerts are content-free, sent to the console and OpenTelemetry the way the MCP gateway
   sends them: category `Egress rule`, `reasonCode` `EGRESS_RULE`, `egressBinary: null`, host, port and
   method, the deciding rule, `egressLayer: "network"`, and `egressRefusal` (`private-address`,
   `wildcard-private-address`, `metadata-address`, `proxy-port`, `ip-literal`, `unroutable-address`,
-  `host-form`, `path-form`, `judge-error`) for an address or form refusal. They never carry
+  `host-form`, `path-form`, `judge-error`, `sni-mismatch`, `tls-unparsed`) for an address or form refusal. They never carry
   a path, a query, a header or a body. A repeat of the same alert is posted at most once a minute. On an
   unenrolled device a rule block coaches, as everywhere else in MoorAI. The address refusals are enforced
   on every device.
@@ -2137,14 +2165,19 @@ The policy goes to stdout. Every rule the target cannot express goes to stderr a
 `{ index, id?, action, fields, effect, reason }`; nothing is dropped silently. A sandbox sees connections, not
 calls, so:
 
-- **MXC (Windows):** only numeric hosts become rules (`network.egress.allow` / `deny`, `/32` or `/128`).
+- **MXC (Windows):** only numeric hosts become rules (`network.egress.allow` / `deny`, `/32` or `/128`), and a
+  `cidr` rule becomes the same rule with its ranges. MXC's deny wins over allow while MoorAI's first match
+  decides, so an earlier allow that shares an address with a later block is reported as narrowed. The desktop
+  host's Rust mirror of this translation does not read `cidr` yet and reports such a rule as invalid.
   `egress.default` stays `deny`. A block wins over the host-only `egressAllow` CIDRs. Hostnames, loopback,
   and the binary, method and path fields stay with MoorAI's check. The desktop host reads the rules from
   `egressRules` / `egressDefault` in `%LOCALAPPDATA%\MoorAI Host\mxc.json`.
-- **Seatbelt (macOS):** `sandbox-exec` can only name `localhost` or `*` (measured). `egressDefault: "block"`
+- **Seatbelt (macOS):** `sandbox-exec` can only name `localhost` or `*` (measured; `(remote ip "10.0.0.0/8:*")`
+  is refused with "host must be * or localhost", macOS 27.0), so a `cidr` rule is reported. `egressDefault: "block"`
   denies all outbound except loopback, and loopback port rules are carried. Every other host is reported.
   The desktop host reads the rules only from a root-owned `/etc/moorai/config.json`.
-- **OpenShell:** generates `network_policies` YAML. Binaries become `/**/<name>` and methods and paths
+- **OpenShell:** generates `network_policies` YAML; an endpoint host is a name, an IP or a wildcard, so a `cidr`
+  rule is reported (a cidr block still removes a later IP-literal allow inside its range). Binaries become `/**/<name>` and methods and paths
   become REST rules. A MoorAI block that an OpenShell allow would cover either becomes `deny_rules` or
   removes that allow. OpenShell has no connection-level deny.
 - **gVisor:** not a target. gVisor has no per-host egress policy; egress comes from the deployment's
@@ -2296,6 +2329,30 @@ It also hardens the wire itself:
   model proxy's: see [`mcp-gateway/README.md`](mcp-gateway/README.md#placeholder-credentials).
 - **Declared workload profiles** on every `tools/call`, the tool named `mcp__<route>__<tool>` as the hook
   names it (`PROFILE_DRIFT`, kinds `tool` and `mcpServer`).
+- **Egress rules** on every `tools/call`'s arguments (`EGRESS_RULE`, the hook's verdict for the same
+  `mcp__<route>__<tool>` call) and on the gateway's own connection to each remote server: host, port, method
+  and path before the request is sent, and cidr rules on every address the connection's DNS lookup returns
+  (the socket connects to an address that was judged). A blocked upstream answers 403 with the rule.
+- **MCP 2026-07-28 request headers.** `Mcp-Param-<Name>` headers mirrored from tool parameters marked
+  `x-mcp-header` (learned from the route's judged `tools/list`) must match the body, after Base64-sentinel
+  decoding and with integers compared as numbers; a missing one when the body carries the value, or one the
+  body has no value for, is refused too. A 2026-era request without `MCP-Protocol-Version`, `Mcp-Method` or
+  (for `tools/call`, `resources/read`, `prompts/get`) `Mcp-Name` is refused. Both answer 400 with JSON-RPC
+  `-32020` (HeaderMismatch). The `server/discover` version probe is held to the same headers, as the
+revision requires (Claude Code 2.1.295's probe carries `MCP-Protocol-Version` and `Mcp-Method`). An
+  `Mcp-Param-*` header the gateway does not recognize is forwarded. A tool definition with an invalid
+  `x-mcp-header` annotation is reported once.
+- **OAuth discovery (RFC 9728).** The gateway serves `/.well-known/oauth-protected-resource/<route>` (and the
+  root form when it has one route): the remote server's own protected-resource metadata, checked against the
+  remote URL as RFC 9728 requires, with `resource` set to the gateway route the client uses. The
+  `resource_metadata` of a remote 401 / 403 Bearer challenge is rewritten to that URL (added when missing);
+  `scope` and the other parameters are kept. The remote metadata is read only from the remote server's own
+  origin. The gateway never runs the authorization flow and stores no token; the token stays in the
+  client's `Authorization` header. A token in the query string (`access_token`) is refused. The client asks
+  its authorization server for a token whose RFC 8707 resource is the gateway route, so a remote server that
+  checks the token's audience strictly refuses it unless its authorization server issues tokens for that
+  resource. Tested against a fake resource server only; no real authorization server or real OAuth client
+  has been run through it.
 
 The gateway adds about 4.7–5 ms at p50 against an in-process fake upstream, unchanged by these checks. It
 is covered by 98 tests against a fake upstream and a fake console, server-mode identity and profile blocks
@@ -2312,7 +2369,7 @@ it) through both pieces. In three live Claude Code runs (`claude -p`, Haiku), th
 server's tool: a benign call through the stdio proxy and one through the gateway were forwarded and
 recorded, and a call with a policy-denied argument through the stdio proxy came back to the model as
 MoorAI's refusal and never reached the server. Not yet tested: Claude Desktop, VS Code or Cursor's
-desktop app; Windows or Linux; OAuth discovery through the gateway; a real client and a real remote
+desktop app; Windows or Linux; OAuth discovery through the gateway with a real client and a real authorization server; a real client and a real remote
 server in the same run (so no session id issued by a real remote server); a live model call with a
 denied argument through the gateway; a completed 2026-07-28 (modern-era) session with a real client.
 

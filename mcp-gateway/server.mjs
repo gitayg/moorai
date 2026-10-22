@@ -37,6 +37,12 @@ import { createCooldown } from "./cooldown.mjs";
 import { countCall } from "./usage.mjs";
 import { createPendingLists, idKey, PENDING_LIST_MAX, PENDING_LIST_TTL_MS } from "./pending-lists.mjs";
 import { createRelistFetcher, relistHeaders, relistMeta } from "./relist.mjs";
+import { upstreamTarget, judgeUpstream, egressLookup, EGRESS_CODE } from "./egress.mjs";
+import { missingStandardHeader, createParamHeaders } from "./headers-2026.mjs";
+import { PRM_PREFIX, prmRoute, createDiscovery, getJson } from "./oauth-discovery.mjs";
+import { state as policyState, ensurePolicy } from "./policy.mjs";
+import { systemConfig as gatewaySystemConfig } from "./profile.mjs";
+import { alertProfile, seenOnce, SERVER_MODE as GW_SERVER_MODE } from "./report.mjs";
 
 export const MAX_REQUEST_BYTES = 16 * 1048576;
 // Messages in one client batch. Each tools/call in a batch is gated in turn without yielding to other
@@ -66,6 +72,12 @@ function sendJson(res, status, obj, extra = {}) {
 }
 const rpcError = (id, code, message) => ({ jsonrpc: "2.0", id: id == null ? null : id, error: { code, message } });
 const isId = (v) => typeof v === "string" || (typeof v === "number" && Number.isInteger(v));
+// A blocked upstream (./egress.mjs): 403 with the rule, answering the id of a single request body.
+function refuseEgress(res, body, reason) {
+  let id = null;
+  try { const m = body && body.length ? JSON.parse(body.toString("utf8")) : null; if (m && !Array.isArray(m) && typeof m === "object" && isId(m.id) && typeof m.method === "string") id = m.id; } catch { /* no id */ }
+  return sendJson(res, 403, rpcError(id, -32600, `MoorAI MCP gateway: ${reason}`));
+}
 // What the MCP SDK client makes of one parsed message (types.js JSONRPCMessageSchema: strict request,
 // notification, result and error schemas; anything else it refuses, unparsed): "request",
 // "notification", "result", "error", or null.
@@ -174,6 +186,18 @@ function upstreamUrl(route, reqUrl) {
   return u;
 }
 
+// → { block: null | reason, lookup } for one request to the route's upstream (./egress.mjs). Alerts are
+// posted once per distinct alert per process, with the route's server label and tool "upstream".
+async function upstreamEgress(route, target, method) {
+  try { await ensurePolicy(); } catch { /* no policy: no rules */ }
+  const st = { policy: policyState.POLICY, system: gatewaySystemConfig(), serviceId: GW_SERVER_MODE.active ? GW_SERVER_MODE.serviceId || "" : "", coach: policyState.COACH };
+  const t = upstreamTarget(target, method);
+  const post = (a) => { if (seenOnce(`egress-upstream:${route.server}:${a.contentHash}:${a.decision}`)) alertProfile(route.server, "upstream", a); };
+  const j = judgeUpstream(t, st);
+  for (const a of j.alerts) post(a);
+  return { block: j.block, lookup: egressLookup(t, st, post) };
+}
+
 function readBody(req, limit) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -193,7 +217,10 @@ export function createGatewayServer(cfg) {
   // the route's drift verdicts are cleared then (fail closed), as for a listing forwarded unjudged.
   const routes = new Map(cfg.routes.map((r) => {
     const guard = createGuard(r);
-    return [r.path, { route: r, guard, pending: createPendingLists({ ...PENDING_OPTS, onDrop: () => guard.listingUnjudged() }) }];
+    // x-mcp-header annotations learned from the route's judged listings (./headers-2026.mjs); a tool whose
+    // annotations make its definition invalid is reported once, content-free (the route label only).
+    const params = createParamHeaders({ onInvalid: () => reportOnce("MCP gateway: tool definition with an invalid x-mcp-header annotation", `gateway:x-mcp-header:invalid:${r.server}`, "Medium") });
+    return [r.path, { route: r, guard, params, pending: createPendingLists({ ...PENDING_OPTS, onDrop: () => guard.listingUnjudged() }) }];
   }));
   if (cfg.schemaValidation === undefined) cfg = { ...cfg, schemaValidation: "enforce" };
   if (cfg.maxResponseBytes === undefined) cfg = { ...cfg, maxResponseBytes: DEFAULT_MAX_RESPONSE_BYTES };
@@ -209,18 +236,38 @@ export function createGatewayServer(cfg) {
   }
 
   const tracer = createTracer({ tenantKey: CONFIG.installToken, agentName: IDENTITY.agentName });
+  // The upstream's protected resource metadata is read with the route's egress checks (./egress.mjs).
+  const discovery = createDiscovery({ fetchJson: async (url, { route }) => {
+    const eg = await upstreamEgress(route, new URL(url), "GET");
+    return eg.block ? null : getJson(url, { lookup: eg.lookup });
+  } });
 
   async function handle(req, res, trace) {
     // DNS rebinding: a loopback-only gateway answers only to loopback Host names and loopback / listed
     // browser Origins (spec: "Servers MUST validate the Origin header").
     if (!cfg.allowRemote && !hostOk(req.headers.host)) return sendJson(res, 403, rpcError(null, -32600, "Forbidden: Host is not loopback"));
     if (!originOk(req.headers.origin, cfg.allowOrigins)) return sendJson(res, 403, rpcError(null, -32600, "Forbidden: Origin not allowed"));
+    // OAuth 2.0 Protected Resource Metadata for a route (./oauth-discovery.mjs): public metadata a client
+    // reads before it holds any credential, so it is served ahead of the gateway token.
+    const wk = new URL(req.url, "http://x").pathname.replace(/\/+$/, "");
+    if (req.method === "GET" && wk.startsWith(PRM_PREFIX)) {
+      const pr = prmRoute(wk, cfg.routes);
+      if (!pr) return sendJson(res, 404, { error: "no MCP route at this metadata path" });
+      const m = await discovery.metadata(pr, `http://${req.headers.host}${pr.path}`, { route: pr });
+      return sendJson(res, m.status, m.body, { "Cache-Control": "no-store" });
+    }
     if (cfg.token && !tokenOk(req.headers[TOKEN_HEADER], cfg.token)) return sendJson(res, 401, rpcError(null, -32600, "Unauthorized: missing or wrong X-MoorAI-Gateway-Token"));
 
     const path = new URL(req.url, "http://x").pathname.replace(/\/+$/, "") || "/";
     const entry = routes.get(path);
     if (!entry) return sendJson(res, 404, rpcError(null, -32601, "No MCP route at this path"));
     const { route, guard, pending } = entry;
+    // 2026-07-28 authorization: "Access tokens MUST NOT be included in the URI query string". Refused before
+    // the body is read; reported once per route, content-free.
+    if (new URL(req.url, "http://x").searchParams.has("access_token")) {
+      reportOnce("MCP gateway: access token in the query string refused", `gateway:query-token:${route.server}`, "Medium");
+      return sendJson(res, 400, rpcError(null, -32600, "MoorAI MCP gateway: an access token in the query string is refused (MCP authorization: tokens go in the Authorization header)"));
+    }
     // Placeholder credentials: refused here, before the body is read or anything is gated or counted.
     let swaps = null;
     if (gate) {
@@ -241,8 +288,13 @@ export function createGatewayServer(cfg) {
 
     // ---- the CALL side: validate the body (C5), then gate every tools/call in it ----
     // Keyed by idKey(id): the id as the MCP SDK client matches a response to it (Number(id)).
-    const ctx = { idTool: new Map(), idMethod: new Map(), paged: new Set(), requestIds: [], route, guard, pending, cfg, httpMethod: req.method };
+    const ctx = { idTool: new Map(), idMethod: new Map(), paged: new Set(), requestIds: [], route, guard, pending, cfg, httpMethod: req.method, params: entry.params, discovery, prmUrl: `http://${req.headers.host}${PRM_PREFIX}${route.path}` };
     const ckey = clientKey(route, req);
+    // F23: the egress rules on the gateway's own upstream connection (./egress.mjs): by name before the
+    // request is sent, then on each address the socket's lookup returns (eg.lookup, also for a re-list).
+    // A blocked upstream is refused here, before the gate, whose block-mode re-list would reach it.
+    const eg = await upstreamEgress(route, upstreamUrl(route, req.url), req.method);
+    if (eg.block) return refuseEgress(res, body, eg.block);
     if (req.method === "POST" && body.length) {
       const enforce = cfg.schemaValidation === "enforce";
       const validating = cfg.schemaValidation !== "off";
@@ -294,7 +346,7 @@ export function createGatewayServer(cfg) {
         if (left && ctx.requestIds.length) return refuseCooldown(res, parsed, left);
         // Every message of a batch must agree with the mirrored headers too (a header names one message).
         for (const m of msgs) {
-          const mm = headerMismatch(req, m);
+          const mm = headerMismatch(req, m) || missingStandardHeader(req, m) || entry.params.check(req, m);
           if (mm) { noteRefusal(ckey, route); return sendJson(res, 400, rpcError(Array.isArray(parsed) ? null : parsed.id, -32020, `Header mismatch: ${mm}`)); }
         }
         const blocked = new Map();
@@ -312,7 +364,7 @@ export function createGatewayServer(cfg) {
           try {
             // Block mode may first list the upstream itself (./relist.mjs), with this request's session.
             const target = upstreamUrl(route, req.url);
-            const fetchPage = createRelistFetcher({ target, headers: relistHeaders(req.headers, { swaps, trace }), agent: AGENTS[target.protocol], creds, meta: relistMeta(m), maxBytes: cfg.maxResponseBytes });
+            const fetchPage = createRelistFetcher({ target, headers: relistHeaders(req.headers, { swaps, trace }), agent: AGENTS[target.protocol], creds, meta: relistMeta(m), maxBytes: cfg.maxResponseBytes, lookup: eg.lookup });
             const d = await guard.gateCall(m, { fetchPage });
             if (d.block) { blocked.set(m, d.block); if (!d.failClosed) policyRefused = true; }
           } catch {
@@ -348,11 +400,12 @@ export function createGatewayServer(cfg) {
     headers["accept-encoding"] = "identity"; // a compressed body could not be scanned
     if (body.length || req.method === "POST") headers["content-length"] = String(body.length);
     const lib = target.protocol === "https:" ? https : http;
-    const up = lib.request(target, { method: req.method, headers, agent: AGENTS[target.protocol] });
+    const up = lib.request(target, { method: req.method, headers, agent: AGENTS[target.protocol], lookup: eg.lookup });
     res.on("close", () => { if (!res.writableFinished) up.destroy(); }); // client went away = cancellation
-    up.on("error", () => {
+    up.on("error", (e) => {
       if (res.writableEnded) return; // already answered (e.g. an oversized response refused, then dropped)
-      if (!res.headersSent) sendJson(res, 502, rpcError(null, -32603, "Upstream MCP server unreachable"));
+      if (!res.headersSent && e && e.code === EGRESS_CODE) sendJson(res, 403, rpcError(null, -32600, `MoorAI MCP gateway: ${e.message}`));
+      else if (!res.headersSent) sendJson(res, 502, rpcError(null, -32603, "Upstream MCP server unreachable"));
       else res.destroy();
     });
     up.on("response", (raw) => {
@@ -402,6 +455,10 @@ function decoded(ur, enc) {
 }
 
 function onUpstream(ur, res, ctx) {
+  // An upstream Bearer challenge names the gateway's metadata for the route (./oauth-discovery.mjs).
+  if ((ur.statusCode === 401 || ur.statusCode === 403) && ur.headers["www-authenticate"] && ctx.discovery) {
+    try { ur.headers["www-authenticate"] = ctx.discovery.challenge(ctx.route, ur.headers["www-authenticate"], ctx.prmUrl); } catch { /* forwarded as sent */ }
+  }
   const ctype = String(ur.headers["content-type"] || "").toLowerCase();
   const enc = String(ur.headers["content-encoding"] || "identity").trim().toLowerCase();
   const passthrough = () => { res.writeHead(ur.statusCode, ur.statusMessage, { ...respHeaders(ur), ...(ur.headers["content-length"] ? { "content-length": ur.headers["content-length"] } : {}) }); ur.pipe(res); };
@@ -510,7 +567,10 @@ function claim(x, m, dispatchable) {
 // A claimed answer that did not reach the client (it went away first) is outstanding again.
 const unclaim = (x, claims) => { for (const [m, c] of claims) x.pending.add(m.id, c); };
 // One server → client message, judged: schema stage, then the result / listing gate.
+// A judged listing teaches the route's x-mcp-header annotations (./headers-2026.mjs).
+const learnTools = (x, m) => { if (x.params && isObj(m) && isObj(m.result) && Array.isArray(m.result.tools)) { try { x.params.learn(m.result.tools); } catch { /* a hint */ } } };
 async function judge(x, m, path, claims, dispatchable) {
+  learnTools(x, m);
   const rep = checkServerMessage(m, x, path);
   const c = claim(x, m, dispatchable);
   if (c) claims.push([m, c]);
@@ -658,6 +718,7 @@ function onSse(ur, res, x) {
       const claims = [];
       // the SDK dispatches a "message" event holding one message; an array or another type, never
       const scan = async (m, dispatchable) => {
+        learnTools(x, m);
         const c = claim(x, m, dispatchable);
         if (c) claims.push([m, c]);
         try { return await guard.gateResult(m, x.toolOf(m && m.id), { paged: c ? c.paged : x.pagedOf(m && m.id), tightenOnly: !c }); } catch { listUnjudged(x); return failClosedEvent(x, m); }

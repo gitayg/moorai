@@ -511,10 +511,31 @@ must turn the run red.
 
 ## Limits
 
-- **OAuth discovery through the gateway is untested.** A client that runs the authorization flow reads
-  the upstream's `WWW-Authenticate` / protected-resource metadata, whose `resource` is the upstream URL,
-  not the gateway's; a client that checks the two match may refuse. A static `Authorization` header in
-  the client's config works (tested with the fake upstream only).
+- **OAuth discovery (2026-07-28 authorization, RFC 9728).** The gateway serves
+  `/.well-known/oauth-protected-resource/<route>`: the upstream's own protected-resource metadata, checked
+  against the upstream URL (RFC 9728 3.3: when they differ "the data contained in the response MUST NOT be
+  used", so the gateway answers 502), with `resource` set to the gateway route the client uses. The
+  `resource_metadata` of an upstream 401 / 403 Bearer challenge is rewritten to that URL, or added when
+  absent; `scope` and the other parameters are kept. The upstream metadata is read only from the
+  upstream's own origin, through the route's egress checks. The gateway runs no authorization flow and
+  stores no token. "Access tokens MUST NOT be included in the URI query string": a request with
+  `access_token` in the query is refused (400). Scope: the client requests its token with the gateway
+  route as the RFC 8707 resource, so an upstream that validates the token's audience strictly ("MCP
+  servers MUST validate that access tokens were issued specifically for them as the intended audience")
+  refuses it unless its authorization server issues tokens for that resource. Tested against a fake
+  resource server only (`test/mcp-gateway-2026.test.mjs`); no real authorization server or real OAuth
+  client has been run through it. A static `Authorization` header in the client's config works as before.
+- **2026-07-28 request headers.** `Mcp-Param-<Name>` headers mirrored from `x-mcp-header` tool parameters
+  (learned from the route's judged `tools/list`) are validated against the body ("Any server that processes
+  the message body MUST validate that encoded header values, after decoding if Base64-encoded, match the
+  corresponding values in the request body"); unrecognized ones are forwarded. A 2026-era request without
+  `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` (where required) is refused, the `server/discover`
+  version probe included (Claude Code 2.1.295 sends both headers on its probe, measured 2026-10-21).
+  Both answer 400 / `-32020`.
+- **Egress rules.** Every `tools/call`'s arguments are judged by the hook's egress rules for
+  `mcp__<route>__<tool>`, and the gateway's own connection to the upstream is judged by host, port, method
+  and path, and by cidr rules on every address its DNS lookup returns (`mcp-gateway/egress.mjs`). A blocked
+  upstream is refused before the `tools/call` gate, so the block-mode tool re-list never reaches it.
 - The 2026-07-28 `subscriptions/listen` stream and MRTR `InputRequiredResult` pass through and are scanned
   like any other response; neither was exercised against a server that implements them.
 - Run against a real remote MCP server (an AppCrane MCP endpoint over Streamable HTTP: initialize, tools/list with 62 tools and a read-only tools/call passed through intact; a malformed message and an over-cap response were refused), with a scripted client; that server issued no session id.
@@ -538,7 +559,7 @@ must turn the run red.
 - Claude Code 2.1.284 opens with a `server/discover` probe (2026-07-28 era), which the gateway forwards.
   The fake upstream does not answer it as a modern server would, so Claude Code falls back to
   `initialize` (2025 era).
-- Still not tested: OAuth discovery through the gateway; a real client and a real remote server in the
+- Still not tested: OAuth discovery through the gateway with a real client and a real authorization server; a real client and a real remote server in the
   same run, so no session id issued by a real remote server behind a real client; a completed 2026-07-28
   session with a real client; a live model call through the gateway with a policy-denied argument (the
   deny case was run live only through the stdio proxy); a result-stage block seen by a real client;
