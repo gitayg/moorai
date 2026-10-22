@@ -2710,6 +2710,42 @@
         }
       ],
       "stride": "Tampering"
+    },
+    {
+      "id": 84,
+      "category": "Agents & Permissions",
+      "threat": "Weakening oversight",
+      "example": "While doing ordinary work, the agent weakens the project's own oversight: it sets an alert, notification or paging suppression flag, empties an alert recipient list or on-call route, removes or comments out monitor, alerting, audit-log or telemetry wiring, deletes a monitoring regression test or rewrites it to assert the monitor is absent, or sets a config key or env var that turns monitoring off. A sub-agent can make the change and the parent report the task complete without mentioning it.",
+      "response": "Review why the agent is changing monitoring, alerting, audit logging or a safety test before it goes through. An instruction such as \"don't send messages\" is not permission to silence the alerts that watch the work, and a change to match a reference path is not permission to remove a monitor.",
+      "saferAlternative": "Leave monitoring, alert routing, audit logging and safety tests as they are; ask the monitor's owner for an approved change and tell the user.",
+      "severity": 4,
+      "likelihood": 3,
+      "riskScore": 12,
+      "riskLevel": "High",
+      "sources": [
+        "Agent safety",
+        "OWASP_Agentic"
+      ],
+      "owasp": "LLM06",
+      "atlas": "AML.T0053",
+      "atlasPartial": {
+        "AML.T0053": "oversight-weakening edits and commands only"
+      },
+      "owaspAgentic": [
+        "ASI10"
+      ],
+      "owaspAgenticPartial": {
+        "ASI10": "an agent weakening the project's monitoring, alerting, audit logging or safety tests, and not disclosing it"
+      },
+      "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1685",
+          "coverage": "partial",
+          "reason": "an agent's own edits and commands that suppress alerting, empty alert routes, remove monitor, audit-log or telemetry wiring, stop or delete a monitoring component, or weaken a monitoring test"
+        }
+      ],
+      "stride": "Repudiation"
     }
   ]
 }

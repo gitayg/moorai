@@ -147,7 +147,8 @@ const AGENTIC = [
   [73, "ASI06", "local agent transcript files only", "agent-history-tamper matches a forged or rewritten transcript store"],
   [66, "ASI07", "sub-agent handoffs on one host, logged and scanned for injection; no message authentication", "handoff edges logged, delegated prompt scanned, orphan sub-agents flagged"],
   [75, "ASI09", "deceptive links in output only", "out-link-deceptive compares a link's shown address with its real host"],
-  [64, "ASI10", "actions outside a declared envelope or a learned baseline, by name and path", "entitlement drift and learned first-seen drift post under #64"]
+  [64, "ASI10", "actions outside a declared envelope or a learned baseline, by name and path", "entitlement drift and learned first-seen drift post under #64"],
+  [84, "ASI10", "an agent weakening the project's monitoring, alerting, audit logging or safety tests, and not disclosing it", "the oversight checks judge the agent's own edits and commands, and Stop checks the final message discloses an allowed change"]
 ];
 
 const MCP = [

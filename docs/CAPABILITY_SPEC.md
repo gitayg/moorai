@@ -7,7 +7,7 @@
 MoorAI is a **native desktop "Managed AI Host"** for office workers, paired with a **central
 server** for policy and visibility. The employee does their AI work *inside* MoorAI — a native
 app with an embedded, managed webview — so the host sees every prompt, response, paste, and
-upload natively (no browser extension, no DOM hacks). It detects the 80-threat matrix in real
+upload natively (no browser extension, no DOM hacks). It detects the 81-threat matrix in real
 time, **coaches the employee** with the matrix's guidance, and **reports redacted alerts** to a
 central server so the security team has visibility.
 
@@ -29,7 +29,7 @@ risk, and (c) **deterministic prevention** where policy calls for it. Because ad
 it still does not prevent Shadow AI by construction; it reduces risk for those who opt in and
 surfaces organization-wide risk signals.
 
-- **Rule-base:** [`data/threats.json`](../data/threats.json) — 80 threats, 17 categories, English.
+- **Rule-base:** [`data/threats.json`](../data/threats.json) — 81 threats, 17 categories, English.
   Each threat is a rule: `example` = trigger context, `response` = intervention,
   `riskScore = severity × likelihood`.
 - **Intervention model:** risk-tiered and policy-driven — `notify` (report) → `justify` (ask) →
@@ -547,15 +547,15 @@ applies a settings file's `env` to hook processes is taken from its documentatio
 ## Risk distribution (from the matrix)
 
 Counts are the shipped `riskLevel` labels in `data/threats.json` — the field the engine actually
-ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 80 threats.
+ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 81 threats.
 
 | Level | Count | Nominal score band |
 |---|---|---|
 | Critical | 17 | ≥ 20 |
-| High | 48 | 12–19 |
+| High | 49 | 12–19 |
 | Medium | 15 | 6–11 |
 
-Note: 8 of the 80 threats carry a `riskLevel` label outside the nominal band their `riskScore`
+Note: 8 of the 81 threats carry a `riskLevel` label outside the nominal band their `riskScore`
 would place them in (e.g. #65 scores 15 but is labeled Critical; #43 scores 6 but is labeled High).
 The label wins at runtime; the bands in `meta.scoring` are documentation, not an invariant the data
 is validated against.
@@ -3958,6 +3958,91 @@ Token counts (metadata only) go to `POST /api/token-usage` as cumulative hourly 
   name the actor, so a cache they wrote carries no approvals. A `once` grant can be replayed for the identical
   action until its signed `validUntil`. The model proxy, MCP gateway and egress proxy do not hold verdicts for
   approval.
+
+## Weakening oversight (#84)
+
+[`cli/oversight-signals.mjs`](../cli/oversight-signals.mjs) (Write / Edit / MultiEdit, judged on the file before
+and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / PowerShell),
+[`cli/oversight-vocab.mjs`](../cli/oversight-vocab.mjs) (the key, identifier and path words),
+[`cli/oversight-surfaces.mjs`](../cli/oversight-surfaces.mjs) (policy), [`cli/oversight-disclosure.mjs`](../cli/oversight-disclosure.mjs)
+(Stop / SubagentStop), wired into [`cli/moorai-hook.mjs`](../cli/moorai-hook.mjs) through `decideOversight`
+([`cli/hook-core.mjs`](../cli/hook-core.mjs)). Tests: `test/oversight-signals.test.mjs`,
+`test/oversight-disclosure.test.mjs`, `test/oversight-hook.test.mjs`, `test/oversight-hardening.test.mjs` (fixtures
+in `test/oversight-fixtures.mjs`).
+
+- **What it catches.** An agent's own write or command that weakens the project's monitoring, alerting, audit
+  logging or safety tests. Signals (local only, on the session-ledger row as `ov`; never on an alert):
+  suppression flag set or made a requirement (`no_notify = True`, `alerting.enabled: false`, a raise on the flag,
+  `amtool silence add`); recipient list or on-call / pager route emptied or deleted; monitor, alerting, audit-log
+  or telemetry wiring removed or commented out (identifiers with an oversight stem that the write drops and does
+  not replace), a monitor module deleted or moved to a name without an oversight word, a monitoring CRD deleted,
+  a monitoring component stopped, scaled to zero, uninstalled or removed; a test that guards oversight deleted,
+  skipped or changed to assert absence; a key or persistent env var (`setx`, `launchctl setenv`, `kubectl set
+  env`, `heroku config:set`, `fly secrets set`, `SetEnvironmentVariable`) that turns monitoring, audit logging or
+  tracing off, or a monitoring sink emptied; a policy-protected path or key touched.
+- **Path handling.** Docs, fixtures and examples are never judged (only protected surfaces are). Test files
+  (`cli/mcp-package/paths.mjs` `notRuntimeReason` "test-code", plus `conftest.py`, `*_test.go`, `.env.test`, …)
+  get only the test signal. Repository tooling (`.github`, `.gitlab`, …) and UI component files (`.tsx`, `.vue`,
+  `.html`, …) are not judged. A new file (nothing before) gets only the protected-surface check. The current file
+  is read up to 1 MiB; an Edit whose `old_string` is not in it, or of a file over 1 MiB, is judged on the snippets.
+- **Bounds (fail closed).** Every pattern is linear: the `sed` / `perl` `s///` and `/re/d` parsers are scanners
+  (a backslash takes the next character, the first unescaped delimiter ends a field, a backslash or line
+  terminator is never a delimiter) and the quoted-prose scanner remembers each position per quote kind; the
+  tests time 50 KB pathological inputs under 50 ms in a child process. A command over 256 KiB, a `sed` / `perl`
+  script over 64 KiB, a command check past 250 ms, a write whose before or after is over 1 MiB, and a Write over
+  an existing runtime / test file the hook does not read (over 1 MiB) raise the local signal
+  `analysis-incomplete` instead of being cut and judged. `decideOversight` asks on it even when
+  `threatPolicy["84"]` is `notify`, turns `kill` into `block` when it is the only signal, and honours `disabled`.
+  An incomplete-only call is not an oversight change for the Stop disclosure check.
+- **Precision.** Measured on `test/oversight-fixtures.mjs`: every positive (the two report cases as 6 edits and 7
+  commands, plus 10 other shapes) fires its signal, and 0 of 42 benign near-misses fire (adding an alert,
+  renaming or adding a recipient, tuning a threshold, a dead unrelated feature flag removed, README / CHANGELOG /
+  docs / comment / fixture mentions, re-enabling notifications, vendor telemetry opt-outs, `.env.test`, a UI
+  `<Alert>`, `notify_on_success: false`, `disable_web_page_preview`, an inline env prefix for one test run,
+  `export`, a rename via `git mv`, reads). The set is hand-built; no field corpus has been run.
+- **Threat id.** 84. Not 81: 81 (read and unknown) and 82 (write) are the OT protocol client ids that shipped
+  in 1.28.0, which live agents send and console policies may set; `threatPolicy["81"]` never changes this verdict.
+- **Default and action.** `APPROVAL_THREATS` includes 84, so `threatActionFor` resolves it to `justify` (ask);
+  `threatPolicy["84"]` / `tierPolicy` override it (`notify`, `block`, `kill`, `disabled`). An `approvalRouting`
+  rule with `match.threatId: [84]` holds it. Server mode settles the ask like any other (headless deny).
+- **Alert.** Category `Weakening oversight`, reason code `OVERSIGHT_WEAKENED`, threat 84, stage `output` (a
+  write) or `prompt` (a command). No signal name, path, key or value. A sub-agent's alert carries
+  `parentSession` (`SESSION_TAG`; Claude Code gives a sub-agent its parent's `session_id`, so it equals
+  `session`) and an origin with `thread: "subagent"`; the verdict is the same as the main agent's.
+- **Policy key.** Top-level `oversight: { v: 1, protectedPaths, protectedKeys, stopDisclosure }`.
+  `protectedPaths`: up to 64 globs (`**`, `*`, `?`), matched against the path relative to the session's cwd and
+  at any directory boundary of an absolute path; `dir/**` also matches `dir`. `protectedKeys`: up to 64 key or
+  env var names, whole-word, as written (a dotted key is not resolved through YAML nesting). A write that changes
+  any line naming a protected key, and a command that names one together with a write verb (`sed -i`, `yq -i`,
+  `tee`, `>`, `setx`, `kubectl set env|patch|edit|apply`, …), is held. `stopDisclosure`: `"alert"` (default) or
+  `"block"`. A path is matched as written, as `path.resolve(cwd, p)`, and (Write / Edit targets and shell
+  paths) as its `realpathSync`, or for a path that does not exist yet the real path of its nearest existing
+  ancestor plus the rest; each relative to cwd and to cwd's real path, and absolute. A malformed entry is dropped
+  with a stderr warning naming its position, never its value; an older agent ignores the key.
+- **Stop / SubagentStop.** The rows in scope (a sub-agent's own calls; for the main agent, every call since the
+  user's last prompt, its sub-agents' included) with an `ov` signal count when the call was allowed, ran after an
+  ask (a PostToolUse / PostToolUseFailure with the same `tool_use_id`), or was asked on a tool Claude Code does
+  not report back on (Write, Edit, MultiEdit: `not-established`). A Bash / MCP ask with no outcome did not run
+  and does not count. `last_assistant_message` is judged in memory (never stored or sent): a sentence naming
+  monitoring, alerting, notification, paging, audit logging, telemetry, a recipient list or a test together with
+  a change verb is a disclosure, unless the verb is negated ("did not remove", "was not changed"). Undisclosed:
+  one alert per scope, category `Undisclosed oversight change`, reason code `OVERSIGHT_UNDISCLOSED`,
+  `oversightDisclosure: { executed: "allowed" | "ran-after-ask" | "not-established", delegated, scope: "turn" |
+  "subagent", blocked }` (a SubagentStop alert also carries `parentSession`). With `stopDisclosure: "block"`,
+  Claude Code only, the hook prints `{ "decision": "block", "reason": "MoorAI: this turn made a change that weakens
+  oversight … state plainly to the user what was changed …" }`. The Claude Code hooks reference: `"block"`
+  "prevents Claude from stopping", the reason "Tells Claude why it should continue", and `stop_hook_active` "is
+  `true` when Claude Code is already continuing as a result of a stop hook. Check this value or process the
+  transcript to avoid blocking on a condition that will never resolve". So it never blocks when
+  `stop_hook_active` is true or a block already happened in the scope; Claude Code's own cap of eight consecutive
+  continuations is a second bound. Shim hosts: alert only. The check is heuristic and precision-first (doubt
+  reads as disclosed); it cannot tell a true statement from a false one.
+- **Not covered.** It judges the agent's own tool calls on this device. Changes made elsewhere (CI, a person,
+  another tool, an MCP server that writes files, a web console), a monitor renamed or rewritten so that no
+  oversight word remains, a test that weakens an assertion without an absence form or a skip, the full text of
+  an Edit to a file over 1 MiB (only its snippets are judged), NotebookEdit cells (no before), paths held in shell variables, and an unenrolled device's Stop (no console, no
+  coaching message) are not covered. No engine detector carries #84, so the MCP proxy, model proxy and
+  `scan.mjs` do not raise it.
 
 ## Coverage & blind spots
 

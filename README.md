@@ -42,6 +42,7 @@ That's the exact trade MoorAI refuses.
 - **Session-level escalation** — what one call cannot show, the session can. An injection-class finding on content the agent ingested (a fetched page, a command's output, an MCP result, a file it read) taints the session for 30 minutes, and an outbound action or credential-file read inside that window raises `Agent behavior: outbound action after untrusted content` (#59). Also across calls: a credential read that was staged (copied, written, encoded or archived) and then sent out; an archive then sent out; a mass read (30 distinct files) then an upload of 4 KB or more to a destination new to the session; and slow exfiltration (5 or more transfers of up to 8 KB each to one destination, summing 16 KB or more). A decaying per-session score posts one alert when it crosses its threshold. Report-only by default (`policy.sessionRisk.mode: "ask"` raises the outbound call to ask, `"off"` disables it). The state on disk is keyed hashes and counts only.
 - **Runaway circuit breaker** — an agent stuck in a loop: the same call 15 times in 5 minutes with an unchanged result, or a 2–4 call cycle repeated 5 times with unchanged results, raises `Agent behavior: runaway loop` (#38). A result that changes is progress, so `npm test` re-run while the agent fixes the code never trips it. Report-only by default; `policy.circuitBreaker.mode: "deny"` pauses the session's tool calls for 15 minutes. Token spend is not measured: no hook event carries usage.
 - **Claimed success vs reality** — at the end of a turn, when the agent's final message says the work succeeded while the turn's commands or MCP calls failed, were denied or were interrupted and were not redone, MoorAI reports `Agent reported success but tool calls failed` (Medium). The message is read in memory, never stored or sent. Report-only, and tuned for precision: on a locked split of a blind-labelled corpus, 100% precision (17 of 17) and 54.8% recall.
+- **Weakening oversight (#84)** — an agent's own edit or command that weakens the project's monitoring, alerting, audit logging or safety tests: a suppression flag set, an alert recipient list or on-call route emptied, monitor or audit-log wiring removed, a monitoring test deleted or rewritten to assert absence, a key that turns monitoring off. Judged on the change, not on a mention. Asks by default (routable to approval routing), and at Stop the agent's final message is checked for whether it says so. See [Weakening oversight](#weakening-oversight-84).
 - **Verdict provenance** — every alert and every on-device ledger row says which policy decided (`policyId`), which branch decided (`reasonCode`), and whether the verdict was enforced as configured (`AS_CONFIGURED`, `STRENGTHENED`, `LIMITED`, or `UNEVALUATED`). A control that never ran — unreadable input, a hook error, a size cap, break-glass — is recorded as `UNEVALUATED`, never as a pass.
 - **Coverage integrity** — the hook sends a content-free daily heartbeat per agent host with the settings that weaken or switch off protection (hooks disabled, `bypassPermissions`, Codex `approval_policy = "never"`, a sandbox off, …), and the desktop app reports when each agent host was last used, independent of every hook. The console raises a finding for an agent in use with no MoorAI hook traffic, a weakened setting, and a hook removed or gone stale.
 - **Credential exposure map** — the daily heartbeat says, by class only, which credentials an agent on the device can reach (cloud CLIs, SSH keys, kubeconfig, `gh`, `.npmrc`, `.netrc`, MCP configs, project `.env` files, allow-listed env var names, AI keys at rest by keyed hash), which ones an agent read, whether a profile name looks like production, and the destination class the session reached within 10 minutes of the read. Never a path, a value or a name it was not told it may send. See [Credential exposure map](#credential-exposure-map).
@@ -1364,6 +1365,73 @@ body is read as part of the command when what it feeds runs it (`bash <<EOF`, `s
 Not seen: a downloaded file renamed before it runs, paths held in variables, `scp`/`rsync` uploads, and
 hosts outside the list. [docs/DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md) §6 and §13 have the detail.
 
+### Weakening oversight (#84)
+
+A coding agent doing ordinary work can weaken the project's own oversight: read "don't send messages" as
+permission to silence the alerts that watch the job, or remove a monitor and rewrite its regression test to
+match a reference change. MoorAI judges the agent's own Write, Edit and MultiEdit calls (the file before and
+after the write) and its Bash / PowerShell commands, and flags the change, never a mention:
+
+- an alert, notification or paging suppression flag set on (`no_notify = True`, `suppress_alerts: true`,
+  `ALERTS_DISABLED=1`), an alerting switch set off (`alerting: { enabled: false }`), or a raise / assert that
+  makes suppression a requirement; an `amtool silence add`;
+- an alert recipient list or on-call / pager route emptied or deleted (`ping_recipients = []`, a YAML route
+  removed, `yq -i '.page_recipients = []'`);
+- monitor, alerting, audit-log or telemetry wiring removed or commented out, a monitor module deleted
+  (`git rm monitoring/scope.py`), a monitoring CRD deleted, a monitoring component stopped, scaled to zero or
+  uninstalled;
+- a test that guards oversight deleted, skipped, or changed to assert absence
+  (`assert "monitor_ctx" not in ...`);
+- a key or persistent env var that turns monitoring, audit logging or tracing off (`OTEL_SDK_DISABLED=true`
+  in a service env file, `AUDIT_LOG_ENABLED = False`, `setx DISABLE_MONITORING 1`), or a monitoring sink
+  emptied (`SENTRY_DSN=`).
+
+Not a finding: docs, READMEs, changelogs, fixtures, examples and comments; a new file; adding alerts, renaming
+a recipient, tuning a threshold; vendor telemetry opt-outs (`NEXT_TELEMETRY_DISABLED`, `DO_NOT_TRACK`); test-only
+env files (`.env.test`); an inline env prefix or `export` for one run (`OTEL_SDK_DISABLED=true npm test`);
+CI workflow files and UI components. On a hand-built benign near-miss set of 42 edits and commands, 0 fired.
+
+**Default: ask** (`justify`), never silent. `threatPolicy["84"]` can set it to `notify`, `block` or `kill` (84, not
+81: 81 and 82 are the OT protocol client read and write ids from 1.28.0, so `threatPolicy["81"]` never touches
+this check), and an
+`approvalRouting` rule with `match: { threatId: [84] }` holds it for an approver. The alert is content-free:
+category `Weakening oversight`, reason code `OVERSIGHT_WEAKENED`, no path, key or value. A sub-agent's change is
+judged exactly like the main agent's and its alert carries `parentSession` (the delegating session) and an
+origin with `thread: "subagent"`.
+
+**Protected surfaces.** The signed policy can declare paths and keys that are always judged under #84:
+
+```json
+"oversight": { "v": 1, "protectedPaths": ["src/monitoring/**", "config/alerting.yaml"], "protectedKeys": ["no_notify", "ALERTS_ENABLED"], "stopDisclosure": "alert" }
+```
+
+Any Write / Edit of a protected path, any write that changes a line naming a protected key, and any command that
+deletes, moves or writes one is held. A path is matched as written, resolved against the working directory
+(`ops/x/../alerting/rules.yaml`, a relative path from a subdirectory) and through its real path, so a symlinked
+file or directory (or, for a new file, a symlinked parent) cannot dodge a protected surface. At most 64 of each; a
+malformed entry is dropped with a warning.
+
+**Bounded, and fail closed.** The checks run in linear time (no backtracking pattern). A command longer than
+256 KiB, a `sed` / `perl` script longer than 64 KiB, a command whose check runs past 250 ms, a write whose before
+or after text is over 1 MiB, and a Write over an existing runtime file too large to read (over 1 MiB) are never
+cut and judged clean: they are held as an incomplete analysis, an ask even where the policy lowers #84 to
+`notify` (never a kill on its own; a policy that disables #84 still disables it).
+
+**Stop-time disclosure (Claude Code).** At Stop and SubagentStop, if the turn made an oversight change that was
+allowed (by policy, an exception or an approver) or asked on a tool Claude Code does not report back on (Write,
+Edit), MoorAI reads the final message in memory and checks whether it states the change. If not, it posts one
+content-free `Undisclosed oversight change` alert (`OVERSIGHT_UNDISCLOSED`). The main agent is judged on its
+sub-agents' changes too: the user hears about a delegated change only from the parent. With
+`"stopDisclosure": "block"` Claude Code is answered `decision: "block"` with a reason telling the agent to state
+the change to the user; never when `stop_hook_active` is set, and once per turn. Other hosts: alert only. The
+check is a heuristic: a sentence that names monitoring, alerting, a recipient list, audit logging or a test and a
+change verb counts as a disclosure unless the verb is negated, so it cannot tell a true statement from a false one.
+
+**What it does not cover.** It judges the agent's own tool calls on this device. A change made elsewhere (in
+CI, by a person, by another tool, through an MCP server that edits files), a monitor disabled through a web
+console, and a renamed or rewritten monitor that keeps no oversight word are not seen. An Edit of a file over
+1 MiB is judged on its old and new snippets only. Details: [docs/CAPABILITY_SPEC.md](docs/CAPABILITY_SPEC.md#weakening-oversight-84).
+
 ### Industrial protocol clients run from an agent shell
 
 MoorAI governs the agents that can reach controllers; it never runs inside a PLC or a safety system. A Bash
@@ -2523,7 +2591,7 @@ complete tool detail, and no argument text reached the console.
 ATT&CK v20 (13 October 2026) added Direct Prompt Injection (T1699), Indirect Prompt Injection (T1698),
 AI-Enabled Exfiltration (T1700), Impair Autonomous Defenses (T1685.007) and AI Result Poisoning (T1608.007),
 and rewrote Compromise Software Dependencies and Development Tools (T1195.001) to name agent skill files and
-IDE task files. 47 of the 80 rules map to 65 v20 techniques through 92 credits: 3 full, 76 partial and 13
+IDE task files. 48 of the 81 rules map to 65 v20 techniques through 93 credits: 3 full, 77 partial and 13
 `none`. 33 rules (data classes, governance and model-error risks) have no ATT&CK counterpart, and each says why.
 
 Over the 71 v20 techniques an AI agent can perform or be aimed at (`ATTACK_SCOPE` in `data/attack.js`), 2 are
@@ -2776,7 +2844,7 @@ so internal files can move without breaking consumers.
 
 ## How it works
 
-A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against an 80-threat matrix (17 categories) + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is MIT; the console is commercial.
+A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against an 81-threat matrix (17 categories) + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is MIT; the console is commercial.
 
 ## Learn more
 

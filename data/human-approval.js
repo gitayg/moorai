@@ -8,5 +8,6 @@ export const APPROVAL_THREATS = new Set([
   46, // changing security settings, IAM, or firewall
   47, // sending external email or notifications
   48, // creating users, tokens, or API keys
-  49  // deploying to a production environment
+  49, // deploying to a production environment
+  84  // weakening oversight: monitoring, alerting, audit logging or safety tests
 ]);

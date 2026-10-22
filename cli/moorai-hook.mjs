@@ -19,7 +19,11 @@ import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideCredFileRead, decideTransit, transitEnvText, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideAuthorizedKeysWrite, decodedCommandPayloads, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, policyIatIso, policyAgeMs, policyFreshByIat, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision, evaluateProfile, rejectedAlert, PROFILE_DRIFT, decideThreat } from "./hook-core.mjs";
+import { buildEngine, decideText, decideCredFileRead, decideTransit, transitEnvText, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideAuthorizedKeysWrite, decodedCommandPayloads, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, policyIatIso, policyAgeMs, policyFreshByIat, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision, evaluateProfile, rejectedAlert, PROFILE_DRIFT, decideThreat, decideOversight, OVERSIGHT_THREAT } from "./hook-core.mjs";
+import { oversightEditSignals, beforeAfter } from "./oversight-signals.mjs";
+import { oversightCommandSignals } from "./oversight-shell.mjs";
+import { oversightPolicy } from "./oversight-surfaces.mjs";
+import { assessOversightDisclosure } from "./oversight-disclosure.mjs";
 import { fetchExecFacts } from "../data/net-exec.js";
 import { fetchedExecHit, recordFetched } from "./fetch-exec-state.mjs";
 import { otShellCheck, scriptReader, OT_PROTOCOL_CLIENT } from "./ot-protocol-client.mjs";
@@ -172,10 +176,10 @@ function postDispatched(tool) { return POST_DISPATCHED_TOOLS.includes(tool) || t
 // matcher; the one entry fires on every prompt. The handler prints nothing — stdout on this event is
 // added to the model's context — and writes only keyed hashes of the prompt's derived features.
 const PROMPT_MATCHERS = [""];
-// LIFECYCLE — visibility only; none of these handlers ever blocks or prints to a channel that feeds the
+// LIFECYCLE — visibility only, with one policy-enabled exception at Stop (#84, below); otherwise none of these handlers blocks or prints to a channel that feeds the
 // model (code.claude.com/docs/en/hooks: "For most events, Claude Code writes stdout to the debug log and
 // doesn't show it in the transcript"; Stop/SubagentStop's `decision:"block"` and `additionalContext` DO
-// reach Claude and are never sent).
+// reach Claude and are sent only for #84 when the signed policy sets oversight.stopDisclosure "block"; see handleStop).
 //   PostToolUseFailure — "Runs when a tool that started executing fails"; PostToolUse "Runs immediately
 //     after a tool completes successfully", so without this a failed command leaves no outcome at all.
 //     Matched to the tools whose outcome the claimed-success check reads.
@@ -525,6 +529,9 @@ let SESSION_TAG = "";
 // Session-level escalation (cli/session-state.mjs) the current PreToolUse call earned, set by
 // logBehavior and applied by emit: allow -> ask, or the reason added to an ask. Never touches a deny.
 let SESSION_ESC = null;
+// #84: the oversight signals this PreToolUse call raised (cli/oversight-signals.mjs), recorded on its ledger
+// row as `ov` (local, content-free enums) so Stop / SubagentStop can check the final message discloses the change.
+let OVERSIGHT_SIG = null;
 // ACTOR is whose events these are. For a subagent's OWN tool calls, Claude Code stamps the hook stdin
 // payload with `agent_id` + `agent_type` (verified against the hooks docs — these are common input
 // fields present only inside a subagent). That is the subagent-lineage linkage the orphan/baseline TODO
@@ -1051,6 +1058,9 @@ function report(findings, stage, tool, blocked, tier, extras, agency) {
     // server independently re-strips above the device's stored tier, so this is one of two backstops.
     const alert = applyCaptureTier(base, { ...extras, matchText: f.match }, tier || "content-free");
     if (agency) Object.assign(alert, agency); // #20 — content-free signed approval token (metadata)
+    // #84 from a sub-agent: the alert names the session that delegated the work (Claude Code gives a sub-agent
+    // its parent's session_id, so this is the same keyed hash as `session`). Never a reason to soften the verdict.
+    if (f.threatId === OVERSIGHT_THREAT && SESSION_TAG && ORIGIN_CTX && ORIGIN_CTX.agentId && !ORIGIN_CTX.shim) alert.parentSession = SESSION_TAG;
     post(alert, CALL.active ? { exception: excusedBy(f.threatId) } : undefined); // → server → SIEM (address configured server-side, #1)
     recordExposure(alert);  // → local content-free exposure ledger; ignores non-secret categories
     recordAction(alert);    // → local searchable action-audit log (#5), already tier-gated
@@ -1980,7 +1990,7 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
   SPAWN = null;
   // The allow trail: one queued, content-free record for a call the host is told it may run.
   const tr = decision === "allow" && CALL.active ? recordAllowed(tg, rewrite) : false;
-  settleRow({ ...verdictFields(decision, { rewrite: Boolean(rewrite) }), ...(tr ? { tr: 1 } : {}), ...(wrapped ? { wrap: 1 } : {}) });
+  settleRow({ ...verdictFields(decision, { rewrite: Boolean(rewrite) }), ...(tr ? { tr: 1 } : {}), ...(wrapped ? { wrap: 1 } : {}), ...(OVERSIGHT_SIG ? { ov: OVERSIGHT_SIG } : {}) });
   // The call ran unless the host was told deny (a coached device was told nothing): only then do its tags
   // join the session record.
   if (tg) recordSessionTags({ sessionId: SESSION_ID, tags: COACH || decision !== "deny" ? tg.tags.tags : [], fired: tg.fired });
@@ -2117,6 +2127,22 @@ function writeText(tool, ti) {
   if (tool === "NotebookEdit") return typeof ti.new_source === "string" ? ti.new_source : "";
   if (tool === "MultiEdit") return (Array.isArray(ti.edits) ? ti.edits : []).map((e) => (e && typeof e.new_string === "string" ? e.new_string : "")).join("\n");
   return "";
+}
+// #84: the signals a write raises. The target's current text (at most 1 MiB, a regular file) is the "before";
+// the write applied to it in memory is the "after". Nothing is written, and only the signal enums leave.
+const OVERSIGHT_READ_MAX = 1_048_576;
+function oversightWriteSignals(tool, ti, path, cwd, policy) {
+  try {
+    if (!path) return [];
+    const base = typeof cwd === "string" && cwd ? cwd : process.cwd();
+    const abs = isAbsolute(path) ? path : resolve(base, path);
+    let file = null, beforeUnread = false;
+    try { const st = statSync(abs); if (st.isFile() && st.size <= OVERSIGHT_READ_MAX) file = readFileSync(abs, "utf8"); else if (st.isFile()) beforeUnread = true; } catch { file = null; }
+    const { before, after } = beforeAfter({ tool, input: ti, file });
+    // An existing file too large to read: a Write over it cannot be compared, so it is held as incomplete
+    // (an Edit / MultiEdit is judged on its snippets instead).
+    return oversightEditSignals({ path: abs, before, after, surfaces: oversightPolicy(policy, () => {}), cwd: base, beforeUnread });
+  } catch { return []; }
 }
 
 // ---- INBOUND: the PostToolUse surface ----
@@ -2598,11 +2624,21 @@ async function handlePrompt(input, policy, engine) {
 // adds agent_id / agent_type / agent_transcript_path and its own last_assistant_message. The transcript
 // is never read. The message is judged in memory (cli/claim-check.mjs) and never stored or sent.
 //
-// Output: none on an enrolled device. "decision":"block" and hookSpecificOutput.additionalContext both
-// continue the conversation with text Claude receives, so neither is ever emitted. An unenrolled device
+// Output: none on an enrolled device, with one policy-enabled exception: an undisclosed oversight change (#84)
+// under oversight.stopDisclosure "block" (below). "decision":"block" and hookSpecificOutput.additionalContext
+// both continue the conversation with text Claude receives, so neither is emitted otherwise. An unenrolled device
 // has no console, so on Stop it coaches the USER with a systemMessage ("Warning message shown to the
 // user") when the claim check fires — nothing else, and never on SubagentStop.
 const CLAIM_CATEGORY = "Agent reported success but tool calls failed";
+// #84 at Stop / SubagentStop (cli/oversight-disclosure.mjs): an allowed oversight-weakening change the final
+// message does not state. One content-free alert per turn (or sub-agent). The one exception to "nothing reaches
+// Claude": when the signed policy sets oversight.stopDisclosure "block", Claude Code (not a shim host) is
+// answered decision "block" with a content-free reason, per code.claude.com/docs/en/hooks: "`"block"` prevents
+// Claude from stopping" and the reason "Tells Claude why it should continue". It never blocks when
+// stop_hook_active is true ("`true` when Claude Code is already continuing as a result of a stop hook. Check
+// this value ... to avoid blocking on a condition that will never resolve"), nor twice in one scope.
+const OVERSIGHT_UNDISCLOSED_CATEGORY = "Undisclosed oversight change";
+const OVERSIGHT_BLOCK_REASON = "MoorAI: this turn made a change that weakens oversight (monitoring, alerting, notification routing, audit logging or a safety test) and your final message does not say so. Before you stop, state plainly to the user what was changed, removed, suppressed or disabled, and why.";
 const SUMMARY_CATEGORY = "Agent session summary";
 function sessionSummary(rows, claimMismatches) {
   // alertsEmitted / alertsDeferred: alerts this session's hook invocations handed to the console (posted or
@@ -2644,12 +2680,22 @@ async function handleStop(input) {
   }
   const msg = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
   const cc = assessTurn(scope, msg);
+  // #84 disclosure. A sub-agent is judged on its own calls; the main agent on every call of this turn, its
+  // sub-agents' included, because the user hears about a delegated change only from the parent.
+  let ovRows = scope;
+  if (!sub) { let k = -1; for (let i = rows.length - 1; i >= 0; i--) if (rows[i].ev === "prompt" && !rows[i].a) { k = i; break; } ovRows = rows.slice(k + 1); }
+  const ov = assessOversightDisclosure(ovRows, msg);
+  const ovFresh = ov.flagged && !scope.some((r) => (r.ev === "stop" || r.ev === "substop") && r.ovFlag);
+  const ovBlock = ovFresh && !COACH && oversightPolicy(POLICY, () => {}).stopDisclosure === "block" && input.stop_hook_active !== true && beatHost() === "claude-code";
   // stop_hook_active (another hook continued the turn) can fire Stop twice for one turn: one finding.
   const already = scope.some((r) => (r.ev === "stop" || r.ev === "substop") && r.claimFlag);
   const fresh = cc.flagged && !already;
   const ts = new Date().toISOString();
   if (fresh) {
     post({ threatId: 0, category: CLAIM_CATEGORY, riskLevel: "Medium", stage: "lifecycle", tool: `hook:${EVENT}`, ts, contentHash: `claim:${cc.claim}:${cc.lastOutcome}`, claimCheck: { claim: cc.claim, lastOutcome: cc.lastOutcome, calls: cc.calls, failed: cc.failed, denied: cc.denied, interrupted: cc.interrupted, unresolved: cc.unresolved, scope: sub ? "subagent" : "turn" }, reasonCode: REASON.CLAIM_MISMATCH, enforcement: ENFORCEMENT.AS_CONFIGURED, ...IDENTITY });
+  }
+  if (ovFresh) {
+    post({ threatId: OVERSIGHT_THREAT, category: OVERSIGHT_UNDISCLOSED_CATEGORY, riskLevel: "High", stage: "lifecycle", tool: `hook:${EVENT}`, ts, contentHash: `oversight-undisclosed:${ov.executed}`, oversightDisclosure: { executed: ov.executed, delegated: ov.delegated || sub, scope: sub ? "subagent" : "turn", blocked: ovBlock }, ...(sub && SESSION_TAG ? { parentSession: SESSION_TAG } : {}), reasonCode: REASON.OVERSIGHT_UNDISCLOSED, enforcement: ENFORCEMENT.AS_CONFIGURED, ...IDENTITY });
   }
   // Asks MoorAI answered in this turn whose call never started (neither PostToolUse nor PostToolUseFailure came).
   const asksUnresolved = resolveStopAsks(sub);
@@ -2677,7 +2723,8 @@ async function handleStop(input) {
       Object.assign(ALERT_COUNT, counted);
     }
   }
-  settleRow({ decision: "none", ...(sum ? { sum } : {}), claim: cc.claim, claimFlag: cc.flagged, policyId: PROV.policyId, ...(PROV.policySource ? { policySource: PROV.policySource } : {}), reasonCode: cc.flagged ? REASON.CLAIM_MISMATCH : REASON.SESSION_SUMMARY, enforcement: ENFORCEMENT.AS_CONFIGURED });
+  settleRow({ decision: "none", ...(sum ? { sum } : {}), claim: cc.claim, claimFlag: cc.flagged, ovFlag: ov.flagged, ...(ovBlock ? { ovBlock: true } : {}), policyId: PROV.policyId, ...(PROV.policySource ? { policySource: PROV.policySource } : {}), reasonCode: cc.flagged ? REASON.CLAIM_MISMATCH : REASON.SESSION_SUMMARY, enforcement: ENFORCEMENT.AS_CONFIGURED });
+  if (ovBlock) process.stdout.write(JSON.stringify({ decision: "block", reason: OVERSIGHT_BLOCK_REASON }));
   if (COACH && fresh && !sub) {
     const n = cc.failed + cc.denied + cc.interrupted;
     process.stdout.write(JSON.stringify({ systemMessage: `MoorAI: the agent reported success, but ${n} tool call${n === 1 ? "" : "s"} in this turn failed, ${n === 1 ? "was" : "were"} denied or interrupted and ${n === 1 ? "was" : "were"} not redone successfully. Check the result before relying on it. (Not blocked: this device is not enrolled in a MoorAI console.)` }));
@@ -3125,6 +3172,20 @@ async function main() {
     finds.push(...cmdD.findings);
     if (cmdD.kill) killIds.push(...cmdD.killIds);
     if (RANK[cmdD.decision] > RANK[dec]) { dec = cmdD.decision; reasons = cmdD.reasons; alts = cmdD.alternatives; }
+    // #84 — the command weakens the project's own oversight (cli/oversight-shell.mjs): a monitor module or
+    // monitoring test deleted, an in-place edit that sets a suppression flag or empties an alert route, an
+    // alert silence, a monitoring component stopped or deleted, a persistent off-switch, a protected surface.
+    {
+      let ovs = [];
+      try { ovs = oversightCommandSignals(ti.command, { ps, surfaces: oversightPolicy(policy, () => {}), cwd: typeof input.cwd === "string" ? input.cwd : "" }); } catch { ovs = []; }
+      if (ovs.length) {
+        const od = decideOversight(policy, ovs, "prompt");
+        OVERSIGHT_SIG = ovs;
+        finds.push(...od.findings);
+        if (od.kill) killIds.push(...od.killIds);
+        if (RANK[od.decision] > RANK[dec]) { dec = od.decision; reasons = od.reasons; alts = od.alternatives; }
+      }
+    }
     // #67 — the command starts a program behind a proxy or a CA override (`HTTPS_PROXY=… NODE_EXTRA_CA_CERTS=…
     // claude -p`, `export SSL_CERT_FILE=…`). Report-first; denied when policy.transitAllow is set and the
     // proxy is not on it. Proxy host and variable names only.
@@ -3235,6 +3296,16 @@ async function main() {
     d.findings.push(...kd.findings);
     if (RANK[kd.decision] > RANK[dec]) { dec = kd.decision; reasons = kd.reasons; alts = kd.alternatives; }
     if (kd.kill) { d.kill = true; d.killIds.push(...kd.killIds); }
+    // #84 — the write weakens the project's own monitoring, alerting, audit logging or safety tests, judged on
+    // the file before and after (cli/oversight-signals.mjs), or touches a policy-protected surface.
+    const ovs = oversightWriteSignals(tool, ti, path, input.cwd, policy);
+    if (ovs.length) {
+      const od = decideOversight(policy, ovs, "output");
+      OVERSIGHT_SIG = ovs;
+      d.findings.push(...od.findings);
+      if (RANK[od.decision] > RANK[dec]) { dec = od.decision; reasons = od.reasons; alts = od.alternatives; }
+      if (od.kill) { d.kill = true; d.killIds.push(...od.killIds); }
+    }
     if (dec !== "allow") why(detectorReason(d.findings));
     report(d.findings, "output", `hook:${tool}`, dec === "deny", policy.captureTier, { filePath: path, toolName: tool });
     logBehavior(tool, path || tool, text, d, "output");

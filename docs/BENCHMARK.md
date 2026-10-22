@@ -1,10 +1,10 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-20T15:22:00.940Z
+> Generated: 2026-10-22T08:57:18.763Z
 
 - **Detectors:** 120
-- **Threats:** 80
+- **Threats:** 81
 - **Adversarial corpus:** 102/102 passed (100.0%)
 - **OWASP LLM Top 10:** 10/10 items covered by ≥1 on-device detector
 - **OWASP Top 10 for Agentic Applications:** 1/10 covered, 6 partial, 3 uncovered
@@ -20,7 +20,7 @@
 | LLM03 | Supply Chain | 8 | 6 | ✅ covered |
 | LLM04 | Data & Model Poisoning | 1 | 1 | ✅ covered |
 | LLM05 | Improper Output Handling | 7 | 16 | ✅ covered |
-| LLM06 | Excessive Agency | 15 | 8 | ✅ covered |
+| LLM06 | Excessive Agency | 16 | 8 | ✅ covered |
 | LLM07 | System Prompt Leakage | 3 | 6 | ✅ covered |
 | LLM08 | Vector & Embedding Weaknesses | 3 | 13 | ✅ covered |
 | LLM09 | Misinformation | 13 | 4 | ✅ covered |
@@ -39,7 +39,7 @@
 | ASI07 | Insecure Inter-Agent Communication | 1 | 1 | 0 | — |
 | ASI08 | Cascading Failures | 0 | 0 | 0 | — |
 | ASI09 | Human-Agent Trust Exploitation | 1 | 1 | 1 | ◐ partial |
-| ASI10 | Rogue Agents | 1 | 1 | 0 | — |
+| ASI10 | Rogue Agents | 2 | 2 | 0 | — |
 
 ## OWASP MCP Top 10 (2025, beta) coverage
 
@@ -114,7 +114,7 @@ risk, the MCP allow-list) are counted under Threats but add no detectors. Source
 | T1070 | Indicator Removal | agent | 1 | 2 | ◐ partial (open gap) |
 | T1070.003 | Clear Command History | agent | 1 | 2 | ◐ partial (open gap) |
 | T1690 | Prevent Command History Logging | agent | 1 | 2 | ◐ partial (open gap) |
-| T1685 | Disable or Modify Tools | agent | 1 | 2 | ◐ partial (open gap) |
+| T1685 | Disable or Modify Tools | agent | 2 | 2 | ◐ partial (open gap) |
 | T1686 | Disable or Modify System Firewall | agent | 1 | 2 | ◐ partial (open gap) |
 | T1553.001 | Gatekeeper Bypass | agent | 1 | 2 | ◐ partial (open gap) |
 | T1553.004 | Install Root Certificate | agent | 2 | 2 | ◐ partial (open gap) |

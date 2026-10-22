@@ -266,6 +266,34 @@ export function decideThreat(policy, id, detectorId, stage = "prompt") {
   return out;
 }
 
+// #84 Weakening oversight (cli/oversight-signals.mjs, cli/oversight-shell.mjs): the hook established the change
+// itself (a diff of the write, or the command's structure), so it is resolved like decideThreat, through the
+// same action table (default justify via APPROVAL_THREATS; threatPolicy[84] may raise it to block or kill, or
+// lower it to notify). The finding's category is the threat's name, which the alert carries and the reason
+// code (OVERSIGHT_WEAKENED) is read from. The signals stay on the finding for the local ledger; no signal,
+// path or value reaches the alert. Id 84, not 81: 81 and 82 are the OT protocol client read and write ids
+// that shipped in 1.28.0 (cli/ot-protocol-client.mjs), and a policy's threatPolicy[81] means OT read.
+//
+// "analysis-incomplete" (the command or write was past a size, script-length or time cap, so it was not read
+// whole) fails closed: it asks even where the policy lowers #84 to notify, and alone it never kills (kill
+// becomes block). A policy that disables #84 still disables it.
+export const OVERSIGHT_THREAT = 84;
+export const OVERSIGHT_CATEGORY = "Weakening oversight";
+export const OVERSIGHT_INCOMPLETE = "analysis-incomplete";
+export function decideOversight(policy, signals, stage = "output") {
+  if (!Array.isArray(signals) || !signals.length) return { decision: "allow", reasons: [], findings: [], kill: false, killIds: [], alternatives: [], maskIds: [] };
+  let pol = policy;
+  if (signals.includes(OVERSIGHT_INCOMPLETE)) {
+    const act = threatActionFor(policy, OVERSIGHT_THREAT);
+    const floor = act === "notify" ? "justify" : act === "kill" && signals.every((s) => s === OVERSIGHT_INCOMPLETE) ? "block" : null;
+    if (floor) pol = { ...(policy || {}), killOnCritical: false, threatPolicy: { ...((policy && policy.threatPolicy) || {}), [OVERSIGHT_THREAT]: floor } };
+  }
+  const d = decideThreat(pol, OVERSIGHT_THREAT, "oversight-change", stage);
+  for (const f of d.findings) { f.category = OVERSIGHT_CATEGORY; f.oversight = signals.slice(); }
+  d.reasons = d.reasons.map((r) => r.replace(new RegExp(`^#${OVERSIGHT_THREAT} [^(]*?(?= \\(|$)`), `#${OVERSIGHT_THREAT} ${OVERSIGHT_CATEGORY}`));
+  return d;
+}
+
 // Clipboard read in one tool call → outbound upload in a LATER call of the same session. Two content-free
 // booleans per Bash command, recorded on the agent event (cli/moorai-hook.mjs logBehavior): `clip` — the
 // command reads the clipboard (CLIPBOARD_READ); `upload` — it sends a payload off the device

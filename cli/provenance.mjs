@@ -57,6 +57,8 @@ export const REASON = Object.freeze({
   CONTAINMENT_UNAVAILABLE: "CONTAINMENT_UNAVAILABLE", // containment is required but MXC cannot be used here: build not capable, wxc-exec missing, wrap impossible
   ASK_OUTCOME: "ASK_OUTCOME",                     // what became of a call MoorAI asked on: ran, failed, did not run, or cannot be followed (cli/ask-outcome.mjs)
   OUTBOX_DROPPED: "OUTBOX_DROPPED",               // the alert outbox dropped entries before delivery (full, aged, rejected, oversize; cli/alert-outbox.mjs)
+  OVERSIGHT_WEAKENED: "OVERSIGHT_WEAKENED",       // #84: a tool call weakens the project's own monitoring, alerting, audit logging or safety tests (cli/oversight-signals.mjs)
+  OVERSIGHT_UNDISCLOSED: "OVERSIGHT_UNDISCLOSED", // #84: an allowed oversight change the agent's final message does not state (cli/oversight-disclosure.mjs, heuristic)
   // A control that never ran for this call. Never a pass.
   UNEVALUATED_NO_POLICY: "UNEVALUATED_NO_POLICY",
   UNEVALUATED_HOOK_ERROR: "UNEVALUATED_HOOK_ERROR",
@@ -118,6 +120,8 @@ const CATEGORY_REASON = [
   [/^Skill-file /, REASON.SKILL_FILE],
   [/^(Model-flagged: |Escalation outcome)/, REASON.MODEL_ESCALATION],
   [/^Literacy: /, REASON.LITERACY],
+  [/^Weakening oversight$/, REASON.OVERSIGHT_WEAKENED],
+  [/^Undisclosed oversight change$/, REASON.OVERSIGHT_UNDISCLOSED],
   [/^Content: /, REASON.CONTENT_RULE],
   [/^MCP gateway: invalid message$/, REASON.SCHEMA_INVALID],
   [/^MCP gateway: response too large$/, REASON.RESPONSE_TOO_LARGE],
