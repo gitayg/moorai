@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, linkSync, renameSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, chownSync, rmSync, linkSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
@@ -204,6 +204,32 @@ test("a socket in a group- or world-writable directory is refused before any con
     assert.equal(s.state, "untrusted");
     assert.equal(s.hello, "skipped", "no frame is sent to an endpoint a user could have planted");
   } finally { srv.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a group-writable directory whose group is not root's is refused → untrusted", { skip: IS_WIN || process.getgid?.() === 0 }, async () => {
+  const kp = keypair();
+  const root = makeRoot({ binary: true, units: true, pub: kp.spki });
+  const srv = await fakeHelper(root, kp, "ok");
+  try {
+    // BSD gives a new directory its parent's group (wheel, gid 0, under /tmp on macOS); set the test
+    // user's own primary group so the directory is group-writable by a non-root group.
+    chownSync(join(root, "run/moorai"), UID, process.getgid());
+    chmodSync(join(root, "run/moorai"), 0o775);
+    const s = await helperInstallStatus(opts(root));
+    assert.equal(s.endpoint, "untrusted");
+    assert.equal(s.state, "untrusted");
+  } finally { srv.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a regular file at the endpoint path is not a socket → untrusted", { skip: IS_WIN }, async () => {
+  const kp = keypair();
+  const root = makeRoot({ binary: true, units: true, pub: kp.spki });
+  try {
+    writeFileSync(join(root, "run/moorai/hook.sock"), "", { mode: 0o644 });
+    const s = await helperInstallStatus(opts(root));
+    assert.equal(s.endpoint, "untrusted");
+    assert.equal(s.state, "untrusted");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("a socket owned by another uid than the trusted one is refused → untrusted", { skip: IS_WIN }, async () => {

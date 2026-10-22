@@ -36,7 +36,7 @@ function readAr(buf) {
   return members;
 }
 function tarList(tgzPath) {
-  const r = spawnSync("tar", ["-tvzf", tgzPath], { encoding: "utf8" });
+  const r = spawnSync("tar", ["--numeric-owner", "-tvzf", tgzPath], { encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
   return r.stdout.split("\n").filter(Boolean);
 }
@@ -132,8 +132,8 @@ test("deb data: the agent tree, one /usr/bin link per package.json bin, user uni
     assert.ok(line, `link for ${bin}`);
     assert.ok(line.endsWith(`-> ../lib/moorai/${target}`), line);
   }
-  // Ownership: every entry root/root (uid 0). bsdtar prints names, GNU tar prints root/root.
-  for (const l of verbose) assert.match(l, /\broot\b|\s0\s+0\s/, l);
+  // Ownership: every entry uid 0 / gid 0 (--numeric-owner: bsdtar prints "0 0", GNU tar "0/0").
+  for (const l of verbose) assert.match(l, /\s0\s+0\s|\s0\/0\s/, l);
   // Nothing outside the npm `files` set: of the top-level test/ tree only the red-team corpus, no host
   // app, no VCS, no secrets. (Directories npm ships whole, such as egress-proxy/, keep their own tests.)
   for (const n of names) {
