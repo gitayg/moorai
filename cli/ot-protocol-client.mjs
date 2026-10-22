@@ -42,11 +42,19 @@ const ACTION_RANK = { disabled: 0, notify: 1, justify: 2, block: 3, kill: 4 };
 const DECISION = { notify: "allow", justify: "ask", block: "deny", kill: "deny" };
 const ALERT_DECISION = { notify: "notify", justify: "ask", block: "deny", kill: "deny" };
 const OP_RANK = { unknown: 0, read: 1, write: 2 };
-// A script is read whole up to SCRIPT_MAX_BYTES. A larger one is never treated as clean: up to
-// SCRIPT_SCAN_MAX it is streamed for the library names alone (each named library is an "unknown" hit,
-// marked incomplete so the verdict takes the stricter of the read and write actions).
+// A script is read whole up to SCRIPT_MAX_BYTES. A larger one is never treated as clean: within the
+// check's budget it is streamed for the library names alone (each named library is an "unknown" hit,
+// marked incomplete so the verdict takes the stricter of the read and write actions), and a tail left
+// unread is itself an unknown, incomplete hit (UNREAD).
+// BUDGET. One check (otShellFacts) reads at most OT_SCAN_BUDGET.bytes in all and stops starting reads
+// after OT_SCAN_BUDGET.ms, shared by every script it reads, each path read once. A script the budget does
+// not cover is an UNREAD hit, so a command naming many large scripts fails closed instead of pushing the
+// hook past its timeout (which the host treats as allow; a synchronous scan also keeps the hook's own
+// decision-budget timer from firing). Measured on an Apple-silicon laptop, warm cache: an 8 MiB script read
+// and matched in 55 ms, a streamed 256 MiB in 250 ms, so the old 256 MiB stream cap times 256 segments
+// could run for over a minute; the shared 64 MiB / 2 s budget bounds a check to about 2 s plus one read.
 const SCRIPT_MAX_BYTES = 8 << 20;
-const SCRIPT_SCAN_MAX = 256 << 20;
+export const OT_SCAN_BUDGET = Object.freeze({ bytes: 64 << 20, ms: 2000 });
 const SCAN_CHUNK = 1 << 20;
 const LIB_NAMES = [...new Set([...Object.keys(OT_PY_LIBS), ...Object.keys(OT_NODE_LIBS)])];
 const NAME_OVERLAP = Math.max(...LIB_NAMES.map((n) => n.length));
@@ -69,16 +77,24 @@ function codeHits(code, lang, hits, max = MAX_CMD) {
   }
 }
 
+// One check's read budget: bytes left, a deadline, and the scripts already read (language + path → hits).
+export function scanBudget({ bytes = OT_SCAN_BUDGET.bytes, ms = OT_SCAN_BUDGET.ms, now = Date.now } = {}) {
+  return { left: bytes, deadline: now() + ms, now, cache: new Map() };
+}
+const spent = (b) => !!b && (b.left <= 0 || b.now() > b.deadline);
+
 // Library names written anywhere in a file too large to read whole, streamed in chunks that overlap by
-// the longest name. → the names found, and whether the file ran past SCRIPT_SCAN_MAX.
-function streamNames(fd, size) {
+// the longest name, as far as the budget allows. → the names found, and whether part of the file was
+// left unread.
+function streamNames(fd, size, budget) {
   const found = new Set();
   const buf = Buffer.alloc(SCAN_CHUNK + NAME_OVERLAP);
   let carry = "", pos = 0;
-  while (pos < size && pos < SCRIPT_SCAN_MAX) {
-    const n = readSync(fd, buf, 0, SCAN_CHUNK, pos);
+  while (pos < size && !spent(budget)) {
+    const n = readSync(fd, buf, 0, Math.min(SCAN_CHUNK, budget.left), pos);
     if (n <= 0) break;
     pos += n;
+    budget.left -= n;
     const text = carry + buf.subarray(0, n).toString("latin1");
     for (const name of LIB_NAMES) if (!found.has(name) && text.includes(name)) found.add(name);
     carry = text.slice(-NAME_OVERLAP);
@@ -87,11 +103,12 @@ function streamNames(fd, size) {
 }
 
 // A bounded reader for a script the command runs: inside `cwd` only, a regular file. → null (not read),
-// the whole text (at most SCRIPT_MAX_BYTES), or for a larger file { truncated: true, names } (the
-// library names streamed from it). The hook passes scriptReader(<session cwd>).
+// the whole text (at most SCRIPT_MAX_BYTES), for a larger file { truncated: true, names, beyond } (the
+// library names streamed from it), or { exhausted: true } when the check's budget does not cover the
+// read. The hook passes scriptReader(<session cwd>); the check passes its budget as the second argument.
 export function scriptReader(cwd) {
   const base = resolve(String(cwd || "."));
-  return (p) => {
+  return (p, budget = scanBudget()) => {
     try {
       const raw = String(p || "");
       if (!raw || /[\0\r\n]/.test(raw)) return null;
@@ -100,29 +117,50 @@ export function scriptReader(cwd) {
       if (!rel || rel.startsWith("..") || isAbsolute(rel)) return null;
       const st = statSync(full);
       if (!st.isFile()) return null;
+      if (spent(budget) || (st.size <= SCRIPT_MAX_BYTES && st.size > budget.left)) return { exhausted: true };
       const fd = openSync(full, "r");
       try {
-        if (st.size > SCRIPT_MAX_BYTES) return { truncated: true, ...streamNames(fd, st.size) };
+        if (st.size > SCRIPT_MAX_BYTES) return { truncated: true, ...streamNames(fd, st.size, budget) };
         const buf = Buffer.alloc(st.size);
         let n = 0;
         while (n < buf.length) { const k = readSync(fd, buf, n, buf.length - n, n); if (k <= 0) break; n += k; }
+        budget.left -= n;
         return buf.subarray(0, n).toString("utf8");
       } finally { closeSync(fd); }
     } catch { return null; }
   };
 }
 
+// A script, or the part of one, that the check did not read: it may hold a client, so it is never clean.
+const UNREAD = { protocol: "unknown", op: "unknown", client: "unread" };
+function unread(hits) { hits.push(UNREAD); hits.incomplete = true; }
+
+// What one script yields, matched once per path and language and replayed from the budget's cache, so a
+// path named many times costs one read and one match.
 function scriptHits(path, lang, readScript, hits) {
   if (typeof readScript !== "function" || !path || path.includes("$")) return;
-  const got = readScript(path);
-  if (typeof got === "string") { codeHits(got, lang, hits, SCRIPT_MAX_BYTES); return; }
-  if (!got || !got.truncated) return;
-  const libs = lang === "py" ? OT_PY_LIBS : OT_NODE_LIBS;
-  for (const name of got.names || []) {
-    if (!Object.prototype.hasOwnProperty.call(libs, name)) continue;
-    hits.push({ protocol: libs[name].protocol, op: "unknown", client: name });
-    hits.incomplete = true;
+  const budget = hits.budget;
+  const key = `${lang}\0${path}`;
+  let own = budget && budget.cache.get(key);
+  if (!own) {
+    own = [];
+    if (spent(budget)) { unread(hits); return; }
+    const got = readScript(path, budget);
+    if (got && got.exhausted) { unread(hits); return; }
+    if (typeof got === "string") codeHits(got, lang, own, SCRIPT_MAX_BYTES);
+    else if (got && got.truncated) {
+      if (got.beyond) unread(own);
+      const libs = lang === "py" ? OT_PY_LIBS : OT_NODE_LIBS;
+      for (const name of got.names || []) {
+        if (!Object.prototype.hasOwnProperty.call(libs, name)) continue;
+        own.push({ protocol: libs[name].protocol, op: "unknown", client: name });
+        own.incomplete = true;
+      }
+    }
+    if (budget) budget.cache.set(key, own);
   }
+  hits.push(...own);
+  if (own.incomplete) hits.incomplete = true;
 }
 
 // mbpoll / modpoll / modbus-cli / OPC UA and BACnet tools. Native tools take POSIX-style options on every
@@ -213,13 +251,32 @@ function pythonHits(binary, rest, seg, readScript, hits) {
 }
 
 // Node options: --eval= / --print=, short flags combined and ending in e or p (`-pe`), and modules loaded
-// before the script (-r / --require / --import / --loader), each checked against OT_NODE_LIBS.
+// before the script (-r / --require / --import / --loader), each checked against OT_NODE_LIBS and, when
+// given as a path (./, ../, /, or a script extension), read as a script too. A long option this parser
+// does not know, written without `=`, may take the next argument as its value, so (as for Python) every
+// remaining argument is then scanned as code, as a preload and as a script path.
 const NODE_PRELOAD = new Set(["-r", "--require", "--import", "--loader", "--experimental-loader"]);
 const NODE_VALUED = new Set(["-C", "--conditions", "--input-type", "--title", "--env-file", "--disable-warning", "--watch-path", "--test-name-pattern", "--test-reporter", "--test-reporter-destination", "--redirect-warnings", "--stack-size"]);
 function preloadHit(spec, hits) {
   const s = String(spec || "");
   const root = s.startsWith("@") ? s.split("/").slice(0, 2).join("/") : s.split("/")[0];
   if (Object.prototype.hasOwnProperty.call(OT_NODE_LIBS, root)) hits.push({ protocol: OT_NODE_LIBS[root].protocol, op: "unknown", client: root });
+}
+
+const NODE_PATH = /^(?:\.{1,2}[\\/]|[\\/])|\.(?:js|mjs|cjs|ts)$/i;
+function preloadSpec(spec, readScript, hits) {
+  preloadHit(spec, hits);
+  const s = String(spec || "");
+  if (NODE_PATH.test(s)) scriptHits(s, "node", readScript, hits);
+}
+const NODE_LONG_NOARG = new Set(["--no-warnings", "--trace-warnings", "--enable-source-maps", "--inspect", "--inspect-brk", "--watch", "--test", "--expose-gc", "--no-deprecation", "--trace-deprecation", "--throw-deprecation", "--pending-deprecation", "--preserve-symlinks", "--preserve-symlinks-main", "--experimental-vm-modules", "--experimental-strip-types", "--experimental-transform-types", "--abort-on-uncaught-exception", "--interactive", "--check", "--version", "--help"]);
+function nodeFallback(rest, seg, readScript, hits) {
+  for (const t of rest) {
+    codeHits(t, "node", hits);
+    preloadHit(t, hits);
+    if (NODE_PATH.test(t) || SCRIPT_EXT.test(t)) scriptHits(t, "node", readScript, hits);
+  }
+  if (seg.heredoc != null) codeHits(seg.heredoc, "node", hits);
 }
 
 function nodeHits(binary, rest, seg, readScript, hits) {
@@ -233,10 +290,11 @@ function nodeHits(binary, rest, seg, readScript, hits) {
     const inline = eq > 0 ? t.slice(eq + 1) : null;
     if (name === "--eval" || name === "--print") { codeHits(inline != null ? inline : rest[i + 1], "node", hits); return; }
     if (/^-[A-Za-z]*[ep]$/.test(t)) { codeHits(rest[i + 1], "node", hits); return; }
-    if (NODE_PRELOAD.has(name)) { preloadHit(inline != null ? inline : rest[i + 1], hits); if (inline == null) i++; continue; }
+    if (NODE_PRELOAD.has(name)) { preloadSpec(inline != null ? inline : rest[i + 1], readScript, hits); if (inline == null) i++; continue; }
     if (NODE_VALUED.has(name)) { if (inline == null) i++; continue; }
     if (t === "-") break;
     if (t === "--") { if (rest[i + 1] != null) scriptHits(rest[i + 1], "node", readScript, hits); return; }
+    if (t.startsWith("--") && inline == null && !NODE_LONG_NOARG.has(t) && !/^--no-/.test(t)) return nodeFallback(rest.slice(i + 1), seg, readScript, hits);
     if (t.startsWith("-")) continue;
     scriptHits(t, "node", readScript, hits);
     return;
@@ -325,12 +383,15 @@ function walk(cmd, ps, depth, readScript, hits) {
 }
 
 // → null, or { otProtocol, otOp, client, incomplete } where client names the tool or library (kept in
-// process; it is not an alert field) and incomplete is true when a script was too large to read whole.
+// process; it is not an alert field) and incomplete is true when a script was too large to read whole or
+// was left (partly) unread; otProtocol is "unknown" when the only hit is an unread script. budget:
+// { bytes, ms, now } overrides OT_SCAN_BUDGET for this check (tests).
 // shell: "sh" (Bash, the default) or "ps" (PowerShell). scripts: further scripts the caller decoded from
 // the command ([{ text, shell }], the hook's -EncodedCommand / Invoke-Expression / base64-into-a-shell
 // payloads), read into the same result. Never throws.
-export function otShellFacts(command, { shell = "sh", readScript = null, scripts = [] } = {}) {
+export function otShellFacts(command, { shell = "sh", readScript = null, scripts = [], budget = {} } = {}) {
   const hits = [];
+  hits.budget = scanBudget(budget || {});
   const sources = [{ text: command, shell }, ...(Array.isArray(scripts) ? scripts : [])];
   for (const s of sources) {
     if (!s || typeof s.text !== "string" || !s.text.trim()) continue;
@@ -352,8 +413,8 @@ function actionFor(policy, id) {
 // The hook's check for one command tool call. → null (no OT client, or the policy disabled the threat), or
 // { decision: "allow"|"ask"|"deny", action, otProtocol, otOp, reason, alert }. The caller posts `alert`
 // (adding ts and identity) and raises its verdict to `decision` when that ranks higher.
-export function otShellCheck({ command, shell = "sh", policy = null, readScript = null, scripts = [], tool = "Bash" } = {}) {
-  const f = otShellFacts(command, { shell, readScript, scripts });
+export function otShellCheck({ command, shell = "sh", policy = null, readScript = null, scripts = [], tool = "Bash", budget = {} } = {}) {
+  const f = otShellFacts(command, { shell, readScript, scripts, budget });
   if (!f) return null;
   const threatId = f.otOp === "write" ? OT_THREAT.write : OT_THREAT.read;
   let action = actionFor(policy, threatId);

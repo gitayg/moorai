@@ -309,6 +309,7 @@ function saveCache(stateDir, cache) {
 // The verified catalogue's signals; a catalogue that is present but does not verify is named in evidence.
 function catalogueFor(id, version, cat) {
   if (!cat || cat.status === "absent" || cat.status === "disabled") return { signals: [], evidence: [] };
+  if (cat.status === "expired" && cat.expiredDeny) return { signals: catalogueSignals(cat.expiredDeny, id, version).signals, evidence: ["catalogue-expired"] };
   if (cat.status !== "ok") return { signals: [], evidence: [`catalogue-${cat.status}`] };
   const c = catalogueSignals(cat.catalogue, id, version);
   return { signals: c.signals, evidence: ["catalogue-verified", ...c.evidence] };

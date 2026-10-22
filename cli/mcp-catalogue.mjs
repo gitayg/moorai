@@ -166,9 +166,25 @@ function raiseMark(stateDir, keyId, seq) {
   writeAtomic(join(stateDir, CATALOGUE_SEQ_FILE), m);
 }
 
+// Past expiresAt a catalogue's positive verdicts are no longer trusted, but its deny side still is: the
+// do-not-install entries and the negative per-version verdicts (do-not-install, review, caution) of the
+// last verified copy. Dropping those on expiry would fail open (withholding a refresh would clear a
+// denylist). An advisory entry is kept through its do-not-install status or a negative verdict.
+const DENY_VERDICTS = new Set(["do-not-install", "review", "caution"]);
+export function expiredDenyCatalogue(cat) {
+  const entries = [];
+  for (const e of (cat && Array.isArray(cat.entries) ? cat.entries : [])) {
+    if (!e || typeof e !== "object") continue;
+    const versions = (Array.isArray(e.versions) ? e.versions : []).filter((v) => v && DENY_VERDICTS.has(v.verdict));
+    if (e.status === "do-not-install" || versions.length) entries.push({ ...e, versions });
+  }
+  return { ...cat, entries };
+}
+
 const MEMO = new Map();
-// → { status, catalogue|null, keyId?, fetchedAt?, url? }
+// → { status, catalogue|null, keyId?, fetchedAt?, url?, expiredDeny? }
 //   status: absent | disabled | ok | rollback-refused | <verifyCatalogue status>
+//   expiredDeny: with status expired, the deny-only view of the last verified copy (expiredDenyCatalogue)
 export function readCatalogue(opts = {}) {
   const stateDir = opts.stateDir || STATE_DIR;
   if (pol(opts.policy).enabled === false) return { status: "disabled", catalogue: null };
@@ -188,8 +204,8 @@ export function readCatalogue(opts = {}) {
     MEMO.set(memoKey, out);
   }
   if (out.status !== "ok") return out;
-  if (Date.parse(out.catalogue.expiresAt) <= now) return { status: "expired", catalogue: null };
   if (out.catalogue.seq < markOf(stateDir, out.keyId)) return { status: "rollback-refused", catalogue: null };
+  if (Date.parse(out.catalogue.expiresAt) <= now) return { status: "expired", catalogue: null, keyId: out.keyId, expiredDeny: expiredDenyCatalogue(out.catalogue) };
   raiseMark(stateDir, out.keyId, out.catalogue.seq);
   return out;
 }

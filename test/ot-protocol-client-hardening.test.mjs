@@ -135,3 +135,83 @@ test("the policy action resolves like every other threat: kill denies and ends t
   assert.equal(v.decision, "allow");
   assert.equal(v.kill, false);
 });
+
+// Security review (late, finding 3a): a script whose tail is never read is never clean. The streamed part
+// names no library, but the unread tail could: a fail-closed unknown hit marked incomplete, so the verdict
+// takes the stricter of the read and write actions (deny under a preset that blocks writes).
+test("a script with an unread tail is never clean: an unknown, incomplete hit that takes the write action", () => {
+  const dir = mkdtempSync(join(tmpdir(), "moorai-ot-tail-"));
+  try {
+    writeFileSync(join(dir, "tail.py"), Buffer.alloc(65 * 1024 * 1024, 0x23));
+    const readScript = scriptReader(dir);
+    const f = otShellFacts("python3 tail.py", { readScript });
+    assert.ok(f, "an unread tail is not clean");
+    assert.deepEqual([f.otOp, f.incomplete], ["unknown", true]);
+    const preset = { threatPolicy: { [OT_THREAT.write]: "block", [OT_THREAT.read]: "notify" } };
+    assert.equal(otShellCheck({ command: "python3 tail.py", policy: preset, readScript }).decision, "deny");
+    const dflt = otShellCheck({ command: "python3 tail.py", readScript });
+    assert.deepEqual([dflt.decision, dflt.alert.otOp], ["allow", "unknown"], "with no policy it is reported, not silently clean");
+  } finally { rmTree(dir); }
+});
+
+// Security review (late, finding 3b): one byte and time budget per check, shared by every script read in
+// it, with each path read once. When it runs out the check fails closed, so a command naming many large
+// scripts cannot push the hook past its timeout (which the host treats as allow).
+test("script reads share one budget per check: a path is read once, and an exhausted budget fails closed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "moorai-ot-budget-"));
+  try {
+    const pad = (n) => "# " + "x".repeat(n) + "\n";
+    writeFileSync(join(dir, "mid.py"), "import pymodbus\n" + pad(80 * 1024) + "c.write_register(1, 2)\n");
+    writeFileSync(join(dir, "plain.py"), pad(2 * 1024 * 1024) + "print('ok')\n");
+    for (let k = 0; k < 10; k++) writeFileSync(join(dir, `b${k}.py`), pad(7 * 1024 * 1024) + "print('ok')\n");
+    const base = scriptReader(dir);
+    let calls = 0;
+    const counting = (p, b) => { calls++; return base(p, b); };
+    assert.deepEqual(facts(Array(40).fill("python3 mid.py").join("; "), { readScript: counting }), WRITE);
+    assert.equal(calls, 1, "the same path named 40 times is read once");
+    assert.equal(facts("python3 plain.py", { readScript: base }), null, "a benign script inside the budget is clean");
+    const tight = otShellFacts("python3 plain.py", { readScript: base, budget: { bytes: 1024 * 1024 } });
+    assert.ok(tight && tight.incomplete && tight.otOp === "unknown", "past the byte budget: fail closed");
+    writeFileSync(join(dir, "stream.py"), pad(10 * 1024 * 1024) + "print('ok')\n");
+    assert.equal(facts("python3 stream.py", { readScript: base }), null, "a streamed benign script inside the budget is clean");
+    const cut = otShellFacts("python3 stream.py", { readScript: base, budget: { bytes: 9 * 1024 * 1024 } });
+    assert.ok(cut && cut.incomplete, "a stream the budget cuts short fails closed");
+    writeFileSync(join(dir, "edge.py"), pad(Math.floor(9.8 * 1024 * 1024)) + "print('ok')\n");
+    const edge = otShellFacts("python3 edge.py", { readScript: base, budget: { bytes: Math.floor(9.5 * 1024 * 1024) } });
+    assert.ok(edge && edge.incomplete, "a stream never reads past the bytes left, even inside one chunk");
+    let c = 0;
+    const late = otShellFacts("python3 stream.py", { readScript: base, budget: { ms: 5, now: () => ++c } });
+    assert.ok(late && late.incomplete, "a stream past the deadline stops and fails closed");
+    let t = 0;
+    const slow = otShellFacts("python3 plain.py; python3 mid.py", { readScript: base, budget: { ms: 100, now: () => (t += 60) } });
+    assert.ok(slow && slow.incomplete, "past the time budget: fail closed");
+    const preset = { threatPolicy: { [OT_THREAT.write]: "block", [OT_THREAT.read]: "notify" } };
+    const many = Array.from({ length: 10 }, (_, k) => `python3 b${k}.py`).join("; ");
+    const t0 = Date.now();
+    const v = otShellCheck({ command: many, policy: preset, readScript: base });
+    const ms = Date.now() - t0;
+    assert.equal(v && v.decision, "deny", "70 MiB of scripts in one command runs out of the 64 MiB budget and fails closed");
+    assert.ok(ms < 5000, `bounded: ${ms} ms`);
+  } finally { rmTree(dir); }
+});
+
+// Security review (late, finding 3c): a preloaded module given as a path is read like the script, and an
+// unrecognised long option with a separate value fails closed the way the Python parser does.
+test("Node: a preload given as a path is read as a script; an unrecognised long option scans every argument", () => {
+  const dir = mkdtempSync(join(tmpdir(), "moorai-ot-preload-"));
+  try {
+    const poll = "const ModbusRTU = require('modbus-serial');\nclient.readHoldingRegisters(0, 10);\n";
+    writeFileSync(join(dir, "pre.js"), poll);
+    writeFileSync(join(dir, "pre.mjs"), poll);
+    writeFileSync(join(dir, "poll.js"), poll);
+    writeFileSync(join(dir, "app.js"), "console.log(1)\n");
+    const readScript = scriptReader(dir);
+    const READ = { otProtocol: "modbus", otOp: "read" };
+    for (const cmd of ["node -r ./pre.js app.js", "node --require pre.js app.js", "node --import=./pre.mjs app.js", "node --loader ./pre.mjs app.js"]) {
+      assert.deepEqual(facts(cmd, { readScript }), READ, cmd);
+    }
+    assert.deepEqual(facts("node --some-future-flag value poll.js", { readScript }), READ, "an unknown long option with a separate value");
+    assert.equal(facts("node -r dotenv/config app.js", { readScript }), null);
+    assert.equal(facts("node --no-warnings app.js", { readScript }), null);
+  } finally { rmTree(dir); }
+});

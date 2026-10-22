@@ -243,14 +243,41 @@ test("an expired catalogue is refused, cached or fetched: never used, never cach
   assert.equal(down.calls.length, 1, "an expired catalogue is not served as fresh");
   assert.deepEqual([r1.refresh, r1.status, r1.catalogue], ["fetch-failed", "expired", null]);
   const rep = assessServerSync({ command: "npx", args: ["-y", "evil-mcp-thing@1.0.0"] }, { stateDir: sd, home, catalogue: POL, now: NOW });
-  assert.ok(!rep.reasons.includes("catalogue-do-not-install"), "an expired catalogue's entries are not used");
+  assert.ok(rep.reasons.includes("catalogue-do-not-install"), "an expired catalogue's do-not-install entry is still applied (see the deny-only test below)");
   assert.ok(rep.evidence.includes("catalogue-expired"), `evidence: ${rep.evidence}`);
+  assert.ok(!rep.evidence.includes("catalogue-verified"), "an expired catalogue is not reported as verified");
   const stale = fakeFetch(signCatalogue(body([E_BAD], { seq: 9, issuedAt: "2026-09-01T00:00:00.000Z", expiresAt: "2026-10-03T00:00:00.000Z" }), K1.privateKey));
   const r2 = await R(sd, stale);
   assert.deepEqual([r2.refresh, r2.catalogue], ["expired", null], "an expired catalogue served by the feed is refused");
   assert.equal(JSON.parse(readFileSync(join(sd, CATALOGUE_FILE), "utf8")).catalogue.seq, 3, "and is not cached");
   const r3 = await R(sd, fakeFetch(signCatalogue(body([E_BAD], { seq: 4, expiresAt: "2027-01-01T00:00:00.000Z" }), K1.privateKey)));
   assert.deepEqual([r3.refresh, r3.status, r3.catalogue.seq], ["ok", "ok", 4]);
+});
+
+test("an expired catalogue fails closed on its denylist: deny and negative verdicts still apply, positive verdicts are dropped", () => {
+  const sd = tmp("expdeny"), home = tmp("expdenyhome");
+  plant(sd, signCatalogue(body([E_BAD, E_FS, E_PY], { seq: 3, issuedAt: "2026-09-01T00:00:00.000Z", expiresAt: "2026-10-02T00:00:00.000Z" }), K1.privateKey), NOW - 3600e3);
+  const read = readCatalogue({ stateDir: sd, policy: POL, env: {}, anchorFile: null, now: NOW });
+  assert.deepEqual([read.status, read.catalogue], ["expired", null], "no positive catalogue is served once expired");
+  assert.ok(read.expiredDeny, "the last verified catalogue's deny entries are kept");
+  const kept = Object.fromEntries(read.expiredDeny.entries.map((e) => [e.name, e.versions.map((v) => v.verdict)]));
+  assert.deepEqual(kept, { "evil-mcp-thing": [], "@modelcontextprotocol/server-filesystem": ["review"], "mcp-server-fetch": ["caution"] });
+  const at = (pkg) => assessServerSync({ command: "npx", args: ["-y", pkg] }, { stateDir: sd, home, catalogue: POL, now: NOW });
+  const bad = at("evil-mcp-thing@1.0.0");
+  assert.ok(bad.reasons.includes("catalogue-do-not-install"), `reasons: ${bad.reasons}`);
+  assert.equal(bad.band, "bad");
+  assert.ok(bad.evidence.includes("catalogue-expired"), `evidence: ${bad.evidence}`);
+  const rev = at("@modelcontextprotocol/server-filesystem@0.9.0");
+  assert.ok(rev.reasons.includes("catalogue-review"), `reasons: ${rev.reasons}`);
+  const clean = at("@modelcontextprotocol/server-filesystem@1.0.0");
+  assert.ok(!clean.evidence.includes("catalogue-scanned-no-findings"), `a positive verdict is not trusted once expired: ${clean.evidence}`);
+  assert.ok(!clean.evidence.includes("catalogue-verified"), `evidence: ${clean.evidence}`);
+  assert.ok(clean.evidence.includes("catalogue-expired"));
+  const sd2 = tmp("expdenyroll");
+  plant(sd2, signCatalogue(body([E_BAD], { seq: 3, issuedAt: "2026-09-01T00:00:00.000Z", expiresAt: "2026-10-02T00:00:00.000Z" }), K1.privateKey), NOW - 3600e3);
+  writeFileSync(join(sd2, "mcp-catalogue.seq.json"), JSON.stringify({ [K1.b64]: 7 }));
+  const rolled = readCatalogue({ stateDir: sd2, policy: POL, env: {}, anchorFile: null, now: NOW });
+  assert.deepEqual([rolled.status, rolled.expiredDeny], ["rollback-refused", undefined], "an expired copy below the seq mark is still a rollback");
 });
 
 test("seq high-water mark: a planted older signed cache is refused on read and refetched; an older fetch is refused with no cache", async () => {

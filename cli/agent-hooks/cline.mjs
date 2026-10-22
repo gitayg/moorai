@@ -37,7 +37,8 @@
 // submit_and_exit (sdk/packages/core/src/extensions/tools/constants.ts), with the input shapes of
 // schemas.ts. The older extension names are still mapped.
 //   run_commands / execute_command  commands[] (string or {command,args}) | command | cmd -> Bash per command
-//                                   ({command,args}: the line rebuilt shell-quoted, plus each element alone)
+//                                   ({command,args}: the line rebuilt shell-quoted and space-joined, plus
+//                                   each element alone)
 //   read_files / read_file          files[] ({path} or string) | paths | file_paths | path -> Read per path
 //   editor                          path, old_text, new_text, insert_line (ClineCore); command, file_text,
 //                                   old_str, new_str (older) -> Edit when old_text or insert_line, else Write
@@ -47,8 +48,10 @@
 //   use_mcp_tool                    server_name, tool_name, arguments (object or JSON string) -> mcp__s__t
 //   fetch_web_content               requests[] ({url, prompt})                  -> WebFetch per url, with prompt
 //   web_fetch / browser_action      url | urls[]                                           -> WebFetch
-//   search_codebase / search_files  queries[] | regex                                      -> Grep per query
-//   list_files                      path                                                   -> LS
+//   search_codebase / search_files  queries[] | regex; path keys as read_files (not _)  -> Grep per query per path
+//   list_files / list_code_definition_names  _ | path keys as read_files                   -> LS per path
+//                                   (cwd only when no path is given; any non-empty value in any other field of
+//                                   a list or search call holds the call)
 //   skills                          skill, args                                            -> Skill
 //   ask_question, submit_and_exit   (act on nothing MoorAI judges)                         -> proceed
 //   any other name                  held: cancelled with an ask-the-user reason, never allowed unread
@@ -117,14 +120,15 @@ function gather(p, keys, fromStr, fromObj) {
   return out.filter((x) => { const key = JSON.stringify(x); return !seen.has(key) && seen.add(key); });
 }
 const pathOf = (o) => str(o.path) || str(o.file_path) || str(o.filePath);
-// A structured command { command, args } runs its executable with argv, no shell: the line is rebuilt
-// with every element quoted as a shell would, whatever its type, and each element is judged on its own.
+// A structured command { command, args }: the line is judged twice, rebuilt with every element quoted as
+// a shell would (the argv as given) and as the plain space-joined line (what a shell would run if the
+// runtime joins the argv into one command string), and each element is judged on its own.
 const SAFE_WORD = /^[A-Za-z0-9_@%+=:,.\/-]+$/;
 export const shellQuote = (s) => (SAFE_WORD.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
 const argList = (a) => (Array.isArray(a) ? a : a === undefined || a === null ? [] : [a]).map(asText);
 function commandsOf(o) {
   const argv = o.command === undefined || o.command === null ? [] : [asText(o.command), ...argList(o.args)];
-  return [...(argv.length ? [argv.map(shellQuote).join(" ")] : []), ...argList(o.args), ...leaves(o)];
+  return [...(argv.length ? [argv.map(shellQuote).join(" "), argv.join(" ")] : []), ...argList(o.args), ...leaves(o)];
 }
 const texts = (...vals) => [...new Set(vals.filter((v) => typeof v === "string" && v))];
 
@@ -150,8 +154,21 @@ export function searchReplaceEdits(diff) {
 // Tools that act on nothing MoorAI judges: they proceed unread.
 const INERT = new Set(["ask_question", "submit_and_exit", "ask_followup_question", "attempt_completion", "plan_mode_respond"]);
 
+const PATH_KEYS = ["_", "path", "file_path", "files", "paths", "file_paths"];
+const pathsIn = (p, keys, cwd) => gather(p, keys, (s) => s, (o) => [pathOf(o), ...leaves(o)]).filter(Boolean).map((x) => abs(x, cwd));
+// List and search tools: the fields this adapter reads. Any other field holding a non-empty value holds the
+// call (unreadPathField), so a directory named under a key MoorAI does not know is never replaced by cwd.
+// For search tools `_` is the query (ClineCore's non-object input), so their paths come from the named keys.
+const LIST_TOOLS = new Set(["list_files", "list_code_definition_names"]);
+const SEARCH_TOOLS = new Set(["search_codebase", "search_files"]);
+const SEARCH_PATH_KEYS = PATH_KEYS.filter((k) => k !== "_");
+const KNOWN_FIELDS = {
+  list: new Set([...PATH_KEYS, "recursive"]),
+  search: new Set([...PATH_KEYS, "queries", "query", "regex", "file_pattern"])
+};
+const filled = (v) => typeof v === "string" && v.trim() !== "";
 function preTool(name, p, cwd) {
-  const paths = () => gather(p, ["_", "path", "file_path", "files", "paths", "file_paths"], (s) => s, (o) => [pathOf(o), ...leaves(o)]).filter(Boolean).map((x) => abs(x, cwd));
+  const paths = () => pathsIn(p, PATH_KEYS, cwd);
   switch (name) {
     case "execute_command": case "run_commands": {
       const cmds = gather(p, ["_", "commands", "command", "cmd"], (s) => s, commandsOf).filter(Boolean);
@@ -196,10 +213,10 @@ function preTool(name, p, cwd) {
     // search_codebase runs regex queries over the workspace: judged as Claude Code's Grep (capability "read").
     case "search_codebase": case "search_files": {
       const qs = gather(p, ["_", "queries", "query", "regex"], (s) => s, (o) => leaves(o));
-      return each(qs, (q) => ["Grep", { pattern: q, path: abs(str(p.path), cwd) || cwd }]);
+      return each(pathsIn(p, SEARCH_PATH_KEYS, cwd), (d) => d || cwd).flatMap((d) => each(qs, (q) => ["Grep", { pattern: q, path: d }]));
     }
     case "list_files": case "list_code_definition_names":
-      return [["LS", { path: abs(str(p.path), cwd) || cwd }]];
+      return each(paths(), (d) => ["LS", { path: d || cwd }]);
     // skills runs a named skill: judged as Claude Code's Skill call.
     case "skills": {
       const skill = asText(p.skill ?? p._);
@@ -254,6 +271,23 @@ export function unjudgedTool(payload) {
   return name && !MAPPED.has(name) && !INERT.has(name) ? name : null;
 }
 
+// A list or search call with any non-empty string in a field the adapter does not read: MoorAI would judge
+// the wrong directory (cwd), so it is held. Returns the field name, or null.
+export function unreadPathField(payload) {
+  if (!obj(payload) || !PRE.has(payload.hookName)) return null;
+  const t = toolInput(payload);
+  if (!t) return null;
+  const known = LIST_TOOLS.has(t.name) ? KNOWN_FIELDS.list : SEARCH_TOOLS.has(t.name) ? KNOWN_FIELDS.search : null;
+  if (!known) return null;
+  for (const [k, v] of Object.entries(t.params)) {
+    if (known.has(k)) continue;
+    // Fail closed: any non-empty string in a field the adapter does not read could be a directory (a bare
+    // "secrets" is a relative path too), so it is held rather than judged as cwd.
+    if (filled(v) || leaves(decoded(v)).some(filled)) return k;
+  }
+  return null;
+}
+
 const tag = (s, dflt) => `MoorAI: ${String(s || "").trim().replace(/\.+$/, "") || dflt}`;
 const json = (o) => ({ stdout: JSON.stringify(o), exitCode: 0 });
 
@@ -262,6 +296,11 @@ export function fromVerdict(verdict, payload) {
   const unknown = unjudgedTool(payload);
   if (unknown) {
     const m = `MoorAI: Cline tool ${/^[\w.:-]{1,64}$/.test(unknown) ? `"${unknown}"` : "(unnamed)"} is not one MoorAI can judge, so this call was held: ask the user to confirm and run it themselves if intended.`;
+    return json({ cancel: true, errorMessage: m, contextModification: m });
+  }
+  const field = unreadPathField(payload);
+  if (field) {
+    const m = `MoorAI: this Cline call names a path in a field MoorAI does not read (${/^[\w.-]{1,64}$/.test(field) ? field : "unnamed"}), so it was held: ask the user to confirm and run it themselves if intended.`;
     return json({ cancel: true, errorMessage: m, contextModification: m });
   }
   const v = verdict || {};
