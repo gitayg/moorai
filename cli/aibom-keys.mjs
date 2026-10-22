@@ -68,7 +68,9 @@ function readSmallText(p) {
 }
 
 // MoorAI's own decoy keys (cli/decoy-keys.mjs) are not keys at rest: a value in the decoy registries is skipped.
-export function scanKeysAtRest({ home = homedir(), hash = contentHash, decoys = decoyTokens({ home }) } = {}) {
+// includePath: each finding also carries `path`, for a caller that classifies it on the device and drops it
+// (cli/credential-exposure.mjs). Off by default, so the AIBOM output is unchanged.
+export function scanKeysAtRest({ home = homedir(), hash = contentHash, decoys = decoyTokens({ home }), includePath = false } = {}) {
   const findings = [], seen = new Set();
   const decoySet = new Set((decoys || []).map((d) => d.token));
   let filesRead = 0, filesSkipped = 0;
@@ -82,7 +84,7 @@ export function scanKeysAtRest({ home = homedir(), hash = contentHash, decoys = 
       const k = `${provider}|${locationClass}|${location}|${keyHash}`;
       if (seen.has(k)) continue;
       seen.add(k);
-      findings.push({ provider, locationClass, location, keyHash });
+      findings.push({ provider, locationClass, location, keyHash, ...(includePath ? { path } : {}) });
     }
   };
 

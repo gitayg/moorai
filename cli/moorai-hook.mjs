@@ -81,6 +81,8 @@ import { enqueueAlerts, claimOutboxFlush, flushAlertOutbox, takeDropReport, impo
 import { originFor, askOutcomeOrigin } from "./origin.mjs";
 import { askTrackable, recordAsk, takeAsk, takeUnresolvedAsks } from "./ask-outcome.mjs";
 import { throwawayHost } from "../data/throwaway-hosts.js";
+import { noteCredentialCall, credentialExposure, fitPostureBody } from "./credential-exposure.mjs";
+import { scheduleTranscriptUsage } from "./transcript-usage.mjs";
 import { leafOf, appendLeaf, sessionHead, contextTreeMode, claimUpload, flushContextTree } from "./context-tree.mjs";
 import { bindingRefusedAlert } from "./config.mjs";
 import { actionTrailMode, buildActionRecord, enqueueActionRecord, claimFlush, flushActionTrail, callFingerprintText, readTrailState } from "./action-trail.mjs";
@@ -1428,7 +1430,11 @@ async function runPostureBeatWorker(host, mode, cwd) {
     // The alert outbox (cli/alert-outbox.mjs): queued, dropped and last delivered, content-free counts.
     let alertOutbox = null;
     try { alertOutbox = outboxPosture(); } catch { alertOutbox = null; }
-    const body = { user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture, ...(failMode ? { failMode } : {}), ...(containment || {}), ...(mcpServerSandbox ? { mcpServerSandbox } : {}), ...(aiCliParents ? { aiCliParents } : {}), ...(inventory ? inventory.fields : {}), ...(alertOutbox ? { alertOutbox } : {}) };
+    // The credential exposure map (cli/credential-exposure.mjs), content-free; fitPostureBody drops its lowest-priority
+    // items, then the field, so the body stays under the console's 16384-byte posture cap.
+    let credExposure = null;
+    try { credExposure = credentialExposure({ cwd: cwd || "", stateDir: STATE_DIR }); } catch { credExposure = null; }
+    const body = fitPostureBody({ user: IDENTITY.user, device: IDENTITY.device, platform: IDENTITY.platform, serverMode: !!SERVER.active, heartbeat: { host, permissionMode: mode || "" }, posture, ...(failMode ? { failMode } : {}), ...(containment || {}), ...(mcpServerSandbox ? { mcpServerSandbox } : {}), ...(aiCliParents ? { aiCliParents } : {}), ...(inventory ? inventory.fields : {}), ...(alertOutbox ? { alertOutbox } : {}), ...(credExposure ? { credentialExposure: credExposure } : {}) });
     const r = await fetch(`${CONFIG.serverUrl}/api/agent-posture`, { method: "POST", headers: { "Content-Type": "application/json", ...(CONFIG.installToken ? { "X-Install-Token": CONFIG.installToken } : {}) }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) }).catch(() => null);
     // On failure the pending mark stays, so the next try is BEAT_RETRY_MS away rather than one per tool call.
     if (r && r.ok) writeBeat(host, { day, bypass: (st.day === day && !!st.bypass) || mode === "bypassPermissions" });
@@ -1440,6 +1446,11 @@ async function runPostureBeatWorker(host, mode, cwd) {
       inventory.commit(failed);
     }
   } catch { /* console unreachable: retried after BEAT_RETRY_MS */ }
+  return exitWhenDrained(0);
+}
+
+async function runTokenUsageWorker() {
+  try { if (isEnrolled(CONFIG)) { const { runTranscriptUsage } = await import("./transcript-usage.mjs"); await runTranscriptUsage({ config: CONFIG, identity: IDENTITY, stateDir: STATE_DIR }); } } catch { /* usage is evidence; the next run retries */ }
   return exitWhenDrained(0);
 }
 
@@ -2760,6 +2771,8 @@ async function main() {
   if (cmd === "indexscan") return runIndexScanWorker(process.argv[3]);
   // The detached coverage heartbeat (see maybePostureBeat). No stdin, no decision.
   if (cmd === "posturebeat") return runPostureBeatWorker(process.argv[3], process.argv[4], process.argv[5]);
+  // The detached transcript token-usage reader (cli/transcript-usage.mjs). No stdin, no decision.
+  if (cmd === "tokenusage") return runTokenUsageWorker();
   // The detached static model scanner for downloads the hook queued (see maybeModelScan). No stdin, no decision.
   if (cmd === "modelscan") return runModelScanWorker();
   // The detached alert sender (see handOffAlerts). No stdin, no decision.
@@ -2785,6 +2798,8 @@ async function main() {
   if (process.env.MOORAI_HOOK_HOST !== "shim" && !AS_PLUGIN) convergeHooks();
   if (AS_PLUGIN && settingsCovers(input.hook_event_name)) return exitHook();
   maybePostureBeat(input);
+  // Token usage from Claude Code's own transcripts (cli/transcript-usage.mjs): a detached worker, at most once an hour.
+  if (process.env.MOORAI_HOOK_HOST !== "shim" && isEnrolled(CONFIG)) scheduleTranscriptUsage({ stateDir: STATE_DIR, spawnWorker: () => spawn(process.execPath, [...process.execArgv, SELF, "tokenusage"], { detached: true, stdio: "ignore", env: workerEnv() }).unref() });
   maybeModelScan();
   // MCP usage cross-check (cli/mcp-usage-beat.mjs): completed days go to a detached worker, at most once a day.
   scheduleMcpUsageFlush({ config: CONFIG, path: "hook", host: beatHost() || "unknown" });
@@ -2834,6 +2849,9 @@ async function main() {
   // (cli/ai-cli-parents.mjs). A file write, nothing waited on; elsewhere a no-op.
   aiCliParentAsk({ sessionId: SESSION_ID });
   SESSION_TAG = SESSION_ID && SESSION !== NO_KEY ? SESSION : "";
+  // Credential exposure map (cli/credential-exposure.mjs): a credential location this call names, and the destination
+  // classes it reaches, logged by class for the daily heartbeat. Enrolled devices only; no network, never a verdict.
+  if (EVENT === "PreToolUse" && isEnrolled(CONFIG)) noteCredentialCall({ stateDir: STATE_DIR, tool, toolInput: ti, cwd: input.cwd, session: SESSION_TAG, host: beatHost() || "unknown" });
   HEADLESS_CTX = { tool, permissionMode: typeof input.permission_mode === "string" ? input.permission_mode : "" };
   // Subagent lineage: a subagent's own tool-call payloads carry agent_id/agent_type (see ACTOR above).
   // Attribute those events to the subagent (a distinct actor) with the spawning session as its parent;

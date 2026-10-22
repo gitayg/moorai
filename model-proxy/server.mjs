@@ -54,6 +54,8 @@ import { resolveFailMode } from "../cli/fail-mode.mjs";
 import { systemConfig } from "../cli/server-mode.mjs";
 import { operatorContextMode } from "./context.mjs";
 import { createDecoyCheck, decoyAlert, DECOY_REFUSAL } from "./decoy.mjs";
+import { createUsageMeter, FLUSH_MS as USAGE_FLUSH_MS } from "./token-usage.mjs";
+import { budgetBlock, budgetErrorBody, budgetAlert } from "./budget.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({
@@ -184,6 +186,11 @@ export async function createProxy(opts = {}) {
   const version = (() => { try { return JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version; } catch { return "unknown"; } })();
   // The allow trail (trail.mjs): one record per forwarded model request, when the signed policy turns it on.
   const trail = createTrail(rt, { config: consoleConfig, appVersion: version });
+  // Token usage (token-usage.mjs): each parsed response's provider usage, cumulative hourly buckets, POST /api/token-usage.
+  const usage = createUsageMeter({ config: consoleConfig, identity: rt.identity, enrolled: rt.config.enrolled, fetch: o.fetch, flushMs: o.usageFlushMs ?? USAGE_FLUSH_MS });
+  // Usage budgets (budget.mjs): one alert per budget and period from this process.
+  const budgetSeen = new Set();
+  const reportBudget = (s, hit) => { const k = `${hit.budgetId}|${hit.periodStart}`; if (budgetSeen.has(k) || budgetSeen.size > 256) return; budgetSeen.add(k); try { rt.reporter.post(budgetAlert(hit, enforce, rt.hash), { prov: { policyId: s.policyId, policySource: s.source, event: "ModelRequest" } }); } catch { /* report-only */ } };
   const routes = Object.entries(o.routes).map(([prefix, base]) => ({ prefix: prefix === "/" ? "" : prefix.replace(/\/+$/, ""), base: String(base).replace(/\/+$/, "") })).sort((a, b) => b.prefix.length - a.prefix.length);
   const agents = { "http:": new http.Agent({ keepAlive: true, maxSockets: o.maxConnections }), "https:": new https.Agent({ keepAlive: true, maxSockets: o.maxConnections }) };
   const loopbackBind = isLoopback(o.host);
@@ -264,7 +271,7 @@ export async function createProxy(opts = {}) {
   const withTimeout = (p) => { let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error("evaluation timeout")), o.timeoutMs); })]).finally(() => clearTimeout(t)); };
 
   // Response side ----------------------------------------------------------------------------------------
-  async function onResponse(ur, res, api, held, later, fm) {
+  async function onResponse(ur, res, api, held, later, fm, meter) {
     const ct = String(ur.headers["content-type"] || "");
     const enc = String(ur.headers["content-encoding"] || "identity").toLowerCase();
     const ok = ur.statusCode >= 200 && ur.statusCode < 300;
@@ -291,7 +298,7 @@ export async function createProxy(opts = {}) {
     // The model's own text where an API has no structured tool calls (Ollama /api/generate): report-only,
     // after the response has ended, in every mode.
     const observe = (items) => { if (items.length) later.push(() => checker.observe(items)); };
-    if (sse || lines) return enforce ? streamEnforce(ur, res, api, decide, lines, observe, nums) : streamObserve(ur, res, api, decide, lines, observe, nums);
+    if (sse || lines) return enforce ? streamEnforce(ur, res, api, decide, lines, observe, nums, meter) : streamObserve(ur, res, api, decide, lines, observe, nums, meter);
     if (!enforce) {
       // Report-only: bytes go to the client as they arrive; a bounded copy is parsed after the end.
       res.writeHead(ur.statusCode, responseHeaders(ur));
@@ -301,6 +308,7 @@ export async function createProxy(opts = {}) {
         if (over) return;
         const all = Buffer.concat(chunks);
         const body = parseJson(all);
+        if (body && meter) meter.body(body);
         if (body) {
           const sc = strictBytes(all), bad = sc.problem;
           nums.note(sc);
@@ -328,6 +336,7 @@ export async function createProxy(opts = {}) {
     }
     const buf = Buffer.concat(chunks);
     const body = parseJson(buf);
+    if (body && meter) meter.body(body);
     // A 2xx body on a parsed path that is neither an event stream nor a JSON object (a local server that
     // labels its stream application/json, say) cannot be checked for tool calls: enforce does not forward it.
     if (!body) { unevaluated("response-unparsed", "response"); return send(res, 502, api.errorBody(502, "MoorAI model-proxy: the response is not a JSON object or an event stream; it cannot be checked"), NO_RETRY); }
@@ -352,18 +361,18 @@ export async function createProxy(opts = {}) {
     res.end(buf);
   }
 
-  async function streamObserve(ur, res, api, decide, lines, observe, nums) {
+  async function streamObserve(ur, res, api, decide, lines, observe, nums, meter) {
     res.writeHead(ur.statusCode, responseHeaders(ur));
     const split = lines ? createLineSplitter(o.maxEvent) : createSplitter(o.maxEvent);
     const machine = api.createStream({ enforce: false, decide, maxHold: o.maxEvent, observe });
     let stopped = false;
-    const feed = (evs) => { for (const ev of evs) { const sc = eventScan(ev); nums.note(sc); const bad = sc && sc.problem; if (bad) unevaluated(`response-${bad}`, "response", "input"); machine.onEvent(ev).catch(() => {}); } };
+    const feed = (evs) => { for (const ev of evs) { if (meter) meter.event(ev); const sc = eventScan(ev); nums.note(sc); const bad = sc && sc.problem; if (bad) unevaluated(`response-${bad}`, "response", "input"); machine.onEvent(ev).catch(() => {}); } };
     ur.on("data", (c) => { if (stopped) return; feed(split.push(c)); if (split.overflow) { stopped = true; unevaluated("stream-event", "response"); } });
     ur.on("end", () => { if (stopped) return; feed(split.end()); machine.onEnd().catch(() => {}); });
     ur.pipe(res);
   }
 
-  async function streamEnforce(ur, res, api, decide, lines, observe, nums) {
+  async function streamEnforce(ur, res, api, decide, lines, observe, nums, meter) {
     res.writeHead(ur.statusCode, responseHeaders(ur, { dropLength: true }));
     const split = lines ? createLineSplitter(o.maxEvent) : createSplitter(o.maxEvent);
     const machine = replace ? api.createReplaceStream({ decide, maxHold: o.maxEvent, observe }) : api.createStream({ enforce: true, decide, maxHold: o.maxEvent, observe });
@@ -378,6 +387,7 @@ export async function createProxy(opts = {}) {
     // An event that is not strict JSON (a repeated key, NaN, …) is refused wherever it is, as the
     // non-streaming body is: a lenient client could read a tool call this check never saw.
     const one = async (ev) => {
+      if (meter) meter.event(ev);
       const sc = eventScan(ev);
       nums.note(sc);
       const bad = sc && sc.problem;
@@ -461,6 +471,13 @@ export async function createProxy(opts = {}) {
     if (db) return refuseDecoy(res, api, db, "body");
 
     const fm = failMode((await rt.ready()).policy);
+    // A signed usage budget in state "exceeded" with action "block" (budget.mjs): refused in enforce mode, before
+    // anything is judged or forwarded; reported in report mode.
+    if (api) {
+      const s0 = await rt.ready();
+      const hit = budgetBlock(s0.policy, { source: s0.source });
+      if (hit) { reportBudget(s0, hit); if (enforce) { stats.refused++; return send(res, 429, budgetErrorBody(hit.budgetId), { "x-moorai-model-proxy": "refused", ...NO_RETRY }); } }
+    }
     if (api) {
       const json = parseJson(body);
       if (api !== gemini) current.model = modelOf(api, rest, json);
@@ -481,12 +498,15 @@ export async function createProxy(opts = {}) {
 
     const lib = url.protocol === "https:" ? https : http;
     if (api) trail.record(await rt.ready(), current, req.headers[SESSION_HEADER] ? "claude-code" : rt.identity.agentName);
+    // This request's usage collector; counted once the response is over, however it ended.
+    const meter = api ? usage.begin({ provider: current.provider, model: current.model, agentName: req.headers[SESSION_HEADER] ? "claude-code" : rt.identity.agentName }) : null;
+    if (meter) res.on("close", () => meter.end());
     stats.forwarded++;
     await new Promise((resolve) => {
       const up = lib.request(url, { method: req.method, headers: upstreamHeaders(req, body.length, swaps, current.trace), agent: agents[url.protocol] }, (raw) => {
         const ur = creds ? maskResponse(raw, creds.secrets) : raw;
         if (ur.refuse) { send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: the upstream answered with a content coding the proxy cannot check for an echoed credential"), NO_RETRY); return resolve(); }
-        onResponse(ur, res, api, held, later, fm).catch(() => { if (!res.headersSent) send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: upstream response failed")); else res.destroy(); }).finally(resolve);
+        onResponse(ur, res, api, held, later, fm, meter).catch(() => { if (!res.headersSent) send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: upstream response failed")); else res.destroy(); }).finally(resolve);
       });
       up.setTimeout(o.upstreamTimeoutMs, () => up.destroy(new Error("upstream timeout")));
       // Connect budget: a fresh socket must be ready to carry the request (TCP connected; for https, the TLS
@@ -529,6 +549,6 @@ export async function createProxy(opts = {}) {
   await new Promise((res, rej) => { server.once("error", rej); server.listen(o.port, o.host, () => { server.off("error", rej); res(); }); });
   const addr = server.address();
   const url = `http://${addr.family === "IPv6" ? `[${addr.address}]` : addr.address}:${addr.port}`;
-  const close = async () => { await new Promise((r) => server.close(() => r())); server.closeAllConnections?.(); for (const a of Object.values(agents)) a.destroy(); if (tracker) tracker.stop(); await trail.close(); await rt.flush(); };
+  const close = async () => { await new Promise((r) => server.close(() => r())); server.closeAllConnections?.(); for (const a of Object.values(agents)) a.destroy(); if (tracker) tracker.stop(); await trail.close(); await usage.close(); await rt.flush(); };
   return { server, url, runtime: rt, close, stats: () => ({ ...stats, inflight, cache: checker.cacheSize(), ...(tracker ? { unchecked: tracker.stats() } : {}) }) };
 }
