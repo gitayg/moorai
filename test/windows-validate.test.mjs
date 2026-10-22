@@ -124,6 +124,8 @@ test("buildReport drops anything outside the fixed vocabulary: unknown statuses,
   assert.deepEqual(r.alerts.byReasonCode, { EGRESS_RULE: 1, THREAT_MATCH: 1 });
   assert.equal(r.alerts.received, 3);
   assert.equal(r.alerts.deny, 2);
+  assert.equal(r.alerts.contentFree, false, "an alert carrying the marker must read as not content-free");
+  assert.equal(reportMod.buildReport({ ...hostile, alerts: hostile.alerts.slice(2) }).alerts.contentFree, true, "control: no marker, content-free");
   assert.equal(r.agentVersion, null);
   assert.equal(r.mxcCapable, null);
   assert.equal(r.machineBinding, false, "a non-boolean is not true");
