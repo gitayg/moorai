@@ -11,6 +11,7 @@ import os from "node:os";
 import { configTarget as droidTarget, eventMap as droidEvents } from "./agent-hooks/droid.mjs";
 import { hooksFile as antigravityFile, eventView as antigravityView } from "./agent-hooks/antigravity.mjs";
 import { hookFile as kiroFile, eventView as kiroView } from "./agent-hooks/kiro.mjs";
+import { hooksDir as clineDir, readHooks as clineHooks } from "./agent-hooks/cline.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, "moorai-hook.mjs");
@@ -51,7 +52,8 @@ export function hostTable(home = os.homedir(), env = process.env) {
     droidHost(home),
     antigravityHost(home),
     { id: "windsurf", label: "Windsurf (Cascade)", dir: join(home, ".codeium", "windsurf"), file: join(home, ".codeium", "windsurf", "hooks.json"), rel: [".codeium", "windsurf", "hooks.json"], ours: agentOurs("windsurf"), install: [AGENT_HOOK, "windsurf", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} windsurf install` },
-    kiroHost(home)
+    kiroHost(home),
+    { id: "cline", label: "Cline", dir: join(home, ".cline"), file: clineDir(home), rel: [".cline", "hooks"], read: () => clineHooks(home), readRel: (h) => clineHooks(h), ours: agentOurs("cline"), install: [AGENT_HOOK, "cline", "install"], fix: `node ${JSON.stringify(AGENT_HOOK)} cline install (and switch hooks on in Cline's settings)` }
   ];
 }
 // Kiro: MoorAI's own V3 hook file ~/.kiro/hooks/moorai.json, a `hooks` ARRAY of { trigger, matcher,
@@ -146,7 +148,7 @@ export function expectedSurface(host) {
     for (const k of ["CODEX_HOME", "COPILOT_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "APPDATA", "LOCALAPPDATA"]) delete env[k];
     const r = spawnSync(process.execPath, host.install, { env, encoding: "utf8", timeout: 15000, input: "" });
     if (r.status !== 0) return { error: `installer exited ${r.status}` };
-    const { data } = readJson(join(home, ...host.rel), { comments: host.comments });
+    const { data } = host.readRel ? host.readRel(home) : readJson(join(home, ...host.rel), { comments: host.comments });
     if (!data) return { error: "installer wrote nothing readable" };
     return { surface: ourSurface(host.viewRel ? host.viewRel(data) : data, host.ours) };
   } finally { rmSync(home, { recursive: true, force: true }); }
@@ -201,7 +203,7 @@ function checkPlugin(base, host, plug, exp) {
 export function checkHost(host, { managedHooks = null, managedPlugins = [], env = process.env, home = os.homedir() } = {}) {
   const base = { id: `host:${host.id}`, group: "hosts", title: host.label };
   const hostPresent = existsSync(host.dir);
-  const { exists, data: raw, error } = readJson(host.file, { comments: host.comments });
+  const { exists, data: raw, error } = host.read ? host.read() : readJson(host.file, { comments: host.comments });
   if (exists && !raw) return { ...base, status: "fail", summary: `${pathOf(host.file)} is ${error}; the host may ignore every hook in it`, fix: `repair the JSON in ${pathOf(host.file)}` };
   const data = raw && host.view ? host.view(raw) : raw;
   let have = data ? ourSurface(data, host.ours) : {};
