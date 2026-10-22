@@ -22,6 +22,9 @@
 //                     repo-missing, repo-unreachable, repo-mismatch. Public package and repo names only.
 //                     And cli/mcp-package/maintainers.mjs counts who can publish (npm packument
 //                     `maintainers`, PyPI `ownership.roles`): single-maintainer. Counted, never kept.
+//   signed catalogue  the MoorAI MCP catalogue (cli/mcp-catalogue.mjs), used only after its ed25519
+//                     signature verifies; the top-level policy key mcpCatalogue { url, publicKeys } is
+//                     handed in as opts.catalogue. Adds do-not-install / review / caution; never raises a score.
 //   OPT-IN feed       policy.mcpReputation.feed = true (or an https URL): SkillTriage's published
 //                     verdicts, downloaded WHOLE with a bare GET and matched here. The request names no
 //                     server, so the feed host learns only that a MoorAI device fetched the feed.
@@ -44,6 +47,7 @@ import { buildEngine } from "./hook-core.mjs";
 import { STATE_DIR } from "./state-dirs.mjs";
 import { isOffline } from "./mcp-package/endpoints.mjs";
 import { scoreReputation, signal, classifyMcpName, reputationAction, reputationAlert, REASON_WEIGHTS, TIER_WEIGHT } from "../data/mcp-reputation.js";
+import { readCatalogue, refreshCatalogue, catalogueSignals } from "./mcp-catalogue.mjs";
 
 export const DEFAULT_FEED_URL = "https://skilltriage.moorai.dev/api/reputation-feed.json";
 export const CACHE_FILE = "mcp-reputation.json";
@@ -302,14 +306,23 @@ function saveCache(stateDir, cache) {
   writeAtomic(join(stateDir, CACHE_FILE), cache);
 }
 
-function present(id, entry, feed, flags) {
+// The verified catalogue's signals; a catalogue that is present but does not verify is named in evidence.
+function catalogueFor(id, version, cat) {
+  if (!cat || cat.status === "absent" || cat.status === "disabled") return { signals: [], evidence: [] };
+  if (cat.status !== "ok") return { signals: [], evidence: [`catalogue-${cat.status}`] };
+  const c = catalogueSignals(cat.catalogue, id, version);
+  return { signals: c.signals, evidence: ["catalogue-verified", ...c.evidence] };
+}
+
+function present(id, entry, feed, flags, cat) {
   const f = feedSignals(feed, id, entry.version);
+  const c = catalogueFor(id, entry.version, cat);
   const lookup = entry.lookup || { signals: [], evidence: [] };
   const tools = (entry.tools || []).map((c) => signal(c));
-  const r = scoreReputation([...entry.base, ...lookup.signals, ...f.signals, ...tools]);
+  const r = scoreReputation([...entry.base, ...lookup.signals, ...f.signals, ...c.signals, ...tools]);
   return {
     key: id.key, kind: id.kind, versionHash: entry.ver, ...r,
-    evidence: [...new Set([...entry.evidence, ...lookup.evidence, ...f.evidence])].sort(),
+    evidence: [...new Set([...entry.evidence, ...lookup.evidence, ...f.evidence, ...c.evidence])].sort(),
     scoredAt: entry.scoredAt, firstSeenAt: entry.firstSeenAt, ...flags
   };
 }
@@ -343,7 +356,7 @@ export function assessServerSync(decl, opts = {}) {
   const r = core(decl, opts, null);
   if (!r.flags.cached) { r.cache.servers[r.id.key] = r.entry; saveCache(stateDir, r.cache); }
   const f = readFeedFile(stateDir);
-  return present(r.id, r.entry, f ? f.feed : null, r.flags);
+  return present(r.id, r.entry, f ? f.feed : null, r.flags, readCatalogue({ stateDir, policy: opts.catalogue }));
 }
 
 // The proxy / hook path. Network only when the org policy opts in (lookup and/or feed).
@@ -363,7 +376,10 @@ export async function assessServer(decl, opts = {}) {
   if (!r.flags.cached) { r.cache.servers[r.id.key] = r.entry; saveCache(stateDir, r.cache); }
   const url = feedUrl(policy);
   const feed = url ? await refreshFeed(url, opts, stateDir) : (readFeedFile(stateDir) || {}).feed || null;
-  const rep = present(r.id, r.entry, feed, r.flags);
+  const cat = opts.catalogue && typeof opts.catalogue === "object" && opts.catalogue.url
+    ? await refreshCatalogue({ stateDir, policy: opts.catalogue, fetchImpl: opts.fetchImpl, now: opts.now }).catch(() => readCatalogue({ stateDir, policy: opts.catalogue }))
+    : readCatalogue({ stateDir, policy: opts.catalogue });
+  const rep = present(r.id, r.entry, feed, r.flags, cat);
   if (offlineSkip) rep.evidence = [...rep.evidence, "registry-not-checked-offline"].sort();
   return rep;
 }
@@ -379,7 +395,7 @@ export function addToolSignals(decl, findings, opts = {}) {
   r.entry.tools = [...have].sort();
   if (changed || !r.flags.cached) { r.cache.servers[r.id.key] = r.entry; saveCache(stateDir, r.cache); }
   const f = readFeedFile(stateDir);
-  return { ...present(r.id, r.entry, f ? f.feed : null, r.flags), changed };
+  return { ...present(r.id, r.entry, f ? f.feed : null, r.flags, readCatalogue({ stateDir, policy: opts.catalogue })), changed };
 }
 
 // ---- config lookup: a hook sees `mcp__<server>__<tool>`, i.e. only the label ----------------------
@@ -426,12 +442,12 @@ export function findServerDecl(name, { home = homedir(), cwd = process.cwd() } =
 // is the proxy's job; a feed the proxy already downloaded is still matched here.
 // → null | { action: "allow"|"alert"|"block"|"coach", rep, report, alert }
 //   report = first sight or a version change (post `alert` then; later calls stay quiet).
-export function hookReputation(label, { policy = {}, enforce = false, home = homedir(), cwd = process.cwd(), stateDir = STATE_DIR, identityHash = null } = {}) {
+export function hookReputation(label, { policy = {}, enforce = false, home = homedir(), cwd = process.cwd(), stateDir = STATE_DIR, identityHash = null, catalogue = null } = {}) {
   const p = policy && typeof policy === "object" ? policy : {};
   if (p.enabled === false) return null;
   const decl = findServerDecl(label, { home, cwd });
   if (!decl) return null;
-  const rep = assessServerSync(decl, { home, stateDir });
+  const rep = assessServerSync(decl, { home, stateDir, catalogue });
   const action = reputationAction(rep, p, { enforce });
   const report = (rep.firstSeen || rep.versionChanged) && action !== "allow";
   const alert = reputationAlert(rep, { server: label, decision: action, identityHash: identityHash ? identityHash(`mcp-reputation:${rep.key}`) : "", tool: `hook:mcp__${label}` });

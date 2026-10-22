@@ -104,7 +104,7 @@ export function createGuard(route) {
   }
   function startReputation() {
     REP_READY = ensurePolicy()
-      .then(() => assessServer(REP_DECL, { policy: repPolicy(), engine: state.ENGINE || undefined }))
+      .then(() => assessServer(REP_DECL, { policy: repPolicy(), engine: state.ENGINE || undefined, catalogue: state.POLICY && state.POLICY.mcpCatalogue }))
       .then((rep) => { REP = rep; if (rep.firstSeen || rep.versionChanged) reportReputation(rep); return rep; })
       .catch(() => null);
     return REP_READY;

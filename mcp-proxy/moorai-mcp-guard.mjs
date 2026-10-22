@@ -322,7 +322,7 @@ function reportReputation(rep) {
 }
 function startReputation() {
   REP_READY = ensurePolicy()
-    .then(() => assessServer(REP_DECL, { policy: repPolicy(), engine: ENGINE || undefined }))
+    .then(() => assessServer(REP_DECL, { policy: repPolicy(), engine: ENGINE || undefined, catalogue: POLICY && POLICY.mcpCatalogue }))
     .then((rep) => { REP = rep; if (rep.firstSeen || rep.versionChanged) reportReputation(rep); return rep; })
     .catch(() => null);
   return REP_READY;

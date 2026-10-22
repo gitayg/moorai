@@ -1,0 +1,20 @@
+{
+  "$comment": "Open source list for the MoorAI MCP server and skill catalogue. scripts/mcp-catalogue-build.mjs validates it, adds reputation fields, records --scan verdicts and signs the result. 'listed' with no versions means the name is catalogued and no MoorAI scan stands behind any version yet. A verdict says what a scan found, never that a server is safe. Pull requests: one entry per change, cite the source or advisory.",
+  "publisher": "MoorAI",
+  "entries": [
+    { "kind": "mcp-server", "ecosystem": "npm", "name": "@modelcontextprotocol/server-everything", "status": "listed", "source": "reference-servers", "repository": "github.com/modelcontextprotocol/servers", "license": "MIT", "versions": [] },
+    { "kind": "mcp-server", "ecosystem": "npm", "name": "@modelcontextprotocol/server-filesystem", "status": "listed", "source": "reference-servers", "repository": "github.com/modelcontextprotocol/servers", "license": "MIT", "versions": [] },
+    { "kind": "mcp-server", "ecosystem": "npm", "name": "@modelcontextprotocol/server-memory", "status": "listed", "source": "reference-servers", "repository": "github.com/modelcontextprotocol/servers", "license": "MIT", "versions": [] },
+    { "kind": "mcp-server", "ecosystem": "npm", "name": "@modelcontextprotocol/server-sequential-thinking", "status": "listed", "source": "reference-servers", "repository": "github.com/modelcontextprotocol/servers", "license": "MIT", "versions": [] },
+    { "kind": "mcp-server", "ecosystem": "pypi", "name": "mcp-server-fetch", "status": "listed", "source": "reference-servers", "repository": "github.com/modelcontextprotocol/servers", "license": "MIT", "versions": [] },
+    { "kind": "mcp-server", "ecosystem": "pypi", "name": "mcp-server-git", "status": "listed", "source": "reference-servers", "repository": "github.com/modelcontextprotocol/servers", "license": "MIT", "versions": [] },
+    { "kind": "mcp-server", "ecosystem": "pypi", "name": "mcp-server-time", "status": "listed", "source": "reference-servers", "repository": "github.com/modelcontextprotocol/servers", "license": "MIT", "versions": [] },
+    { "kind": "mcp-server", "ecosystem": "npm", "name": "@playwright/mcp", "status": "listed", "source": "vendor", "repository": "github.com/microsoft/playwright-mcp", "versions": [] },
+    { "kind": "mcp-server", "ecosystem": "npm", "name": "@notionhq/notion-mcp-server", "status": "listed", "source": "vendor", "repository": "github.com/makenotion/notion-mcp-server", "versions": [] },
+    { "kind": "mcp-server", "ecosystem": "npm", "name": "@upstash/context7-mcp", "status": "listed", "source": "vendor", "repository": "github.com/upstash/context7", "versions": [] },
+    { "kind": "mcp-server", "ecosystem": "npm", "name": "postmark-mcp", "status": "do-not-install", "source": "advisory", "advisories": ["MAL-2025-47604"], "versions": [] },
+    { "kind": "mcp-server", "ecosystem": "pypi", "name": "iflow-mcp_cmpxchg16-reddit-mcp", "status": "do-not-install", "source": "advisory", "versions": [
+      { "version": "0.1.0", "verdict": "do-not-install", "reasons": ["pkg-known-malicious"], "sha256": "5e77fa2a506e1ce6f0726faa502a5bdd0fccd598bd835c7cd6b69963de550198" }
+    ] }
+  ]
+}
