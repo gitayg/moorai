@@ -136,3 +136,52 @@ test("model presence: a bare name matches its :latest tag", async () => {
   assert.equal(esc.modelListed(["llama3:latest"], "llama3:latest"), true);
   assert.equal(esc.modelListed(["llama3.2:latest"], "llama3:latest"), false);
 });
+
+// ---- review fixes: the classifier prompt is part of the key, and measurement can turn the cache off ----
+
+test("a verdict stored under one prompt version misses under another", () => {
+  const dir = mkdtempSync(join(tmpdir(), "moorai-esccache-u-"));
+  cache.putCachedVerdict(CANARY, "m1", { flagged: true, category: "x", confidence: 0.9 }, { dir, promptId: "p1" });
+  assert.ok(cache.getCachedVerdict(CANARY, "m1", { dir, promptId: "p1" }));
+  assert.equal(cache.getCachedVerdict(CANARY, "m1", { dir, promptId: "p2" }), null);
+});
+
+test("classifyLocal keys the cache on the shipped prompt: an entry from a different prompt is not reused", async () => {
+  state.generate = 0; state.status = 200; state.risk = false;
+  const dir = join(HOME, ".moorai");
+  const text = "prompt version sample never classified before";
+  assert.match(String(esc.CLASSIFIER_PROMPT_ID), /^[0-9a-f]{16}$/);
+  cache.putCachedVerdict(text, "fake-model:latest", { flagged: true, category: "stale", confidence: 1 }, { dir, promptId: "an-older-prompt" });
+  const v = await esc.classifyLocal(text);
+  assert.equal(state.generate, 1, "a verdict from another prompt must not be served");
+  assert.equal(v.flagged, false);
+  const text2 = "prompt version sample two never classified before";
+  cache.putCachedVerdict(text2, "fake-model:latest", { flagged: true, category: "same", confidence: 1 }, { dir, promptId: esc.CLASSIFIER_PROMPT_ID });
+  assert.equal((await esc.classifyLocal(text2)).category, "same");
+  assert.equal(state.generate, 1, "a verdict from the shipped prompt is served from the cache");
+  state.risk = true;
+});
+
+test("MOORAI_ESCALATION_CACHE=off: every call asks the model and nothing is read or written", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "moorai-esccache-u-"));
+  process.env.MOORAI_ESCALATION_CACHE = "off";
+  try {
+    cache.putCachedVerdict(CANARY, "m1", { flagged: true, category: "x", confidence: 0.9 }, { dir });
+    assert.equal(existsSync(join(dir, cache.CACHE_FILE)), false, "no write while off");
+    state.generate = 0; state.status = 200;
+    const text = "cache off sample";
+    await esc.classifyLocal(text);
+    await esc.classifyLocal(text);
+    assert.equal(state.generate, 2, "both calls reach the model");
+  } finally {
+    delete process.env.MOORAI_ESCALATION_CACHE;
+  }
+  cache.putCachedVerdict(CANARY, "m1", { flagged: true, category: "x", confidence: 0.9 }, { dir });
+  process.env.MOORAI_ESCALATION_CACHE = "0";
+  try {
+    assert.equal(cache.getCachedVerdict(CANARY, "m1", { dir }), null, "no read while off");
+  } finally {
+    delete process.env.MOORAI_ESCALATION_CACHE;
+  }
+  assert.ok(cache.getCachedVerdict(CANARY, "m1", { dir }), "on again once the variable is unset");
+});

@@ -9,6 +9,7 @@ import { hasDeviceKey, classifyWithProvider } from "./device-inference.mjs";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { STATE_DIR, statePath } from "../cli/state-dirs.mjs";
 import { getCachedVerdict, putCachedVerdict } from "./escalation-cache.mjs";
+import { createHash } from "node:crypto";
 
 // LOOPBACK ONLY. The zero-egress guarantee in the header is enforced here rather than asserted: the
 // port may be pointed elsewhere (a second Ollama, a test double) but the HOST may not, so no setting
@@ -141,6 +142,15 @@ export async function localModelAvailable(timeoutMs = 400, model = DEFAULT_MODEL
   } catch { return false; }
 }
 
+// classifyLocal's prompt up to the scanned text, and a short hash of it. The hash is part of the verdict
+// cache key (data/escalation-cache.mjs), so editing the criteria or this framing invalidates old verdicts.
+const LOCAL_PROMPT_HEAD =
+  "You are a security classifier for an AI coding agent. " +
+  CLASSIFIER_CRITERIA +
+  ' Respond with ONLY compact JSON: {"risk":true|false,"category":"short-label","confidence":0.0-1.0}. ' +
+  "CONTENT:\n";
+export const CLASSIFIER_PROMPT_ID = createHash("sha256").update(LOCAL_PROMPT_HEAD, "utf8").digest("hex").slice(0, 16);
+
 // Returns { flagged, category, confidence } or null (unavailable / unparseable / fail-open).
 // The prompt/text goes to the loopback model only; the caller reduces the result to a content-free
 // signal before anything leaves the device.
@@ -152,14 +162,11 @@ export async function classifyLocal(text, { model = DEFAULT_MODEL, timeoutMs = D
   if (UNDERPOWERED_MODELS.has(model)) recordEscalationOutcome("underpowered", 0, "local");
   // F22: a verdict this device already got for the same text and model (data/escalation-cache.mjs; keyed
   // hash only, bounded, fail-open). Recorded as answered by "local-cache" so the ledger still shows it.
-  const cached = getCachedVerdict(text, model);
+  // The key includes CLASSIFIER_PROMPT_ID, so a prompt change never reuses an older prompt's verdicts.
+  const keyOpts = { promptId: CLASSIFIER_PROMPT_ID };
+  const cached = getCachedVerdict(text, model, keyOpts);
   if (cached) { recordEscalationOutcome("answered", 0, "local-cache"); return cached; }
-  const prompt =
-    "You are a security classifier for an AI coding agent. " +
-    CLASSIFIER_CRITERIA +
-    ' Respond with ONLY compact JSON: {"risk":true|false,"category":"short-label","confidence":0.0-1.0}. ' +
-    "CONTENT:\n" +
-    text.slice(0, 4000);
+  const prompt = LOCAL_PROMPT_HEAD + text.slice(0, 4000);
   // Outcome recording is deliberately on EVERY exit path of this function: a silent null is the failure
   // mode this layer actually had in production (see OUTCOME_KINDS above).
   const t0 = Date.now();
@@ -180,7 +187,7 @@ export async function classifyLocal(text, { model = DEFAULT_MODEL, timeoutMs = D
       category: String(parsed.category || "model-flagged").slice(0, 40),
       confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0))
     };
-    putCachedVerdict(text, model, verdict);
+    putCachedVerdict(text, model, verdict, keyOpts);
     return verdict;
   } catch (e) {
     // AbortSignal.timeout rejects with a TimeoutError; anything else is a real error (connection

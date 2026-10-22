@@ -414,6 +414,9 @@ export function toText(sc, rows, verbose, semantic, splits, postureLabel = "buil
 // provider call unless explicitly opted in via MOORAI_EVAL_SEMANTIC_MODE=provider.
 async function buildEscalator(semantic) {
   if (!semantic) return null;
+  // Measurement asks the model every time: the on-device verdict cache (data/escalation-cache.mjs) would
+  // answer repeat texts from earlier runs. An explicit MOORAI_ESCALATION_CACHE setting is left as is.
+  if (!process.env.MOORAI_ESCALATION_CACHE) process.env.MOORAI_ESCALATION_CACHE = "off";
   const { escalateMiss } = await import("../src/semantic.js");
   const { crescendoTrajectory } = await import("../data/crescendo.js");
   const mode = process.env.MOORAI_EVAL_SEMANTIC_MODE === "provider" ? "provider" : "local";

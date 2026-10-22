@@ -246,12 +246,20 @@ Cheapest-and-most-private first; the escalation order *is* the privacy order.
    paying a `/api/generate` call that fails with "model not found" (a bare name matches its `:latest`
    tag; an unreadable tag list counts as present). Verdicts are **cached on the device**
    ([`data/escalation-cache.mjs`](../data/escalation-cache.mjs), `~/.moorai/escalation-cache.json`,
-   0600): the key is an HMAC of model + text under a random per-device key
+   0600): the key is an HMAC of model + classifier-prompt id + text under a random per-device key
    (`~/.moorai/escalation-cache.key`), the value is the content-free verdict (flag, short category,
-   confidence, time); entries expire after 24 hours and at most 2,000 are kept. Only verdicts a model
-   returned are cached, never a timeout or an error. A cache hit is recorded as outcome `answered` with
-   backend `local-cache`. The escalation worker is a new process per tool call, which is why the cache
-   is on disk. Tests: `test/escalation-cache.test.mjs` (fake Ollama on 127.0.0.1, temporary HOME).
+   confidence, time); entries expire after 24 hours and at most 2,000 are kept. The prompt id
+   (`CLASSIFIER_PROMPT_ID`, a hash of the local classifier prompt) means a changed prompt never reuses
+   an older prompt's verdicts. Only verdicts a model returned are cached, never a timeout or an error. A
+   cache hit is recorded as outcome `answered` with backend `local-cache`. The cache covers the local
+   backend only; the provider backend (Tier 2b) is not cached. The escalation worker is a new process per
+   tool call, which is why the cache is on disk. `MOORAI_ESCALATION_CACHE=off` (or `0`, `false`, `no`)
+   turns reads and writes off; `scripts/measure-variance.mjs` and the `--semantic` paths of
+   `scripts/redteam-eval.mjs`, `score-heldout-v2.mjs`, `score-vectors.mjs` and `score-vector24.mjs` set it
+   unless it is already set, so repeated measurement runs ask the model every time. Tests:
+   `test/escalation-cache.test.mjs` (fake Ollama on 127.0.0.1, temporary HOME) and
+   `test/measurement-cache-off.test.mjs` (each measurement script against a fake Ollama: every run
+   reaches the model and no device cache file is written).
 3. **Tier 2b — device-side provider inference** — when no local model is present
    ([`data/device-inference.mjs`](../data/device-inference.mjs)). Reuses the API key **already on the
    developer's machine** (`ANTHROPIC_API_KEY` or an admin key file), so no new third party and no new
@@ -3245,7 +3253,7 @@ each basis; the console pins the same literal and downgrades a stronger claim.
 - **Native runtime/toolkit** — **Tauri** (see [`src-tauri/`](../src-tauri/)), chosen over Electron
   for size, auditability and a clean local-model sidecar.
 - **Local model** — **nothing is bundled.** Tier 2 is opportunistic: it uses an Ollama model already
-  present on the machine (default `llama3.2:1b`), else the developer's own provider credential, else
+  present on the machine (default `llama3:latest`, set with `MOORAI_LOCAL_MODEL`), else the developer's own provider credential, else
   regex-only. This keeps the installer small and avoids shipping a model in the notarized build.
 
 ## OPEN DECISIONS

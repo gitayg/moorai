@@ -335,6 +335,9 @@ export async function scoreVector2({ semantic = false, corpusPath = VECTOR_FILES
   const data = JSON.parse(readFileSync(join(ROOT, corpusPath), "utf8"));
   const threats = JSON.parse(readFileSync(join(ROOT, "data/threats.json"), "utf8"));
   const engine = new DetectionEngine(threats, DETECTORS, CONTENT_RULES);
+  // Measurement asks the model every time: the on-device verdict cache (data/escalation-cache.mjs) would
+  // answer repeat texts from earlier runs. An explicit MOORAI_ESCALATION_CACHE setting is left as is.
+  if (semantic && !process.env.MOORAI_ESCALATION_CACHE) process.env.MOORAI_ESCALATION_CACHE = "off";
   const escalate = semantic
     ? (eng, text, stage, turns) => escalateMiss(eng, text, stage, SEMANTIC_POLICY, turns ? { turns } : undefined)
     : null;
