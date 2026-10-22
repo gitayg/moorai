@@ -174,7 +174,8 @@ test("runner --live against an in-test model server: the real model proxy refuse
     for (const id of ["openai-chat-allow", "openai-chat-stream-allow", "openai-chat-secret-deny", "openai-chat-toolcall-withhold", "openai-chat-stream-toolcall-withhold", "anthropic-messages-allow", "anthropic-messages-secret-deny", "anthropic-toolcall-withhold", "ollama-chat-allow", "ollama-chat-secret-deny", "ollama-chat-toolcall-withhold"]) {
       assert.equal(by[id] && by[id].status, "pass", `${id}: ${JSON.stringify(by[id])}`);
     }
-    assert.equal(by["openai-responses-secret"].status, "gap");
+    assert.equal(by["openai-responses-secret"].status, "pass", JSON.stringify(by["openai-responses-secret"]));
+    assert.equal(by["openai-responses-secret"].observed, "refuse", "the proxy parses the Responses API, so the credential is refused before the model");
     const gw = reps["mcp-gateway-mcp-sdk"];
     assert.ok(gw, `files: ${files}`);
     assert.deepEqual(gw.targets[0].cases.map((c) => [c.id, c.status]), [["sdk-echo-allow", "pass"], ["sdk-echo-deny", "pass"]]);

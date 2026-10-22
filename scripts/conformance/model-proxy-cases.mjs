@@ -3,7 +3,7 @@
 //   /openai/chat/completions     → Ollama's OpenAI-compatible /v1/chat/completions (JSON and SSE)
 //   /anthropic/v1/messages       → Ollama's Anthropic-compatible /v1/messages
 //   /ollama/api/chat             → Ollama's native /api/chat
-//   /openai/responses            → Ollama's /v1/responses (the proxy forwards this unparsed: a known gap)
+//   /openai/responses            → Ollama's /v1/responses (a credential is refused before the model; an unparsed forward is a gap)
 // An upstream recorder sits between the proxy and Ollama, so each case knows whether a refused request
 // reached the model and whether the model really produced a tool call.
 //

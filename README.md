@@ -46,6 +46,7 @@ That's the exact trade MoorAI refuses.
 - **Coverage integrity** — the hook sends a content-free daily heartbeat per agent host with the settings that weaken or switch off protection (hooks disabled, `bypassPermissions`, Codex `approval_policy = "never"`, a sandbox off, …), and the desktop app reports when each agent host was last used, independent of every hook. The console raises a finding for an agent in use with no MoorAI hook traffic, a weakened setting, and a hook removed or gone stale.
 - **Credential exposure map** — the daily heartbeat says, by class only, which credentials an agent on the device can reach (cloud CLIs, SSH keys, kubeconfig, `gh`, `.npmrc`, `.netrc`, MCP configs, project `.env` files, allow-listed env var names, AI keys at rest by keyed hash), which ones an agent read, whether a profile name looks like production, and the destination class the session reached within 10 minutes of the read. Never a path, a value or a name it was not told it may send. See [Credential exposure map](#credential-exposure-map).
 - **Token usage and usage budgets** — the model proxy reads the token counts each provider returns, and a Claude Code device reads the usage Claude Code records in its own transcripts; both go to the console as content-free hourly totals per agent, model and keyed project. A signed usage budget the console marks exceeded is answered 429 by the model proxy in enforce mode. See [Token usage and usage budgets](#token-usage-and-usage-budgets).
+- **Just-in-time approval routing** — a signed policy can send selected blocks and asks in Claude Code to an approver group: the call is denied at once with a request id, one content-free `APPROVAL_REQUESTED` alert goes to the console, and the device allows the identical call only after an approve grant arrives inside the signed policy. The hook never waits for a decision. See [Just-in-time approval routing](#just-in-time-approval-routing).
 - **Protected-instruction leak detection (#52)** — reports the rules files an agent runs under (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, Copilot, Cursor, Windsurf and Cline rules) leaving the device through the agent: reproduced in what it writes or sends, or uploaded by path (`curl -d "$(cat CLAUDE.md)"`, `gh gist create AGENTS.md`). The files are fingerprinted on-device as keyed hashes of 7-word shingles; no text is stored. Editing the rules file itself, quoting a line or two, and template boilerplate stay silent.
 - **MCP server reputation** — scores an MCP server 0-100 the first time it is seen (bands good / fair / poor / bad) from its package name, its launch command and the copy npx already installed, plus, opt-in, a registry lookup (which also checks that the package's declared repository is really its own, from registry provenance or the repository's own manifest, and counts the accounts that can publish it: one is `single-maintainer`, a weak signal at weight 5) and SkillTriage's published verdicts. `moorai-mcp-check <package>` runs ten pre-install checks on a server you have not installed yet. A content-free alert carries the score, band and reason codes; `mcpReputation.blockBelow` refuses a low-scoring server. Details in [`mcp-proxy/README.md`](mcp-proxy/README.md).
 - **Signed MCP server and skill catalogue** — an open catalogue format (`moorai-mcp-catalogue` v1: name, ecosystem, status, source, repository, per-version scan verdict, reason codes, artifact or tree sha256, and reputation fields from the agent's own scoring) signed with ed25519. `scripts/mcp-catalogue-build.mjs` builds and signs it from [`data/mcp-catalogue/source.json`](data/mcp-catalogue/source.json), runs MoorAI's package engine over a local copy with `--scan`, and exports the v0.1 MCP registry responses for allow-listable versions with `--format mcp-registry`. A device uses a catalogue only after its signature verifies against a key it got out of band (the signed policy's `mcpCatalogue.publicKeys`, `MOORAI_CATALOGUE_PUBKEY`, or root-owned `/etc/moorai/catalogue.pub`); with no key it is not used. The cached copy (`~/.moorai/mcp-catalogue.json`, user-writable) is re-verified on every read and never decides its own freshness: a fetch time in the future makes it stale, so it is fetched again; a catalogue past its signed `expiresAt` (mandatory) is refused, cached or fetched, so an old signed catalogue cannot be replayed past its expiry; a catalogue whose `seq` is below the highest this device accepted from that key is refused, cached or fetched. That mark lives in the same writable directory, so a local user who rewrites both files can hold an older signed catalogue until the next refresh, at most 24 hours. An expired catalogue is not used and is reported as `catalogue-expired`; until a current one arrives the device has its no-catalogue verdicts. Verdicts feed MCP reputation for npm and PyPI servers as `catalogue-do-not-install`, `catalogue-review` and `catalogue-caution`; `no-findings` is evidence only and never raises a score. The MCP stdio guard fetches `mcpCatalogue.url` (https, one bare GET a day) and keeps the catalogue on the re-score after `tools/list`. The HTTP gateway fetches it too, but its servers are remote and remote, docker and skill entries are not matched yet, so it draws no verdict from it. The Claude Code hook reads only a cached copy, with the environment, root-owned or built-in keys (not the policy's keys or URL). Skill entries and `skillTreeDigest` exist in the format and the generator; nothing on the device consumes them yet. `moorai-mcp-catalogue verify <file>` and `status` check a file or the cached copy. A verdict says what a scan found, never that a server is safe. The publisher key and the hosted feed are not published yet.
@@ -1994,6 +1995,31 @@ so a resend never double-counts. Never prompt or response text, a path or a key.
   (over 1 hour) budget state never blocks. Hooks cannot stop a model call, so they never block on budget.
 - Details: [`docs/CAPABILITY_SPEC.md`](docs/CAPABILITY_SPEC.md) (Token usage and usage budgets).
 
+### Just-in-time approval routing
+
+A signed policy's top-level `approvalRouting` (`{ v: 1, rules: [...] }`, at most 64 rules) names which held
+verdicts go to a human approver group instead of standing as a block or an ask
+([`cli/approval-routing.mjs`](cli/approval-routing.mjs), wired into the Claude Code `PreToolUse` hook). A
+rule matches on threat ids, an MCP tool, an egress rule id or a reason code; every threat and egress rule on
+the call must be covered, so approving one threat never releases another on the same call.
+
+- **Hold.** A matching block or ask is denied at once (`Held for approval: <label> (request apr_…)`). The device
+  generates the request id and posts one `APPROVAL_REQUESTED` alert carrying the rule id, the held verdict and a
+  keyed hash of the tool name and input, never the command, path, URL or argument text. A pending request for
+  the same rule and action is reused, not re-sent.
+- **Decision.** The console adds the device's decided rows to the signed policy as `approvals`. Grants are read
+  only from a policy whose ed25519 signature verifies under the anchor or the pinned key. `grant: "once"` allows
+  the identical call one time, `"ttl"` until `validUntil`; the first use posts `APPROVAL_USED`, and a request
+  that expires undecided is denied and posts `APPROVAL_EXPIRED`.
+- **Never held:** fail-closed denies, policy tamper, containment, decoys, behaviour signals, profile drift,
+  session kills and calls on an unenrolled device.
+- **Limits.** A decision reaches the device on the first call after the 60-second policy cache expires. A
+  `once` grant can be replayed for the identical action until its signed `validUntil`, because the pending
+  file is in the agent user's write scope. With the console down or older than approval routing the call
+  stays held (a deny). The model proxy, MCP gateway and egress proxy do not hold verdicts for approval.
+
+Details: [docs/APPROVAL_ROUTING.md](docs/APPROVAL_ROUTING.md).
+
 ### Where an action came from
 
 Each hook alert and allow-trail record carries `origin` ([`cli/origin.mjs`](cli/origin.mjs)): a `kind`
@@ -2530,7 +2556,7 @@ in `data/threats.json` to get technique ids, coverage and reason. The console's 
 
 ### Keeping up with the agent hosts
 
-MoorAI hooks into six hosts, and each changes its hook interface on its own release schedule.
+MoorAI hooks into ten hosts, and each changes its hook interface on its own release schedule.
 [`data/host-versions.json`](data/host-versions.json) is the single record of which version of each host the
 adapter was last tested against:
 
@@ -2598,6 +2624,20 @@ native installer's `versions/<v>/` directory, or the npm package's `package.json
 runs a host binary while deciding a verdict, and verdicts are unchanged. Only a version string (digits,
 dots and a short build suffix) leaves the device. The console drops both fields on ingest today; console
 v0.73.0, in progress, is the release that keeps them.
+
+### Live conformance tier
+
+`npm run test:live` (opt-in, not in CI) drives the installed software against MoorAI and writes one signed,
+content-free report per target and version into [`docs/conformance/`](docs/conformance/): the real Claude Code
+binary in a throwaway home with a scripted model on loopback (shell allow and deny, prompt block, MCP allow and
+deny), the Cursor MCP handshake, the desktop clients recorded as installed or not, a real
+`moorai-model-proxy --mode enforce` in front of a real local Ollama (allow, credential refusal and real tool-call
+withholding on the OpenAI-compatible, Anthropic-compatible and native APIs, and a credential on the Responses
+API), and the official MCP TypeScript SDK as client and server through the MCP gateway. The recorded run (macOS
+arm64, 2026-10-21): Claude Code 2.1.295 5/5, the model proxy 11 pass and 1 gap (the Responses API, before the
+proxy parsed it; a 2026-10-22 re-run on 1.28.0 passed 12/12), the gateway 2/2; agent turns in Cursor, Codex,
+Copilot, Gemini and Droid, the official provider SDKs, Windows and Linux were not run. Details:
+[docs/HOST_CONFORMANCE.md](docs/HOST_CONFORMANCE.md).
 
 ### Image inspection (#23) — where the OCR runs
 

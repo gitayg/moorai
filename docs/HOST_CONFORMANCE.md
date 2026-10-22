@@ -59,7 +59,7 @@ reached the model and whether the model really produced a tool call. The policy 
 | `/openai/chat/completions` | OpenAI-compatible `/v1/chat/completions` | allow (JSON), allow (SSE), credential refused before the model, tool call withheld (JSON), tool call withheld (SSE) |
 | `/anthropic/v1/messages` | Anthropic-compatible `/v1/messages` | allow, credential refused, tool call withheld |
 | `/ollama/api/chat` | native `/api/chat` | allow, credential refused, tool call withheld |
-| `/openai/responses` | `/v1/responses` | credential: forwarded unparsed, recorded as `gap` (the proxy does not parse the Responses API) |
+| `/openai/responses` | `/v1/responses` | credential refused before the model (`pass`); a proxy that forwards it unparsed is recorded as `gap` |
 
 A withhold case whose model made no tool call is `inconclusive`, never a pass. Each credential case uses
 its own fake key, because the proxy reports a repeated identical item once.
@@ -97,7 +97,7 @@ with `--verify … --pub`; without one, an ephemeral key signs the run and the r
 | Codex CLI, Copilot CLI, Gemini CLI, Factory Droid | | not installed |
 | Claude Desktop | 2.37337.1 | installed, not run (`no-headless-mode`) |
 | VS Code, Cursor desktop app | | not installed |
-| Model proxy with Ollama | Ollama 0.40.3, `llama3.2:latest` | 11 pass (every allow, refuse and withhold case on all three APIs, the real model made each tool call); Responses API `gap` |
+| Model proxy with Ollama | Ollama 0.40.3, `llama3.2:latest` | 11 pass (every allow, refuse and withhold case on all three APIs, the real model made each tool call); Responses API `gap` (agent 1.27, before the proxy parsed the Responses API). Re-run 2026-10-22 on agent 1.28.0: 12 pass, the Responses credential case refused before the model (ephemeral signing key; the committed report is the 1.27 run) |
 | MCP gateway with the MCP TypeScript SDK | 1.32.1 | benign forwarded pass, denied refused pass |
 | Official provider SDKs (OpenAI, Anthropic, Google Gen AI, Ollama; Node and Python) | | not installed (`sdk-not-installed`) |
 | Server image, linux/amd64 | | not present (`image-not-present`; only arm64 builds are local) |

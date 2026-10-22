@@ -3663,8 +3663,9 @@ version into `docs/conformance/`.
   a real Ollama, with an upstream recorder between them, through Ollama's OpenAI-compatible
   (`/v1/chat/completions`, JSON and SSE), Anthropic-compatible (`/v1/messages`) and native (`/api/chat`)
   APIs: allowed requests forwarded, a credential refused before the model (the recorder confirms the model
-  never saw it), and a real model tool call to a policy-blocked function withheld; the Responses API path
-  is forwarded unparsed and recorded as `gap`. The MCP gateway case runs the official MCP TypeScript SDK as
+  never saw it), and a real model tool call to a policy-blocked function withheld; a credential on the
+  Responses API path is refused before the model (`pass`), and a proxy that forwards it unparsed is
+  recorded as `gap`. The MCP gateway case runs the official MCP TypeScript SDK as
   client and server through a real gateway process (benign forwarded, denied refused and never received).
   The official provider SDKs and the linux/amd64 server image are recorded as present or not; the tier
   installs and pulls nothing.
@@ -3677,8 +3678,10 @@ version into `docs/conformance/`.
 - **Recorded run, 2026-10-21, macOS arm64:** Claude Code 2.1.295 5/5 pass (sandboxed); cursor-agent
   2026.05.27-fe9a6e2 MCP handshake and bundle markers pass, agent turn skipped (`auth-required`); Claude
   Desktop 2.37337.1 installed, not run; Codex, Copilot, Gemini, Droid, VS Code and Cursor desktop not
-  installed; model proxy with Ollama 0.40.3 / `llama3.2:latest` 11 pass, 1 gap (Responses); MCP gateway with
-  the MCP TypeScript SDK 1.32.1 2/2 pass; provider SDKs not installed; amd64 image not present.
+  installed; model proxy with Ollama 0.40.3 / `llama3.2:latest` 11 pass, 1 gap (Responses, agent 1.27, before
+  the proxy parsed the Responses API); MCP gateway with the MCP TypeScript SDK 1.32.1 2/2 pass; provider SDKs
+  not installed; amd64 image not present. Re-run 2026-10-22 on agent 1.28.0 (model proxy only, ephemeral
+  signing key, not committed): 12/12 pass, the Responses credential case refused before the model.
 - **Blind spots:** agent turns in Cursor, Codex, Copilot, Gemini and Droid; desktop clients as live MCP
   clients; a paid model (Claude Code's turns are scripted); the official OpenAI, Anthropic and Google SDKs
   (not installed; the cases send each API's documented request shape over HTTP); a real remote MCP server
@@ -3904,6 +3907,37 @@ Token counts (metadata only) go to `POST /api/token-usage` as cumulative hourly 
   pairs in one process no further budget alert is raised). Report mode forwards the request and the alert says `notify`. A policy that is not the verified
   signed policy, no state, a state older than 1 hour or dated in the future, an ended period, `warn`/`ok`, or
   `action: "alert"` never blocks, whatever failMode says. Hooks never block on budget.
+
+## Just-in-time approval routing (device side)
+
+[`cli/approval-routing.mjs`](../cli/approval-routing.mjs), wired into [`cli/moorai-hook.mjs`](../cli/moorai-hook.mjs)
+(Claude Code `PreToolUse`); full description in [`APPROVAL_ROUTING.md`](APPROVAL_ROUTING.md). Tests:
+`test/approval-routing.test.mjs`, `test/approval-routing-hook.test.mjs`.
+
+- **Policy key.** Top-level `approvalRouting: { v: 1, rules: [{ id, label, match, holds, group, timeoutSec,
+  onTimeout: "deny", grant: "once" | "ttl", grantTtlSec }] }`, at most 64 rules; `match` keys `threatId`,
+  `mcpTool`, `egressRuleId`, `reasonCode` (`EGRESS_RULE`, `OT_PROTOCOL_CLIENT`, `MCP_TOOL_ARGS`), `otOp`,
+  `functionTool`, every key set must match, and every threat id and egress rule id on the call must be covered.
+  The hook supplies no function name and no OT operation, and its only reason code is `EGRESS_RULE`, so a rule
+  that needs `functionTool`, `otOp`, `OT_PROTOCOL_CLIENT` or `MCP_TOOL_ARGS` never matches in the hook. A
+  malformed rule is dropped with a stderr warning naming its id or index. An older agent ignores the key.
+- **Hold and request.** A `deny` or `ask` that matches a rule with that verdict in `holds` is answered with a deny
+  at once. The device generates `apr_` + 26 Crockford base32 characters and posts one `APPROVAL_REQUESTED` alert
+  (`approval{ v: 1, requestId, ruleId, surface: "hook", verdict, actionHash, requestedAt, expiresAt, destClass? }`; `actionHash` is
+  the keyed per-tenant hash of the tool name and the key-sorted input). Pending requests: `~/.moorai/approvals.json`
+  (0600, at most 256), deduped per rule and action.
+- **Decision.** The policy fetch names the device's keyed actor (`actor=h2:…`); grants come only from the
+  signed policy's `approvals`, verified under the anchor or the pinned key (unsigned, altered, foreign-key,
+  locally cached or first-contact bodies give no grant). `once` is consumed on use, `ttl` holds until
+  `validUntil`; `APPROVAL_USED` on first use, `APPROVAL_EXPIRED` once for a pending request past its expiry.
+  An egress grant is honoured at the egress check only; a detector block on the same call still stands.
+- **Not held:** fail-closed denies, policy tamper, containment, decoys, behaviour signals, profile drift, session
+  kills and unenrolled (coached) calls. Capability-tag rules, session-risk escalation and MXC wrapping still apply
+  to an approved call.
+- **Limits.** Decision latency is at least the 60-second policy cache; `moorai-guard` and the MCP guard do not
+  name the actor, so a cache they wrote carries no approvals. A `once` grant can be replayed for the identical
+  action until its signed `validUntil`. The model proxy, MCP gateway and egress proxy do not hold verdicts for
+  approval.
 
 ## Coverage & blind spots
 
