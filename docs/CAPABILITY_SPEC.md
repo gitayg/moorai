@@ -1008,8 +1008,10 @@ is validated against.
     both"): one prefix or a list of up to 64, `a.b.c.d/n` (0-32) or IPv6 `x::/n` (0-128), normalised to
     network form; host bits set are refused ("cidr has host bits set"), `/0` only with `alert` or `block`, and
     an IPv4-mapped prefix (`::ffff:0:0/96` and longer) is the IPv4 prefix. From a call's text a cidr rule
-    matches a target whose host is an address inside the range (IPv4, IPv6, IPv4-mapped IPv6 read as IPv4,
-    numeric IPv4 spellings WHATWG reads as an address); a host name never matches it there (the hook does no
+    matches a target whose host is an address inside the range (IPv4, IPv6 with any zone id `%eth0` /
+    `%25eth0` set aside, IPv4-mapped IPv6 read as IPv4, numeric IPv4 spellings WHATWG reads as an address;
+    an address `net.isIP` accepts that the range parser cannot read matches `alert` and `block` cidr rules,
+    never `allow`), including an unbracketed IPv6 `ssh` destination; a host name never matches it there (the hook does no
     DNS), a stated exception to the unknown-field rule. Network-layer surfaces judge the resolved connect
     address (below). Cidr rules are refused inside a workload profile ("cidr rules are not accepted inside a
     workload profile"): an agent older than 1.28.0 drops a whole profile that carries an unknown key, while a

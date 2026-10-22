@@ -11,8 +11,10 @@
 //              `a.b.c.d/n` (n 0-32) or IPv6 `x::/n` (n 0-128), normalised to network form; a prefix with
 //              host bits set is refused, not masked; `/0` only with action alert or block. An IPv4-mapped
 //              IPv6 prefix (::ffff:0:0/96 and longer) is the IPv4 prefix. A target matches when its host
-//              IS an address inside the range (IPv4, IPv6, IPv4-mapped IPv6 read as IPv4, and the numeric
-//              IPv4 spellings WHATWG reads as an address). A host NAME never matches a cidr rule here: this
+//              IS an address inside the range (IPv4, IPv6 with its zone id `%eth0` / `%25eth0` set aside,
+//              IPv4-mapped IPv6 read as IPv4, and the numeric IPv4 spellings WHATWG reads as an address; an
+//              address net.isIP accepts that this parser cannot read matches alert and block cidr rules, never
+//              allow ones, and is never read as a name). A host NAME never matches a cidr rule here: this
 //              judge reads text and does no DNS. That is a stated exception to UNKNOWN FIELDS below, which
 //              would make every cidr block rule block every name. Network-layer surfaces
 //              (egress-proxy/judge.mjs, the MCP gateway's upstream connection) also judge the resolved
@@ -143,12 +145,16 @@ function parseCidr(raw) {
   return { fam, net: n, bits, text: `${fam === 4 ? v4Text(n) : v6Text(n)}/${bits}` };
 }
 
-// A host as an address → { fam, n } or null (a name). Brackets, IPv4-mapped IPv6 (read as IPv4) and the
-// numeric IPv4 spellings WHATWG and inet_aton read as an address (`0x0a.1`, `167772161`, `10.1`).
+// A host as an address → { fam, n }, { unparsed: true } (net.isIP reads an address this parser cannot), or
+// null (a name). Brackets, an IPv6 zone id (`%eth0`, URL-encoded `%25eth0`: the address without it),
+// IPv4-mapped IPv6 (read as IPv4) and the numeric IPv4 spellings WHATWG and inet_aton read as an address
+// (`0x0a.1`, `167772161`, `10.1`).
 function addressOf(host) {
   let h = String(host == null ? "" : host).trim().toLowerCase();
   if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1);
   if (!h) return null;
+  const zone = h.indexOf("%");
+  if (zone > 0 && h.includes(":") && (net.isIP(h) === 6 || net.isIP(h.slice(0, zone)) === 6)) h = h.slice(0, zone);
   if (net.isIP(h) !== 4 && /^[0-9a-fx.]+$/.test(h) && /\d/.test(h)) {
     try { const w = new URL(`http://${h}/`).hostname; if (net.isIP(w) === 4) h = w; } catch { /* a name */ }
   }
@@ -156,15 +162,17 @@ function addressOf(host) {
   if (fam === 4) return { fam: 4, n: v4Big(h) };
   if (fam !== 6) return null;
   const n = v6Big(h);
-  if (n === null) return null;
+  if (n === null) return { unparsed: true };
   if ((n >> 32n) === MAPPED_HI) return { fam: 4, n: n & 0xffffffffn };
   return { fam: 6, n };
 }
 
-// Is this host an address inside one of the compiled prefixes? A name never is.
-export function ipInCidr(list, host) {
+// Is this host an address inside one of the compiled prefixes? A name never is. An address that cannot be
+// read is inside when unparsedMatches is set (an alert or block rule: fails closed, never read as a name).
+export function ipInCidr(list, host, { unparsedMatches = false } = {}) {
   const a = addressOf(host);
   if (!a || !Array.isArray(list)) return false;
+  if (a.unparsed) return unparsedMatches;
   for (const c of list) {
     if (c.fam !== a.fam) continue;
     const shift = BigInt((c.fam === 4 ? 32 : 128) - c.bits);
@@ -401,7 +409,10 @@ function sshTargets(rest) {
   const port = Number(val(flags, "-p")) || 22;
   const out = [];
   const dest = positional[0];
-  if (dest && !dest.includes("://")) { const t = bareHost(dest, port); if (t) out.push(t); }
+  // ssh takes a bare IPv6 address unbracketed (`ssh fe80::1`, `ssh root@fe80::1%eth0`): there is no host:path.
+  const v6 = dest ? dest.replace(/^[^@:/[\]]*@/, "") : "";
+  if (v6 && net.isIP(v6.split("%")[0]) === 6) out.push({ scheme: "ssh", host: v6.toLowerCase(), port, method: null, path: null });
+  else if (dest && !dest.includes("://")) { const t = bareHost(dest, port); if (t) out.push(t); }
   const jump = val(flags, "-J");
   if (jump) for (const j of jump.split(",")) { const [h, p] = j.replace(/^[^@]*@/, "").split(":"); const t = bareHost(h, Number(p) || 22); if (t) out.push(t); }
   return out;
@@ -583,7 +594,7 @@ function pathMatch(p, path) {
 // Does one rule match one target? See UNKNOWN FIELDS and BINARY ATTRIBUTION above.
 export function ruleMatches(rule, t) {
   const allow = rule.action === "allow";
-  if (rule.cidr ? !ipInCidr(rule.cidr, t.addr != null ? t.addr : t.host) : !hostMatch(rule.host, t.host)) return false;
+  if (rule.cidr ? !ipInCidr(rule.cidr, t.addr != null ? t.addr : t.host, { unparsedMatches: !allow }) : !hostMatch(rule.host, t.host)) return false;
   if (rule.binary) {
     if (allow) { if (!t.binary || !rule.binary.some((re) => re.test(t.binary))) return false; }
     else if (t.binary) {

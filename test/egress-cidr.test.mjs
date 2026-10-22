@@ -106,3 +106,22 @@ test("cidr match reads the numeric IPv4 spellings a URL parser and inet_aton rea
   assert.equal(judge(rules, "Bash", { command: "ssh admin@0x0a.1" }).worst, "block", "ssh to a hex spelling");
   assert.equal(judge(rules, "Bash", { command: "nc 167772161 22" }).worst, "block", "nc to a one-number spelling");
 });
+
+test("ipInCidr reads an IPv6 address with a zone id (raw %eth0 or URL-encoded %25eth0, bracketed or not) as that address", () => {
+  const ll = validateEgressRule({ cidr: ["fe80::/10"], action: "block" }).rule;
+  for (const h of ["fe80::1%eth0", "fe80::1%25eth0", "[fe80::1%25eth0]", "[fe80::1%eth0]", "FE80::1%EN0"]) assert.equal(ipInCidr(ll.cidr, h), true, h);
+  const v4 = validateEgressRule({ cidr: ["10.0.0.0/8"], action: "block" }).rule;
+  assert.equal(ipInCidr(v4.cidr, "::ffff:10.0.0.1%en0"), true, "an IPv4-mapped address with a zone id");
+  assert.equal(ipInCidr(ll.cidr, "fe81.example%eth0"), false, "a name is still a name");
+});
+
+test("a zone-scoped IPv6 destination in a command is blocked by a cidr block rule (nc, curl, unbracketed ssh)", () => {
+  const rules = [{ id: "link-local", cidr: "fe80::/10", action: "block" }];
+  for (const command of ["nc fe80::1%eth0 80", "curl http://[fe80::1%25eth0]/", "curl -g \"http://[fe80::1%25eth0]:80/\"", "ssh fe80::1%eth0", "ssh root@fe80::1", "ssh -p 2222 admin@fe80::1%25eth0"]) {
+    assert.equal(judge(rules, "Bash", { command }).worst, "block", command);
+  }
+});
+
+test("cidr allow on a zone-scoped IPv6 address: the zone is stripped, so the address is read and an allow range opens it", () => {
+  assert.equal(judge([{ cidr: "fe80::/10", action: "allow" }], "Bash", { command: "nc fe80::1%eth0 80" }, "block").worst, "allow");
+});

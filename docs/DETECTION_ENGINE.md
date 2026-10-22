@@ -1697,8 +1697,8 @@ rate depends entirely on those rules and was not measured.
   MCP stdio proxy runs `evaluateEgress()` (the egress half), both for `mcp__<server>__<tool>`, so MCP calls
   from any client behind either are judged as the hook judges Claude Code's. The gateway also judges its own
   connection to the remote server, cidr rules on the addresses its DNS lookup returns.
-- `cidr` rules match an IP literal in the call's text (IPv4, IPv6, IPv4-mapped IPv6, the numeric IPv4
-  spellings WHATWG accepts); a host name never matches one here, because the hook does no DNS. The egress
+- `cidr` rules match an IP literal in the call's text (IPv4, IPv6 with any zone id `%eth0` / `%25eth0` set
+  aside, IPv4-mapped IPv6, the numeric IPv4 spellings WHATWG accepts, an unbracketed IPv6 `ssh` destination); a host name never matches one here, because the hook does no DNS. The egress
   proxy and the gateway's upstream connection match them on resolved addresses.
 - `PreToolUse` only. Tested on macOS only.
 
