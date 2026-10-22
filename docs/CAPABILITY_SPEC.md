@@ -3356,6 +3356,49 @@ is installed and healthy.
   `moorai-install-hooks` refuses with a clear message, and the tarball installs into `/` and uninstalls. Not run:
   systemd (no container ran it), RHEL or any rpm, Ubuntu 22.04, amd64, Wayland or X11 (there is no Linux
   clipboard guard or desktop app).
+## Live conformance tier (agent hosts, MCP clients, AI Servers)
+
+An opt-in tier (`npm run test:live`; full description in [`HOST_CONFORMANCE.md`](HOST_CONFORMANCE.md))
+drives the installed software against MoorAI and writes one signed, content-free report per target and
+version into `docs/conformance/`.
+
+- **Agent hosts** (`scripts/host-conformance.mjs`): each case is one headless turn of the real host binary
+  in a throwaway HOME, MoorAI installed by its own installer and enrolled to a loopback stand-in console
+  serving a signed policy. The model is a scripted Anthropic Messages endpoint on loopback
+  (`scripts/conformance/scripted-anthropic.mjs`), so the host runs its real hook pipeline, permission layer
+  and tools while no provider is called and no key is read; on macOS the host runs under `sandbox-exec`
+  (localhost-only egress, no writes to the real `~/.claude.json`, `~/.claude`, `~/.cursor`). Claude Code
+  cases: `shell-allow`, `shell-deny` (PreToolUse deny, command never runs, Blocked alert), `prompt-block`
+  (UserPromptSubmit block under `promptScan: "all"` + `promptScanAction: "block"`; the prompt never reaches
+  the model), `mcp-allow` and `mcp-deny` (Claude Code as an MCP client through the stdio guard; the denied
+  call never reaches the server). Cursor: the MCP client handshake through the stdio guard and the bundle
+  markers run; an agent turn needs a Cursor account (`auth-required`), and the installed build refuses its
+  local-model `--base-url` flag. Desktop MCP clients (Claude Desktop, VS Code, Cursor desktop) are recorded
+  as installed or not, with version, and never launched (`no-headless-mode`).
+- **AI Servers** (`scripts/server-conformance.mjs`): a real `moorai-model-proxy --mode enforce` in front of
+  a real Ollama, with an upstream recorder between them, through Ollama's OpenAI-compatible
+  (`/v1/chat/completions`, JSON and SSE), Anthropic-compatible (`/v1/messages`) and native (`/api/chat`)
+  APIs: allowed requests forwarded, a credential refused before the model (the recorder confirms the model
+  never saw it), and a real model tool call to a policy-blocked function withheld; the Responses API path
+  is forwarded unparsed and recorded as `gap`. The MCP gateway case runs the official MCP TypeScript SDK as
+  client and server through a real gateway process (benign forwarded, denied refused and never received).
+  The official provider SDKs and the linux/amd64 server image are recorded as present or not; the tier
+  installs and pulls nothing.
+- **Report** (`cli/conformance-report.mjs`): types `moorai.host-conformance/v1` and
+  `moorai.server-conformance/v1`; enums, booleans, integers, version strings and the alert's category /
+  risk / decision / reason code only, behind an allowlist that verification re-applies; ed25519 over the
+  SHA-256 of the canonical JSON; `--key` / `MOORAI_CONFORMANCE_KEY` for a stable pinnable key, otherwise an
+  ephemeral key and `signature.ephemeral: true`. Statuses `pass`, `fail`, `skip`, `inconclusive` (the real
+  model did not produce what the case needs), `gap` (a documented limit, observed).
+- **Recorded run, 2026-10-21, macOS arm64:** Claude Code 2.1.295 5/5 pass (sandboxed); cursor-agent
+  2026.05.27-fe9a6e2 MCP handshake and bundle markers pass, agent turn skipped (`auth-required`); Claude
+  Desktop 2.37337.1 installed, not run; Codex, Copilot, Gemini, Droid, VS Code and Cursor desktop not
+  installed; model proxy with Ollama 0.40.3 / `llama3.2:latest` 11 pass, 1 gap (Responses); MCP gateway with
+  the MCP TypeScript SDK 1.32.1 2/2 pass; provider SDKs not installed; amd64 image not present.
+- **Blind spots:** agent turns in Cursor, Codex, Copilot, Gemini and Droid; desktop clients as live MCP
+  clients; a paid model (Claude Code's turns are scripted); the official OpenAI, Anthropic and Google SDKs
+  (not installed; the cases send each API's documented request shape over HTTP); a real remote MCP server
+  in the gateway case; the amd64 image; Windows and Linux; no nightly schedule (the tier is not in CI).
 
 ## Coverage & blind spots
 
@@ -3415,7 +3458,10 @@ is installed and healthy.
   **Blind spot:** real clients have been run only against the fake upstream, so a real client and a real
   remote server in the same run, a session id from a real remote server, OAuth discovery through the
   gateway, a completed 2026-07-28 session with a real client and a live denied call through the gateway
-  are unproven; so are Claude Desktop, VS Code, Cursor's desktop app, Windows and Linux.
+  are unproven; so are Claude Desktop, VS Code, Cursor's desktop app, Windows and Linux. The live
+  conformance tier (above) has since run the official MCP TypeScript SDK as both client and server
+  through the gateway in one run (benign forwarded; denied refused, never received by the server, Blocked
+  alert); the server is an SDK server on loopback, not a third-party remote server.
 - **Model calls** go through the model proxy ([`model-proxy/`](../model-proxy/README.md)) when the agent's
   SDK base URL points at it: prompts and fed-back tool results are scanned, and the tool calls the model
   returns are decided as the sidecar decides them. Report-only by default (byte-identical pass-through,
@@ -3424,7 +3470,10 @@ is installed and healthy.
   Response-side enforcement (withholding a denied tool call, streaming and non-streaming, Anthropic and OpenAI shapes, including truncated streams, arguments that are not a JSON object and a dropped upstream connection) is tested against a fake provider; it has not been run with the real SDKs or a real provider. In Anthropic streams a tool call is held one block at a time, so an allowed call that comes before a denied one in the same turn has already been released when the turn is refused. **Blind spots:** an SDK that talks HTTPS to the provider directly bypasses
   it (no TLS interception); only Anthropic Messages and OpenAI Chat Completions are parsed (the Responses
   API, embeddings, Bedrock and Vertex pass unchecked); assistant turns, images, PDFs, tool definitions and
-  server-side tools are not scanned; not exercised with the real SDKs or a real provider.
+  server-side tools are not scanned; not exercised with the real SDKs or a paid provider. The live
+  conformance tier (above) has run it in enforce mode against a real local model server (Ollama 0.40.3,
+  `llama3.2:latest`) through the OpenAI-compatible (JSON and SSE), Anthropic-compatible and native Ollama
+  APIs: allow, credential refusal and real tool-call withholding all passed.
 - **Cloud AI platforms.** `moorai-cloud-inventory bedrock` reads an AWS account's Bedrock agents,
   knowledge bases, guardrails, custom models, provisioned throughput, application inference profiles and
   AgentCore runtimes, read-only, with the customer's own AWS CLI, and posts content-free records to the
@@ -3450,7 +3499,8 @@ is installed and healthy.
   proxy depend on no hook format, so MCP and model traffic stay covered while an adapter catches up
   (README, *Coverage layers*). **Blind spots:** the workflow has not run on GitHub yet; its live tier (one
   real agent turn per host) skips because no API-key secret exists, and Codex has no live tier; the
-  console shows neither field until console v0.73.0.
+  console shows neither field until console v0.73.0. The separate live conformance tier (above) runs
+  Claude Code turns against a scripted model with no key and has passed on 2.1.295.
 - **Across a session** (17b, 17c): the claim check and the session summary need `Stop`, which only Claude
   Code sends (the other agents' adapters forward no stop event). The claim check, session risk and the
   circuit breaker are report-only by default, and have been driven through the real hook with scripted

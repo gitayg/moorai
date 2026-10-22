@@ -1,0 +1,47 @@
+{
+  "type": "moorai.host-conformance/v1",
+  "moorai": "1.27.0",
+  "generatedAt": "2026-10-22T01:35:40.593Z",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "22.22.0"
+  },
+  "summary": {
+    "targets": 1,
+    "ran": 0,
+    "notRun": 1,
+    "cases": 0,
+    "pass": 0,
+    "fail": 0,
+    "skip": 0,
+    "inconclusive": 0,
+    "gap": 0
+  },
+  "targets": [
+    {
+      "kind": "desktop-client",
+      "id": "vscode",
+      "label": "Visual Studio Code",
+      "version": null,
+      "tested": null,
+      "ran": false,
+      "sandboxed": false,
+      "model": "none",
+      "modelName": null,
+      "cases": [],
+      "reason": "not-installed"
+    }
+  ],
+  "reasons": {
+    "not-installed": "not installed on the machine that ran the tier"
+  },
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "91c6703fbe76fa92",
+    "pub": "MCowBQYDK2VwAyEA4vNsxAiLa9lXSB2ePUJ1apxgM22q81Iu0b/MaCqxfrE=",
+    "digest": "786599a62197d274badc09ec54525ee0a9088389b35151f63883666dbaf9cf9c",
+    "sig": "+QQ3zLpbMHlNJAy3btrmBV8zephq5BnkL8T1jKRRFBKu0JSPUX3wCeQKZ+5D7ICZ55L//HJ/rG1Dev/f/yADAw==",
+    "ephemeral": false
+  }
+}

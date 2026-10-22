@@ -1,0 +1,147 @@
+{
+  "type": "moorai.host-conformance/v1",
+  "moorai": "1.27.0",
+  "generatedAt": "2026-10-22T01:35:40.513Z",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "22.22.0"
+  },
+  "summary": {
+    "targets": 1,
+    "ran": 1,
+    "notRun": 0,
+    "cases": 5,
+    "pass": 5,
+    "fail": 0,
+    "skip": 0,
+    "inconclusive": 0,
+    "gap": 0
+  },
+  "targets": [
+    {
+      "kind": "host",
+      "id": "claude-code",
+      "label": "Claude Code",
+      "version": "2.1.295",
+      "tested": "2.1.284",
+      "ran": true,
+      "sandboxed": true,
+      "model": "scripted",
+      "modelName": null,
+      "cases": [
+        {
+          "id": "shell-allow",
+          "surface": "agent-turn",
+          "expect": "allow",
+          "observed": "allow",
+          "status": "pass",
+          "checks": {
+            "toolUseSent": true,
+            "toolRan": true,
+            "refusedByMoorAI": false,
+            "alertSeen": false,
+            "promptReachedModel": false,
+            "hostExitZero": true
+          },
+          "alert": null,
+          "latencyMs": 34960
+        },
+        {
+          "id": "shell-deny",
+          "surface": "agent-turn",
+          "expect": "deny",
+          "observed": "deny",
+          "status": "pass",
+          "checks": {
+            "toolUseSent": true,
+            "toolRan": false,
+            "refusedByMoorAI": true,
+            "alertSeen": true,
+            "promptReachedModel": false,
+            "hostExitZero": true
+          },
+          "alert": {
+            "category": "Output & Code",
+            "riskLevel": "Blocked",
+            "decision": null,
+            "reasonCode": "DETECTOR_MATCH"
+          },
+          "latencyMs": 18466
+        },
+        {
+          "id": "prompt-block",
+          "surface": "prompt",
+          "expect": "deny",
+          "observed": "deny",
+          "status": "pass",
+          "checks": {
+            "toolUseSent": false,
+            "toolRan": false,
+            "refusedByMoorAI": false,
+            "alertSeen": true,
+            "promptReachedModel": false,
+            "hostExitZero": true
+          },
+          "alert": {
+            "category": "Information & Privacy",
+            "riskLevel": "Blocked",
+            "decision": null,
+            "reasonCode": "DETECTOR_MATCH"
+          },
+          "latencyMs": 10473
+        },
+        {
+          "id": "mcp-allow",
+          "surface": "mcp-client",
+          "expect": "allow",
+          "observed": "allow",
+          "status": "pass",
+          "checks": {
+            "toolUseSent": true,
+            "toolRan": true,
+            "refusedByMoorAI": false,
+            "alertSeen": false,
+            "promptReachedModel": false,
+            "hostExitZero": true,
+            "serverGotCall": true
+          },
+          "alert": null,
+          "latencyMs": 29239
+        },
+        {
+          "id": "mcp-deny",
+          "surface": "mcp-client",
+          "expect": "deny",
+          "observed": "deny",
+          "status": "pass",
+          "checks": {
+            "toolUseSent": true,
+            "toolRan": false,
+            "refusedByMoorAI": true,
+            "alertSeen": true,
+            "promptReachedModel": false,
+            "hostExitZero": true,
+            "serverGotCall": false
+          },
+          "alert": {
+            "category": "MCP: denied tool argument",
+            "riskLevel": "Blocked",
+            "decision": "deny",
+            "reasonCode": null
+          },
+          "latencyMs": 27247
+        }
+      ]
+    }
+  ],
+  "reasons": {},
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "91c6703fbe76fa92",
+    "pub": "MCowBQYDK2VwAyEA4vNsxAiLa9lXSB2ePUJ1apxgM22q81Iu0b/MaCqxfrE=",
+    "digest": "4f16ec5f393ac407ea5d1db98a1a01596e3bd5f23f9d03ceabffe6ee3ffd2630",
+    "sig": "tG1v/g1jvETpiYMUIkkTBny9D1ux7yMezjUbScSvVp/QY3ZHBUX+mJSIsav55lIOehGhYzUBbXWi2S3M7zbPBA==",
+    "ephemeral": false
+  }
+}

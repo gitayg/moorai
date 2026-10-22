@@ -1,0 +1,79 @@
+{
+  "type": "moorai.server-conformance/v1",
+  "moorai": "1.27.0",
+  "generatedAt": "2026-10-22T01:43:49.492Z",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "22.22.0"
+  },
+  "summary": {
+    "targets": 1,
+    "ran": 1,
+    "notRun": 0,
+    "cases": 2,
+    "pass": 2,
+    "fail": 0,
+    "skip": 0,
+    "inconclusive": 0,
+    "gap": 0
+  },
+  "targets": [
+    {
+      "kind": "sdk",
+      "id": "mcp-gateway-mcp-sdk",
+      "label": "MoorAI MCP gateway with the official MCP TypeScript SDK client and server",
+      "version": "1.32.1",
+      "tested": null,
+      "ran": true,
+      "sandboxed": false,
+      "model": "none",
+      "modelName": null,
+      "cases": [
+        {
+          "id": "sdk-echo-allow",
+          "surface": "mcp-gateway",
+          "expect": "forward",
+          "observed": "forward",
+          "status": "pass",
+          "checks": {
+            "clientConnected": true,
+            "toolListed": true,
+            "serverGotCall": true,
+            "resultReturned": true
+          },
+          "alert": null,
+          "latencyMs": 2559
+        },
+        {
+          "id": "sdk-echo-deny",
+          "surface": "mcp-gateway",
+          "expect": "refuse",
+          "observed": "refuse",
+          "status": "pass",
+          "checks": {
+            "refusedByMoorAI": true,
+            "serverGotCall": false,
+            "alertSeen": true
+          },
+          "alert": {
+            "category": "MCP: denied tool argument",
+            "riskLevel": "Blocked",
+            "decision": "deny",
+            "reasonCode": null
+          },
+          "latencyMs": 2559
+        }
+      ]
+    }
+  ],
+  "reasons": {},
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "91c6703fbe76fa92",
+    "pub": "MCowBQYDK2VwAyEA4vNsxAiLa9lXSB2ePUJ1apxgM22q81Iu0b/MaCqxfrE=",
+    "digest": "42cbbcdc36985cac9e5e2d5ba5d396cf07d4c779da7c827bb8f70ca75761ef60",
+    "sig": "IP2cH0bCK+5Qz5+E8QDsDzjwdkbCjSR+5jb4lRSkQ6DTC0rqGhq8p3tUHabhA9qunH1QIg77IckwrdZmftbjCg==",
+    "ephemeral": false
+  }
+}

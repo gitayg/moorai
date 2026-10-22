@@ -81,7 +81,8 @@
     "test:harnesses": "node scripts/hooktest.mjs && node cli/verify-gateway.mjs && node browser-ext/test-detectors.mjs && node mcp-proxy/test-proxy.mjs && node scripts/redteam.mjs && node scripts/moorai-validate-blocking.mjs && node scripts/moorai-validate-blocking.mjs --mode offline",
     "test:generated": "node scripts/benchmark.mjs --no-latency && git diff --exit-code -I generatedAt -I '^> Generated:' -I '^(\\| (In process|Process): |> Latency|  \"latency\": )' -- docs/BENCHMARK.md docs/benchmark.json && git checkout -- docs/BENCHMARK.md docs/benchmark.json",
     "test:scorers": "node scripts/redteam-eval.mjs --fail-under 96 && node scripts/score-benign-v2.mjs --fail-over 4",
-    "test:unit": "node --test --test-concurrency=4 --import ./test/hermetic-env.mjs test/*.test.mjs"
+    "test:live": "node scripts/host-conformance.mjs --live --out-dir docs/conformance && node scripts/server-conformance.mjs --live --out-dir docs/conformance",
+    "test:unit":"node --test --test-concurrency=4 --import ./test/hermetic-env.mjs test/*.test.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",

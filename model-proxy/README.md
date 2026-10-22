@@ -785,8 +785,12 @@ The same applies to LM Studio (`http://127.0.0.1:1234/v1`), llama.cpp server (`h
 and vLLM (`http://127.0.0.1:8000/v1`). These ports are the projects' documented defaults, not tested here.
 
 Tested against a fake local server only: no auth header, the request path under `/v1`, and a whole tool call
-(id, name, all its arguments, `finish_reason`) in one chunk as well as a call fragmented across chunks. Not
-tested against a real Ollama, LM Studio, llama.cpp or vLLM build on `/v1`. From reading the code, not from a test: a server that streams several tool-call deltas
+(id, name, all its arguments, `finish_reason`) in one chunk as well as a call fragmented across chunks.
+Run live against Ollama 0.40.3 on `/v1` with `llama3.2:latest` (`scripts/server-conformance.mjs`,
+[docs/HOST_CONFORMANCE.md](../docs/HOST_CONFORMANCE.md)): JSON and SSE answers forwarded, a credential
+refused before the model, and the model's real tool call to a policy-blocked function withheld, in JSON and
+in SSE; the same on Ollama's Anthropic-compatible `/v1/messages` and native `/api/chat`. Not tested
+against LM Studio, llama.cpp or vLLM. From reading the code, not from a test: a server that streams several tool-call deltas
 with no `index` gets them merged into one call, whose arguments then fail to parse, which enforce mode denies
 rather than misreads.
 
