@@ -3146,19 +3146,34 @@ is installed and healthy.
   `install.sh` stages, with a `preinstall` that boots a running daemon out and a `postinstall` that sets owners
   and modes and bootstraps it. The package is unsigned (signing needs a Developer ID Installer identity).
 - **Windows.** `guardd/packaging/windows/install.ps1 -Binary <exe>` (elevated) copies the binary to
-  `<Program Files>\MoorAI\moorai-guardd.exe` (SYSTEM and Administrators full, Users read and execute), creates
-  `<ProgramData>\MoorAI` with `<ProgramData>` read from HKLM ProfileList (never `%ProgramData%`) for
-  `config.json` (SYSTEM and Administrators full, Users read, inherited), creates the contract §4.2 helper
-  directories under it itself: `state` (owner SYSTEM, inheritance removed, SYSTEM full only, so it does not
-  inherit the Users read above) and `run` (owner SYSTEM, SYSTEM and Administrators full, Users read), registers
-  `MoorAIGuard` (auto start, LocalSystem, restart after 1 s, 5 s, then every 60 s), sets the service DACL
+  `<Program Files>\MoorAI\moorai-guardd.exe` (SYSTEM and Administrators full, Users read and execute) and
+  sets up `<ProgramData>\MoorAI`, with `<ProgramData>` read from HKLM ProfileList (never `%ProgramData%`).
+  Before it changes anything (the service included) it refuses a pre-existing `<ProgramData>\MoorAI`, or any
+  entry under it, that is a reparse point (junction or symbolic link), is owned by anyone but SYSTEM or
+  Administrators, has no DACL, or grants anyone else a right to add, change, delete or re-permission entries
+  (inherit-only entries included); it names the entry and leaves its ACLs alone, and the administrator removes
+  the directory and reruns. A missing directory is created with its DACL in place. Each DACL is then written
+  whole, so no earlier or extra entry survives: `<ProgramData>\MoorAI` owner SYSTEM,
+  `D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;0x120089;;;BU)` (Users read the folder itself, never inherited),
+  then every ACL under it is reset to inherit that; `state` owner SYSTEM, `D:P(A;OICI;FA;;;SY)` with its
+  contents reset to inherit it; `run` owner SYSTEM, SYSTEM and Administrators full and Users read, inherited by
+  `device.pub`; an existing `secret.json` owner SYSTEM, `D:P(A;;FA;;;SY)(A;;FA;;;BA)`, with a warning to issue
+  a new install token and enrolment secret when it was readable by anyone else before the run. Each existing
+  public admin input the agent reads as the signed-in user (`config.json`, `policy.pub`, `breakglass.pub`,
+  `offline-posture`, `policy-hwm.json`, `policy-lkg.json`, `exceptions.json`, `decoys.json`) gets an explicit
+  Users read; one MDM writes later needs that grant from MDM, because the folder no longer hands Users read
+  down. It then reads the descriptors back and stops unless they match. The checks are in
+  `guardd/packaging/windows/acl-checks.ps1`. It registers `MoorAIGuard` (auto start, LocalSystem, restart after
+  1 s, 5 s, then every 60 s), sets the service DACL
   `D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;AU)` (only SYSTEM and
   Administrators can start, stop, reconfigure or re-permission it; any signed-in user can query it), starts it
   and waits for Running. `-DryRun` prints the plan. `moorai-guardd.exe` does not yet call the Service Control
   Manager's dispatcher (`guardd/src/main.rs`), so Windows reports a start timeout for it until that is added.
+  The script is checked by reading its text (`test/guardd-install-scripts.test.mjs`); it has not been run on
+  Windows here, and the test that runs the ACL checks on real descriptors runs on Windows only.
 - **Every installer** refuses a relative or missing binary path and a binary whose `--build-info` does not say
-  `test-injection=false` (contract §10.2, §11.2), and none writes `config.json` or `secret.json` (the
-  administrator's or MDM's, §4.1). `MOORAI_GUARDD_STAGE=<dir>` (Linux and macOS scripts) lays the files out under
+  `test-injection=false` (contract §10.2, §11.2), and none writes the content of `config.json` or `secret.json`
+  (the administrator's or MDM's, §4.1; the Windows script sets their ACLs as above). `MOORAI_GUARDD_STAGE=<dir>` (Linux and macOS scripts) lays the files out under
   `<dir>` without chown or a service manager and prints the skipped steps as `plan:` lines; the helper itself
   still reads no environment.
 - **Is it installed and healthy.** `helperInstallStatus()` returns a content-free object:

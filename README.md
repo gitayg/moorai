@@ -177,9 +177,11 @@ node scripts/build-linux-package.mjs --guardd <binary> --guardd-arch amd64      
 moorai-helper status [--json]                                     # installed? running? valid device-key proof?
 ```
 
-Each installer refuses a binary built with test-only path injection and never writes `/etc/moorai/config.json` or
-`secret.json` (those come from the administrator or MDM). On Windows only SYSTEM and Administrators can stop or
-reconfigure the service. `moorai-helper status` reports `healthy` only when the endpoint passes the root-ownership
+Each installer refuses a binary built with test-only path injection and never writes the content of
+`/etc/moorai/config.json` or `secret.json` (those come from the administrator or MDM). On Windows only SYSTEM and Administrators can stop or
+reconfigure the service, and `install.ps1` refuses a pre-existing `<ProgramData>\MoorAI` that is a junction, is not
+owned by SYSTEM or Administrators, or that anyone else can write to, then writes each DACL whole (Users read the folder
+itself and the public admin inputs, never `secret.json` or the helper's state). `moorai-helper status` reports `healthy` only when the endpoint passes the root-ownership
 check and the helper proves it holds the key published in `device.pub`. The helper's per-OS platform layer is not
 implemented yet, so an installed helper exits at start today; the install path and the status check are what ship.
 That a non-admin user cannot delete the alert chain or read the device key is not demonstrated on any OS yet, and
