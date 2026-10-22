@@ -37,8 +37,11 @@
 // the agent's context" (IDE) or captured (CLI). So a deny exits 2 with the reason on stderr and an allow
 // exits 0 with nothing printed. Kiro has no ask: a MoorAI ask also exits 2, with a reason that tells the
 // agent to get the user's confirmation (as the Codex adapter does). A coach note (unenrolled device) is the
-// one thing printed on an allow, to stdout, where the IDE hands it to the agent. Other non-zero exits are a
-// warning and the tool runs (fail open). UserPromptSubmit is captured for intent alignment and always exits
+// one thing printed on an allow, to stdout, where the IDE hands it to the agent. Other non-zero exits (a crash
+// of this process exits 1): the docs disagree. kiro.dev/docs/hooks/actions says "in the case of the Pre Tool
+// Use hook, the tool invocation is blocked" on any non-zero exit (a crash fails closed); the IDE 1.0 page says
+// "Any other non-zero exit code is treated as an error, not a block"; the CLI 2.x reference says "STDERR is
+// shown as a warning". Not measured. UserPromptSubmit is captured for intent alignment and always exits
 // 0 with nothing printed (stdout would be added to the agent's context).
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { join, dirname, isAbsolute, resolve } from "node:path";
