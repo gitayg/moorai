@@ -83,6 +83,7 @@ export function sanitizeTarget(t = {}) {
     version: cleanVersion(t.version),
     tested: cleanVersion(t.tested),
     ran: t.ran === true,
+    sandboxed: t.sandboxed === true,
     model: pick(t.model, MODEL_KINDS, "none"),
     modelName: match(t.modelName, MODEL_RE),
     cases: (Array.isArray(t.cases) ? t.cases : []).slice(0, 64).map(sanitizeCase)
