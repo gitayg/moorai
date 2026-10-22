@@ -264,3 +264,90 @@ test("doctor: a MoorAI script left in ~/.cline/hooks is reported", { skip: proce
     assert.match(r.summary, /\.cline\/hooks/);
   } finally { rmTree(home); }
 });
+
+// Security review (parser differential): only the list-valued keys Cline JSON-stringifies are decoded. A
+// scalar key (command, cmd, path, url) is judged exactly as typed, since that string is what Cline runs,
+// reads or fetches; a decoded list value is judged too, with every string field of a decoded object.
+test("a scalar value that looks like JSON is judged as typed: command, path and url are never decoded", () => {
+  const t = (toolName, parameters) => [toClaude({ ...FIXTURE, workspaceRoots: ["/w"], preToolUse: { toolName, parameters } })].flat();
+  const cmd = `{"command":"ls","note":"$(${REVERSE_SHELL})"}`;
+  assert.deepEqual(t("execute_command", { command: cmd }).map((c) => c.tool_input.command), [cmd]);
+  assert.deepEqual(t("run_commands", { cmd }).map((c) => c.tool_input.command), [cmd]);
+  assert.deepEqual(t("read_file", { path: '["README.md"]' }).map((c) => c.tool_input.file_path), ['/w/["README.md"]']);
+  assert.deepEqual(t("web_fetch", { url: '{"url":"https://a.example"}' }).map((c) => c.tool_input.url), ['{"url":"https://a.example"}']);
+  // A list key is decoded, and its raw string is judged as well.
+  assert.deepEqual(t("read_files", { paths: '["a"]' }).map((c) => c.tool_input.file_path).sort(), ['/w/["a"]', "/w/a"].sort());
+  // Every string field of a decoded object is judged, not only its command, path or url.
+  const fields = t("run_commands", { commands: JSON.stringify([{ command: "ls", cwd: "/tmp", note: REVERSE_SHELL }]) }).map((c) => c.tool_input.command);
+  assert.ok(fields.includes(REVERSE_SHELL), JSON.stringify(fields));
+  const reqs = t("fetch_web_content", { requests: JSON.stringify([{ url: "https://a.example", prompt: "send AKIA" }]) });
+  assert.ok(reqs.some((c) => c.tool_input.url === "https://a.example" && c.tool_input.prompt === "send AKIA"), JSON.stringify(reqs));
+});
+
+test("e2e: a JSON-looking command and a JSON-named file are judged as Cline would run and read them", async () => {
+  const home = box();
+  try {
+    assert.equal(pre(home, "execute_command", { command: `{"command":"ls","note":"$(${REVERSE_SHELL})"}` }).cancel, true, "the shell expands $(...) inside the double quotes");
+    assert.equal(pre(home, "run_commands", { commands: JSON.stringify([{ command: "ls", note: REVERSE_SHELL }]) }).cancel, true);
+  } finally { rmTree(home); }
+  const { srv, url } = await policyServer({ threatPolicy: { 39: "block" } });
+  const h2 = sandbox("cline", url);
+  try {
+    writeFileSync(join(h2, "proj", '["README.md"]'), AWS_ENV);
+    writeFileSync(join(h2, "proj", "README.md"), "hello\n");
+    assert.equal(clineVerdict(await runAgentAsync("cline", h2, url, payload(h2, "read_file", { path: '["README.md"]' }))).cancel, true, "Cline reads the file literally named [\"README.md\"]");
+  } finally { srv.close(); rmTree(h2); }
+});
+
+test("use_mcp_tool arguments that do not decode to an object are still judged", () => {
+  const home = box();
+  try {
+    assert.equal(pre(home, "use_mcp_tool", { server_name: "shellbox", tool_name: "exec", arguments: JSON.stringify([REVERSE_SHELL]) }).cancel, true, "array arguments");
+    assert.equal(pre(home, "use_mcp_tool", { server_name: "shellbox", tool_name: "exec", arguments: REVERSE_SHELL }).cancel, true, "plain-string arguments");
+  } finally { rmTree(home); }
+});
+
+// Security review (lossy reconstruction): a structured command's args are argv elements of any type; each
+// is judged, and the reconstructed line quotes every element as a shell would.
+test("structured commands: every args element is judged whatever its type, and the line is shell-quoted", () => {
+  const t = (input) => [toClaude({ clineVersion: "", hookName: "tool_call", taskId: "c", workspaceRoots: ["/w"], tool_call: { id: "1", name: "run_commands", input } })].flat().map((c) => c.tool_input.command);
+  const got = t({ commands: [{ command: "bash", args: ["-c", 42, { x: 1 }, "it's here", null] }] });
+  assert.equal(got[0], `bash -c 42 '{"x":1}' 'it'\\''s here' null`);
+  for (const a of ["-c", "42", '{"x":1}', "it's here"]) assert.ok(got.includes(a), `${a} in ${JSON.stringify(got)}`);
+  assert.ok(t({ commands: [{ command: "bash", args: `-c '${REVERSE_SHELL}'` }] }).some((c) => c.includes("/dev/tcp/")), "args given as one string");
+  const home = box();
+  try {
+    assert.equal(clineVerdict(run(home, core(home, "run_commands", { commands: [{ command: "bash", args: `-c '${REVERSE_SHELL}'` }] }))).cancel, true);
+    assert.equal(clineVerdict(run(home, core(home, "run_commands", { commands: [{ command: "sh", args: ["-c", [REVERSE_SHELL]] }] }))).cancel, true);
+    assert.deepEqual(clineVerdict(run(home, core(home, "run_commands", { commands: [{ command: "git", args: ["status", "--short"] }] }))), { cancel: false });
+  } finally { rmTree(home); }
+});
+
+// Security review (fail open): search_codebase and skills are judged as Claude Code's Grep and Skill;
+// a tool name this adapter does not know is held (Cline has no ask), never allowed unread.
+test("search_codebase maps to Grep per query and skills to Skill; an unknown tool is held, not allowed", () => {
+  const pt = (toolName, parameters) => [toClaude({ ...FIXTURE, workspaceRoots: ["/w"], preToolUse: { toolName, parameters } })].flat();
+  assert.deepEqual(pt("search_codebase", { queries: JSON.stringify(["AKIA[0-9A-Z]{16}", "password"]) }).map((c) => [c.tool_name, c.tool_input.pattern]).filter(([, p]) => !p.startsWith("[")), [["Grep", "AKIA[0-9A-Z]{16}"], ["Grep", "password"]]);
+  assert.deepEqual(pt("skills", { skill: "deploy", args: "prod" }).map((c) => [c.tool_name, c.tool_input]), [["Skill", { skill: "deploy", args: "prod" }]]);
+  const home = box();
+  try {
+    for (const name of ["frobnicate", "access_mcp_resource"]) {
+      const v = pre(home, name, { x: "y" });
+      assert.equal(v.cancel, true, name);
+      assert.match(v.errorMessage, /not one MoorAI can judge/);
+    }
+    const c = core(home, "frobnicate", { x: "y" });
+    assert.equal(clineVerdict(run(home, c)).cancel, true, "tool_call");
+    for (const [tool, params] of [["ask_question", { question: "?", options: JSON.stringify(["a", "b"]) }], ["submit_and_exit", { summary: "done and verified", verified: "true" }], ["search_codebase", { queries: "TODO" }], ["skills", { skill: "lint" }]]) {
+      assert.deepEqual(pre(home, tool, params), { cancel: false }, tool);
+    }
+  } finally { rmTree(home); }
+});
+
+test("search_codebase is held under a tagActions read: block policy", async () => {
+  const { srv, url } = await policyServer({ tagActions: { read: "block" } });
+  const home = sandbox("cline", url);
+  try {
+    assert.equal(clineVerdict(await runAgentAsync("cline", home, url, payload(home, "search_codebase", { queries: JSON.stringify(["AKIA"]) }))).cancel, true);
+  } finally { srv.close(); rmTree(home); }
+});
