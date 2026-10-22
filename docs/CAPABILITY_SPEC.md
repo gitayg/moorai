@@ -1570,6 +1570,99 @@ Windows (connection resets, and a gateway that exited `0xC0000409` before it lis
 crashed before the fix (only the guard was seen to, as each makes a single fetch); and
 `moorai-scan --package` (no test drives its registry fetch).
 
+## Windows runtime validation (`moorai-windows-validate`)
+
+**Status: built and run on macOS only. It has not run on Windows yet**, on a GitHub runner or on a
+Windows 11 box. Until it has, the Windows rows below are a test plan, not evidence.
+
+`node cli/moorai-windows-validate.mjs [--out <file>] [--strict] [--require-windows] [--only <ids>] [--json]`
+runs the agent's enforced surfaces on the machine it is started on and writes a content-free report. It
+needs only Node and the agent tree: no install, no account, no network beyond `127.0.0.1`. Files:
+[`cli/moorai-windows-validate.mjs`](../cli/moorai-windows-validate.mjs) (CLI),
+[`cli/windows-validate-probes.mjs`](../cli/windows-validate-probes.mjs) (probes),
+[`cli/windows-validate-harness.mjs`](../cli/windows-validate-harness.mjs) (loopback console, sandboxes,
+process helpers), [`cli/windows-validate-report.mjs`](../cli/windows-validate-report.mjs) (report and
+verdict), [`cli/windows-validate-table.mjs`](../cli/windows-validate-table.mjs) (probe table).
+
+**How a run works.** It starts a loopback console that serves a policy per probe, signed with an ed25519
+key made for that run, and collects alerts. Each probe gets its own throwaway HOME, `USERPROFILE`,
+`APPDATA` and `LOCALAPPDATA`, enrolled to that console. Every child process gets an environment built from
+scratch, so none of the operator's `MOORAI_*` or proxy variables reach it. The operator's own MoorAI
+state, policy and console are not read or written. One thing is shared with the real device: a
+machine-wide binding or policy anchor (`<ProgramData>\MoorAI\config.json`, `policy.pub`) still applies to
+the agent processes. The report says whether one is present (`machineBinding`, `machineAnchor`), because
+an admin setting can change what a probe sees.
+
+| Probe | Surface | Windows only | A pass means |
+|---|---|---|---|
+| `hook-bash-block` | hook | no | The hook process starts and denies a reverse-shell Bash command. |
+| `hook-powershell-block` | powershell | no | The same command through the `PowerShell` tool is denied. |
+| `hook-powershell-allow` | powershell | no | A benign PowerShell command is allowed (the hook does not deny everything). |
+| `powershell-host` | powershell | yes | The hook launched through `powershell.exe` returns the same deny. |
+| `mcp-gateway-hook` | mcp | no | An MCP call to a server outside `mcpAllow` is denied. |
+| `mcp-gateway-http` | mcp | no | The HTTP MCP gateway refuses a call carrying a credential; the remote server sees no call. |
+| `egress-hook` | egress | no | An egress block rule denies an upload command to the blocked host. |
+| `egress-proxy` | egress | no | The egress proxy answers 403 for a blocked host and does not forward the request. |
+| `mxc-detect-config` | mxc | no | The MXC detector reads Codex `windows.sandbox = "mxc"` as contained and an unset config as not. |
+| `mxc-registry` | mxc | yes | `reg.exe` gives this build's UBR, so `mxcCapable` comes from the real registry. |
+| `mxc-enforce` | mxc | yes | With `containmentRequired: "block"`, a Codex shell call whose config does not use MXC is denied (alerted only where `mxcCapable` is false). |
+| `alert-delivery` | alerts | no | Each passing block probe's alert reached the console with the expected reason code (`MCP_SERVER_NOT_ALLOWED`, `EGRESS_RULE`, `CONTAINMENT_*`), and no alert contained the run's marker or a listed payload piece (see below). |
+
+**What the content-free check looks for.** `alert-delivery` fails, and the report's `alerts.contentFree`
+is false, if any alert's serialized form contains one of these strings:
+
+- the run's random marker, which is appended to every command, URL and argument a probe sends;
+- `PAYLOAD_NEEDLES` in `cli/windows-validate-probes.mjs`, the distinctive pieces of the payloads
+  themselves: `bash -i`, `/dev/tcp/198.51.100.7`, `198.51.100.7`, the example AWS key id and secret,
+  `@notes.txt` and `Get-ChildItem`.
+
+The marker alone is not enough. It sits after each payload, outside the span a detector matches, so an
+alert that carried the matched span (for example `/dev/tcp/198.51.100.7/4444`) would not contain it. With
+`captureTier: "full-capture"` the hook's alert does carry that span, and a test runs the probes that way
+and checks that `alert-delivery` reads `leaked` and the verdict is `fail`.
+
+Scope of the check: it finds only these strings, not every possible rendering of a payload (a re-encoded
+or truncated form would not match). The blocked destination host (`drop.paste.example`), the tool name and
+the egress binary (`curl`) are not checked, because content-free egress and MCP alerts report them by
+design (`egressHost`, `tool`, `egressBinary`). Neither the marker nor a payload piece is written to the
+report.
+
+**The report** (`moorai-windows-validation/1`) holds only: an hour-rounded `generatedAt`; `agentVersion`;
+`platform`, `arch`, the Windows build number (`osBuild`), the Node major version and `mxcCapable`;
+`machineBinding` and `machineAnchor` (booleans); and one row per probe. A row has `id`, `surface`,
+`status` (`pass`, `fail`, `skipped` or `error`), `expected` and `observed` from a fixed list, a fixed
+`reason`, `ms` and the probe table's `proves` sentence. It also has alert counts (received, deny,
+`contentFree`, counts by reason code), a summary with a verdict, and the `notCovered` list. Every field
+passes an allowlist, so free text from a probe (a path, a command, an error message) is dropped. No user
+name, host name, path, command, URL or alert body is written.
+
+**Verdict.** `fail` if any probe failed or errored, or if nothing ran. `incomplete` if `--require-windows`
+was given and a probe was skipped. Otherwise `pass`. `--strict` exits 1 unless the verdict is `pass`. Off
+Windows, the Windows-only probes are `skipped` (`not-windows`). Forcing them on another OS gives `error`
+or `fail`, never `pass`. The hook has no platform switch, so Windows behaviour cannot be faked.
+
+**Not covered by a run** (stated in every report): the clipboard guard (it is in the desktop app, in
+Rust); the NSIS upgrade over the previous release (needs both installers and an interactive session); and
+running a command inside an MXC container (the probes check detection and the hook's verdict, not
+`wxc-exec`).
+
+**CI.** [`.github/workflows/windows-validate.yml`](../.github/workflows/windows-validate.yml) runs on
+`windows-latest` with Node 22 and 24. It runs the validator with `--strict --require-windows`, then
+[`test/windows-runtime.test.mjs`](../test/windows-runtime.test.mjs) (Windows-only assertions: build and
+UBR from the real registry, the full validation passing, the hook through `powershell.exe`),
+`test/windows-validate.test.mjs`, and the MXC and PowerShell test files, one at a time. The report is
+uploaded as an artifact even when a step fails. `test/containment-enforce*.test.mjs` are not in that list:
+they fake Windows on POSIX and are not built to run on Windows itself. The `mxc-enforce` probe is their
+real-host counterpart.
+
+**Not proven.** No probe has run on Windows: the workflow has not run (the branch has not been pushed),
+and no Windows machine was used. In particular these are unverified: `powershell.exe` piping the payload
+to the hook (`[Console]::In.ReadToEnd() | & node hook`), `reg.exe` output on `windows-latest`, the
+`mxc-enforce` decision on a real build, and whether the first Windows run of the MXC test files passes. The
+`egress-proxy` probe does not show that the block comes before a DNS lookup: the proxy's code returns a
+rule block before it resolves the address (`admit` in `egress-proxy/server.mjs`), but the blocked host
+never resolves, so a run would look the same either way.
+
 ## Sandbox egress policies from egressRules
 
 **Status: built and unit-tested (`test/sandbox-policy.test.mjs`, `cargo test` `mxc::egress`,
