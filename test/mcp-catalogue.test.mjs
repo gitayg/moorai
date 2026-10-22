@@ -233,7 +233,7 @@ test("refreshCatalogue: a fetchedAt in the future does not make a planted older 
 
 test("an expired catalogue is refused, cached or fetched: never used, never cached, replaced by a current one", async () => {
   const sd = tmp("expired"), home = tmp("exphome");
-  plant(sd, signCatalogue(body([E_BAD], { seq: 3, expiresAt: "2026-10-02T00:00:00.000Z" }), K1.privateKey), NOW - 3600e3);
+  plant(sd, signCatalogue(body([E_BAD], { seq: 3, issuedAt: "2026-09-01T00:00:00.000Z", expiresAt: "2026-10-02T00:00:00.000Z" }), K1.privateKey), NOW - 3600e3);
   const read = readCatalogue({ stateDir: sd, policy: POL, env: {}, anchorFile: null, now: NOW });
   assert.deepEqual([read.status, read.catalogue], ["expired", null]);
   const before = readCatalogue({ stateDir: sd, policy: POL, env: {}, anchorFile: null, now: Date.parse("2026-10-01T00:00:00.000Z") });
@@ -245,7 +245,7 @@ test("an expired catalogue is refused, cached or fetched: never used, never cach
   const rep = assessServerSync({ command: "npx", args: ["-y", "evil-mcp-thing@1.0.0"] }, { stateDir: sd, home, catalogue: POL, now: NOW });
   assert.ok(!rep.reasons.includes("catalogue-do-not-install"), "an expired catalogue's entries are not used");
   assert.ok(rep.evidence.includes("catalogue-expired"), `evidence: ${rep.evidence}`);
-  const stale = fakeFetch(signCatalogue(body([E_BAD], { seq: 9, expiresAt: "2026-10-03T00:00:00.000Z" }), K1.privateKey));
+  const stale = fakeFetch(signCatalogue(body([E_BAD], { seq: 9, issuedAt: "2026-09-01T00:00:00.000Z", expiresAt: "2026-10-03T00:00:00.000Z" }), K1.privateKey));
   const r2 = await R(sd, stale);
   assert.deepEqual([r2.refresh, r2.catalogue], ["expired", null], "an expired catalogue served by the feed is refused");
   assert.equal(JSON.parse(readFileSync(join(sd, CATALOGUE_FILE), "utf8")).catalogue.seq, 3, "and is not cached");
@@ -451,7 +451,6 @@ test("moorai-mcp-catalogue status: reports the cached catalogue's verification s
   const r = cli(["status"], { HOME: home, MOORAI_CATALOGUE_PUBKEY: K1.b64 });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(JSON.parse(r.stdout).status, "ok");
-  assert.equal(JSON.parse(r.stdout).expired, false);
   const old = tmp("cliold");
   seedCache(join(old, ".moorai"), signCatalogue(body([E_BAD], { issuedAt: "2020-01-01T00:00:00.000Z", expiresAt: "2020-04-01T00:00:00.000Z" }), K1.privateKey));
   assert.equal(JSON.parse(cli(["status"], { HOME: old, MOORAI_CATALOGUE_PUBKEY: K1.b64 }).stdout).status, "expired");

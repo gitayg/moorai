@@ -3118,7 +3118,7 @@ each basis; the console pins the same literal and downgrades a stronger claim.
 
 ## Signed MCP server and skill catalogue (`cli/mcp-catalogue.mjs`)
 
-- **Format.** `data/mcp-catalogue.js`: `{ catalogue: "moorai-mcp-catalogue", v: 1, seq, issuedAt, expiresAt?,
+- **Format.** `data/mcp-catalogue.js`: `{ catalogue: "moorai-mcp-catalogue", v: 1, seq, issuedAt, expiresAt,
   publisher, entries[], sig }`. An entry is `{ kind: mcp-server|skill, ecosystem: npm|pypi|docker|remote|skill,
   name, status: listed|do-not-install, source: official-registry|reference-servers|vendor|community|advisory,
   repository?, license?, registryName?, advisories?, reputation: {score, band, reasons}, versions: [{ version,
@@ -3126,7 +3126,9 @@ each basis; the console pins the same literal and downgrades a stronger claim.
   engine? }] }`, versions newest first. There is no "safe" or "clean" verdict.
 - **Signature.** ed25519 over `moorai-mcp-catalogue|v1|<seq>|<issuedAt>|<sha256 of canonicalJson(everything but
   sig)>`; `sig = { v: 1, alg: "ed25519", keyId (base64 SPKI DER), sig }`. `verifyCatalogue` returns `ok`,
-  `no-anchor`, `unsigned`, `malformed` or `untrusted`.
+  `no-anchor`, `unsigned`, `malformed`, `untrusted` or `expired`. `expiresAt` is mandatory and must be later
+  than `issuedAt` (a catalogue without it is `malformed`); it is covered by the digest, so it cannot be
+  extended without breaking the signature. The generator sets it (`--expires-days`, default 90).
 - **Trust.** Keys from the signed policy's top-level `mcpCatalogue.publicKeys`, `MOORAI_CATALOGUE_PUBKEY`,
   root-owned `/etc/moorai/catalogue.pub`, and `data/mcp-catalogue-keys.js` (empty: the publisher key is
   generated and published by the owner). No key means the catalogue is not used (unlike a policy, which is
@@ -3136,16 +3138,16 @@ each basis; the console pins the same literal and downgrades a stronger claim.
   once in 24 h, `redirect: "error"`, 5 s timeout, 16 MB cap; `MOORAI_OFFLINE=1` serves the cache. The verified
   file is cached in `~/.moorai/mcp-catalogue.json` and re-verified on every read (it is in the user's writable
   state). Nothing in that file decides freshness on its own: the cache is fresh only when its `url` matches,
-  its `fetchedAt` is at most 5 minutes in the future and under 24 h old, and its signed `expiresAt` has not
-  passed. `~/.moorai/mcp-catalogue.seq.json` holds the highest `seq` accepted per publisher keyId (raised on
+  its `fetchedAt` is at most 5 minutes in the future and under 24 h old. `~/.moorai/mcp-catalogue.seq.json` holds the highest `seq` accepted per publisher keyId (raised on
   every accepted fetch and every verified read). A cached catalogue below it reads `rollback-refused` (no
   catalogue, so the next refresh fetches), and a fetched catalogue below it or below the verified cache is
   refused (`refresh: "rollback-refused"`). The mark is in the same writable directory: a local user who
   rewrites both files can hold an older signed catalogue until the next refresh, at most 24 h.
-  `readCatalogue` returns `expired: true` for a verified catalogue past its `expiresAt`. It is not fresh, so
-  every refresh fetches; while none succeeds its risk signals still apply (dropping them would let the
-  clock or a withheld download weaken a control) and reputation evidence names `catalogue-expired`.
-  `moorai-mcp-catalogue status` prints `expired`.
+  A catalogue past its signed `expiresAt` is refused at the device clock, cached or fetched: `readCatalogue`
+  reads `expired` with no catalogue (so every refresh fetches), a fetched expired catalogue is not cached
+  (`refresh: "expired"`), reputation evidence names `catalogue-expired`, and `moorai-mcp-catalogue verify` and
+  `status` report `expired`. An old signed catalogue therefore cannot be replayed past its expiry; until a
+  current one arrives the device has its no-catalogue verdicts, the same as with no catalogue at all.
 - **Tool-stage re-score.** The stdio guard and the gateway pass the same `mcpCatalogue` to `addToolSignals`,
   so a re-score after `tools/list` keeps the catalogue verdict (before, it read the cache with no policy
   keys, and a server whose only anchor was the policy dropped `catalogue-do-not-install` on re-score).

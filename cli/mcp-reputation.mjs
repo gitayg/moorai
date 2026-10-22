@@ -311,7 +311,7 @@ function catalogueFor(id, version, cat) {
   if (!cat || cat.status === "absent" || cat.status === "disabled") return { signals: [], evidence: [] };
   if (cat.status !== "ok") return { signals: [], evidence: [`catalogue-${cat.status}`] };
   const c = catalogueSignals(cat.catalogue, id, version);
-  return { signals: c.signals, evidence: ["catalogue-verified", ...(cat.expired ? ["catalogue-expired"] : []), ...c.evidence] };
+  return { signals: c.signals, evidence: ["catalogue-verified", ...c.evidence] };
 }
 
 function present(id, entry, feed, flags, cat) {

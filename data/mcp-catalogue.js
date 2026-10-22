@@ -6,7 +6,7 @@
 // is safe. "not-scanned" means the name is catalogued but no MoorAI scan stands behind that version.
 //
 // Shape (every field below is inside the signature except `sig`):
-//   { catalogue: "moorai-mcp-catalogue", v: 1, seq, issuedAt, expiresAt?, publisher,
+//   { catalogue: "moorai-mcp-catalogue", v: 1, seq, issuedAt, expiresAt, publisher,
 //     entries: [ { kind, ecosystem, name, status, source, repository?, license?, registryName?,
 //                  advisories?, reputation?, versions: [ { version, verdict, reasons?, sha256?,
 //                  treeSha256?, scannedAt?, engine? } ] } ],
@@ -80,7 +80,7 @@ export function validateCatalogue(c) {
   const err = [];
   if (!Number.isInteger(c.seq) || c.seq < 0) err.push("seq");
   if (!isStr(c.issuedAt, 40) || Number.isNaN(Date.parse(c.issuedAt))) err.push("issuedAt");
-  if (c.expiresAt != null && Number.isNaN(Date.parse(c.expiresAt))) err.push("expiresAt");
+  if (!isStr(c.expiresAt, 40) || !(Date.parse(c.expiresAt) > Date.parse(c.issuedAt))) err.push("expiresAt");
   if (!Array.isArray(c.entries)) return [...err, "entries"];
   const keys = new Set();
   for (const e of c.entries) {
