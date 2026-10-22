@@ -78,9 +78,12 @@ printed only as a sha256 fingerprint. An OIDC-minted token lives as long as the 
 ## Claude Code cloud sessions
 
 1. In the environment's settings: environment variables `MOORAI_SERVER_URL`, `MOORAI_TENANT`,
-   `MOORAI_INSTALL_TOKEN` (a static workload token), `MOORAI_REF` (the MoorAI release tag to install; the
-   setup script stops without it); network access Custom with the console host added;
-   setup script [`claude-code-web-setup.sh`](claude-code-web-setup.sh).
+   `MOORAI_INSTALL_TOKEN` (a static workload token), `MOORAI_REF` (the MoorAI release tag to install) and
+   `MOORAI_COMMIT` (the full commit SHA that tag points to; the setup script stops without either, or when
+   the clone's `HEAD` is another commit); network access Custom with the console host added;
+   setup script [`claude-code-web-setup.sh`](claude-code-web-setup.sh). The script clones the tag fresh in
+   every session, checks the commit, and only then swaps it into `/opt/moorai`; a checkout an earlier session
+   left there is never run, and git never runs inside it.
 2. Put [`claude-code-web-hooks.json`](claude-code-web-hooks.json) (the output of
    `moorai-cloud-setup claude-code-web --print-hooks`) in the organization's server-managed settings, where
    the agent cannot change it, or in the repository's `.claude/settings.json`. Server-managed settings also
