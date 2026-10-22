@@ -100,7 +100,7 @@ export function classifyExtensionId(id) {
 }
 
 // Longest run of invisible selector code points (U+FE00-FE0F, U+E0000-E01EF) in a string.
-const INVISIBLE = /(?:[︀-️]|\uDB40[\uDC00-\uDDEF])+/g;
+const INVISIBLE = /(?:[\uFE00-\uFE0F]|\uDB40[\uDC00-\uDDEF])+/g;
 export function invisibleRun(text) {
   let best = 0;
   for (const m of String(text).matchAll(INVISIBLE)) {

@@ -118,7 +118,9 @@ test("invisible code: a long run of Unicode variation selectors (the GlassWorm t
   const home = tmp("inv");
   vsext(home, ".cursor/extensions", "someone", "theme-pack", "1.0.0", { "extension.js": `const s = "${vs}";\n` });
   vsext(home, ".cursor/extensions", "someone", "emoji-pack", "1.0.0", { "extension.js": "const e = '❤️';\n".repeat(200), "out/deep/x.js": `const t = "${supp}";` });
+  vsext(home, ".cursor/extensions", "someone", "emoji-only", "1.0.0", { "extension.js": "const e = '❤️ ✔️ ☀️ 👍🏽';\n".repeat(500) });
   const m = byId(scanIdeExtensions({ home, platform: "darwin" }));
+  assert.deepEqual(m["cursor:someone.emoji-only@1.0.0"].codes, [], "ordinary emoji in a bundle are not invisible code");
   assert.deepEqual(m["cursor:someone.theme-pack@1.0.0"].codes, ["ide-ext-invisible-code"]);
   assert.equal(m["cursor:someone.theme-pack@1.0.0"].risk, "high");
   assert.deepEqual(m["cursor:someone.emoji-pack@1.0.0"].codes, ["ide-ext-invisible-code"], "a run in any bundled script counts, not only the entry file");
