@@ -534,7 +534,8 @@ must turn the run red.
   Both answer 400 / `-32020`.
 - **Egress rules.** Every `tools/call`'s arguments are judged by the hook's egress rules for
   `mcp__<route>__<tool>`, and the gateway's own connection to the upstream is judged by host, port, method
-  and path, and by cidr rules on every address its DNS lookup returns (`mcp-gateway/egress.mjs`).
+  and path, and by cidr rules on every address its DNS lookup returns (`mcp-gateway/egress.mjs`). A blocked
+  upstream is refused before the `tools/call` gate, so the block-mode tool re-list never reaches it.
 - The 2026-07-28 `subscriptions/listen` stream and MRTR `InputRequiredResult` pass through and are scanned
   like any other response; neither was exercised against a server that implements them.
 - Run against a real remote MCP server (an AppCrane MCP endpoint over Streamable HTTP: initialize, tools/list with 62 tools and a read-only tools/call passed through intact; a malformed message and an over-cap response were refused), with a scripted client; that server issued no session id.

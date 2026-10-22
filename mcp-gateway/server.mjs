@@ -72,6 +72,12 @@ function sendJson(res, status, obj, extra = {}) {
 }
 const rpcError = (id, code, message) => ({ jsonrpc: "2.0", id: id == null ? null : id, error: { code, message } });
 const isId = (v) => typeof v === "string" || (typeof v === "number" && Number.isInteger(v));
+// A blocked upstream (./egress.mjs): 403 with the rule, answering the id of a single request body.
+function refuseEgress(res, body, reason) {
+  let id = null;
+  try { const m = body && body.length ? JSON.parse(body.toString("utf8")) : null; if (m && !Array.isArray(m) && typeof m === "object" && isId(m.id) && typeof m.method === "string") id = m.id; } catch { /* no id */ }
+  return sendJson(res, 403, rpcError(id, -32600, `MoorAI MCP gateway: ${reason}`));
+}
 // What the MCP SDK client makes of one parsed message (types.js JSONRPCMessageSchema: strict request,
 // notification, result and error schemas; anything else it refuses, unparsed): "request",
 // "notification", "result", "error", or null.
@@ -286,7 +292,9 @@ export function createGatewayServer(cfg) {
     const ckey = clientKey(route, req);
     // F23: the egress rules on the gateway's own upstream connection (./egress.mjs): by name before the
     // request is sent, then on each address the socket's lookup returns (eg.lookup, also for a re-list).
+    // A blocked upstream is refused here, before the gate, whose block-mode re-list would reach it.
     const eg = await upstreamEgress(route, upstreamUrl(route, req.url), req.method);
+    if (eg.block) return refuseEgress(res, body, eg.block);
     if (req.method === "POST" && body.length) {
       const enforce = cfg.schemaValidation === "enforce";
       const validating = cfg.schemaValidation !== "off";
@@ -385,7 +393,6 @@ export function createGatewayServer(cfg) {
 
     // ---- forward ----
     const target = upstreamUrl(route, req.url);
-    if (eg.block) return sendJson(res, 403, rpcError(!ctx.batch && ctx.requestIds.length === 1 ? ctx.requestIds[0] : null, -32600, `MoorAI MCP gateway: ${eg.block}`));
     const headers = {};
     for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k)) headers[k] = v;
     if (swaps) for (const [k, v] of swaps) headers[k] = v; // after the hop-by-hop strip; keys lower-case, as Node's

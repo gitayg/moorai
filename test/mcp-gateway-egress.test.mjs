@@ -73,3 +73,35 @@ test("upstream connection: a route by name is judged on the address its DNS look
   }
   } finally { await up.close(); }
 });
+
+test("upstream lookup: EVERY address the lookup returns is judged as an IP literal against cidr rules, and one blocked address refuses the connection, in any order and for either lookup form", async () => {
+  const { egressLookup, upstreamTarget, EGRESS_CODE } = await import("../mcp-gateway/egress.mjs");
+  const st = { policy: policy([RFC1918]), system: null, serviceId: "", coach: false };
+  const t = upstreamTarget(new URL("https://mcp.example/mcp"), "POST");
+  const fake = (addrs) => (host, opts, cb) => cb(null, addrs.map((address) => ({ address, family: address.includes(":") ? 6 : 4 })));
+  const run = (addrs, opts) => new Promise((resolve) => egressLookup(t, st, () => {}, fake(addrs))("mcp.example", opts, (err, a, f) => resolve({ err, a, f })));
+  for (const addrs of [["93.184.216.34", "10.1.1.1"], ["10.1.1.1", "93.184.216.34"], ["2001:db8::1", "93.184.216.34", "::ffff:10.9.9.9"]]) {
+    for (const opts of [{}, { all: true }]) {
+      const r = await run(addrs, opts);
+      assert.equal(r.err && r.err.code, EGRESS_CODE, `${addrs} ${JSON.stringify(opts)}`);
+      assert.match(r.err.message, /egress rule "rfc1918"/);
+    }
+  }
+  const ok = await run(["93.184.216.34", "2001:db8::1"], { all: true });
+  assert.equal(ok.err, null);
+  assert.deepEqual(ok.a.map((x) => x.address), ["93.184.216.34", "2001:db8::1"], "every address handed to the socket was judged");
+});
+
+test("upstream connection: a blocked upstream gets no byte, not even the block-mode tool re-list the gateway sends before it gates a tools/call", async () => {
+  await scenario({ policy: policy([{ id: "no-loopback", cidr: "127.0.0.0/8", action: "block" }], { mcpToolDrift: "block", mcpToolRecheckSeconds: 0 }) }, async ({ up, base }) => {
+    const r = await rpc(base, call(1, "fetch", { url: "https://example.com/a" }));
+    assert.equal(r.status, 403, r.text);
+    assert.match(r.json.error.message, /egress rule "no-loopback"/);
+    assert.equal(up.received.length, 0, `the upstream received: ${up.received.map((x) => x.json && x.json.method).join(", ")}`);
+  });
+  await scenario({ policy: policy([{ id: "no-route-host", host: "127.0.0.1", action: "block" }], { mcpToolDrift: "block", mcpToolRecheckSeconds: 0 }) }, async ({ up, base }) => {
+    const r = await rpc(base, call(1, "fetch", { url: "https://example.com/a" }));
+    assert.equal(r.status, 403, r.text);
+    assert.equal(up.received.length, 0, "a host rule on the route's host holds for the re-list too");
+  });
+});

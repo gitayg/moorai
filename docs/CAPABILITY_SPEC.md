@@ -1036,7 +1036,8 @@ is validated against.
     `test/mcp-guard-egress.test.mjs`). The gateway also judges its own connection to each remote server
     (`mcp-gateway/egress.mjs`): by name, port, method and path before the request is sent, and with a cidr
     rule in force on every address the socket's DNS lookup returns, refusing in the lookup so the socket
-    only connects to a judged address (a reused keep-alive socket was judged when it connected). Tested
+    only connects to a judged address (a reused keep-alive socket was judged when it connected). A blocked
+    upstream is refused before the `tools/call` gate, so the block-mode tool re-list never reaches it. Tested
     on macOS only.
 
 ### D. Central server

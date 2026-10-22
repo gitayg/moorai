@@ -2,7 +2,8 @@
 // server is a destination like any other, judged at the network layer exactly as egress-proxy/judge.mjs
 // judges a connection (binary unknown, so an allow rule that sets `binary` never matches; host, port,
 // method and path known, because the gateway is the TLS client). Two checks:
-//   1. judgeUpstream(): before the request is sent, on the route URL's host name (or IP literal).
+//   1. judgeUpstream(): before the request is sent, on the route URL's host name (or IP literal). A block
+//      refuses the request before the gate runs, so the gate's block-mode re-list never reaches it either.
 //   2. egressLookup(): the socket's DNS lookup. With a cidr rule in force, every address the lookup returns
 //      is judged beside the name (egress-proxy/judge.mjs judgeAddresses) and the connection is refused when
 //      any is blocked. The socket connects to an address that was judged, so a second DNS answer cannot
