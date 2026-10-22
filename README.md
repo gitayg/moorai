@@ -466,6 +466,20 @@ off. The desktop app, the AI bill of materials, the shadow-AI inventory and OS p
 server. Proof: one live run of Claude Code 2.1.284 (`claude -p`, the hooks added with `--settings`, server mode from the environment) showed UserPromptSubmit (117 ms) and PreToolUse (224 ms) firing, a `.env` read denied as a headless ask, and the console receiving content-free reports under the workload identity. An Agent SDK service and a GitHub Actions run have not been watched end to end. An Agent
 SDK service can also run MoorAI in process, below.
 
+**Cloud coding agents.** Where a cloud agent's host runs a setup step before the agent and calls a pre-tool
+hook in the cloud session, `moorai-cloud-setup <host>` binds server mode there
+([`examples/cloud/`](examples/cloud/README.md)): the GitHub Copilot coding agent (`copilot-setup-steps.yml`
+plus a `.github/hooks/` file) and Claude Code cloud sessions (an environment setup script plus hooks in
+server-managed settings or the repository). OpenAI Codex cloud is not supported: its hooks page says command
+hooks do not run under cloud orchestration, so the installer refuses it. It writes the root-owned
+`/etc/moorai/config.json` (with `cloudHost` and `workloadAttestation`) and two wrappers under the install
+directory, and prints the host's hook registration. The token is a scoped workload token (`mwt_…`), either
+static or minted from the setup job's GitHub OIDC ID token (`MOORAI_WORKLOAD_ID` + `MOORAI_OIDC=github`,
+[`cli/workload-token.mjs`](cli/workload-token.mjs)). Server mode resolves the heartbeat's
+`cloudAgent: { host, attestation }` field from that file (`cloudAgentPosture`).
+In a cloud VM the agent runs as root or with sudo, so MoorAI's files there are not a tamper boundary. Neither
+host has been run end to end with MoorAI yet.
+
 **Settings files cannot set MoorAI's trust anchors.** Claude Code applies a settings file's `env` block to the
 hook's environment, so a repository's `.claude/settings.json` could otherwise supply `MOORAI_BREAKGLASS_PUBKEY`,
 `MOORAI_POLICY_PUBKEY`, `MOORAI_OFFLINE_MODE` or the OTLP export endpoint. On every device, laptop or server, a
@@ -1248,6 +1262,25 @@ body is read as part of the command when what it feeds runs it (`bash <<EOF`, `s
 Not seen: a downloaded file renamed before it runs, paths held in variables, `scp`/`rsync` uploads, and
 hosts outside the list. [docs/DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md) §6 and §13 have the detail.
 
+### Industrial protocol clients run from an agent shell
+
+MoorAI governs the agents that can reach controllers; it never runs inside a PLC or a safety system. A Bash
+or PowerShell call that runs an industrial-protocol client is reported with reason code `OT_PROTOCOL_CLIENT`
+and two fields: `otProtocol` (`modbus`, `dnp3`, `opcua`, `s7`, `bacnet`, `enip`, `iec104`) and `otOp`
+(`read`, `write`, `unknown`) ([`cli/ot-protocol-client.mjs`](cli/ot-protocol-client.mjs), list in
+[`data/ot-protocol-clients.js`](data/ot-protocol-clients.js)). It recognises `mbpoll` and `modpoll` (values
+after the target are a write), modbus-cli `read`/`write`, the OPC UA tools (`uaread`, `uawrite`, `uacall`, …),
+the BACnet stack clients (`bacrp`, `bacwp`, …), `python -m cpppo.server.enip.client`, and Python or Node code,
+inline, in a heredoc or in a script file inside the session directory (first 64 KiB), that imports pymodbus,
+pyModbusTCP, minimalmodbus, opcua/asyncua, snap7, pycomm3, pylogix, BAC0, bacpypes, pydnp3, c104,
+modbus-serial, jsmodbus, node-opcua, node-snap7, bacstack or st-ethernet-ip; the library's write calls
+(`write_register`, `write_value`, `db_write`, `plc_stop`, `DirectOperate`, …) make it a write. Read and
+unknown are threat 81, write is threat 82 (proposed ids); both report by default, and the Industrial/OT preset
+sets 82 to block. The alert carries the two enums only, never the command, a host, a register or a value.
+Not seen: a client under another name, a script outside the session directory or past 64 KiB, code built at
+run time, and connections the agent makes without a shell (MCP tools are the preset's function rules;
+connections into OT subnets are the egress rule `cidr` field).
+
 ### Model file scanning
 
 `moorai-model-scan <path|dir> [--json]` inspects model files **without loading or executing them** and gives
@@ -2002,6 +2035,7 @@ npx moorai-scan --package github:owner/repo   # a whole source repository — an
 - **`moorai-mcp-check <package>`** runs ten pre-install checks on an MCP server from registry metadata and published manifests only; the package is never downloaded or run, and the reputation cache is not written. Each check is pass, warn, fail or not checked, with a one-line reason: (1) publisher identity and typosquat (the name lists and the repository link), (2) package age (`new-package`, under 30 days), (3) maintainers (npm `maintainers`, PyPI `ownership.roles`), (4) npm install scripts from the version manifest, (5) authentication and (7) credential names, both from the `server.json` the package publishes to the official MCP Registry (npm `mcpName`, PyPI `mcp-name:`), (6) a remote endpoint's HTTPS, hostname rather than bare IP, and fit with the policy's `egressRules`, (8) tool descriptions through the tool-stage engine when you pass `--tools <tools/list JSON>`, (9) whether the spec pins a version, and (10) whether this machine routes MCP through MoorAI (hook, stdio proxy or gateway). It also prints a metadata-only reputation score and band, and the SkillTriage verdict when `mcpReputation.feed` is on. Input: `npm:name@1.2.3`, `pypi:name==1.0`, a bare npm name, a launch command (`"npx -y name@1.2.3"`) or an `https://` URL (parsed, never contacted). Policy comes from `--policy file.json`, or the verified policy already on the device (read offline, as `moorai-doctor` does); `--no-policy`; `--json`. Exit 1 if any check fails. `--offline` (or `MOORAI_OFFLINE=1`) makes no request: the registry, repository and MCP Registry checks and the SkillTriage feed report `not-checked (offline)`, and the name, pinning, tools and runtime checks still run. Mirrors: `MOORAI_NPM_REGISTRY`, `MOORAI_PYPI_URL`, `MOORAI_MCP_REGISTRY` and `MOORAI_GITHUB_RAW_URL`; an invalid one (not https, or carrying credentials, a query or a fragment) is refused with exit 2 rather than replaced by the public host. **Limits.** PyPI install-time code (setup.py, build backends) is not visible in its JSON API, so that check is not checked for PyPI. Authentication, credentials and transport for a package need a published `server.json`; most packages have none. MCP OAuth is negotiated at connect time and is not probed. The tool list is only known from a running server unless you supply it. An npm semver range is not resolved: install scripts are read from the latest version, and the report says so.
 - **`moorai-outbox`** shows and sends the alert outbox (`status [--json]`, `flush`) and writes a device bundle for a console the device cannot reach (`export --out <file.zip> [--include-trail]`). See [Store-and-forward alerts](#store-and-forward-alerts).
 - **`moorai-model-scan <path|dir>`** inspects model files without loading or executing them and gives each one a verdict (unsafe, suspicious, clean, allowed, unscanned), its format, findings and sha256. See [Model file scanning](#model-file-scanning).
+- **`moorai-cloud-setup <copilot-coding-agent|claude-code-web|codex-cloud>`** binds server mode inside a cloud coding agent's setup step (as root; `--install-dir`, `--root` for an image build, `--print-hooks` for the host's hook registration). Exit 0 done, 2 usage or missing binding, 3 host blocked (Codex cloud), 4 token exchange refused. See [`examples/cloud/`](examples/cloud/README.md).
 
   **Package code (`--packages`, `--package`).** With `--packages`, each MCP server whose config launches a package (`npx`, `pnpm dlx`, `bunx`, `yarn dlx`, `uvx`, `uv tool run`, `pipx run`) is downloaded from the public registry, its digest checked (npm `sha512` integrity, PyPI `sha256`; a mismatch fails closed), extracted into a temporary directory with traversal, link and size guards, and analysed statically — nothing in it is executed. Only the package name and version leave the device, and only with the flag (or `MOORAI_SCAN_PACKAGES=1`); without it the packages are listed as not analysed. Package code gets its own checks — install scripts that download or run remote code, runtime self-install, environment or credential harvesting next to a network send, obfuscated `eval`, socket reverse shells, typosquatted names, known-malicious packages (by name, PyPI names compared in their PEP 503 form, and by the exact published SHA-256 of a known-bad artifact or of any extracted file, `data/known-bad-artifacts.js`: `pkg-known-malicious`, block), and a hard-coded fetch from a free throwaway web host such as `tiiny.site`, a paste site or an anonymous tunnel (`pkg-throwaway-host`, a `CAUTION` warning only, never a verdict; the host is matched as a suffix of the parsed hostname against `data/throwaway-hosts.js`, and only in live code that also makes a network call) — and the prompt-oriented detectors are scoped by file type: in code and docs they report at most `CAUTION`, because an MCP server spawning processes or calling APIs is expected. `DO-NOT-INSTALL` needs concrete evidence of malicious or unsafe-by-construction behaviour. Docker images and remote-only servers are reported as not analysed.
 
