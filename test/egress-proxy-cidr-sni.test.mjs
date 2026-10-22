@@ -16,7 +16,7 @@ let up, echo;
 before(async () => { up = await startUpstream(); echo = await startEcho(); });
 after(async () => { await up.close(); await echo.close(); });
 
-const TABLE = { "api.example.com": [PUBLIC], "plc.corp": ["10.20.1.5"], "intranet.corp": ["10.9.9.9"], "mixed.example": [PUBLIC, "10.1.1.1"], "evil.example": [PUBLIC] };
+const TABLE = { "api.example.com": [PUBLIC], "plc.corp": ["10.20.1.5"], "intranet.corp": ["10.9.9.9"], "mixed.example": [PUBLIC, "10.1.1.1"], "evil.example": [PUBLIC], "two.example": [PUBLIC, "198.51.100.7"], "owt.example": ["198.51.100.7", PUBLIC] };
 async function proxyWith(policy, extra = {}) {
   const resolve = fakeResolver(TABLE);
   const connect = fakeConnect({ httpPort: up.port, echoPort: echo.port });
@@ -189,5 +189,46 @@ test("cidr: a range never vouches for a cloud metadata address", async () => {
     const r = await connectVia(p.port, "169.254.169.254:80");
     assert.equal(r.status, 403);
     assert.match(r.body, /cloud metadata/);
+  } finally { await p.close(); }
+});
+
+test("cidr in force: a name a host rule blocks, or the block default with no cidr allow or alert rule, is refused before any DNS lookup", async () => {
+  const p = await proxyWith({ egressRules: [{ id: "rfc1918", cidr: "10.0.0.0/8", action: "block" }, { id: "no-evil", host: "evil.example", action: "block" }], egressDefault: "allow" });
+  try {
+    const r = await viaProxy(p.port, "http://evil.example/x");
+    assert.equal(r.status, 403);
+    assert.match(r.body, /egress rule "no-evil"/);
+    assert.equal((await connectVia(p.port, "evil.example:443")).status, 403);
+    assert.deepEqual(p.resolve.calls, [], "the blocked name was looked up in DNS (a DNS query is itself egress)");
+    assert.equal((await viaProxy(p.port, "http://api.example.com/")).status, 200, "a name no rule blocks is still resolved and judged per address");
+    assert.deepEqual(p.resolve.calls, ["api.example.com"]);
+  } finally { await p.close(); }
+  const d = await proxyWith({ egressRules: [{ cidr: "10.0.0.0/8", action: "block" }, { host: "api.example.com", action: "allow" }], egressDefault: "block" });
+  try {
+    assert.equal((await connectVia(d.port, "unlisted.example:443")).status, 403);
+    assert.deepEqual(d.resolve.calls, [], "under a block default only a cidr allow or alert rule could open a name");
+  } finally { await d.close(); }
+});
+
+test("cidr in force: a cidr allow rule ahead of the blocking host rule can still open the name, so that name is resolved and judged per address", async () => {
+  const p = await proxyWith({ egressRules: [{ id: "cdn", cidr: "93.184.0.0/16", action: "allow" }, { id: "no-evil", host: "evil.example", action: "block" }], egressDefault: "block" });
+  try {
+    assert.equal((await viaProxy(p.port, "http://evil.example/")).status, 200, "the earlier cidr allow decides for the resolved address");
+    assert.deepEqual(p.resolve.calls, ["evil.example"]);
+    assert.equal((await connectVia(p.port, "unlisted.example:443")).status, 502, "under the block default a cidr allow could open any name, so it is looked up (and does not resolve here)");
+  } finally { await p.close(); }
+});
+
+test("cidr: EVERY resolved address is judged as an IP literal, so a blocked public range on any one of them refuses the name (no private-address check involved)", async () => {
+  const p = await proxyWith({ egressRules: [{ id: "bad-net", cidr: "198.51.100.0/24", action: "block" }], egressDefault: "allow" });
+  try {
+    for (const name of ["two.example", "owt.example"]) {
+      const r = await viaProxy(p.port, `http://${name}/`);
+      assert.equal(r.status, 403, name);
+      assert.match(r.body, /egress rule "bad-net"/, name);
+      assert.equal((await connectVia(p.port, `${name}:443`)).status, 403, name);
+    }
+    assert.equal(p.connect.calls.length, 0);
+    assert.equal((await viaProxy(p.port, "http://api.example.com/")).status, 200, "a name with no address in the range goes");
   } finally { await p.close(); }
 });

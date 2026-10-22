@@ -2106,7 +2106,9 @@ on the connections it carries, using that module's own parsing, matching and ale
 - **Address ranges (F23).** With any cidr rule in force (`hasCidrRules`), a name is resolved before it is
   judged and `judgeAddresses` judges it once per resolved address, each as `{ …target, addr }` (a host rule
   reads the name, a cidr rule the address, first match in order), the strictest action standing and a grant
-  holding only if it holds for every address. Without a cidr rule a blocked name is refused before DNS. A
+  holding only if it holds for every address. A blocked name is refused before DNS when no cidr rule is in
+  force, and also when one is but no cidr `allow` or `alert` rule precedes the deciding block rule (any rule,
+  when egressDefault decided): `blockHoldsForEveryAddress`, as no address could lift the block. A
   cidr rule counts as exact for special ranges (`exactHost`); a cloud metadata address needs a host rule on
   the IP literal (`hostExact`, which sets cidr rules aside).
 - **TLS server name (F23, [`egress-proxy/sni.mjs`](../egress-proxy/sni.mjs)).** After `200 Connection

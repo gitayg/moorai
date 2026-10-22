@@ -7,7 +7,9 @@
 //      URL the two parsers of cli/egress-rules.mjs read differently, or https:// in absolute form (that is
 //      CONNECT's job) is refused 400. The path is canonicalised (path.mjs); an encoded separator, NUL or
 //      percent sign, a malformed escape or a backslash is refused 400.
-//   3. The egress rules decide (judge.mjs). A block is refused 403 with the deciding rule.
+//   3. The egress rules decide (judge.mjs). A block is refused 403 with the deciding rule, before any DNS
+//      lookup. With a cidr rule in force a name is judged per resolved address instead (step 4), unless no
+//      cidr allow or alert rule could lift its block (judge.mjs blockHoldsForEveryAddress).
 //   4. The address. An IP literal is used as written; a name is resolved ONCE (deps.resolve, a timeout).
 //      The proxy's own port and the sibling ports (cfg.siblingPorts: moorai-serve, the model proxy, the
 //      MCP gateway) on a loopback or local interface address are never connected to, whatever the rules
@@ -42,7 +44,7 @@ import os from "node:os";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { egressReason, egressAlerts, EGRESS_RULE, EGRESS_CATEGORY } from "../cli/egress-rules.mjs";
 import { ipOf, addressClass, isMetadataAddress, isLocalAddress } from "./address.mjs";
-import { judgeConnection, judgeAddresses, hasCidrRules, networkTarget, httpTarget, httpDestination, connectTarget, rejectedAlert } from "./judge.mjs";
+import { judgeConnection, judgeAddresses, hasCidrRules, blockHoldsForEveryAddress, networkTarget, httpTarget, httpDestination, connectTarget, rejectedAlert } from "./judge.mjs";
 import { sniffClientHello } from "./sni.mjs";
 import { DEFAULTS } from "./config.mjs";
 import { parseTraceparent, formatTraceparent, newTraceId, newSpanId } from "../cli/trace-context.mjs";
@@ -130,11 +132,12 @@ export function createEgressProxy(cfg = {}, deps = {}) {
     if (v.error) { alertRefusal("judge-error", t, tc); return { ok: false, status: 403, message: "the egress rules could not be evaluated" }; }
     const literal = ipOf(t.host);
     // With a cidr rule in force a name's verdict depends on its addresses (F23): it is resolved first and
-    // judged per resolved address (judgeAddresses). Without one, a blocked name is refused before any DNS.
+    // judged per resolved address (judgeAddresses). A blocked name is refused before any DNS when there is
+    // no cidr rule, or when no cidr allow or alert rule could lift the block for any address.
     const byAddress = !literal && hasCidrRules(st);
     let verdict = { target: t, action: v.action, ref: v.ref, ...(v.ruleId ? { ruleId: v.ruleId } : {}) };
     const ruleAlerts = () => { for (const a of egressAlerts([verdict], { coach: !!st.coach, profileId: v.profileId })) alert(a, tc); };
-    if (!byAddress && v.action === "block" && !st.coach) { ruleAlerts(); return { ok: false, status: 403, message: egressReason(verdict) }; }
+    if ((!byAddress || blockHoldsForEveryAddress(v, st)) && v.action === "block" && !st.coach) { ruleAlerts(); return { ok: false, status: 403, message: egressReason(verdict) }; }
 
     let addrs;
     if (literal) addrs = [{ address: literal, family: net.isIP(literal) }];

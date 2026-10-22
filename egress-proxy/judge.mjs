@@ -49,6 +49,26 @@ export function hasCidrRules({ policy = null, system = null, serviceId = "" } = 
   } catch { return true; }
 }
 
+// A block on a name that no resolved address could lift: judged per address, a cidr rule reads the address,
+// so only a cidr allow or alert rule read BEFORE the deciding block rule (or anywhere, when egressDefault
+// decided) could change the outcome. When there is none the name is refused before any DNS lookup, which is
+// itself egress. Rule order: the chain judgeConnection reads. A ref this cannot place → false (resolve first).
+export function blockHoldsForEveryAddress(v, { policy = null, system = null, serviceId = "" } = {}) {
+  try {
+    if (!v || v.action !== "block" || v.error) return false;
+    const eg = cachedEgress(policy, system);
+    const { profiles } = profilesOf(policy, system);
+    const profile = serviceId ? matchProfile(profiles, { serviceId, repo: "" }) : null;
+    for (const s of egressChain(profile, eg).chain) {
+      for (const r of s.rules) {
+        if (`${s.source}#${r.index}` === v.ref) return true;
+        if (r.cidr && r.action !== "block") return false;
+      }
+    }
+    return v.ref === "default";
+  } catch { return false; }
+}
+
 // A connection to a name, judged once per resolved address: each address is judged as that IP literal
 // beside the name (a host rule reads the name, a cidr rule the address; first match in order decides), and
 // the strictest of them stands. Grants (explicit, exactHost, hostExact) hold only when they hold for every

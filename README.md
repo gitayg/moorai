@@ -931,8 +931,9 @@ HTTPS_PROXY=http://127.0.0.1:8850 HTTP_PROXY=http://127.0.0.1:8850 http_proxy=ht
   address (a host rule reads the name, a cidr rule the address; the first match in order decides), and the
   strictest outcome stands, so one address inside a blocked range refuses the connection. A cidr `allow` or
   `alert` rule whose range holds the address opens a private address too, as an exact host rule does; a cloud
-  metadata address still needs a host rule naming that IP literal. Without a cidr rule a blocked name is
-  refused before any DNS, as before.
+  metadata address still needs a host rule naming that IP literal. A blocked name is refused before any DNS
+  lookup (a lookup is itself egress) when no cidr rule is in force, and also when one is but no cidr `allow`
+  or `alert` rule is read before the blocking rule (or at all, when the block default decided).
 - **Addresses.** DNS is resolved once, and the proxy connects to exactly the address it checked, so a
   second DNS answer cannot redirect it (DNS rebinding). Loopback (`localhost` is not exempt here), private,
   carrier-grade NAT, link-local and unique-local destinations need an `allow` or `alert` rule whose host
