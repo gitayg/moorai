@@ -117,6 +117,7 @@ async function startResourceServer({ prmResource, challengeMetadata = true, fore
     });
   });
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  srv.unref(); // a failed assertion must not keep the test process alive
   return { url: `http://127.0.0.1:${srv.address().port}/mcp`, seen, close: () => new Promise((r) => { srv.closeAllConnections?.(); srv.close(r); }) };
 }
 async function withGateway(upUrl, fn) {

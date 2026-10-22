@@ -161,6 +161,28 @@ test("cidr: an allow range opens a private address under a block default, connec
   } finally { await p.close(); }
 });
 
+// A minimal ClientHello built by hand: TLS 1.2 version, empty session id, one cipher suite, null
+// compression, and a server_name extension carrying the given names (RFC 6066 3).
+function handHello(names, { repeatExt = false, repeatOther = false } = {}) {
+  const entry = (n) => Buffer.concat([Buffer.from([0, n.length >> 8, n.length & 255]), Buffer.from(n, "latin1")]);
+  const list = Buffer.concat(names.map(entry));
+  const sniData = Buffer.concat([Buffer.from([list.length >> 8, list.length & 255]), list]);
+  const ext = Buffer.concat([Buffer.from([0, 0, sniData.length >> 8, sniData.length & 255]), sniData]);
+  const groups = Buffer.from([0, 10, 0, 4, 0, 2, 0, 29]); // supported_groups(10): x25519
+  const exts = repeatExt ? Buffer.concat([ext, ext]) : repeatOther ? Buffer.concat([groups, ext, groups]) : ext;
+  const body = Buffer.concat([Buffer.from([3, 3]), Buffer.alloc(32), Buffer.from([0, 0, 2, 0x13, 0x01, 1, 0]), Buffer.from([exts.length >> 8, exts.length & 255]), exts]);
+  const hs = Buffer.concat([Buffer.from([1, body.length >> 16, (body.length >> 8) & 255, body.length & 255]), body]);
+  return Buffer.concat([Buffer.from([0x16, 3, 1, hs.length >> 8, hs.length & 255]), hs]);
+}
+
+test("sniffClientHello: two host_name entries, a repeated server_name extension, or a name that is not a host name is malformed (refused)", () => {
+  assert.deepEqual(sniffClientHello(handHello(["api.example.com"])), { tls: true, sni: "api.example.com" });
+  assert.ok(sniffClientHello(handHello(["api.example.com", "evil.example"])).error, "two host_name entries");
+  assert.ok(sniffClientHello(handHello(["api.example.com"], { repeatExt: true })).error, "a repeated server_name extension");
+  assert.ok(sniffClientHello(handHello(["api.example.com"], { repeatOther: true })).error, "a repeated extension of another type (RFC 8446 4.2)");
+  assert.ok(sniffClientHello(handHello(["bad name"])).error, "not a host name");
+});
+
 test("cidr: a range never vouches for a cloud metadata address", async () => {
   const p = await proxyWith({ egressRules: [{ cidr: "169.254.0.0/16", action: "allow" }], egressDefault: "block" });
   try {

@@ -51,6 +51,7 @@ test("upstream connection: an IP-literal route inside a cidr block rule is refus
 test("upstream connection: a route by name is judged on the address its DNS lookup returns (cidr), and a host rule on the name", async () => {
   const up = await startUpstream();
   const port = new URL(up.url).port;
+  try {
   for (const [rules, want] of [
     [[{ id: "no-loopback", cidr: ["127.0.0.0/8", "::1/128"], action: "block" }], 403],
     [[{ id: "by-name", host: "localhost", method: "POST", path: "/mcp", action: "block" }], 403],
@@ -70,5 +71,5 @@ test("upstream connection: a route by name is judged on the address its DNS look
       }
     } finally { await stopGateway(gw); await con.close(); rmSync(home, { recursive: true, force: true }); }
   }
-  await up.close();
+  } finally { await up.close(); }
 });
