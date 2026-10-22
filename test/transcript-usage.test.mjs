@@ -1,6 +1,8 @@
 // F15 endpoint source (cli/transcript-usage.mjs): the usage Claude Code records on each assistant message in its
 // local transcripts (~/.claude/projects/**/*.jsonl, message.usage), read incrementally, deduplicated by message
-// id (Claude Code writes one line per content block, each repeating the message's usage), bucketed by hour,
+// id (Claude Code writes one line per content block; input and cache counts repeat on every line while
+// output_tokens grows, and the last line carries the final count, so each message counts its field-wise
+// maximum, adding to its bucket as later lines arrive), bucketed by hour,
 // model and keyed project hash, and posted as source "transcript". Never content, never a path.
 //
 //   node --test test/transcript-usage.test.mjs
@@ -23,6 +25,8 @@ const CWD = "/Users/someone/secret-project";
 const hash = (s) => `h2:${Buffer.from(s).toString("hex").slice(0, 16)}`;
 const asst = (id, model, ts, usage, text = "PRIVATE-ANSWER") => JSON.stringify({ parentUuid: "p", isSidechain: false, type: "assistant", uuid: "u", timestamp: ts, cwd: CWD, sessionId: "s", message: { model, id, type: "message", role: "assistant", content: [{ type: "text", text }], ...(usage ? { usage } : {}) }, requestId: "req" }) + "\n";
 const U1 = { input_tokens: 10, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000, output_tokens: 5, service_tier: "standard" };
+// One message written as three lines, as current Claude Code writes it: output_tokens grows, the rest repeats.
+const U1a = { ...U1, output_tokens: 2 }, U1c = { ...U1, output_tokens: 812 };
 const U2 = { input_tokens: 3, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 7 };
 
 function fixture(t) {
@@ -33,9 +37,9 @@ function fixture(t) {
   const main = join(proj, "s1.jsonl");
   writeFileSync(main,
     JSON.stringify({ type: "user", message: { role: "user", content: "PRIVATE-PROMPT" }, cwd: CWD, timestamp: "2026-10-21T10:01:00Z" }) + "\n" +
-    asst("msg_1", "claude-opus-5-5", "2026-10-21T10:02:00Z", U1, "block one") +
-    asst("msg_1", "claude-opus-5-5", "2026-10-21T10:02:01Z", U1, "block two") +
-    asst("msg_1", "claude-opus-5-5", "2026-10-21T10:02:02Z", U1, "block three") +
+    asst("msg_1", "claude-opus-5-5", "2026-10-21T10:02:00Z", U1a, "block one") +
+    asst("msg_1", "claude-opus-5-5", "2026-10-21T10:02:01Z", U1a, "block two") +
+    asst("msg_1", "claude-opus-5-5", "2026-10-21T10:02:02Z", U1c, "block three") +
     asst("msg_2", "claude-haiku-4-5", "2026-10-21T11:30:00Z", U2) +
     asst("msg_s", "<synthetic>", "2026-10-21T11:31:00Z", { input_tokens: 0, output_tokens: 0 }) +
     asst("msg_3", "claude-opus-5-5", "2026-10-21T11:40:00Z", null) +
@@ -70,7 +74,7 @@ test("TRANSCRIPT: per-message usage, deduplicated by message id, bucketed by hou
   assert.equal(body.instance, TRANSCRIPT_INSTANCE);
   assert.match(body.instance, /^tr-[0-9a-f]{8}$/);
   const by = (hour, model) => body.buckets.find((b) => b.hour === hour && b.model === model);
-  assert.deepEqual(by("2026-10-21T10:00:00Z", "claude-opus-5-5"), { hour: "2026-10-21T10:00:00Z", agentName: "claude-code", provider: "anthropic", model: "claude-opus-5-5", projectKey: hash(CWD), requests: 2, requestsNoUsage: 0, in: 13, out: 12, cacheRead: 1000, cacheWrite: 100 }, "msg_1 once (three lines), plus the sub-agent's msg_sub");
+  assert.deepEqual(by("2026-10-21T10:00:00Z", "claude-opus-5-5"), { hour: "2026-10-21T10:00:00Z", agentName: "claude-code", provider: "anthropic", model: "claude-opus-5-5", projectKey: hash(CWD), requests: 2, requestsNoUsage: 0, in: 13, out: 819, cacheRead: 1000, cacheWrite: 100 }, "msg_1 once (three lines, its last line's 812 output tokens), plus the sub-agent's msg_sub");
   assert.deepEqual([by("2026-10-21T11:00:00Z", "claude-haiku-4-5").in, by("2026-10-21T11:00:00Z", "claude-haiku-4-5").out], [3, 7]);
   const nu = by("2026-10-21T11:00:00Z", "claude-opus-5-5");
   assert.deepEqual([nu.requests, nu.requestsNoUsage], [1, 1], "a message without usage; the unfinished last line is not read yet");
@@ -94,6 +98,23 @@ test("TRANSCRIPT: incremental; the finished line and new lines add to running to
   assert.deepEqual([b[0].hour, b[0].requests, b[0].requestsNoUsage, b[0].in, b[0].out], ["2026-10-21T11:00:00Z", 3, 1, 6, 14]);
   await run(f, fetch);
   assert.equal(fetch.calls.length, 2);
+});
+
+test("TRANSCRIPT: a later line of a message already counted adds only its growth, in a later run, to the first line's bucket", async (t) => {
+  const f = fixture(t);
+  const fetch = fakeFetch();
+  writeFileSync(f.main, asst("msg_9", "claude-opus-5-5", "2026-10-21T09:59:59Z", U1a) + asst("msg_9", "claude-opus-5-5", "2026-10-21T10:00:00Z", U1a));
+  await run(f, fetch);
+  const first = fetch.calls[0].body.buckets.find((b) => b.hour === "2026-10-21T09:00:00Z");
+  assert.deepEqual([first.requests, first.in, first.out, first.cacheRead, first.cacheWrite], [1, 10, 2, 1000, 100]);
+  appendFileSync(f.main, asst("msg_9", "claude-opus-5-5", "2026-10-21T10:00:01Z", { ...U1, output_tokens: 400 }) + asst("msg_9", "claude-opus-5-5", "2026-10-21T10:00:02Z", U1c) + asst("msg_9", "claude-opus-5-5", "2026-10-21T10:00:03Z", U1a));
+  await run(f, fetch);
+  assert.equal(fetch.calls.length, 2);
+  const b = fetch.calls[1].body.buckets;
+  assert.equal(b.length, 1, "only the first line's bucket changed, though the later lines fall in the next hour");
+  assert.deepEqual([b[0].hour, b[0].requests, b[0].in, b[0].out, b[0].cacheRead, b[0].cacheWrite], ["2026-10-21T09:00:00Z", 1, 10, 812, 1000, 100], "one request; the maximum, not a sum, and a lower later line takes nothing back");
+  await run(f, fetch);
+  assert.equal(fetch.calls.length, 2, "nothing new, nothing sent");
 });
 
 test("TRANSCRIPT: a byte budget per run; later runs continue to the same totals", async (t) => {
