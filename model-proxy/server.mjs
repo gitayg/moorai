@@ -13,7 +13,8 @@
 // any other placeholder use is refused before the body is read, and every response is masked for the bound
 // secrets (credential-mask.mjs) before anything reads it. Without them, nothing here changes.
 //
-// Only POST …/messages (Anthropic), POST …/chat/completions (OpenAI), POST …/models/{model}:generateContent
+// Only POST …/messages (Anthropic), POST …/chat/completions, …/responses and …/embeddings (OpenAI;
+// openai-responses.mjs, openai-embeddings.mjs), POST …/models/{model}:generateContent
 // / :streamGenerateContent (Gemini, on any route) and POST …/api/chat / …/api/generate (Ollama's native API,
 // on any route; NDJSON streams) are parsed; any other path or method is forwarded unparsed.
 //
@@ -36,6 +37,8 @@ import { REASON } from "../cli/provenance.mjs";
 import { isLoopback } from "../cli/moorai-serve.mjs";
 import * as anthropic from "./anthropic.mjs";
 import * as openai from "./openai.mjs";
+import * as openaiResponses from "./openai-responses.mjs";
+import * as openaiEmbeddings from "./openai-embeddings.mjs";
 import * as gemini from "./gemini.mjs";
 import * as ollama from "./ollama.mjs";
 import { createSplitter } from "./sse.mjs";
@@ -112,9 +115,9 @@ function originOk(origin, allow) {
   try { const u = new URL(origin); return (u.protocol === "http:" || u.protocol === "https:") && isLoopback(u.hostname); } catch { return false; }
 }
 const digest = (s) => createHash("sha256").update(String(s)).digest();
-const apiFor = (method, path) => (method !== "POST" ? null : /\/messages$/.test(path) ? anthropic : /\/chat\/completions$/.test(path) ? openai : gemini.isPath(path) ? gemini : ollama.isPath(path) ? ollama : null);
+const apiFor = (method, path) => (method !== "POST" ? null : /\/messages$/.test(path) ? anthropic : /\/chat\/completions$/.test(path) ? openai : /\/responses$/.test(path) ? openaiResponses : /\/embeddings$/.test(path) ? openaiEmbeddings : gemini.isPath(path) ? gemini : ollama.isPath(path) ? ollama : null);
 // The retryable status of the proxy's own budget errors: OpenAI, Gemini and Ollama 503, Anthropic 529 (overloaded).
-const busy = (api) => (api === openai || api === gemini || api === ollama ? 503 : 529);
+const busy = (api) => (api && api !== anthropic ? 503 : 529);
 // A response (body, SSE event data, NDJSON line) that is not strict JSON has no one reading (json-strict.mjs):
 // enforce does not forward it; report mode forwards it and reports it.
 const strictMessage = (p) => `MoorAI model-proxy: the response ${PROBLEM_TEXT[p]}, so a client could read it differently than it was checked; it was not forwarded`;
