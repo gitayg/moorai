@@ -102,7 +102,11 @@ test("BUDGET: an exceeded, fresh, signed block budget is answered 429 budget_exc
     assert.ok(await waitFor(() => con.alerts.some((a) => a.reasonCode === "BUDGET_EXCEEDED")), "alert posted");
     const a = con.alerts.find((x) => x.reasonCode === "BUDGET_EXCEEDED");
     assert.equal(a.budgetId, "eng-monthly"); assert.equal(a.decision, "deny"); assert.equal(a.riskLevel, "Medium");
-  } finally { await px.stop(); await con.close(); }
+    for (let i = 0; i < 3; i++) assert.equal((await request(px.listening, ANT, { body: { model: "claude-fake", max_tokens: 8, messages: [{ role: "user", content: "hi" }] } })).status, 429);
+  } finally { await px.stop(); }
+  try {
+    assert.equal(con.alerts.filter((x) => x.reasonCode === "BUDGET_EXCEEDED").length, 1, "one alert per budget and period, though four requests were refused");
+  } finally { await con.close(); }
 });
 
 test("BUDGET: a stale budget state, an alert-only budget and report mode never block", async () => {

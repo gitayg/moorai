@@ -3201,8 +3201,16 @@ Token counts (metadata only) go to `POST /api/token-usage` as cumulative hourly 
 - **Claude Code transcripts** (`cli/transcript-usage.mjs`): a detached hook worker, at most once an hour on an
   enrolled device and only from Claude Code's own hook, reads `~/.claude/projects/**/*.jsonl` (and
   `$CLAUDE_CONFIG_DIR/projects`) from a saved offset in 1 MiB chunks, up to 64 MiB a run, files touched in the last
-  35 days. Each assistant message is counted once by `message.id` (Claude Code writes one line per content block,
-  each repeating the usage; measured: 291 repeats, none different). `<synthetic>` messages are skipped. Source
+  35 days. Each assistant message is one request by `message.id`, counted at its field-wise maximum usage. Claude
+  Code writes one line per content block; measured on one developer machine (2026-10-21, 1034 transcripts touched
+  in the last 3 days, counts only): of 31801 messages written as more than one line, input and cache counts never
+  differed between lines, `output_tokens` differed in 7371, never fell from one line to the next, and the last
+  line always held the largest; the first line alone gave 38% of the output tokens. A later line adds only its
+  growth to the first line's bucket, in the same run or a later one (the last 64 ids per file are kept, the last
+  4 with the usage counted so far). Over the 2000 most recent transcripts on that machine (4.65 GB) the reader's
+  totals matched an independent per-message maximum count except for 533 messages whose id reappeared after
+  more than 64 other messages in the same file; those are counted again (about 0.3% of requests and output
+  tokens). `<synthetic>` messages are skipped. Source
   `transcript`, instance `tr-<8 hex>` fixed, `projectKey` is the keyed hash of the message's `cwd`. The state file
   (`~/.moorai/token-usage-transcript.json`, 0600) keys files by a digest of their path. Codex and other hosts'
   transcripts are not read.
@@ -3210,7 +3218,8 @@ Token counts (metadata only) go to `POST /api/token-usage` as cumulative hourly 
   `budgetState`. In enforce mode, a model request while a budget with `action: "block"` is `exceeded` is answered
   HTTP 429 `{ "error": { "type": "budget_exceeded", "budgetId": "…", "message": "…" } }` with
   `x-should-retry: false`, is not forwarded, and raises one `BUDGET_EXCEEDED` alert (Medium, `budgetId`) per budget
-  and period. Report mode forwards the request and the alert says `notify`. A policy that is not the verified
+  and period from each proxy process (kept in memory: a restarted proxy alerts again, and after 257 budget-period
+  pairs in one process no further budget alert is raised). Report mode forwards the request and the alert says `notify`. A policy that is not the verified
   signed policy, no state, a state older than 1 hour or dated in the future, an ended period, `warn`/`ok`, or
   `action: "alert"` never blocks, whatever failMode says. Hooks never block on budget.
 

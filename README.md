@@ -1848,11 +1848,14 @@ so a resend never double-counts. Never prompt or response text, a path or a key.
   get usage: an OpenAI stream sent without `stream_options.include_usage` counts as a request with no usage.
 - **Claude Code transcripts:** on an enrolled device, Claude Code's hook starts a detached worker at most once an
   hour that reads the usage Claude Code records per assistant message in `~/.claude/projects/**/*.jsonl`,
-  incrementally (64 MiB a run), counting each message once. Other hosts' transcripts are not read.
+  incrementally (64 MiB a run). Claude Code writes a message as several lines and its output count grows from
+  line to line, so each message is one request counted at its largest usage, and a line written after a run adds
+  only its growth. Other hosts' transcripts are not read.
 - **Budgets:** the signed policy can carry `usageBudgets` and the console's `budgetState`. When a budget with
   `action: "block"` is `exceeded`, the model proxy in enforce mode answers 429
   `{ "error": { "type": "budget_exceeded", "budgetId": "…" } }` without forwarding and raises one
-  `BUDGET_EXCEEDED` alert per budget and period. Report mode forwards and alerts. A missing, unsigned or stale
+  `BUDGET_EXCEEDED` alert per budget and period from each proxy process (a restarted proxy alerts again).
+  Report mode forwards and alerts. A missing, unsigned or stale
   (over 1 hour) budget state never blocks. Hooks cannot stop a model call, so they never block on budget.
 - Details: [`docs/CAPABILITY_SPEC.md`](docs/CAPABILITY_SPEC.md) (Token usage and usage budgets).
 
