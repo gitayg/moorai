@@ -9,7 +9,9 @@
 //                         be executed in GitHub Actions before Copilot starts working". Repository hooks in
 //                         `.github/hooks/*.json` run under Copilot cloud agent, `preToolUse` fires there,
 //                         "Command `preToolUse` hooks are fail-closed on errors" and "Under cloud agent,
-//                         `"ask"` is treated as `"deny"`". MoorAI's Copilot adapter (cli/agent-hooks/
+//                         `"ask"` is treated as `"deny"` because no user is available to answer."
+//                         (docs.github.com/en/copilot/reference/hooks-configuration, permissionDecision
+//                         table). MoorAI's Copilot adapter (cli/agent-hooks/
 //                         copilot.mjs) is the hook; the setup step installs it and writes the binding.
 //   claude-code-web       SUPPORTED. A cloud environment's setup script "runs when a new cloud session
 //                         starts, before Claude Code launches" and "Scripts run as root on Ubuntu 24.04".

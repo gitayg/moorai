@@ -62,8 +62,9 @@ printed only as a sha256 fingerprint. An OIDC-minted token lives as long as the 
 
 ## Copilot coding agent
 
-1. Create the `copilot` environment's variables `MOORAI_SERVER_URL`, `MOORAI_TENANT` (and
-   `MOORAI_WORKLOAD_ID` for OIDC) or the secret `MOORAI_INSTALL_TOKEN`.
+1. Create the `copilot` environment's variables `MOORAI_SERVER_URL`, `MOORAI_TENANT`, `MOORAI_REF` (the
+   MoorAI release tag to install; the clone pins it and the job fails without it), and
+   `MOORAI_WORKLOAD_ID` for OIDC or the secret `MOORAI_INSTALL_TOKEN`.
 2. Copy [`copilot-setup-steps.yml`](copilot-setup-steps.yml) to `.github/workflows/copilot-setup-steps.yml`
    on the default branch.
 3. Copy [`copilot-hooks.json`](copilot-hooks.json) to `.github/hooks/moorai.json`. It runs
@@ -77,7 +78,8 @@ printed only as a sha256 fingerprint. An OIDC-minted token lives as long as the 
 ## Claude Code cloud sessions
 
 1. In the environment's settings: environment variables `MOORAI_SERVER_URL`, `MOORAI_TENANT`,
-   `MOORAI_INSTALL_TOKEN` (a static workload token); network access Custom with the console host added;
+   `MOORAI_INSTALL_TOKEN` (a static workload token), `MOORAI_REF` (the MoorAI release tag to install; the
+   setup script stops without it); network access Custom with the console host added;
    setup script [`claude-code-web-setup.sh`](claude-code-web-setup.sh).
 2. Put [`claude-code-web-hooks.json`](claude-code-web-hooks.json) (the output of
    `moorai-cloud-setup claude-code-web --print-hooks`) in the organization's server-managed settings, where
@@ -95,7 +97,8 @@ printed only as a sha256 fingerprint. An OIDC-minted token lives as long as the 
 - `/opt/moorai/bin/moorai-hook` and `/opt/moorai/bin/moorai-agent-hook`: wrappers that run this machine's
   node by absolute path, so the hook registration names one fixed path.
 
-The heartbeat then carries `cloudAgent: { host, attestation }`.
+The hook's daily coverage heartbeat (`POST /api/agent-posture`) then carries the top-level field
+`cloudAgent: { host, attestation }`; consoles that predate the field ignore it.
 
 **Scope.** In these VMs the agent runs as root (Claude Code) or as a user with passwordless sudo
 (GitHub-hosted runners), so it can read and change MoorAI's files there: the root-owned file is not a tamper

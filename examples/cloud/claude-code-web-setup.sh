@@ -9,10 +9,14 @@
 #   MOORAI_INSTALL_TOKEN=mwt_...      a static workload token: the environment dialog warns that anyone who
 #                                     uses the environment can read its variables, and a workload token only
 #                                     reaches MoorAI's telemetry and policy-read routes
+#   MOORAI_REF=<release tag>          the MoorAI release to install; the clone pins it and the script stops
+#                                     without it, so sessions never run the moving main branch
 # Network access: Custom, with the console's host in Allowed domains (keep "Also include default list").
 # Hook registration: paste the output of `moorai-cloud-setup claude-code-web --print-hooks`
 # (claude-code-web-hooks.json) into your organization's server-managed settings, or commit it as the
 # repository's .claude/settings.json.
 set -e
-git clone --depth 1 https://github.com/gitayg/moorai.git /opt/moorai || true
+: "${MOORAI_REF:?set MOORAI_REF to a MoorAI release tag}"
+# A checkout left by an earlier session is reused; a failed clone stops the script (set -e).
+[ -d /opt/moorai/.git ] || git clone --depth 1 --branch "$MOORAI_REF" https://github.com/gitayg/moorai.git /opt/moorai
 node /opt/moorai/cli/moorai-cloud-setup.mjs claude-code-web --install-dir /opt/moorai

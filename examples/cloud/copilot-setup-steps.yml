@@ -6,7 +6,8 @@
 # The job MUST be called copilot-setup-steps. Values come from the repository's `copilot` environment
 # (Settings > Environments > copilot): variables MOORAI_SERVER_URL, MOORAI_TENANT, and either the secret
 # MOORAI_INSTALL_TOKEN (a static workload token from the console) or the variable MOORAI_WORKLOAD_ID for the
-# OIDC exchange below.
+# OIDC exchange below, and the variable MOORAI_REF: the MoorAI release tag to install. The clone pins that tag
+# and the job fails without it, so every session runs the release you chose, never the moving main branch.
 #
 # Add the console's host to the Copilot firewall's custom allowlist (Settings > Copilot > Internet access)
 # so the hook can reach it during the session. Alerts the hook cannot deliver wait in its outbox.
@@ -36,6 +37,8 @@ jobs:
           MOORAI_WORKLOAD_ID: ${{ vars.MOORAI_WORKLOAD_ID }}
           MOORAI_OIDC: ${{ vars.MOORAI_WORKLOAD_ID && 'github' || '' }}
           MOORAI_SERVICE_ID: copilot:${{ github.repository }}
+          MOORAI_REF: ${{ vars.MOORAI_REF }}
         run: |
-          sudo git clone --depth 1 https://github.com/gitayg/moorai.git /opt/moorai
+          : "${MOORAI_REF:?set the copilot environment variable MOORAI_REF to a MoorAI release tag}"
+          sudo git clone --depth 1 --branch "$MOORAI_REF" https://github.com/gitayg/moorai.git /opt/moorai
           sudo -E "$(command -v node)" /opt/moorai/cli/moorai-cloud-setup.mjs copilot-coding-agent --install-dir /opt/moorai
