@@ -27,7 +27,7 @@ export function sdkTargets({ js = jsInstalled, py = pyInstalled } = {}) {
   });
 }
 
-// The published sidecar image (docker/server/Dockerfile, ghcr.io/gitayg/moorai-server) for linux/amd64.
+// The published sidecar image (docker/server/Dockerfile, any local tag named moorai-server) for linux/amd64.
 export function imageTarget() {
   const base = { kind: "image", id: "server-image-amd64", label: "MoorAI server image for linux/amd64", ran: false, model: "none", cases: [] };
   const ls = spawnSync("docker", ["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"], { encoding: "utf8", timeout: 20000 });

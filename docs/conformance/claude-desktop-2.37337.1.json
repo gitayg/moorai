@@ -1,0 +1,47 @@
+{
+  "type": "moorai.host-conformance/v1",
+  "moorai": "1.27.0",
+  "generatedAt": "2026-10-22T01:35:40.586Z",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "22.22.0"
+  },
+  "summary": {
+    "targets": 1,
+    "ran": 0,
+    "notRun": 1,
+    "cases": 0,
+    "pass": 0,
+    "fail": 0,
+    "skip": 0,
+    "inconclusive": 0,
+    "gap": 0
+  },
+  "targets": [
+    {
+      "kind": "desktop-client",
+      "id": "claude-desktop",
+      "label": "Claude Desktop",
+      "version": "2.37337.1",
+      "tested": null,
+      "ran": false,
+      "sandboxed": false,
+      "model": "none",
+      "modelName": null,
+      "cases": [],
+      "reason": "no-headless-mode"
+    }
+  ],
+  "reasons": {
+    "no-headless-mode": "a desktop GUI app with no headless mode; driving it would use the person's real profile and account"
+  },
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "91c6703fbe76fa92",
+    "pub": "MCowBQYDK2VwAyEA4vNsxAiLa9lXSB2ePUJ1apxgM22q81Iu0b/MaCqxfrE=",
+    "digest": "c0aaea00be97b355bf2bba3693885501e7e02b2f3a6695de1aa6517cbde0f99e",
+    "sig": "D0OjU5l/o2+/ky2JJgALEb9KtqB/kkYnUK5JJcgkm7LFTUa0HP6s1w07CCQxejHWaCnkjAsromki/WT3/lbeDA==",
+    "ephemeral": false
+  }
+}

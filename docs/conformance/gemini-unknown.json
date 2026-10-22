@@ -1,0 +1,47 @@
+{
+  "type": "moorai.host-conformance/v1",
+  "moorai": "1.27.0",
+  "generatedAt": "2026-10-22T01:35:40.586Z",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "22.22.0"
+  },
+  "summary": {
+    "targets": 1,
+    "ran": 0,
+    "notRun": 1,
+    "cases": 0,
+    "pass": 0,
+    "fail": 0,
+    "skip": 0,
+    "inconclusive": 0,
+    "gap": 0
+  },
+  "targets": [
+    {
+      "kind": "host",
+      "id": "gemini",
+      "label": "Gemini CLI",
+      "version": null,
+      "tested": "0.60.0",
+      "ran": false,
+      "sandboxed": false,
+      "model": "none",
+      "modelName": null,
+      "cases": [],
+      "reason": "not-installed"
+    }
+  ],
+  "reasons": {
+    "not-installed": "not installed on the machine that ran the tier"
+  },
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "91c6703fbe76fa92",
+    "pub": "MCowBQYDK2VwAyEA4vNsxAiLa9lXSB2ePUJ1apxgM22q81Iu0b/MaCqxfrE=",
+    "digest": "21cc17dbfbd8d0887e3aebe81ef9196cbf26d75e972633022dc10069593f18d9",
+    "sig": "t/S3YNE28HVmMGQU0Tv1Ef35da0rTveis6fjabzUohz69g55hL/8UmrsWo+x4cP5fA0SyMz0TZaWUEhKQ20QBg==",
+    "ephemeral": false
+  }
+}

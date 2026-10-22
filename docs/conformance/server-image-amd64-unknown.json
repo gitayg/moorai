@@ -1,0 +1,47 @@
+{
+  "type": "moorai.server-conformance/v1",
+  "moorai": "1.27.0",
+  "generatedAt": "2026-10-22T01:43:49.495Z",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "22.22.0"
+  },
+  "summary": {
+    "targets": 1,
+    "ran": 0,
+    "notRun": 1,
+    "cases": 0,
+    "pass": 0,
+    "fail": 0,
+    "skip": 0,
+    "inconclusive": 0,
+    "gap": 0
+  },
+  "targets": [
+    {
+      "kind": "image",
+      "id": "server-image-amd64",
+      "label": "MoorAI server image for linux/amd64",
+      "version": null,
+      "tested": null,
+      "ran": false,
+      "sandboxed": false,
+      "model": "none",
+      "modelName": null,
+      "cases": [],
+      "reason": "image-not-present"
+    }
+  ],
+  "reasons": {
+    "image-not-present": "the container image is not present locally; the tier pulls nothing"
+  },
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "91c6703fbe76fa92",
+    "pub": "MCowBQYDK2VwAyEA4vNsxAiLa9lXSB2ePUJ1apxgM22q81Iu0b/MaCqxfrE=",
+    "digest": "9769d0f8812c7303df67a1b0651a5a06b5a9eed4196c5acdd3b64f0f0b74c6f0",
+    "sig": "lB58B/bHXZhg470PawPXP7uivBzQ0fVWfTsmYphu0TBW7eLoTcV/ta+5SxZVEcklzXPAjAcOS/9msrfP2Q4MDw==",
+    "ephemeral": false
+  }
+}

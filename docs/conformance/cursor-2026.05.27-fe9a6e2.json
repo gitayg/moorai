@@ -1,0 +1,89 @@
+{
+  "type": "moorai.host-conformance/v1",
+  "moorai": "1.27.0",
+  "generatedAt": "2026-10-22T01:35:40.584Z",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "22.22.0"
+  },
+  "summary": {
+    "targets": 1,
+    "ran": 1,
+    "notRun": 0,
+    "cases": 3,
+    "pass": 2,
+    "fail": 0,
+    "skip": 1,
+    "inconclusive": 0,
+    "gap": 0
+  },
+  "targets": [
+    {
+      "kind": "host",
+      "id": "cursor",
+      "label": "Cursor (cursor-agent CLI)",
+      "version": "2026.05.27-fe9a6e2",
+      "tested": "2026.05.27-fe9a6e2",
+      "ran": true,
+      "sandboxed": true,
+      "model": "none",
+      "modelName": null,
+      "cases": [
+        {
+          "id": "agent-turn",
+          "surface": "agent-turn",
+          "expect": "deny",
+          "observed": "none",
+          "status": "skip",
+          "checks": {
+            "authRequired": true,
+            "localModeRefused": true
+          },
+          "alert": null,
+          "latencyMs": null
+        },
+        {
+          "id": "mcp-handshake-stdio",
+          "surface": "mcp-handshake",
+          "expect": "handshake",
+          "observed": "handshake",
+          "status": "pass",
+          "checks": {
+            "connected": true,
+            "toolsFetched": true,
+            "toolListed": true,
+            "moorAIRecordedList": true,
+            "serverSawToolsList": true
+          },
+          "alert": null,
+          "latencyMs": 19050
+        },
+        {
+          "id": "bundle-markers",
+          "surface": "static",
+          "expect": "none",
+          "observed": "none",
+          "status": "pass",
+          "checks": {
+            "hookEventsPresent": true
+          },
+          "alert": null,
+          "latencyMs": null
+        }
+      ],
+      "reason": "auth-required"
+    }
+  ],
+  "reasons": {
+    "auth-required": "a headless turn needs the vendor's account login or API key; the tier uses no account and no key"
+  },
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "91c6703fbe76fa92",
+    "pub": "MCowBQYDK2VwAyEA4vNsxAiLa9lXSB2ePUJ1apxgM22q81Iu0b/MaCqxfrE=",
+    "digest": "6e8b08943033a2e3fa64c4f2787543174fa02e844ed9b23b3c46d390d21a1335",
+    "sig": "D9snQMyIUz9jNHYwPmTzeQ8Ch/IbTxn3oXM7yqgG2Z35swm28XaMnmV6u9zCTVXv0dGL3P0443nfx+/hQSY4Dg==",
+    "ephemeral": false
+  }
+}

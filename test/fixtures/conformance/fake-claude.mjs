@@ -53,7 +53,8 @@ const use = (first.content || []).find((b) => b.type === "tool_use");
 if (use) {
   const pre = runHooks("PreToolUse", { ...base, hook_event_name: "PreToolUse", tool_name: use.name, tool_input: use.input, tool_use_id: use.id }, use.name);
   let result;
-  if (pre.block) result = { type: "tool_result", tool_use_id: use.id, is_error: true, content: pre.reason };
+  // FAKE_CLAUDE_IGNORE_PRETOOL=1 plays a host that does not honour a PreToolUse deny (the tier must go red).
+  if (pre.block && process.env.FAKE_CLAUDE_IGNORE_PRETOOL !== "1") result ={ type: "tool_result", tool_use_id: use.id, is_error: true, content: pre.reason };
   else {
     const c = String((use.input && use.input.command) || "");
     result = { type: "tool_result", tool_use_id: use.id, is_error: false, content: /^echo [\w -]+$/.test(c) ? c.slice(5) + "\n" : "fake host: command accepted, not executed" };

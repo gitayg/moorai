@@ -1,0 +1,47 @@
+{
+  "type": "moorai.host-conformance/v1",
+  "moorai": "1.27.0",
+  "generatedAt": "2026-10-22T01:35:40.593Z",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "22.22.0"
+  },
+  "summary": {
+    "targets": 1,
+    "ran": 0,
+    "notRun": 1,
+    "cases": 0,
+    "pass": 0,
+    "fail": 0,
+    "skip": 0,
+    "inconclusive": 0,
+    "gap": 0
+  },
+  "targets": [
+    {
+      "kind": "desktop-client",
+      "id": "cursor-desktop",
+      "label": "Cursor desktop app",
+      "version": null,
+      "tested": null,
+      "ran": false,
+      "sandboxed": false,
+      "model": "none",
+      "modelName": null,
+      "cases": [],
+      "reason": "not-installed"
+    }
+  ],
+  "reasons": {
+    "not-installed": "not installed on the machine that ran the tier"
+  },
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "91c6703fbe76fa92",
+    "pub": "MCowBQYDK2VwAyEA4vNsxAiLa9lXSB2ePUJ1apxgM22q81Iu0b/MaCqxfrE=",
+    "digest": "d83ff235a6be0abb317f286f94ec3db768bbcb0544c53bbd3b44b81af7c5c48a",
+    "sig": "tyn4VL3cmM9tSmLD5y64it+tcjBiWd07AMWJb/Hg245hK+TBrKXU2WpWWKqeNc/h0F+PRGvj+z+Db+7yZjaACA==",
+    "ephemeral": false
+  }
+}

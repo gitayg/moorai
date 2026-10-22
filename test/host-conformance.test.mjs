@@ -207,3 +207,14 @@ test("runner --live against a stand-in Claude Code: the real MoorAI hook allows,
   for (const leak of ["dev/tcp", "AKIA", "moorai-conformance-ok", "echo "]) assert.equal(raw.includes(leak), false, `report carries ${leak}`);
   assert.ok(existsSync(join(keyDir, "k.pem")));
 });
+
+test("runner goes red when the host runs a tool call MoorAI denied", () => {
+  const out = mkdtempSync(join(tmpdir(), "moorai-conf-red-"));
+  const r = spawnSync(process.execPath, [RUNNER, "--live", "--host", "claude-code", "--bin", `claude-code=${FAKE_CLAUDE}`, "--out-dir", out, "--no-sandbox", "--cases", "shell-deny"], { encoding: "utf8", timeout: 120000, env: { ...process.env, FAKE_CLAUDE_IGNORE_PRETOOL: "1" } });
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  const rep = JSON.parse(readFileSync(join(out, readdirSync(out)[0]), "utf8"));
+  const c = rep.targets[0].cases[0];
+  assert.equal(c.status, "fail");
+  assert.equal(c.observed, "allow");
+  assert.equal(c.checks.toolRan, true);
+});

@@ -33,7 +33,7 @@ const MOORAI = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).vers
 const PARTS = ["model-proxy", "mcp-gateway", "sdks", "image"];
 
 export function parseArgs(argv) {
-  const a = { live: false, upstream: "http://127.0.0.1:11434", model: null, only: [], outDir: "conformance-out", key: null, timeoutMs: 300000, verify: null, pub: null };
+  const a = { live: false, upstream: "http://127.0.0.1:11434", model: null, only: [], outDir: "conformance-out", key: process.env.MOORAI_CONFORMANCE_KEY || null, timeoutMs: 300000, verify: null, pub: null };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === "--live") a.live = true;

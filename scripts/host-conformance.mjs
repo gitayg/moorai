@@ -53,7 +53,7 @@ function versionOf(bin) {
 }
 
 export function parseArgs(argv) {
-  const a = { live: false, hosts: [], cases: null, bins: {}, outDir: "conformance-out", key: null, sandbox: true, timeoutMs: 180000, verify: null, pub: null };
+  const a = { live: false, hosts: [], cases: null, bins: {}, outDir: "conformance-out", key: process.env.MOORAI_CONFORMANCE_KEY || null, sandbox: true, timeoutMs: 180000, verify: null, pub: null };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === "--live") a.live = true;

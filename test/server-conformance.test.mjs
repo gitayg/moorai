@@ -112,11 +112,31 @@ test("judge: withhold cases are inconclusive when the model made no tool call, a
   assert.equal(judgeServerCase(def("openai-chat-toolcall-withhold"), { status: 200, okShape: true, toolCallReleased: false, upstream: up(), alerts: [] }).status, "inconclusive");
   assert.equal(judgeServerCase(def("openai-chat-toolcall-withhold"), { status: 403, errorShape: true, toolCallReleased: false, upstream: up({ toolCallSeen: true }), alerts: [blocked] }).status, "pass");
   assert.equal(judgeServerCase(def("openai-chat-toolcall-withhold"), { status: 200, okShape: true, toolCallReleased: true, upstream: up({ toolCallSeen: true }), alerts: [blocked] }).status, "fail");
+  // A stream that released the call and only then ended in an error is still a released call.
+  assert.equal(judgeServerCase(def("openai-chat-stream-toolcall-withhold"), { status: 200, errorShape: true, toolCallReleased: true, upstream: up({ toolCallSeen: true }), alerts: [blocked] }).status, "fail");
+});
+
+test("provider SDK rows say installed-but-not-run apart from not installed", async () => {
+  const { sdkTargets } = await import("../scripts/conformance/server-rows.mjs");
+  const none = sdkTargets({ js: () => false, py: () => false });
+  assert.ok(none.length >= 8 && none.every((t) => t.ran === false && t.reason === "sdk-not-installed"));
+  const all = sdkTargets({ js: () => true, py: () => true });
+  assert.ok(all.every((t) => t.ran === false && t.reason === "no-live-tier"));
 });
 
 test("judge: the Responses API case records the documented gap rather than a pass", () => {
   assert.equal(judgeServerCase(def("openai-responses-secret"), { status: 200, okShape: true, upstream: up({ markerSeen: true }), alerts: [] }).status, "gap");
   assert.equal(judgeServerCase(def("openai-responses-secret"), { status: 403, errorShape: true, upstream: up({ requests: 0 }), alerts: [blocked] }).status, "pass");
+});
+
+test("judge: the MCP SDK deny case fails if the SDK server received the call or no alert came", async () => {
+  const { judgeSdkGateway } = await import("../scripts/conformance/mcp-sdk-gateway.mjs");
+  const j = { ok: true, tools: ["echo"], calls: [{ name: "echo", isError: false, text: "hello-moorai" }, { name: "echo", isError: true, text: "MoorAI blocked this MCP tool call: echo argument matches a denied pattern" }] };
+  const alert = { category: "MCP: denied tool argument", riskLevel: "Blocked", decision: "deny" };
+  assert.deepEqual(judgeSdkGateway(j, { gotBenign: true, gotDenied: false }, [alert]).map((c) => c.status), ["pass", "pass"]);
+  assert.deepEqual(judgeSdkGateway(j, { gotBenign: true, gotDenied: true }, [alert]).map((c) => c.status), ["pass", "fail"]);
+  assert.deepEqual(judgeSdkGateway(j, { gotBenign: true, gotDenied: false }, []).map((c) => c.status), ["pass", "fail"]);
+  assert.deepEqual(judgeSdkGateway(j, { gotBenign: false, gotDenied: false }, [alert]).map((c) => c.status), ["fail", "pass"]);
 });
 
 test("runner without --live prints the plan and starts nothing", () => {

@@ -1,0 +1,296 @@
+{
+  "type": "moorai.server-conformance/v1",
+  "moorai": "1.27.0",
+  "generatedAt": "2026-10-22T01:43:49.490Z",
+  "platform": {
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "22.22.0"
+  },
+  "summary": {
+    "targets": 1,
+    "ran": 1,
+    "notRun": 0,
+    "cases": 12,
+    "pass": 11,
+    "fail": 0,
+    "skip": 0,
+    "inconclusive": 0,
+    "gap": 1
+  },
+  "targets": [
+    {
+      "kind": "provider-api",
+      "id": "model-proxy-ollama",
+      "label": "MoorAI model proxy with Ollama",
+      "version": "0.40.3",
+      "tested": null,
+      "ran": true,
+      "sandboxed": false,
+      "model": "ollama",
+      "modelName": "llama3.2:latest",
+      "cases": [
+        {
+          "id": "openai-chat-allow",
+          "surface": "model-proxy",
+          "expect": "forward",
+          "observed": "forward",
+          "status": "pass",
+          "checks": {
+            "reachedUpstream": true,
+            "upstreamSawMarker": false,
+            "modelMadeToolCall": false,
+            "toolCallReleased": false,
+            "clientShapeOk": true,
+            "refusalShapeOk": false,
+            "alertSeen": false
+          },
+          "alert": null,
+          "latencyMs": 17540
+        },
+        {
+          "id": "openai-chat-stream-allow",
+          "surface": "model-proxy",
+          "expect": "forward",
+          "observed": "forward",
+          "status": "pass",
+          "checks": {
+            "reachedUpstream": true,
+            "upstreamSawMarker": false,
+            "modelMadeToolCall": false,
+            "toolCallReleased": false,
+            "clientShapeOk": true,
+            "refusalShapeOk": false,
+            "alertSeen": false
+          },
+          "alert": null,
+          "latencyMs": 39016
+        },
+        {
+          "id": "openai-chat-secret-deny",
+          "surface": "model-proxy",
+          "expect": "refuse",
+          "observed": "refuse",
+          "status": "pass",
+          "checks": {
+            "reachedUpstream": false,
+            "upstreamSawMarker": false,
+            "modelMadeToolCall": false,
+            "toolCallReleased": false,
+            "clientShapeOk": false,
+            "refusalShapeOk": true,
+            "alertSeen": true
+          },
+          "alert": {
+            "category": "Information & Privacy",
+            "riskLevel": "Blocked",
+            "decision": null,
+            "reasonCode": "DETECTOR_MATCH"
+          },
+          "latencyMs": 106
+        },
+        {
+          "id": "openai-chat-toolcall-withhold",
+          "surface": "model-proxy",
+          "expect": "withhold",
+          "observed": "withhold",
+          "status": "pass",
+          "checks": {
+            "reachedUpstream": true,
+            "upstreamSawMarker": false,
+            "modelMadeToolCall": true,
+            "toolCallReleased": false,
+            "clientShapeOk": false,
+            "refusalShapeOk": true,
+            "alertSeen": true
+          },
+          "alert": {
+            "category": "Model proxy: function denied by name (functionToolActions)",
+            "riskLevel": "Blocked",
+            "decision": "deny",
+            "reasonCode": "OBSERVATION_ONLY"
+          },
+          "latencyMs": 46439
+        },
+        {
+          "id": "openai-chat-stream-toolcall-withhold",
+          "surface": "model-proxy",
+          "expect": "withhold",
+          "observed": "withhold",
+          "status": "pass",
+          "checks": {
+            "reachedUpstream": true,
+            "upstreamSawMarker": false,
+            "modelMadeToolCall": true,
+            "toolCallReleased": false,
+            "clientShapeOk": false,
+            "refusalShapeOk": true,
+            "alertSeen": true
+          },
+          "alert": {
+            "category": "Model proxy: function denied by name (functionToolActions)",
+            "riskLevel": "Blocked",
+            "decision": "deny",
+            "reasonCode": "OBSERVATION_ONLY"
+          },
+          "latencyMs": 65316
+        },
+        {
+          "id": "anthropic-messages-allow",
+          "surface": "model-proxy",
+          "expect": "forward",
+          "observed": "forward",
+          "status": "pass",
+          "checks": {
+            "reachedUpstream": true,
+            "upstreamSawMarker": false,
+            "modelMadeToolCall": false,
+            "toolCallReleased": false,
+            "clientShapeOk": true,
+            "refusalShapeOk": false,
+            "alertSeen": false
+          },
+          "alert": null,
+          "latencyMs": 61744
+        },
+        {
+          "id": "anthropic-messages-secret-deny",
+          "surface": "model-proxy",
+          "expect": "refuse",
+          "observed": "refuse",
+          "status": "pass",
+          "checks": {
+            "reachedUpstream": false,
+            "upstreamSawMarker": false,
+            "modelMadeToolCall": false,
+            "toolCallReleased": false,
+            "clientShapeOk": false,
+            "refusalShapeOk": true,
+            "alertSeen": true
+          },
+          "alert": {
+            "category": "Information & Privacy",
+            "riskLevel": "Blocked",
+            "decision": null,
+            "reasonCode": "DETECTOR_MATCH"
+          },
+          "latencyMs": 258
+        },
+        {
+          "id": "anthropic-toolcall-withhold",
+          "surface": "model-proxy",
+          "expect": "withhold",
+          "observed": "withhold",
+          "status": "pass",
+          "checks": {
+            "reachedUpstream": true,
+            "upstreamSawMarker": false,
+            "modelMadeToolCall": true,
+            "toolCallReleased": false,
+            "clientShapeOk": false,
+            "refusalShapeOk": true,
+            "alertSeen": true
+          },
+          "alert": {
+            "category": "Model proxy: function denied by name (functionToolActions)",
+            "riskLevel": "Blocked",
+            "decision": "deny",
+            "reasonCode": "OBSERVATION_ONLY"
+          },
+          "latencyMs": 59027
+        },
+        {
+          "id": "ollama-chat-allow",
+          "surface": "model-proxy",
+          "expect": "forward",
+          "observed": "forward",
+          "status": "pass",
+          "checks": {
+            "reachedUpstream": true,
+            "upstreamSawMarker": false,
+            "modelMadeToolCall": false,
+            "toolCallReleased": false,
+            "clientShapeOk": true,
+            "refusalShapeOk": false,
+            "alertSeen": false
+          },
+          "alert": null,
+          "latencyMs": 52327
+        },
+        {
+          "id": "ollama-chat-secret-deny",
+          "surface": "model-proxy",
+          "expect": "refuse",
+          "observed": "refuse",
+          "status": "pass",
+          "checks": {
+            "reachedUpstream": false,
+            "upstreamSawMarker": false,
+            "modelMadeToolCall": false,
+            "toolCallReleased": false,
+            "clientShapeOk": false,
+            "refusalShapeOk": true,
+            "alertSeen": true
+          },
+          "alert": {
+            "category": "Information & Privacy",
+            "riskLevel": "Blocked",
+            "decision": null,
+            "reasonCode": "DETECTOR_MATCH"
+          },
+          "latencyMs": 75
+        },
+        {
+          "id": "ollama-chat-toolcall-withhold",
+          "surface": "model-proxy",
+          "expect": "withhold",
+          "observed": "withhold",
+          "status": "pass",
+          "checks": {
+            "reachedUpstream": true,
+            "upstreamSawMarker": false,
+            "modelMadeToolCall": true,
+            "toolCallReleased": false,
+            "clientShapeOk": false,
+            "refusalShapeOk": true,
+            "alertSeen": true
+          },
+          "alert": {
+            "category": "Model proxy: function denied by name (functionToolActions)",
+            "riskLevel": "Blocked",
+            "decision": "deny",
+            "reasonCode": "OBSERVATION_ONLY"
+          },
+          "latencyMs": 50454
+        },
+        {
+          "id": "openai-responses-secret",
+          "surface": "model-proxy",
+          "expect": "unscanned",
+          "observed": "unscanned",
+          "status": "gap",
+          "checks": {
+            "reachedUpstream": true,
+            "upstreamSawMarker": true,
+            "modelMadeToolCall": false,
+            "toolCallReleased": false,
+            "clientShapeOk": true,
+            "refusalShapeOk": false,
+            "alertSeen": false
+          },
+          "alert": null,
+          "latencyMs": 53785
+        }
+      ]
+    }
+  ],
+  "reasons": {},
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "91c6703fbe76fa92",
+    "pub": "MCowBQYDK2VwAyEA4vNsxAiLa9lXSB2ePUJ1apxgM22q81Iu0b/MaCqxfrE=",
+    "digest": "35b94ae2dd60637d834591d3c8e285f8c73ae0ba5b6117a0fb818ca59cd20204",
+    "sig": "Wymukj3raZVJP5lqLhihHNs364R7ZgE1Nl97WUZI5i7u+BxSr70VuxdPgyvS7bO+EAoO7R2kbXNFGpCAWo4eCw==",
+    "ephemeral": false
+  }
+}
