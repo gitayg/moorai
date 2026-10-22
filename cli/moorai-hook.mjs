@@ -3328,7 +3328,7 @@ async function main() {
     // MCP server reputation: evidence about the server's package (registry age, repo link, SkillTriage
     // verdict). Reported on first sight or a version change; refused only below an org's blockBelow.
     let rep = null;
-    try { rep = hookReputation(server, { policy: policy.mcpReputation, enforce: !COACH, identityHash: contentHash }); } catch { /* reputation is evidence; fail open */ }
+    try { rep = hookReputation(server, { policy: policy.mcpReputation, enforce: !COACH, identityHash: contentHash, catalogue: policy.mcpCatalogue }); } catch { /* reputation is evidence; fail open */ }
     if (rep && rep.report) post({ ...rep.alert, ...IDENTITY });
     if (rep && (rep.action === "block" || rep.action === "coach")) { why(REASON.MCP_REPUTATION); audit("deny"); return emit("deny", `${tool} — MCP server reputation ${rep.rep.score}/100 (${rep.rep.band}: ${rep.rep.reasons.join(", ")}) is below your organization's threshold`); }
     // T1-5 — entitlement envelope: an MCP server outside the agent's declared scope is drift.

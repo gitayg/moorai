@@ -3728,10 +3728,11 @@ version into `docs/conformance/`.
   unresolved version are evidence only (`catalogue-scanned-no-findings`, `catalogue-listed-not-scanned`,
   `catalogue-other-version`, `catalogue-listed`). Evidence also names `catalogue-verified`, or
   `catalogue-<status>` for a cached catalogue that does not verify. A catalogue can only add risk.
-- **Hook path.** `hookReputation(label, { catalogue })` takes the top-level `mcpCatalogue` object; the call
-  site in `cli/moorai-hook.mjs` does not pass it yet (integrator line:
-  `hookReputation(server, { policy: policy.mcpReputation, enforce: !COACH, identityHash: contentHash, catalogue: policy.mcpCatalogue })`).
-  Without it the hook still uses a cached catalogue verified by the environment, root-owned or built-in keys.
+- **Hook path.** `hookReputation(label, { catalogue })` takes the top-level `mcpCatalogue` object, and
+  `cli/moorai-hook.mjs` passes the policy's `mcpCatalogue`, so a cached catalogue signed by a key the policy
+  anchors verifies in the hook too (tested end to end, `test/mcp-catalogue-hook.test.mjs`). The hook never
+  fetches the catalogue; it reads the cached copy only. With no `mcpCatalogue` in the policy the hook uses a
+  cached catalogue verified by the environment, root-owned or built-in keys.
 - **Skills.** `skillTreeDigest(dir)` (sha256 over sorted `relative path NUL sha256(file)` rows, symlinks and
   `.git` / `node_modules` skipped) and `catalogueSkillStatus(cat, name, digest)` →
   `listed-match | digest-mismatch | listed | do-not-install | unknown`. Not yet wired into the AIBOM.
