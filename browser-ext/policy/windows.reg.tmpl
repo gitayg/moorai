@@ -1,0 +1,10 @@
+Windows Registry Editor Version 5.00
+
+; MoorAI Browser Guard for __BROWSER_NAME__: force-install and managed settings.
+; Value "__INDEX__" must not collide with an ExtensionInstallForcelist entry you already deploy.
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\__REG_VENDOR__\ExtensionInstallForcelist]
+"__INDEX__"="__EXTENSION_ID__;__UPDATE_URL__"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\__REG_VENDOR__\3rdparty\extensions\__EXTENSION_ID__\policy]
+__MANAGED_REG__

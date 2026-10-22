@@ -284,7 +284,14 @@ Signals, all offline unless the policy opts in:
   and, in parallel, the **repository link** below;
 - opt-in `mcpReputation.feed: true` — SkillTriage's published verdicts, downloaded whole with a bare GET
   and matched on the device (`catalogue-do-not-install`, `catalogue-review`, …), so the request names no
-  server.
+  server;
+- the signed MoorAI MCP catalogue — top-level policy key `mcpCatalogue: { url, publicKeys }`: fetched whole
+  (https, at most daily) and used only after its ed25519 signature verifies against a key from the policy,
+  `MOORAI_CATALOGUE_PUBKEY` or `/etc/moorai/catalogue.pub`; the same `catalogue-*` codes (npm and PyPI
+  servers), kept on the re-score after `tools/list`, and a `no-findings` verdict is evidence only. The cache
+  is refetched when its fetch time is in the future, a catalogue past its signed (mandatory) `expiresAt` is
+  refused, cached or fetched, and a catalogue below the highest `seq` this device accepted from that key is refused. Format, generator and trust rules: `docs/CAPABILITY_SPEC.md`,
+  "Signed MCP server and skill catalogue".
 
 Both opt-in requests honour the registry mirrors (`MOORAI_NPM_REGISTRY`, `MOORAI_PYPI_URL`,
 `MOORAI_MCP_REGISTRY`, `MOORAI_GITHUB_RAW_URL`, `MOORAI_GITHUB_CODELOAD_URL`, https only) and

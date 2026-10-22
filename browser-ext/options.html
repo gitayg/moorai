@@ -20,19 +20,23 @@
     .row label { margin: 0; }
     button { margin-top: 8px; background: #2563eb; color: #fff; border: 0; border-radius: 6px; padding: 9px 18px; font-size: 14px; font-weight: 600; cursor: pointer; }
     #status { margin-left: 12px; color: #059669; font-size: 13px; }
+    .managed { background: #eff6ff; border: 1px solid #93c5fd; border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #1e3a8a; }
     .guarantee { background: #ecfdf5; border: 1px solid #6ee7b7; border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #065f46; }
     @media (prefers-color-scheme: dark) {
       body { background: #111827; color: #e5e7eb; }
       fieldset { border-color: #374151; }
       input[type=text], input[type=url], input[type=password] { background: #1f2937; color: #e5e7eb; border-color: #374151; }
       p.sub, .hint { color: #9ca3af; }
+      .managed { background: #172554; border-color: #1e40af; color: #bfdbfe; }
       .guarantee { background: #052e2b; border-color: #065f46; color: #6ee7b7; }
     }
   </style>
 </head>
 <body>
   <h1>MoorAI Browser Guard</h1>
-  <p class="sub">On-device, content-free prompt review for ChatGPT, Claude, and Copilot.</p>
+  <p class="sub">On-device, content-free prompt review for browser AI apps.</p>
+
+  <p id="managed" class="managed" hidden>Some settings are managed by your organization; those values apply.</p>
 
   <p class="guarantee">Content-free by design: the text you type is scanned locally in your browser. Only a category, a risk level, and a one-way hash are ever sent — never your prompt.</p>
 
@@ -64,6 +68,7 @@
   <button id="save">Save</button>
   <span id="status" role="status"></span>
 
+  <script src="config.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

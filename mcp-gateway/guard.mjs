@@ -104,7 +104,7 @@ export function createGuard(route) {
   }
   function startReputation() {
     REP_READY = ensurePolicy()
-      .then(() => assessServer(REP_DECL, { policy: repPolicy(), engine: state.ENGINE || undefined }))
+      .then(() => assessServer(REP_DECL, { policy: repPolicy(), engine: state.ENGINE || undefined, catalogue: state.POLICY && state.POLICY.mcpCatalogue }))
       .then((rep) => { REP = rep; if (rep.firstSeen || rep.versionChanged) reportReputation(rep); return rep; })
       .catch(() => null);
     return REP_READY;
@@ -325,7 +325,7 @@ export function createGuard(route) {
     if (dirty) saveBaseline(baseline);
     if (repFindings.length) {
       try {
-        const rep = addToolSignals(REP_DECL, repFindings.map((f) => ({ threatId: f.threatId, riskLevel: f.riskLevel })));
+        const rep = addToolSignals(REP_DECL, repFindings.map((f) => ({ threatId: f.threatId, riskLevel: f.riskLevel })), { catalogue: state.POLICY && state.POLICY.mcpCatalogue });
         REP = rep;
         if (rep.changed) reportReputation(rep);
       } catch { /* reputation is evidence */ }

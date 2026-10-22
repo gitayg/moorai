@@ -3526,8 +3526,127 @@ version into `docs/conformance/`.
   (not installed; the cases send each API's documented request shape over HTTP); a real remote MCP server
   in the gateway case; the amd64 image; Windows and Linux; no nightly schedule (the tier is not in CI).
 
+## Signed MCP server and skill catalogue (`cli/mcp-catalogue.mjs`)
+
+- **Format.** `data/mcp-catalogue.js`: `{ catalogue: "moorai-mcp-catalogue", v: 1, seq, issuedAt, expiresAt,
+  publisher, entries[], sig }`. An entry is `{ kind: mcp-server|skill, ecosystem: npm|pypi|docker|remote|skill,
+  name, status: listed|do-not-install, source: official-registry|reference-servers|vendor|community|advisory,
+  repository?, license?, registryName?, advisories?, reputation: {score, band, reasons}, versions: [{ version,
+  verdict: no-findings|caution|review|do-not-install|not-scanned, reasons?, sha256?, treeSha256?, scannedAt?,
+  engine? }] }`, versions newest first. There is no "safe" or "clean" verdict.
+- **Signature.** ed25519 over `moorai-mcp-catalogue|v1|<seq>|<issuedAt>|<sha256 of canonicalJson(everything but
+  sig)>`; `sig = { v: 1, alg: "ed25519", keyId (base64 SPKI DER), sig }`. `verifyCatalogue` returns `ok`,
+  `no-anchor`, `unsigned`, `malformed`, `untrusted` or `expired`. `expiresAt` is mandatory and must be later
+  than `issuedAt` (a catalogue without it is `malformed`); it is covered by the digest, so it cannot be
+  extended without breaking the signature. The generator sets it (`--expires-days`, default 90).
+- **Trust.** Keys from the signed policy's top-level `mcpCatalogue.publicKeys`, `MOORAI_CATALOGUE_PUBKEY`,
+  root-owned `/etc/moorai/catalogue.pub`, and `data/mcp-catalogue-keys.js` (empty: the publisher key is
+  generated and published by the owner). No key means the catalogue is not used (unlike a policy, which is
+  "unanchored"): nothing depends on it, so accepting an unverifiable one buys nothing.
+- **Fetch and cache.** Policy `mcpCatalogue: { url, publicKeys, enabled }`. The MCP stdio guard and the HTTP
+  gateway pass it to `assessServer`, which fetches an https (or loopback http) URL with one bare GET, at most
+  once in 24 h, `redirect: "error"`, 5 s timeout, 16 MB cap; `MOORAI_OFFLINE=1` serves the cache. The verified
+  file is cached in `~/.moorai/mcp-catalogue.json` and re-verified on every read (it is in the user's writable
+  state). Nothing in that file decides freshness on its own: the cache is fresh only when its `url` matches,
+  its `fetchedAt` is at most 5 minutes in the future and under 24 h old. `~/.moorai/mcp-catalogue.seq.json` holds the highest `seq` accepted per publisher keyId (raised on
+  every accepted fetch and every verified read). A cached catalogue below it reads `rollback-refused` (no
+  catalogue, so the next refresh fetches), and a fetched catalogue below it or below the verified cache is
+  refused (`refresh: "rollback-refused"`). The mark is in the same writable directory: a local user who
+  rewrites both files can hold an older signed catalogue until the next refresh, at most 24 h.
+  A catalogue past its signed `expiresAt` is refused at the device clock, cached or fetched: `readCatalogue`
+  reads `expired` with no catalogue (so every refresh fetches), a fetched expired catalogue is not cached
+  (`refresh: "expired"`), reputation evidence names `catalogue-expired`, and `moorai-mcp-catalogue verify` and
+  `status` report `expired`. An old signed catalogue therefore cannot be replayed past its expiry; until a
+  current one arrives the device has its no-catalogue verdicts, the same as with no catalogue at all.
+- **Tool-stage re-score.** The stdio guard and the gateway pass the same `mcpCatalogue` to `addToolSignals`,
+  so a re-score after `tools/list` keeps the catalogue verdict (before, it read the cache with no policy
+  keys, and a server whose only anchor was the policy dropped `catalogue-do-not-install` on re-score).
+  Tested end to end through the stdio guard (`test/mcp-catalogue-wiring.test.mjs`). The gateway's servers are
+  remote: `catalogueSignals` matches npm and PyPI only, so for the gateway the pass-through changes evidence,
+  not the score, and no test observes it.
+- **Reputation.** `catalogueSignals`: a name-level `do-not-install` adds `catalogue-do-not-install` to any
+  version; a version's `do-not-install` / `review` / `caution` adds `catalogue-do-not-install` (70) /
+  `catalogue-review` (20) / `catalogue-caution` (5); `no-findings`, `not-scanned`, an unlisted version and an
+  unresolved version are evidence only (`catalogue-scanned-no-findings`, `catalogue-listed-not-scanned`,
+  `catalogue-other-version`, `catalogue-listed`). Evidence also names `catalogue-verified`, or
+  `catalogue-<status>` for a cached catalogue that does not verify. A catalogue can only add risk.
+- **Hook path.** `hookReputation(label, { catalogue })` takes the top-level `mcpCatalogue` object; the call
+  site in `cli/moorai-hook.mjs` does not pass it yet (integrator line:
+  `hookReputation(server, { policy: policy.mcpReputation, enforce: !COACH, identityHash: contentHash, catalogue: policy.mcpCatalogue })`).
+  Without it the hook still uses a cached catalogue verified by the environment, root-owned or built-in keys.
+- **Skills.** `skillTreeDigest(dir)` (sha256 over sorted `relative path NUL sha256(file)` rows, symlinks and
+  `.git` / `node_modules` skipped) and `catalogueSkillStatus(cat, name, digest)` →
+  `listed-match | digest-mismatch | listed | do-not-install | unknown`. Not yet wired into the AIBOM.
+- **Generator.** `scripts/mcp-catalogue-build.mjs --source --key --out [--seq] [--issued] [--expires-days 90]
+  [--scan <npm|pypi>:<name>@<version>=<dir>] [--format moorai|mcp-registry] [--include-not-scanned]`. `--scan`
+  runs `scanPackageFiles` + `packageHeuristics` over a local copy: any block tier → `do-not-install`, justify →
+  `review`, notify → `caution`, none → `no-findings`. Reputation fields come from `nameFindings`,
+  `classifyMcpName`, the name status and the newest version's verdict, scored by `data/mcp-reputation.js`.
+  `--format mcp-registry` writes a map of v0.1 registry routes (`/v0.1/servers`,
+  `/v0.1/servers/<name>/versions/latest|<version>`) for listed npm/PyPI versions whose verdict is
+  `no-findings` or `caution`, with `_meta["dev.moorai/catalogue"]`; serving it needs a router with CORS.
+- **CLI.** `moorai-mcp-catalogue verify <file> [--pubkey]` (exit 0 only when the signature verifies) and
+  `status` (the cached copy); JSON, counts only.
+
+## Installed IDE-extension scanning (`cli/ide-extensions.mjs`)
+
+- **Roots.** `~/.vscode`, `~/.vscode-insiders`, `~/.vscode-server`, `~/.vscode-oss` and `~/.vscodium`
+  (VSCodium), `~/.cursor`, `~/.windsurf`, `~/.kiro` (`/extensions`); JetBrains plugins under
+  `~/Library/Application Support/JetBrains/<product>/plugins` (macOS), `%APPDATA%\JetBrains\<product>\plugins`
+  (Windows), `~/.local/share/JetBrains/<product>` (Linux).
+- **Identity.** VS Code family: `publisher.name` and `version` from the extension's `package.json` (folder name
+  as fallback); install source from `extensions.json` `metadata.source`. JetBrains: `<id>` (or `<name>`) and
+  `<version>` from `META-INF/plugin.xml` inside the plugin's `lib/*.jar` (or a single-jar plugin), read with
+  the model scanner's zip reader; folder name as fallback.
+- **Checks (VS Code family).** `ide-ext-known-malicious` (critical): exact id + version in
+  `data/ide-extension-advisories.js` (OSV MAL-2025-191157 to 191170, CVE-2025-8217).
+  `ide-ext-invisible-code` (high): a `.js`/`.cjs`/`.mjs` file with a run of >= 16 code points in
+  U+FE00-FE0F or U+E0000-E01EF. `ide-ext-typosquat` (medium): Damerau-Levenshtein distance <= 2 (ids of 12+
+  characters, else 1) from `data/popular-ide-extensions.js`. `ide-ext-publisher-impersonation` (medium): a
+  listed extension name of 8+ characters under another publisher (an editor's own publisher is exempt inside
+  that editor: `anysphere` in Cursor, measured on a real install where Cursor ships `anysphere.remote-ssh`).
+  `ide-ext-sideloaded` (low): install source `vsix`. AI classification from `data/ai-catalog.json` keywords.
+- **Bounds.** 2,000 extensions per root, 400 script files and depth 10 per extension, 8 MB per file, 48 MB
+  per extension, 512 MB per run; a skipped file sets `truncated`.
+- **Output.** `{ scanned, ai, flagged, truncated, extensions: [{ editor, id, version, ai, source?, codes,
+  risk, advisories? }] }`. No path, file name or file content. Report-only: no alert is posted and nothing is
+  blocked. Surfaces: `moorai-ide-extensions [--format json|md] [--flagged]` and the AIBOM's `ideExtensionScan`
+  with `summary.ideExtensionsScanned` / `ideExtensionsFlagged`.
+
+## Browser Guard store build and managed force-install
+
+- **Config precedence** (`browser-ext/config.js`): `chrome.storage.managed` (admin policy, schema
+  `managed-schema.json`: `serverUrl`, `installToken`, `mode` coach|block, `reportEnabled`, `lockSettings`)
+  over `chrome.storage.sync` (options page). Mistyped values are ignored. `lockSettings` makes the options
+  page read-only.
+- **Reporting path.** The content script builds the alerts and sends them with `chrome.runtime.sendMessage`;
+  `background.js` (MV3 service worker) accepts messages from its own extension id only, at most 32 alerts,
+  rebuilds each from the allow-list `threatId, category, riskLevel, stage, tool, ts, contentHash, host,
+  source` with type and length checks, and POSTs each to `<serverUrl>/api/alerts` with `X-Install-Token`
+  only when reporting is on, the URL is https (or loopback http) and `chrome.permissions.contains` says the
+  extension holds that origin. Before this change the content script posted directly, which Chrome treats as
+  a request from the page's origin.
+- **Packaging.** `scripts/browser-ext-package.mjs` zips exactly the files the manifest and options page
+  reference (fixed timestamp, sorted, deflate); `--console-origin https://…` adds that origin to the packaged
+  manifest's `host_permissions` for a self-hosted build. `scripts/browser-ext-icons.mjs` draws the icons.
+- **Policy.** `scripts/browser-ext-policy.mjs --id` renders `browser-ext/policy/*.tmpl`:
+  `ExtensionInstallForcelist` (`<id>;<update URL>`, store URLs
+  `https://clients2.google.com/service/update2/crx` and
+  `https://edge.microsoft.com/extensionwebstorebase/v1/crx`, or `--update-url`) and the managed settings under
+  `3rdparty\extensions\<id>\policy` (Windows), `<domain>.extensions.<id>` (macOS, `com.apple.ManagedClient.preferences`
+  payload), `3rdparty.extensions.<id>` (Linux), plus an ADMX/ADML pair for the managed settings.
+- **Owner steps.** Developer accounts, store submission and review, hosting `store/PRIVACY.md`, and rendering
+  the templates with the assigned ids. The Edge managed-storage locations follow the Chromium layout; Microsoft
+  Learn documents only the force-list.
+
 ## Coverage & blind spots
 
+- **Supply chain (F16, F19, F20).** The MCP catalogue has no published publisher key or hosted feed yet, and
+  its seed lists 12 names with no MoorAI scan behind any listed version. IDE-extension checks other than
+  inventory and AI classification cover the VS Code family only; the known-bad list is ids and versions from
+  public advisories, with no file digests; invisible-code detection is one technique, not a malware scan.
+  Browser Guard is not in either store yet; a store build reports only after the user grants the console
+  origin, and the extension was not run in a browser by the tests (a fake `chrome` object in Node).
 - **Origin and ask outcomes on shim hosts and untracked tools are unknown.** Codex, Copilot, Cursor, Gemini,
   Droid, Antigravity, Windsurf, Kiro and Cline forward no agent id and no call id back, so their records read `host-no-thread-id` and every ask
   there reads `ask-not-trackable`; on Claude Code, an ask on Write, Edit, MultiEdit, Read or NotebookEdit

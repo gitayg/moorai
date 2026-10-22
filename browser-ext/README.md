@@ -44,6 +44,30 @@ matched span — the matched text is used only to compute that hash and is then 
 no matched substring, and only the URL **host** (never the full URL or query string) is included.
 Reporting **fails open and silent**: any network error, or no configured server, simply sends nothing.
 
+The POST is made by the extension's **background service worker** (`background.js`), not the content
+script: a content script's fetch runs under the page's origin and same-origin policy even when the extension
+holds host permission. The content script hands the alerts over with `chrome.runtime.sendMessage`; the
+worker accepts messages from this extension only, rebuilds each alert from the allow-listed fields above
+(type- and length-checked, anything else dropped), and posts only to an https console origin (or http on
+loopback) it holds host permission for.
+
+## Store build and managed force-install
+
+- `node scripts/browser-ext-package.mjs` writes the store upload zip (`dist/browser-ext/moorai-browser-guard-<version>.zip`):
+  exactly the files the manifest and options page reference, deterministic bytes.
+- `--console-origin https://console.example.com` writes a self-hosted variant whose manifest carries that
+  origin as a host permission, so a force-installed copy reports with no user step.
+- `store/listing.md` holds the listing text, single-purpose statement, a justification per permission and the
+  data-usage disclosure; `store/PRIVACY.md` is the privacy policy. Submitting to the Chrome Web Store and Edge
+  Add-ons (developer accounts, review, hosting the privacy policy at a public URL) is the owner's step.
+- `policy/` holds force-install templates for Chrome and Edge (macOS `.mobileconfig`, Windows `.reg`, Linux
+  JSON, an ADMX/ADML pair for the managed settings, Intune steps). Render them with the store-assigned id:
+  `node scripts/browser-ext-policy.mjs --id <id> --out <dir> --server-url ... --install-token ... --mode coach`.
+- Administrators set `serverUrl`, `installToken`, `mode`, `reportEnabled` and `lockSettings` through browser
+  policy (`managed-schema.json`, read from `chrome.storage.managed`). A managed value wins over the user's own;
+  with `lockSettings` the options page shows them read-only.
+- Icons are drawn by `node scripts/browser-ext-icons.mjs` (no image tooling).
+
 There is **no bundled ML model** — detection is deterministic regex/rules only.
 
 ## Detection vocabulary
@@ -77,16 +101,25 @@ There is **no bundled ML model** — detection is deterministic regex/rules only
 | Server URL     | URL or blank    | MoorAI console for content-free signals. Blank = fully local, no reporting.   |
 | Install token  | string          | Sent as `X-Install-Token` (same as the agent).                     |
 | Send signals   | on/off          | Master switch for reporting.                                       |
+| Lock settings  | managed only    | Set by policy: shows the managed values read-only.                 |
+
+Every setting can also come from browser policy (managed storage); a managed value wins.
 
 ## Files
 
 ```
 browser-ext/
   manifest.json        MV3 manifest (minimal permissions; one host perm per supported AI site)
+  config.js            effective config: managed policy over the user's options-page values
+  background.js        service worker: validates alerts from the content script, POSTs them to the console
+  managed-schema.json  managed-storage schema (serverUrl, installToken, mode, reportEnabled, lockSettings)
+  icons/               16/32/48/128 px icons (scripts/browser-ext-icons.mjs)
+  store/               store listing text + privacy policy
+  policy/              Chrome/Edge force-install templates (scripts/browser-ext-policy.mjs renders them)
   content-hash.js      keyed one-way content hash (HMAC-SHA-256), loaded before detectors.js
   detectors.js         on-device, content-free detection engine (agent-subset regexes)
   content.js           composer detection, send interception, coach/block banner
-  report.js            content-free POST to <serverUrl>/api/alerts
+  report.js            builds the content-free alerts and hands them to background.js
   content.css          banner styling
   options.html/.js     configure mode, server URL, token
   test-detectors.mjs   Node unit test for the ported detectors + hash parity
@@ -97,6 +130,7 @@ browser-ext/
 
 ```
 node browser-ext/test-detectors.mjs
+node --test --import ./test/hermetic-env.mjs test/browser-ext-store.test.mjs
 ```
 
 ## Known limitations
