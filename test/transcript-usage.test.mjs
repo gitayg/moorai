@@ -12,7 +12,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, read
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runTranscriptUsage, TRANSCRIPT_INSTANCE, TRANSCRIPT_STATE, TRANSCRIPT_STAMP } from "../cli/transcript-usage.mjs";
+import { runTranscriptUsage, scheduleTranscriptUsage, TRANSCRIPT_INSTANCE, TRANSCRIPT_STATE, TRANSCRIPT_STAMP } from "../cli/transcript-usage.mjs";
 import { makeSandbox } from "../cli/doctor-sandbox.mjs";
 import { rmTree } from "./fs-cleanup.mjs";
 
@@ -155,6 +155,20 @@ test("HOOK: an enrolled Claude Code hook call starts the transcript usage worker
   b.run();
   await sleep(2500);
   assert.equal(c.usage.length, 1, "no second run inside the hour, though there is new usage to send");
+});
+
+test("SCHEDULE: no transcript directory, no worker; a directory and no recent stamp, one worker", (t) => {
+  const home = mkdtempSync(join(tmpdir(), "moorai-trusage-sched-"));
+  t.after(() => rmTree(home));
+  const stateDir = join(home, ".moorai");
+  let n = 0;
+  assert.equal(scheduleTranscriptUsage({ stateDir, home, env: {}, spawnWorker: () => n++, now: NOW }), false);
+  assert.equal(n, 0);
+  assert.equal(existsSync(join(stateDir, TRANSCRIPT_STAMP)), false);
+  mkdirSync(join(home, ".claude", "projects"), { recursive: true });
+  assert.equal(scheduleTranscriptUsage({ stateDir, home, env: {}, spawnWorker: () => n++, now: Date.now() }), true);
+  assert.equal(scheduleTranscriptUsage({ stateDir, home, env: {}, spawnWorker: () => n++, now: Date.now() }), false, "inside the hour");
+  assert.equal(n, 1);
 });
 
 test("HOOK: an unenrolled device never reads transcripts", async (t) => {

@@ -145,10 +145,12 @@ export async function runTranscriptUsage({ home = homedir(), env = process.env, 
   return { files: files.length, bytes, sent: res.sent, failed: res.failed, paused };
 }
 
-// The hook's trigger: at most once per TRANSCRIPT_INTERVAL_MS, stamped before the worker starts. spawnWorker
-// starts the detached worker. → true when it did.
-export function scheduleTranscriptUsage({ stateDir, spawnWorker, now = Date.now() }) {
+// The hook's trigger: at most once per TRANSCRIPT_INTERVAL_MS, stamped before the worker starts, and only when a
+// transcript directory exists (no process is started on a device with nothing to read). spawnWorker starts the
+// detached worker. → true when it did.
+export function scheduleTranscriptUsage({ stateDir, spawnWorker, now = Date.now(), home = homedir(), env = process.env }) {
   try {
+    if (!projectsDirs(home, env).some((d) => { try { return statSync(d).isDirectory(); } catch { return false; } })) return false;
     const stamp = join(stateDir, TRANSCRIPT_STAMP);
     try { if (now - statSync(stamp).mtimeMs < TRANSCRIPT_INTERVAL_MS) return false; } catch { /* never ran */ }
     mkdirSync(stateDir, { recursive: true });
