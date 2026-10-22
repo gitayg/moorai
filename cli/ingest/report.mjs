@@ -6,7 +6,7 @@
 //   replayed: true          the marker
 //   ts                      the ORIGINAL time of the recorded call, from the transcript
 //   ingestedAt              when this replay ran
-//   source: "ingest", agent the transcript's agent ("claude-code" | "codex")
+//   source: "ingest", agent the transcript's agent ("claude-code" | "codex" | "gemini")
 //   wouldDecision           what enforce mode would have decided (deny | ask | mask | allow)
 //   enforcement             "UNEVALUATED" — no control ran on this event when it happened
 //   riskLevel               the finding's own level, never "Blocked": nothing was blocked
