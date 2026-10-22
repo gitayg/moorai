@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "deny": [
+      "Domain(evil.example.com)",
+      "PowerShell(*)",
+      "Shell(*)"
+    ],
+    "limitTo": [
+      "*.example.com",
+      "api.partner.test",
+      "registry.npmjs.org"
+    ]
+  },
+  "allowedMcpServers": [
+    {
+      "serverName": "bad name"
+    },
+    {
+      "serverName": "github"
+    }
+  ]
+}

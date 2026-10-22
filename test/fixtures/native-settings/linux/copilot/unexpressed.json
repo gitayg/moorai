@@ -1,0 +1,124 @@
+[
+  {
+    "source": "tagActions",
+    "item": "exec",
+    "effect": "coarsened",
+    "reason": "tag-beyond-builtin-tools"
+  },
+  {
+    "source": "tagActions",
+    "item": "network",
+    "effect": "coarsened",
+    "reason": "tag-beyond-builtin-tools"
+  },
+  {
+    "source": "tagActions",
+    "item": "read-private",
+    "effect": "omitted",
+    "reason": "tag-decided-from-content"
+  },
+  {
+    "source": "tagActions",
+    "tool": "Monitor",
+    "effect": "omitted",
+    "reason": "copilot-tool-not-mapped"
+  },
+  {
+    "source": "tagActions",
+    "tool": "WebFetch",
+    "effect": "omitted",
+    "reason": "copilot-no-tool-ask"
+  },
+  {
+    "source": "tagActions",
+    "tool": "WebSearch",
+    "effect": "omitted",
+    "reason": "copilot-no-tool-ask"
+  },
+  {
+    "source": "tagActions",
+    "tool": "PowerShell",
+    "effect": "approximated",
+    "reason": "copilot-wildcard-form-unverified"
+  },
+  {
+    "source": "tagActions",
+    "tool": "Bash",
+    "effect": "approximated",
+    "reason": "copilot-wildcard-form-unverified"
+  },
+  {
+    "source": "egressRules",
+    "index": 1,
+    "fields": [
+      "port"
+    ],
+    "effect": "coarsened",
+    "reason": "copilot-no-port-syntax"
+  },
+  {
+    "source": "egressRules",
+    "index": 1,
+    "fields": [
+      "host"
+    ],
+    "effect": "approximated",
+    "reason": "copilot-wildcard-semantics-unstated"
+  },
+  {
+    "source": "egressRules",
+    "index": 2,
+    "fields": [
+      "path"
+    ],
+    "effect": "coarsened",
+    "reason": "copilot-request-fields"
+  },
+  {
+    "source": "egressRules",
+    "index": 3,
+    "fields": [
+      "method"
+    ],
+    "effect": "omitted",
+    "reason": "copilot-request-fields"
+  },
+  {
+    "source": "egressRules",
+    "index": 4,
+    "fields": [
+      "port"
+    ],
+    "effect": "omitted",
+    "reason": "copilot-no-port-syntax"
+  },
+  {
+    "source": "egressRules",
+    "index": 5,
+    "fields": [
+      "binary"
+    ],
+    "effect": "coarsened",
+    "reason": "copilot-request-fields"
+  },
+  {
+    "source": "egressRules",
+    "index": 0,
+    "id": "no-evil",
+    "fields": [
+      "binary"
+    ],
+    "effect": "coarsened",
+    "reason": "copilot-domain-rules-not-shell"
+  },
+  {
+    "source": "egressDefault",
+    "effect": "coarsened",
+    "reason": "copilot-limitto-not-shell"
+  },
+  {
+    "source": "mcpAllow",
+    "effect": "coarsened",
+    "reason": "copilot-first-party-servers-exempt"
+  }
+]
