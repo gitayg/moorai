@@ -118,8 +118,8 @@ test("toClaude: Cline tool names onto MoorAI's canonical tools", () => {
   assert.deepEqual(one(t("write_to_file", { path: "a", content: "x" }))[0], { hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: "/w/a", content: "x" }, session_id: "task-0001", cwd: "/w" });
   assert.equal(one(t("use_mcp_tool", { server_name: "gh", tool_name: "create_issue", arguments: "{}" }))[0].tool_name, "mcp__gh__create_issue");
   assert.equal(one(t("web_fetch", { url: "https://example.com" }))[0].tool_name, "WebFetch");
-  assert.equal(one(t("fetch_web_content", { requests: JSON.stringify([{ url: "https://example.com", prompt: "summarize" }]) }))[0].tool_input.url, "https://example.com");
-  assert.equal(t("list_files", { path: "." }), null);
+  assert.ok(one(t("fetch_web_content", { requests: JSON.stringify([{ url: "https://example.com", prompt: "summarize" }]) })).some((c) => c.tool_input.url === "https://example.com" && c.tool_input.prompt === "summarize"));
+  assert.deepEqual(one(t("list_files", { path: "." })).map((c) => [c.tool_name, c.tool_input.path]), [["LS", "/w"]]);
   assert.deepEqual(toClaude({ ...FIXTURE, hookName: "UserPromptSubmit", userPromptSubmit: { prompt: "hi" } }), { hook_event_name: "UserPromptSubmit", prompt: "hi", session_id: "task-0001", cwd: "/Users/me/project" });
   assert.equal(toClaude(null), null);
 });
@@ -176,13 +176,15 @@ test("doctor: cline is in the host table and a fresh install reads as current", 
 // (apps/vscode/src/sdk/hooks-adapter.ts) and the SDK's mapParams (sdk/packages/core/src/hooks/subprocess.ts,
 // hook-file-hooks.ts) both do `typeof value === "string" ? value : JSON.stringify(value)`.
 test("stringified array parameters are decoded: each path of read_files and each command of run_commands is judged", () => {
-  const t = (toolName, parameters) => [toClaude({ ...FIXTURE, workspaceRoots: ["/w"], preToolUse: { toolName, parameters } })].flat();
+  // The raw stringified value is judged as well (see the parser-differential test below); filtered out here.
+  const t = (toolName, parameters) => [toClaude({ ...FIXTURE, workspaceRoots: ["/w"], preToolUse: { toolName, parameters } })].flat().filter((c) => !Object.values(parameters).includes(c.tool_input.command ?? c.tool_input.url) && !Object.values(parameters).some((v) => c.tool_input.file_path === `/w/${v}`));
   assert.deepEqual(t("read_files", { files: JSON.stringify([{ path: "README.md" }, { path: ".env", start_line: 1, end_line: null }]) }).map((c) => c.tool_input.file_path), ["/w/README.md", "/w/.env"]);
   assert.deepEqual(t("read_files", { paths: JSON.stringify(["a", "/abs/b"]) }).map((c) => c.tool_input.file_path), ["/w/a", "/abs/b"]);
   assert.deepEqual(t("read_files", { file_paths: JSON.stringify(["/x/.env"]) }).map((c) => c.tool_input.file_path), ["/x/.env"]);
-  assert.deepEqual(t("run_commands", { commands: JSON.stringify(["ls", { command: "git", args: ["status", "--short"] }]) }).map((c) => c.tool_input.command), ["ls", "git status --short"]);
-  assert.deepEqual(t("run_commands", { commands: "[ -f x ] && echo y" }).map((c) => c.tool_input.command), ["[ -f x ] && echo y"], "a command that only looks like JSON is kept as typed");
+  assert.deepEqual(t("run_commands", { commands: JSON.stringify(["ls", { command: "git", args: ["status", "--short"] }]) }).map((c) => c.tool_input.command), ["ls", "git status --short", "status", "--short", "git"], "the rebuilt line, then each argv element and string field on its own");
+  assert.deepEqual([toClaude({ ...FIXTURE, workspaceRoots: ["/w"], preToolUse: { toolName: "run_commands", parameters: { commands: "[ -f x ] && echo y" } } })].flat().map((c) => c.tool_input.command), ["[ -f x ] && echo y"], "a command that only looks like JSON is kept as typed");
   assert.deepEqual(t("fetch_web_content", { requests: JSON.stringify([{ url: "https://a.example", prompt: "p" }, { url: "https://b.example", prompt: "p" }]) }).map((c) => c.tool_input.url), ["https://a.example", "https://b.example"]);
+  assert.deepEqual(t("run_commands", { commands: JSON.stringify([{ command: "git", args: ["status"] }]) }).map((c) => c.tool_input.command)[0], "git status", "the rebuilt line comes first");
 });
 
 test("ClineCore's editor shape (path, old_text, new_text, insert_line) is content-checked", () => {

@@ -72,39 +72,61 @@ const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : null);
 const abs = (p, cwd) => (p && cwd && !isAbsolute(p) ? resolve(cwd, p) : p);
 const each = (vals, mk) => (vals.length ? vals : [""]).map(mk);
 
-// A parameter Cline JSON-stringified: decode a JSON array or object; anything else stays as typed.
+// Only the list-valued keys are ever decoded (Cline JSON-stringifies a list it passes as a string); a
+// scalar key (command, cmd, path, url, ...) is judged exactly as typed, because that string is what Cline
+// runs, reads or fetches. `_` is ClineCore's non-object tool_call.input, which its schemas accept as a
+// string or a list.
+const LIST_KEYS = new Set(["_", "files", "paths", "file_paths", "commands", "requests", "urls", "queries"]);
 function decoded(v) {
   if (typeof v !== "string" || !/^\s*[[{]/.test(v)) return v;
   try { const j = JSON.parse(v); return j && typeof j === "object" ? j : v; } catch { return v; }
 }
-// Every distinct string under the given values, flattening arrays, decoding stringified JSON and reading
-// `pick` from objects; a stringified value that yields nothing is kept as typed.
-function gather(pick, ...vals) {
+const asText = (v) => (typeof v === "string" ? v : v === undefined ? "" : JSON.stringify(v) ?? "");
+// Every string field of an object or array, at any depth up to 4.
+function leaves(v, out = [], depth = 0) {
+  if (typeof v === "string") { if (v) out.push(v); return out; }
+  if (depth < 4 && v && typeof v === "object") for (const x of Array.isArray(v) ? v : Object.values(v)) leaves(x, out, depth + 1);
+  return out;
+}
+// The values to judge under `keys` of p: each value as typed and, for a list key holding stringified
+// JSON, also its decoded form; arrays are flattened; a string goes through `fromStr`, an object through
+// `fromObj` (which judges every string field of it), any other scalar through `fromStr` as its JSON text.
+function gather(p, keys, fromStr, fromObj) {
   const out = [];
-  const walk = (v, depth) => {
-    if (typeof v === "string") {
-      const d = depth < 3 ? decoded(v) : v;
-      if (d === v) { if (v) out.push(v); return; }
-      const before = out.length;
-      walk(d, depth + 1);
-      if (out.length === before && v) out.push(v);
-      return;
-    }
-    if (Array.isArray(v)) { for (const x of v) walk(x, depth); return; }
-    if (obj(v)) { const r = pick(v); if (r) out.push(r); }
+  const item = (v, depth) => {
+    if (v === undefined || v === null) return;
+    if (typeof v === "string") { if (v) out.push(fromStr(v)); return; }
+    if (Array.isArray(v)) { if (depth < 4) for (const x of v) item(x, depth + 1); return; }
+    if (obj(v)) { out.push(...fromObj(v)); return; }
+    out.push(fromStr(asText(v)));
   };
-  for (const v of vals) walk(v, 0);
-  return [...new Set(out)];
+  for (const k of keys) {
+    const v = p[k];
+    item(v, 0);
+    if (typeof v === "string" && LIST_KEYS.has(k)) { const d = decoded(v); if (d !== v) item(d, 0); }
+  }
+  const seen = new Set();
+  return out.filter((x) => { const key = JSON.stringify(x); return !seen.has(key) && seen.add(key); });
 }
 const pathOf = (o) => str(o.path) || str(o.file_path) || str(o.filePath);
-const cmdOf = (o) => (str(o.command) ? [o.command, ...(Array.isArray(o.args) ? o.args.map(String) : [])].join(" ") : "");
-const urlOf = (o) => str(o.url);
+// A structured command { command, args } runs its executable with argv, no shell: the line is rebuilt
+// with every element quoted as a shell would, whatever its type, and each element is judged on its own.
+const SAFE_WORD = /^[A-Za-z0-9_@%+=:,.\/-]+$/;
+export const shellQuote = (s) => (SAFE_WORD.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
+const argList = (a) => (Array.isArray(a) ? a : a === undefined || a === null ? [] : [a]).map(asText);
+function commandsOf(o) {
+  const argv = o.command === undefined || o.command === null ? [] : [asText(o.command), ...argList(o.args)];
+  return [...(argv.length ? [argv.map(shellQuote).join(" ")] : []), ...argList(o.args), ...leaves(o)];
+}
 const texts = (...vals) => [...new Set(vals.filter((v) => typeof v === "string" && v))];
 
+// MCP arguments: an object, or a JSON string of one; anything else is carried as { arguments } so its
+// content is still judged.
 function parseArgs(v) {
   if (obj(v)) return v;
-  if (typeof v !== "string") return {};
-  try { return obj(JSON.parse(v)) || {}; } catch { return {}; }
+  if (v === undefined || v === null || v === "") return {};
+  if (typeof v === "string") { try { const j = obj(JSON.parse(v)); if (j) return j; } catch { /* kept as typed */ } }
+  return { arguments: v };
 }
 
 // SEARCH/REPLACE blocks ("------- SEARCH ... ======= ... +++++++ REPLACE", or the older "<<<<<<< SEARCH ...
@@ -117,11 +139,14 @@ export function searchReplaceEdits(diff) {
   return edits;
 }
 
+// Tools that act on nothing MoorAI judges: they proceed unread.
+const INERT = new Set(["ask_question", "submit_and_exit", "ask_followup_question", "attempt_completion", "plan_mode_respond"]);
+
 function preTool(name, p, cwd) {
-  const paths = () => gather(pathOf, p._, p.path, p.file_path, p.files, p.paths, p.file_paths).map((x) => abs(x, cwd));
+  const paths = () => gather(p, ["_", "path", "file_path", "files", "paths", "file_paths"], (s) => s, (o) => [pathOf(o), ...leaves(o)]).filter(Boolean).map((x) => abs(x, cwd));
   switch (name) {
     case "execute_command": case "run_commands": {
-      const cmds = gather(cmdOf, p._, p.commands, p.command, p.cmd);
+      const cmds = gather(p, ["_", "commands", "command", "cmd"], (s) => s, commandsOf).filter(Boolean);
       return cmds.length ? cmds.map((c) => ["Bash", { command: c }]) : null;
     }
     case "read_file": case "read_files": {
@@ -156,13 +181,27 @@ function preTool(name, p, cwd) {
       return [[`mcp__${server}__${p.tool_name}`, parseArgs(p.arguments)]];
     }
     case "web_fetch": case "fetch_web_content": case "browser_action": {
-      const urls = gather(urlOf, p._, p.requests, p.url, p.urls);
-      return urls.length ? urls.map((u) => ["WebFetch", { url: u, prompt: "" }]) : null;
+      // A request object { url, prompt } is one fetch: its url, and every other string field as the prompt.
+      const reqs = gather(p, ["_", "requests", "url", "urls"], (s) => ({ url: s, prompt: "" }), (o) => [{ url: str(o.url), prompt: leaves(o).filter((x) => x !== o.url).join("\n") }]);
+      return reqs.length ? reqs.map((r) => ["WebFetch", r]) : null;
+    }
+    // search_codebase runs regex queries over the workspace: judged as Claude Code's Grep (capability "read").
+    case "search_codebase": case "search_files": {
+      const qs = gather(p, ["_", "queries", "query", "regex"], (s) => s, (o) => leaves(o));
+      return each(qs, (q) => ["Grep", { pattern: q, path: abs(str(p.path), cwd) || cwd }]);
+    }
+    case "list_files": case "list_code_definition_names":
+      return [["LS", { path: abs(str(p.path), cwd) || cwd }]];
+    // skills runs a named skill: judged as Claude Code's Skill call.
+    case "skills": {
+      const skill = asText(p.skill ?? p._);
+      return [["Skill", { skill, ...(p.args !== undefined && p.args !== null ? { args: asText(p.args) } : {}) }]];
     }
     default:
       return null;
   }
 }
+const MAPPED = new Set(["execute_command", "run_commands", "read_file", "read_files", "write_to_file", "replace_in_file", "editor", "apply_patch", "use_mcp_tool", "web_fetch", "fetch_web_content", "browser_action", "search_codebase", "search_files", "list_files", "list_code_definition_names", "skills"]);
 
 const PRE = new Set(["PreToolUse", "tool_call"]);
 const PROMPT = new Set(["UserPromptSubmit", "prompt_submit"]);
@@ -198,11 +237,25 @@ export function toClaude(payload) {
   return calls.length === 1 ? calls[0] : calls;
 }
 
+// A PreToolUse / tool_call for a tool name this adapter neither maps nor knows to be inert: MoorAI cannot
+// judge it, so it is held (Cline has no ask) rather than allowed unread. Returns the name, or null.
+export function unjudgedTool(payload) {
+  if (!obj(payload) || !PRE.has(payload.hookName)) return null;
+  const tc = obj(payload.tool_call), t = obj(payload.preToolUse);
+  const name = (tc && typeof tc.name === "string" && tc.name) || (t && typeof t.toolName === "string" && t.toolName) || "";
+  return name && !MAPPED.has(name) && !INERT.has(name) ? name : null;
+}
+
 const tag = (s, dflt) => `MoorAI: ${String(s || "").trim().replace(/\.+$/, "") || dflt}`;
 const json = (o) => ({ stdout: JSON.stringify(o), exitCode: 0 });
 
 export function fromVerdict(verdict, payload) {
   if (payload && PROMPT.has(payload.hookName)) return json({ cancel: false });
+  const unknown = unjudgedTool(payload);
+  if (unknown) {
+    const m = `MoorAI: Cline tool ${/^[\w.:-]{1,64}$/.test(unknown) ? `"${unknown}"` : "(unnamed)"} is not one MoorAI can judge, so this call was held: ask the user to confirm and run it themselves if intended.`;
+    return json({ cancel: true, errorMessage: m, contextModification: m });
+  }
   const v = verdict || {};
   if (v.decision === "deny") { const m = tag(v.reason, "blocked by policy"); return json({ cancel: true, errorMessage: m, contextModification: m }); }
   if (v.decision === "ask") {
