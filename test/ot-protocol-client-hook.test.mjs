@@ -3,14 +3,10 @@
 // The OT protocol client check (cli/ot-protocol-client.mjs) end to end through the real hook and a local
 // console listener: a Modbus write blocked by the OT preset's threatPolicy, a read reported and allowed,
 // and the alert fields (reasonCode OT_PROTOCOL_CLIENT, otProtocol, otOp) with no command content.
-//
-// SKIPPED until the hook imports cli/ot-protocol-client.mjs: cli/moorai-hook.mjs has one integrator
-// (CONTRACT-F28 §0.7). This file owns the assertions; the integrator lands the one-line call in the Bash
-// branch (the insertion is in the A10 package report).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,8 +16,6 @@ import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
-const WIRED = readFileSync(HOOK, "utf8").includes("ot-protocol-client.mjs");
-const skip = WIRED ? false : "hook wiring for the OT protocol client check not landed yet (cli/moorai-hook.mjs)";
 
 const TOKEN = "tok-othook-SECRET-71aa";
 const WRITE = "mbpoll -1 -a 1 -t 4 -r 4242 10.20.0.5 1500";
@@ -57,7 +51,7 @@ const decision = (o) => (o.hookSpecificOutput && o.hookSpecificOutput.permission
 const env = (url) => ({ MOORAI_MODE: "server", MOORAI_SERVER_URL: url, MOORAI_TENANT: "ot-test", MOORAI_INSTALL_TOKEN: TOKEN, MOORAI_SERVICE_ID: "ot-bot" });
 const waitFor = async (pred, ms = 3000) => { const end = Date.now() + ms; while (Date.now() < end) { if (pred()) return true; await new Promise((r) => setTimeout(r, 50)); } return pred(); };
 
-test("OT preset: a Modbus write from the agent shell is denied; a read is reported and allowed", { skip }, async () => {
+test("OT preset: a Modbus write from the agent shell is denied; a read is reported and allowed", async () => {
   const c = await consoleServer({ captureTier: "content-free", threatPolicy: { [OT_THREAT.write]: "block", [OT_THREAT.read]: "notify" } });
   const home = mkdtempSync(join(tmpdir(), "moorai-othook-"));
   mkdirSync(join(home, "proj"), { recursive: true });
@@ -78,7 +72,7 @@ test("OT preset: a Modbus write from the agent shell is denied; a read is report
   } finally { c.close(); rmTree(home); }
 });
 
-test("no OT policy: a Modbus write is reported, not blocked (built-in notify)", { skip }, async () => {
+test("no OT policy: a Modbus write is reported, not blocked (built-in notify)", async () => {
   const c = await consoleServer({ captureTier: "content-free" });
   const home = mkdtempSync(join(tmpdir(), "moorai-othook-"));
   mkdirSync(join(home, "proj"), { recursive: true });
