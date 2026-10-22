@@ -11,13 +11,13 @@
 // leaves this module. Nothing here reads the environment for a path (contract §3.1, §10.2); the `root`
 // and `trustUid` options exist for tests, the way guardd's own tests use Paths::under (§11.2), and no
 // CLI flag reaches them.
-import { lstatSync, readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { createConnection } from "node:net";
 import { randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { join, posix } from "node:path";
 import { createRequire } from "node:module";
-import { endpointFor, runDirFor, encodeFrame, FrameDecoder, buildRequest, helloProofInput, keyIdOfSpki, verifyHelloProof, PROTO_VERSION } from "./guardd-client.mjs";
+import { checkOwnedPath, endpointFor, runDirFor, encodeFrame, FrameDecoder, buildRequest, helloProofInput, keyIdOfSpki, verifyHelloProof, PROTO_VERSION } from "./guardd-client.mjs";
 
 const VERSION = (() => { try { return createRequire(import.meta.url)("../package.json").version; } catch { return "0.0.0"; } })();
 
@@ -51,37 +51,8 @@ export function guarddLayout(platform = process.platform) {
 }
 
 const under = (root, p) => (root === "/" ? p : join(root, p));
-const isLooseMode = (st, platform) => {
-  if (st.mode & 0o002) return true;
-  if (!(st.mode & 0o020)) return false;
-  // macOS /private/var/run is root:daemon 0775 (contract §13.3 item 2): group-writable is accepted only
-  // for gid 0, or gid 1 (daemon) on macOS.
-  return !(st.gid === 0 || (platform === "darwin" && st.gid === 1));
-};
-
-// Contract §3.6 step 1. Walks from the trust root to `target`'s directory: no symlinks, every directory
-// owned by root (or, under an injected test root, by `trustUid`) and not writable by group or others.
-// Returns "ok", "absent" or "untrusted".
-export function checkOwnedPath(target, { root = "/", trustUid = 0, platform = process.platform, kind = "socket" } = {}) {
-  const okUid = (uid) => uid === 0 || uid === trustUid;
-  const rel = posix.relative("/", target);
-  const parts = rel.split("/").filter(Boolean);
-  let cur = root;
-  const dirs = [cur];
-  for (const p of parts.slice(0, -1)) { cur = join(cur, p); dirs.push(cur); }
-  for (const d of dirs) {
-    let st;
-    try { st = lstatSync(d); } catch { return "absent"; }
-    if (st.isSymbolicLink() || !st.isDirectory()) return "untrusted";
-    if (!okUid(st.uid) || isLooseMode(st, platform)) return "untrusted";
-  }
-  let st;
-  try { st = lstatSync(join(cur, parts[parts.length - 1])); } catch { return "absent"; }
-  if (st.isSymbolicLink() || !okUid(st.uid)) return "untrusted";
-  if (kind === "socket") return st.isSocket() ? "ok" : "untrusted";
-  if (!st.isFile() || (st.mode & 0o022)) return "untrusted";
-  return "ok";
-}
+// The §3.6 step 1 walk lives in cli/guardd-client.mjs (one implementation for the hook and this status).
+export { checkOwnedPath };
 
 function readDevicePubAt(path, opts) {
   const v = checkOwnedPath(path, { ...opts, kind: "file" });

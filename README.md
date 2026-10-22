@@ -165,8 +165,8 @@ package. Tested on Debian 12 and Ubuntu 24.04 containers (arm64); systemd itself
 
 ### Privileged helper (moorai-guardd)
 
-`moorai-guardd` is the root-owned helper that holds the device key, the policy cache and the alert queue where the
-user cannot delete or read them (design: [`docs/proposals/guardd-contract.md`](docs/proposals/guardd-contract.md)).
+`moorai-guardd` is the root-owned helper designed to hold the device key, the policy cache and the alert queue where
+the user cannot delete or read them (design: [`docs/proposals/guardd-contract.md`](docs/proposals/guardd-contract.md)).
 Installers, one per OS, run as root or elevated:
 
 ```bash
@@ -182,6 +182,8 @@ Each installer refuses a binary built with test-only path injection and never wr
 reconfigure the service. `moorai-helper status` reports `healthy` only when the endpoint passes the root-ownership
 check and the helper proves it holds the key published in `device.pub`. The helper's per-OS platform layer is not
 implemented yet, so an installed helper exits at start today; the install path and the status check are what ship.
+That a non-admin user cannot delete the alert chain or read the device key is not demonstrated on any OS yet, and
+the CI install test skips each OS until its helper can start (`scripts/guardd-ci-ready.mjs`).
 
 ### Try the CLI guard in 30 seconds
 

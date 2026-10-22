@@ -121,7 +121,33 @@ test("endpoint paths are constants, never taken from the environment", () => {
   } finally { process.env = saved; }
 });
 
-test("transport and ownership are stubs until implemented", async () => {
+test("transport is a stub until implemented", async () => {
   await assert.rejects(connect(), /not implemented/);
-  await assert.rejects(verifyEndpointOwnership(endpointFor()), /not implemented/);
+});
+
+// verifyEndpointOwnership is the one §3.6 step 1 walk; cli/guardd-install.mjs uses the same function.
+function fakeLstat(table) {
+  return (p) => {
+    const e = table[p];
+    if (!e) { const err = new Error("ENOENT"); err.code = "ENOENT"; throw err; }
+    return { uid: e.uid, gid: 0, mode: e.mode, isSymbolicLink: () => false, isDirectory: () => e.dir === true, isSocket: () => e.dir !== true, isFile: () => false };
+  };
+}
+const TREE = {
+  "/": { dir: true, uid: 0, mode: 0o755 }, "/run": { dir: true, uid: 0, mode: 0o755 },
+  "/run/moorai": { dir: true, uid: 0, mode: 0o755 }, "/run/moorai/hook.sock": { uid: 0, mode: 0o666 }
+};
+
+test("verifyEndpointOwnership: uid 0 only on every directory and the socket (no helper-uid exception)", async () => {
+  const o = { platform: "linux" };
+  assert.deepEqual(await verifyEndpointOwnership("/run/moorai/hook.sock", { ...o, lstat: fakeLstat(TREE) }), { ok: true, reason: "ok" });
+  const userDir = { ...TREE, "/run/moorai": { dir: true, uid: 999, mode: 0o755 } };
+  assert.deepEqual(await verifyEndpointOwnership("/run/moorai/hook.sock", { ...o, lstat: fakeLstat(userDir) }), { ok: false, reason: "untrusted" });
+  const userSock = { ...TREE, "/run/moorai/hook.sock": { uid: 999, mode: 0o666 } };
+  assert.deepEqual(await verifyEndpointOwnership("/run/moorai/hook.sock", { ...o, lstat: fakeLstat(userSock) }), { ok: false, reason: "untrusted" });
+  assert.deepEqual(await verifyEndpointOwnership("/run/moorai/hook.sock", { ...o, lstat: fakeLstat({}) }), { ok: false, reason: "absent" });
+});
+
+test("verifyEndpointOwnership: Windows has no owner walk (§3.6), so it defers to the device-key proof", async () => {
+  assert.deepEqual(await verifyEndpointOwnership(endpointFor("win32"), { platform: "win32" }), { ok: true, reason: "skipped" });
 });

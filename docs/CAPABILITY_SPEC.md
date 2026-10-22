@@ -3147,7 +3147,10 @@ is installed and healthy.
   and modes and bootstraps it. The package is unsigned (signing needs a Developer ID Installer identity).
 - **Windows.** `guardd/packaging/windows/install.ps1 -Binary <exe>` (elevated) copies the binary to
   `<Program Files>\MoorAI\moorai-guardd.exe` (SYSTEM and Administrators full, Users read and execute), creates
-  `<ProgramData>\MoorAI` with `<ProgramData>` read from HKLM ProfileList (never `%ProgramData%`), registers
+  `<ProgramData>\MoorAI` with `<ProgramData>` read from HKLM ProfileList (never `%ProgramData%`) for
+  `config.json` (SYSTEM and Administrators full, Users read, inherited), creates the contract §4.2 helper
+  directories under it itself: `state` (owner SYSTEM, inheritance removed, SYSTEM full only, so it does not
+  inherit the Users read above) and `run` (owner SYSTEM, SYSTEM and Administrators full, Users read), registers
   `MoorAIGuard` (auto start, LocalSystem, restart after 1 s, 5 s, then every 60 s), sets the service DACL
   `D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;AU)` (only SYSTEM and
   Administrators can start, stop, reconfigure or re-permission it; any signed-in user can query it), starts it
@@ -3160,7 +3163,8 @@ is installed and healthy.
   still reads no environment.
 - **Is it installed and healthy.** `helperInstallStatus()` returns a content-free object:
   `{state, binary, service, endpoint, devicePub, hello, helperVersion?}`. `endpoint` and `devicePub` come from
-  the contract §3.6 ownership walk: from `/` to the file, no symlinks, every directory owned by root and not
+  the contract §3.6 ownership walk, `checkOwnedPath` in `cli/guardd-client.mjs` (the same function behind the
+  hook-side `verifyEndpointOwnership`, uid 0 only): from `/` to the file, no symlinks, every directory owned by root and not
   writable by group or others (group-writable only for gid 0, or gid 1 on macOS for `/private/var/run`), the
   endpoint a socket owned by root, `device.pub` a regular root-owned file that is not group- or world-writable
   and holds an ed25519 SPKI key. Only then does it send one `hello` (default budget 250 ms; the status command
@@ -3181,7 +3185,15 @@ is installed and healthy.
   running `moorai-helper status` as an unprivileged user against a stand-in helper that root started at
   `/run/moorai/hook.sock` (`healthy`), one signing with another key (`untrusted`, `bad-proof`) and one a
   non-root user started at a path that user owned (`untrusted`, endpoint refused before any connect). The
-  PowerShell script has not been run or parsed by PowerShell.
+  PowerShell script has not been run or parsed by PowerShell; its ACL lines are checked as text only.
+- **Not demonstrated.** That a non-admin user cannot delete the alert chain or read the device key is the goal
+  of this helper and is not shown on any OS yet, because no real `moorai-guardd` has run.
+- **CI.** `.github/workflows/guardd-install.yml` installs a release build as root and waits for the service.
+  Its gate, `scripts/guardd-ci-ready.mjs <linux|macos|windows>`, says ready only when that OS's install script
+  exists, no `todo!()` or `unimplemented!()` is left in the code compiled for it (its `guardd/src/platform/<os>`
+  directory and shared code not `cfg`-gated to another OS), and on Windows `main.rs` has a service control
+  dispatcher. Today it reports not ready on all three, so the install and agent-side steps skip with a notice
+  and the agent-side step is still a placeholder (`test/guardd-ci-ready.test.mjs`).
 
 ## Linux agent package
 

@@ -7,7 +7,8 @@
 // endpoint ownership check and the client's ops. Nothing in this file reads the environment for a path,
 // and nothing ever will (contract §3.1).
 import { createHash, createPublicKey, verify as edVerify } from "node:crypto";
-import { win32 } from "node:path";
+import { lstatSync } from "node:fs";
+import { win32, posix, join } from "node:path";
 import { machineDir } from "./machine-dir.mjs";
 
 export const PROTO_VERSION = 1;
@@ -167,11 +168,48 @@ export function fallbackMode({ helper = "optional", reachable = false, outdated 
 // ---- stubs: transport and ownership (contract §3.1, §3.6) ----
 const notImplemented = (what) => { throw new Error(`guardd-client: ${what} not implemented (contract only)`); };
 
-// Unix: lstat every directory from / to the socket's directory and the socket itself: no symlinks, owner
-// uid 0 (or the helper's own uid on Linux, from /etc/passwd "moorai"), not group- or world-writable
-// (the socket itself is 0666). Windows: the device.pub hello-proof check is the server check (Node has no
-// GetNamedPipeServerProcessId). Resolves to { ok, reason }.
-export async function verifyEndpointOwnership(_endpoint, _opts = {}) { return notImplemented("verifyEndpointOwnership"); }
+const isLooseMode = (st, platform) => {
+  if (st.mode & 0o002) return true;
+  if (!(st.mode & 0o020)) return false;
+  // macOS /private/var/run is root:daemon 0775 (contract §13.3 item 2): group-writable is accepted only
+  // for gid 0, or gid 1 (daemon) on macOS.
+  return !(st.gid === 0 || (platform === "darwin" && st.gid === 1));
+};
+
+// Contract §3.6 step 1, the one implementation (cli/guardd-install.mjs uses it too). Walks from the trust
+// root to `target`'s directory: no symlinks, every directory owned by uid 0 and not writable by group or
+// others; then the target itself: owned by uid 0, a socket (kind "socket") or a regular file not writable
+// by group or others (kind "file"). Returns "ok", "absent" or "untrusted". `root`, `trustUid` and `lstat`
+// exist for tests only (an injected root accepts `trustUid` as well as 0); no CLI flag reaches them.
+export function checkOwnedPath(target, { root = "/", trustUid = 0, platform = process.platform, kind = "socket", lstat = lstatSync } = {}) {
+  const okUid = (uid) => uid === 0 || uid === trustUid;
+  const parts = posix.relative("/", target).split("/").filter(Boolean);
+  let cur = root;
+  const dirs = [cur];
+  for (const p of parts.slice(0, -1)) { cur = join(cur, p); dirs.push(cur); }
+  for (const d of dirs) {
+    let st;
+    try { st = lstat(d); } catch { return "absent"; }
+    if (st.isSymbolicLink() || !st.isDirectory()) return "untrusted";
+    if (!okUid(st.uid) || isLooseMode(st, platform)) return "untrusted";
+  }
+  let st;
+  try { st = lstat(join(cur, parts[parts.length - 1])); } catch { return "absent"; }
+  if (st.isSymbolicLink() || !okUid(st.uid)) return "untrusted";
+  if (kind === "socket") return st.isSocket() ? "ok" : "untrusted";
+  if (!st.isFile() || (st.mode & 0o022)) return "untrusted";
+  return "ok";
+}
+
+// Unix: checkOwnedPath over the endpoint (uid 0 only; the helper runs as root on both Unix OSes, §4.2).
+// Windows: no owner walk exists for the pipe namespace (§3.6), so this step is skipped and the device.pub
+// hello-proof check is the server check. Resolves to { ok, reason } with reason "ok", "absent",
+// "untrusted" or "skipped".
+export async function verifyEndpointOwnership(endpoint, { platform = process.platform, lstat = lstatSync } = {}) {
+  if (platform === "win32") return { ok: true, reason: "skipped" };
+  const reason = checkOwnedPath(endpoint, { platform, kind: "socket", lstat });
+  return { ok: reason === "ok", reason };
+}
 // Reads device.pub from runDirFor() through readRootOwned (cli/hook-core.mjs). Resolves to base64 SPKI or null.
 export async function readDevicePub(_opts = {}) { return notImplemented("readDevicePub"); }
 // Connect within CONNECT_BUDGET_MS, check ownership, send hello, verify the proof. Resolves to a

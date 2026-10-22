@@ -261,6 +261,33 @@ test("windows: install.ps1 resolves ProgramData from HKLM ProfileList, never %Pr
   assert.match(t, /\[switch\]\$DryRun/);
 });
 
+// Contract §4.2: <PD>\\MoorAI\\state is owner SYSTEM with a protected DACL, SYSTEM F only; <PD>\\MoorAI\\run is
+// SYSTEM F + Administrators F + Users R. <PD>\\MoorAI itself grants Users read (config.json), inheritable, so
+// the state directory must break inheritance or it would inherit Users read over device.key.
+function icaclsGrants(t, dirVar) {
+  const lines = t.split("\n").filter((l) => new RegExp(`& \\$Icacls \\$${dirVar} `).test(l));
+  return lines.map((l) => ({ line: l, sids: [...l.matchAll(/'\*(S-1-5-[0-9-]+):([^']*)'/g)].map((m) => [m[1], m[2]]) }));
+}
+
+test("windows: install.ps1 creates the state directory owned by SYSTEM with a protected SYSTEM-only DACL", () => {
+  const t = readFileSync(PS1, "utf8");
+  assert.match(t, /\$StateDir\s*=\s*Join-Path \$DataDir 'state'/);
+  const g = icaclsGrants(t, "StateDir");
+  assert.ok(g.length >= 1, "an icacls call on the state dir");
+  const grant = g.find((x) => /\/grant:r/.test(x.line));
+  assert.ok(grant && /\/inheritance:r/.test(grant.line), "inheritance removed (protected DACL)");
+  assert.deepEqual(grant.sids.map((s) => s[0]), ["S-1-5-18"], "SYSTEM is the only principal");
+  assert.ok(g.some((x) => /\/setowner \*S-1-5-18/.test(x.line)), "owner SYSTEM");
+});
+
+test("windows: install.ps1 creates the run directory with SYSTEM F, Administrators F and Users R", () => {
+  const t = readFileSync(PS1, "utf8");
+  assert.match(t, /\$RunDir\s*=\s*Join-Path \$DataDir 'run'/);
+  const grant = icaclsGrants(t, "RunDir").find((x) => /\/grant:r/.test(x.line));
+  assert.ok(grant && /\/inheritance:r/.test(grant.line));
+  assert.deepEqual(Object.fromEntries(grant.sids), { "S-1-5-18": "(OI)(CI)F", "S-1-5-32-544": "(OI)(CI)F", "S-1-5-32-545": "(OI)(CI)R" });
+});
+
 test("the guardd-install CI contract paths exist (one script per OS)", () => {
   for (const p of ["linux/install.sh", "macos/install.sh", "windows/install.ps1"]) assert.ok(existsSync(join(PKG, p)), p);
 });

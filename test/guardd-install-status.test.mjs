@@ -12,7 +12,7 @@ import { createServer } from "node:net";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { encodeFrame, FrameDecoder, helloProofInput, keyIdOfSpki } from "../cli/guardd-client.mjs";
-import { helperInstallStatus, guarddLayout, HELPER_STATES, POSTURE_KEYS } from "../cli/guardd-install.mjs";
+import { helperInstallStatus, guarddLayout, checkOwnedPath, HELPER_STATES, POSTURE_KEYS } from "../cli/guardd-install.mjs";
 
 const REPO = fileURLToPath(new URL("..", import.meta.url));
 const IS_WIN = process.platform === "win32";
@@ -320,4 +320,35 @@ test("moorai-helper takes no path or root flag (contract §10.2: nothing user-su
   const r = spawnSync(process.execPath, [join(REPO, "cli", "moorai-helper.mjs"), "status", "--root", "/tmp"], { encoding: "utf8", timeout: 15000 });
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /unknown option/);
+});
+
+// A fake lstat over a fixed table, so the walk can be checked against owners a test process cannot create
+// (a root-owned socket under a directory some other non-root uid owns).
+function fakeLstat(table) {
+  return (p) => {
+    const e = table[p];
+    if (!e) { const err = new Error("ENOENT"); err.code = "ENOENT"; throw err; }
+    return {
+      uid: e.uid, gid: e.gid ?? 0, mode: e.mode,
+      isSymbolicLink: () => e.type === "link", isDirectory: () => e.type === "dir",
+      isSocket: () => e.type === "sock", isFile: () => e.type === "file"
+    };
+  };
+}
+const ROOT_TREE = {
+  "/": { type: "dir", uid: 0, mode: 0o755 },
+  "/run": { type: "dir", uid: 0, mode: 0o755 },
+  "/run/moorai": { type: "dir", uid: 0, mode: 0o755 },
+  "/run/moorai/hook.sock": { type: "sock", uid: 0, mode: 0o666 }
+};
+
+test("every directory on the endpoint path must be root's: a 0755 directory owned by another uid is refused even under a root socket", () => {
+  const o = { root: "/", trustUid: 0, platform: "linux", kind: "socket" };
+  assert.equal(checkOwnedPath("/run/moorai/hook.sock", { ...o, lstat: fakeLstat(ROOT_TREE) }), "ok", "control: an all-root path passes");
+  for (const d of ["/", "/run", "/run/moorai"]) {
+    const t = { ...ROOT_TREE, [d]: { ...ROOT_TREE[d], uid: 1000 } };
+    assert.equal(checkOwnedPath("/run/moorai/hook.sock", { ...o, lstat: fakeLstat(t) }), "untrusted", `${d} owned by uid 1000`);
+  }
+  const link = { ...ROOT_TREE, "/run": { type: "link", uid: 0, mode: 0o777 } };
+  assert.equal(checkOwnedPath("/run/moorai/hook.sock", { ...o, lstat: fakeLstat(link) }), "untrusted", "a symlinked directory");
 });

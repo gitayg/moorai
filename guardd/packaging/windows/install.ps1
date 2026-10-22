@@ -9,8 +9,11 @@ What it does:
   * copies the binary to <Program Files>\MoorAI\moorai-guardd.exe, with the folder limited to SYSTEM and
     Administrators (full) and Users (read and execute);
   * creates <ProgramData>\MoorAI for the administrator's config.json (SYSTEM and Administrators full,
-    Users read). <ProgramData> comes from HKLM ProfileList, never from %ProgramData% (§4.1). The helper
-    creates its own state and run directories under it;
+    Users read). <ProgramData> comes from HKLM ProfileList, never from %ProgramData% (§4.1);
+  * creates the helper's directories under it with the contract §4.2 DACLs, so neither depends on the
+    helper: state (owner SYSTEM, inheritance removed, SYSTEM full only, so it does not inherit the Users
+    read above; device.key and the alert queue live here) and run (owner SYSTEM, SYSTEM and Administrators
+    full, Users read, for device.pub);
   * registers MoorAIGuard: auto start, LocalSystem, restart on failure three times and then every 60 s;
   * sets the service DACL so only SYSTEM and Administrators can stop, reconfigure or re-permission it,
     and any signed-in user can query its state;
@@ -65,6 +68,8 @@ $ProgramData = if ($DryRun) { 'C:\ProgramData' } else { Get-ProgramData }
 $InstallDir = Join-Path $ProgramFiles 'MoorAI'
 $Exe = Join-Path $InstallDir 'moorai-guardd.exe'
 $DataDir = Join-Path $ProgramData 'MoorAI'
+$StateDir = Join-Path $DataDir 'state'
+$RunDir = Join-Path $DataDir 'run'
 
 $existing = if ($DryRun) { $null } else { Get-Service -Name $ServiceName -ErrorAction SilentlyContinue }
 if ($existing -and $existing.Status -ne 'Stopped') {
@@ -81,6 +86,20 @@ Step "$Icacls $InstallDir /inheritance:r /grant:r SYSTEM:F Administrators:F User
 Step "create $DataDir; $Icacls /inheritance:r /grant:r SYSTEM:F Administrators:F Users:R" {
   New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
   & $Icacls $DataDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)R' | Out-Null
+}
+# Contract §4.2: the state dir is SYSTEM-only with a protected DACL. /inheritance:r drops what it would
+# otherwise inherit from $DataDir (Users read), and the explicit grant replaces whatever was there before.
+Step "create $StateDir; $Icacls /inheritance:r /grant:r SYSTEM:F; owner SYSTEM" {
+  New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+  & $Icacls $StateDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' | Out-Null
+  if ($LASTEXITCODE -ne 0) { return }
+  & $Icacls $StateDir /setowner *S-1-5-18 /T /C | Out-Null
+}
+Step "create $RunDir; $Icacls /inheritance:r /grant:r SYSTEM:F Administrators:F Users:R; owner SYSTEM" {
+  New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
+  & $Icacls $RunDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)R' | Out-Null
+  if ($LASTEXITCODE -ne 0) { return }
+  & $Icacls $RunDir /setowner *S-1-5-18 /T /C | Out-Null
 }
 
 $binPath = '"' + $Exe + '"'
