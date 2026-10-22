@@ -1991,8 +1991,17 @@ shapes (2 of 610 samples contain curl/wget). Tested on macOS only.
 agents that can reach controllers and never sits inside a PLC or safety system.
 
 - **Input**: a Bash (`sh`) or PowerShell (`ps`) command, split by the shared shell reader, following
-  wrappers (`sudo`, `env`, `timeout`, …), `sh -c`, `pwsh -Command`, runners (`uv run`, `poetry run`, `npx`, …)
-  and heredocs fed to an interpreter. Native tools' options are scanned POSIX-style on every platform.
+  wrappers (`sudo`, `env`, `timeout`, …), `sh -c`, PowerShell `-EncodedCommand` (`-e`, `-ec`, `-enc`, any
+  prefix, with `-`, `--` or `/`), `-Command` (any prefix, `-CommandWithArgs`) and a first bare argument,
+  `cmd /c` and `/k`, `eval`, `Invoke-Expression` / `iex`, `find -exec` / `-execdir` / `-ok`, runners
+  (`uv run`, `poetry run`, `npx`, …) and heredocs fed to an interpreter. Native tools' options are scanned
+  POSIX-style on every platform. The hook also passes the scripts it decoded from the command (`scripts`:
+  `embeddedScripts` as PowerShell, `decodedCommandPayloads` as POSIX), read into the same result.
+- **Interpreter options**: Python's short options are read character by character (`-Ic code`, `-Im mod`,
+  `-Wignore`, `-mmod`); options it cannot parse fail closed: every argument is then scanned as code, as a
+  module name and as a script path. Node: `--eval=` / `--print=`, short flags combined and ending in `e` or
+  `p` (`-pe`), and `-r` / `--require` / `--import` / `--loader` values checked against the Node library list
+  (op unknown).
 - **Recognised**: `mbpoll` / `modpoll` (two or more positional arguments after options = write, one = read,
   none = unknown), modbus-cli `modbus read|dump|write`, OPC UA tools (`uaread`, `uals`, `uasubscribe`,
   `uahistoryread`, `uadiscover` read; `uawrite`, `uacall` write; `uaclient` unknown), BACnet stack clients
@@ -2002,10 +2011,14 @@ agents that can reach controllers and never sits inside a PLC or safety system.
   imports a listed library; the library's listed write calls make it a write, else its read calls a read,
   else unknown. A write anywhere in the command wins.
 - **Script files**: read only through the reader the hook passes (`scriptReader(cwd)`): a path inside the
-  session directory, a regular file of at most 1 MiB, first 64 KiB.
+  session directory, a regular file, read whole up to 8 MiB. A larger file is streamed (up to 256 MiB) for
+  the listed library names; each named library is an `unknown` hit marked incomplete, and an incomplete
+  result takes the stricter of the read and write actions, since a write could sit in the part not read.
 - **Verdict**: `OT_THREAT.read` (81: read and unknown) and `OT_THREAT.write` (82), both resolved through
-  `policy.threatPolicy[id]` (`notify` → allow, `justify` → ask, `block` → deny, `disabled` → nothing; `mask`
-  falls back to `maskFallback`). With no entry both are `notify`: the built-in block tier needs zero measured
+  `cli/hook-core.mjs threatActionFor` like every other threat (`threatPolicy`, `tierPolicy`, the `mask`
+  fallback, the built-in table): `notify` → allow, `justify` → ask, `block` → deny, `kill` → deny and the
+  session-kill request, `disabled` → nothing; a value that is not an action fails closed to `block`. With no
+  entry both are `notify`: the built-in block tier needs zero measured
   benign fires first. The console's Industrial/OT preset is specified to set 82 to `block`, which its
   `ot-shell-write` approval rule holds (CONTRACT-F28 §6.2); that preset is not in a released console yet. The
   two ids are proposed, not yet in `data/threats.json`.
@@ -2014,9 +2027,11 @@ agents that can reach controllers and never sits inside a PLC or safety system.
   `reasonCode` `OT_PROTOCOL_CLIENT`, `otProtocol`, `otOp`, `contentHash` `ot:<protocol>:<op>`.
 - **Hook**: one call in the Bash/PowerShell branch of `cli/moorai-hook.mjs` posts the alert and raises the
   verdict when the check's decision ranks higher; `test/ot-protocol-client-hook.test.mjs` runs it end to end
-  (a write denied under `threatPolicy` 82 `block`, a read reported and allowed, a write reported with no policy).
+  (a write denied under `threatPolicy` 82 `block`, a read reported and allowed, a write reported with no policy,
+  a write inside a base64 payload piped to `sh` denied, and `kill` ending the session).
 
-Limits: a client under another name, a script outside the session directory or past 64 KiB, code assembled at
+Limits: a client under another name, a script outside the session directory, a script past 256 MiB whose
+first 256 MiB name no listed library, a PowerShell `-File` script, code assembled at
 run time or imported indirectly, a read misread as a write when a library's generic `write(` name also matches
 another object's call (the stricter direction), and connections without a shell are not seen; OT-subnet
 connections are the egress rule `cidr` field (§ Egress proxy, owned by F23). Not run against real devices.

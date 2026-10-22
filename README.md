@@ -1272,14 +1272,20 @@ and two fields: `otProtocol` (`modbus`, `dnp3`, `opcua`, `s7`, `bacnet`, `enip`,
 [`data/ot-protocol-clients.js`](data/ot-protocol-clients.js)). It recognises `mbpoll` and `modpoll` (values
 after the target are a write), modbus-cli `read`/`write`, the OPC UA tools (`uaread`, `uawrite`, `uacall`, …),
 the BACnet stack clients (`bacrp`, `bacwp`, …), `python -m cpppo.server.enip.client`, and Python or Node code,
-inline, in a heredoc or in a script file inside the session directory (first 64 KiB), that imports pymodbus,
+inline, in a heredoc or in a script file inside the session directory (read whole up to 8 MiB; a larger one is
+scanned for the library names, up to 256 MiB, and takes the stricter of the read and write actions), that imports pymodbus,
 pyModbusTCP, minimalmodbus, opcua/asyncua, snap7, pycomm3, pylogix, BAC0, bacpypes, pydnp3, c104,
 modbus-serial, jsmodbus, node-opcua, node-snap7, bacstack or st-ethernet-ip; the library's write calls
-(`write_register`, `write_value`, `db_write`, `plc_stop`, `DirectOperate`, …) make it a write. Read and
-unknown are threat 81, write is threat 82 (proposed ids, not yet in `data/threats.json`); both report by
-default, and a policy's `threatPolicy` can set 82 to `block` (a console Industrial/OT preset that does so is
+(`write_register`, `write_value`, `db_write`, `plc_stop`, `DirectOperate`, …) make it a write. It follows
+nested scripts (`sh -c`, PowerShell `-EncodedCommand` and `-Command` in any prefix or a bare argument,
+`cmd /c`, `eval`, `Invoke-Expression`, `find -exec`), grouped Python options (`-Ic`, `-Im`; arguments it cannot
+parse are all scanned), Node's `--eval=`, `-pe` and `-r`/`--require`/`--import` modules, and the scripts the hook
+decodes from the command (base64 into a shell). Read and
+unknown are threat 81, write is threat 82 (proposed ids, not yet in `data/threats.json`), resolved like every
+other threat (`threatActionFor`; `kill` denies and ends the session, a value that is not an action blocks); both
+report by default, and a policy's `threatPolicy` can set 82 to `block` (a console Industrial/OT preset that does so is
 not in a released console yet). The alert carries the two enums only, never the command, a host, a register or a value.
-Not seen: a client under another name, a script outside the session directory or past 64 KiB, code built at
+Not seen: a client under another name, a script outside the session directory or past 256 MiB, code built at
 run time, and connections the agent makes without a shell (MCP tools are the preset's function rules;
 connections into OT subnets are the egress rule `cidr` field).
 

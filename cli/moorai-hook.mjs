@@ -3061,7 +3061,9 @@ async function main() {
     // Scripts the command carries (-EncodedCommand, an Invoke-Expression string): scanned as commands too.
     // Plus base64/hex payloads the command decodes straight into a shell (T1027.010): decoded and re-scanned
     // so the real payload, not the encoder, meets the command detectors.
-    const scripts = [...embeddedScripts(ti.command, ps ? { shell: "powershell" } : undefined), ...decodedCommandPayloads(ti.command)];
+    const embedded = embeddedScripts(ti.command, ps ? { shell: "powershell" } : undefined);
+    const decodedPayloads = decodedCommandPayloads(ti.command);
+    const scripts = [...embedded, ...decodedPayloads];
     const shellText = [ti.command || "", ...scripts].join("\n");
     // A file an UPLOAD command reads is leaving the device; the command text itself is outbound when it
     // uploads or names a host. Only these carry ctx.egress (instr-leak-egress is opt-in on it).
@@ -3145,7 +3147,9 @@ async function main() {
     logBehavior(tool, ti.command || "bash", btext, { decision: dec, findings: finds }, "file", clipboardSignals(ti.command));
     if (killIds.length) killSession(tool, killIds, "file");
     if (checkSecretEgress(policy, ti.command, tool, "egress") && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); why(REASON.SECRET_EGRESS); }
-    { const ot = otShellCheck({ command: ti.command, shell: ps ? "ps" : "sh", policy, readScript: scriptReader(typeof input.cwd === "string" ? input.cwd : process.cwd()), tool }); if (ot) { post({ ...ot.alert, ts: new Date().toISOString(), ...IDENTITY }); if (RANK[ot.decision] > RANK[dec]) { dec = ot.decision; reasons = [ot.reason]; alts = []; why(OT_PROTOCOL_CLIENT); } } }
+    // OT protocol clients (cli/ot-protocol-client.mjs): the command and every script decoded from it (embedded
+    // scripts are PowerShell, base64/hex payloads go to a POSIX shell); the strictest result is kept.
+    { const ot = otShellCheck({ command: ti.command, shell: ps ? "ps" : "sh", scripts: [...embedded.map((text) => ({ text, shell: "ps" })), ...decodedPayloads.map((text) => ({ text, shell: "sh" }))], policy, readScript: scriptReader(typeof input.cwd === "string" ? input.cwd : process.cwd()), tool }); if (ot) { post({ ...ot.alert, ts: new Date().toISOString(), ...IDENTITY }); if (ot.kill) killSession(tool, ot.killIds, "file"); if (RANK[ot.decision] > RANK[dec]) { dec = ot.decision; reasons = [ot.reason]; alts = []; why(OT_PROTOCOL_CLIENT); } } }
     if (reportEnvelope(policy, tool, { tool: "Bash", paths: readPaths }, "file") && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; alts = saferAlternativesFor([64]); why(REASON.ENVELOPE); }
     // Cumulative deletion volume: the first deletion after this session crossed the threshold asks. Only
     // ever allow -> ask (or adds the reason to an existing ask); never touches a deny.

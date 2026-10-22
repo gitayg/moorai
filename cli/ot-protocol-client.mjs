@@ -12,8 +12,10 @@
 //
 // ACTION. Two threat ids, because a threat carries one policy action and the contract wants read and
 // unknown to alert while write can block: OT_THREAT.read (read and unknown) and OT_THREAT.write. Both
-// resolve through policy.threatPolicy[id]; with no entry the action is "notify" (report, allow). The
-// built-in default is not raised to block, by the repository's rule for built-in blocks (cli/hook-core.mjs
+// resolve through cli/hook-core.mjs threatActionFor, like every other threat (threatPolicy, tierPolicy,
+// the mask fallback, then the built-in table); with no entry the action is "notify" (report, allow).
+// "kill" denies the call and asks the host to end the session. A value that is not an action
+// (a typo in a hand-edited policy) fails closed to "block". The built-in default is not raised to block, by the repository's rule for built-in blocks (cli/hook-core.mjs
 // BUILTIN_DEFAULT_ACTIONS: zero benign fires measured first); the Industrial/OT preset sets
 // threatPolicy[OT_THREAT.write] = "block", which is what its approvalRouting rule "ot-shell-write"
 // (match reasonCode OT_PROTOCOL_CLIENT, otOp write, holds block) holds for approval on a new agent.
@@ -25,22 +27,29 @@
 //
 // Network side: connections into OT subnets are the egress rule `cidr` field (CONTRACT-F28 §6.1, owned by
 // cli/egress-rules.mjs, rule id "ot-subnets"); this file does not judge destinations.
-import { statSync, readFileSync, openSync, readSync, closeSync } from "node:fs";
+import { statSync, openSync, readSync, closeSync } from "node:fs";
 import { resolve, relative, isAbsolute } from "node:path";
 import { splitShell, commandOf, scanArgs, normBinary, SHELLS, PWSH, MAX_CMD, MAX_DEPTH } from "../data/shell-parse.js";
 import { OT_PROTOCOLS, OT_OPS, OT_BINARIES, OT_PY_LIBS, OT_NODE_LIBS, OT_PY_MODULES, PY_INTERPRETERS, NODE_INTERPRETERS, RUNNERS } from "../data/ot-protocol-clients.js";
+import { threatActionFor } from "./hook-core.mjs";
 
 export { OT_PROTOCOLS, OT_OPS };
 export const OT_PROTOCOL_CLIENT = "OT_PROTOCOL_CLIENT";
 export const OT_THREAT = Object.freeze({ read: 81, write: 82 });
 export const OT_CATEGORY = "OT protocol client run from a shell";
 
-const ACTIONS = new Set(["notify", "justify", "block", "disabled"]);
-const DECISION = { notify: "allow", justify: "ask", block: "deny" };
-const ALERT_DECISION = { notify: "notify", justify: "ask", block: "deny" };
+const ACTION_RANK = { disabled: 0, notify: 1, justify: 2, block: 3, kill: 4 };
+const DECISION = { notify: "allow", justify: "ask", block: "deny", kill: "deny" };
+const ALERT_DECISION = { notify: "notify", justify: "ask", block: "deny", kill: "deny" };
 const OP_RANK = { unknown: 0, read: 1, write: 2 };
-const SCRIPT_MAX_BYTES = 65536;
-const SCRIPT_MAX_FILE = 1 << 20;
+// A script is read whole up to SCRIPT_MAX_BYTES. A larger one is never treated as clean: up to
+// SCRIPT_SCAN_MAX it is streamed for the library names alone (each named library is an "unknown" hit,
+// marked incomplete so the verdict takes the stricter of the read and write actions).
+const SCRIPT_MAX_BYTES = 8 << 20;
+const SCRIPT_SCAN_MAX = 256 << 20;
+const SCAN_CHUNK = 1 << 20;
+const LIB_NAMES = [...new Set([...Object.keys(OT_PY_LIBS), ...Object.keys(OT_NODE_LIBS)])];
+const NAME_OVERLAP = Math.max(...LIB_NAMES.map((n) => n.length));
 const SCRIPT_EXT = /\.(?:py|pyw|js|mjs|cjs|ts|mts|cts)$/i;
 
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -50,8 +59,8 @@ const PY = compile(OT_PY_LIBS, (n) => new RegExp(`(?:^|[\\n;])[ \\t]*(?:import[ 
 const NODE = compile(OT_NODE_LIBS, (n) => new RegExp(`(?:require|import)\\s*\\(\\s*['"\`]${esc(n)}(?:/[^'"\`]*)?['"\`]\\s*\\)|\\bfrom\\s+['"]${esc(n)}(?:/[^'"]*)?['"]`));
 
 // Libraries a piece of code imports, each with the op its calls show.
-function codeHits(code, lang, hits) {
-  const text = String(code || "").slice(0, MAX_CMD);
+function codeHits(code, lang, hits, max = MAX_CMD) {
+  const text = String(code || "").slice(0, max);
   if (!text) return;
   for (const l of lang === "py" ? PY : NODE) {
     if (!l.imp.test(text)) continue;
@@ -60,8 +69,26 @@ function codeHits(code, lang, hits) {
   }
 }
 
-// A bounded reader for a script the command runs: inside `cwd` only, a regular file of at most 1 MiB,
-// the first 64 KiB read. Returns the text or null. The hook passes scriptReader(<session cwd>).
+// Library names written anywhere in a file too large to read whole, streamed in chunks that overlap by
+// the longest name. → the names found, and whether the file ran past SCRIPT_SCAN_MAX.
+function streamNames(fd, size) {
+  const found = new Set();
+  const buf = Buffer.alloc(SCAN_CHUNK + NAME_OVERLAP);
+  let carry = "", pos = 0;
+  while (pos < size && pos < SCRIPT_SCAN_MAX) {
+    const n = readSync(fd, buf, 0, SCAN_CHUNK, pos);
+    if (n <= 0) break;
+    pos += n;
+    const text = carry + buf.subarray(0, n).toString("latin1");
+    for (const name of LIB_NAMES) if (!found.has(name) && text.includes(name)) found.add(name);
+    carry = text.slice(-NAME_OVERLAP);
+  }
+  return { names: [...found], beyond: pos < size };
+}
+
+// A bounded reader for a script the command runs: inside `cwd` only, a regular file. → null (not read),
+// the whole text (at most SCRIPT_MAX_BYTES), or for a larger file { truncated: true, names } (the
+// library names streamed from it). The hook passes scriptReader(<session cwd>).
 export function scriptReader(cwd) {
   const base = resolve(String(cwd || "."));
   return (p) => {
@@ -72,11 +99,13 @@ export function scriptReader(cwd) {
       const rel = relative(base, full);
       if (!rel || rel.startsWith("..") || isAbsolute(rel)) return null;
       const st = statSync(full);
-      if (!st.isFile() || st.size > SCRIPT_MAX_FILE) return null;
+      if (!st.isFile()) return null;
       const fd = openSync(full, "r");
       try {
-        const buf = Buffer.alloc(Math.min(st.size, SCRIPT_MAX_BYTES));
-        const n = readSync(fd, buf, 0, buf.length, 0);
+        if (st.size > SCRIPT_MAX_BYTES) return { truncated: true, ...streamNames(fd, st.size) };
+        const buf = Buffer.alloc(st.size);
+        let n = 0;
+        while (n < buf.length) { const k = readSync(fd, buf, n, buf.length - n, n); if (k <= 0) break; n += k; }
         return buf.subarray(0, n).toString("utf8");
       } finally { closeSync(fd); }
     } catch { return null; }
@@ -85,8 +114,15 @@ export function scriptReader(cwd) {
 
 function scriptHits(path, lang, readScript, hits) {
   if (typeof readScript !== "function" || !path || path.includes("$")) return;
-  const text = readScript(path);
-  if (typeof text === "string") codeHits(text, lang, hits);
+  const got = readScript(path);
+  if (typeof got === "string") { codeHits(got, lang, hits, SCRIPT_MAX_BYTES); return; }
+  if (!got || !got.truncated) return;
+  const libs = lang === "py" ? OT_PY_LIBS : OT_NODE_LIBS;
+  for (const name of got.names || []) {
+    if (!Object.prototype.hasOwnProperty.call(libs, name)) continue;
+    hits.push({ protocol: libs[name].protocol, op: "unknown", client: name });
+    hits.incomplete = true;
+  }
 }
 
 // mbpoll / modpoll / modbus-cli / OPC UA and BACnet tools. Native tools take POSIX-style options on every
@@ -120,19 +156,70 @@ function pyModuleHit(mod, args, hits) {
   if (lib) hits.push({ protocol: lib.protocol, op: "unknown", client: root });
 }
 
-function pythonHits(rest, seg, readScript, hits) {
+// CPython's options, read character by character as getopt does: `-Ic code`, `-Im mod`, `-Wignore`.
+const PY_NOARG = new Set([..."bBdEhiIOPqRsSuvVx?"]);
+const PY_LONG_NOARG = new Set(["--version", "--help", "--help-env", "--help-xoptions", "--help-all"]);
+const PY_LONG_VALUED = new Set(["--check-hash-based-pycs"]);
+const PY_LAUNCHER_VERSION = /^-(?:\d+(?:\.\d+)?)?(?:-(?:32|64|arm64))?$/;
+
+// Arguments the parser cannot read fail closed: every argument is scanned as code, as a module name and
+// as a script path.
+function pythonFallback(rest, readScript, hits) {
+  for (const t of rest) {
+    codeHits(t, "py", hits);
+    if (/^[A-Za-z_][\w.]*$/.test(t)) pyModuleHit(t, [], hits);
+    if (/\.pyw?$/i.test(t)) scriptHits(t, "py", readScript, hits);
+  }
+}
+
+function pythonHits(binary, rest, seg, readScript, hits) {
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i];
-    if (t === "-c") { codeHits(rest[i + 1], "py", hits); return; }
-    if (t.startsWith("-c") && t.length > 2 && !t.startsWith("--")) { codeHits(t.slice(2), "py", hits); return; }
-    if (t === "-m") { if (rest[i + 1]) pyModuleHit(rest[i + 1], rest.slice(i + 2), hits); return; }
-    if (t === "-W" || t === "-X") { i++; continue; }
     if (t === "-") break;
-    if (t.startsWith("-")) continue;
+    if (t === "--") { if (rest[i + 1] != null && rest[i + 1] !== "-") { scriptHits(rest[i + 1], "py", readScript, hits); return; } break; }
+    if (binary === "py" && PY_LAUNCHER_VERSION.test(t) && t !== "-") continue;
+    if (t.startsWith("--")) {
+      if (PY_LONG_NOARG.has(t)) continue;
+      const eq = t.indexOf("=");
+      if (PY_LONG_VALUED.has(eq > 0 ? t.slice(0, eq) : t)) {
+        if (eq < 0) { if (rest[i + 1] == null) return pythonFallback(rest, readScript, hits); i++; }
+        continue;
+      }
+      return pythonFallback(rest, readScript, hits);
+    }
+    if (t.startsWith("-")) {
+      for (let k = 1; k < t.length; k++) {
+        const ch = t[k];
+        if (ch === "c" || ch === "m") {
+          const attached = k + 1 < t.length;
+          const v = attached ? t.slice(k + 1) : rest[i + 1];
+          if (v == null) return pythonFallback(rest, readScript, hits);
+          if (ch === "c") codeHits(v, "py", hits);
+          else pyModuleHit(v, rest.slice(attached ? i + 1 : i + 2), hits);
+          return;
+        }
+        if (ch === "W" || ch === "X") {
+          if (k + 1 === t.length) { if (rest[i + 1] == null) return pythonFallback(rest, readScript, hits); i++; }
+          break;
+        }
+        if (!PY_NOARG.has(ch)) return pythonFallback(rest, readScript, hits);
+      }
+      continue;
+    }
     scriptHits(t, "py", readScript, hits);
     return;
   }
   if (seg.heredoc != null) codeHits(seg.heredoc, "py", hits);
+}
+
+// Node options: --eval= / --print=, short flags combined and ending in e or p (`-pe`), and modules loaded
+// before the script (-r / --require / --import / --loader), each checked against OT_NODE_LIBS.
+const NODE_PRELOAD = new Set(["-r", "--require", "--import", "--loader", "--experimental-loader"]);
+const NODE_VALUED = new Set(["-C", "--conditions", "--input-type", "--title", "--env-file", "--disable-warning", "--watch-path", "--test-name-pattern", "--test-reporter", "--test-reporter-destination", "--redirect-warnings", "--stack-size"]);
+function preloadHit(spec, hits) {
+  const s = String(spec || "");
+  const root = s.startsWith("@") ? s.split("/").slice(0, 2).join("/") : s.split("/")[0];
+  if (Object.prototype.hasOwnProperty.call(OT_NODE_LIBS, root)) hits.push({ protocol: OT_NODE_LIBS[root].protocol, op: "unknown", client: root });
 }
 
 function nodeHits(binary, rest, seg, readScript, hits) {
@@ -141,14 +228,48 @@ function nodeHits(binary, rest, seg, readScript, hits) {
   if (binary === "deno" && rest[0] === "eval") { codeHits(rest[1], "node", hits); return; }
   for (; i < rest.length; i++) {
     const t = rest[i];
-    if (t === "-e" || t === "--eval" || t === "-p" || t === "--print") { codeHits(rest[i + 1], "node", hits); return; }
-    if (t === "-r" || t === "--require" || t === "--import" || t === "--loader") { i++; continue; }
+    const eq = t.startsWith("--") ? t.indexOf("=") : -1;
+    const name = eq > 0 ? t.slice(0, eq) : t;
+    const inline = eq > 0 ? t.slice(eq + 1) : null;
+    if (name === "--eval" || name === "--print") { codeHits(inline != null ? inline : rest[i + 1], "node", hits); return; }
+    if (/^-[A-Za-z]*[ep]$/.test(t)) { codeHits(rest[i + 1], "node", hits); return; }
+    if (NODE_PRELOAD.has(name)) { preloadHit(inline != null ? inline : rest[i + 1], hits); if (inline == null) i++; continue; }
+    if (NODE_VALUED.has(name)) { if (inline == null) i++; continue; }
     if (t === "-") break;
+    if (t === "--") { if (rest[i + 1] != null) scriptHits(rest[i + 1], "node", readScript, hits); return; }
     if (t.startsWith("-")) continue;
     scriptHits(t, "node", readScript, hits);
     return;
   }
   if (seg.heredoc != null) codeHits(seg.heredoc, "node", hits);
+}
+
+// PowerShell's command line (cli/egress-rules.mjs reads it the same way): a parameter is written with
+// -, -- or /, and any unambiguous prefix names it. -EncodedCommand (-e, -ec, -enc, ...) carries a base64
+// UTF-16LE script; -Command (any prefix, or -CommandWithArgs) the rest of the line; -File a script file;
+// and a first bare argument is the command (Windows PowerShell) or a script (pwsh), read as a command.
+const PS_PARAM = /^(?:--?|\/)([A-Za-z]+)$/;
+const isPrefix = (p, full, min = 1) => p.length >= min && full.startsWith(p);
+const PS_VALUED = ["executionpolicy", "windowstyle", "workingdirectory", "configurationname", "configurationfile", "custompipename", "inputformat", "outputformat", "psconsolefile", "settingsfile", "version"];
+const PS_VALUED_SHORT = new Set(["ep", "ex", "w", "wd", "if", "of", "o", "v", "config"]);
+function decodeEncoded(b64) {
+  try { return Buffer.from(String(b64 || ""), "base64").toString("utf16le"); } catch { return ""; }
+}
+function pwshHits(rest, seg, depth, readScript, hits) {
+  for (let i = 0; i < rest.length; i++) {
+    const m = PS_PARAM.exec(rest[i]);
+    if (!m) { walk(rest.slice(i).join(" "), true, depth + 1, readScript, hits); return; }
+    const p = m[1].toLowerCase();
+    if (p === "e" || p === "ec" || isPrefix(p, "encodedcommand", 2)) { if (rest[i + 1]) walk(decodeEncoded(rest[i + 1]), true, depth + 1, readScript, hits); return; }
+    if (p === "cwa" || isPrefix(p, "commandwithargs", 1)) {
+      if (rest[i + 1] === "-" && seg.heredoc != null) walk(seg.heredoc, true, depth + 1, readScript, hits);
+      else walk(rest.slice(i + 1).join(" "), true, depth + 1, readScript, hits);
+      return;
+    }
+    if (isPrefix(p, "file", 1)) return;
+    if (PS_VALUED_SHORT.has(p) || PS_VALUED.some((v) => isPrefix(p, v, 2))) { i++; continue; }
+  }
+  if (seg.heredoc != null) walk(seg.heredoc, true, depth + 1, readScript, hits);
 }
 
 // One command word (after env assignments and wrappers) and its arguments.
@@ -169,14 +290,29 @@ function commandHits(tokens, seg, ps, depth, readScript, hits) {
     else if (seg.heredoc != null) walk(seg.heredoc, false, depth + 1, readScript, hits);
     return;
   }
-  if (depth < MAX_DEPTH && PWSH.has(binary)) {
-    const ci = rest.findIndex((t) => /^-c(ommand)?$/i.test(t));
-    if (ci >= 0) walk(rest.slice(ci + 1).join(" "), true, depth + 1, readScript, hits);
+  if (depth < MAX_DEPTH && PWSH.has(binary)) { pwshHits(rest, seg, depth, readScript, hits); return; }
+  if (depth < MAX_DEPTH && binary === "cmd") {
+    const ci = rest.findIndex((t) => /^\/[ck]$/i.test(t));
+    if (ci >= 0) walk(rest.slice(ci + 1).join(" "), false, depth + 1, readScript, hits);
+    return;
+  }
+  if (depth < MAX_DEPTH && (binary === "eval" || binary === "invoke-expression" || binary === "iex")) {
+    walk(rest.join(" "), ps || binary !== "eval", depth + 1, readScript, hits);
+    return;
+  }
+  if (depth < MAX_DEPTH && binary === "find" && rest.some((t) => /^-(?:exec|execdir|ok|okdir)$/.test(t))) {
+    for (let k = 0; k < rest.length; k++) {
+      if (!/^-(?:exec|execdir|ok|okdir)$/.test(rest[k])) continue;
+      let end = rest.findIndex((t, j) => j > k && (t === ";" || t === "+"));
+      if (end < 0) end = rest.length;
+      commandHits(rest.slice(k + 1, end), { tokens: rest.slice(k + 1, end) }, false, depth + 1, readScript, hits);
+      k = end;
+    }
     return;
   }
   const def = Object.prototype.hasOwnProperty.call(OT_BINARIES, binary) ? OT_BINARIES[binary] : null;
   if (def) { hits.push(binaryHit(def, binary, rest)); return; }
-  if (PY_INTERPRETERS.test(binary)) { pythonHits(rest, seg, readScript, hits); return; }
+  if (PY_INTERPRETERS.test(binary)) { pythonHits(binary, rest, seg, readScript, hits); return; }
   if (NODE_INTERPRETERS.test(binary)) { nodeHits(binary, rest, seg, readScript, hits); return; }
   // A script run directly (./tool.py, ./poll.mjs): read by extension.
   const bare = String(word || "");
@@ -188,33 +324,41 @@ function walk(cmd, ps, depth, readScript, hits) {
   for (const seg of parsed.segs || []) commandHits(seg.tokens || [], seg, ps, depth, readScript, hits);
 }
 
-// → null, or { otProtocol, otOp, client } where client names the tool or library (kept in process; it is
-// not an alert field). shell: "sh" (Bash, the default) or "ps" (PowerShell). Never throws.
-export function otShellFacts(command, { shell = "sh", readScript = null } = {}) {
-  if (typeof command !== "string" || !command.trim()) return null;
+// → null, or { otProtocol, otOp, client, incomplete } where client names the tool or library (kept in
+// process; it is not an alert field) and incomplete is true when a script was too large to read whole.
+// shell: "sh" (Bash, the default) or "ps" (PowerShell). scripts: further scripts the caller decoded from
+// the command ([{ text, shell }], the hook's -EncodedCommand / Invoke-Expression / base64-into-a-shell
+// payloads), read into the same result. Never throws.
+export function otShellFacts(command, { shell = "sh", readScript = null, scripts = [] } = {}) {
   const hits = [];
-  try { walk(command, shell === "ps", 0, readScript, hits); } catch { return null; }
+  const sources = [{ text: command, shell }, ...(Array.isArray(scripts) ? scripts : [])];
+  for (const s of sources) {
+    if (!s || typeof s.text !== "string" || !s.text.trim()) continue;
+    try { walk(s.text, s.shell === "ps", 0, readScript, hits); } catch { /* one source that cannot be read does not hide another */ }
+  }
   if (!hits.length) return null;
   let best = hits[0];
   for (const h of hits) if (OP_RANK[h.op] > OP_RANK[best.op]) best = h;
-  return { otProtocol: best.protocol, otOp: best.op, client: best.client };
+  return { otProtocol: best.protocol, otOp: best.op, client: best.client, incomplete: !!hits.incomplete };
 }
 
+// The policy action for one threat id, resolved by threatActionFor; a value that is not an action fails
+// closed to "block".
 function actionFor(policy, id) {
-  const act = policy && typeof policy === "object" && policy.threatPolicy && typeof policy.threatPolicy === "object" ? policy.threatPolicy[id] : undefined;
-  if (ACTIONS.has(act)) return act;
-  if (act === "mask" && ["notify", "justify", "block"].includes(policy.maskFallback)) return policy.maskFallback;
-  return "notify";
+  const act = threatActionFor(policy && typeof policy === "object" ? policy : null, id);
+  return Object.prototype.hasOwnProperty.call(ACTION_RANK, act) ? act : "block";
 }
 
 // The hook's check for one command tool call. → null (no OT client, or the policy disabled the threat), or
 // { decision: "allow"|"ask"|"deny", action, otProtocol, otOp, reason, alert }. The caller posts `alert`
 // (adding ts and identity) and raises its verdict to `decision` when that ranks higher.
-export function otShellCheck({ command, shell = "sh", policy = null, readScript = null, tool = "Bash" } = {}) {
-  const f = otShellFacts(command, { shell, readScript });
+export function otShellCheck({ command, shell = "sh", policy = null, readScript = null, scripts = [], tool = "Bash" } = {}) {
+  const f = otShellFacts(command, { shell, readScript, scripts });
   if (!f) return null;
   const threatId = f.otOp === "write" ? OT_THREAT.write : OT_THREAT.read;
-  const action = actionFor(policy, threatId);
+  let action = actionFor(policy, threatId);
+  // A script read only in part may hold a write in the part not read: the stricter action of the two.
+  if (f.incomplete && f.otOp !== "write") { const wa = actionFor(policy, OT_THREAT.write); if (ACTION_RANK[wa] > ACTION_RANK[action]) action = wa; }
   if (action === "disabled") return null;
   const decision = DECISION[action];
   const what = `an OT protocol client (${f.otProtocol} ${f.otOp})`;
@@ -235,5 +379,6 @@ export function otShellCheck({ command, shell = "sh", policy = null, readScript 
     otOp: f.otOp,
     contentHash: `ot:${f.otProtocol}:${f.otOp}`
   };
-  return { decision, action, otProtocol: f.otProtocol, otOp: f.otOp, reason, alert };
+  const kill = action === "kill";
+  return { decision, action, kill, killIds: kill ? [threatId] : [], otProtocol: f.otProtocol, otOp: f.otOp, reason, alert };
 }

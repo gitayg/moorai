@@ -82,3 +82,27 @@ test("no OT policy: a Modbus write is reported, not blocked (built-in notify)", 
     assert.ok(await waitFor(() => c.alerts.some((a) => a.reasonCode === "OT_PROTOCOL_CLIENT" && a.otOp === "write" && a.decision === "notify")));
   } finally { c.close(); rmTree(home); }
 });
+
+test("a client inside a script the command decodes into a shell is checked, and its write is denied", async () => {
+  const c = await consoleServer({ captureTier: "content-free", threatPolicy: { [OT_THREAT.write]: "block", [OT_THREAT.read]: "notify" } });
+  const home = mkdtempSync(join(tmpdir(), "moorai-othook-"));
+  mkdirSync(join(home, "proj"), { recursive: true });
+  try {
+    const cmd = `echo ${Buffer.from(WRITE).toString("base64")} | base64 -d | sh`;
+    const w = await run(home, cmd, env(c.url));
+    assert.equal(decision(w.out), "deny", JSON.stringify(w.out));
+    assert.ok(await waitFor(() => c.alerts.some((a) => a.reasonCode === "OT_PROTOCOL_CLIENT" && a.otOp === "write")), JSON.stringify(c.alerts.map((a) => a.category)));
+    for (const leak of ["10.20.0.5", "4242", "1500"]) assert.ok(!JSON.stringify(c.alerts).includes(leak), `alert carries ${leak}`);
+  } finally { c.close(); rmTree(home); }
+});
+
+test("threatPolicy kill on the OT write threat denies the call and ends the session", async () => {
+  const c = await consoleServer({ captureTier: "content-free", threatPolicy: { [OT_THREAT.write]: "kill" } });
+  const home = mkdtempSync(join(tmpdir(), "moorai-othook-"));
+  mkdirSync(join(home, "proj"), { recursive: true });
+  try {
+    const w = await run(home, WRITE, env(c.url));
+    assert.equal(decision(w.out), "deny", JSON.stringify(w.out));
+    assert.ok(await waitFor(() => c.alerts.some((a) => a.category === "Session terminated (kill)" && a.contentHash === `kill:${OT_THREAT.write}`)), JSON.stringify(c.alerts.map((a) => a.category)));
+  } finally { c.close(); rmTree(home); }
+});
