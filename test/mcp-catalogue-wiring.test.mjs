@@ -35,7 +35,7 @@ function signPolicy(policy) {
 const pub = generateKeyPairSync("ed25519");
 const PUB_B64 = pub.publicKey.export({ type: "spki", format: "der" }).toString("base64");
 const CATALOGUE = JSON.stringify(signCatalogue({
-  catalogue: CATALOGUE_FORMAT, v: 1, seq: 1, issuedAt: "2026-10-21T00:00:00.000Z", publisher: "test",
+  catalogue: CATALOGUE_FORMAT, v: 1, seq: 1, issuedAt: "2026-10-21T00:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z", publisher: "test",
   entries: [{ kind: "mcp-server", ecosystem: "npm", name: "evil-mcp-thing", status: "do-not-install", source: "advisory", versions: [] }]
 }, pub.privateKey));
 

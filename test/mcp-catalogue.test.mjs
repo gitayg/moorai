@@ -30,7 +30,7 @@ const kp = () => {
 const K1 = kp(), K2 = kp();
 
 function body(entries, extra = {}) {
-  return { catalogue: CATALOGUE_FORMAT, v: 1, seq: 3, issuedAt: "2026-10-21T00:00:00.000Z", publisher: "test", entries, ...extra };
+  return { catalogue: CATALOGUE_FORMAT, v: 1, seq: 3, issuedAt: "2026-10-21T00:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z", publisher: "test", entries, ...extra };
 }
 const E_BAD = { kind: "mcp-server", ecosystem: "npm", name: "evil-mcp-thing", status: "do-not-install", versions: [], source: "advisory" };
 const E_FS = { kind: "mcp-server", ecosystem: "npm", name: "@modelcontextprotocol/server-filesystem", status: "listed", source: "official-registry",
@@ -75,6 +75,24 @@ test("tampered entry, wrong key, unsigned and malformed are all refused", () => 
   assert.equal(verifyCatalogue({ ...c, sig: { ...c.sig, alg: "rsa" } }, { keys }).status, "malformed");
   assert.equal(verifyCatalogue({ ...c, catalogue: "other" }, { keys }).status, "malformed");
   assert.equal(verifyCatalogue(null, { keys }).status, "malformed");
+});
+
+test("expiresAt is mandatory and after issuedAt: a signed catalogue without it is malformed", () => {
+  const keys = catalogueTrustKeys({ policyKeys: [K1.b64], env: {}, anchorFile: null, builtin: [] });
+  const { expiresAt: _e, ...noExp } = body([E_FS]);
+  assert.ok(validateCatalogue(noExp).includes("expiresAt"), "a missing expiresAt is a validation error");
+  assert.ok(validateCatalogue(body([E_FS], { expiresAt: "2026-10-20T00:00:00.000Z" })).includes("expiresAt"), "expiresAt before issuedAt");
+  assert.deepEqual(verifyCatalogue(signCatalogue(noExp, K1.privateKey), { keys }), { trusted: false, status: "malformed" });
+});
+
+test("an expired signed catalogue is refused by verifyCatalogue (status expired), at the given now and by default at the real clock", () => {
+  const keys = catalogueTrustKeys({ policyKeys: [K1.b64], env: {}, anchorFile: null, builtin: [] });
+  const c = signCatalogue(body([E_BAD], { issuedAt: "2020-01-01T00:00:00.000Z", expiresAt: "2020-04-01T00:00:00.000Z" }), K1.privateKey);
+  assert.deepEqual([verifyCatalogue(c, { keys }).trusted, verifyCatalogue(c, { keys }).status], [false, "expired"]);
+  assert.equal(verifyCatalogue(c, { keys, now: Date.parse("2020-03-31T23:59:59.000Z") }).status, "ok", "before expiresAt it verifies");
+  assert.equal(verifyCatalogue(c, { keys, now: Date.parse("2020-04-01T00:00:00.000Z") }).status, "expired", "at expiresAt it is expired");
+  const t = JSON.parse(JSON.stringify(c)); t.expiresAt = "2099-01-01T00:00:00.000Z";
+  assert.equal(verifyCatalogue(t, { keys }).status, "untrusted", "expiresAt is inside the signature: extending it breaks the signature");
 });
 
 test("entry validation: unknown kind, verdict, status and ecosystem are rejected; a valid catalogue passes", () => {
@@ -213,20 +231,26 @@ test("refreshCatalogue: a fetchedAt in the future does not make a planted older 
   assert.equal(f2.calls.length, 0);
 });
 
-test("an expired catalogue is never fresh: it is fetched again; while it cannot be, its risk signals still apply and it reads expired", async () => {
+test("an expired catalogue is refused, cached or fetched: never used, never cached, replaced by a current one", async () => {
   const sd = tmp("expired"), home = tmp("exphome");
   plant(sd, signCatalogue(body([E_BAD], { seq: 3, expiresAt: "2026-10-02T00:00:00.000Z" }), K1.privateKey), NOW - 3600e3);
   const read = readCatalogue({ stateDir: sd, policy: POL, env: {}, anchorFile: null, now: NOW });
-  assert.deepEqual([read.status, read.expired], ["ok", true]);
+  assert.deepEqual([read.status, read.catalogue], ["expired", null]);
+  const before = readCatalogue({ stateDir: sd, policy: POL, env: {}, anchorFile: null, now: Date.parse("2026-10-01T00:00:00.000Z") });
+  assert.deepEqual([before.status, before.catalogue && before.catalogue.seq], ["ok", 3], "the same cached file read before its expiry is used");
   const down = fakeFetch({}, { status: 503 });
   const r1 = await R(sd, down);
   assert.equal(down.calls.length, 1, "an expired catalogue is not served as fresh");
-  assert.deepEqual([r1.refresh, r1.catalogue.seq, r1.expired], ["fetch-failed", 3, true]);
+  assert.deepEqual([r1.refresh, r1.status, r1.catalogue], ["fetch-failed", "expired", null]);
   const rep = assessServerSync({ command: "npx", args: ["-y", "evil-mcp-thing@1.0.0"] }, { stateDir: sd, home, catalogue: POL, now: NOW });
-  assert.ok(rep.reasons.includes("catalogue-do-not-install"), "expiry never removes a risk signal");
+  assert.ok(!rep.reasons.includes("catalogue-do-not-install"), "an expired catalogue's entries are not used");
   assert.ok(rep.evidence.includes("catalogue-expired"), `evidence: ${rep.evidence}`);
-  const r2 = await R(sd, fakeFetch(signCatalogue(body([E_BAD], { seq: 4, expiresAt: "2027-01-01T00:00:00.000Z" }), K1.privateKey)));
-  assert.deepEqual([r2.refresh, r2.catalogue.seq, r2.expired], ["ok", 4, false]);
+  const stale = fakeFetch(signCatalogue(body([E_BAD], { seq: 9, expiresAt: "2026-10-03T00:00:00.000Z" }), K1.privateKey));
+  const r2 = await R(sd, stale);
+  assert.deepEqual([r2.refresh, r2.catalogue], ["expired", null], "an expired catalogue served by the feed is refused");
+  assert.equal(JSON.parse(readFileSync(join(sd, CATALOGUE_FILE), "utf8")).catalogue.seq, 3, "and is not cached");
+  const r3 = await R(sd, fakeFetch(signCatalogue(body([E_BAD], { seq: 4, expiresAt: "2027-01-01T00:00:00.000Z" }), K1.privateKey)));
+  assert.deepEqual([r3.refresh, r3.status, r3.catalogue.seq], ["ok", "ok", 4]);
 });
 
 test("seq high-water mark: a planted older signed cache is refused on read and refetched; an older fetch is refused with no cache", async () => {
@@ -415,6 +439,10 @@ test("moorai-mcp-catalogue verify: exit 0 on a good signature, 1 on a tampered f
   assert.equal(JSON.parse(r2.stdout).status, "untrusted");
   const r3 = cli(["verify", good], { MOORAI_CATALOGUE_PUBKEY: "" });
   assert.equal(JSON.parse(r3.stdout).status, "no-anchor");
+  const exp = join(d, "old.json");
+  writeFileSync(exp, JSON.stringify(signCatalogue(body([E_BAD], { issuedAt: "2020-01-01T00:00:00.000Z", expiresAt: "2020-04-01T00:00:00.000Z" }), K1.privateKey)));
+  const r4 = cli(["verify", exp, "--pubkey", K1.b64]);
+  assert.deepEqual([r4.status, JSON.parse(r4.stdout).status], [1, "expired"]);
 });
 
 test("moorai-mcp-catalogue status: reports the cached catalogue's verification state", () => {
@@ -424,6 +452,9 @@ test("moorai-mcp-catalogue status: reports the cached catalogue's verification s
   assert.equal(r.status, 0, r.stderr);
   assert.equal(JSON.parse(r.stdout).status, "ok");
   assert.equal(JSON.parse(r.stdout).expired, false);
+  const old = tmp("cliold");
+  seedCache(join(old, ".moorai"), signCatalogue(body([E_BAD], { issuedAt: "2020-01-01T00:00:00.000Z", expiresAt: "2020-04-01T00:00:00.000Z" }), K1.privateKey));
+  assert.equal(JSON.parse(cli(["status"], { HOME: old, MOORAI_CATALOGUE_PUBKEY: K1.b64 }).stdout).status, "expired");
   const r2 = cli(["status"], { HOME: home, MOORAI_CATALOGUE_PUBKEY: K2.b64 });
   assert.equal(JSON.parse(r2.stdout).status, "untrusted");
 });
