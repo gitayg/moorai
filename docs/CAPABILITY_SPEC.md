@@ -3251,7 +3251,8 @@ each basis; the console pins the same literal and downgrades a stronger claim.
   ("MUST forward it and otherwise ignore it"); an annotation off a `properties` chain, on a `number`, not a
   token, or repeated case-blind makes the tool's annotations unused and is reported once. A 2026-era request
   (header or body `_meta` protocol version ≥ 2026-07-28) missing `MCP-Protocol-Version`, `Mcp-Method` or
-  `Mcp-Name` answers 400 / `-32020` ("A required standard header ... is missing"), except `server/discover`.
+  `Mcp-Name` answers 400 / `-32020` ("A required standard header ... is missing"), `server/discover` included
+  (the revision lists no exemption).
   [`mcp-gateway/oauth-discovery.mjs`](../mcp-gateway/oauth-discovery.mjs): `/.well-known/oauth-protected-resource/<route>`
   serves the remote's RFC 9728 metadata after checking its `resource` against the remote URL (RFC 9728 3.3;
   502 when it names another resource, 404 when there is none), with `resource` set to the gateway route; a

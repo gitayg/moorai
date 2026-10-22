@@ -2200,7 +2200,8 @@ It also hardens the wire itself:
   decoding and with integers compared as numbers; a missing one when the body carries the value, or one the
   body has no value for, is refused too. A 2026-era request without `MCP-Protocol-Version`, `Mcp-Method` or
   (for `tools/call`, `resources/read`, `prompts/get`) `Mcp-Name` is refused. Both answer 400 with JSON-RPC
-  `-32020` (HeaderMismatch). `server/discover`, the version probe, is not refused for a missing header. An
+  `-32020` (HeaderMismatch). The `server/discover` version probe is held to the same headers, as the
+revision requires (Claude Code 2.1.295's probe carries `MCP-Protocol-Version` and `Mcp-Method`). An
   `Mcp-Param-*` header the gateway does not recognize is forwarded. A tool definition with an invalid
   `x-mcp-header` annotation is reported once.
 - **OAuth discovery (RFC 9728).** The gateway serves `/.well-known/oauth-protected-resource/<route>` (and the

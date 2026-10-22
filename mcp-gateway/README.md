@@ -529,7 +529,8 @@ must turn the run red.
   (learned from the route's judged `tools/list`) are validated against the body ("Any server that processes
   the message body MUST validate that encoded header values, after decoding if Base64-encoded, match the
   corresponding values in the request body"); unrecognized ones are forwarded. A 2026-era request without
-  `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` (where required) is refused, except `server/discover`.
+  `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` (where required) is refused, the `server/discover`
+  version probe included (Claude Code 2.1.295 sends both headers on its probe, measured 2026-10-21).
   Both answer 400 / `-32020`.
 - **Egress rules.** Every `tools/call`'s arguments are judged by the hook's egress rules for
   `mcp__<route>__<tool>`, and the gateway's own connection to the upstream is judged by host, port, method

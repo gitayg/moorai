@@ -91,6 +91,23 @@ test("2026-07-28 requests: a missing MCP-Protocol-Version, Mcp-Method or Mcp-Nam
   });
 });
 
+test("2026-07-28 server/discover is held to the same standard headers: without Mcp-Method it is a HeaderMismatch (the spec lists no exemption); with the headers a real client sends (Claude Code 2.1.295: MCP-Protocol-Version and Mcp-Method) it is forwarded", async () => {
+  await scenario({ policy: { captureTier: "content-free" } }, async ({ up, base }) => {
+    const disc = (id) => ({ jsonrpc: "2.0", id, method: "server/discover", params: { _meta: { "io.modelcontextprotocol/protocolVersion": PV } } });
+    for (const [hdrs, missing] of [[{ "MCP-Protocol-Version": PV }, "Mcp-Method"], [{ "Mcp-Method": "server/discover" }, "MCP-Protocol-Version"]]) {
+      const r = await post(base, disc(1), hdrs);
+      assert.equal(r.status, 400, `${missing}: ${r.text}`);
+      assert.equal(r.json.error.code, -32020);
+      assert.match(r.json.error.message, new RegExp(`required ${missing} header is missing`));
+    }
+    const probes = () => up.received.filter((r) => r.json && r.json.method === "server/discover").length;
+    assert.equal(probes(), 0, "a refused probe reached the upstream");
+    const ok = await post(base, disc(2), { "MCP-Protocol-Version": PV, "Mcp-Method": "server/discover" });
+    assert.notEqual(ok.status, 400, ok.text);
+    assert.equal(probes(), 1, "the probe with its headers reached the upstream");
+  });
+});
+
 // A protected remote MCP server (an OAuth resource server): 401 without a token, with resource_metadata.
 async function startResourceServer({ prmResource, challengeMetadata = true, foreignPrm = null } = {}) {
   const seen = [];

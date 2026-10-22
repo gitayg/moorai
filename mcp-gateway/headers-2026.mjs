@@ -44,12 +44,13 @@ export function isModern(req, m) {
   return [h, b].some((v) => typeof v === "string" && PV_RE.test(v) && v >= MODERN_PV);
 }
 
-// A 2026-era request missing a required standard header → the reason, else null. `server/discover` is
-// exempt: it is the version probe ("Clients MAY call it before any other request for up-front version
-// selection, or use it as a backward-compatibility probe"), carries no tool, and the upstream answers it
-// with the versions it supports; refusing a probe that omits a header would only break version selection.
+// A 2026-era request missing a required standard header → the reason, else null. Every request, the
+// `server/discover` version probe included: the revision lists no exemption (Mcp-Method is required for "All
+// requests"), and a client whose probe gets a modern JSON-RPC error is told to "correct the request, rather
+// than falling back" (Backward Compatibility). Claude Code 2.1.295's probe carries both MCP-Protocol-Version
+// and Mcp-Method (measured 2026-10-21).
 export function missingStandardHeader(req, m) {
-  if (!isObj(m) || typeof m.method !== "string" || m.id === undefined || m.method === "server/discover" || !isModern(req, m)) return null;
+  if (!isObj(m) || typeof m.method !== "string" || m.id === undefined || !isModern(req, m)) return null;
   if (req.headers["mcp-protocol-version"] === undefined) return "required MCP-Protocol-Version header is missing";
   if (req.headers["mcp-method"] === undefined) return "required Mcp-Method header is missing";
   if (NAME_METHODS.has(m.method) && req.headers["mcp-name"] === undefined) return "required Mcp-Name header is missing";
