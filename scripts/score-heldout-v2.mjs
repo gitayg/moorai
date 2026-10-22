@@ -76,6 +76,9 @@ async function run() {
   const timeoutMs = ti >= 0 && args[ti + 1] ? Number(args[ti + 1]) : null;
 
   const opts = { policy: enforcementPolicy, timeoutMs };
+  // Measurement asks the model every time: the on-device verdict cache (data/escalation-cache.mjs) would
+  // answer repeat texts from earlier runs. An explicit MOORAI_ESCALATION_CACHE setting is left as is.
+  if (useSemantic && !process.env.MOORAI_ESCALATION_CACHE) process.env.MOORAI_ESCALATION_CACHE = "off";
   if (useSemantic) opts.escalate = (eng, text, stage) => escalateMiss(eng, text, stage, SEMANTIC_POLICY);
 
   const rows = [];

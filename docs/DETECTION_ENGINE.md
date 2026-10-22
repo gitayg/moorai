@@ -648,6 +648,28 @@ scan, and each is wrapped so that a failure inside it leaves the boolean verdict
    (`test/escalation-ordering.test.mjs`, F-301). Only `semantic-persuasion` opts in today, on the
    `detect` gate; the `confirm` gate (a model verdict dropping a finding) has no production detector, and
    the hook could not honour a drop anyway because it has already posted its findings by then.
+   The local backend runs only when the configured model is listed by Ollama's `/api/tags`, and its
+   verdicts are kept in a bounded on-device cache keyed by an HMAC of model + classifier-prompt id + text
+   ([`data/escalation-cache.mjs`](../data/escalation-cache.mjs); 24 h, 2,000 entries, verdicts only,
+   never a failure). Within 24 hours, for the same model and prompt, the local backend answers a text it
+   has already classified from the cache instead of calling the model again; the provider backend is
+   not cached. `MOORAI_ESCALATION_CACHE=off` turns it off, and the measurement scripts
+   (`measure-variance.mjs` and the `--semantic` scorers) do so themselves, so a repeated-run measurement
+   measures the model and not the cache.
+   **Measured marginal value (2026-10-21, `scripts/measure-local-guard.mjs --corpus
+   test/redteam/heldout-v2-tune.json --prompts shipped --gated-only`, public tune half only).** The
+   deterministic engine catches 60 of 61 tune attacks, so the miss gate has one attack to recover. Both
+   installed models recovered it (+1 attack, 1.6 points) and both added false positives on the 1,176
+   benign samples the miss gate would escalate: `mistral-nemo:latest` (12B) 433, `llama3.2:latest` (3B)
+   265, including 58–63 of 174 Arabic and 33–34 of 180 Russian texts. Latency per call: p50 2,625 /
+   2,257 ms, p95 5,399 / 4,724 ms (part of the run shared the machine with the unit suite). On this
+   measurement the layer costs far more in false positives than it adds in recall, which is why it
+   stays off by default and is advisory only. These figures come from one run. An independent re-run
+   reproduced the deterministic part (60 of 61 tune attacks, 1,176 benign samples on the miss gate) and
+   the `llama3.2:latest` Arabic count (63 of 174 flagged); the `mistral-nemo:latest` false-positive
+   count and both latency figures were not reproduced independently. The shipped default model (`llama3:latest`) was not
+   installed on the measuring machine and was not measured here; `qwen3.5:9b` could not be measured
+   because its runner refuses the `format: "json"` request the classifier makes.
 
 ---
 

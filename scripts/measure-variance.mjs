@@ -27,6 +27,9 @@
 // timeout budget at module-load time. A cold model load once cost this project a badly wrong conclusion,
 // so the default here is generous (30s) and a warm-up call is made before run 1 and discarded.
 if (!process.env.MOORAI_LOCAL_TIMEOUT_MS) process.env.MOORAI_LOCAL_TIMEOUT_MS = "30000";
+// Measurement asks the model every time: the on-device verdict cache (data/escalation-cache.mjs) would
+// answer repeat texts from earlier runs. An explicit MOORAI_ESCALATION_CACHE setting is left as is.
+if (!process.env.MOORAI_ESCALATION_CACHE) process.env.MOORAI_ESCALATION_CACHE = "off";
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -267,7 +270,7 @@ async function main() {
     return;
   }
 
-  if (!(await localModelAvailable(2000))) {
+  if (!(await localModelAvailable(2000, snapshot.model))) {
     process.stderr.write("no local model on 127.0.0.1:11434 — nothing to measure\n");
     process.exit(2);
   }
@@ -282,7 +285,7 @@ async function main() {
   // ---- 4. Warm-up so a cold model load is never scored as a verdict -------
   if (entry.runs.length < args.runs) {
     const t0 = Date.now();
-    await classifyLocal("warm up the model so the first scored run is not a cold load");
+    await classifyLocal("warm up the model so the first scored run is not a cold load", { model: snapshot.model });
     takeEscalationOutcomes();
     entry.warmupMs = Date.now() - t0;
   }
