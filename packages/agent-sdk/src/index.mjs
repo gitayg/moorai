@@ -41,7 +41,8 @@ const resultText = (v) => inboundLib.inboundText(v, RESULT_CAP);
 //   headlessAsk                "deny" (default) | "allow-with-report" | "pass-through"
 //   offlineMode                "fail-closed": no policy reachable → the offline fail-closed default
 //   prompts                    "observe" (default: scan + report, never block — the shell hook's
-//                              promptScanAction defaults to "report" too) | "enforce" (block a denied prompt)
+//                              promptScanAction defaults to "report" too) | "enforce" (block a denied prompt).
+//                              Either way a prompt the scan denies is not captured as the intent task
 //   toolResults                "observe" (default: scan + report) | "advise" (also tell the model a
 //                              flagged result is untrusted data, via additionalContext)
 //   failClosed                 deny a tool call when MoorAI itself errors (default: allow, as the hook)
@@ -84,11 +85,13 @@ export function moorAIHooks(options = {}) {
   async function userPromptSubmit(input) {
     if (!input || input.hook_event_name !== "UserPromptSubmit") return {};
     try {
+      const v = await (await runtime()).scan(typeof input.prompt === "string" ? input.prompt : "", "prompt", {}, { event: "UserPromptSubmit", tool: "UserPromptSubmit", settle: options.prompts === "enforce", session: input.session_id });
       // The task, for intent alignment: the prompt passed to query() and every later user turn arrive here.
       // Only a person's prompt is the task (the hook's isUserPrompt): a machine-injected source could put
-      // its own destination in scope. Held as keyed hashes in memory only.
-      if (!input.source || USER_SOURCES.has(input.source)) await (await runtime()).captureTask(input.session_id, input.prompt);
-      const v = await (await runtime()).scan(typeof input.prompt === "string" ? input.prompt : "", "prompt", {}, { event: "UserPromptSubmit", tool: "UserPromptSubmit", settle: options.prompts === "enforce", session: input.session_id });
+      // its own destination in scope. Captured only AFTER the scan, and only when it did not deny the
+      // prompt (under "enforce" that is a blocked prompt; under "observe" the prompt goes on but is not the
+      // task), so the hosts a denied prompt names never come into scope. Held as keyed hashes in memory only.
+      if (v.decision !== "deny" && (!input.source || USER_SOURCES.has(input.source))) await (await runtime()).captureTask(input.session_id, input.prompt);
       if (options.prompts !== "enforce" || v.decision !== "deny") return {};
       return { decision: "block", reason: `MoorAI: prompt blocked — ${v.reasons.join(", ")}`, hookSpecificOutput: { hookEventName: "UserPromptSubmit", suppressOriginalPrompt: true } };
     } catch (err) { return fail(err, "UserPromptSubmit"); }

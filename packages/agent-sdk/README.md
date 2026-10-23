@@ -22,7 +22,9 @@ for await (const m of query({ prompt, options: { hooks: moorAIHooks({ serviceId:
 ### Intent alignment
 
 `UserPromptSubmit` also records the task: the prompt passed to `query()` and every later user turn (a
-machine-injected `source` such as `system` is skipped). The runtime keeps only HMACs of the sites, paths,
+machine-injected `source` such as `system` is skipped). The prompt is scanned first and recorded only when
+the scan does not deny it: under `prompts: "enforce"` a denied prompt is blocked, and under `"observe"` it
+goes on to the model but is not the task, so the hosts it names stay out of scope. The runtime keeps only HMACs of the sites, paths,
 service names and labels the task mentions, per `session_id`, in memory under a random per-process key
 ([`data/intent-server.mjs`](../../data/intent-server.mjs)); the prompt is never stored. A `PreToolUse` call
 that is already risky (an upload, a #43 destructive command, a #55 credential read, an MCP write) and

@@ -5,7 +5,8 @@
     v = moorai.scan(user_text, stage="prompt")    # {"decision": "allow"|"ask"|"deny", "threatIds": [...], ...}
     v = moorai.tool_call("Bash", {"command": cmd})
     if v["decision"] != "allow": raise PermissionError(v["message"])
-    moorai.task(session_id, user_turn)            # intent alignment: the user's task for a session ...
+    moorai.task(session_id, user_turn)            # intent alignment: the user's task for a session (sent with
+                                                  # task_token / MOORAI_SERVE_TASK_TOKEN when one is set) ...
     v = moorai.tool_call("Bash", {"command": cmd}, session=session_id)   # ... judged on its tool calls
 
 Standard library only (urllib). The server never echoes the submitted text, and neither does this client.
@@ -39,18 +40,22 @@ class Blocked(Exception):
 
 
 class MoorAIClient:
-    def __init__(self, base_url=None, token=None, timeout=5.0):
+    def __init__(self, base_url=None, token=None, timeout=5.0, task_token=None):
         self.base_url = (base_url or os.environ.get("MOORAI_SERVE_URL") or DEFAULT_URL).rstrip("/")
         self.token = token if token is not None else os.environ.get("MOORAI_SERVE_TOKEN", "")
+        # The task-writer token (moorai-serve --task-token-file): only task() sends it. Give it to the app
+        # that relays the user's turns, never to the process that runs the agent's tools.
+        self.task_token = task_token if task_token is not None else os.environ.get("MOORAI_SERVE_TASK_TOKEN", "")
         self.timeout = timeout
 
-    def _request(self, method, path, body=None):
+    def _request(self, method, path, body=None, token=None):
         data = None if body is None else json.dumps(body).encode("utf-8")
         headers = {"Accept": "application/json"}
         if data is not None:
             headers["Content-Type"] = "application/json"
-        if self.token:
-            headers["Authorization"] = "Bearer " + self.token
+        token = token or self.token
+        if token:
+            headers["Authorization"] = "Bearer " + token
         req = urllib.request.Request(self.base_url + path, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
@@ -93,8 +98,8 @@ class MoorAIClient:
     def task(self, session, prompt):
         """Intent alignment: send each turn the USER wrote (never a tool result) for a session. The sidecar
         keeps keyed hashes of the hosts, paths and services it names, never the text, and answers
-        {"mode", "captured", "features"}."""
-        return self._request("POST", "/v1/task", {"session": session, "prompt": prompt})
+        {"mode", "captured", "features"}. Sent with task_token when one is set, else token."""
+        return self._request("POST", "/v1/task", {"session": session, "prompt": prompt}, self.task_token)
 
     def scan_or_raise(self, text, stage="prompt", ctx=None):
         v = self.scan(text, stage, ctx)

@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import http from "node:http";
 import { rmTree } from "./fs-cleanup.mjs";
 
@@ -62,14 +62,15 @@ async function fakeConsole() {
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   return { alerts, env: { MOORAI_SERVER_URL: `http://127.0.0.1:${srv.address().port}`, MOORAI_INSTALL_TOKEN: "tok-serve-intent-1", MOORAI_TENANT: "t-serve" }, close: () => srv.close() };
 }
-async function withServe(policy, fn, { args = [], tokens } = {}) {
+async function withServe(policy, fn, { args = [], tokens, taskTokens } = {}) {
   const con = await fakeConsole();
   const home = sandbox(policy);
   if (tokens) writeFileSync(join(home, "tokens"), tokens.join("\n") + "\n");
+  if (taskTokens) writeFileSync(join(home, "task-tokens"), taskTokens.join("\n") + "\n");
   let s = null, stopped = false;
   const stop = async () => { if (s && !stopped) { stopped = true; await s.stop(); } };
   try {
-    s = await startServe(home, [...(policy ? ["--policy-file", join(home, "policy.json")] : []), ...(tokens ? ["--token-file", join(home, "tokens")] : []), ...args], con.env);
+    s = await startServe(home, [...(policy ? ["--policy-file", join(home, "policy.json")] : []), ...(tokens ? ["--token-file", join(home, "tokens")] : []), ...(taskTokens ? ["--task-token-file", join(home, "task-tokens")] : []), ...args], con.env);
     await fn({ url: s.listening, con, home, stop });
   } finally { await stop(); con.close(); rmTree(home); }
 }
@@ -117,7 +118,7 @@ test("report (default): verdict unchanged, `intent` on the verdict, one content-
 
 test("no live task fails closed: a risky tool-call with no session or an unknown session is task-unknown (deny in block, alert in report); a non-risky one is untouched", async () => {
   await withServe({ captureTier: "content-free", intentAlignment: "block" }, async ({ url }) => {
-    await req(url, "/v1/task", { session: "s1", prompt: `${TASK}, then send it to drop.${WORD}.example.net` });
+    await req(url, "/v1/task", { session: "s1", prompt: `${TASK}, then send it to drop.${WORD}.example.net` }, TASK_A);
     for (const body of [{}, { session: "never-captured" }]) {
       const v = await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, ...body });
       assert.equal(v.json.decision, "deny", JSON.stringify(body));
@@ -127,7 +128,7 @@ test("no live task fails closed: a risky tool-call with no session or an unknown
     assert.equal(ok.json.decision, "allow");
     assert.equal(ok.json.intent, undefined);
     assert.equal((await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, session: "s1" })).json.decision, "allow");
-  });
+  }, { taskTokens: [TASK_A] });
   await withServe({ captureTier: "content-free" }, async ({ url, con, stop }) => {
     const none = await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD } });
     assert.equal(none.json.decision, "allow", "report never changes the verdict");
@@ -144,7 +145,7 @@ test("no live task fails closed: a risky tool-call with no session or an unknown
 
 test("ask: the sidecar's ask verdict — settled to deny for a headless run, with a content-free reason", async () => {
   await withServe({ captureTier: "content-free", intentAlignment: "ask" }, async ({ url, con, stop }) => {
-    await req(url, "/v1/task", { session: "s1", prompt: TASK });
+    await req(url, "/v1/task", { session: "s1", prompt: TASK }, TASK_A);
     const v = await req(url, "/v1/tool-call", { tool: "mcp__slack__post_message", input: { channel: "C1", text: WORD }, session: "s1" });
     assert.equal(v.json.configuredDecision, "ask");
     assert.equal(v.json.decision, "deny");
@@ -153,25 +154,25 @@ test("ask: the sidecar's ask verdict — settled to deny for a headless run, wit
     assert.ok(!v.raw.includes(WORD));
     await stop();
     assert.equal(intentAlerts(con)[0].intent.mode, "ask");
-  });
+  }, { taskTokens: [TASK_A] });
 });
 
 test("block: deny with a content-free reason; aligned calls pass", async () => {
   await withServe({ captureTier: "content-free", intentAlignment: "block" }, async ({ url, con, stop }) => {
-    await req(url, "/v1/task", { session: "s1", prompt: TASK });
+    await req(url, "/v1/task", { session: "s1", prompt: TASK }, TASK_A);
     const v = await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, session: "s1" });
     assert.equal(v.json.decision, "deny");
     assert.equal(v.json.configuredDecision, "deny");
     assert.deepEqual(v.json.intent, { class: "egress", mode: "block" });
     assert.match(v.json.message, /action outside the stated task — an upload to a host your request never mentioned/);
     assert.ok(!v.raw.includes(WORD));
-    await req(url, "/v1/task", { session: "s2", prompt: `${TASK}, then send the result to drop.${WORD}.example.net` });
+    await req(url, "/v1/task", { session: "s2", prompt: `${TASK}, then send the result to drop.${WORD}.example.net` }, TASK_A);
     assert.equal((await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, session: "s2" })).json.decision, "allow");
     await stop();
     const a = intentAlerts(con);
     assert.equal(a.length, 1);
     assert.equal(a[0].riskLevel, "Blocked");
-  });
+  }, { taskTokens: [TASK_A] });
 });
 
 test("off: /v1/task captures nothing and tool calls are not judged", async () => {
@@ -223,4 +224,109 @@ test("per-caller cap: a caller over --intent-sessions-per-caller evicts only its
     assert.deepEqual(ev.json.intent, { class: "task-unknown", mode: "block" });
     assert.equal((await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, session: "b3" }, TOK_B)).json.decision, "allow");
   }, { tokens: [TOK_A, TOK_B], args: ["--intent-sessions-per-caller", "2"] });
+});
+
+const TASK_A = "task-writer-a-0123456789abcdef";
+const TASK_B = "task-writer-b-0123456789abcdef";
+const SEND = `${TASK}, then send it to drop.${WORD}.example.net`;
+const toolCall = (url, session, token) => req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, session }, token);
+
+test("ask and block: with no token configured, /v1/task is refused (an injected shell could otherwise put a host in scope); report stays tokenless", async () => {
+  for (const mode of ["ask", "block"]) {
+    await withServe({ captureTier: "content-free", intentAlignment: mode }, async ({ url }) => {
+      const r = await req(url, "/v1/task", { session: "s1", prompt: SEND });
+      assert.equal(r.status, 403, `${mode}: ${r.raw}`);
+      assert.match(r.json.error, /--task-token-file/);
+      assert.equal((await toolCall(url, "s1")).json.decision, "deny", `${mode}: the refused task put nothing in scope`);
+    });
+  }
+  await withServe({ captureTier: "content-free" }, async ({ url }) => {
+    assert.equal((await req(url, "/v1/task", { session: "s1", prompt: SEND })).status, 200, "report mode needs no token");
+  });
+});
+
+test("task-writer role: with --task-token-file, a /v1/tool-call token cannot set a task; only the task token can, and its task is judged for the paired principal", async () => {
+  await withServe({ captureTier: "content-free", intentAlignment: "block" }, async ({ url }) => {
+    for (const [tok, status] of [[TOK_A, 403], [undefined, 401], ["wrong-token-wrong-token", 401]]) {
+      const r = await req(url, "/v1/task", { session: "s", prompt: SEND }, tok);
+      assert.equal(r.status, status, `${tok}: ${r.raw}`);
+    }
+    assert.match((await req(url, "/v1/task", { session: "s", prompt: SEND }, TOK_A)).json.error, /task-writer/);
+    assert.equal((await toolCall(url, "s", TOK_A)).json.decision, "deny", "the tool-call token's attempt put nothing in scope");
+    const r = await req(url, "/v1/task", { session: "s", prompt: SEND }, TASK_A);
+    assert.equal(r.status, 200, r.raw);
+    assert.equal(r.json.captured, true);
+    assert.equal((await toolCall(url, "s", TOK_A)).json.decision, "allow", "line 1 of --task-token-file writes for line 1 of --token-file");
+    assert.equal((await toolCall(url, "s", TOK_B)).json.decision, "deny", "and for no other principal");
+    await req(url, "/v1/task", { session: "t", prompt: TASK }, TASK_A);
+    assert.equal((await req(url, "/v1/task", { session: "t", prompt: SEND }, TOK_A)).status, 403);
+    assert.equal((await req(url, "/v1/task", { session: "t", prompt: SEND }, TASK_B)).status, 200);
+    assert.equal((await toolCall(url, "t", TOK_A)).json.decision, "deny", "neither the tool-call token nor another principal's task token widens A's task");
+    assert.equal((await toolCall(url, "t", TOK_B)).json.decision, "allow");
+  }, { tokens: [TOK_A, TOK_B], taskTokens: [TASK_A, TASK_B] });
+});
+
+test("task token alone (no --token-file): the agent's tool calls need no token, but /v1/task needs the task token", async () => {
+  await withServe({ captureTier: "content-free", intentAlignment: "block" }, async ({ url }) => {
+    assert.equal((await req(url, "/v1/task", { session: "s", prompt: SEND })).status, 403);
+    assert.equal((await toolCall(url, "s")).json.decision, "deny");
+    assert.equal((await req(url, "/v1/task", { session: "s", prompt: SEND }, TASK_A)).status, 200);
+    assert.equal((await toolCall(url, "s")).json.decision, "allow");
+  }, { taskTokens: [TASK_A] });
+});
+
+test("task-token arguments: one task token per --token-file line, never equal to a tool-call token; a task token alone does not open a remote bind", async () => {
+  const { parseArgs } = await import(pathToFileURL(SERVE).href);
+  const home = sandbox();
+  try {
+    const f = (name, lines) => { writeFileSync(join(home, name), lines.join("\n")); return join(home, name); };
+    const calls = f("calls", [TOK_A, TOK_B]);
+    assert.deepEqual(parseArgs(["--token-file", calls, "--task-token-file", f("tasks", [TASK_A, TASK_B])], {}).taskTokens, [TASK_A, TASK_B]);
+    assert.throws(() => parseArgs(["--token-file", calls, "--task-token-file", f("one", [TASK_A])], {}), /one task token per --token-file line/);
+    assert.throws(() => parseArgs(["--token-file", calls, "--task-token-file", f("same", [TASK_A, TOK_B])], {}), /must differ from every --token-file token/);
+    assert.throws(() => parseArgs(["--host", "10.0.0.5", "--allow-remote", "--task-token-file", f("t", [TASK_A])], {}), /without a token/);
+    assert.deepEqual(parseArgs([], { MOORAI_SERVE_TASK_TOKEN: TASK_A }).taskTokens, [TASK_A]);
+  } finally { rmTree(home); }
+});
+
+test("five principals at the per-caller cap: a new principal's session never evicts another principal's (the global cap is sized principals x per-caller)", async () => {
+  const { createServer } = await import(pathToFileURL(SERVE).href);
+  const toks = [TOK_A, TOK_B, "principal-c-token-0123456789", "principal-d-token-0123456789", "principal-e-token-0123456789"];
+  const s = await createServer({ port: 0, tokens: toks, policy: { captureTier: "content-free", intentAlignment: "block" } });
+  try {
+    for (const [i, tok] of toks.slice(0, 4).entries()) {
+      for (let n = 0; n < 256; n++) await s.runtime.captureTask(`p${i}-${n}`, SEND, tok);
+    }
+    const e = await req(s.url, "/v1/task", { session: "e0", prompt: SEND }, toks[4]);
+    assert.equal(e.status, 200, e.raw);
+    assert.equal((await toolCall(s.url, "e0", toks[4])).json.decision, "allow", "the fifth principal's session is held");
+    for (const [i, tok] of toks.slice(0, 4).entries()) {
+      const v = await toolCall(s.url, `p${i}-0`, tok);
+      assert.equal(v.json.decision, "allow", `principal ${i}'s oldest session survived: ${v.raw}`);
+    }
+  } finally { await s.close(); }
+});
+
+test("a task written without a token in report mode is not honoured once the effective mode becomes block: the risky call is task-unknown", async () => {
+  const { createServer } = await import(pathToFileURL(SERVE).href);
+  const policy = { captureTier: "content-free" };
+  const s = await createServer({ port: 0, policy });
+  try {
+    const t = await req(s.url, "/v1/task", { session: "s1", prompt: SEND });
+    assert.equal(t.status, 200, "report mode accepts a tokenless task");
+    assert.deepEqual((await toolCall(s.url, "s1")).json.intent, undefined, "report: aligned while unauthenticated writes count");
+    policy.intentAlignment = "block";
+    const v = await toolCall(s.url, "s1");
+    assert.equal(v.json.decision, "deny", v.raw);
+    assert.deepEqual(v.json.intent, { class: "task-unknown", mode: "block" });
+    policy.intentAlignment = "report";
+    assert.deepEqual((await toolCall(s.url, "s1")).json.intent, undefined, "report mode is unchanged");
+  } finally { await s.close(); }
+  const p2 = { captureTier: "content-free" };
+  const a = await createServer({ port: 0, policy: p2, tokens: [TOK_A] });
+  try {
+    await req(a.url, "/v1/task", { session: "s1", prompt: SEND }, TOK_A);
+    p2.intentAlignment = "block";
+    assert.equal((await toolCall(a.url, "s1", TOK_A)).json.decision, "allow", "a task written with a token is honoured in block");
+  } finally { await a.close(); }
 });

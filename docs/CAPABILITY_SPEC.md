@@ -756,8 +756,17 @@ is validated against.
    supplied id with no task is `task-unknown` in every mode. Sessions are namespaced by an
    optional owner: on the sidecar, the bearer token presented (each line of `--token-file` is a
    principal), so a task can be set, replaced, judged or evicted only by its own principal; per principal
-   at most `--intent-sessions-per-caller` (default 256), its own oldest out; at the global cap the
-   principal holding the most loses its oldest. Without a token every local process is one principal. The SDK captures the task at `UserPromptSubmit` (the `query()` prompt and later user turns;
+   at most `--intent-sessions-per-caller` (default 256), its own oldest out. The store's global cap evicts
+   the LRU session of the owner holding the most, which can be another owner's; the sidecar sizes it to
+   max(1024, principals × per-caller cap), so that never happens there. Without a token every local process
+   is one principal. Only a task writer may `POST /v1/task`: with `--task-token-file` (one task token per
+   `--token-file` line, writing for that line's principal) only those tokens; with no task token any
+   authenticated caller for its own principal; with no token at all, in `"ask"` and `"block"`, nobody (403),
+   so an agent's own shell cannot widen its task. A capture carries whether an authenticated writer sent it
+   (`captureTask(..., owner, { authenticated })`, default true; the sidecar with no token passes false), and
+   `"ask"`/`"block"` judge only against authenticated captures (`judge(..., owner, { authenticatedOnly })`), so
+   a tokenless task written under `"report"` is `task-unknown` once the mode changes. The SDK records a prompt as the task only when its prompt
+   scan did not deny it. The SDK captures the task at `UserPromptSubmit` (the `query()` prompt and later user turns;
    a machine-injected `source` is skipped); the sidecar at `POST /v1/task {session, prompt}`, which answers
    `{mode, captured, features}`. A `PreToolUse` / `/v1/tool-call` with that session is judged after the
    branch verdict and before the headless rule (`packages/agent-sdk/src/runtime.mjs`):

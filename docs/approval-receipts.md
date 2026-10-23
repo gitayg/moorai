@@ -402,4 +402,5 @@ A rejected receipt leaves the call queued.
   so the hook's install token must be the helper's and the hook must name the user and host the kernel reports.
   A hook in server mode (a service identity, `svc:<id>`) or with another install token gets `source: "none"`
   and takes its direct path with no receipt. Two uids with the same login name derive the same actor; the one
-  that asks first holds it and the other gets `source: "none"`.
+  that asks first holds it for the helper's lifetime (also after its binding is evicted) and the other gets
+  `source: "none"`.

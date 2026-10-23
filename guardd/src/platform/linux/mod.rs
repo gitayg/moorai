@@ -50,10 +50,24 @@ impl SystemInfo for Platform {
     }
 
     fn hostname(&self) -> String {
-        todo!("gethostname / GetComputerNameExW(ComputerNameDnsHostname), same value the hook sends as device")
+        crate::platform::gethostname()
     }
 
     fn login_name(&self, uid: u32) -> Option<String> {
         crate::platform::passwd_name(uid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::platform::SystemInfo;
+
+    #[test]
+    fn hostname_is_gethostname_and_does_not_panic() {
+        // helper::peer_actor calls hostname() for every actor-scoped policy request; it must not panic.
+        let h = super::Platform::new().hostname();
+        let want = std::process::Command::new("uname").arg("-n").output().expect("uname -n");
+        assert_eq!(h, String::from_utf8_lossy(&want.stdout).trim_end_matches('\n'));
+        assert!(!h.is_empty());
     }
 }

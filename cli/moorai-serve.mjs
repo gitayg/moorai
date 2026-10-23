@@ -33,14 +33,34 @@
 //                                                     needs the caller to send the task first. In "report"
 //                                                     mode a call with NO session is not judged (no alert).
 //                                                     PRINCIPALS: each token in --token-file (one per line)
-//                                                     is a principal; a session's task is namespaced by the
-//                                                     token that set it, so only that principal's tool calls
-//                                                     are judged against it and no other principal can set,
+//                                                     is a principal; a session's task is namespaced by its
+//                                                     principal, so only that principal's tool calls are
+//                                                     judged against it and no other principal can set,
 //                                                     replace or evict it. Each principal holds at most
 //                                                     --intent-sessions-per-caller sessions (default 256);
-//                                                     over that, its own oldest goes. WITHOUT A TOKEN every
-//                                                     local process is one principal and can set any
-//                                                     session's task.
+//                                                     over that, its own oldest goes. The global cap is
+//                                                     max(1024, principals x that), so one principal's new
+//                                                     session never evicts another's.
+//                                                     WHO MAY WRITE A TASK. The task widens what a risky call
+//                                                     may reach, so the agent's own tool sandbox (where an
+//                                                     injected model runs commands) must not hold a
+//                                                     credential that writes it. --task-token-file (or
+//                                                     MOORAI_SERVE_TASK_TOKEN) gives task-writer tokens: with
+//                                                     any configured, ONLY they can POST /v1/task (any other
+//                                                     caller: 403). Line N writes the tasks of the principal
+//                                                     on --token-file line N (with no --token-file, of the one
+//                                                     tokenless principal); it may also call every other
+//                                                     endpoint as that principal. Deploy it so the app that
+//                                                     relays the user's turns holds the task token and the
+//                                                     process that runs tools holds at most the --token-file
+//                                                     token. With no task token, every caller writes its own
+//                                                     principal's tasks, and with NO token at all, "ask" and
+//                                                     "block" refuse /v1/task (403); "report" stays tokenless,
+//                                                     where any local process (an injected shell included)
+//                                                     can set or replace a session's task and so silence its
+//                                                     alerts. Such a tokenless task counts in "report" only:
+//                                                     if the policy later turns to "ask" or "block", the
+//                                                     session is judged as if it had no task (task-unknown).
 //   session (optional, every POST but /v1/task, where it is required): the caller's own session /
 //   conversation id. Only its keyed hash leaves, as the `session` field of each console alert the request
 //   raises; omitted, no field.
@@ -56,11 +76,14 @@
 // sent as application/json, which a cross-site form cannot do without a CORS preflight this server
 // never answers.
 //
-//   moorai-serve [--host 127.0.0.1] [--port 8790] [--token-file <path>] [--allow-remote] [--intent-sessions-per-caller 256]
+//   moorai-serve [--host 127.0.0.1] [--port 8790] [--token-file <path>] [--task-token-file <path>] [--allow-remote] [--intent-sessions-per-caller 256]
 //                [--max-body 1048576] [--timeout-ms 10000] [--policy-file <path>] [--service-id <name>]
 //                [--headless-ask deny|allow-with-report] [--log]
 //                [--model-proxy-url http://127.0.0.1:8791] [--model-proxy-token-file <path>]
-//   Token: --token-file (one token per line; each line is a principal), else MOORAI_SERVE_TOKEN (one). The model proxy's token: --model-proxy-token-file, else
+//   Token: --token-file (one token per line; each line is a principal), else MOORAI_SERVE_TOKEN (one). Task-writer token:
+//   --task-token-file (one per --token-file line, paired by position), else MOORAI_SERVE_TASK_TOKEN (one). A token is
+//   16-256 characters of A-Z a-z 0-9 . _ ~ + / = -; in a token file a line starting with # is a comment, blank lines
+//   are skipped, and any other line that is not a token is refused at startup. The model proxy's token: --model-proxy-token-file, else
 //   MOORAI_MODEL_PROXY_TOKEN. Console binding: MOORAI_SERVER_URL / MOORAI_TENANT /
 //   MOORAI_INSTALL_TOKEN or /etc/moorai/config.json, as server mode reads them.
 import http from "node:http";
@@ -70,7 +93,7 @@ import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { createMoorAI, STAGES } from "../packages/agent-sdk/src/runtime.mjs";
-import { inboundLib, indexScanLib } from "../packages/agent-sdk/src/core.mjs";
+import { inboundLib, indexScanLib, intentServerLib } from "../packages/agent-sdk/src/core.mjs";
 import { createCheckedNotifier } from "../model-proxy/checked-notify.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -90,13 +113,34 @@ function hostHeaderOk(header) {
   return isLoopback(name);
 }
 
+// A token: 16-256 characters of letters, digits and . _ ~ + / = - (hex, base64, base64url, a UUID). In a
+// token file each line is one token; a line whose first non-blank character is "#" is a comment, blank lines
+// are skipped and surrounding whitespace is trimmed. Any other line is refused, by line number, never echoed.
+export const TOKEN_RE = /^[A-Za-z0-9._~+/=-]{16,256}$/;
+function tokenLines(text, flag) {
+  const out = [];
+  text.split(/\r?\n/).forEach((raw, i) => {
+    const t = raw.trim();
+    if (!t || t.startsWith("#")) return;
+    if (!TOKEN_RE.test(t)) throw new Error(`${flag}: line ${i + 1} is not a token (16-256 characters of A-Z a-z 0-9 . _ ~ + / = -; a comment line starts with #)`);
+    out.push(t);
+  });
+  return out;
+}
+function envToken(env, name) {
+  const t = String(env[name] || "").trim();
+  if (t && !TOKEN_RE.test(t)) throw new Error(t.length < 16 ? "the token must be at least 16 characters" : `${name} is not a token (16-256 characters of A-Z a-z 0-9 . _ ~ + / = -)`);
+  return t ? [t] : [];
+}
+
 export function parseArgs(argv, env = process.env) {
-  const o = { ...DEFAULTS, allowRemote: false, log: false, token: "", tokens: [] };
+  const o = { ...DEFAULTS, allowRemote: false, log: false, token: "", tokens: [], taskTokens: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i], v = () => { const x = argv[++i]; if (x === undefined) throw new Error(`${a} needs a value`); return x; };
     if (a === "--host") o.host = v();
     else if (a === "--port") o.port = Number(v());
-    else if (a === "--token-file") o.tokens = readFileSync(v(), "utf8").split(/\r?\n/).map((t) => t.trim()).filter(Boolean);
+    else if (a === "--token-file") o.tokens = tokenLines(readFileSync(v(), "utf8"), a);
+    else if (a === "--task-token-file") o.taskTokens = tokenLines(readFileSync(v(), "utf8"), a);
     else if (a === "--allow-remote") o.allowRemote = true;
     else if (a === "--max-body") o.maxBody = Number(v());
     else if (a === "--timeout-ms") o.timeoutMs = Number(v());
@@ -109,8 +153,11 @@ export function parseArgs(argv, env = process.env) {
     else if (a === "--intent-sessions-per-caller") o.intentSessionsPerCaller = Number(v());
     else throw new Error(`unknown argument ${a}`);
   }
-  if (!o.tokens.length && env.MOORAI_SERVE_TOKEN) o.tokens = [String(env.MOORAI_SERVE_TOKEN).trim()].filter(Boolean);
+  if (!o.tokens.length) o.tokens = envToken(env, "MOORAI_SERVE_TOKEN");
+  if (!o.taskTokens.length) o.taskTokens = envToken(env, "MOORAI_SERVE_TASK_TOKEN");
   o.token = o.tokens[0] || "";
+  if (o.taskTokens.length && o.tokens.length && o.taskTokens.length !== o.tokens.length) throw new Error("--task-token-file must hold one task token per --token-file line (line N writes the tasks of the principal on line N)");
+  if (o.taskTokens.some((t) => o.tokens.includes(t))) throw new Error("a task token must differ from every --token-file token");
   if (o.modelProxyUrl) {
     let u;
     try { u = new URL(o.modelProxyUrl); } catch { throw new Error("--model-proxy-url is not a URL"); }
@@ -126,23 +173,29 @@ export function parseArgs(argv, env = process.env) {
     if (!o.allowRemote) throw new Error(`refusing to listen on ${o.host}: not a loopback address (pass --allow-remote and a token to expose it)`);
     if (!o.token) throw new Error(`refusing to listen on ${o.host} without a token (--token-file or MOORAI_SERVE_TOKEN)`);
   }
-  if (o.tokens.some((t) => t.length < 16)) throw new Error("the token must be at least 16 characters");
   if (!Number.isInteger(o.intentSessionsPerCaller) || o.intentSessionsPerCaller < 1) throw new Error("--intent-sessions-per-caller must be an integer >= 1");
   return o;
 }
 
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
 const digest = (s) => createHash("sha256").update(String(s)).digest();
-// The principal a request authenticates as: "" with no token configured (every local process is the same
-// caller), else the token it presented (kept in memory only, as the intent store's owner), else null.
-function principal(req, tokens) {
-  if (!tokens.length) return "";
+// Who a request authenticates as: { owner, taskWriter } or null (a wrong or missing bearer where one is
+// required). owner is the intent store's namespace: "" with no --token-file (every local process is the
+// same caller), else the --token-file token (kept in memory only). A task token (--task-token-file) line N
+// authenticates as the principal of --token-file line N (or "" with no --token-file) AND as that
+// principal's task writer; with task tokens configured nothing else may write a task. With none, every
+// caller writes its own principal's tasks (gated by intent mode in route()).
+function authenticate(req, tokens, taskTokens) {
   const m = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ""));
-  if (!m) return null;
-  const got = digest(m[1].trim());
-  let hit = null;
-  for (const t of tokens) if (timingSafeEqual(got, digest(t))) hit = t;
-  return hit;
+  const got = m ? digest(m[1].trim()) : null;
+  let call = null, task = -1;
+  if (got) {
+    for (const t of tokens) if (timingSafeEqual(got, digest(t))) call = t;
+    taskTokens.forEach((t, i) => { if (timingSafeEqual(got, digest(t))) task = i; });
+  }
+  if (task >= 0) return { owner: tokens.length ? tokens[task] : "", taskWriter: true };
+  if (!tokens.length) return { owner: "", taskWriter: !taskTokens.length };
+  return call === null ? null : { owner: call, taskWriter: !taskTokens.length };
 }
 // An over-size body is answered 413 only after the client has finished sending it (discarded, never
 // buffered), so the client reads the 413 instead of a connection reset mid-write. Past DRAIN_FACTOR x the
@@ -185,7 +238,12 @@ function withTimeout(p, ms) {
 export async function createServer(opts = {}) {
   const o = { ...DEFAULTS, ...opts };
   const tokens = Array.isArray(o.tokens) && o.tokens.length ? o.tokens : o.token ? [o.token] : [];
-  const rt = await createMoorAI({ policyFile: o.policyFile, policy: o.policy, serviceId: o.serviceId, headlessAsk: o.headlessAsk, console: o.console, fetch: o.fetch, env: o.env, surface: "serve", intentStore: { maxSessionsPerOwner: o.intentSessionsPerCaller } });
+  const taskTokens = Array.isArray(o.taskTokens) ? o.taskTokens : [];
+  if (taskTokens.length && tokens.length && taskTokens.length !== tokens.length) throw new Error("taskTokens must hold one task token per token (paired by position)");
+  // Room for every principal's full per-caller quota, so a session is only ever evicted by its own
+  // principal: the store evicts across owners only past maxSessions, which this sizing never reaches.
+  const maxSessions = Math.max(intentServerLib.INTENT_DEFAULTS.maxSessions, Math.max(1, tokens.length) * o.intentSessionsPerCaller);
+  const rt = await createMoorAI({ policyFile: o.policyFile, policy: o.policy, serviceId: o.serviceId, headlessAsk: o.headlessAsk, console: o.console, fetch: o.fetch, env: o.env, surface: "serve", intentStore: { maxSessionsPerOwner: o.intentSessionsPerCaller, maxSessions } });
   await rt.ready();
   const version = (() => { try { return JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version; } catch { return "unknown"; } })();
   const loopbackBind = isLoopback(o.host);
@@ -201,8 +259,18 @@ export async function createServer(opts = {}) {
     }
     if (path !== "/v1/scan" && path !== "/v1/tool-call" && path !== "/v1/index-scan" && path !== "/v1/task") throw new HttpError(404, "not found");
     if (req.method !== "POST") throw new HttpError(405, "use POST");
-    const owner = principal(req, tokens);
-    if (owner === null) throw new HttpError(401, "missing or wrong bearer token");
+    const auth = authenticate(req, tokens, taskTokens);
+    if (auth === null) throw new HttpError(401, "missing or wrong bearer token");
+    const owner = auth.owner;
+    if (path === "/v1/task") {
+      // The task decides what a risky call may reach, so the agent's own tool sandbox must not be able to
+      // write it. With task tokens configured only they can; without any token, ask and block refuse it.
+      if (taskTokens.length && !auth.taskWriter) throw new HttpError(403, "this credential cannot set tasks: /v1/task needs a task-writer token (--task-token-file)");
+      if (!tokens.length && !taskTokens.length) {
+        const mode = intentServerLib.intentModeFromPolicy((await rt.ready()).policy);
+        if (mode === "ask" || mode === "block") throw new HttpError(403, `intent mode "${mode}": /v1/task needs a token, or any local process could widen a session's task; start moorai-serve with --task-token-file (the app holds it, the agent's tool sandbox does not) or --token-file`);
+      }
+    }
     const body = await readJson(req, o.maxBody);
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "body must be a JSON object");
     if (body.session != null && (typeof body.session !== "string" || !body.session || body.session.length > 256)) throw new HttpError(400, "session must be a non-empty string of at most 256 characters");
@@ -211,7 +279,9 @@ export async function createServer(opts = {}) {
       if (session === undefined) throw new HttpError(400, "session is required");
       if (typeof body.prompt !== "string") throw new HttpError(400, "prompt must be a string");
       if (body.prompt.length > MAX_TEXT) throw new HttpError(413, "prompt too long");
-      return withTimeout(rt.captureTask(session, body.prompt, owner), o.timeoutMs);
+      // Unauthenticated (no token configured at all, so only report mode gets here): honoured in "report"
+      // only; the store keeps it apart and "ask"/"block" judge without it, even after the mode changes.
+      return withTimeout(rt.captureTask(session, body.prompt, owner, tokens.length > 0 || taskTokens.length > 0), o.timeoutMs);
     }
     if (path === "/v1/scan") {
       const ctx = cleanCtx(body.ctx);
@@ -283,7 +353,9 @@ async function main() {
   try { o = parseArgs(process.argv.slice(2)); } catch (e) { process.stderr.write(`moorai-serve: ${e.message}\n`); process.exit(2); }
   const s = await createServer(o);
   // One machine-readable line, so a supervisor (or a test using --port 0) can find the port.
-  process.stdout.write(JSON.stringify({ listening: s.url, auth: o.token ? "bearer" : "none", serviceId: s.runtime.settings.serviceId, ...(o.modelProxyUrl ? { modelProxy: new URL(o.modelProxyUrl).origin } : {}) }) + "\n");
+  const mode = intentServerLib.intentModeFromPolicy((await s.runtime.ready()).policy);
+  if (!o.tokens.length && !o.taskTokens.length && (mode === "ask" || mode === "block")) process.stderr.write(`moorai-serve: intent mode "${mode}" with no token: POST /v1/task is refused until moorai-serve runs with --task-token-file or --token-file\n`);
+  process.stdout.write(JSON.stringify({ listening: s.url, auth: o.token ? "bearer" : "none", ...(o.taskTokens.length ? { taskAuth: "bearer" } : {}), serviceId: s.runtime.settings.serviceId, ...(o.modelProxyUrl ? { modelProxy: new URL(o.modelProxyUrl).origin } : {}) }) + "\n");
   const stop = async () => { await s.close(); process.exit(0); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);

@@ -79,13 +79,7 @@ impl SystemInfo for Platform {
     }
 
     fn hostname(&self) -> String {
-        // gethostname(2), the call behind Node's os.hostname() (libuv uv_os_gethostname).
-        let mut buf = [0u8; 256];
-        if unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) } != 0 {
-            return String::new();
-        }
-        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-        String::from_utf8_lossy(&buf[..end]).into_owned()
+        crate::platform::gethostname()
     }
 
     fn login_name(&self, uid: u32) -> Option<String> {

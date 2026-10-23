@@ -704,8 +704,10 @@ content-free) in one process:
   session id), which leaves only as the keyed `session` field of the alerts it raises. Verdicts never contain the submitted text, though a
   `tool-call` verdict's `message`, the sentence the hook shows the agent, can name a file or a host from
   the call. It binds loopback
-  only unless `--allow-remote` is given with a token of 16+ characters (`--token-file` or
-  `MOORAI_SERVE_TOKEN`, sent as a bearer token and compared in constant time). It rejects a non-loopback
+  only unless `--allow-remote` is given with a token (`--token-file` or `MOORAI_SERVE_TOKEN`, sent as a
+  bearer token and compared in constant time). A token is 16-256 characters of `A-Z a-z 0-9 . _ ~ + / = -`;
+  in a token file a line starting with `#` is a comment, blank lines are skipped, and any other line that is
+  not a token stops the sidecar at startup. It rejects a non-loopback
   `Host` (421), a body that is not JSON (415) and a body over 1 MiB (413, after draining it), with a 5 s
   header timeout and at most 256 connections. p50 for `/v1/scan` on 2 KB is 6.4–11 ms. A stdlib-only
   Python client with LangGraph and CrewAI examples is in [`clients/python`](clients/python/README.md),
@@ -734,11 +736,21 @@ never captured, evicted or expired) is judged as class `task-unknown` (not align
 `"block"` denies and `"report"` alerts (once per session and target). Unlike the hook, which skips a
 session with no task, `"block"` therefore requires the caller to supply the task (`POST /v1/task`, or the
 SDK's `UserPromptSubmit` capture); without one, every risky call is "task unknown". On the sidecar each token in `--token-file` (one per line) is a principal: a session's task is
-namespaced by the token that set it, so only that principal's tool calls are judged against it and no
-other principal can set, replace or evict it; a principal holds at most `--intent-sessions-per-caller`
-sessions (default 256) and over that loses its own oldest, and at the global cap the principal holding
-the most loses its oldest. Without a token every local process is one principal and can set or replace
-any session's task. The prompt is never stored or echoed: `/v1/task` answers `{mode, captured,
+namespaced by its principal, so only that principal's tool calls are judged against it and no other
+principal can set, replace or evict it; a principal holds at most `--intent-sessions-per-caller` sessions
+(default 256) and over that loses its own oldest, and the global cap is max(1024, principals × that), so a
+principal's new session never evicts another's. **Who may write the task.** The task widens what a risky
+call may reach, so the process that runs the agent's tools (where an injected model can `curl` the sidecar)
+must not be able to write it. `--task-token-file` (or `MOORAI_SERVE_TASK_TOKEN`) holds task-writer tokens,
+one per `--token-file` line (line N writes the tasks of the principal on line N; with no `--token-file`, of
+the one tokenless principal). With any configured, only a task token can `POST /v1/task`; every other
+caller gets 403, and a task token may also call the other endpoints as its principal. Deploy it so the app
+that relays the user's turns holds the task token and the tool sandbox holds at most the `--token-file`
+token (or none). With no task token every caller writes its own principal's tasks, and with no token at
+all `"ask"` and `"block"` refuse `/v1/task` (403). `"report"` stays tokenless, where any local process can
+set or replace a session's task and so keep its calls from alerting. A task written with no token counts
+in `"report"` only: if the policy later turns to `"ask"` or `"block"`, the store judges against
+authenticated writes alone, so such a session is `task-unknown`. The prompt is never stored or echoed: `/v1/task` answers `{mode, captured,
 features}`. A tool call with the same session (the SDK's `session_id`, the sidecar's `session`) that is
 already risky (an upload, a #43 destructive command, a #55 credential read, an MCP write) and aimed at
 something the task never named is judged under `policy.intentAlignment`: `"report"` (default) posts one

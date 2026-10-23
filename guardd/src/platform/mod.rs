@@ -33,6 +33,19 @@ pub trait SystemInfo {
     fn login_name(&self, uid: u32) -> Option<String>;
 }
 
+/// gethostname(2), the call behind Node's os.hostname() (libuv uv_os_gethostname): the same value the
+/// hook sends as `device`. "" when the call fails, so policy::derive_actor derives no actor (no panic).
+#[cfg(unix)]
+pub fn gethostname() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: buf outlives the call and buf.len() is its real size.
+    if unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) } != 0 {
+        return String::new();
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..end]).into_owned()
+}
+
 /// getpwuid_r(uid).pw_name, the lookup behind Node's os.userInfo().username. None when there is no entry
 /// or the name is not UTF-8.
 #[cfg(unix)]
@@ -63,5 +76,13 @@ mod tests {
         assert_eq!(super::passwd_name(0).as_deref(), Some("root"));
         assert!(super::passwd_name(crate::state::current_uid()).is_some_and(|n| !n.is_empty()));
         assert_eq!(super::passwd_name(3_999_999_999), None, "no passwd entry");
+    }
+
+    #[test]
+    fn gethostname_is_the_os_node_name() {
+        let want = std::process::Command::new("uname").arg("-n").output().expect("uname -n");
+        let h = super::gethostname();
+        assert!(!h.is_empty());
+        assert_eq!(h, String::from_utf8_lossy(&want.stdout).trim_end_matches('\n'));
     }
 }
