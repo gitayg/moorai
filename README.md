@@ -122,6 +122,12 @@ names the tenant and actor only). A console that reads the user and device only 
 serves the desktop app the tenant's default policy.
 An unenrolled device sends the `h2:nokey` sentinel as its actor, never a reversible hash.
 
+**AI-tool accounts.** The desktop app's device report lists which account each agent CLI is signed into.
+The Claude Code account's email is sent only as its keyed `h2:` pseudonym (the same function, lower-cased
+email in), never the address; an email inside the organization name (a personal Claude organization is
+named "<email>'s Organization") is replaced by the same pseudonym, and the rest of the organization name
+is sent as is. The GitHub login Copilot runs as is sent as the login. Codex is reported by presence only.
+
 **Which session an event came from.** Alerts also carry `session`, the same keyed hash (`h2:` + 16 hex of
 an HMAC-SHA-256 keyed from the tenant's enrollment token, `contentHash` in `cli/content-hash.mjs`) of the
 agent's own session id. Every alert from one session has the same value. The raw id never leaves. The

@@ -1,4 +1,5 @@
 mod admin_config;
+mod ai_accounts;
 mod ai_keys;
 mod ai_runtime;
 mod clip_guard;
@@ -677,22 +678,20 @@ fn device_mcp() -> serde_json::Value {
     serde_json::json!({ "servers": servers })
 }
 
-// Which account each agent CLI is logged in as — the account NAME only (email / username), never
-// the token. Lets the console report the list of accounts used with AI agents (e.g. to spot
-// personal accounts). Reads only identity fields from well-known configs; tokens are never touched.
+// Which account each agent CLI is logged in as, never the token: the Claude email as its keyed h2:
+// pseudonym, the GitHub login Copilot runs as. Lets the console report the list of accounts used with AI
+// agents. Reads only identity fields from well-known configs; tokens are never touched.
 #[tauri::command]
 fn device_accounts() -> serde_json::Value {
     let home = platform::home_dir();
     let mut accounts: Vec<serde_json::Value> = vec![];
 
-    // Claude Code — ~/.claude.json → oauthAccount.emailAddress (+ organizationName). Not the token.
+    // Claude Code — ~/.claude.json → oauthAccount.emailAddress (+ organizationName). Not the token. The
+    // email is sent only as its keyed pseudonym (ai_accounts.rs).
     if let Ok(txt) = std::fs::read_to_string(format!("{home}/.claude.json")) {
         if let Ok(j) = serde_json::from_str::<serde_json::Value>(&txt) {
             if let Some(acc) = j.get("oauthAccount") {
-                if let Some(email) = acc.get("emailAddress").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
-                    let org = acc.get("organizationName").and_then(|v| v.as_str());
-                    accounts.push(serde_json::json!({ "agent": "claude", "account": email, "org": org }));
-                }
+                if let Some(a) = ai_accounts::claude_account(acc, content_hash::tenant_key().as_ref()) { accounts.push(a); }
             }
         }
     }
