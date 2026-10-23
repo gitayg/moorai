@@ -743,7 +743,8 @@ principal's new session never evicts another's. **Who may write the task.** The 
 call may reach, so the process that runs the agent's tools (where an injected model can `curl` the sidecar)
 must not be able to write it. `--task-token-file` (or `MOORAI_SERVE_TASK_TOKEN`) holds task-writer tokens,
 one per `--token-file` line (line N writes the tasks of the principal on line N; with no `--token-file`, of
-the one tokenless principal). With any configured, only a task token can `POST /v1/task`; every other
+the one tokenless principal). A task token equal to a tool-call token is refused at startup, by
+`createServer` itself, so an application embedding the sidecar gets the same refusal. With any configured, only a task token can `POST /v1/task`; every other
 caller gets 403, and a task token may also call the other endpoints as its principal. Deploy it so the app
 that relays the user's turns holds the task token and the tool sandbox holds at most the `--token-file`
 token (or none). With no task token every caller writes its own principal's tasks, and with no token at

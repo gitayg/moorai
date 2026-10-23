@@ -283,7 +283,8 @@ test("task-token arguments: one task token per --token-file line, never equal to
     const calls = f("calls", [TOK_A, TOK_B]);
     assert.deepEqual(parseArgs(["--token-file", calls, "--task-token-file", f("tasks", [TASK_A, TASK_B])], {}).taskTokens, [TASK_A, TASK_B]);
     assert.throws(() => parseArgs(["--token-file", calls, "--task-token-file", f("one", [TASK_A])], {}), /one task token per --token-file line/);
-    assert.throws(() => parseArgs(["--token-file", calls, "--task-token-file", f("same", [TASK_A, TOK_B])], {}), /must differ from every --token-file token/);
+    // A task token equal to a tool-call token parses; createServer refuses it (the next test), for the CLI and embedders alike.
+    assert.deepEqual(parseArgs(["--token-file", calls, "--task-token-file", f("same", [TASK_A, TOK_B])], {}).taskTokens, [TASK_A, TOK_B]);
     assert.throws(() => parseArgs(["--host", "10.0.0.5", "--allow-remote", "--task-token-file", f("t", [TASK_A])], {}), /without a token/);
     assert.deepEqual(parseArgs([], { MOORAI_SERVE_TASK_TOKEN: TASK_A }).taskTokens, [TASK_A]);
   } finally { rmTree(home); }
@@ -329,4 +330,20 @@ test("a task written without a token in report mode is not honoured once the eff
     p2.intentAlignment = "block";
     assert.equal((await toolCall(a.url, "s1", TOK_A)).json.decision, "allow", "a task written with a token is honoured in block");
   } finally { await a.close(); }
+});
+
+test("createServer refuses a task token equal to a tool-call token, so an embedder gets the same check as the CLI", async () => {
+  const { createServer } = await import(pathToFileURL(SERVE).href);
+  const policy = { captureTier: "content-free", intentAlignment: "block" };
+  // A server that starts anyway is closed before the assertion fails, so a red run does not hang.
+  const refuses = async (o) => {
+    let s;
+    try { s = await createServer(o); } catch (e) { assert.match(e.message, /task token must differ from every tool-call token/); return; }
+    await s.close();
+    assert.fail("createServer started with a task token equal to a tool-call token");
+  };
+  await refuses({ port: 0, tokens: [TOK_A, TOK_B], taskTokens: [TASK_A, TOK_B], policy });
+  await refuses({ port: 0, token: TOK_A, taskTokens: [TOK_A], policy });
+  const s = await createServer({ port: 0, tokens: [TOK_A, TOK_B], taskTokens: [TASK_A, TASK_B], policy });
+  await s.close();
 });

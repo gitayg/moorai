@@ -157,7 +157,6 @@ export function parseArgs(argv, env = process.env) {
   if (!o.taskTokens.length) o.taskTokens = envToken(env, "MOORAI_SERVE_TASK_TOKEN");
   o.token = o.tokens[0] || "";
   if (o.taskTokens.length && o.tokens.length && o.taskTokens.length !== o.tokens.length) throw new Error("--task-token-file must hold one task token per --token-file line (line N writes the tasks of the principal on line N)");
-  if (o.taskTokens.some((t) => o.tokens.includes(t))) throw new Error("a task token must differ from every --token-file token");
   if (o.modelProxyUrl) {
     let u;
     try { u = new URL(o.modelProxyUrl); } catch { throw new Error("--model-proxy-url is not a URL"); }
@@ -240,6 +239,7 @@ export async function createServer(opts = {}) {
   const tokens = Array.isArray(o.tokens) && o.tokens.length ? o.tokens : o.token ? [o.token] : [];
   const taskTokens = Array.isArray(o.taskTokens) ? o.taskTokens : [];
   if (taskTokens.length && tokens.length && taskTokens.length !== tokens.length) throw new Error("taskTokens must hold one task token per token (paired by position)");
+  if (taskTokens.some((t) => tokens.includes(t))) throw new Error("a task token must differ from every tool-call token (--token-file, MOORAI_SERVE_TOKEN or the tokens option)");
   // Room for every principal's full per-caller quota, so a session is only ever evicted by its own
   // principal: the store evicts across owners only past maxSessions, which this sizing never reaches.
   const maxSessions = Math.max(intentServerLib.INTENT_DEFAULTS.maxSessions, Math.max(1, tokens.length) * o.intentSessionsPerCaller);
@@ -351,7 +351,8 @@ export async function createServer(opts = {}) {
 async function main() {
   let o;
   try { o = parseArgs(process.argv.slice(2)); } catch (e) { process.stderr.write(`moorai-serve: ${e.message}\n`); process.exit(2); }
-  const s = await createServer(o);
+  let s;
+  try { s = await createServer(o); } catch (e) { process.stderr.write(`moorai-serve: ${e.message}\n`); process.exit(2); }
   // One machine-readable line, so a supervisor (or a test using --port 0) can find the port.
   const mode = intentServerLib.intentModeFromPolicy((await s.runtime.ready()).policy);
   if (!o.tokens.length && !o.taskTokens.length && (mode === "ask" || mode === "block")) process.stderr.write(`moorai-serve: intent mode "${mode}" with no token: POST /v1/task is refused until moorai-serve runs with --task-token-file or --token-file\n`);
