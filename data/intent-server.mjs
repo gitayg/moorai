@@ -13,6 +13,16 @@
 //   createIntentStore({ ..., maxSessionsPerOwner })
 //   store.captureTask(sessionId, promptText, owner)
 //   store.judge(sessionId, tool, input, findings, owner)
+//   store.captureTask(sessionId, promptText, owner, { authenticated })
+//   store.judge(sessionId, tool, input, findings, owner, { authenticatedOnly })
+//   authenticated      boolean, default true: whether an authenticated task writer wrote this capture
+//                      (moorai-serve: false when the sidecar has no token at all; in-process callers, the SDK
+//                      and the model proxy, are authenticated). The session keeps the features of its
+//                      authenticated captures apart from the rest.
+//   authenticatedOnly  boolean, default false: judge only against authenticated captures; a session with none
+//                      is "task-unknown". The runtime passes it in "ask" and "block", so a task written
+//                      without a token while the mode was "report" never opens the gate after the mode
+//                      changes. The return shape of judge is unchanged.
 //   owner         string, the principal the session belongs to (moorai-serve: the bearer token presented).
 //                 Sessions are namespaced by owner: a task set under one owner is invisible to, and cannot
 //                 be replaced by, another. Omitted or not a string -> "" (one shared namespace).
@@ -106,7 +116,7 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
     evictLruOf(big);
   }
 
-  function captureTask(sessionId, promptText, owner) {
+  function captureTask(sessionId, promptText, owner, { authenticated = true } = {}) {
     if (!validId(sessionId) || typeof promptText !== "string") return { features: 0 };
     const t = clock();
     prune(t);
@@ -115,13 +125,16 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
     let cur = sessions.get(sid);
     if (!cur) {
       makeRoom(ow);
-      cur = { t, o: ow, f: new Set(), seen: new Set() };
+      // f: every capture's features; fa: only authenticated captures' (a: one has happened).
+      cur = { t, o: ow, f: new Set(), fa: new Set(), a: false, seen: new Set() };
       owners.set(ow, (owners.get(ow) || 0) + 1);
       unknown.delete(sid);
     }
+    const auth = authenticated !== false;
+    if (auth) cur.a = true;
     for (const fk of featureKeys(taskFeatures(promptText), h)) {
-      if (cur.f.size >= maxF) break;
-      cur.f.add(fk);
+      if (cur.f.size < maxF) cur.f.add(fk);
+      if (auth && cur.fa.size < maxF) cur.fa.add(fk);
     }
     cur.t = t;
     touch(sid, cur);
@@ -135,7 +148,7 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
     return true;
   };
 
-  function judge(sessionId, tool, input, findings, owner) {
+  function judge(sessionId, tool, input, findings, owner, { authenticatedOnly = false } = {}) {
     const action = actionTargets(tool, input, Array.isArray(findings) ? findings : []);
     if (!action) return null;
     const t = clock();
@@ -143,7 +156,7 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
     const targets = [...action.sites, ...action.paths, ...action.names].join("|");
     let cur = validId(sessionId) ? sessions.get(sid) : undefined;
     if (cur && t - cur.t >= ttl) { bury(sid, cur); cur = undefined; }
-    if (!cur) {
+    if (!cur || (authenticatedOnly && !cur.a)) {
       let seen = unknown.get(sid);
       if (!seen) {
         seen = new Set();
@@ -155,7 +168,7 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
     }
     cur.t = t;
     touch(sid, cur);
-    const r = assessAlignment(cur.f, action, h);
+    const r = assessAlignment(authenticatedOnly ? cur.fa : cur.f, action, h);
     const targetHash = h(`target:${action.cls}:${targets}`);
     return { aligned: r.aligned, class: action.cls, targetHash, firstForTarget: firstIn(cur.seen, targetHash) };
   }

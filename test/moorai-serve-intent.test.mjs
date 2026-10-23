@@ -306,3 +306,27 @@ test("five principals at the per-caller cap: a new principal's session never evi
     }
   } finally { await s.close(); }
 });
+
+test("a task written without a token in report mode is not honoured once the effective mode becomes block: the risky call is task-unknown", async () => {
+  const { createServer } = await import(pathToFileURL(SERVE).href);
+  const policy = { captureTier: "content-free" };
+  const s = await createServer({ port: 0, policy });
+  try {
+    const t = await req(s.url, "/v1/task", { session: "s1", prompt: SEND });
+    assert.equal(t.status, 200, "report mode accepts a tokenless task");
+    assert.deepEqual((await toolCall(s.url, "s1")).json.intent, undefined, "report: aligned while unauthenticated writes count");
+    policy.intentAlignment = "block";
+    const v = await toolCall(s.url, "s1");
+    assert.equal(v.json.decision, "deny", v.raw);
+    assert.deepEqual(v.json.intent, { class: "task-unknown", mode: "block" });
+    policy.intentAlignment = "report";
+    assert.deepEqual((await toolCall(s.url, "s1")).json.intent, undefined, "report mode is unchanged");
+  } finally { await s.close(); }
+  const p2 = { captureTier: "content-free" };
+  const a = await createServer({ port: 0, policy: p2, tokens: [TOK_A] });
+  try {
+    await req(a.url, "/v1/task", { session: "s1", prompt: SEND }, TOK_A);
+    p2.intentAlignment = "block";
+    assert.equal((await toolCall(a.url, "s1", TOK_A)).json.decision, "allow", "a task written with a token is honoured in block");
+  } finally { await a.close(); }
+});

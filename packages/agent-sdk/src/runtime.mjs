@@ -179,11 +179,13 @@ export async function createMoorAI(options = {}) {
   // counts: { mode, captured, features }.
   // owner: the principal the session belongs to (moorai-serve: the bearer token presented); sessions are
   // namespaced by it, so one principal cannot set, replace or evict another's task.
-  async function captureTask(session, prompt, owner) {
+  // authenticated (default true): whether an authenticated task writer sent it (moorai-serve passes false
+  // when it has no token); "ask" and "block" judge only against authenticated captures.
+  async function captureTask(session, prompt, owner, authenticated = true) {
     const s = await ready();
     const mode = intentModeFromPolicy(s.policy);
     if (mode === "off" || !intent) return { mode: intent ? mode : "off", captured: false, features: 0 };
-    const r = intent.captureTask(session, prompt, owner);
+    const r = intent.captureTask(session, prompt, owner, { authenticated });
     return { mode, captured: typeof session === "string" && session.length > 0 && typeof prompt === "string", features: r.features };
   }
 
@@ -196,7 +198,7 @@ export async function createMoorAI(options = {}) {
     // Report mode skips a call with NO session id at all, so callers that never send one see no new
     // alerts; ask and block still judge it (task-unknown), and a supplied id with no task alerts in every mode.
     if (mode === "report" && (typeof session !== "string" || !session)) return v;
-    const j = intent.judge(session, v.tool, input, v.findings, owner);
+    const j = intent.judge(session, v.tool, input, v.findings, owner, { authenticatedOnly: mode === "ask" || mode === "block" });
     if (!j || j.aligned) return v;
     if (j.firstForTarget) {
       reporter.post({ threatId: 64, category: INTENT_CATEGORY, riskLevel: mode === "block" ? "Blocked" : "Medium", stage: "behavior", tool: `hook:${v.tool}`, contentHash: hash(`intent:${j.class}`), intent: { class: j.class, mode, targetHash: j.targetHash }, ...sess }, { prov: prov(s, "PreToolUse") });

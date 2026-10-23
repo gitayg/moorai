@@ -24,7 +24,8 @@ reach, so keep the credential that writes it away from the agent's tool sandbox:
 only to the app that relays the user's turns (`MoorAIClient(task_token=...)`), and give the process that
 runs tools at most the `--token-file` token. Then only the task token can `POST /v1/task` (anything else gets
 403). With no token at all, `ask` and `block` refuse `/v1/task`; `report` accepts it from any local process,
-including an injected shell, which can then set a session's task and silence its alerts. Details:
+including an injected shell, which can then set a session's task and silence its alerts. Such a tokenless
+task counts in `report` only; if the policy later turns to `ask` or `block`, its session is task unknown. Details:
 [README](../../README.md), "Intent alignment in process".
 
 All three listen on 127.0.0.1 only and refuse a request whose Host header is not a loopback name. Run the

@@ -58,7 +58,9 @@
 //                                                     "block" refuse /v1/task (403); "report" stays tokenless,
 //                                                     where any local process (an injected shell included)
 //                                                     can set or replace a session's task and so silence its
-//                                                     alerts.
+//                                                     alerts. Such a tokenless task counts in "report" only:
+//                                                     if the policy later turns to "ask" or "block", the
+//                                                     session is judged as if it had no task (task-unknown).
 //   session (optional, every POST but /v1/task, where it is required): the caller's own session /
 //   conversation id. Only its keyed hash leaves, as the `session` field of each console alert the request
 //   raises; omitted, no field.
@@ -277,7 +279,9 @@ export async function createServer(opts = {}) {
       if (session === undefined) throw new HttpError(400, "session is required");
       if (typeof body.prompt !== "string") throw new HttpError(400, "prompt must be a string");
       if (body.prompt.length > MAX_TEXT) throw new HttpError(413, "prompt too long");
-      return withTimeout(rt.captureTask(session, body.prompt, owner), o.timeoutMs);
+      // Unauthenticated (no token configured at all, so only report mode gets here): honoured in "report"
+      // only; the store keeps it apart and "ask"/"block" judge without it, even after the mode changes.
+      return withTimeout(rt.captureTask(session, body.prompt, owner, tokens.length > 0 || taskTokens.length > 0), o.timeoutMs);
     }
     if (path === "/v1/scan") {
       const ctx = cleanCtx(body.ctx);

@@ -748,7 +748,9 @@ caller gets 403, and a task token may also call the other endpoints as its princ
 that relays the user's turns holds the task token and the tool sandbox holds at most the `--token-file`
 token (or none). With no task token every caller writes its own principal's tasks, and with no token at
 all `"ask"` and `"block"` refuse `/v1/task` (403). `"report"` stays tokenless, where any local process can
-set or replace a session's task and so keep its calls from alerting. The prompt is never stored or echoed: `/v1/task` answers `{mode, captured,
+set or replace a session's task and so keep its calls from alerting. A task written with no token counts
+in `"report"` only: if the policy later turns to `"ask"` or `"block"`, the store judges against
+authenticated writes alone, so such a session is `task-unknown`. The prompt is never stored or echoed: `/v1/task` answers `{mode, captured,
 features}`. A tool call with the same session (the SDK's `session_id`, the sidecar's `session`) that is
 already risky (an upload, a #43 destructive command, a #55 credential read, an MCP write) and aimed at
 something the task never named is judged under `policy.intentAlignment`: `"report"` (default) posts one

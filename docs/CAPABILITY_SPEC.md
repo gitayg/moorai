@@ -762,7 +762,10 @@ is validated against.
    is one principal. Only a task writer may `POST /v1/task`: with `--task-token-file` (one task token per
    `--token-file` line, writing for that line's principal) only those tokens; with no task token any
    authenticated caller for its own principal; with no token at all, in `"ask"` and `"block"`, nobody (403),
-   so an agent's own shell cannot widen its task. The SDK records a prompt as the task only when its prompt
+   so an agent's own shell cannot widen its task. A capture carries whether an authenticated writer sent it
+   (`captureTask(..., owner, { authenticated })`, default true; the sidecar with no token passes false), and
+   `"ask"`/`"block"` judge only against authenticated captures (`judge(..., owner, { authenticatedOnly })`), so
+   a tokenless task written under `"report"` is `task-unknown` once the mode changes. The SDK records a prompt as the task only when its prompt
    scan did not deny it. The SDK captures the task at `UserPromptSubmit` (the `query()` prompt and later user turns;
    a machine-injected `source` is skipped); the sidecar at `POST /v1/task {session, prompt}`, which answers
    `{mode, captured, features}`. A `PreToolUse` / `/v1/tool-call` with that session is judged after the
