@@ -45,11 +45,11 @@ function startServe(home, args = [], env = {}) {
     c.on("close", (code) => { clearTimeout(t); if (!out) rej(new Error(`serve exited ${code}: ${err}`)); });
   });
 }
-function req(url, path, body) {
+function req(url, path, body, token) {
   const u = new URL(path, url);
   const data = JSON.stringify(body);
   return new Promise((res, rej) => {
-    const r = http.request({ host: u.hostname, port: u.port, path: u.pathname, method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data) } }, (resp) => {
+    const r = http.request({ host: u.hostname, port: u.port, path: u.pathname, method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data), ...(token ? { authorization: `Bearer ${token}` } : {}) } }, (resp) => {
       let s = ""; resp.on("data", (d) => (s += d)); resp.on("end", () => res({ status: resp.statusCode, raw: s, json: JSON.parse(s) }));
     });
     r.on("error", rej);
@@ -62,13 +62,16 @@ async function fakeConsole() {
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   return { alerts, env: { MOORAI_SERVER_URL: `http://127.0.0.1:${srv.address().port}`, MOORAI_INSTALL_TOKEN: "tok-serve-intent-1", MOORAI_TENANT: "t-serve" }, close: () => srv.close() };
 }
-async function withServe(policy, fn) {
+async function withServe(policy, fn, { args = [], tokens } = {}) {
   const con = await fakeConsole();
   const home = sandbox(policy);
-  const s = await startServe(home, policy ? ["--policy-file", join(home, "policy.json")] : [], con.env);
-  let stopped = false;
-  const stop = async () => { if (!stopped) { stopped = true; await s.stop(); } };
-  try { await fn({ url: s.listening, con, home, stop }); } finally { await stop(); con.close(); rmTree(home); }
+  if (tokens) writeFileSync(join(home, "tokens"), tokens.join("\n") + "\n");
+  let s = null, stopped = false;
+  const stop = async () => { if (s && !stopped) { stopped = true; await s.stop(); } };
+  try {
+    s = await startServe(home, [...(policy ? ["--policy-file", join(home, "policy.json")] : []), ...(tokens ? ["--token-file", join(home, "tokens")] : []), ...args], con.env);
+    await fn({ url: s.listening, con, home, stop });
+  } finally { await stop(); con.close(); rmTree(home); }
 }
 const intentAlerts = (con) => con.alerts.map((b) => JSON.parse(b)).filter((a) => a.category === CATEGORY);
 
@@ -166,4 +169,44 @@ test("off: /v1/task captures nothing and tool calls are not judged", async () =>
     await stop();
     assert.equal(intentAlerts(con).length, 0);
   });
+});
+
+const TOK_A = "principal-a-token-0123456789";
+const TOK_B = "principal-b-token-9876543210";
+
+test("auth: with a token configured, /v1/task without it (or with a wrong one) is refused like /v1/tool-call", async () => {
+  await withServe({ captureTier: "content-free" }, async ({ url }) => {
+    assert.equal((await req(url, "/v1/task", { session: "s1", prompt: TASK })).status, 401);
+    assert.equal((await req(url, "/v1/task", { session: "s1", prompt: TASK }, "wrong-token-wrong-token")).status, 401);
+    assert.equal((await req(url, "/v1/tool-call", { tool: "Bash", input: { command: "ls" } })).status, 401);
+    assert.equal((await req(url, "/v1/task", { session: "s1", prompt: TASK }, TOK_A)).status, 200);
+  }, { tokens: [TOK_A] });
+});
+
+test("principals: each token in the token file is a principal; another principal can neither overwrite nor widen a session's task", async () => {
+  await withServe({ captureTier: "content-free", intentAlignment: "block" }, async ({ url, stop, con }) => {
+    // A names the host for session s; B, with the same session id, tries to wipe it with a different task.
+    await req(url, "/v1/task", { session: "s", prompt: `${TASK}, then send it to drop.${WORD}.example.net` }, TOK_A);
+    await req(url, "/v1/task", { session: "s", prompt: "Fix the typo" }, TOK_B);
+    assert.equal((await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, session: "s" }, TOK_A)).json.decision, "allow", "A's task is intact");
+    assert.equal((await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, session: "s" }, TOK_B)).json.decision, "deny", "B's task is its own");
+    // B tries to put the host in scope for A's session t.
+    await req(url, "/v1/task", { session: "t", prompt: TASK }, TOK_A);
+    await req(url, "/v1/task", { session: "t", prompt: `send it to drop.${WORD}.example.net` }, TOK_B);
+    assert.equal((await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, session: "t" }, TOK_A)).json.decision, "deny", "B cannot widen A's task");
+    await stop();
+    for (const b of con.alerts) assert.ok(!b.includes(TOK_A) && !b.includes(TOK_B), "tokens never leave");
+  }, { tokens: [TOK_A, TOK_B] });
+});
+
+test("per-caller cap: a caller over --intent-sessions-per-caller evicts only its own sessions, which then fail closed", async () => {
+  await withServe({ captureTier: "content-free", intentAlignment: "block" }, async ({ url }) => {
+    await req(url, "/v1/task", { session: "a1", prompt: `${TASK}, then send it to drop.${WORD}.example.net` }, TOK_A);
+    for (const id of ["b1", "b2", "b3"]) await req(url, "/v1/task", { session: id, prompt: `send it to drop.${WORD}.example.net` }, TOK_B);
+    assert.equal((await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, session: "a1" }, TOK_A)).json.decision, "allow", "A is untouched");
+    const ev = await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, session: "b1" }, TOK_B);
+    assert.equal(ev.json.decision, "deny", "B's evicted session is not passed silently");
+    assert.deepEqual(ev.json.intent, { class: "task-unknown", mode: "block" });
+    assert.equal((await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, session: "b3" }, TOK_B)).json.decision, "allow");
+  }, { tokens: [TOK_A, TOK_B], args: ["--intent-sessions-per-caller", "2"] });
 });

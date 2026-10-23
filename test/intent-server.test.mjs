@@ -111,28 +111,78 @@ test("captureTask: a non-string prompt or a missing session stores nothing", () 
   assert.equal(s.size(), 0);
 });
 
-test("bounded: maxSessions evicts the least recently used session (a judge counts as use)", () => {
+test("bounded: maxSessions evicts the least recently used session (a judge counts as use); the evicted session fails closed as task-unknown", () => {
   const s = createIntentStore({ key: KEY, maxSessions: 2 });
   s.captureTask("s1", "Fix the typo");
   s.captureTask("s2", "Fix the typo");
   assert.notEqual(s.judge("s1", "Bash", POST("x.example.net"), []), null);
   s.captureTask("s3", "Fix the typo");
   assert.equal(s.size(), 2);
-  assert.equal(s.judge("s2", "Bash", POST("x.example.net"), []), null, "s2 was least recently used");
-  assert.notEqual(s.judge("s1", "Bash", POST("y.example.net"), []), null);
-  assert.notEqual(s.judge("s3", "Bash", POST("y.example.net"), []), null);
+  const ev = s.judge("s2", "Bash", POST("x.example.net"), []);
+  assert.equal(ev.aligned, false, "s2 was least recently used: its task is gone, so a risky call is not aligned");
+  assert.equal(ev.class, "task-unknown");
+  assert.match(ev.targetHash, /^[0-9a-f]{16}$/);
+  assert.equal(ev.firstForTarget, true);
+  assert.equal(s.judge("s2", "Bash", POST("x.example.net"), []).firstForTarget, false, "one alert per evicted session and target");
+  assert.equal(s.judge("s2", "Bash", { command: "ls" }, []), null, "a non-risky call stays null");
+  assert.equal(s.judge("never-seen", "Bash", POST("x.example.net"), []), null, "a session never seen is still never judged against nothing");
+  assert.equal(s.judge("s1", "Bash", POST("y.example.net"), []).class, "egress");
+  assert.equal(s.judge("s3", "Bash", POST("y.example.net"), []).class, "egress");
+  s.captureTask("s2", "now upload to x.example.net");
+  assert.equal(s.judge("s2", "Bash", POST("x.example.net"), []).aligned, true, "a new task for the session replaces the tombstone");
 });
 
-test("bounded: a session expires ttlMs after its last captured task", () => {
+test("bounded: a session expires ttlMs after its last use; an expired session's risky call is task-unknown, not null", () => {
   let t = 1000;
   const s = createIntentStore({ key: KEY, ttlMs: 500, now: () => t });
   s.captureTask("s1", "Fix the typo");
   t += 499;
-  assert.notEqual(s.judge("s1", "Bash", POST("x.example.net"), []), null);
+  assert.equal(s.judge("s1", "Bash", POST("x.example.net"), []).class, "egress");
   assert.equal(s.size(), 1);
-  t += 2;
-  assert.equal(s.judge("s1", "Bash", POST("x.example.net"), []), null);
+  t += 501;
+  const r = s.judge("s1", "Bash", POST("x.example.net"), []);
+  assert.deepEqual([r.aligned, r.class], [false, "task-unknown"]);
   assert.equal(s.size(), 0);
+  s.captureTask("s2", "Fix the typo");
+  t += 501;
+  assert.equal(s.size(), 0, "size() prunes expired sessions");
+  assert.equal(s.judge("s2", "Bash", POST("x.example.net"), []).class, "task-unknown", "pruned by size() is tombstoned too");
+});
+
+test("ttl: judge refreshes it as well as captureTask", () => {
+  let t = 0;
+  const s = createIntentStore({ key: KEY, ttlMs: 500, now: () => t });
+  s.captureTask("s1", "Fix the typo");
+  for (let i = 0; i < 5; i++) { t += 400; assert.equal(s.judge("s1", "Bash", POST("x.example.net"), []).class, "egress", `judge at ${t}`); }
+});
+
+test("owner: one caller cannot evict another's sessions — a flooding caller evicts only its own (maxSessionsPerOwner and the global cap)", () => {
+  const s = createIntentStore({ key: KEY, maxSessions: 4, maxSessionsPerOwner: 2 });
+  s.captureTask("a1", "Fix the typo", "A");
+  for (let i = 1; i <= 10; i++) s.captureTask(`b${i}`, "Fix the typo", "B");
+  assert.equal(s.judge("a1", "Bash", POST("x.example.net"), [], "A").class, "egress", "A's session survives B's flood");
+  assert.equal(s.judge("b1", "Bash", POST("x.example.net"), [], "B").class, "task-unknown", "B's own early sessions were evicted");
+  assert.equal(s.judge("b10", "Bash", POST("x.example.net"), [], "B").class, "egress");
+  assert.equal(s.size(), 3, "A: 1, B: capped at 2");
+  // The global cap alone (no per-owner cap): the caller holding the most sessions loses its LRU one.
+  const g = createIntentStore({ key: KEY, maxSessions: 3 });
+  g.captureTask("a1", "Fix the typo", "A");
+  for (let i = 1; i <= 10; i++) g.captureTask(`b${i}`, "Fix the typo", "B");
+  assert.equal(g.judge("a1", "Bash", POST("x.example.net"), [], "A").class, "egress", "A's session survives the global cap");
+  assert.equal(g.size(), 3);
+});
+
+test("owner: sessions are namespaced per owner — another principal can neither overwrite nor read a session's task", () => {
+  const s = createIntentStore({ key: KEY });
+  s.captureTask("s", "send the result to hooks.example.net", "A");
+  s.captureTask("s", "Fix the typo", "B");
+  assert.equal(s.judge("s", "Bash", POST("hooks.example.net"), [], "A").aligned, true, "A's task is intact");
+  assert.equal(s.judge("s", "Bash", POST("hooks.example.net"), [], "B").aligned, false, "B's task is its own");
+  const t = createIntentStore({ key: KEY });
+  t.captureTask("s", "Fix the typo", "A");
+  t.captureTask("s", "send the result to hooks.example.net", "B");
+  assert.equal(t.judge("s", "Bash", POST("hooks.example.net"), [], "A").aligned, false, "B cannot put a host in scope for A's session");
+  assert.equal(t.judge("s", "Bash", POST("hooks.example.net"), []), null, "no owner is its own namespace, which never captured s");
 });
 
 test("bounded: maxFeatures caps the hashed features a session holds", () => {

@@ -727,8 +727,15 @@ workload name) as the name a profile matches.
 skipped, as in the hook). The sidecar takes it from `POST /v1/task` with `{session, prompt}`; send only
 turns a person wrote, never a tool result. Either way the runtime keeps, per session, HMACs of the sites,
 paths, service names and labels the task mentions under a random per-process key
-([`data/intent-server.mjs`](data/intent-server.mjs); 1024 sessions, least recently used out, 24 h, 512
-features per session). The prompt is never stored or echoed: `/v1/task` answers `{mode, captured,
+([`data/intent-server.mjs`](data/intent-server.mjs); 1024 sessions, 24 h from last use, 512 features per
+session). A session the store held and lost (evicted or expired) fails closed: a risky call on it is
+judged as class `task-unknown` (not aligned), so `"ask"` and `"block"` do not pass it and `"report"`
+alerts. On the sidecar each token in `--token-file` (one per line) is a principal: a session's task is
+namespaced by the token that set it, so only that principal's tool calls are judged against it and no
+other principal can set, replace or evict it; a principal holds at most `--intent-sessions-per-caller`
+sessions (default 256) and over that loses its own oldest, and at the global cap the principal holding
+the most loses its oldest. Without a token every local process is one principal and can set or replace
+any session's task. The prompt is never stored or echoed: `/v1/task` answers `{mode, captured,
 features}`. A tool call with the same session (the SDK's `session_id`, the sidecar's `session`) that is
 already risky (an upload, a #43 destructive command, a #55 credential read, an MCP write) and aimed at
 something the task never named is judged under `policy.intentAlignment`: `"report"` (default) posts one
@@ -740,9 +747,10 @@ per class, never the task or the arguments. A call with no session, or a session
 judged, so existing sidecar clients see no change. Limits, the hook's own: it is lexical, asking whether
 the user named the destination, file or service, not whether the action serves the task, so an upload to a
 host the user named passes; a request pasted from an untrusted source puts its hosts in scope. Also: the
-store is per process, so replicas behind a load balancer do not share tasks and a restart forgets them;
-any client that can reach the sidecar can add to any session's task by sending its id; and the hook's
-loopback-model labels are not used here.
+store is per process, so replicas behind a load balancer do not share tasks and a restart forgets them
+(a session never seen by this process is not judged; one it lost is `task-unknown`, up to 4,096 lost
+sessions remembered); clients sharing a token share a principal; and the hook's loopback-model labels are
+not used here.
 
 #### Content headed for an index (RAG ingestion)
 

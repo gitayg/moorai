@@ -39,7 +39,10 @@ A call the branch already denied is not judged again, and a session with no task
 `createMoorAI()` exposes the same step as `captureTask(session, prompt)` plus `toolCall({ ..., session })`,
 whose verdict carries `intent: {class, mode}` when it fires. Limits: it is lexical, asking whether the user
 named the destination, file or service, not whether the action serves the task; a request pasted from an
-untrusted source puts its hosts in scope; the store is per process, so a restart forgets the task.
+untrusted source puts its hosts in scope; the store is per process, so a restart forgets the task. A
+session the store held and lost (evicted past `intentStore.maxSessions`, default 1024, or idle past 24 h)
+fails closed: a risky call on it is judged as class `task-unknown`, which `"block"` denies, `"ask"` asks
+and `"report"` alerts on.
 
 ## Scan content before it is embedded
 

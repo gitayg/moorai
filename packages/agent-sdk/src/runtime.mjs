@@ -26,7 +26,8 @@
 // gains `intent: { class, mode }`. The store's HMAC key is random per runtime (options.intentStore.key to
 // pin one) and never leaves the process. Lexical, with the hook's limits: it asks whether the user NAMED
 // the destination, file or service, not whether the action serves the task, and a pasted untrusted
-// request puts its hosts in scope.
+// request puts its hosts in scope. A session the store held and lost (evicted, expired) is judged as class
+// "task-unknown": not aligned, so ask/block fail closed and report alerts.
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib, intentServerLib } from "./core.mjs";
@@ -171,21 +172,23 @@ export async function createMoorAI(options = {}) {
 
   // The user's task for a session (intent alignment), held as keyed hashes only. Returns content-free
   // counts: { mode, captured, features }.
-  async function captureTask(session, prompt) {
+  // owner: the principal the session belongs to (moorai-serve: the bearer token presented); sessions are
+  // namespaced by it, so one principal cannot set, replace or evict another's task.
+  async function captureTask(session, prompt, owner) {
     const s = await ready();
     const mode = intentModeFromPolicy(s.policy);
     if (mode === "off") return { mode, captured: false, features: 0 };
-    const r = intent.captureTask(session, prompt);
+    const r = intent.captureTask(session, prompt, owner);
     return { mode, captured: typeof session === "string" && session.length > 0 && typeof prompt === "string", features: r.features };
   }
 
   // Intent alignment on the branch verdict v (see the header). Returns v, or a copy with the adjusted
   // decision, reason and alternatives plus `intent`. Reasons are fixed text per class: no argument, no task.
-  function intentStep(s, v, input, session, sess) {
+  function intentStep(s, v, input, session, sess, owner) {
     if (v.decision === "deny" || typeof session !== "string" || !session) return v;
     const mode = intentModeFromPolicy(s.policy);
     if (mode === "off") return v;
-    const j = intent.judge(session, v.tool, input, v.findings);
+    const j = intent.judge(session, v.tool, input, v.findings, owner);
     if (!j || j.aligned) return v;
     if (j.firstForTarget) {
       reporter.post({ threatId: 64, category: INTENT_CATEGORY, riskLevel: mode === "block" ? "Blocked" : "Medium", stage: "behavior", tool: `hook:${v.tool}`, contentHash: hash(`intent:${j.class}`), intent: { class: j.class, mode, targetHash: j.targetHash }, ...sess }, { prov: prov(s, "PreToolUse") });
@@ -202,13 +205,13 @@ export async function createMoorAI(options = {}) {
 
   // The verdict the hook reaches for one tool call (src/decide.mjs), judged for intent alignment when the
   // call carries a session, then settled for a headless run.
-  async function toolCall({ tool, input, cwd, permissionMode = "", session } = {}) {
+  async function toolCall({ tool, input, cwd, permissionMode = "", session, owner } = {}) {
     const s = await ready();
     const b = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId });
     const sess = sessionOf(session);
     report(s, b.findings, { tool: b.tool, decision: b.decision, sess });
     reportSignals(s, b.signals, b.tool, "PreToolUse", sess);
-    const v = intentStep(s, b, input, session, sess);
+    const v = intentStep(s, b, input, session, sess, owner);
     const st = settle(s, v, { tool: v.tool, permissionMode, sess });
     const message = st.decision === "allow" ? "" : `MoorAI: ${withSafer(st.reason, v.alternatives)}`;
     return { decision: st.decision, configuredDecision: v.decision, ...summary(v.findings), reasons: v.decision === "allow" ? [] : [st.reason], alternatives: v.alternatives, kill: v.kill, message, findings: contentFree(v.findings), evaluated: v.evaluated, notEvaluated: v.notEvaluated, ...(v.intent ? { intent: v.intent } : {}), ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };

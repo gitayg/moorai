@@ -14,7 +14,9 @@ the same `session` on `/v1/tool-call`. A risky call aimed at a host, path or ser
 is then judged under `policy.intentAlignment` (`report` by default, `ask`, `block`, `off`); the sidecar
 keeps only keyed hashes in memory and never stores or echoes the prompt. It is lexical (did the user name
 the destination, not does the action serve the task), and a pasted untrusted request puts its hosts in
-scope. Details: [README](../../README.md), "Intent alignment in process".
+scope. Without a token, any local process can set or replace a session's task; with `--token-file`, each
+token (one per line) is a principal whose sessions only it can set, judge or evict, capped by
+`--intent-sessions-per-caller` (default 256). Details: [README](../../README.md), "Intent alignment in process".
 
 All three listen on 127.0.0.1 only and refuse a request whose Host header is not a loopback name. Run the
 sidecar in the agent's network namespace: a container in the same Kubernetes pod, or a compose service

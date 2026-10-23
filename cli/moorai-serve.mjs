@@ -28,6 +28,17 @@
 //                                                     unchanged), "ask" (allow -> ask, then the headless
 //                                                     rule), "block" (deny), "off". The verdict then carries
 //                                                     `intent: { class, mode }`. No session, no judgement.
+//                                                     A session that was held and is gone (evicted, expired)
+//                                                     is judged as class "task-unknown" (fails closed).
+//                                                     PRINCIPALS: each token in --token-file (one per line)
+//                                                     is a principal; a session's task is namespaced by the
+//                                                     token that set it, so only that principal's tool calls
+//                                                     are judged against it and no other principal can set,
+//                                                     replace or evict it. Each principal holds at most
+//                                                     --intent-sessions-per-caller sessions (default 256);
+//                                                     over that, its own oldest goes. WITHOUT A TOKEN every
+//                                                     local process is one principal and can set any
+//                                                     session's task.
 //   session (optional, every POST but /v1/task, where it is required): the caller's own session /
 //   conversation id. Only its keyed hash leaves, as the `session` field of each console alert the request
 //   raises; omitted, no field.
@@ -43,11 +54,11 @@
 // sent as application/json, which a cross-site form cannot do without a CORS preflight this server
 // never answers.
 //
-//   moorai-serve [--host 127.0.0.1] [--port 8790] [--token-file <path>] [--allow-remote]
+//   moorai-serve [--host 127.0.0.1] [--port 8790] [--token-file <path>] [--allow-remote] [--intent-sessions-per-caller 256]
 //                [--max-body 1048576] [--timeout-ms 10000] [--policy-file <path>] [--service-id <name>]
 //                [--headless-ask deny|allow-with-report] [--log]
 //                [--model-proxy-url http://127.0.0.1:8791] [--model-proxy-token-file <path>]
-//   Token: --token-file, else MOORAI_SERVE_TOKEN. The model proxy's token: --model-proxy-token-file, else
+//   Token: --token-file (one token per line; each line is a principal), else MOORAI_SERVE_TOKEN (one). The model proxy's token: --model-proxy-token-file, else
 //   MOORAI_MODEL_PROXY_TOKEN. Console binding: MOORAI_SERVER_URL / MOORAI_TENANT /
 //   MOORAI_INSTALL_TOKEN or /etc/moorai/config.json, as server mode reads them.
 import http from "node:http";
@@ -61,7 +72,7 @@ import { inboundLib, indexScanLib } from "../packages/agent-sdk/src/core.mjs";
 import { createCheckedNotifier } from "../model-proxy/checked-notify.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-export const DEFAULTS = Object.freeze({ host: "127.0.0.1", port: 8790, maxBody: 1048576, timeoutMs: 10000 });
+export const DEFAULTS = Object.freeze({ host: "127.0.0.1", port: 8790, maxBody: 1048576, timeoutMs: 10000, intentSessionsPerCaller: 256 });
 const CTX_KEYS = { template: "boolean", egress: "boolean", inbound: "boolean", targetPath: "string", tool: "string" };
 const MAX_TEXT = 4 * 1048576;
 
@@ -78,12 +89,12 @@ function hostHeaderOk(header) {
 }
 
 export function parseArgs(argv, env = process.env) {
-  const o = { ...DEFAULTS, allowRemote: false, log: false, token: "" };
+  const o = { ...DEFAULTS, allowRemote: false, log: false, token: "", tokens: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i], v = () => { const x = argv[++i]; if (x === undefined) throw new Error(`${a} needs a value`); return x; };
     if (a === "--host") o.host = v();
     else if (a === "--port") o.port = Number(v());
-    else if (a === "--token-file") o.token = readFileSync(v(), "utf8").trim();
+    else if (a === "--token-file") o.tokens = readFileSync(v(), "utf8").split(/\r?\n/).map((t) => t.trim()).filter(Boolean);
     else if (a === "--allow-remote") o.allowRemote = true;
     else if (a === "--max-body") o.maxBody = Number(v());
     else if (a === "--timeout-ms") o.timeoutMs = Number(v());
@@ -93,9 +104,11 @@ export function parseArgs(argv, env = process.env) {
     else if (a === "--log") o.log = true;
     else if (a === "--model-proxy-url") o.modelProxyUrl = v();
     else if (a === "--model-proxy-token-file") o.modelProxyToken = readFileSync(v(), "utf8").trim();
+    else if (a === "--intent-sessions-per-caller") o.intentSessionsPerCaller = Number(v());
     else throw new Error(`unknown argument ${a}`);
   }
-  if (!o.token && env.MOORAI_SERVE_TOKEN) o.token = String(env.MOORAI_SERVE_TOKEN).trim();
+  if (!o.tokens.length && env.MOORAI_SERVE_TOKEN) o.tokens = [String(env.MOORAI_SERVE_TOKEN).trim()].filter(Boolean);
+  o.token = o.tokens[0] || "";
   if (o.modelProxyUrl) {
     let u;
     try { u = new URL(o.modelProxyUrl); } catch { throw new Error("--model-proxy-url is not a URL"); }
@@ -111,16 +124,23 @@ export function parseArgs(argv, env = process.env) {
     if (!o.allowRemote) throw new Error(`refusing to listen on ${o.host}: not a loopback address (pass --allow-remote and a token to expose it)`);
     if (!o.token) throw new Error(`refusing to listen on ${o.host} without a token (--token-file or MOORAI_SERVE_TOKEN)`);
   }
-  if (o.token && o.token.length < 16) throw new Error("the token must be at least 16 characters");
+  if (o.tokens.some((t) => t.length < 16)) throw new Error("the token must be at least 16 characters");
+  if (!Number.isInteger(o.intentSessionsPerCaller) || o.intentSessionsPerCaller < 1) throw new Error("--intent-sessions-per-caller must be an integer >= 1");
   return o;
 }
 
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
 const digest = (s) => createHash("sha256").update(String(s)).digest();
-function authorized(req, token) {
-  if (!token) return true;
+// The principal a request authenticates as: "" with no token configured (every local process is the same
+// caller), else the token it presented (kept in memory only, as the intent store's owner), else null.
+function principal(req, tokens) {
+  if (!tokens.length) return "";
   const m = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ""));
-  return Boolean(m) && timingSafeEqual(digest(m[1].trim()), digest(token));
+  if (!m) return null;
+  const got = digest(m[1].trim());
+  let hit = null;
+  for (const t of tokens) if (timingSafeEqual(got, digest(t))) hit = t;
+  return hit;
 }
 // An over-size body is answered 413 only after the client has finished sending it (discarded, never
 // buffered), so the client reads the 413 instead of a connection reset mid-write. Past DRAIN_FACTOR x the
@@ -162,7 +182,8 @@ function withTimeout(p, ms) {
 
 export async function createServer(opts = {}) {
   const o = { ...DEFAULTS, ...opts };
-  const rt = await createMoorAI({ policyFile: o.policyFile, policy: o.policy, serviceId: o.serviceId, headlessAsk: o.headlessAsk, console: o.console, fetch: o.fetch, env: o.env, surface: "serve" });
+  const tokens = Array.isArray(o.tokens) && o.tokens.length ? o.tokens : o.token ? [o.token] : [];
+  const rt = await createMoorAI({ policyFile: o.policyFile, policy: o.policy, serviceId: o.serviceId, headlessAsk: o.headlessAsk, console: o.console, fetch: o.fetch, env: o.env, surface: "serve", intentStore: { maxSessionsPerOwner: o.intentSessionsPerCaller } });
   await rt.ready();
   const version = (() => { try { return JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version; } catch { return "unknown"; } })();
   const loopbackBind = isLoopback(o.host);
@@ -178,7 +199,8 @@ export async function createServer(opts = {}) {
     }
     if (path !== "/v1/scan" && path !== "/v1/tool-call" && path !== "/v1/index-scan" && path !== "/v1/task") throw new HttpError(404, "not found");
     if (req.method !== "POST") throw new HttpError(405, "use POST");
-    if (!authorized(req, o.token)) throw new HttpError(401, "missing or wrong bearer token");
+    const owner = principal(req, tokens);
+    if (owner === null) throw new HttpError(401, "missing or wrong bearer token");
     const body = await readJson(req, o.maxBody);
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "body must be a JSON object");
     if (body.session != null && (typeof body.session !== "string" || !body.session || body.session.length > 256)) throw new HttpError(400, "session must be a non-empty string of at most 256 characters");
@@ -187,7 +209,7 @@ export async function createServer(opts = {}) {
       if (session === undefined) throw new HttpError(400, "session is required");
       if (typeof body.prompt !== "string") throw new HttpError(400, "prompt must be a string");
       if (body.prompt.length > MAX_TEXT) throw new HttpError(413, "prompt too long");
-      return withTimeout(rt.captureTask(session, body.prompt), o.timeoutMs);
+      return withTimeout(rt.captureTask(session, body.prompt, owner), o.timeoutMs);
     }
     if (path === "/v1/scan") {
       const ctx = cleanCtx(body.ctx);
@@ -223,7 +245,7 @@ export async function createServer(opts = {}) {
     if (body.input != null && (typeof body.input !== "object" || Array.isArray(body.input))) throw new HttpError(400, "input must be an object");
     if (body.cwd != null && typeof body.cwd !== "string") throw new HttpError(400, "cwd must be a string");
     if (body.toolCallId != null && (typeof body.toolCallId !== "string" || !body.toolCallId || body.toolCallId.length > 256)) throw new HttpError(400, "toolCallId must be a non-empty string of at most 256 characters");
-    const v = await withTimeout(rt.toolCall({ tool: body.tool, input: body.input || {}, cwd: body.cwd || process.cwd(), permissionMode: typeof body.permissionMode === "string" ? body.permissionMode.slice(0, 32) : "", session }), o.timeoutMs);
+    const v = await withTimeout(rt.toolCall({ tool: body.tool, input: body.input || {}, cwd: body.cwd || process.cwd(), permissionMode: typeof body.permissionMode === "string" ? body.permissionMode.slice(0, 32) : "", session, owner }), o.timeoutMs);
     if (notifier && body.toolCallId) notifier.note(body.toolCallId);
     return v;
   }

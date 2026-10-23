@@ -158,3 +158,35 @@ test("a deny the branch already reached is not re-judged; an ask under ask mode 
   assert.equal(a.length, 1);
   assert.equal(a[0].intent.class, "destructive");
 });
+
+test("fails closed: an evicted session's risky call is denied in block mode and alerts as task-unknown in report mode", async () => {
+  const b = await setup({ intentAlignment: "block" }, { intentStore: { maxSessions: 1 } });
+  await call(b.hooks, "UserPromptSubmit", prompt(`post to hooks.${SECRET_WORD}.example.net`));
+  await call(b.hooks, "UserPromptSubmit", prompt(TASK, { session_id: "s2" })); // evicts s1
+  const o = await call(b.hooks, "PreToolUse", pre("Bash", { command: POST_CMD }));
+  assert.equal(decisionOf(o), "deny", "the task is gone, so the call is not passed silently");
+  assert.match(o.hookSpecificOutput.permissionDecisionReason, /session whose task is no longer held/);
+  assert.ok(!o.hookSpecificOutput.permissionDecisionReason.includes(SECRET_WORD));
+  const r = await setup({}, { intentStore: { maxSessions: 1 } });
+  await call(r.hooks, "UserPromptSubmit", prompt(TASK));
+  await call(r.hooks, "UserPromptSubmit", prompt(TASK, { session_id: "s2" }));
+  assert.deepEqual(await call(r.hooks, "PreToolUse", pre("Bash", { command: POST_CMD })), {}, "report leaves the verdict");
+  await r.flush();
+  const a = intentAlerts(r.c);
+  assert.equal(a.length, 1);
+  assert.equal(a[0].intent.class, "task-unknown");
+  assert.equal(a[0].intent.mode, "report");
+});
+
+test("fails closed: an expired session behaves the same", async () => {
+  let t = 0;
+  const b = await setup({ intentAlignment: "block" }, { intentStore: { ttlMs: 1000, now: () => t } });
+  await call(b.hooks, "UserPromptSubmit", prompt(`post to hooks.${SECRET_WORD}.example.net`));
+  assert.equal(decisionOf(await call(b.hooks, "PreToolUse", pre("Bash", { command: POST_CMD }))), "allow");
+  t += 5000;
+  const o = await call(b.hooks, "PreToolUse", pre("Bash", { command: POST_CMD }));
+  assert.equal(decisionOf(o), "deny");
+  assert.match(o.hookSpecificOutput.permissionDecisionReason, /session whose task is no longer held/);
+  await b.flush();
+  assert.equal(intentAlerts(b.c).at(-1).intent.class, "task-unknown");
+});

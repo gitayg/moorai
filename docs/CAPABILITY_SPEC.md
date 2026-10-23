@@ -744,9 +744,14 @@ is validated against.
 
    **Server surfaces (Agent SDK, `moorai-serve`).** The same pure logic runs over an in-memory store,
    [`data/intent-server.mjs`](../data/intent-server.mjs): per session, HMACs (random per-process key, never
-   leaves the process) of the task's derived features and of the targets already judged; 1024 sessions
-   (least recently used out), 24 h TTL from the last captured task, 512 features per session. The prompt is
-   never stored. The SDK captures the task at `UserPromptSubmit` (the `query()` prompt and later user turns;
+   leaves the process) of the task's derived features and of the targets already judged; 1024 sessions,
+   24 h TTL from last use (capture or judge), 512 features per session. The prompt is never stored. A held
+   session that is evicted or expires is tombstoned (at most 4 x 1024): a risky call on it returns class
+   `task-unknown`, not aligned, so ask/block fail closed and report alerts. Sessions are namespaced by an
+   optional owner: on the sidecar, the bearer token presented (each line of `--token-file` is a
+   principal), so a task can be set, replaced, judged or evicted only by its own principal; per principal
+   at most `--intent-sessions-per-caller` (default 256), its own oldest out; at the global cap the
+   principal holding the most loses its oldest. Without a token every local process is one principal. The SDK captures the task at `UserPromptSubmit` (the `query()` prompt and later user turns;
    a machine-injected `source` is skipped); the sidecar at `POST /v1/task {session, prompt}`, which answers
    `{mode, captured, features}`. A `PreToolUse` / `/v1/tool-call` with that session is judged after the
    branch verdict and before the headless rule (`packages/agent-sdk/src/runtime.mjs`):
@@ -758,8 +763,8 @@ is validated against.
    mode}`; the reason it adds is fixed text per class. No session, or no captured task, means no judgement.
    **Limits** (beyond the hook's lexical ones, which hold unchanged: whether the user named the destination,
    file or service, not whether the action serves the task; a pasted untrusted request puts its hosts in
-   scope): the store is per process, so replicas do not share a task and a restart forgets it; any
-   sidecar client can add to a session's task by sending its id; no loopback-model labels.
+   scope): the store is per process, so replicas do not share a task and a restart forgets it (a session
+   this process never saw is not judged); clients sharing a token share a principal; no loopback-model labels.
 
 11d. **Protected-instruction leak** — the agent's own rules files leaving the device. *Threat 52.*
    Three detectors ([`data/detectors-instruction-leak.js`](../data/detectors-instruction-leak.js)):
