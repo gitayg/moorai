@@ -83,6 +83,11 @@ pub struct PolicyReq {
     /// The `policySig.iat` the client already holds; the reply omits `policy` when it is still current.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub if_iat: Option<String>,
+    /// The hook's keyed actor (`h2:` + 16..64 hex, cli/content-hash.mjs actorHash), named on the helper's
+    /// `/api/policy` fetch so the console adds this device's decided approvals (and, to a fetch signed by
+    /// the bound device key, their receipts). Never a hostname or login.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub actor: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

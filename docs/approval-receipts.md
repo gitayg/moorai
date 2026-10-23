@@ -256,16 +256,45 @@ string). The device reads it only from a policy whose signature verifies (as eve
 A later use of a `ttl` grant, or an approval with no console receipt, gets a device receipt (basis `allowed`), which
 the hub queues.
 
-**Delivery today: dormant.** The console serves `approvals[].receipt` in `/api/policy` only when the fetch is signed
-by the device's BOUND helper key (the `moorai-guardd` device key, registered with a one-time enrolment secret; the
-console's `verifySignedRequest` over method, path and query), that key's device is the request's device, and the
-install token is the one that posted the request. This agent's hook fetches the policy with the install token only,
-and it does not read the policy through the helper. The only key the hook holds is the device receipt key in
-`~/.moorai`, which any process of the agent's OS user can read, so signing the fetch with it would let any such
-process collect console receipts; it is not used for this. `moorai-guardd` is built but not installed by anything.
-Until the helper is installed, bound, and the hook reads the policy from it, no console receipt reaches the hook: an
-approved call goes on with a device receipt (basis `allowed`), and the hub queues it for its own approval. Tested:
-`test/approval-receipts-hook.test.mjs` ("approval without a console receipt").
+**Delivery: live once `moorai-guardd` is installed and bound.** The console puts `approvals[].receipt` in
+`/api/policy` only when all of these hold:
+- the fetch is signed by the device's BOUND helper key. That is the `moorai-guardd` device key, registered with a
+  one-time enrolment secret, and the console checks it with `verifySignedRequest` over method, path and query;
+- that key's device is the request's device;
+- the install token is the one that posted the request.
+
+The helper makes that fetch:
+- `GET /api/policy?tenant=<t>&actor=<the hook's keyed actor>`, the hook's own query;
+- signed in the contract §6.2 form, `moorai-devreq|v1|GET|<path and query as sent>|<tenant>|<deviceId>|<keyId>|<ts>|<nonce>|<sha256 of the empty body>`;
+- with `X-Device-Id`, `X-Device-Key`, `X-Device-Ts`, `X-Device-Nonce` and `X-Device-Sig` beside `X-Install-Token`.
+
+The hook reads the policy through the helper's socket (`cli/guardd-policy.mjs`; contract §3.4 `policy`, with the
+hook's `actor`):
+- the helper answers from what it holds when it fetched for that actor within the last 60 s;
+- otherwise it fetches on demand, bounded to 1 s, and the hook waits at most 1.3 s;
+- the hook verifies the helper's policy like a fresh fetch: signature, tenant and rollback mark.
+
+The hook falls back to its own install-token fetch, which carries no receipt, when:
+- no helper is installed;
+- the helper does not answer, or fails its device-key proof;
+- the helper serves another tenant, or holds no fresh policy;
+- the policy does not verify.
+
+The device then goes on with a device receipt (basis `allowed`), and the hub queues the call. The same happens
+when the helper registered unbound (no enrolment secret): the console serves the policy but withholds the receipt.
+
+The only key the hook itself holds is the device receipt key in `~/.moorai`, which any process of the agent's OS
+user can read. It is never used to sign the policy fetch.
+
+Install it (macOS) with `sudo sh guardd/packaging/macos/install.sh <binary> --bind --enroll-secret-file <file>`
+(README, "Privileged helper"). Then `sudo sh guardd/packaging/macos/install.sh --check` reports
+`ok registered and bound`. Linux and Windows have no helper platform layer yet, so on those systems receipts stay
+dormant. Tested:
+- `test/guardd-policy-e2e.test.mjs`: the real helper binary, a test console that decides with the console's
+  `receiptAuthFor` and `verifySignedRequest` copied verbatim (`test/fixtures/guardd/console-verifier.mjs`), and the
+  hook's loader. The receipt arrives through the helper and not on the direct fetch;
+- `test/guardd-policy.test.mjs`: the fallbacks;
+- `test/approval-receipts-hook.test.mjs` ("approval without a console receipt"): the device-receipt path.
 
 A console receipt expires at most 120 s after the console mints it. An approval that reaches the device later
 than that carries an expired receipt, and the hub queues the call.
@@ -351,4 +380,7 @@ A rejected receipt leaves the call queued.
 - If the hook crashes or times out (and the fail mode is open), it answers nothing and the call goes on as the
   model wrote it, `_moorai` included.
 - Claude Code alone is measured to deliver `updatedInput` to MCP tools (§4).
-- Console receipts are dormant until `moorai-guardd` is installed and bound and the hook reads its policy (§5).
+- Console receipts reach the hook only through an installed and bound `moorai-guardd` (§5), today on macOS only.
+  The console binds a receipt to the device, not to the OS user. On a Mac shared by several users, a local user who
+  can compute another user's keyed actor can ask the helper for a policy that names it, and so receive that user's
+  receipts.

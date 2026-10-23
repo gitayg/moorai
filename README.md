@@ -174,27 +174,88 @@ package. Tested on Debian 12 and Ubuntu 24.04 containers (arm64); systemd itself
 
 ### Privileged helper (moorai-guardd)
 
-`moorai-guardd` is the root-owned helper designed to hold the device key, the policy cache and the alert queue where
+`moorai-guardd` is the root-owned helper that holds the device key, the policy cache and the alert queue where
 the user cannot delete or read them (design: [`docs/proposals/guardd-contract.md`](docs/proposals/guardd-contract.md)).
-Installers, one per OS, run as root or elevated:
+On macOS it installs and runs today; the Linux and Windows platform layers are not implemented, so on those systems
+an installed helper exits at start.
+
+**What it does for the hook today (macOS).** The helper registers its device key with the console, binding it
+with a one-time enrolment secret, and fetches `/api/policy` signed with that key. The hook reads its signed policy
+through the helper's socket instead of fetching it with the install token. The console puts an approver's
+receipt in the policy only for such a signed fetch from a bound key, so **console approval receipts reach the hook
+once the helper is installed and bound** ([docs/approval-receipts.md](docs/approval-receipts.md) §5). The hook
+still checks the policy's signature, tenant and rollback mark itself. The helper only carries the policy; it adds
+no trust to it. When the helper is absent, does not answer within 1.3 s, fails its device-key proof, or returns a
+policy that is not fresh or does not verify, the hook falls back to the direct install-token fetch, cache and
+last-known-good, exactly as on a device without the helper. A device that has not pinned a policy key yet takes the
+direct path for its first fetch.
+
+Install on macOS. You run it with sudo; it is never run for you:
+
+```bash
+cargo build --release --manifest-path guardd/Cargo.toml          # → guardd/target/release/moorai-guardd
+# Console admin: issue a one-time enrolment secret (Devices → Enrolment secrets, or POST /api/devices/enroll-secrets)
+# and save the mes_… value in a file, e.g. ~/moorai-enroll.txt.
+sudo sh guardd/packaging/macos/install.sh "$PWD/guardd/target/release/moorai-guardd" \
+  --bind --enroll-secret-file ~/moorai-enroll.txt
+rm ~/moorai-enroll.txt                                            # the helper deletes its copy once bound
+sh guardd/packaging/macos/install.sh --check                      # unprivileged: layout, modes, key out of reach
+sudo sh guardd/packaging/macos/install.sh --check                 # also the key's own mode and "registered and bound"
+moorai-helper status                                              # healthy = the helper proved device.pub's key
+```
+
+`--bind` writes `/etc/moorai/config.json` (root:wheel 0644: `serverUrl`, `tenant`, `"helper": "optional"`) and
+`/etc/moorai/secret.json` (root:wheel 0600: `installToken`, `enrollSecret`). It reads these values from the hook
+config of the user who ran sudo (`~/.moorai/config.json`). Override them with `--user-config`, `--server-url` or
+`--tenant`. The secret file must hold the same install token the hook posts approval requests with, because the
+console gives a receipt only to the token that posted the request. `--bind` never overwrites a binding that names
+another console, tenant or token (MDM owns that one). The machine config also makes the device *managed* for the
+hook (`cli/config.mjs`). Without `--enroll-secret-file`, the helper registers unbound: the hook still reads its
+policy through the helper, but the console withholds receipts.
+
+`--check` changes nothing and prints `ok …` or `FAIL …` for each item, exiting 1 on any failure:
+- the binary and the plist are root-owned;
+- `secret.json` is root-only;
+- the state directory is root:wheel 0700 and the device key is not readable by the user running the check. As root,
+  `--check` also verifies the key is 0600 and that the registration is bound;
+- the socket is root-owned 0666 in a root-owned 0755 directory;
+- `device.pub` is root-owned 0644.
+
+Uninstall:
+
+```bash
+sudo sh guardd/packaging/macos/uninstall.sh      # stops and removes the daemon and binary; keeps /etc/moorai and the state
+# Full removal also deletes the binding and the device key (a reinstall then registers a NEW key, which the
+# console records as "Device key changed" unless it is enrolled with a fresh secret):
+sudo rm -f /etc/moorai/config.json /etc/moorai/secret.json
+sudo rm -rf "/Library/Application Support/MoorAI/state"
+```
+
+Other installers (the helper does not start on these yet):
 
 ```bash
 sudo sh guardd/packaging/linux/install.sh /abs/path/moorai-guardd   # systemd service + socket
-sudo sh guardd/packaging/macos/install.sh /abs/path/moorai-guardd   # LaunchDaemon (build-pkg.sh builds a .pkg)
 pwsh -File guardd/packaging/windows/install.ps1 -Binary C:\path\moorai-guardd.exe   # MoorAIGuard service
 node scripts/build-linux-package.mjs --guardd <binary> --guardd-arch amd64          # moorai-guardd .deb
-moorai-helper status [--json]                                     # installed? running? valid device-key proof?
+sh guardd/packaging/macos/build-pkg.sh /abs/moorai-guardd out.pkg 0.1.0             # unsigned macOS .pkg
 ```
 
-Each installer refuses a binary built with test-only path injection and never writes the content of
-`/etc/moorai/config.json` or `secret.json` (those come from the administrator or MDM). On Windows only SYSTEM and Administrators can stop or
-reconfigure the service, and `install.ps1` refuses a pre-existing `<ProgramData>\MoorAI` that is a junction, is not
-owned by SYSTEM or Administrators, or that anyone else can write to, then writes each DACL whole (Users read the folder
-itself and the public admin inputs, never `secret.json` or the helper's state). `moorai-helper status` reports `healthy` only when the endpoint passes the root-ownership
-check and the helper proves it holds the key published in `device.pub`. The helper's per-OS platform layer is not
-implemented yet, so an installed helper exits at start today; the install path and the status check are what ship.
-That a non-admin user cannot delete the alert chain or read the device key is not demonstrated on any OS yet, and
-the CI install test skips each OS until its helper can start (`scripts/guardd-ci-ready.mjs`).
+Each installer refuses a binary built with test-only path injection. Without `--bind`, an installer never writes
+`/etc/moorai/config.json` or `secret.json`; the administrator or MDM supplies them. On Windows only SYSTEM and
+Administrators can stop or reconfigure the service, and `install.ps1` refuses a pre-existing
+`<ProgramData>\MoorAI` that is a junction, is not owned by SYSTEM or Administrators, or that anyone else can write
+to. It then writes each DACL whole: Users read the folder itself and the public admin inputs, never `secret.json`
+or the helper's state.
+
+Limits:
+- Installing a binary you built in your own tree trusts that tree. A process running as you could have changed
+  the build output before you ran sudo. A signed release package is the intended path, and it is not built yet.
+- The console matches the helper's device to the hook's alerts by the Mac's hostname. Renaming the Mac after
+  install is not handled.
+- Quarantine on macOS suspends the agent's processes but cannot block their network, because the Network
+  Extension content filter is not built.
+- That a non-admin user cannot delete the alert chain is not demonstrated on any OS. On macOS the CI install test
+  runs once the helper can start (`scripts/guardd-ci-ready.mjs`).
 
 ### Try the CLI guard in 30 seconds
 
@@ -2233,8 +2294,9 @@ into the Claude Code `PreToolUse` hook). Without it nothing changes.
   pseudonyms alerts already carry; `exp - iat` is at most 120 s.
 - **Who signs.** A call an approver allowed carries the console's receipt (basis `approved`) unchanged, on the
   grant's first use. The console serves that receipt only to a policy fetch signed by the device's bound helper key
-  (`moorai-guardd`), which nothing installs yet, so today an approved call carries a device receipt and the hub
-  queues it. Any other allowed call carries a receipt signed with the device key (basis `allowed`). Any
+  (`moorai-guardd`). Once the helper is installed and bound (macOS: `install.sh --bind`), the hook reads its policy
+  through the helper and the console's receipt reaches it. Without the helper, an approved call carries a device
+  receipt and the hub queues it. Any other allowed call carries a receipt signed with the device key (basis `allowed`). Any
   process of the same OS user can sign with that key, so a device receipt is advisory, and a hub queues it.
 - **Never on** an ask or a deny. A `_moorai` key the model put in the input is stripped before the call is judged;
   on a host that cannot rewrite input (the other agents' adapters, the Cursor CLI) such a call is denied.

@@ -265,22 +265,28 @@ fn register_loop(shared: &Shared) {
     }
 }
 
+/// One policy fetch (background cadence or IPC on demand); content-free tamper findings are queued.
+pub fn policy_fetch_once(shared: &Shared, timeout_ms: u64) {
+    let now = || shared.now();
+    match crate::policy::fetch_cycle_with(&shared.state, shared.deps.console.as_ref(), &now, timeout_ms) {
+        Ok(rejected) => {
+            let alerts: Vec<_> = rejected
+                .iter()
+                .map(|r| serde_json::json!({"kind":"policyRejected","source":r.source,"status":r.status,"ts":crate::clock::iso_ms(shared.now() as i64)}).as_object().cloned().unwrap_or_default())
+                .collect();
+            if !alerts.is_empty() {
+                let _ = shared.lock().alerts.enqueue(alerts, None);
+                shared.poke();
+            }
+        }
+        Err(e) => eprintln!("moorai-guardd: policy fetch: {e:?}"),
+    }
+}
+
 fn policy_loop(shared: &Shared) {
     while !shared.stopping() {
         if shared.lock().binding.is_some() {
-            match crate::policy::fetch_cycle(&shared.state, shared.deps.console.as_ref()) {
-                Ok(rejected) => {
-                    let alerts: Vec<_> = rejected
-                        .iter()
-                        .map(|r| serde_json::json!({"kind":"policyRejected","source":r.source,"status":r.status,"ts":crate::clock::iso_ms(shared.now() as i64)}).as_object().cloned().unwrap_or_default())
-                        .collect();
-                    if !alerts.is_empty() {
-                        let _ = shared.lock().alerts.enqueue(alerts, None);
-                        shared.poke();
-                    }
-                }
-                Err(e) => eprintln!("moorai-guardd: policy fetch: {e:?}"),
-            }
+            policy_fetch_once(shared, crate::policy::FETCH_TIMEOUT_MS);
         }
         let delay = shared.lock().policy.next_fetch_delay_ms(shared.now());
         shared.sleep_ms(delay);
@@ -532,6 +538,25 @@ impl Handler for IpcHandler {
                 (reply(Response::Hello(HelloResp { proto: PROTO_VERSION, helper_version: crate::HELPER_VERSION.into(), tenant, device_id: s.device_id.clone(), key_id, caps, proof })), None)
             }
             Request::Policy(p) => {
+                if p.actor.as_deref().is_some_and(|a| !crate::policy::valid_actor(a)) {
+                    return (err(ErrorCode::BadRequest, "actor must be h2: and 16..64 hex"), None);
+                }
+                // A policy request counts as hook activity (fetch cadence), names the actor the next fetch
+                // carries, and fetches on demand when what is held is stale for that actor (bounded by
+                // ON_DEMAND_FETCH_MS; this connection's thread waits, no other).
+                let now = shared.now();
+                let on_demand = {
+                    let mut s = shared.lock();
+                    s.policy.last_call_ms = now;
+                    if p.actor.is_some() {
+                        s.policy.actor = p.actor.clone();
+                    }
+                    let want = s.policy.actor.clone();
+                    s.binding.as_ref().map(|b| b.tenant.clone()).is_some_and(|t| s.policy.needs_on_demand(&t, want.as_deref(), now))
+                };
+                if on_demand {
+                    policy_fetch_once(shared, crate::policy::ON_DEMAND_FETCH_MS);
+                }
                 let s = shared.lock();
                 (reply(Response::Policy(crate::policy::answer(s.policy.held.as_ref(), p.if_iat.as_deref(), shared.now()))), None)
             }

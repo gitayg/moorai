@@ -1,14 +1,22 @@
 # Contract: `moorai-guardd`, the privileged helper (trust-anchor design, phase 2)
 
-**Status.** Frozen contract for parallel implementation. Pre-implementation scaffolding: nothing here ships
-yet. Design: `docs/proposals/trust-anchors.md` §3.2, §3.3, §4 Phase 2, §5.
+**Status.** Frozen contract for parallel implementation. Design: `docs/proposals/trust-anchors.md` §3.2, §3.3,
+§4 Phase 2, §5.
+- **macOS:** installable and running. The platform layer is implemented: process table, SIGSTOP suspension and
+  `network: "unsupported"`. `guardd/packaging/macos/install.sh --bind` installs the LaunchDaemon and writes the
+  console binding, and `install.sh --check` verifies the install unprivileged. The helper registers its key, bound
+  with an enrolment secret, and fetches `/api/policy` device-signed (§13.3 item 13). The hook reads its policy
+  through the helper (`cli/guardd-policy.mjs`), so console approval receipts reach it once the helper is installed
+  and bound.
+- **Linux and Windows:** the platform layers are still stubs, so the helper does not start there.
+- **Not wired yet:** the hook's other ops (`submit`, `call`, `kill`, `quarantine`).
 
 **What is real today and what is a stub.**
 
 | Area | Real (tested against the golden fixture) | Stub (`todo!()` / throws / 501) |
 |---|---|---|
-| Rust crate `guardd/` | wire forms (golden), IPC server, state store, device key lifecycle and registration, policy fetch/verify/cache/LKG/back-off, alert queue and delivery, beat, push channel, observation, quarantine decisions and ordering, Unix socket transport, `main.rs` (tested with fake platform facilities; §13.3) | every `platform::<os>` item (process table, suspend, network block, system info, Windows pipe), `moorai-guardctl` |
-| Hook client `cli/guardd-client.mjs` | constants, canonical JSON, framing, request builders, signed-byte forms, hello-proof verify, fallback table | `connect`, `verifyEndpointOwnership`, `readDevicePub`, `GuarddClient` ops |
+| Rust crate `guardd/` | wire forms (golden), IPC server, state store, device key lifecycle and registration, policy fetch (device-signed, naming the hook's actor, on demand)/verify/cache/LKG/back-off, alert queue and delivery, beat, push channel, observation, quarantine decisions and ordering, Unix socket transport, `main.rs`, `platform::macos` (system info, process table, SIGSTOP suspend; network block unsupported) | `platform::linux`, `platform::windows` (process table, suspend, network block, system info, Windows pipe), `moorai-guardctl` |
+| Hook client `cli/guardd-client.mjs` | constants, canonical JSON, framing, request builders, signed-byte forms, hello-proof verify, fallback table, `verifyEndpointOwnership`, `readDevicePub`, `connect`, `GuarddClient.policy` (used by `cli/guardd-policy.mjs` from `loadVerifiedPolicy`) | `GuarddClient` `submit`, `call`, `kill`, `quarantine` |
 | Console `server/device-keys*.js` | canonical JSON, signed-byte forms, `verifySignedRequest` (skew, replay, canonical body, binding), command signature verify, tables | register / beat / alerts / commands / sweep / settings logic; every route answers 501 |
 
 The golden fixture is `test/fixtures/guardd/golden.json` (agent repo), copied byte for byte to
@@ -119,14 +127,30 @@ Types: `str`, `int` (safe integer), `u32`, `bool`, `obj`, `[T]`. `?` = optional 
 | Request | | Response | |
 |---|---|---|---|
 | `ifIat?` | `str` the `policySig.iat` the client holds | `source` | `"fresh"` \| `"cache"` \| `"lkg"` \| `"none"` |
+| `actor?` | `str` the hook's keyed actor, `h2:` + 16..64 hex (else `bad_request`) | | |
 | | | `policy?` | `str` the signed policy exactly as `GET /api/policy` served it; omitted when `source` is `none` or `ifIat` is current |
 | | | `iat?`, `fetchedAt?` | `str` timestamps |
 | | | `ageSec?` | `int` now − iat |
 
 `fresh` = verified and younger than `policyMaxAgeMinutes` (default 15); `cache` = verified, older (console
 unreachable); `lkg` = last known good; `none` = nothing verified. The hook re-verifies the signature and
-applies its own HWM. The helper fetches every 60 s while any `call` arrived in the last 10 min, else every
-10 min.
+applies its own HWM. The helper fetches every 60 s while any `call` or `policy` request arrived in the last
+10 min, else every 10 min.
+
+The fetch is `GET /api/policy?tenant=<t>[&actor=<a>]` (`encodeURIComponent` values, the hook's own query form).
+`<a>` is the last `actor` a `policy` request named; at start it is the cached policy's. Once the device key is
+registered, the request is device-signed per §6.2 over exactly that path and query. That gives the console the
+per-device credential for approval receipts (RAISEME-server `server/approval-receipts.js` `receiptAuthFor`; a
+receipt goes only to a bound key whose device is the request's device, over the posting install token). A
+signature the console cannot verify only withholds receipts: the policy is served on the install token
+either way.
+
+**On demand.** A `policy` request is answered from the held policy when that policy was fetched for the request's
+actor within `ON_DEMAND_FRESH_MS` (60 s, the hook's own cache window). Otherwise the helper fetches first, with a
+per-request timeout of `ON_DEMAND_FETCH_MS` (1000 ms), and then answers with what it holds. It never fetches on
+demand while the console back-off is open, or before a policy key is anchored or pinned (the background loop does
+first contact). Fetches carry tickets: an answer that arrives after a later-started fetch was applied is dropped.
+The hook uses only a `fresh` answer and otherwise takes its own direct path (§10.3).
 
 **`submit`**
 
@@ -192,7 +216,7 @@ Client budgets (from the first byte written; on expiry the client closes and app
 | Step | Budget |
 |---|---|
 | connect + ownership check + `hello` + proof verify | **50 ms** (`CONNECT_BUDGET_MS`) |
-| `policy` | 50 ms |
+| `policy` | 50 ms (answered from the held policy); 1300 ms when the helper fetches on demand (`POLICY_FETCH_TIMEOUT_MS`, `OP_TIMEOUT_POLICY_FETCH_MS`) |
 | `submit` | 250 ms |
 | `call` | 20 ms |
 | `kill` | 50 ms |
@@ -868,9 +892,11 @@ contradictory point, to be folded into the sections above.
     of `read_owned_under` stops at the trust root: `/` for the system paths (unchanged), the injected root
     for a `test-injection` tree. A tenant change in the admin binding (detected through `binding.json`)
     drops the pin, mark, cache and last-known-good and re-registers.
-13. **Policy:** fetched with the install token only (not device-signed), as the hook does. Freshness is
-    measured from `iat`, else from `fetchedAt` (an unsigned console). Last-known-good is written only for a
-    real signature (`ok` or a TOFU arm).
+13. **Policy:** fetched with the install token and, once the device key is registered, device-signed (§6.2,
+    `GET`, path and query as sent, empty body), naming the hook's actor; fetched on demand per §3.4. Before
+    agent v1.32.0 it was fetched with the install token only, so no console receipt could reach the hook.
+    Freshness is measured from `iat`, else from `fetchedAt` (an unsigned console). Last-known-good is written
+    only for a real signature (`ok` or a TOFU arm). The `/api/policy/pubkey` first-contact fetch stays unsigned.
 14. **Alert chain:** genesis is record-chain's `genesis("guardd-alerts", tenant)`, so before the first alert
     the beat's `chainHead` is `g:` + 24 hex, not 64 hex. `rhash` is `recordRhash` of the stamped alert minus
     `seq`. The overflow rule also spares the batch in flight; a `413` drops that batch and counts it as
@@ -884,3 +910,22 @@ contradictory point, to be folded into the sections above.
     a non-socket file at the endpoint path is refused rather than unlinked.
 18. **Not implemented in core:** `moorai-guardctl` (release is reachable over IPC as an admin peer);
     Windows `running_privileged`.
+19. **macOS platform:** `machine_id` is `gethostuuid(2)`, the same UUID as `IOPlatformUUID`. `hostname` is
+    `gethostname(2)`, the value Node's `os.hostname()` returns, which the hook reports as `device`. `ProcInfo.uid`
+    is the effective uid (`pbi_uid`), which `LOCAL_PEERCRED` also reports. `awakeSec`
+    (`CLOCK_UPTIME_RAW`) can read up to a few seconds above `uptimeSec` (now − `kern.boottime`), because one clock
+    is raw and the other adjusted. The difference was measured at about 10 s after 8.6 h of uptime with no sleep;
+    `CLOCK_MONOTONIC_RAW` for `uptimeSec` would remove it, which would be a contract change.
+20. **Hook policy through the helper** (`cli/guardd-policy.mjs`, `cli/hook-core.mjs` `loadVerifiedPolicy`
+    `helper`). The hook asks the helper only when all of these hold:
+    - it holds a policy key (anchored or pinned);
+    - the pin is not missing;
+    - the call is a network call;
+    - the machine config's `helper` is not `off`.
+    It uses the answer only when the hello proof verifies, the helper's tenant is the hook's, the `source` is
+    `fresh`, and the body passes the same signature, tenant and rollback checks as a direct fetch. A good answer
+    is written as the hook's cache and, for a real signature, as its last-known-good and mark. A body that does
+    not verify is reported as the tamper pair `{source: "helper", status}`. A copy behind the hook's mark is
+    dropped silently, because the hook may have fetched directly more recently. In every other case the hook takes
+    the direct path. `required` mode is not enforced for the policy read yet: the hook falls back as if
+    `optional`.

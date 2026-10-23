@@ -54,6 +54,8 @@ impl SystemInfo for Sys {
 #[derive(Default)]
 struct Script {
     policy: Option<String>,
+    /// Served instead of `policy` to a device-signed /api/policy fetch (the console adds receipts only then).
+    signed_policy: Option<String>,
     published: Option<String>,
     commands: Vec<Value>,
     register_status: Option<(&'static str, bool)>,
@@ -136,7 +138,7 @@ fn handler(script: Arc<Mutex<Script>>) -> moorai_guardd::console::fake::Handler 
                 }
             }
             "/api/devices/commands/ack" => reply(200, json!({"ok":true})),
-            "/api/policy" => match &s.policy {
+            "/api/policy" => match if r.header("X-Device-Sig").is_some() && s.signed_policy.is_some() { &s.signed_policy } else { &s.policy } {
                 Some(p) => Ok(HttpResponse { status: 200, body: p.clone().into_bytes() }),
                 None => reply(404, json!({})),
             },
@@ -597,4 +599,52 @@ fn the_full_helper_threads_register_beat_and_poll_on_their_own() {
     assert!(seen("/api/devices/register"), "registered");
     assert!(seen("/api/devices/beat"), "the start-up beat");
     assert!(seen("/api/devices/commands"), "the long-poll");
+}
+
+#[test]
+fn the_policy_fetch_is_device_signed_names_the_hooks_actor_and_an_ipc_request_fetches_on_demand() {
+    let w = world("signedpolicy");
+    register_once(&w.shared).unwrap();
+    pin_console_key(&w);
+    let pinned = requests_to(&w, "/api/policy");
+    verify_devreq(pinned.last().unwrap(), &device_pub(&w));
+    let ck = console_key();
+    w.script.lock().unwrap().signed_policy = Some(sign_policy(json!({"approvals":[{"requestId":"apr_1","receipt":"wire.sig"}]}), &ck, "acme", "2026-10-12T09:00:10.000Z"));
+    w.clock.store(T0 + 10_000, Ordering::SeqCst);
+    let mut c = Client::connect(&w);
+    c.hello();
+    let actor = "h2:a1b2c3d4e5f60718";
+    let p = c.send(json!({"op":"policy","actor":actor}));
+    assert_eq!(p["source"], "fresh");
+    assert!(p["policy"].as_str().unwrap().contains(r#""receipt":"wire.sig""#), "a new actor fetches on demand: {p}");
+    let fetches = requests_to(&w, "/api/policy");
+    let last = fetches.last().unwrap();
+    assert_eq!(last.path_and_query, "/api/policy?tenant=acme&actor=h2%3Aa1b2c3d4e5f60718", "the hook's own query form");
+    assert_eq!(last.method, "GET");
+    assert!(last.body.is_empty());
+    verify_devreq(last, &device_pub(&w));
+    assert_eq!(last.header("X-Device-Key"), Some(moorai_guardd::keys::key_id_of_raw(&moorai_guardd::keys::raw_from_spki_b64(&device_pub(&w)).unwrap()).as_str()));
+    assert_eq!(w.console.timeouts.lock().unwrap().last().copied(), Some(moorai_guardd::policy::ON_DEMAND_FETCH_MS), "the on-demand fetch is bounded");
+    let n = requests_to(&w, "/api/policy").len();
+    w.clock.store(T0 + 30_000, Ordering::SeqCst);
+    let again = c.send(json!({"op":"policy","actor":actor}));
+    assert_eq!(again["policy"], p["policy"]);
+    assert_eq!(requests_to(&w, "/api/policy").len(), n, "held for this actor and younger than 60 s: no fetch");
+    w.clock.store(T0 + 10_000 + moorai_guardd::policy::ON_DEMAND_FRESH_MS, Ordering::SeqCst);
+    c.send(json!({"op":"policy","actor":actor}));
+    assert_eq!(requests_to(&w, "/api/policy").len(), n + 1, "60 s later: fetched again");
+    assert_eq!(c.send(json!({"op":"policy","actor":"alice@laptop"}))["code"], "bad_request", "only a keyed actor goes on the wire");
+}
+
+#[test]
+fn an_unregistered_helper_fetches_policy_unsigned_and_never_on_demand_before_the_pin() {
+    let w = world("unsignedpolicy");
+    let mut c = Client::connect(&w);
+    c.hello();
+    assert_eq!(c.send(json!({"op":"policy","actor":"h2:a1b2c3d4e5f60718"}))["source"], "none");
+    assert!(requests_to(&w, "/api/policy").is_empty(), "unpinned: the background loop does the first-contact fetch");
+    pin_console_key(&w);
+    let f = requests_to(&w, "/api/policy");
+    assert_eq!(f[0].path_and_query, "/api/policy?tenant=acme&actor=h2%3Aa1b2c3d4e5f60718");
+    assert!(f[0].header("X-Device-Sig").is_none(), "no registration yet: install token only");
 }

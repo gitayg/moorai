@@ -121,8 +121,10 @@ test("endpoint paths are constants, never taken from the environment", () => {
   } finally { process.env = saved; }
 });
 
-test("transport is a stub until implemented", async () => {
-  await assert.rejects(connect(), /not implemented/);
+test("connect never throws: no helper at the compiled-in endpoint is absent (or untrusted), never a client", { skip: process.platform === "win32" }, async () => {
+  const r = await connect();
+  assert.equal(r.client, null);
+  assert.ok(["absent", "untrusted", "not-ready", "timeout", "error"].includes(r.reason), r.reason);
 });
 
 // verifyEndpointOwnership is the one §3.6 step 1 walk; cli/guardd-install.mjs uses the same function.

@@ -36,8 +36,12 @@ function tree(files) {
 const CLEAN = "pub fn f() -> u32 { 1 }\n";
 const DISPATCH = "fn main() { windows_service::service_dispatcher::start(\"MoorAIGuard\", ffi_service_main).unwrap(); }\n";
 
-test("this checkout: no OS is ready while its platform layer still has todo!() stubs", () => {
-  for (const [p, dir] of [["linux", "linux"], ["macos", "macos"], ["windows", "windows"]]) {
+test("this checkout: macOS is ready (its platform layer is implemented); Linux and Windows are not while theirs still have todo!() stubs", () => {
+  const mac = gate("macos");
+  assert.equal(mac.status, 0, mac.stderr);
+  assert.equal(mac.ready, "true", mac.stdout);
+  assert.doesNotMatch(mac.stdout, /::notice title=guardd-install skipped::/);
+  for (const [p, dir] of [["linux", "linux"], ["windows", "windows"]]) {
     const g = gate(p);
     assert.equal(g.status, 0, g.stderr);
     assert.equal(g.ready, "false", `${p}: ${g.stdout}`);

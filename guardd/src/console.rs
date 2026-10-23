@@ -321,12 +321,14 @@ pub mod fake {
 
     pub struct FakeConsole {
         pub seen: Mutex<Vec<HttpRequest>>,
+        /// The timeout each request was sent with, in the order of `seen`.
+        pub timeouts: Mutex<Vec<u64>>,
         pub handler: Handler,
     }
 
     impl FakeConsole {
         pub fn new(handler: Handler) -> Self {
-            FakeConsole { seen: Mutex::new(vec![]), handler }
+            FakeConsole { seen: Mutex::new(vec![]), timeouts: Mutex::new(vec![]), handler }
         }
         pub fn requests(&self) -> Vec<HttpRequest> {
             self.seen.lock().unwrap().clone()
@@ -334,9 +336,10 @@ pub mod fake {
     }
 
     impl ConsoleTransport for FakeConsole {
-        fn send(&self, _origin: &str, req: HttpRequest, _t: u64) -> Result<HttpResponse, ConsoleError> {
+        fn send(&self, _origin: &str, req: HttpRequest, t: u64) -> Result<HttpResponse, ConsoleError> {
             let r = (self.handler)(&req);
             self.seen.lock().unwrap().push(req);
+            self.timeouts.lock().unwrap().push(t);
             r
         }
     }
