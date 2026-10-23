@@ -9,15 +9,26 @@
 //   3. the incoming W3C traceparent's trace-id, when the request carries a valid one (trace-w3c.mjs
 //                                         source "incoming"): one agent run under one trace is one task;
 //   4. the conversation itself: a keyed hash of its first user turn. Every request re-sends the whole
-//                                         conversation, so its first turn names it on every turn.
+//                                         conversation, so its first turn names it on every turn;
+//   5. none of these (no header, no trace, no user turn): the one session "none", where nothing is ever
+//                                         captured, so a risky call there is judged "task-unknown".
 // The explicit names win over the trace because a trace can span several conversations (a workflow trace
 // around many agent runs), which would merge their tasks. The id goes to the store with its source as a
 // prefix (hdr: / cc: / trace: / conv:); the store keeps only its keyed hash.
 //
 // TASK. From each request's real user turns (user-turns.mjs; never a system prompt, tool result, function
-// response or document): the first turn, the task, and the latest turn. Each (session, turn) pair is captured
-// once (a keyed-hash LRU of 8192), so a long conversation is not re-read every turn. The store holds feature
-// hashes only; a turn's text is in memory for the call.
+// response or document): the first turn, the task, and the latest turn, captured on every request, so a
+// session the store evicted or expired is restored by the conversation's next request. The store holds
+// feature hashes only; a turn's text is in memory for the call.
+//
+// NO TASK. The store answers class "task-unknown" (aligned: false) for a risky call in a session with no live
+// captured task: never captured (a request with no real user turn), evicted or expired. It is handled like
+// any misaligned call: an alert, and in --mode enforce the ask or the block.
+//
+// OWNER. The store's optional owner principal (so one caller cannot evict another's sessions) is not passed:
+// every client of one proxy holds the same token, so the proxy has no per-client principal to give. One
+// consequence: X-MoorAI-Session-Id is the client's to choose, so a client of this proxy that names another
+// client's session id adds its own turns to that session's task.
 //
 // JUDGEMENT. Each tool call the model returns, mapped to the hook's tool vocabulary (check.mjs mapTool), after
 // the proxy's own verdict on it and not when that verdict is a deny. intentModeFromPolicy(policy):
@@ -44,14 +55,15 @@ import { createHmac, randomBytes } from "node:crypto";
 import { REASON } from "../cli/provenance.mjs";
 import { settleHeadlessAsk } from "../cli/server-mode.mjs";
 import { readRootOwned } from "../cli/hook-core.mjs";
-import { CLASS_TEXT } from "../cli/intent-alignment.mjs";
+import { CLASS_TEXT as HOOK_CLASS_TEXT } from "../cli/intent-alignment.mjs";
 import { userTurns } from "./user-turns.mjs";
 
 export const SESSION_ID_HEADER = "x-moorai-session-id";
 export const CLAUDE_SESSION_HEADER = "x-claude-code-session-id";
 export const MAX_SESSION_ID = 256;
+export const NO_SESSION = "none";
+const CLASS_TEXT = { ...HOOK_CLASS_TEXT, "task-unknown": "no request from you was seen in this session" };
 export const STORE_LIMITS = Object.freeze({ maxSessions: 1024, ttlMs: 24 * 3600 * 1000, maxFeatures: 512 });
-const CAPTURED_MAX = 8192;
 export const CATEGORY = "Action outside the stated task";
 
 // { key: Buffer, source: "option" | "file" | "random" }. A key file that is missing, writable by others or
@@ -68,14 +80,14 @@ export function loadIntentKey({ key, keyFile, read = readRootOwned, warn = (m) =
 
 const header = (headers, name) => { const v = headers && headers[name]; return typeof v === "string" && v && v.length <= MAX_SESSION_ID ? v : null; };
 
-// The session id for a request (see SESSION above), or null when there is none to judge against.
+// The session id for a request (see SESSION above); NO_SESSION when nothing names one.
 export function sessionOf({ headers, trace, turns, hmac }) {
   const explicit = header(headers, SESSION_ID_HEADER);
   if (explicit) return `hdr:${explicit}`;
   const cc = header(headers, CLAUDE_SESSION_HEADER);
   if (cc) return `cc:${cc}`;
   if (trace && trace.source === "incoming" && trace.traceId) return `trace:${trace.traceId}`;
-  return turns.length ? `conv:${hmac(`conv\0${turns[0]}`)}` : null;
+  return turns.length ? `conv:${hmac(`conv\0${turns[0]}`)}` : NO_SESSION;
 }
 
 // lib: { createIntentStore, intentModeFromPolicy } (data/intent-server.mjs, or a test double). A store that
@@ -87,7 +99,6 @@ export function createIntent({ lib, key, rt, enforce, now, warn = (m) => process
     try { warn("moorai-model-proxy: intent alignment is unavailable (data/intent-server.mjs did not start); tool calls are not judged against the task\n"); } catch { /* a warning */ }
   }
   const hmac = (s) => createHmac("sha256", key).update(s, "utf8").digest("base64url");
-  const captured = new Map();
   const modeOf = (policy) => { try { const m = lib.intentModeFromPolicy(policy); return ["off", "report", "ask", "block"].includes(m) ? m : "off"; } catch { return "off"; } };
 
   // Per request, after the body is read: capture the task, return the context the judge needs, or null.
@@ -97,14 +108,9 @@ export function createIntent({ lib, key, rt, enforce, now, warn = (m) => process
     if (mode === "off") return null;
     const turns = userTurns(kind, json);
     const sessionId = sessionOf({ headers, trace, turns, hmac });
-    if (!sessionId) return null;
     for (const t of new Set([turns[0], turns[turns.length - 1]])) {
       if (!t) continue;
-      const k = hmac(`${sessionId}\0${t}`);
-      if (captured.has(k)) { captured.delete(k); captured.set(k, 1); continue; }
-      try { store.captureTask(sessionId, t); } catch { continue; }
-      captured.set(k, 1);
-      if (captured.size > CAPTURED_MAX) captured.delete(captured.keys().next().value);
+      try { store.captureTask(sessionId, t); } catch { /* not captured: the store answers task-unknown */ }
     }
     return { sessionId, mode };
   }
