@@ -3928,6 +3928,46 @@ Token counts (metadata only) go to `POST /api/token-usage` as cumulative hourly 
   signed policy, no state, a state older than 1 hour or dated in the future, an ended period, `warn`/`ok`, or
   `action: "alert"` never blocks, whatever failMode says. Hooks never block on budget.
 
+## Approval receipts (device side)
+
+[`cli/approval-receipts.mjs`](../cli/approval-receipts.mjs), [`cli/receipt-step.mjs`](../cli/receipt-step.mjs),
+[`cli/canonical-json.mjs`](../cli/canonical-json.mjs), wired into [`cli/moorai-hook.mjs`](../cli/moorai-hook.mjs)
+(Claude Code `PreToolUse`); full specification, hub verification steps and trust rule in
+[`approval-receipts.md`](approval-receipts.md). Tests: `test/approval-receipts.test.mjs`,
+`test/approval-receipts-hook.test.mjs`; vectors `test/fixtures/approval-receipts/vectors.json`
+(`node scripts/gen-receipt-vectors.mjs`).
+
+- **Policy key.** Top-level `approvalReceipts: { v: 1, audiences: [{ aud, mcpServer, tools? }], ttlSec }`, at most
+  16 audiences; `mcpServer` is the server segment of `mcp__<server>__<tool>`, matched exactly; `tools` are anchored
+  globs over the bare tool name; `ttlSec` defaults to 60 and is capped at 120. Read from the verified policy only.
+  Absent: nothing changes.
+- **Receipt.** Payload `{ v: 1, typ: "moorai.receipt", aud, tool (bare name), argsSha256, device (keyed actor),
+  session (keyed session hash), nonce, iat, exp (≤ 120 s), basis, approvalId?, approver?, keyId, keySource }`;
+  ed25519 over `"moorai-receipt|v1|" + canonicalJson(payload)`; wire `base64url(payload).base64url(sig)` under
+  the input's `_moorai.receipt`. `argsSha256` is SHA-256 of the canonical JSON of the parsed arguments without
+  `_moorai`. keyId is the first 32 hex of SHA-256 over the raw 32-byte public key.
+- **Delivery.** On a final allow of an MCP call to a listed server / tool, `updatedInput` = the complete input +
+  `_moorai`, with no `permissionDecision` (measured: Claude Code 2.1.295 delivers it to the MCP server, also past
+  `additionalProperties: false`). Device receipts (keySource `device`, basis `allowed`) are signed with the device
+  key `~/.moorai/agency-ed25519.key`; the console's receipt from an approval grant's `receipt` field is attached
+  unchanged on the grant's first use. Never on an ask or a deny. The console serves `receipt` only to a fetch signed
+  by a bound `moorai-guardd` key; the hook's fetch is token-only and guardd is not installed, so console receipts are
+  dormant and an approved call carries a device receipt. No receipt for `click`, `type_text`, `press_key`,
+  `upload_file`, `download_file`, `push_file`.
+- **Reserved key.** A model-supplied `_moorai` is stripped before any check; the stripped input goes on with an
+  allow or an ask. On a host that cannot rewrite input (the agent-hook shim, Cursor, an aliased tool name) a call
+  carrying it is denied (`RECEIPT_KEY_INJECTED`) and no receipt is attached.
+- **Approvals.** For a covered MCP call the `APPROVAL_REQUESTED` alert carries `approval.receiptArgsDigest`
+  (`contentHash(argsSha256)`) and `approval.receiptRequest { aud, tool, argsSha256 }` (raw hash: the console mints
+  from it and strips the raw hash before alert storage and SIEM; the alert chain and the outbox `rhash` cover its
+  `aud` and `tool` but not `argsSha256`, `cli/alert-seq.mjs` `alertChainView`), and its `actionHash` =
+  `contentHash("approval\0" + canonicalJson({ argsSha256, aud, tool }))`.
+- **Trust.** Advisory: any process of the agent's OS user can sign a device receipt. A hub pins keys with their
+  keySource and skips its queue only for a key pinned as `console` (basis `approved`, an `approvalId`) or `helper`,
+  with integer-only arguments; the payload's own keySource is never trusted alone.
+- **Hub tools.** `HUB_RECEIPT_TOOLS` (19 tools) is the example list; `click`, `type_text`, `press_key`,
+  `upload_file`, `download_file` and `push_file` are never listed (`HUB_EXCLUDED_TOOLS`).
+
 ## Just-in-time approval routing (device side)
 
 [`cli/approval-routing.mjs`](../cli/approval-routing.mjs), wired into [`cli/moorai-hook.mjs`](../cli/moorai-hook.mjs)

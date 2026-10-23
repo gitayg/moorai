@@ -53,3 +53,13 @@ export function signApproval(tool, argsH, decision) {
     return { agency, sig, pub: _pubB64, alg: "ed25519" };
   } catch { return null; }
 }
+
+// Approval receipts (cli/approval-receipts.mjs) sign with this same device key: the signer for a device receipt
+// (keySource "device", basis "allowed"). Any process of the same OS user can read the key and sign with it, so a
+// device receipt is advisory and a hub queues it. → { sign(bytes) → Buffer, publicKey: base64 SPKI DER } or null.
+export function deviceReceiptSigner() {
+  try {
+    if (!loadKeys()) return null;
+    return { sign: (bytes) => cryptoSign(null, bytes, _priv), publicKey: _pubB64 };
+  } catch { return null; }
+}

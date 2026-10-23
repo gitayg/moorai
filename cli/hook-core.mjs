@@ -7,6 +7,7 @@
 // the policy-trust I/O, and it is here rather than in one entrypoint precisely because BOTH need it.
 
 import { trustedEnv } from "./server-mode.mjs";
+import { canonicalJson } from "./canonical-json.mjs";
 import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createPublicKey, verify as cryptoVerify, createHash } from "node:crypto";
@@ -809,12 +810,8 @@ export const POLICY_SIG_VERSION = 1;
 
 // Deterministic serialization — key-sorted, so the digest does not depend on JSON key order or on the
 // exact bytes the cache file happens to hold. Must stay byte-identical to the console's canonicalJson.
-export function canonicalJson(v) {
-  if (v === undefined) return "null";
-  if (v === null || typeof v !== "object") return JSON.stringify(v);
-  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(",")}]`;
-  return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(v[k])}`).join(",")}}`;
-}
+// The serializer lives in cli/canonical-json.mjs (one implementation, documented there).
+export { canonicalJson };
 
 // sha256 over the whole policy MINUS the signature envelope — every field the engine reads is covered.
 export function policyDigest(policy) {

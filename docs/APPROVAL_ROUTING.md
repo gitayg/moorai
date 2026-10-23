@@ -34,7 +34,11 @@ Code: `cli/approval-routing.mjs`, wired into `cli/moorai-hook.mjs` (Claude Code 
    `APPROVAL_REQUESTED` alert through the normal alert path (direct post, or the alert outbox when the console does
    not answer). The `approval` object carries the request id, rule id, surface `hook`, the held verdict, the action
    hash, and the request and expiry times. The action hash is the keyed per-tenant hash of the tool name and the
-   key-sorted tool input. No command, path, URL or argument text is sent.
+   key-sorted tool input. No command, path, URL or argument text is sent. For an MCP call covered by the policy's
+   `approvalReceipts`, the action hash is taken over `{ argsSha256, aud, tool }` instead and the `approval` object also
+   carries `receiptArgsDigest` (the keyed digest of the argument hash) and `receiptRequest: { aud, tool, argsSha256 }`,
+   so the console can mint an approval receipt for the identical call; the console strips `receiptRequest` before
+   alert storage and SIEM ([approval-receipts.md](approval-receipts.md) §5).
 3. **Dedupe.** While a request for the same rule and action is pending, the same request id is reused and no new
    alert is sent. Pending requests are kept in `~/.moorai/approvals.json` (mode 0600, at most 256).
 4. **Decision.** The policy fetch names the device's keyed actor (`actor=h2:…`, never a hostname or login), and the
@@ -44,7 +48,8 @@ Code: `cli/approval-routing.mjs`, wired into `cli/moorai-hook.mjs` (Claude Code 
    key yet (first contact) give no grant.
 5. **Use.** While an approve grant for the same rule and action hash is valid, the call is allowed. `grant: "once"`
    allows it one time: the request id is recorded as used and the next identical call raises a new request.
-   `grant: "ttl"` allows it until `validUntil`. The first use posts `APPROVAL_USED`. A deny grant answers
+   `grant: "ttl"` allows it until `validUntil`. The first use posts `APPROVAL_USED`. A grant row's `receipt` (the
+   console's approval receipt) is attached unchanged to the call on the grant's first use. A deny grant answers
    `Denied by approver (<label>, request apr_…)` while the console serves it.
 6. **Expiry.** A pending request past its expiry with no decision is denied and `APPROVAL_EXPIRED` is posted once.
    The next identical call raises a new request, so a device sends at most one request per action per `timeoutSec`.

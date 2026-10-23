@@ -93,10 +93,22 @@ function withLock(dir, fn) {
 }
 
 // Stamps `alert` in place with { seq, chainHead } and returns it. `dir` is injectable for tests.
+// The fields the alert chain covers: the alert minus approval.receiptRequest.argsSha256, the raw argument hash the
+// console strips before alert storage (docs/approval-receipts.md §5), so a stored alert still checks against its
+// link. The request's aud and tool stay chained; the raw hash is bound through the chained receiptArgsDigest and
+// actionHash.
+export function alertChainView(alert) {
+  const a = alert && alert.approval;
+  const rr = a && typeof a === "object" ? a.receiptRequest : undefined;
+  if (!rr || typeof rr !== "object" || !Object.prototype.hasOwnProperty.call(rr, "argsSha256")) return alert;
+  const { argsSha256: _drop, ...kept } = rr;
+  return { ...alert, approval: { ...a, receiptRequest: kept } };
+}
+
 export function stampAlertSeq(alert, { tenant, dir = STATE_DIR } = {}) {
   if (!alert || typeof alert !== "object") return alert;
   try {
-    const rhash = recordRhash(alert);
+    const rhash = recordRhash(alertChainView(alert));
     const link = withLock(dir, () => nextLink(ALERT_CHAIN, rhash, { tenant, dir }));
     if (link && Number.isInteger(link.seq) && link.seq > 0) { alert.seq = link.seq; alert.chainHead = link.chash; }
   } catch { /* evidence, never delivery */ }

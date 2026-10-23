@@ -48,6 +48,7 @@ That's the exact trade MoorAI refuses.
 - **Credential exposure map** — the daily heartbeat says, by class only, which credentials an agent on the device can reach (cloud CLIs, SSH keys, kubeconfig, `gh`, `.npmrc`, `.netrc`, MCP configs, project `.env` files, allow-listed env var names, AI keys at rest by keyed hash), which ones an agent read, whether a profile name looks like production, and the destination class the session reached within 10 minutes of the read. Never a path, a value or a name it was not told it may send. See [Credential exposure map](#credential-exposure-map).
 - **Token usage and usage budgets** — the model proxy reads the token counts each provider returns, and a Claude Code device reads the usage Claude Code records in its own transcripts; both go to the console as content-free hourly totals per agent, model and keyed project. A signed usage budget the console marks exceeded is answered 429 by the model proxy in enforce mode. See [Token usage and usage budgets](#token-usage-and-usage-budgets).
 - **Just-in-time approval routing** — a signed policy can send selected blocks and asks in Claude Code to an approver group: the call is denied at once with a request id, one content-free `APPROVAL_REQUESTED` alert goes to the console, and the device allows the identical call only after an approve grant arrives inside the signed policy. The hook never waits for a decision. See [Just-in-time approval routing](#just-in-time-approval-routing).
+- **Approval receipts** — a signed policy can name MCP servers (a remote-administration hub, say) whose allowed calls go out with a short-lived ed25519 receipt in the arguments (`_moorai.receipt`): the bare tool name, a SHA-256 of the arguments (never the arguments), an audience, a nonce and a lifetime of at most 120 s. An approved call carries the console's receipt, which a hub can trust to skip its own approval queue; any other call carries a device-signed receipt, which is advisory and queued. A `_moorai` key the model writes is stripped and replaced. See [Approval receipts](#approval-receipts).
 - **Protected-instruction leak detection (#52)** — reports the rules files an agent runs under (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, Copilot, Cursor, Windsurf and Cline rules) leaving the device through the agent: reproduced in what it writes or sends, or uploaded by path (`curl -d "$(cat CLAUDE.md)"`, `gh gist create AGENTS.md`). The files are fingerprinted on-device as keyed hashes of 7-word shingles; no text is stored. Editing the rules file itself, quoting a line or two, and template boilerplate stay silent.
 - **MCP server reputation** — scores an MCP server 0-100 the first time it is seen (bands good / fair / poor / bad) from its package name, its launch command and the copy npx already installed, plus, opt-in, a registry lookup (which also checks that the package's declared repository is really its own, from registry provenance or the repository's own manifest, and counts the accounts that can publish it: one is `single-maintainer`, a weak signal at weight 5) and SkillTriage's published verdicts. `moorai-mcp-check <package>` runs ten pre-install checks on a server you have not installed yet. A content-free alert carries the score, band and reason codes; `mcpReputation.blockBelow` refuses a low-scoring server. Details in [`mcp-proxy/README.md`](mcp-proxy/README.md).
 - **Signed MCP server and skill catalogue** — an open catalogue format (`moorai-mcp-catalogue` v1: name, ecosystem, status, source, repository, per-version scan verdict, reason codes, artifact or tree sha256, and reputation fields from the agent's own scoring) signed with ed25519. `scripts/mcp-catalogue-build.mjs` builds and signs it from [`data/mcp-catalogue/source.json`](data/mcp-catalogue/source.json), runs MoorAI's package engine over a local copy with `--scan`, and exports the v0.1 MCP registry responses for allow-listable versions with `--format mcp-registry`. A device uses a catalogue only after its signature verifies against a key it got out of band (the signed policy's `mcpCatalogue.publicKeys`, `MOORAI_CATALOGUE_PUBKEY`, or root-owned `/etc/moorai/catalogue.pub`); with no key it is not used. The cached copy (`~/.moorai/mcp-catalogue.json`, user-writable) is re-verified on every read and never decides its own freshness: a fetch time in the future makes it stale, so it is fetched again; a catalogue past its signed `expiresAt` (mandatory) is refused, cached or fetched, so an old signed catalogue cannot be replayed past its expiry; a catalogue whose `seq` is below the highest this device accepted from that key is refused, cached or fetched. That mark lives in the same writable directory, so a local user who rewrites both files can hold an older signed catalogue until the next refresh, at most 24 hours. An expired catalogue's positive verdicts are not used and it is reported as `catalogue-expired`, but its deny side does not fail open: the do-not-install entries and negative per-version verdicts (`do-not-install`, `review`, `caution`) of the last verified copy keep applying until a current one arrives, so withholding a refresh cannot clear the denylist. Verdicts feed MCP reputation for npm and PyPI servers as `catalogue-do-not-install`, `catalogue-review` and `catalogue-caution`; `no-findings` is evidence only and never raises a score. The MCP stdio guard fetches `mcpCatalogue.url` (https, one bare GET a day) and keeps the catalogue on the re-score after `tools/list`. The HTTP gateway fetches it too, but its servers are remote and remote, docker and skill entries are not matched yet, so it draws no verdict from it. The Claude Code hook reads only a cached copy, with the environment, root-owned or built-in keys (not the policy's keys or URL). Skill entries and `skillTreeDigest` exist in the format and the generator; nothing on the device consumes them yet. `moorai-mcp-catalogue verify <file>` and `status` check a file or the cached copy. A verdict says what a scan found, never that a server is safe. The publisher key and the hosted feed are not published yet.
@@ -2108,6 +2109,47 @@ the call must be covered, so approving one threat never releases another on the 
   stays held (a deny). The model proxy, MCP gateway and egress proxy do not hold verdicts for approval.
 
 Details: [docs/APPROVAL_ROUTING.md](docs/APPROVAL_ROUTING.md).
+
+### Approval receipts
+
+A signed policy's `approvalReceipts` (`{ v: 1, audiences: [{ aud, mcpServer, tools? }], ttlSec }`) lists the MCP
+servers, and optionally the tools, whose calls carry a receipt
+([`cli/approval-receipts.mjs`](cli/approval-receipts.mjs), [`cli/receipt-step.mjs`](cli/receipt-step.mjs), wired
+into the Claude Code `PreToolUse` hook). Without it nothing changes.
+
+- **What is attached.** When the hook's final verdict on a listed MCP call is allow, it answers `updatedInput` =
+  the complete input plus `_moorai: { receipt }`, with no `permissionDecision`, so Claude Code's own permission
+  flow still runs. The receipt is ed25519 over `"moorai-receipt|v1|"` + the canonical JSON of `{ v, typ, aud, tool,
+  argsSha256, device, session, nonce, iat, exp, basis, approvalId?, approver?, keyId, keySource }`. `tool` is the
+  bare name the server sees, `argsSha256` a SHA-256 of the canonical arguments, `device` and `session` the keyed
+  pseudonyms alerts already carry; `exp - iat` is at most 120 s.
+- **Who signs.** A call an approver allowed carries the console's receipt (basis `approved`) unchanged, on the
+  grant's first use. The console serves that receipt only to a policy fetch signed by the device's bound helper key
+  (`moorai-guardd`), which nothing installs yet, so today an approved call carries a device receipt and the hub
+  queues it. Any other allowed call carries a receipt signed with the device key (basis `allowed`). Any
+  process of the same OS user can sign with that key, so a device receipt is advisory, and a hub queues it.
+- **Never on** an ask or a deny. A `_moorai` key the model put in the input is stripped before the call is judged;
+  on a host that cannot rewrite input (the other agents' adapters, the Cursor CLI) such a call is denied.
+- **Approvals.** For a covered call the `APPROVAL_REQUESTED` alert carries `approval.receiptRequest` (`aud`, bare
+  `tool`, `argsSha256`), which the console uses to mint and strips before storage and SIEM, the keyed
+  `approval.receiptArgsDigest`, and an `actionHash` bound to `{ argsSha256, aud, tool }`, so the console can check
+  them before it mints.
+- **Hubs** pin the console (and later helper) keys and their audience from their own config, and skip their queue
+  only for a console receipt with basis `approved` or a helper receipt. Test vectors for a hub verifier:
+  [`test/fixtures/approval-receipts/vectors.json`](test/fixtures/approval-receipts/vectors.json).
+
+For a remote-administration hub (never `click`, `type_text`, `press_key`, `upload_file`, `download_file` or
+`push_file`, which the hub never accepts a receipt for):
+
+<!-- example-approvalReceipts -->
+```json
+{ "approvalReceipts": { "v": 1, "ttlSec": 60, "audiences": [ { "aud": "it-ai-hub-1", "mcpServer": "it-ai",
+  "tools": ["run_command", "job_start", "job_stop", "update_agent", "dissolve_agent", "device_action", "message_user",
+            "install_package", "uninstall_package", "run_plugin", "system_report", "check_updates", "compliance_posture",
+            "run_script", "fleet_run", "fleet_report", "run_script_fleet", "screenshot", "camera_snapshot"] } ] } }
+```
+
+Details: [docs/approval-receipts.md](docs/approval-receipts.md).
 
 ### Where an action came from
 

@@ -30,7 +30,7 @@ import { readFileSync, writeFileSync, appendFileSync, statSync, mkdirSync, renam
 import { join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { STATE_DIR } from "./state-dirs.mjs";
-import { withFileLock } from "./alert-seq.mjs";
+import { withFileLock, alertChainView } from "./alert-seq.mjs";
 import { recordRhash } from "./record-chain.mjs";
 import { backoffDelay, BACKOFF_CAP_MS } from "./console-backoff.mjs";
 
@@ -168,7 +168,7 @@ export function outboxEntry(alert, { via, now = Date.now(), oid } = {}) {
   };
   if (stripped) {
     const { seq, chainHead, delivery, ...orig } = alert;
-    e.rhash = recordRhash(orig);
+    e.rhash = recordRhash(alertChainView(orig));
   }
   e.alert = copy;
   return Buffer.byteLength(lineOf(e)) > MAX_ENTRY_BYTES ? null : e;

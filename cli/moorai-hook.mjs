@@ -42,7 +42,7 @@ import { hookReputation } from "./mcp-reputation.mjs";
 import { scanMcpFileArgs } from "./mcp-file-args.mjs";
 import { OUTBOUND_UPLOAD } from "../data/outbound-upload.js";
 import { isNewDestination } from "../data/destination-map.js";
-import { signApproval, argsHash } from "../data/agency-sign.mjs";
+import { signApproval, argsHash, deviceReceiptSigner } from "../data/agency-sign.mjs";
 import { contentTells, assessSession, assessTrifecta, assessCrossServerTrifecta, trifectaLegs, serverOf } from "../data/agent-behavior.js";
 import { agentBaselineReport } from "../data/agent-baseline.js";
 import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
@@ -97,6 +97,7 @@ import { guardHit, guardAlert, guardReason } from "./containment-guard.mjs";
 import { mxcCapable } from "./mxc-detect.mjs";
 import { queueModelDownload, modelScanDue } from "./model-scan-queue.mjs";
 import { approvalGate } from "./approval-routing.mjs";
+import { receiptIntake, receiptRequest, receiptAnswer } from "./receipt-step.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -532,6 +533,11 @@ let SESSION_ESC = null;
 // #84: the oversight signals this PreToolUse call raised (cli/oversight-signals.mjs), recorded on its ledger
 // row as `ov` (local, content-free enums) so Stop / SubagentStop can check the final message discloses the change.
 let OVERSIGHT_SIG = null;
+// Approval receipts (cli/receipt-step.mjs): this MCP call's intake under the verified policy's approvalReceipts, or
+// null (no policy field, not an MCP PreToolUse call: nothing changes).
+let RCPT = null;
+// The receipt's device and session: the keyed actor pseudonym (never the hostname) and the keyed session hash.
+function receiptIds() { return { device: IDENTITY.actor || "", session: SESSION_TAG || "" }; }
 // ACTOR is whose events these are. For a subagent's OWN tool calls, Claude Code stamps the hook stdin
 // payload with `agent_id` + `agent_type` (verified against the hooks docs — these are common input
 // fields present only inside a subagent). That is the subagent-lineage linkage the orphan/baseline TODO
@@ -1909,7 +1915,7 @@ function coachOut(hookEventName, reason, alternatives) {
 async function emit(decision, reason, alternatives = [], rewrite = null) {
   if (FAIL_EXIT) return new Promise(() => {});
   DECIDED = true;
-  const held = CALL.active && EVENT === "PreToolUse" && !COACH ? await APPROVALS.overlay({ decision, reason, alternatives, rewrite }, { tool: CALL.tool, ti: CALL.ti, found: CALL.found, basis: VERDICT.reason, killOnCritical: POLICY?.killOnCritical === true }) : null;
+  const held = CALL.active && EVENT === "PreToolUse" && !COACH ? await APPROVALS.overlay({ decision, reason, alternatives, rewrite }, { tool: CALL.tool, ti: CALL.ti, found: CALL.found, basis: VERDICT.reason, killOnCritical: POLICY?.killOnCritical === true, receiptFor: receiptRequest(RCPT) }) : null;
   if (held) { VERDICT.basis = VERDICT.reason || REASON.DETECTOR_MATCH; why(held.reasonCode); ({ decision, reason, alternatives, rewrite } = held); }
   // Capability tags (cli/tool-tags.mjs): tagActions and tagRules, the stricter verdict winning. Before the
   // session-risk escalation, so an escalation's reason still appends to the gate's.
@@ -1998,7 +2004,13 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
   const hint = CALL.active && decision !== "allow" && !COACH && !SERVER.active ? hintFor(reason, tg) : "";
   const mnote = rewrite ? maskNote("this tool call's input", rewrite.count, rewrite.ids) : "";
   const note = [mnote, wrapped ? WRAP_NOTE : ""].filter(Boolean).join(" ");
-  const updated = wrapped || (rewrite ? rewrite.value : null);
+  let updated = wrapped || (rewrite ? rewrite.value : null);
+  // Approval receipt (cli/receipt-step.mjs): on the FINAL verdict only. An allow to a listed MCP server / tool goes
+  // on with the receipt; an ask or another tool goes on with the model's _moorai stripped; a deny carries nothing.
+  if (RCPT && CALL.active && EVENT === "PreToolUse" && !COACH) {
+    const ra = receiptAnswer(RCPT, { decision, base: updated || CALL.ti, grant: APPROVALS.granted(), ...receiptIds(), signer: deviceReceiptSigner() });
+    if (ra.input) updated = ra.input;
+  }
   if (COACH && decision !== "allow") process.stdout.write(coachOut("PreToolUse", reason, alternatives));
   else if (COACH && (LEAK_COACH || PROFILE_COACH)) process.stdout.write(coachOut("PreToolUse", (LEAK_COACH || PROFILE_COACH).reason, (LEAK_COACH || PROFILE_COACH).alts));
   else if (decision !== "allow") {
@@ -2006,7 +2018,7 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision === "deny" ? "deny" : "ask", permissionDecisionReason: `MoorAI: ${withSafer(reason, alternatives)}${hint ? ` ${hint}` : ""}`, ...upd } }));
   } else if (updated) {
     // No permissionDecision: a wrap, like a mask, must not auto-approve the call (see MASK above).
-    process.stdout.write(JSON.stringify({ ...(mnote ? { systemMessage: mnote } : {}), hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: updated, additionalContext: note } }));
+    process.stdout.write(JSON.stringify({ ...(mnote ? { systemMessage: mnote } : {}), hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: updated, ...(note ? { additionalContext: note } : {}) } }));
   }
   askStep(decision);
   return exitHook();
@@ -2864,7 +2876,7 @@ async function main() {
   // unreadable input (cli/tool-input.mjs).
   const nti = normalizeToolInput(tool, input.tool_input);
   if (nti.coerced.length) input.tool_input = nti.value;
-  const ti = input.tool_input || {};
+  let ti = input.tool_input || {};
   HOST_REWRITES = !TOOL_ALIASES[input.tool_name];
   EVENT = typeof input.hook_event_name === "string" ? input.hook_event_name : "";
   PROV = { policyId: "not-loaded", policySource: "", offline: false };
@@ -3054,7 +3066,13 @@ async function main() {
   if (EVENT === "PreToolUse" && transitDeny) { why(REASON.DETECTOR_MATCH); return emit("deny", `blocked via ${tool} — the agent runs behind a proxy not on the transit allow-list (${transitDeny.bad.join(", ")})`, saferAlternativesFor([67])); }
   // This call, for the tag gate and the exception hint in emit(), and the exceptions that cover it: a live
   // one turns its threat into "notify" for this call only (cli/exceptions.mjs).
+  // Approval receipts: the reserved _moorai key comes off the input before any check reads it (cli/receipt-step.mjs).
+  // Cursor runs these hooks too, and whether it honours updatedInput is unmeasured, so it counts as a host that
+  // cannot rewrite.
+  RCPT = receiptIntake({ event: EVENT, tool, ti, policy: VERIFIED_POLICY, coach: COACH, rewrites: canRewrite() && !process.env.CURSOR_VERSION });
+  if (RCPT) ti = RCPT.ti;
   Object.assign(CALL, { active: true, tool, ti, cwd: typeof input.cwd === "string" ? input.cwd : "", system: parseRootOwnedJson(systemConfigPath()) });
+  if (RCPT && RCPT.injected && !RCPT.rewrites) { why(REASON.RECEIPT_KEY_INJECTED); return emit("deny", `${tool} — the input carries the reserved _moorai key, which this host cannot remove`); }
   // MXC containment intake (Windows): recover a wrapped command before any check reads it; refuse an agent
   // wxc-exec launch and a write that would undo the containment from outside it. See wrapIntake.
   const wi = await wrapIntake(tool, ti, CALL.cwd);
@@ -3080,7 +3098,7 @@ async function main() {
   // Declared workload profile (cli/workload-profile.mjs): a tool, MCP server or host outside it is drift.
   // The same call judges egress rules (cli/egress-rules.mjs): binary, host, port, method, path.
   const wp = profileStep(policy, tool, ti, input.cwd);
-  if (wp && !(await APPROVALS.liftEgress(wp, { tool, ti }))) { why(wp.reasonCode || PROFILE_DRIFT); return emit("deny", wp.reason); }
+  if (wp && !(await APPROVALS.liftEgress(wp, { tool, ti, receiptFor: receiptRequest(RCPT) }))) { why(wp.reasonCode || PROFILE_DRIFT); return emit("deny", wp.reason); }
 
   if (tool === "Read") {
     READ_BUF = null;

@@ -59,6 +59,7 @@ export const REASON = Object.freeze({
   OUTBOX_DROPPED: "OUTBOX_DROPPED",               // the alert outbox dropped entries before delivery (full, aged, rejected, oversize; cli/alert-outbox.mjs)
   OVERSIGHT_WEAKENED: "OVERSIGHT_WEAKENED",       // #84: a tool call weakens the project's own monitoring, alerting, audit logging or safety tests (cli/oversight-signals.mjs)
   OVERSIGHT_UNDISCLOSED: "OVERSIGHT_UNDISCLOSED", // #84: an allowed oversight change the agent's final message does not state (cli/oversight-disclosure.mjs, heuristic)
+  RECEIPT_KEY_INJECTED: "RECEIPT_KEY_INJECTED",   // an MCP call's input carries the reserved _moorai key on a host that cannot rewrite input (cli/receipt-step.mjs)
   // A control that never ran for this call. Never a pass.
   UNEVALUATED_NO_POLICY: "UNEVALUATED_NO_POLICY",
   UNEVALUATED_HOOK_ERROR: "UNEVALUATED_HOOK_ERROR",
