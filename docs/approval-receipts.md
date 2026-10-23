@@ -286,7 +286,7 @@ when the helper registered unbound (no enrolment secret): the console serves the
 The only key the hook itself holds is the device receipt key in `~/.moorai`, which any process of the agent's OS
 user can read. It is never used to sign the policy fetch.
 
-Install it (macOS) with `sudo sh guardd/packaging/macos/install.sh <binary> --bind --enroll-secret-file <file>`
+Install it (macOS) with `sudo sh guardd/packaging/macos/install.sh <binary> --bind --server-url <console> --tenant <tenant> --enroll-secret-file <file>`
 (README, "Privileged helper"). Then `sudo sh guardd/packaging/macos/install.sh --check` reports
 `ok registered and bound`. Linux and Windows have no helper platform layer yet, so on those systems receipts stay
 dormant. Tested:
@@ -381,6 +381,12 @@ A rejected receipt leaves the call queued.
   model wrote it, `_moorai` included.
 - Claude Code alone is measured to deliver `updatedInput` to MCP tools (§4).
 - Console receipts reach the hook only through an installed and bound `moorai-guardd` (§5), today on macOS only.
-  The console binds a receipt to the device, not to the OS user. On a Mac shared by several users, a local user who
-  can compute another user's keyed actor can ask the helper for a policy that names it, and so receive that user's
-  receipts.
+  The console binds a receipt to the device, not to the OS user. The helper enforces the per-user split itself:
+  - it keys every actor's policy by actor, in memory only, and answers a request only from that actor's own entry;
+  - its background fetch names no actor, and its cache and last-known-good never hold an actor's policy;
+  - it binds each actor to the OS user (the IPC peer's uid, from the kernel) that first sends it: one actor per
+    uid, and a request from any other uid naming that actor gets `source: "none"` and fetches nothing.
+
+  What remains: the binding lives in memory, so after a helper restart, a local user who can compute another
+  user's keyed actor could claim it before that user's hook next asks. The hook then takes its direct path with
+  no receipt.

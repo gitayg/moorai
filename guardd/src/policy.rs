@@ -33,6 +33,9 @@ pub const FETCH_TIMEOUT_MS: u64 = 10_000;
 /// helper fetches on demand, bounded by ON_DEMAND_FETCH_MS, and answers with what it then holds.
 pub const ON_DEMAND_FRESH_MS: u64 = 60_000;
 pub const ON_DEMAND_FETCH_MS: u64 = 1_000;
+/// At most this many OS users each bind one actor, and at most this many actor policies are held (least
+/// recently used out).
+pub const MAX_ACTORS: usize = 16;
 
 /// The hook's keyed actor as /api/policy names it (cli/hook-core.mjs loadVerifiedPolicy): `h2:` + 16..64
 /// lowercase hex. Anything else is never put on the wire.
@@ -362,12 +365,17 @@ pub struct PolicyStore {
     pub backoff: Backoff,
     pub last_call_ms: u64,
     pub held: Option<HeldPolicy>,
-    /// The actor the next fetch names: the last valid one a hook sent (in memory; at start, the cache's).
-    pub actor: Option<String>,
-    /// Fetch tickets: a fetch whose answer arrives after a later-started fetch was applied is dropped,
-    /// so concurrent on-demand and background fetches never apply out of order.
+    /// Policies fetched for a hook's actor (they carry that actor's approvals and receipts), keyed by
+    /// actor, in memory only. `held` (and the cache and last-known-good on disk) is only ever the
+    /// actor-less policy of the background fetch, so an actor's approvals reach no one else.
+    pub by_actor: std::collections::BTreeMap<String, HeldPolicy>,
+    /// Which OS user (IPC peer uid, a kernel fact) holds which actor: one actor per uid, and an actor held
+    /// by one uid is refused to every other uid. First come, in memory; a helper restart clears it.
+    pub uid_actor: std::collections::BTreeMap<u32, (String, u64)>,
+    /// Fetch tickets, per actor ("" = the actor-less fetch): an answer that arrives after a later-started
+    /// fetch for the same actor was applied is dropped, so fetches never apply out of order.
     fetch_seq: u64,
-    applied_seq: u64,
+    applied: std::collections::BTreeMap<String, u64>,
 }
 
 /// A content-free tamper finding from a fetch: (source, status) as hook-core's `rejected` pairs.
@@ -415,7 +423,6 @@ impl PolicyStore {
             });
         let d = &paths.state_dir;
         let cache: Option<Stored> = load_or_none(&d.join(files::POLICY_CACHE));
-        let actor = cache.as_ref().and_then(|c| c.actor.clone()).filter(|a| valid_actor(a));
         let mut s = PolicyStore {
             state_dir: d.clone(),
             admin_anchor,
@@ -427,9 +434,10 @@ impl PolicyStore {
             backoff: load_or_none(&d.join(files::BACKOFF)).unwrap_or_default(),
             last_call_ms: 0,
             held: None,
-            actor,
+            by_actor: Default::default(),
+            uid_actor: Default::default(),
             fetch_seq: 0,
-            applied_seq: 0,
+            applied: Default::default(),
         };
         if let Some(t) = tenant {
             s.select_held(t, crate::clock::now_ms());
@@ -502,7 +510,8 @@ impl PolicyStore {
                 actor: s.actor.clone(),
             })
         };
-        let held = self.cache.as_ref().and_then(|c| pick(c, PolicySource::Fresh)).or_else(|| self.lkg.as_ref().and_then(|l| pick(l, PolicySource::Lkg)));
+        // A stored copy that names an actor (written by an earlier build) is never the actor-less policy.
+        let held = self.cache.as_ref().filter(|c| c.actor.is_none()).and_then(|c| pick(c, PolicySource::Fresh)).or_else(|| self.lkg.as_ref().filter(|l| l.actor.is_none()).and_then(|l| pick(l, PolicySource::Lkg)));
         self.held = held.map(|mut h| {
             if h.source == PolicySource::Fresh && !is_fresh(&h, now_ms) {
                 h.source = PolicySource::Cache;
@@ -528,6 +537,39 @@ impl PolicyStore {
     /// is missing, was fetched for another actor, or is older than ON_DEMAND_FRESH_MS. Never while the
     /// console back-off is open (the console did not answer recently) or before the first trusted key is
     /// pinned (the background loop does the trust-on-first-use fetch).
+    /// Bind `actor` to the peer `uid` (one actor per uid; the uid's previous actor and its policy are
+    /// dropped). false = another uid holds this actor: the request is answered `none` and fetches nothing.
+    pub fn bind_actor(&mut self, uid: u32, actor: &str, now_ms: u64) -> bool {
+        if self.uid_actor.iter().any(|(u, (a, _))| *u != uid && a == actor) {
+            return false;
+        }
+        if let Some((old, _)) = self.uid_actor.insert(uid, (actor.to_string(), now_ms)) {
+            if old != actor {
+                self.by_actor.remove(&old);
+            }
+        }
+        while self.uid_actor.len() > MAX_ACTORS {
+            let Some((&lru, _)) = self.uid_actor.iter().min_by_key(|(_, (_, t))| *t) else { break };
+            if let Some((a, _)) = self.uid_actor.remove(&lru) {
+                self.by_actor.remove(&a);
+            }
+        }
+        true
+    }
+
+    fn actor_bound(&self, actor: &str) -> bool {
+        self.uid_actor.values().any(|(a, _)| a == actor)
+    }
+
+    /// The answer to an IPC `policy` request: an actor's own held policy, or `none` when there is none
+    /// for that actor (the hook then takes its direct path); without an actor, the actor-less policy.
+    pub fn answer_for(&self, actor: Option<&str>, if_iat: Option<&str>, now_ms: u64) -> PolicyResp {
+        match actor {
+            Some(a) => answer(self.by_actor.get(a), if_iat, now_ms),
+            None => answer(self.held.as_ref(), if_iat, now_ms),
+        }
+    }
+
     pub fn needs_on_demand(&self, tenant: &str, actor: Option<&str>, now_ms: u64) -> bool {
         if self.trust(tenant).0 == TrustMode::Unpinned {
             return false;
@@ -535,21 +577,29 @@ impl PolicyStore {
         if self.backoff.failures > 0 && now_ms.saturating_sub(self.backoff.failed_at_ms) < self.backoff.window_ms() {
             return false;
         }
-        match &self.held {
+        let held = match actor {
+            Some(a) => self.by_actor.get(a),
+            None => self.held.as_ref(),
+        };
+        match held {
             None => true,
             Some(h) => {
                 let age = parse_iso_ms(&h.fetched_at).map(|t| (now_ms as i64).saturating_sub(t)).unwrap_or(i64::MAX);
-                h.actor.as_deref() != actor || age < 0 || age >= ON_DEMAND_FRESH_MS as i64
+                age < 0 || age >= ON_DEMAND_FRESH_MS as i64
             }
         }
     }
 
-    /// The requests of one fetch cycle: the policy (naming the current actor), plus the published key
+    /// The requests of one fetch cycle: the policy (naming `actor` when given), plus the published key
     /// unless anchored or pinned. The caller signs the policy request with the device key (fetch_cycle_with).
     pub fn plan(&self, binding: &crate::config::Binding) -> Vec<HttpRequest> {
+        self.plan_for(binding, None)
+    }
+
+    pub fn plan_for(&self, binding: &crate::config::Binding, actor: Option<&str>) -> Vec<HttpRequest> {
         let token = binding.secret.install_token.clone().unwrap_or_default();
         let get = |p: String| HttpRequest { method: "GET", path_and_query: p, headers: vec![(crate::console::H_INSTALL_TOKEN, token.clone())], body: vec![] };
-        let actor = self.actor.as_deref().filter(|a| valid_actor(a)).map(|a| format!("&actor={}", encode_uri_component(a))).unwrap_or_default();
+        let actor = actor.filter(|a| valid_actor(a)).map(|a| format!("&actor={}", encode_uri_component(a))).unwrap_or_default();
         let mut out = vec![get(format!("{POLICY_PATH}?tenant={}{actor}", encode_uri_component(&binding.tenant)))];
         // The unsigned /api/policy/pubkey is read ONLY on first contact (trust on first use). Once
         // pinned, keys change only through a signed `nextKeys` list (see `arm_pin`).
@@ -574,9 +624,24 @@ impl PolicyStore {
         if let Some(raw) = r.policy.filter(|t| !t.trim().is_empty()) {
             let (mode, _) = self.trust(tenant);
             let v = self.check(&raw, tenant);
-            if v.status.trusted() {
+            if v.status.trusted() && r.actor.is_some() {
+                // An actor's policy: it still maintains the pin and the mark (a real signature), but it is
+                // held only for that actor, in memory, never as the cache or last-known-good, and only while
+                // some uid still holds the actor.
                 let policy = v.policy.clone().unwrap_or_default();
-                let stored = Stored { text: raw.clone(), iat: v.iat.clone().unwrap_or_default(), fetched_at: iso_ms(now_ms as i64), actor: r.actor.clone() };
+                self.arm_pin(tenant, mode, &v, &raw, &policy, None, &mut rejected)?;
+                let a = r.actor.clone().unwrap_or_default();
+                if self.actor_bound(&a) {
+                    let h = HeldPolicy { text: raw.clone(), iat: v.iat.clone().unwrap_or_default(), fetched_at: iso_ms(now_ms as i64), source: PolicySource::Fresh, max_age_ms: v.max_age_ms, actor: Some(a.clone()) };
+                    self.by_actor.insert(a, h);
+                    while self.by_actor.len() > MAX_ACTORS {
+                        let Some(oldest) = self.by_actor.iter().min_by_key(|(_, h)| parse_iso_ms(&h.fetched_at).unwrap_or(0)).map(|(k, _)| k.clone()) else { break };
+                        self.by_actor.remove(&oldest);
+                    }
+                }
+            } else if v.status.trusted() {
+                let policy = v.policy.clone().unwrap_or_default();
+                let stored = Stored { text: raw.clone(), iat: v.iat.clone().unwrap_or_default(), fetched_at: iso_ms(now_ms as i64), actor: None };
                 save_json(&self.state_dir.join(files::POLICY_CACHE), &stored)?;
                 self.cache = Some(stored.clone());
                 let armed = self.arm_pin(tenant, mode, &v, &raw, &policy, r.published.as_deref(), &mut rejected)?;
@@ -703,7 +768,7 @@ pub fn fetch(transport: &dyn ConsoleTransport, origin: &str, reqs: Vec<HttpReque
 
 /// One fetch cycle against shared state: plan under the lock, fetch without it, apply under it.
 pub fn fetch_cycle(state: &std::sync::Mutex<crate::state::HelperState>, transport: &dyn ConsoleTransport) -> Result<Vec<Rejected>, ConsoleError> {
-    fetch_cycle_with(state, transport, &crate::clock::now_ms, FETCH_TIMEOUT_MS)
+    fetch_cycle_with(state, transport, &crate::clock::now_ms, FETCH_TIMEOUT_MS, None)
 }
 
 /// fetch_cycle with the clock and the per-request timeout given (the IPC on-demand fetch passes
@@ -713,26 +778,32 @@ pub fn fetch_cycle(state: &std::sync::Mutex<crate::state::HelperState>, transpor
 /// policy (RAISEME-server server/approval-receipts.js receiptAuthFor). The console serves the policy
 /// either way; a signature it cannot verify only withholds receipts. The policy content is still verified
 /// here and again by the hook against the policy key: the device key adds no trust to policy content.
-pub fn fetch_cycle_with(state: &std::sync::Mutex<crate::state::HelperState>, transport: &dyn ConsoleTransport, now: &dyn Fn() -> u64, timeout_ms: u64) -> Result<Vec<Rejected>, ConsoleError> {
-    let (binding, reqs, actor, seq) = {
+/// `actor`: None for the background (actor-less) fetch; Some for an IPC on-demand fetch, whose answer is
+/// held for that actor only (PolicyStore::by_actor).
+pub fn fetch_cycle_with(state: &std::sync::Mutex<crate::state::HelperState>, transport: &dyn ConsoleTransport, now: &dyn Fn() -> u64, timeout_ms: u64, actor: Option<String>) -> Result<Vec<Rejected>, ConsoleError> {
+    let (binding, reqs, seq) = {
         let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(b) = s.binding.clone() else { return Err(ConsoleError::BadResponse("no binding".into())) };
-        let mut reqs = s.policy.plan(&b);
+        let mut reqs = s.policy.plan_for(&b, actor.as_deref());
+        if actor.is_some() {
+            reqs.truncate(1);
+        }
         if s.registration.is_some() {
             if let Some(first) = reqs.first_mut() {
                 *first = crate::console::sign_request(&s.key, &b, &s.device_id, "GET", &first.path_and_query, vec![], s.beat.clock_offset_ms, now());
             }
         }
         s.policy.fetch_seq += 1;
-        (b, reqs, s.policy.actor.clone(), s.policy.fetch_seq)
+        (b, reqs, s.policy.fetch_seq)
     };
     let mut r = fetch(transport, &binding.origin, reqs, timeout_ms);
     r.actor = actor;
+    let key = r.actor.clone().unwrap_or_default();
     let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-    if seq < s.policy.applied_seq {
+    if s.policy.applied.get(&key).is_some_and(|&last| seq < last) {
         return Ok(vec![]);
     }
-    s.policy.applied_seq = seq;
+    s.policy.applied.insert(key, seq);
     s.policy.apply(&binding.tenant, r, now()).map_err(|e| ConsoleError::Network(e.to_string()))
 }
 

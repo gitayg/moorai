@@ -1,12 +1,13 @@
 #!/bin/sh
 # Install moorai-guardd, the MoorAI privileged helper, as a LaunchDaemon (contract §4.3, §13.1 decision 1).
 #
-#   sudo sh install.sh /abs/path/to/moorai-guardd [--bind [--enroll-secret-file F] [--user-config P]
-#                                                   [--server-url U] [--tenant T]]
+#   sudo sh install.sh /abs/path/to/moorai-guardd [--bind --server-url U --tenant T
+#                                                   [--enroll-secret-file F] [--user-config P] [--yes]]
 #   sh install.sh --check            # unprivileged: verify an installed helper (check.sh); sudo for more
 #
-# --bind also writes the console binding (/etc/moorai/config.json, root-only secret.json) from the enrolled
-# user's hook config (bind.sh), for a device without MDM, and after start waits for the helper's
+# --bind also writes the console binding (/etc/moorai/config.json, root-only secret.json; bind.sh: the console
+# and tenant from the command line only, the install token from the enrolled user's checked hook config,
+# written after a confirmation), for a device without MDM, and after start waits for the helper's
 # registration and prints whether the console bound its key (bound = console approval receipts reach
 # the hook). Without --bind the binding stays MDM's.
 #

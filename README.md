@@ -197,7 +197,9 @@ cargo build --release --manifest-path guardd/Cargo.toml          # → guardd/ta
 # Console admin: issue a one-time enrolment secret (Devices → Enrolment secrets, or POST /api/devices/enroll-secrets)
 # and save the mes_… value in a file, e.g. ~/moorai-enroll.txt.
 sudo sh guardd/packaging/macos/install.sh "$PWD/guardd/target/release/moorai-guardd" \
-  --bind --enroll-secret-file ~/moorai-enroll.txt
+  --bind --server-url https://<your console> --tenant <your tenant id> --enroll-secret-file ~/moorai-enroll.txt
+# It prints the console, the tenant and the install token's SHA-256 fingerprint and asks before writing
+# (--yes skips the question in scripted installs).
 rm ~/moorai-enroll.txt                                            # the helper deletes its copy once bound
 sh guardd/packaging/macos/install.sh --check                      # unprivileged: layout, modes, key out of reach
 sudo sh guardd/packaging/macos/install.sh --check                 # also the key's own mode and "registered and bound"
@@ -205,10 +207,17 @@ moorai-helper status                                              # healthy = th
 ```
 
 `--bind` writes `/etc/moorai/config.json` (root:wheel 0644: `serverUrl`, `tenant`, `"helper": "optional"`) and
-`/etc/moorai/secret.json` (root:wheel 0600: `installToken`, `enrollSecret`). It reads these values from the hook
-config of the user who ran sudo (`~/.moorai/config.json`). Override them with `--user-config`, `--server-url` or
-`--tenant`. The secret file must hold the same install token the hook posts approval requests with, because the
-console gives a receipt only to the token that posted the request. `--bind` never overwrites a binding that names
+`/etc/moorai/secret.json` (root:wheel 0600: `installToken`, `enrollSecret`).
+- **Console and tenant:** `--server-url` and `--tenant` are required and are never read from a user file. The
+  agent can write the user's hook config, and a tampered value there would bind the root helper, and send the
+  enrolment secret, to another console. The URL must be https (plain http only for localhost).
+- **Install token:** taken from the hook config of the user who ran sudo (`~/.moorai/config.json`, or
+  `--user-config`), because it must be the same token the hook posts approval requests with. The console gives a
+  receipt only to the token that posted the request.
+- **That file is checked first:** it and every directory above it must be owned by that user or root and not
+  writable by group or others. A symbolic link is accepted only for a root-owned directory, never for the file
+  itself. The file is read as that user, not as root, and the token's shape is checked.
+- **Confirmation:** nothing is written until you confirm the printed binding (or pass `--yes`). `--bind` never overwrites a binding that names
 another console, tenant or token (MDM owns that one). The machine config also makes the device *managed* for the
 hook (`cli/config.mjs`). Without `--enroll-secret-file`, the helper registers unbound: the hook still reads its
 policy through the helper, but the console withholds receipts.

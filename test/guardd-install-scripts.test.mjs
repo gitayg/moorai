@@ -6,6 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, existsSync, chmodSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -224,12 +225,14 @@ function userConfig(dir, extra = {}) {
 function stageBind(dir, args) {
   return runInstaller(join(PKG, "macos", "install.sh"), [fakeBinary(dir), "--bind", ...args], { MOORAI_GUARDD_STAGE: join(dir, "root") });
 }
+// The console and tenant come from the command line only (never the user-writable hook config).
+const URL_ARGS = ["--server-url", "https://console.example.com", "--tenant", "acme"];
 
 test("macos: --bind writes config.json 0644 and a root-only secret.json from the enrolled user's hook config", { skip: DARWIN }, () => {
   const dir = mkdtempSync(join(tmpdir(), "guardd-bind-"));
   try {
     writeFileSync(join(dir, "enroll.txt"), `${ENROLL}\n`);
-    const r = stageBind(dir, ["--user-config", userConfig(dir), "--enroll-secret-file", join(dir, "enroll.txt")]);
+    const r = stageBind(dir, [...URL_ARGS, "--yes", "--user-config", userConfig(dir), "--enroll-secret-file", join(dir, "enroll.txt")]);
     assert.equal(r.status, 0, r.stderr);
     const etc = join(dir, "root", "private", "etc", "moorai");
     assert.equal(mode(join(etc, "config.json")), 0o644);
@@ -237,6 +240,8 @@ test("macos: --bind writes config.json 0644 and a root-only secret.json from the
     assert.equal(mode(join(etc, "secret.json")), 0o600, "secret.json is owner-only");
     assert.deepEqual(JSON.parse(readFileSync(join(etc, "secret.json"), "utf8")), { enrollSecret: ENROLL, installToken: TOKEN }, "the hook's own install token, so receipts match the posting token");
     assert.ok(!r.stdout.includes(TOKEN) && !r.stdout.includes(ENROLL) && !r.stderr.includes(TOKEN), "no secret is printed");
+    const fp = createHash("sha256").update(TOKEN).digest("hex").slice(0, 12);
+    assert.match(r.stdout, new RegExp(`console https://console\\.example\\.com, tenant acme, install token sha256:${fp}`), "the binding is shown before it is written");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -244,19 +249,86 @@ test("macos: --bind refuses another console's existing binding, a bad enrolment 
   const dir = mkdtempSync(join(tmpdir(), "guardd-bind-"));
   try {
     const etc = join(dir, "root", "private", "etc", "moorai");
-    assert.equal(stageBind(dir, ["--user-config", userConfig(dir)]).status, 0);
-    const other = stageBind(dir, ["--user-config", userConfig(dir, { serverUrl: "https://evil.example" })]);
+    assert.equal(stageBind(dir, [...URL_ARGS, "--yes", "--user-config", userConfig(dir)]).status, 0);
+    const other = stageBind(dir, ["--server-url", "https://evil.example", "--tenant", "acme", "--yes", "--user-config", userConfig(dir)]);
     assert.notEqual(other.status, 0);
     assert.match(other.stderr, /another console or tenant/);
     assert.equal(JSON.parse(readFileSync(join(etc, "config.json"), "utf8")).serverUrl, "https://console.example.com", "never overwritten");
     writeFileSync(join(dir, "bad.txt"), "mes_short\n");
-    const bad = stageBind(dir, ["--user-config", userConfig(dir), "--enroll-secret-file", join(dir, "bad.txt")]);
+    const bad = stageBind(dir, [...URL_ARGS, "--yes", "--user-config", userConfig(dir), "--enroll-secret-file", join(dir, "bad.txt")]);
     assert.notEqual(bad.status, 0);
     assert.match(bad.stderr, /mes_ \+ 32 hex/);
     rmSync(join(dir, "root"), { recursive: true, force: true });
-    const http = stageBind(dir, ["--user-config", userConfig(dir, { serverUrl: "http://console.example.com" })]);
+    const http = stageBind(dir, ["--server-url", "http://console.example.com", "--tenant", "acme", "--yes", "--user-config", userConfig(dir)]);
     assert.notEqual(http.status, 0);
     assert.match(http.stderr, /https/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("macos: --bind refuses without --server-url and --tenant, never taking them from the user-writable hook config", { skip: DARWIN }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "guardd-bind-"));
+  try {
+    const cfg = userConfig(dir, { serverUrl: "https://attacker.example", tenant: "evil" });
+    for (const args of [[], ["--server-url", "https://console.example.com"], ["--tenant", "acme"]]) {
+      const r = stageBind(dir, [...args, "--yes", "--user-config", cfg]);
+      assert.notEqual(r.status, 0, args.join(" "));
+      assert.match(r.stderr, /--server-url and --tenant are required/);
+      assert.ok(!existsSync(join(dir, "root", "private", "etc", "moorai", "config.json")), "nothing written");
+    }
+    const badTenant = stageBind(dir, ["--server-url", "https://console.example.com", "--tenant", "a b", "--yes", "--user-config", cfg]);
+    assert.notEqual(badTenant.status, 0);
+    const ok = stageBind(dir, [...URL_ARGS, "--yes", "--user-config", cfg]);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(JSON.parse(readFileSync(join(dir, "root", "private", "etc", "moorai", "config.json"), "utf8")).serverUrl, "https://console.example.com", "the command line wins over the hook config's console");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("macos: --bind refuses a symlinked or group/world-writable user config, or one under such a directory", { skip: DARWIN }, async () => {
+  const { symlinkSync } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "guardd-bind-"));
+  try {
+    const real = join(dir, "real");
+    mkdirSync(real, { mode: 0o755 });
+    chmodSync(real, 0o755);
+    const cfg = userConfig(real);
+    chmodSync(cfg, 0o600);
+    const run = (p) => stageBind(dir, [...URL_ARGS, "--yes", "--user-config", p]);
+    assert.equal(run(cfg).status, 0, run(cfg).stderr);
+    rmSync(join(dir, "root"), { recursive: true, force: true });
+    symlinkSync(cfg, join(dir, "link.json"));
+    const viaFileLink = run(join(dir, "link.json"));
+    assert.notEqual(viaFileLink.status, 0);
+    assert.match(viaFileLink.stderr, /symbolic link/);
+    symlinkSync(real, join(dir, "linkdir"));
+    const viaDirLink = run(join(dir, "linkdir", "user-config.json"));
+    assert.notEqual(viaDirLink.status, 0);
+    assert.match(viaDirLink.stderr, /symbolic link/);
+    chmodSync(cfg, 0o620);
+    const gw = run(cfg);
+    assert.notEqual(gw.status, 0);
+    assert.match(gw.stderr, /writable by group or others/);
+    chmodSync(cfg, 0o600);
+    chmodSync(real, 0o777);
+    const dirw = run(cfg);
+    assert.notEqual(dirw.status, 0);
+    assert.match(dirw.stderr, /writable by group or others/);
+    chmodSync(real, 0o755);
+    assert.ok(!existsSync(join(dir, "root", "private", "etc", "moorai", "secret.json")), "nothing written by a refused run");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("macos: --bind shows the binding and needs a yes: without a terminal and without --yes it writes nothing", { skip: DARWIN }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "guardd-bind-"));
+  try {
+    writeFileSync(join(dir, "enroll.txt"), `${ENROLL}\n`);
+    const r = stageBind(dir, [...URL_ARGS, "--user-config", userConfig(dir), "--enroll-secret-file", join(dir, "enroll.txt")]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stdout, /tenant acme, install token sha256:[0-9a-f]{12}/);
+    assert.match(r.stderr, /confirm/);
+    assert.ok(!existsSync(join(dir, "root", "private", "etc", "moorai", "secret.json")));
+    const no = spawnSync("sh", [join(PKG, "macos", "install.sh"), fakeBinary(dir), "--bind", ...URL_ARGS, "--user-config", userConfig(dir)], { encoding: "utf8", env: { ...process.env, MOORAI_GUARDD_STAGE: join(dir, "root"), MOORAI_BIND_TEST_TTY: "1" }, input: "n\n" });
+    assert.notEqual(no.status, 0, "an answer other than yes writes nothing");
+    assert.ok(!existsSync(join(dir, "root", "private", "etc", "moorai", "config.json")));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -266,7 +338,7 @@ async function stagedRunningInstall(dir) {
   const { createServer } = await import("node:net");
   const root = join(dir, "root");
   writeFileSync(join(dir, "enroll.txt"), `${ENROLL}\n`);
-  assert.equal(stageBind(dir, ["--user-config", userConfig(dir), "--enroll-secret-file", join(dir, "enroll.txt")]).status, 0);
+  assert.equal(stageBind(dir, [...URL_ARGS, "--yes", "--user-config", userConfig(dir), "--enroll-secret-file", join(dir, "enroll.txt")]).status, 0);
   const state = join(root, "Library", "Application Support", "MoorAI", "state");
   mkdirSync(state, { recursive: true });
   chmodSync(join(root, "Library", "Application Support", "MoorAI"), 0o755);

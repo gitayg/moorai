@@ -26,7 +26,7 @@ Install it with the script for your OS under guardd/packaging/ (run as root / el
 `;
 
 const NEXT = {
-  "not-installed": "Install (macOS): sudo sh guardd/packaging/macos/install.sh /abs/path/moorai-guardd --bind --enroll-secret-file <file>; then sh guardd/packaging/macos/install.sh --check.",
+  "not-installed": "Install (macOS): sudo sh guardd/packaging/macos/install.sh /abs/path/moorai-guardd --bind --server-url <console> --tenant <tenant> --enroll-secret-file <file>; then sh guardd/packaging/macos/install.sh --check.",
   partial: "Re-run the installer for your OS; it lays out the binary and the service together.",
   "installed-not-running": "Start it: systemctl start moorai-guardd.socket moorai-guardd.service (Linux), launchctl kickstart system/<label> (macOS), sc.exe start MoorAIGuard (Windows).",
   "not-ready": "Write the console binding: /etc/moorai/config.json and secret.json (macOS: install.sh --bind; Windows: ProgramData\\MoorAI).",

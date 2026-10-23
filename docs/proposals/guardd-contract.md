@@ -138,18 +138,26 @@ applies its own HWM. The helper fetches every 60 s while any `call` or `policy` 
 10 min, else every 10 min.
 
 The fetch is `GET /api/policy?tenant=<t>[&actor=<a>]` (`encodeURIComponent` values, the hook's own query form).
-`<a>` is the last `actor` a `policy` request named; at start it is the cached policy's. Once the device key is
+The background fetch names no actor. Its policy is the only one ever held as `held`, the cache or the
+last-known-good. A `policy` request with `actor` is bound to the peer's uid (§3.6):
+- one actor per uid, with the uid's previous actor and its policy dropped;
+- an actor another uid holds is answered `source: "none"` with no fetch;
+- at most 16 uids, least recently used out, in memory only.
+
+Its fetch names that actor, and its answer is held per actor (in memory, at most 16) and served only to requests
+naming that actor. Once the device key is
 registered, the request is device-signed per §6.2 over exactly that path and query. That gives the console the
 per-device credential for approval receipts (RAISEME-server `server/approval-receipts.js` `receiptAuthFor`; a
 receipt goes only to a bound key whose device is the request's device, over the posting install token). A
 signature the console cannot verify only withholds receipts: the policy is served on the install token
 either way.
 
-**On demand.** A `policy` request is answered from the held policy when that policy was fetched for the request's
-actor within `ON_DEMAND_FRESH_MS` (60 s, the hook's own cache window). Otherwise the helper fetches first, with a
+**On demand.** A `policy` request is answered from that actor's own held policy (or, without an actor, the
+actor-less one) when it was fetched within `ON_DEMAND_FRESH_MS` (60 s, the hook's own cache window). Otherwise the helper fetches first, with a
 per-request timeout of `ON_DEMAND_FETCH_MS` (1000 ms), and then answers with what it holds. It never fetches on
 demand while the console back-off is open, or before a policy key is anchored or pinned (the background loop does
-first contact). Fetches carry tickets: an answer that arrives after a later-started fetch was applied is dropped.
+first contact). Fetches carry tickets per actor: an answer that arrives after a later-started fetch for the same
+actor was applied is dropped.
 The hook uses only a `fresh` answer and otherwise takes its own direct path (§10.3).
 
 **`submit`**
@@ -929,3 +937,7 @@ contradictory point, to be folded into the sections above.
     dropped silently, because the hook may have fetched directly more recently. In every other case the hook takes
     the direct path. `required` mode is not enforced for the policy read yet: the hook falls back as if
     `optional`.
+21. **`--bind` trust** (`guardd/packaging/macos/bind.sh`). The console URL and tenant come only from the command
+    line. The install token comes from the sudo user's hook config, read as that user after an ownership walk:
+    the file and every directory owned by that user or root and not group- or world-writable; a symbolic link
+    only for a root-owned directory. Nothing is written before an interactive yes or `--yes`.
