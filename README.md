@@ -152,7 +152,8 @@ the same id under the same token hashes to the same value on every surface. Who 
 - **`@moorai/agent-sdk`**: the hook input's `session_id`. **`moorai-serve`**: the optional `session` field
   of a `/v1/scan`, `/v1/tool-call` or `/v1/index-scan` body (a string of 1 to 256 characters).
 - **Not sent** by `moorai-model-proxy` (a Messages or Chat Completions request names no conversation, and
-  the proxy does not invent one), the stdio MCP proxy, `moorai-guard`, the desktop app, the browser
+  the proxy puts none on an alert; the session its intent alignment derives stays in the process as a keyed
+  hash), the stdio MCP proxy, `moorai-guard`, the desktop app, the browser
   extension or the egress proxy.
 
 ### One-line install (CLI guard + Claude Code hooks)
@@ -822,6 +823,25 @@ back at stage `output` as inbound content, where indirect injection shows up; a 
 scanned once, through a bounded cache) and decides each tool call the model returns as `/v1/tool-call` would. The client's own API
 key and headers go upstream untouched and are never logged, stored or reported. Alerts use surface
 `model-proxy` with the existing reason codes and are content-free.
+
+**Intent alignment.** Each tool call the model returns is also judged against the task the person gave in
+this session (the first user turn and the latest; never a system prompt, tool result or document), with
+the hook's lexical rules: an upload to a host, a credential read, a destructive command or an MCP write
+that the task never mentioned raises one content-free alert per target (`Action outside the stated task`,
+`INTENT_MISMATCH`). Policy `intentAlignment: "block"` refuses such a call and `"ask"` makes it a headless ask,
+in `--mode enforce`. The session is `X-MoorAI-Session-Id`, else `X-Claude-Code-Session-Id`, else an
+incoming `traceparent`'s trace-id, else a keyed hash of the conversation's first user turn. It is lexical:
+an upload to a host the person named passes, even when it is exfiltration to that host. See
+[`model-proxy/README.md`](model-proxy/README.md#intent-alignment).
+
+**Reply text.** The text of the model's reply is scanned, on every parsed API, streaming and not, for
+secrets (#39), personal data (#15), payment-card data (#1) and a 24-word run of this request's system
+prompt (compared as keyed 8-word shingles, so the system prompt is never stored). Report-only by default;
+policy `responseScan: "mask"` replaces the match with `[REDACTED:#<threat>]` and `"block"` refuses, in
+`--mode enforce`. A stream is scanned over a rolling window: in mask / block mode the last 256 characters of
+each text channel are held back (the client sees the text up to about 64 tokens late), so a match of up to
+256 characters is caught before any of it is sent; a longer one can be caught only after its start was
+sent, and text already sent cannot be recalled. See [`model-proxy/README.md`](model-proxy/README.md#reply-text-scanning).
 
 **Token usage and budgets.** The proxy reads each response's token counts and posts content-free hourly totals to
 the console, and answers 429 `budget_exceeded` in enforce mode while a signed usage budget with `action: "block"`

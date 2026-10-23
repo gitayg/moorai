@@ -136,7 +136,9 @@ to the cloud for its own reasoning.
 - **Model proxy** — `moorai-model-proxy` ([`model-proxy/`](../model-proxy/README.md)), a loopback proxy
   between an agent's model SDK and the provider (Anthropic Messages, OpenAI Chat Completions, Gemini
   `generateContent` / `streamGenerateContent`) that scans
-  what the agent sends and the tool calls the model returns. Report-only by default; `--mode enforce`
+  what the agent sends, the tool calls the model returns (decided, and judged against the person's task:
+  intent alignment) and the text of the model's reply (secrets, personal data, card numbers, the system
+  prompt). Report-only by default; `--mode enforce`
   refuses in the provider's own error shape. `--connect-timeout <ms>` (default 10000) bounds a new
   upstream connection (TCP connect, and the TLS handshake for https) and answers 504 with a reason that
   names no host; streaming after the connection is unaffected.
@@ -2203,6 +2205,53 @@ the framework ever asks.
   native `/api/chat` was run live (0.15.6, `mistral-nemo`, enforce, JSON and NDJSON); replace mode,
   `/api/generate` and the wrapped-argument shape were tested against a fake upstream only.
 - `functionToolActions` alerts carry the derived reason code `OBSERVATION_ONLY` (no dedicated code exists).
+
+## Model proxy: intent alignment and reply text
+
+**Status: built and unit-tested (`test/model-proxy-intent.test.mjs`, `test/model-proxy-response-scan.test.mjs`),
+in process against fake upstreams for Anthropic, OpenAI Chat Completions and Responses, Gemini and Ollama,
+streaming and not. The intent store (`data/intent-server.mjs`) is a test double there; the test against the
+real module is skipped until it is implemented. Not run against a real provider or SDK.**
+
+**Intent alignment** ([`model-proxy/intent.mjs`](../model-proxy/intent.mjs),
+[`user-turns.mjs`](../model-proxy/user-turns.mjs)). Each tool call the model returns that maps to a hook tool
+and is not already denied is judged by `data/intent-server.mjs` against the session's task.
+- Session, first match: `X-MoorAI-Session-Id` (not sent upstream), `X-Claude-Code-Session-Id`, the trace-id
+  of a valid incoming `traceparent`, a keyed hash of the conversation's first user turn.
+- Task: the first and the latest real user turn of each request. System and developer text, tool results,
+  function responses, documents, and the text blocks sent with Anthropic `tool_result` blocks are never
+  the task. Each (session, turn) pair is captured once.
+- `intentAlignment`: `off`; `report` (default: one alert per target per session); `ask` (enforce: the
+  headless ask, a deny unless `--headless-ask allow-with-report`); `block` (enforce: the proxy's refusal or
+  replacement text). In `--mode report` an ask or block outcome is stamped `enforcement: LIMITED`.
+- Alert: the hook's `category: "Action outside the stated task"`, `reasonCode: "INTENT_MISMATCH"`,
+  `threatId: 64`, `stage: "behavior"`, `intent: {class, mode}`, `contentHash` (tenant-keyed hash of the
+  class and the store's keyed target hash). No prompt, host, path or argument.
+- Key: `--intent-key-file` (64 hex characters, root-owned, not group- or world-writable), else 32 random
+  bytes per process. Store limits: 1,024 sessions, 512 features each, 24 h.
+- Limits: lexical (a named host is aligned even when it is the exfiltration target); unmapped functions are
+  not judged; a request with no user turn and no session header is not judged.
+
+**Reply text scanning** ([`model-proxy/response-scan.mjs`](../model-proxy/response-scan.mjs),
+[`text-codecs.mjs`](../model-proxy/text-codecs.mjs), [`text-guard.mjs`](../model-proxy/text-guard.mjs)).
+- Found: #39 secrets, #1 payment-card data, #15 personal data (the engine's output-stage detectors for
+  those threats, policy-built, packs included; a `disabled` threat is skipped) and #52 a 24-word run of
+  this request's system prompt (8-word shingles, HMAC-SHA256 with a per-process key, 48 bits kept, at most
+  8,192; prompts under 24 words are not tracked; nothing but the hashes is kept).
+- `responseScan`: `report` (default; forwarded byte-identical), `mask` (enforce: the match becomes
+  `[REDACTED:#<threat>]` or `[REDACTED:system-prompt]`; changed events are re-serialized), `block` (enforce:
+  403, or the provider's error event mid-stream). In `--mode report` mask and block are reported with
+  `enforcement: LIMITED`.
+- Streaming window per text channel: 256 characters already sent plus the unsent text. Report: nothing
+  held, scanned each 4,096 characters. Mask / block: the last 256 characters held back, so a match of up to
+  256 characters is found before any of it is sent; a longer one is found after its start was sent
+  (`sent: "partial"`), and sent text cannot be recalled. Measured: 18 µs of CPU per streamed piece in
+  mask / block mode, 0.2 µs in report mode.
+- Alert: `category` "Model proxy: <class> in the model's reply" / "… system prompt reproduced in the
+  model's reply", `stage: "output"`, `tool: "model-proxy:response-text"`, `responseScan: {class, mode,
+  applied, sent}`, `contentHash` (tenant-keyed hash of the match). One per class and hash per response,
+  at most 32.
+- Not scanned: reasoning (thinking, thought parts), refusal fields, `logprobs`, images, audio, embeddings.
 
 ## Local models with safety training removed (by name)
 
