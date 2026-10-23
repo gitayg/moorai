@@ -911,6 +911,7 @@ mod device_mcp_tests {
         std::fs::write(dir.join(".claude.json"), json!({ "mcpServers": {
             "weather": { "command": "npx", "args": ["-y", "@acme/weather-mcp@2.1.0", "--token", "SECRET-ARG-9Z", "/Users/alice/clients"], "env": { "ACME_API_KEY": "sk-live-ENV-3" } },
             "git": { "command": "uvx", "args": ["mcp-server-git"] },
+            "tilde": { "command": "npx", "args": ["-y", "tilde-srv@~1.4.2"] },
             "local": { "command": "node", "args": ["/Users/alice/srv/index.js"] },
             "remote": { "type": "http", "url": "https://mcp.internal.corp/x?token=abc" }
         } }).to_string()).unwrap();
@@ -924,6 +925,7 @@ mod device_mcp_tests {
         let by = |n: &str| servers.iter().find(|s| s["name"] == n).unwrap().clone();
         assert_eq!(by("weather")["pkg"], json!({ "eco": "npm", "name": "@acme/weather-mcp", "version": "2.1.0", "pinned": true, "maintainers": 1, "maintainersOrg": false, "scan": { "verdict": "warn", "findings": ["single-maintainer"] } }));
         assert_eq!(by("git")["pkg"], json!({ "eco": "pypi", "name": "mcp-server-git", "version": null, "pinned": false, "maintainers": null, "maintainersOrg": null, "scan": null }));
+        assert_eq!((by("tilde")["pkg"]["version"].clone(), by("tilde")["pkg"]["pinned"].clone()), (json!("~1.4.2"), json!(false)));
         assert_eq!(by("local")["pkg"]["eco"], "local");
         assert!(by("local")["pkg"]["name"].is_null());
         assert_eq!(by("remote")["pkg"]["eco"], "other");
@@ -931,9 +933,11 @@ mod device_mcp_tests {
         // The console's acceptance rules, on every entry of what becomes the report's body.mcp[].
         for s in servers {
             let p = &s["pkg"];
+            // Rule 4: no whitespace, backslash or "://", no leading "/" or "."; a leading "~" only in version.
             for k in ["name", "version"] {
                 if let Some(v) = p[k].as_str() {
-                    assert!(!v.chars().any(char::is_whitespace) && !v.contains('\\') && !v.contains("://") && !v.starts_with(['/', '.', '~']), "{k} shaped like a path/URL: {p}");
+                    assert!(!v.chars().any(char::is_whitespace) && !v.contains('\\') && !v.contains("://") && !v.starts_with(['/', '.']), "{k} shaped like a path/URL: {p}");
+                    if k == "name" { assert!(!v.starts_with('~'), "name starts with ~: {p}"); }
                 }
             }
             assert_ne!(p["maintainers"], json!(0));

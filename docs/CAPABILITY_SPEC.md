@@ -835,9 +835,11 @@ is validated against.
    docker image on a registry other than Docker Hub, ghcr.io, quay.io, gcr.io, mcr.microsoft.com,
    public.ecr.aws, registry.gitlab.com or registry.k8s.io keeps no name or tag. A digest reference sends
    the whole reference (`repo[:tag]@sha256:<hex>`) as `name`, with `version: null`. A name or version never
-   contains whitespace, a backslash or `://`, and never starts with `/`, `.` or `~`, so a `~1.4` or `~=1.4`
-   spec is sent with `version: null` (`pinned` is still false). Every field is validated and bounded on
-   both sides, and again when the cache is read back.
+   contains whitespace, a backslash or `://`, and never starts with `/` or `.`. A version may start with
+   `~` (`~1.4.2`, `~=1.4`, both `pinned: false`); a name may not. A spec with whitespace (`1.x || 2.x`) is
+   sent with `version: null`. Every field is validated and bounded on both sides, and again when the cache
+   is read back. The reputation score's `unpinned-version` reason uses the same exact-version rule, so
+   `latest`, `^1.4` and `~1.4` raise it too.
 
    The maintainer count and scan verdict live in `~/.moorai/mcp-pkg.json`, keyed per `eco:name@version`.
    Each value has a 7-day TTL, a day of future clock skew at most, and 512 entries at most. The verdict is

@@ -39,11 +39,12 @@ const NAME_RE = {
   // version limit), else the repository alone.
   docker: /^[a-z0-9]+(?:[._-]+[a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-]+[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$/
 };
-// The console's rule for both name and version: no whitespace, backslash or "://", and no leading "/",
-// "." or "~" (a value shaped like a path or URL drops the whole pkg there). So a `~1.4` or `~=1.4` spec
-// is sent as version null; pinned still says it is not exact.
+// The console's rule: no whitespace, backslash or "://", and no leading "/" or "." (a value shaped like a
+// path or URL drops the whole pkg there). A version may start with "~" (`~1.4.2`, `~=1.4` are ordinary
+// specs, pinned false); a name may not (the NAME_RE patterns above never allow it). A spec with
+// whitespace is sent as version null.
 const VERSION_RE = /^[0-9A-Za-z.+_~^<>=!*|,-]+$/;
-const BAD_LEAD = /^[/.~]/;
+const BAD_LEAD = /^[/.]/;
 const PY_EXACT = /^[A-Za-z0-9.!+_-]+$/;
 const THREAT_RE = /^threat-\d{1,4}$/;
 // Registries whose image names are public. An image on any other host keeps no name or tag: the host

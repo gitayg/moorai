@@ -1,5 +1,5 @@
 {
- "_comment": "Shared by test/mcp-pkg-report.test.mjs (cli/mcp-package/pkg-report.mjs) and src-tauri/src/mcp_pkg.rs (cargo test): the same MCP server config must give the same pkg {eco,name,version,pinned} on both sides. Console rules: a name or version never holds whitespace, a backslash or ://, and never starts with /, . or ~ (so a ~ range or ~= spec goes out with version null); a docker digest reference keeps the whole image reference in name, version null, pinned true.",
+ "_comment": "Shared by test/mcp-pkg-report.test.mjs (cli/mcp-package/pkg-report.mjs) and src-tauri/src/mcp_pkg.rs (cargo test): the same MCP server config must give the same pkg {eco,name,version,pinned} on both sides. Console rules: a name or version never holds whitespace, a backslash or ://, and never starts with / or . (a version may start with ~, a name may not; a spec with whitespace goes out as version null); a docker digest reference keeps the whole image reference in name, version null, pinned true.",
  "cases": [
   {
    "id": "npm-exact",
@@ -45,7 +45,7 @@
    "pkg": {
     "eco": "npm",
     "name": "srv",
-    "version": null,
+    "version": "~1.4.2",
     "pinned": false
    }
   },
@@ -323,7 +323,7 @@
    "pkg": {
     "eco": "pypi",
     "name": "pkg",
-    "version": null,
+    "version": "~=1.4",
     "pinned": false
    }
   },

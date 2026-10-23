@@ -281,7 +281,7 @@ Signals, all offline unless the policy opts in:
 
 - the package name against the known-malicious / popular-library list and the popular MCP server list
   (`data/popular-mcp-servers.js`, from the SkillTriage catalogue seed) — `pkg-known-malicious`,
-  `pkg-typosquat`, `mcp-typosquat`; an unpinned `npx -y pkg` — `unpinned-version`;
+  `pkg-typosquat`, `mcp-typosquat`; an unpinned `npx -y pkg` (no exact version: none, `latest`, `^1.4`, `~1.4`) — `unpinned-version`;
 - the copy npx already installed under `~/.npm/_npx`, read with the package heuristics and scoped engine
   scan SkillTriage runs — `pkg-install-script-remote`, `pkg-remote-code`, …;
 - the server's own `tools/list` — `tool-poisoning` (#60, including `mcp-tool-cred-path`),

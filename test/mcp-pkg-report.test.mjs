@@ -46,6 +46,7 @@ test("pinned: exact versions and docker digests only; ^, ~, latest, partial and 
   assert.equal(pin("npm-prerelease"), true);
   assert.equal(pin("npm-caret"), false);
   assert.equal(pin("npm-tilde"), false);
+  assert.equal(pin("pypi-compatible"), false);
   assert.equal(pin("npm-latest"), false);
   assert.equal(pin("npm-partial"), false);
   assert.equal(pin("npm-none"), false);
@@ -237,8 +238,9 @@ function consoleRules(entry) {
   const errs = [];
   const p = entry.pkg;
   if (!p) return ["no pkg"];
-  const shaped = (v) => typeof v === "string" && (/\s/.test(v) || v.includes("\\") || v.includes("://") || /^[/.~]/.test(v));
-  if (shaped(p.name)) errs.push(`name shaped like a path or URL: ${p.name}`);
+  // Rule 4: no whitespace, backslash or "://"; no leading "/" or "."; a leading "~" only in version.
+  const shaped = (v) => typeof v === "string" && (/\s/.test(v) || v.includes("\\") || v.includes("://") || /^[/.]/.test(v));
+  if (shaped(p.name) || (typeof p.name === "string" && p.name.startsWith("~"))) errs.push(`name shaped like a path or URL: ${p.name}`);
   if (shaped(p.version)) errs.push(`version shaped like a path or URL: ${p.version}`);
   if (typeof p.name === "string" && p.name.length > 214) errs.push("name too long");
   if (typeof p.version === "string" && p.version.length > 64) errs.push("version too long");
@@ -268,10 +270,28 @@ test("console contract: sample report entries satisfy all five rules (body.mcp[]
   assert.equal(dg.version, null); assert.equal(dg.pinned, true);
   // 3. a registry that lists no maintainers is unknown, never 0.
   assert.equal(clampPkg({ eco: "npm", name: "x", maintainers: 0 }).maintainers, null);
-  // 4. shapes the console rejects never leave: ~ ranges and spaced specs lose their version.
-  assert.equal(derivePkg(byId["npm-tilde"].decl).version, null);
-  assert.equal(derivePkg(byId["pypi-compatible"].decl).version, null);
-  for (const v of ["1 .0", "a\\b", "x://y", "/x", ".1", "~1"]) assert.equal(clampPkg({ eco: "npm", name: "x", version: v }).version, null, v);
+  // 4. a version may start with "~" (an ordinary range), a name may not; spaced specs lose their version.
+  assert.deepEqual([derivePkg(byId["npm-tilde"].decl).version, derivePkg(byId["npm-tilde"].decl).pinned], ["~1.4.2", false]);
+  assert.deepEqual([derivePkg(byId["pypi-compatible"].decl).version, derivePkg(byId["pypi-compatible"].decl).pinned], ["~=1.4", false]);
+  assert.equal(derivePkg(byId["pypi-range-with-space"].decl).version, null);
+  for (const v of ["1 .0", "a\\b", "x://y", "/x", ".1"]) assert.equal(clampPkg({ eco: "npm", name: "x", version: v }).version, null, v);
+  assert.equal(clampPkg({ eco: "npm", name: "x", version: "~1" }).version, "~1");
+  for (const eco of ["npm", "pypi", "docker"]) assert.equal(clampPkg({ eco, name: "~x", version: "1.0.0" }).name, null, eco);
+  assert.deepEqual(consoleRules({ pkg: { eco: "npm", name: "x", version: "~1.4.2", maintainers: null } }), [], "a leading ~ version is accepted");
   // the validator itself rejects each rule's violation
-  assert.ok(consoleRules({ pkg: { eco: "npm", name: "x", version: "~1", maintainers: 0, scan: { verdict: "warn", findings: ["nope"] } } }).length >= 3);
+  assert.ok(consoleRules({ pkg: { eco: "npm", name: "~x", version: "/1", maintainers: 0, scan: { verdict: "warn", findings: ["nope"] } } }).length >= 4);
+});
+
+test("reputation agrees with pkg.pinned: latest, ^ and ~ ranges raise unpinned-version; an exact version does not", () => {
+  const s = sandbox();
+  try {
+    const unpinned = (decl) => assessServerSync(decl, { stateDir: s.stateDir, home: s.home, now: NOW }).reasons.includes("unpinned-version");
+    for (const spec of ["latest", "^1.4", "~1.4", "~1.4.2", "1.4", "1.x"]) assert.equal(unpinned({ command: "npx", args: ["-y", `pin-check-srv@${spec}`] }), true, spec);
+    assert.equal(unpinned({ command: "npx", args: ["-y", "pin-check-srv@1.4.2"] }), false, "exact");
+    for (const c of CASES) {
+      const p = derivePkg(c.decl);
+      if (p.eco !== "npm" && p.eco !== "pypi") continue;
+      assert.equal(unpinned(c.decl), !p.pinned, `${c.id}: reputation and pkg.pinned disagree`);
+    }
+  } finally { s.done(); }
 });

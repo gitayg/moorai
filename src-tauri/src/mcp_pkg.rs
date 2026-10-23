@@ -47,7 +47,8 @@ re!(re_py_rest, r"(?s)^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[^\]]*\])?\s*(.*)$");
 re!(re_py_name, r"^[A-Za-z0-9][A-Za-z0-9._-]*$");
 re!(re_py_exact, r"^[A-Za-z0-9.!+_-]+$");
 re!(re_docker_name, r"^[a-z0-9]+(?:[._-]+[a-z0-9]+)*(?:/[a-z0-9]+(?:[._-]+[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$");
-// The console's rule: no whitespace, backslash or "://", no leading "/", "." or "~" (see pkg-report.mjs).
+// The console's rule: no whitespace, backslash or "://", no leading "/" or "."; a version may start with
+// "~", a name may not (see pkg-report.mjs).
 re!(re_version, r"^[0-9A-Za-z.+_~^<>=!*|,-]+$");
 re!(re_exact_semver, r"^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$");
 re!(re_threat, r"^threat-\d{1,4}$");
@@ -276,7 +277,7 @@ fn clean_name(eco: &str, v: &Value) -> Value {
     if ok { Value::String(s.to_string()) } else { Value::Null }
 }
 fn clean_version(v: &Value) -> Value {
-    match v.as_str() { Some(s) if !s.is_empty() && s.chars().count() <= MAX_VERSION && re_version().is_match(s) && !s.starts_with(['/', '.', '~']) => Value::String(s.to_string()), _ => Value::Null }
+    match v.as_str() { Some(s) if !s.is_empty() && s.chars().count() <= MAX_VERSION && re_version().is_match(s) && !s.starts_with(['/', '.']) => Value::String(s.to_string()), _ => Value::Null }
 }
 fn clean_count(v: &Value) -> Value {
     match v.as_f64() { Some(f) if v.is_number() && f.is_finite() && f.fract() == 0.0 && f >= 1.0 => json!(f.min(MAX_MAINTAINERS) as i64), _ => Value::Null }

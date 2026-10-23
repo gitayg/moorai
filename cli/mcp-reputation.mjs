@@ -6,7 +6,8 @@
 //
 //   always, offline   the package NAME against the known-malicious / popular-library list
 //                     (data/popular-packages.js, via nameFindings) and the popular MCP server list
-//                     (data/popular-mcp-servers.js); an unpinned `npx -y pkg`; a local / docker / remote /
+//                     (data/popular-mcp-servers.js); an unpinned `npx -y pkg` (no exact version: none, a
+//                     dist-tag or a range); a local / docker / remote /
 //                     unresolvable launch. Nothing is fetched.
 //   always, offline   the INSTALLED copy npx already put on disk (~/.npm/_npx/*/node_modules/<name>) is
 //                     read with the same package heuristics and scoped engine scan SkillTriage runs
@@ -40,6 +41,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveLaunch, unwrapGuard } from "./mcp-package/resolve.mjs";
+import { EXACT_SEMVER } from "./mcp-package/check-spec.mjs";
 import { nameFindings, packageHeuristics } from "./mcp-package/heuristics.mjs";
 import { scanPackageFiles } from "./mcp-package/scope.mjs";
 import { analyzePackage } from "./mcp-package.mjs";
@@ -89,7 +91,10 @@ export function serverIdentity(decl) {
   if (!argv.length) return { kind: "unknown", key: `unknown:${sha("")}`, ref: null };
   const ref = resolveLaunch(argv);
   if (ref.ecosystem === "npm" || ref.ecosystem === "pypi") {
-    return { kind: ref.ecosystem, key: `${ref.ecosystem}:${String(ref.name).toLowerCase()}`, ref, pinned: !!ref.version };
+    // Pinned = an exact version, the same rule as the device report's pkg.pinned: npm `latest`, `^1.4`,
+    // `~1.4` resolve at launch. PyPI's parser only yields a version for == / @ <literal>, i.e. exact.
+    const pinned = ref.ecosystem === "npm" ? !!ref.version && EXACT_SEMVER.test(ref.version) : !!ref.version;
+    return { kind: ref.ecosystem, key: `${ref.ecosystem}:${String(ref.name).toLowerCase()}`, ref, pinned };
   }
   if (ref.ecosystem === "local") return { kind: "local", key: `local:${sha(ref.path)}`, ref, entry: ref.path };
   if (ref.ecosystem === "docker") return { kind: "docker", key: `docker:${sha(ref.name)}`, ref };
