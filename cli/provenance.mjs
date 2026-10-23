@@ -21,6 +21,8 @@ export const REASON = Object.freeze({
   ENVELOPE: "ENVELOPE",                           // entitlement drift (#64)
   PROFILE_DRIFT: "PROFILE_DRIFT",                 // a declared workload/repo profile (policy.workloadProfiles) was left
   EGRESS_RULE: "EGRESS_RULE",                     // an egress rule or egressDefault (policy / profile egressRules) alerted or blocked
+  BOUNDARY_UNMODELLED: "BOUNDARY_UNMODELLED",     // #85: a trust-boundary change in the turn and no threat-model update (cli/boundary-stop.mjs)
+  BOUNDARY_MODEL_INVALID: "BOUNDARY_MODEL_INVALID", // #85: threatcl validate rejected a threat-model file the session wrote (cli/boundary-model.mjs)
   JIT_ELEVATION: "JIT_ELEVATION",
   ENDPOINT_NOT_ALLOWED: "ENDPOINT_NOT_ALLOWED",   // model-endpoint allow-list (#63)
   SECRET_EGRESS: "SECRET_EGRESS",                 // local secret value egress (#65)
@@ -118,6 +120,8 @@ const CATEGORY_REASON = [
   [/^(Autonomous-agent behavior|Lethal trifecta exposure|Clipboard read then outbound upload|Cross-server toxic flow|Agent behavior: |Agent drift: )/, REASON.BEHAVIOR_SIGNAL],
   [/^Agent destination: /, REASON.DESTINATION],
   [/^Honeytoken canary triggered$/, REASON.HONEYTOKEN],
+  [/^Trust boundary changed without a threat-model update$/, REASON.BOUNDARY_UNMODELLED],
+  [/^Threat model failed validation$/, REASON.BOUNDARY_MODEL_INVALID],
   [/^Skill-file /, REASON.SKILL_FILE],
   [/^(Model-flagged: |Escalation outcome)/, REASON.MODEL_ESCALATION],
   [/^Literacy: /, REASON.LITERACY],

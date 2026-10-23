@@ -2746,6 +2746,32 @@
         }
       ],
       "stride": "Repudiation"
+    },
+    {
+      "id": 85,
+      "category": "Output & Code",
+      "threat": "Trust boundary changed without a threat-model update",
+      "example": "While doing ordinary work, the agent changes where the system's trust boundaries are: it adds an external dependency to a manifest or installs one, adds an outbound call to a host the code never contacted, starts reading a new secret env var or credential file, or registers a new HTTP route. The repository keeps a threat model as code, and the same change does not update it, so the next review works from a model that no longer matches the system.",
+      "response": "Review the change against the project's threat model before it ships: a new dependency, outbound host, credential path or HTTP route is a change in what the system trusts and exposes. Update the model in the same change, or record why the change does not need it.",
+      "saferAlternative": "Update the threat model (for example a threatcl file) in the same change that adds the dependency, outbound host, credential path or route.",
+      "severity": 3,
+      "likelihood": 3,
+      "riskScore": 9,
+      "riskLevel": "Medium",
+      "sources": [
+        "Agent safety",
+        "OWASP"
+      ],
+      "owasp": "LLM06",
+      "atlas": "AML.T0053",
+      "atlasPartial": {
+        "AML.T0053": "trust-boundary-changing edits and installs only"
+      },
+      "owaspAgentic": [],
+      "owaspMcp": [],
+      "attack": [],
+      "attackNote": "An agent changing a trust boundary in code it writes without updating the threat model is a review gap, not an adversary technique.",
+      "stride": "Elevation of Privilege"
     }
   ]
 }

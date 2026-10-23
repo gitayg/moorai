@@ -43,6 +43,7 @@ That's the exact trade MoorAI refuses.
 - **Runaway circuit breaker** — an agent stuck in a loop: the same call 15 times in 5 minutes with an unchanged result, or a 2–4 call cycle repeated 5 times with unchanged results, raises `Agent behavior: runaway loop` (#38). A result that changes is progress, so `npm test` re-run while the agent fixes the code never trips it. Report-only by default; `policy.circuitBreaker.mode: "deny"` pauses the session's tool calls for 15 minutes. Token spend is not measured: no hook event carries usage.
 - **Claimed success vs reality** — at the end of a turn, when the agent's final message says the work succeeded while the turn's commands or MCP calls failed, were denied or were interrupted and were not redone, MoorAI reports `Agent reported success but tool calls failed` (Medium). The message is read in memory, never stored or sent. Report-only, and tuned for precision: on a locked split of a blind-labelled corpus, 100% precision (17 of 17) and 54.8% recall.
 - **Weakening oversight (#84)** — an agent's own edit or command that weakens the project's monitoring, alerting, audit logging or safety tests: a suppression flag set, an alert recipient list or on-call route emptied, monitor or audit-log wiring removed, a monitoring test deleted or rewritten to assert absence, a key that turns monitoring off. Judged on the change, not on a mention. Asks by default (routable to approval routing), and at Stop the agent's final message is checked for whether it says so. See [Weakening oversight](#weakening-oversight-84).
+- **Trust boundary changed without a threat-model update (#85)** — when the agent's own edits or installs add a dependency, an outbound host, a credential path or an HTTP route in a repository that keeps a threat model as code (threatcl), and the same turn does not touch the model, MoorAI raises a content-free alert at Stop; a policy can make Claude Code update the model or say why not before it stops. Judged on the change, not on a mention. See [Trust boundary changes](#trust-boundary-changed-without-a-threat-model-update-85).
 - **Verdict provenance** — every alert and every on-device ledger row says which policy decided (`policyId`), which branch decided (`reasonCode`), and whether the verdict was enforced as configured (`AS_CONFIGURED`, `STRENGTHENED`, `LIMITED`, or `UNEVALUATED`). A control that never ran — unreadable input, a hook error, a size cap, break-glass — is recorded as `UNEVALUATED`, never as a pass.
 - **Coverage integrity** — the hook sends a content-free daily heartbeat per agent host with the settings that weaken or switch off protection (hooks disabled, `bypassPermissions`, Codex `approval_policy = "never"`, a sandbox off, …), and the desktop app reports when each agent host was last used, independent of every hook. The console raises a finding for an agent in use with no MoorAI hook traffic, a weakened setting, and a hook removed or gone stale.
 - **Credential exposure map** — the daily heartbeat says, by class only, which credentials an agent on the device can reach (cloud CLIs, SSH keys, kubeconfig, `gh`, `.npmrc`, `.netrc`, MCP configs, project `.env` files, allow-listed env var names, AI keys at rest by keyed hash), which ones an agent read, whether a profile name looks like production, and the destination class the session reached within 10 minutes of the read. Never a path, a value or a name it was not told it may send. See [Credential exposure map](#credential-exposure-map).
@@ -1454,6 +1455,113 @@ CI, by a person, by another tool, through an MCP server that edits files), a mon
 console, and a renamed or rewritten monitor that keeps no oversight word are not seen. An Edit of a file over
 1 MiB is judged on its old and new snippets only. Details: [docs/CAPABILITY_SPEC.md](docs/CAPABILITY_SPEC.md#weakening-oversight-84).
 
+### Trust boundary changed without a threat-model update (#85)
+
+The idea comes from Serval's post "Agentic Threat Modeling" (https://www.serval.com/blog/agentic-threat-modeling,
+21 October 2026): when a coding agent makes a material trust-boundary change, the threat model should change in
+the same change, and teams that keep threat models as code ([threatcl](https://github.com/threatcl/threatcl) HCL
+files) can check that in CI. MoorAI checks it on the device, at the end of the agent's turn.
+
+What counts as a boundary change, judged on the agent's own Write, Edit and MultiEdit calls (the file before and
+after the write) and its shell commands, never on a mention:
+
+- **new-dependency**: a manifest gains a dependency it did not declare (`package.json` dependencies, optional and
+  peer dependencies; `requirements*.txt`; `pyproject.toml` `[project]` and poetry dependencies; `go.mod`;
+  `Cargo.toml`; `Gemfile`; `pom.xml`; gradle `implementation` / `api` / `compileOnly` / `runtimeOnly`), or an
+  install command adds one (`npm` / `pnpm` / `yarn` / `bun add`, `npm install <pkg>`, `pip install <pkg>`,
+  `uv` / `poetry add`, `cargo add`, `go get`, `bundle add`, `composer require`, `dotnet add package`);
+- **new-egress-host**: an http(s) URL in runtime code or config for a host the file did not name before;
+- **new-credential-path**: runtime code newly reads a secret-looking env var (the credential names and shape the
+  credential exposure map uses) or names a credential file (`~/.aws/credentials`, an SSH key, `.env`, ...), starts
+  loading dotenv, or a `.env` file gains a key;
+- **new-route**: more HTTP route or handler registrations than before (express / koa / fastify style
+  `app.get` and `router.post`, Flask / FastAPI decorators, Django `urlpatterns`, Go `http.HandleFunc`, Spring
+  `@*Mapping`, ASP.NET `Map*`, Rails `routes.rb`, Next.js route handlers);
+- **analysis-incomplete**: the write was not read whole, so it is reported rather than judged clean: a file over
+  1 MiB before or after the write, a write that adds a line over 4 KiB to a file read line by line (everything but
+  `package.json` and `pom.xml`, which are parsed whole), or a shell command over 256 KiB. These checks run inside
+  the PreToolUse hook on text the agent wrote, so every pattern is linear-time and over-long lines are never
+  scanned; a slow scan would time the hook out.
+
+Not a boundary change: a version bump of a declared dependency, a dev or test dependency (`devDependencies`,
+`-D`, `[dev-dependencies]`, test scope), `npm install` / `npm ci` / `pip install -r` with no new package, a global
+tool (`-g`), a URL in a README, doc, test or fixture, a localhost or `example.com` URL, a `$schema` or `xmlns`
+URL, a URL or route in a comment or docstring, a new path on a host the file already calls, reading an env var
+the file already read or a non-secret one (`PORT`), `.env.example`, a certificate path, and a renamed route. On a
+hand-built set of 49 benign near-misses (37 edits, 12 commands), 0 fired.
+
+A repository **has a threat model** when it holds a threatcl spec (an `.hcl` file with a top-level
+`threatmodel "<name>" {` block), or a file matching a path the signed policy declares. At Stop and SubagentStop,
+if the turn (sub-agents included) made a boundary change, the repository has a threat model, and no call in the
+turn really updated one of this repository's threat-model files (see "What counts as updating the model" below;
+a Write / Edit, or a shell redirect, `tee`, `sed -i`,
+`cp` / `mv` to one; allowed, or asked and reported run; matched by real path to a model file inside the
+repository, so a decoy elsewhere, another repository's model or a symlink pointing out of the repository does not
+count), MoorAI
+posts one alert: category `Trust boundary changed without a threat-model update`, reason code
+`BOUNDARY_UNMODELLED`, threat 85, with the signal kinds and a count and never a path, package, host, key or
+value. The signals stay on the local session-ledger row. **Default: notify** (an alert, never silent);
+`threatPolicy["85"]: "disabled"` turns it off. With no threat model in the repository nothing is reported unless
+the policy sets `reportWithoutModel`.
+
+```json
+"threatModel": { "v": 1, "paths": ["security/threat-model.md", "threatmodels/**"], "require": "block-stop", "reportWithoutModel": false, "threatclPath": "/opt/moorai/bin/threatcl" }
+```
+
+`require: "block-stop"` (Claude Code only) also answers Stop with `decision: "block"` and a reason telling the
+agent to update the threat model or tell the user why it does not need one: once per turn, never when
+`stop_hook_active` is set, as the #84 disclosure check does. Other hosts alert only. The key is read from the
+signed policy only.
+
+**threatcl validation.** Off unless the signed policy names the binary in `threatModel.threatclPath`: without it
+validation is simply not run (the Stop row records `unset`), and MoorAI never looks for threatcl on PATH and never
+installs it. With it, when the turn wrote a threat-model file, Stop runs `threatcl validate <file>` (no shell, 3 s
+budget) and records `pass`, `fail`, `timeout` or `error` on the local Stop row; a failure posts a content-free
+`Threat model failed validation` alert (`BOUNDARY_MODEL_INVALID`). The hook runs threatcl itself, possibly outside
+the agent's sandbox, so an agent running as the same user must not be able to plant or replace it:
+
+- On macOS and Linux the binary, and every directory and symlink on the way to it from `/` (symlink targets
+  included), must be owned by root and not group- or world-writable, and neither the path nor its real path may be
+  inside the repository or the session cwd. The admin installs threatcl to a root-owned location, for example
+  `sudo install -d -o root -m 0755 /opt/moorai/bin && sudo install -o root -m 0755 threatcl /opt/moorai/bin/`
+  (check that `/opt` is root-owned too). Homebrew's prefix
+  (`/opt/homebrew`, or `/usr/local` after a default Homebrew install) is owned by the user and does not qualify,
+  nor does `~/bin` or `~/go/bin`. Stop runs it by its real path.
+- A path that fails these checks records `untrusted`, a missing or non-executable one `absent`; neither falls back
+  to anything else. A relative or malformed `threatclPath` is dropped with a warning (`unset`).
+- On Windows the hook never runs threatcl: there is no owner or ACL check there, so a path the user can write
+  would run. The Stop row records `unsupported`, and a model write on Windows clears the check only as an update
+  of an existing model (below), never by validation.
+
+The model is written by the agent, and threatcl's `imports` and `including` may fetch URLs or read other files,
+which would let a model make the hook reach the network or the disk outside the agent's sandbox. So **a model
+that uses imports or including, or contains a URL, is not validated by the hook**: when the file contains the
+word `imports` or `including` anywhere (any case, prose included), `://`, a `\u` / `\U` escape, a `${` or `%{`
+template, an HCL file function call (`file(`, `templatefile(`, `fileexists(`, ...), or is over 1 MiB, threatcl
+is not started and the Stop row records `untrusted-input` (nothing is posted). A clean model is validated as a
+copy in a fresh empty temporary directory (threatcl's working directory, removed afterwards), with only
+`PATH=/usr/bin:/bin`, `HOME` set to that empty directory, and every proxy variable pointed at a closed port on
+127.0.0.1 (`NO_PROXY` empty). On macOS it also runs under `/usr/bin/sandbox-exec` with network denied; Linux has
+no such wrapper, so there the content check and the environment are what hold.
+
+**What counts as updating the model.** A dummy does not clear the check. A write counts as an update only when it
+is to a threat-model file that existed when the turn began (MoorAI notes the repository's model files at the
+user's prompt) or to a path `threatModel.paths` names, and its content, with comments and whitespace removed,
+differs from what it was. A whitespace- or comment-only edit does not count. A model created during the turn
+counts only when the policy's `threatclPath` validates it (`pass`); otherwise the alert still fires with
+`trustBoundary.threatModel: "created"`. With `threatclPath` set, an update clears only on `pass`: `fail`,
+`untrusted-input`, `error`, `timeout`, `untrusted` or `absent` leaves the alert. The Stop row records why a
+write did not clear (`tmr`: `created`, `not-substantive` or `validation`). MoorAI does not judge whether the
+update is adequate, only that it is a real change to a real model.
+
+**What it does not cover.** Only the agent's own tool calls on this device. It does not check that a new
+endpoint is authenticated, rate-limited or audit-logged, or that the threat-model update is any good: that is
+static-analysis and review work. It does not see dependencies added by hand, in CI, through a lockfile only,
+through a shell write to a manifest (`echo x >> requirements.txt`), or after a `cd` to another project (an install
+after a `cd` is counted without the manifest check); egress to hosts built at runtime, UI components (`.tsx`,
+`.vue`) and NotebookEdit cells; route registrations in frameworks not listed. Details:
+[docs/CAPABILITY_SPEC.md](docs/CAPABILITY_SPEC.md#trust-boundary-changed-without-a-threat-model-update-85).
+
 ### Industrial protocol clients run from an agent shell
 
 MoorAI governs the agents that can reach controllers; it never runs inside a PLC or a safety system. A Bash
@@ -2654,8 +2762,8 @@ complete tool detail, and no argument text reached the console.
 ATT&CK v20 (13 October 2026) added Direct Prompt Injection (T1699), Indirect Prompt Injection (T1698),
 AI-Enabled Exfiltration (T1700), Impair Autonomous Defenses (T1685.007) and AI Result Poisoning (T1608.007),
 and rewrote Compromise Software Dependencies and Development Tools (T1195.001) to name agent skill files and
-IDE task files. 48 of the 81 rules map to 65 v20 techniques through 93 credits: 3 full, 77 partial and 13
-`none`. 33 rules (data classes, governance and model-error risks) have no ATT&CK counterpart, and each says why.
+IDE task files. 48 of the 82 rules map to 65 v20 techniques through 93 credits: 3 full, 77 partial and 13
+`none`. 34 rules (data classes, governance, review and model-error risks) have no ATT&CK counterpart, and each says why.
 
 Over the 71 v20 techniques an AI agent can perform or be aimed at (`ATTACK_SCOPE` in `data/attack.js`), 2 are
 covered, 55 partial and 14 uncovered. Of the 58 in the agent lane, the actions a hook, proxy or gateway sees,
@@ -2907,7 +3015,7 @@ so internal files can move without breaking consumers.
 
 ## How it works
 
-A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against an 81-threat matrix (17 categories) + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is MIT; the console is commercial.
+A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against an 82-threat matrix (17 categories) + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is MIT; the console is commercial.
 
 ## Learn more
 

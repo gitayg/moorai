@@ -1,9 +1,9 @@
 {
   "name": "MoorAI Agent Security Benchmark",
-  "generatedAt": "2026-10-22T08:57:18.763Z",
+  "generatedAt": "2026-10-23T02:14:37.962Z",
   "engine": {
     "detectors": 120,
-    "threats": 81,
+    "threats": 82,
     "corpusCases": 102
   },
   "corpus": {
@@ -36,7 +36,7 @@
         "detectors": 16
       },
       "LLM06": {
-        "threats": 16,
+        "threats": 17,
         "detectors": 8
       },
       "LLM07": {

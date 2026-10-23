@@ -33,7 +33,7 @@ const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const stderrWarn = (m) => { try { process.stderr.write(`moorai: ${m}\n`); } catch { /* best effort */ } };
 const esc = (s) => s.replace(/[.+^${}()|[\]\\]/g, "\\$&");
 
-function globRe(glob) {
+export function globRe(glob) {
   const g = glob.replace(/\\/g, "/");
   const abs = g.startsWith("/");
   let body = "";

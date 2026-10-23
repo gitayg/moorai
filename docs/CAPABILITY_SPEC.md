@@ -7,7 +7,7 @@
 MoorAI is a **native desktop "Managed AI Host"** for office workers, paired with a **central
 server** for policy and visibility. The employee does their AI work *inside* MoorAI — a native
 app with an embedded, managed webview — so the host sees every prompt, response, paste, and
-upload natively (no browser extension, no DOM hacks). It detects the 81-threat matrix in real
+upload natively (no browser extension, no DOM hacks). It detects the 82-threat matrix in real
 time, **coaches the employee** with the matrix's guidance, and **reports redacted alerts** to a
 central server so the security team has visibility.
 
@@ -29,7 +29,7 @@ risk, and (c) **deterministic prevention** where policy calls for it. Because ad
 it still does not prevent Shadow AI by construction; it reduces risk for those who opt in and
 surfaces organization-wide risk signals.
 
-- **Rule-base:** [`data/threats.json`](../data/threats.json) — 81 threats, 17 categories, English.
+- **Rule-base:** [`data/threats.json`](../data/threats.json) — 82 threats, 17 categories, English.
   Each threat is a rule: `example` = trigger context, `response` = intervention,
   `riskScore = severity × likelihood`.
 - **Intervention model:** risk-tiered and policy-driven — `notify` (report) → `justify` (ask) →
@@ -547,15 +547,15 @@ applies a settings file's `env` to hook processes is taken from its documentatio
 ## Risk distribution (from the matrix)
 
 Counts are the shipped `riskLevel` labels in `data/threats.json` — the field the engine actually
-ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 81 threats.
+ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 82 threats.
 
 | Level | Count | Nominal score band |
 |---|---|---|
 | Critical | 17 | ≥ 20 |
 | High | 49 | 12–19 |
-| Medium | 15 | 6–11 |
+| Medium | 16 | 6–11 |
 
-Note: 8 of the 81 threats carry a `riskLevel` label outside the nominal band their `riskScore`
+Note: 8 of the 82 threats carry a `riskLevel` label outside the nominal band their `riskScore`
 would place them in (e.g. #65 scores 15 but is labeled Critical; #43 scores 6 but is labeled High).
 The label wins at runtime; the bands in `meta.scoring` are documentation, not an invariant the data
 is validated against.
@@ -4121,6 +4121,196 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   the same directory that keeps an oversight word (`alerting.py` to `alerting_unused.py`), and an unenrolled device's Stop (no console, no
   coaching message) are not covered. No engine detector carries #84, so the MCP proxy, model proxy and
   `scan.mjs` do not raise it.
+
+## Trust boundary changed without a threat-model update (#85)
+
+[`cli/boundary-signals.mjs`](../cli/boundary-signals.mjs) (Write / Edit / MultiEdit, judged on the file before and
+after), [`cli/boundary-shell.mjs`](../cli/boundary-shell.mjs) (install commands),
+[`cli/boundary-model.mjs`](../cli/boundary-model.mjs) (threat-model detection, the `threatModel` policy key,
+threatcl), [`cli/boundary-stop.mjs`](../cli/boundary-stop.mjs) (ledger fields and the Stop / SubagentStop decision),
+wired into [`cli/moorai-hook.mjs`](../cli/moorai-hook.mjs). Tests: `test/boundary-signals.test.mjs`,
+`test/boundary-hook.test.mjs` (fixtures in `test/boundary-fixtures.mjs`). The idea is from Serval's "Agentic Threat
+Modeling" (2026-10-21): a material trust-boundary change by a coding agent should come with a threat-model update in
+the same change, with threat models kept as code ([threatcl](https://github.com/threatcl/threatcl)) and validated
+in CI.
+
+- **What it catches.** Four local, content-free signals (and `analysis-incomplete`, see "Linear time, fail
+  closed"), recorded on the PreToolUse session-ledger row as `tb`
+  (never on an alert by name of file, package, host, key or value):
+  `new-dependency` (a manifest gains a dependency: `package.json` `dependencies` / `optionalDependencies` /
+  `peerDependencies`, `requirements*.txt`, `pyproject.toml` `[project] dependencies`, non-dev
+  `[project.optional-dependencies]` and poetry dependency tables, `go.mod` `require`, `Cargo.toml` `dependencies` /
+  `build-dependencies` (also `workspace.` and `target.*.`), `Gemfile` `gem`, `pom.xml` `<dependency>` outside test
+  scope, gradle `implementation` / `api` / `compileOnly` / `runtimeOnly` / `annotationProcessor` / `kapt` / `ksp`;
+  or a command `npm` / `pnpm` / `bun` `add|install <pkg>`, `yarn add`, `pip install <pkg>` (also `python -m pip`,
+  `uv pip`), `uv` / `poetry add`, `pipenv install <pkg>`, `cargo add`, `go get`, `bundle add`, `composer require`,
+  `dotnet add package`, for a package that cwd's manifest does not already declare);
+  `new-egress-host` (an http(s) URL host in runtime code or config that the file did not contain);
+  `new-credential-path` (a newly read env var whose name is in `data/credential-env-names.js`
+  `CREDENTIAL_ENV_NAMES`, matches its `CREDENTIAL_ENV_SHAPE`, or ends in `SECRET_KEY` / `SIGNING_KEY` /
+  `ENCRYPTION_KEY` / `MASTER_KEY` / `PRIVATE_KEY` / `SERVICE_ACCOUNT_KEY`, read through `process.env`,
+  `import.meta.env`, `os.environ`, `getenv` / `Getenv` / `LookupEnv`, `ENV[]`, `env::var`,
+  `GetEnvironmentVariable` or `$env:`; a string literal naming a credential file by the
+  `data/cred-alternatives.js` kinds, certificates and `.pub` excluded; dotenv loading added; or a new key in a real
+  `.env` file);
+  `new-route` (the count of route registrations goes up: `app` / `router` / `server` / `fastify` / `api` / `mux` /
+  `r` / `e` / `g` / `*Router` / `*App` `.get|post|put|patch|delete|all|options|head|use|route` or Go
+  `.GET|POST|…|Handle|HandleFunc` with a literal path, fastify `route({ url })`, `http.Handle[Func]`, Flask /
+  FastAPI decorators, Spring `@*Mapping`, ASP.NET `Map*` and `[Http*]` / `[Route]`, Django `path` / `re_path` /
+  `url` in `urls.py`, Rails verbs and `resources` in `routes.rb`, Next.js `export function GET|POST|…` in
+  `app/**/route.*` and `pages/api/**`).
+- **Diff, not mention.** Each signal is a set difference (hosts, credential references, dependency names, `.env`
+  keys) or a count increase (routes) between the file before and after the write, so a version bump, a second read
+  of an env var the file already read, a new path on a known host and a renamed route are not new. The current
+  file is read up to 1 MiB; an Edit of an unreadable file is judged on its snippets (a `package.json` snippet that
+  does not parse as JSON raises nothing). Comments are removed per language (a quote scanner that cuts at `//`,
+  `/* */` or `#` outside a string), and Python docstrings that open a statement are dropped.
+- **Path handling.** `cli/oversight-signals.mjs` `pathClasses`: a path is judged when it, or its real target, is
+  runtime code; docs, fixtures, examples, tests, CI tooling and UI components (`.jsx`, `.tsx`, `.vue`, `.html`, …)
+  are not. Manifests are judged by file name in the same classes (`requirements*.txt` is a manifest, not a doc;
+  `test/fixtures/**/package.json` and `examples/**` are not judged). Egress, credential and route checks run on
+  source and config extensions only; lockfiles are skipped. Ignored hosts: loopback, `*.localhost`, `*.local`,
+  `*.test`, `*.example`, `*.invalid`, `example.com|net|org`, and XML / JSON schema namespace hosts (`w3.org`,
+  `json-schema.org`, `json.schemastore.org`, …); lines with `$schema`, `xmlns` or `xsi:schemaLocation` are skipped.
+- **Threat-model awareness.** A repository (the nearest ancestor of cwd holding `.git`, else cwd) has a threat
+  model when a bounded walk (20,000 entries, depth 8, 1 s; `node_modules`, `.git`, `vendor`, `dist`, `build`,
+  `target`, virtualenvs and caches skipped) finds an `.hcl` file of at most 256 KiB with a top-level
+  `threatmodel "<name>" {` block, or a file matching `threatModel.paths`. A threat-model write is a Write / Edit /
+  MultiEdit of such a file (the block before or after the write, or a declared path) or a shell command that
+  writes one (a redirect target, `tee`, `sed` / `gsed` / `perl -i`, the last argument of `cp` / `mv` / `install` /
+  `rsync`; an `.hcl` target counts when it is a spec now or the command carries a `threatmodel "` block). The row
+  carries `tm: 1` and `tmk`, keyed hashes (`localHash`) of the files' real paths, never the path.
+- **Stop / SubagentStop.** The rows in scope are the ones the #84 disclosure check reads (a sub-agent: its own; the
+  main agent: every call since the user's last prompt, its sub-agents' included). A `tb` row counts when the call
+  was allowed, ran after an ask, or was asked on a tool the host does not report back on; a denied call does not.
+  A threat-model write clears the check only when it is established, belongs to this repository and is a real
+  update ("What counts as an update" below): the `tm` row
+  was allowed, or asked and then reported run (PostToolUse / PostToolUseFailure with the same `tool_use_id`; an
+  ask on Write / Edit, whose outcome Claude Code never reports, does not clear it), and one of its `tmk` keys
+  (the real path, or for a new file its nearest existing ancestor's real path plus the rest) matches a file the
+  walk finds under the repository root. The walk lists regular files only and follows no symlink, so a decoy
+  threatcl file outside the repository, another repository's model, and an in-repository symlink named like a
+  model that points elsewhere clear nothing. Boundary change, threat model present, no threat-model write: one alert per
+  scope, threat 85, category `Trust boundary changed without a threat-model update`, reason code
+  `BOUNDARY_UNMODELLED`, risk Medium, stage `lifecycle`, `trustBoundary: { kinds, count, threatModel: "present" |
+  "absent" | "created", scope: "turn" | "subagent", delegated, blocked }` (a SubagentStop alert also carries `parentSession`).
+  The Stop row carries `tbFlag` (and `tbBlock`), so a second Stop in the same scope adds nothing.
+- **Default and action.** Notify: `threatActionFor` resolves 85 to `notify` (no built-in default, not an approval
+  threat); `threatPolicy["85"]: "disabled"` turns both the recording and the Stop check off. The PreToolUse verdict
+  of the call is never changed.
+- **Policy key.** Top-level `threatModel: { v: 1, paths, require, reportWithoutModel, threatclPath }`, read from the signed
+  policy only (the hook's verified policy, never `~/.moorai`). `paths`: up to 64 globs, matched like
+  `oversight.protectedPaths`, as written, resolved against cwd and through the real path. `require`: `"notify"`
+  (default) or `"block-stop"`: Claude Code only, and only when the repository has a threat model, the hook prints
+  `{ "decision": "block", "reason": "MoorAI: this turn changed a trust boundary (a new dependency, outbound host,
+  credential path or HTTP route) and did not update the project's threat model. Before you stop, update the
+  threat model to cover the change, or tell the user plainly why it does not need one." }`, never when
+  `stop_hook_active` is true, never twice in a scope, never on an unenrolled device; when #84 blocks in the same
+  Stop the two reasons are joined in one answer. `reportWithoutModel`: `true` reports boundary changes in a
+  repository with no threat model (`threatModel: "absent"`, never blocks). `threatclPath`: the absolute path of
+  the threatcl executable (POSIX: rooted; Windows: a drive-letter or UNC path), at most 1024 characters without
+  control characters; the only way threatcl validation runs (see below); a relative or malformed value is dropped
+  with a warning and validation is not run. A malformed entry is dropped with a
+  stderr warning naming its position; an older agent ignores the key.
+- **threatcl validation.** Only when the signed policy sets `threatModel.threatclPath` and the turn wrote a
+  threat-model file; without `threatclPath` it is not run (`tmv: "unset"`), and threatcl is never looked up on
+  PATH, installed or downloaded. `threatcl validate <file>` for each written file found by the walk (keyed-hash
+  match, at most 8), `spawnSync` without a shell, output discarded, 3 s total. Exit 0 for every file is `pass`, a
+  non-zero exit `fail`, past the budget or killed `timeout`, a spawn error `error`; a binary not run is `unset`,
+  `absent` or `untrusted`, a refused model `untrusted-input` (below); Windows records `unsupported` and never runs it. The result is the Stop row's `tmv`; `fail` posts `Threat model failed
+  validation` (`BOUNDARY_MODEL_INVALID`, Low, `threatModelValidation: { result, files }`). threatcl's README
+  documents the command ("used to validate a `threatcl` spec HCL file") but not its exit codes;
+  non-zero-is-failure is assumed and was tested with fakes and root-owned stand-ins (`/usr/bin/true`,
+  `/usr/bin/false`) only.
+- **Which threatcl runs.** The hook runs it, possibly outside the agent's sandbox, so an agent running as the same
+  user must not be able to plant or replace it (`whichThreatcl`, `rootOwnedChain`, cli/boundary-model.mjs). Only
+  `threatclPath` is considered. POSIX: the path is walked from `/` the way the kernel resolves it (`..` taken
+  physically, at most 32 symlinks followed, each target walked the same way), and every component visited, `/`
+  and each directory, each symlink and the final file, must be owned by uid 0; every directory and the file must
+  have no group or world write bit (`mode & 0o022`); the final component must be a regular executable file.
+  Neither the path nor its real path may be the repository root (`repoRoot(cwd)`), the session cwd or below either
+  (as written and through `realpathSync.native`, case-folded on macOS and Windows). The binary is run by the real
+  path the walk ends at. A failed ownership, mode, symlink-loop or inside-project check is `untrusted`; a missing
+  component, a non-regular file or a non-executable file is `absent`; nothing falls back to PATH or anything else.
+  The admin must install threatcl to a root-owned location: Homebrew's user-owned prefix (`/opt/homebrew`, or
+  `/usr/local` after a default Homebrew install), `~/bin` and `~/go/bin` do not qualify. Windows: the hook never
+  runs threatcl (`unsupported`): no owner or ACL check exists there and none could be validated without a Windows
+  box, so a user-writable path would run; `%ProgramFiles%`-style heuristics are not used because those values come
+  from an environment the agent can influence. Tested in `test/boundary-threatcl.test.mjs` (marker-writing fakes for
+  "not run", `/usr/bin/true` and `/usr/bin/false` for "run", and an injected `lstat` / `readlink` for the
+  ancestor cases).
+- **What threatcl is given** (`cli/boundary-threatcl-input.mjs`, `validateThreatModels`). The model is agent-written
+  and threatcl runs outside the agent's sandbox and egress controls. threatcl's documentation for `imports` and
+  `including` could not be checked offline (nothing on disk), so both are assumed able to fetch remote content
+  or read files. Models that use imports or including, or contain a URL, are not validated by the hook: every
+  file is read once (at most 1 MiB; larger is refused) and refused, threatcl never started, when it contains
+  `imports` or `including` as a word anywhere in any case (`(?:^|[^A-Za-z0-9_-])(?:imports|including)(?![A-Za-z0-9_-])`,
+  so attributes, blocks, single-line blocks, after a comment, and prose all match: when unsure, refuse), `://`,
+  a `\u` / `\U` escape or a `${` / `%{` template (either could spell a URL or key past the text checks), an HCL
+  file function before `(` (`file`, `templatefile`, `fileexists`, `fileset`, `filebase64`, `filemd5`, the
+  `filesha*` and `filebase64sha*` functions, `abspath`, `pathexpand`), a NUL or a U+FFFD. The result is
+  `untrusted-input` on the Stop row (`files: 0`) and nothing is posted. Linear-time patterns (about 3 ms on 1 MiB
+  of adversarial text). A clean file's checked bytes are written (`wx`, 0600) to a fresh `mkdtemp` directory under
+  the OS temp directory, which is threatcl's working directory, and that copy is validated (so a later change to
+  the agent's file is not what runs); the directory is removed afterwards. Environment, nothing inherited:
+  `PATH=/usr/bin:/bin`, `HOME` = that empty directory (set, not omitted: a child with no `HOME` resolves the real
+  one from the password database), `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` and their lower-case forms =
+  `http://127.0.0.1:9`, `NO_PROXY` / `no_proxy` empty (the Windows form of this environment exists in
+  `threatclEnv` but is never used, since Windows never runs threatcl). macOS: when `/usr/bin/sandbox-exec` passes the root-ownership
+  walk, threatcl runs as `sandbox-exec -p "(version 1)(allow default)(deny network*)" <threatcl> validate <copy>`
+  (measured: a direct `curl` to a live 127.0.0.1 server from inside fails, the same `curl` outside succeeds).
+  Linux has no wrapper: the content gate and the environment are what hold. Tested in
+  `test/boundary-threatcl-input.test.mjs`.
+- **What counts as an update** (`cli/boundary-update.mjs`). A threat-model write clears the check only when it is a
+  real update. At UserPromptSubmit the hook walks the repository (the same bounded walk) and records on the prompt
+  row `tms: { modelKey: contentDigest }` for at most 64 model files (`tmt: 1` when the walk was truncated or there
+  were more); each threat-model write's PreToolUse row carries `tmb: { modelKey: digest | "" | 0 }`, the file before
+  that call (a fallback for a turn with no prompt row). A digest is a keyed hash (`localHash`) of the content with
+  comments (`#`, `//`, `/* */` outside strings per extension; `<!-- -->` in Markdown and HTML) and all whitespace
+  removed (linear: one quote-scanner pass and an `indexOf` loop; files over 1 MiB are unreadable). At Stop, per
+  written file of this repository: `existed` when its key is in the turn's `tms` (or, without `tms`, its
+  earliest `tmb` is not 0); `declared` when it matches `threatModel.paths`; `substantive` when its digest now
+  differs from the turn-start one (a declared file new in the turn: when its digest is not the empty one); an
+  unreadable state on either side is never substantive. With no validation configured (`threatclPath` unset, or
+  Windows): cleared when some file existed or is declared and is substantive. With a `threatclPath`: cleared only
+  when validation is `pass` and some file is such an update or was created in the turn. Not cleared: the alert
+  fires (when a boundary change is in scope), `trustBoundary.threatModel` is `"created"` when a written model was
+  new in the turn, and the Stop row's `tmr` says why: `"validation"` (configured, not `pass`; `tmv` holds the
+  result), `"created"` (only new models, no validation pass) or `"not-substantive"`. The hook does not judge
+  whether an update is adequate. Tested in `test/boundary-update.test.mjs`.
+- **Linear time, fail closed.** The signals run inside PreToolUse on agent-written text, where a slow scan would
+  time the hook out and the host would let the call through. No line-anchored pattern lets `\s` span a newline
+  (`[ \t]` instead), TOML table headers are read with the non-overlapping `/^\[([^\]]*)\]$/` and trimmed after,
+  identifier runs in the route pattern are bounded (`{0,63}`, starting only where no identifier character
+  precedes), and the go module-path check is a linear scan. Lines over 4 KiB (`LINE_MAX`) are blanked before any
+  pattern runs, in every file read line by line (all but `package.json`, parsed by `JSON.parse`, and `pom.xml`,
+  read by splitting); manifests in cwd read to check whether an install is new are blanked the same way (a name
+  on such a line is not seen, so the install counts as new). A write is `analysis-incomplete`, the fifth `tb`
+  kind, when the file is over 1 MiB before or after it, or when it adds a line over 4 KiB that was not there
+  before; a shell command over `MAX_CMD` (256 KiB) is too. It is never judged clean: like any signal it counts at
+  Stop and appears in `trustBoundary.kinds`. The PreToolUse verdict is not changed (85 is notify-only, unlike
+  #84, which asks on its `analysis-incomplete`). Measured by `test/boundary-redos.test.mjs`: each adversarial
+  input (a `[` and 200,000 spaces, 4,000-space headers, 200,000-newline runs before a non-matching line,
+  `a$` x 2,000 per line, a 1,000,000-character line, over 1 MiB, a 200,000-dot `go get`, a command over 256 KiB)
+  is judged in a child process and finishes in under 200 ms; the v1.31.0 patterns took over 10 s (killed) on
+  eight of them.
+- **Precision.** Measured on `test/boundary-fixtures.mjs`: 29 positive edits and 8 positive commands each raise
+  exactly their signal, and 0 of 49 benign near-misses fire (dependency bumps, dev / test dependencies, a new
+  script, fixture and example manifests, URLs in a README, docs, tests and fixtures, localhost / 127.0.0.1 /
+  `example.com` URLs, a URL in a comment, a new path on a known host, a `$schema` URL, re-reading a secret env var,
+  non-secret env vars, a changed `.env` value, `.env.example`, a certificate path, renamed routes, routes in
+  comments, docstrings and READMEs, `cache.get("/users")`, `npm install` / `npm ci` / `pip install -r` /
+  `pip install -e .`, global and dev installs, bumps of declared packages, and `echo` / `grep` mentioning an
+  install). The set is hand-built; no field corpus has been run.
+- **Not covered.** Only the agent's own tool calls on this device. Whether a new endpoint is authenticated,
+  authorised, rate-limited or audit-logged, and whether the threat-model update is adequate, are static-analysis
+  and review questions this check does not answer. Not seen: changes by a person, CI or another tool; a dependency
+  added through a lockfile alone, a shell write to a manifest, or a manifest edit that does not parse; an install
+  after a `cd` is counted without the manifest check; hosts built at runtime or held in variables; UI component
+  files and NotebookEdit cells; frameworks and route styles not listed (a router mounted under another name, a
+  route table built from data); a threat model outside the walk's bounds (a truncated walk with nothing found
+  reads as no threat model). No engine detector carries #85, so the MCP proxy, model proxy and `scan.mjs` do not
+  raise it.
 
 ## Coverage & blind spots
 

@@ -27,6 +27,8 @@ import { assessOversightDisclosure } from "./oversight-disclosure.mjs";
 import { fetchExecFacts } from "../data/net-exec.js";
 import { fetchedExecHit, recordFetched } from "./fetch-exec-state.mjs";
 import { otShellCheck, scriptReader, OT_PROTOCOL_CLIENT } from "./ot-protocol-client.mjs";
+import { boundaryWriteFields, boundaryCommandFields, boundaryAtStop, BOUNDARY_THREAT, BOUNDARY_CATEGORY, BOUNDARY_INVALID_CATEGORY, BOUNDARY_BLOCK_REASON } from "./boundary-stop.mjs";
+import { boundaryTurnSnapshot } from "./boundary-update.mjs";
 import { maskValue, maskNote } from "./mask.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressHits } from "./secret-egress.mjs";
@@ -180,7 +182,7 @@ const PROMPT_MATCHERS = [""];
 // LIFECYCLE — visibility only, with one policy-enabled exception at Stop (#84, below); otherwise none of these handlers blocks or prints to a channel that feeds the
 // model (code.claude.com/docs/en/hooks: "For most events, Claude Code writes stdout to the debug log and
 // doesn't show it in the transcript"; Stop/SubagentStop's `decision:"block"` and `additionalContext` DO
-// reach Claude and are sent only for #84 when the signed policy sets oversight.stopDisclosure "block"; see handleStop).
+// reach Claude and are sent only for #84 when the signed policy sets oversight.stopDisclosure "block", and for #85 when it sets threatModel.require "block-stop"; see handleStop).
 //   PostToolUseFailure — "Runs when a tool that started executing fails"; PostToolUse "Runs immediately
 //     after a tool completes successfully", so without this a failed command leaves no outcome at all.
 //     Matched to the tools whose outcome the claimed-success check reads.
@@ -2608,6 +2610,8 @@ async function emitPost(decision, reason, alternatives = [], rewrite = null, too
 // device never blocks; it shows the user a systemMessage.
 async function handlePrompt(input, policy, engine) {
   await captureTask(input, policy);
+  // #85: the repository's threat-model files as the turn begins, so Stop can tell an update from a new dummy.
+  if (ROW) Object.assign(ROW, boundaryTurnSnapshot(input.cwd, policy));
   const plan = promptScanPlan(policy, input, { server: !!SERVER.active });
   if (!plan.scan) { settleRow(unevaluated(REASON.OBSERVATION_ONLY)); return exitHook(); }
   let text = input.prompt;
@@ -2699,6 +2703,12 @@ async function handleStop(input) {
   const ov = assessOversightDisclosure(ovRows, msg);
   const ovFresh = ov.flagged && !scope.some((r) => (r.ev === "stop" || r.ev === "substop") && r.ovFlag);
   const ovBlock = ovFresh && !COACH && oversightPolicy(POLICY, () => {}).stopDisclosure === "block" && input.stop_hook_active !== true && beatHost() === "claude-code";
+  // #85: a trust-boundary change in the same rows and no threat-model update (cli/boundary-stop.mjs). Under
+  // threatModel.require "block-stop", Claude Code is answered decision "block" once per scope, as #84 above.
+  // The turn's prompt row (its #85 threat-model snapshot): the main agent's last; a sub-agent's, the last before its first row.
+  let turnStart = null;
+  { const first = sub ? rows.findIndex((r) => ROW && ROW.a && r.a === ROW.a) : -1; for (let i = (first < 0 ? rows.length : first) - 1; i >= 0; i--) if (rows[i].ev === "prompt" && !rows[i].a) { turnStart = rows[i]; break; } }
+  const tb = boundaryAtStop({ rows: ovRows, scope, cwd: input.cwd, policy: POLICY, sub, coach: COACH, host: beatHost(), stopHookActive: input.stop_hook_active === true, turnStart });
   // stop_hook_active (another hook continued the turn) can fire Stop twice for one turn: one finding.
   const already = scope.some((r) => (r.ev === "stop" || r.ev === "substop") && r.claimFlag);
   const fresh = cc.flagged && !already;
@@ -2709,6 +2719,9 @@ async function handleStop(input) {
   if (ovFresh) {
     post({ threatId: OVERSIGHT_THREAT, category: OVERSIGHT_UNDISCLOSED_CATEGORY, riskLevel: "High", stage: "lifecycle", tool: `hook:${EVENT}`, ts, contentHash: `oversight-undisclosed:${ov.executed}`, oversightDisclosure: { executed: ov.executed, delegated: ov.delegated || sub, scope: sub ? "subagent" : "turn", blocked: ovBlock }, ...(sub && SESSION_TAG ? { parentSession: SESSION_TAG } : {}), reasonCode: REASON.OVERSIGHT_UNDISCLOSED, enforcement: ENFORCEMENT.AS_CONFIGURED, ...IDENTITY });
   }
+  if (tb.flagged) post({ threatId: BOUNDARY_THREAT, category: BOUNDARY_CATEGORY, riskLevel: "Medium", stage: "lifecycle", tool: `hook:${EVENT}`, ts, contentHash: `boundary-unmodelled:${tb.kinds.join(",")}`, trustBoundary: { kinds: tb.kinds, count: tb.count, threatModel: tb.threatModel, scope: sub ? "subagent" : "turn", delegated: tb.delegated, blocked: tb.block }, ...(sub && SESSION_TAG ? { parentSession: SESSION_TAG } : {}), reasonCode: REASON.BOUNDARY_UNMODELLED, enforcement: ENFORCEMENT.AS_CONFIGURED, ...IDENTITY });
+  if (tb.validation && tb.validation.result === "fail") post({ threatId: BOUNDARY_THREAT, category: BOUNDARY_INVALID_CATEGORY, riskLevel: "Low", stage: "lifecycle", tool: `hook:${EVENT}`, ts, contentHash: "boundary-model-invalid", threatModelValidation: tb.validation, reasonCode: REASON.BOUNDARY_MODEL_INVALID, enforcement: ENFORCEMENT.AS_CONFIGURED, ...IDENTITY });
+  if (ROW) Object.assign(ROW, tb.row);
   // Asks MoorAI answered in this turn whose call never started (neither PostToolUse nor PostToolUseFailure came).
   const asksUnresolved = resolveStopAsks(sub);
   let sum = null;
@@ -2736,7 +2749,7 @@ async function handleStop(input) {
     }
   }
   settleRow({ decision: "none", ...(sum ? { sum } : {}), claim: cc.claim, claimFlag: cc.flagged, ovFlag: ov.flagged, ...(ovBlock ? { ovBlock: true } : {}), policyId: PROV.policyId, ...(PROV.policySource ? { policySource: PROV.policySource } : {}), reasonCode: cc.flagged ? REASON.CLAIM_MISMATCH : REASON.SESSION_SUMMARY, enforcement: ENFORCEMENT.AS_CONFIGURED });
-  if (ovBlock) process.stdout.write(JSON.stringify({ decision: "block", reason: OVERSIGHT_BLOCK_REASON }));
+  if (ovBlock || tb.block) process.stdout.write(JSON.stringify({ decision: "block", reason: [ovBlock ? OVERSIGHT_BLOCK_REASON : "", tb.block ? BOUNDARY_BLOCK_REASON : ""].filter(Boolean).join(" ") }));
   if (COACH && fresh && !sub) {
     const n = cc.failed + cc.denied + cc.interrupted;
     process.stdout.write(JSON.stringify({ systemMessage: `MoorAI: the agent reported success, but ${n} tool call${n === 1 ? "" : "s"} in this turn failed, ${n === 1 ? "was" : "were"} denied or interrupted and ${n === 1 ? "was" : "were"} not redone successfully. Check the result before relying on it. (Not blocked: this device is not enrolled in a MoorAI console.)` }));
@@ -3204,6 +3217,8 @@ async function main() {
         if (RANK[od.decision] > RANK[dec]) { dec = od.decision; reasons = od.reasons; alts = od.alternatives; }
       }
     }
+    // #85 — an install that adds a dependency, or a shell write to a threat-model file: local ledger fields for Stop (cli/boundary-stop.mjs).
+    if (ROW) Object.assign(ROW, boundaryCommandFields(ti.command, typeof input.cwd === "string" ? input.cwd : "", policy, { ps }));
     // #67 — the command starts a program behind a proxy or a CA override (`HTTPS_PROXY=… NODE_EXTRA_CA_CERTS=…
     // claude -p`, `export SSL_CERT_FILE=…`). Report-first; denied when policy.transitAllow is set and the
     // proxy is not on it. Proxy host and variable names only.
@@ -3324,6 +3339,8 @@ async function main() {
       if (RANK[od.decision] > RANK[dec]) { dec = od.decision; reasons = od.reasons; alts = od.alternatives; }
       if (od.kill) { d.kill = true; d.killIds.push(...od.killIds); }
     }
+    // #85 — a trust-boundary change or a threat-model write: local ledger fields for Stop (cli/boundary-stop.mjs).
+    if (ROW) Object.assign(ROW, boundaryWriteFields(tool, ti, path, input.cwd, policy));
     if (dec !== "allow") why(detectorReason(d.findings));
     report(d.findings, "output", `hook:${tool}`, dec === "deny", policy.captureTier, { filePath: path, toolName: tool });
     logBehavior(tool, path || tool, text, d, "output");
