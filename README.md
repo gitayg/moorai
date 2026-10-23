@@ -87,7 +87,11 @@ Because you can read the code. The agent is **MIT and open source** — the whol
 Community edition: runs standalone, no account required. **Without enrollment MoorAI coaches**: it runs the
 same detection and built-in defaults, and shows you (and, where the agent's hook protocol allows, the agent)
 what it caught and the safer way to do it — it never blocks, never asks for sign-off, never ends a session
-and posts nothing anywhere. **Blocking, sign-off and session kill apply once the device is enrolled** in a
+and posts nothing anywhere. The unenrolled desktop app sends nothing to any console either: no policy
+request, no report, so no login name or hostname leaves the device. The only request it makes is the
+update check, which carries no user or device identifier: a plain GET of the update endpoint with the
+updater's own user agent (see [Updates](docs/DESKTOP_AIRGAP.md#updates)).
+**Blocking, sign-off and session kill apply once the device is enrolled** in a
 MoorAI console (free to self-host with no user limit; the hosted console is a free trial).
 
 ### Enroll a device in a management account
@@ -109,9 +113,24 @@ Two ways, both in the app's settings panel (the gear in the status bar):
 `user@host`, keyed with the tenant's enrollment token — the same keyed function as every content hash
 (`actorHash` in `cli/content-hash.mjs`). The hook, the `moorai-guard` CLI, the Claude Desktop MCP proxy
 and the desktop app compute the same value, so one machine is one actor in the console. The login name
-and hostname also travel, so the console can resolve a per-device policy; the console replaces both with
-keyed per-tenant pseudonyms (`usr-…`, `dev-…`) on arrival and stores neither. An unenrolled device sends
-the `h2:nokey` sentinel as its actor, never a reversible hash.
+and hostname also travel in the bodies of reports and alerts; the console replaces both with keyed
+per-tenant pseudonyms (`usr-…`, `dev-…`) on arrival and stores neither. They never go in a URL query
+string, which proxies and access logs keep: the desktop app's policy request names the tenant and the
+`actor` only, and sends the login name and hostname as the `X-MoorAI-User` and `X-MoorAI-Device` headers,
+percent-encoded, so the console can resolve a policy assigned to that device (the hook's policy request
+names the tenant and actor only). A console that reads the user and device only from the query string
+serves the desktop app the tenant's default policy.
+An unenrolled device sends the `h2:nokey` sentinel as its actor, never a reversible hash.
+
+**AI-tool accounts.** The desktop app's device report lists which account each agent CLI is signed into.
+The Claude Code account's email is sent only as its keyed `h2:` pseudonym (the same function, lower-cased
+email in), never the address; an email inside the organization name (a personal Claude organization is
+named "<email>'s Organization") is replaced by the same pseudonym, and the rest of the organization name
+is sent as is. So the console can still flag a personal account, the device classes the email's domain
+before hashing, against the `corporateDomains` of the policy it was served, and sends `domainClass`:
+`corporate` (an exact, case-insensitive match), `personal`, or `unknown` (no corporate domains, or no
+domain). No domain string is sent. The app sends its device report after its first policy request, so the
+classification has the domains; a change to them reaches the classification on the next device report. The GitHub login Copilot runs as is sent as the login. Codex is reported by presence only.
 
 **Which session an event came from.** Alerts also carry `session`, the same keyed hash (`h2:` + 16 hex of
 an HMAC-SHA-256 keyed from the tenant's enrollment token, `contentHash` in `cli/content-hash.mjs`) of the
@@ -2964,14 +2983,17 @@ MoorAI console. Honest platform matrix:
 | Linux | `Tesseract` via the `leptess` binding (system `libtesseract`, pulled in as a `.deb`/`.rpm` dependency) — **opportunistic, second-class** vs the OS engines | **No.** Fully on-device. |
 | Windows with no OCR language pack, or the app opened in a plain browser | none | See below. |
 
-Where the OS provides no engine, MoorAI does **not** fall back to its own servers. If — and only if
-— the device already holds an AI provider key (`ANTHROPIC_API_KEY`, the admin key file at
-`~/.moorai/provider-key`, or the agent token saved in MoorAI; the same resolution as
-[`data/device-inference.mjs`](data/device-inference.mjs)), the app offers a fallback that sends the
-image **device → provider directly**, to the provider the developer's own agent already talks to.
-That path is disclosed in the UI before it runs and emits a content-free alert so it is visible in
-the console. With no engine **and** no key, image inspection is **skipped** and says so — it never
-degrades into silent egress.
+Where the OS provides no engine, MoorAI does **not** fall back to its own servers. A fallback that sends
+the image **device → provider directly**, to the provider the developer's own agent already talks to,
+exists but is **off by default**. It runs only when all three hold: the OS has no engine; the device
+already holds an AI provider key (`ANTHROPIC_API_KEY`, the admin key file at `~/.moorai/provider-key`, or
+the agent token saved in MoorAI; the same resolution as [`data/device-inference.mjs`](data/device-inference.mjs));
+and the fallback was turned on, either by the console's policy (`imageInspection.providerFallback: true`)
+or by the user on that device (the **Settings** checkbox, stored in the app's local storage). A policy
+with `providerFallback: false` keeps it off whatever the device setting says. A key on the device never
+turns it on by itself. When it runs, it is disclosed in the UI first and emits a content-free alert so it
+is visible in the console. Otherwise image inspection is **skipped** and says so — it never degrades into
+silent egress.
 
 On macOS the image gets two Vision passes, accurate and then fast, and a fast-pass line the accurate pass
 did not produce is added to the text. On macOS 27 the accurate recognizer misreads some characters in
