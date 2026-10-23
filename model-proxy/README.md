@@ -505,14 +505,18 @@ user-role text block `<system-reminder>\nAs you answer the user's questions, you
 context: … Contents of <path> …</system-reminder>`; background workers' results arrive as user-role
 `<task-notification>` blocks; a `!` command's output is `<bash-stdout>` / `<bash-stderr>`; a local slash
 command's output is `<local-command-stdout>` / `<local-command-stderr>`; hook output is
-`<user-prompt-submit-hook>`. Each of those blocks is removed from every text before any feature is taken
-(`user-turns.mjs stripHarness`), so a host, a path or a label word ("delete", "token", "post") that appears
+`<user-prompt-submit-hook>`. Each of those blocks is removed before any feature is taken
+(`user-turns.mjs stripTurn`), so a host, a path or a label word ("delete", "token", "post") that appears
 only there never counts — a cloned repository's CLAUDE.md naming a host does not put it in scope, and the
 credentials, destructive and mcp-write labels are not switched on by a CLAUDE.md that happens to use those
-words. Per text, a tag is cut from its first opening to its last closing, and an opening never closed runs
-to the end of that text, so a quoted file carrying its own `</system-reminder>` cannot end the cut early; the
-cost is that a person's words between two blocks of the same tag in one text are dropped, which can only
-make a call look less aligned. `<bash-input>` (the command the person typed) is kept.
+words. One left-to-right scan per text over every harness tag, with a stack: a block ends at its own
+matching close and blocks nest. It fails closed: an unclosed block, or a close that does not match the
+innermost open block (interleaved tags), drops the rest of the turn (that text part and every later one); a
+second top-level block of the same tag in one text, or a stray close of a tag after a block of it, drops
+everything from the earlier block's start — so a quoted file carrying `</system-reminder> words
+<system-reminder>` cannot expose `words` between two well-formed blocks. The cost is that a person's words
+caught in such a cut are dropped, which can only make a call look less aligned. Linear. `<bash-input>` (the
+command the person typed) is kept.
 
 **Only requests that declare tools, and only once the provider accepts them.** A request with no `tools`
 (nor OpenAI Chat's legacy `functions`) is a side request — Claude Code's WebFetch summariser, whose user turn
@@ -580,10 +584,21 @@ captured again (the intermediate turns, and which targets already alerted, are w
 conversation's first request after a restart is judged on its first and latest turns only).
 
 **moorai-control.** An upload to one of MoorAI's own loopback listeners at its default port — moorai-serve
-(8790), the model proxy (8791), the MCP gateway (8848) — by URL, bare `host:port`, `nc` or `socat`, is class
-`moorai-control` and is never aligned, whatever the task names: it is an agent writing its own task
-(`POST /v1/task`) or driving the control that judges it. An upload to any other loopback port is still not
-judged (a local dev server), and a listener started on a non-default port is not recognised.
+(8790), the model proxy (8791), the MCP gateway (8848) — by URL (any scheme), bare `host:port`, `nc` or
+`socat`, is class `moorai-control` and is never aligned, whatever the task names: it is an agent writing its
+own task (`POST /v1/task`) or driving the control that judges it. The host is normalised before it is
+classed, not matched by spelling: `localhost` / `*.localhost`, 127.0.0.0/8 and 0 in any inet_aton spelling
+(`127.1`, `2130706433`, `0x7f.1`, `0177.0.0.1`, `0`), `::1`, `::`, IPv4-mapped and -compatible IPv6
+(`[::ffff:127.0.0.1]`, `[::ffff:7f00:1]`), a trailing dot, any case. When the same command also uploads to a
+remote host, it is still judged moorai-control (the strictest) with the remote sites among its targets, so
+each remote destination raises its own alert. An upload to any other loopback port is still not judged (a
+local dev server), and a listener started on a non-default port is not recognised.
+
+**Bare curl / wget destinations.** Every curl / wget argument that is not a flag or a flag's value is a
+destination (`--url VALUE` and `--url=VALUE` too; any scheme; a query or fragment after the host is ignored).
+A destination whose host is shell text the proxy cannot resolve — `$VAR`, `$(…)`, backticks, a glob, a
+brace, a backslash — is the site `unknown`, which no task can name (every site a task yields has a dot), so
+such an upload is never aligned.
 
 **Limits.**
 - Lexical, as in the hook: an upload to a host the person named is aligned even when it is exfiltration to
@@ -1224,7 +1239,12 @@ runtime), stable within a process, different across two; mask removes log-probab
 secret's first 7 characters out through them on the four streams; a 65th channel throws in mask / block and
 held text is released at the end; through the proxy a 66-choice masked stream is stopped; report mode finds
 a spaced card across the batch boundary; a masked Gemini chunk and a masked Ollama body keep
-`12345678901234567890` as sent. Each fix was mutated back and its test seen failing.
+`12345678901234567890` as sent. Commit-review follow-ups (the `R1`–`R4` tests in the same files): a command
+posting to 127.0.0.1:8790 and uploading to a remote host keeps the remote site as a target; a query straight
+after a bare host, `--url=`, any scheme, and unresolvable shell text (site `unknown`, never aligned); sixteen
+loopback spellings on a MoorAI port, with public and other-port controls and a bounded-time check;
+interleaved, nested, re-balanced and unclosed harness blocks, and a linear-time check. Each fix was mutated
+back and its test seen failing.
 
 Latency the judging adds, measured on an M-series Mac, node, no console, built-in rules:
 

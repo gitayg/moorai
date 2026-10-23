@@ -20,13 +20,19 @@
 // "<bash-stdout>…</bash-stdout><bash-stderr>…</bash-stderr>"; a local slash command's output is
 // <local-command-stdout> / <local-command-stderr>; hook output is <user-prompt-submit-hook>. None of it is the
 // person's request, and all of it can carry text someone else wrote (a cloned repository's CLAUDE.md, a page a
-// worker read). stripHarness removes each such block from every text before anything is taken from it, so a
-// host, a path or a label word that appears only inside one never counts. Per text (a block, a string), each
-// tag is cut from its FIRST opening to its LAST closing, and an opening never closed runs to the end of that
-// text: a file quoted inside a reminder that carries its own `</system-reminder>` cannot end the cut early and
-// put the words after it in scope. The cost is the other way: a person's words between two harness blocks of
-// the same tag, in one text, are dropped, which can only make an action look LESS aligned. <bash-input> (the
-// command a person typed) is kept. Linear: indexOf / lastIndexOf, at most two cuts per tag per text.
+// worker read). stripHarness removes each such block from a turn's texts (its text parts, in order) before
+// anything is taken from them, so a host, a path or a label word that appears only inside one never counts.
+// ONE left-to-right scan per text over every harness tag, opening and closing, with a stack: a block ends at
+// its own matching close, and blocks nest. Fail closed on anything malformed or forgeable:
+//   * an opening never closed, or a close that does not match the innermost open block (interleaved tags):
+//     the rest of the TURN is dropped (this text and every later part);
+//   * a second top-level block of a tag in the same text, or a close of a tag outside any block after a block
+//     of that tag: everything from the earlier block's start is dropped. A file quoted inside a reminder that
+//     carries `</system-reminder> words <system-reminder>` (so the harness's own tags close the forgery)
+//     would otherwise expose `words` between two well-formed blocks.
+// The cost is the other way: a person's words caught in such a cut are dropped, which can only make an action
+// look LESS aligned. <bash-input> (the command a person typed) is kept. Linear: one global regex pass, the
+// output kept as a list of pieces that a cut truncates.
 //
 // NOT IDENTIFIABLE HERE (judged as the person's turn): a sub-agent's prompt (Claude Code's Task / Agent tool:
 // the sub-agent's first user turn is text the PARENT MODEL wrote, so in an agent-to-agent call the "task" this
@@ -39,23 +45,57 @@
 export const MAX_TURN = 20000;
 
 export const HARNESS_TAGS = Object.freeze(["system-reminder", "task-notification", "bash-stdout", "bash-stderr", "local-command-stdout", "local-command-stderr", "user-prompt-submit-hook"]);
-export function stripHarness(text) {
-  let s = String(text);
-  for (const tag of HARNESS_TAGS) {
-    const open = `<${tag}>`, close = `</${tag}>`;
-    let i = s.indexOf(open);
-    if (i < 0) continue;
-    const j = s.lastIndexOf(close);
-    if (j > i) { s = s.slice(0, i) + s.slice(j + close.length); i = s.indexOf(open); }
-    if (i >= 0) s = s.slice(0, i);
+const HARNESS_RE = new RegExp(`<(/?)(${HARNESS_TAGS.join("|")})>`, "g");
+// One text → { text, malformed }.
+function scan(text) {
+  const s = String(text);
+  const out = [];          // the kept pieces, in order
+  const mark = new Map();  // tag -> out.length when the latest block of that tag began
+  const stack = [];        // open tags, innermost last
+  let keepFrom = 0;
+  HARNESS_RE.lastIndex = 0;
+  let m;
+  while ((m = HARNESS_RE.exec(s)) !== null) {
+    const closing = m[1] === "/", tag = m[2];
+    // Back to where the earlier block of this tag began: the text since then is dropped.
+    const cut = () => { const n = mark.get(tag); out.length = n; for (const [k, v] of mark) if (v > n) mark.set(k, n); };
+    if (!closing) {
+      if (!stack.length) {
+        if (mark.has(tag)) cut(); else out.push(s.slice(keepFrom, m.index));
+        mark.set(tag, out.length);
+      }
+      stack.push(tag);
+      continue;
+    }
+    if (stack.length) {
+      if (stack[stack.length - 1] !== tag) return { text: out.join(""), malformed: true };   // interleaved
+      stack.pop();
+      if (!stack.length) keepFrom = HARNESS_RE.lastIndex;
+      continue;
+    }
+    // A close outside any block: an earlier close of this tag was forged.
+    if (mark.has(tag)) { cut(); keepFrom = HARNESS_RE.lastIndex; }
   }
-  return s;
+  if (stack.length) return { text: out.join(""), malformed: true };                       // unclosed
+  out.push(s.slice(keepFrom));
+  return { text: out.join(""), malformed: false };
 }
+// A turn's texts → the person's text, joined by newlines; a malformed text ends the turn there.
+export function stripTurn(texts) {
+  const out = [];
+  for (const t of texts) {
+    const r = scan(t);
+    out.push(r.text);
+    if (r.malformed) break;
+  }
+  return out.join("\n");
+}
+export const stripHarness = (text) => stripTurn([text]);
 
 const isObj = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
 const cut = (s) => (s.length > MAX_TURN ? s.slice(0, MAX_TURN) : s);
 const partsText = (content, types) => (typeof content === "string" ? stripHarness(content)
-  : Array.isArray(content) ? content.filter((p) => isObj(p) && types.has(p.type) && typeof p.text === "string").map((p) => stripHarness(p.text)).join("\n") : "");
+  : Array.isArray(content) ? stripTurn(content.filter((p) => isObj(p) && types.has(p.type) && typeof p.text === "string").map((p) => p.text)) : "");
 const TEXT = new Set(["text"]);
 const RESP_TEXT = new Set(["input_text", "text"]);
 
@@ -94,7 +134,7 @@ function gemini(body) {
   for (const c of contents) {
     if (!isObj(c) || !(c.role == null || c.role === "user") || !Array.isArray(c.parts)) continue;
     if (c.parts.some((p) => isObj(p) && (p.functionResponse !== undefined || p.function_response !== undefined))) continue;
-    const t = c.parts.filter((p) => isObj(p) && typeof p.text === "string" && p.thought !== true).map((p) => stripHarness(p.text)).join("\n");
+    const t = stripTurn(c.parts.filter((p) => isObj(p) && typeof p.text === "string" && p.thought !== true).map((p) => p.text));
     if (t.trim()) out.push(cut(t));
   }
   return out;
