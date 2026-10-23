@@ -745,9 +745,11 @@ is validated against.
    **Server surfaces (Agent SDK, `moorai-serve`).** The same pure logic runs over an in-memory store,
    [`data/intent-server.mjs`](../data/intent-server.mjs): per session, HMACs (random per-process key, never
    leaves the process) of the task's derived features and of the targets already judged; 1024 sessions,
-   24 h TTL from last use (capture or judge), 512 features per session. The prompt is never stored. A held
-   session that is evicted or expires is tombstoned (at most 4 x 1024): a risky call on it returns class
-   `task-unknown`, not aligned, so ask/block fail closed and report alerts. Sessions are namespaced by an
+   24 h TTL from last use (capture or judge), 512 features per session. The prompt is never stored. A risky
+   call whose session has no live task under its owner (no session, never captured, evicted, expired)
+   returns class `task-unknown`, not aligned, so ask/block fail closed and report alerts (once per session
+   and target). This departs from the hook, which skips a session with no task: `"block"` requires the
+   caller to supply the task, and without one every risky call is "task unknown". Sessions are namespaced by an
    optional owner: on the sidecar, the bearer token presented (each line of `--token-file` is a
    principal), so a task can be set, replaced, judged or evicted only by its own principal; per principal
    at most `--intent-sessions-per-caller` (default 256), its own oldest out; at the global cap the
@@ -760,11 +762,11 @@ is validated against.
    `"block"` (allow or ask to deny; server surfaces only) or `"off"`. The alert is the hook's: #64,
    `Action outside the stated task`, stage `behavior`, reason code `INTENT_MISMATCH`, `contentHash` the
    keyed hash of the class, and `intent: {class, mode, targetHash}`. The verdict gains `intent: {class,
-   mode}`; the reason it adds is fixed text per class. No session, or no captured task, means no judgement.
+   mode}`; the reason it adds is fixed text per class.
    **Limits** (beyond the hook's lexical ones, which hold unchanged: whether the user named the destination,
    file or service, not whether the action serves the task; a pasted untrusted request puts its hosts in
-   scope): the store is per process, so replicas do not share a task and a restart forgets it (a session
-   this process never saw is not judged); clients sharing a token share a principal; no loopback-model labels.
+   scope): the store is per process, so replicas do not share a task and a restart forgets it (risky
+   calls are then `task-unknown` until the task is sent again); clients sharing a token share a principal; no loopback-model labels.
 
 11d. **Protected-instruction leak** — the agent's own rules files leaving the device. *Threat 52.*
    Three detectors ([`data/detectors-instruction-leak.js`](../data/detectors-instruction-leak.js)):

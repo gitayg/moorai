@@ -728,9 +728,11 @@ skipped, as in the hook). The sidecar takes it from `POST /v1/task` with `{sessi
 turns a person wrote, never a tool result. Either way the runtime keeps, per session, HMACs of the sites,
 paths, service names and labels the task mentions under a random per-process key
 ([`data/intent-server.mjs`](data/intent-server.mjs); 1024 sessions, 24 h from last use, 512 features per
-session). A session the store held and lost (evicted or expired) fails closed: a risky call on it is
-judged as class `task-unknown` (not aligned), so `"ask"` and `"block"` do not pass it and `"report"`
-alerts. On the sidecar each token in `--token-file` (one per line) is a principal: a session's task is
+session). **No task fails closed:** a risky call whose session has no live task (no session at all,
+never captured, evicted or expired) is judged as class `task-unknown` (not aligned), so `"ask"` asks,
+`"block"` denies and `"report"` alerts (once per session and target). Unlike the hook, which skips a
+session with no task, `"block"` therefore requires the caller to supply the task (`POST /v1/task`, or the
+SDK's `UserPromptSubmit` capture); without one, every risky call is "task unknown". On the sidecar each token in `--token-file` (one per line) is a principal: a session's task is
 namespaced by the token that set it, so only that principal's tool calls are judged against it and no
 other principal can set, replace or evict it; a principal holds at most `--intent-sessions-per-caller`
 sessions (default 256) and over that loses its own oldest, and at the global cap the principal holding
@@ -743,13 +745,13 @@ alert per session and target (#64, `Action outside the stated task`, reason code
 hashes only) and leaves the verdict alone; `"ask"` raises an allow to ask, which the headless rule then
 settles (deny unless `headlessAsk` says otherwise); `"block"` denies; `"off"` disables it. A deny the call
 already earned is not judged again. The verdict gains `intent: {class, mode}`, and the reason it adds is fixed text
-per class, never the task or the arguments. A call with no session, or a session with no task, is not
-judged, so existing sidecar clients see no change. Limits, the hook's own: it is lexical, asking whether
+per class, never the task or the arguments. A sidecar client that sends no `session` keeps its verdicts
+under the default `"report"` but now raises `task-unknown` alerts for its risky calls. Limits, the hook's own: it is lexical, asking whether
 the user named the destination, file or service, not whether the action serves the task, so an upload to a
 host the user named passes; a request pasted from an untrusted source puts its hosts in scope. Also: the
 store is per process, so replicas behind a load balancer do not share tasks and a restart forgets them
-(a session never seen by this process is not judged; one it lost is `task-unknown`, up to 4,096 lost
-sessions remembered); clients sharing a token share a principal; and the hook's loopback-model labels are
+(their risky calls are then `task-unknown` until the task is sent again); clients sharing a token share a
+principal; and the hook's loopback-model labels are
 not used here.
 
 #### Content headed for an index (RAG ingestion)

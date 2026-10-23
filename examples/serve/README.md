@@ -12,7 +12,9 @@ three commands.
 For intent alignment, send each turn the user wrote to `POST /v1/task` as `{session, prompt}` and pass
 the same `session` on `/v1/tool-call`. A risky call aimed at a host, path or service the task never named
 is then judged under `policy.intentAlignment` (`report` by default, `ask`, `block`, `off`); the sidecar
-keeps only keyed hashes in memory and never stores or echoes the prompt. It is lexical (did the user name
+keeps only keyed hashes in memory and never stores or echoes the prompt. A risky call with no task for its
+session (no `session`, never sent, expired, evicted) is "task unknown": `block` denies it, so in `block`
+mode the task is required. It is lexical (did the user name
 the destination, not does the action serve the task), and a pasted untrusted request puts its hosts in
 scope. Without a token, any local process can set or replace a session's task; with `--token-file`, each
 token (one per line) is a principal whose sessions only it can set, judge or evict, capped by

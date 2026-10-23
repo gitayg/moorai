@@ -27,9 +27,10 @@
 //                                                     "report" (default: one alert per target, verdict
 //                                                     unchanged), "ask" (allow -> ask, then the headless
 //                                                     rule), "block" (deny), "off". The verdict then carries
-//                                                     `intent: { class, mode }`. No session, no judgement.
-//                                                     A session that was held and is gone (evicted, expired)
-//                                                     is judged as class "task-unknown" (fails closed).
+//                                                     `intent: { class, mode }`. A risky call with no live
+//                                                     task (no session, never sent, evicted, expired) is
+//                                                     class "task-unknown" and fails closed, so "block"
+//                                                     needs the caller to send the task first.
 //                                                     PRINCIPALS: each token in --token-file (one per line)
 //                                                     is a principal; a session's task is namespaced by the
 //                                                     token that set it, so only that principal's tool calls

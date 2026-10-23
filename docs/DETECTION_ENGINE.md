@@ -2923,7 +2923,8 @@ Stated rather than papered over.
   learned drift, MCP reputation, model escalation, honeytokens, the `mask` rewrite or the #67 check of the
   agent's own environment (`transit-env`) (each result lists them in `notEvaluated`). They do judge intent
   alignment, from an in-memory store (`data/intent-server.mjs`; the task from the SDK's `UserPromptSubmit`
-  or the sidecar's `POST /v1/task`), with the hook's lexical limits and an added `"block"` mode
+  or the sidecar's `POST /v1/task`), with the hook's lexical limits and an added `"block"` mode; unlike
+  the hook, a risky call with no live task for its session is judged `task-unknown` and fails closed
   ([CAPABILITY_SPEC.md](CAPABILITY_SPEC.md) 11c). The SDK's `PostToolUse` resolves results under the hook's inbound rules (§7). The SDK's
   `UserPromptSubmit` scans every prompt at stage `prompt`, not the hook's `file`-stage scan of
   event-triggered prompts. `moorai-serve`'s `/v1/tool-call` reads paths on the sidecar's own filesystem, so

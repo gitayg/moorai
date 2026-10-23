@@ -26,8 +26,10 @@
 // gains `intent: { class, mode }`. The store's HMAC key is random per runtime (options.intentStore.key to
 // pin one) and never leaves the process. Lexical, with the hook's limits: it asks whether the user NAMED
 // the destination, file or service, not whether the action serves the task, and a pasted untrusted
-// request puts its hosts in scope. A session the store held and lost (evicted, expired) is judged as class
-// "task-unknown": not aligned, so ask/block fail closed and report alerts.
+// request puts its hosts in scope. A risky call with no live task for its session (no session, never
+// captured, evicted, expired) is judged as class "task-unknown": not aligned, so ask/block fail closed and
+// report alerts. Unlike the hook, which skips a session with no task, so "block" needs the caller to
+// supply the task.
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib, intentServerLib } from "./core.mjs";
@@ -185,7 +187,7 @@ export async function createMoorAI(options = {}) {
   // Intent alignment on the branch verdict v (see the header). Returns v, or a copy with the adjusted
   // decision, reason and alternatives plus `intent`. Reasons are fixed text per class: no argument, no task.
   function intentStep(s, v, input, session, sess, owner) {
-    if (v.decision === "deny" || typeof session !== "string" || !session) return v;
+    if (v.decision === "deny") return v;
     const mode = intentModeFromPolicy(s.policy);
     if (mode === "off") return v;
     const j = intent.judge(session, v.tool, input, v.findings, owner);
@@ -203,8 +205,8 @@ export async function createMoorAI(options = {}) {
     return w;
   }
 
-  // The verdict the hook reaches for one tool call (src/decide.mjs), judged for intent alignment when the
-  // call carries a session, then settled for a headless run.
+  // The verdict the hook reaches for one tool call (src/decide.mjs), judged for intent alignment (a call
+  // with no session has no task: a risky one is task-unknown), then settled for a headless run.
   async function toolCall({ tool, input, cwd, permissionMode = "", session, owner } = {}) {
     const s = await ready();
     const b = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId });

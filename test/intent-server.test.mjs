@@ -57,16 +57,45 @@ test("judge: credential and destructive classes come from the findings, as in th
   assert.equal(s.judge("t", "Bash", { command: "rm -rf build/cache" }, [{ threatId: 43 }]).aligned, true);
 });
 
-test("judge: null for a non-risky call, and null when the session has no captured task (never judged against nothing)", () => {
+test("judge: null for a non-risky call, with or without a task", () => {
   const s = createIntentStore({ key: KEY });
   s.captureTask("s1", "Fix the typo");
-  assert.equal(s.judge("s1", "Bash", { command: "ls -la src" }, []), null);
-  assert.equal(s.judge("s1", "Bash", { command: "curl -s https://api.github.com/zen" }, []), null);
-  assert.equal(s.judge("s1", "Read", { file_path: "src/a.js" }, []), null);
-  assert.equal(s.judge("s1", "mcp__slack__list_channels", {}, []), null);
-  assert.equal(s.judge("nobody", "Bash", POST("collector.example.net"), []), null);
-  assert.equal(s.judge("", "Bash", POST("collector.example.net"), []), null);
-  assert.equal(s.judge(undefined, "Bash", POST("collector.example.net"), []), null);
+  for (const id of ["s1", "nobody", "", undefined]) {
+    assert.equal(s.judge(id, "Bash", { command: "ls -la src" }, []), null);
+    assert.equal(s.judge(id, "Bash", { command: "curl -s https://api.github.com/zen" }, []), null);
+    assert.equal(s.judge(id, "Read", { file_path: "src/a.js" }, []), null);
+    assert.equal(s.judge(id, "mcp__slack__list_channels", {}, []), null);
+  }
+});
+
+test("judge: a risky call in a session with no live task (never captured, no id) is task-unknown — fails closed, one alert per target", () => {
+  const s = createIntentStore({ key: KEY });
+  for (const id of ["nobody", "", undefined]) {
+    const r = s.judge(id, "Bash", POST("collector.example.net"), []);
+    assert.deepEqual([r.aligned, r.class], [false, "task-unknown"], `session ${JSON.stringify(id)}`);
+    assert.match(r.targetHash, /^[0-9a-f]{16}$/);
+  }
+  assert.equal(s.judge("never", "Bash", POST("a.example.org"), []).firstForTarget, true);
+  assert.equal(s.judge("never", "Bash", POST("a.example.org"), []).firstForTarget, false, "rate-limited per session and target");
+  assert.equal(s.judge("never", "mcp__slack__post_message", {}, []).firstForTarget, true, "another target is first again");
+  assert.equal(s.size(), 0, "judging an unknown session holds no task for it");
+});
+
+test("judge: a task evicted by ANOTHER owner's flood, and one expired, are task-unknown, however many sessions churn afterwards", () => {
+  // A holds the most sessions, so B's new session at the global cap pushes out A's oldest.
+  const s = createIntentStore({ key: KEY, maxSessions: 2 });
+  s.captureTask("a1", "send it to hooks.example.net", "A");
+  s.captureTask("a2", "Fix the typo", "A");
+  s.captureTask("b1", "Fix the typo", "B");
+  for (let i = 0; i < 50; i++) { s.captureTask(`b${i}`, "Fix the typo", "B"); s.captureTask(`c${i}`, "Fix the typo", "C"); }
+  const r = s.judge("a1", "Bash", POST("hooks.example.net"), [], "A");
+  assert.deepEqual([r.aligned, r.class], [false, "task-unknown"], "A's pushed-out task fails closed for A");
+  let t = 0;
+  const e = createIntentStore({ key: KEY, ttlMs: 100, maxSessions: 1, now: () => t });
+  e.captureTask("x", "send it to hooks.example.net");
+  t += 101;
+  for (let i = 0; i < 50; i++) e.captureTask(`churn${i}`, "Fix the typo", "B");
+  assert.equal(e.judge("x", "Bash", POST("hooks.example.net"), []).class, "task-unknown", "expired, and long since out of any tombstone bound");
 });
 
 test("firstForTarget: true once per session per target — one destination alerts once; another target or session is first again", () => {
@@ -125,7 +154,7 @@ test("bounded: maxSessions evicts the least recently used session (a judge count
   assert.equal(ev.firstForTarget, true);
   assert.equal(s.judge("s2", "Bash", POST("x.example.net"), []).firstForTarget, false, "one alert per evicted session and target");
   assert.equal(s.judge("s2", "Bash", { command: "ls" }, []), null, "a non-risky call stays null");
-  assert.equal(s.judge("never-seen", "Bash", POST("x.example.net"), []), null, "a session never seen is still never judged against nothing");
+  assert.equal(s.judge("never-seen", "Bash", POST("x.example.net"), []).class, "task-unknown", "a session never seen is task-unknown too");
   assert.equal(s.judge("s1", "Bash", POST("y.example.net"), []).class, "egress");
   assert.equal(s.judge("s3", "Bash", POST("y.example.net"), []).class, "egress");
   s.captureTask("s2", "now upload to x.example.net");
@@ -182,7 +211,7 @@ test("owner: sessions are namespaced per owner — another principal can neither
   t.captureTask("s", "Fix the typo", "A");
   t.captureTask("s", "send the result to hooks.example.net", "B");
   assert.equal(t.judge("s", "Bash", POST("hooks.example.net"), [], "A").aligned, false, "B cannot put a host in scope for A's session");
-  assert.equal(t.judge("s", "Bash", POST("hooks.example.net"), []), null, "no owner is its own namespace, which never captured s");
+  assert.equal(t.judge("s", "Bash", POST("hooks.example.net"), []).class, "task-unknown", "no owner is its own namespace, which never captured s");
 });
 
 test("bounded: maxFeatures caps the hashed features a session holds", () => {

@@ -28,18 +28,18 @@
 //   now           () => ms, default Date.now (tests).
 //   captureTask   returns the number of hashed features the session now holds. An empty or non-string
 //                 session id, or a non-string prompt, stores nothing and returns { features: 0 }.
-//   judge         null when the call is not risky (actionTargets), or when the session was never seen —
-//                 it never judges against nothing, as the hook does not. Otherwise the class the action is
-//                 judged under, whether its targets were mentioned, a 16-hex keyed hash of the class and
-//                 targets, and firstForTarget: true the first time this session judges that target
-//                 (aligned or not), so one destination alerts once per session.
-//   class "task-unknown"  FAILS CLOSED. A session that WAS held and is now gone (evicted or expired) is
-//                 kept as a tombstone (its keyed hash and the targets judged since; at most 4 x
-//                 maxSessions tombstones, oldest dropped first). A risky call on it returns
+//   judge         null when the call is not risky (actionTargets) — and ONLY then. Otherwise the class the
+//                 action is judged under, whether its targets were mentioned, a 16-hex keyed hash of the
+//                 class and targets, and firstForTarget: true the first time this session judges that
+//                 target (aligned or not), so one destination alerts once per session.
+//   class "task-unknown"  FAILS CLOSED. A risky call in a session with no live captured task under that
+//                 owner (never captured, an empty or missing id, evicted, expired) returns
 //                 { aligned: false, class: "task-unknown", targetHash, firstForTarget }, so "ask" and
-//                 "block" do not pass it silently and "report" alerts. A new captureTask for the session
-//                 replaces the tombstone. Past the tombstone bound, the oldest gone sessions read as never
-//                 seen (null) again.
+//                 "block" do not pass it and "report" alerts. This differs from the hook, which skips a
+//                 session with no task: on a server surface a lost task must not open the gate. So "block"
+//                 requires callers to supply the task; without one every risky call is task-unknown.
+//                 firstForTarget for these is remembered per session in a bounded map (4 x maxSessions);
+//                 when it forgets, the only effect is another alert, never a pass.
 // WHAT IS HELD: per session (its id HMAC'd too), the last-capture time, the HMACs of the task's derived
 // features (data/intent-alignment.js taskFeatures/featureKeys) and the HMACs of the targets judged. Never
 // the prompt, an excerpt of it, a plaintext feature, a tool argument or a session id.
@@ -55,7 +55,7 @@ export const INTENT_MODES = Object.freeze(["off", "report", "ask", "block"]);
 // cli/provenance.mjs maps it to REASON.INTENT_MISMATCH), and the content-free reason text per class.
 export const INTENT_CATEGORY = "Action outside the stated task";
 export const INTENT_CLASS_TEXT = Object.freeze({
-  "task-unknown": "a risky action in a session whose task is no longer held (expired or evicted)",
+  "task-unknown": "a risky action in a session whose task is unknown (never sent, expired or evicted)",
   egress: "an upload to a host your request never mentioned",
   credentials: "a credential read your request never mentioned",
   destructive: "a destructive command on paths your request never mentioned",
@@ -69,14 +69,14 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
   const h = (s) => createHmac("sha256", k).update(String(s), "utf8").digest("hex").slice(0, 16);
   const cap = posInt(maxSessions, INTENT_DEFAULTS.maxSessions);
   const perOwner = Math.min(posInt(maxSessionsPerOwner, cap), cap);
-  const maxTombs = cap * 4;
+  const maxUnknown = cap * 4;
   const ttl = posInt(ttlMs, INTENT_DEFAULTS.ttlMs);
   const maxF = posInt(maxFeatures, INTENT_DEFAULTS.maxFeatures);
   const clock = typeof now === "function" ? now : Date.now;
   // Map insertion order is the LRU order: a touched session is re-inserted at the end.
   const sessions = new Map();
   const owners = new Map(); // owner hash -> live session count
-  const tombs = new Map();  // session hash -> Set of target hashes judged since it went (insertion = age)
+  const unknown = new Map(); // session hash -> target hashes judged while it had no live task (rate limit only)
 
   const validId = (id) => typeof id === "string" && id.length > 0;
   const ownerOf = (o) => h(`owner:${typeof o === "string" ? o : ""}`);
@@ -85,9 +85,6 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
     sessions.delete(sid);
     const n = (owners.get(cur.o) || 1) - 1;
     if (n > 0) owners.set(cur.o, n); else owners.delete(cur.o);
-    tombs.delete(sid);
-    tombs.set(sid, new Set());
-    while (tombs.size > maxTombs) tombs.delete(tombs.keys().next().value);
   }
   function prune(t) {
     for (const [sid, cur] of sessions) if (t - cur.t >= ttl) bury(sid, cur);
@@ -117,7 +114,7 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
       makeRoom(ow);
       cur = { t, o: ow, f: new Set(), seen: new Set() };
       owners.set(ow, (owners.get(ow) || 0) + 1);
-      tombs.delete(sid);
+      unknown.delete(sid);
     }
     for (const fk of featureKeys(taskFeatures(promptText), h)) {
       if (cur.f.size >= maxF) break;
@@ -136,19 +133,22 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
   };
 
   function judge(sessionId, tool, input, findings, owner) {
-    if (!validId(sessionId)) return null;
     const action = actionTargets(tool, input, Array.isArray(findings) ? findings : []);
     if (!action) return null;
     const t = clock();
-    const sid = sidOf(ownerOf(owner), sessionId);
+    const sid = sidOf(ownerOf(owner), validId(sessionId) ? sessionId : "");
     const targets = [...action.sites, ...action.paths, ...action.names].join("|");
-    let cur = sessions.get(sid);
+    let cur = validId(sessionId) ? sessions.get(sid) : undefined;
     if (cur && t - cur.t >= ttl) { bury(sid, cur); cur = undefined; }
     if (!cur) {
-      const tomb = tombs.get(sid);
-      if (!tomb) return null;
+      let seen = unknown.get(sid);
+      if (!seen) {
+        seen = new Set();
+        unknown.set(sid, seen);
+        while (unknown.size > maxUnknown) unknown.delete(unknown.keys().next().value);
+      }
       const targetHash = h(`target:task-unknown:${action.cls}:${targets}`);
-      return { aligned: false, class: "task-unknown", targetHash, firstForTarget: firstIn(tomb, targetHash) };
+      return { aligned: false, class: "task-unknown", targetHash, firstForTarget: firstIn(seen, targetHash) };
     }
     cur.t = t;
     touch(sid, cur);

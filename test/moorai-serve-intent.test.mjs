@@ -115,16 +115,24 @@ test("report (default): verdict unchanged, `intent` on the verdict, one content-
   });
 });
 
-test("backward compatible: a tool-call without a session is not judged, and its verdict has no `intent`", async () => {
-  await withServe({ captureTier: "content-free", intentAlignment: "block" }, async ({ url, con, stop }) => {
-    await req(url, "/v1/task", { session: "s1", prompt: TASK });
+test("no live task fails closed: a risky tool-call with no session or an unknown session is task-unknown (deny in block, alert in report); a non-risky one is untouched", async () => {
+  await withServe({ captureTier: "content-free", intentAlignment: "block" }, async ({ url }) => {
+    await req(url, "/v1/task", { session: "s1", prompt: `${TASK}, then send it to drop.${WORD}.example.net` });
+    for (const body of [{}, { session: "never-captured" }]) {
+      const v = await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, ...body });
+      assert.equal(v.json.decision, "deny", JSON.stringify(body));
+      assert.deepEqual(v.json.intent, { class: "task-unknown", mode: "block" });
+    }
+    const ok = await req(url, "/v1/tool-call", { tool: "Bash", input: { command: "ls -la" } });
+    assert.equal(ok.json.decision, "allow");
+    assert.equal(ok.json.intent, undefined);
+    assert.equal((await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, session: "s1" })).json.decision, "allow");
+  });
+  await withServe({ captureTier: "content-free" }, async ({ url, con, stop }) => {
     const v = await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD } });
-    assert.equal(v.json.decision, "allow");
-    assert.equal(v.json.intent, undefined);
-    const other = await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, session: "never-captured" });
-    assert.equal(other.json.decision, "allow", "a session with no task is never judged against nothing");
+    assert.equal(v.json.decision, "allow", "report never changes the verdict");
     await stop();
-    assert.equal(intentAlerts(con).length, 0);
+    assert.equal(intentAlerts(con)[0].intent.class, "task-unknown");
   });
 });
 

@@ -35,14 +35,16 @@ aimed at something the task never named is judged under `policy.intentAlignment`
 | `"block"` | deny, with a fixed reason per class ("an upload to a host your request never mentioned") |
 | `"off"` | nothing is captured or judged |
 
-A call the branch already denied is not judged again, and a session with no task is never judged.
+A call the branch already denied is not judged again.
 `createMoorAI()` exposes the same step as `captureTask(session, prompt)` plus `toolCall({ ..., session })`,
 whose verdict carries `intent: {class, mode}` when it fires. Limits: it is lexical, asking whether the user
 named the destination, file or service, not whether the action serves the task; a request pasted from an
-untrusted source puts its hosts in scope; the store is per process, so a restart forgets the task. A
-session the store held and lost (evicted past `intentStore.maxSessions`, default 1024, or idle past 24 h)
-fails closed: a risky call on it is judged as class `task-unknown`, which `"block"` denies, `"ask"` asks
-and `"report"` alerts on.
+untrusted source puts its hosts in scope; the store is per process, so a restart forgets the task.
+**No task fails closed:** a risky call whose session has no live task (never captured, evicted past
+`intentStore.maxSessions`, default 1024, or idle past 24 h) is judged as class `task-unknown`, which
+`"block"` denies, `"ask"` asks and `"report"` alerts on. Unlike the hook, `"block"` therefore needs the
+task: it arrives through `UserPromptSubmit`, so a run whose prompt never reaches that hook has every risky
+call blocked.
 
 ## Scan content before it is embedded
 
