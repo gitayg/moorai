@@ -2217,10 +2217,14 @@ real module is skipped until it is implemented. Not run against a real provider 
 [`user-turns.mjs`](../model-proxy/user-turns.mjs)). Each tool call the model returns that maps to a hook tool
 and is not already denied is judged by `data/intent-server.mjs` against the session's task.
 - Session, first match: `X-MoorAI-Session-Id` (not sent upstream), `X-Claude-Code-Session-Id`, the trace-id
-  of a valid incoming `traceparent`, a keyed hash of the conversation's first user turn.
+  of a valid incoming `traceparent`, a keyed hash of the conversation's first user turn, else the session
+  `none`. No owner principal is passed to the store (the proxy has no per-client principal), so a proxy's
+  clients share one session space.
 - Task: the first and the latest real user turn of each request. System and developer text, tool results,
   function responses, documents, and the text blocks sent with Anthropic `tool_result` blocks are never
-  the task. Each (session, turn) pair is captured once.
+  the task. Both are captured on every request.
+- Task unknown: a risky call in a session with no live captured task (no user turn ever seen, evicted,
+  expired) is class `task-unknown`, handled as misaligned; `block` refuses it and `ask` asks.
 - `intentAlignment`: `off`; `report` (default: one alert per target per session); `ask` (enforce: the
   headless ask, a deny unless `--headless-ask allow-with-report`); `block` (enforce: the proxy's refusal or
   replacement text). In `--mode report` an ask or block outcome is stamped `enforcement: LIMITED`.
@@ -2230,7 +2234,7 @@ and is not already denied is judged by `data/intent-server.mjs` against the sess
 - Key: `--intent-key-file` (64 hex characters, root-owned, not group- or world-writable), else 32 random
   bytes per process. Store limits: 1,024 sessions, 512 features each, 24 h.
 - Limits: lexical (a named host is aligned even when it is the exfiltration target); unmapped functions are
-  not judged; a request with no user turn and no session header is not judged.
+  not judged.
 
 **Reply text scanning** ([`model-proxy/response-scan.mjs`](../model-proxy/response-scan.mjs),
 [`text-codecs.mjs`](../model-proxy/text-codecs.mjs), [`text-guard.mjs`](../model-proxy/text-guard.mjs)).

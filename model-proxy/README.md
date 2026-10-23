@@ -475,6 +475,8 @@ Completions and Responses, Gemini, Ollama `/api/chat`), streaming and not.
    under one trace is one task.
 4. The conversation: a keyed hash of its first user turn. Every request re-sends the whole conversation, so
    its first turn names it on every turn.
+5. None of these (no header, no trace, no user turn): one session, `none`, in which nothing is ever
+   captured.
 
 The explicit headers win over the trace because one trace can wrap several conversations (a workflow trace
 around many agent runs), which would merge their tasks and make more calls look aligned. An application
@@ -493,9 +495,23 @@ model, never the model's own turns:
 | Gemini | a `contents[]` entry with `role: "user"` (or none) and no `functionResponse` part; `thought` parts are not counted |
 | Ollama | `/api/chat` `user` messages; `/api/generate` `prompt` |
 
-Each (session, turn) pair is captured once (a keyed-hash LRU of 8,192). The store keeps per session only
-keyed hashes of the turn's features (hosts, paths, known service names, three labels), at most 1,024
-sessions, 512 features each, 24 hours; a turn's text is in memory for the call only.
+Both are captured on every request, so a session the store evicted or expired is restored by the
+conversation's next request. The store keeps per session only keyed hashes of the turn's features (hosts,
+paths, known service names, three labels), at most 1,024 sessions, 512 features each, 24 hours; a turn's
+text is in memory for the call only.
+
+**Task unknown.** For a risky call in a session with no live captured task — no real user turn was ever
+seen in it (a request that carries only tool results, or the `none` session), or the store evicted or
+expired it — the store answers class `task-unknown`, and the proxy handles it like any misaligned call: an
+alert, and in `--mode enforce` the ask or the block. **So `intentAlignment: "block"` refuses a risky call in
+a session without a captured user turn**, and `"ask"` makes it a headless ask (a deny by default). A call
+the store does not class as risky is never judged, task or not.
+
+**Owner.** The store accepts an owner principal per session, so one caller cannot evict another's
+sessions. The proxy passes none: every client of one proxy holds the same token, so it has no per-client
+principal to give. All of a proxy's clients share one session space, and `X-MoorAI-Session-Id` is the
+client's to choose: a client that names another client's session id adds its own turns to that session's
+task. Run one proxy per tenant where that matters.
 
 **Judging.** At the point the proxy decides tool calls, after its own verdict on the call and not when that
 verdict is a deny, for a call that maps to a hook tool (`Bash`, `PowerShell`, `Read`, `mcp__*` …; the
@@ -513,7 +529,7 @@ all: an upload to a host (egress), a credential read, a destructive command, an 
 **The alert** is the hook's: `category: "Action outside the stated task"`, `reasonCode: "INTENT_MISMATCH"`,
 `threatId: 64`, `riskLevel: "Medium"`, `stage: "behavior"`, `tool: "model-proxy:<name>"`, `decision`
 (notify / ask / deny, the configured outcome), `intent: {class, mode}` with class `egress`, `credentials`,
-`destructive` or `mcp-write`, and `contentHash`, the tenant-keyed hash of the class and the store's keyed
+`destructive`, `mcp-write` or `task-unknown`, and `contentHash`, the tenant-keyed hash of the class and the store's keyed
 target hash. One alert per target per session; a refused call is refused every time. No prompt, path,
 host or argument is in it.
 
@@ -522,13 +538,13 @@ reads 64 hex characters from a file owned by root and not group- or world-writab
 protected file), so several proxy replicas hash alike; otherwise, or when that file is not usable (said
 once on stderr), 32 random bytes at start. It never leaves the process. A restart with a random key forgets
 every session, which costs little here: the next request re-sends the conversation and its first turn is
-captured again (the intermediate turns, and which targets already alerted, are what is forgotten).
+captured again (the intermediate turns, and which targets already alerted, are what is forgotten; a
+conversation's first request after a restart is judged on its first and latest turns only).
 
 **Limits.**
 - Lexical, as in the hook: an upload to a host the person named is aligned even when it is exfiltration to
   that host, and a task pasted from an untrusted source puts its hosts in scope.
 - A call the proxy cannot map to a hook tool (an unknown function, content-scanned instead) is not judged.
-- A request with no user turn and no session header has no session and is not judged.
 - If `data/intent-server.mjs` cannot start, the proxy runs without intent alignment and says so once on
   stderr.
 
