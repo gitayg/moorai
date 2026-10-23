@@ -130,6 +130,23 @@ mod tests {
         assert_eq!(choose(&bound, &json!({}), &crate::admin_config::Admin { console: Some("https://moorai.corp.example".into()), updates_off: None, ..Default::default() }), Plan::Endpoints(vec!["https://moorai.corp.example/api/update".into()]));
     }
 
+    // The updater GETs each endpoint as given, substituting only {{target}}/{{arch}}/{{current_version}}/
+    // {{bundle_type}} (tauri-plugin-updater 2.10.1 updater.rs check()). No endpoint carries a query or a
+    // template, so an update check names no user, device, tenant or token, enrolled or not.
+    #[test]
+    fn an_update_check_url_carries_no_identifier() {
+        let bound = scratch("ids");
+        crate::console_binding::write_binding(&bound, "https://moorai.acme.internal", "enrolment").unwrap();
+        for p in [plan(None, None), choose(&bound, &json!({ "installToken": "t", "tenant": "acme" }), &crate::admin_config::Admin::default())] {
+            let Plan::Endpoints(eps) = p else { panic!("updates off") };
+            for e in eps {
+                let u = url::Url::parse(&e).unwrap();
+                assert!(u.query().is_none() && !e.contains("{{") && !e.contains("%7B"), "{e}");
+                assert!(u.path() == "/api/update", "{e}");
+            }
+        }
+    }
+
     #[test]
     fn the_cloud_endpoints_match_tauri_conf_and_the_pubkey_is_the_shipped_one() {
         let conf: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();

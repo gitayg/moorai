@@ -140,6 +140,8 @@ function updateStatusbar(reachable) {
   const srv = $("sb-server");
   srv.className = "sb-item " + (ok ? "ok" : "off");
   srv.innerHTML = `<span class="dot"></span> ${ok ? "server connected" : "server offline"}`;
+  // Unenrolled there is no console and getPolicy() asks none: say that rather than "offline".
+  if (!enrolled()) { srv.className = "sb-item"; srv.innerHTML = `<span class="dot"></span> not enrolled — nothing is sent`; }
   // The host refused or ignored a console (console_binding.rs) — say so; the reason is the tooltip.
   const cw = consoleWarning();
   srv.title = cw || "";
@@ -741,6 +743,7 @@ function wireEnrollment() {
       $("signup-name").value = ""; $("signup-email").value = "";
       refreshEnrollChip();
       await loadIdentity();
+      startPolling(); // the first policy request this device makes
       const dev = await reportDevice();
       reportPatches(dev);
     } catch (e) {
@@ -762,6 +765,7 @@ function wireEnrollment() {
       refreshEnrollChip();
       // Re-report immediately so the device moves to the enrolled tenant without an app restart.
       await loadIdentity();
+      startPolling(); // the first policy request this device makes
       const dev = await reportDevice();
       reportPatches(dev);
     } catch (e) {

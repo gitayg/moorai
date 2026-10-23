@@ -72,7 +72,19 @@ pub fn target(req: &ConsoleRequest, dir: &str, cfg: &Value, admin: &crate::admin
     Ok((url, token))
 }
 
+// The user and device for the one call the console resolves per device: the credentialed policy GET. As
+// headers (console_binding::identity_headers), so the renderer's query names only the tenant and actor.
+pub fn identity_for(method: &str, url: &url::Url, credentialed: bool) -> Vec<(&'static str, String)> {
+    if credentialed && method.eq_ignore_ascii_case("GET") && url.path() == "/api/policy" {
+        crate::console_binding::identity_headers(&crate::platform::username(), &crate::platform::hostname())
+    } else { vec![] }
+}
+
 pub async fn send(method: &str, url: url::Url, body: Option<Value>, token: Option<String>, client_id: Option<String>, timeout: Duration) -> Result<Value, String> {
+    send_with(method, url, body, token, client_id, &[], timeout).await
+}
+
+pub async fn send_with(method: &str, url: url::Url, body: Option<Value>, token: Option<String>, client_id: Option<String>, extra: &[(&'static str, String)], timeout: Duration) -> Result<Value, String> {
     let client = reqwest::Client::builder()
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
@@ -81,6 +93,7 @@ pub async fn send(method: &str, url: url::Url, body: Option<Value>, token: Optio
     let mut rq = if method.eq_ignore_ascii_case("POST") { client.post(url) } else { client.get(url) };
     if let Some(t) = token { rq = rq.header("X-Install-Token", t); }
     if let Some(c) = client_id { rq = rq.header("X-Client-Id", c); }
+    for (k, v) in extra { rq = rq.header(*k, v); }
     if let Some(b) = body { rq = rq.json(&b); }
     let r = rq.send().await.map_err(|e| e.to_string())?;
     let status = r.status().as_u16();
@@ -95,7 +108,8 @@ pub async fn console_fetch(req: ConsoleRequest) -> Result<Value, String> {
     let admin = crate::admin_config::admin();
     let cfg = crate::admin_config::effective_config(crate::read_config(), &admin);
     let (url, token) = target(&req, &crate::console_binding::host_dir(), &cfg, &admin)?;
-    send(&req.method, url, req.body, token, client_id_header(req.client_id.as_deref()), TIMEOUT).await
+    let extra = identity_for(&req.method, &url, req.credentialed);
+    send_with(&req.method, url, req.body, token, client_id_header(req.client_id.as_deref()), &extra, TIMEOUT).await
 }
 
 #[cfg(test)]
@@ -245,6 +259,38 @@ mod tests {
         assert!(evil.seen.lock().unwrap().is_empty(), "the planted console received the allow-list call: {:?}", evil.seen.lock().unwrap());
         assert_eq!(good.seen.lock().unwrap().len(), 2);
         assert!(d.warning.as_deref().unwrap_or("").contains(&evil.origin), "the user is told: {:?}", d.warning);
+    }
+
+    // The renderer's policy request (src/api.js getPolicy) names the tenant and the keyed actor only; the
+    // host attaches the user and device as headers, so they never ride a URL. No other call carries them.
+    #[test]
+    fn the_policy_call_carries_user_and_device_as_headers_and_nothing_else_does() {
+        let _g = crate::console_binding::TEST_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (origin, heads) = crate::console_binding::record_heads(r#"{"ok":true}"#);
+        let home = scratch("idhome");
+        let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let saved: Vec<(&str, Option<String>)> = [var, "LOCALAPPDATA", "XDG_DATA_HOME"].into_iter().map(|k| (k, std::env::var(k).ok())).collect();
+        std::env::set_var(var, &home);
+        std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("XDG_DATA_HOME");
+        std::fs::create_dir_all(format!("{home}/.moorai")).unwrap();
+        std::fs::write(format!("{home}/.moorai/config.json"), json!({ "tenant": "acme", "installToken": "tok-SECRET-INSTALL" }).to_string()).unwrap();
+        let dir = crate::console_binding::host_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::console_binding::write_binding(&dir, &origin, "enrolment").unwrap();
+        let pol = run(console_fetch(rq("GET", "/api/policy?tenant=acme&actor=h2:0123456789abcdef", true, None)));
+        let alert = run(console_fetch(ConsoleRequest { body: Some(json!({ "threatId": 1 })), ..rq("POST", "/api/alerts", true, None) }));
+        let health = run(console_fetch(rq("GET", "/api/health", false, Some(&origin))));
+        for (k, v) in saved { match v { Some(v) => std::env::set_var(k, v), None => std::env::remove_var(k) } }
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(pol.is_ok() && alert.is_ok() && health.is_ok(), "{pol:?} {alert:?} {health:?}");
+        let heads = heads.lock().unwrap();
+        assert_eq!(heads.len(), 3, "{heads:?}");
+        let (user, device) = (crate::platform::username(), crate::platform::hostname());
+        assert_eq!(heads[0].lines().next().unwrap(), "GET /api/policy?tenant=acme&actor=h2:0123456789abcdef HTTP/1.1");
+        assert!(heads[0].contains(&format!("\nx-moorai-user: {}\n", crate::console_binding::header_value(&user))), "{}", heads[0]);
+        assert!(heads[0].contains(&format!("\nx-moorai-device: {}\n", crate::console_binding::header_value(&device))), "{}", heads[0]);
+        for h in &heads[1..] { assert!(!h.contains("x-moorai-user") && !h.contains("x-moorai-device"), "only the policy call names the user: {h}"); }
     }
 
     #[test]

@@ -87,7 +87,7 @@ export function enrolBase() {
   if (inHost()) return hostProvisioned || hostEnrolled || CLOUD_BASE;
   return safeConsoleOrigin(localStorage.getItem("raiseme.server") || "") || CLOUD_BASE;
 }
-// The console for this app's other uncredentialed calls (the default policy): the administrator's, else
+// The console the About panel names, and the base for the browser build's update check: the administrator's, else
 // the one the host recorded, else enrolBase(). A provisioned device never falls back to the cloud.
 export function serverBase() {
   return hostProvisioned || hostConsole || enrolBase();
@@ -108,9 +108,13 @@ export async function consoleCall({ method = "GET", path, body, credentialed = f
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (credentialed) { headers["X-Client-Id"] = CLIENT_ID; headers["X-Install-Token"] = installTok(); }
+  if (credentialed && method === "GET" && path.split("?")[0] === "/api/policy") Object.assign(headers, identityHeaders());
   const r = await fetch(`${origin}${path}`, { ...CRED, method, headers, body: body !== undefined ? JSON.stringify(body) : undefined, keepalive: method === "POST", signal: AbortSignal.timeout(8000) });
   return { ok: r.ok, status: r.status, body: await r.json().catch(() => null) };
 }
+// Who the policy is resolved for, as headers rather than in the URL. Percent-encoded: a login name or
+// hostname need not be ASCII. The host attaches the same pair itself (console_http.rs).
+function identityHeaders() { return { "X-MoorAI-User": encodeURIComponent(identity.user), "X-MoorAI-Device": encodeURIComponent(identity.device) }; }
 // fetch-shaped adapter over consoleCall for ./signup.js, which builds `${base}/path` URLs itself.
 function consoleFetchImpl(base) {
   return async (u, o = {}) => {
@@ -336,14 +340,16 @@ export async function reportPatches(dev) {
   } catch { return null; }
 }
 
+// Unenrolled, there is no console: no request at all, and the app runs on its built-in defaults. Enrolled,
+// the query names the tenant and the keyed actor (h2:, as the hooks send it), never the user or device:
+// those go as the X-MoorAI-User / X-MoorAI-Device headers (identityHeaders), attached host-side in the app.
 export async function getPolicy() {
-  // Unenrolled, nothing credentialed rides this request, so the default base serves the default policy.
-  const credentialed = !!installTok();
-  const base = credentialed ? credBase() : serverBase();
-  if (!base) return null;
+  if (!enrolled()) return null;
+  if (!credBase()) return null;
   try {
-    const q = `tenant=${encodeURIComponent(identity.tenant)}&user=${encodeURIComponent(identity.user)}&device=${encodeURIComponent(identity.device)}`;
-    const r = await consoleCall({ method: "GET", path: `/api/policy?${q}`, credentialed, base });
+    const actor = reported().actor;
+    const q = `tenant=${encodeURIComponent(identity.tenant)}${/^h2:[0-9a-f]{16,64}$/.test(actor) ? `&actor=${encodeURIComponent(actor)}` : ""}`;
+    const r = await consoleCall({ method: "GET", path: `/api/policy?${q}`, credentialed: true });
     return r.ok ? r.body : null;
   } catch {
     return null;

@@ -87,7 +87,11 @@ Because you can read the code. The agent is **MIT and open source** — the whol
 Community edition: runs standalone, no account required. **Without enrollment MoorAI coaches**: it runs the
 same detection and built-in defaults, and shows you (and, where the agent's hook protocol allows, the agent)
 what it caught and the safer way to do it — it never blocks, never asks for sign-off, never ends a session
-and posts nothing anywhere. **Blocking, sign-off and session kill apply once the device is enrolled** in a
+and posts nothing anywhere. The unenrolled desktop app sends nothing to any console either: no policy
+request, no report, so no login name or hostname leaves the device. The only request it makes is the
+update check, which carries no user or device identifier: a plain GET of the update endpoint with the
+updater's own user agent (see [Updates](docs/DESKTOP_AIRGAP.md#updates)).
+**Blocking, sign-off and session kill apply once the device is enrolled** in a
 MoorAI console (free to self-host with no user limit; the hosted console is a free trial).
 
 ### Enroll a device in a management account
@@ -109,9 +113,14 @@ Two ways, both in the app's settings panel (the gear in the status bar):
 `user@host`, keyed with the tenant's enrollment token — the same keyed function as every content hash
 (`actorHash` in `cli/content-hash.mjs`). The hook, the `moorai-guard` CLI, the Claude Desktop MCP proxy
 and the desktop app compute the same value, so one machine is one actor in the console. The login name
-and hostname also travel, so the console can resolve a per-device policy; the console replaces both with
-keyed per-tenant pseudonyms (`usr-…`, `dev-…`) on arrival and stores neither. An unenrolled device sends
-the `h2:nokey` sentinel as its actor, never a reversible hash.
+and hostname also travel in the bodies of reports and alerts; the console replaces both with keyed
+per-tenant pseudonyms (`usr-…`, `dev-…`) on arrival and stores neither. They never go in a URL query
+string, which proxies and access logs keep: the desktop app's policy request names the tenant and the
+`actor` only, and sends the login name and hostname as the `X-MoorAI-User` and `X-MoorAI-Device` headers,
+percent-encoded, so the console can resolve a policy assigned to that device (the hook's policy request
+names the tenant and actor only). A console that reads the user and device only from the query string
+serves the desktop app the tenant's default policy.
+An unenrolled device sends the `h2:nokey` sentinel as its actor, never a reversible hash.
 
 **Which session an event came from.** Alerts also carry `session`, the same keyed hash (`h2:` + 16 hex of
 an HMAC-SHA-256 keyed from the tenant's enrollment token, `contentHash` in `cli/content-hash.mjs`) of the

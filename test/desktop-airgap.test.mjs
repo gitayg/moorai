@@ -64,7 +64,8 @@ test("QUIET: MDM-provisioned by an administrator, not yet enrolled: the provisio
     assert.deepEqual(api.parseEnrollInput("it_abc"), { token: "it_abc", base: SELF }, "a bare token enrols against the provisioned console");
     await everything(api);
     const reqs = net(calls);
-    assert.ok(reqs.length >= 2, JSON.stringify(reqs));
+    assert.ok(reqs.length >= 1, JSON.stringify(reqs));
+    assert.deepEqual(reqs.map(where).filter((u) => u.includes("/api/policy")), [], "an unenrolled device asks no console for a policy");
     assert.ok(reqs.every((c) => c.cmd === "console_fetch"), "the renderer fetched directly: " + JSON.stringify(reqs));
     assert.deepEqual(reqs.map(where).filter((u) => CLOUD.test(u)), [], "a provisioned device named the MoorAI cloud");
     assert.ok(reqs.some((c) => where(c) === `${SELF}/api/signup`), JSON.stringify(reqs.map(where)));
