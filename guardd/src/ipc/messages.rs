@@ -85,7 +85,8 @@ pub struct PolicyReq {
     pub if_iat: Option<String>,
     /// The hook's keyed actor (`h2:` + 16..64 hex, cli/content-hash.mjs actorHash), named on the helper's
     /// `/api/policy` fetch so the console adds this device's decided approvals (and, to a fetch signed by
-    /// the bound device key, their receipts). Never a hostname or login.
+    /// the bound device key, their receipts). Never a hostname or login. The helper serves it only when it
+    /// equals the actor it derives for the peer (policy::derive_actor), else `none`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub actor: Option<String>,
 }

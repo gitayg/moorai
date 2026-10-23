@@ -278,6 +278,7 @@ The hook falls back to its own install-token fetch, which carries no receipt, wh
 - no helper is installed;
 - the helper does not answer, or fails its device-key proof;
 - the helper serves another tenant, or holds no fresh policy;
+- the hook's actor is not the one the helper derives for its OS user (§8);
 - the policy does not verify.
 
 The device then goes on with a device receipt (basis `allowed`), and the hub queues the call. The same happens
@@ -294,6 +295,8 @@ dormant. Tested:
   `receiptAuthFor` and `verifySignedRequest` copied verbatim (`test/fixtures/guardd/console-verifier.mjs`), and the
   hook's loader. The receipt arrives through the helper and not on the direct fetch;
 - `test/guardd-policy.test.mjs`: the fallbacks;
+- `guardd/tests/helper_e2e.rs` and `test/guardd-actor-parity.test.mjs`: the helper derives the peer's actor as the
+  hook does (shared vectors `guardd/tests/fixtures/actor-vectors.json`) and refuses any other actor;
 - `test/approval-receipts-hook.test.mjs` ("approval without a console receipt"): the device-receipt path.
 
 A console receipt expires at most 120 s after the console mints it. An approval that reaches the device later
@@ -384,9 +387,19 @@ A rejected receipt leaves the call queued.
   The console binds a receipt to the device, not to the OS user. The helper enforces the per-user split itself:
   - it keys every actor's policy by actor, in memory only, and answers a request only from that actor's own entry;
   - its background fetch names no actor, and its cache and last-known-good never hold an actor's policy;
-  - it binds each actor to the OS user (the IPC peer's uid, from the kernel) that first sends it: one actor per
-    uid, and a request from any other uid naming that actor gets `source: "none"` and fetches nothing.
+  - it derives each request's actor from the peer and never takes it from the message: the IPC peer's uid (from
+    the kernel, `LOCAL_PEERCRED` / `SO_PEERCRED`) resolved to its login name (`getpwuid_r`), the helper's own
+    install token (root-owned `secret.json`) and the hostname, hashed exactly as the hook's `actorHash`
+    (`guardd/src/policy.rs` `derive_actor`, pinned to `cli/content-hash.mjs` by
+    `guardd/tests/fixtures/actor-vectors.json`);
+  - a request naming any other actor gets `source: "none"` and fetches nothing, so a local user who can compute
+    another user's keyed actor gains nothing by claiming it, before or after a helper restart;
+  - a request naming no actor is served the derived one; when no actor can be derived (no install token, or
+    the uid has no login name), only the actor-less policy is served, never an actor's;
+  - the derived actor is bound to its uid: one actor per uid, in memory.
 
-  What remains: the binding lives in memory, so after a helper restart, a local user who can compute another
-  user's keyed actor could claim it before that user's hook next asks. The hook then takes its direct path with
-  no receipt.
+  What remains: the hook gets its receipts through the helper only when its own actor equals the derived one,
+  so the hook's install token must be the helper's and the hook must name the user and host the kernel reports.
+  A hook in server mode (a service identity, `svc:<id>`) or with another install token gets `source: "none"`
+  and takes its direct path with no receipt. Two uids with the same login name derive the same actor; the one
+  that asks first holds it and the other gets `source: "none"`.

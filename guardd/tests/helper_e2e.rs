@@ -48,7 +48,13 @@ impl SystemInfo for Sys {
     fn hostname(&self) -> String {
         "test-host".into()
     }
+    /// `user<uid>`, and no passwd entry at all for uids from NO_PASSWD up.
+    fn login_name(&self, uid: u32) -> Option<String> {
+        (uid < NO_PASSWD).then(|| format!("user{uid}"))
+    }
 }
+
+const NO_PASSWD: u32 = 4_000_000;
 
 /// What the fake console serves; tests edit it between steps.
 #[derive(Default)]
@@ -620,13 +626,15 @@ fn the_policy_fetch_is_device_signed_names_the_hooks_actor_and_an_ipc_request_fe
     w.clock.store(T0 + 10_000, Ordering::SeqCst);
     let mut c = Client::connect(&w);
     c.hello();
-    let actor = "h2:a1b2c3d4e5f60718";
+    // The actor this socket's peer (this test process's uid) derives to: user<uid>@test-host under tok-acme.
+    let own = moorai_guardd::policy::derive_actor(Some("tok-acme"), &format!("user{}", uid()), "test-host").expect("derivable");
+    let actor = own.as_str();
     let p = c.send(json!({"op":"policy","actor":actor}));
     assert_eq!(p["source"], "fresh");
     assert!(p["policy"].as_str().unwrap().contains(r#""receipt":"wire.sig""#), "a new actor fetches on demand: {p}");
     let fetches = requests_to(&w, "/api/policy");
     let last = fetches.last().unwrap();
-    assert_eq!(last.path_and_query, "/api/policy?tenant=acme&actor=h2%3Aa1b2c3d4e5f60718", "the hook's own query form");
+    assert_eq!(last.path_and_query, format!("/api/policy?tenant=acme&actor={}", actor.replace(':', "%3A")), "the hook's own query form");
     assert_eq!(last.method, "GET");
     assert!(last.body.is_empty());
     verify_devreq(last, &device_pub(&w));
@@ -656,15 +664,21 @@ fn an_unregistered_helper_fetches_policy_unsigned_and_never_on_demand_before_the
     assert!(f[0].header("X-Device-Sig").is_none(), "no registration yet: install token only");
 }
 
-const ACTOR_X: &str = "h2:aaaaaaaaaaaaaaaa";
-const ACTOR_Y: &str = "h2:bbbbbbbbbbbbbbbb";
+// The actors uid 501 and uid 502 derive to (user501@test-host / user502@test-host under tok-acme), as
+// cli/content-hash.mjs computed them (guardd/tests/fixtures/actor-vectors.json).
+const ACTOR_X: &str = "h2:809a3abb6b63d7e8";
+const ACTOR_Y: &str = "h2:a8f5e1ea28456929";
 
 /// One IPC `policy` request from a peer of `uid`, through the real handler (the peer uid is the kernel's
 /// LOCAL_PEERCRED / SO_PEERCRED answer in production).
 fn ask(w: &World, uid: u32, actor: Option<&str>) -> moorai_guardd::ipc::PolicyResp {
+    ask_on(&w.shared, uid, actor)
+}
+
+fn ask_on(shared: &Arc<Shared>, uid: u32, actor: Option<&str>) -> moorai_guardd::ipc::PolicyResp {
     use moorai_guardd::ipc::server::{ConnCtx, Handler};
     use moorai_guardd::ipc::{PolicyReq, Request, RequestFrame, Response};
-    let h = IpcHandler { shared: w.shared.clone() };
+    let h = IpcHandler { shared: shared.clone() };
     let req = RequestFrame { v: 1, id: 1, body: Request::Policy(PolicyReq { if_iat: None, actor: actor.map(str::to_string) }) };
     let mut ctx = ConnCtx { hello_done: true, client: Some("moorai-hook".into()) };
     let (resp, _) = h.handle(&mut ctx, &moorai_guardd::transport::PeerCred { pid: 4242, uid, sid: None, admin: false }, req);
@@ -696,8 +710,8 @@ fn two_users_actors_never_get_each_others_held_policy() {
     assert!(names(&y, ACTOR_Y) && !names(&y, ACTOR_X), "uid 502 gets Y's policy");
     let x2 = ask(&w, 501, Some(ACTOR_X));
     assert!(names(&x2, ACTOR_X) && !names(&x2, ACTOR_Y), "within 60 s uid 501 is answered from X's own entry, never Y's: {x2:?}");
-    let none = ask(&w, 501, None);
-    assert!(!names(&none, ACTOR_X) && !names(&none, ACTOR_Y), "an actor-less request never gets an actor's policy");
+    let own = ask(&w, 502, None);
+    assert!(names(&own, ACTOR_Y) && !names(&own, ACTOR_X), "a request naming no actor is served the peer's own derived actor, never another's: {own:?}");
 }
 
 #[test]
@@ -714,7 +728,68 @@ fn an_actor_change_on_one_connection_never_changes_another_users_fetch_or_answer
     assert!(stolen.policy.is_none());
     let after = requests_to(&w, "/api/policy").iter().filter(|r| r.path_and_query.contains("aaaaaaaaaaaaaaaa")).count();
     assert_eq!(after, before, "no fetch naming X on another uid's behalf");
-    // uid 502 moves to a new actor of its own: its old one is released, uid 501's answer is unchanged.
-    assert!(names(&ask(&w, 502, Some("h2:cccccccccccccccc")), "h2:cccccccccccccccc"));
+    // uid 502 cannot move to an actor it does not derive to; its own and uid 501's answers are unchanged.
+    let other = ask(&w, 502, Some("h2:cccccccccccccccc"));
+    assert_eq!(other.source, moorai_guardd::ipc::PolicySource::None, "{other:?}");
+    assert!(!requests_to(&w, "/api/policy").iter().any(|r| r.path_and_query.contains("cccccccccccccccc")), "never fetched");
+    assert!(names(&ask(&w, 502, Some(ACTOR_Y)), ACTOR_Y));
     assert!(names(&ask(&w, 501, Some(ACTOR_X)), ACTOR_X));
+}
+
+fn fetches_naming(w: &World, actor: &str) -> usize {
+    requests_to(w, "/api/policy").iter().filter(|r| r.path_and_query.contains(&actor.replace(':', "%3A"))).count()
+}
+
+#[test]
+fn a_peer_claiming_another_users_actor_gets_none_and_causes_no_fetch() {
+    // A fresh helper: no uid holds any actor yet, so a first-come binding would hand X to whoever asks first.
+    let w = per_actor_world("claimforeign");
+    let stolen = ask(&w, 502, Some(ACTOR_X));
+    assert_eq!(stolen.source, moorai_guardd::ipc::PolicySource::None, "uid 502 does not derive to X: {stolen:?}");
+    assert!(stolen.policy.is_none());
+    assert_eq!(fetches_naming(&w, ACTOR_X), 0, "no fetch naming X on uid 502's behalf");
+    assert!(!w.shared.lock().policy.uid_actor.values().any(|(a, _)| a == ACTOR_X), "nothing bound");
+    // X's own user is served it.
+    assert!(names(&ask(&w, 501, Some(ACTOR_X)), ACTOR_X));
+}
+
+#[test]
+fn after_a_helper_restart_the_first_claimant_of_a_foreign_actor_is_still_refused() {
+    let (root, paths);
+    {
+        let w = per_actor_world("restartrace");
+        assert!(names(&ask(&w, 501, Some(ACTOR_X)), ACTOR_X), "uid 501 held X before the restart");
+        root = w.root.clone();
+        paths = w.paths.clone();
+    }
+    // A new helper over the same state: the in-memory uid -> actor binding is gone.
+    let _ = std::fs::remove_file(&paths.endpoint);
+    let w = open_world(root, paths);
+    w.script.lock().unwrap().per_actor = true;
+    w.clock.store(T0 + 10_000, Ordering::SeqCst);
+    assert!(w.shared.lock().policy.uid_actor.is_empty(), "a fresh helper binds nothing");
+    let raced = ask(&w, 502, Some(ACTOR_X));
+    assert_eq!(raced.source, moorai_guardd::ipc::PolicySource::None, "the first claimant after a restart is refused: {raced:?}");
+    assert_eq!(fetches_naming(&w, ACTOR_X), 0, "no fetch naming X");
+    assert!(names(&ask(&w, 501, Some(ACTOR_X)), ACTOR_X), "X's own user still gets it");
+}
+
+#[test]
+fn a_request_naming_no_actor_is_served_the_peers_derived_actor() {
+    let w = per_actor_world("derived");
+    let p = ask(&w, 501, None);
+    assert!(names(&p, ACTOR_X), "{p:?}");
+    assert_eq!(fetches_naming(&w, ACTOR_X), 1, "fetched for the derived actor");
+}
+
+#[test]
+fn a_peer_with_no_derivable_actor_gets_only_the_actor_less_policy() {
+    let w = per_actor_world("underivable");
+    let claimed = ask(&w, NO_PASSWD + 1, Some(ACTOR_X));
+    assert_eq!(claimed.source, moorai_guardd::ipc::PolicySource::None, "no login name: a claimed actor is never trusted: {claimed:?}");
+    assert_eq!(fetches_naming(&w, ACTOR_X), 0, "and never fetched");
+    let plain = ask(&w, NO_PASSWD + 1, None);
+    assert_eq!(plain.source, moorai_guardd::ipc::PolicySource::Fresh, "{plain:?}");
+    assert!(!names(&plain, ACTOR_X), "the actor-less policy, not an actor's: {plain:?}");
+    assert!(requests_to(&w, "/api/policy").iter().all(|r| !r.path_and_query.contains("actor=")), "no actor named on any fetch");
 }

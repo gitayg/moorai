@@ -11,18 +11,22 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, chmodSync, existsSync, mkdtempSync } from "node:fs";
-import { tmpdir, hostname } from "node:os";
+import { tmpdir, hostname, userInfo } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { consoleKeyPair, startFakeConsole } from "./fixtures/guardd/fake-console.mjs";
 import { shortTempRoot } from "./fixtures/guardd/fake-helper.mjs";
 import { connect } from "../cli/guardd-client.mjs";
 import { rmTree } from "./fs-cleanup.mjs";
+import { hashWithKey, deriveKey } from "../cli/content-hash.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CHILD = join(ROOT, "test", "fixtures", "guardd", "load-policy-child.mjs");
 const TENANT = "acme", TOKEN = "tok-guardd-e2e", SECRET = "mes_0123456789abcdef0123456789abcdef";
-const ACTOR = "h2:a1b2c3d4e5f60718";
+// The hook's actor for this OS user and host under TOKEN (cli/content-hash.mjs actorHash). The helper derives
+// the same value itself from the socket peer's uid (getpwuid_r), its own install token and gethostname, and
+// refuses a request naming any other actor, so this is what the real hook must send to get its receipts.
+const ACTOR = hashWithKey(deriveKey(TOKEN), `${userInfo().username}@${hostname()}`);
 const KEY = consoleKeyPair();
 const HAS_CARGO = spawnSync("cargo", ["--version"], { encoding: "utf8" }).status === 0;
 const SKIP = process.platform !== "darwin" ? "the helper's platform layer exists for macOS only" : !HAS_CARGO ? "needs cargo to build moorai-guardd-test" : false;
@@ -99,6 +103,20 @@ test("E2E: a bound helper's signed fetch gets the console receipt, and the hook 
     const direct = await load(home(), { console: w.c, helper: null });
     assert.equal(direct.via, "");
     assert.equal(direct.approvals[0].receipt, undefined);
+  } finally { await w.close(); }
+});
+
+test("E2E: a hook naming another user's actor gets nothing from the helper, and the helper fetches nothing for it", { skip: SKIP, timeout: 120_000 }, async () => {
+  const w = await helperWorld();
+  try {
+    const foreign = hashWithKey(deriveKey(TOKEN), `someone-else@${hostname()}`);
+    const c = await connect({ ...w.connectOpts, budgetMs: 2000 });
+    assert.ok(c.client, c.reason);
+    try {
+      const p = await c.client.policy({ actor: foreign }, 5000);
+      assert.equal(p.source, "none");
+    } finally { c.client.close(); }
+    assert.ok(!w.c.log.some((e) => e.path === "/api/policy" && String(e.url).includes(encodeURIComponent(foreign))), "no fetch names the foreign actor");
   } finally { await w.close(); }
 });
 

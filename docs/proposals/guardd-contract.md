@@ -127,7 +127,7 @@ Types: `str`, `int` (safe integer), `u32`, `bool`, `obj`, `[T]`. `?` = optional 
 | Request | | Response | |
 |---|---|---|---|
 | `ifIat?` | `str` the `policySig.iat` the client holds | `source` | `"fresh"` \| `"cache"` \| `"lkg"` \| `"none"` |
-| `actor?` | `str` the hook's keyed actor, `h2:` + 16..64 hex (else `bad_request`) | | |
+| `actor?` | `str` the hook's keyed actor, `h2:` + 16..64 hex (else `bad_request`); must equal the actor the helper derives for the peer (below) | | |
 | | | `policy?` | `str` the signed policy exactly as `GET /api/policy` served it; omitted when `source` is `none` or `ifIat` is current |
 | | | `iat?`, `fetchedAt?` | `str` timestamps |
 | | | `ageSec?` | `int` now − iat |
@@ -139,21 +139,37 @@ applies its own HWM. The helper fetches every 60 s while any `call` or `policy` 
 
 The fetch is `GET /api/policy?tenant=<t>[&actor=<a>]` (`encodeURIComponent` values, the hook's own query form).
 The background fetch names no actor. Its policy is the only one ever held as `held`, the cache or the
-last-known-good. A `policy` request with `actor` is bound to the peer's uid (§3.6):
+last-known-good.
+
+**The actor is derived from the peer, not claimed.** For every `policy` request the helper derives the peer's
+actor itself (`policy::derive_actor`, `helper::peer_actor`): the peer uid (§3.6, kernel-reported) resolved to its
+login name with `getpwuid_r` (the lookup behind the hook's `os.userInfo().username`), the helper's install token
+from `secret.json`, and `gethostname` (behind `os.hostname()`), hashed byte for byte as `cli/content-hash.mjs`
+`actorHash`: key = HMAC-SHA-256(installToken, `moorai/content-hash/v2`); actor = `h2:` + the first 16 lowercase hex
+of HMAC-SHA-256(key, `<user>@<host>`), with no normalisation. Shared vectors:
+`guardd/tests/fixtures/actor-vectors.json` (generated from `content-hash.mjs`, tested by both sides).
+- a request naming an actor other than the derived one, or naming one when none can be derived, is answered
+  `source: "none"` with no fetch (the hook then takes its direct path);
+- a request naming no actor is served the derived actor;
+- when no actor can be derived (no install token, a uid with no login name, no hostname, or a Windows peer),
+  only the actor-less policy is served, never an actor's.
+
+The derived actor is bound to the peer's uid:
 - one actor per uid, with the uid's previous actor and its policy dropped;
-- an actor another uid holds is answered `source: "none"` with no fetch;
-- at most 16 uids, least recently used out, in memory only.
+- an actor another uid holds (two uids with one login name) is answered `source: "none"` with no fetch;
+- at most 16 uids, least recently used out, in memory only. Only derived actors are bound, so the binding
+  cannot be raced after a helper restart.
 
 Its fetch names that actor, and its answer is held per actor (in memory, at most 16) and served only to requests
-naming that actor. Once the device key is
+for that actor. Once the device key is
 registered, the request is device-signed per §6.2 over exactly that path and query. That gives the console the
 per-device credential for approval receipts (RAISEME-server `server/approval-receipts.js` `receiptAuthFor`; a
 receipt goes only to a bound key whose device is the request's device, over the posting install token). A
 signature the console cannot verify only withholds receipts: the policy is served on the install token
 either way.
 
-**On demand.** A `policy` request is answered from that actor's own held policy (or, without an actor, the
-actor-less one) when it was fetched within `ON_DEMAND_FRESH_MS` (60 s, the hook's own cache window). Otherwise the helper fetches first, with a
+**On demand.** A `policy` request is answered from that actor's own held policy (or, with no derivable actor,
+the actor-less one) when it was fetched within `ON_DEMAND_FRESH_MS` (60 s, the hook's own cache window). Otherwise the helper fetches first, with a
 per-request timeout of `ON_DEMAND_FETCH_MS` (1000 ms), and then answers with what it holds. It never fetches on
 demand while the console back-off is open, or before a policy key is anchored or pinned (the background loop does
 first contact). Fetches carry tickets per actor: an answer that arrives after a later-started fetch for the same
@@ -247,7 +263,7 @@ A hook process opens at most one connection per invocation and reuses it for eve
   liveness only for agent processes of the peer's uid (§8.2), and the `sessionHash` → agent tree mapping it
   records belongs to the peer's uid (another uid's `call` never remaps it, and when the map is full the
   eviction comes out of the uid holding the most sessions); `quarantine` derives its target from the peer pid
-  (§8.3); `submit` stamps `peerUid` on each queued alert.
+  (§8.3); `submit` stamps `peerUid` on each queued alert; `policy` derives the peer's actor from its uid (§3.4).
 - Rate limits per peer uid: `quarantine` 10/min (`busy` beyond); `submit` 64 alerts per frame.
 
 **Hook side.** Node exposes neither `SO_PEERCRED`/`LOCAL_PEERCRED` nor `GetNamedPipeServerProcessId`, so the
@@ -901,7 +917,8 @@ contradictory point, to be folded into the sections above.
     for a `test-injection` tree. A tenant change in the admin binding (detected through `binding.json`)
     drops the pin, mark, cache and last-known-good and re-registers.
 13. **Policy:** fetched with the install token and, once the device key is registered, device-signed (§6.2,
-    `GET`, path and query as sent, empty body), naming the hook's actor; fetched on demand per §3.4. Before
+    `GET`, path and query as sent, empty body), naming the actor the helper derives for the IPC peer (equal to
+    the hook's actor, §3.4); fetched on demand per §3.4. Before
     agent v1.32.0 it was fetched with the install token only, so no console receipt could reach the hook.
     Freshness is measured from `iat`, else from `fetchedAt` (an unsigned console). Last-known-good is written
     only for a real signature (`ok` or a TOFU arm). The `/api/policy/pubkey` first-contact fetch stays unsigned.
