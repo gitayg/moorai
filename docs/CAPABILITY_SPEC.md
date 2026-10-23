@@ -724,7 +724,8 @@ is validated against.
    [`data/intent-alignment.js`](../data/intent-alignment.js)).
 
    Only already-risky calls are judged: a `Bash` or `PowerShell` upload to a non-loopback host (egress;
-   a UNC share's host counts), a #43 destructive command, a #55 credential read (`Read`, `Bash` or
+   a UNC share's host counts), any upload to a loopback host whatever the port (`moorai-control`, never
+   aligned), a #43 destructive command, a #55 credential read (`Read`, `Bash` or
    `PowerShell`), and an MCP tool whose name carries a write verb. Egress is aligned only if every destination site was named, and no label excuses it. The
    other classes are aligned by their label or by a named path or server. Sessions with no captured task
    are never judged, and a call already denied is not re-judged. A misaligned call posts one alert per

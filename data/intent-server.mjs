@@ -72,7 +72,8 @@ export const INTENT_CLASS_TEXT = Object.freeze({
   egress: "an upload to a host your request never mentioned",
   credentials: "a credential read your request never mentioned",
   destructive: "a destructive command on paths your request never mentioned",
-  "mcp-write": "an MCP write to a service your request never mentioned"
+  "mcp-write": "an MCP write to a service your request never mentioned",
+  "moorai-control": "an upload to a service on this machine (loopback), such as MoorAI's own control endpoints"
 });
 
 const posInt = (v, d) => (Number.isInteger(v) && v > 0 ? v : d);

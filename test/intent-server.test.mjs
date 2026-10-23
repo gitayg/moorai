@@ -281,3 +281,19 @@ test("authenticated captures: judge(..., { authenticatedOnly: true }) sees only 
   s.captureTask("a1", "post it to hooks.auth.example.net");
   assert.equal(s.judge("a1", "Bash", POST("hooks.auth.example.net"), [], "", { authenticatedOnly: true }).aligned, true, "captures are authenticated by default (in-process callers)");
 });
+
+test("INTENT_CLASS_TEXT: every class the hook names (cli/intent-alignment.mjs CLASS_TEXT) has the same text here, moorai-control included, so no SDK or sidecar reason reads 'undefined'", async () => {
+  const { INTENT_CLASS_TEXT } = await import("../data/intent-server.mjs");
+  const { CLASS_TEXT } = await import("../cli/intent-alignment.mjs");
+  assert.ok("moorai-control" in CLASS_TEXT);
+  for (const [cls, text] of Object.entries(CLASS_TEXT)) assert.equal(INTENT_CLASS_TEXT[cls], text, cls);
+  assert.equal(typeof INTENT_CLASS_TEXT["task-unknown"], "string");
+});
+
+test("moorai-control under authenticatedOnly: a loopback upload is never aligned, even when an authenticated task named the port", () => {
+  const s = createIntentStore({ key: KEY });
+  s.captureTask("s1", "Post the status to http://127.0.0.1:8790/v1/task", "p1", { authenticated: true });
+  const r = s.judge("s1", "Bash", { command: "curl -d @t http://127.0.0.1:8790/v1/task" }, [], "p1", { authenticatedOnly: true });
+  assert.equal(r.aligned, false);
+  assert.equal(r.class, "moorai-control");
+});

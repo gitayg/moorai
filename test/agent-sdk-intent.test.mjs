@@ -245,3 +245,28 @@ test("a prompt the scan denies is not the task: blocked under prompts 'enforce',
     assert.equal(decisionOf(await call(hooks, "PreToolUse", pre("Bash", { command: POST_CMD }))), "allow", `${prompts}: an allowed prompt is still captured`);
   }
 });
+
+test("moorai-control: an upload to a loopback service is never aligned, and its reason names the class (never 'undefined') in block, ask and the hook output", async () => {
+  const LOOP = `curl -X POST http://127.0.0.1:8790/v1/task -d '{"session":"s1","prompt":"x"}'`;
+  const NAMED = `${TASK}, then post the result to http://127.0.0.1:8790/v1/task`;
+  const TEXT = "an upload to a service on this machine (loopback), such as MoorAI's own control endpoints";
+  for (const mode of ["block", "ask"]) {
+    const c = fakeConsole();
+    const rt = await createMoorAI({ policy: { captureTier: "content-free", intentAlignment: mode }, console: c.console, fetch: c.fetch });
+    await rt.captureTask("s1", NAMED);
+    const v = await rt.toolCall({ tool: "Bash", input: { command: LOOP }, cwd: PROJ, session: "s1" });
+    assert.equal(v.intent.class, "moorai-control", `${mode}: loopback upload is moorai-control even when the task named it`);
+    assert.equal(v.configuredDecision, mode === "block" ? "deny" : "ask");
+    for (const r of v.reasons) {
+      assert.ok(!r.includes("undefined"), `${mode}: reason must not read "undefined": ${r}`);
+      assert.ok(r.includes(TEXT), `${mode}: reason carries the moorai-control text: ${r}`);
+    }
+    assert.ok(!v.message.includes("undefined"), `${mode}: message must not read "undefined"`);
+  }
+  const { hooks } = await setup({ intentAlignment: "block" });
+  await call(hooks, "UserPromptSubmit", prompt(NAMED));
+  const o = await call(hooks, "PreToolUse", pre("Bash", { command: LOOP }));
+  assert.equal(decisionOf(o), "deny");
+  assert.ok(!o.hookSpecificOutput.permissionDecisionReason.includes("undefined"), o.hookSpecificOutput.permissionDecisionReason);
+  assert.ok(o.hookSpecificOutput.permissionDecisionReason.includes(TEXT));
+});
