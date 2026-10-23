@@ -73,6 +73,26 @@ test("bind rules: loopback by default; a non-loopback bind needs --allow-remote 
   assert.match(r.stderr, /refusing to listen on 0\.0\.0\.0/);
 });
 
+test("token files: '#' comment lines and blank lines are skipped, lines are trimmed, and a line that is not token-shaped is refused without echoing it", () => {
+  const home = sandbox();
+  try {
+    const f = join(home, "tokens");
+    const A = "tok-A_0123456789.abcdef", B = "dG9rLUItMDEyMzQ1Njc4OQ==";
+    writeFileSync(f, `# moorai-serve principals, one per line\r\n\n   ${A}   \r\n#${SERVE_TOKEN}\n  # indented comment\n${B}\n`);
+    for (const flag of ["--token-file", "--task-token-file"]) {
+      const o = parseArgs([flag, f], {});
+      assert.deepEqual(flag === "--token-file" ? o.tokens : o.taskTokens, [A, B], `${flag}: only the two token lines`);
+    }
+    for (const [bad, why] of [[`${A} # the billing agent`, "an inline comment"], ["two words-0123456789abcdef", "a space"], ["short-tok", "under 16"], ["x".repeat(257), "over 256"], ["töken-0123456789abcdef", "non-ASCII"], ["tok\"en<0123456789abcdef>", "quote and angle brackets"]]) {
+      writeFileSync(f, `${A}\n${bad}\n`);
+      assert.throws(() => parseArgs(["--token-file", f], {}), (e) => /line 2 is not a token/.test(e.message) && !e.message.includes(bad.slice(0, 12)), why);
+    }
+    writeFileSync(f, "# only a comment\n\n");
+    assert.deepEqual(parseArgs(["--token-file", f], {}).tokens, [], "a file of comments holds no token");
+    assert.throws(() => parseArgs([], { MOORAI_SERVE_TOKEN: "has a space-0123456789" }), /MOORAI_SERVE_TOKEN is not a token/);
+  } finally { rmTree(home); }
+});
+
 test("scan: content-free verdicts; the text is never echoed; health and route limits", async () => {
   const home = sandbox();
   const s = await startServe(home);

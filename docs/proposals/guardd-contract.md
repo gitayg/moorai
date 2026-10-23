@@ -156,9 +156,11 @@ of HMAC-SHA-256(key, `<user>@<host>`), with no normalisation. Shared vectors:
 
 The derived actor is bound to the peer's uid:
 - one actor per uid, with the uid's previous actor and its policy dropped;
-- an actor another uid holds (two uids with one login name) is answered `source: "none"` with no fetch;
-- at most 16 uids, least recently used out, in memory only. Only derived actors are bound, so the binding
-  cannot be raced after a helper restart.
+- an actor is tied to the first uid that binds it for the helper's lifetime: any other uid (two uids with one
+  login name) is answered `source: "none"` with no fetch, also after the first uid's binding has been evicted;
+- at most 16 uid bindings, least recently used out, in memory only; the actor-to-first-uid ties are never
+  evicted, and past 4096 of them a new actor is answered `source: "none"`. Only derived actors are bound, so
+  the binding cannot be raced after a helper restart (a restart clears the ties too).
 
 Its fetch names that actor, and its answer is held per actor (in memory, at most 16) and served only to requests
 for that actor. Once the device key is
@@ -934,7 +936,8 @@ contradictory point, to be folded into the sections above.
 17. **Transport:** `Listener` gains `accept_timeout` (default: blocking accept) so the server loop can stop;
     a non-socket file at the endpoint path is refused rather than unlinked.
 18. **Not implemented in core:** `moorai-guardctl` (release is reachable over IPC as an admin peer);
-    Windows `running_privileged`.
+    Windows `running_privileged`. On Linux, `hostname` is `gethostname(2)` (the macOS call, shared in
+    `platform/mod.rs`; "" on failure, so no actor is derived); the rest of the Linux platform is still `todo!()`.
 19. **macOS platform:** `machine_id` is `gethostuuid(2)`, the same UUID as `IOPlatformUUID`. `hostname` is
     `gethostname(2)`, the value Node's `os.hostname()` returns, which the hook reports as `device`. `ProcInfo.uid`
     is the effective uid (`pbi_uid`), which `LOCAL_PEERCRED` also reports. `awakeSec`

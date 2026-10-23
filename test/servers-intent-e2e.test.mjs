@@ -129,11 +129,14 @@ function startServe(home, args, env) {
     c.on("close", (code) => { clearTimeout(t); if (!out) rej(new Error(`serve exited ${code}: ${err}`)); });
   });
 }
+// The app holds the task-writer token; the tool calls carry none (the agent's own sandbox cannot set tasks).
+const SERVE_TASK_TOKEN = "serve-e2e-task-writer-0123456789";
 async function withServe(policy, con, fn) {
   const home = sandbox();
   writeFileSync(join(home, "policy.json"), JSON.stringify(policy));
-  const s = await startServe(home, ["--policy-file", join(home, "policy.json")], envFor(con));
-  const post = async (path, b) => { const r = await request(s.listening, path, { body: b }); return { status: r.status, json: r.json, text: r.raw.toString("utf8") }; };
+  writeFileSync(join(home, "task-token"), `${SERVE_TASK_TOKEN}\n`);
+  const s = await startServe(home, ["--policy-file", join(home, "policy.json"), "--task-token-file", join(home, "task-token")], envFor(con));
+  const post = async (path, b) => { const r = await request(s.listening, path, { body: b, headers: path === "/v1/task" ? { authorization: `Bearer ${SERVE_TASK_TOKEN}` } : {} }); return { status: r.status, json: r.json, text: r.raw.toString("utf8") }; };
   try { await fn(post); } finally { await s.stop(); rmTree(home); }
 }
 

@@ -20,7 +20,10 @@
 // DETAILS OF THE CONTRACT (implementation notes, not new signatures):
 //   key           omitted -> 32 random bytes, so the hashes are unlinkable outside this process.
 //   maxSessions   default 1024 live sessions in all. A new session over the cap evicts the least recently
-//                 used session OF THE OWNER HOLDING THE MOST, so a caller that floods evicts its own.
+//                 used session OF THE OWNER HOLDING THE MOST, so a caller that floods evicts its own. That
+//                 can be ANOTHER owner's session when owners x maxSessionsPerOwner > maxSessions; a caller
+//                 that must never evict across owners sizes maxSessions >= owners x maxSessionsPerOwner
+//                 (moorai-serve does: max(1024, tokens x --intent-sessions-per-caller)).
 //   maxSessionsPerOwner  default = maxSessions; a new session over it evicts that owner's own LRU session.
 //   ttlMs         default 24 h from the session's last use (captureTask or judge).
 //   maxFeatures   default 512 hashed features per session; once full, a new feature is dropped, which can

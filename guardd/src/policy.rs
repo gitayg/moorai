@@ -36,6 +36,9 @@ pub const ON_DEMAND_FETCH_MS: u64 = 1_000;
 /// At most this many OS users each bind one actor, and at most this many actor policies are held (least
 /// recently used out).
 pub const MAX_ACTORS: usize = 16;
+/// At most this many actors are ever tied to a uid in one helper lifetime (`actor_uid`); past it a new
+/// actor is refused (`none`, the hook's direct path), never bound by forgetting an old tie.
+pub const MAX_ACTOR_UIDS: usize = 4096;
 
 /// The hook's keyed actor as /api/policy names it (cli/hook-core.mjs loadVerifiedPolicy): `h2:` + 16..64
 /// lowercase hex. Anything else is never put on the wire.
@@ -393,6 +396,10 @@ pub struct PolicyStore {
     /// by one uid is refused to every other uid. In memory; a helper restart clears it. Only an actor the
     /// helper derived for that uid (derive_actor) is ever bound, so the binding cannot be raced.
     pub uid_actor: std::collections::BTreeMap<u32, (String, u64)>,
+    /// The first uid each actor was bound to, kept for the helper's lifetime (never evicted with
+    /// `uid_actor`). Two uids with one login name derive one actor; without this, evicting the first uid's
+    /// binding would let the second bind the actor and be served the first's approvals and receipts.
+    pub actor_uid: std::collections::BTreeMap<String, u32>,
     /// Fetch tickets, per actor ("" = the actor-less fetch): an answer that arrives after a later-started
     /// fetch for the same actor was applied is dropped, so fetches never apply out of order.
     fetch_seq: u64,
@@ -457,6 +464,7 @@ impl PolicyStore {
             held: None,
             by_actor: Default::default(),
             uid_actor: Default::default(),
+            actor_uid: Default::default(),
             fetch_seq: 0,
             applied: Default::default(),
         };
@@ -559,11 +567,18 @@ impl PolicyStore {
     /// console back-off is open (the console did not answer recently) or before the first trusted key is
     /// pinned (the background loop does the trust-on-first-use fetch).
     /// Bind `actor` to the peer `uid` (one actor per uid; the uid's previous actor and its policy are
-    /// dropped). false = another uid holds this actor: the request is answered `none` and fetches nothing.
-    /// The caller binds only the actor it derived for `uid` (helper::peer_actor), never a claimed one.
+    /// dropped). false = another uid was the first to bind this actor in this helper's lifetime (even if
+    /// its binding has since been evicted), or MAX_ACTOR_UIDS actors are already tied: the request is
+    /// answered `none` and fetches nothing. The caller binds only the actor it derived for `uid`
+    /// (helper::peer_actor), never a claimed one.
     pub fn bind_actor(&mut self, uid: u32, actor: &str, now_ms: u64) -> bool {
-        if self.uid_actor.iter().any(|(u, (a, _))| *u != uid && a == actor) {
-            return false;
+        match self.actor_uid.get(actor) {
+            Some(&first) if first != uid => return false,
+            Some(_) => {}
+            None if self.actor_uid.len() >= MAX_ACTOR_UIDS => return false,
+            None => {
+                self.actor_uid.insert(actor.to_string(), uid);
+            }
         }
         if let Some((old, _)) = self.uid_actor.insert(uid, (actor.to_string(), now_ms)) {
             if old != actor {
@@ -971,6 +986,38 @@ pub mod tests {
     }
 
     const T0: u64 = 1_791_795_600_000; // 2026-10-12T09:00:00.000Z
+
+    #[test]
+    fn an_actor_stays_with_its_first_uid_even_after_lru_eviction() {
+        // Two uids with one login name derive the same actor (user@host). The first uid keeps it for the
+        // helper's lifetime: the second is refused before AND after the first uid's binding is evicted.
+        let p = tree("actor-tombstone");
+        let mut s = PolicyStore::open(&p, Some("acme"));
+        let x = "h2:00000000000000000000000000000001";
+        assert!(s.bind_actor(501, x, T0));
+        assert!(!s.bind_actor(502, x, T0 + 1), "held by uid 501");
+        for i in 0..=MAX_ACTORS as u32 {
+            assert!(s.bind_actor(1000 + i, &format!("h2:{:032x}", 0x1000 + i), T0 + 10 + u64::from(i)));
+        }
+        assert!(!s.uid_actor.contains_key(&501), "uid 501's binding was evicted as least recently used");
+        assert!(!s.bind_actor(502, x, T0 + 100), "evicting uid 501 never frees its actor for another uid");
+        assert!(!s.uid_actor.values().any(|(a, _)| a == x));
+        assert!(s.bind_actor(501, x, T0 + 200), "the first uid can bind it again");
+    }
+
+    #[test]
+    fn past_max_actor_uids_a_new_actor_is_refused_not_bound_by_forgetting() {
+        let p = tree("actor-tombstone-cap");
+        let mut s = PolicyStore::open(&p, Some("acme"));
+        assert!(s.bind_actor(7, "h2:00000000000000000000000000000007", T0));
+        for i in 1..MAX_ACTOR_UIDS as u32 {
+            s.actor_uid.insert(format!("h2:{:032x}", 0x10_0000 + i), 5000 + i);
+        }
+        assert_eq!(s.actor_uid.len(), MAX_ACTOR_UIDS);
+        assert!(!s.bind_actor(8, "h2:00000000000000000000000000000008", T0 + 1), "full: refused");
+        assert!(s.bind_actor(7, "h2:00000000000000000000000000000007", T0 + 2), "a tied actor still binds to its uid");
+        assert_eq!(s.actor_uid.len(), MAX_ACTOR_UIDS);
+    }
 
     #[test]
     fn first_contact_pins_the_published_key_then_refuses_other_keys() {

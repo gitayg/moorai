@@ -6,6 +6,7 @@ file, standard library only (`urllib`); tested on Python 3.14.
 ```sh
 moorai-serve                         # 127.0.0.1:8790, server-mode semantics, no token
 MOORAI_SERVE_TOKEN=... moorai-serve  # require "Authorization: Bearer ..."
+MOORAI_SERVE_TASK_TOKEN=... moorai-serve  # only this token may set intent tasks (task())
 ```
 
 ```python
@@ -53,6 +54,13 @@ task never named then gets `intent: {"class", "mode"}` and, under `policy.intent
 `"block"`, an ask or deny. The sidecar keeps only keyed hashes, never the text; `task()` returns
 `{"mode", "captured", "features"}`. It is lexical, and a request pasted from an untrusted source puts its
 hosts in scope. In `"block"` mode a risky call with no task is denied.
+
+The task decides what a risky call may reach, so the agent's own tools must not be able to set it. Run the
+sidecar with `--task-token-file` (or `MOORAI_SERVE_TASK_TOKEN`) and give that token only to the code that
+relays the user's turns: `MoorAIClient(token=..., task_token=...)` (or `MOORAI_SERVE_TASK_TOKEN`); `task()`
+sends `task_token`, everything else sends `token`. The process that runs the tools gets no task token, and
+its `task()` is refused (403). With no token at all, `"ask"` and `"block"` refuse `task()`; `"report"` accepts
+it from any local process.
 
 ## LangGraph
 
