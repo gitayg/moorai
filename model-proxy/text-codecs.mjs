@@ -17,7 +17,8 @@
 //                     is read as a body.
 //   Ollama            /api/chat message.content, /api/generate response, body or NDJSON line (ended by done).
 // Not read: reasoning the model returns beside its answer (Anthropic thinking, Gemini thought parts, Ollama
-// thinking, Responses reasoning items), refusal fields and tool-call arguments (decided by check.mjs).
+// thinking, Responses reasoning items), refusal fields, tool-call arguments (decided by check.mjs), Anthropic
+// citations[].cited_text, Gemini executableCode / codeExecutionResult parts and OpenAI audio.transcript.
 // logprobs(obj) REMOVES the token log-probabilities a client can ask for, which repeat the reply text token by
 // token (and their top alternatives): OpenAI Chat choices[].logprobs → null; Responses `logprobs` on text
 // deltas, .done events and output_text parts (in parts, items and whole responses) → []; Gemini

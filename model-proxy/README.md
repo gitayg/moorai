@@ -737,7 +737,8 @@ Ollama `logprobs` removed. A client that asked for log-probabilities gets none w
 
 **Not scanned:** reasoning returned beside the answer (Anthropic `thinking`, Gemini `thought` parts, Ollama
 `thinking`, Responses reasoning items), refusal fields, token log-probabilities in report mode (removed in
-mask / block, above), images and audio, and embeddings. A scan error is reported
+mask / block, above), Anthropic `citations[].cited_text`, Gemini `executableCode` / `codeExecutionResult`
+parts, OpenAI `audio.transcript`, images and audio, and embeddings. A scan error is reported
 unevaluated; in mask / block mode under a closed fail mode the response is refused (502) or the stream
 stopped. Ollama `/api/generate` text is in addition still scanned report-only by every detector at stage
 `output` (see **Model text** above), so a finding there can raise both alerts.

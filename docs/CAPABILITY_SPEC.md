@@ -2331,7 +2331,8 @@ and is not already denied is judged by `data/intent-server.mjs` against the sess
   and hash per response, at most 32.
 - Token log-probabilities (`logprobs`, `top_logprobs`, Gemini `logprobsResult`) are removed from every event
   and body in mask / block; report mode changes nothing.
-- Not scanned: reasoning (thinking, thought parts), refusal fields, log-probabilities in report mode, images,
+- Not scanned: reasoning (thinking, thought parts), refusal fields, log-probabilities in report mode, Anthropic
+  `citations[].cited_text`, Gemini `executableCode` / `codeExecutionResult`, OpenAI `audio.transcript`, images,
   audio, embeddings.
 
 ## Local models with safety training removed (by name)

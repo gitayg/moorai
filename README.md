@@ -515,7 +515,8 @@ Claude Code session. Reports are content-free even under `full-capture`.
 `system` and `poll_event` turns are skipped) the hook stores HMACs, under a device key in
 `~/.moorai/intent.key`, of the sites, paths, service names and labels the prompt mentions, in `~/.moorai/intent-alignment.json` (both 0600; 64
 sessions, 24 h, 512 features). Only calls that are already risky are judged: a `Bash` or `PowerShell`
-upload to a non-loopback host (a UNC share counts as its host), a #43 destructive command, a #55 credential read, an MCP tool whose name is a write.
+upload to a non-loopback host (a UNC share counts as its host; a destination it cannot read is the site
+`unknown`, never aligned), any upload to a loopback host (`moorai-control`, never aligned), a #43 destructive command, a #55 credential read, an MCP tool whose name is a write.
 An upload is aligned only if every destination site was named; a label never excuses one. A session
 with no captured task is never judged. A misaligned call posts one content-free alert per session,
 class and target (#64, `Action outside the stated task`, counts only). `policy.intentAlignment` is
@@ -524,7 +525,10 @@ With `modelEscalation` and `semanticEscalation` both on, the loopback model also
 capture time, bounded by `MOORAI_INTENT_TIMEOUT_MS` (default 1500). Limits: it is lexical, not semantic,
 so an upload to a host the user named passes; text pasted into a prompt widens the task; the agent runs
 as the same user and can tamper with the state file; `Write`/`Edit`, data in a GET query string and
-`git push` to a new remote are not judged; the Codex, Cursor, Gemini and Copilot hosts do not mark
+`git push` to a new remote are not judged; upload forms other than curl and wget uploads, `Invoke-RestMethod` /
+`Invoke-WebRequest` with a body or upload method, nc / ncat / socat / telnet, scp / rsync / sftp to a remote,
+a BITS upload and a copy onto a UNC share (python, node, perl or ruby scripts, `/dev/tcp`, some curl short-flag clusters, PowerShell abbreviated or colon parameters) are not
+classed as uploads by the intent check; the Codex, Cursor, Gemini and Copilot hosts do not mark
 machine-injected turns, so there a hook-forced continuation counts as part of the task; Codex runs the
 prompt hook only after the user trusts it; and it adds one hook process per prompt (p50 119–190 ms across two
 runs on one machine). Full contract: [`docs/DETECTION_ENGINE.md`](docs/DETECTION_ENGINE.md) §6.
