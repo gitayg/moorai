@@ -163,6 +163,8 @@ test("session: X-MoorAI-Session-Id, then X-Claude-Code-Session-Id, then an incom
   const seen = (r) => report.lib.calls.judge.at(-1).sessionId;
   await call(report, "openai", false, { headers: { [SESSION_ID_HEADER]: "app-1", "x-claude-code-session-id": "cc-1", traceparent: tp } });
   assert.equal(seen(), "hdr:app-1");
+  assert.equal(fp.requests.at(-1).headers[SESSION_ID_HEADER], undefined, "X-MoorAI-Session-Id is not sent upstream");
+  assert.equal(fp.requests.at(-1).headers["x-claude-code-session-id"], "cc-1", "Claude Code's header is forwarded as sent");
   await call(report, "openai", false, { headers: { "x-claude-code-session-id": "cc-1", traceparent: tp } });
   assert.equal(seen(), "cc:cc-1");
   await call(report, "openai", false, { headers: { traceparent: tp } });

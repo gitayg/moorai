@@ -16,7 +16,7 @@ export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK 
                      [--connect-timeout <ms>]
                      [--policy-file <path>] [--service-id <name>] [--headless-ask deny|allow-with-report] [--cwd <dir>] [--log]
                      [--credentials <file>] [--require-placeholders] [--denied-tool-call refuse|replace]
-                     [--unchecked-window-ms <ms>] [--unchecked-max <n>]
+                     [--unchecked-window-ms <ms>] [--unchecked-max <n>] [--intent-key-file <path>]
 
   Point the SDK at it (plain http on loopback; the proxy speaks TLS to the provider):
     ANTHROPIC_BASE_URL=http://127.0.0.1:${DEFAULTS.port}/anthropic      (upstream https://api.anthropic.com)
@@ -57,6 +57,12 @@ export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK 
   --credentials     placeholder bindings file (also MOORAI_MODEL_PROXY_CREDENTIALS); refused if group- or
                     world-writable or owned by another non-root user
   --require-placeholders  with --credentials: refuse (401) a raw credential instead of reporting it
+  --intent-key-file the HMAC key for intent alignment (64 hex characters, root-owned, not group- or world-
+                    writable), so several proxies hash alike; default a random key per process
+  Policy keys read here: intentAlignment off|report|ask|block (a tool call that does not fit the person's task;
+                    default report) and responseScan report|mask|block (secrets, personal data, card numbers
+                    and the system prompt in the model's reply text; default report). ask / block / mask take
+                    effect with --mode enforce. Name the session with X-MoorAI-Session-Id (see README).
   GET /healthz      { status, version, policyId, mode }
 `;
 
@@ -95,6 +101,7 @@ export function parseArgs(argv, env = process.env) {
     else if (a === "--denied-tool-call") o.deniedToolCall = v();
     else if (a === "--unchecked-window-ms") o.uncheckedWindowMs = Number(v());
     else if (a === "--unchecked-max") o.uncheckedMax = Number(v());
+    else if (a === "--intent-key-file") o.intentKeyFile = resolve(v());
     else throw new Error(`unknown argument ${a}`);
   }
   if (o.help) return o;

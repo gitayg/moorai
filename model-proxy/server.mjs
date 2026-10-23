@@ -82,7 +82,9 @@ export const TOKEN_HEADER = "x-moorai-proxy-token";
 // The agent session a request belongs to, as Claude Code states it to its model endpoint (measured, Claude
 // Code 2.1.295: the same id as its hooks' session_id). Read for the trace id only; forwarded as sent.
 export const SESSION_HEADER = "x-claude-code-session-id";
-export const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER]);
+// X-MoorAI-Session-Id names the session for intent alignment (intent.mjs); it is addressed to this proxy and
+// is not sent upstream.
+export const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER, "x-moorai-session-id"]);
 const HOP_RES = new Set(["connection", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"]);
 
 // Report-only work runs after the response is complete, so a scan (≈10 ms for 2 KB, measured) never

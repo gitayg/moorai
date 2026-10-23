@@ -22,6 +22,9 @@
 //   businessToolActions         a function with no functionToolActions key of its own is classed by name
 //                               (money, bulk-data, identity, destructive, delegation: business-tools.mjs);
 //                               built-in action alert, raised or silenced per class by the policy.
+//   intent alignment            a call that maps to a hook tool and is not denied is judged against the
+//                               person's task (intent.mjs, passed in by server.mjs); its verdict can replace
+//                               this one (an ask or a deny, in --mode enforce only).
 //   unwrapArgs                  {"function": "<name>", "arguments": {...}} (or parameters / args / input)
 //                               is unwrapped before mapTool when the call does not map as sent.
 //   readings                    every other way a client could read the same call (an object, or a JSON
