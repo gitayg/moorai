@@ -300,7 +300,8 @@ export async function reportDevice() {
     let posture = null;
     try { const p = await invoke("device_posture"); if (p && Object.keys(p).length) posture = p; } catch {}
     let accounts = [];
-    try { accounts = (await invoke("device_accounts")).accounts || []; } catch {}
+    // The host classes the account's email domain against the served policy's corporate domains before hashing.
+    try { accounts = (await invoke("device_accounts", { corporateDomains: servedDomains })).accounts || []; } catch {}
     let aiAssets = null; // #7 — models/providers + local models (config metadata only)
     try { aiAssets = await invoke("device_ai_assets"); } catch {}
     let aiShadow = null; // Feature 2 — shadow-AI: catalog-matched AI apps + AI browser extensions (names/ids/flags only)
@@ -340,6 +341,8 @@ export async function reportPatches(dev) {
   } catch { return null; }
 }
 
+// The corporateDomains of the last policy served to this device (reportDevice hands them to the host).
+let servedDomains = [];
 // Unenrolled, there is no console: no request at all, and the app runs on its built-in defaults. Enrolled,
 // the query names the tenant and the keyed actor (h2:, as the hooks send it), never the user or device:
 // those go as the X-MoorAI-User / X-MoorAI-Device headers (identityHeaders), attached host-side in the app.
@@ -350,6 +353,7 @@ export async function getPolicy() {
     const actor = reported().actor;
     const q = `tenant=${encodeURIComponent(identity.tenant)}${/^h2:[0-9a-f]{16,64}$/.test(actor) ? `&actor=${encodeURIComponent(actor)}` : ""}`;
     const r = await consoleCall({ method: "GET", path: `/api/policy?${q}`, credentialed: true });
+    if (r.ok && r.body && Array.isArray(r.body.corporateDomains)) servedDomains = r.body.corporateDomains.filter((d) => typeof d === "string");
     return r.ok ? r.body : null;
   } catch {
     return null;

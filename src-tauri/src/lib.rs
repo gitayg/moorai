@@ -681,8 +681,10 @@ fn device_mcp() -> serde_json::Value {
 // Which account each agent CLI is logged in as, never the token: the Claude email as its keyed h2:
 // pseudonym, the GitHub login Copilot runs as. Lets the console report the list of accounts used with AI
 // agents. Reads only identity fields from well-known configs; tokens are never touched.
+// `corporate_domains`: the corporateDomains of the policy this device was served (src/api.js reportDevice).
 #[tauri::command]
-fn device_accounts() -> serde_json::Value {
+fn device_accounts(corporate_domains: Option<Vec<String>>) -> serde_json::Value {
+    let corporate = corporate_domains.unwrap_or_default();
     let home = platform::home_dir();
     let mut accounts: Vec<serde_json::Value> = vec![];
 
@@ -691,7 +693,7 @@ fn device_accounts() -> serde_json::Value {
     if let Ok(txt) = std::fs::read_to_string(format!("{home}/.claude.json")) {
         if let Ok(j) = serde_json::from_str::<serde_json::Value>(&txt) {
             if let Some(acc) = j.get("oauthAccount") {
-                if let Some(a) = ai_accounts::claude_account(acc, content_hash::tenant_key().as_ref()) { accounts.push(a); }
+                if let Some(a) = ai_accounts::claude_account(acc, content_hash::tenant_key().as_ref(), &corporate) { accounts.push(a); }
             }
         }
     }

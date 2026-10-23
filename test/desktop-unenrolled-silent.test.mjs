@@ -8,14 +8,16 @@
 //   node --test --import ./test/hermetic-env.mjs test/desktop-unenrolled-silent.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 const USER = "jdoe.private";
 const HOST = "JDOE-LAPTOP.local";
 let n = 0;
 
-async function desktop({ identity, tauri = true }) {
+async function desktop({ identity, tauri = true, policyBody = {} }) {
   const kv = new Map();
   const net = [];
+  const accountsArgs = [];
   const saved = {};
   const shim = (k, v) => { saved[k] = Object.getOwnPropertyDescriptor(globalThis, k); Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true }); };
   shim("localStorage", { getItem: (k) => (kv.has(k) ? kv.get(k) : null), setItem: (k, v) => kv.set(k, String(v)), removeItem: (k) => kv.delete(k) });
@@ -23,11 +25,11 @@ async function desktop({ identity, tauri = true }) {
   shim("screen", { width: 1 });
   const invoke = async (cmd, args) => {
     if (cmd === "identity") return identity;
-    if (cmd === "console_fetch") { net.push({ via: "host", url: `${args.req.credentialed ? "<recorded console>" : args.req.base}${args.req.path}`, ipc: JSON.stringify(args) }); return { status: 200, body: {} }; }
+    if (cmd === "console_fetch") { net.push({ via: "host", url: `${args.req.credentialed ? "<recorded console>" : args.req.base}${args.req.path}`, ipc: JSON.stringify(args) }); return { status: 200, body: args.req.path.startsWith("/api/policy") ? policyBody : {} }; }
     if (cmd === "check_and_install_update") { net.push({ via: "updater", url: "<update endpoint>", ipc: JSON.stringify(args ?? null) }); return false; }
     if (cmd === "device_ai_tools") return { tools: [] };
     if (cmd === "device_agent_activity") return { activity: [{ host: "codex", lastActiveEpoch: 1700000000 }] };
-    if (cmd === "device_accounts") return { accounts: [] };
+    if (cmd === "device_accounts") { accountsArgs.push(args); return { accounts: [] }; }
     if (cmd === "app_version") return "1.0.0";
     return {};
   };
@@ -36,7 +38,7 @@ async function desktop({ identity, tauri = true }) {
   const restore = () => { for (const [k, d] of Object.entries(saved)) { if (d) Object.defineProperty(globalThis, k, d); else delete globalThis[k]; } };
   const api = await import(`../src/api.js?silent=${++n}`);
   await api.loadIdentity();
-  return { api, net, restore };
+  return { api, net, accountsArgs, restore };
 }
 
 // What app.js runs at boot and on every poll tick, minus the updater (tested on its own below).
@@ -91,6 +93,24 @@ test("QUERY: the plain-browser build sends the user and device as percent-encode
     assert.equal(r.headers["X-MoorAI-Device"], encodeURIComponent("büro-pc"));
     assert.equal(r.headers["X-Install-Token"], "tok-SECRET");
   } finally { restore(); }
+});
+
+// The host hashes the Claude account's email, so it classes the email's domain first (corporate / personal /
+// unknown) against the corporateDomains of the policy this device was served; the renderer hands them over.
+test("ACCOUNTS: the device report hands the host the served policy's corporateDomains, and none before a policy", async () => {
+  const { api, accountsArgs, restore } = await desktop({ identity: ENROLLED, policyBody: { policyId: "default", corporateDomains: ["acme.com", "acme.io"] } });
+  try {
+    await api.reportDevice();
+    await api.getPolicy();
+    await api.reportDevice();
+    assert.deepEqual(accountsArgs, [{ corporateDomains: [] }, { corporateDomains: ["acme.com", "acme.io"] }]);
+  } finally { restore(); }
+});
+
+test("ACCOUNTS: the app reports the device after its first policy request, so the classification has the domains", () => {
+  const app = readFileSync(new URL("../src/app.js", import.meta.url), "utf8");
+  assert.match(app, /const firstPolicy = startPolling\(\);/);
+  assert.match(app, /firstPolicy\.catch\(\(\) => \{\}\)\.then\(\(\) => reportDevice\(\)\)/);
 });
 
 test("UPDATE: the update check carries no user or device identifier, enrolled or not", async () => {

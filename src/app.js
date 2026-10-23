@@ -80,7 +80,7 @@ async function boot() {
   // local device scans (apps, browsers, OS patches) run.
   $("sb-server").className = "sb-item";
   $("sb-server").innerHTML = '<span class="dot"></span> connecting…';
-  startPolling();
+  const firstPolicy = startPolling();
 
   // Auto-update. Native: silently download + install a newer signed build in the background, then
   // apply on restart (the idle timer restarts automatically). Browser: just offer the download.
@@ -90,8 +90,9 @@ async function boot() {
     checkUpdate().then((u) => { if (u && u.updateAvailable) { pendingUpdate = u; showUpdate(u); } });
   }
 
-  // Device reporting runs in the background; its scans take a few seconds.
-  reportDevice().then((dev) => {
+  // Device reporting runs in the background; its scans take a few seconds. It waits for the first policy request
+  // (bounded by the host's 4 s console timeout), whose corporateDomains the account classification needs.
+  firstPolicy.catch(() => {}).then(() => reportDevice()).then((dev) => {
     renderDeviceInfo(dev);
     reportPatches(dev).then((p) => { if (p) renderDeviceInfo({ ...dev, patches: p }); });
   });
@@ -206,6 +207,7 @@ function switchTool(t) {
 // Self-rescheduling poll. Interval comes from the server (policy.pollSeconds), so admins can
 // tune fleet request volume centrally; clamped to a 15s floor.
 let pollTimer;
+// → the first tick's promise, so a caller can wait for the first policy request.
 function startPolling() {
   clearTimeout(pollTimer);
   const tick = async () => {
@@ -213,7 +215,7 @@ function startPolling() {
     const secs = Math.max(15, Number(policy?.pollSeconds) || 60);
     pollTimer = setTimeout(tick, secs * 1000);
   };
-  tick();
+  return tick();
 }
 
 function closeAbout() { $("about-dialog").hidden = true; $("about-backdrop").hidden = true; }
