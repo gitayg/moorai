@@ -253,5 +253,6 @@ export function createScanner({ dets, policy, echo = null, hold = false, onFind 
     for (const [k, ch] of channels) if (!ch.done) { const t = push(k, "", true); if (t) out.push([k, t]); }
     return out;
   }
-  return { push, whole, finish, get overflowed() { return overflowed; }, held: (key) => { const ch = channels.get(key); return ch ? end(ch) - ch.rel : 0; } };
+  // held: characters received and not yet passed on; retained: characters kept (tail + held).
+  return { push, whole, finish, get overflowed() { return overflowed; }, held: (key) => { const ch = channels.get(key); return ch ? end(ch) - ch.rel : 0; }, retained: (key) => { const ch = channels.get(key); return ch ? ch.buf.length : 0; } };
 }
