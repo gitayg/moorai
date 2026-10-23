@@ -312,7 +312,9 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
 
   // The function-name rule runs on the name the model sent and on every name a dispatcher could take from
   // the arguments (readings.innerNames); a deny on any of them denies the call.
-  async function checkOne(c) {
+  // intent(tool, input, findings, name, verdict): intent alignment (intent.mjs), for a call that maps to a hook
+  // tool and is not already denied; a verdict it returns replaces this one.
+  async function checkOne(c, intent) {
     const rd = c.raw == null && !c.over ? readings(c.name, c.input) : null;
     const names = [c.name];
     for (const n of rd ? rd.innerNames : []) if (!names.some((x) => foldName(x) === foldName(n))) names.push(n);
@@ -323,10 +325,15 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
       if (named && named.decision === "ask" && !ask) ask = named;
     }
     const v = await checkArgs(c, rd);
-    return ask && v.decision !== "deny" ? ask : v;
+    const out = ask && v.decision !== "deny" ? ask : v;
+    if (!intent || out.decision === "deny" || c.raw != null || c.over) return out;
+    const m = mapTool(c.name, c.input);
+    if (!m) return out;
+    const iv = await intent(m.tool, m.input, v.findings || [], c.name, out);
+    return iv || out;
   }
 
-  const decideMapped = async (m) => { const v = await rt.toolCall({ tool: m.tool, input: m.input, cwd }); return { decision: v.decision, reasons: v.reasons }; };
+  const decideMapped = async (m) => { const v = await rt.toolCall({ tool: m.tool, input: m.input, cwd }); return { decision: v.decision, reasons: v.reasons, findings: v.findings || [] }; };
 
   async function checkArgs(c, rd) {
     if (c.over) {
@@ -373,10 +380,10 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
     return { decision: v.decision, reasons: v.reasons };
   }
 
-  async function checkToolCalls(calls) {
+  async function checkToolCalls(calls, { intent } = {}) {
     const denied = [];
     for (const c of calls) {
-      const v = await checkOne(c);
+      const v = await checkOne(c, intent);
       if (v.decision === "deny") denied.push({ name: c.name, reasons: v.reasons });
     }
     return { decision: denied.length ? "deny" : "allow", denied };
