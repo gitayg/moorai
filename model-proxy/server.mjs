@@ -29,7 +29,7 @@ import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { timingSafeEqual, createHash, randomBytes } from "node:crypto";
+import { timingSafeEqual, createHash, createHmac, randomBytes } from "node:crypto";
 import { createMoorAI, resolveSettings } from "../packages/agent-sdk/src/runtime.mjs";
 import { createTracer, applyTraceHeaders, cleanModel } from "./trace-w3c.mjs";
 import { createTrail } from "./trail.mjs";
@@ -59,6 +59,7 @@ import { budgetBlock, budgetErrorBody, budgetAlert } from "./budget.mjs";
 import { createIntent, loadIntentKey } from "./intent.mjs";
 import { responseScanMode, responseDetectors, createEcho, createScanner } from "./response-scan.mjs";
 import { createTextGuard, guardBody } from "./text-guard.mjs";
+import { parseLossless } from "./json-lossless.mjs";
 import { textAlert, textRefusal } from "./text-report.mjs";
 import * as codecs from "./text-codecs.mjs";
 
@@ -165,6 +166,8 @@ function errorPayload(api, status, message) {
 export async function createProxy(opts = {}) {
   const o = { ...DEFAULTS, ...opts, routes: opts.routes || defaultRoutes(opts.host || DEFAULTS.host) };
   const enforce = o.mode === "enforce";
+  // An unsettled ask has no approver behind this proxy: in enforce mode it would be forwarded as if allowed.
+  if (enforce && o.headlessAsk === "pass-through") throw new Error("model-proxy: headlessAsk pass-through is not accepted in --mode enforce (use deny or allow-with-report)");
   // --denied-tool-call replace: a denied tool call is withheld and its turn delivered as text explaining
   // why (anthropic-replace.mjs, openai-replace.mjs) instead of the whole response being refused.
   const replace = enforce && o.deniedToolCall === "replace";
@@ -209,6 +212,15 @@ export async function createProxy(opts = {}) {
   const intent = createIntent({ lib: intentLib, key: loadIntentKey({ key: o.intentKey, keyFile: o.intentKeyFile }).key, rt, enforce, now: o.intentNow });
   // Response text scanning (response-scan.mjs): the system-prompt shingle key, random per process.
   const echoKey = randomBytes(32);
+  // A payment card (#1) or personal data (#15) in the reply is a value from a small space (a card is 10^16
+  // candidates less the Luhn check, a phone number 10^10): its contentHash is not the tenant-keyed hash, which
+  // anyone holding the install token could enumerate back to the value, but an HMAC under a key random to this
+  // process ("proc:" and 16 hex). The same value seen twice by this process hashes alike; nothing outside it —
+  // the console, another proxy, a restart — can link or reverse it. A secret (#39, high entropy) and a
+  // system-prompt echo (#52, a keyed shingle) keep the tenant-keyed hash, so the console can correlate them.
+  const piiKey = randomBytes(32);
+  const LOW_ENTROPY = new Set([1, 15]);
+  const findingHash = (id, match) => (LOW_ENTROPY.has(id) ? `proc:${createHmac("sha256", piiKey).update(String(match), "utf8").digest("hex").slice(0, 16)}` : rt.hash(match));
   const routes = Object.entries(o.routes).map(([prefix, base]) => ({ prefix: prefix === "/" ? "" : prefix.replace(/\/+$/, ""), base: String(base).replace(/\/+$/, "") })).sort((a, b) => b.prefix.length - a.prefix.length);
   const agents = { "http:": new http.Agent({ keepAlive: true, maxSockets: o.maxConnections }), "https:": new https.Agent({ keepAlive: true, maxSockets: o.maxConnections }) };
   const loopbackBind = isLoopback(o.host);
@@ -299,7 +311,7 @@ export async function createProxy(opts = {}) {
     const seen = new Set();
     const t = { codec, mode, hold: mode !== "report", blocked: null, scanner: null };
     t.scanner = createScanner({ dets: rctx.dets, policy: rctx.policy, echo: rctx.echo, hold: t.hold, onFind: ({ id, match, sent }) => {
-      const h = rt.hash(match);
+      const h = findingHash(id, match);
       const k = `${id}:${h}`;
       if (seen.has(k) || seen.size >= 32) return;
       seen.add(k);
@@ -316,6 +328,9 @@ export async function createProxy(opts = {}) {
     const sse = /^text\/event-stream\b/i.test(ct);
     // Ollama streams NDJSON (application/x-ndjson): framed by lines instead of SSE events.
     const lines = Boolean(api && api.NDJSON) && /^application\/x-ndjson\b/i.test(ct);
+    // The provider accepted the request: its user turns become the task (intent.mjs), before any tool call in
+    // this response is judged. A rejected request adds nothing.
+    if (ok && ictx) intent.commit(ictx);
     if (!api || !ok) { res.writeHead(ur.statusCode, responseHeaders(ur)); ur.pipe(res); return; }
     if (enc !== "identity") {
       // Unscannable. Report-only forwards it (and says so once); enforce does not forward what it cannot read.
@@ -393,7 +408,9 @@ export async function createProxy(opts = {}) {
     let v;
     try { v = await decide(calls); } catch { return send(res, busy(api), api.errorBody(busy(api), "MoorAI model-proxy: evaluation did not finish in time; retry")); }
     if (v.decision === "deny" && !replace) return refuse(res, api, v, "response");
-    const sent = v.decision === "deny" ? api.replaceResponse(body, v) : body;
+    // A body the reply-text scan may rewrite is re-parsed keeping each number's source text (json-lossless.mjs),
+    // so re-serializing it never rounds an integer past 2^53 in a function call's arguments beside the text.
+    const sent = v.decision === "deny" ? api.replaceResponse(body, v) : text && text.hold ? (parseLossless(buf) || body) : body;
     if (v.decision === "deny") stats.replaced++;
     // The reply text (response-scan.mjs): report mode after the response; mask / block before it is sent.
     let masked = false;
@@ -561,8 +578,9 @@ export async function createProxy(opts = {}) {
       if (api !== gemini) current.model = modelOf(api, rest, json);
       const items = json ? api.outboundItems(json) : [];
       const s1 = await rt.ready();
-      // Intent alignment: this request's session and the person's turns in it (intent.mjs).
-      if (json && KIND.has(api)) ictx = intent.begin(KIND.get(api), json, req.headers, current.trace, s1.policy);
+      // Intent alignment: this request's session and the person's turns in it (intent.mjs). A body that does not
+      // parse is judged too: the header's session (or the trace's), else "none", with no turns captured.
+      if (KIND.has(api)) ictx = intent.begin(KIND.get(api), json, req.headers, current.trace, s1.policy);
       // Reply-text scanning: the policy's mode, the engine's response detectors, this request's system prompt
       // as keyed shingles (response-scan.mjs).
       if (CODEC.has(api)) {

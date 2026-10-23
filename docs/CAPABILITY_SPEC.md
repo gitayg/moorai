@@ -2237,8 +2237,9 @@ the framework ever asks.
 
 ## Model proxy: intent alignment and reply text
 
-**Status: built and unit-tested (`test/model-proxy-intent.test.mjs`, `test/model-proxy-response-scan.test.mjs`),
-in process against fake upstreams for Anthropic, OpenAI Chat Completions and Responses, Gemini and Ollama,
+**Status: built and unit-tested (`test/model-proxy-intent.test.mjs`, `test/model-proxy-response-scan.test.mjs`,
+`test/model-proxy-intent-review.test.mjs`, `test/model-proxy-reply-scan-review.test.mjs`,
+`test/intent-alignment-control.test.mjs`), in process against fake upstreams for Anthropic, OpenAI Chat Completions and Responses, Gemini and Ollama,
 streaming and not. The intent store (`data/intent-server.mjs`) is a test double there; one test runs the
 real module, and `test/servers-intent-e2e.test.mjs` runs the proxy CLI and moorai-serve on it end to end
 against a fake upstream. Not run against a real provider or SDK.**
@@ -2252,12 +2253,27 @@ and is not already denied is judged by `data/intent-server.mjs` against the sess
   clients share one session space.
 - Task: the first and the latest real user turn of each request. System and developer text, tool results,
   function responses, documents, and the text blocks sent with Anthropic `tool_result` blocks are never
-  the task. Both are captured on every request.
+  the task. Harness blocks are stripped from every text first (per text, first opening to last closing; an
+  unclosed one to the end): `<system-reminder>` (Claude Code's CLAUDE.md, memory and session context),
+  `<task-notification>`, `<bash-stdout>`, `<bash-stderr>`, `<local-command-stdout>`, `<local-command-stderr>`,
+  `<user-prompt-submit-hook>` — identified in Claude Code 2.1.295's bundle. Captured only from a request that
+  declares tools (a tool-less side request — WebFetch summarisation, compaction — adds nothing), and only
+  when the provider's 2xx response begins. A body that does not parse (gzip, BOM) captures nothing and is
+  judged in the header's session, else `none`.
+- Whose turn: a sub-agent's first user turn is the parent model's prompt; the proxy judges a sub-agent's
+  calls against it. For a task that is the person's by construction, use `X-MoorAI-Session-Id` with
+  moorai-serve's `POST /v1/task` or the Agent SDK's capture.
+- Judged on every reading of a call that maps to a hook tool (as sent, `cmd` read as `command`, a
+  dispatcher's inner tool …), each with its own findings; the strictest verdict wins.
+- `moorai-control`: an upload to a MoorAI loopback listener at its default port (moorai-serve 8790, the
+  proxy 8791, the MCP gateway 8848; URL, bare `host:port`, `nc`, `socat`) is risky and never aligned. A
+  curl / wget destination given as a bare argument is an egress site.
 - Task unknown: a risky call in a session with no live captured task (no user turn ever seen, evicted,
   expired) is class `task-unknown`, handled as misaligned; `block` refuses it and `ask` asks.
 - `intentAlignment`: `off`; `report` (default: one alert per target per session); `ask` (enforce: the
-  headless ask, a deny unless `--headless-ask allow-with-report`); `block` (enforce: the proxy's refusal or
-  replacement text). In `--mode report` an ask or block outcome is stamped `enforcement: LIMITED`.
+  headless ask, a deny unless `--headless-ask allow-with-report`; `--headless-ask pass-through` is refused
+  at startup); `block` (enforce: the proxy's refusal or replacement text). In `--mode report` an ask or
+  block outcome is stamped `enforcement: LIMITED`.
 - Alert: the hook's `category: "Action outside the stated task"`, `reasonCode: "INTENT_MISMATCH"`,
   `threatId: 64`, `stage: "behavior"`, `intent: {class, mode}`, `contentHash` (tenant-keyed hash of the
   class and the store's keyed target hash). No prompt, host, path or argument.
@@ -2279,13 +2295,21 @@ and is not already denied is judged by `data/intent-server.mjs` against the sess
 - Streaming window per text channel: 256 characters already sent plus the unsent text. Report: nothing
   held, scanned each 4,096 characters. Mask / block: the last 256 characters held back, so a match of up to
   256 characters is found before any of it is sent; a longer one is found after its start was sent
-  (`sent: "partial"`), and sent text cannot be recalled. Measured: 18 µs of CPU per streamed piece in
-  mask / block mode, 0.2 µs in report mode.
+  (`sent: "partial"`), and sent text cannot be recalled. Report mode keeps exactly the last 256 characters
+  (a spaced card across a batch boundary is found). At most 64 channels; past that mask / block fail closed
+  (the event is refused before any of it is taken; a closed fail mode stops the stream). A re-serialized
+  event or body keeps every number's source text (an integer past 2^53 is not rounded); a Responses flush
+  repeats the last delta's `sequence_number`. Measured: 18 µs of CPU per streamed piece in mask / block
+  mode, 0.2 µs in report mode.
 - Alert: `category` "Model proxy: <class> in the model's reply" / "… system prompt reproduced in the
   model's reply", `stage: "output"`, `tool: "model-proxy:response-text"`, `responseScan: {class, mode,
-  applied, sent}`, `contentHash` (tenant-keyed hash of the match). One per class and hash per response,
-  at most 32.
-- Not scanned: reasoning (thinking, thought parts), refusal fields, `logprobs`, images, audio, embeddings.
+  applied, sent}`, `contentHash` (tenant-keyed hash of the match; for #1 and #15, low-entropy values, an
+  HMAC under a per-process random key, `proc:…`, which the install token cannot enumerate). One per class
+  and hash per response, at most 32.
+- Token log-probabilities (`logprobs`, `top_logprobs`, Gemini `logprobsResult`) are removed from every event
+  and body in mask / block; report mode changes nothing.
+- Not scanned: reasoning (thinking, thought parts), refusal fields, log-probabilities in report mode, images,
+  audio, embeddings.
 
 ## Local models with safety training removed (by name)
 

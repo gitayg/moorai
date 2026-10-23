@@ -17,9 +17,24 @@
 // prefix (hdr: / cc: / trace: / conv:); the store keeps only its keyed hash.
 //
 // TASK. From each request's real user turns (user-turns.mjs; never a system prompt, tool result, function
-// response or document): the first turn, the task, and the latest turn, captured on every request, so a
-// session the store evicted or expired is restored by the conversation's next request. The store holds
-// feature hashes only; a turn's text is in memory for the call.
+// response or document, and never a harness block such as Claude Code's <system-reminder> with CLAUDE.md and
+// memory): the first turn, the task, and the latest turn, captured on every request, so a session the store
+// evicted or expired is restored by the conversation's next request. Two conditions, both or nothing:
+//   * the request declares tools (user-turns.mjs carriesTools). A tool-less request is a side request
+//     (WebFetch's summariser, whose user turn is the fetched page; compaction; a title) and adds nothing;
+//   * the provider accepted it: the turns are captured when its 2xx response begins (commit), before any tool
+//     call in that response is judged. A request the provider rejects adds nothing.
+// The store holds feature hashes only; a turn's text is in memory for the call.
+//
+// WHOSE "USER" TURN. In an agent-to-agent call (a sub-agent: Claude Code's Task / Agent tool) the first user
+// turn is the parent model's prompt, not the person's; this proxy cannot tell the two apart, so it judges the
+// sub-agent's calls against what the parent model wrote. For a task that is the person's by construction, name
+// the session (X-MoorAI-Session-Id) and set its task over the explicit channel — moorai-serve's POST /v1/task,
+// or the Agent SDK's capture — rather than relying on the turns this proxy sees.
+//
+// A BODY THAT CANNOT BE PARSED (a gzip-encoded request, a leading byte-order mark): no turns, so nothing is
+// captured, and the session is the header's or the trace's, else "none" — a risky call is still judged, and in
+// a session with no task it is task-unknown.
 //
 // NO TASK. The store answers class "task-unknown" (aligned: false) for a risky call in a session with no live
 // captured task: never captured (a request with no real user turn), evicted or expired. It is handled like
@@ -30,7 +45,8 @@
 // consequence: X-MoorAI-Session-Id is the client's to choose, so a client of this proxy that names another
 // client's session id adds its own turns to that session's task.
 //
-// JUDGEMENT. Each tool call the model returns, mapped to the hook's tool vocabulary (check.mjs mapTool), after
+// JUDGEMENT. Each tool call the model returns, on every reading of it that maps to the hook's tool vocabulary
+// (check.mjs: as sent, a `cmd` alias, a dispatcher's inner tool …; the strictest verdict wins), after
 // the proxy's own verdict on it and not when that verdict is a deny. intentModeFromPolicy(policy):
 //   off     nothing;
 //   report  (default) the first misaligned call per target raises one content-free alert;
@@ -42,7 +58,8 @@
 //
 // THE ALERT. The hook's own category and reason code: category "Action outside the stated task" (threatId 64,
 // riskLevel Medium, stage "behavior"), reasonCode INTENT_MISMATCH (cli/provenance.mjs), tool
-// "model-proxy:<name>", the class (egress | credentials | destructive | mcp-write) and the mode, and
+// "model-proxy:<name>", the class (egress | credentials | destructive | mcp-write | moorai-control |
+// task-unknown) and the mode, and
 // contentHash = the tenant-keyed hash of the class and the store's keyed target hash. Never a prompt, a
 // path, a host or an argument.
 //
@@ -56,7 +73,7 @@ import { REASON } from "../cli/provenance.mjs";
 import { settleHeadlessAsk } from "../cli/server-mode.mjs";
 import { readRootOwned } from "../cli/hook-core.mjs";
 import { CLASS_TEXT as HOOK_CLASS_TEXT } from "../cli/intent-alignment.mjs";
-import { userTurns } from "./user-turns.mjs";
+import { userTurns, carriesTools } from "./user-turns.mjs";
 
 export const SESSION_ID_HEADER = "x-moorai-session-id";
 export const CLAUDE_SESSION_HEADER = "x-claude-code-session-id";
@@ -101,18 +118,25 @@ export function createIntent({ lib, key, rt, enforce, now, warn = (m) => process
   const hmac = (s) => createHmac("sha256", key).update(s, "utf8").digest("base64url");
   const modeOf = (policy) => { try { const m = lib.intentModeFromPolicy(policy); return ["off", "report", "ask", "block"].includes(m) ? m : "off"; } catch { return "off"; } };
 
-  // Per request, after the body is read: capture the task, return the context the judge needs, or null.
+  // Per request, after the body is read (json null when it could not be parsed): the context the judge needs,
+  // or null. The turns are held until commit(ctx).
   function begin(kind, json, headers, trace, policy) {
     if (!store) return null;
     const mode = modeOf(policy);
     if (mode === "off") return null;
-    const turns = userTurns(kind, json);
+    const turns = json ? userTurns(kind, json) : [];
     const sessionId = sessionOf({ headers, trace, turns, hmac });
-    for (const t of new Set([turns[0], turns[turns.length - 1]])) {
-      if (!t) continue;
-      try { store.captureTask(sessionId, t); } catch { /* not captured: the store answers task-unknown */ }
+    const pending = carriesTools(kind, json) ? [...new Set([turns[0], turns[turns.length - 1]])].filter(Boolean) : [];
+    return { sessionId, mode, pending };
+  }
+  // The provider answered 2xx: capture the task. Once per request.
+  function commit(ctx) {
+    if (!ctx || !store) return;
+    const turns = ctx.pending;
+    ctx.pending = [];
+    for (const t of turns) {
+      try { store.captureTask(ctx.sessionId, t); } catch { /* not captured: the store answers task-unknown */ }
     }
-    return { sessionId, mode };
   }
 
   // check.mjs calls this for a mapped tool call whose verdict is not a deny. Returns the verdict that replaces
@@ -143,5 +167,5 @@ export function createIntent({ lib, key, rt, enforce, now, warn = (m) => process
     return { decision: h.decision, reasons: [h.reason] };
   }
 
-  return { begin, judge, get active() { return store !== null; }, size: () => { try { return store ? store.size() : 0; } catch { return 0; } } };
+  return { begin, commit, judge, get active() { return store !== null; }, size: () => { try { return store ? store.size() : 0; } catch { return 0; } } };
 }

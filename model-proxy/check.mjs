@@ -23,8 +23,10 @@
 //                               (money, bulk-data, identity, destructive, delegation: business-tools.mjs);
 //                               built-in action alert, raised or silenced per class by the policy.
 //   intent alignment            a call that maps to a hook tool and is not denied is judged against the
-//                               person's task (intent.mjs, passed in by server.mjs); its verdict can replace
-//                               this one (an ask or a deny, in --mode enforce only).
+//                               person's task (intent.mjs, passed in by server.mjs) on EVERY reading below
+//                               that maps (the as-sent mapping, a `cmd` alias read as `command`, the tool a
+//                               dispatcher names inside its arguments …), each with its own findings; the
+//                               strictest verdict replaces this one (an ask or a deny, in --mode enforce only).
 //   unwrapArgs                  {"function": "<name>", "arguments": {...}} (or parameters / args / input)
 //                               is unwrapped before mapTool when the call does not map as sent.
 //   readings                    every other way a client could read the same call (an object, or a JSON
@@ -183,6 +185,7 @@ export function readings(name, input) {
   const keys = new Set(maps.map(decisionKey).filter(Boolean));
   return { maps, innerNames: [...innerNames], overflow, problem, ambiguous: overflow || problem || keys.size > 1 };
 }
+const RANK = { allow: 0, ask: 1, deny: 2 };
 const AMBIGUOUS = "tool call arguments can be read more than one way (a wrapped, repeated or alias field disagrees), so a client may run something other than what was checked";
 
 function mapDirect(name, input = {}) {
@@ -330,10 +333,15 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
     const v = await checkArgs(c, rd);
     const out = ask && v.decision !== "deny" ? ask : v;
     if (!intent || out.decision === "deny" || c.raw != null || c.over) return out;
-    const m = mapTool(c.name, c.input);
-    if (!m) return out;
-    const iv = await intent(m.tool, m.input, v.findings || [], c.name, out);
-    return iv || out;
+    // Every reading that maps to a hook tool, each with the findings its own decision produced; the strictest
+    // intent verdict wins (deny over ask over none).
+    let best = null;
+    for (const j of v.judged || []) {
+      const iv = await intent(j.tool, j.input, j.findings, c.name, out);
+      if (iv && RANK[iv.decision] > RANK[best ? best.decision : "allow"]) best = iv;
+      if (best && best.decision === "deny") break;
+    }
+    return best || out;
   }
 
   const decideMapped = async (m) => { const v = await rt.toolCall({ tool: m.tool, input: m.input, cwd }); return { decision: v.decision, reasons: v.reasons, findings: v.findings || [] }; };
@@ -355,12 +363,15 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
     }
     let out = m ? await decideMapped(m) : await scanArgs(c);
     if (out.decision === "deny") return out;
+    // judged: each mapped reading and the findings of its own decision, for intent alignment (checkOne).
+    const judged = m ? [{ tool: m.tool, input: m.input, findings: out.findings || [] }] : [];
     for (const a of alts) {
       const v = await decideMapped(a);
       if (v.decision === "deny") return v;
+      judged.push({ tool: a.tool, input: a.input, findings: v.findings });
       if (out.decision === "allow" && v.decision !== "allow") out = v;
     }
-    return out;
+    return { ...out, judged };
   }
 
   async function scanArgs(c) {
