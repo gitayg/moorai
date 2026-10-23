@@ -17,6 +17,7 @@ mod listen_sockets;
 mod local_ai;
 mod local_ai_windows;
 mod local_model_names;
+mod mcp_pkg;
 mod mxc;
 mod mxc_denials;
 mod mxc_launch;
@@ -640,13 +641,17 @@ fn mcp_caps(cfg: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({ "net": net, "fs": fs, "cred": cred })
 }
 
-fn mcp_collect(map: &serde_json::Map<String, serde_json::Value>, scope: &str, out: &mut Vec<serde_json::Value>, seen: &mut std::collections::HashSet<String>) {
+// `pkg` (mcp_pkg.rs): package ecosystem, name, version spec, pinned, maintainer count and scan verdict,
+// derived from the launch config here (never sent) plus the Node side's ~/.moorai/mcp-pkg.json.
+struct PkgCtx { cache: serde_json::Value, now_ms: f64 }
+
+fn mcp_collect(map: &serde_json::Map<String, serde_json::Value>, scope: &str, out: &mut Vec<serde_json::Value>, seen: &mut std::collections::HashSet<String>, pkg: &PkgCtx) {
     for (name, cfg) in map {
         if name.is_empty() || !seen.insert(format!("{scope}:{name}")) { continue; }
         let remote = cfg.get("url").is_some()
             || cfg.get("type").and_then(|v| v.as_str()) == Some("sse")
             || cfg.get("transport").and_then(|v| v.as_str()) == Some("sse");
-        let mut entry = serde_json::json!({ "name": name, "scope": scope, "transport": if remote { "remote" } else { "stdio" }, "caps": mcp_caps(cfg) });
+        let mut entry = serde_json::json!({ "name": name, "scope": scope, "transport": if remote { "remote" } else { "stdio" }, "caps": mcp_caps(cfg), "pkg": mcp_pkg::pkg_for(cfg, &pkg.cache, pkg.now_ms) });
         if let Some(reason) = mcp_risk(cfg) { entry["risk"] = serde_json::Value::String(reason.into()); }
         out.push(entry);
     }
@@ -655,15 +660,20 @@ fn mcp_collect(map: &serde_json::Map<String, serde_json::Value>, scope: &str, ou
 #[tauri::command]
 fn device_mcp() -> serde_json::Value {
     let home = platform::home_dir();
+    device_mcp_in(&home, mcp_pkg::now_ms())
+}
+
+fn device_mcp_in(home: &str, now_ms: f64) -> serde_json::Value {
+    let pkg = PkgCtx { cache: mcp_pkg::read_cache(home), now_ms };
     let mut servers: Vec<serde_json::Value> = vec![];
     let mut seen = std::collections::HashSet::new();
     // Claude Code — ~/.claude.json (global + per-project mcpServers)
     if let Ok(txt) = std::fs::read_to_string(format!("{home}/.claude.json")) {
         if let Ok(j) = serde_json::from_str::<serde_json::Value>(&txt) {
-            if let Some(m) = j.get("mcpServers").and_then(|v| v.as_object()) { mcp_collect(m, "claude", &mut servers, &mut seen); }
+            if let Some(m) = j.get("mcpServers").and_then(|v| v.as_object()) { mcp_collect(m, "claude", &mut servers, &mut seen, &pkg); }
             if let Some(projs) = j.get("projects").and_then(|v| v.as_object()) {
                 for (_, pv) in projs {
-                    if let Some(m) = pv.get("mcpServers").and_then(|v| v.as_object()) { mcp_collect(m, "claude", &mut servers, &mut seen); }
+                    if let Some(m) = pv.get("mcpServers").and_then(|v| v.as_object()) { mcp_collect(m, "claude", &mut servers, &mut seen, &pkg); }
                 }
             }
         }
@@ -671,7 +681,7 @@ fn device_mcp() -> serde_json::Value {
     // Cursor — ~/.cursor/mcp.json
     if let Ok(txt) = std::fs::read_to_string(format!("{home}/.cursor/mcp.json")) {
         if let Ok(j) = serde_json::from_str::<serde_json::Value>(&txt) {
-            if let Some(m) = j.get("mcpServers").and_then(|v| v.as_object()) { mcp_collect(m, "cursor", &mut servers, &mut seen); }
+            if let Some(m) = j.get("mcpServers").and_then(|v| v.as_object()) { mcp_collect(m, "cursor", &mut servers, &mut seen, &pkg); }
         }
     }
     serde_json::json!({ "servers": servers })
@@ -884,4 +894,59 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![native_log, app_version, identity, save_provision, set_agent_auth, open_url, open_login_terminal, restart_app, check_and_install_update, console_http::console_fetch, about_info, term_open, term_input, term_resize, term_kill, device_ai_tools, device_ai_assets, device_mcp, os_patch_status, device_browsers, device_ai_shadow, device_posture, device_accounts, device_agent_activity, dir_sensitive, ocr::ocr_capability, ocr::ocr_image, clip_guard_run::clipguard_status, clip_guard_run::clipguard_result])
         .run(tauri::generate_context!())
         .expect("error while running MoorAI");
+}
+
+#[cfg(test)]
+mod device_mcp_tests {
+    use serde_json::json;
+
+    // The device report's mcp entries carry pkg, filled from the config and the Node side's cache, and
+    // nothing of the launch command, its arguments or env.
+    #[test]
+    fn device_mcp_reports_pkg_and_no_launch_details() {
+        let dir = std::env::temp_dir().join(format!("moorai-rs-devmcp-{}-{}", std::process::id(), crate::mcp_pkg::now_ms() as u64));
+        std::fs::create_dir_all(dir.join(".moorai")).unwrap();
+        std::fs::create_dir_all(dir.join(".cursor")).unwrap();
+        let now = 1_792_454_400_000f64;
+        std::fs::write(dir.join(".claude.json"), json!({ "mcpServers": {
+            "weather": { "command": "npx", "args": ["-y", "@acme/weather-mcp@2.1.0", "--token", "SECRET-ARG-9Z", "/Users/alice/clients"], "env": { "ACME_API_KEY": "sk-live-ENV-3" } },
+            "git": { "command": "uvx", "args": ["mcp-server-git"] },
+            "tilde": { "command": "npx", "args": ["-y", "tilde-srv@~1.4.2"] },
+            "local": { "command": "node", "args": ["/Users/alice/srv/index.js"] },
+            "remote": { "type": "http", "url": "https://mcp.internal.corp/x?token=abc" }
+        } }).to_string()).unwrap();
+        std::fs::write(dir.join(".cursor/mcp.json"), json!({ "mcpServers": { "img": { "command": "docker", "args": ["run", "-i", "registry.internal.corp:5000/team/img:1"] } } }).to_string()).unwrap();
+        std::fs::write(dir.join(".moorai").join(crate::mcp_pkg::PKG_CACHE_FILE), json!({ "v": 1, "entries": {
+            "npm:@acme/weather-mcp@2.1.0": { "m": { "count": 1, "org": false, "at": now - 1000.0 }, "s": { "verdict": "warn", "findings": ["single-maintainer", "/etc/passwd"], "at": now - 1000.0 } }
+        } }).to_string()).unwrap();
+        let home = dir.to_string_lossy().to_string();
+        let out = super::device_mcp_in(&home, now);
+        let servers = out["servers"].as_array().unwrap();
+        let by = |n: &str| servers.iter().find(|s| s["name"] == n).unwrap().clone();
+        assert_eq!(by("weather")["pkg"], json!({ "eco": "npm", "name": "@acme/weather-mcp", "version": "2.1.0", "pinned": true, "maintainers": 1, "maintainersOrg": false, "scan": { "verdict": "warn", "findings": ["single-maintainer"] } }));
+        assert_eq!(by("git")["pkg"], json!({ "eco": "pypi", "name": "mcp-server-git", "version": null, "pinned": false, "maintainers": null, "maintainersOrg": null, "scan": null }));
+        assert_eq!((by("tilde")["pkg"]["version"].clone(), by("tilde")["pkg"]["pinned"].clone()), (json!("~1.4.2"), json!(false)));
+        assert_eq!(by("local")["pkg"]["eco"], "local");
+        assert!(by("local")["pkg"]["name"].is_null());
+        assert_eq!(by("remote")["pkg"]["eco"], "other");
+        assert_eq!(by("img")["pkg"], json!({ "eco": "docker", "name": null, "version": null, "pinned": false, "maintainers": null, "maintainersOrg": null, "scan": null }));
+        // The console's acceptance rules, on every entry of what becomes the report's body.mcp[].
+        for s in servers {
+            let p = &s["pkg"];
+            // Rule 4: no whitespace, backslash or "://", no leading "/" or "."; a leading "~" only in version.
+            for k in ["name", "version"] {
+                if let Some(v) = p[k].as_str() {
+                    assert!(!v.chars().any(char::is_whitespace) && !v.contains('\\') && !v.contains("://") && !v.starts_with(['/', '.']), "{k} shaped like a path/URL: {p}");
+                    if k == "name" { assert!(!v.starts_with('~'), "name starts with ~: {p}"); }
+                }
+            }
+            assert_ne!(p["maintainers"], json!(0));
+            if p["eco"] == "local" || p["eco"] == "other" { assert!(p["name"].is_null()); }
+        }
+        let text = out.to_string();
+        for leak in ["SECRET-ARG-9Z", "/Users/alice", "sk-live", "ACME_API_KEY", "--token", "internal.corp", "token=abc", "npx", "uvx", "/etc/passwd", "index.js"] {
+            assert!(!text.contains(leak), "device report leaked {leak}: {text}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

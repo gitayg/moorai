@@ -1,0 +1,768 @@
+{
+ "_comment": "Shared by test/mcp-pkg-report.test.mjs (cli/mcp-package/pkg-report.mjs) and src-tauri/src/mcp_pkg.rs (cargo test): the same MCP server config must give the same pkg {eco,name,version,pinned} on both sides. Console rules: a name or version never holds whitespace, a backslash or ://, and never starts with / or . (a version may start with ~, a name may not; a spec with whitespace goes out as version null); a docker digest reference keeps the whole image reference in name, version null, pinned true.",
+ "cases": [
+  {
+   "id": "npm-exact",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "-y",
+     "@scope/srv@1.4.2"
+    ]
+   },
+   "pkg": {
+    "eco": "npm",
+    "name": "@scope/srv",
+    "version": "1.4.2",
+    "pinned": true
+   }
+  },
+  {
+   "id": "npm-caret",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "-y",
+     "srv@^1.4"
+    ]
+   },
+   "pkg": {
+    "eco": "npm",
+    "name": "srv",
+    "version": "^1.4",
+    "pinned": false
+   }
+  },
+  {
+   "id": "npm-tilde",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "-y",
+     "srv@~1.4.2"
+    ]
+   },
+   "pkg": {
+    "eco": "npm",
+    "name": "srv",
+    "version": "~1.4.2",
+    "pinned": false
+   }
+  },
+  {
+   "id": "npm-latest",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "pkg@latest"
+    ]
+   },
+   "pkg": {
+    "eco": "npm",
+    "name": "pkg",
+    "version": "latest",
+    "pinned": false
+   }
+  },
+  {
+   "id": "npm-none",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "-y",
+     "@modelcontextprotocol/server-filesystem",
+     "/Users/me/private"
+    ]
+   },
+   "pkg": {
+    "eco": "npm",
+    "name": "@modelcontextprotocol/server-filesystem",
+    "version": null,
+    "pinned": false
+   }
+  },
+  {
+   "id": "npm-partial",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "-y",
+     "srv@1.4"
+    ]
+   },
+   "pkg": {
+    "eco": "npm",
+    "name": "srv",
+    "version": "1.4",
+    "pinned": false
+   }
+  },
+  {
+   "id": "npm-prerelease",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "-y",
+     "srv@1.0.0-beta.2"
+    ]
+   },
+   "pkg": {
+    "eco": "npm",
+    "name": "srv",
+    "version": "1.0.0-beta.2",
+    "pinned": true
+   }
+  },
+  {
+   "id": "npm-x-range",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "-y",
+     "srv@1.x"
+    ]
+   },
+   "pkg": {
+    "eco": "npm",
+    "name": "srv",
+    "version": "1.x",
+    "pinned": false
+   }
+  },
+  {
+   "id": "npm-package-flag",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "--package=tool@2.0.0",
+     "tool-bin"
+    ]
+   },
+   "pkg": {
+    "eco": "npm",
+    "name": "tool",
+    "version": "2.0.0",
+    "pinned": true
+   }
+  },
+  {
+   "id": "npm-registry-flag",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "--yes",
+     "--registry",
+     "https://r.example",
+     "mcp-remote@0.1.2",
+     "https://x.example/mcp"
+    ]
+   },
+   "pkg": {
+    "eco": "npm",
+    "name": "mcp-remote",
+    "version": "0.1.2",
+    "pinned": true
+   }
+  },
+  {
+   "id": "pnpm-dlx",
+   "decl": {
+    "command": "pnpm",
+    "args": [
+     "dlx",
+     "@scope/a@1.0.0"
+    ]
+   },
+   "pkg": {
+    "eco": "npm",
+    "name": "@scope/a",
+    "version": "1.0.0",
+    "pinned": true
+   }
+  },
+  {
+   "id": "cmd-c-wrapper",
+   "decl": {
+    "command": "cmd",
+    "args": [
+     "/c",
+     "npx",
+     "-y",
+     "e-server@3.1.0"
+    ]
+   },
+   "pkg": {
+    "eco": "npm",
+    "name": "e-server",
+    "version": "3.1.0",
+    "pinned": true
+   }
+  },
+  {
+   "id": "guard-wrapped",
+   "decl": {
+    "command": "node",
+    "args": [
+     "/opt/moorai/mcp-proxy/moorai-mcp-guard.mjs",
+     "--server",
+     "x",
+     "--",
+     "npx",
+     "-y",
+     "pkg@1.0.0"
+    ]
+   },
+   "pkg": {
+    "eco": "npm",
+    "name": "pkg",
+    "version": "1.0.0",
+    "pinned": true
+   }
+  },
+  {
+   "id": "command-string",
+   "decl": {
+    "command": "npx -y c-srv@2.0.0"
+   },
+   "pkg": {
+    "eco": "npm",
+    "name": "c-srv",
+    "version": "2.0.0",
+    "pinned": true
+   }
+  },
+  {
+   "id": "pypi-none",
+   "decl": {
+    "command": "uvx",
+    "args": [
+     "mcp-server-fetch"
+    ]
+   },
+   "pkg": {
+    "eco": "pypi",
+    "name": "mcp-server-fetch",
+    "version": null,
+    "pinned": false
+   }
+  },
+  {
+   "id": "pypi-exact",
+   "decl": {
+    "command": "uvx",
+    "args": [
+     "--python",
+     "3.12",
+     "mcp-server-git==0.6.2",
+     "--repository",
+     "."
+    ]
+   },
+   "pkg": {
+    "eco": "pypi",
+    "name": "mcp-server-git",
+    "version": "0.6.2",
+    "pinned": true
+   }
+  },
+  {
+   "id": "pypi-at-latest",
+   "decl": {
+    "command": "uvx",
+    "args": [
+     "--from",
+     "awslabs.core-mcp-server@latest",
+     "awslabs.core-mcp-server"
+    ]
+   },
+   "pkg": {
+    "eco": "pypi",
+    "name": "awslabs.core-mcp-server",
+    "version": "latest",
+    "pinned": false
+   }
+  },
+  {
+   "id": "pypi-at-exact",
+   "decl": {
+    "command": "uvx",
+    "args": [
+     "srv-mcp@1.2.3"
+    ]
+   },
+   "pkg": {
+    "eco": "pypi",
+    "name": "srv-mcp",
+    "version": "1.2.3",
+    "pinned": true
+   }
+  },
+  {
+   "id": "pypi-range",
+   "decl": {
+    "command": "uvx",
+    "args": [
+     "pkg[extra]>=1.0"
+    ]
+   },
+   "pkg": {
+    "eco": "pypi",
+    "name": "pkg",
+    "version": ">=1.0",
+    "pinned": false
+   }
+  },
+  {
+   "id": "pypi-compatible",
+   "decl": {
+    "command": "uvx",
+    "args": [
+     "pkg~=1.4"
+    ]
+   },
+   "pkg": {
+    "eco": "pypi",
+    "name": "pkg",
+    "version": "~=1.4",
+    "pinned": false
+   }
+  },
+  {
+   "id": "pypi-wildcard",
+   "decl": {
+    "command": "uvx",
+    "args": [
+     "pkg==1.*"
+    ]
+   },
+   "pkg": {
+    "eco": "pypi",
+    "name": "pkg",
+    "version": "1.*",
+    "pinned": false
+   }
+  },
+  {
+   "id": "pipx-spec",
+   "decl": {
+    "command": "pipx",
+    "args": [
+     "run",
+     "--spec",
+     "x-mcp==1.1",
+     "x"
+    ]
+   },
+   "pkg": {
+    "eco": "pypi",
+    "name": "x-mcp",
+    "version": "1.1",
+    "pinned": true
+   }
+  },
+  {
+   "id": "python-m-inferred",
+   "decl": {
+    "command": "python",
+    "args": [
+     "-m",
+     "mcp_server_fetch"
+    ]
+   },
+   "pkg": {
+    "eco": "other",
+    "name": null,
+    "version": null,
+    "pinned": null
+   }
+  },
+  {
+   "id": "docker-untagged",
+   "decl": {
+    "command": "docker",
+    "args": [
+     "run",
+     "-i",
+     "--rm",
+     "-e",
+     "GITHUB_TOKEN",
+     "-v",
+     "/a:/b",
+     "ghcr.io/github/github-mcp-server"
+    ]
+   },
+   "pkg": {
+    "eco": "docker",
+    "name": "ghcr.io/github/github-mcp-server",
+    "version": null,
+    "pinned": false
+   }
+  },
+  {
+   "id": "docker-tag",
+   "decl": {
+    "command": "docker",
+    "args": [
+     "run",
+     "-i",
+     "--rm",
+     "mcp/fetch:1.2"
+    ]
+   },
+   "pkg": {
+    "eco": "docker",
+    "name": "mcp/fetch",
+    "version": "1.2",
+    "pinned": false
+   }
+  },
+  {
+   "id": "docker-latest",
+   "decl": {
+    "command": "docker",
+    "args": [
+     "run",
+     "-i",
+     "--rm",
+     "mcp/fetch:latest"
+    ]
+   },
+   "pkg": {
+    "eco": "docker",
+    "name": "mcp/fetch",
+    "version": "latest",
+    "pinned": false
+   }
+  },
+  {
+   "id": "docker-digest",
+   "decl": {
+    "command": "docker",
+    "args": [
+     "run",
+     "-i",
+     "--rm",
+     "mcp/fetch@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    ]
+   },
+   "pkg": {
+    "eco": "docker",
+    "name": "mcp/fetch@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "version": null,
+    "pinned": true
+   }
+  },
+  {
+   "id": "docker-tag-and-digest",
+   "decl": {
+    "command": "docker",
+    "args": [
+     "run",
+     "-i",
+     "--rm",
+     "ghcr.io/x/y:2.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    ]
+   },
+   "pkg": {
+    "eco": "docker",
+    "name": "ghcr.io/x/y:2.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "version": null,
+    "pinned": true
+   }
+  },
+  {
+   "id": "docker-short-digest",
+   "decl": {
+    "command": "docker",
+    "args": [
+     "run",
+     "-i",
+     "--rm",
+     "mcp/fetch@sha256:abc"
+    ]
+   },
+   "pkg": {
+    "eco": "docker",
+    "name": "mcp/fetch",
+    "version": null,
+    "pinned": false
+   }
+  },
+  {
+   "id": "docker-private-registry",
+   "decl": {
+    "command": "docker",
+    "args": [
+     "run",
+     "-i",
+     "--rm",
+     "registry.internal.corp:5000/team/img:1"
+    ]
+   },
+   "pkg": {
+    "eco": "docker",
+    "name": null,
+    "version": null,
+    "pinned": false
+   }
+  },
+  {
+   "id": "docker-localhost-registry",
+   "decl": {
+    "command": "docker",
+    "args": [
+     "run",
+     "-i",
+     "--rm",
+     "localhost:5000/img@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    ]
+   },
+   "pkg": {
+    "eco": "docker",
+    "name": null,
+    "version": null,
+    "pinned": true
+   }
+  },
+  {
+   "id": "podman-docker-io",
+   "decl": {
+    "command": "podman",
+    "args": [
+     "run",
+     "docker.io/library/alpine:3"
+    ]
+   },
+   "pkg": {
+    "eco": "docker",
+    "name": "docker.io/library/alpine",
+    "version": "3",
+    "pinned": false
+   }
+  },
+  {
+   "id": "local-node",
+   "decl": {
+    "command": "node",
+    "args": [
+     "/Users/me/srv/index.js"
+    ]
+   },
+   "pkg": {
+    "eco": "local",
+    "name": null,
+    "version": null,
+    "pinned": null
+   }
+  },
+  {
+   "id": "local-python",
+   "decl": {
+    "command": "python",
+    "args": [
+     "server.py"
+    ]
+   },
+   "pkg": {
+    "eco": "local",
+    "name": null,
+    "version": null,
+    "pinned": null
+   }
+  },
+  {
+   "id": "local-binary",
+   "decl": {
+    "command": "./bin/server"
+   },
+   "pkg": {
+    "eco": "local",
+    "name": null,
+    "version": null,
+    "pinned": null
+   }
+  },
+  {
+   "id": "local-npx-dir",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "-y",
+     "./local-dir"
+    ]
+   },
+   "pkg": {
+    "eco": "local",
+    "name": null,
+    "version": null,
+    "pinned": null
+   }
+  },
+  {
+   "id": "local-npx-file",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "file:../x"
+    ]
+   },
+   "pkg": {
+    "eco": "local",
+    "name": null,
+    "version": null,
+    "pinned": null
+   }
+  },
+  {
+   "id": "local-npx-tgz",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "pkg-1.0.0.tgz"
+    ]
+   },
+   "pkg": {
+    "eco": "local",
+    "name": null,
+    "version": null,
+    "pinned": null
+   }
+  },
+  {
+   "id": "local-uv-run",
+   "decl": {
+    "command": "uv",
+    "args": [
+     "run",
+     "--directory",
+     "/x/y",
+     "server.py"
+    ]
+   },
+   "pkg": {
+    "eco": "local",
+    "name": null,
+    "version": null,
+    "pinned": null
+   }
+  },
+  {
+   "id": "other-github",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "github:user/repo"
+    ]
+   },
+   "pkg": {
+    "eco": "other",
+    "name": null,
+    "version": null,
+    "pinned": null
+   }
+  },
+  {
+   "id": "other-url-tarball",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "https://internal.corp/x/pkg.tgz"
+    ]
+   },
+   "pkg": {
+    "eco": "other",
+    "name": null,
+    "version": null,
+    "pinned": null
+   }
+  },
+  {
+   "id": "other-remote",
+   "decl": {
+    "url": "https://mcp.example.com/mcp?token=abc",
+    "type": "http"
+   },
+   "pkg": {
+    "eco": "other",
+    "name": null,
+    "version": null,
+    "pinned": null
+   }
+  },
+  {
+   "id": "other-unknown-binary",
+   "decl": {
+    "command": "my-server-binary",
+    "args": [
+     "--port",
+     "9"
+    ]
+   },
+   "pkg": {
+    "eco": "other",
+    "name": null,
+    "version": null,
+    "pinned": null
+   }
+  },
+  {
+   "id": "other-python-module",
+   "decl": {
+    "command": "python3",
+    "args": [
+     "-m",
+     "http.server"
+    ]
+   },
+   "pkg": {
+    "eco": "other",
+    "name": null,
+    "version": null,
+    "pinned": null
+   }
+  },
+  {
+   "id": "other-empty",
+   "decl": {
+    "command": ""
+   },
+   "pkg": {
+    "eco": "other",
+    "name": null,
+    "version": null,
+    "pinned": null
+   }
+  },
+  {
+   "id": "pypi-range-with-space",
+   "decl": {
+    "command": "uvx",
+    "args": [
+     "pkg>=1.0, <2"
+    ]
+   },
+   "pkg": {
+    "eco": "pypi",
+    "name": "pkg",
+    "version": null,
+    "pinned": false
+   }
+  },
+  {
+   "id": "npm-or-range-with-space",
+   "decl": {
+    "command": "npx",
+    "args": [
+     "-y",
+     "srv@1.x || 2.x"
+    ]
+   },
+   "pkg": {
+    "eco": "npm",
+    "name": "srv",
+    "version": null,
+    "pinned": false
+   }
+  }
+ ]
+}
