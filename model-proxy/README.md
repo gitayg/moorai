@@ -1127,12 +1127,13 @@ reply text), streaming and not. Intent: a misaligned upload alerts (report) and 
 headless-asked (`ask`); an aligned one is delivered; a tool result, the text sent with it and the system
 prompt are never captured as the task; the session precedence and the header strip. The intent store there
 is a test double that honours `data/intent-server.mjs`'s contract (`model-proxy/test/fake-intent.mjs`); one
-test runs the real module and is skipped while it is the stub. Reply text: a secret, an email address, a
+test runs the real module, and `test/servers-intent-e2e.test.mjs` runs the proxy CLI on it end to end
+(host named in the user turn delivered, another host alerted or refused, a tool-result-only request
+task-unknown). Reply text: a secret, an email address, a
 card number and a system-prompt echo, each split across 7-character deltas and 5-byte network chunks, are
 each found; report forwards byte-identical, mask replaces the match (every repeated Responses copy too),
 block refuses with nothing of the match sent. Not tested: real providers and SDKs reading a masked or
-flushed event, a model that interleaves text across several Responses content parts or Gemini candidates,
-and the real `data/intent-server.mjs` judging (pending its implementation).
+flushed event and a model that interleaves text across several Responses content parts or Gemini candidates.
 
 Latency the judging adds, measured on an M-series Mac, node, no console, built-in rules:
 

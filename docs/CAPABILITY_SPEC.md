@@ -2239,8 +2239,9 @@ the framework ever asks.
 
 **Status: built and unit-tested (`test/model-proxy-intent.test.mjs`, `test/model-proxy-response-scan.test.mjs`),
 in process against fake upstreams for Anthropic, OpenAI Chat Completions and Responses, Gemini and Ollama,
-streaming and not. The intent store (`data/intent-server.mjs`) is a test double there; the test against the
-real module is skipped until it is implemented. Not run against a real provider or SDK.**
+streaming and not. The intent store (`data/intent-server.mjs`) is a test double there; one test runs the
+real module, and `test/servers-intent-e2e.test.mjs` runs the proxy CLI and moorai-serve on it end to end
+against a fake upstream. Not run against a real provider or SDK.**
 
 **Intent alignment** ([`model-proxy/intent.mjs`](../model-proxy/intent.mjs),
 [`user-turns.mjs`](../model-proxy/user-turns.mjs)). Each tool call the model returns that maps to a hook tool
