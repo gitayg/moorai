@@ -352,21 +352,29 @@ const unknownDir = (state) => { state.dir = null; state.moved = true; return tru
 // as the literal first command word (after env assignments, `command` or `builtin`); behind any other
 // wrapper (sudo, env, time, eval …) or last in a pipeline (zsh, bash lastpipe run it in this shell) the
 // directory is unknown.
-const REPARSE_BINS = new Set(["eval", "source", "."]);
+const REPARSE_BINS = new Set(["eval", "source", ".", "iex", "invoke-expression"]);
 // A link made earlier in the same command can move a destination's real path after realOf read it, so a move of
 // oversight after one is judged as a removal.
 const LINK_BINS = new Set(["ln", "link", "mklink"]);
+// Copies that can write links, archive extraction, and interpreter one-liners can each make a link the parser
+// cannot see; any of them anywhere in the command (or a background job) counts.
+const COPY_LINK = { cp: /^(?:-[a-zA-Z]*[sladP][a-zA-Z]*|--(?:symbolic-link|link|links|archive|no-dereference))$/, rsync: /^(?:-[a-zA-Z]*[al][a-zA-Z]*|--(?:links|archive|copy-links))$/ };
+const EXTRACT_BINS = new Set(["tar", "bsdtar", "unzip", "cpio", "7z", "7za", "ditto"]);
+const INTERP = /^(?:python[0-9.]*|node|perl|ruby|php|bash|sh|zsh|dash|ksh|pwsh|powershell)$/;
 function makesLink(seg) {
   const c = commandOf(seg.tokens, seg.ps);
   if (!c) return false;
-  if (LINK_BINS.has(c.binary)) return true;
+  const args = seg.tokens.slice(c.at + 1);
+  if (LINK_BINS.has(c.binary) || EXTRACT_BINS.has(c.binary)) return true;
+  if (COPY_LINK[c.binary] && args.some((t) => COPY_LINK[c.binary].test(t))) return true;
+  if (INTERP.test(c.binary) && args.some((t) => /^-(?:[a-zA-Z]*[ce]|-?command|-eval)$/i.test(t))) return true;
   return c.binary === "new-item" && seg.tokens.some((t) => /^(?:symboliclink|junction|hardlink)$/i.test(t));
 }
 function changeDir(seg, prev, state) {
   const c = commandOf(seg.tokens, seg.ps);
   // eval, source and . re-parse text in this shell, so any cd inside them is invisible here: unknown.
-  const first = seg.tokens.find((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t));
-  if (REPARSE_BINS.has(first) || (c && REPARSE_BINS.has(c.binary))) return unknownDir(state);
+  const first = seg.tokens.find((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t) && t !== "command" && t !== "builtin");
+  if (REPARSE_BINS.has(String(first).toLowerCase()) || (c && REPARSE_BINS.has(c.binary))) return unknownDir(state);
   if (!c || !CD_BINS.has(c.binary)) return false;
   if (!seg.ps && (seg.sep === "|" || seg.sep === "&")) return true;
   if (!seg.ps && prev && prev.sep === "|") return unknownDir(state);
@@ -401,6 +409,8 @@ export function oversightCommandSignals(command, { ps = false, surfaces = null, 
   const project = resolve(typeof cwd === "string" && cwd ? cwd : process.cwd());
   const opts = { ps, surfacePaths: Boolean(surfaces && surfaces.paths && surfaces.paths.length) };
   const dirs = new Map(); // subshell scope -> { dir, stack }
+  // Execution order is not parse order (a later segment, a background job): a link-maker anywhere counts.
+  opts.linkedEarlier = segs.some((s) => { try { return makesLink(s) || (!s.ps && s.sep === "&"); } catch { return true; } });
   for (let i = 0; i < segs.length; i++) {
     if (now() > deadline) { out.add(INCOMPLETE); break; }
     const seg = segs[i];
@@ -411,7 +421,6 @@ export function oversightCommandSignals(command, { ps = false, surfaces = null, 
       const state = dirState(dirs, scope, project);
       if (changeDir(seg, segs[i - 1], state)) { dirs.set(scope, state); continue; }
       judgeSegment(seg, segs, i, opts, out, touched, pathCtx(project, state.dir, out));
-      if (makesLink(seg)) opts.linkedEarlier = true;
     } catch { /* one segment never sinks the rest */ }
   }
   if (!out.has(INCOMPLETE) && now() > deadline) out.add(INCOMPLETE);

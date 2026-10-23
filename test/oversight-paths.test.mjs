@@ -238,3 +238,17 @@ test("round-5: eval / source / . re-parse in this shell, so the directory is unk
   // A link elsewhere in the command does not touch an unrelated, non-oversight move.
   assert.deepEqual(sh("ln -s ../shared lib/shared && mv src/util.py src/util2.py"), []);
 });
+
+test("round-6: a link-maker anywhere in the command (later, background, cp/rsync link flags, archive extraction, interpreter one-liners) makes a monitor move a removal; iex and command . re-parse too", () => {
+  for (const cmd of [
+    "mv src/alerting.py ops/keep/alerting.py; ln -s /tmp ops/keep",
+    "ln -s /tmp ops/keep & mv src/alerting.py ops/keep/alerting.py",
+    "cp -s /tmp/x ops/keep && mv src/alerting.py ops/keep/alerting.py",
+    "rsync -a --links /tmp/ ops/ && mv src/alerting.py ops/keep/alerting.py",
+    "tar xf links.tar && mv src/alerting.py ops/keep/alerting.py",
+    "python3 -c 'import os' && mv src/alerting.py ops/keep/alerting.py"
+  ]) has(sh(cmd), "wiring-removed", cmd);
+  for (const cmd of ["command . ./env.sh && rm scope.py"]) has(sh(cmd), "analysis-incomplete", cmd);
+  has(sh("iex $GO; Remove-Item scope.py", { ps: true }), "analysis-incomplete", "iex");
+  assert.deepEqual(sh("cp -a src/util.py src/util2.py && mv src/a.py src/b.py"), []);
+});
