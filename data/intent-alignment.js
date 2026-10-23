@@ -119,8 +119,8 @@ export const MOORAI_PORTS = Object.freeze([8790, 8791, 8848]);
 const MOORAI_PORT = new Set(MOORAI_PORTS.map(String));
 // Where a command names host:port (any scheme's URL, socat's address), classified after normalising the host
 // (loopbackHost below), never by its spelling.
-const URL_HOSTPORT = /\b[a-z][a-z0-9+.-]{0,15}:\/\/(?:[^\s\/@'"]{0,200}@)?(\[[0-9a-f:.%]{1,64}\]|[^\s\/:'"?#`)\[\]]{1,253})(?::(\d{1,5}))?/gi;
-const SOCAT_HOSTPORT = /\b(?:tcp[46]?|tcp[46]?-connect|openssl|openssl-connect|udp[46]?|udp[46]?-sendto|udp[46]?-connect):(\[[0-9a-f:.%]{1,64}\]|[^\s:,]{1,253}):(\d{1,5})/gi;
+const URL_HOSTPORT = /\b[a-z][a-z0-9+.-]{0,15}:\/\/(?:[^\s\/@'"]{0,200}@)?(\[[0-9a-f:.%]{1,64}\]|[^\s\/:'"?#`)\[\]]{1,253})(?::(\d{1,16}))?(?!\d)/gi;
+const SOCAT_HOSTPORT = /\b(?:tcp[46]?|tcp[46]?-connect|openssl|openssl-connect|udp[46]?|udp[46]?-sendto|udp[46]?-connect):(\[[0-9a-f:.%]{1,64}\]|[^\s:,]{1,253}):(\d{1,16})(?!\d)/gi;
 // IPv4 as inet_aton reads it: 1-4 parts, each decimal, 0x hex or 0-prefixed octal, the last part filling the
 // bytes left (127.1, 2130706433, 0x7f.1, 0177.0.0.1). Returns the 32-bit value, or null.
 function ipv4(h) {
@@ -172,7 +172,9 @@ export function loopbackHost(host) {
   if (g.slice(0, 5).every((x) => x === 0) && (g[5] === 0xffff || g[5] === 0)) return g[5] === 0 && g[6] === 0 ? g[7] <= 1 : v4tail === 0 || v4tail >>> 24 === 127;
   return false;
 }
-const moorPort = (port) => port != null && MOORAI_PORT.has(String(Number(port)));
+// A port as written, leading zeros allowed (at most 16 digits are read): one of MOORAI_PORTS once it is a
+// number of at most 65535.
+const moorPort = (port) => { const n = port == null ? NaN : Number(port); return Number.isInteger(n) && n <= 65535 && MOORAI_PORT.has(String(n)); };
 const NC_HOST = /\b(?:nc|ncat|netcat|telnet)\b(?:\s+-{1,2}[\w-]+(?:\s+\d+)?)*\s+([a-z0-9][\w.-]*\.[a-z][\w-]*|\d{1,3}(?:\.\d{1,3}){3})\b/gi;
 const REMOTE_COPY = /(?:^|\s)(?:[\w.-]+@)?([a-z0-9][\w-]*(?:\.[\w-]+)+):/gi;
 const SOCAT_HOST = /\btcp[46]?:([a-z0-9][\w.-]+):\d+/gi;
@@ -193,7 +195,7 @@ const VALUE_LONG = new Set(["--data", "--data-binary", "--data-raw", "--data-url
   "--password", "--http-user", "--http-password", "--append-output", "--output-file", "--tries", "--timeout", "--wait", "--level"]);
 // Short flags that take a value, per tool (they differ: curl -O and -i take none, wget -O and -i do).
 const VALUE_SHORT = { curl: new Set([..."AbcCdDeEFHKmoPQrtTuUwxXyYz"]), wget: new Set([..."oaOeiBtTwQUPlARDIX"]) };
-const BARE = /^(?:[^\s\/@]{1,64}@)?(\[[0-9a-f:.%]{1,64}\]|[a-z0-9][a-z0-9-]{0,62}(?:\.[a-z0-9-]{1,63}){0,16}\.?)(?::(\d{1,5}))?(?:[\/?#]|$)/i;
+const BARE = /^(?:[^\s\/@]{1,64}@)?(\[[0-9a-f:.%]{1,64}\]|[a-z0-9][a-z0-9-]{0,62}(?:\.[a-z0-9-]{1,63}){0,16}\.?)(?::(\d{1,16}))?(?:[\/?#]|$)/i;
 function words(seg) {
   const out = [];
   let cur = "", q = "", has = false;
@@ -236,7 +238,7 @@ function ncTargets(command, add) {
       if (t.startsWith("-") && t.length > 1) { if (t.length === 2 && NC_VALUE.has(t[1])) i++; continue; }
       pos.push(t);
     }
-    if (pos.length === 2 && /^\d{1,5}$/.test(pos[1])) add(pos[0], pos[1]);
+    if (pos.length === 2 && /^\d{1,16}$/.test(pos[1])) add(pos[0], pos[1]);
   }
 }
 // The unknown destination: a bare curl / wget argument whose host is shell text this module cannot resolve
@@ -266,7 +268,7 @@ function egressTargets(command) {
     const auth = a.split(/[\/?#]/, 1)[0];
     if (SHELL_TEXT.test(auth) || (auth.includes("[") && !/^(?:[^\s\/@]{1,64}@)?\[[0-9a-f:.%]{1,64}\](?::\d{1,5})?$/i.test(auth))) { addHost(UNKNOWN_SITE); return; }
     const b = BARE.exec(auth);
-    if (!b) return;
+    if (!b) { addHost(UNKNOWN_SITE); return; }             // an authority this module cannot read: fail closed
     const host = b[1].toLowerCase();
     if (loopbackHost(host)) { if (moorPort(b[2])) control.add(`loopback:${Number(b[2])}`); return; }
     if (url || host.includes(".") || host.startsWith("[")) addHost(host);

@@ -22,17 +22,17 @@
 // person's request, and all of it can carry text someone else wrote (a cloned repository's CLAUDE.md, a page a
 // worker read). stripHarness removes each such block from a turn's texts (its text parts, in order) before
 // anything is taken from them, so a host, a path or a label word that appears only inside one never counts.
-// ONE left-to-right scan per text over every harness tag, opening and closing, with a stack: a block ends at
-// its own matching close, and blocks nest. Fail closed on anything malformed or forgeable:
-//   * an opening never closed, or a close that does not match the innermost open block (interleaved tags):
-//     the rest of the TURN is dropped (this text and every later part);
-//   * a second top-level block of a tag in the same text, or a close of a tag outside any block after a block
-//     of that tag: everything from the earlier block's start is dropped. A file quoted inside a reminder that
-//     carries `</system-reminder> words <system-reminder>` (so the harness's own tags close the forgery)
-//     would otherwise expose `words` between two well-formed blocks.
-// The cost is the other way: a person's words caught in such a cut are dropped, which can only make an action
-// look LESS aligned. <bash-input> (the command a person typed) is kept. Linear: one global regex pass, the
-// output kept as a list of pieces that a cut truncates.
+// Per text, ONE left-to-right scan over every harness tag with a stack: the first block ends at its own
+// matching close, and blocks nest. What is kept is the text before the first harness tag and, when that block
+// closes cleanly and NO further harness tag follows in the text, the text after it. Fail closed:
+//   * an unclosed block, or a close that does not match the innermost open block (interleaved tags): only the
+//     text before the first harness tag is kept, and the rest of the TURN (every later part) is dropped;
+//   * any further harness tag after the first block (a second block of any tag, or a stray close, e.g. a file
+//     quoted inside a reminder carrying `</system-reminder> words <system-reminder>`): only the text before
+//     the first harness tag is kept from this text.
+// The cost is the other way: a person's words after a harness block in the same text, when another harness
+// tag follows, are dropped, which can only make an action look LESS aligned. <bash-input> (the command a
+// person typed) is kept. Linear: one global regex pass.
 //
 // NOT IDENTIFIABLE HERE (judged as the person's turn): a sub-agent's prompt (Claude Code's Task / Agent tool:
 // the sub-agent's first user turn is text the PARENT MODEL wrote, so in an agent-to-agent call the "task" this
@@ -49,36 +49,21 @@ const HARNESS_RE = new RegExp(`<(/?)(${HARNESS_TAGS.join("|")})>`, "g");
 // One text → { text, malformed }.
 function scan(text) {
   const s = String(text);
-  const out = [];          // the kept pieces, in order
-  const mark = new Map();  // tag -> out.length when the latest block of that tag began
-  const stack = [];        // open tags, innermost last
-  let keepFrom = 0;
   HARNESS_RE.lastIndex = 0;
-  let m;
+  let m, first = -1, end = -1;
+  const stack = [];
   while ((m = HARNESS_RE.exec(s)) !== null) {
     const closing = m[1] === "/", tag = m[2];
-    // Back to where the earlier block of this tag began: the text since then is dropped.
-    const cut = () => { const n = mark.get(tag); out.length = n; for (const [k, v] of mark) if (v > n) mark.set(k, n); };
-    if (!closing) {
-      if (!stack.length) {
-        if (mark.has(tag)) cut(); else out.push(s.slice(keepFrom, m.index));
-        mark.set(tag, out.length);
-      }
-      stack.push(tag);
-      continue;
-    }
-    if (stack.length) {
-      if (stack[stack.length - 1] !== tag) return { text: out.join(""), malformed: true };   // interleaved
-      stack.pop();
-      if (!stack.length) keepFrom = HARNESS_RE.lastIndex;
-      continue;
-    }
-    // A close outside any block: an earlier close of this tag was forged.
-    if (mark.has(tag)) { cut(); keepFrom = HARNESS_RE.lastIndex; }
+    if (end >= 0) return { text: s.slice(0, first), malformed: false };          // a further harness tag
+    if (first < 0) { if (closing) continue; first = m.index; }                 // a close before any block is text
+    if (!closing) { stack.push(tag); continue; }
+    if (stack[stack.length - 1] !== tag) return { text: s.slice(0, first), malformed: true };   // interleaved
+    stack.pop();
+    if (!stack.length) end = HARNESS_RE.lastIndex;
   }
-  if (stack.length) return { text: out.join(""), malformed: true };                       // unclosed
-  out.push(s.slice(keepFrom));
-  return { text: out.join(""), malformed: false };
+  if (first < 0) return { text: s, malformed: false };
+  if (end < 0) return { text: s.slice(0, first), malformed: true };             // unclosed
+  return { text: s.slice(0, first) + s.slice(end), malformed: false };
 }
 // A turn's texts → the person's text, joined by newlines; a malformed text ends the turn there.
 export function stripTurn(texts) {

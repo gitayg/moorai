@@ -2253,9 +2253,9 @@ and is not already denied is judged by `data/intent-server.mjs` against the sess
   clients share one session space.
 - Task: the first and the latest real user turn of each request. System and developer text, tool results,
   function responses, documents, and the text blocks sent with Anthropic `tool_result` blocks are never
-  the task. Harness blocks are stripped first (one stack scan per text, a block ending at its own close;
-  an unclosed block or an interleaved close drops the rest of the turn, a second block of the same tag in one
-  text or a stray close drops back to the earlier block's start): `<system-reminder>` (Claude Code's CLAUDE.md, memory and session context),
+  the task. Harness blocks are stripped first (one stack scan per text; kept: the text before the first
+  harness tag, plus the text after that block only when it closes cleanly and no further harness tag
+  follows; an unclosed block or interleaved close also drops the rest of the turn): `<system-reminder>` (Claude Code's CLAUDE.md, memory and session context),
   `<task-notification>`, `<bash-stdout>`, `<bash-stderr>`, `<local-command-stdout>`, `<local-command-stderr>`,
   `<user-prompt-submit-hook>` — identified in Claude Code 2.1.295's bundle. Captured only from a request that
   declares tools (a tool-less side request — WebFetch summarisation, compaction — adds nothing), and only
@@ -2270,8 +2270,8 @@ and is not already denied is judged by `data/intent-server.mjs` against the sess
   proxy 8791, the MCP gateway 8848; URL, bare `host:port`, `nc`, `socat`; the host normalised: any inet_aton
   IPv4 spelling, `0`, `::1`, IPv4-mapped IPv6, a trailing dot) is risky and never aligned; remote hosts in
   the same command stay among its targets. A curl / wget destination given as a bare argument (or
-  `--url=`) is an egress site; one whose host is unresolvable shell text is the site `unknown`, never
-  aligned.
+  `--url=`) is an egress site; one whose host is unresolvable shell text, or whose authority cannot be
+  read, is the site `unknown`, never aligned. Ports are read with leading zeros (≤ 16 digits, ≤ 65535).
 - Task unknown: a risky call in a session with no live captured task (no user turn ever seen, evicted,
   expired) is class `task-unknown`, handled as misaligned; `block` refuses it and `ask` asks.
 - `intentAlignment`: `off`; `report` (default: one alert per target per session); `ask` (enforce: the

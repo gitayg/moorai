@@ -509,13 +509,15 @@ command's output is `<local-command-stdout>` / `<local-command-stderr>`; hook ou
 (`user-turns.mjs stripTurn`), so a host, a path or a label word ("delete", "token", "post") that appears
 only there never counts — a cloned repository's CLAUDE.md naming a host does not put it in scope, and the
 credentials, destructive and mcp-write labels are not switched on by a CLAUDE.md that happens to use those
-words. One left-to-right scan per text over every harness tag, with a stack: a block ends at its own
-matching close and blocks nest. It fails closed: an unclosed block, or a close that does not match the
-innermost open block (interleaved tags), drops the rest of the turn (that text part and every later one); a
-second top-level block of the same tag in one text, or a stray close of a tag after a block of it, drops
-everything from the earlier block's start — so a quoted file carrying `</system-reminder> words
-<system-reminder>` cannot expose `words` between two well-formed blocks. The cost is that a person's words
-caught in such a cut are dropped, which can only make a call look less aligned. Linear. `<bash-input>` (the
+words. One left-to-right scan per text over every harness tag, with a stack: the first block ends at its
+own matching close and blocks nest. Kept: the text before the first harness tag, and — only when that block
+closes cleanly and no further harness tag follows in the same text — the text after it. Fail closed: an
+unclosed block, or a close that does not match the innermost open block (interleaved tags), keeps only the
+text before the first harness tag and drops the rest of the turn (every later text part); any further
+harness tag after the first block (a second block of any tag, or a stray close) keeps only the text before
+the first harness tag of that text — so a quoted file carrying `</system-reminder> words <system-reminder>`
+cannot expose `words`. The cost is that a person's words after a harness block, in a text where another
+harness tag follows, are dropped, which can only make a call look less aligned. Linear. `<bash-input>` (the
 command the person typed) is kept.
 
 **Only requests that declare tools, and only once the provider accepts them.** A request with no `tools`
@@ -597,8 +599,10 @@ local dev server), and a listener started on a non-default port is not recognise
 **Bare curl / wget destinations.** Every curl / wget argument that is not a flag or a flag's value is a
 destination (`--url VALUE` and `--url=VALUE` too; any scheme; a query or fragment after the host is ignored).
 A destination whose host is shell text the proxy cannot resolve — `$VAR`, `$(…)`, backticks, a glob, a
-brace, a backslash — is the site `unknown`, which no task can name (every site a task yields has a dot), so
-such an upload is never aligned.
+brace, a backslash — or whose authority it cannot read at all (an underscore in the host, a port of more than
+16 digits), is the site `unknown`, which no task can name (every site a task yields has a dot), so such an
+upload is never aligned. A port is read with its leading zeros (up to 16 digits) and compared as a number of
+at most 65535, so `:0008790` is moorai-serve's port.
 
 **Limits.**
 - Lexical, as in the hook: an upload to a host the person named is aligned even when it is exfiltration to
@@ -1243,8 +1247,10 @@ a spaced card across the batch boundary; a masked Gemini chunk and a masked Olla
 posting to 127.0.0.1:8790 and uploading to a remote host keeps the remote site as a target; a query straight
 after a bare host, `--url=`, any scheme, and unresolvable shell text (site `unknown`, never aligned); sixteen
 loopback spellings on a MoorAI port, with public and other-port controls and a bounded-time check;
-interleaved, nested, re-balanced and unclosed harness blocks, and a linear-time check. Each fix was mutated
-back and its test seen failing.
+interleaved, nested, re-balanced and unclosed harness blocks, and a linear-time check; `R5` an interleaved or
+unclosed block, or a second block, followed by an upload host keeps only the text before the first tag (and
+the proxy refuses the upload); `R6` leading-zero MoorAI ports by URL, bare, `nc` and `socat`, a padded other
+port, and unreadable authorities as `unknown`. Each fix was mutated back and its test seen failing.
 
 Latency the judging adds, measured on an M-series Mac, node, no console, built-in rules:
 

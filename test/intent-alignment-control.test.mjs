@@ -140,3 +140,18 @@ test("R3: the address normalisation is bounded and linear", () => {
     assert.ok(ms < 250, `${ms.toFixed(1)} ms`);
   }
 });
+
+test("R6: a MoorAI port with leading zeros is still a MoorAI port; an authority that cannot be read fails closed", () => {
+  for (const cmd of ["curl -d @t http://127.0.0.1:08790/v1/task", "curl -d @t http://127.0.0.1:0008790/v1/task", "curl -d @t 127.0.0.1:000000008791/x", "nc 127.0.0.1 0008790 < r", "socat - tcp:127.0.0.1:00008848", "curl -d @t 'http://[::1]:0000000000008790/x'"]) {
+    const t = bash(cmd);
+    assert.equal(t && t.cls, "moorai-control", cmd);
+  }
+  assert.equal(bash("curl -d @t http://127.0.0.1:00003000/x"), null, "a padded other port is still another port");
+  const long = bash("curl -d @t http://127.0.0.1:0000000000000000099999/x");
+  assert.notEqual(long && long.cls, "moorai-control", "past 16 digits is no port of ours");
+  assert.ok(long && long.sites.includes("unknown"), "an unreadable authority fails closed");
+  for (const cmd of ["curl -d @f my_host.example/x", "curl -d @f evil.example:99999999999999999999/x", "curl -d @f 'a b'"]) {
+    const t = bash(cmd);
+    assert.ok(t && t.sites.includes("unknown"), `${cmd}: ${JSON.stringify(t)}`);
+  }
+});
