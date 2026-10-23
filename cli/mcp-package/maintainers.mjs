@@ -1,5 +1,5 @@
-// How many accounts can publish this package? From registry metadata only, counted and then dropped:
-// no name, username or email is returned, cached or reported.
+// How many accounts can publish this package? From registry metadata only: the accounts are counted and
+// then dropped. No name, username or email is returned, cached or reported; only the count is kept.
 //
 // npm — docs/responses/package-metadata.md in github.com/npm/registry, full metadata format:
 //   "`maintainers`: array of [human](#human) objects for people with permission to publish this package;
@@ -48,10 +48,13 @@ export function maintainerSignals(info) {
   return { signals: [], evidence: ["maintainers-multiple"] };
 }
 
-// The reputation lookup's entry point. Fail-open: any error is evidence only.
+// The reputation lookup's entry point. Fail-open: any error is evidence only. On a registry answer the
+// count itself is returned too (`info`, {count, org} or null): the reputation path keeps it, per package
+// and version with a TTL, in cli/mcp-package/pkg-report.mjs's cache for the device report.
 export async function checkMaintainers(ref, { fetchImpl = globalThis.fetch, timeoutMs } = {}) {
   if (!ref || (ref.ecosystem !== "npm" && ref.ecosystem !== "pypi") || !ref.name) return { signals: [], evidence: [] };
   const r = await fetchRegistryMeta(ref, { fetchImpl, ...(timeoutMs ? { timeoutMs } : {}) });
   if (r.status !== 200) return { signals: [], evidence: ["maintainers-check-failed"] };
-  return maintainerSignals(maintainerInfo(ref.ecosystem, r.doc));
+  const info = maintainerInfo(ref.ecosystem, r.doc);
+  return { ...maintainerSignals(info), info };
 }

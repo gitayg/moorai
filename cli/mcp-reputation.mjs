@@ -21,7 +21,9 @@
 //                     provenance, else the repository's own manifest on github.com / gitlab.com):
 //                     repo-missing, repo-unreachable, repo-mismatch. Public package and repo names only.
 //                     And cli/mcp-package/maintainers.mjs counts who can publish (npm packument
-//                     `maintainers`, PyPI `ownership.roles`): single-maintainer. Counted, never kept.
+//                     `maintainers`, PyPI `ownership.roles`): single-maintainer. The count (never a
+//                     name) is kept per package@version with a TTL in mcp-pkg.json for the device
+//                     report (cli/mcp-package/pkg-report.mjs), and refreshed here once it expires.
 //   signed catalogue  the MoorAI MCP catalogue (cli/mcp-catalogue.mjs), used only after its ed25519
 //                     signature verifies; the top-level policy key mcpCatalogue { url, publicKeys } is
 //                     handed in as opts.catalogue. Adds do-not-install / review / caution; never raises a score.
@@ -37,7 +39,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, readdirSync, lstatS
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveLaunch } from "./mcp-package/resolve.mjs";
+import { resolveLaunch, unwrapGuard } from "./mcp-package/resolve.mjs";
 import { nameFindings, packageHeuristics } from "./mcp-package/heuristics.mjs";
 import { scanPackageFiles } from "./mcp-package/scope.mjs";
 import { analyzePackage } from "./mcp-package.mjs";
@@ -48,6 +50,7 @@ import { STATE_DIR } from "./state-dirs.mjs";
 import { isOffline } from "./mcp-package/endpoints.mjs";
 import { scoreReputation, signal, classifyMcpName, reputationAction, reputationAlert, REASON_WEIGHTS, TIER_WEIGHT } from "../data/mcp-reputation.js";
 import { readCatalogue, refreshCatalogue, catalogueSignals } from "./mcp-catalogue.mjs";
+import { derivePkg, recordPkgMeta, readPkgMeta, maintainersChecked, scanOfReputation } from "./mcp-package/pkg-report.mjs";
 
 export const DEFAULT_FEED_URL = "https://skilltriage.moorai.dev/api/reputation-feed.json";
 export const CACHE_FILE = "mcp-reputation.json";
@@ -73,14 +76,6 @@ const REP_REV = (() => {
 const sha = (s) => createHash("sha256").update(String(s)).digest("hex").slice(0, 16);
 
 // ---- identity ----------------------------------------------------------------------------------
-
-// A server already wrapped by `mcp-proxy/install.mjs` is `node …/moorai-mcp-guard.mjs [--server x] -- real…`.
-function unwrapGuard(argv) {
-  const i = argv.findIndex((a) => /moorai-mcp-guard\.mjs$/.test(String(a)));
-  if (i < 0) return argv;
-  const sep = argv.indexOf("--", i);
-  return sep >= 0 ? argv.slice(sep + 1) : argv;
-}
 
 function remoteKey(url) {
   try { const u = new URL(url); return `remote:${sha(u.protocol + "//" + u.host + u.pathname)}`; } catch { return `remote:${sha("invalid")}`; }
@@ -211,7 +206,17 @@ async function registryLookup(id, opts) {
     if (n.id === "registry-http-404" && !(id.kind === "npm" && String(id.ref.name).startsWith("@"))) signals.push(signal("name-not-published"));
   }
   evidence.push(e.analysed ? "registry-analysed" : "registry-not-analysed");
-  return { signals, evidence };
+  return { signals, evidence, maintainers: maint.info || { count: null } };
+}
+
+// The device report's pkg cache (cli/mcp-package/pkg-report.mjs): the scan verdict whenever this server's
+// package code was read, and the maintainer count from a registry lookup. Local only; never throws.
+function notePkg(decl, stateDir, now, { rep = null, maintainers = null } = {}) {
+  try {
+    const scan = rep ? scanOfReputation(rep) : null;
+    if (!scan && !maintainers) return;
+    recordPkgMeta(stateDir, derivePkg(decl), { ...(scan ? { scan } : {}), ...(maintainers ? { maintainers } : {}) }, now || Date.now());
+  } catch { /* evidence only */ }
 }
 
 // ---- opt-in SkillTriage feed ----------------------------------------------------------------------
@@ -357,7 +362,9 @@ export function assessServerSync(decl, opts = {}) {
   const r = core(decl, opts, null);
   if (!r.flags.cached) { r.cache.servers[r.id.key] = r.entry; saveCache(stateDir, r.cache); }
   const f = readFeedFile(stateDir);
-  return present(r.id, r.entry, f ? f.feed : null, r.flags, readCatalogue({ stateDir, policy: opts.catalogue, now: opts.now }));
+  const rep = present(r.id, r.entry, f ? f.feed : null, r.flags, readCatalogue({ stateDir, policy: opts.catalogue, now: opts.now }));
+  notePkg(decl, stateDir, opts.now, { rep });
+  return rep;
 }
 
 // The proxy / hook path. Network only when the org policy opts in (lookup and/or feed).
@@ -367,12 +374,19 @@ export async function assessServer(decl, opts = {}) {
   let r = core(decl, opts, null);
   // MOORAI_OFFLINE=1: the opt-in lookup is skipped (and not cached, so it runs once the device is online).
   const offlineSkip = r.needLookup && isOffline();
+  let maintainers = null;
   if (r.needLookup && !offlineSkip) {
     let lookup;
-    try { lookup = await registryLookup(r.id, opts); } catch { lookup = { signals: [], evidence: ["registry-not-analysed"] }; }
+    try { ({ maintainers, ...lookup } = await registryLookup(r.id, opts)); } catch { lookup = { signals: [], evidence: ["registry-not-analysed"] }; }
     const flags = r.flags;
     r = core(decl, opts, lookup);
     r.flags = flags;
+  } else if (policy.lookup === "registry" && (r.id.kind === "npm" || r.id.kind === "pypi") && !isOffline()
+    && !maintainersChecked(derivePkg(decl), readPkgMeta(stateDir), opts.now || Date.now())) {
+    // The lookup itself is cached per version; the count it keeps expires. Refresh only the count: one
+    // registry metadata request, on this opt-in proxy path (the hook never looks anything up).
+    const m = await checkMaintainers(r.id.ref, { fetchImpl: opts.fetchImpl || globalThis.fetch }).catch(() => null);
+    maintainers = (m && m.info) || { count: null };
   }
   if (!r.flags.cached) { r.cache.servers[r.id.key] = r.entry; saveCache(stateDir, r.cache); }
   const url = feedUrl(policy);
@@ -382,6 +396,7 @@ export async function assessServer(decl, opts = {}) {
     : readCatalogue({ stateDir, policy: opts.catalogue, now: opts.now });
   const rep = present(r.id, r.entry, feed, r.flags, cat);
   if (offlineSkip) rep.evidence = [...rep.evidence, "registry-not-checked-offline"].sort();
+  notePkg(decl, stateDir, opts.now, { rep, maintainers });
   return rep;
 }
 

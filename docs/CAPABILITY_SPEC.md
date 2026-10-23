@@ -803,12 +803,50 @@ is validated against.
    `maintainers` ("people with permission to publish this package; not authoritative but informational")
    or PyPI's `ownership.roles` (Owner / Maintainer users). Exactly one is `single-maintainer` (5): a weak
    signal, since 127 of 238 listed npm servers and 67 of 85 listed PyPI servers with roles have one
-   (measured 2026-10-09), so on its own a server stays good. Counted and dropped: no name, username or
-   email is cached or reported. Same 4 s request timeout and per-version cache as the rest of the lookup;
-   an error gives no signal. **Limits.** PyPI's free-text `author` / `maintainer` fields are not used. A
+   (measured 2026-10-09), so on its own a server stays good. The accounts are counted and dropped: no
+   name, username or email is cached or reported. Only the count is kept (see the device report's `pkg`
+   below). Same 4 s request timeout and per-version cache as the rest of the lookup; an error gives no
+   signal. **Limits.** PyPI's free-text `author` / `maintainer` fields are not used. A
    PyPI project owned by an organization is never called single-maintainer, because team access is not
    listed in `roles`; an empty `roles` list is unknown. npm calls its list informational, and whether it
    includes npm-organization team members is not documented.
+
+   **Package details in the device report (`pkg`).** Each MCP server in the desktop host's device report
+   (`mcp[]`, stored by the console as `mcp_servers`) carries
+   `pkg: { eco, name, version, pinned, maintainers, maintainersOrg, scan }` so the console can show
+   single-maintainer, unpinned, package-version and package-scan data. `eco` is `npm`, `pypi`, `docker`,
+   `local` or `other`. `name` is the registry package name (214 characters or fewer). `version` is the
+   version spec as configured (64 characters or fewer: `1.4.2`, `^1.4`, `latest`), or null when there is
+   none. `pinned` is true only for an exact version (npm `1.4.2`, PyPI `==1.4.2` / `@1.4.2`) or a docker
+   `@sha256:` digest; a tag or range is false, and a local or remote server is null. `maintainers` /
+   `maintainersOrg` are the registry maintainer count and organization ownership above. `scan` is
+   `{verdict: clean|warn|block, findings}` from the reputation score when the package's code was read
+   (the installed npx copy, or the opt-in registry artifact). The bands map as good to clean, fair or poor
+   to warn, and bad to block. `findings` are reason codes from a fixed vocabulary
+   ([`data/mcp-pkg-findings.json`](../data/mcp-pkg-findings.json): the reputation reasons and package
+   heuristic ids) or `threat-<n>`, 32 at most. Unknown codes are dropped.
+
+   It is content-free. `pkg` is derived on the device from the launch config (npx / uvx / pipx / docker
+   arguments, parsed locally) by [`src-tauri/src/mcp_pkg.rs`](../src-tauri/src/mcp_pkg.rs). That module
+   mirrors [`cli/mcp-package/pkg-report.mjs`](../cli/mcp-package/pkg-report.mjs), and both are held to the
+   shared fixtures `test/fixtures/mcp-pkg-cases.json` and `mcp-pkg-cache.json`. The command, its arguments,
+   env, paths and URLs are never sent. A local script or file package is `eco: "local"` with `name: null`.
+   A URL, git, alias, inferred (`python -m`) or remote server is `eco: "other"` with `name: null`. A
+   docker image on a registry other than Docker Hub, ghcr.io, quay.io, gcr.io, mcr.microsoft.com,
+   public.ecr.aws, registry.gitlab.com or registry.k8s.io keeps no name or tag. A digest reference sends
+   the whole reference (`repo[:tag]@sha256:<hex>`) as `name`, with `version: null`. A name or version never
+   contains whitespace, a backslash or `://`, and never starts with `/`, `.` or `~`, so a `~1.4` or `~=1.4`
+   spec is sent with `version: null` (`pinned` is still false). Every field is validated and bounded on
+   both sides, and again when the cache is read back.
+
+   The maintainer count and scan verdict live in `~/.moorai/mcp-pkg.json`, keyed per `eco:name@version`.
+   Each value has a 7-day TTL, a day of future clock skew at most, and 512 entries at most. The verdict is
+   written whenever the reputation path scores a server (also on the hook path, which stays offline). The
+   count is written by the opt-in registry lookup (`mcpReputation.lookup: "registry"`, proxy only). Once
+   it expires, the proxy refreshes only the count, with one registry metadata request. No new request is
+   made on the hook path. **Limits.** Without the opt-in lookup, `maintainers` is null. A version range is
+   not resolved, so the count and verdict are joined on the spec as configured. A docker tag is never
+   counted as pinned.
 
 11e2. **Pre-install MCP check** — `moorai-mcp-check <package>`
    ([`cli/moorai-mcp-check.mjs`](../cli/moorai-mcp-check.mjs),

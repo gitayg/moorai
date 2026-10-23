@@ -106,7 +106,7 @@ function base(cmd) {
   return String(cmd).replace(/\\/g, "/").split("/").pop().replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
 }
 
-function isPathLike(s) {
+export function isPathLike(s) {
   return /^(\/|\.\.?[/\\]|~[/\\]|[a-zA-Z]:[/\\]|file:)/.test(String(s));
 }
 
@@ -128,31 +128,42 @@ export function parsePypiSpec(spec) {
   return { ecosystem: "pypi", name: m[1], version: m[4] && m[4] !== "latest" ? m[4] : null };
 }
 
-function npmFromArgs(args, runner) {
+// The package token an npm runner launches (the raw spec text), or null.
+function npmToken(args, runner) {
   const { valueFlags, pkgFlags } = NPM_RUNNERS[runner];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === "--") { i++; return args[i] ? parseNpmSpec(args[i]) : null; }
+    if (a === "--") { i++; return args[i] || null; }
     const eq = a.indexOf("=");
     const flag = eq > 0 ? a.slice(0, eq) : a;
-    if (pkgFlags.includes(flag)) return parseNpmSpec(eq > 0 ? a.slice(eq + 1) : args[i + 1] || "");
+    if (pkgFlags.includes(flag)) return eq > 0 ? a.slice(eq + 1) : args[i + 1] || "";
     if (a.startsWith("-")) { if (eq < 0 && valueFlags.includes(a)) i++; continue; }
-    return parseNpmSpec(a);
+    return a;
   }
   return null;
 }
 
-function pypiFromArgs(args) {
+function pypiToken(args) {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     const eq = a.indexOf("=");
     const flag = a.startsWith("-") && eq > 0 ? a.slice(0, eq) : a;
-    if (flag === "--from" || flag === "--spec") return parsePypiSpec(eq > 0 ? a.slice(eq + 1) : args[i + 1] || "");
-    if (a === "--") { i++; return args[i] ? parsePypiSpec(args[i]) : null; }
+    if (flag === "--from" || flag === "--spec") return eq > 0 ? a.slice(eq + 1) : args[i + 1] || "";
+    if (a === "--") { i++; return args[i] || null; }
     if (a.startsWith("-")) { if (eq < 0 && PY_VALUE_FLAGS.includes(a)) i++; continue; }
-    return parsePypiSpec(a);
+    return a;
   }
   return null;
+}
+
+function npmFromArgs(args, runner, unknown) {
+  const spec = npmToken(args, runner);
+  return { ref: (spec ? parseNpmSpec(spec) : null) || unknown, spec };
+}
+
+function pypiFromArgs(args, unknown) {
+  const spec = pypiToken(args);
+  return { ref: (spec ? parsePypiSpec(spec) : null) || unknown, spec };
 }
 
 function dockerImage(args) {
@@ -168,51 +179,68 @@ function firstNonFlag(args) {
   return args.find((a) => !a.startsWith("-")) || null;
 }
 
+// A server already wrapped by `mcp-proxy/install.mjs` is `node …/moorai-mcp-guard.mjs [--server x] -- real…`.
+export function unwrapGuard(argv) {
+  const i = argv.findIndex((a) => /moorai-mcp-guard\.mjs$/.test(String(a)));
+  if (i < 0) return argv;
+  const sep = argv.indexOf("--", i);
+  return sep >= 0 ? argv.slice(sep + 1) : argv;
+}
+
 // argv (command + args) → a package reference, or {ecosystem:"unknown"}.
 export function resolveLaunch(argvIn) {
+  return launchSpec(argvIn).ref;
+}
+
+// argv → { ref: resolveLaunch's answer, spec: the raw package token a registry runner (npx, uvx …) was
+// given, or null }. The token stays on the device: cli/mcp-package/pkg-report.mjs reads the version spec
+// and whether it is a local path from it.
+export function launchSpec(argvIn) {
   let argv = argvIn.slice();
   const b0 = base(argv[0] || "");
   if (b0 === "cmd" && /^\/c$/i.test(argv[1] || "")) argv = argv.slice(2);
   else if ((b0 === "sh" || b0 === "bash" || b0 === "zsh") && argv[1] === "-c" && argv[2]) argv = splitCommand(argv[2]);
-  if (!argv.length) return { ecosystem: "unknown" };
+  const none = (ref) => ({ ref, spec: null });
+  if (!argv.length) return none({ ecosystem: "unknown" });
   const cmd = base(argv[0]);
   const rest = argv.slice(1);
+  const unknown = { ecosystem: "unknown", runner: cmd };
 
-  if (cmd === "npx" || cmd === "bunx" || cmd === "pnpx") return npmFromArgs(rest, cmd) || { ecosystem: "unknown", runner: cmd };
-  if ((cmd === "pnpm" || cmd === "yarn") && rest[0] === "dlx") return npmFromArgs(rest.slice(1), `${cmd} dlx`) || { ecosystem: "unknown", runner: cmd };
-  if (cmd === "npm" && (rest[0] === "exec" || rest[0] === "x")) return npmFromArgs(rest.slice(1), "npm exec") || { ecosystem: "unknown", runner: cmd };
-  if (cmd === "bun" && rest[0] === "x") return npmFromArgs(rest.slice(1), "bunx") || { ecosystem: "unknown", runner: cmd };
+  if (cmd === "npx" || cmd === "bunx" || cmd === "pnpx") return npmFromArgs(rest, cmd, unknown);
+  if ((cmd === "pnpm" || cmd === "yarn") && rest[0] === "dlx") return npmFromArgs(rest.slice(1), `${cmd} dlx`, unknown);
+  if (cmd === "npm" && (rest[0] === "exec" || rest[0] === "x")) return npmFromArgs(rest.slice(1), "npm exec", unknown);
+  if (cmd === "bun" && rest[0] === "x") return npmFromArgs(rest.slice(1), "bunx", unknown);
 
-  if (cmd === "uvx") return pypiFromArgs(rest) || { ecosystem: "unknown", runner: cmd };
-  if (cmd === "uv" && rest[0] === "tool" && rest[1] === "run") return pypiFromArgs(rest.slice(2)) || { ecosystem: "unknown", runner: cmd };
-  if (cmd === "pipx" && rest[0] === "run") return pypiFromArgs(rest.slice(1)) || { ecosystem: "unknown", runner: cmd };
+  if (cmd === "uvx") return pypiFromArgs(rest, unknown);
+  if (cmd === "uv" && rest[0] === "tool" && rest[1] === "run") return pypiFromArgs(rest.slice(2), unknown);
+  if (cmd === "pipx" && rest[0] === "run") return pypiFromArgs(rest.slice(1), unknown);
   if (/^python(\d(\.\d+)?)?$/.test(cmd) || cmd === "py") {
     const mi = rest.indexOf("-m");
     if (mi >= 0 && rest[mi + 1]) {
       const mod = rest[mi + 1];
-      if (/mcp/i.test(mod)) return { ecosystem: "pypi", name: mod.replace(/_/g, "-"), version: null, inferred: true };
-      return { ecosystem: "unknown", runner: cmd };
+      if (/mcp/i.test(mod)) return none({ ecosystem: "pypi", name: mod.replace(/_/g, "-"), version: null, inferred: true });
+      return none(unknown);
     }
     const p = firstNonFlag(rest);
-    return p ? { ecosystem: "local", path: p } : { ecosystem: "unknown", runner: cmd };
+    return none(p ? { ecosystem: "local", path: p } : unknown);
   }
 
   if (cmd === "docker" || cmd === "podman") {
     const ri = rest.indexOf("run");
     const img = ri >= 0 ? dockerImage(rest.slice(ri + 1)) : null;
-    return img ? { ecosystem: "docker", name: img } : { ecosystem: "unknown", runner: cmd };
+    return none(img ? { ecosystem: "docker", name: img } : unknown);
   }
 
   if (cmd === "node" || cmd === "deno" || cmd === "bun" || cmd === "tsx" || cmd === "ts-node") {
     const p = rest[0] === "run" ? firstNonFlag(rest.slice(1)) : firstNonFlag(rest);
-    return p ? { ecosystem: "local", path: p } : { ecosystem: "unknown", runner: cmd };
+    return none(p ? { ecosystem: "local", path: p } : unknown);
   }
   if (cmd === "uv" && rest[0] === "run") {
     const di = rest.indexOf("--directory");
-    return { ecosystem: "local", path: di >= 0 && rest[di + 1] ? rest[di + 1] : firstNonFlag(rest.slice(1)) || "." };
+    return none({ ecosystem: "local", path: di >= 0 && rest[di + 1] ? rest[di + 1] : firstNonFlag(rest.slice(1)) || "." });
   }
-  if (isPathLike(argv[0])) return { ecosystem: "local", path: argv[0] };
-  return { ecosystem: "unknown", runner: cmd };
+  if (isPathLike(argv[0])) return none({ ecosystem: "local", path: argv[0] });
+  return none(unknown);
 }
 
 // config (parsed object, JSON text, or Codex TOML text) → [{ecosystem, name, version} | {ecosystem:"local", path} | …].
