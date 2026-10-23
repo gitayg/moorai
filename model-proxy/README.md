@@ -177,7 +177,7 @@ unchecked**.
 | `alt=proto` / protobuf bodies on a Gemini path | a response is refused in enforce mode (not JSON or SSE) and reported unevaluated in report mode; a protobuf **request** is forwarded unscanned |
 | Amazon Bedrock (`InvokeModel`, `Converse`, its event-stream framing) | **no** — forwarded unparsed |
 | Ollama's native `POST …/api/chat`, JSON (`"stream": false`) and NDJSON (the default) | yes: `message.tool_calls`; tested against a fake upstream and live against Ollama 0.15.6 with `mistral-nemo` |
-| Ollama's native `POST …/api/generate` | no tool calls exist; `prompt` / `system` / `suffix` / `template` are scanned like any prompt, and the generated `response` text is scanned **report-only** (alerted, never withheld) |
+| Ollama's native `POST …/api/generate` | no tool calls exist; `prompt` / `system` / `suffix` / `template` are scanned like any prompt, and the generated `response` text is scanned by every detector **report-only** (alerted, never withheld) besides the [reply text scan](#reply-text-scanning) |
 | Anthropic `server_tool_use` / `mcp_tool_use` | **no** — they run at the provider, not in the agent |
 | anything the agent sends to a provider **without** going through this proxy (an SDK pinned to the provider URL, a direct HTTPS call, a second key) | **no** |
 
@@ -254,8 +254,10 @@ Server-side tool blocks (`server_tool_use`, `mcp_tool_use`) are not checked: the
 not in the agent. File contents are read from the proxy's own filesystem, resolved against `--cwd`. If
 the proxy does not share the agent's filesystem, only path names are checked.
 
-**Model text.** The model's own text is not scanned on any API, with one exception: Ollama `/api/generate`
-has no structured tool calls, so its generated `response` text is scanned at stage `output`, report-only, in
+**Model text.** The text of every reply is scanned for secrets, personal data, card numbers and the
+system prompt (see [Reply text scanning](#reply-text-scanning)); each tool call is also judged against the
+person's task (see [Intent alignment](#intent-alignment)). In addition, Ollama `/api/generate`
+has no structured tool calls, so its generated `response` text is scanned by every detector at stage `output`, report-only, in
 every mode. It is filed as a PostToolUse observation (`tool: "model-proxy:completion"`), so a deny-level
 finding is stamped `enforcement: LIMITED`, and it is never withheld, streaming or not: holding a whole
 generation to scan it would end streaming for `/api/generate` in enforce mode, and stage `output` flags
@@ -454,6 +456,181 @@ refused as ambiguous in enforce mode. Not covered: a client that resolves look-a
 scripts (no mainstream client does; not tested), Unicode case folds beyond `toUpperCase().toLowerCase()`
 (Go's fold orbits for `ſ` and the Kelvin sign are covered), and a number field that a decision reads (none
 does: every decision field is a string).
+
+## Intent alignment
+
+Each tool call the model returns is also judged against the task the **person** gave in this session: does
+it fit what they asked for? It is the hook's intent alignment (`data/intent-alignment.js`, lexical: "did
+the person ever name this destination, file or service"), run per session in the proxy's memory by
+`data/intent-server.mjs`. Code: [`intent.mjs`](intent.mjs), [`user-turns.mjs`](user-turns.mjs), and the
+judging point in [`check.mjs`](check.mjs). It covers every API with tool calls (Anthropic, OpenAI Chat
+Completions and Responses, Gemini, Ollama `/api/chat`), streaming and not.
+
+**The session.** The first of, per request:
+
+1. `X-MoorAI-Session-Id: <id>` (at most 256 characters): the application names its session. It is
+   addressed to the proxy and is not sent upstream.
+2. `X-Claude-Code-Session-Id` (Claude Code's own session id; forwarded as sent).
+3. The trace-id of a valid incoming W3C `traceparent` (see [Trace context](#trace-context)): one agent run
+   under one trace is one task.
+4. The conversation: a keyed hash of its first user turn. Every request re-sends the whole conversation, so
+   its first turn names it on every turn.
+5. None of these (no header, no trace, no user turn): one session, `none`, in which nothing is ever
+   captured.
+
+The explicit headers win over the trace because one trace can wrap several conversations (a workflow trace
+around many agent runs), which would merge their tasks and make more calls look aligned. An application
+that runs many conversations under one trace, or two conversations that start with the same words, should
+send `X-MoorAI-Session-Id`.
+
+**The task.** From each request's real user turns: the first turn (the task) and the latest turn. Never a
+system prompt or developer message, never a tool result, function response or document fed back to the
+model, never the model's own turns:
+
+| API | A user turn is |
+|---|---|
+| Anthropic | a `user` message's string or `text` blocks; a `user` message that carries any `tool_result` block is the agent returning results, and its text blocks are not counted |
+| OpenAI Chat Completions | a `user` message (string or text parts) |
+| OpenAI Responses | `input` as a string, or its `message` items with `role: "user"` (`input_text` / `text` parts) |
+| Gemini | a `contents[]` entry with `role: "user"` (or none) and no `functionResponse` part; `thought` parts are not counted |
+| Ollama | `/api/chat` `user` messages; `/api/generate` `prompt` |
+
+Both are captured on every request, so a session the store evicted or expired is restored by the
+conversation's next request. The store keeps per session only keyed hashes of the turn's features (hosts,
+paths, known service names, three labels), at most 1,024 sessions, 512 features each, 24 hours; a turn's
+text is in memory for the call only.
+
+**Task unknown.** For a risky call in a session with no live captured task — no real user turn was ever
+seen in it (a request that carries only tool results, or the `none` session), or the store evicted or
+expired it — the store answers class `task-unknown`, and the proxy handles it like any misaligned call: an
+alert, and in `--mode enforce` the ask or the block. **So `intentAlignment: "block"` refuses a risky call in
+a session without a captured user turn**, and `"ask"` makes it a headless ask (a deny by default). A call
+the store does not class as risky is never judged, task or not.
+
+**Owner.** The store accepts an owner principal per session, so one caller cannot evict another's
+sessions. The proxy passes none: every client of one proxy holds the same token, so it has no per-client
+principal to give. All of a proxy's clients share one session space, and `X-MoorAI-Session-Id` is the
+client's to choose: a client that names another client's session id adds its own turns to that session's
+task. Run one proxy per tenant where that matters.
+
+**Judging.** At the point the proxy decides tool calls, after its own verdict on the call and not when that
+verdict is a deny, for a call that maps to a hook tool (`Bash`, `PowerShell`, `Read`, `mcp__*` …; the
+table under [What it checks](#what-it-checks)). The store's lexical rules decide which calls are judged at
+all: an upload to a host (egress), a credential read, a destructive command, an MCP write. The policy's
+`intentAlignment`:
+
+| `intentAlignment` | `--mode report` | `--mode enforce` |
+|---|---|---|
+| `"off"` | nothing captured or judged | same |
+| `"report"` (default) | one alert | one alert |
+| `"ask"` | one alert, `enforcement: LIMITED` | the call is an ask, settled by server mode's headless rule as a `functionToolActions` ask is: a deny (the proxy's refusal) unless `--headless-ask allow-with-report` |
+| `"block"` | one alert, `enforcement: LIMITED` | the call is denied: the proxy's refusal, or the replacement text with `--denied-tool-call replace` |
+
+**The alert** is the hook's: `category: "Action outside the stated task"`, `reasonCode: "INTENT_MISMATCH"`,
+`threatId: 64`, `riskLevel: "Medium"`, `stage: "behavior"`, `tool: "model-proxy:<name>"`, `decision`
+(notify / ask / deny, the configured outcome), `intent: {class, mode}` with class `egress`, `credentials`,
+`destructive`, `mcp-write` or `task-unknown`, and `contentHash`, the tenant-keyed hash of the class and the store's keyed
+target hash. One alert per target per session; a refused call is refused every time. No prompt, path,
+host or argument is in it.
+
+**The key.** One HMAC key per process for the store and the conversation hash. `--intent-key-file <path>`
+reads 64 hex characters from a file owned by root and not group- or world-writable (on Windows, a
+protected file), so several proxy replicas hash alike; otherwise, or when that file is not usable (said
+once on stderr), 32 random bytes at start. It never leaves the process. A restart with a random key forgets
+every session, which costs little here: the next request re-sends the conversation and its first turn is
+captured again (the intermediate turns, and which targets already alerted, are what is forgotten; a
+conversation's first request after a restart is judged on its first and latest turns only).
+
+**Limits.**
+- Lexical, as in the hook: an upload to a host the person named is aligned even when it is exfiltration to
+  that host, and a task pasted from an untrusted source puts its hosts in scope.
+- A call the proxy cannot map to a hook tool (an unknown function, content-scanned instead) is not judged.
+- If `data/intent-server.mjs` cannot start, the proxy runs without intent alignment and says so once on
+  stderr.
+
+## Reply text scanning
+
+The text of the model's reply, what reaches the person or the application, is scanned for leaks, on every
+API the proxy parses, streaming and not. Code: [`response-scan.mjs`](response-scan.mjs) (detection),
+[`text-codecs.mjs`](text-codecs.mjs) (where the text is, per API), [`text-guard.mjs`](text-guard.mjs)
+(holding and rewriting), [`text-report.mjs`](text-report.mjs) (alert and refusal).
+
+| Class | Threat | What finds it |
+|---|---|---|
+| `secret` | #39 | the engine's output-stage secret detectors (`secret-*`, `dlp-jwt`, `dlp-private-key` …) |
+| `payment-card` | #1 | `dlp-payment-card` (Luhn-checked), `pci-cvv` |
+| `personal-data` | #15 | `dlp-email`, `dlp-phone`, `dlp-national-id`, `pii-passport` |
+| `system-prompt` | #52 | the reply reproduces a run of at least 24 consecutive words of this request's system prompt |
+
+The first three are the detection engine the proxy already judges outbound content with (the runtime's
+policy-built engine, detector packs included), restricted to those threats' detectors that declare the
+`output` stage. A threat the policy sets `"disabled"` is not looked for.
+
+**System-prompt echo.** The request's system text (Anthropic `system`, OpenAI `system` / `developer`
+messages, Responses `instructions`, Gemini `systemInstruction`, Ollama `system`) is lower-cased and split
+into words (runs of letters and digits). Each run of 8 consecutive words is HMAC-SHA256'd with a random
+per-process key and its first 48 bits kept, at most 8,192 shingles (words past that are not compared),
+cached for the 16 most recent system prompts. A system prompt under 24 words is not tracked. The reply's
+words go through the same 8-word window as they arrive; 17 consecutive matching shingles (a 24-word run) is
+an echo. The system prompt and the reply are never stored or logged, only these hashes, in memory. Cost: one
+HMAC per word (an 8,192-word system prompt took 25 ms to hash, once per process while cached). A run of
+shared words is not proof of copying (a stock phrase the prompt quotes), and a paraphrase, a translation or
+a re-tokenized copy is not found.
+
+**Modes.** The policy's `responseScan`:
+
+| `responseScan` | `--mode report` | `--mode enforce` |
+|---|---|---|
+| `"report"` (default) | one alert per finding; the reply is forwarded byte-identical | same |
+| `"mask"` | alert, `enforcement: LIMITED`; nothing changed | the match is replaced by `[REDACTED:#<threat>]` (`[REDACTED:system-prompt]` for an echo) in what the client receives; `reasonCode: "MASK_APPLIED"` |
+| `"block"` | alert, `enforcement: LIMITED`; nothing changed | non-streaming: HTTP 403 in the provider's error shape (`x-moorai-model-proxy: refused`); streaming: the provider's error event ends the stream (the same shapes as a denied tool call); `riskLevel: "Blocked"` |
+
+A masked non-streaming body is re-serialized (`x-moorai-model-proxy: masked`); one with no finding goes out
+byte-identical. In a stream, an event whose text changed is re-serialized — the `event:` line kept, the
+same JSON keys in the same order, one `data:` line (one line for NDJSON) — and every other event goes out
+byte-identical. Report-mode scanning runs after the bytes are written (a non-streaming body after the
+response ends), so it never sits between the provider and the client.
+
+**Streaming: the rolling window.** Each text channel (an Anthropic content block, an OpenAI choice, a
+Responses content part, a Gemini candidate, an Ollama reply) is scanned over its last 256 characters
+already passed on plus the text not yet passed on, so a match split across events, or across network
+chunks, is found whole.
+- **report:** nothing is held; the channel is scanned every 4,096 characters and at its end. Memory per
+  channel: 256 + 4,096 characters plus one event's text.
+- **mask / block:** the last **256 characters** of each channel are held back and released as more text
+  arrives, and at the channel's end (its `content_block_stop`, `finish_reason`, `.output_text.done`,
+  `finishReason`, `done` line, or the end of the stream). A streamed reply's text therefore reaches the
+  client up to 256 characters (about 64 tokens) behind the provider; tool-call events are not delayed
+  beyond their own hold. Memory per channel: 256 + 256 characters plus one event's text, and at most one
+  event's data (up to 16 KiB) kept as the template for a flush event. Measured (Apple M5 Max, node 22, a
+  100 KB reply in 4-character pieces, built-in detectors): 0.2 µs per piece in report mode, 18 µs per
+  piece in mask / block mode, 20 µs with a tracked system prompt.
+- A match of at most 256 characters is found before any of it is passed on. A longer one (a PEM body, a
+  long JWT) can be found only after its start was passed on: the rest is still masked, or the stream
+  stopped, and the alert says `sent: "partial"`. **Text already sent on a stream cannot be recalled.**
+  Where the reply may carry long secrets, prefer `mask` (the remainder is still replaced) over relying on
+  `block`.
+- When a channel ends at an event that has no text of its own, the held text goes out in one flush event
+  just before it, in the API's own delta shape (Anthropic `content_block_delta`, an OpenAI chunk, a
+  Responses `response.output_text.delta` repeating the last delta's `sequence_number`, a Gemini chunk, an
+  Ollama line). OpenAI Responses repeats the complete text in `.output_text.done`, `.content_part.*`,
+  `.output_item.*` and the terminal response: each copy is scanned and masked whole.
+- At most 64 channels per response are tracked separately; text past that shares one channel.
+
+**The alert:** `category` "Model proxy: secret or credential in the model's reply" (or payment-card data,
+personal data; "Model proxy: system prompt reproduced in the model's reply"), `threatId`, `riskLevel` (the
+threat's, `Blocked` in block mode), `stage: "output"`, `tool: "model-proxy:response-text"`, `decision`
+(`deny` for a configured block, else `notify`), `responseScan: {class, mode, applied, sent}`, and
+`contentHash`, the tenant-keyed hash of the matched text (for an echo, of the run's first keyed shingle).
+Never the text, the match, the system prompt or a position. One alert per class and hash per response, at
+most 32.
+
+**Not scanned:** reasoning returned beside the answer (Anthropic `thinking`, Gemini `thought` parts, Ollama
+`thinking`, Responses reasoning items), refusal fields, token log-probabilities (`logprobs`, which repeat the
+text token by token when a client asks for them), images and audio, and embeddings. A scan error is reported
+unevaluated; in mask / block mode under a closed fail mode the response is refused (502) or the stream
+stopped. Ollama `/api/generate` text is in addition still scanned report-only by every detector at stage
+`output` (see **Model text** above), so a finding there can raise both alerts.
 
 ## Report vs enforce
 
@@ -939,8 +1116,23 @@ node --test --import ./test/hermetic-env.mjs test/model-proxy.test.mjs test/mode
   test/model-proxy-toolcall.test.mjs test/model-proxy-toolcall-local.test.mjs test/model-proxy-gemini.test.mjs test/serve-unchecked.test.mjs \
   test/model-proxy-connect-timeout.test.mjs test/model-proxy-ollama.test.mjs test/model-proxy-function-rules.test.mjs \
   test/model-proxy-differentials.test.mjs test/model-proxy-canonical.test.mjs test/model-proxy-json-strict-fuzz.test.mjs \
-  test/proxy-context-system.test.mjs test/proxy-business-tools.test.mjs test/proxy-fail-mode.test.mjs test/decoy-use.test.mjs test/decoy-use-real.test.mjs
+  test/proxy-context-system.test.mjs test/proxy-business-tools.test.mjs test/proxy-fail-mode.test.mjs test/decoy-use.test.mjs test/decoy-use-real.test.mjs \
+  test/model-proxy-intent.test.mjs test/model-proxy-response-scan.test.mjs
 ```
+
+**Intent alignment and reply text, exact coverage.** `test/model-proxy-intent.test.mjs` and
+`test/model-proxy-response-scan.test.mjs` run the proxy in process against the fake upstreams, for
+Anthropic, OpenAI Chat Completions and Responses, Gemini and Ollama (`/api/chat`, and `/api/generate` for
+reply text), streaming and not. Intent: a misaligned upload alerts (report) and is refused (`block`) or
+headless-asked (`ask`); an aligned one is delivered; a tool result, the text sent with it and the system
+prompt are never captured as the task; the session precedence and the header strip. The intent store there
+is a test double that honours `data/intent-server.mjs`'s contract (`model-proxy/test/fake-intent.mjs`); one
+test runs the real module and is skipped while it is the stub. Reply text: a secret, an email address, a
+card number and a system-prompt echo, each split across 7-character deltas and 5-byte network chunks, are
+each found; report forwards byte-identical, mask replaces the match (every repeated Responses copy too),
+block refuses with nothing of the match sent. Not tested: real providers and SDKs reading a masked or
+flushed event, a model that interleaves text across several Responses content parts or Gemini candidates,
+and the real `data/intent-server.mjs` judging (pending its implementation).
 
 Latency the judging adds, measured on an M-series Mac, node, no console, built-in rules:
 

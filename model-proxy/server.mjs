@@ -29,7 +29,7 @@ import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { timingSafeEqual, createHash } from "node:crypto";
+import { timingSafeEqual, createHash, randomBytes } from "node:crypto";
 import { createMoorAI, resolveSettings } from "../packages/agent-sdk/src/runtime.mjs";
 import { createTracer, applyTraceHeaders, cleanModel } from "./trace-w3c.mjs";
 import { createTrail } from "./trail.mjs";
@@ -56,6 +56,11 @@ import { operatorContextMode } from "./context.mjs";
 import { createDecoyCheck, decoyAlert, DECOY_REFUSAL } from "./decoy.mjs";
 import { createUsageMeter, FLUSH_MS as USAGE_FLUSH_MS } from "./token-usage.mjs";
 import { budgetBlock, budgetErrorBody, budgetAlert } from "./budget.mjs";
+import { createIntent, loadIntentKey } from "./intent.mjs";
+import { responseScanMode, responseDetectors, createEcho, createScanner } from "./response-scan.mjs";
+import { createTextGuard, guardBody } from "./text-guard.mjs";
+import { textAlert, textRefusal } from "./text-report.mjs";
+import * as codecs from "./text-codecs.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({
@@ -77,7 +82,9 @@ export const TOKEN_HEADER = "x-moorai-proxy-token";
 // The agent session a request belongs to, as Claude Code states it to its model endpoint (measured, Claude
 // Code 2.1.295: the same id as its hooks' session_id). Read for the trace id only; forwarded as sent.
 export const SESSION_HEADER = "x-claude-code-session-id";
-export const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER]);
+// X-MoorAI-Session-Id names the session for intent alignment (intent.mjs); it is addressed to this proxy and
+// is not sent upstream.
+export const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "accept-encoding", TOKEN_HEADER, "x-moorai-session-id"]);
 const HOP_RES = new Set(["connection", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"]);
 
 // Report-only work runs after the response is complete, so a scan (≈10 ms for 2 KB, measured) never
@@ -138,6 +145,10 @@ function largeNumbers() {
 const PROVIDER_OF = { anthropic: "anthropic", openai: "openai", gemini: "google", ollama: "ollama" };
 const PROVIDER_OF_ROUTE = { "/anthropic": "anthropic", "/openai": "openai", "/gemini": "google", "/ollama": "ollama" };
 const providerOf = (api, prefix) => (api && PROVIDER_OF[api.NAME]) || PROVIDER_OF_ROUTE[prefix] || "other";
+// Each parsed API's name for intent alignment (user-turns.mjs) and its reply-text codec (text-codecs.mjs).
+// Embeddings have neither: no tool call and no reply text.
+const KIND = new Map([[anthropic, "anthropic"], [openai, "openai-chat"], [openaiResponses, "openai-responses"], [gemini, "gemini"], [ollama, "ollama"]]);
+const CODEC = new Map([[anthropic, codecs.anthropic], [openai, codecs.openaiChat], [openaiResponses, codecs.openaiResponses], [gemini, codecs.gemini], [ollama, codecs.ollama]]);
 // The request's model: Gemini names it in the path (…/models/{model}:generateContent), the others in the body.
 function modelOf(api, rest, json) {
   if (api === gemini) { let p = rest; try { p = decodeURIComponent(rest); } catch { /* as sent */ } const m = /\/(?:models|tunedModels|endpoints)\/([^/]+):[A-Za-z]+$/.exec(p); return cleanModel(m && m[1]); }
@@ -191,6 +202,12 @@ export async function createProxy(opts = {}) {
   // Usage budgets (budget.mjs): one alert per budget and period from this process.
   const budgetSeen = new Set();
   const reportBudget = (s, hit) => { const k = `${hit.budgetId}|${hit.periodStart}`; if (budgetSeen.has(k) || budgetSeen.size > 256) return; budgetSeen.add(k); try { rt.reporter.post(budgetAlert(hit, enforce, rt.hash), { prov: { policyId: s.policyId, policySource: s.source, event: "ModelRequest" } }); } catch { /* report-only */ } };
+  // Intent alignment (intent.mjs): the store is data/intent-server.mjs unless a test injects one (opts.intentLib);
+  // the key is opts.intentKey (tests), --intent-key-file, or random per process.
+  const intentLib = o.intentLib || await import("../data/intent-server.mjs");
+  const intent = createIntent({ lib: intentLib, key: loadIntentKey({ key: o.intentKey, keyFile: o.intentKeyFile }).key, rt, enforce, now: o.intentNow });
+  // Response text scanning (response-scan.mjs): the system-prompt shingle key, random per process.
+  const echoKey = randomBytes(32);
   const routes = Object.entries(o.routes).map(([prefix, base]) => ({ prefix: prefix === "/" ? "" : prefix.replace(/\/+$/, ""), base: String(base).replace(/\/+$/, "") })).sort((a, b) => b.prefix.length - a.prefix.length);
   const agents = { "http:": new http.Agent({ keepAlive: true, maxSockets: o.maxConnections }), "https:": new https.Agent({ keepAlive: true, maxSockets: o.maxConnections }) };
   const loopbackBind = isLoopback(o.host);
@@ -271,7 +288,27 @@ export async function createProxy(opts = {}) {
   const withTimeout = (p) => { let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error("evaluation timeout")), o.timeoutMs); })]).finally(() => clearTimeout(t)); };
 
   // Response side ----------------------------------------------------------------------------------------
-  async function onResponse(ur, res, api, held, later, fm, meter) {
+  // The reply-text scan for one response (response-scan.mjs): mode report unless --mode enforce and the policy
+  // says mask / block. Findings are posted as they are made, deduplicated per response (class + keyed hash),
+  // at most 32; in block mode the first one sets `blocked`.
+  function textScan(api, rctx, current) {
+    const codec = CODEC.get(api);
+    if (!codec || !rctx) return null;
+    const mode = enforce ? rctx.mode : "report";
+    const seen = new Set();
+    const t = { codec, mode, hold: mode !== "report", blocked: null, scanner: null };
+    t.scanner = createScanner({ dets: rctx.dets, policy: rctx.policy, echo: rctx.echo, hold: t.hold, onFind: ({ id, match, sent }) => {
+      const h = rt.hash(match);
+      const k = `${id}:${h}`;
+      if (seen.has(k) || seen.size >= 32) return;
+      seen.add(k);
+      if (mode === "block" && !t.blocked) t.blocked = id;
+      REQUEST.run(current, () => { try { rt.reporter.post(textAlert({ id, hash: h, sent, mode, configured: rctx.mode, enforce, riskLevel: rctx.risk(id) }), { prov: { policyId: rctx.policyId, policySource: rctx.source, event: "PostToolUse" } }); } catch { /* report-only */ } });
+    } });
+    return t;
+  }
+
+  async function onResponse(ur, res, api, held, later, fm, meter, ictx, rctx) {
     const ct = String(ur.headers["content-type"] || "");
     const enc = String(ur.headers["content-encoding"] || "identity").toLowerCase();
     const ok = ur.statusCode >= 200 && ur.statusCode < 300;
@@ -292,13 +329,16 @@ export async function createProxy(opts = {}) {
     // An engine error or the evaluation budget run out: refused (closed: the caller answers it), or, under an
     // open fail mode, reported unevaluated and released.
     const unjudged = (e) => { if (fm !== "open") throw e; unevaluated("evaluation", "response", "error"); return ALLOW; };
+    // Intent alignment for each call (intent.mjs), when this request has a session to judge against.
+    const copts = ictx ? { intent: (tool, input, findings, name, verdict) => intent.judge(ictx, tool, input, findings, name, verdict) } : {};
     const decide = enforce
-      ? (calls) => (calls.length ? withTimeout(checker.checkToolCalls(nums.attach(calls))).catch(unjudged).then((v) => { if (v.decision === "allow") track(calls); return v; }) : Promise.resolve(ALLOW))
-      : (calls) => { if (calls.length) { track(calls); const cs = nums.attach(calls); later.push(() => checker.checkToolCalls(cs)); } return Promise.resolve(ALLOW); };
+      ? (calls) => (calls.length ? withTimeout(checker.checkToolCalls(nums.attach(calls), copts)).catch(unjudged).then((v) => { if (v.decision === "allow") track(calls); return v; }) : Promise.resolve(ALLOW))
+      : (calls) => { if (calls.length) { track(calls); const cs = nums.attach(calls); later.push(() => checker.checkToolCalls(cs, copts)); } return Promise.resolve(ALLOW); };
+    const text = textScan(api, rctx, REQUEST.getStore());
     // The model's own text where an API has no structured tool calls (Ollama /api/generate): report-only,
     // after the response has ended, in every mode.
     const observe = (items) => { if (items.length) later.push(() => checker.observe(items)); };
-    if (sse || lines) return enforce ? streamEnforce(ur, res, api, decide, lines, observe, nums, meter) : streamObserve(ur, res, api, decide, lines, observe, nums, meter);
+    if (sse || lines) return enforce ? streamEnforce(ur, res, api, decide, lines, observe, nums, meter, text, fm) : streamObserve(ur, res, api, decide, lines, observe, nums, meter, text);
     if (!enforce) {
       // Report-only: bytes go to the client as they arrive; a bounded copy is parsed after the end.
       res.writeHead(ur.statusCode, responseHeaders(ur));
@@ -314,6 +354,7 @@ export async function createProxy(opts = {}) {
           nums.note(sc);
           if (bad) unevaluated(`response-${bad}`, "response", "input");
           decide(api.responseToolCalls(body)); if (api.responseItems) observe(api.responseItems(body));
+          if (text) later.push(() => { guardBody(text.codec, text.scanner, body, false); });
         }
         else unevaluated("response-unparsed", "response");
       });
@@ -350,38 +391,70 @@ export async function createProxy(opts = {}) {
     if (api.responseItems) observe(api.responseItems(body));
     let v;
     try { v = await decide(calls); } catch { return send(res, busy(api), api.errorBody(busy(api), "MoorAI model-proxy: evaluation did not finish in time; retry")); }
-    if (v.decision === "deny") {
-      if (!replace) return refuse(res, api, v, "response");
-      stats.replaced++;
-      const out = Buffer.from(JSON.stringify(api.replaceResponse(body, v)));
-      res.writeHead(ur.statusCode, { ...responseHeaders(ur, { dropLength: true }), "content-length": out.length, "x-moorai-model-proxy": "replaced" });
+    if (v.decision === "deny" && !replace) return refuse(res, api, v, "response");
+    const sent = v.decision === "deny" ? api.replaceResponse(body, v) : body;
+    if (v.decision === "deny") stats.replaced++;
+    // The reply text (response-scan.mjs): report mode after the response; mask / block before it is sent.
+    let masked = false;
+    if (text && !text.hold) later.push(() => { guardBody(text.codec, text.scanner, sent, false); });
+    else if (text) {
+      try { masked = guardBody(text.codec, text.scanner, sent, true); } catch {
+        unevaluated("response-text", "response", "error");
+        if (fm !== "open") return send(res, 502, api.errorBody(502, "MoorAI model-proxy: the reply text could not be scanned; it was not forwarded"), NO_RETRY);
+      }
+      if (text.blocked) { stats.refused++; return send(res, 403, api.errorBody(403, textRefusal(text.blocked)), { "x-moorai-model-proxy": "refused" }); }
+    }
+    if (v.decision === "deny" || masked) {
+      const out = Buffer.from(JSON.stringify(sent));
+      res.writeHead(ur.statusCode, { ...responseHeaders(ur, { dropLength: true }), "content-length": out.length, "x-moorai-model-proxy": v.decision === "deny" ? "replaced" : "masked" });
       return res.end(out);
     }
     res.writeHead(ur.statusCode, { ...responseHeaders(ur, { dropLength: true }), "content-length": buf.length });
     res.end(buf);
   }
 
-  async function streamObserve(ur, res, api, decide, lines, observe, nums, meter) {
+  async function streamObserve(ur, res, api, decide, lines, observe, nums, meter, text) {
     res.writeHead(ur.statusCode, responseHeaders(ur));
     const split = lines ? createLineSplitter(o.maxEvent) : createSplitter(o.maxEvent);
     const machine = api.createStream({ enforce: false, decide, maxHold: o.maxEvent, observe });
+    // The reply text, report-only: a copy of each event's text goes through the rolling window; nothing is held.
+    const guard = text ? createTextGuard({ codec: text.codec, scanner: text.scanner, lines, hold: false }) : null;
+    const tap = (f) => { if (!guard) return; try { f(); } catch { unevaluated("response-text", "response", "error"); } };
     let stopped = false;
-    const feed = (evs) => { for (const ev of evs) { if (meter) meter.event(ev); const sc = eventScan(ev); nums.note(sc); const bad = sc && sc.problem; if (bad) unevaluated(`response-${bad}`, "response", "input"); machine.onEvent(ev).catch(() => {}); } };
+    const feed = (evs) => { for (const ev of evs) { if (meter) meter.event(ev); const sc = eventScan(ev); nums.note(sc); const bad = sc && sc.problem; if (bad) unevaluated(`response-${bad}`, "response", "input"); machine.onEvent(ev).catch(() => {}); tap(() => guard.event(ev.raw)); } };
     ur.on("data", (c) => { if (stopped) return; feed(split.push(c)); if (split.overflow) { stopped = true; unevaluated("stream-event", "response"); } });
-    ur.on("end", () => { if (stopped) return; feed(split.end()); machine.onEnd().catch(() => {}); });
+    ur.on("end", () => { if (stopped) return; feed(split.end()); machine.onEnd().catch(() => {}); tap(() => guard.end()); });
     ur.pipe(res);
   }
 
-  async function streamEnforce(ur, res, api, decide, lines, observe, nums, meter) {
+  async function streamEnforce(ur, res, api, decide, lines, observe, nums, meter, text, fm) {
     res.writeHead(ur.statusCode, responseHeaders(ur, { dropLength: true }));
     const split = lines ? createLineSplitter(o.maxEvent) : createSplitter(o.maxEvent);
     const machine = replace ? api.createReplaceStream({ decide, maxHold: o.maxEvent, observe }) : api.createStream({ enforce: true, decide, maxHold: o.maxEvent, observe });
     const write = async (bufs) => { for (const b of bufs) if (!res.write(b)) await Promise.race([once(res, "drain"), once(res, "close")]); };
     const stop = async (status, message) => { stats.refused++; ur.destroy(); res.end(api.streamError(status, message)); };
+    // The reply text (text-guard.mjs) on what the tool-call machine releases: mask / block hold and rewrite it
+    // before it is written; report reads it after the bytes are written. A scan error is reported unevaluated;
+    // in mask / block mode under a closed fail mode it stops the stream.
+    const guard = text ? createTextGuard({ codec: text.codec, scanner: text.scanner, lines, hold: text.hold }) : null;
+    const guarded = async (f, bufs) => {
+      if (!guard) return bufs;
+      if (!text.hold) { await write(bufs); try { f(); } catch { unevaluated("response-text", "response", "error"); } return []; }
+      let out;
+      try { out = f(); } catch {
+        unevaluated("response-text", "response", "error");
+        if (fm !== "open") { await stop(502, "MoorAI model-proxy: the reply text could not be scanned; the stream was stopped"); return null; }
+        out = bufs;
+      }
+      if (text.blocked) { await stop(403, textRefusal(text.blocked)); return null; }
+      return out;
+    };
     const step = async (r) => {
       if (r.refuse) { await stop(403, refusalMessage(r.refuse, "response")); return false; }
       if (r.replaced) stats.replaced++;
-      await write(r.out);
+      const out = await guarded(() => r.out.flatMap((b) => guard.event(b)), r.out);
+      if (!out) return false;
+      await write(out);
       return true;
     };
     // An event that is not strict JSON (a repeated key, NaN, …) is refused wherever it is, as the
@@ -402,6 +475,9 @@ export async function createProxy(opts = {}) {
       }
       for (const ev of split.end()) if (!(await one(ev))) return;
       if (!(await step(await machine.onEnd()))) return;
+      const tail = await guarded(() => guard.end(), []);
+      if (!tail) return;
+      await write(tail);
       res.end();
     } catch (e) {
       if (res.writableEnded) return;
@@ -478,10 +554,22 @@ export async function createProxy(opts = {}) {
       const hit = budgetBlock(s0.policy, { source: s0.source });
       if (hit) { reportBudget(s0, hit); if (enforce) { stats.refused++; return send(res, 429, budgetErrorBody(hit.budgetId), { "x-moorai-model-proxy": "refused", ...NO_RETRY }); } }
     }
+    let ictx = null, rctx = null;
     if (api) {
       const json = parseJson(body);
       if (api !== gemini) current.model = modelOf(api, rest, json);
       const items = json ? api.outboundItems(json) : [];
+      const s1 = await rt.ready();
+      // Intent alignment: this request's session and the person's turns in it (intent.mjs).
+      if (json && KIND.has(api)) ictx = intent.begin(KIND.get(api), json, req.headers, current.trace, s1.policy);
+      // Reply-text scanning: the policy's mode, the engine's response detectors, this request's system prompt
+      // as keyed shingles (response-scan.mjs).
+      if (CODEC.has(api)) {
+        const threats = s1.engine.threatsById;
+        rctx = { mode: responseScanMode(s1.policy), policy: s1.policy, policyId: s1.policyId, source: s1.source, dets: responseDetectors(s1.engine),
+          echo: createEcho(items.filter((it) => it.kind === "system").map((it) => it.text).join("\n"), echoKey),
+          risk: (id) => (threats && threats.get(id) && threats.get(id).riskLevel) || "High" };
+      }
       if (enforce && items.length) {
         let v = null;
         try { v = await withTimeout(checker.checkRequest(items)); } catch {
@@ -506,7 +594,7 @@ export async function createProxy(opts = {}) {
       const up = lib.request(url, { method: req.method, headers: upstreamHeaders(req, body.length, swaps, current.trace), agent: agents[url.protocol] }, (raw) => {
         const ur = creds ? maskResponse(raw, creds.secrets) : raw;
         if (ur.refuse) { send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: the upstream answered with a content coding the proxy cannot check for an echoed credential"), NO_RETRY); return resolve(); }
-        onResponse(ur, res, api, held, later, fm, meter).catch(() => { if (!res.headersSent) send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: upstream response failed")); else res.destroy(); }).finally(resolve);
+        onResponse(ur, res, api, held, later, fm, meter, ictx, rctx).catch(() => { if (!res.headersSent) send(res, 502, errorPayload(api, 502, "MoorAI model-proxy: upstream response failed")); else res.destroy(); }).finally(resolve);
       });
       up.setTimeout(o.upstreamTimeoutMs, () => up.destroy(new Error("upstream timeout")));
       // Connect budget: a fresh socket must be ready to carry the request (TCP connected; for https, the TLS
@@ -550,5 +638,5 @@ export async function createProxy(opts = {}) {
   const addr = server.address();
   const url = `http://${addr.family === "IPv6" ? `[${addr.address}]` : addr.address}:${addr.port}`;
   const close = async () => { await new Promise((r) => server.close(() => r())); server.closeAllConnections?.(); for (const a of Object.values(agents)) a.destroy(); if (tracker) tracker.stop(); await trail.close(); await usage.close(); await rt.flush(); };
-  return { server, url, runtime: rt, close, stats: () => ({ ...stats, inflight, cache: checker.cacheSize(), ...(tracker ? { unchecked: tracker.stats() } : {}) }) };
+  return { server, url, runtime: rt, close, stats: () => ({ ...stats, inflight, cache: checker.cacheSize(), intentSessions: intent.size(), ...(tracker ? { unchecked: tracker.stats() } : {}) }) };
 }
