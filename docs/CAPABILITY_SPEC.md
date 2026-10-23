@@ -2282,7 +2282,10 @@ and is not already denied is judged by `data/intent-server.mjs` against the sess
   spelling, `0`, `::1`, IPv4-mapped IPv6, a trailing dot). Risky and never aligned; remote hosts in the same
   command stay among its targets. A curl / wget destination given as a bare argument (or
   `--url=`) is an egress site; one whose host is unresolvable shell text, or whose authority cannot be
-  read, is the site `unknown`, never aligned.
+  read, is the site `unknown`, never aligned. Any upload form with no readable destination (scp / rsync /
+  sftp to a dotless ssh alias, `Invoke-RestMethod -Uri $u`, nc / socat to a variable, `curl -K cfg`) is
+  egress to `unknown`, and so is each host past the first 64 in one command; only a copy onto WSL's own
+  file share and nothing else is not judged.
 - Task unknown: a risky call in a session with no live captured task (no user turn ever seen, evicted,
   expired) is class `task-unknown`, handled as misaligned; `block` refuses it and `ask` asks.
 - `intentAlignment`: `off`; `report` (default: one alert per target per session); `ask` (enforce: the

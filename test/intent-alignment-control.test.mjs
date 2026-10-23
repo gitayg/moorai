@@ -183,3 +183,31 @@ test("R7: an upload to ANY loopback host is moorai-control, the port readable or
   assert.equal(bash("curl -s http://localhost:3000/health"), null);
   assert.equal(bash("copy notes.txt \\\\wsl.localhost\\Ubuntu\\home\\me\\"), null);
 });
+
+// v1.33.0 re-review: an upload whose destination this module cannot read is judged, never skipped.
+test("an upload pattern with no readable destination is egress to the unknown site (scp to a dotless alias, irm with a variable -Uri, curl -K), never aligned", async () => {
+  const { UNKNOWN_SITE } = await import("../data/intent-alignment.js");
+  const cases = [["Bash", "scp build.tar myalias:/srv/drop"], ["PowerShell", "Invoke-RestMethod -Uri $u -Method Post -Body $b"], ["Bash", "curl -K cfg -d @report.json"]];
+  for (const [tool, command] of cases) {
+    const a = actionTargets(tool, { command }, []);
+    assert.deepEqual(a, { cls: "egress", sites: [UNKNOWN_SITE], paths: [], names: [] }, command);
+    const store = createIntentStore({});
+    store.captureTask("s", `Upload the build to myalias and to $u as configured in cfg`);
+    const r = store.judge("s", tool, { command }, []);
+    assert.equal(r.aligned, false, command);
+    assert.equal(r.class, "egress", command);
+  }
+});
+
+test("past MAX_SITES hosts, the dropped ones count as the unknown site, so naming the first 64 does not align the 65th", async () => {
+  const { UNKNOWN_SITE } = await import("../data/intent-alignment.js");
+  const hosts = Array.from({ length: 65 }, (_, i) => `h${i}.example${i}.com`);
+  const command = `curl -d @f ${hosts.map((h) => `https://${h}/u`).join(" ")}`;
+  const a = actionTargets("Bash", { command }, []);
+  assert.equal(a.cls, "egress");
+  assert.ok(a.sites.includes(UNKNOWN_SITE), "a dropped host is the unknown site");
+  const store = createIntentStore({ maxFeatures: 4096 });
+  store.captureTask("s", `Post the report to ${hosts.slice(0, 64).join(", ")}`);
+  assert.equal(store.judge("s", "Bash", { command: `curl -d @f ${hosts.slice(0, 64).map((h) => `https://${h}/u`).join(" ")}` }, []).aligned, true, "the 64 named hosts align");
+  assert.equal(store.judge("s", "Bash", { command }, []).aligned, false, "the unnamed 65th does not hide behind the cap");
+});

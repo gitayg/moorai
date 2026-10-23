@@ -14,7 +14,9 @@
 //                                   control that judges it, or writing to a local service. The port is only
 //                                   the target's detail. A loopback host is recognised after normalising it
 //                                   (loopbackHost), and a command that also uploads to a remote host keeps
-//                                   those sites among the moorai-control targets.
+//                                   those sites among the moorai-control targets. An upload whose
+//                                   destination cannot be read (or past MAX_SITES hosts) is egress to
+//                                   UNKNOWN_SITE, which no task names: judged, never skipped.
 //
 // Deliberately lexical. It answers "did the user ever name this destination / file / service", not
 // "does this action serve the task". An upload to a host the user named is aligned even when it is
@@ -257,7 +259,9 @@ function egressTargets(command) {
   // An upload to this machine is moorai-control whatever its port — readable or not, MoorAI's or not; the port
   // is only the target's detail. WSL's file share (\\wsl.localhost\…) is a local copy, not a service.
   const loop = (port) => { if (control.size < MAX_SITES) { const n = portOf(port); control.add(n === null ? "loopback" : `loopback:${n}`); } };
-  const addHost = (h) => { const x = h.toLowerCase(); if (x === "wsl.localhost") return; if (loopbackHost(x)) loop(null); else if (hosts.size < MAX_SITES) hosts.add(x); };
+  // A host past MAX_SITES is not dropped silently: it counts as UNKNOWN_SITE, so the cap cannot hide one.
+  let wsl = false;
+  const addHost = (h) => { const x = h.toLowerCase(); if (x === "wsl.localhost") { wsl = true; return; } if (loopbackHost(x)) loop(null); else if (!hosts.has(x)) hosts.add(hosts.size < MAX_SITES ? x : UNKNOWN_SITE); };
   const hostPort = (host, port) => { if (loopbackHost(host)) loop(port); else addHost(host); };
   for (const re of [NC_HOST, SOCAT_HOST]) for (const m of c.matchAll(re)) addHost(m[1]);
   if (/\b(?:scp|rsync|sftp)\b/i.test(c)) for (const m of c.matchAll(REMOTE_COPY)) addHost(m[1]);
@@ -280,7 +284,7 @@ function egressTargets(command) {
     const host = b[1].toLowerCase();
     if (url || host.includes(".") || host.startsWith("[")) addHost(host);
   });
-  return { hosts: [...hosts], control: [...control] };
+  return { hosts: [...hosts], control: [...control], wsl };
 }
 
 const MCP_WRITE = /(?:^|[_-])(?:create|update|delete|remove|send|post|write|push|publish|upload|comment|merge|add|edit|put|set|insert|close|reply|share|invite|move|rename|archive|transfer|execute|run|deploy|submit|patch)(?:[_-]|$)/i;
@@ -304,13 +308,17 @@ export function actionTargets(tool, input, findings) {
   const ids = new Set((findings || []).map((f) => f && f.threatId));
   if (tool === "Bash" || tool === "PowerShell") {
     const cmd = String(ti.command || "");
-    if (UPLOAD.some((r) => r.test(cmd))) {
-      const { hosts, control } = egressTargets(cmd);
+    const matched = UPLOAD.filter((r) => r.test(cmd));
+    if (matched.length) {
+      const { hosts, control, wsl } = egressTargets(cmd);
       const sites = [...new Set(hosts.map(siteOf))];
       // Both at once: judged as moorai-control (never aligned, the strictest), with the remote sites among its
       // targets, so each remote destination behind it is a target (an alert) of its own.
       if (control.length) return { cls: "moorai-control", sites: [...control, ...sites], paths: [], names: [] };
-      if (sites.length) return { cls: "egress", sites, paths: [], names: [] };
+      // An upload whose destination cannot be read (scp to a dotless ssh alias, irm -Uri $u, curl -K cfg, nc to
+      // a variable) is egress to UNKNOWN_SITE, never aligned: judged, not skipped.
+      // The one exception: a copy onto WSL's own file share and nothing else (a local copy, not a service).
+      if (sites.length || !(wsl && matched.length === 1 && matched[0] === UNC_COPY)) return { cls: "egress", sites: sites.length ? sites : [UNKNOWN_SITE], paths: [], names: [] };
     }
     if (ids.has(43)) return { cls: "destructive", sites: [], paths: commandPaths(cmd), names: [] };
     if (ids.has(55)) return { cls: "credentials", sites: [], paths: commandPaths(cmd), names: [] };

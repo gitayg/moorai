@@ -606,7 +606,10 @@ A destination whose host is shell text the proxy cannot resolve — `$VAR`, `$(�
 brace, a backslash — or whose authority it cannot read at all (an underscore in the host, a port of more than
 16 digits), is the site `unknown`, which no task can name (every site a task yields has a dot), so such an
 upload is never aligned. A loopback host is recognised before the rest of the authority is read, so an
-unreadable port on it is still moorai-control.
+unreadable port on it is still moorai-control. Any upload form whose destination cannot be read at all (scp,
+rsync or sftp to a dotless ssh alias, `Invoke-RestMethod -Uri $u`, nc or socat to a variable, `curl -K cfg`)
+is egress to the site `unknown` too, and so is every host past the first 64 in one command; only a copy onto
+WSL's own file share (`\\wsl.localhost\…`) and nothing else is not judged.
 
 **Limits.**
 - Lexical, as in the hook: an upload to a host the person named is aligned even when it is exfiltration to
