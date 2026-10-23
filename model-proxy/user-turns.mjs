@@ -21,21 +21,22 @@
 // <local-command-stdout> / <local-command-stderr>; hook output is <user-prompt-submit-hook>; the IDE's selection
 // and open file are <ide_selection> / <ide_opened_file> (Claude Code strips them itself with
 // /<(ide_opened_file|ide_selection)(?:\s[^>]*)?>[\s\S]*?<\/\1>/); an MCP resource is
-// <mcp-resource server="…" uri="…">. A tag may carry attributes (up to 512 characters). None of it is the
+// <mcp-resource server="…" uri="…">. A tag may carry attributes of any length. None of it is the
 // person's request, and all of it can carry text someone else wrote (a cloned repository's CLAUDE.md, a page a
 // worker read). stripHarness removes each such block from a turn's texts (its text parts, in order) before
 // anything is taken from them, so a host, a path or a label word that appears only inside one never counts.
 // Per text, ONE left-to-right scan over every harness tag with a stack: the first block ends at its own
 // matching close, and blocks nest. What is kept is the text before the first harness tag and, when that block
 // closes cleanly and NO further harness tag follows in the text, the text after it. Fail closed:
-//   * an unclosed block, or a close that does not match the innermost open block (interleaved tags): only the
-//     text before the first harness tag is kept, and the rest of the TURN (every later part) is dropped;
+//   * an unclosed block, a tag with no closing ">", a close with no open block (a stray close), or a close that
+//     does not match the innermost open block (interleaved tags): only the text before the first harness tag
+//     is kept, and the rest of the TURN (every later part) is dropped;
 //   * any further harness tag after the first block (a second block of any tag, or a stray close, e.g. a file
 //     quoted inside a reminder carrying `</system-reminder> words <system-reminder>`): only the text before
 //     the first harness tag is kept from this text.
 // The cost is the other way: a person's words after a harness block in the same text, when another harness
 // tag follows, are dropped, which can only make an action look LESS aligned. <bash-input> (the command a
-// person typed) is kept. Linear: one global regex pass.
+// person typed) is kept. Linear: one left-to-right pass (HARNESS_START below).
 //
 // NOT IDENTIFIABLE HERE (judged as the person's turn): a sub-agent's prompt (Claude Code's Task / Agent tool:
 // the sub-agent's first user turn is text the PARENT MODEL wrote, so in an agent-to-agent call the "task" this
@@ -48,7 +49,10 @@
 export const MAX_TURN = 20000;
 
 export const HARNESS_TAGS = Object.freeze(["system-reminder", "task-notification", "bash-stdout", "bash-stderr", "local-command-stdout", "local-command-stderr", "user-prompt-submit-hook", "ide_selection", "ide_opened_file", "mcp-resource"]);
-const HARNESS_RE = new RegExp(`<(/?)(${HARNESS_TAGS.join("|")})(?:\\s[^<>]{0,512})?>`, "g");
+// A harness tag starts at "<" or "</" plus a HARNESS_TAGS name followed by whitespace, ">" or "/"; its attributes
+// run to the next ">", whatever their length. The regex finds only the start; the end is one indexOf, and the
+// scan resumes after that ">", so a tag start inside another tag's attributes is never rescanned: linear.
+const HARNESS_START = new RegExp(`<(/?)(${HARNESS_TAGS.join("|")})(?=[\\s>/])`, "g");
 
 // COMPACTION. When a Claude Code conversation runs out of context, the summary of it becomes the first user turn,
 // opening with this sentence (2.1.295's bundle; its Remote Control variant opens the same way). The summary is
@@ -59,17 +63,20 @@ export const isCompactionSummary = (t) => String(t).trimStart().startsWith(COMPA
 // One text → { text, malformed }.
 function scan(text) {
   const s = String(text);
-  HARNESS_RE.lastIndex = 0;
+  HARNESS_START.lastIndex = 0;
   let m, first = -1, end = -1;
   const stack = [];
-  while ((m = HARNESS_RE.exec(s)) !== null) {
-    const closing = m[1] === "/", tag = m[2];
+  while ((m = HARNESS_START.exec(s)) !== null) {
+    if (first < 0) first = m.index;
     if (end >= 0) return { text: s.slice(0, first), malformed: false };          // a further harness tag
-    if (first < 0) { if (closing) continue; first = m.index; }                 // a close before any block is text
+    const gt = s.indexOf(">", HARNESS_START.lastIndex);
+    if (gt < 0) return { text: s.slice(0, first), malformed: true };             // unterminated tag
+    HARNESS_START.lastIndex = gt + 1;
+    const closing = m[1] === "/", tag = m[2];
     if (!closing) { stack.push(tag); continue; }
-    if (stack[stack.length - 1] !== tag) return { text: s.slice(0, first), malformed: true };   // interleaved
+    if (stack[stack.length - 1] !== tag) return { text: s.slice(0, first), malformed: true };   // stray or interleaved close
     stack.pop();
-    if (!stack.length) end = HARNESS_RE.lastIndex;
+    if (!stack.length) end = HARNESS_START.lastIndex;
   }
   if (first < 0) return { text: s, malformed: false };
   if (end < 0) return { text: s.slice(0, first), malformed: true };             // unclosed

@@ -506,7 +506,7 @@ context: … Contents of <path> …</system-reminder>`; background workers' resu
 `<task-notification>` blocks; a `!` command's output is `<bash-stdout>` / `<bash-stderr>`; a local slash
 command's output is `<local-command-stdout>` / `<local-command-stderr>`; hook output is
 `<user-prompt-submit-hook>`; the IDE's selection and open file are `<ide_selection>` / `<ide_opened_file>`;
-an MCP resource is `<mcp-resource server="…" uri="…">`. A tag may carry attributes (up to 512 characters).
+an MCP resource is `<mcp-resource server="…" uri="…">`. A tag may carry attributes of any length.
 Each of those blocks is removed before any feature is taken
 (`user-turns.mjs stripTurn`), so a host, a path or a label word ("delete", "token", "post") that appears
 only there never counts — a cloned repository's CLAUDE.md naming a host does not put it in scope, and the
@@ -514,8 +514,9 @@ credentials, destructive and mcp-write labels are not switched on by a CLAUDE.md
 words. One left-to-right scan per text over every harness tag, with a stack: the first block ends at its
 own matching close and blocks nest. Kept: the text before the first harness tag, and — only when that block
 closes cleanly and no further harness tag follows in the same text — the text after it. Fail closed: an
-unclosed block, or a close that does not match the innermost open block (interleaved tags), keeps only the
-text before the first harness tag and drops the rest of the turn (every later text part); any further
+unclosed block, a tag with no closing `>`, a close with no open block, or a close that does not match the
+innermost open block (interleaved tags), keeps only the text before the first harness tag and drops the rest
+of the turn (every later text part); any further
 harness tag after the first block (a second block of any tag, or a stray close) keeps only the text before
 the first harness tag of that text — so a quoted file carrying `</system-reminder> words <system-reminder>`
 cannot expose `words`. The cost is that a person's words after a harness block, in a text where another

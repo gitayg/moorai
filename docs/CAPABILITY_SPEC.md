@@ -2268,10 +2268,11 @@ and is not already denied is judged by `data/intent-server.mjs` against the sess
   function responses, documents, and the text blocks sent with Anthropic `tool_result` blocks are never
   the task. Harness blocks are stripped first (one stack scan per text; kept: the text before the first
   harness tag, plus the text after that block only when it closes cleanly and no further harness tag
-  follows; an unclosed block or interleaved close also drops the rest of the turn): `<system-reminder>` (Claude Code's CLAUDE.md, memory and session context),
+  follows; an unclosed block, a tag with no closing `>`, a stray close or an interleaved close also drops the
+  rest of the turn): `<system-reminder>` (Claude Code's CLAUDE.md, memory and session context),
   `<task-notification>`, `<bash-stdout>`, `<bash-stderr>`, `<local-command-stdout>`, `<local-command-stderr>`,
   `<user-prompt-submit-hook>`, `<ide_selection>`, `<ide_opened_file>`, `<mcp-resource server=… uri=…>` (a tag may
-  carry attributes, up to 512 characters) — identified in Claude Code 2.1.295's bundle. Captured only from a request that
+  carry attributes of any length) — identified in Claude Code 2.1.295's bundle. Captured only from a request that
   declares tools (a tool-less side request — WebFetch summarisation, compaction — adds nothing), and only
   when the provider's 2xx response begins. A body that does not parse (gzip, BOM) captures nothing and is
   judged in the header's session, else `none`.
