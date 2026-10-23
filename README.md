@@ -2901,14 +2901,17 @@ MoorAI console. Honest platform matrix:
 | Linux | `Tesseract` via the `leptess` binding (system `libtesseract`, pulled in as a `.deb`/`.rpm` dependency) — **opportunistic, second-class** vs the OS engines | **No.** Fully on-device. |
 | Windows with no OCR language pack, or the app opened in a plain browser | none | See below. |
 
-Where the OS provides no engine, MoorAI does **not** fall back to its own servers. If — and only if
-— the device already holds an AI provider key (`ANTHROPIC_API_KEY`, the admin key file at
-`~/.moorai/provider-key`, or the agent token saved in MoorAI; the same resolution as
-[`data/device-inference.mjs`](data/device-inference.mjs)), the app offers a fallback that sends the
-image **device → provider directly**, to the provider the developer's own agent already talks to.
-That path is disclosed in the UI before it runs and emits a content-free alert so it is visible in
-the console. With no engine **and** no key, image inspection is **skipped** and says so — it never
-degrades into silent egress.
+Where the OS provides no engine, MoorAI does **not** fall back to its own servers. A fallback that sends
+the image **device → provider directly**, to the provider the developer's own agent already talks to,
+exists but is **off by default**. It runs only when all three hold: the OS has no engine; the device
+already holds an AI provider key (`ANTHROPIC_API_KEY`, the admin key file at `~/.moorai/provider-key`, or
+the agent token saved in MoorAI; the same resolution as [`data/device-inference.mjs`](data/device-inference.mjs));
+and the fallback was turned on, either by the console's policy (`imageInspection.providerFallback: true`)
+or by the user on that device (the **Settings** checkbox, stored in the app's local storage). A policy
+with `providerFallback: false` keeps it off whatever the device setting says. A key on the device never
+turns it on by itself. When it runs, it is disclosed in the UI first and emits a content-free alert so it
+is visible in the console. Otherwise image inspection is **skipped** and says so — it never degrades into
+silent egress.
 
 On macOS the image gets two Vision passes, accurate and then fast, and a fast-pass line the accurate pass
 did not produce is added to the text. On macOS 27 the accurate recognizer misreads some characters in

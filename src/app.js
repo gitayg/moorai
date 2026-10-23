@@ -8,7 +8,7 @@ import { DetectionEngine } from "./engine.js";
 import { Audit } from "./audit.js";
 import { COACH_TAIL } from "../data/enforcement.js";
 import { consoleBound, consoleWarning, enrolled, getPolicy, postAlert, nativeLog, loadIdentity, enroll, signUp, awaitClaim, serverBase, enrolBase, currentTenant, setAgentAuth, getAuthMethod, setAuthMethod, openUrl, reportDevice, reportPatches, reportPrompt, reportActivity, appVersion, checkUpdate, restartApp, checkAndInstallUpdate, reportIdentity, aboutInfo } from "./api.js";
-import { ocrCapability, ocrImage, engineLabel, decideImageInspection } from "./ocr.js";
+import { ocrCapability, ocrImage, engineLabel, decideImageInspection, providerOptIn, providerChoice, setProviderChoice } from "./ocr.js";
 import { wireClipGuard } from "./clipguard.js";
 import { BUILD } from "./buildinfo.js";
 
@@ -595,8 +595,9 @@ async function handleFile(file, source) {
   } else if ((file.type || "").startsWith("image/")) {
     // #23 — recover the image's text and run it through the SAME PII/secret policy as any file. The
     // OS's own engine does it on-device (macOS Vision / Windows OCR): no bundled model, and the image
-    // never leaves the machine. Where the OS ships no engine we say so and, only with a provider key
-    // already on this device, offer the disclosed device → provider fallback. Otherwise: skipped.
+    // never leaves the machine. Where the OS ships no engine we say so; the disclosed device → provider
+    // fallback runs only with a provider key already on this device AND the fallback turned on (the
+    // console's policy, or the user in Settings). Otherwise: skipped.
     const note = document.createElement("div");
     note.className = "card coach";
     note.innerHTML = `<div class="top"><span class="chip lvl coach">Image</span><span class="name">Image ${esc(source)}</span></div><div class="hint"></div>`;
@@ -606,7 +607,8 @@ async function handleFile(file, source) {
     const plan = decideImageInspection(cap, {
       sizeBytes: file.size || 0,
       maxBytes: cap.maxBytes || 4 * 1024 * 1024,
-      policyDisabled: policy?.imageInspection?.enabled === false
+      policyDisabled: policy?.imageInspection?.enabled === false,
+      providerOptIn: providerOptIn(policy, providerChoice())
     });
     hint.textContent = plan.hint;
     if (plan.mode !== "skip") {
@@ -788,6 +790,10 @@ function wireEnrollment() {
   $("auth-method").value = getAuthMethod();
   applyAuthMethod(getAuthMethod());
   $("auth-method").addEventListener("change", (e) => { setAuthMethod(e.target.value); applyAuthMethod(e.target.value); });
+
+  // The OCR provider fallback: off unless the user turns it on here (or the console's policy does).
+  const ocrBox = $("ocr-provider");
+  if (ocrBox) { ocrBox.checked = providerChoice(); ocrBox.addEventListener("change", () => setProviderChoice(ocrBox.checked)); }
 
   $("agent-key-btn").addEventListener("click", async () => {
     const token = $("agent-token").value.trim();

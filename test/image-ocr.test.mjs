@@ -16,7 +16,7 @@ const SRC = new URL("../src/", import.meta.url);
 const read = (f) => readFileSync(new URL(f, SRC), "utf8");
 
 // src/ocr.js touches window.__TAURI__ only inside functions, so it imports cleanly under node.
-const { decideImageInspection, ocrCapability, ocrImage, engineLabel } = await import("../src/ocr.js");
+const { decideImageInspection, ocrCapability, ocrImage, engineLabel, providerOptIn, providerChoice, setProviderChoice } = await import("../src/ocr.js");
 
 const NATIVE = { native: true, engine: "macos-vision", providerFallback: false, maxBytes: 4194304 };
 const NO_ENGINE_WITH_KEY = { native: false, engine: null, providerFallback: true, maxBytes: 4194304 };
@@ -41,14 +41,55 @@ test("IMAGE-OCR: a native engine always wins — the provider is unreachable whe
   assert.equal(decideImageInspection(NATIVE).mode, "native");
 });
 
-test("IMAGE-OCR: the provider branch requires BOTH no native engine and a key already on the device", () => {
-  assert.equal(decideImageInspection(NO_ENGINE_WITH_KEY).mode, "provider");
+test("IMAGE-OCR: the provider branch requires no native engine, a key already on the device AND an opt-in", () => {
+  assert.equal(decideImageInspection(NO_ENGINE_WITH_KEY, { providerOptIn: true }).mode, "provider");
+  assert.equal(decideImageInspection(NOTHING, { providerOptIn: true }).mode, "skip", "an opt-in without a key sends nothing");
   assert.equal(decideImageInspection(NOTHING).mode, "skip");
   assert.match(decideImageInspection(NOTHING).hint, /not inspected/);
 });
 
+test("IMAGE-OCR: a provider key alone never sends the image: off by default, and the user is told how to turn it on", () => {
+  const plan = decideImageInspection(NO_ENGINE_WITH_KEY);
+  assert.equal(plan.mode, "skip", "the image was sent to the provider just because a key exists");
+  assert.equal(decideImageInspection(NO_ENGINE_WITH_KEY, { providerOptIn: false }).mode, "skip");
+  assert.doesNotMatch(plan.hint, /will be sent/);
+  assert.match(plan.hint, /off/);
+  assert.match(plan.hint, /Settings/);
+});
+
+test("IMAGE-OCR: the opt-in comes from the console's policy or the user's own choice on this device, never from a key", () => {
+  assert.equal(providerOptIn(null, false), false, "default: off");
+  assert.equal(providerOptIn(undefined, undefined), false);
+  assert.equal(providerOptIn({ imageInspection: { enabled: true } }, false), false, "image inspection on is not the provider fallback on");
+  assert.equal(providerOptIn({ imageInspection: { providerFallback: true } }, false), true, "the policy turns it on");
+  assert.equal(providerOptIn(null, true), true, "the user turns it on for this device");
+  assert.equal(providerOptIn({ imageInspection: { providerFallback: false } }, true), false, "a policy that says no wins over the device choice");
+  assert.equal(providerOptIn({ imageInspection: { providerFallback: "yes" } }, false), false, "only true turns it on");
+});
+
+test("IMAGE-OCR: the device choice is stored only when the user sets it, and reads back off when storage fails", () => {
+  const kv = new Map();
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: { getItem: (k) => (kv.has(k) ? kv.get(k) : null), setItem: (k, v) => kv.set(k, String(v)), removeItem: (k) => kv.delete(k) } });
+  try {
+    assert.equal(providerChoice(), false);
+    setProviderChoice(true);
+    assert.equal(providerChoice(), true);
+    setProviderChoice(false);
+    assert.equal(providerChoice(), false);
+    assert.equal(kv.size, 0, "turning it off leaves nothing stored");
+    globalThis.localStorage = { getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); }, removeItem: () => {} };
+    assert.equal(providerChoice(), false);
+  } finally { if (saved) Object.defineProperty(globalThis, "localStorage", saved); else delete globalThis.localStorage; }
+});
+
+test("IMAGE-OCR: the app passes the opt-in to the decision (src/app.js)", () => {
+  const app = read("app.js");
+  assert.match(app, /decideImageInspection\(cap, \{[^}]*providerOptIn: providerOptIn\(policy, providerChoice\(\)\)/s);
+});
+
 test("IMAGE-OCR: the provider hint discloses the egress and names whose token is used", () => {
-  const hint = decideImageInspection(NO_ENGINE_WITH_KEY).hint;
+  const hint = decideImageInspection(NO_ENGINE_WITH_KEY, { providerOptIn: true }).hint;
   assert.match(hint, /sent to your AI provider/);
   assert.match(hint, /token already on this device/);
   assert.match(hint, /not to MoorAI/);
