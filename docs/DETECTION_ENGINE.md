@@ -2919,9 +2919,12 @@ Stated rather than papered over.
   file are ignored (`trustedEnv` in `cli/server-mode.mjs`) and reported; other `MOORAI_*` tuning variables
   (for example `MOORAI_LOCAL_MODEL`) are still read from the environment. A container with no `/etc/moorai/policy.pub` or `MOORAI_POLICY_PUBKEY` starts every run
   unpinned, so it trusts the first policy it fetches. The in-process forms (`@moorai/agent-sdk`,
-  `moorai-serve`) do not evaluate the circuit breaker, session risk, deletion volume, intent alignment,
+  `moorai-serve`) do not evaluate the circuit breaker, session risk, deletion volume,
   learned drift, MCP reputation, model escalation, honeytokens, the `mask` rewrite or the #67 check of the
-  agent's own environment (`transit-env`) (each result lists them in `notEvaluated`). The SDK's `PostToolUse` resolves results under the hook's inbound rules (§7). The SDK's
+  agent's own environment (`transit-env`) (each result lists them in `notEvaluated`). They do judge intent
+  alignment, from an in-memory store (`data/intent-server.mjs`; the task from the SDK's `UserPromptSubmit`
+  or the sidecar's `POST /v1/task`), with the hook's lexical limits and an added `"block"` mode
+  ([CAPABILITY_SPEC.md](CAPABILITY_SPEC.md) 11c). The SDK's `PostToolUse` resolves results under the hook's inbound rules (§7). The SDK's
   `UserPromptSubmit` scans every prompt at stage `prompt`, not the hook's `file`-stage scan of
   event-triggered prompts. `moorai-serve`'s `/v1/tool-call` reads paths on the sidecar's own filesystem, so
   an authenticated client can learn whether a file there holds secrets, and its secret-egress fingerprint

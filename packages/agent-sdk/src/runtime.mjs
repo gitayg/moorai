@@ -15,19 +15,32 @@
 //     "pass-through"` returns the "ask" to the SDK, whose permission flow then hands it to the
 //     application's own `canUseTool` — for a service that has a real approver. Never the default.
 //   * enforcement without a token — server mode is management evidence; this surface never coaches.
+//
+// INTENT ALIGNMENT (data/intent-server.mjs). captureTask(session, prompt) records the user's task for a
+// session as keyed hashes in memory (the SDK's UserPromptSubmit, moorai-serve's POST /v1/task); toolCall
+// then judges an already-risky call with a `session` against it, after the branch verdict and before the
+// headless rule, as the hook's intentStep does. policy.intentAlignment: "report" (default: one alert per
+// session per target, verdict unchanged), "ask" (allow -> ask, which the headless rule then settles),
+// "block" (allow or ask -> deny), "off". A branch deny is not re-judged. The alert is the hook's category,
+// "Action outside the stated task" (#64, reason code INTENT_MISMATCH) with keyed hashes only; the verdict
+// gains `intent: { class, mode }`. The store's HMAC key is random per runtime (options.intentStore.key to
+// pin one) and never leaves the process. Lexical, with the hook's limits: it asks whether the user NAMED
+// the destination, file or service, not whether the action serves the task, and a pasted untrusted
+// request puts its hosts in scope.
 import { readFileSync } from "node:fs";
 import os from "node:os";
-import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib } from "./core.mjs";
+import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib, intentServerLib } from "./core.mjs";
 import { decideToolCall } from "./decide.mjs";
 import { createReporter } from "./report.mjs";
 
-const { buildEngine, decideText, loadVerifiedPolicy, readRootOwned, withSafer } = hookCore;
+const { buildEngine, decideText, loadVerifiedPolicy, readRootOwned, withSafer, saferAlternativesFor } = hookCore;
 const { resolveServerMode, systemConfigPath, settleHeadlessAsk, serviceWho, normalizeServiceId, HEADLESS_MODES } = serverModeLib;
 const { hashWithKey, deriveKey, NO_KEY } = contentHashLib;
 const { policyIdOf, REASON } = provenance;
 const { OFFLINE_DEFAULT_POLICY } = offlineDefault;
 const { decideInbound, surfaceOf, inboundText } = inboundLib;
 const { decideIndexChunk, indexScanAction, indexSource, INDEX_MAX_CHUNKS } = indexScanLib;
+const { createIntentStore, intentModeFromPolicy, INTENT_CATEGORY, INTENT_CLASS_TEXT } = intentServerLib;
 
 // The hook's NO_POLICY_BASELINE, byte for byte: no threat configuration, so threatActionFor falls through
 // to BUILTIN_DEFAULT_ACTIONS (cli/moorai-hook.mjs explains why this differs from the offline default).
@@ -78,6 +91,7 @@ export async function createMoorAI(options = {}) {
   const agentName = agentNamesLib.agentNameOf(surface);
   const identity = { user: who.user, device: who.device, platform: os.platform(), tenant: config.tenant, actor: hash(`${who.user}@${who.device}`), surface, ...(agentName ? { agentName } : {}) };
   const reporter = options.reporter || createReporter({ config, identity, fetchImpl: options.fetch });
+  const intent = createIntentStore(options.intentStore || {});
 
   let state = null, loading = null, loadedAt = 0;
   async function loadPolicy() {
@@ -155,16 +169,49 @@ export async function createMoorAI(options = {}) {
     return { decision: st.decision, configuredDecision: d.decision, ...summary(findings), reasons: d.reasons, alternatives: d.alternatives, kill: d.kill, findings: contentFree(findings), ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };
   }
 
-  // The verdict the hook reaches for one tool call (src/decide.mjs), settled for a headless run.
+  // The user's task for a session (intent alignment), held as keyed hashes only. Returns content-free
+  // counts: { mode, captured, features }.
+  async function captureTask(session, prompt) {
+    const s = await ready();
+    const mode = intentModeFromPolicy(s.policy);
+    if (mode === "off") return { mode, captured: false, features: 0 };
+    const r = intent.captureTask(session, prompt);
+    return { mode, captured: typeof session === "string" && session.length > 0 && typeof prompt === "string", features: r.features };
+  }
+
+  // Intent alignment on the branch verdict v (see the header). Returns v, or a copy with the adjusted
+  // decision, reason and alternatives plus `intent`. Reasons are fixed text per class: no argument, no task.
+  function intentStep(s, v, input, session, sess) {
+    if (v.decision === "deny" || typeof session !== "string" || !session) return v;
+    const mode = intentModeFromPolicy(s.policy);
+    if (mode === "off") return v;
+    const j = intent.judge(session, v.tool, input, v.findings);
+    if (!j || j.aligned) return v;
+    if (j.firstForTarget) {
+      reporter.post({ threatId: 64, category: INTENT_CATEGORY, riskLevel: mode === "block" ? "Blocked" : "Medium", stage: "behavior", tool: `hook:${v.tool}`, contentHash: hash(`intent:${j.class}`), intent: { class: j.class, mode, targetHash: j.targetHash }, ...sess }, { prov: prov(s, "PreToolUse") });
+    }
+    const why = `action outside the stated task — ${INTENT_CLASS_TEXT[j.class]}`;
+    const w = { ...v, intent: { class: j.class, mode } };
+    if (mode === "block") return { ...w, decision: "deny", reason: `blocked ${v.tool} — ${why}`, alternatives: saferAlternativesFor([64]) };
+    if (mode === "ask") {
+      if (v.decision === "allow") return { ...w, decision: "ask", reason: `needs justification ${v.tool} — ${why}`, alternatives: saferAlternativesFor([64]) };
+      return { ...w, reason: `${v.reason}, ${why}` };
+    }
+    return w;
+  }
+
+  // The verdict the hook reaches for one tool call (src/decide.mjs), judged for intent alignment when the
+  // call carries a session, then settled for a headless run.
   async function toolCall({ tool, input, cwd, permissionMode = "", session } = {}) {
     const s = await ready();
-    const v = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId });
+    const b = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId });
     const sess = sessionOf(session);
-    report(s, v.findings, { tool: v.tool, decision: v.decision, sess });
-    reportSignals(s, v.signals, v.tool, "PreToolUse", sess);
+    report(s, b.findings, { tool: b.tool, decision: b.decision, sess });
+    reportSignals(s, b.signals, b.tool, "PreToolUse", sess);
+    const v = intentStep(s, b, input, session, sess);
     const st = settle(s, v, { tool: v.tool, permissionMode, sess });
     const message = st.decision === "allow" ? "" : `MoorAI: ${withSafer(st.reason, v.alternatives)}`;
-    return { decision: st.decision, configuredDecision: v.decision, ...summary(v.findings), reasons: v.decision === "allow" ? [] : [st.reason], alternatives: v.alternatives, kill: v.kill, message, findings: contentFree(v.findings), evaluated: v.evaluated, notEvaluated: v.notEvaluated, ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };
+    return { decision: st.decision, configuredDecision: v.decision, ...summary(v.findings), reasons: v.decision === "allow" ? [] : [st.reason], alternatives: v.alternatives, kill: v.kill, message, findings: contentFree(v.findings), evaluated: v.evaluated, notEvaluated: v.notEvaluated, ...(v.intent ? { intent: v.intent } : {}), ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };
   }
 
   // The index stage (cli/index-scan.mjs): chunks an application is about to embed, one verdict each —
@@ -197,5 +244,5 @@ export async function createMoorAI(options = {}) {
     return { action: indexScanAction(s.policy), policyId: s.policyId, results, allowed, flagged, held, denied };
   }
 
-  return { identity, config: { serverUrl: config.serverUrl, tenant: config.tenant, enrolled: reporter.enrolled }, settings: { serviceId: sm.serviceId, serviceIdSource: options.serviceId ? "options" : sm.serviceIdSource, headless: sm.headless, passThrough: settings.passThrough }, ready, scan, toolCall, scanForIndex, flush: () => reporter.flush(), reporter, hash, RANK };
+  return { identity, config: { serverUrl: config.serverUrl, tenant: config.tenant, enrolled: reporter.enrolled }, settings: { serviceId: sm.serviceId, serviceIdSource: options.serviceId ? "options" : sm.serviceIdSource, headless: sm.headless, passThrough: settings.passThrough }, ready, scan, toolCall, captureTask, scanForIndex, flush: () => reporter.flush(), reporter, hash, RANK };
 }

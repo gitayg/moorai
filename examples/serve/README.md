@@ -5,9 +5,16 @@ three commands.
 
 | Command | What it does | Port (loopback) |
 |---|---|---|
-| `moorai-serve` (default) | HTTP decision API: `POST /v1/tool-call`, `POST /v1/scan`, `GET /healthz` | 8790 |
+| `moorai-serve` (default) | HTTP decision API: `POST /v1/tool-call`, `POST /v1/scan`, `POST /v1/task`, `GET /healthz` | 8790 |
 | `moorai-mcp-gateway --route /name=https://...` | Guard in front of remote MCP servers | 8848 |
 | `moorai-model-proxy` | Between the agent's model SDK and the provider (Anthropic Messages, OpenAI Chat Completions); see [model-proxy/README.md](../../model-proxy/README.md) | 8791 |
+
+For intent alignment, send each turn the user wrote to `POST /v1/task` as `{session, prompt}` and pass
+the same `session` on `/v1/tool-call`. A risky call aimed at a host, path or service the task never named
+is then judged under `policy.intentAlignment` (`report` by default, `ask`, `block`, `off`); the sidecar
+keeps only keyed hashes in memory and never stores or echoes the prompt. It is lexical (did the user name
+the destination, not does the action serve the task), and a pasted untrusted request puts its hosts in
+scope. Details: [README](../../README.md), "Intent alignment in process".
 
 All three listen on 127.0.0.1 only and refuse a request whose Host header is not a loopback name. Run the
 sidecar in the agent's network namespace: a container in the same Kubernetes pod, or a compose service

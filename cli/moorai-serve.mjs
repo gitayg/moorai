@@ -15,8 +15,22 @@
 //                                                     source: a string label, or { name?, trust?:
 //                                                     "trusted" | "untrusted" | "unknown", kind? } (the
 //                                                     author: cli/index-scan.mjs PROVENANCE)
-//   session (optional, every POST): the caller's own session / conversation id. Only its keyed hash
-//   leaves, as the `session` field of each console alert the request raises; omitted, no field.
+//   POST /v1/task      { session, prompt }          -> { mode, captured, features }: the user's task for that
+//                                                     session, for intent alignment (data/intent-server.mjs).
+//                                                     Send each turn a PERSON wrote, never a tool result or
+//                                                     other machine-injected text. Held in memory as keyed
+//                                                     hashes of the sites, paths, service names and labels it
+//                                                     mentions; the prompt is never stored or echoed.
+//                                                     A later /v1/tool-call with the same `session` is judged
+//                                                     when risky (upload, credential read, destructive
+//                                                     command, MCP write) under policy.intentAlignment:
+//                                                     "report" (default: one alert per target, verdict
+//                                                     unchanged), "ask" (allow -> ask, then the headless
+//                                                     rule), "block" (deny), "off". The verdict then carries
+//                                                     `intent: { class, mode }`. No session, no judgement.
+//   session (optional, every POST but /v1/task, where it is required): the caller's own session /
+//   conversation id. Only its keyed hash leaves, as the `session` field of each console alert the request
+//   raises; omitted, no field.
 //   GET  /healthz                                  -> { status, version, policyId }
 //
 // Responses never contain the submitted text: decision, threat ids, categories, the hook's reasons
@@ -162,13 +176,19 @@ export async function createServer(opts = {}) {
       const s = await rt.ready();
       return { status: "ok", version, policyId: s.policyId };
     }
-    if (path !== "/v1/scan" && path !== "/v1/tool-call" && path !== "/v1/index-scan") throw new HttpError(404, "not found");
+    if (path !== "/v1/scan" && path !== "/v1/tool-call" && path !== "/v1/index-scan" && path !== "/v1/task") throw new HttpError(404, "not found");
     if (req.method !== "POST") throw new HttpError(405, "use POST");
     if (!authorized(req, o.token)) throw new HttpError(401, "missing or wrong bearer token");
     const body = await readJson(req, o.maxBody);
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "body must be a JSON object");
     if (body.session != null && (typeof body.session !== "string" || !body.session || body.session.length > 256)) throw new HttpError(400, "session must be a non-empty string of at most 256 characters");
     const session = body.session == null ? undefined : body.session;
+    if (path === "/v1/task") {
+      if (session === undefined) throw new HttpError(400, "session is required");
+      if (typeof body.prompt !== "string") throw new HttpError(400, "prompt must be a string");
+      if (body.prompt.length > MAX_TEXT) throw new HttpError(413, "prompt too long");
+      return withTimeout(rt.captureTask(session, body.prompt), o.timeoutMs);
+    }
     if (path === "/v1/scan") {
       const ctx = cleanCtx(body.ctx);
       const { tool, ...engineCtx } = ctx;

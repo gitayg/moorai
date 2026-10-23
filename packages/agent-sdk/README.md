@@ -19,6 +19,28 @@ for await (const m of query({ prompt, options: { hooks: moorAIHooks({ serviceId:
 (`prompts: "enforce"`, `toolResults: "advise"` to act on them). Options are documented at the top of
 [`src/index.mjs`](src/index.mjs).
 
+### Intent alignment
+
+`UserPromptSubmit` also records the task: the prompt passed to `query()` and every later user turn (a
+machine-injected `source` such as `system` is skipped). The runtime keeps only HMACs of the sites, paths,
+service names and labels the task mentions, per `session_id`, in memory under a random per-process key
+([`data/intent-server.mjs`](../../data/intent-server.mjs)); the prompt is never stored. A `PreToolUse` call
+that is already risky (an upload, a #43 destructive command, a #55 credential read, an MCP write) and
+aimed at something the task never named is judged under `policy.intentAlignment`:
+
+| Mode | Effect |
+|---|---|
+| `"report"` (default) | one content-free alert per session and target (#64, `Action outside the stated task`); the decision is unchanged |
+| `"ask"` | an allow becomes an ask, which the headless rule settles (deny by default; `headlessAsk: "pass-through"` hands it to your `canUseTool`) |
+| `"block"` | deny, with a fixed reason per class ("an upload to a host your request never mentioned") |
+| `"off"` | nothing is captured or judged |
+
+A call the branch already denied is not judged again, and a session with no task is never judged.
+`createMoorAI()` exposes the same step as `captureTask(session, prompt)` plus `toolCall({ ..., session })`,
+whose verdict carries `intent: {class, mode}` when it fires. Limits: it is lexical, asking whether the user
+named the destination, file or service, not whether the action serves the task; a request pasted from an
+untrusted source puts its hosts in scope; the store is per process, so a restart forgets the task.
+
 ## Scan content before it is embedded
 
 For an application that runs its own RAG or memory ingestion. A poisoned chunk in a retrieval index is

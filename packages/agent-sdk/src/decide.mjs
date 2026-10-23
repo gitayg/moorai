@@ -13,7 +13,7 @@
 //
 // WHAT IS NOT HERE — the hook steps that need per-session state on disk or a network lookup, listed in
 // NOT_EVALUATED and returned on every result so a caller can see them: the runaway circuit breaker,
-// session-risk escalation, cumulative deletion volume, intent alignment, learned drift, MCP server
+// session-risk escalation, cumulative deletion volume, learned drift, MCP server
 // reputation, model escalation, honeytokens and the mask rewrite (a "mask" policy resolves to its
 // fallback here, as threatActionFor does for every caller that cannot rewrite). Also not here, by design:
 // the hook's transit check on the AGENT'S OWN environment ("transit-env", #67 transitEnvStep). The hook
@@ -28,6 +28,8 @@
 // containmentClaudeCode "wrap" rewrites a Bash call through updatedInput, which this runtime cannot do
 // ("mask-rewrite"). Neither is a function of the call, and an SDK host is neither of those CLIs. The pure
 // decision (containmentDecision) is shared code the hook imports; off Windows both are inert in the hook too.
+// Intent alignment is NOT in NOT_EVALUATED: it needs the session's task, so src/runtime.mjs judges it around
+// this function (data/intent-server.mjs, in memory), as the hook's intentStep runs after its branch verdict.
 import { readFileSync } from "node:fs";
 import { basename, isAbsolute, resolve } from "node:path";
 import { hookCore, mcpFileArgs, secretEgress, modelEndpoints, outboundUpload, serverModeLib, toolTagsLib, exceptionsLib } from "./core.mjs";
@@ -51,7 +53,7 @@ export const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
 export const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 // Cursor's alias, as the hook maps it (TOOL_ALIASES).
 const TOOL_ALIASES = { Shell: "Bash" };
-export const NOT_EVALUATED = Object.freeze(["circuit-breaker", "session-risk", "deletion-volume", "intent-alignment", "learned-drift", "mcp-reputation", "model-escalation", "honeytokens", "mask-rewrite", "tag-rules", "transit-env", "mxc-containment"]);
+export const NOT_EVALUATED = Object.freeze(["circuit-breaker", "session-risk", "deletion-volume", "learned-drift", "mcp-reputation", "model-escalation", "honeytokens", "mask-rewrite", "tag-rules", "transit-env", "mxc-containment"]);
 const FILE_CAP = 262144;
 
 function readFileCapped(fp) {

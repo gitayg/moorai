@@ -38,7 +38,7 @@ That's the exact trade MoorAI refuses.
 - **Agent entitlement envelope** — declare each agent's authorized tools / path-prefixes / MCP servers; an action outside the envelope is flagged as **entitlement drift** and alerted or blocked — least-privilege for agents, content-free.
 - **Declared workload profiles** — write down what a workload is expected to use: tools, MCP servers and destination hosts, per service (`serviceId`) or per repository (`github:owner/name`). A call outside the profile is reported as `PROFILE_DRIFT` (the kind, the out-of-profile tool, server or host, and the profile id; never a path, command or argument), or denied when the profile says `"action": "block"`; an unenrolled device coaches instead. Profiles live in the signed console policy or the root-owned machine-wide config, never in the repository. A repository match follows the git remote, which the agent can change, so block on `serviceId`. The hook, `@moorai/agent-sdk` and `moorai-serve` evaluate them, and so does the HTTP MCP gateway on every `tools/call` (tool and MCP-server kinds; the tool is named `mcp__<route>__<tool>`, as the hook names it). Details: [DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md#declared-workload-profiles).
 - **Egress rules** — `egressRules: [{ binary?, host | cidr, port?, method?, path?, action }]` plus `egressDefault`, with `action` one of `allow`, `alert` or `block`. They say which binary may reach which host or address range, port, HTTP method and path. They can apply fleet-wide (top level of the signed policy or the root-owned machine-wide config) or per workload profile. `host` is exact or `*.suffix`. `cidr` (instead of `host`) is one range or a list of up to 64 (`10.0.0.0/8`, `fd00:20::/32`); a prefix with host bits set is refused, and `/0` is accepted only for `alert` or `block`. From a call's text a cidr rule matches an IP literal inside the range (IPv4, IPv6 with or without a zone id such as `%eth0`, IPv4-mapped IPv6); it never matches a host name there, because the hook does no DNS. The egress proxy and the MCP gateway's own upstream connection match it on the resolved address. Agents older than 1.28.0 drop a cidr rule as an unknown key, and cidr rules are not accepted inside a workload profile. The first matching rule decides, and with no match the default applies. An allow rule never matches a field the call does not reveal (no method on `git clone`, no path on `ssh`). The hook, `@moorai/agent-sdk` and `moorai-serve` read the destinations a Bash/PowerShell command, WebFetch or MCP call names: URLs, curl/wget/httpie/Invoke-WebRequest methods, ssh/scp/rsync/git/nc hosts, and nested `sh -c` / `-EncodedCommand` / `$( … )`. A block denies the call (coached when unenrolled). Alert and block post a content-free `EGRESS_RULE` alert (binary, host, port, method, rule; never a path or query). The binary is the command word the line names, not the process that opens the socket. The HTTP MCP gateway and the stdio MCP proxy judge the destinations a `tools/call`'s arguments name by the same function (the tool named `mcp__<server>__<tool>`), so a deny holds the same way in the hook, the gateway and the stdio proxy; the gateway also judges its own connection to each remote MCP server (host, port, method and path, and cidr rules on the address its DNS lookup returns). Details: [DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md#egress-rules).
-- **Intent alignment** — flags a risky agent action aimed at something the user's own request never mentioned: an upload to a host the prompt never named, a destructive command or credential read on paths it never named, an MCP write to a service it never named. The `UserPromptSubmit` hook keeps only keyed, device-local hashes of the sites, paths, service names and three labels (*credentials*, *destructive*, *mcp-write*) a prompt mentions — never the prompt. Report-only by default (`policy.intentAlignment: "ask"` raises the call to ask, `"off"` disables it). Lexical; the prompt is captured in Claude Code, Codex, Cursor, Gemini and Copilot — limits below.
+- **Intent alignment** — flags a risky agent action aimed at something the user's own request never mentioned: an upload to a host the prompt never named, a destructive command or credential read on paths it never named, an MCP write to a service it never named. The `UserPromptSubmit` hook keeps only keyed, device-local hashes of the sites, paths, service names and three labels (*credentials*, *destructive*, *mcp-write*) a prompt mentions — never the prompt. Report-only by default (`policy.intentAlignment: "ask"` raises the call to ask, `"off"` disables it). Lexical; the prompt is captured in Claude Code, Codex, Cursor, Gemini and Copilot — limits below. The Agent SDK and the `moorai-serve` sidecar judge it too, from an in-memory store (where `"block"` also denies the call).
 - **Session-level escalation** — what one call cannot show, the session can. An injection-class finding on content the agent ingested (a fetched page, a command's output, an MCP result, a file it read) taints the session for 30 minutes, and an outbound action or credential-file read inside that window raises `Agent behavior: outbound action after untrusted content` (#59). Also across calls: a credential read that was staged (copied, written, encoded or archived) and then sent out; an archive then sent out; a mass read (30 distinct files) then an upload of 4 KB or more to a destination new to the session; and slow exfiltration (5 or more transfers of up to 8 KB each to one destination, summing 16 KB or more). A decaying per-session score posts one alert when it crosses its threshold. Report-only by default (`policy.sessionRisk.mode: "ask"` raises the outbound call to ask, `"off"` disables it). The state on disk is keyed hashes and counts only.
 - **Runaway circuit breaker** — an agent stuck in a loop: the same call 15 times in 5 minutes with an unchanged result, or a 2–4 call cycle repeated 5 times with unchanged results, raises `Agent behavior: runaway loop` (#38). A result that changes is progress, so `npm test` re-run while the agent fixes the code never trips it. Report-only by default; `policy.circuitBreaker.mode: "deny"` pauses the session's tool calls for 15 minutes. Token spend is not measured: no hook event carries usage.
 - **Claimed success vs reality** — at the end of a turn, when the agent's final message says the work succeeded while the turn's commands or MCP calls failed, were denied or were interrupted and were not redone, MoorAI reports `Agent reported success but tool calls failed` (Medium). The message is read in memory, never stored or sent. Report-only, and tuned for precision: on a locked split of a blind-labelled corpus, 100% precision (17 of 17) and 54.8% recall.
@@ -527,6 +527,8 @@ as the same user and can tamper with the state file; `Write`/`Edit`, data in a G
 machine-injected turns, so there a hook-forced continuation counts as part of the task; Codex runs the
 prompt hook only after the user trusts it; and it adds one hook process per prompt (p50 119–190 ms across two
 runs on one machine). Full contract: [`docs/DETECTION_ENGINE.md`](docs/DETECTION_ENGINE.md) §6.
+The Agent SDK and `moorai-serve` run the same check in memory ([`data/intent-server.mjs`](data/intent-server.mjs));
+see "Intent alignment in process" below.
 
 **Protected instructions are fingerprinted, never copied.** The hook discovers the rules files the agent
 runs under (`CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/`, managed policy,
@@ -696,7 +698,8 @@ content-free) in one process:
   loops that are not Claude Code or the Agent SDK (OpenAI Agents SDK, LangGraph, CrewAI, a custom loop):
   `POST /v1/scan` (`{text, stage?, ctx?}`), `POST /v1/tool-call` (`{tool, input, cwd?}`, the decision the hook
   makes for that call), `POST /v1/index-scan` (`{chunks, source?}`, one verdict per chunk about to be
-  embedded; see below) and `GET /healthz`. Each POST also takes an optional `session` (the caller's own
+  embedded; see below), `POST /v1/task` (`{session, prompt}`, the user's task for intent alignment; see
+  below) and `GET /healthz`. Each POST also takes an optional `session` (the caller's own
   session id), which leaves only as the keyed `session` field of the alerts it raises. Verdicts never contain the submitted text, though a
   `tool-call` verdict's `message`, the sentence the hook shows the agent, can name a file or a host from
   the call. It binds loopback
@@ -708,7 +711,7 @@ content-free) in one process:
   which also maps a framework's tools onto the hook's tool names.
 
 Not evaluated in process, and listed in each result's `notEvaluated`: the circuit breaker, session risk,
-deletion volume, intent alignment, learned drift, MCP reputation, model escalation, honeytokens, the
+deletion volume, learned drift, MCP reputation, model escalation, honeytokens, the
 `mask` rewrite and the #67 check of the agent's own environment for a proxy or CA override (`transit-env`;
 the hook inherits the agent's environment, an in-process runtime or the sidecar does not). The SDK's `PostToolUse` observes by default and resolves a result under the same inbound
 rules as the hook (`cli/inbound.mjs`); `/v1/scan` with `ctx.inbound` does too, and accepts the tool's raw
@@ -718,6 +721,28 @@ a file there holds secrets; run it where the agent's files are. The secret-egres
 filled once per directory for the life of the process. The Python examples have not been executed.
 Declared workload profiles are evaluated in process, with the `serviceId` option (else the server-mode
 workload name) as the name a profile matches.
+
+**Intent alignment in process.** The SDK takes the task from `UserPromptSubmit`: the prompt passed to
+`query()` and every later user turn (a turn whose `source` is machine-injected, such as `system`, is
+skipped, as in the hook). The sidecar takes it from `POST /v1/task` with `{session, prompt}`; send only
+turns a person wrote, never a tool result. Either way the runtime keeps, per session, HMACs of the sites,
+paths, service names and labels the task mentions under a random per-process key
+([`data/intent-server.mjs`](data/intent-server.mjs); 1024 sessions, least recently used out, 24 h, 512
+features per session). The prompt is never stored or echoed: `/v1/task` answers `{mode, captured,
+features}`. A tool call with the same session (the SDK's `session_id`, the sidecar's `session`) that is
+already risky (an upload, a #43 destructive command, a #55 credential read, an MCP write) and aimed at
+something the task never named is judged under `policy.intentAlignment`: `"report"` (default) posts one
+alert per session and target (#64, `Action outside the stated task`, reason code `INTENT_MISMATCH`, keyed
+hashes only) and leaves the verdict alone; `"ask"` raises an allow to ask, which the headless rule then
+settles (deny unless `headlessAsk` says otherwise); `"block"` denies; `"off"` disables it. A deny the call
+already earned is not judged again. The verdict gains `intent: {class, mode}`, and the reason it adds is fixed text
+per class, never the task or the arguments. A call with no session, or a session with no task, is not
+judged, so existing sidecar clients see no change. Limits, the hook's own: it is lexical, asking whether
+the user named the destination, file or service, not whether the action serves the task, so an upload to a
+host the user named passes; a request pasted from an untrusted source puts its hosts in scope. Also: the
+store is per process, so replicas behind a load balancer do not share tasks and a restart forgets them;
+any client that can reach the sidecar can add to any session's task by sending its id; and the hook's
+loopback-model labels are not used here.
 
 #### Content headed for an index (RAG ingestion)
 

@@ -231,13 +231,14 @@ Claude Code GitHub Action, an Agent SDK service in a container
   own decision and reason (parity test: 214 payloads, two policy states, 0 mismatches). Prompts and tool
   results are observed by default (`prompts: "enforce"`, `toolResults: "advise"` to act on them).
   `moorai-serve` is the same runtime as a localhost sidecar: `POST /v1/scan`, `POST /v1/tool-call`,
-  `POST /v1/index-scan` (chunks about to be embedded; B.12), `GET /healthz`, content-free verdicts, loopback only unless `--allow-remote` plus a 16+ character
+  `POST /v1/index-scan` (chunks about to be embedded; B.12), `POST /v1/task` (the user's task for intent
+  alignment, 11c), `GET /healthz`, content-free verdicts, loopback only unless `--allow-remote` plus a 16+ character
   bearer token (compared in constant time); it rejects a non-loopback `Host` (421), non-JSON (415) and a
   body over 1 MiB (413, after draining), with a 5 s header timeout and 256 connections. A stdlib-only
   Python client with LangGraph / CrewAI examples (not executed) is in
   [`clients/python`](../clients/python/README.md). p50 on 2 KB: SDK `PreToolUse` 1.99 ms, sidecar
   `/v1/scan` 6.4–11 ms, shell hook process p50 152–159 ms / p95 170–178 ms (docs/BENCHMARK.md). **Limits.** Not evaluated in process (listed in
-  each result's `notEvaluated`): circuit breaker, session risk, deletion volume, intent alignment,
+  each result's `notEvaluated`): circuit breaker, session risk, deletion volume,
   learned drift, MCP reputation, escalation, honeytokens, the `mask` rewrite. The SDK's `PostToolUse`
   observes by default and resolves results under the same inbound rules as the hook
   ([DETECTION_ENGINE.md](DETECTION_ENGINE.md) §7). Declared workload profiles (17f) are evaluated in
@@ -740,6 +741,25 @@ is validated against.
    continuation counts as the task. Codex runs the prompt hook only after the user trusts it. Adapter
    installs from before the prompt event need `moorai-agent-hook.mjs <agent> install` re-run; only
    Claude Code's registration converges on its own. It adds one hook process per prompt.
+
+   **Server surfaces (Agent SDK, `moorai-serve`).** The same pure logic runs over an in-memory store,
+   [`data/intent-server.mjs`](../data/intent-server.mjs): per session, HMACs (random per-process key, never
+   leaves the process) of the task's derived features and of the targets already judged; 1024 sessions
+   (least recently used out), 24 h TTL from the last captured task, 512 features per session. The prompt is
+   never stored. The SDK captures the task at `UserPromptSubmit` (the `query()` prompt and later user turns;
+   a machine-injected `source` is skipped); the sidecar at `POST /v1/task {session, prompt}`, which answers
+   `{mode, captured, features}`. A `PreToolUse` / `/v1/tool-call` with that session is judged after the
+   branch verdict and before the headless rule (`packages/agent-sdk/src/runtime.mjs`):
+   `policy.intentAlignment` `"report"` (default; one alert per session and target, verdict unchanged),
+   `"ask"` (allow to ask, then settled headless: deny unless `headlessAsk` allows or passes it through),
+   `"block"` (allow or ask to deny; server surfaces only) or `"off"`. The alert is the hook's: #64,
+   `Action outside the stated task`, stage `behavior`, reason code `INTENT_MISMATCH`, `contentHash` the
+   keyed hash of the class, and `intent: {class, mode, targetHash}`. The verdict gains `intent: {class,
+   mode}`; the reason it adds is fixed text per class. No session, or no captured task, means no judgement.
+   **Limits** (beyond the hook's lexical ones, which hold unchanged: whether the user named the destination,
+   file or service, not whether the action serves the task; a pasted untrusted request puts its hosts in
+   scope): the store is per process, so replicas do not share a task and a restart forgets it; any
+   sidecar client can add to a session's task by sending its id; no loopback-model labels.
 
 11d. **Protected-instruction leak** — the agent's own rules files leaving the device. *Threat 52.*
    Three detectors ([`data/detectors-instruction-leak.js`](../data/detectors-instruction-leak.js)):

@@ -28,6 +28,8 @@ export { scanBeforeEmbed, guardEmbed } from "./embed.mjs";
 // JSON.stringify(result) until v1.4.0, which turned the newlines and quotes of MCP content blocks into
 // \n and \" and hid line- and sentence-anchored patterns from the scan.
 const RESULT_CAP = 262144;
+// The prompt sources the hook counts as a person's (cli/intent-alignment.mjs USER_SOURCES).
+const USER_SOURCES = new Set(["user", "sdk", "loop_wakeup", "schedule_wakeup"]);
 const resultText = (v) => inboundLib.inboundText(v, RESULT_CAP);
 
 // options:
@@ -45,6 +47,8 @@ const resultText = (v) => inboundLib.inboundText(v, RESULT_CAP);
 //   failClosed                 deny a tool call when MoorAI itself errors (default: allow, as the hook)
 //   timeout                    seconds, for each HookCallbackMatcher (default: the SDK's event default)
 //   onError                    (err) => void, for an internal error
+//   intentStore                { key?, maxSessions?, ttlMs?, maxFeatures? } for the in-memory intent
+//                              alignment store (data/intent-server.mjs); the mode is policy.intentAlignment
 export function moorAIHooks(options = {}) {
   let rt = null;
   const runtime = () => (rt ||= createMoorAI(options));
@@ -80,6 +84,10 @@ export function moorAIHooks(options = {}) {
   async function userPromptSubmit(input) {
     if (!input || input.hook_event_name !== "UserPromptSubmit") return {};
     try {
+      // The task, for intent alignment: the prompt passed to query() and every later user turn arrive here.
+      // Only a person's prompt is the task (the hook's isUserPrompt): a machine-injected source could put
+      // its own destination in scope. Held as keyed hashes in memory only.
+      if (!input.source || USER_SOURCES.has(input.source)) await (await runtime()).captureTask(input.session_id, input.prompt);
       const v = await (await runtime()).scan(typeof input.prompt === "string" ? input.prompt : "", "prompt", {}, { event: "UserPromptSubmit", tool: "UserPromptSubmit", settle: options.prompts === "enforce", session: input.session_id });
       if (options.prompts !== "enforce" || v.decision !== "deny") return {};
       return { decision: "block", reason: `MoorAI: prompt blocked — ${v.reasons.join(", ")}`, hookSpecificOutput: { hookEventName: "UserPromptSubmit", suppressOriginalPrompt: true } };
