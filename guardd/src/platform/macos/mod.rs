@@ -87,4 +87,8 @@ impl SystemInfo for Platform {
         let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
         String::from_utf8_lossy(&buf[..end]).into_owned()
     }
+
+    fn login_name(&self, uid: u32) -> Option<String> {
+        crate::platform::passwd_name(uid)
+    }
 }

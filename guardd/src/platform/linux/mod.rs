@@ -52,4 +52,8 @@ impl SystemInfo for Platform {
     fn hostname(&self) -> String {
         todo!("gethostname / GetComputerNameExW(ComputerNameDnsHostname), same value the hook sends as device")
     }
+
+    fn login_name(&self, uid: u32) -> Option<String> {
+        crate::platform::passwd_name(uid)
+    }
 }

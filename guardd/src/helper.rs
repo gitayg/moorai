@@ -498,6 +498,14 @@ fn is_hex(s: &str, n: usize) -> bool {
     s.len() == n && s.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 
+/// The actor of the IPC peer `uid`, derived as its hook computes it (policy::derive_actor) from the uid's
+/// login name, the helper's own install token and the hostname. None when any of them is missing.
+fn peer_actor(shared: &Shared, uid: u32) -> Option<String> {
+    let token = shared.lock().binding.as_ref().and_then(|b| b.secret.install_token.clone())?;
+    let user = shared.deps.sys.login_name(uid)?;
+    crate::policy::derive_actor(Some(&token), &user, &shared.deps.sys.hostname())
+}
+
 fn short_token(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
 }
@@ -541,27 +549,40 @@ impl Handler for IpcHandler {
                 if p.actor.as_deref().is_some_and(|a| !crate::policy::valid_actor(a)) {
                     return (err(ErrorCode::BadRequest, "actor must be h2: and 16..64 hex"), None);
                 }
-                // A policy request counts as hook activity (fetch cadence). Its actor is bound to the peer's
-                // uid (a kernel fact): one actor per uid, and an actor another uid holds is answered `none`
-                // with no fetch. The answer is that actor's own held policy, fetched on demand when missing or
-                // older than 60 s (bounded by ON_DEMAND_FETCH_MS; this connection's thread waits, no other).
-                // No request changes what another uid's requests or the background fetch name or receive.
+                // A policy request counts as hook activity (fetch cadence). The actor is never taken from the
+                // message: the helper derives it from the peer (kernel uid -> login name, its own install token,
+                // the hostname) exactly as that peer's hook computes it. A request naming any other actor, or
+                // naming one when none can be derived, is answered `none` with no fetch (the hook then takes
+                // its direct path). A request naming no actor is served the derived one, or, when none can be
+                // derived, only the actor-less policy. The derived actor is bound to the uid (one actor per
+                // uid). The answer is that actor's own held policy, fetched on demand when missing or older
+                // than 60 s (bounded by ON_DEMAND_FETCH_MS; this connection's thread waits, no other). No
+                // request changes what another uid's requests or the background fetch name or receive.
                 let now = shared.now();
+                let derived = peer_actor(shared, peer.uid);
+                let actor = match (p.actor.as_deref(), derived) {
+                    (Some(claimed), Some(d)) if claimed == d => Some(d),
+                    (Some(_), _) => {
+                        shared.lock().policy.last_call_ms = now;
+                        return (reply(Response::Policy(crate::policy::answer(None, None, now))), None);
+                    }
+                    (None, d) => d,
+                };
                 let on_demand = {
                     let mut s = shared.lock();
                     s.policy.last_call_ms = now;
-                    if let Some(a) = p.actor.as_deref() {
+                    if let Some(a) = actor.as_deref() {
                         if !s.policy.bind_actor(peer.uid, a, now) {
                             return (reply(Response::Policy(crate::policy::answer(None, None, now))), None);
                         }
                     }
-                    s.binding.as_ref().map(|b| b.tenant.clone()).is_some_and(|t| s.policy.needs_on_demand(&t, p.actor.as_deref(), now))
+                    s.binding.as_ref().map(|b| b.tenant.clone()).is_some_and(|t| s.policy.needs_on_demand(&t, actor.as_deref(), now))
                 };
                 if on_demand {
-                    policy_fetch_once(shared, crate::policy::ON_DEMAND_FETCH_MS, p.actor.clone());
+                    policy_fetch_once(shared, crate::policy::ON_DEMAND_FETCH_MS, actor.clone());
                 }
                 let s = shared.lock();
-                (reply(Response::Policy(s.policy.answer_for(p.actor.as_deref(), p.if_iat.as_deref(), shared.now()))), None)
+                (reply(Response::Policy(s.policy.answer_for(actor.as_deref(), p.if_iat.as_deref(), shared.now()))), None)
             }
             Request::Submit(sub) => {
                 if sub.alerts.is_empty() || sub.alerts.len() > MAX_SUBMIT_ALERTS {
@@ -733,6 +754,9 @@ mod tests {
         }
         fn hostname(&self) -> String {
             "test-host".into()
+        }
+        fn login_name(&self, uid: u32) -> Option<String> {
+            Some(format!("user{uid}"))
         }
     }
 
