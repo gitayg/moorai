@@ -6,7 +6,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, statSync, existsSync, chmodSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, existsSync, chmodSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -209,6 +210,195 @@ test("macos: build-pkg.sh builds a pkg whose payload is the staged layout", { sk
     const files = spawnSync("/usr/sbin/pkgutil", ["--payload-files", out], { encoding: "utf8" }).stdout.split("\n");
     assert.ok(files.includes("./Library/PrivilegedHelperTools/moorai-guardd"), files.join(","));
     assert.ok(files.includes("./Library/LaunchDaemons/run.glick.moorai.guardd.plist"));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ---- macOS: --bind (the console binding without MDM) and --check (the unprivileged check mode) ----
+const DARWIN = process.platform !== "darwin" && "needs macOS (plutil, dscl, stat -f)";
+const TOKEN = "tok_bind_0123456789";
+const ENROLL = "mes_0123456789abcdef0123456789abcdef";
+function userConfig(dir, extra = {}) {
+  const p = join(dir, "user-config.json");
+  writeFileSync(p, JSON.stringify({ serverUrl: "https://console.example.com/", tenant: "acme", installToken: TOKEN, ...extra }));
+  return p;
+}
+function stageBind(dir, args) {
+  return runInstaller(join(PKG, "macos", "install.sh"), [fakeBinary(dir), "--bind", ...args], { MOORAI_GUARDD_STAGE: join(dir, "root") });
+}
+// The console and tenant come from the command line only (never the user-writable hook config).
+const URL_ARGS = ["--server-url", "https://console.example.com", "--tenant", "acme"];
+
+test("macos: --bind writes config.json 0644 and a root-only secret.json from the enrolled user's hook config", { skip: DARWIN }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "guardd-bind-"));
+  try {
+    writeFileSync(join(dir, "enroll.txt"), `${ENROLL}\n`);
+    const r = stageBind(dir, [...URL_ARGS, "--yes", "--user-config", userConfig(dir), "--enroll-secret-file", join(dir, "enroll.txt")]);
+    assert.equal(r.status, 0, r.stderr);
+    const etc = join(dir, "root", "private", "etc", "moorai");
+    assert.equal(mode(join(etc, "config.json")), 0o644);
+    assert.deepEqual(JSON.parse(readFileSync(join(etc, "config.json"), "utf8")), { serverUrl: "https://console.example.com", tenant: "acme", helper: "optional" });
+    assert.equal(mode(join(etc, "secret.json")), 0o600, "secret.json is owner-only");
+    assert.deepEqual(JSON.parse(readFileSync(join(etc, "secret.json"), "utf8")), { enrollSecret: ENROLL, installToken: TOKEN }, "the hook's own install token, so receipts match the posting token");
+    assert.ok(!r.stdout.includes(TOKEN) && !r.stdout.includes(ENROLL) && !r.stderr.includes(TOKEN), "no secret is printed");
+    const fp = createHash("sha256").update(TOKEN).digest("hex").slice(0, 12);
+    assert.match(r.stdout, new RegExp(`console https://console\\.example\\.com, tenant acme, install token sha256:${fp}`), "the binding is shown before it is written");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("macos: --bind refuses another console's existing binding, a bad enrolment secret, and plain http to a remote console", { skip: DARWIN }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "guardd-bind-"));
+  try {
+    const etc = join(dir, "root", "private", "etc", "moorai");
+    assert.equal(stageBind(dir, [...URL_ARGS, "--yes", "--user-config", userConfig(dir)]).status, 0);
+    const other = stageBind(dir, ["--server-url", "https://evil.example", "--tenant", "acme", "--yes", "--user-config", userConfig(dir)]);
+    assert.notEqual(other.status, 0);
+    assert.match(other.stderr, /another console or tenant/);
+    assert.equal(JSON.parse(readFileSync(join(etc, "config.json"), "utf8")).serverUrl, "https://console.example.com", "never overwritten");
+    writeFileSync(join(dir, "bad.txt"), "mes_short\n");
+    const bad = stageBind(dir, [...URL_ARGS, "--yes", "--user-config", userConfig(dir), "--enroll-secret-file", join(dir, "bad.txt")]);
+    assert.notEqual(bad.status, 0);
+    assert.match(bad.stderr, /mes_ \+ 32 hex/);
+    rmSync(join(dir, "root"), { recursive: true, force: true });
+    const http = stageBind(dir, ["--server-url", "http://console.example.com", "--tenant", "acme", "--yes", "--user-config", userConfig(dir)]);
+    assert.notEqual(http.status, 0);
+    assert.match(http.stderr, /https/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("macos: --bind refuses without --server-url and --tenant, never taking them from the user-writable hook config", { skip: DARWIN }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "guardd-bind-"));
+  try {
+    const cfg = userConfig(dir, { serverUrl: "https://attacker.example", tenant: "evil" });
+    for (const args of [[], ["--server-url", "https://console.example.com"], ["--tenant", "acme"]]) {
+      const r = stageBind(dir, [...args, "--yes", "--user-config", cfg]);
+      assert.notEqual(r.status, 0, args.join(" "));
+      assert.match(r.stderr, /--server-url and --tenant are required/);
+      assert.ok(!existsSync(join(dir, "root", "private", "etc", "moorai", "config.json")), "nothing written");
+    }
+    const badTenant = stageBind(dir, ["--server-url", "https://console.example.com", "--tenant", "a b", "--yes", "--user-config", cfg]);
+    assert.notEqual(badTenant.status, 0);
+    const ok = stageBind(dir, [...URL_ARGS, "--yes", "--user-config", cfg]);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(JSON.parse(readFileSync(join(dir, "root", "private", "etc", "moorai", "config.json"), "utf8")).serverUrl, "https://console.example.com", "the command line wins over the hook config's console");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("macos: --bind refuses a symlinked or group/world-writable user config, or one under such a directory", { skip: DARWIN }, async () => {
+  const { symlinkSync } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "guardd-bind-"));
+  try {
+    const real = join(dir, "real");
+    mkdirSync(real, { mode: 0o755 });
+    chmodSync(real, 0o755);
+    const cfg = userConfig(real);
+    chmodSync(cfg, 0o600);
+    const run = (p) => stageBind(dir, [...URL_ARGS, "--yes", "--user-config", p]);
+    assert.equal(run(cfg).status, 0, run(cfg).stderr);
+    rmSync(join(dir, "root"), { recursive: true, force: true });
+    symlinkSync(cfg, join(dir, "link.json"));
+    const viaFileLink = run(join(dir, "link.json"));
+    assert.notEqual(viaFileLink.status, 0);
+    assert.match(viaFileLink.stderr, /symbolic link/);
+    symlinkSync(real, join(dir, "linkdir"));
+    const viaDirLink = run(join(dir, "linkdir", "user-config.json"));
+    assert.notEqual(viaDirLink.status, 0);
+    assert.match(viaDirLink.stderr, /symbolic link/);
+    chmodSync(cfg, 0o620);
+    const gw = run(cfg);
+    assert.notEqual(gw.status, 0);
+    assert.match(gw.stderr, /writable by group or others/);
+    chmodSync(cfg, 0o600);
+    chmodSync(real, 0o777);
+    const dirw = run(cfg);
+    assert.notEqual(dirw.status, 0);
+    assert.match(dirw.stderr, /writable by group or others/);
+    chmodSync(real, 0o755);
+    assert.ok(!existsSync(join(dir, "root", "private", "etc", "moorai", "secret.json")), "nothing written by a refused run");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("macos: --bind shows the binding and needs a yes: without a terminal and without --yes it writes nothing", { skip: DARWIN }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "guardd-bind-"));
+  try {
+    writeFileSync(join(dir, "enroll.txt"), `${ENROLL}\n`);
+    const r = stageBind(dir, [...URL_ARGS, "--user-config", userConfig(dir), "--enroll-secret-file", join(dir, "enroll.txt")]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stdout, /tenant acme, install token sha256:[0-9a-f]{12}/);
+    assert.match(r.stderr, /confirm/);
+    assert.ok(!existsSync(join(dir, "root", "private", "etc", "moorai", "secret.json")));
+    const no = spawnSync("sh", [join(PKG, "macos", "install.sh"), fakeBinary(dir), "--bind", ...URL_ARGS, "--user-config", userConfig(dir)], { encoding: "utf8", env: { ...process.env, MOORAI_GUARDD_STAGE: join(dir, "root"), MOORAI_BIND_TEST_TTY: "1" }, input: "n\n" });
+    assert.notEqual(no.status, 0, "an answer other than yes writes nothing");
+    assert.ok(!existsSync(join(dir, "root", "private", "etc", "moorai", "config.json")));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// A staged tree that looks like a running install: what install.sh lays out, the binding, the helper's
+// state (0700 dir, 0600 key, registration) and run directory (0755, socket 0666, device.pub 0644).
+async function stagedRunningInstall(dir) {
+  const { createServer } = await import("node:net");
+  const root = join(dir, "root");
+  writeFileSync(join(dir, "enroll.txt"), `${ENROLL}\n`);
+  assert.equal(stageBind(dir, [...URL_ARGS, "--yes", "--user-config", userConfig(dir), "--enroll-secret-file", join(dir, "enroll.txt")]).status, 0);
+  const state = join(root, "Library", "Application Support", "MoorAI", "state");
+  mkdirSync(state, { recursive: true });
+  chmodSync(join(root, "Library", "Application Support", "MoorAI"), 0o755);
+  chmodSync(state, 0o700);
+  writeFileSync(join(state, "device.key"), "00".repeat(32));
+  chmodSync(join(state, "device.key"), 0o600);
+  writeFileSync(join(state, "registration.json"), JSON.stringify({ keyId: "k".repeat(32), deviceId: "d".repeat(32), status: "registered", bound: true }));
+  chmodSync(join(state, "registration.json"), 0o600);
+  const run = join(root, "private", "var", "run", "moorai");
+  mkdirSync(run, { recursive: true });
+  chmodSync(run, 0o755);
+  writeFileSync(join(run, "device.pub"), "MCowBQYDK2VwAyEA\n");
+  chmodSync(join(run, "device.pub"), 0o644);
+  const srv = createServer();
+  await new Promise((r) => srv.listen(join(run, "hook.sock"), r));
+  chmodSync(join(run, "hook.sock"), 0o666);
+  return { root, state, run, close: () => new Promise((r) => srv.close(r)) };
+}
+const runCheck = (root) => spawnSync("sh", [join(PKG, "macos", "install.sh"), "--check"], { encoding: "utf8", env: { ...process.env, MOORAI_GUARDD_STAGE: root } });
+
+test("macos: --check passes on a correct install and fails when the device key or secret is not root-only", { skip: DARWIN }, async () => {
+  const base = realpathSync(tmpdir().length > 60 ? "/tmp" : tmpdir());
+  const dir = mkdtempSync(join(base, "gck-"));
+  const t = await stagedRunningInstall(dir);
+  try {
+    const good = runCheck(t.root);
+    assert.equal(good.status, 0, good.stdout);
+    assert.match(good.stdout, /^ok device key root-only$/m);
+    assert.match(good.stdout, /^ok secret \/etc\/moorai\/secret\.json root-only$/m);
+    assert.match(good.stdout, /^ok state directory root-only$/m);
+    assert.match(good.stdout, /^ok hook socket root-owned, connectable by users$/m);
+    assert.match(good.stdout, /^ok registered and bound \(status registered\)$/m);
+    assert.doesNotMatch(good.stdout, /FAIL/);
+    const loosen = (p, m, line) => {
+      const before = statSync(p).mode & 0o777;
+      chmodSync(p, m);
+      const r = runCheck(t.root);
+      chmodSync(p, before);
+      assert.equal(r.status, 1, `${p} ${m.toString(8)}`);
+      assert.match(r.stdout, line);
+    };
+    loosen(join(t.state, "device.key"), 0o644, /^FAIL device key root-only: mode 644 grants more than allowed$/m);
+    loosen(join(t.state, "device.key"), 0o640, /^FAIL device key root-only: mode 640/m);
+    loosen(t.state, 0o755, /^FAIL state directory root-only: mode 755/m);
+    loosen(join(t.root, "private", "etc", "moorai", "secret.json"), 0o640, /^FAIL secret \/etc\/moorai\/secret\.json root-only: mode 640/m);
+    loosen(join(t.run, "hook.sock"), 0o600, /^FAIL hook socket root-owned, connectable by users: mode 600, expected 666$/m);
+    writeFileSync(join(t.state, "registration.json"), JSON.stringify({ status: "changed", bound: false }));
+    const unbound = runCheck(t.root);
+    assert.equal(unbound.status, 1);
+    assert.match(unbound.stdout, /^FAIL registration: status changed, bound false/m);
+  } finally { await t.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("macos: --check on a machine without the helper fails every item and never claims the key is safe", { skip: DARWIN }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "gck-empty-"));
+  try {
+    const r = runCheck(dir);
+    assert.equal(r.status, 1);
+    assert.match(r.stdout, /^FAIL device key: missing/m);
+    assert.doesNotMatch(r.stdout, /^ok /m);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

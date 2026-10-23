@@ -3991,8 +3991,9 @@ Token counts (metadata only) go to `POST /api/token-usage` as cumulative hourly 
   `additionalProperties: false`). Device receipts (keySource `device`, basis `allowed`) are signed with the device
   key `~/.moorai/agency-ed25519.key`; the console's receipt from an approval grant's `receipt` field is attached
   unchanged on the grant's first use. Never on an ask or a deny. The console serves `receipt` only to a fetch signed
-  by a bound `moorai-guardd` key; the hook's fetch is token-only and guardd is not installed, so console receipts are
-  dormant and an approved call carries a device receipt. No receipt for `click`, `type_text`, `press_key`,
+  by a bound `moorai-guardd` key. Once the helper is installed and bound (macOS), the hook reads its policy through
+  the helper (`cli/guardd-policy.mjs`) and the receipt reaches it. Without the helper, the hook's fetch uses the
+  token only and an approved call carries a device receipt. No receipt for `click`, `type_text`, `press_key`,
   `upload_file`, `download_file`, `push_file`.
 - **Reserved key.** A model-supplied `_moorai` is stripped before any check; the stripped input goes on with an
   allow or an ask. On a host that cannot rewrite input (the agent-hook shim, Cursor, an aliased tool name) a call

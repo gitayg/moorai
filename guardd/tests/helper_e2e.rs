@@ -54,6 +54,11 @@ impl SystemInfo for Sys {
 #[derive(Default)]
 struct Script {
     policy: Option<String>,
+    /// Served instead of `policy` to a device-signed /api/policy fetch (the console adds receipts only then).
+    signed_policy: Option<String>,
+    /// Serve a policy naming the request's actor query value (`{"for": "<encoded actor>"}`), as the console
+    /// adds that actor's approvals.
+    per_actor: bool,
     published: Option<String>,
     commands: Vec<Value>,
     register_status: Option<(&'static str, bool)>,
@@ -136,7 +141,11 @@ fn handler(script: Arc<Mutex<Script>>) -> moorai_guardd::console::fake::Handler 
                 }
             }
             "/api/devices/commands/ack" => reply(200, json!({"ok":true})),
-            "/api/policy" => match &s.policy {
+            "/api/policy" if s.per_actor => {
+                let actor = r.path_and_query.split("actor=").nth(1).unwrap_or("").to_string();
+                Ok(HttpResponse { status: 200, body: sign_policy(json!({"for": actor}), &console_key(), "acme", "2026-10-12T09:00:10.000Z").into_bytes() })
+            }
+            "/api/policy" => match if r.header("X-Device-Sig").is_some() && s.signed_policy.is_some() { &s.signed_policy } else { &s.policy } {
                 Some(p) => Ok(HttpResponse { status: 200, body: p.clone().into_bytes() }),
                 None => reply(404, json!({})),
             },
@@ -597,4 +606,115 @@ fn the_full_helper_threads_register_beat_and_poll_on_their_own() {
     assert!(seen("/api/devices/register"), "registered");
     assert!(seen("/api/devices/beat"), "the start-up beat");
     assert!(seen("/api/devices/commands"), "the long-poll");
+}
+
+#[test]
+fn the_policy_fetch_is_device_signed_names_the_hooks_actor_and_an_ipc_request_fetches_on_demand() {
+    let w = world("signedpolicy");
+    register_once(&w.shared).unwrap();
+    pin_console_key(&w);
+    let pinned = requests_to(&w, "/api/policy");
+    verify_devreq(pinned.last().unwrap(), &device_pub(&w));
+    let ck = console_key();
+    w.script.lock().unwrap().signed_policy = Some(sign_policy(json!({"approvals":[{"requestId":"apr_1","receipt":"wire.sig"}]}), &ck, "acme", "2026-10-12T09:00:10.000Z"));
+    w.clock.store(T0 + 10_000, Ordering::SeqCst);
+    let mut c = Client::connect(&w);
+    c.hello();
+    let actor = "h2:a1b2c3d4e5f60718";
+    let p = c.send(json!({"op":"policy","actor":actor}));
+    assert_eq!(p["source"], "fresh");
+    assert!(p["policy"].as_str().unwrap().contains(r#""receipt":"wire.sig""#), "a new actor fetches on demand: {p}");
+    let fetches = requests_to(&w, "/api/policy");
+    let last = fetches.last().unwrap();
+    assert_eq!(last.path_and_query, "/api/policy?tenant=acme&actor=h2%3Aa1b2c3d4e5f60718", "the hook's own query form");
+    assert_eq!(last.method, "GET");
+    assert!(last.body.is_empty());
+    verify_devreq(last, &device_pub(&w));
+    assert_eq!(last.header("X-Device-Key"), Some(moorai_guardd::keys::key_id_of_raw(&moorai_guardd::keys::raw_from_spki_b64(&device_pub(&w)).unwrap()).as_str()));
+    assert_eq!(w.console.timeouts.lock().unwrap().last().copied(), Some(moorai_guardd::policy::ON_DEMAND_FETCH_MS), "the on-demand fetch is bounded");
+    let n = requests_to(&w, "/api/policy").len();
+    w.clock.store(T0 + 30_000, Ordering::SeqCst);
+    let again = c.send(json!({"op":"policy","actor":actor}));
+    assert_eq!(again["policy"], p["policy"]);
+    assert_eq!(requests_to(&w, "/api/policy").len(), n, "held for this actor and younger than 60 s: no fetch");
+    w.clock.store(T0 + 10_000 + moorai_guardd::policy::ON_DEMAND_FRESH_MS, Ordering::SeqCst);
+    c.send(json!({"op":"policy","actor":actor}));
+    assert_eq!(requests_to(&w, "/api/policy").len(), n + 1, "60 s later: fetched again");
+    assert_eq!(c.send(json!({"op":"policy","actor":"alice@laptop"}))["code"], "bad_request", "only a keyed actor goes on the wire");
+}
+
+#[test]
+fn an_unregistered_helper_fetches_policy_unsigned_and_never_on_demand_before_the_pin() {
+    let w = world("unsignedpolicy");
+    let mut c = Client::connect(&w);
+    c.hello();
+    assert_eq!(c.send(json!({"op":"policy","actor":"h2:a1b2c3d4e5f60718"}))["source"], "none");
+    assert!(requests_to(&w, "/api/policy").is_empty(), "unpinned: the background loop does the first-contact fetch");
+    pin_console_key(&w);
+    let f = requests_to(&w, "/api/policy");
+    assert_eq!(f[0].path_and_query, "/api/policy?tenant=acme", "the background fetch never names a hook's actor");
+    assert!(f[0].header("X-Device-Sig").is_none(), "no registration yet: install token only");
+}
+
+const ACTOR_X: &str = "h2:aaaaaaaaaaaaaaaa";
+const ACTOR_Y: &str = "h2:bbbbbbbbbbbbbbbb";
+
+/// One IPC `policy` request from a peer of `uid`, through the real handler (the peer uid is the kernel's
+/// LOCAL_PEERCRED / SO_PEERCRED answer in production).
+fn ask(w: &World, uid: u32, actor: Option<&str>) -> moorai_guardd::ipc::PolicyResp {
+    use moorai_guardd::ipc::server::{ConnCtx, Handler};
+    use moorai_guardd::ipc::{PolicyReq, Request, RequestFrame, Response};
+    let h = IpcHandler { shared: w.shared.clone() };
+    let req = RequestFrame { v: 1, id: 1, body: Request::Policy(PolicyReq { if_iat: None, actor: actor.map(str::to_string) }) };
+    let mut ctx = ConnCtx { hello_done: true, client: Some("moorai-hook".into()) };
+    let (resp, _) = h.handle(&mut ctx, &moorai_guardd::transport::PeerCred { pid: 4242, uid, sid: None, admin: false }, req);
+    match resp.body {
+        Response::Policy(p) => p,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn names(p: &moorai_guardd::ipc::PolicyResp, actor: &str) -> bool {
+    p.policy.as_deref().is_some_and(|t| t.contains(&actor.replace(':', "%3A")))
+}
+
+fn per_actor_world(tag: &str) -> World {
+    let w = world(tag);
+    register_once(&w.shared).unwrap();
+    pin_console_key(&w);
+    w.script.lock().unwrap().per_actor = true;
+    w.clock.store(T0 + 10_000, Ordering::SeqCst);
+    w
+}
+
+#[test]
+fn two_users_actors_never_get_each_others_held_policy() {
+    let w = per_actor_world("twoactors");
+    let x = ask(&w, 501, Some(ACTOR_X));
+    assert!(names(&x, ACTOR_X), "uid 501 gets X's policy: {x:?}");
+    let y = ask(&w, 502, Some(ACTOR_Y));
+    assert!(names(&y, ACTOR_Y) && !names(&y, ACTOR_X), "uid 502 gets Y's policy");
+    let x2 = ask(&w, 501, Some(ACTOR_X));
+    assert!(names(&x2, ACTOR_X) && !names(&x2, ACTOR_Y), "within 60 s uid 501 is answered from X's own entry, never Y's: {x2:?}");
+    let none = ask(&w, 501, None);
+    assert!(!names(&none, ACTOR_X) && !names(&none, ACTOR_Y), "an actor-less request never gets an actor's policy");
+}
+
+#[test]
+fn an_actor_change_on_one_connection_never_changes_another_users_fetch_or_answer() {
+    let w = per_actor_world("actorchange");
+    assert!(names(&ask(&w, 501, Some(ACTOR_X)), ACTOR_X));
+    assert!(names(&ask(&w, 502, Some(ACTOR_Y)), ACTOR_Y));
+    moorai_guardd::policy::fetch_cycle(w.shared.state_mutex(), w.console.as_ref()).unwrap();
+    let bg = requests_to(&w, "/api/policy").pop().unwrap();
+    assert_eq!(bg.path_and_query, "/api/policy?tenant=acme", "the background fetch names no hook's actor");
+    let before = requests_to(&w, "/api/policy").iter().filter(|r| r.path_and_query.contains("aaaaaaaaaaaaaaaa")).count();
+    let stolen = ask(&w, 503, Some(ACTOR_X));
+    assert_eq!(stolen.source, moorai_guardd::ipc::PolicySource::None, "an actor bound to another uid is refused: {stolen:?}");
+    assert!(stolen.policy.is_none());
+    let after = requests_to(&w, "/api/policy").iter().filter(|r| r.path_and_query.contains("aaaaaaaaaaaaaaaa")).count();
+    assert_eq!(after, before, "no fetch naming X on another uid's behalf");
+    // uid 502 moves to a new actor of its own: its old one is released, uid 501's answer is unchanged.
+    assert!(names(&ask(&w, 502, Some("h2:cccccccccccccccc")), "h2:cccccccccccccccc"));
+    assert!(names(&ask(&w, 501, Some(ACTOR_X)), ACTOR_X));
 }

@@ -6,6 +6,7 @@
 // Everything down to the "Policy TRUST + LOAD" banner near the bottom is pure. That last section owns
 // the policy-trust I/O, and it is here rather than in one entrypoint precisely because BOTH need it.
 
+import { readPolicyViaHelper } from "./guardd-policy.mjs";
 import { trustedEnv } from "./server-mode.mjs";
 import { canonicalJson } from "./canonical-json.mjs";
 import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
@@ -2153,7 +2154,15 @@ function writePolicyPin(config, pin, keys, mark) {
 // back-off, no cache, no pin, no last-known-good.
 // actor: the device's keyed actor (h2:, cli/content-hash.mjs actorHash), named on the fetch so the console can add
 // this device's decided approvals to the signed policy (cli/approval-routing.mjs). Never a hostname or login.
-export async function loadVerifiedPolicy(config, { backoffDraw, network = true, actor = "" } = {}) {
+//
+// helper: null (the default: never ask the helper), or { mode } from the machine config's `helper` field
+// (cli/moorai-hook.mjs passes it), plus test-only connect options (cli/guardd-policy.mjs). When the device
+// already holds a policy key (anchored or pinned) and moorai-guardd answers with a fresh policy, that policy
+// is verified exactly like a fresh fetch (signature, tenant, rollback marks) and used; the helper fetched it
+// signed with the bound device key, so it carries the console's approval receipts. Anything else — helper
+// absent, timed out, unproven, another tenant, a stale, unsigned or refused body — continues below on the
+// direct install-token path, unchanged. An unpinned device always takes the direct path (first contact pins).
+export async function loadVerifiedPolicy(config, { backoffDraw, network = true, actor = "", helper = null } = {}) {
   const anchorKeys = policyKeys();    // explicit anchor: root-owned /etc/moorai/policy.pub or MDM env
   const pin = readPolicyPin();        // this device's own TOFU record
   const trust = policyTrust({ anchorKeys, pin, tenant: config.tenant });
@@ -2221,6 +2230,29 @@ export async function loadVerifiedPolicy(config, { backoffDraw, network = true, 
   const cached = cacheRaw == null ? null : verify(cacheRaw);
   if (cached && cached.bad) rejected.push({ source: "cache", status: cached.bad });
   behind("cache", cached);
+
+  if (helper && network && (trust.mode === "anchored" || trust.mode === "pinned") && !absence.suspicious) {
+    const h = await (helper.read || readPolicyViaHelper)({ tenant: config.tenant, actor, mode: helper.mode, clientVersion: helper.clientVersion, connectOpts: helper.connectOpts || {},
+      ...(helper.budgetMs ? { budgetMs: helper.budgetMs } : {}), ...(helper.policyTimeoutMs ? { policyTimeoutMs: helper.policyTimeoutMs } : {}) }).catch(() => null);
+    if (h && h.raw) {
+      const v = verify(h.raw);
+      if (v.policy) {
+        behind("helper", v);
+        try { mkdirSync(dirname(POLICY_CACHE), { recursive: true }); writeFileSync(POLICY_CACHE, h.raw); } catch {}
+        // Same bar as the fresh path: a real signature under the anchor or the pin advances the mark and
+        // becomes last-known-good. No published key is passed, so a pinned device learns keys only from a
+        // signed nextKeys newer than the mark (policyKeysToLearn), as on a direct fetch.
+        if (v.status === "ok") {
+          armPolicyPin(config, trust, { ...pin, iat: user.mark }, v, JSON.parse(h.raw), "", rejected, mark);
+          writePolicyLkg(h.raw);
+        }
+        return { policy: v.policy, source: "fresh", via: "helper", rejected, pin, trust, absence };
+      }
+      // A helper copy behind the device's mark is not tampering (the hook may have fetched directly more
+      // recently); a signature that does not verify is reported. Either way the direct path decides.
+      if (v.bad !== "malformed" && v.bad !== "rollback") rejected.push({ source: "helper", status: v.bad });
+    }
+  }
   // A CACHED policy never re-pins, however valid it looks: the cache file is in the agent's own write
   // scope, so letting it teach the device a key would hand the attacker the pin. Only a signature
   // delivered fresh over the network from the configured server can arm or roll the pin forward.

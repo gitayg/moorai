@@ -343,7 +343,10 @@ let VERIFIED_POLICY;
 // reached the load must be the mode main would have enforced: a network-free read takes the cache or a
 // last-known-good copy however old, both in the user's write scope (test/fail-mode-hook-preverify).
 let POLICY_LOAD = null;
-const verifiedPolicyLoad = () => (POLICY_LOAD ??= loadVerifiedPolicy(CONFIG, { actor: (() => { try { return IDENTITY.actor; } catch { return ""; } })() }));
+// helper: read the policy through moorai-guardd when it is installed and answers (cli/guardd-policy.mjs), so the
+// console's approval receipts reach the hook; the machine config's `helper: "off"` never connects.
+const verifiedPolicyLoad = () => (POLICY_LOAD ??= loadVerifiedPolicy(CONFIG, { actor: (() => { try { return IDENTITY.actor; } catch { return ""; } })(),
+  helper: { mode: ADMIN && typeof ADMIN.helper === "string" ? ADMIN.helper : "optional", clientVersion: (() => { try { return APP_VERSION || "0.0.0"; } catch { return "0.0.0"; } })() } }));
 // DECIDED: a verdict for this call has been written (emit) or the hook is exiting (exitHook), so a late
 // fail-closed deny must not write a second one. FAIL_EXIT: a fail-closed deny was written, so nothing
 // else may write or set the exit code.

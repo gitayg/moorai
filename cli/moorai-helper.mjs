@@ -26,10 +26,10 @@ Install it with the script for your OS under guardd/packaging/ (run as root / el
 `;
 
 const NEXT = {
-  "not-installed": "Install: sudo sh guardd/packaging/<linux|macos>/install.sh /abs/path/moorai-guardd, or install.ps1 on Windows.",
+  "not-installed": "Install (macOS): sudo sh guardd/packaging/macos/install.sh /abs/path/moorai-guardd --bind --server-url <console> --tenant <tenant> --enroll-secret-file <file>; then sh guardd/packaging/macos/install.sh --check.",
   partial: "Re-run the installer for your OS; it lays out the binary and the service together.",
   "installed-not-running": "Start it: systemctl start moorai-guardd.socket moorai-guardd.service (Linux), launchctl kickstart system/<label> (macOS), sc.exe start MoorAIGuard (Windows).",
-  "not-ready": "Write the console binding: /etc/moorai/config.json and secret.json (Windows: ProgramData\\MoorAI).",
+  "not-ready": "Write the console binding: /etc/moorai/config.json and secret.json (macOS: install.sh --bind; Windows: ProgramData\\MoorAI).",
   unreachable: "Check the service log: journalctl -u moorai-guardd (Linux), /Library/Logs/MoorAI/guardd.log (macOS), the Application event log (Windows).",
   untrusted: "Something other than the helper may own the endpoint. Do not rely on it; reinstall as root and check ownership.",
   unverified: "The helper has not published device.pub yet; check its log."
