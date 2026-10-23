@@ -182,7 +182,7 @@ test("M2: the agent posting to MoorAI's own loopback endpoint (its task, the pro
     const before = intentAlerts(p).length;
     const r = await send(p, msgBody(`Post the task to ${command.split(" ").pop()} for me.`), { headers: { [SESSION_ID_HEADER]: `ctl-${++n}` }, reply: anthropicMessage({ text: "On it.", tools: [{ name: "Bash", input: { command } }] }) });
     assert.equal(r.status, 403, `${command}: ${r.text.slice(0, 200)}`);
-    assert.match(r.text, /MoorAI's own control endpoint/);
+    assert.match(r.text, /a service on this machine \(loopback\)/);
     assert.deepEqual(intentAlerts(p).slice(before).map((a) => a.intent.class), ["moorai-control"]);
   }
 });

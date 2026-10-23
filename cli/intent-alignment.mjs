@@ -162,5 +162,5 @@ export const CLASS_TEXT = {
   credentials: "a credential read your request never mentioned",
   destructive: "a destructive command on paths your request never mentioned",
   "mcp-write": "an MCP write to a service your request never mentioned",
-  "moorai-control": "an upload to MoorAI's own control endpoint (moorai-serve, the model proxy or the MCP gateway)"
+  "moorai-control": "an upload to a service on this machine (loopback), such as MoorAI's own control endpoints"
 };

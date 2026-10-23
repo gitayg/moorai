@@ -560,7 +560,7 @@ tool a dispatcher names inside its arguments (`invoke {"tool_name": "Bash", "arg
 readings under [Parser differentials](#parser-differentials) — and the strictest verdict wins (deny over
 ask). The store's lexical rules decide which calls are judged at all: an upload to a host (egress, a
 `curl` / `wget` destination given as a bare argument included), an upload to MoorAI's own loopback
-endpoints (moorai-control), a credential read, a destructive command, an MCP write. The policy's
+endpoints or any other loopback service, whatever the port (moorai-control), a credential read, a destructive command, an MCP write. The policy's
 `intentAlignment`:
 
 | `intentAlignment` | `--mode report` | `--mode enforce` |
@@ -585,24 +585,28 @@ every session, which costs little here: the next request re-sends the conversati
 captured again (the intermediate turns, and which targets already alerted, are what is forgotten; a
 conversation's first request after a restart is judged on its first and latest turns only).
 
-**moorai-control.** An upload to one of MoorAI's own loopback listeners at its default port — moorai-serve
-(8790), the model proxy (8791), the MCP gateway (8848) — by URL (any scheme), bare `host:port`, `nc` or
-`socat`, is class `moorai-control` and is never aligned, whatever the task names: it is an agent writing its
-own task (`POST /v1/task`) or driving the control that judges it. The host is normalised before it is
+**moorai-control: loopback uploads are always judged.** Every upload or egress to a host on this machine —
+by URL (any scheme), bare `host:port`, `nc`, `socat` or a UNC copy — is class `moorai-control` and is never
+aligned, whatever the task names and **whatever the port**: readable or not, one of MoorAI's own listeners
+(moorai-serve 8790, the model proxy 8791, the MCP gateway 8848: an agent writing its own task with
+`POST /v1/task`, or driving the control that judges it) or any other local service (a database on
+`localhost:5432`, a dev server on `:3000`). The port is only the target's detail (`loopback:<port>`, leading
+zeros dropped; `loopback` when it cannot be read); the decision never depends on parsing it. So in `ask` or
+`block` every loopback upload by an agent is asked or refused; a GET (no upload) is not judged, and a copy
+onto WSL's file share (`\\wsl.localhost\…`) is not a loopback service. The host is normalised before it is
 classed, not matched by spelling: `localhost` / `*.localhost`, 127.0.0.0/8 and 0 in any inet_aton spelling
 (`127.1`, `2130706433`, `0x7f.1`, `0177.0.0.1`, `0`), `::1`, `::`, IPv4-mapped and -compatible IPv6
 (`[::ffff:127.0.0.1]`, `[::ffff:7f00:1]`), a trailing dot, any case. When the same command also uploads to a
 remote host, it is still judged moorai-control (the strictest) with the remote sites among its targets, so
-each remote destination raises its own alert. An upload to any other loopback port is still not judged (a
-local dev server), and a listener started on a non-default port is not recognised.
+each remote destination raises its own alert.
 
 **Bare curl / wget destinations.** Every curl / wget argument that is not a flag or a flag's value is a
 destination (`--url VALUE` and `--url=VALUE` too; any scheme; a query or fragment after the host is ignored).
 A destination whose host is shell text the proxy cannot resolve — `$VAR`, `$(…)`, backticks, a glob, a
 brace, a backslash — or whose authority it cannot read at all (an underscore in the host, a port of more than
 16 digits), is the site `unknown`, which no task can name (every site a task yields has a dot), so such an
-upload is never aligned. A port is read with its leading zeros (up to 16 digits) and compared as a number of
-at most 65535, so `:0008790` is moorai-serve's port.
+upload is never aligned. A loopback host is recognised before the rest of the authority is read, so an
+unreadable port on it is still moorai-control.
 
 **Limits.**
 - Lexical, as in the hook: an upload to a host the person named is aligned even when it is exfiltration to
@@ -1250,7 +1254,10 @@ loopback spellings on a MoorAI port, with public and other-port controls and a b
 interleaved, nested, re-balanced and unclosed harness blocks, and a linear-time check; `R5` an interleaved or
 unclosed block, or a second block, followed by an upload host keeps only the text before the first tag (and
 the proxy refuses the upload); `R6` leading-zero MoorAI ports by URL, bare, `nc` and `socat`, a padded other
-port, and unreadable authorities as `unknown`. Each fix was mutated back and its test seen failing.
+port, and unreadable authorities as `unknown`; `R7` every loopback upload judged whatever the port (a
+20-digit zero-padded 8790, `localhost:5432`, `:3000`, an unreadable port, `nc` with a padded or non-numeric
+port, `socat`, `wget` to `0x7f.1`), the port only in the detail, a GET and the WSL share not judged. Each
+fix was mutated back and its test seen failing.
 
 Latency the judging adds, measured on an M-series Mac, node, no console, built-in rules:
 

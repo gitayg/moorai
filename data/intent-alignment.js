@@ -8,13 +8,13 @@
 //                                   destructive / mcp-write) and, if so, what it targets.
 //   assessAlignment(task, action) — aligned iff the targets were mentioned (or, for credentials, destructive
 //                                   and mcp-write, the task carries the matching label). moorai-control is
-//                                   never aligned: an upload to MoorAI's own loopback listeners (moorai-serve,
-//                                   the model proxy, the MCP gateway, at their default ports) is an agent
-//                                   writing its own task (POST /v1/task) or driving the control that judges it,
-//                                   whatever the task says. Uploads to any other loopback port stay out of
-//                                   scope (a local dev server). A loopback host is recognised after
-//                                   normalising it (loopbackHost), and a command that also uploads to a
-//                                   remote host keeps those sites among the moorai-control targets.
+//                                   never aligned: EVERY upload to a loopback host, whatever its port
+//                                   (readable or not, MoorAI's listeners or any other local service), is
+//                                   judged — an agent writing its own task (POST /v1/task), driving the
+//                                   control that judges it, or writing to a local service. The port is only
+//                                   the target's detail. A loopback host is recognised after normalising it
+//                                   (loopbackHost), and a command that also uploads to a remote host keeps
+//                                   those sites among the moorai-control targets.
 //
 // Deliberately lexical. It answers "did the user ever name this destination / file / service", not
 // "does this action serve the task". An upload to a host the user named is aligned even when it is
@@ -113,14 +113,13 @@ const UPLOAD = [
 ];
 // MoorAI's own loopback listeners, at the ports the code listens on by default: moorai-serve
 // (cli/moorai-serve.mjs DEFAULTS.port), the model proxy (model-proxy/server.mjs DEFAULTS.port) and the MCP
-// gateway (mcp-gateway/config.mjs DEFAULT_PORT); test/intent-alignment-control.test.mjs keeps them equal. One
-// started on another port is not recognised.
+// gateway (mcp-gateway/config.mjs DEFAULT_PORT); test/intent-alignment-control.test.mjs keeps them equal. Kept
+// for reference: the moorai-control decision does not depend on the port (any loopback upload is judged).
 export const MOORAI_PORTS = Object.freeze([8790, 8791, 8848]);
-const MOORAI_PORT = new Set(MOORAI_PORTS.map(String));
 // Where a command names host:port (any scheme's URL, socat's address), classified after normalising the host
 // (loopbackHost below), never by its spelling.
-const URL_HOSTPORT = /\b[a-z][a-z0-9+.-]{0,15}:\/\/(?:[^\s\/@'"]{0,200}@)?(\[[0-9a-f:.%]{1,64}\]|[^\s\/:'"?#`)\[\]]{1,253})(?::(\d{1,16}))?(?!\d)/gi;
-const SOCAT_HOSTPORT = /\b(?:tcp[46]?|tcp[46]?-connect|openssl|openssl-connect|udp[46]?|udp[46]?-sendto|udp[46]?-connect):(\[[0-9a-f:.%]{1,64}\]|[^\s:,]{1,253}):(\d{1,16})(?!\d)/gi;
+const URL_HOSTPORT = /\b[a-z][a-z0-9+.-]{0,15}:\/\/(?:[^\s\/@'"]{0,200}@)?(\[[0-9a-f:.%]{1,64}\]|[^\s\/:'"?#`)\[\]]{1,253})(?::(\d+))?/gi;
+const SOCAT_HOSTPORT = /\b(?:tcp[46]?|tcp[46]?-connect|openssl|openssl-connect|udp[46]?|udp[46]?-sendto|udp[46]?-connect):(\[[0-9a-f:.%]{1,64}\]|[^\s:,]{1,253})(?::(\d+))?/gi;
 // IPv4 as inet_aton reads it: 1-4 parts, each decimal, 0x hex or 0-prefixed octal, the last part filling the
 // bytes left (127.1, 2130706433, 0x7f.1, 0177.0.0.1). Returns the 32-bit value, or null.
 function ipv4(h) {
@@ -172,9 +171,11 @@ export function loopbackHost(host) {
   if (g.slice(0, 5).every((x) => x === 0) && (g[5] === 0xffff || g[5] === 0)) return g[5] === 0 && g[6] === 0 ? g[7] <= 1 : v4tail === 0 || v4tail >>> 24 === 127;
   return false;
 }
-// A port as written, leading zeros allowed (at most 16 digits are read): one of MOORAI_PORTS once it is a
-// number of at most 65535.
-const moorPort = (port) => { const n = port == null ? NaN : Number(port); return Number.isInteger(n) && n <= 65535 && MOORAI_PORT.has(String(n)); };
+// A port as written, for the target's detail only (never for whether the call is judged): leading zeros of any
+// length dropped, then a number of at most 65535, else null.
+const portOf = (port) => { const d = String(port == null ? "" : port).replace(/^0+(?=\d)/, ""); return /^\d{1,5}$/.test(d) && Number(d) <= 65535 ? Number(d) : null; };
+// The host part of an authority ([v6] or up to a colon), after any userinfo.
+const hostPartOf = (auth) => { const a = auth.slice(auth.lastIndexOf("@") + 1); const v6 = /^\[[^\]]{0,64}\]/.exec(a); const h = v6 ? v6[0] : a.split(":", 1)[0]; return { host: h, port: a.slice(h.length).startsWith(":") ? a.slice(h.length + 1) : null }; };
 const NC_HOST = /\b(?:nc|ncat|netcat|telnet)\b(?:\s+-{1,2}[\w-]+(?:\s+\d+)?)*\s+([a-z0-9][\w.-]*\.[a-z][\w-]*|\d{1,3}(?:\.\d{1,3}){3})\b/gi;
 const REMOTE_COPY = /(?:^|\s)(?:[\w.-]+@)?([a-z0-9][\w-]*(?:\.[\w-]+)+):/gi;
 const SOCAT_HOST = /\btcp[46]?:([a-z0-9][\w.-]+):\d+/gi;
@@ -238,7 +239,8 @@ function ncTargets(command, add) {
       if (t.startsWith("-") && t.length > 1) { if (t.length === 2 && NC_VALUE.has(t[1])) i++; continue; }
       pos.push(t);
     }
-    if (pos.length === 2 && /^\d{1,16}$/.test(pos[1])) add(pos[0], pos[1]);
+    if (pos.length && loopbackHost(pos[0])) add(pos[0], pos[1]);           // loopback: judged, whatever the port
+    else if (pos.length === 2 && /^\d+$/.test(pos[1])) add(pos[0], pos[1]);
   }
 }
 // The unknown destination: a bare curl / wget argument whose host is shell text this module cannot resolve
@@ -252,8 +254,11 @@ const SHELL_TEXT = /[$`*?\\{}()<>!|;]/;
 function egressTargets(command) {
   const c = String(command || "");
   const hosts = new Set(), control = new Set();
-  const addHost = (h) => { if (hosts.size < MAX_SITES) hosts.add(h.toLowerCase()); };
-  const hostPort = (host, port) => { if (loopbackHost(host)) { if (moorPort(port)) control.add(`loopback:${Number(port)}`); } else addHost(host); };
+  // An upload to this machine is moorai-control whatever its port — readable or not, MoorAI's or not; the port
+  // is only the target's detail. WSL's file share (\\wsl.localhost\…) is a local copy, not a service.
+  const loop = (port) => { if (control.size < MAX_SITES) { const n = portOf(port); control.add(n === null ? "loopback" : `loopback:${n}`); } };
+  const addHost = (h) => { const x = h.toLowerCase(); if (x === "wsl.localhost") return; if (loopbackHost(x)) loop(null); else if (hosts.size < MAX_SITES) hosts.add(x); };
+  const hostPort = (host, port) => { if (loopbackHost(host)) loop(port); else addHost(host); };
   for (const re of [NC_HOST, SOCAT_HOST]) for (const m of c.matchAll(re)) addHost(m[1]);
   if (/\b(?:scp|rsync|sftp)\b/i.test(c)) for (const m of c.matchAll(REMOTE_COPY)) addHost(m[1]);
   if (UNC_COPY.test(c)) for (const m of c.matchAll(UNC_HOST)) addHost(m[1]);
@@ -266,14 +271,16 @@ function egressTargets(command) {
     if (sch >= 0) { if (/^[a-z][a-z0-9+.-]{0,15}$/i.test(a.slice(0, sch))) a = a.slice(sch + 3); else { addHost(UNKNOWN_SITE); return; } }
     // The authority only: up to the path, the query or the fragment (a query's `?` is not a glob here).
     const auth = a.split(/[\/?#]/, 1)[0];
+    // A loopback host is judged before anything else about the authority is read (a port of any length).
+    const hp = hostPartOf(auth);
+    if (loopbackHost(hp.host)) { loop(hp.port); return; }
     if (SHELL_TEXT.test(auth) || (auth.includes("[") && !/^(?:[^\s\/@]{1,64}@)?\[[0-9a-f:.%]{1,64}\](?::\d{1,5})?$/i.test(auth))) { addHost(UNKNOWN_SITE); return; }
     const b = BARE.exec(auth);
     if (!b) { addHost(UNKNOWN_SITE); return; }             // an authority this module cannot read: fail closed
     const host = b[1].toLowerCase();
-    if (loopbackHost(host)) { if (moorPort(b[2])) control.add(`loopback:${Number(b[2])}`); return; }
     if (url || host.includes(".") || host.startsWith("[")) addHost(host);
   });
-  return { hosts: [...hosts].filter((h) => !loopbackHost(h) && h !== "wsl.localhost"), control: [...control] };
+  return { hosts: [...hosts], control: [...control] };
 }
 
 const MCP_WRITE = /(?:^|[_-])(?:create|update|delete|remove|send|post|write|push|publish|upload|comment|merge|add|edit|put|set|insert|close|reply|share|invite|move|rename|archive|transfer|execute|run|deploy|submit|patch)(?:[_-]|$)/i;
