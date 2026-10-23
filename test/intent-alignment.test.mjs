@@ -49,10 +49,10 @@ test("targets: an upload is egress to its destination site, even when it also re
   assert.equal(t.cls, "egress");
   assert.deepEqual(t.sites, ["paste.example"]);
 });
-test("targets: a plain GET, a listing, a loopback post are not risky", () => {
+test("targets: a plain GET and a listing are not risky; a loopback post is (moorai-control, any port)", () => {
   assert.equal(actionTargets("Bash", { command: "curl -s https://api.github.com/zen" }, []), null);
   assert.equal(actionTargets("Bash", { command: "ls -la" }, []), null);
-  assert.equal(actionTargets("Bash", { command: "curl -d @p.json http://localhost:3000/api" }, []), null);
+  assert.equal(actionTargets("Bash", { command: "curl -d @p.json http://localhost:3000/api" }, []).cls, "moorai-control");
 });
 test("targets: credential read, destructive, MCP write", () => {
   assert.equal(actionTargets("Read", { file_path: "/home/u/.aws/credentials" }, [{ threatId: 55 }]).cls, "credentials");

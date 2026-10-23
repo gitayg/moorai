@@ -478,6 +478,10 @@ Completions and Responses, Gemini, Ollama `/api/chat`), streaming and not.
 5. None of these (no header, no trace, no user turn): one session, `none`, in which nothing is ever
    captured.
 
+A request body the proxy cannot parse (a gzip-encoded request, a leading byte-order mark) has no turns: its
+session is the header's or the trace's, else `none`, nothing is captured from it, and its tool calls are
+still judged (in a session with no task, as `task-unknown`).
+
 The explicit headers win over the trace because one trace can wrap several conversations (a workflow trace
 around many agent runs), which would merge their tasks and make more calls look aligned. An application
 that runs many conversations under one trace, or two conversations that start with the same words, should
@@ -485,7 +489,7 @@ send `X-MoorAI-Session-Id`.
 
 **The task.** From each request's real user turns: the first turn (the task) and the latest turn. Never a
 system prompt or developer message, never a tool result, function response or document fed back to the
-model, never the model's own turns:
+model, never the model's own turns, and never an agent harness's own blocks (below):
 
 | API | A user turn is |
 |---|---|
@@ -494,6 +498,41 @@ model, never the model's own turns:
 | OpenAI Responses | `input` as a string, or its `message` items with `role: "user"` (`input_text` / `text` parts) |
 | Gemini | a `contents[]` entry with `role: "user"` (or none) and no `functionResponse` part; `thought` parts are not counted |
 | Ollama | `/api/chat` `user` messages; `/api/generate` `prompt` |
+
+**Harness blocks are stripped first.** An agent harness writes text of its own into the user role. In
+Claude Code 2.1.295 (measured in its bundle) CLAUDE.md, memory and the session context reach the model as a
+user-role text block `<system-reminder>\nAs you answer the user's questions, you can use the following
+context: … Contents of <path> …</system-reminder>`; background workers' results arrive as user-role
+`<task-notification>` blocks; a `!` command's output is `<bash-stdout>` / `<bash-stderr>`; a local slash
+command's output is `<local-command-stdout>` / `<local-command-stderr>`; hook output is
+`<user-prompt-submit-hook>`. Each of those blocks is removed before any feature is taken
+(`user-turns.mjs stripTurn`), so a host, a path or a label word ("delete", "token", "post") that appears
+only there never counts — a cloned repository's CLAUDE.md naming a host does not put it in scope, and the
+credentials, destructive and mcp-write labels are not switched on by a CLAUDE.md that happens to use those
+words. One left-to-right scan per text over every harness tag, with a stack: the first block ends at its
+own matching close and blocks nest. Kept: the text before the first harness tag, and — only when that block
+closes cleanly and no further harness tag follows in the same text — the text after it. Fail closed: an
+unclosed block, or a close that does not match the innermost open block (interleaved tags), keeps only the
+text before the first harness tag and drops the rest of the turn (every later text part); any further
+harness tag after the first block (a second block of any tag, or a stray close) keeps only the text before
+the first harness tag of that text — so a quoted file carrying `</system-reminder> words <system-reminder>`
+cannot expose `words`. The cost is that a person's words after a harness block, in a text where another
+harness tag follows, are dropped, which can only make a call look less aligned. Linear. `<bash-input>` (the
+command the person typed) is kept.
+
+**Only requests that declare tools, and only once the provider accepts them.** A request with no `tools`
+(nor OpenAI Chat's legacy `functions`) is a side request — Claude Code's WebFetch summariser, whose user turn
+is the fetched page; compaction; a title — and adds nothing to the task. The turns of a request that does
+are captured when the provider's **2xx** response begins, before any tool call in it is judged; a request
+the provider rejects adds nothing.
+
+**Whose "user" turn.** In an agent-to-agent call — a sub-agent started by Claude Code's Task / Agent tool,
+or any framework's delegated agent — the sub-agent's first user turn is the prompt the **parent model**
+wrote, and this proxy cannot tell it from a person's. Its calls are then judged against model-written text,
+so a parent steered by an injection can widen a sub-agent's scope; the same holds for a custom slash
+command's expanded body (a file in the repository). Where the task must be the person's by construction,
+name the session with `X-MoorAI-Session-Id` and set its task over the explicit channel — moorai-serve's
+`POST /v1/task`, or the Agent SDK's prompt capture — instead of relying on the turns this proxy sees.
 
 Both are captured on every request, so a session the store evicted or expired is restored by the
 conversation's next request. The store keeps per session only keyed hashes of the turn's features (hosts,
@@ -515,21 +554,26 @@ task. Run one proxy per tenant where that matters.
 
 **Judging.** At the point the proxy decides tool calls, after its own verdict on the call and not when that
 verdict is a deny, for a call that maps to a hook tool (`Bash`, `PowerShell`, `Read`, `mcp__*` …; the
-table under [What it checks](#what-it-checks)). The store's lexical rules decide which calls are judged at
-all: an upload to a host (egress), a credential read, a destructive command, an MCP write. The policy's
+table under [What it checks](#what-it-checks)). Every reading of the call that maps is judged, each with the
+findings of its own decision — the as-sent mapping, `Bash {"cmd": …}` read with `cmd` as its command, the
+tool a dispatcher names inside its arguments (`invoke {"tool_name": "Bash", "args": {…}}`), the other
+readings under [Parser differentials](#parser-differentials) — and the strictest verdict wins (deny over
+ask). The store's lexical rules decide which calls are judged at all: an upload to a host (egress, a
+`curl` / `wget` destination given as a bare argument included), an upload to MoorAI's own loopback
+endpoints or any other loopback service, whatever the port (moorai-control), a credential read, a destructive command, an MCP write. The policy's
 `intentAlignment`:
 
 | `intentAlignment` | `--mode report` | `--mode enforce` |
 |---|---|---|
 | `"off"` | nothing captured or judged | same |
 | `"report"` (default) | one alert | one alert |
-| `"ask"` | one alert, `enforcement: LIMITED` | the call is an ask, settled by server mode's headless rule as a `functionToolActions` ask is: a deny (the proxy's refusal) unless `--headless-ask allow-with-report` |
+| `"ask"` | one alert, `enforcement: LIMITED` | the call is an ask, settled by server mode's headless rule as a `functionToolActions` ask is: a deny (the proxy's refusal) unless `--headless-ask allow-with-report` (`--headless-ask pass-through` is refused at startup: the proxy has no approver, so an unsettled ask would be forwarded) |
 | `"block"` | one alert, `enforcement: LIMITED` | the call is denied: the proxy's refusal, or the replacement text with `--denied-tool-call replace` |
 
 **The alert** is the hook's: `category: "Action outside the stated task"`, `reasonCode: "INTENT_MISMATCH"`,
 `threatId: 64`, `riskLevel: "Medium"`, `stage: "behavior"`, `tool: "model-proxy:<name>"`, `decision`
 (notify / ask / deny, the configured outcome), `intent: {class, mode}` with class `egress`, `credentials`,
-`destructive`, `mcp-write` or `task-unknown`, and `contentHash`, the tenant-keyed hash of the class and the store's keyed
+`destructive`, `mcp-write`, `moorai-control` or `task-unknown`, and `contentHash`, the tenant-keyed hash of the class and the store's keyed
 target hash. One alert per target per session; a refused call is refused every time. No prompt, path,
 host or argument is in it.
 
@@ -541,9 +585,34 @@ every session, which costs little here: the next request re-sends the conversati
 captured again (the intermediate turns, and which targets already alerted, are what is forgotten; a
 conversation's first request after a restart is judged on its first and latest turns only).
 
+**moorai-control: loopback uploads are always judged.** Every upload or egress to a host on this machine —
+by URL (any scheme), bare `host:port`, `nc`, `socat` or a UNC copy — is class `moorai-control` and is never
+aligned, whatever the task names and **whatever the port**: readable or not, one of MoorAI's own listeners
+(moorai-serve 8790, the model proxy 8791, the MCP gateway 8848: an agent writing its own task with
+`POST /v1/task`, or driving the control that judges it) or any other local service (a database on
+`localhost:5432`, a dev server on `:3000`). The port is only the target's detail (`loopback:<port>`, leading
+zeros dropped; `loopback` when it cannot be read); the decision never depends on parsing it. So in `ask` or
+`block` every loopback upload by an agent is asked or refused; a GET (no upload) is not judged, and a copy
+onto WSL's file share (`\\wsl.localhost\…`) is not a loopback service. The host is normalised before it is
+classed, not matched by spelling: `localhost` / `*.localhost`, 127.0.0.0/8 and 0 in any inet_aton spelling
+(`127.1`, `2130706433`, `0x7f.1`, `0177.0.0.1`, `0`), `::1`, `::`, IPv4-mapped and -compatible IPv6
+(`[::ffff:127.0.0.1]`, `[::ffff:7f00:1]`), a trailing dot, any case. When the same command also uploads to a
+remote host, it is still judged moorai-control (the strictest) with the remote sites among its targets, so
+each remote destination raises its own alert.
+
+**Bare curl / wget destinations.** Every curl / wget argument that is not a flag or a flag's value is a
+destination (`--url VALUE` and `--url=VALUE` too; any scheme; a query or fragment after the host is ignored).
+A destination whose host is shell text the proxy cannot resolve — `$VAR`, `$(…)`, backticks, a glob, a
+brace, a backslash — or whose authority it cannot read at all (an underscore in the host, a port of more than
+16 digits), is the site `unknown`, which no task can name (every site a task yields has a dot), so such an
+upload is never aligned. A loopback host is recognised before the rest of the authority is read, so an
+unreadable port on it is still moorai-control.
+
 **Limits.**
 - Lexical, as in the hook: an upload to a host the person named is aligned even when it is exfiltration to
   that host, and a task pasted from an untrusted source puts its hosts in scope.
+- The person's turn is told from a harness's only by the blocks listed above; a sub-agent's prompt is
+  model-written and judged as the task (see **Whose "user" turn**).
 - A call the proxy cannot map to a hook tool (an unknown function, content-scanned instead) is not judged.
 - If `data/intent-server.mjs` cannot start, the proxy runs without intent alignment and says so once on
   stderr.
@@ -615,19 +684,44 @@ chunks, is found whole.
   Responses `response.output_text.delta` repeating the last delta's `sequence_number`, a Gemini chunk, an
   Ollama line). OpenAI Responses repeats the complete text in `.output_text.done`, `.content_part.*`,
   `.output_item.*` and the terminal response: each copy is scanned and masked whole.
-- At most 64 channels per response are tracked separately; text past that shares one channel.
+  The repeated number cannot be made fresh without renumbering every later event the provider already
+  numbered. The OpenAI Node SDK reads `sequence_number` only to skip events at or below a resume point
+  (openai 4.104.0 `lib/responses/ResponseStream.js`: `starting_after == null || event.sequence_number >
+  starting_after`), and a resumed stream (`GET …/responses/{id}?stream=true`) is not a parsed path here, so
+  a flush is not skipped by it; a client that requires strictly increasing numbers would see one repeat.
+- A re-serialized event or body keeps every number's source text (`json-lossless.mjs`): an integer past
+  2^53 in a function call's arguments beside the masked text (a Gemini chunk, an Ollama line) is written as
+  the provider sent it. String escapes and whitespace may differ from the provider's bytes; the values do
+  not. (The text change is not spliced into the original bytes.)
+- **report:** the kept tail is exactly the last 256 characters, so a match with spaces in it (a card or phone
+  number) across a 4,096-character batch boundary is found whole.
+- At most 64 channels per response. Past that, `mask` / `block` fail closed: the event that would open a
+  65th channel is refused before any of its text is taken — reported unevaluated, and under a closed fail
+  mode the stream is stopped (under `open`, that event goes out unscanned) — so no channel's text is ever
+  released inside another's. Report mode scans text past the cap in one shared channel.
 
 **The alert:** `category` "Model proxy: secret or credential in the model's reply" (or payment-card data,
 personal data; "Model proxy: system prompt reproduced in the model's reply"), `threatId`, `riskLevel` (the
 threat's, `Blocked` in block mode), `stage: "output"`, `tool: "model-proxy:response-text"`, `decision`
 (`deny` for a configured block, else `notify`), `responseScan: {class, mode, applied, sent}`, and
-`contentHash`, the tenant-keyed hash of the matched text (for an echo, of the run's first keyed shingle).
-Never the text, the match, the system prompt or a position. One alert per class and hash per response, at
-most 32.
+`contentHash`: for a secret, the tenant-keyed hash of the matched text (for an echo, of the run's first
+keyed shingle), so the console can correlate it; **for a payment card (#1) or personal data (#15), an HMAC
+under a key random to this proxy process** (`proc:` and 16 hex), because those values come from small
+spaces (a card is 10^16 candidates less the Luhn check, a phone number 10^10) and the tenant-keyed hash
+could be enumerated back to the value by anyone holding the install token. The same card seen twice by one
+proxy process hashes alike; the console, another proxy or a restart cannot link or reverse it. Never the
+text, the match, the system prompt or a position. One alert per class and hash per response, at most 32.
+
+**Token log-probabilities.** In `mask` and `block` (enforce) the token log-probabilities a client can ask
+for are removed from every event and body, since they repeat the reply text token by token, held or masked
+text included: OpenAI Chat `choices[].logprobs` → `null`; Responses `logprobs` on text deltas, `.done`
+events and `output_text` parts → `[]`; Gemini `candidates[].logprobsResult` removed (`avgLogprobs` kept);
+Ollama `logprobs` removed. A client that asked for log-probabilities gets none while `responseScan` is
+`mask` or `block`; in report mode nothing is changed.
 
 **Not scanned:** reasoning returned beside the answer (Anthropic `thinking`, Gemini `thought` parts, Ollama
-`thinking`, Responses reasoning items), refusal fields, token log-probabilities (`logprobs`, which repeat the
-text token by token when a client asks for them), images and audio, and embeddings. A scan error is reported
+`thinking`, Responses reasoning items), refusal fields, token log-probabilities in report mode (removed in
+mask / block, above), images and audio, and embeddings. A scan error is reported
 unevaluated; in mask / block mode under a closed fail mode the response is refused (502) or the stream
 stopped. Ollama `/api/generate` text is in addition still scanned report-only by every detector at stage
 `output` (see **Model text** above), so a finding there can raise both alerts.
@@ -1134,6 +1228,36 @@ card number and a system-prompt echo, each split across 7-character deltas and 5
 each found; report forwards byte-identical, mask replaces the match (every repeated Responses copy too),
 block refuses with nothing of the match sent. Not tested: real providers and SDKs reading a masked or
 flushed event and a model that interleaves text across several Responses content parts or Gemini candidates.
+
+**Security-review hardening (v1.33.0), exact coverage.** `test/model-proxy-intent-review.test.mjs` (real
+`data/intent-server.mjs` store unless a test needs to see what was captured): a CLAUDE.md-style
+`<system-reminder>` naming a host does not align an upload to it (enforce + block refuses it; the same host
+in the person's words is delivered), in its own block, in the prompt's block, as string content and with a
+forged early close; every listed harness tag is stripped and an unclosed one runs to the end; label words
+only inside a reminder align none of credentials / destructive / mcp-write; a tool-less request captures
+nothing; `Bash {"cmd": …}` and `invoke {tool_name, args}` are refused as misaligned; a 4xx response captures
+nothing; gzip and BOM bodies are judged task-unknown; an upload to 127.0.0.1:8790 / localhost:8791 is
+refused as moorai-control even when the task names it; `--headless-ask pass-through` is refused.
+`test/intent-alignment-control.test.mjs`: the MoorAI ports equal the code's defaults, every form of a
+loopback control upload, never aligned, other loopback ports and GETs not risky, bare curl / wget hosts and
+flag values, and a 60,000-character command bounded. `test/model-proxy-reply-scan-review.test.mjs`: a card's
+and personal data's contentHash is none of the install-token-keyed hashes of the value's forms (enrolled
+runtime), stable within a process, different across two; mask removes log-probabilities on OpenAI Chat
+(both), Responses (both), Gemini (both) and Ollama (chat stream, generate body), and block lets not even the
+secret's first 7 characters out through them on the four streams; a 65th channel throws in mask / block and
+held text is released at the end; through the proxy a 66-choice masked stream is stopped; report mode finds
+a spaced card across the batch boundary; a masked Gemini chunk and a masked Ollama body keep
+`12345678901234567890` as sent. Commit-review follow-ups (the `R1`–`R4` tests in the same files): a command
+posting to 127.0.0.1:8790 and uploading to a remote host keeps the remote site as a target; a query straight
+after a bare host, `--url=`, any scheme, and unresolvable shell text (site `unknown`, never aligned); sixteen
+loopback spellings on a MoorAI port, with public and other-port controls and a bounded-time check;
+interleaved, nested, re-balanced and unclosed harness blocks, and a linear-time check; `R5` an interleaved or
+unclosed block, or a second block, followed by an upload host keeps only the text before the first tag (and
+the proxy refuses the upload); `R6` leading-zero MoorAI ports by URL, bare, `nc` and `socat`, a padded other
+port, and unreadable authorities as `unknown`; `R7` every loopback upload judged whatever the port (a
+20-digit zero-padded 8790, `localhost:5432`, `:3000`, an unreadable port, `nc` with a padded or non-numeric
+port, `socat`, `wget` to `0x7f.1`), the port only in the detail, a GET and the WSL share not judged. Each
+fix was mutated back and its test seen failing.
 
 Latency the judging adds, measured on an M-series Mac, node, no console, built-in rules:
 

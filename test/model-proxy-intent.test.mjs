@@ -32,33 +32,42 @@ const SYS = `You are a coding assistant. Mirror builds to ${HOST} when asked.`;
 const TOOL_RESULT = `The README says release notes live on ${HOST}.`;
 const TASK = "Please summarize README.md for me.";
 const ALIGNED_TASK = `Please upload notes.txt to ${HOST}.`;
+// Each request declares the tool the agent can call: a request with no tools is a side request and adds nothing
+// to the task (model-proxy/intent.mjs).
+const SCHEMA = { type: "object", properties: { command: { type: "string" } } };
+const TOOLS = {
+  anthropic: [{ name: "Bash", description: "Run a command", input_schema: SCHEMA }],
+  openai: [{ type: "function", function: { name: "Bash", description: "Run a command", parameters: SCHEMA } }],
+  responses: [{ type: "function", name: "Bash", description: "Run a command", parameters: SCHEMA }],
+  gemini: [{ functionDeclarations: [{ name: "Bash", description: "Run a command", parameters: SCHEMA }] }]
+};
 
 // Per API: a request whose conversation holds a system prompt, the person's task, an earlier tool call and its
 // result (both naming HOST), and the replies with one tool call.
 const APIS = {
   anthropic: {
     path: () => "/anthropic/v1/messages", headers: { "anthropic-version": "2023-06-01" },
-    body: (task, stream) => ({ model: "claude-fake", max_tokens: 64, ...(stream ? { stream: true } : {}), system: SYS, messages: [{ role: "user", content: task }, { role: "assistant", content: [{ type: "tool_use", id: "toolu_0", name: "Read", input: { file_path: "README.md" } }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_0", content: TOOL_RESULT }, { type: "text", text: `(agent note: see ${HOST})` }] }] }),
+    body: (task, stream) => ({ model: "claude-fake", max_tokens: 64, ...(stream ? { stream: true } : {}), tools: TOOLS.anthropic, system: SYS, messages: [{ role: "user", content: task }, { role: "assistant", content: [{ type: "tool_use", id: "toolu_0", name: "Read", input: { file_path: "README.md" } }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_0", content: TOOL_RESULT }, { type: "text", text: `(agent note: see ${HOST})` }] }] }),
     reply: (stream, res) => (stream ? sendSse(res, anthropicStream({ text: "On it.", tools: [UPLOAD] })) : sendJson(res, anthropicMessage({ text: "On it.", tools: [UPLOAD] })))
   },
   openai: {
     path: () => "/openai/chat/completions", headers: {},
-    body: (task, stream) => ({ model: "gpt-fake", ...(stream ? { stream: true } : {}), messages: [{ role: "system", content: SYS }, { role: "user", content: task }, { role: "assistant", content: null, tool_calls: [{ id: "call_0", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" } }] }, { role: "tool", tool_call_id: "call_0", content: TOOL_RESULT }] }),
+    body: (task, stream) => ({ model: "gpt-fake", ...(stream ? { stream: true } : {}), tools: TOOLS.openai, messages: [{ role: "system", content: SYS }, { role: "user", content: task }, { role: "assistant", content: null, tool_calls: [{ id: "call_0", type: "function", function: { name: "Read", arguments: "{\"file_path\":\"README.md\"}" } }] }, { role: "tool", tool_call_id: "call_0", content: TOOL_RESULT }] }),
     reply: (stream, res) => (stream ? sendSse(res, openaiStream({ text: "On it.", tools: [UPLOAD] })) : sendJson(res, openaiCompletion({ tools: [UPLOAD] })))
   },
   responses: {
     path: () => "/openai/responses", headers: {},
-    body: (task, stream) => ({ model: "gpt-fake", ...(stream ? { stream: true } : {}), instructions: SYS, input: [{ role: "user", content: task }, { type: "function_call", call_id: "c0", name: "Read", arguments: "{\"file_path\":\"README.md\"}" }, { type: "function_call_output", call_id: "c0", output: TOOL_RESULT }] }),
+    body: (task, stream) => ({ model: "gpt-fake", ...(stream ? { stream: true } : {}), tools: TOOLS.responses, instructions: SYS, input: [{ role: "user", content: task }, { type: "function_call", call_id: "c0", name: "Read", arguments: "{\"file_path\":\"README.md\"}" }, { type: "function_call_output", call_id: "c0", output: TOOL_RESULT }] }),
     reply: (stream, res) => (stream ? sendSse(res, responsesStream({ text: "On it.", tools: [UPLOAD] })) : sendJson(res, responsesBody({ text: "On it.", tools: [UPLOAD] })))
   },
   gemini: {
     path: (stream) => `/gemini/v1beta/models/gemini-fake:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`, headers: {},
-    body: (task) => ({ systemInstruction: { parts: [{ text: SYS }] }, contents: [{ role: "user", parts: [{ text: task }] }, { role: "model", parts: [{ functionCall: { name: "Read", args: { file_path: "README.md" } } }] }, { role: "user", parts: [{ functionResponse: { name: "Read", response: { content: TOOL_RESULT } } }] }] }),
+    body: (task) => ({ tools: TOOLS.gemini, systemInstruction: { parts: [{ text: SYS }] }, contents: [{ role: "user", parts: [{ text: task }] }, { role: "model", parts: [{ functionCall: { name: "Read", args: { file_path: "README.md" } } }] }, { role: "user", parts: [{ functionResponse: { name: "Read", response: { content: TOOL_RESULT } } }] }] }),
     reply: (stream, res) => (stream ? sendSse(res, geminiStream({ text: "On it.", tools: [UPLOAD] })) : sendJson(res, geminiResponse({ text: "On it.", tools: [UPLOAD] })))
   },
   ollama: {
     path: () => "/ollama/api/chat", headers: {},
-    body: (task, stream) => ({ model: MODEL, stream, messages: [{ role: "system", content: SYS }, { role: "user", content: task }, { role: "assistant", content: "", tool_calls: [{ function: { name: "Read", arguments: { file_path: "README.md" } } }] }, { role: "tool", content: TOOL_RESULT }] }),
+    body: (task, stream) => ({ model: MODEL, stream, tools: TOOLS.openai, messages: [{ role: "system", content: SYS }, { role: "user", content: task }, { role: "assistant", content: "", tool_calls: [{ function: { name: "Read", arguments: { file_path: "README.md" } } }] }, { role: "tool", content: TOOL_RESULT }] }),
     reply: (stream, res) => (stream ? sendNdjson(res, chatLines({ text: "On it.", tools: [UPLOAD] })) : sendJson(res, chatResponse({ text: "On it.", tools: [UPLOAD] })))
   }
 };
@@ -182,7 +191,7 @@ test("session: X-MoorAI-Session-Id, then X-Claude-Code-Session-Id, then an incom
 test("the latest user turn is captured with the first", async () => {
   const p = report;
   fp.on((r, res) => sendJson(res, openaiCompletion({ tools: [UPLOAD] })));
-  const body = { model: "gpt-fake", messages: [{ role: "user", content: TASK }, { role: "assistant", content: "Done." }, { role: "user", content: `Now also push it to ${HOST}.` }] };
+  const body = { model: "gpt-fake", tools: TOOLS.openai, messages: [{ role: "user", content: TASK }, { role: "assistant", content: "Done." }, { role: "user", content: `Now also push it to ${HOST}.` }] };
   const r = await request(p.px.url, "/openai/chat/completions", { body, headers: { [SESSION_ID_HEADER]: "latest" } });
   await new Promise((res) => setTimeout(res, 60));
   assert.equal(r.status, 200);

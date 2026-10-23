@@ -17,15 +17,32 @@
 //                     is read as a body.
 //   Ollama            /api/chat message.content, /api/generate response, body or NDJSON line (ended by done).
 // Not read: reasoning the model returns beside its answer (Anthropic thinking, Gemini thought parts, Ollama
-// thinking, Responses reasoning items), refusal fields, token log-probabilities (`logprobs`, which repeat the
-// text token by token when a client asks for them), and tool-call arguments (decided by check.mjs).
+// thinking, Responses reasoning items), refusal fields and tool-call arguments (decided by check.mjs).
+// logprobs(obj) REMOVES the token log-probabilities a client can ask for, which repeat the reply text token by
+// token (and their top alternatives): OpenAI Chat choices[].logprobs → null; Responses `logprobs` on text
+// deltas, .done events and output_text parts (in parts, items and whole responses) → []; Gemini
+// candidates[].logprobsResult → removed (avgLogprobs, one number, stays); Ollama `logprobs` → removed.
+// Returns whether anything was removed. Mask / block call it on every event and body (text-guard.mjs), so a
+// masked or held secret never leaves through them; report mode never changes a byte.
 // flush(ch, text, tmpl) builds the event that carries a channel's held text when the event that ends the
 // channel has no text of its own: the API's own delta shape, metadata from the channel's last text event
-// (tmpl, or none). A Responses flush repeats that event's sequence_number.
+// (tmpl, or none). A Responses flush repeats that event's sequence_number: a fresh number cannot be made
+// without renumbering every later event, which the provider has already numbered. The OpenAI Node SDK reads
+// the field only to skip events at or below a resume point (openai 4.104.0, lib/responses/ResponseStream.js:
+// `starting_after == null || event.sequence_number > starting_after`), and a resumed stream (GET
+// …/responses/{id}?stream=true) is not a parsed path here, so a flush is never skipped by it.
 import { candidatesOf, partsOf, indexOf, finishOf } from "./gemini.mjs";
 
 const isObj = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
 const piece = (ch, obj, key) => ({ ch, text: obj[key], set: (t) => { obj[key] = t; } });
+// Removes o[key] (empty undefined) or sets it to `empty`; true when there was something to remove.
+const drop = (o, key, empty) => {
+  if (!isObj(o) || o[key] == null || (Array.isArray(o[key]) && o[key].length === 0)) return false;
+  if (empty === undefined) delete o[key]; else o[key] = empty;
+  return true;
+};
+const any = (list, f) => list.reduce((acc, x) => f(x) || acc, false);
+const arr = (v) => (Array.isArray(v) ? v : []);
 const sse = (type, data) => Buffer.from(`${type ? `event: ${type}\n` : ""}data: ${JSON.stringify(data)}\n\n`);
 
 function anthropicBody(b) {
@@ -44,7 +61,8 @@ export const anthropic = {
     if (d.type === "content_block_stop") return [`b${d.index}`];
     return d.type === "message_delta" || d.type === "message_stop" ? open : [];
   },
-  flush: (ch, text) => sse("content_block_delta", { type: "content_block_delta", index: Number(ch.slice(1)), delta: { type: "text_delta", text } })
+  flush: (ch, text) => sse("content_block_delta", { type: "content_block_delta", index: Number(ch.slice(1)), delta: { type: "text_delta", text } }),
+  logprobs: () => false
 };
 
 export const openaiChat = {
@@ -55,11 +73,14 @@ export const openaiChat = {
     if (ev.data === "[DONE]") return open;
     return d && Array.isArray(d.choices) ? d.choices.filter((c) => isObj(c) && c.finish_reason).map((c) => `c${c.index}`) : [];
   },
-  flush: (ch, text, t) => sse(null, { id: t && t.id, object: "chat.completion.chunk", created: t && t.created, model: t && t.model, choices: [{ index: Number(ch.slice(1)), delta: { content: text }, logprobs: null, finish_reason: null }] })
+  flush: (ch, text, t) => sse(null, { id: t && t.id, object: "chat.completion.chunk", created: t && t.created, model: t && t.model, choices: [{ index: Number(ch.slice(1)), delta: { content: text }, logprobs: null, finish_reason: null }] }),
+  logprobs: (d) => any(isObj(d) ? arr(d.choices) : [], (c) => drop(c, "logprobs", null))
 };
 
 const outputTexts = (item) => (isObj(item) && item.type === "message" && Array.isArray(item.content) ? item.content.filter((p) => isObj(p) && p.type === "output_text" && typeof p.text === "string").map((p) => piece("", p, "text")) : []);
 const responseTexts = (r) => (isObj(r) && Array.isArray(r.output) ? r.output.flatMap(outputTexts) : []);
+const partsLp = (item) => (isObj(item) ? any(arr(item.content), (p) => drop(p, "logprobs", [])) : false);
+const responseLp = (r) => (isObj(r) ? any(arr(r.output), partsLp) : false);
 const WHOLE_RESPONSE = new Set(["response.created", "response.in_progress", "response.completed", "response.incomplete", "response.failed"]);
 const TERMINAL = new Set(["response.completed", "response.incomplete", "response.failed"]);
 export const openaiResponses = {
@@ -81,7 +102,9 @@ export const openaiResponses = {
     const i = ch.lastIndexOf(":");
     const { logprobs, ...meta } = isObj(t) ? t : {};
     return sse("response.output_text.delta", { ...meta, type: "response.output_text.delta", item_id: ch.slice(0, i), content_index: Number(ch.slice(i + 1)), delta: text, ...(logprobs !== undefined ? { logprobs: [] } : {}) });
-  }
+  },
+  // A body is a response object; an event carries them on itself, its part, its item or its response.
+  logprobs: (d) => isObj(d) && [drop(d, "logprobs", []), isObj(d.part) && drop(d.part, "logprobs", []), partsLp(d.item), responseLp(d.response), responseLp(d)].some(Boolean)
 };
 
 const geminiParts = (r, chOf) => candidatesOf(r).flatMap((c, i) => (isObj(c) ? partsOf(c.content).filter((p) => isObj(p) && typeof p.text === "string" && p.thought !== true).map((p) => piece(chOf(c, i), p, "text")) : []));
@@ -90,7 +113,8 @@ export const gemini = {
   pieces: (d) => geminiParts(d, (c, i) => `g${indexOf(c, i)}`),
   wholes: () => [],
   ends: (d) => (d ? candidatesOf(d).map((c, i) => (isObj(c) && finishOf(c) ? `g${indexOf(c, i)}` : null)).filter(Boolean) : []),
-  flush: (ch, text, t) => sse(null, { candidates: [{ index: Number(ch.slice(1)), content: { role: "model", parts: [{ text }] } }], ...(isObj(t) && t.modelVersion ? { modelVersion: t.modelVersion } : {}), ...(isObj(t) && t.responseId ? { responseId: t.responseId } : {}) })
+  flush: (ch, text, t) => sse(null, { candidates: [{ index: Number(ch.slice(1)), content: { role: "model", parts: [{ text }] } }], ...(isObj(t) && t.modelVersion ? { modelVersion: t.modelVersion } : {}), ...(isObj(t) && t.responseId ? { responseId: t.responseId } : {}) }),
+  logprobs: (b) => any(Array.isArray(b) ? b : [b], (r) => any(candidatesOf(r), (c) => drop(c, "logprobsResult")))
 };
 
 const ollamaPieces = (d, prefix) => [
@@ -102,5 +126,6 @@ export const ollama = {
   pieces: (d) => ollamaPieces(d, ""),
   wholes: () => [],
   ends: (d, ev, open) => (d && d.done === true ? open : []),
-  flush: (ch, text, t) => Buffer.from(`${JSON.stringify({ model: isObj(t) ? t.model : undefined, created_at: isObj(t) ? t.created_at : undefined, ...(ch === "m" ? { message: { role: "assistant", content: text } } : { response: text }), done: false })}\n`)
+  flush: (ch, text, t) => Buffer.from(`${JSON.stringify({ model: isObj(t) ? t.model : undefined, created_at: isObj(t) ? t.created_at : undefined, ...(ch === "m" ? { message: { role: "assistant", content: text } } : { response: text }), done: false })}\n`),
+  logprobs: (d) => drop(d, "logprobs")
 };

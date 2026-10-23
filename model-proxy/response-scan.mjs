@@ -24,7 +24,10 @@
 // THE ROLLING WINDOW (per text channel: an Anthropic block, an OpenAI choice, a Responses content part, a
 // Gemini candidate, an Ollama reply). The detectors run over the channel's last TAIL = 256 characters already
 // passed on plus the text not yet passed on, so a match split across chunks or events is found whole.
-//   report   nothing is held: the text is scanned each BATCH = 4096 characters and at the channel's end.
+//   report   nothing is held: the text is scanned each BATCH = 4096 characters and at the channel's end. The
+//            tail is exactly the last TAIL characters (not cut at a whitespace: a card or phone number with
+//            spaces in it across a batch boundary keeps its start); a match that starts exactly at the cut and
+//            ends inside the tail is a cut-off token's end and is not reported.
 //            Memory per channel: TAIL + BATCH + one event's text.
 //   mask /   the last HOLD = 256 characters of each channel are held back and released as more text arrives
 //   block    (a stream's text reaches the client up to 256 characters behind the provider — about 64
@@ -34,7 +37,10 @@
 //            start was released: the rest is still masked (or the stream stopped), and the alert says
 //            sent "partial". Text already released can never be recalled.
 // A match is replaced by "[REDACTED:#<threat>]" ("[REDACTED:system-prompt]" for an echo); the length changes,
-// and the event is re-serialized. At most MAX_CHANNELS = 64 channels per response; text past that shares one.
+// and the event is re-serialized. At most MAX_CHANNELS = 64 channels per response. Past that, mask / block
+// fail closed: admit() (and a push to a 65th channel) throws before anything is taken, and the caller reports
+// it unevaluated and, under a closed fail mode, stops the stream — no channel's text is ever released inside
+// another's. Report mode, which changes nothing, scans text past the cap in one shared channel.
 import { createHmac, randomBytes } from "node:crypto";
 import { globalMatches } from "../src/regex-restart.js";
 import { threatActionFor } from "../cli/hook-core.mjs";
@@ -136,10 +142,15 @@ export function createScanner({ dets, policy, echo = null, hold = false, onFind 
   const channels = new Map();
   let overflowed = false;
 
+  const tooMany = () => new Error(`response text: more than ${MAX_CHANNELS} text channels; not scanned`);
   function channel(key) {
     let ch = channels.get(key);
     if (ch) return ch;
-    if (channels.size >= MAX_CHANNELS) { overflowed = true; key = "\0overflow"; ch = channels.get(key); if (ch) return ch; }
+    if (channels.size >= MAX_CHANNELS && !key.startsWith("\0whole")) {
+      overflowed = true;
+      if (hold) throw tooMany();
+      key = "\0overflow"; ch = channels.get(key); if (ch) return ch;
+    }
     ch = { buf: "", base: 0, rel: 0, spans: [], echoSpans: [], seen: new Set(), wpos: 0, ring: [], run: 0, runStart: -1, echoSpan: null, done: false };
     channels.set(key, ch);
     return ch;
@@ -186,7 +197,9 @@ export function createScanner({ dets, policy, echo = null, hold = false, onFind 
 
   function scan(ch) {
     const spans = findSpans(dets, ch.buf, enabled).map((sp) => ({ s: sp.s + ch.base, e: sp.e + ch.base, id: sp.id }));
-    for (const sp of mergeSpans(spans)) found(ch, sp);
+    // Report mode's tail can start inside a token; a match that starts exactly there and ends inside the tail is
+    // that token's cut-off end, not a new finding (a real one there was found, at the same position, before).
+    for (const sp of mergeSpans(spans)) if (hold || !(ch.base > 0 && sp.s === ch.base && sp.e <= ch.rel)) found(ch, sp);
     ch.spans = mergeSpans([...ch.spans.filter((sp) => sp.e > ch.rel), ...spans.filter((sp) => sp.e > ch.rel)]);
   }
   function masked(ch, from, to) {
@@ -202,8 +215,9 @@ export function createScanner({ dets, policy, echo = null, hold = false, onFind 
   function trim(ch) {
     let nb = Math.max(ch.base, ch.rel - TAIL);
     if (nb > ch.base) {
-      // Start the kept tail after a whitespace, so a token cut in half does not look like a token of its own.
-      const ws = ch.buf.slice(nb - ch.base, ch.rel - ch.base).search(/\s/);
+      // mask / block: start the kept tail after a whitespace, so a token cut in half does not look like a token
+      // of its own (a match there would be masked in text already released). Report mode keeps the exact tail.
+      const ws = hold ? ch.buf.slice(nb - ch.base, ch.rel - ch.base).search(/\s/) : -1;
       if (ws >= 0) nb += ws + 1;
       ch.buf = ch.buf.slice(nb - ch.base);
       ch.base = nb;
@@ -216,7 +230,8 @@ export function createScanner({ dets, policy, echo = null, hold = false, onFind 
   // released part, masked; report: `text` itself).
   function push(key, text, final = false) {
     const ch = channel(key);
-    if (typeof text === "string" && text) ch.buf += text;
+    // Text after a channel's end (report mode's shared overflow channel) reopens it, so finish() scans it.
+    if (typeof text === "string" && text) { ch.buf += text; ch.done = false; }
     words(ch, final);
     if (!hold) {
       if (final || end(ch) - ch.rel >= BATCH) { scan(ch); ch.rel = end(ch); trim(ch); }
@@ -253,6 +268,13 @@ export function createScanner({ dets, policy, echo = null, hold = false, onFind 
     for (const [k, ch] of channels) if (!ch.done) { const t = push(k, "", true); if (t) out.push([k, t]); }
     return out;
   }
+  // mask / block: throws when the channels in `keys` that are not open yet would take the response past
+  // MAX_CHANNELS — before any text of the event is pushed.
+  function admit(keys) {
+    if (!hold) return;
+    const fresh = new Set(keys.filter((k) => !channels.has(k)));
+    if (channels.size + fresh.size > MAX_CHANNELS) { overflowed = true; throw tooMany(); }
+  }
   // held: characters received and not yet passed on; retained: characters kept (tail + held).
-  return { push, whole, finish, get overflowed() { return overflowed; }, held: (key) => { const ch = channels.get(key); return ch ? end(ch) - ch.rel : 0; }, retained: (key) => { const ch = channels.get(key); return ch ? ch.buf.length : 0; } };
+  return { push, whole, finish, admit, get overflowed() { return overflowed; }, held: (key) => { const ch = channels.get(key); return ch ? end(ch) - ch.rel : 0; }, retained: (key) => { const ch = channels.get(key); return ch ? ch.buf.length : 0; } };
 }

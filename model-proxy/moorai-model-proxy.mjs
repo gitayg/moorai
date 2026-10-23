@@ -109,6 +109,8 @@ export function parseArgs(argv, env = process.env) {
   if (!o.token && env.MOORAI_MODEL_PROXY_TOKEN) o.token = String(env.MOORAI_MODEL_PROXY_TOKEN).trim();
   if (!["report", "enforce"].includes(o.mode)) throw new Error("--mode must be report or enforce");
   if (!Number.isInteger(o.port) || o.port < 0 || o.port > 65535) throw new Error("--port must be 0-65535");
+  // pass-through leaves an ask unsettled; the proxy has no one to put it to, so the call would be forwarded.
+  if (o.headlessAsk !== undefined && !["deny", "allow-with-report"].includes(o.headlessAsk)) throw new Error(`--headless-ask must be deny or allow-with-report${o.headlessAsk === "pass-through" ? " (pass-through would forward every call that needs approval: the proxy has no approver to ask)" : ""}`);
   if (!["refuse", "replace"].includes(o.deniedToolCall)) throw new Error("--denied-tool-call must be refuse or replace");
   if (o.deniedToolCall === "replace" && o.mode !== "enforce") throw new Error("--denied-tool-call replace needs --mode enforce (report mode never changes a response)");
   if (!Number.isInteger(o.uncheckedWindowMs) || o.uncheckedWindowMs < 0 || (o.uncheckedWindowMs > 0 && o.uncheckedWindowMs < 100) || o.uncheckedWindowMs > 3600000) throw new Error("--unchecked-window-ms must be 0 (off) or an integer from 100 to 3600000");
