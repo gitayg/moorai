@@ -883,7 +883,10 @@ taken only from requests that declare tools and that the provider accepted (2xx)
 as Claude Code's `<system-reminder>` (CLAUDE.md, memory) stripped first; every upload to a loopback host,
 whatever the port (MoorAI's own endpoints included), is class `moorai-control` and never aligned. A sub-agent's "user" turn is its parent model's
 prompt, which the proxy cannot tell from a person's: for a task that is the person's by construction, set
-it over `X-MoorAI-Session-Id` with moorai-serve's `POST /v1/task` or the Agent SDK's capture. It is lexical:
+it over `X-MoorAI-Session-Id` with moorai-serve's `POST /v1/task` or the Agent SDK's capture. A Claude Code
+compaction summary (the turn opening "This session is being continued from a previous conversation that ran
+out of context.") is never the task, and once a session has a task each request adds only its latest user
+turn, so a rewritten or summarised first turn is not learned again. It is lexical:
 an upload to a host the person named passes, even when it is exfiltration to that host. See
 [`model-proxy/README.md`](model-proxy/README.md#intent-alignment).
 

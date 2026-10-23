@@ -18,8 +18,12 @@
 //
 // TASK. From each request's real user turns (user-turns.mjs; never a system prompt, tool result, function
 // response or document, and never a harness block such as Claude Code's <system-reminder> with CLAUDE.md and
-// memory): the first turn, the task, and the latest turn, captured on every request, so a session the store
-// evicted or expired is restored by the conversation's next request. Two conditions, both or nothing:
+// memory): the first turn, the task, and the latest turn — but only on a session's first captured request. Once
+// a session has a captured task, a later request adds only its latest user turn: every request re-sends the
+// conversation, and its first turn is the client's to rewrite (or, after compaction, a summary), so it is never
+// re-learned. The proxy keeps which sessions it captured (keyed hashes of the ids, at most STORE_LIMITS.maxSessions, for
+// STORE_LIMITS.ttlMs); a session the store evicted while the proxy still holds it is restored from its latest
+// turn only, which can only make a call look less aligned. Two conditions, both or nothing:
 //   * the request declares tools (user-turns.mjs carriesTools). A tool-less request is a side request
 //     (WebFetch's summariser, whose user turn is the fetched page; compaction; a title) and adds nothing;
 //   * the provider accepted it: the turns are captured when its 2xx response begins (commit), before any tool
@@ -31,6 +35,13 @@
 // sub-agent's calls against what the parent model wrote. For a task that is the person's by construction, name
 // the session (X-MoorAI-Session-Id) and set its task over the explicit channel — moorai-serve's POST /v1/task,
 // or the Agent SDK's capture — rather than relying on the turns this proxy sees.
+//
+// COMPACTION. When Claude Code compacts a conversation, the model-written summary of the earlier turns becomes the
+// first user turn ("This session is being continued from a previous conversation that ran out of context. …").
+// It repeats whatever those turns quoted, so a turn that opens with that sentence is never captured
+// (user-turns.mjs isCompactionSummary), and a session captured before compaction keeps its task and adds only
+// the latest turn. A session the proxy first sees after compaction starts from the person's next turn. Another
+// harness's own summary wording is not recognised and counts as a person's turn.
 //
 // A BODY THAT CANNOT BE PARSED (a gzip-encoded request, a leading byte-order mark): no turns, so nothing is
 // captured, and the session is the header's or the trace's, else "none" — a risky call is still judged, and in
@@ -116,6 +127,11 @@ export function createIntent({ lib, key, rt, enforce, now, warn = (m) => process
     try { warn("moorai-model-proxy: intent alignment is unavailable (data/intent-server.mjs did not start); tool calls are not judged against the task\n"); } catch { /* a warning */ }
   }
   const hmac = (s) => createHmac("sha256", key).update(s, "utf8").digest("base64url");
+  // The sessions that have a captured task (TASK above): session id → when last captured, LRU, bounded.
+  const clock = typeof now === "function" ? now : Date.now;
+  const known = new Map();
+  const captured = (id) => { const sid = hmac(`known\0${id}`), t = known.get(sid); if (t === undefined) return false; if (clock() - t >= STORE_LIMITS.ttlMs) { known.delete(sid); return false; } return true; };
+  const remember = (id) => { const sid = hmac(`known\0${id}`); known.delete(sid); known.set(sid, clock()); while (known.size > STORE_LIMITS.maxSessions) known.delete(known.keys().next().value); };
   const modeOf = (policy) => { try { const m = lib.intentModeFromPolicy(policy); return ["off", "report", "ask", "block"].includes(m) ? m : "off"; } catch { return "off"; } };
 
   // Per request, after the body is read (json null when it could not be parsed): the context the judge needs,
@@ -126,7 +142,8 @@ export function createIntent({ lib, key, rt, enforce, now, warn = (m) => process
     if (mode === "off") return null;
     const turns = json ? userTurns(kind, json) : [];
     const sessionId = sessionOf({ headers, trace, turns, hmac });
-    const pending = carriesTools(kind, json) ? [...new Set([turns[0], turns[turns.length - 1]])].filter(Boolean) : [];
+    const firstTurns = captured(sessionId) ? [] : [turns[0]];
+    const pending = carriesTools(kind, json) ? [...new Set([...firstTurns, turns[turns.length - 1]])].filter(Boolean) : [];
     return { sessionId, mode, pending };
   }
   // The provider answered 2xx: capture the task. Once per request.
@@ -137,6 +154,7 @@ export function createIntent({ lib, key, rt, enforce, now, warn = (m) => process
     for (const t of turns) {
       try { store.captureTask(ctx.sessionId, t); } catch { /* not captured: the store answers task-unknown */ }
     }
+    if (turns.length) remember(ctx.sessionId);
   }
 
   // check.mjs calls this for a mapped tool call whose verdict is not a deny. Returns the verdict that replaces

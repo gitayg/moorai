@@ -2261,13 +2261,17 @@ and is not already denied is judged by `data/intent-server.mjs` against the sess
   of a valid incoming `traceparent`, a keyed hash of the conversation's first user turn, else the session
   `none`. No owner principal is passed to the store (the proxy has no per-client principal), so a proxy's
   clients share one session space.
-- Task: the first and the latest real user turn of each request. System and developer text, tool results,
+- Task: the first and the latest real user turn of a session's first captured request; after that only each
+  request's latest user turn (the proxy remembers captured sessions as keyed hashes, at most 1,024, 24 h), so
+  a rewritten first turn is never learned again. A turn opening with Claude Code's compaction preamble ("This
+  session is being continued from a previous conversation that ran out of context.") is never captured. System and developer text, tool results,
   function responses, documents, and the text blocks sent with Anthropic `tool_result` blocks are never
   the task. Harness blocks are stripped first (one stack scan per text; kept: the text before the first
   harness tag, plus the text after that block only when it closes cleanly and no further harness tag
   follows; an unclosed block or interleaved close also drops the rest of the turn): `<system-reminder>` (Claude Code's CLAUDE.md, memory and session context),
   `<task-notification>`, `<bash-stdout>`, `<bash-stderr>`, `<local-command-stdout>`, `<local-command-stderr>`,
-  `<user-prompt-submit-hook>` — identified in Claude Code 2.1.295's bundle. Captured only from a request that
+  `<user-prompt-submit-hook>`, `<ide_selection>`, `<ide_opened_file>`, `<mcp-resource server=… uri=…>` (a tag may
+  carry attributes, up to 512 characters) — identified in Claude Code 2.1.295's bundle. Captured only from a request that
   declares tools (a tool-less side request — WebFetch summarisation, compaction — adds nothing), and only
   when the provider's 2xx response begins. A body that does not parse (gzip, BOM) captures nothing and is
   judged in the header's session, else `none`.

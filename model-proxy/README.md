@@ -505,7 +505,9 @@ user-role text block `<system-reminder>\nAs you answer the user's questions, you
 context: … Contents of <path> …</system-reminder>`; background workers' results arrive as user-role
 `<task-notification>` blocks; a `!` command's output is `<bash-stdout>` / `<bash-stderr>`; a local slash
 command's output is `<local-command-stdout>` / `<local-command-stderr>`; hook output is
-`<user-prompt-submit-hook>`. Each of those blocks is removed before any feature is taken
+`<user-prompt-submit-hook>`; the IDE's selection and open file are `<ide_selection>` / `<ide_opened_file>`;
+an MCP resource is `<mcp-resource server="…" uri="…">`. A tag may carry attributes (up to 512 characters).
+Each of those blocks is removed before any feature is taken
 (`user-turns.mjs stripTurn`), so a host, a path or a label word ("delete", "token", "post") that appears
 only there never counts — a cloned repository's CLAUDE.md naming a host does not put it in scope, and the
 credentials, destructive and mcp-write labels are not switched on by a CLAUDE.md that happens to use those
@@ -534,8 +536,17 @@ command's expanded body (a file in the repository). Where the task must be the p
 name the session with `X-MoorAI-Session-Id` and set its task over the explicit channel — moorai-serve's
 `POST /v1/task`, or the Agent SDK's prompt capture — instead of relying on the turns this proxy sees.
 
-Both are captured on every request, so a session the store evicted or expired is restored by the
-conversation's next request. The store keeps per session only keyed hashes of the turn's features (hosts,
+**Compaction.** When Claude Code compacts a conversation, the model-written summary of the earlier turns
+becomes the first user turn, opening "This session is being continued from a previous conversation that ran
+out of context." (2.1.295's bundle). It repeats whatever those turns quoted, so a turn that opens with that
+sentence is never captured. Another harness's own summary wording is not recognised and counts as a
+person's turn.
+
+**First turn once.** A session's first captured request adds its first and latest user turns. After that,
+each request adds only its latest user turn: the first turn of a re-sent conversation is the client's to
+rewrite, or a compaction summary, so it is never learned again. The proxy remembers which sessions it
+captured (keyed hashes, at most 1,024, 24 hours); a session the store evicted while the proxy still
+remembers it is restored from its latest turn only, which can only make a call look less aligned. The store keeps per session only keyed hashes of the turn's features (hosts,
 paths, known service names, three labels), at most 1,024 sessions, 512 features each, 24 hours; a turn's
 text is in memory for the call only.
 
@@ -615,7 +626,8 @@ WSL's own file share (`\\wsl.localhost\…`) and nothing else is not judged.
 - Lexical, as in the hook: an upload to a host the person named is aligned even when it is exfiltration to
   that host, and a task pasted from an untrusted source puts its hosts in scope.
 - The person's turn is told from a harness's only by the blocks listed above; a sub-agent's prompt is
-  model-written and judged as the task (see **Whose "user" turn**).
+  model-written and judged as the task (see **Whose "user" turn**). A compaction summary is recognised
+  only by Claude Code's opening sentence (see **Compaction**).
 - A call the proxy cannot map to a hook tool (an unknown function, content-scanned instead) is not judged.
 - If `data/intent-server.mjs` cannot start, the proxy runs without intent alignment and says so once on
   stderr.

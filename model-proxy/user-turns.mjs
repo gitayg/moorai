@@ -18,7 +18,10 @@
 // <path> (…)" (its own parser: /^<system-reminder>\n?([\s\S]*?)\n?<\/system-reminder>$/); background worker
 // results arrive "as user-role messages containing `<task-notification>` XML"; a `!` command's output is
 // "<bash-stdout>…</bash-stdout><bash-stderr>…</bash-stderr>"; a local slash command's output is
-// <local-command-stdout> / <local-command-stderr>; hook output is <user-prompt-submit-hook>. None of it is the
+// <local-command-stdout> / <local-command-stderr>; hook output is <user-prompt-submit-hook>; the IDE's selection
+// and open file are <ide_selection> / <ide_opened_file> (Claude Code strips them itself with
+// /<(ide_opened_file|ide_selection)(?:\s[^>]*)?>[\s\S]*?<\/\1>/); an MCP resource is
+// <mcp-resource server="…" uri="…">. A tag may carry attributes (up to 512 characters). None of it is the
 // person's request, and all of it can carry text someone else wrote (a cloned repository's CLAUDE.md, a page a
 // worker read). stripHarness removes each such block from a turn's texts (its text parts, in order) before
 // anything is taken from them, so a host, a path or a label word that appears only inside one never counts.
@@ -44,8 +47,15 @@
 // Returns the turns in order, each at most MAX_TURN characters (the intent store reads at most 20,000).
 export const MAX_TURN = 20000;
 
-export const HARNESS_TAGS = Object.freeze(["system-reminder", "task-notification", "bash-stdout", "bash-stderr", "local-command-stdout", "local-command-stderr", "user-prompt-submit-hook"]);
-const HARNESS_RE = new RegExp(`<(/?)(${HARNESS_TAGS.join("|")})>`, "g");
+export const HARNESS_TAGS = Object.freeze(["system-reminder", "task-notification", "bash-stdout", "bash-stderr", "local-command-stdout", "local-command-stderr", "user-prompt-submit-hook", "ide_selection", "ide_opened_file", "mcp-resource"]);
+const HARNESS_RE = new RegExp(`<(/?)(${HARNESS_TAGS.join("|")})(?:\\s[^<>]{0,512})?>`, "g");
+
+// COMPACTION. When a Claude Code conversation runs out of context, the summary of it becomes the first user turn,
+// opening with this sentence (2.1.295's bundle; its Remote Control variant opens the same way). The summary is
+// model-written and repeats whatever the earlier turns quoted (a fetched page, a file), so a turn that opens with
+// it is never a person's turn.
+export const COMPACTION_PREAMBLE = "This session is being continued from a previous conversation that ran out of context.";
+export const isCompactionSummary = (t) => String(t).trimStart().startsWith(COMPACTION_PREAMBLE);
 // One text → { text, malformed }.
 function scan(text) {
   const s = String(text);
@@ -139,7 +149,7 @@ function ollama(body) {
 const BY_KIND = { anthropic, "openai-chat": openaiChat, "openai-responses": openaiResponses, gemini, ollama };
 export function userTurns(kind, body) {
   const f = BY_KIND[kind];
-  return f && isObj(body) ? f(body) : [];
+  return f && isObj(body) ? f(body).filter((t) => !isCompactionSummary(t)) : [];
 }
 
 // Whether a request declares tools the model can call: a non-empty `tools` (or OpenAI Chat's legacy
