@@ -148,7 +148,27 @@ test("no live task fails closed: no captured task, no session id, or a machine-i
   const r = await setup();
   assert.deepEqual(await call(r.hooks, "PreToolUse", pre("Bash", { command: POST_CMD }, { session_id: "fresh" })), {}, "report mode alerts and leaves the verdict");
   await r.flush();
-  assert.equal(intentAlerts(r.c)[0].intent.class, "task-unknown");
+  assert.equal(intentAlerts(r.c).length, 1);
+  assert.equal(intentAlerts(r.c)[0].intent.class, "task-unknown", "a session id that IS supplied with no task alerts in report mode");
+});
+
+test("report mode, NO session id (absent or empty): not judged, no alert, verdict unchanged; ask and block stay fail-closed", async () => {
+  const r = await setup();
+  for (const extra of [{ session_id: "" }, { session_id: undefined }]) {
+    assert.deepEqual(await call(r.hooks, "PreToolUse", pre("Bash", { command: POST_CMD }, extra)), {});
+  }
+  const rt = await r.hooks.moorai.runtime();
+  const v = await rt.toolCall({ tool: "Bash", input: { command: POST_CMD }, cwd: PROJ });
+  assert.equal(v.decision, "allow");
+  assert.equal(v.intent, undefined);
+  await r.flush();
+  assert.equal(intentAlerts(r.c).length, 0, "no upgrade noise from callers that send no session");
+  const b = await setup({ intentAlignment: "block" });
+  assert.equal(decisionOf(await call(b.hooks, "PreToolUse", pre("Bash", { command: POST_CMD }, { session_id: "" }))), "deny");
+  const brt = await b.hooks.moorai.runtime();
+  assert.deepEqual((await brt.toolCall({ tool: "Bash", input: { command: POST_CMD }, cwd: PROJ })).intent, { class: "task-unknown", mode: "block" });
+  const a = await setup({ intentAlignment: "ask" }, { headlessAsk: "pass-through" });
+  assert.equal(decisionOf(await call(a.hooks, "PreToolUse", pre("Bash", { command: POST_CMD }, { session_id: "" }))), "ask");
 });
 
 test("a deny the branch already reached is not re-judged; an ask under ask mode keeps its verdict and gains the reason", async () => {

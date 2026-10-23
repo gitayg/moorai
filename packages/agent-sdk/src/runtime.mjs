@@ -29,7 +29,7 @@
 // request puts its hosts in scope. A risky call with no live task for its session (no session, never
 // captured, evicted, expired) is judged as class "task-unknown": not aligned, so ask/block fail closed and
 // report alerts. Unlike the hook, which skips a session with no task, so "block" needs the caller to
-// supply the task.
+// supply the task. One exception: in "report" mode a call with no session id at all is not judged.
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib, intentServerLib } from "./core.mjs";
@@ -190,6 +190,9 @@ export async function createMoorAI(options = {}) {
     if (v.decision === "deny") return v;
     const mode = intentModeFromPolicy(s.policy);
     if (mode === "off") return v;
+    // Report mode skips a call with NO session id at all, so callers that never send one see no new
+    // alerts; ask and block still judge it (task-unknown), and a supplied id with no task alerts in every mode.
+    if (mode === "report" && (typeof session !== "string" || !session)) return v;
     const j = intent.judge(session, v.tool, input, v.findings, owner);
     if (!j || j.aligned) return v;
     if (j.firstForTarget) {

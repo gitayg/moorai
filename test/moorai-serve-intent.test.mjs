@@ -129,10 +129,16 @@ test("no live task fails closed: a risky tool-call with no session or an unknown
     assert.equal((await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, session: "s1" })).json.decision, "allow");
   });
   await withServe({ captureTier: "content-free" }, async ({ url, con, stop }) => {
-    const v = await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD } });
-    assert.equal(v.json.decision, "allow", "report never changes the verdict");
+    const none = await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD } });
+    assert.equal(none.json.decision, "allow", "report never changes the verdict");
+    assert.equal(none.json.intent, undefined, "report mode does not judge a call with no session");
+    const unknown = await req(url, "/v1/tool-call", { tool: "Bash", input: { command: POST_CMD }, session: "never-captured" });
+    assert.equal(unknown.json.decision, "allow");
+    assert.deepEqual(unknown.json.intent, { class: "task-unknown", mode: "report" });
     await stop();
-    assert.equal(intentAlerts(con)[0].intent.class, "task-unknown");
+    const a = intentAlerts(con);
+    assert.equal(a.length, 1, "only the supplied-but-unknown session alerts");
+    assert.equal(a[0].intent.class, "task-unknown");
   });
 });
 

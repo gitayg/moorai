@@ -749,7 +749,9 @@ is validated against.
    call whose session has no live task under its owner (no session, never captured, evicted, expired)
    returns class `task-unknown`, not aligned, so ask/block fail closed and report alerts (once per session
    and target). This departs from the hook, which skips a session with no task: `"block"` requires the
-   caller to supply the task, and without one every risky call is "task unknown". Sessions are namespaced by an
+   caller to supply the task, and without one every risky call is "task unknown". One exception: in
+   `"report"` a call with no session id at all (absent or empty) is not judged and raises no alert; a
+   supplied id with no task is `task-unknown` in every mode. Sessions are namespaced by an
    optional owner: on the sidecar, the bearer token presented (each line of `--token-file` is a
    principal), so a task can be set, replaced, judged or evicted only by its own principal; per principal
    at most `--intent-sessions-per-caller` (default 256), its own oldest out; at the global cap the

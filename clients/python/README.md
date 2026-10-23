@@ -47,6 +47,13 @@ OpenAI `call_…`). When the sidecar runs with `--model-proxy-url` next to `moor
 --unchecked-window-ms`, the proxy then knows this call was checked. Any call the model returned that no
 check matched raises a content-free "unchecked tool call" alert. Without those flags the id is ignored.
 
+**Intent alignment.** Send each turn the user wrote with `moorai.task(session_id, text)` (never a tool
+result) and pass `session=session_id` to `tool_call`. A risky call aimed at a host, path or service the
+task never named then gets `intent: {"class", "mode"}` and, under `policy.intentAlignment` `"ask"` or
+`"block"`, an ask or deny. The sidecar keeps only keyed hashes, never the text; `task()` returns
+`{"mode", "captured", "features"}`. It is lexical, and a request pasted from an untrusted source puts its
+hosts in scope. In `"block"` mode a risky call with no task is denied.
+
 ## LangGraph
 
 A guard node between the model and the `ToolNode`: every tool call the model proposes is checked

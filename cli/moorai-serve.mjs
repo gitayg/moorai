@@ -30,7 +30,8 @@
 //                                                     `intent: { class, mode }`. A risky call with no live
 //                                                     task (no session, never sent, evicted, expired) is
 //                                                     class "task-unknown" and fails closed, so "block"
-//                                                     needs the caller to send the task first.
+//                                                     needs the caller to send the task first. In "report"
+//                                                     mode a call with NO session is not judged (no alert).
 //                                                     PRINCIPALS: each token in --token-file (one per line)
 //                                                     is a principal; a session's task is namespaced by the
 //                                                     token that set it, so only that principal's tool calls

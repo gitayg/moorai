@@ -745,8 +745,9 @@ alert per session and target (#64, `Action outside the stated task`, reason code
 hashes only) and leaves the verdict alone; `"ask"` raises an allow to ask, which the headless rule then
 settles (deny unless `headlessAsk` says otherwise); `"block"` denies; `"off"` disables it. A deny the call
 already earned is not judged again. The verdict gains `intent: {class, mode}`, and the reason it adds is fixed text
-per class, never the task or the arguments. A sidecar client that sends no `session` keeps its verdicts
-under the default `"report"` but now raises `task-unknown` alerts for its risky calls. Limits, the hook's own: it is lexical, asking whether
+per class, never the task or the arguments. In `"report"` mode a call with no session id at all (absent or
+empty) is not judged and raises no alert, so a client that sends none sees no change; in `"ask"` and
+`"block"` it is `task-unknown`, and a supplied session id with no task is `task-unknown` in every mode. Limits, the hook's own: it is lexical, asking whether
 the user named the destination, file or service, not whether the action serves the task, so an upload to a
 host the user named passes; a request pasted from an untrusted source puts its hosts in scope. Also: the
 store is per process, so replicas behind a load balancer do not share tasks and a restart forgets them
