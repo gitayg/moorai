@@ -115,7 +115,9 @@ for (const apiName of Object.keys(API)) for (const stream of [false, true]) {
       }
       assert.match(r.raw.toString("utf8"), /responseScan block/, kind);
       assert.ok(!leaks(r.raw.toString("utf8"), c.x), `${kind}: no part of the match was sent`);
-      if (stream) assert.ok(!r.raw.toString("utf8").includes(c.x.slice(0, 10)), `${kind}: not even the start of the match`);
+      // The text the client reassembled from the events before the refusal: not even the match's first 7
+      // characters (the deltas are 7 characters, so a released first delta would show here).
+      if (stream) assert.ok(!r.a.streamText(r.raw).includes(c.x.slice(0, 7)), `${kind}: not even the start of the match: ${r.a.streamText(r.raw)}`);
       const al = r.alerts.find((x) => x.responseScan && x.responseScan.class === c.cls);
       assert.equal(al.decision, "deny");
       assert.equal(al.riskLevel, "Blocked");
