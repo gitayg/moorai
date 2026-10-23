@@ -30,6 +30,9 @@
 // captured, evicted, expired) is judged as class "task-unknown": not aligned, so ask/block fail closed and
 // report alerts. Unlike the hook, which skips a session with no task, so "block" needs the caller to
 // supply the task. One exception: in "report" mode a call with no session id at all is not judged.
+// options.intentStore false: this runtime does not judge intent at all (no store; captureTask records
+// nothing). For a caller that judges intent itself with its own sessions — moorai-model-proxy
+// (model-proxy/intent.mjs), whose toolCall carries no session and would otherwise be task-unknown.
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib, intentServerLib } from "./core.mjs";
@@ -94,7 +97,7 @@ export async function createMoorAI(options = {}) {
   const agentName = agentNamesLib.agentNameOf(surface);
   const identity = { user: who.user, device: who.device, platform: os.platform(), tenant: config.tenant, actor: hash(`${who.user}@${who.device}`), surface, ...(agentName ? { agentName } : {}) };
   const reporter = options.reporter || createReporter({ config, identity, fetchImpl: options.fetch });
-  const intent = createIntentStore(options.intentStore || {});
+  const intent = options.intentStore === false ? null : createIntentStore(options.intentStore || {});
 
   let state = null, loading = null, loadedAt = 0;
   async function loadPolicy() {
@@ -179,7 +182,7 @@ export async function createMoorAI(options = {}) {
   async function captureTask(session, prompt, owner) {
     const s = await ready();
     const mode = intentModeFromPolicy(s.policy);
-    if (mode === "off") return { mode, captured: false, features: 0 };
+    if (mode === "off" || !intent) return { mode: intent ? mode : "off", captured: false, features: 0 };
     const r = intent.captureTask(session, prompt, owner);
     return { mode, captured: typeof session === "string" && session.length > 0 && typeof prompt === "string", features: r.features };
   }
@@ -187,7 +190,7 @@ export async function createMoorAI(options = {}) {
   // Intent alignment on the branch verdict v (see the header). Returns v, or a copy with the adjusted
   // decision, reason and alternatives plus `intent`. Reasons are fixed text per class: no argument, no task.
   function intentStep(s, v, input, session, sess, owner) {
-    if (v.decision === "deny") return v;
+    if (v.decision === "deny" || !intent) return v;
     const mode = intentModeFromPolicy(s.policy);
     if (mode === "off") return v;
     // Report mode skips a call with NO session id at all, so callers that never send one see no new

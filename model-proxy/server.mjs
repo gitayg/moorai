@@ -170,8 +170,9 @@ export async function createProxy(opts = {}) {
   const replace = enforce && o.deniedToolCall === "replace";
   // Report-only passes an "ask" through unsettled (nothing is enforced, so nothing is settled); enforce
   // applies server mode's headless rule: an ask with no approver is a deny unless a trusted source says
-  // allow-with-report.
-  const rt = await createMoorAI({ policyFile: o.policyFile, policy: o.policy, serviceId: o.serviceId, headlessAsk: enforce ? o.headlessAsk : "pass-through", console: o.console, fetch: o.fetch, env: o.env, systemConfig: o.systemConfig, surface: "model-proxy" });
+  // allow-with-report. intentStore false: the runtime's own intent step is off, since this proxy judges intent
+  // with its own sessions (intent.mjs) and runtime.toolCall carries none (every risky call would be task-unknown).
+  const rt = await createMoorAI({ policyFile: o.policyFile, policy: o.policy, serviceId: o.serviceId, headlessAsk: enforce ? o.headlessAsk : "pass-through", console: o.console, fetch: o.fetch, env: o.env, systemConfig: o.systemConfig, surface: "model-proxy", intentStore: false });
   await rt.ready();
   wrapReporter(rt, { enforce });
   const consoleConfig = resolveSettings({ console: o.console }, { env: o.env || process.env, system: o.systemConfig }).config;

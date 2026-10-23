@@ -45,6 +45,8 @@ untrusted source puts its hosts in scope; the store is per process, so a restart
 `"block"` denies, `"ask"` asks and `"report"` alerts on. Unlike the hook, `"block"` therefore needs the
 task: it arrives through `UserPromptSubmit`, so a run whose prompt never reaches that hook has every risky
 call blocked. In `"report"` mode a call with no `session_id` at all is not judged and raises no alert.
+`createMoorAI({ intentStore: false })` turns the step off for a caller that judges intent itself with its own
+sessions (`moorai-model-proxy` does: its `toolCall` carries no session, so every risky call would be `task-unknown`).
 
 ## Scan content before it is embedded
 

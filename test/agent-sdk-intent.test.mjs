@@ -217,3 +217,16 @@ test("fails closed: an expired session behaves the same", async () => {
   await b.flush();
   assert.equal(intentAlerts(b.c).at(-1).intent.class, "task-unknown");
 });
+
+test("intentStore false: the runtime does not judge intent (a caller that judges it itself, the model proxy, opts out)", async () => {
+  const c = fakeConsole();
+  const rt = await createMoorAI({ policy: { captureTier: "content-free", intentAlignment: "block" }, console: c.console, fetch: c.fetch, intentStore: false });
+  assert.deepEqual(await rt.captureTask("s1", TASK), { mode: "off", captured: false, features: 0 });
+  for (const session of [undefined, "s1"]) {
+    const v = await rt.toolCall({ tool: "Bash", input: { command: POST_CMD }, cwd: PROJ, session });
+    assert.equal(v.decision, "allow", `not task-unknown (session ${session})`);
+    assert.equal(v.intent, undefined);
+  }
+  await rt.flush();
+  assert.equal(intentAlerts(c).length, 0);
+});

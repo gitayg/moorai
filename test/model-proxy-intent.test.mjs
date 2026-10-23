@@ -8,8 +8,9 @@
 // proxy's refusal and "ask" its headless ask. Tool results, function responses and system prompts never count
 // as the task.
 // The intent store is a test double (model-proxy/test/fake-intent.mjs) that honours data/intent-server.mjs's
-// frozen contract, injected with createProxy's intentLib option; one test imports the real module and skips
-// while it is still the stub. In process, fake upstreams, no real provider.
+// frozen contract, injected with createProxy's intentLib option; one test runs the proxy on the real module.
+// In process, fake upstreams, no real provider. The end-to-end run on the real store is
+// test/servers-intent-e2e.test.mjs.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync, mkdtempSync } from "node:fs";
@@ -264,12 +265,7 @@ test("userTurns: only the person's turns, for every API", () => {
   assert.deepEqual(userTurns("anthropic", { messages: [{ role: "user", content: [{ type: "document", source: { type: "text", data: HOST } }, { type: "text", text: TASK }] }] }), [TASK]);
 });
 
-test("integration: the real data/intent-server.mjs (skipped while it is the frozen stub)", async (t) => {
-  const real = await import("../data/intent-server.mjs");
-  try { real.createIntentStore({ key: Buffer.alloc(32, 7), ...STORE_LIMITS }); } catch (e) {
-    if (/not implemented/.test(String(e && e.message))) { t.skip("data/intent-server.mjs is still the stub"); return; }
-    throw e;
-  }
+test("integration: the real data/intent-server.mjs", async () => {
   const px = await createProxy({ port: 0, mode: "enforce", policy: { intentAlignment: "block" }, routes: { "/anthropic": fp.url }, systemConfig: null, env: {} });
   try {
     fp.on((r, res) => APIS.anthropic.reply(false, res));
