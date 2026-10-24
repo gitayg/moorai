@@ -666,6 +666,7 @@ is validated against.
    | `kiro-steering`, `kiro-spec`, `kiro-hook` | `.kiro/steering/` and `~/.kiro/steering/`; `.kiro/specs/**/*.md`; `.kiro/hooks/*` | doc |
    | `gemini-settings`, `amp-settings`, `opencode-config` | `.gemini/settings.json` (project, user, system and `system-defaults.json`) — carries `hooks` and `mcpServers`; `.amp/settings.json` and `~/.config/amp/settings.json`; `opencode.json` — names extra instruction files | doc |
    | `cline-mcp`, `windsurf-mcp`, `vscode-mcp`, `continue-mcp`, `amazon-q-mcp`, `kiro-mcp` | other clients' dedicated MCP-config files (`cline_mcp_settings.json`, `.codeium/windsurf/mcp_config.json`, `.vscode/mcp.json`, `.continue/mcpServers/*`, `.aws/amazonq` & `.amazonq/mcp.json`, `.kiro/settings/mcp.json`) | doc |
+   | `openclaw-soul`, `openclaw-memory` | OpenClaw's `SOUL.md` ("Loaded every session"), `MEMORY.md` (curated long-term memory, loaded in the main session) and `~/.openclaw/workspace/memory/*.md` (docs.openclaw.ai/concepts/agent-workspace, checked 2026-10-23); matched by file name anywhere, after `claude-memory`, so Claude Code's own `memory/MEMORY.md` keeps its kind | doc |
    | `zed-mcp` | Zed `context_servers` — lives inside `~/.config/zed/settings.json` or project `.zed/settings.json` (a general settings file, anchored to the `zed` dir; no overlap with `.claude/settings.json`) | doc |
 
    **Intent labels** are a closed vocabulary (`INTENT_LABELS`,
@@ -673,6 +674,22 @@ is validated against.
    existing content tell ([`data/agent-behavior.js`](../data/agent-behavior.js)) or the existing host
    extractor ([`data/model-endpoints.js`](../data/model-endpoints.js)). There is deliberately **no second
    detection engine**: a forked engine would sit outside `threatActionFor` and the org's detector packs.
+
+   **Hiding-technique labels.** Five labels name one detector each rather than a threat, because the engine
+   keeps one finding per threat and these share theirs with other detectors (data/detectors-skill-hiding.js,
+   data/skill-hiding.js): `padded-hidden-content` (`skill-padded-hidden-content`, #40: a run of 60 or more
+   blank or whitespace-only lines with content after it), `hidden-html-instructions`
+   (`skill-hidden-html-instructions`, #40: an HTML comment holding a shell command, a beacon `key=value` line
+   with a URL or host, a URL next to a call verb, or an order to the agent; licence headers, TODO notes and
+   lint/TOC directives excluded), `conceals-from-user` (`skill-conceals-from-user`, #40), `targets-reviewers`
+   (`skill-targets-reviewers`, #3) and `persists-to-memory` (`skill-persists-to-memory`, #22). Stages `file`
+   and `index`. Padding and HTML comments fire only when the caller names the file (`ctx.readPath` from the
+   hook's Read and Bash branches, `moorai scan` and the MCP package scan; `ctx.targetPath` from the ingest
+   worker) and it is on the skill surface; the three phrasing rules also fire when no path is given, and stay
+   quiet on a named file off the skill surface. When two of them fire on one file, the engine's one finding
+   names the last; `skillIntents` recovers the others by re-running the same detector objects over the text
+   and its invisible-character views, and only for a threat the engine reported, so a policy that disables
+   the threat removes the label.
 
    **Limits.** (a) Intent coverage *is* detector coverage — an instruction with no detector produces no
    label, so "no labels" means "nothing recognized", never "benign". (b) Files are seen when an agent
@@ -4258,7 +4275,15 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   write) or `prompt` (a command). No signal name, path, key or value. A sub-agent's alert carries
   `parentSession` (`SESSION_TAG`; Claude Code gives a sub-agent its parent's `session_id`, so it equals
   `session`) and an origin with `thread: "subagent"`; the verdict is the same as the main agent's.
-- **Policy key.** Top-level `oversight: { v: 1, protectedPaths, protectedKeys, stopDisclosure }`.
+- **Built-in protected surfaces.** With no policy, the agent's persistent-instruction files are protected paths
+  (`PERSISTENT_INSTRUCTION_KINDS`, data/skill-surface.js: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/`,
+  `AGENTS.md` / `AGENT.md` / `AGENTS.override.md`, `GEMINI.md`, `.cursorrules`, `.cursor/rules/`, `.windsurfrules`,
+  Windsurf and Cline rules, `.github/copilot-instructions.md`, `.github/instructions/`, Kiro steering, Claude Code's
+  `.claude/projects/<p>/memory/`, OpenClaw `SOUL.md` / `MEMORY.md` / `memory/`). A Write / Edit of one, or a shell
+  command that writes, moves or deletes one, raises `protected-surface` under #84 (default ask). Skills, commands
+  and agent definitions are not in the set. `oversight.protectMemoryFiles: false` turns the built-in set off
+  (declared `protectedPaths` still apply); a non-boolean value is ignored with a warning.
+- **Policy key.** Top-level `oversight: { v: 1, protectedPaths, protectedKeys, stopDisclosure, protectMemoryFiles }`.
   `protectedPaths`: up to 64 globs (`**`, `*`, `?`), matched against the path relative to the session's cwd and
   at any directory boundary of an absolute path; `dir/**` also matches `dir`. `protectedKeys`: up to 64 key or
   env var names, whole-word, as written (a dotted key is not resolved through YAML nesting). A write that changes

@@ -1,9 +1,9 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-23T02:14:37.962Z
+> Generated: 2026-10-24T01:11:45.587Z
 
-- **Detectors:** 120
+- **Detectors:** 125
 - **Threats:** 82
 - **Adversarial corpus:** 102/102 passed (100.0%)
 - **OWASP LLM Top 10:** 10/10 items covered by ≥1 on-device detector
@@ -15,10 +15,10 @@
 
 | Item | Name | Threats | Detectors | Status |
 |------|------|--------:|----------:|--------|
-| LLM01 | Prompt Injection | 8 | 21 | ✅ covered |
+| LLM01 | Prompt Injection | 8 | 25 | ✅ covered |
 | LLM02 | Sensitive Information Disclosure | 20 | 44 | ✅ covered |
 | LLM03 | Supply Chain | 8 | 6 | ✅ covered |
-| LLM04 | Data & Model Poisoning | 1 | 1 | ✅ covered |
+| LLM04 | Data & Model Poisoning | 1 | 2 | ✅ covered |
 | LLM05 | Improper Output Handling | 7 | 16 | ✅ covered |
 | LLM06 | Excessive Agency | 17 | 8 | ✅ covered |
 | LLM07 | System Prompt Leakage | 3 | 6 | ✅ covered |
@@ -30,12 +30,12 @@
 
 | Item | Name | Threats | Partial | Detectors | Status |
 |------|------|--------:|--------:|----------:|--------|
-| ASI01 | Agent Goal Hijack | 9 | 7 | 29 | ✅ covered |
+| ASI01 | Agent Goal Hijack | 9 | 7 | 33 | ✅ covered |
 | ASI02 | Tool Misuse and Exploitation | 9 | 9 | 7 | ◐ partial |
 | ASI03 | Identity and Privilege Abuse | 4 | 4 | 6 | ◐ partial |
 | ASI04 | Agentic Supply Chain Vulnerabilities | 3 | 3 | 11 | ◐ partial |
 | ASI05 | Unexpected Code Execution (RCE) | 6 | 6 | 15 | ◐ partial |
-| ASI06 | Memory & Context Poisoning | 4 | 4 | 6 | ◐ partial |
+| ASI06 | Memory & Context Poisoning | 4 | 4 | 7 | ◐ partial |
 | ASI07 | Insecure Inter-Agent Communication | 1 | 1 | 0 | — |
 | ASI08 | Cascading Failures | 0 | 0 | 0 | — |
 | ASI09 | Human-Agent Trust Exploitation | 1 | 1 | 1 | ◐ partial |
@@ -50,7 +50,7 @@
 | MCP03 | Tool Poisoning | 2 | 2 | 11 | ◐ partial |
 | MCP04 | Software Supply Chain Attacks & Dependency Tampering | 0 | 0 | 0 | — |
 | MCP05 | Command Injection & Execution | 2 | 2 | 3 | ◐ partial |
-| MCP06 | Intent Flow Subversion | 8 | 6 | 20 | ✅ covered |
+| MCP06 | Intent Flow Subversion | 8 | 6 | 24 | ✅ covered |
 | MCP07 | Insufficient Authentication & Authorization | 0 | 0 | 0 | — |
 | MCP08 | Lack of Audit and Telemetry | 1 | 1 | 2 | ◐ partial |
 | MCP09 | Shadow MCP Servers | 1 | 1 | 0 | — |
@@ -67,10 +67,10 @@ risk, the MCP allow-list) are counted under Threats but add no detectors. Source
 
 | Technique | Name | Lane | Threats | Detectors | Status |
 |-----------|------|------|--------:|----------:|--------|
-| T1698 | Indirect Prompt Injection | agent | 8 | 18 | ✅ covered |
+| T1698 | Indirect Prompt Injection | agent | 8 | 22 | ✅ covered |
 | T1699 | Direct Prompt Injection | agent | 2 | 9 | ✅ covered |
 | T1700 | AI-Enabled Exfiltration | agent | 4 | 4 | ◐ partial (open gap) |
-| T1685.007 | Impair Autonomous Defenses | agent | 1 | 5 | ◐ partial (open gap) |
+| T1685.007 | Impair Autonomous Defenses | agent | 1 | 8 | ◐ partial (open gap) |
 | T1608.007 | AI Result Poisoning | agent | 1 | 1 | ◐ partial (by design) |
 | T1027.018 | Invisible Unicode | agent | 1 | 8 | ◐ partial (open gap) |
 | T1195.001 | Compromise Software Dependencies and Development Tools | agent | 5 | 5 | ◐ partial (open gap) |
