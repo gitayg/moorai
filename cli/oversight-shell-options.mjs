@@ -307,3 +307,12 @@ export const GIT_CONFIG = Object.freeze({
   edit: configOpts([], [], "f", "f"),
   short: { e: "--edit", f: "--file", l: "--list", t: "--type", z: "--null" }
 });
+// The options that name the program run for the other end of a transfer (`git <cmd> -h` on 2.54.0: fetch, pull and
+// ls-remote "--[no-]upload-pack <path>", push and send-pack "--[no-]receive-pack" and "--[no-]exec", archive
+// "--[no-]exec <command>"; fetch-pack's usage "--upload-pack=<git-upload-pack>", and it reads --exec= too). A command
+// value runs, measured on 2.39.5 and 2.54.0 with a local repository, as does clone -u / --upload-pack (GIT_CLONE).
+// None has a short letter (`git ls-remote -u` is refused). A long option written as any prefix of one is read as it.
+export const GIT_PACK_PROGRAM = Object.freeze({
+  fetch: ["--upload-pack"], pull: ["--upload-pack"], "ls-remote": ["--upload-pack"], "fetch-pack": ["--upload-pack", "--exec"],
+  push: ["--receive-pack", "--exec"], "send-pack": ["--receive-pack", "--exec"], archive: ["--exec"]
+});

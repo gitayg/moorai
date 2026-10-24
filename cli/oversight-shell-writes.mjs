@@ -28,7 +28,7 @@
 // Windows reads them case-insensitively, and on POSIX the extra match only over-reports.
 import { scanArgs, longName } from "../data/shell-parse.js";
 import { CP, INSTALL, RSYNC, CURL, WGET, PATCH, GIT_CHECKOUT, GIT_RESTORE, GIT_GLOBAL, GIT_BUILTINS, GIT_SAFE_CONFIG,
-  GIT_EXEC_ENV, GIT_EDITOR_ENV, GIT_HARMLESS_PROGRAMS, GIT_HARMLESS_EDITORS, GIT_OPAQUE_ENV, GIT_CLONE, GIT_INIT, GIT_CONFIG } from "./oversight-shell-options.mjs";
+  GIT_EXEC_ENV, GIT_EDITOR_ENV, GIT_HARMLESS_PROGRAMS, GIT_HARMLESS_EDITORS, GIT_OPAQUE_ENV, GIT_CLONE, GIT_INIT, GIT_CONFIG, GIT_PACK_PROGRAM } from "./oversight-shell-options.mjs";
 
 // Not a literal path: an expansion, a substitution, a glob or brace, or ~user (a bare ~ or ~/… is the home
 // directory, which the caller expands).
@@ -258,6 +258,17 @@ export function gitInvocation(args, env = []) {
     const { flags } = scanArgs(args.slice(at + 1), sub === "clone" ? GIT_CLONE : GIT_INIT);
     if (unknownOption(flags) || flagged(flags, "--template")) opaque = true;
     if (sub === "clone" && !vals(flags, "-c", "--config").every((kv) => kv != null && safeConfigKey(kv))) opaque = true;
+    if (sub === "clone" && flagged(flags, "-u", "--upload-pack")) opaque = true;
+  }
+  // A program for the other end of a transfer (GIT_PACK_PROGRAM: fetch / pull / ls-remote / fetch-pack --upload-pack,
+  // push / send-pack --receive-pack and --exec, archive --exec): any long option before -- that is a prefix of one.
+  if (Object.hasOwn(GIT_PACK_PROGRAM, sub)) {
+    const rest = args.slice(at + 1);
+    const end = rest.indexOf("--");
+    for (const t of end < 0 ? rest : rest.slice(0, end)) {
+      const name = t.split("=")[0];
+      if (name.length > 2 && name.startsWith("--") && GIT_PACK_PROGRAM[sub].some((o) => o.startsWith(name))) opaque = true;
+    }
   }
   let base = null, unsure = false;
   for (const c of vals(pre, "-C")) {
@@ -270,7 +281,9 @@ export function gitInvocation(args, env = []) {
   return { at, sub: at < 0 ? null : args[at].toLowerCase(), opaque, unknown, under: (p) => joinUnder(base, p) };
 }
 
-// git config <args> (after `config`) → null when it reads, unsets or removes; { unknown: true } when an option is one
+// git config <args> (after `config`) → null when it reads, or unsets or removes without -f; { key: null, scope, file,
+// remove: true } when it unsets, removes a section from or renames a section in the file -f names (git rewrites that
+// file: measured, 2.39.5 and 2.54.0); { unknown: true } when an option is one
 // git config does not have, is ambiguous, or lacks its value (git refuses it; another version may not); else { key,
 // scope, file }: the key it sets (null for --edit / edit and --rename-section / rename-section, whose result the
 // arguments do not show), scope ("local", "global", "system", "worktree") and file (-f / --file). Both forms: `git config
@@ -323,7 +336,8 @@ export function gitConfigWrite(args) {
     else if (["--global", "--system", "--local", "--worktree"].includes(f.name)) { if (!f.unset) scope = f.name.slice(2); else if (scope === f.name.slice(2)) scope = "local"; }
     else if (sub === null && Object.hasOwn(CONFIG_ACTION, f.name)) action = CONFIG_ACTION[f.name];
   }
-  if (action === "read" || action === "unset") return null;
+  if (action === "read") return null;
+  if (action === "unset") return file != null ? { key: null, scope, file, remove: true } : null;
   if (action === "edit" || action === "rename") return { key: null, scope, file };
   return r.pos.length >= 2 ? { key: r.pos[0], scope, file } : null;
 }

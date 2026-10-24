@@ -385,6 +385,8 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
     if (!w) return;
     if (w.unknown) { unknownWrite(opts, out); return; }
     if (w.file != null) { if (nonLiteral(w.file)) unknownWrite(opts, out); else ctx.both(home(w.file)).forEach((a) => touched.add(a)); }
+    // Removing a key or a section from the -f file rewrites it (judged above) and arms nothing.
+    if (w.remove) return;
     if (w.key !== null && !nonLiteral(w.key) && safeConfigKey(w.key)) return;
     opts.armed = true;
     const local = w.file == null && (w.scope === "local" || w.scope === "worktree") ? g.under(w.scope === "local" ? ".git/config" : ".git/config.worktree") : undefined;

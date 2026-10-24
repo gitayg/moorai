@@ -4346,7 +4346,9 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   unique prefix (`--fil=f` writes `f`, `--glob` the global file, 2.54.0's `--comm` takes the next word as its
   comment), `--no-global` / `--no-file` putting the scope back, and short letters clustered (`-zf <file>`,
   `-f<file>`). An option it does not have, an ambiguous one or one missing its value (git refuses each) leaves the
-  write unknown. Shell writes (`cli/oversight-shell-writes.mjs`): a redirect (a bare `> path` with no
+  write unknown. With `-f <file>`, `--unset`, `--unset-all`, `unset`, `--remove-section`, `remove-section`,
+  `--rename-section` and `rename-section` rewrite `<file>` (measured, 2.39.5 and 2.54.0) and are a write to it, judged
+  by the path checks; a removal arms nothing, and without `-f` it stays clean. Shell writes (`cli/oversight-shell-writes.mjs`): a redirect (a bare `> path` with no
   command word too, read from the raw text, quote-aware, heredoc bodies skipped, since the parser keeps no segment
   for it), `tee` (a word after `--` too), `sed -i` / `--in-place` / BSD `-I`, `perl -pi`, `yq -i`, `Set-Content`, the
   destination of `cp` / `install` / `rsync` (a local one; `-t`, `--target-directory`, `-T` for cp; into a directory,
@@ -4397,7 +4399,10 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   (`GIT_CLONE` / `GIT_INIT`, from `git clone -h` / `git init -h` on 2.54.0): anywhere before `--`, a long one by a
   unique prefix (`--templ=d`, `--temp d`, `--conf k=v`, `--co k=v`, init `--t d`), `-c` inside a cluster (`-qc
   k=v`, `-qck=v`), all measured to copy or run the hooks on 2.39.5 and 2.54.0, and an option they do not have or an
-  ambiguous one (`clone --t`: template or tags) opaque —, and `GIT_EXEC_ENV` set with a value outside `GIT_HARMLESS_PROGRAMS` (empty,
+  ambiguous one (`clone --t`: template or tags) opaque —, a program for the other end of a transfer
+  (`GIT_PACK_PROGRAM` and `clone -u` / `--upload-pack`: `fetch`, `pull`, `ls-remote` and `fetch-pack --upload-pack`,
+  `push` and `send-pack --receive-pack` / `--exec`, `archive --exec`, any long option before `--` that is a prefix of
+  one; a command value measured to run with a local repository on 2.39.5 and 2.54.0), and `GIT_EXEC_ENV` set with a value outside `GIT_HARMLESS_PROGRAMS` (empty,
   `cat`, `less`, `more`, `true`, `:`; for `GIT_EDITOR`, `EDITOR`, `VISUAL` and `GIT_SEQUENCE_EDITOR` also `vi`,
   `vim`, `nano`, `code --wait`): `GIT_PAGER` / `PAGER` (log, diff on a terminal), `GIT_EDITOR` / `EDITOR`
   (commit), `GIT_SSH_COMMAND` / `GIT_SSH` / `GIT_PROXY_COMMAND` (fetch) and `GIT_EXTERNAL_DIFF` (diff) measured to

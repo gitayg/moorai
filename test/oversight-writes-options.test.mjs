@@ -26,7 +26,8 @@
 //   * git config reads options only before its first word, a subcommand only as the first word, a long option by a
 //     unique prefix; clone / init / init-db read --template and -c / --config by unique prefix and inside a short
 //     cluster; an unknown or ambiguous option on them is unknown. GIT_TRACE* naming ~ or ~/… is a write under the home
-//     directory. A commondir and a worktree's gitdir are memory-file.
+//     directory. A commondir and a worktree's gitdir are memory-file. --upload-pack / --receive-pack / --exec (clone -u)
+//     is unknown; git config -f <file> removing or renaming is a write to <file>.
 //
 //   node --test --import ./test/hermetic-env.mjs test/oversight-writes-options.test.mjs
 import { test, after } from "node:test";
@@ -447,4 +448,30 @@ test("planting: a commondir or a worktree's gitdir is memory-file; alternates an
     "echo /tmp/e/.git > .git/worktrees/w/gitdir", "echo x > .git/modules/m/worktrees/w/commondir"], MEM, bare);
   assert.deepEqual(oversightEditSignals({ path: join(proj, ".git/commondir"), before: null, after: "/tmp/e", surfaces: none, cwd: proj }), ["memory-file"]);
   each(["echo x > .git/objects/info/alternates", "echo x > .git/modules/m/gitdir", "echo x > .git/gitdir", "echo x > docs/commondir", "echo x > .git/info/attributes"], [], bare);
+});
+
+// ---- v1.34.3: a program for the other end of a transfer ----
+test("git: --upload-pack / --receive-pack / --exec (clone -u too) runs a program and is unknown", () => {
+  // Measured (2.39.5 and 2.54.0, a local repository): a command value runs for clone -u / -qu / -u<cmd> / --upload-pack
+  // / --upl, fetch / pull / ls-remote --upload-pack (and --upl), fetch-pack --upload-pack=, push / send-pack
+  // --receive-pack and --exec, and archive --remote --exec.
+  each(["git clone -u 'sh x' a b", "git clone --upload-pack='sh x' a b", "git clone --upl 'sh x' a b", "git clone -qu 'sh x' a b", "git clone -u'sh x' a b",
+    "git fetch --upload-pack 'sh x' origin", "git fetch --upl=x origin", "git fetch origin --upload-pack=x", "git pull --upload-pack x origin",
+    "git ls-remote --upload-pack=x r", "git ls-remote --upl=x r", "git fetch-pack --upload-pack=x r HEAD", "git fetch-pack --exec=x r HEAD",
+    "git push --receive-pack x r HEAD", "git push --exec=x r HEAD", "git send-pack --receive-pack=x r HEAD", "git archive --remote=r --exec x HEAD"], INC);
+  each(["git fetch origin", "git fetch -u origin", "git push --repo=origin", "git push origin HEAD", "git ls-remote --tags r", "git archive --remote=r HEAD",
+    "git pull --rebase origin main", "git fetch -- --upload-pack=x"], [], bare);
+});
+
+// ---- v1.34.3: git config -f <file> removing or renaming rewrites the file ----
+test("git config -f <file> with --unset / --unset-all / unset / --remove-section / --rename-section is a write to <file>", () => {
+  // Measured (2.39.5 and 2.54.0; the subcommands on 2.54.0): each rewrites <file> (a key or section is gone or renamed).
+  each(["git config -f ops/alerting/a.cfg --unset alerts.route", "git config -f ops/alerting/a.cfg --unset-all alerts.route",
+    "git config unset -f ops/alerting/a.cfg alerts.route", "git config --file=ops/alerting/a.cfg --remove-section alerts",
+    "git config remove-section -f ops/alerting/a.cfg alerts", "git config -f ops/alerting/a.cfg --rename-section alerts zz"], PROT);
+  has(`git config -f ${join(proj, "CLAUDE.md")} --unset a.b`, "memory-file", bare);
+  has("git config -f .git/config --unset core.hooksPath", "memory-file", bare);
+  assert.deepEqual(gitConfigWrite(["-f", "a.cfg", "--unset", "x.y"]), { key: null, scope: "local", file: "a.cfg", remove: true });
+  // A removal arms nothing, and without -f it stays clean.
+  each(["git config -f a.cfg --unset core.hooksPath", "git config --unset core.fsmonitor", "git config --global --remove-section alias", "git config unset alias.x"], [], bare);
 });
