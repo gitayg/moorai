@@ -1609,8 +1609,10 @@ command), `tee`, `sed -i` / `perl -pi`, `yq -i`, `Set-Content`, a copy or instal
 <path>` or `patch <path>`. The same paths are judged for an MCP filesystem server's write, edit, move or create
 tool (`write_file`, `edit_file`, `move_file`, `create_directory`, `edit_block`, `create_text_file` …), exactly as
 for a Write / Edit. A named remote-repository tool (github / gitlab / gitea / bitbucket `create_or_update_file`,
-`push_files` …) writes no local file and is not judged; in any other call an `owner`, `repo` or `bucket` argument
-only makes a relative path ambiguous (it is skipped), while an absolute, `~` or `file://` path is always judged.
+`push_files` …) writes no local file and is not judged. Remote is decided by the tool alone: an `owner`, `repo`,
+`url` or `bucket` argument on any other tool changes nothing, and a relative path is resolved against the working
+directory. A move whose source is not exactly one readable local file (several sources, too large, unreadable)
+is held as an incomplete analysis when the destination is runtime code or a test.
 A path with an `http`, `https`, `s3`, `gs`, `git` or `ssh` scheme is not local; any other `scheme:` path is
 judged with and without the scheme and held as an incomplete analysis.
 

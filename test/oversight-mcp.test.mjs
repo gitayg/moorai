@@ -110,7 +110,8 @@ test("a remote-looking argument does not switch the check off: absolute, ~ and f
   assert.deepEqual(sig("mcp__filesystem__write_file", { path: join(proj, "CLAUDE.md"), repo: "x", content: "x" }), ["memory-file"]);
   assert.deepEqual(sig("mcp__filesystem__write_file", { path: `file://${join(proj, "CLAUDE.md")}`, owner: "o", content: "x" }), ["memory-file"]);
   assert.deepEqual(sig("mcp__filesystem__write_file", { path: "~/.claude/CLAUDE.md", bucket: "b", content: "x" }), ["memory-file"]);
-  assert.deepEqual(sig("mcp__filesystem__write_file", { path: "CLAUDE.md", repo: "x", content: "x" }), [], "a relative path next to a remote location is ignored, as cli/mcp-file-args.mjs does");
+  assert.deepEqual(sig("mcp__filesystem__write_file", { path: "CLAUDE.md", repo: "x", content: "x" }), ["memory-file"], "remote is decided by tool identity only: a relative path is resolved against cwd");
+  assert.deepEqual(sig("mcp__filesystem__write_file", { path: "CLAUDE.md", url: "x", content: "x" }), ["memory-file"]);
   assert.deepEqual(sig("mcp__github__create_or_update_file", { owner: "o", repo: "r", path: join(proj, "CLAUDE.md"), content: "x" }), [], "a named remote-repository tool writes no local file");
 });
 
@@ -134,4 +135,16 @@ test("move_file: a source too large or unreadable onto runtime code is analysis-
     try { assert.deepEqual(sig("mcp__filesystem__move_file", { source: locked, destination: join(proj, "eval_pipeline/notify.py") }), ["analysis-incomplete"]); }
     finally { chmodSync(locked, 0o644); }
   }
+});
+
+test("move_file: argument keys never suppress the check or the source read; several sources are incomplete", () => {
+  writeFileSync(join(proj, "evil2.md"), "x\n");
+  assert.deepEqual(sig("mcp__filesystem__move_file", { source: join(proj, "evil2.md"), destination: "ops/alerting/rules.yaml", repo: "x" }), ["protected-surface"]);
+  const SUP = CASE1_NOTIFY_BEFORE.replace(SUPPRESS.old_string, SUPPRESS.new_string);
+  writeFileSync(join(proj, "staged_notify.py"), SUP);
+  assert.deepEqual(sig("mcp__filesystem__move_file", { source: "staged_notify.py", destination: "eval_pipeline/notify.py", owner: "o", repo: "r" }), ["suppression-flag"], "the source is read whatever keys sit beside it");
+  writeFileSync(join(proj, "a.py"), "x = 1\n");
+  writeFileSync(join(proj, "b.py"), "y = 2\n");
+  assert.deepEqual(sig("mcp__filesystem__move_file", { source: [join(proj, "a.py"), join(proj, "b.py")], destination: join(proj, "eval_pipeline/notify.py") }), ["analysis-incomplete"]);
+  assert.deepEqual(sig("mcp__filesystem__move_file", { sources: [join(proj, "a.py"), join(proj, "b.py")], destination: join(proj, "eval_pipeline/notify.py") }), ["analysis-incomplete"]);
 });
