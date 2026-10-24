@@ -136,10 +136,28 @@ const apiFor = (method, path) => (method !== "POST" ? null : /\/messages$/.test(
 // cachedContents are read and scanned like their model requests; the Files / uploads APIs (Anthropic and OpenAI
 // /files, OpenAI /uploads and their parts, Gemini's /upload/… media uploads) and Gemini batch generation are not
 // read, so they are refused in enforce mode or under a closed fail mode and alerted otherwise.
-const UPLOAD_PATHS = [/^(?:\/v1(?:beta)?)?\/files$/, /^(?:\/v1)?\/uploads(?:\/[^/]+\/parts)?$/, /^\/upload\//, /:batchGenerateContent$/];
+// With fileScan on, the path is normalised before it is matched and forwarded (normalPath): percent-encoded
+// unreserved characters decoded, dot segments resolved, duplicate slashes collapsed, a trailing slash removed. It is
+// matched (matchPath) with %2F / %5C also read as "/", case-insensitively (the endpoint patterns carry the i flag,
+// and the parsed-API choice is tried as sent and in lower case), since a provider may route either way; the
+// normalised, case-kept path is what goes upstream.
+const UNRESERVED_PCT = /%(?:4[1-9A-Fa-f]|5[0-9Aa]|6[1-9A-Fa-f]|7[0-9Aa]|3[0-9]|2[DdEe]|5[Ff]|7[Ee])/g;
+export function normalPath(p) {
+  const decoded = String(p).replace(UNRESERVED_PCT, (m) => String.fromCharCode(parseInt(m.slice(1), 16)));
+  const out = [];
+  for (const seg of decoded.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") { out.pop(); continue; }
+    out.push(seg);
+  }
+  return `/${out.join("/")}`;
+}
+export const matchPath = (p) => normalPath(String(p).replace(/%2f|%5c/gi, "/").replace(/\\/g, "/"));
+const UPLOAD_PATHS = [/^(?:\/v1(?:beta)?)?\/files$/i, /^(?:\/v1)?\/uploads(?:\/[^/]+\/parts)?$/i, /^\/upload\//i, /:batchGenerateContent$/i];
 function fileEndpoint(method, path) {
-  if (method === "POST" && /\/messages\/batches$/.test(path)) return { kind: "anthropic-batch", api: anthropic };
-  if (method === "POST" && /\/cachedContents$/.test(path)) return { kind: "gemini", api: gemini };
+  if (method === "POST" && /\/messages\/batches$/i.test(path)) return { kind: "anthropic-batch", api: anthropic };
+  if (method === "POST" && /\/messages\/count_tokens$/i.test(path)) return { kind: "anthropic", api: anthropic };
+  if (method === "POST" && /\/cachedContents$/i.test(path)) return { kind: "gemini", api: gemini };
   if ((method === "POST" || method === "PUT" || method === "PATCH") && UPLOAD_PATHS.some((re) => re.test(path))) return { kind: "upload", api: null };
   return null;
 }
@@ -635,8 +653,9 @@ export async function createProxy(opts = {}) {
     if (tracker && path === CHECKED_PATH) return checkedIds(req, res);
     const route = routes.find((r) => path === r.prefix || path.startsWith(`${r.prefix}/`));
     if (!route) throw new HttpError(404, "no model-proxy route at this path");
-    const rest = path.slice(route.prefix.length) || "/";
-    const api = apiFor(req.method, rest);
+    const scanOn = fileScanPolicy((await rt.ready()).policy).mode !== "off";
+    const rest = scanOn ? normalPath(path.slice(route.prefix.length) || "/") : path.slice(route.prefix.length) || "/";
+    const api = scanOn ? apiFor(req.method, matchPath(rest)) || apiFor(req.method, matchPath(rest).toLowerCase()) : apiFor(req.method, rest);
     const url = new URL(route.base + rest + query);
     const current = REQUEST.getStore();
     current.trace = tracer({ traceparent: req.headers.traceparent, tracestate: req.headers.tracestate, sessionKey: req.headers[SESSION_HEADER] });
@@ -709,8 +728,8 @@ export async function createProxy(opts = {}) {
     }
 
     // File-carrying endpoints the APIs above do not parse (fileEndpoint), with policy fileScan on.
-    if (!api) {
-      const ep = fileEndpoint(req.method, rest);
+    if (!api && scanOn) {
+      const ep = fileEndpoint(req.method, matchPath(rest));
       const s2 = ep ? await rt.ready() : null;
       const fsCfg = s2 ? fileScanPolicy(s2.policy) : null;
       if (ep && fsCfg.mode !== "off") {
@@ -721,6 +740,17 @@ export async function createProxy(opts = {}) {
           const ref = { body };
           if (await fileScanRequest(ep.kind, ep.api, req, res, ref, s2, fm, later, fsCfg)) return;
           body = ref.body;
+        }
+      } else if (!ep && body.length && (req.method === "POST" || req.method === "PUT" || req.method === "PATCH")) {
+        // Any other path this proxy does not parse: a body that is not plain JSON (multipart, binary, a content coding,
+        // unparseable) could carry a file nothing here reads. Refused in enforce mode or under a closed fail mode,
+        // alerted otherwise. A JSON body there is forwarded unscanned (README "Cloud file scanning").
+        const ct = String(req.headers["content-type"] || "").toLowerCase();
+        const coding = String(req.headers["content-encoding"] || "").trim().toLowerCase();
+        const v = /^application\/(?:[a-z0-9.!#$&^_-]+\+)?json\b/.test(ct) && (!coding || coding === "identity") ? parseLossless(body) : null;
+        if (!v || typeof v !== "object") {
+          unevaluated("file-scan-unparsed", "request", "input");
+          if (enforce || fm === "closed") return refuseFile(res, null, "a request body this proxy does not parse (multipart, binary or not JSON) is not scanned for files (policy fileScan), and your organization blocks what MoorAI cannot evaluate");
         }
       }
     }

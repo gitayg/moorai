@@ -785,7 +785,14 @@ alert are `cli/file-scan.mjs`; finding the parts is `model-proxy/file-parts.mjs`
 | A `file_data` / `image_url` value that is neither a `data:` URL nor a URL (raw base64, a non-string), base64 that is not strict, a part nested past 16 levels | unscannable: an error, so the fail mode decides (open: `onUnknown`) |
 | A body on a parsed path with a `Content-Encoding` other than identity, or that is not a JSON object (a BOM, protobuf) | refused in enforce mode or under a closed fail mode; otherwise forwarded with an `UNEVALUATED_BAD_INPUT` alert (`model-proxy:file-scan-body`) |
 | Upload endpoints: Anthropic and OpenAI `…/files`, OpenAI `…/uploads` and `…/uploads/{id}/parts`, Gemini `/upload/…` media uploads, Gemini `:batchGenerateContent` | not read; refused in enforce mode or under a closed fail mode, otherwise alerted (`model-proxy:file-scan-endpoint`) and forwarded. A file uploaded there and later used by id is a reference (above) |
-| Any other path the proxy does not parse (OpenAI Batch input files, vector-store and Assistants file attachments by id, realtime / audio endpoints) | not scanned |
+| Any other path the proxy does not parse, with a POST / PUT / PATCH body that is not plain JSON (multipart, binary, a content coding, unparseable) | refused in enforce mode or under a closed fail mode, otherwise alerted (`model-proxy:file-scan-unparsed`) and forwarded |
+| Any other path the proxy does not parse, with a JSON body (OpenAI Batch input by file id, vector-store and Assistants file attachments by id) | not scanned |
+
+**Paths.** With `fileScan` on, the request path is normalised before it is matched and forwarded: percent-encoded
+unreserved characters are decoded, dot segments resolved, duplicate slashes collapsed and a trailing slash removed;
+the normalised path is what goes upstream. Matching also reads `%2F` / `%5C` as `/` and ignores case, so
+`/v1//files`, `/v1/files/`, `/V1/Files` and `/v1%2Ffiles` are all the Files API, and `/v1//messages/` is parsed and
+scanned as `/v1/messages`. Anthropic `…/messages/count_tokens` is scanned like a Messages request.
 
 An Anthropic `document` whose source is text is scanned as text, as before. At most 32 parts per request are
 scanned; the rest count as not scanned (the fail mode decides). The request body is the same whether `stream` is set or not, so the

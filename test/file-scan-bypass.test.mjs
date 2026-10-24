@@ -210,3 +210,59 @@ async function byReference(send, con) {
     for (const a of con.alerts) assert.ok(!a.includes("example.com"), "the reference itself never leaves");
   } finally { await allow.close(); }
 }
+
+// ---- path normalisation and the non-JSON catch-all ----
+test("upload-endpoint variants (//, trailing /, case, %2F, %-encoded letters, dot segments) are refused when scanning is on, even with a JSON body", async () => {
+  const variants = ["/anthropic/v1//files", "/anthropic/v1/files/", "/anthropic/V1/Files", "/anthropic/v1%2Ffiles", "/anthropic/v1/%66iles", "/anthropic/v1/x/../files", "/openai//uploads/"];
+  const e = await proxy("enforce", HASH);
+  try {
+    for (const p of variants) {
+      fp.on((r, res) => sendJson(res, { id: "file_1" }));
+      const n = fp.requests.length;
+      const r = await request(e.url, p, { body: { purpose: "user_data" } });
+      assert.equal(r.status, 403, `${p}: ${r.raw}`);
+      assert.equal(fp.requests.length, n, p);
+    }
+  } finally { await e.close(); }
+});
+
+test("with scanning on, a parsed path with // or a trailing slash is still parsed and scanned, and forwarded normalised", async () => {
+  const px = await proxy("enforce", HASH);
+  try {
+    ok();
+    const n = fp.requests.length;
+    const bad = await request(px.url, "/anthropic/v1//messages/", { body: msg(b64(BAD)) });
+    assert.equal(bad.status, 403, String(bad.raw));
+    assert.match(bad.raw.toString(), /malicious file/);
+    assert.equal(fp.requests.length, n);
+    ok();
+    assert.equal((await request(px.url, "/anthropic/v1//messages/", { body: msg(b64(GOOD)) })).status, 200);
+    assert.equal(fp.requests[n].url, "/v1/messages", "the normalised path went upstream");
+  } finally { await px.close(); }
+});
+
+test("with scanning on, a multipart or binary POST to a path the proxy does not parse is refused in enforce mode, alerted in report mode; JSON there is forwarded", async () => {
+  const con = await startConsole();
+  try {
+    const multipart = { body: "--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.bin\"\r\n\r\nxyz\r\n--b--\r\n", headers: { "content-type": "multipart/form-data; boundary=b" } };
+    const e = await proxy("enforce", HASH);
+    try {
+      fp.on((r, res) => sendJson(res, { ok: true }));
+      const n = fp.requests.length;
+      const r = await request(e.url, "/openai/some/unknown/endpoint", multipart);
+      assert.equal(r.status, 403, String(r.raw));
+      assert.match(r.raw.toString(), /not scanned/);
+      assert.equal((await request(e.url, "/openai/some/unknown/endpoint", { body: "\u0000\u0001binary", headers: { "content-type": "application/octet-stream" } })).status, 403);
+      assert.equal(fp.requests.length, n);
+      assert.equal((await request(e.url, "/openai/some/unknown/endpoint", { body: { a: 1 } })).status, 200, "a JSON body on an unparsed path is forwarded");
+      assert.equal((await request(e.url, "/anthropic/v1/messages/batches/msgbatch_1/cancel", { body: "" , headers: { "content-type": "" } })).status, 200, "an empty POST has nothing to scan");
+    } finally { await e.close(); }
+    const rep = await proxy("report", HASH, { ...OPEN, console: { serverUrl: con.url, tenant: "t", installToken: "tok-bypass-4" } });
+    try {
+      assert.equal((await request(rep.url, "/openai/some/unknown/endpoint", multipart)).status, 200);
+      assert.ok(await waitFor(() => con.parsed().some((a) => /file-scan-unparsed/.test(a.tool))));
+    } finally { await rep.close(); }
+    const off = await proxy("enforce", undefined);
+    try { assert.equal((await request(off.url, "/openai/some/unknown/endpoint", multipart)).status, 200, "scanning off changes nothing"); } finally { await off.close(); }
+  } finally { await con.close(); }
+});
