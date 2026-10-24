@@ -3,7 +3,7 @@
 // WHY. A keyword or semantic rule is written for the text a reader sees. Three hiding techniques from
 // malicious agent skills (VirusTotal, October 2026: 35,878 skills analysed, 6,637 malicious) put bytes
 // between the reader and the rule without changing what the model reads:
-//   * a zero-width character inside a phrase: "API​ keys" reads as "API keys" and matches no rule
+//   * a zero-width character inside a phrase: "API\u200B keys" reads as "API keys" and matches no rule
 //     written for "API keys";
 //   * Unicode tag characters (U+E0020-E007E): an invisible ASCII copy of a sentence the model decodes;
 //   * a long run of blank lines that pushes the payload out of a reviewer's view and out of reach of the
@@ -35,7 +35,7 @@ import { TAG_SMUGGLING, wellFormedSelectorSequence } from "./invisible-selectors
 export const VIEW_MAX_INPUT = 262_144; // the hook's readFileCapped cap; a larger text gets no view
 export const BLANK_RUN_COLLAPSE = 3;   // blank lines in a row before a run is collapsed (PEP 8's two stay)
 
-const ZW_RUN = /[​-‍⁠﻿]+/g;
+const ZW_RUN = /[\u200B-\u200D\u2060\uFEFF]+/g;
 const WORDISH = /[\p{L}\p{N}]/u;
 const TAG_G = new RegExp(TAG_SMUGGLING.source, "gu");
 const ANY_TAG = /[\u{E0000}-\u{E007F}]/u;
@@ -46,7 +46,7 @@ const NEEDS_VIEW = new RegExp(`[\\u200B-\\u200D\\u2060\\uFEFF]|[\\u{E0000}-\\u{E
 
 export function stripZeroWidth(text) {
   return text.replace(ZW_RUN, (m, off) => {
-    if (off === 0 && m === "﻿") return m;
+    if (off === 0 && m === "\uFEFF") return m;
     const prev = off > 0 ? text[off - 1] : "";
     const next = text[off + m.length] || "";
     return WORDISH.test(prev) || WORDISH.test(next) ? "" : m;

@@ -30,7 +30,7 @@ const cap = (s) => (typeof s === "string" ? (s.length > MAX ? s.slice(0, MAX) : 
 // any tracked text file of this repository, any JSON string leaf of the benign corpora and the Markdown in
 // node_modules is far below it; the padding in the write-up's samples runs to hundreds of lines.
 export const PAD_MIN = 60;
-const BLANK_LINE = /^[\s​-‍⁠﻿]*$/;
+const BLANK_LINE = /^[\s\u200B-\u200D\u2060\uFEFF]*$/;
 export function paddedHiddenContent(text, min = PAD_MIN) {
   const t = cap(text);
   let run = 0, start = 0;
@@ -192,7 +192,7 @@ export function targetsReviewers(text) {
 const MEMORY_FILE = String.raw`(?:(?:MEMORY|SOUL|AGENTS?|CLAUDE(?:\.local)?|GEMINI|IDENTITY|USER|BOOT|HEARTBEAT)\.md|\.cursorrules|\.windsurfrules|\.clinerules|copilot-instructions\.md|global_rules\.md)\b`;
 const OWN_TEXT = String.raw`(?:the\s+following(?:\s+(?:lines?|text|block|rules?|instructions?|directives?|snippet|section|entry|note))?|the\s+(?:block|text|lines?|snippet|section|rules?|instructions?|directives?|entry|note)\s+(?:below|above)|(?:this|these)(?:\s+(?:block|text|lines?|snippet|section|rules?|instructions?|directives?|skill(?:['’]s\s+\w+)?|note|file|content|configuration|entry|prompt|persona))?)`;
 const PERSIST = [
-  new RegExp(String.raw`\b(?:append|add|write|save|insert|copy|paste|put|store|persist|place|inject|prepend|merge)\s+${OWN_TEXT}\s+(?:verbatim\s+|exactly\s+)?(?:to|into|in|at\s+the\s+(?:top|end|start|bottom)\s+of)\s+(?:the\s+|your\s+|a\s+)?[^\s,;]{0,80}?${MEMORY_FILE}`, "i"),
+  new RegExp(String.raw`\b(?:append|add|write|save|insert|copy|paste|put|store|persist|place|inject|prepend|merge)\s+${OWN_TEXT}\s+(?:verbatim\s+|exactly\s+)?(?:(?:to|at)\s+the\s+(?:top|end|start|bottom)\s+of|to|into|in)\s+(?:the\s+|your\s+|a\s+)?[^\s,;]{0,80}?${MEMORY_FILE}`, "i"),
   new RegExp(String.raw`\b(?:append|add|write|save|insert|copy|store|persist|commit)\s+${OWN_TEXT}\s+(?:to|into|in)\s+(?:your\s+)?(?:long[- ]term\s+|persistent\s+|permanent\s+)?memory\b`, "i"),
   new RegExp(String.raw`(?:>>|\btee\s{1,4}(?:-a|--append)\s{1,4})\s{0,4}["']?[^\s"'|;&<>]{0,120}?${MEMORY_FILE}`, "i"),
   new RegExp(String.raw`\b(?:Add-Content)\b[^\n;|]{0,200}?${MEMORY_FILE}`, "i")
