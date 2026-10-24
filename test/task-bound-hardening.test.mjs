@@ -11,7 +11,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -135,7 +135,7 @@ async function withHook(policy, fn) {
     const t = out.trim();
     return t ? JSON.parse(t).hookSpecificOutput?.permissionDecision || "allow" : "allow";
   };
-  const prompt = (session, text) => run({ hook_event_name: "UserPromptSubmit", session_id: session, prompt: text, source: "user" });
+  const prompt = (session, text, tp) => run({ hook_event_name: "UserPromptSubmit", session_id: session, prompt: text, source: "user", ...(tp ? { transcript_path: tp } : {}) });
   const mcp = (session, tool, input) => run({ hook_event_name: "PreToolUse", session_id: session, tool_name: tool, tool_input: input });
   const state = join(home, ".moorai", "task-terms.json");
   try { await fn({ prompt, mcp, alerts, state, home }); } finally { srv.close(); rmTree(home); }
@@ -193,12 +193,17 @@ test("hook: a deleted, edited or unreadable state fails closed for covered tools
 });
 
 test("hook: after a tamper, the next capture does not reopen the sessions the old state held; a fresh device is not 'tampered'", async () => {
-  await withHook(MCP_HARVEST, async ({ prompt, mcp, state }) => {
+  await withHook(MCP_HARVEST, async ({ prompt, mcp, state, home }) => {
     await prompt("s1", "harvest the orchard");
     rmSync(state);
-    await prompt("s3", "write a poem");
+    await prompt("s2", "write a poem"); // this capture records the tamper
+    await new Promise((r) => setTimeout(r, 20));
+    const tp = join(home, "s3.jsonl");
+    writeFileSync(tp, "{}\n"); // s3's transcript, created after the tamper: proven new
+    await prompt("s3", "write a poem", tp);
     assert.equal(await mcp("s1", "mcp__robot__open_gate", {}), "deny", "s1's record was lost: still closed");
-    assert.equal(await mcp("s3", "mcp__robot__open_gate", {}), "allow", "a session captured after the tamper is judged normally");
+    assert.equal(await mcp("s2", "mcp__robot__open_gate", {}), "deny", "captured after the tamper without proof of newness: held");
+    if (statSync(tp).birthtimeMs > 0) assert.equal(await mcp("s3", "mcp__robot__open_gate", {}), "allow", "a session proven new is judged normally");
   });
   await withHook(MCP_HARVEST, async ({ mcp, alerts }) => {
     assert.equal(await mcp("s9", "mcp__robot__open_gate", {}), "allow", "never captured on this device: no task, nothing tampered");

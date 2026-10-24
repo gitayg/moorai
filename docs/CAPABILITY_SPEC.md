@@ -836,7 +836,9 @@ is validated against.
      default (default `"deny"`), whatever `intentAlignment` says: class `outside-task-allowlist`, reason
      `tool-not-listed` or `argument-not-allowed`. Globs are matched in linear time. Argument keys
      (`walkKeys` over the listed keys as a tree): a listed dotted key is read literally and nested, each one
-     present must be allowed; a key equal to a listed key or segment only after folding is held
+     present must be allowed (a dotted key that runs below a listed leaf is cut off there, whatever the
+     listing order, and none of its later segments is attached higher up); a key equal to a listed key or
+     segment only after folding is held
      (`argument-key-collision`); with `unlistedArgs` `"deny"` (the default for every entry, an ask entry only
      asking) an argument the tool's `args` do not list, at the top level or under a listed dotted path, is held
      (`argument-not-listed`), and `"allow"` passes it; a tool listed as `true` / `{}` takes any arguments.
@@ -860,8 +862,15 @@ is validated against.
      another version or an HMAC mismatch is tampered: every allowlist entry judges the call as if its task
      matched, anything one would hold is denied (reason `state-tampered`), and each such call raises
      `Task-bound state tampered` (threat 0, stage `policy`, `FAIL_CLOSED`, `taskBoundState: {problem}`:
-     `missing` | `unverified` | `lost-record`). The tampered file is never re-signed; the next capture writes
-     a fresh signed state with `tamperedAt`, and for 24 h a session absent from it is tampered too.
+     `missing` | `unverified` | `carried-over`). The tampered file is never re-signed; the next capture writes
+     a fresh signed state with `tamperedAt` and `carried` (the keyed session ids the tampered file still
+     showed, if it parsed; HMAC-covered). Each session records its first capture time (`f`) and whether it
+     was proven new (`ok`). For 24 h after `tamperedAt` a session is judged normally only when proven new —
+     first captured in the fresh state after the tamper, not carried over, and its `transcript_path` file
+     created (birth time) after the tamper; any other session (carried over, not captured since, or captured
+     without that proof, which is then added to `carried`) has every allowlist entry applied as if selected,
+     as for a tampered file. Without file birth times (some Linux filesystems) no session is proven new
+     within the window.
    - *Alerts and verdicts.* #64 `Action outside the stated task`, reason code `INTENT_MISMATCH`, `intent:
      {class, mode | outcome, task?, reason?}`; never an argument, a value or the task. Verdicts gain `intent:
      {class, mode}` (`task` for an allowlist). The model proxy in `--mode report` only alerts. Storage: in
@@ -879,7 +888,8 @@ is validated against.
      the model sent, not a dispatcher's inner tool. The device
      state shares `intent-alignment.json`'s trust boundary: the agent runs as the same user, can read both
      keys, dictionary-attack the hashed words and re-sign an edited state; deleting `intent.key` together
-     with the state returns the device to "never captured"; more than 1024 prompted sessions in 24 h evict the
+     with the state returns the device to "never captured"; the proof of newness is a transcript's birth
+     time, which it can reset by recreating the transcript of a session the tampered state no longer showed; more than 1024 prompted sessions in 24 h evict the
      oldest matched-entry record (a privileged witness, `moorai-guardd`, is not installed). On the server
      surfaces an evicted or never-captured session has no recorded entry, so no keyword entry applies.
      Not observed in a live Claude Code, LangGraph or robot-planner session.

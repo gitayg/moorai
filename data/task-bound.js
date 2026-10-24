@@ -341,22 +341,27 @@ export function collectKey(input, key) {
   }
   return { values: values.filter((v) => v !== undefined), collision };
 }
-// The listed keys as a tree: a literal key at the top level, and each dotted key as nested segments.
+// The listed keys as a tree: a literal key at the top level, and each dotted key as nested segments. A listed
+// key is always a leaf (whatever the order): a dotted key that runs below a leaf is cut off there, and none of
+// its later segments is attached anywhere.
 const LEAF = Symbol("leaf");
 function keyTree(keys) {
   const root = new Map();
+  for (const k of keys) root.set(k, LEAF);
   for (const k of keys) {
-    root.set(k, LEAF);
     if (!k.includes(".")) continue;
-    let node = root;
     const segs = k.split(".");
-    segs.forEach((seg, i) => {
-      if (i === segs.length - 1) { if (!node.has(seg)) node.set(seg, LEAF); return; }
-      let next = node.get(seg);
-      if (next === LEAF) return;
-      if (!next) { next = new Map(); node.set(seg, next); }
-      node = next;
-    });
+    let node = root;
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      if (i === segs.length - 1) { node.set(seg, LEAF); break; }
+      const next = node.get(seg);
+      if (next === LEAF) break;
+      if (next) { node = next; continue; }
+      const made = new Map();
+      node.set(seg, made);
+      node = made;
+    }
   }
   return root;
 }

@@ -612,7 +612,10 @@ state that is missing (once a capture has happened on the device), unreadable or
 **tampered**: every allowlist entry is applied as if its task matched, anything one of them would hold is
 denied (`state-tampered`), and each such call raises a content-free `Task-bound state tampered` alert. The
 tampered file is never re-signed; the next capture starts a fresh signed state recording the tamper time,
-and for 24 h a session absent from it stays tampered. Misses alert as
+and carrying over the (keyed) session ids the tampered file still showed. For 24 h a session is judged
+normally only when it is proven new — its first capture came after the tamper, it is not carried over, and its
+transcript (`transcript_path`) was created after the tamper; any other session, including an old one that
+captures a new prompt, has every allowlist entry applied as if selected. Misses alert as
 `Action outside the stated task` (#64, `INTENT_MISMATCH`) with the class, the mode or outcome, the entry's
 name and a reason token (`tool-not-listed`, `argument-not-allowed`, `argument-key-collision`,
 `argument-not-listed`, `invalid-policy`), never an argument
@@ -631,7 +634,8 @@ not hold its built-in tools (`Bash`, `Write` …) there; the model proxy judges 
 dispatcher's inner tool. On the device the agent runs as the same user: it can read both keys,
 dictionary-attack the hashed words (the prompt is already in its transcript) and re-sign an edited state;
 deleting the intent key together with the state returns the device to "never captured", which no
-user-writable state can tell from a fresh install; more than 1024 prompted sessions in 24 h evict the oldest
+user-writable state can tell from a fresh install; the proof of newness is a transcript's creation time,
+which it can reset by recreating the transcript of a session the tampered state no longer showed; more than 1024 prompted sessions in 24 h evict the oldest
 matched-entry record. On the server surfaces a session the store evicted (or never captured) has no
 recorded entry, so no keyword entry applies to it.
 
