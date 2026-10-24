@@ -6,7 +6,7 @@
 //   node --test --import ./test/hermetic-env.mjs test/oversight-mcp.test.mjs
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { mcpWriteTool, mcpWriteCalls, oversightMcpSignals } from "../cli/oversight-mcp.mjs";
@@ -103,4 +103,35 @@ test("hook: an MCP write into CLAUDE.md with nothing configured is allowed and s
 test("hook: memoryFiles block denies an MCP write into CLAUDE.md", async () => {
   const { outs } = await run({ ...BASE, oversight: { v: 1, memoryFiles: "block" } }, [(sb) => mcp("mcp__filesystem__edit_file", { path: join(sb.proj, "CLAUDE.md"), edits: [{ oldText: "a", newText: "b" }] })]);
   assert.deepEqual(outs.map(decisionOf), ["deny"]);
+});
+
+// ---- review fixes: remote-looking arguments, scheme-shaped paths, unreadable move sources ----
+test("a remote-looking argument does not switch the check off: absolute, ~ and file:// paths are still judged", () => {
+  assert.deepEqual(sig("mcp__filesystem__write_file", { path: join(proj, "CLAUDE.md"), repo: "x", content: "x" }), ["memory-file"]);
+  assert.deepEqual(sig("mcp__filesystem__write_file", { path: `file://${join(proj, "CLAUDE.md")}`, owner: "o", content: "x" }), ["memory-file"]);
+  assert.deepEqual(sig("mcp__filesystem__write_file", { path: "~/.claude/CLAUDE.md", bucket: "b", content: "x" }), ["memory-file"]);
+  assert.deepEqual(sig("mcp__filesystem__write_file", { path: "CLAUDE.md", repo: "x", content: "x" }), [], "a relative path next to a remote location is ignored, as cli/mcp-file-args.mjs does");
+  assert.deepEqual(sig("mcp__github__create_or_update_file", { owner: "o", repo: "r", path: join(proj, "CLAUDE.md"), content: "x" }), [], "a named remote-repository tool writes no local file");
+});
+
+test("a scheme-shaped path is not skipped unless the scheme is a known remote one", () => {
+  for (const p of [`x-local:${join(proj, "CLAUDE.md")}`, "foo:CLAUDE.md"]) {
+    const s = sig("mcp__filesystem__write_file", { path: p, content: "x" });
+    assert.ok(s.length > 0, `${p}: ${JSON.stringify(s)}`);
+    assert.ok(s.includes("memory-file") || s.includes("analysis-incomplete"), `${p}: ${JSON.stringify(s)}`);
+  }
+  for (const p of ["https://x.example.com/CLAUDE.md", "s3://b/CLAUDE.md", "gs://b/CLAUDE.md", "ssh://h/CLAUDE.md", "git://h/r/CLAUDE.md", "http://x.example.com/CLAUDE.md"]) assert.deepEqual(sig("mcp__filesystem__write_file", { path: p, content: "x" }), [], p);
+});
+
+test("move_file: a source too large or unreadable onto runtime code is analysis-incomplete, not a new file", () => {
+  writeFileSync(join(proj, "big.py"), "x = 1\n".repeat(200_000));
+  assert.deepEqual(sig("mcp__filesystem__move_file", { source: join(proj, "big.py"), destination: join(proj, "eval_pipeline/notify.py") }), ["analysis-incomplete"]);
+  assert.deepEqual(sig("mcp__filesystem__move_file", { source: join(proj, "big.py"), destination: join(proj, "notes2.txt") }), [], "not code or a test: nothing to judge");
+  if (process.getuid && process.getuid() !== 0) {
+    const locked = join(proj, "locked.py");
+    writeFileSync(locked, "x = 1\n");
+    chmodSync(locked, 0o000);
+    try { assert.deepEqual(sig("mcp__filesystem__move_file", { source: locked, destination: join(proj, "eval_pipeline/notify.py") }), ["analysis-incomplete"]); }
+    finally { chmodSync(locked, 0o644); }
+  }
 });

@@ -4294,12 +4294,18 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   `git restore <path>` (`-C dir` applied) and `patch <file>` / `patch -o <file>`. MCP filesystem write tools
   (`cli/oversight-mcp.mjs`, wired in the hook's `mcp__*` branch): a tool named by a write verb (write, edit, move,
   rename, create, append, replace, insert, patch, save, overwrite, update) and a file noun (file, text_file,
-  directory, dir, folder, block, text, content, path, document), or a bare `write` / `edit`, unless its arguments
-  name a remote repository or bucket (`namesRemoteLocation`). Its path arguments map onto the Write / Edit check:
+  directory, dir, folder, block, text, content, path, document), or a bare `write` / `edit`, except a named
+  remote-repository tool (`REMOTE_REPO_TOOL`: a github / gitlab / gitea / bitbucket server's
+  `create_or_update_file`, `create_file`, `update_file`, `push_files`, `delete_file`). Arguments naming a remote
+  repository or bucket (`namesRemoteLocation`) only make relative paths ambiguous (skipped, the
+  `cli/mcp-file-args.mjs` rule); absolute, `~` and `file://` paths are always judged. A path with a known remote
+  scheme (`http`, `https`, `s3`, `gs`, `git`, `ssh`) is not local; any other `scheme:` path is judged as written
+  and without the scheme and raises `analysis-incomplete`. Its path arguments map onto the Write / Edit check:
   `content` / `text` → Write (append mode: the file's text plus it), `edits: [{ oldText, newText }]` → MultiEdit,
   `old_string` / `new_string` → Edit, a move's destination → a Write of the source's text and its source → a
-  path-only check, anything else (`create_directory`) → a path-only check; the alert is reported at stage
-  `output`. `decideOversight`
+  path-only check (a source that exists but is over 1 MiB or unreadable, onto runtime code or a test, is
+  `analysis-incomplete`, as an oversized Write is), anything else (`create_directory`) → a path-only check; the
+  alert is reported at stage `output`. `decideOversight`
   resolves it: with nothing configured for #84 (no `threatPolicy["84"]`; #84 has no data tier, so no `tierPolicy`
   reaches it) and no `memoryFiles`, `notify` (an alert, no prompt); with #84 configured, the stricter of
   `memoryFiles` (`notify`, `ask` = justify, `block`) and #84's action, `killOnCritical` untouched; with

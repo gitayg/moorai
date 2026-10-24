@@ -1608,8 +1608,11 @@ command), `tee`, `sed -i` / `perl -pi`, `yq -i`, `Set-Content`, a copy or instal
 `--output` / `-O`, `wget -O` / `-o`, or the URL's own name), `dd of=`, `git checkout -- <path>`, `git restore
 <path>` or `patch <path>`. The same paths are judged for an MCP filesystem server's write, edit, move or create
 tool (`write_file`, `edit_file`, `move_file`, `create_directory`, `edit_block`, `create_text_file` …), exactly as
-for a Write / Edit; a call that names a remote repository or bucket (`owner`, `repo`, `bucket`) writes no local
-file and is not judged.
+for a Write / Edit. A named remote-repository tool (github / gitlab / gitea / bitbucket `create_or_update_file`,
+`push_files` …) writes no local file and is not judged; in any other call an `owner`, `repo` or `bucket` argument
+only makes a relative path ambiguous (it is skipped), while an absolute, `~` or `file://` path is always judged.
+A path with an `http`, `https`, `s3`, `gs`, `git` or `ssh` scheme is not local; any other `scheme:` path is
+judged with and without the scheme and held as an incomplete analysis.
 
 **The agent's own instruction and memory files are watched with no policy at all**: `CLAUDE.md`,
 `CLAUDE.local.md`, `.claude/rules/`, `AGENTS.md`, `GEMINI.md`, `.cursorrules` and `.cursor/rules/`, the Windsurf,
