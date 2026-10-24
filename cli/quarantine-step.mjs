@@ -18,7 +18,7 @@ export const QUARANTINE_MAX_FILES = 3;
 const name = (p) => String(basename(String(p || "file"))).replace(/[\u0000-\u001f\u007f​-‏‪-‮⁠-⁤﻿"`<>]/g, "").slice(0, 120);
 
 export function quarantineAlert(r, { surface, mode, origin, outcome = r.outcome }) {
-  const risk = outcome === "withheld" || (outcome === "no-reader" && mode === "summary") ? "Blocked" : "Medium";
+  const risk = outcome === "withheld" || ((outcome === "no-reader" || outcome === "untrusted-reader") && mode === "summary") ? "Blocked" : outcome === "untrusted-reader" ? "High" : "Medium";
   return {
     threatId: 3, category: QUARANTINE_CATEGORY, riskLevel: risk, stage: "file", reasonCode: "QUARANTINE_READ",
     contentHash: `quarantine:${surface}:${outcome}`, outcome, surface, fileQuarantine: mode,
@@ -49,9 +49,10 @@ export async function quarantineStep({ cfg, surface, paths, originOf, engine, re
   for (const x of outside) done.push({ ...x, r: await readerFn(x.path, { cfg, engine, origin: x.origin, deadline }) });
   const framed = done.filter((d) => d.r.framed).map((d) => d.r.framed);
   const withheld = done.filter((d) => d.r.outcome === "withheld");
-  const noReader = done.filter((d) => d.r.outcome === "no-reader");
+  const noReader = done.filter((d) => d.r.outcome === "no-reader" || d.r.outcome === "untrusted-reader");
   const asked = mode === "ask" && !withheld.length;
-  const alerts = done.map((d) => quarantineAlert(d.r, { surface, mode, origin: d.origin, outcome: asked ? "asked" : d.r.outcome }));
+  // An untrusted reader is reported as such in either mode.
+  const alerts = done.map((d) => quarantineAlert(d.r, { surface, mode, origin: d.origin, outcome: d.r.outcome === "untrusted-reader" ? "untrusted-reader" : asked ? "asked" : d.r.outcome }));
   if (withheld.length) {
     return { decision: "deny", reason: `quarantined read of ${withheld.map((d) => name(d.path)).join(", ")} — outside-origin file; summary withheld: it contained instructions`, rewrite: null, context: null, alerts };
   }

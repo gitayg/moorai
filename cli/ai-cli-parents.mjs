@@ -88,6 +88,8 @@ export function imageBase(p) {
   return b.replace(/[^\x20-\x7e]/g, "?").slice(0, 64);
 }
 const key = (image) => imageBase(image).toLowerCase().replace(/\.exe$/, "");
+// A hook shell by image (cli/quarantine-owner.mjs walks past them to the agent process the same way).
+export const isHookShell = (image) => SHELLS.has(key(image));
 const winOr = (p, platform) => (looksWindows(p) ? "win32" : platform);
 
 // Temp directories, by segments (cli/path-within.mjs): /tmp, /var/tmp, /dev/shm, the macOS per-user TMPDIR
