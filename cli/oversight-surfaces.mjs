@@ -1,6 +1,6 @@
 // Policy-declared protected oversight surfaces for the weakening-oversight threat (#84).
 //
-// The signed policy may carry `oversight` ({ v: 1, protectedPaths, protectedKeys, stopDisclosure }):
+// The signed policy may carry `oversight` ({ v: 1, protectedPaths, protectedKeys, stopDisclosure, memoryFiles }):
 //   protectedPaths  up to 64 globs (`**` any depth, `*` within one path segment, `?` one character), matched
 //                   against the path relative to the session's working directory; a relative glob also matches
 //                   at any directory boundary of an absolute path ("**/monitor_*.py", "ops/alerting/**",
@@ -9,6 +9,19 @@
 //                   matched as a whole word, exactly as written (a dotted key is not resolved through YAML nesting).
 //   stopDisclosure  "alert" (default) or "block": what Stop / SubagentStop does when an allowed oversight change
 //                   is not disclosed in the agent's final message (cli/oversight-disclosure.mjs).
+//   memoryFiles     "notify" (default), "ask", "block" or "off". The agent's PERSISTENT-INSTRUCTION files —
+//                   CLAUDE.md, CLAUDE.local.md, AGENTS.md, GEMINI.md, .cursorrules and the other rules files,
+//                   Claude Code's auto memory (.claude/projects/<p>/memory/), OpenClaw's SOUL.md / MEMORY.md /
+//                   memory/ (data/skill-surface.js PERSISTENT_INSTRUCTION_KINDS) — are watched BUILT IN, with no
+//                   policy at all: a skill that persists itself into the agent's memory steers every later
+//                   session. A write raises the signal "memory-file" (not "protected-surface"), and
+//                   cli/hook-core.mjs decideOversight resolves it: with NOTHING configured for #84 and no
+//                   memoryFiles, notify (an alert, no prompt), because an agent saves memory and edits CLAUDE.md
+//                   on request routinely; with #84 configured (threatPolicy), the stricter of memoryFiles and
+//                   #84's action, so the default never weakens an admin's policy. An invalid memoryFiles, or
+//                   `protectMemoryFiles: true`, takes #84's action; `protectMemoryFiles: false` is "off". A policy
+//                   that disables #84 still disables it.
+//                   A path the policy ALSO declares in protectedPaths stays "protected-surface" (ask).
 // Any Write / Edit / MultiEdit / NotebookEdit of a protected path, a write that changes a line naming a
 // protected key, and a shell command that deletes, moves or writes a protected path or writes a protected key,
 // is judged under #84 with the signal "protected-surface". An older agent ignores the key.
@@ -23,12 +36,14 @@
 // warning sink and the realpath lookups of protectedPathHit({ real: true }).
 import { realpathSync } from "node:fs";
 import { resolve, dirname, basename, join } from "node:path";
+import { persistentInstructionKind } from "../data/skill-surface.js";
 
 
 const MAX_ENTRIES = 64, MAX_LEN = 256;
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_.\-]{0,127}$/;
 const CONTROL_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
-const KNOWN = new Set(["v", "protectedPaths", "protectedKeys", "stopDisclosure"]);
+const KNOWN = new Set(["v", "protectedPaths", "protectedKeys", "stopDisclosure", "memoryFiles", "protectMemoryFiles"]);
+const MEMORY_ACTIONS = new Set(["notify", "ask", "block"]);
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const stderrWarn = (m) => { try { process.stderr.write(`moorai: ${m}\n`); } catch { /* best effort */ } };
 const esc = (s) => s.replace(/[.+^${}()|[\]\\]/g, "\\$&");
@@ -50,7 +65,7 @@ export function globRe(glob) {
 }
 
 export function oversightPolicy(policy, warn = stderrWarn) {
-  const none = { paths: [], keys: [], stopDisclosure: "alert" };
+  const none = { paths: [], keys: [], stopDisclosure: "alert", memory: "default" };
   const o = isObj(policy) ? policy.oversight : undefined;
   if (o === undefined || o === null) return none;
   if (!isObj(o) || o.v !== 1) { warn("oversight ignored: not { v: 1, ... }"); return none; }
@@ -75,7 +90,19 @@ export function oversightPolicy(policy, warn = stderrWarn) {
     if (o.stopDisclosure === "alert" || o.stopDisclosure === "block") stopDisclosure = o.stopDisclosure;
     else warn("oversight.stopDisclosure ignored: alert or block");
   }
-  return { paths, keys: [...new Set(keys)], stopDisclosure };
+  // memory: "default" (nothing set), "notify" | "ask" | "block" (set), "inherit" (#84's action), or false (off).
+  let memory = "default";
+  if (o.memoryFiles !== undefined) {
+    if (MEMORY_ACTIONS.has(o.memoryFiles)) memory = o.memoryFiles;
+    else if (o.memoryFiles === "off") memory = false;
+    else { memory = "inherit"; warn("oversight.memoryFiles: not notify, ask, block or off; #84's action applies"); }
+  }
+  if (o.protectMemoryFiles !== undefined) {
+    if (o.protectMemoryFiles === false) memory = false;
+    else if (o.protectMemoryFiles === true) { if (memory === "default") memory = "inherit"; }
+    else warn("oversight.protectMemoryFiles ignored: true or false");
+  }
+  return { paths, keys: [...new Set(keys)], stopDisclosure, memory };
 }
 
 const slashes = (s) => String(s || "").replace(/\\/g, "/");
@@ -114,6 +141,11 @@ export function protectedPathHit(path, surfaces, { cwd = "", real: useReal = fal
   if (!surfaces || !surfaces.paths || !surfaces.paths.length || typeof path !== "string" || !path || /[\r\n\0]/.test(path)) return false;
   const forms = pathForms(path, { cwd, real: useReal });
   return surfaces.paths.some((p) => forms.some((f) => p.re.test(f)));
+}
+// One of the agent's persistent-instruction files (oversightPolicy's built-in set), unless the policy turned it off.
+export function memoryPathHit(path, surfaces, { cwd = "", real: useReal = false } = {}) {
+  if (!surfaces || !surfaces.memory || typeof path !== "string" || !path || /[\r\n\0]/.test(path)) return false;
+  return pathForms(path, { cwd, real: useReal }).some((f) => persistentInstructionKind(f) !== null);
 }
 
 const keyRe = (k) => new RegExp(`(?<![\\w\\-])${esc(k)}(?![\\w\\-])`);

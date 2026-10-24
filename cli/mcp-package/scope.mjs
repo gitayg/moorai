@@ -77,7 +77,7 @@ function readText(full) {
 
 function toFindings(raw, text, relativePath, surfaceKind, policy, cap, repoRoot = false) {
   if (!raw.length) return [];
-  const intentLabels = skillIntents(text, raw);
+  const intentLabels = skillIntents(text, raw, { readPath: relativePath });
   // A CODE file that is a test, an example or the repository's own CI/dev tooling is not what gets run
   // when the server is installed — the same rule heuristics.mjs applies to its own block-tier evidence.
   // Instruction SURFACES are deliberately exempt: an agent loads a SKILL.md wherever it sits.
@@ -123,9 +123,10 @@ const ingestView = (engine) => view(engine, "ingest", (d) => (d.stages || [d.sta
 // payloads in code are the obfuscation heuristics' job).
 const shellView = (engine) => view(engine, "shell", (d) => d.threatId === REVERSE_SHELL, { raw: true });
 
-function engineFindings(engine, policy, text, cls, name) {
+function engineFindings(engine, policy, text, cls, name, rel) {
+  const ctx = { readPath: rel };
   if (cls === "surface") {
-    const a = decideText(engine, policy, text, "file").findings;
+    const a = decideText(engine, policy, text, "file", { ctx }).findings;
     const js = jsonStrings(text);
     const b = js ? decideText(engine, policy, js, "tool").findings : [];
     const raw = [...a, ...b.filter((f) => !a.some((x) => x.threatId === f.threatId))]
@@ -133,7 +134,7 @@ function engineFindings(engine, policy, text, cls, name) {
     return { raw, cap: "skill" };
   }
   if (cls === "doc") {
-    const raw = decideText(ingestView(engine), policy, text, "file").findings.filter((f) => INJECTION_OWASP.has(engine.threat(f.threatId)?.owasp));
+    const raw = decideText(ingestView(engine), policy, text, "file", { ctx }).findings.filter((f) => INJECTION_OWASP.has(engine.threat(f.threatId)?.owasp));
     return { raw, cap: "notify" };
   }
   if (cls === "data") {
@@ -160,7 +161,7 @@ export function scanPackageFiles(root, files, { engine, policy = {}, skill = fal
     if (r.skip) { filesSkipped++; continue; }
     filesScanned++;
     if (!r.text.trim()) continue;
-    const { raw, cap } = engineFindings(engine, policy, r.text, cls, basename(rel));
+    const { raw, cap } = engineFindings(engine, policy, r.text, cls, basename(rel), rel);
     for (const f of toFindings(raw, r.text, rel, surfaceKind, policy, cap, repoRoot)) rows.push({ cls, f });
   }
   rows.sort((a, b) => CLASS_ORDER[a.cls] - CLASS_ORDER[b.cls]);

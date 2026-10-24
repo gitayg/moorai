@@ -262,7 +262,7 @@ const CONFUSABLES = {
   "\u00a0": " ", "\u2007": " ", "\u202f": " ", "\u200b": "", "\u200c": "", "\u200d": "", "\ufeff": ""
 };
 
-function foldConfusables(text) {
+export function foldConfusables(text) {
   if (!/[^\u0000-\u007f]/.test(text)) return null; // pure ASCII — nothing to fold (cheap gate)
   let s = text;
   try { s = s.normalize("NFKC"); } catch { /* fail-open: fold the raw string */ }

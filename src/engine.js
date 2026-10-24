@@ -1,6 +1,7 @@
 import { safeRegex } from "./safe-regex.js";
 import { globalMatches, replaceWithRestart } from "./regex-restart.js";
 import { normalizeVariants } from "../data/normalize.js";
+import { invisibleViews } from "../data/text-views.js";
 import { aggregateRisk, resolveScoring, scoreLabel } from "../data/risk-score.js";
 
 const LEVEL_RANK = { Critical: 4, High: 3, Medium: 2, Low: 1 };
@@ -125,6 +126,12 @@ export class DetectionEngine {
       if (!prev || finding.mode === "warn") byThreat.set(threat.id, finding);
     }
 
+    // Invisible-character views (data/text-views.js): the same rules over the text with zero-width
+    // characters and tag characters undone and long blank runs collapsed. Additive like the decode pass
+    // below, and fail-open. Runs only when the text holds such a character or run, so ordinary text costs
+    // nothing extra.
+    try { this._scanViews(text, want, byThreat, ctx); } catch { /* fail-open: keep the raw result */ }
+
     // Normalization / decode pre-pass — catch instructions hidden behind an encoding, a reversal, or
     // layers of both. Purely ADDITIVE: it only adds findings for threats the raw scan didn't already
     // flag, and is wrapped fail-open so a normalization error can never change the raw decision.
@@ -141,6 +148,25 @@ export class DetectionEngine {
         (LEVEL_RANK[b.threat.riskLevel] - LEVEL_RANK[a.threat.riskLevel]) ||
         (b.threat.riskScore - a.threat.riskScore)
     );
+  }
+
+  // Every in-stage rule over each invisible-character view, for a threat the raw scan did not already
+  // raise. Excluded: the invisible-character detectors (#50), which must judge the original bytes (the
+  // view has the characters they look for removed), and a detector marked `rawOnly` (one that reads the
+  // layout the view collapses, like the blank-line padding signal).
+  _scanViews(text, want, byThreat, ctx) {
+    const views = invisibleViews(text);
+    if (!views.length) return;
+    for (const v of views) {
+      for (const d of this.detectors) {
+        if (d.threatId === 50 || d.rawOnly || !this._inStage(d, want)) continue;
+        const threat = this.threat(d.threatId);
+        if (!threat || byThreat.has(threat.id)) continue;
+        const match = this._matchDetector(v, d, ctx);
+        if (!match) continue;
+        byThreat.set(threat.id, { detectorId: d.detectorId, mode: d.mode || "warn", hint: d.hint, match: this._clip(match), threat, obfuscated: "invisible" });
+      }
+    }
   }
 
   // Re-run the instruction-family detectors over bounded decoded/normalized variants of the input, and

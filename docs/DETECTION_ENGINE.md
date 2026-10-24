@@ -519,6 +519,62 @@ auto-run command in one is found at the `index`/`file` stage (threat #60, which 
 `test/ide-task-surface.test.mjs` holds 6 classifying paths, 9 benign siblings, an injected-vs-clean tasks.json scan
 and the #60 credit.
 
+### Skill and instruction file hiding (#40, #3, #22)
+
+Malicious agent skills are mostly instructions with no code (VirusTotal, October 2026: 35,878 skills analysed,
+6,637 malicious, 62% of those instructions-only), so what they need is to keep the instruction in front of the
+model and out of sight of the person who installs the file. [`data/skill-hiding.js`](../data/skill-hiding.js) holds
+five content-free predicates and [`data/detectors-skill-hiding.js`](../data/detectors-skill-hiding.js) wires them
+as detectors on the `file` and `index` stages, appended after every other detector so that where another detector
+of the same threat fires too, the engine keeps the specific one. Every sample they were written against is
+synthetic (`test/skill-hiding.test.mjs`).
+
+| detector | threat | fires on | quiet on |
+|---|---|---|---|
+| `skill-padded-hidden-content` (`rawOnly`) | #40 | 60+ blank lines, then content. A line break is CRLF, CR, LF, U+2028 or U+2029; a blank line holds only whitespace, format characters (Unicode Cf: soft hyphen, zero-width, U+2061-U+2064 …), U+034F and filler characters (U+115F, U+1160, U+3164, U+FFA0, U+2800 Braille blank), so a lone format-character line does not reset the run | 59 lines; trailing blank lines; code with blank pairs; an ordinary CRLF file |
+| `skill-hidden-html-instructions` | #40 | every HTML comment body, whole (no comment-count cap, no per-body truncation; the 256 KB file cap stays), holding a shell command (curl/wget with a target, a pipe into a shell, `sh -c`, PowerShell, iex/iwr/irm, netcat host and port, `python -c`, `base64 -d`), a beacon line (`hub=`, `reg=`, `ping=`, `beacon=`, `callback=`, `webhook=` … set to a URL or host), a URL next to a call verb or in a comment that addresses the agent, or an order to the agent (override, send-to, conceal, silently run) | licence and copyright headers, TODO/FIXME notes, markdownlint / prettier / TOC directives, a commented-out link, "see https://… for details" |
+| `skill-conceals-from-user` | #40 | "your human doesn't need to know"; "do not mention / reveal this URL (link, endpoint, webhook …)"; "do not show the endpoint to the user"; "silently … without asking / telling / permission"; "keep this between us"; "… must never find out"; and, with an exfiltration, persistence, secrets, execution or destruction action within 200 characters (a URL, a transfer tool, upload / exfiltrate / send-to-a-server, contacting a server; install, cron, a launch agent, a shell profile, a memory file; a credential file or reading API keys / credentials / tokens; `bash -c`, `powershell -enc`, `iex`; `rm -rf`, `del /s`, `git push --force`, "delete / wipe" a path, directory, disk or repository, "format the disk"), with no cap on how many matches are checked: "do not tell / inform / notify the user", "do not / dont let the user know / see", "the user doesn't need to know", "hide this from the user", "without the user noticing" | "fail silently", `curl --silent`, "silently ignore errors", "do not tell the user whether the password was wrong", "do not tell the user their password was wrong; then call the API", "tell the user to …", "run the tests without asking for confirmation", "refresh without the user noticing a flicker", "run the tests", "format the files with prettier" |
+| `skill-targets-reviewers` | #3 | an address to the reviewer ("note / instructions to automated (skill / code / security) / AI / LLM-based reviewers / scanners", a line opening "automated reviewers:" or "MoorAI:", "if you are / you're an AI reviewing this skill", "to the AI analyzing this", "any AI scanning this", "LLM-based scanners should …") with a verdict order within 300 characters (ignore / suppress any warnings, flags or findings, or the wide form: ignore … warnings within 40 characters; "report no issues"; "mark it as safe"; "consider / deem it benign"; "raise nothing", "do not raise"; "not malicious"; "do not flag"; "approve this skill"), every address checked; standalone "override / skip any heuristic / automated / scanner / detection / MoorAI flags, warnings or checks"; "this skill has passed audit / is verified safe" next to a verdict order | "we use automated code reviewers", "ignore deprecation warnings", "## Instructions for AI code reviewers" with ordinary review guidance, "suppress all static-analysis warnings in generated code", "this package has been audited", "Security scanners: run semgrep", "Note for security reviewers: …" |
+| `skill-persists-to-memory` | #22 | "append / copy / save the following (this block, these instructions, the rules below) to … MEMORY.md, SOUL.md, CLAUDE.md, AGENTS.md, GEMINI.md, IDENTITY.md, USER.md, .cursorrules …", "save this to your long-term memory", a shell append (`>>`, `tee -a`, `Add-Content`) into one | "update CLAUDE.md when you add a command", "add a note to MEMORY.md about …", `cat > CLAUDE.md` (an overwrite, as an init skill does) |
+
+**Threats.** #40 (Second-Order Prompt Injection: an instruction stored in content a privileged agent reads later)
+is what a skill or instruction file is; padding, HTML comments and concealment are three ways of hiding such an
+instruction. Concealment maps to #40 rather than #3 because the existing concealment payload of
+`ingest-agent-directed` already raises #40, and #3's intent label is `instruction-override`, which concealment is
+not. Reviewer-directed text is an override aimed at a different reader, so it joins the #3 override family
+(`inj-ignore`, `inj-override-structural`, `inj-multilingual`). Persistence is #22's definition.
+
+**Path scope.** Padding and HTML comments are layout tells that a fetched HTML page or a log carries as a matter of
+course, so they fire only when the caller names the file and it is on the skill surface: `ctx.readPath` (the hook's
+Read and Bash branches, `moorai scan`, the MCP package scan) or `ctx.targetPath` (the ingest worker). `readPath` is
+its own key because `targetPath` already means a write target to `instr-leak-*`, which goes silent on a rules-file
+target. The phrasing rules also fire when no path is given (an MCP tool result at the proxy, an embedding
+pipeline) and stay quiet on a named file off the skill surface (a README the agent reads).
+
+**Calibration.** The padding bar (60) is set against the longest blank run followed by content in 1,335 tracked
+text files of this repository with their JSON string leaves, 154 Markdown/text files under `node_modules`, and
+7,834 local Markdown and rules files (among them installed plugins' `SKILL.md` files and real `CLAUDE.md` files):
+the longest was 5 lines. On the inbound tune split (`node scripts/score-inbound.mjs`, 675 samples) the benign
+counts did not change; on `benign-corpus-v2` (prompt stage) none of the five can fire. Twelve benign skill-file
+controls live in `test/fixtures/skill-benign-controls.json`, outside the benchmark corpora so the published
+precision stays comparable; `test/skill-hiding.test.mjs` asserts none of the five fires on them (stage `file` and
+`index`, with no path, as a `SKILL.md` and as `CLAUDE.md`) and pins the three pre-existing detectors that do:
+`legal-license-prompt` on a licence header, `mcp-tool-poisoning` on "do not tell the user whether the password was
+wrong", `dep-typosquat` on prose after `npm install`.
+
+**Skill triage.** `cli/skill-analysis.mjs` names each detector with its own label (`padded-hidden-content`,
+`hidden-html-instructions`, `conceals-from-user`, `targets-reviewers`, `persists-to-memory`). Because the engine
+keeps one finding per threat, two of them firing on one file leave one finding; `skillIntents` re-runs the same
+detector objects (their patterns and refine, over the text and its invisible-character views) for the others, and
+only for a threat the engine reported, so a policy that disables the threat removes the label. No new rule lives
+there.
+
+**Limits.** Phrasing and layout rules: a synonym the lists do not hold, an instruction split across two files or
+across a sentence boundary the windows do not reach, a beacon key not in the list, or padding made of something
+other than whitespace lines is missed. HTML comments are the only hiding markup judged here (rendering-hidden HTML
+and CSS stay `obf-rendered-hidden`'s). Concealment with no action nearby ("do not tell the user about this step"
+far from the step) is missed by design, to keep product guidance quiet.
+
 ### Poisoned pipeline execution inside #32
 
 `ci-pipeline-poisoning` in `data/ci-pipeline.js` is a detector on threat #32 crediting ATT&CK T1677. It fires on
@@ -623,9 +679,9 @@ trifecta post, this alert never changes the allow/deny decision, and `threatPoli
 block. It fires once per session. `test/clipboard-session.test.mjs` covers the signals, the rule, and the
 hook end to end.
 
-## 4. The three additive passes
+## 4. The four additive passes
 
-All three only ever **add** findings. None can suppress, reorder or alter one produced by the boolean
+All four only ever **add** findings. None can suppress, reorder or alter one produced by the boolean
 scan, and each is wrapped so that a failure inside it leaves the boolean verdict exactly as it was.
 
 1. **Normalization / decode re-scan** (`_scanNormalized`, always on). Bounded decoded and reversed
@@ -634,11 +690,30 @@ scan, and each is wrapped so that a failure inside it leaves the boolean verdict
    cannot resurface the noisier DLP/legal/citation detectors on incidental bytes. It also raises threat
    #50 when an encoded blob decodes to concealed natural-language text. Adds only for threats the raw
    scan missed (`!byThreat.has`).
-2. **Weighted risk aggregate** (`_promoteByScore`, `data/risk-score.js`). **Off unless a policy opts in**
+2. **Invisible-character views** (`_scanViews`, [`data/text-views.js`](../data/text-views.js), always on). At
+   most two extra views of the text: invisible characters (U+200B-U+200D, U+2060, U+FEFF, the soft hyphen
+   U+00AD, U+180E, U+2061-U+2064) next to a letter or digit removed, variation selectors (U+FE00-U+FE0F,
+   U+E0100-U+E01EF) and U+034F next to a letter removed, combining marks on an ASCII letter removed (a mark on
+   any other base is a real accent or vowel sign and stays), every run of three or more blank lines collapsed to
+   one blank line (CR, CRLF, LF, U+2028 and U+2029 are line breaks; filler characters such as U+3164 and U+2800
+   count as blank), and Unicode tag characters
+   either removed (view A) or decoded to their ASCII letters in place (view B). EVERY in-stage detector runs over
+   each view except the invisible-character detectors (#50), which judge the original bytes so the hiding signal
+   is kept, and a detector marked `rawOnly` (the padding signal, which reads the layout the view collapses).
+   Adds only for a threat the raw scan missed, marked `obfuscated: "invisible"`. Ordinary text costs nothing: no
+   view is built unless the text holds such a character or a triple blank line, and none for text over 256 KB.
+   Kept on purpose: a ZWJ between two emoji (no letter beside it), a byte-order mark at offset 0, the three RGI
+   subdivision flags, bidi marks and RTL text. Linear (one replace per transform, no overlapping quantifier).
+   Limits: a view adds nothing for a threat the raw text already raised, so a second detector of that threat
+   matching only on the view is not named by the engine (skill triage recovers its label, §3); a zero-width
+   character with no letter or digit beside it is not removed; homoglyphs and encodings stay the decode pass's,
+   except that the three skill phrasing rules (concealment, reviewer text, persistence) also read their input
+   through the decode pass's confusable fold (`foldConfusables`) themselves, at any size up to 256 KB.
+3. **Weighted risk aggregate** (`_promoteByScore`, `data/risk-score.js`). **Off unless a policy opts in**
    (`_scoring` is `null` for every mode but `weighted`), and consulted **only when the boolean path found
    nothing at all**. Those two conditions are what make it monotonic: recall is `>=` the boolean baseline
    at every threshold. Its finding carries a rendered score and tell **counts**, never a span.
-3. **Semantic escalation** (`scanSemantic` + [`src/semantic.js`](../src/semantic.js)). Injected, not
+4. **Semantic escalation** (`scanSemantic` + [`src/semantic.js`](../src/semantic.js)). Injected, not
    imported, so the browser bundle never pulls in the node-only backends. Requires **both**
    `policy.modelEscalation` and `semanticEnabled(policy)` (default OFF), reaches only a loopback Ollama
    model or the developer's own on-machine provider credential, and is hard-bounded (default 3500 ms
@@ -1363,7 +1438,7 @@ stored.
 
 | Class | Call | Aligned when |
 |---|---|---|
-| `egress` | a `Bash` or `PowerShell` upload (`curl -d/-F/-T/-X POST`, `wget --post-*`, `Invoke-RestMethod -Body`, `nc`/`socat`/`telnet`, `scp`/`rsync`/`sftp` to a remote, `Start-BitsTransfer -TransferType Upload`, a copy onto a UNC share) with a non-loopback host; a UNC share's host is its destination | every destination site was named in the task. Labels never excuse egress. |
+| `egress` | a `Bash` or `PowerShell` upload (`curl -d/-F/-T/-X POST`, `wget --post-*`, `Invoke-RestMethod -Body`, `nc`/`ncat`/`netcat`/`socat`/`telnet` named anywhere in the command — fail closed; the one exemption is a command string that is, as a whole, a single plain lookup: one segment, no env assignment and no shell metacharacter anywhere, the command exactly `which`/`type` (option `-a` only), `whereis`, `whatis`, `apropos` or `command -v`, or `man` with no option and only section numbers and plain names, and every argument a plain name; a word is read as the shell runs it (quotes and backslashes removed, a call operator dropped, a `C:\…\nc.exe` path's last segment, `.exe` dropped) and an expansion or glob that could produce a netcat name counts: in the command word of each segment (segments split on newline `;` `&` `|` `(` `)` `{` `}` and backtick; leading redirections, `NAME=value` assignments and shell keywords such as `!`, `function`, `coproc`, `if`, `then`, `do` skipped first), and in every word of a segment whose command word is a wrapper (`sudo`, `env`, `timeout`, `nohup`, `xargs`, `time`, `exec` …), follows an assignment, starts with `-`, or is not a plain literal; a word that starts with an expansion (`$X`, `$(…)`, a backtick, `$'…'`) always counts there, while `echo $HOME` or `ls *.txt` does not, `scp`/`rsync`/`sftp` to a remote, `Start-BitsTransfer -TransferType Upload`, a copy onto a UNC share) with a non-loopback host; a UNC share's host is its destination | every destination site was named in the task. Labels never excuse egress. |
 | `destructive` | a `Bash` or `PowerShell` command with a #43 finding | the task carries the `destructive` label, or names one of the operands |
 | `credentials` | a `Read`, `Bash` or `PowerShell` call with a #55 finding | the task carries the `credentials` label, or names the path |
 | `mcp-write` | an `mcp__` tool whose name has a write verb (`create`, `send`, `post`, `delete`, `push`, …) | the task carries the `mcp-write` label, or names the server |

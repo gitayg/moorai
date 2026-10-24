@@ -1,8 +1,8 @@
 {
   "name": "MoorAI Agent Security Benchmark",
-  "generatedAt": "2026-10-23T02:14:37.962Z",
+  "generatedAt": "2026-10-24T01:11:45.587Z",
   "engine": {
-    "detectors": 120,
+    "detectors": 125,
     "threats": 82,
     "corpusCases": 102
   },
@@ -17,7 +17,7 @@
     "byItem": {
       "LLM01": {
         "threats": 8,
-        "detectors": 21
+        "detectors": 25
       },
       "LLM02": {
         "threats": 20,
@@ -29,7 +29,7 @@
       },
       "LLM04": {
         "threats": 1,
-        "detectors": 1
+        "detectors": 2
       },
       "LLM05": {
         "threats": 7,
@@ -68,7 +68,7 @@
       "ASI01": {
         "threats": 9,
         "partialThreats": 7,
-        "detectors": 29,
+        "detectors": 33,
         "status": "covered"
       },
       "ASI02": {
@@ -98,7 +98,7 @@
       "ASI06": {
         "threats": 4,
         "partialThreats": 4,
-        "detectors": 6,
+        "detectors": 7,
         "status": "partial"
       },
       "ASI07": {
@@ -168,7 +168,7 @@
       "MCP06": {
         "threats": 8,
         "partialThreats": 6,
-        "detectors": 20,
+        "detectors": 24,
         "status": "covered"
       },
       "MCP07": {
@@ -218,7 +218,7 @@
       "T1698": {
         "lane": "agent",
         "threats": 8,
-        "detectors": 18,
+        "detectors": 22,
         "status": "covered"
       },
       "T1699": {
@@ -237,7 +237,7 @@
       "T1685.007": {
         "lane": "agent",
         "threats": 1,
-        "detectors": 5,
+        "detectors": 8,
         "status": "partial",
         "partialBound": "gap"
       },

@@ -12,6 +12,9 @@
 //   monitoring-off        a key or env var that turns monitoring, audit logging or tracing off, or empties
 //                         a monitoring sink (SENTRY_DSN, an OTLP endpoint);
 //   protected-surface     the write touches a path or key the signed policy declares protected;
+//   memory-file           the write touches one of the agent's persistent-instruction or memory files (CLAUDE.md,
+//                         AGENTS.md, rules files, auto memory, SOUL.md …): built in, notify by default
+//                         (cli/oversight-surfaces.mjs memoryFiles, cli/hook-core.mjs decideOversight);
 //   analysis-incomplete   the write was not read whole (before or after over MAX, or an existing file too large
 //                         for the hook to read under a Write): never cut and judged clean, it fails closed
 //                         (cli/hook-core.mjs decideOversight asks on it).
@@ -27,11 +30,12 @@
 // backtracking regex), so with the MAX size bound the analysis of one write is bounded in time too.
 import { resolve, relative, isAbsolute } from "node:path";
 import { notRuntimeReason, TOOLING_PATH } from "./mcp-package/paths.mjs";
-import { protectedPathHit, protectedKeyChanged, realOf } from "./oversight-surfaces.mjs";
+import { protectedPathHit, protectedKeyChanged, memoryPathHit, realOf } from "./oversight-surfaces.mjs";
 import { words, switchKind, listKind, wiringFamily, TEST_GUARD_WORDS, valueKind } from "./oversight-vocab.mjs";
 
-export const OVERSIGHT_SIGNALS = Object.freeze(["suppression-flag", "recipients-emptied", "wiring-removed", "safety-test-weakened", "monitoring-off", "protected-surface", "analysis-incomplete"]);
+export const OVERSIGHT_SIGNALS = Object.freeze(["suppression-flag", "recipients-emptied", "wiring-removed", "safety-test-weakened", "monitoring-off", "protected-surface", "memory-file", "analysis-incomplete"]);
 export const INCOMPLETE = "analysis-incomplete";
+export const MEMORY_FILE = "memory-file";
 const MAX = 1_048_576;
 const order = (set) => OVERSIGHT_SIGNALS.filter((s) => set.has(s));
 
@@ -302,6 +306,7 @@ export function oversightEditSignals({ path = "", before = null, after = "", sur
   const aft = typeof after === "string" ? after.slice(0, MAX) : "";
   const bef = typeof before === "string" ? before.slice(0, MAX) : null;
   if (surfaces && (protectedPathHit(path, surfaces, { cwd, real: true }) || protectedKeyChanged(bef ?? "", aft, surfaces))) out.add("protected-surface");
+  else if (surfaces && memoryPathHit(path, surfaces, { cwd, real: true })) out.add(MEMORY_FILE);
   if (judged && (bef === null ? beforeUnread : over)) { out.add(INCOMPLETE); return order(out); }
   if (bef === null) return order(out);
   if (tst && testSignals(tst.rel, bef, aft)) out.add("safety-test-weakened");

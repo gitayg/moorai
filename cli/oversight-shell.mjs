@@ -33,7 +33,7 @@ import { statSync } from "node:fs";
 import { resolve, relative, isAbsolute, dirname, basename, join } from "node:path";
 import { splitShell, commandOf } from "../data/shell-parse.js";
 import { oversightEditSignals, assignedSignals, pathClass, pathClasses, OVERSIGHT_SIGNALS, INCOMPLETE } from "./oversight-signals.mjs";
-import { protectedPathHit, protectedKeyInCommand, realOf } from "./oversight-surfaces.mjs";
+import { protectedPathHit, protectedKeyInCommand, memoryPathHit, realOf } from "./oversight-surfaces.mjs";
 import { words, switchKind, listKind, valueKind, WIRING_FAMILIES, TEST_GUARD_WORDS } from "./oversight-vocab.mjs";
 
 const MAX = 262144;
@@ -429,6 +429,7 @@ export function oversightCommandSignals(command, { ps = false, surfaces = null, 
   if (surfaces) {
     if ([...touched].some((p) => protectedPathHit(p, surfaces, { cwd, real: true }))) out.add("protected-surface");
     if (protectedKeyInCommand(cmd, surfaces)) out.add("protected-surface");
+    if (!out.has("protected-surface") && [...touched].some((p) => memoryPathHit(p, surfaces, { cwd, real: true }))) out.add("memory-file");
   }
   return OVERSIGHT_SIGNALS.filter((s) => out.has(s));
 }

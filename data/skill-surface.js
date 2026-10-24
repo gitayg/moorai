@@ -109,6 +109,13 @@ const SURFACE = [
   // ---- instruction / memory files loaded into context at session start ----
   [/(^|[/\\])\.claude[/\\]rules([/\\].+)?\.md$/i, "claude-rule", false],
   [/(^|[/\\])\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$/i, "claude-memory", true],
+  // OpenClaw (docs.openclaw.ai/concepts/agent-workspace, checked 2026-10-23), workspace ~/.openclaw/workspace:
+  //   SOUL.md "Loaded every session"; MEMORY.md is curated long-term memory, loaded "in the main, private
+  //   session"; memory/YYYY-MM-DD.md, "read today + yesterday on session start". AGENTS.md (also loaded) is
+  //   matched below. After claude-memory, so Claude Code's own memory/MEMORY.md keeps its kind.
+  [/(^|[/\\])SOUL\.md$/i, "openclaw-soul", false],
+  [/(^|[/\\])\.openclaw[/\\]workspace[/\\]memory[/\\][^/\\]+\.md$/i, "openclaw-memory", false],
+  [/(^|[/\\])MEMORY\.md$/i, "openclaw-memory", false],
   [/(^|[/\\])CLAUDE\.local\.md$/i, "CLAUDE.local.md", false],
   [/(^|[/\\])CLAUDE\.md$/i, "CLAUDE.md", true],
   // AGENTS.md also covers Amp's AGENT.md fallback (ampcode.com/docs/customize/agents-md).
@@ -182,6 +189,23 @@ const SURFACE = [
 
 export const SKILL_SURFACE_KINDS = [...new Set(SURFACE.map(([, kind]) => kind))];
 export const SKILL_SURFACE_OBSERVED = [...new Set(SURFACE.filter(([, , o]) => o).map(([, kind]) => kind))];
+
+// The PERSISTENT-INSTRUCTION subset: files the agent loads as standing instructions or memory at the start
+// of every session, so a write into one outlives the conversation that made it. Skills, commands, subagent
+// definitions and configs are left out: installing one of those is its own act, judged elsewhere.
+// cli/oversight-surfaces.mjs protects these paths by default (a write asks under #84 protected-surface).
+export const PERSISTENT_INSTRUCTION_KINDS = Object.freeze([
+  "claude-memory", "CLAUDE.md", "CLAUDE.local.md", "claude-rule",
+  "AGENTS.md", "AGENTS.override.md", "GEMINI.md",
+  ".cursorrules", ".cursor/rules", ".windsurfrules", "windsurf-rule", "windsurf-global",
+  ".clinerules", "cline-rule", "copilot-instructions", "copilot-path-instructions", "kiro-steering",
+  "openclaw-soul", "openclaw-memory"
+]);
+const PERSISTENT = new Set(PERSISTENT_INSTRUCTION_KINDS);
+export function persistentInstructionKind(path) {
+  const k = skillSurfaceKind(path);
+  return k && PERSISTENT.has(k) ? k : null;
+}
 
 export function skillSurfaceKind(path) {
   const p = String(path || "");

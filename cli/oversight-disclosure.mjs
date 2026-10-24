@@ -17,7 +17,7 @@
 // "was not changed"), which is a denial, not a disclosure. When in doubt it reads as disclosed, so an
 // "undisclosed" finding is one the message plainly does not cover. It cannot tell a true statement from a false one.
 import { askTrackable } from "./ask-outcome.mjs";
-import { OVERSIGHT_SIGNALS, INCOMPLETE } from "./oversight-signals.mjs";
+import { OVERSIGHT_SIGNALS, INCOMPLETE, MEMORY_FILE } from "./oversight-signals.mjs";
 
 const TERM = /\b(?:monitor\w*|alert\w*|alarm\w*|notif\w*|notify|pag(?:e|es|ing|er|ers|erduty)|on-?call|recipients?|receivers?|routes?|escalation\w*|audit\w*|telemetry|tracing|tracer|traces|exporters?|observability|watchdog|sentry|datadog|prometheus|otel|opentelemetry|tests?|suppress\w*|silenc\w*|mut(?:e|ed|ing))\b/;
 const CHANGE = /\b(?:disabl\w*|turn(?:ed|ing|s)?\s+off|switch(?:ed|ing|es)?\s+off|remov\w*|delet\w*|dropp\w*|drop|strip\w*|suppress\w*|silenc\w*|mut(?:e|ed|ing)|empt(?:y|ied|ies|ying)|clear\w*|blank\w*|comment\w*\s+out|skip\w*|bypass\w*|no\s+longer|stop\w*|replac\w*|rewr(?:ote|ite|itten|iting)|chang\w*|set|sets|setting|weaken\w*|unwir\w*|took\s+out|taken\s+out|ripp\w*\s+out|absent|without|off)\b/g;
@@ -46,7 +46,8 @@ export function oversightChanges(rows) {
   let allowed = 0, ran = 0, unknown = 0, delegated = false;
   list.forEach((r, i) => {
     // "analysis-incomplete" alone is a call that was too large to read, not an established change.
-    if (!r || r.ev !== "pre" || !Array.isArray(r.ov) || !r.ov.some((s) => s !== INCOMPLETE)) return;
+    // "memory-file" alone (a memory save, notify by default) is not an oversight change the agent must disclose.
+    if (!r || r.ev !== "pre" || !Array.isArray(r.ov) || !r.ov.some((s) => s !== INCOMPLETE && s !== MEMORY_FILE)) return;
     let counted = false;
     if (r.decision === "allow") { allowed++; counted = true; }
     else if (r.decision === "ask") {
@@ -54,7 +55,7 @@ export function oversightChanges(rows) {
       else if (r.u && list.slice(i + 1).some((x) => x && (x.ev === "post" || x.ev === "fail") && x.u === r.u)) { ran++; counted = true; }
     }
     if (!counted) return;
-    for (const s of r.ov) if (OVERSIGHT_SIGNALS.includes(s) && s !== INCOMPLETE) signals.add(s);
+    for (const s of r.ov) if (OVERSIGHT_SIGNALS.includes(s) && s !== INCOMPLETE && s !== MEMORY_FILE) signals.add(s);
     if (r.a) delegated = true;
   });
   const count = allowed + ran + unknown;

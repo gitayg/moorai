@@ -104,7 +104,9 @@ const UPLOAD = [
   /\bcurl\b(?<!\bcurl\b[^\n;|&]*?\bcurl)[^\n;|&]*?(?:\s-(?:[a-zA-Z]*d|F|T)\b|\s--(?:data(?:-binary|-raw|-urlencode|-ascii)?|form|upload-file|json)\b|\s-X\s*(?:POST|PUT|PATCH)\b|\s--request\s+(?:POST|PUT|PATCH)\b)/i,
   /\bwget\b[^\n;|&]*?--(?:post-data|post-file|body-data|body-file|method=(?:POST|PUT))/i,
   /\b(?:Invoke-RestMethod|Invoke-WebRequest|irm|iwr)\b[^\n;|&]*?(?:-Method\s+(?:Post|Put|Patch)|-InFile|-Body)\b/i,
-  /\b(?:nc|ncat|netcat|socat|telnet)\b/i,
+  // A netcat-family INVOCATION with a target or data (ncInvoked below), not a mention: `which nc`, `man telnet`,
+  // `apt install netcat-openbsd` and `grep telnet` are not uploads.
+  { test: (c) => ncInvoked(c) },
   // `[\w.-](?:[\w.-]*@)?[\w.-]+` is `[\w.-]+@?[\w.-]+` without the two runs overlapping ("scp a.a.a…"
   // was quadratic from a single start).
   /\b(?:scp|rsync|sftp)\b(?<!\b(?:scp|rsync|sftp)\b[^\n;|&]*?\b(?:scp|rsync|sftp))[^\n;|&]*?\s[\w.-](?:[\w.-]*@)?[\w.-]+:/i,
@@ -113,6 +115,102 @@ const UPLOAD = [
   /\bStart-BitsTransfer\b[^\n;|&]*?\s-TransferType\s{1,4}["']?Upload/i,
   UNC_COPY
 ];
+// nc / ncat / netcat / socat / telnet as an upload. FAIL CLOSED: a command string that names a netcat tool is
+// judged, unless the WHOLE string is one plain lookup and nothing else:
+//   * one segment, and none of ; & | newline ( ) { } $ ` * ? [ ] quotes backslash = < > ! ~ # anywhere in it, so
+//     nothing is chained, defined, substituted, expanded, globbed, quoted, assigned or redirected;
+//   * the command word is exactly which or type (option: only -a), whereis, whatis, apropos, the pair
+//     `command -v`, or man with every argument a section number (1-9, optionally a letter) or a plain name;
+//   * every argument is a plain name (^[A-Za-z0-9._+-]+$, not an option).
+// "Names a netcat tool" checks every word, not a guessed command word: a word that runs as one once quotes and
+// backslashes are removed, a leading call operator dropped, a Windows or POSIX path cut to its last segment and
+// .exe dropped (`'nc'`, `n\c`, `C:\tools\nc.exe`); or an expansion or glob that could produce one, in the
+// command position (see WRAPPERS below), so a variable command word is judged too.
+const NC_NAME = /^(?:nc|ncat|netcat|socat|telnet)(?:\.(?:openbsd|traditional))?$/i;
+const NC_NAMES = ["nc", "ncat", "netcat", "socat", "telnet"];
+const NC_HINT = /(?<![\w.-])(?:nc|ncat|netcat|socat|telnet)(?![\w-])/i;
+const NOT_PLAIN = /[;&|\n\r(){}$`*?[\]'"\\=<>!~#]/;
+const PLAIN = /^[A-Za-z0-9._+][A-Za-z0-9._+-]*$/;
+const MAN_ARG = /^(?:[1-9][a-z]?|[a-z0-9._+][a-z0-9._+-]*)$/;
+const LOOKUP = new Set(["which", "whereis", "type", "whatis", "apropos"]);
+const dropExe = (b) => b.replace(/\.exe$/i, "");
+function namesOf(word) {
+  const w = word.replace(/['"`]/g, "").replace(/^[&.]+(?=[^&.])/, "");
+  const a = w.split(/[\/\\]/).pop();
+  const b = w.replace(/\\/g, "").replace(/^[&.]+(?=[^&.])/, "").split("/").pop();
+  return [dropExe(a).toLowerCase(), dropExe(b).toLowerCase()];
+}
+const isNc = (word) => namesOf(word).some((n) => NC_NAME.test(n));
+// Could this word, with its expansions and glob characters, produce a netcat name? Each expansion is any text.
+function mayExpandToNc(word) {
+  if (!/[$*?[]/.test(word)) return false;
+  let re = "";
+  for (let i = 0; i < word.length && re.length < 512; i++) {
+    const ch = word[i];
+    if (ch === "$") { re += ".*"; if (word[i + 1] === "{") { const e = word.indexOf("}", i); i = e < 0 ? word.length : e; } else if (word[i + 1] === "'" || word[i + 1] === '"') { const q = word[i + 1]; const e = word.indexOf(q, i + 2); i = e < 0 ? word.length : e; } else while (i + 1 < word.length && /\w/.test(word[i + 1])) i++; continue; }
+    if (ch === "*") { re += ".*"; continue; }
+    if (ch === "?") { re += "."; continue; }
+    if (ch === "[") { const e = word.indexOf("]", i); re += "."; i = e < 0 ? word.length : e; continue; }
+    if (ch === "'" || ch === '"' || ch === "\\") continue;
+    re += ch.replace(/[.+^(){}|\\/]/g, "\\$&");
+  }
+  let r;
+  try { r = new RegExp(`^${re}$`, "i"); } catch { return true; }
+  return NC_NAMES.some((n) => r.test(n));
+}
+// The command position, modelled to fail closed. Segments are split on newline ; & | ( ) { } and backtick (and
+// once on newline ; & | alone, so a segment that STARTS with a substitution is seen whole). Before the command
+// word, leading redirections (`2>/dev/null`, `> out`, `&>`, `>&2`), NAME=value assignments and shell keywords
+// (! { function coproc select if then elif else while until do) are skipped. Then:
+//   * the command word is a wrapper (sudo, env, timeout, xargs …), or an assignment preceded it: every word of
+//     the segment is checked, because the command could be any of them (wrapper options are not modelled);
+//   * the command word is not a plain literal (^[A-Za-z0-9._+/-]+$), or starts with "-": every word is checked too;
+//   * otherwise (a plain command such as echo, ls, cd) nothing more: `echo $HOME` and `ls *.txt` stay quiet.
+// "Checked": the word starts with an expansion ($X, ${X}, $(…), $'…', a backtick), which could be any command,
+// or its expansions and globs could produce a netcat name (mayExpandToNc).
+const WRAPPERS = new Set(["sudo", "doas", "env", "timeout", "nohup", "nice", "ionice", "stdbuf", "exec", "command", "builtin", "xargs",
+  "time", "chroot", "setsid", "unbuffer", "busybox", "watch", "strace", "ltrace", "caffeinate", "flock", "taskset", "su", "runuser"]);
+// time and exec are wrappers, not keywords: they take options (`exec -a name`, `time -p`) and then run a command.
+const KEYWORDS = new Set(["!", "{", "}", "function", "coproc", "select", "if", "then", "elif", "else", "while", "until", "do"]);
+const REDIRECT = /^(?:\d*[<>]|&>|>&)/;
+const REDIRECT_ONLY = /^(?:\d*(?:<<?<?|>>?|<>)&?|&>>?|>&)$/;
+const ASSIGN = /^[A-Za-z_]\w*(?:\[[^\]]*\])?\+?=/;
+const LITERAL = /^[A-Za-z0-9._+/-]+$/;
+const mayRun = (x) => /^(?:\$|`)/.test(x) || mayExpandToNc(x);
+function namesNetcat(c) {
+  if (NC_HINT.test(c) || NC_HINT.test(c.replace(/[\\'"`]/g, ""))) return true;
+  if (c.split(/[\s;&|(){}`]+/).some((w) => w && isNc(w))) return true;
+  for (const seg of [...c.split(/[\n;&|]+/), ...c.split(/[\n;&|(){}`]+/)]) {
+    const w = seg.trim().split(/\s+/).filter(Boolean);
+    let i = 0, assigned = false;
+    for (; i < w.length; i++) {
+      if (REDIRECT.test(w[i])) { if (REDIRECT_ONLY.test(w[i])) i++; continue; }
+      if (ASSIGN.test(w[i])) { assigned = true; continue; }
+      if (KEYWORDS.has(w[i])) continue;
+      break;
+    }
+    if (i >= w.length) continue;
+    const cmd = w[i];
+    // A command word that starts with "-" is an option of something not modelled: fail closed as well.
+    if (assigned || WRAPPERS.has(namesOf(cmd)[1]) || !LITERAL.test(cmd) || cmd.startsWith("-")) { if (w.slice(i).some(mayRun)) return true; }
+  }
+  return false;
+}
+function wholeStringPlainLookup(c) {
+  const t = c.trim();
+  if (!t || NOT_PLAIN.test(t)) return false;
+  const w = t.split(/[ \t]+/);
+  const plainArgs = (args, allowA) => args.length > 0 && args.every((x) => (allowA && x === "-a") || (PLAIN.test(x) && !x.startsWith("-")));
+  if (LOOKUP.has(w[0])) return plainArgs(w.slice(1), w[0] === "which" || w[0] === "type");
+  if (w[0] === "command" && w[1] === "-v") return plainArgs(w.slice(2), false);
+  if (w[0] === "man") return w.length > 1 && w.slice(1).every((x) => MAN_ARG.test(x));
+  return false;
+}
+function ncInvoked(command) {
+  const c = String(command || "");
+  return namesNetcat(c) && !wholeStringPlainLookup(c);
+}
+
 // MoorAI's own loopback listeners, at the ports the code listens on by default: moorai-serve
 // (cli/moorai-serve.mjs DEFAULTS.port), the model proxy (model-proxy/server.mjs DEFAULTS.port) and the MCP
 // gateway (mcp-gateway/config.mjs DEFAULT_PORT); test/intent-alignment-control.test.mjs keeps them equal. Kept
