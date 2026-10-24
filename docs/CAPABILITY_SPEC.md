@@ -4254,8 +4254,10 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   tests time 50 KB pathological inputs under 50 ms in a child process. A command over 256 KiB, a `sed` / `perl`
   script over 64 KiB, a command check past 250 ms, a command the shell parser throws on (`cli/oversight-shell.mjs`
   passes `splitShell` its `heredocs` list, so a heredoc parses), a write whose before or after is over 1 MiB, a
-  Write over an existing runtime / test file the hook does not read (over 1 MiB), and, while memory files or
-  protected paths are watched, a write position whose target is not literal (`$`, `$( … )`, a glob or brace, a
+  Write over an existing runtime / test file the hook does not read (over 1 MiB), and, when `protectedPaths` are
+  declared or `memoryFiles` is `ask` / `block` / #84's action (`opts.strictWrites`), a write position whose
+  target is not literal (with only the built-in memory-file protection on it raises `memory-file` instead:
+  notify, an alert and no prompt, unless #84 is configured) (`$`, `$( … )`, a glob or brace, a
   `~user`; a redirect, a copy / install / download / `dd` / `git restore` / `patch` destination, an `mv`
   destination, a non-literal source copied or moved into a directory, `patch` with no file operand) raise the
   local signal `analysis-incomplete` instead of being cut and judged. `decideOversight` asks on it even when

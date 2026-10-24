@@ -1636,9 +1636,10 @@ malformed entry is dropped with a warning.
 **Bounded, and fail closed.** The checks run in linear time (no backtracking pattern). A command longer than
 256 KiB, a `sed` / `perl` script longer than 64 KiB, a command whose check runs past 250 ms, a command the shell
 parser fails on, a write whose before or after text is over 1 MiB, a Write over an existing runtime file too
-large to read (over 1 MiB), and a write whose destination is not a literal path (`cp x "$DEST"`, `curl -o $F`,
-`> $LOG`, `patch -p1 < fix.diff`, a glob copied into a directory) while memory files or protected paths are
-watched are never cut and judged clean: they are held as an incomplete analysis, an ask even where the policy lowers #84 to
+large to read (over 1 MiB), and, when `protectedPaths` are declared or `memoryFiles` is `ask` / `block` (or #84's
+action), a write whose destination is not a literal path (`cp x "$DEST"`, `curl -o $F`, `> $LOG`, `patch -p1 <
+fix.diff`, a glob copied into a directory) are never cut and judged clean (with only the built-in memory-file
+protection on, such a write is a `memory-file` alert instead: no prompt unless #84 is configured): they are held as an incomplete analysis, an ask even where the policy lowers #84 to
 `notify` (never a kill on its own; a policy that disables #84 still disables it).
 
 **Stop-time disclosure (Claude Code).** At Stop and SubagentStop, if the turn made an oversight change that was

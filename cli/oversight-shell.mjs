@@ -14,8 +14,9 @@
 //     heroku config:set, fly secrets set, [Environment]::SetEnvironmentVariable);
 //   * a write onto a memory file or a protected path: besides redirects, tee, sed -i and Set-Content, a cp /
 //     install / rsync / mv destination, a curl / wget download, dd of=, git checkout -- / git restore, patch and
-//     a bare `> path` (cli/oversight-shell-writes.mjs). While there is a write check to run (memory files on or
-//     protected paths declared), a write position whose target is not literal is "analysis-incomplete".
+//     a bare `> path` (cli/oversight-shell-writes.mjs). A write position whose target is not literal is
+//     "analysis-incomplete" when protected paths are declared or memoryFiles is ask / block / #84's action, and
+//     "memory-file" (notify by default: an alert, no prompt) when only the built-in memory-file protection is on.
 // Where a path lands: every path is resolved against the segment's working directory, tracked across
 // segments (cd / pushd / popd / Set-Location / Push-Location / Pop-Location with a literal target; a `cd`
 // inside a subshell, a pipeline or a background job does not move the shell around it), then judged relative
@@ -155,7 +156,7 @@ function judgeMove(bin, args, git, opts, ctx, out, touched) {
   if (!m) { for (const p of args.filter((t) => !t.startsWith("-"))) ctx.both(p).forEach((a) => touched.add(a)); return; }
   const literal = m.dest && !NOT_LITERAL.test(m.dest) && m.dest !== "/dev/null";
   // A destination (or, into a directory, a source name) that is not literal: where it writes is unknown.
-  if (opts.watch && m.dest !== "/dev/null" && (!literal || m.sources.some((s) => nonLiteral(s)))) out.add(INCOMPLETE);
+  if (m.dest !== "/dev/null" && (!literal || m.sources.some((s) => nonLiteral(s)))) unknownWrite(opts, out);
   const pairs = [ctx.at, ctx.written].map((place) => {
     const destAbs = literal ? place(m.dest) : null;
     if (destAbs) touched.add(destAbs);
@@ -257,15 +258,23 @@ const envPairs = (toks) => toks.map((t) => /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exe
 // (cli/oversight-shell-writes.mjs) go to the protected-path and memory-file checks, at both the tracked
 // directory and as written; a directory destination receives each source under its own name. A destination
 // that is not literal is analysis-incomplete when there is anything to check.
+// A write whose target is not literal, proportionate to what is watched: with only the built-in memory-file
+// protection (no protectedPaths, memoryFiles not above notify) it is memory-file, notify unless #84 is
+// configured (an alert, no prompt, for routine `cmd > "$out"`); with protectedPaths declared or memoryFiles ask /
+// block / #84's action it is analysis-incomplete. Nothing when there is no write check to run.
+function unknownWrite(opts, out) {
+  if (!opts.watch) return;
+  out.add(opts.strictWrites ? INCOMPLETE : "memory-file");
+}
 const home = (p) => (p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 function judgeWrites(wt, opts, ctx, out, touched) {
-  if (wt.unknown && opts.watch) out.add(INCOMPLETE);
+  if (wt.unknown) unknownWrite(opts, out);
   for (const { dest, sources, dir } of wt.writes) {
     for (const destAbs of ctx.both(home(dest))) {
       touched.add(destAbs);
       if (!sources || !(dir ?? isDir(destAbs))) continue;
       for (const src of sources) {
-        if (nonLiteral(src)) { if (opts.watch) out.add(INCOMPLETE); continue; }
+        if (nonLiteral(src)) { unknownWrite(opts, out); continue; }
         touched.add(join(destAbs, basename(home(src).replace(/[\/\\]+$/, ""))));
       }
     }
@@ -282,7 +291,7 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
   const P = ctx.project;
   // Redirect targets: whatever this segment prints goes into them.
   for (const w of seg.writes || []) {
-    if (opts.watch && nonLiteral(w) && !nullTarget(w)) out.add(INCOMPLETE);
+    if (nonLiteral(w) && !nullTarget(w)) unknownWrite(opts, out);
     let text = "";
     if (bin === "echo" || bin === "printf") text = pos.join(" ").replace(/\\n/g, "\n");
     else if (seg.heredoc) text = seg.heredoc;
@@ -444,6 +453,9 @@ export function oversightCommandSignals(command, { ps = false, surfaces = null, 
   const opts = { ps, surfacePaths: Boolean(surfaces && surfaces.paths && surfaces.paths.length) };
   // watch: there is a write check to run (memory files on, or protected paths declared).
   opts.watch = Boolean(surfaces && (surfaces.memory || opts.surfacePaths));
+  // strictWrites: an admin asked for more than the built-in notify (protected paths, or memoryFiles ask / block /
+  // #84's action), so a write that cannot be placed is analysis-incomplete rather than a memory-file alert.
+  opts.strictWrites = opts.surfacePaths || Boolean(surfaces && ["ask", "block", "inherit"].includes(surfaces.memory));
   const dirs = new Map(); // subshell scope -> { dir, stack }
   // Execution order is not parse order (a later segment, a background job): a link-maker anywhere counts.
   opts.linkedEarlier = segs.some((s) => { try { return makesLink(s) || (!s.ps && s.sep === "&"); } catch { return true; } });
@@ -465,7 +477,7 @@ export function oversightCommandSignals(command, { ps = false, surfaces = null, 
     try {
       for (const t of bareRedirects(cmd, ps)) {
         if (nullTarget(t)) continue;
-        if (nonLiteral(t)) { out.add(INCOMPLETE); continue; }
+        if (nonLiteral(t)) { unknownWrite(opts, out); continue; }
         for (const abs of new Set([resolve(project, home(t)), resolve(project, t)])) touched.add(abs);
       }
     } catch { out.add(INCOMPLETE); }
