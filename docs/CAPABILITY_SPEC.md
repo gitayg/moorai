@@ -1074,6 +1074,42 @@ is validated against.
     `cooldownMin`, default 15) | `off`. Token burn is not measured: no hook input carries usage. State in
     `~/.moorai` under a device-local `session.key` (0600): keyed hashes and counts only, 32 sessions, 24 h.
     **Measured** on scripted sessions: test-fix and build-watch loops raised no alert; runaway loops 3/3.
+17c1. **Origin-based session taint** — [`cli/file-origin.mjs`](../cli/file-origin.mjs) `fileOrigin(path)` →
+    `null | { source, app, hostHash }`: `quarantine` (macOS `com.apple.quarantine`; `app` its third field),
+    `where-froms` (`kMDItemWhereFroms` without quarantine), `zone` (Windows `<path>:Zone.Identifier`,
+    `ZoneId` ≥ 3), `download-dir` (under `~/Downloads`, on Linux also `XDG_DOWNLOAD_DIR` from
+    `user-dirs.dirs`). `hostHash` is the tenant-keyed `contentHash` of the first WhereFroms URL's host, or of
+    `HostUrl` / `ReferrerUrl`. Synchronous; cached by (dev, ino, mtime, size) in `session-risk.json`. A
+    mark that cannot be read counts as outside under a download directory and as unknown elsewhere.
+    [`data/origin-taint.js`](../data/origin-taint.js) holds the gate table and the call facts;
+    [`data/session-risk.js`](../data/session-risk.js) the window. Tainting events: the Read / NotebookRead
+    path, the Bash / PowerShell read paths (`extractReadPaths`, which also reads `textutil`, `pandoc`,
+    `pdftotext`, `antiword`, `catdoc`, `docx2txt`, `unrtf` inputs), the files an MCP tool that neither sends
+    nor writes names (`scanMcpFileArgs`; `get_file_info`, `list`, `search`, `stat` excluded), an archive
+    unpacked (`data/net-exec.js` `unpackFacts`: unzip, tar, bsdtar, ditto -x, 7z, unar, Expand-Archive,
+    `python -m zipfile -e`, jar, gunzip and kin; its destination inherits the origin for the session), a file
+    run (`fetchExecFacts`), and an origin mark removed (`originStripFacts`). Gated in the window
+    (`sessionRisk.originTaint`, per class `sessionRisk.originGates`): `outbound` (`classifyEvent`'s upload,
+    data-carrying fetch, gist, push to a URL, MCP write), `memory-write` (#84 `memory-file` /
+    `write-target-unknown`), `extension-install` (`claude|codex|gemini … mcp add`, `plugin install`, a write
+    to a non-instruction skill-surface path: MCP configs, skills, commands, agents, plugin manifests, hook and
+    IDE auto-run configs), `exec-outside`, `git-push`, `message` (MCP send/post/reply message or email tools,
+    `mail`, `sendmail`, `Send-MailMessage`). Levels: `notify` (default; alert only), `ask`, `block`, `off`;
+    the admin binding's `sessionRisk` wins over the signed policy's. Alerts: #3 `Origin taint: action after
+    reading an internet-origin file` (once per class per window; `signature` = action, outKind, level,
+    source, app, hostHash, minutesSinceTaint) and #3 `Origin taint: origin mark removed` (every time), reason
+    `ORIGIN_TAINT`; no path or host. **Measured** (macOS 27, this machine): `/usr/bin/xattr -l` median 3.8 ms
+    unmarked / 8.7 ms quarantined per uncached check, 0.07 ms cached; `ls -l@d`, zsh `zgetattr` and a perl
+    syscall were slower. The hook's Read latency moved within run-to-run noise (median of 50: about 400 ms
+    either way). **Limits:** the mark is set by the downloading program, so a file fetched by `curl`, `git`,
+    an editor or a sandboxed tool that sets no quarantine and lands outside a download directory is not
+    outside; Linux reads no attribute (Chromium's `user.xdg.origin.url` is not read); a file whose bytes are
+    copied into a new file (`cat a > b`, `rsync` without `-E`, a script) loses the mark, though the read of the
+    original taints; `python -c "open(…)"` and other inline-code reads are not extracted; the read is tainted
+    at PreToolUse, so a read the host then refuses still taints; marks from extraction cover the whole
+    destination directory; the strip and install patterns are textual and a shell write that names an
+    extension path (`cat .mcp.json > x`) counts as an install; the agent runs as the same user and can edit
+    `session-risk.json` (the trust boundary of 17c).
 17d. **Verdict provenance** — [`cli/provenance.mjs`](../cli/provenance.mjs) stamps every alert and ledger
     row with `policyId` (`pol:<tenant>:<iat>:<digest12>`, `pol:unsigned:<digest12>`, `builtin-defaults`,
     `offline-fail-closed-default`, `none`, `not-loaded`), `policySource`, `reasonCode` (the branch that

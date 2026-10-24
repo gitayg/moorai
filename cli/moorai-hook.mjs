@@ -23,9 +23,11 @@ import { buildEngine, decideText, decideCredFileRead, decideTransit, transitEnvT
 import { oversightEditSignals, beforeAfter } from "./oversight-signals.mjs";
 import { oversightCommandSignals } from "./oversight-shell.mjs";
 import { oversightPolicy } from "./oversight-surfaces.mjs";
-import { oversightMcpSignals } from "./oversight-mcp.mjs";
+import { oversightMcpSignals, mcpWriteCalls, mcpWriteTool } from "./oversight-mcp.mjs";
 import { assessOversightDisclosure } from "./oversight-disclosure.mjs";
-import { fetchExecFacts } from "../data/net-exec.js";
+import { fetchExecFacts, unpackFacts } from "../data/net-exec.js";
+import { shellGateClasses, originStripFacts, extensionPath, mcpMessageTool } from "../data/origin-taint.js";
+import { mcpToolSends } from "./mcp-file-args.mjs";
 import { fetchedExecHit, recordFetched } from "./fetch-exec-state.mjs";
 import { otShellCheck, scriptReader, OT_PROTOCOL_CLIENT } from "./ot-protocol-client.mjs";
 import { boundaryWriteFields, boundaryCommandFields, boundaryAtStop, BOUNDARY_THREAT, BOUNDARY_CATEGORY, BOUNDARY_INVALID_CATEGORY, BOUNDARY_BLOCK_REASON } from "./boundary-stop.mjs";
@@ -536,6 +538,11 @@ let SESSION_TAG = "";
 // Session-level escalation (cli/session-state.mjs) the current PreToolUse call earned, set by
 // logBehavior and applied by emit: allow -> ask, or the reason added to an ask. Never touches a deny.
 let SESSION_ESC = null;
+// Origin taint (data/origin-taint.js): ORIGIN_IN is what this PreToolUse call does with files (the paths it reads,
+// runs and unpacks, its gated action classes, a mark removal), set by the branch before logBehavior; ORIGIN_ESC is
+// the level a gated action inside an origin-taint window earned ("ask" | "block"), applied by emit. Never weakens.
+let ORIGIN_IN = null;
+let ORIGIN_ESC = null;
 // #84: the oversight signals this PreToolUse call raised (cli/oversight-signals.mjs), recorded on its ledger
 // row as `ov` (local, content-free enums) so Stop / SubagentStop can check the final message discloses the change.
 let OVERSIGHT_SIG = null;
@@ -1129,9 +1136,12 @@ function logBehavior(tool, identity, scannedText, d, stage, lineage = {}) {
     maybeAgentScan(tool);
   } catch { /* behavior signal is best-effort; never affects enforcement */ }
   // Session-level escalation (data/session-risk.js): taint, score, slow exfil, sequences. Content-free.
-  const sr = sessionRiskStep({ policy: POLICY, sessionId: SESSION_ID, event: EVENT, tool, identity, text: scannedText, findings: d.findings, stage, coach: COACH });
+  const oin = EVENT !== "PostToolUse" ? ORIGIN_IN : null;
+  ORIGIN_IN = null;
+  const sr = sessionRiskStep({ policy: POLICY, admin: ADMIN, sessionId: SESSION_ID, event: EVENT, tool, identity, text: scannedText, findings: d.findings, stage, coach: COACH, origin: oin });
   for (const a of sr.alerts) post({ ...a, tool: `hook:${tool}`, ts: new Date().toISOString(), ...IDENTITY });
   if (sr.escalate && EVENT !== "PostToolUse") SESSION_ESC = sr.escalate;
+  if (sr.origin && EVENT !== "PostToolUse" && (sr.origin.level === "ask" || sr.origin.level === "block")) ORIGIN_ESC = sr.origin;
 }
 
 // ---- the six agent/behavioral detections, on a production path (out-of-band) ----
@@ -1930,6 +1940,15 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
     const m = applyTagGate({ decision, reason, alternatives }, tg.gate);
     if (m.changed) { why(REASON.BEHAVIOR_SIGNAL); VERDICT.basis = null; ({ decision, reason, alternatives } = m); if (decision === "deny") rewrite = null; tg.drove = true; }
   }
+  // Origin taint: a gated action inside the window takes the policy's level. "block" denies, "ask" raises an
+  // allow to ask (or adds its reason to an ask); a deny stays a deny.
+  if (ORIGIN_ESC && decision !== "deny") {
+    const why3 = `origin taint — ${ORIGIN_ESC.reason}, then ${ORIGIN_ESC.action === "outbound" ? "an outbound action" : ORIGIN_ESC.action.replace(/-/g, " ")}`;
+    if (ORIGIN_ESC.level === "block") { decision = "deny"; reason = why3; alternatives = saferAlternativesFor([3]); rewrite = null; VERDICT.basis = null; why(REASON.ORIGIN_TAINT); }
+    else if (decision === "allow") { decision = "ask"; reason = why3; alternatives = saferAlternativesFor([3]); why(REASON.ORIGIN_TAINT); }
+    else reason = `${reason}, ${why3}`;
+  }
+  ORIGIN_ESC = null;
   if (SESSION_ESC && decision !== "deny") {
     const why2 = `session risk — ${SESSION_ESC.reason}`;
     if (decision === "allow") { decision = "ask"; reason = why2; alternatives = saferAlternativesFor([SESSION_ESC.kind === "taint" ? 3 : 59]); why(REASON.BEHAVIOR_SIGNAL); }
@@ -3140,6 +3159,7 @@ async function main() {
     if (RANK[md.decision] > RANK[d.decision]) { d.decision = md.decision; d.reasons = md.reasons; d.alternatives = md.alternatives; }
     if (d.decision !== "allow") why(detectorReason(d.findings));
     report(d.findings, "file", "hook:Read", d.decision === "deny", policy.captureTier, { filePath: ti.file_path, toolName: "Read" });
+    ORIGIN_IN = { cwd: CALL.cwd, reads: typeof ti.file_path === "string" ? [agentPath(ti.file_path, input.cwd)] : [] };
     logBehavior("Read", ti.file_path || "file", text, d, "file");
     if (isSkillSurface(ti.file_path)) reportSkillFile(ti.file_path, text, d);
     if (d.kill) killSession("Read", d.killIds, "file");
@@ -3267,6 +3287,14 @@ async function main() {
     const epD = decideEndpoints(policy, ti.command);
     if (epD.decision === "deny") { why(REASON.ENDPOINT_NOT_ALLOWED); dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...destField(epD.hosts), ...IDENTITY }); }
     report(finds, "file", `hook:${tool}`, dec === "deny", policy.captureTier, { toolName: tool, cmdShape: commandShape(ti.command) });
+    {
+      // Origin taint: the files this command reads, runs and unpacks, and the gated classes it carries.
+      const strip = originStripFacts(shellText);
+      const gates = shellGateClasses(shellText);
+      if (OVERSIGHT_SIG && OVERSIGHT_SIG.some((x) => x === "memory-file" || x === "write-target-unknown")) gates.push("memory-write");
+      const uopts = { ps, cwd: CALL.cwd || process.cwd(), home: os.homedir(), insensitive: process.platform === "win32" };
+      ORIGIN_IN = { cwd: CALL.cwd, reads: readPaths.map((p) => agentPath(p, input.cwd)), exec: fx.executed, extract: [...unpackFacts(ti.command, uopts), ...scripts.flatMap((x) => unpackFacts(x, uopts))], gates, strip: strip.hit, stripTargets: strip.targets };
+    }
     logBehavior(tool, ti.command || "bash", btext, { decision: dec, findings: finds }, "file", clipboardSignals(ti.command));
     if (killIds.length) killSession(tool, killIds, "file");
     if (checkSecretEgress(policy, ti.command, tool, "egress") && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); why(REASON.SECRET_EGRESS); }
@@ -3349,6 +3377,7 @@ async function main() {
     if (ROW) Object.assign(ROW, boundaryWriteFields(tool, ti, path, input.cwd, policy));
     if (dec !== "allow") why(detectorReason(d.findings));
     report(d.findings, "output", `hook:${tool}`, dec === "deny", policy.captureTier, { filePath: path, toolName: tool });
+    ORIGIN_IN = { cwd: CALL.cwd, gates: [...(ovs.includes("memory-file") ? ["memory-write"] : []), ...(extensionPath(path) ? ["extension-install"] : [])] };
     logBehavior(tool, path || tool, text, d, "output");
     if (d.kill) killSession(tool, d.killIds, "output");
     // T1-1 — a rogue LLM base-URL being written INTO a config/source file is the same threat as one
@@ -3490,6 +3519,17 @@ async function main() {
     // otherwise close the whole trifecta (#59) in one call — measured: it did, where a Read of the same
     // file raises two legs and no #59. A read_file is logged as before; an upload of that file is not.
     const sent = fsr.sends ? { findings: allFindings, text: fsr.text ? `${args}\n${fsr.text}` : args } : { findings: g.findings, text: args };
+    {
+      // Origin taint: a tool that hands a named local file to the model (not one that sends or writes it) reads
+      // it; metadata-only tools (get_file_info, list, search, stat) do not. The write targets and messaging
+      // tools are gated classes.
+      const ln = tool.split("__").slice(2).join("__");
+      const reads = !mcpToolSends(tool) && !mcpWriteTool(tool) && !/(?:^|_)(?:get_file_info|stat|list|search|exists|tree)(?:_|$)/i.test(ln) ? fsr.files.map((f) => f.real) : [];
+      let wpaths = [];
+      try { wpaths = mcpWriteCalls(tool, ti).map((c) => c.path); } catch { wpaths = []; }
+      const gates = [...(OVERSIGHT_SIG && OVERSIGHT_SIG.includes("memory-file") ? ["memory-write"] : []), ...(wpaths.some(extensionPath) ? ["extension-install"] : []), ...(mcpMessageTool(tool) ? ["message"] : [])];
+      ORIGIN_IN = { cwd: CALL.cwd, reads, gates };
+    }
     logBehavior(tool, tool, sent.text, { decision: g.decision, findings: sent.findings }, "egress");
     if (g.kill) killSession(tool, g.killIds, "egress");
     const it = intentStep(policy, tool, ti, allFindings, g.decision, g.reason ? [g.reason] : [], g.alternatives);
@@ -3524,6 +3564,11 @@ async function main() {
     // never wired), so the only non-allow outcome here is a failed mask's fallback.
     const tm = settleMask(engine, policy, { tool: "Task", stage: "prompt", ctx: {}, ids: pd.maskIds, value: ti, only: ["prompt"], scanOf: (v) => v.prompt || "", dec: "allow", reasons: [], alts: [], text: ti.prompt || "" });
     return emit(tm.dec, tm.dec === "allow" ? "sub-agent delegation logged" : `Task (sub-agent delegation) — ${tm.reasons.join(", ")}`, tm.alts, tm.rewrite);
+  }
+  // NotebookRead (older hosts): the notebook is read unscanned, as before, and its origin taints the session.
+  if (tool === "NotebookRead" && typeof ti.notebook_path === "string") {
+    ORIGIN_IN = { cwd: CALL.cwd, reads: [agentPath(ti.notebook_path, input.cwd)] };
+    logBehavior("NotebookRead", ti.notebook_path, "", { decision: "allow", findings: [] }, "file");
   }
   // A tool no branch reads (Glob, Grep, LS, …) still carries tags: a tag action or rule that applies to
   // it decides through emit(); otherwise it is allowed unread, as before, and its tags join the session.

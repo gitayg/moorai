@@ -271,6 +271,91 @@ export function fetchExecFacts(cmd, { ps = false, cwd = "", home = "", insensiti
 
 export { dirOf };
 
+// ---- unpacking ----
+//
+// One command line -> [{ archive, dest }]: every archive it unpacks and where the contents land, for origin taint
+// (an outside archive's contents inherit its origin). unzip [-d dir], tar / bsdtar / gtar -x[f] [-C dir],
+// ditto -x[k] src dest, 7z / 7za / 7zz x|e [-odir], unar [-o dir], Expand-Archive [-Path] src [-DestinationPath]
+// dest, python -m zipfile -e src dest, jar x[f], and single-file decompressors (gunzip, gzip -d, bunzip2, unxz,
+// xz -d, zstd -d) whose output is the archive's name less its suffix. With no destination the contents land in the
+// working directory. A tar reading stdin names no archive and is left out. Paths as fetchExecFacts gives them.
+const DECOMP = new Set(["gunzip", "bunzip2", "unxz", "unzstd", "unlzma"]);
+const DECOMP_D = new Set(["gzip", "bzip2", "xz", "zstd", "lzma"]);
+function unpackOf(seg, base) {
+  const b = seg.cw && seg.cw.binary;
+  const r = seg.rest;
+  if (!b) return [];
+  const one = (arc, dest) => (usable(arc) && (dest == null || usable(dest)) ? [{ archive: normPath(arc, base), dest: normPath(dest == null ? "." : dest, base) }] : []);
+  if (b === "unzip") {
+    const di = r.indexOf("-d");
+    const xi = r.indexOf("-x");
+    const arc = r.find((t, k) => !t.startsWith("-") && r[k - 1] !== "-d" && (xi < 0 || k < xi));
+    return arc ? one(arc, di >= 0 ? r[di + 1] : null) : [];
+  }
+  if (b === "tar" || b === "bsdtar" || b === "gtar") {
+    const mode = r[0] && !r[0].startsWith("-") ? r[0] : r.find((t) => /^-[A-Za-z]*x/.test(t) || t === "--extract" || t === "--get");
+    if (!mode || !(/x/.test(mode) || mode === "--extract" || mode === "--get")) return [];
+    let arc = null;
+    const fi = r.findIndex((t) => /^-[A-Za-z]*f$/.test(t) || (t === r[0] && /^[A-Za-z]*f[A-Za-z]*$/.test(t)) || t === "--file");
+    if (fi >= 0) arc = r[fi + 1] || null;
+    const fe = r.find((t) => t.startsWith("--file="));
+    if (fe) arc = fe.slice(7);
+    if (!arc || arc === "-") return [];
+    const ci = r.findIndex((t) => t === "-C" || t === "--directory");
+    const de = r.find((t) => t.startsWith("--directory="));
+    return one(arc, de ? de.slice(12) : ci >= 0 ? r[ci + 1] : null);
+  }
+  if (b === "ditto") {
+    if (!r.some((t) => /^-[A-Za-z]*x/.test(t))) return [];
+    const pos = r.filter((t) => !t.startsWith("-"));
+    return pos.length >= 2 ? one(pos[0], pos[1]) : [];
+  }
+  if (b === "7z" || b === "7za" || b === "7zz" || b === "7zr") {
+    if (r[0] !== "x" && r[0] !== "e") return [];
+    const o = r.find((t) => /^-o./.test(t));
+    const arc = r.slice(1).find((t) => !t.startsWith("-"));
+    return arc ? one(arc, o ? o.slice(2) : null) : [];
+  }
+  if (b === "unar") {
+    const oi = r.indexOf("-o");
+    const arc = r.find((t, k) => !t.startsWith("-") && r[k - 1] !== "-o");
+    return arc ? one(arc, oi >= 0 ? r[oi + 1] : null) : [];
+  }
+  if (b === "expand-archive") {
+    const { flags, positional } = scanArgs(r, { longValued: ["-path", "-literalpath", "-destinationpath"], ps: true });
+    const arc = named(flags, "-path") ?? named(flags, "-literalpath") ?? positional[0];
+    const dest = named(flags, "-destinationpath") ?? positional[1] ?? null;
+    return arc ? one(arc, dest) : [];
+  }
+  if (b === "jar" && r[0] && /^x/.test(r[0])) { const arc = /f/.test(r[0]) ? r[1] : null; return arc ? one(arc, null) : []; }
+  if (INTERP.test(b) && /^python/i.test(b) && r[0] === "-m" && r[1] === "zipfile" && (r[2] === "-e" || r[2] === "--extract") && r[3]) return one(r[3], r[4] ?? null);
+  if (DECOMP.has(b) || (DECOMP_D.has(b) && r.some((t) => /^-[A-Za-z]*d/.test(t) || t === "--decompress"))) {
+    const out = [];
+    for (const t of r) if (!t.startsWith("-") && usable(t)) { const a = normPath(t, base); out.push({ archive: a, dest: a.replace(/\.(?:gz|tgz|bz2|xz|zst|lzma|z)$/i, "") }); }
+    return out.slice(0, 8);
+  }
+  return [];
+}
+export function unpackFacts(cmd, { ps = false, cwd = "", home = "", insensitive = false } = {}) {
+  const res = [];
+  try {
+    const h = String(home || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    const fold = (p) => { const q = h && p.startsWith("~/") ? h + p.slice(1) : p; return insensitive ? q.toLowerCase() : q; };
+    for (const segs of readings(cmd, ps)) {
+      let base = cwd || "";
+      for (const seg of segs) {
+        const nb = cdTarget(seg, base);
+        if (nb !== undefined) { base = nb; continue; }
+        for (const x of unpackOf(seg, base)) {
+          const e = { archive: fold(x.archive), dest: fold(x.dest) };
+          if (!res.some((y) => y.archive === e.archive && y.dest === e.dest)) res.push(e);
+        }
+      }
+    }
+  } catch { return []; }
+  return res.slice(0, 8);
+}
+
 // ---- clone (or download and unpack), then run the checkout ----
 //
 // `git clone <repo> && cd <repo> && pnpm install && pnpm start`: a repository fetched and its install or

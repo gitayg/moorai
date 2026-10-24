@@ -1384,7 +1384,10 @@ const XP_PATH_MAX = 12;    // paths returned
 const XP_SUBST_MAX = 2000; // how far we scan for the close of a $( … ) / ` … ` before giving up
 
 // Commands whose non-flag arguments are files they read into their output.
-const XP_READERS = new Set(["cat", "head", "tail", "less", "more", "bat", "xxd", "nl", "od", "base64", "strings", "tac", "rev"]);
+// Document converters read their input too (textutil, pandoc, pdftotext, antiword, catdoc, docx2txt, unrtf): a
+// .docx turned into text reaches the agent the same way `cat` does. Their option values and output names land
+// here as well; a path that is not a readable file contributes nothing.
+const XP_READERS = new Set(["cat", "head", "tail", "less", "more", "bat", "xxd", "nl", "od", "base64", "strings", "tac", "rev", "textutil", "pandoc", "pdftotext", "antiword", "catdoc", "docx2txt", "unrtf"]);
 // `cp` reads the SOURCE bytes (a rename does not, which is why `mv` is deliberately absent). Only the
 // sources count — scanning the DESTINATION would flag `cp new.env .env` for the content already there.
 const XP_COPY = new Set(["cp"]);
