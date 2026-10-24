@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { isLoopback } from "../cli/moorai-serve.mjs";
 import { createProxy, DEFAULTS, TOKEN_HEADER, HOP, defaultRoutes } from "./server.mjs";
 import { loadBindings } from "./credentials.mjs";
+import { PROVIDERS as FILE_SCAN_PROVIDERS } from "../cli/file-scan-policy.mjs";
 
 export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK and the provider (Anthropic Messages, OpenAI Chat Completions, Gemini generateContent, Ollama /api/chat and /api/generate)
 
@@ -17,6 +18,7 @@ export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK 
                      [--policy-file <path>] [--service-id <name>] [--headless-ask deny|allow-with-report] [--cwd <dir>] [--log]
                      [--credentials <file>] [--require-placeholders] [--denied-tool-call refuse|replace]
                      [--unchecked-window-ms <ms>] [--unchecked-max <n>] [--intent-key-file <path>]
+                     [--file-scan-key-file metadefender|virustotal=<path>]...
 
   Point the SDK at it (plain http on loopback; the proxy speaks TLS to the provider):
     ANTHROPIC_BASE_URL=http://127.0.0.1:${DEFAULTS.port}/anthropic      (upstream https://api.anthropic.com)
@@ -59,7 +61,12 @@ export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK 
   --require-placeholders  with --credentials: refuse (401) a raw credential instead of reporting it
   --intent-key-file the HMAC key for intent alignment (64 hex characters, root-owned, not group- or world-
                     writable), so several proxies hash alike; default a random key per process
-  Policy keys read here: intentAlignment off|report|ask|block (a tool call that does not fit the person's task;
+  --file-scan-key-file  a cloud file-scanning provider's API key, first line of a root-owned file that is not
+                    group- or world-writable (repeatable, one per provider); also the admin binding's fileScanKeys
+                    or MOORAI_METADEFENDER_API_KEY / MOORAI_VIRUSTOTAL_API_KEY. Never the policy, never logged.
+  Policy keys read here: fileScan (scan every inline file, document or image part with OPSWAT MetaDefender
+                    Cloud or VirusTotal before it goes upstream: mode off (default) | hash (only the SHA-256
+                    leaves) | upload (unknown files are uploaded); see README "Cloud file scanning"), intentAlignment off|report|ask|block (a tool call that does not fit the person's task;
                     default report) and responseScan report|mask|block (secrets, personal data, card numbers
                     and the system prompt in the model's reply text; default report). ask / block / mask take
                     effect with --mode enforce. Name the session with X-MoorAI-Session-Id (see README).
@@ -102,6 +109,12 @@ export function parseArgs(argv, env = process.env) {
     else if (a === "--unchecked-window-ms") o.uncheckedWindowMs = Number(v());
     else if (a === "--unchecked-max") o.uncheckedMax = Number(v());
     else if (a === "--intent-key-file") o.intentKeyFile = resolve(v());
+    else if (a === "--file-scan-key-file") {
+      const x = v(), eq = x.indexOf("=");
+      const name = eq > 0 ? x.slice(0, eq) : "";
+      if (!FILE_SCAN_PROVIDERS.includes(name) || eq === x.length - 1) throw new Error(`--file-scan-key-file must be <provider>=<path>, provider one of ${FILE_SCAN_PROVIDERS.join(", ")}`);
+      (o.fileScanKeyFiles ||= {})[name] = resolve(x.slice(eq + 1));
+    }
     else throw new Error(`unknown argument ${a}`);
   }
   if (o.help) return o;

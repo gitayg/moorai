@@ -705,7 +705,8 @@ content-free) in one process:
   `POST /v1/scan` (`{text, stage?, ctx?}`), `POST /v1/tool-call` (`{tool, input, cwd?}`, the decision the hook
   makes for that call), `POST /v1/index-scan` (`{chunks, source?}`, one verdict per chunk about to be
   embedded; see below), `POST /v1/task` (`{session, prompt}`, the user's task for intent alignment; see
-  below) and `GET /healthz`. Each POST also takes an optional `session` (the caller's own
+  below), `POST /v1/file-scan` (`{data | sha256, mediaType?}`, the cloud file scan of a file about to be sent
+  to a model; see [Cloud file scanning](#cloud-file-scanning-before-the-model)) and `GET /healthz`. Each POST also takes an optional `session` (the caller's own
   session id), which leaves only as the keyed `session` field of the alerts it raises. Verdicts never contain the submitted text, though a
   `tool-call` verdict's `message`, the sentence the hook shows the agent, can name a file or a host from
   the call. It binds loopback
@@ -906,6 +907,75 @@ each text channel are held back (the client sees the text up to about 64 tokens 
 sent, and text already sent cannot be recalled. Mask / block also remove token log-probabilities, which
 repeat the reply token by token. A card or personal-data alert's `contentHash` is keyed per proxy process,
 not by the install token. See [`model-proxy/README.md`](model-proxy/README.md#reply-text-scanning).
+
+<a id="cloud-file-scanning-before-the-model"></a>**Cloud file scanning before the model.** Policy `fileScan` has the model proxy check every inline file, document or image a request carries with a cloud
+file-scanning provider **before the request goes upstream**: Anthropic `image` / `document` base64 blocks (also
+inside a `tool_result`), OpenAI Chat `image_url` data URLs, `file` parts and `input_audio` (any role, tool
+messages included), Responses `input_image` / `input_file` (also in a `function_call_output`), Gemini `inlineData`
+(also in `systemInstruction` and nested `functionResponse.parts`), and
+Ollama `images`. moorai-serve's `POST /v1/file-scan` does the same for a framework that sends files some other
+way. Two providers, behind one interface: **OPSWAT MetaDefender Cloud** (`"metadefender"`, the default) and
+**VirusTotal** (`"virustotal"`).
+
+```json
+"fileScan": { "provider": "metadefender", "mode": "hash", "onMalicious": "block", "onUnknown": "allow",
+              "maxBytes": 33554432, "timeoutMs": 10000, "iocHash": false }
+```
+
+**What leaves the server, per mode.** `"off"` (the default): nothing. `"hash"`: only the file's SHA-256, in the
+URL of one GET to the provider (MetaDefender `GET /v4/hash/{sha256}`, VirusTotal `GET /api/v3/files/{sha256}`);
+no file content. VirusTotal documents that "any IoC submitted or queried via the API will be scanned and added to
+the VirusTotal dataset", so a hash lookup there tells VirusTotal the hash. `"upload"` (explicit opt-in): a file
+the hash lookup did not know, up to `maxBytes`, is also uploaded and polled to a verdict.
+- **MetaDefender Cloud** receives the file's bytes (`POST /v4/file`). By OPSWAT's documentation, submitting a
+  file gives OPSWAT permission to share the scan results with the security community; `privateScan: true` sends
+  `samplesharing: 0` ("all files scanned in private mode are not stored or shared"; a paid-licence feature).
+  `region` pins one of OPSWAT's documented regional endpoints (`us-west`, `eu-central`, `ca-central`,
+  `ap-southeast`, `ap-northeast`, `ap-south`, `il-central`); otherwise OPSWAT routes to the nearest.
+- **VirusTotal** receives the file's bytes (`POST /api/v3/files`, or the one-time `upload_url` past 32 MB).
+  **Uploads to VirusTotal are not private:** "Scanning reports produced by VirusTotal are shared with the public
+  VirusTotal community" and "the contents of submitted files or pages may also be shared with premium VirusTotal
+  customers" ([docs.virustotal.com/docs/how-it-works](https://docs.virustotal.com/docs/how-it-works)). Do not
+  turn on upload mode with VirusTotal for files that may hold confidential data. VirusTotal's public API is
+  limited to 4 requests per minute and 500 a day and "must not be used in commercial products or services".
+
+**Decisions.** Malicious (MetaDefender `scan_all_result_i` 1, 8, 27, 28; VirusTotal any engine `malicious`):
+`onMalicious` `block` refuses the request (403, enforce mode) or `report` forwards it with an alert. Unknown
+(not found, suspicious only, an incomplete scan, or over `maxBytes` in upload mode): `onUnknown` `allow`, `ask`
+(no approver on a server: the headless rule, deny by default) or `block`. A provider error, timeout, rate limit,
+missing key, or a request with more than 32 files follows the model proxy's admin-chosen fail mode
+(`failMode.modelProxy`): closed refuses with the `FAIL_CLOSED` alert, open treats the file as unknown. A scan
+never waits past `timeoutMs`. Report mode forwards everything and alerts after the response, except that under
+a closed fail mode a file it could not scan is refused first. What is scanned is what is sent: base64 is decoded strictly
+(data that is not is unscannable, never clean), both spellings of a Gemini field are scanned (different content
+in `inlineData` and `inline_data` is refused as ambiguous), nested `functionResponse.parts` and tool results are
+walked (a part nested past 16 levels is unscannable), a request body that repeats a JSON key is refused in
+enforce mode, and with scanning on every parsed body is forwarded re-serialised from the parsed object.
+
+**Keys** come only from the root-owned admin binding (`"fileScanKeys": {"metadefender": "…"}`), a root-owned key
+file (`--file-scan-key-file metadefender=/etc/moorai/metadefender.key`) or the server's environment
+(`MOORAI_METADEFENDER_API_KEY`, `MOORAI_VIRUSTOTAL_API_KEY`); never from the signed policy, never logged, never
+in an alert or sent to the console.
+
+**Cache and rate limit.** Verdicts are cached per process by hash (malicious and clean 1 h, unknown 5 min), so a
+conversation that re-sends its images each turn is looked up once. Each provider has a request budget per
+minute (`ratePerMinute`; default 4 for VirusTotal, 60 for MetaDefender) with a bounded wait queue; a 429 pauses
+that provider until the reset it names.
+
+**Alerts** are content-free: provider, verdict, detection and engine counts, the provider's threat name when it
+gives one, the MIME class, a size bucket and a keyed hash of the SHA-256. A malicious file is threat #17
+(dangerous files, `REASON` `FILE_SCAN`); its raw SHA-256, a public indicator, is added only with
+`iocHash: true`. A clean verdict needs at least `minEngines` engines (default 3); fewer is unknown. Anthropic Message
+Batches and Gemini `cachedContents` are scanned like model requests. **Not scanned:** a file sent by reference (a URL,
+a provider file id, Gemini `fileData`) is not fetched: it is alerted and `onUnknown` decides; the upload endpoints
+(Anthropic / OpenAI `/files`, OpenAI `/uploads`, Gemini `/upload/…`, Gemini `:batchGenerateContent`) are not read and
+are refused in enforce mode or under a closed fail mode, alerted otherwise; a body with a content coding or that is
+not a JSON object, a multipart or binary body to any path the proxy does not parse, and a path with any `%` escape are
+handled the same way; paths are normalised (`//`, dot segments, a trailing slash, case) before they are matched and
+forwarded; every JSON body on any path is walked for every API's file shapes (`count_tokens`, `countTokens`,
+`input_tokens`, unknown routes); a file uploaded earlier and used only by an id the proxy does not see is not scanned; scanning before embedding (`/v1/index-scan`) is not wired yet. Deep CDR (MetaDefender's
+sanitisation) is not used.
+See [`model-proxy/README.md`](model-proxy/README.md#cloud-file-scanning).
 
 **Token usage and budgets.** The proxy reads each response's token counts and posts content-free hourly totals to
 the console, and answers 429 `budget_exceeded` in enforce mode while a signed usage budget with `action: "block"`

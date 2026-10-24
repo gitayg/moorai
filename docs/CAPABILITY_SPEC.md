@@ -2724,6 +2724,40 @@ present. They have not been checked against Anthropic's real signer.
 | Business-impact classes | `money`, `bulk-data`, `identity`, `destructive`, `delegation` by function-name words; built-in `alert`; `businessToolActions` per class; a specific `functionToolActions` key wins | test/proxy-business-tools.test.mjs |
 | Model-proxy fail mode | see Fail mode above | test/proxy-fail-mode.test.mjs |
 
+## Cloud file scanning before the model (v1.34.0)
+
+**Contract.** Signed policy `fileScan` (`cli/file-scan-policy.mjs`); keys from the root-owned admin binding
+`fileScanKeys`, `--file-scan-key-file <provider>=<path>` (root-owned) or `MOORAI_METADEFENDER_API_KEY` /
+`MOORAI_VIRUSTOTAL_API_KEY`, never the policy. Providers behind one interface: OPSWAT MetaDefender Cloud API v4
+(`cli/file-scan-metadefender.mjs`) and VirusTotal API v3 (`cli/file-scan-virustotal.mjs`).
+
+| Field | Values | Default |
+|---|---|---|
+| `provider` | `metadefender` \| `virustotal` | `metadefender` |
+| `mode` | `off` \| `hash` \| `upload` | `off` |
+| `onMalicious` | `block` \| `report` | `block` |
+| `onUnknown` | `allow` \| `ask` \| `block` | `allow` |
+| `maxBytes` / `timeoutMs` | 1–681574400 / 100–120000 | 33554432 / 10000 |
+| `iocHash`, `privateScan` | `true` | `false` |
+| `region` (MetaDefender), `ratePerMinute` | a documented region name / 1–10000 | nearest / 60 MetaDefender, 4 VirusTotal |
+| `minEngines` | 1–1000: a clean verdict from fewer engines is unknown (`few-engines`) | 3 |
+
+| Capability | Behaviour | Evidence |
+|---|---|---|
+| What leaves, per mode | `off`: nothing. `hash`: one GET with the SHA-256 in the path (MetaDefender `/v4/hash/{h}`, VirusTotal `/api/v3/files/{h}`). `upload`: also the bytes of a file the lookup did not know (≤ `maxBytes`): MetaDefender `POST /v4/file` (results shareable with the community unless `privateScan` sends `samplesharing: 0`), VirusTotal `POST /api/v3/files` (report public; contents may be shared with premium customers) | test/file-scan-core.test.mjs, test/file-scan-proxy.test.mjs ("only GET by hash") |
+| Model proxy parts | Anthropic image / document base64 (and in `tool_result`), OpenAI Chat `image_url` / `file` / `input_audio` (any role), Responses `input_image` / `input_file` (and `function_call_output`), Gemini `inlineData` / `inline_data` (contents, `systemInstruction`, nested `functionResponse.parts`), Ollama `images`; streaming and not; ≤ 32 per request | test/file-scan-proxy.test.mjs, test/file-scan-parts.test.mjs |
+| Scanned = sent | Strict base64 (failures are `unscannable`, an error, never clean); Gemini dual spellings both scanned, differing ones refused as ambiguous; a body with a duplicate or case-colliding key refused (both: enforce or closed fail mode; else forwarded with `UNEVALUATED_BAD_INPUT`); with scanning on every parsed body forwarded re-serialised from the lossless parse; a part past 16 nesting levels is unscannable | test/file-scan-parts.test.mjs |
+| Decision | malicious → `onMalicious`; unknown → `onUnknown` (`ask` = headless ask); error (timeout, 429 / 253, auth, no key, over the part cap, unscannable) → fail mode: closed refuses with `FAIL_CLOSED` (`Fail-closed: file not scanned`), open applies `onUnknown`. Proxy: `failMode.modelProxy`; moorai-serve: `failMode.default` | test/file-scan-core.test.mjs, test/file-scan-proxy.test.mjs, test/file-scan-serve.test.mjs |
+| Cache / rate limit | per-process LRU by provider, mode and SHA-256 (1 h; unknown 5 min; errors never), single flight; per-provider token bucket with a 32-deep wait queue bounded by the deadline; a provider 429 pauses it until its reset | test/file-scan-core.test.mjs |
+| Sidecar | `POST /v1/file-scan` `{data \| sha256, mediaType?, session?}`, token auth as `/v1/tool-call`, body cap `--max-file-body` | test/file-scan-serve.test.mjs |
+| Alert | `File scan: malicious file` (threat #17, `FILE_SCAN`), `File scan: unknown file` / `File scan: file not scanned` (threat 0, `FILE_SCAN`); `fileScan: {provider, verdict, mode, detections?, engines?, threat?, mimeClass, sizeBucket, uploaded, why?}`; `contentHash` keyed; raw `sha256` only for malicious with `iocHash` | test/file-scan-core.test.mjs, test/file-scan-proxy.test.mjs |
+| Key handling | sent only in the provider's header to its own origin (`redirect: "error"`; VirusTotal's `upload_url` must be same-origin); never in a log, alert, error or refusal | test/file-scan-providers.test.mjs, test/file-scan-proxy.test.mjs |
+
+| Unreadable bodies and other endpoints | A parsed-path body with a content coding or not a JSON object, and the upload endpoints (`/files`, `/uploads`, Gemini `/upload/…`, `:batchGenerateContent`): refused in enforce or closed fail mode, else `UNEVALUATED_BAD_INPUT` (`model-proxy:file-scan-body` / `file-scan-endpoint`). Anthropic `/messages/batches`, `/messages/count_tokens` and Gemini `cachedContents` are parsed and scanned. Any other unparsed path with a non-JSON POST / PUT / PATCH body (multipart, binary, or a `Content-Type` other than `application/json` / `application/*+json`): refused or `model-proxy:file-scan-unparsed`. A path with any `%` escape: refused or `model-proxy:file-scan-path`. Paths normalised (dot segments, `//`, trailing `/`) before matching and forwarding, matched case-insensitively. Every JSON body on any path walked for every API's file shapes (64 levels, 200000 objects) | test/file-scan-bypass.test.mjs |
+| References | URL and file-id references (and Responses `computer_call_output` by id) alert with `why: "reference"` and apply `onUnknown`; a non-data-URL `file_data` / `image_url` value is unscannable | test/file-scan-bypass.test.mjs |
+
+**Not built.** Deep CDR; fetching files sent by reference; scanning upload endpoints; scan-before-embed for files (`/v1/index-scan`).
+
 ## Living off the AI detectors (v1.15.0)
 
 **Threat.** An LLM-operated implant that "lives off the AI" uses the AI already on the device. It drives the

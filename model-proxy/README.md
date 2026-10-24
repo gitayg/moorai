@@ -743,6 +743,142 @@ unevaluated; in mask / block mode under a closed fail mode the response is refus
 stopped. Ollama `/api/generate` text is in addition still scanned report-only by every detector at stage
 `output` (see **Model text** above), so a finding there can raise both alerts.
 
+## Cloud file scanning
+
+Policy `fileScan` (`cli/file-scan-policy.mjs`) has the proxy check every inline file, document or image part of
+a parsed request with a cloud file-scanning provider before the request goes upstream. Two providers behind one
+interface (`lookup(sha256)`, `upload(bytes)`, `poll(id)`): **OPSWAT MetaDefender Cloud** (`cli/file-scan-metadefender.mjs`,
+API v4) and **VirusTotal** (`cli/file-scan-virustotal.mjs`, API v3). The scanner, cache, rate limit, decision and
+alert are `cli/file-scan.mjs`; finding the parts is `model-proxy/file-parts.mjs`.
+
+| Field | Values | Default |
+|---|---|---|
+| `provider` | `"metadefender"`, `"virustotal"` (anything else turns scanning off) | `"metadefender"` |
+| `mode` | `"off"`, `"hash"`, `"upload"` | `"off"` |
+| `onMalicious` | `"block"`, `"report"` | `"block"` |
+| `onUnknown` | `"allow"`, `"ask"`, `"block"` | `"allow"` |
+| `maxBytes` | largest file uploaded, 1 to 681574400 | 33554432 |
+| `timeoutMs` | the whole scan of one request's files, 100 to 120000 | 10000 |
+| `iocHash` | `true` adds a malicious file's raw SHA-256 to its alert | `false` |
+| `privateScan` | MetaDefender: `true` sends `samplesharing: 0` on upload | `false` |
+| `region` | MetaDefender regional endpoint by name: `us-west`, `eu-central`, `ca-central`, `ap-southeast`, `ap-northeast`, `ap-south`, `il-central` (never a URL) | OPSWAT's nearest (`api.metadefender.com`) |
+| `ratePerMinute` | provider requests per minute from this process, 1 to 10000 | 4 (VirusTotal), 60 (MetaDefender) |
+| `minEngines` | a clean verdict counts only from at least this many engines (VirusTotal: harmless + undetected + malicious + suspicious; MetaDefender: `total_avs`); fewer is unknown (`few-engines`), 1 to 1000 | 3 |
+
+**Parts read.** Every turn, any role (a conversation re-sends its earlier files; the cache answers those):
+
+| API | Parts |
+|---|---|
+| Anthropic Messages | `image` and `document` blocks with `source.type: "base64"`, also inside a `tool_result`'s content |
+| OpenAI Chat Completions | `image_url` with a `data:` URL, `file` with `file_data` (a `data:` URL), `input_audio` (`data`); any role, a `tool` message's content included |
+| OpenAI Responses | `input_image` (`image_url` `data:` URL) and `input_file` (`file_data`), in a message or a `function_call_output`; a `computer_call_output` screenshot (`output.image_url`) |
+| Anthropic Message Batches (`POST …/messages/batches`) | every `requests[].params` read as a Messages request |
+| Gemini `POST …/cachedContents` | read as a Gemini request (`contents`, `systemInstruction`) |
+| Gemini | `inlineData` in `contents[].parts[]`, `systemInstruction.parts[]` and every nested `functionResponse.parts[]` |
+| Ollama | `images[]` in `/api/chat` messages and `/api/generate` |
+
+**Files the scan cannot read, and what happens to them** (all with `fileScan` on; `mode: "off"` changes nothing):
+
+| What | Handling |
+|---|---|
+| A file sent by reference: a URL (`image_url` / `file_url` `https://…`, an Anthropic `url` source, Gemini `fileData.fileUri`) or a provider file id (OpenAI `file_id`, Anthropic `source.type: "file"`) | not fetched; an alert (`why: "reference"`, keyed hash of the reference, never the reference) and `onUnknown` decides |
+| A `file_data` / `image_url` value that is neither a `data:` URL nor a URL (raw base64, a non-string), base64 that is not strict, a part nested past 16 levels | unscannable: an error, so the fail mode decides (open: `onUnknown`) |
+| A body on a parsed path with a `Content-Encoding` other than identity, or that is not a JSON object (a BOM, protobuf) | refused in enforce mode or under a closed fail mode; otherwise forwarded with an `UNEVALUATED_BAD_INPUT` alert (`model-proxy:file-scan-body`) |
+| Upload endpoints: Anthropic and OpenAI `…/files`, OpenAI `…/uploads` and `…/uploads/{id}/parts`, Gemini `/upload/…` media uploads, Gemini `:batchGenerateContent` | not read; refused in enforce mode or under a closed fail mode, otherwise alerted (`model-proxy:file-scan-endpoint`) and forwarded. A file uploaded there and later used by id is a reference (above) |
+| Any other path the proxy does not parse, with a POST / PUT / PATCH body that is not JSON (multipart, binary, a content coding), or whose `Content-Type` is not `application/json` / `application/*+json` even if it parses as JSON | refused in enforce mode or under a closed fail mode, otherwise alerted (`model-proxy:file-scan-unparsed`) and forwarded |
+| A request path with any `%` escape | refused in enforce mode or under a closed fail mode, otherwise alerted (`model-proxy:file-scan-path`) and forwarded |
+| A file uploaded earlier and used only by id (OpenAI Batch input files, vector-store and Assistants attachments) | a reference where the request names it in a known shape; otherwise not seen |
+
+**Any JSON body, any path.** Every JSON request body, on a parsed path or not (`count_tokens`, Gemini `countTokens`
+including a nested `generateContentRequest`, Responses `input_tokens`, batches, an unknown route), is walked whole and
+every object tested against every API's file shapes above; a file found anywhere is scanned under the same rules.
+The walk stops at 64 levels or 200000 objects; past either the body is unscannable.
+
+**Paths.** With `fileScan` on, a path carrying any `%` escape is refused (enforce or closed fail mode) or alerted, never
+matched. Otherwise the path is normalised before it is matched and forwarded: dot segments resolved, duplicate slashes
+collapsed, a trailing slash removed, and the endpoint lists matched case-insensitively; the normalised path is exactly
+what goes upstream. So `/v1//files`, `/v1/files/` and `/V1/Files` are the Files API, and `/v1//messages/` is parsed and
+scanned as `/v1/messages`.
+
+An Anthropic `document` whose source is text is scanned as text, as before. At most 32 parts per request are
+scanned; the rest count as not scanned (the fail mode decides). The request body is the same whether `stream` is set or not, so the
+scan runs before forwarding either way.
+
+**What is scanned is what is sent.** Three rules keep the bytes scanned and the bytes the provider reads the same:
+- *Dual spellings.* Gemini's API is proto3 JSON, whose parsers take both `inlineData` and `inline_data` (likewise
+  `mimeType` / `mime_type`, `functionResponse` / `function_response`, `systemInstruction` / `system_instruction`).
+  Both are scanned; when both are present with different content the request is ambiguous: refused in enforce mode
+  or under a closed fail mode, otherwise forwarded with a content-free `UNEVALUATED_BAD_INPUT` alert.
+- *Strict base64.* A blob must be the standard alphabet (Gemini also the URL-safe one, which proto3 JSON accepts;
+  never both in one value), padding only at the end, a length that is a multiple of 4 once whitespace is removed,
+  and must re-encode to the same text. One that fails is **unscannable**: never clean, never looked up, decided as
+  an error (closed fail mode refuses; open applies `onUnknown`). A Gemini blob sent unpadded is valid to Gemini but
+  unscannable here.
+- *Duplicate keys.* With file scanning on, a request body that repeats a JSON key, or has keys that differ only in
+  case (Go's `encoding/json`, which Ollama uses, folds case), is a parser differential: a reader that keeps the first
+  occurrence could see a file the last-wins parse never did. It is refused (403, the provider's error shape) in
+  enforce mode or under a closed fail mode; otherwise it is forwarded re-serialised with a content-free
+  `UNEVALUATED_BAD_INPUT` alert.
+- *Re-serialised body.* With file scanning on, every parsed request body is forwarded as the parsed object
+  re-serialised (lossless numbers, `json-lossless.mjs`), file or not, so the value scanned is the only one sent.
+  With `mode: "off"` the body is forwarded byte for byte, as before.
+- *Depth.* Nested parts are read 16 levels deep (`tool_result` in `tool_result`, `functionResponse.parts`); a part
+  past that is recorded unscannable, not skipped.
+
+**What leaves the server.**
+
+| Mode | MetaDefender Cloud | VirusTotal |
+|---|---|---|
+| `off` | nothing | nothing |
+| `hash` | `GET /v4/hash/{sha256}` with the `apikey` header: the SHA-256 only | `GET /api/v3/files/{sha256}` with `x-apikey`: the SHA-256 only. VirusTotal documents that a queried indicator is added to its dataset |
+| `upload` | as `hash`, then for a hash the provider did not know and no larger than `maxBytes`: the file's bytes, `POST /v4/file` (a `filename` header), polled with `GET /v4/file/{data_id}`. By default OPSWAT may share the scan results with the security community; `privateScan: true` sends `samplesharing: 0` (a paid-licence feature: "All files scanned in private mode are not stored or shared") | as `hash`, then the file's bytes, multipart `POST /api/v3/files` (past 32 MB through the one-time `GET /files/upload_url`, accepted only on VirusTotal's own origin), polled with `GET /api/v3/analyses/{id}`. **Not private:** "Scanning reports produced by VirusTotal are shared with the public VirusTotal community" and "the contents of submitted files or pages may also be shared with premium VirusTotal customers" |
+
+The proxy never sends a provider the request's text, headers, model, or the client's own credentials.
+
+**Verdicts and decisions.**
+
+| Provider answer | Verdict |
+|---|---|
+| MetaDefender `scan_all_result_i` 1 (Infected), 8 (Skipped Infected), 27 / 28 (sandbox likely malicious / malicious); VirusTotal `last_analysis_stats.malicious` > 0 | malicious |
+| MetaDefender 0 (No Threats Found), 7 (Skipped Clean); VirusTotal no malicious or suspicious and at least one harmless or undetected | clean |
+| HTTP 404 (MetaDefender "The hash was not found", VirusTotal `NotFoundError`); suspicious only (MetaDefender 2, 18, 26; VirusTotal `suspicious` > 0); any other result code (failed, encrypted, archive limits, unsupported, empty); no engine verdict yet; over `maxBytes` in upload mode | unknown |
+| 429, MetaDefender 253 ("Not Scanned. Rate Limit Exceeded"), 401 / 403, any other error, the deadline, no key, past the 32-part cap, unscannable base64 | error |
+
+`onMalicious: "block"` refuses the request in `--mode enforce` (403, `x-moorai-model-proxy: refused`, the
+provider's name, the detection count and its threat name in the message); `"report"` forwards it with an alert.
+`onUnknown: "block"` refuses an unknown file; `"ask"` settles as a headless ask (deny unless the admin binding or
+policy says `headlessAsk: "allow-with-report"`). An error follows `failMode.modelProxy` (cli/fail-mode.mjs; the
+proxy's own fallback is closed in enforce, open in report): closed refuses with a content-free `FAIL_CLOSED` alert
+(`Fail-closed: file not scanned`); open treats the file as unknown. In report mode nothing is refused and the scan
+runs after the response, except under a closed fail mode, where the scan runs first and a file it could not scan
+is refused.
+
+**Keys.** Only from the root-owned admin binding (`/etc/moorai/config.json` `"fileScanKeys": {"metadefender": "…",
+"virustotal": "…"}`), then a key file per provider (`--file-scan-key-file metadefender=<path>`, first line, read only
+when root-owned and not group- or world-writable), then the environment (`MOORAI_METADEFENDER_API_KEY`,
+`MOORAI_VIRUSTOTAL_API_KEY`). A key in the policy is ignored. A key is sent only in the provider's header to the
+provider's base URL (fetch with `redirect: "error"`); it is never in an error, a log line, an alert or a refusal.
+
+**Cache, rate limit, deadline.** Verdicts are cached per process by provider, mode and SHA-256 (malicious and clean
+1 h, unknown 5 min, errors never; LRU of 4096); concurrent scans of one file share one query. Every lookup, upload
+and poll takes a token from the provider's per-minute bucket (`ratePerMinute`); a request with no token waits only
+if a token comes before the deadline and fewer than 32 requests wait, otherwise it is a rate-limit error at once.
+A provider 429 pauses that provider until its `X-RateLimit-Reset-In` / `Retry-After` (else 60 s). `timeoutMs`
+bounds the whole scan, waits and polls included. Documented limits: VirusTotal's public API, 4 requests per minute
+and 500 a day, not for commercial use; MetaDefender's throttling, 9 requests per hour on a free key, 75 / 150 / 500+
+per minute on standard / professional / enterprise licences (uploads and bulk lookups), daily limits per key.
+
+**Alerts.** One per file, verdict and decision per proxy process: `tool: "model-proxy:file-scan"`, stage `prompt`,
+`fileScan: { provider, verdict, mode, detections?, engines?, threat?, mimeClass, sizeBucket, uploaded, why? }`,
+`contentHash` the keyed hash of the SHA-256. A malicious file is threat #17 ("Dangerous links, files, or scripts",
+the catalogue's only threat about a dangerous file; ATLAS AML.T0011 User Execution) with `REASON` `FILE_SCAN`; an
+unknown or unscanned file is threat 0. The raw SHA-256 is added only for a malicious file with `iocHash: true`. A
+clean file raises nothing.
+
+**Not built.** Deep CDR (MetaDefender's sanitisation, `GET /v4/file/converted/{dataId}`) is not used. Files sent by
+reference are not fetched (they are alerted and `onUnknown` decides). Upload endpoints are refused or alerted, not
+scanned. Scan-before-embed for files (`/v1/index-scan`) is not wired.
+
 ## Report vs enforce
 
 **`--mode report` (default)** changes nothing in the traffic:
@@ -1229,7 +1365,17 @@ node --test --import ./test/hermetic-env.mjs test/model-proxy.test.mjs test/mode
   test/model-proxy-differentials.test.mjs test/model-proxy-canonical.test.mjs test/model-proxy-json-strict-fuzz.test.mjs \
   test/proxy-context-system.test.mjs test/proxy-business-tools.test.mjs test/proxy-fail-mode.test.mjs test/decoy-use.test.mjs test/decoy-use-real.test.mjs \
   test/model-proxy-intent.test.mjs test/model-proxy-response-scan.test.mjs
+node --test --import ./test/hermetic-env.mjs test/file-scan-providers.test.mjs test/file-scan-core.test.mjs \
+  test/file-scan-proxy.test.mjs test/file-scan-parts.test.mjs test/file-scan-serve.test.mjs
 ```
+
+**Cloud file scanning.** `test/file-scan-*.test.mjs` run against fake MetaDefender Cloud and VirusTotal servers
+that answer in each provider's documented shapes (`test/file-scan-fakes.mjs`); no real API is called and no real
+key exists. Covered: response parsing for both providers, hash hit (blocked), clean (forwarded), unknown under
+each `onUnknown`, upload then poll to a verdict, a timeout and a 429 under each fail mode, the bounded rate-limit
+queue, the cache, that hash mode sends only `GET` by hash, that the key is in no log line, alert or error, every
+adapter's file part streaming and not, dual spellings, nested `functionResponse.parts`, strict base64 and the
+re-serialised body.
 
 **Intent alignment and reply text, exact coverage.** `test/model-proxy-intent.test.mjs` and
 `test/model-proxy-response-scan.test.mjs` run the proxy in process against the fake upstreams, for

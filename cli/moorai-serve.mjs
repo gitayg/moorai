@@ -61,6 +61,23 @@
 //                                                     alerts. Such a tokenless task counts in "report" only:
 //                                                     if the policy later turns to "ask" or "block", the
 //                                                     session is judged as if it had no task (task-unknown).
+//   POST /v1/file-scan { data | sha256, mediaType?, session? } -> the cloud file scan (cli/file-scan.mjs) of one
+//                                                     file about to be sent to a model some other way than through
+//                                                     moorai-model-proxy: `data` is the file in base64, or `sha256`
+//                                                     only its hash (looked up, never uploaded). Policy fileScan
+//                                                     (cli/file-scan-policy.mjs) names the provider (OPSWAT
+//                                                     MetaDefender Cloud or VirusTotal) and the mode: "hash" sends
+//                                                     only the SHA-256, "upload" also uploads a file the provider
+//                                                     did not know. -> { decision: allow | deny, verdict:
+//                                                     malicious | clean | unknown | error | not-scanned, provider,
+//                                                     mode, detections?, engines?, threat?, uploaded, cached, why?,
+//                                                     policyId }. A provider error, timeout or rate limit follows
+//                                                     the signed policy's failMode.default (admin binding first;
+//                                                     default open: onUnknown decides). The provider key: the
+//                                                     admin binding's fileScanKeys, --file-scan-key-file
+//                                                     <provider>=<path> (root-owned), or MOORAI_METADEFENDER_API_KEY
+//                                                     / MOORAI_VIRUSTOTAL_API_KEY; never the policy. Body cap
+//                                                     --max-file-body (default 50331648).
 //   session (optional, every POST but /v1/task, where it is required): the caller's own session /
 //   conversation id. Only its keyed hash leaves, as the `session` field of each console alert the request
 //   raises; omitted, no field.
@@ -80,6 +97,7 @@
 //                [--max-body 1048576] [--timeout-ms 10000] [--policy-file <path>] [--service-id <name>]
 //                [--headless-ask deny|allow-with-report] [--log]
 //                [--model-proxy-url http://127.0.0.1:8791] [--model-proxy-token-file <path>]
+//                [--file-scan-key-file metadefender|virustotal=<path>]... [--max-file-body 50331648]
 //   Token: --token-file (one token per line; each line is a principal), else MOORAI_SERVE_TOKEN (one). Task-writer token:
 //   --task-token-file (one per --token-file line, paired by position), else MOORAI_SERVE_TASK_TOKEN (one). A token is
 //   16-256 characters of A-Z a-z 0-9 . _ ~ + / = -; in a token file a line starting with # is a comment, blank lines
@@ -95,9 +113,16 @@ import { dirname, join, resolve } from "node:path";
 import { createMoorAI, STAGES } from "../packages/agent-sdk/src/runtime.mjs";
 import { inboundLib, indexScanLib, intentServerLib } from "../packages/agent-sdk/src/core.mjs";
 import { createCheckedNotifier } from "../model-proxy/checked-notify.mjs";
+import { fileScanPolicy, PROVIDERS as FILE_SCAN_PROVIDERS } from "./file-scan-policy.mjs";
+import { loadFileScanKeys } from "./file-scan-keys.mjs";
+import { createFileScanner, fileScanDecision, fileScanAlert } from "./file-scan.mjs";
+import { resolveFailMode } from "./fail-mode.mjs";
+import { headlessAskMode, systemConfig } from "./server-mode.mjs";
+import { NO_KEY } from "./content-hash.mjs";
+import { strictBase64 } from "../model-proxy/file-parts.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-export const DEFAULTS = Object.freeze({ host: "127.0.0.1", port: 8790, maxBody: 1048576, timeoutMs: 10000, intentSessionsPerCaller: 256 });
+export const DEFAULTS = Object.freeze({ host: "127.0.0.1", port: 8790, maxBody: 1048576, maxFileBody: 50331648, timeoutMs: 10000, intentSessionsPerCaller: 256 });
 const CTX_KEYS = { template: "boolean", egress: "boolean", inbound: "boolean", targetPath: "string", tool: "string" };
 const MAX_TEXT = 4 * 1048576;
 
@@ -134,7 +159,7 @@ function envToken(env, name) {
 }
 
 export function parseArgs(argv, env = process.env) {
-  const o = { ...DEFAULTS, allowRemote: false, log: false, token: "", tokens: [], taskTokens: [] };
+  const o = { ...DEFAULTS, allowRemote: false, log: false, token: "", tokens: [], taskTokens: [], fileScanKeyFiles: {} };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i], v = () => { const x = argv[++i]; if (x === undefined) throw new Error(`${a} needs a value`); return x; };
     if (a === "--host") o.host = v();
@@ -151,6 +176,13 @@ export function parseArgs(argv, env = process.env) {
     else if (a === "--model-proxy-url") o.modelProxyUrl = v();
     else if (a === "--model-proxy-token-file") o.modelProxyToken = readFileSync(v(), "utf8").trim();
     else if (a === "--intent-sessions-per-caller") o.intentSessionsPerCaller = Number(v());
+    else if (a === "--max-file-body") o.maxFileBody = Number(v());
+    else if (a === "--file-scan-key-file") {
+      const x = v(), eq = x.indexOf("=");
+      const name = eq > 0 ? x.slice(0, eq) : "";
+      if (!FILE_SCAN_PROVIDERS.includes(name) || eq === x.length - 1) throw new Error(`--file-scan-key-file must be <provider>=<path>, provider one of ${FILE_SCAN_PROVIDERS.join(", ")}`);
+      o.fileScanKeyFiles[name] = resolve(x.slice(eq + 1));
+    }
     else throw new Error(`unknown argument ${a}`);
   }
   if (!o.tokens.length) o.tokens = envToken(env, "MOORAI_SERVE_TOKEN");
@@ -168,6 +200,7 @@ export function parseArgs(argv, env = process.env) {
   if (!Number.isInteger(o.port) || o.port < 0 || o.port > 65535) throw new Error("--port must be 0-65535");
   if (!Number.isInteger(o.maxBody) || o.maxBody < 1024) throw new Error("--max-body must be an integer >= 1024");
   if (!Number.isInteger(o.timeoutMs) || o.timeoutMs < 100) throw new Error("--timeout-ms must be an integer >= 100");
+  if (!Number.isInteger(o.maxFileBody) || o.maxFileBody < 1024) throw new Error("--max-file-body must be an integer >= 1024");
   if (!isLoopback(o.host)) {
     if (!o.allowRemote) throw new Error(`refusing to listen on ${o.host}: not a loopback address (pass --allow-remote and a token to expose it)`);
     if (!o.token) throw new Error(`refusing to listen on ${o.host} without a token (--token-file or MOORAI_SERVE_TOKEN)`);
@@ -248,6 +281,40 @@ export async function createServer(opts = {}) {
   const version = (() => { try { return JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version; } catch { return "unknown"; } })();
   const loopbackBind = isLoopback(o.host);
   const notifier = o.modelProxyUrl ? createCheckedNotifier({ url: o.modelProxyUrl, token: o.modelProxyToken || "", fetchImpl: o.notifyFetch }) : null;
+  // Cloud file scanning (POST /v1/file-scan). Keys: the root-owned admin binding, root-owned key files, this
+  // process's environment (cli/file-scan-keys.mjs); opts.fileScanKeys is an embedder's own (tests).
+  const admin = o.systemConfig !== undefined ? o.systemConfig : systemConfig();
+  const fileScanner = createFileScanner({
+    keys: { ...loadFileScanKeys({ admin, keyFiles: o.fileScanKeyFiles || {}, env: o.env || process.env }).keys, ...(o.fileScanKeys || {}) },
+    endpoints: o.fileScanEndpoints || {}, fetch: o.fileScanFetch || globalThis.fetch, pollMs: o.fileScanPollMs ?? 1000
+  });
+  // moorai-serve has no fail surface of its own (cli/fail-mode.mjs FAIL_SURFACES): failMode.default decides.
+  const serveFailMode = (policy) => resolveFailMode(policy, "serve", { admin, fallback: "open", warn: (m) => { if (!/unknown fail surface/.test(m)) { try { process.stderr.write(`moorai-serve: ${m}\n`); } catch { /* a warning */ } } } }).mode;
+  async function fileScan(body, session) {
+    const hasData = body.data !== undefined, hasSha = body.sha256 !== undefined;
+    if (hasData === hasSha) throw new HttpError(400, "send exactly one of data (the file, base64) or sha256");
+    if (hasData && (typeof body.data !== "string" || !body.data)) throw new HttpError(400, "data must be the file in base64");
+    if (hasSha && (typeof body.sha256 !== "string" || !/^[0-9A-Fa-f]{64}$/.test(body.sha256))) throw new HttpError(400, "sha256 must be 64 hex characters");
+    if (body.mediaType != null && (typeof body.mediaType !== "string" || body.mediaType.length > 128)) throw new HttpError(400, "mediaType must be a string of at most 128 characters");
+    // Strict base64 (model-proxy/file-parts.mjs strictBase64): data a lenient decoder would read differently is
+    // unscannable — not scanned, never clean; onUnknown and the fail mode decide.
+    const bytes = hasData ? strictBase64(body.data) : null;
+    const s = await rt.ready();
+    const cfg = fileScanPolicy(s.policy);
+    if (cfg.mode === "off") return { decision: "allow", verdict: "not-scanned", mode: "off", policyId: s.policyId };
+    const r = hasData && !bytes
+      ? { verdict: "error", why: "unscannable", provider: cfg.provider, sha256: `raw:${createHash("sha256").update(body.data).digest("hex")}`, uploaded: false, cached: false }
+      : await withTimeout(bytes ? fileScanner.scan(bytes, cfg) : fileScanner.scanHash(body.sha256, cfg), Math.max(o.timeoutMs, cfg.timeoutMs + 1000));
+    const d = fileScanDecision(r, cfg, { failMode: serveFailMode(s.policy), headless: headlessAskMode({ active: true, headless: rt.settings.headless || {} }, s.policy).mode });
+    if (d.alert) {
+      const sh = typeof session === "string" ? rt.hash(session) : NO_KEY;
+      const sess = sh === NO_KEY ? {} : { session: sh };
+      try { rt.reporter.post({ ...fileScanAlert({ result: r, cfg, decision: d, hash: rt.hash, tool: "serve:file-scan", mime: body.mediaType || "", size: bytes ? bytes.length : 0 }), ...sess }, { prov: { policyId: s.policyId, policySource: s.source, event: "FileScan" } }); } catch { /* report-only */ }
+    }
+    const out = { decision: d.action, verdict: r.verdict, provider: r.provider, mode: cfg.mode };
+    for (const k of ["detections", "engines", "threat"]) if (r[k] !== undefined) out[k] = r[k];
+    return { ...out, uploaded: r.uploaded === true, cached: r.cached === true, ...(r.why ? { why: r.why } : {}), policyId: s.policyId };
+  }
   const log = (req, status, t0) => { if (o.log) process.stderr.write(`${new Date().toISOString()} ${req.method} ${req.url.split("?")[0]} ${status} ${(performance.now() - t0).toFixed(1)}ms\n`); };
 
   async function route(req) {
@@ -257,7 +324,7 @@ export async function createServer(opts = {}) {
       const s = await rt.ready();
       return { status: "ok", version, policyId: s.policyId };
     }
-    if (path !== "/v1/scan" && path !== "/v1/tool-call" && path !== "/v1/index-scan" && path !== "/v1/task") throw new HttpError(404, "not found");
+    if (path !== "/v1/scan" && path !== "/v1/tool-call" && path !== "/v1/index-scan" && path !== "/v1/task" && path !== "/v1/file-scan") throw new HttpError(404, "not found");
     if (req.method !== "POST") throw new HttpError(405, "use POST");
     const auth = authenticate(req, tokens, taskTokens);
     if (auth === null) throw new HttpError(401, "missing or wrong bearer token");
@@ -271,7 +338,7 @@ export async function createServer(opts = {}) {
         if (mode === "ask" || mode === "block") throw new HttpError(403, `intent mode "${mode}": /v1/task needs a token, or any local process could widen a session's task; start moorai-serve with --task-token-file (the app holds it, the agent's tool sandbox does not) or --token-file`);
       }
     }
-    const body = await readJson(req, o.maxBody);
+    const body = await readJson(req, path === "/v1/file-scan" ? Math.max(o.maxBody, o.maxFileBody) : o.maxBody);
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "body must be a JSON object");
     if (body.session != null && (typeof body.session !== "string" || !body.session || body.session.length > 256)) throw new HttpError(400, "session must be a non-empty string of at most 256 characters");
     const session = body.session == null ? undefined : body.session;
@@ -283,6 +350,7 @@ export async function createServer(opts = {}) {
       // only; the store keeps it apart and "ask"/"block" judge without it, even after the mode changes.
       return withTimeout(rt.captureTask(session, body.prompt, owner, tokens.length > 0 || taskTokens.length > 0), o.timeoutMs);
     }
+    if (path === "/v1/file-scan") return fileScan(body, session);
     if (path === "/v1/scan") {
       const ctx = cleanCtx(body.ctx);
       const { tool, ...engineCtx } = ctx;

@@ -62,6 +62,7 @@ export const REASON = Object.freeze({
   OVERSIGHT_WEAKENED: "OVERSIGHT_WEAKENED",       // #84: a tool call weakens the project's own monitoring, alerting, audit logging or safety tests (cli/oversight-signals.mjs)
   OVERSIGHT_UNDISCLOSED: "OVERSIGHT_UNDISCLOSED", // #84: an allowed oversight change the agent's final message does not state (cli/oversight-disclosure.mjs, heuristic)
   RECEIPT_KEY_INJECTED: "RECEIPT_KEY_INJECTED",   // an MCP call's input carries the reserved _moorai key on a host that cannot rewrite input (cli/receipt-step.mjs)
+  FILE_SCAN: "FILE_SCAN",                         // a cloud file-scanning provider's verdict on a file sent to a model (cli/file-scan.mjs): malicious, unknown or not scanned
   // A control that never ran for this call. Never a pass.
   UNEVALUATED_NO_POLICY: "UNEVALUATED_NO_POLICY",
   UNEVALUATED_HOOK_ERROR: "UNEVALUATED_HOOK_ERROR",
@@ -134,6 +135,7 @@ const CATEGORY_REASON = [
   [/^MCP: (tool added after approval|tool removed after approval|quarantined tool \(changed since approval\)|tool not in a checked listing|tool list re-check failed)$/, REASON.MCP_TOOL_DRIFT],
   [/^MCP tool call$/, REASON.NO_MATCH],
   [/^Fail-closed: /, REASON.FAIL_CLOSED],
+  [/^File scan: /, REASON.FILE_SCAN],
   [/^Containment: agent commands not in MXC$/, REASON.CONTAINMENT_MISSING],
   [/^Containment: MXC unavailable$/, REASON.CONTAINMENT_UNAVAILABLE],
   [/^Containment: (agent launched wxc-exec|write to a protected location)$/, REASON.POLICY_TAMPER]
