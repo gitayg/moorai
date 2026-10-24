@@ -119,6 +119,7 @@ import { createFileScanner, fileScanDecision, fileScanAlert } from "./file-scan.
 import { resolveFailMode } from "./fail-mode.mjs";
 import { headlessAskMode, systemConfig } from "./server-mode.mjs";
 import { NO_KEY } from "./content-hash.mjs";
+import { strictBase64 } from "../model-proxy/file-parts.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({ host: "127.0.0.1", port: 8790, maxBody: 1048576, maxFileBody: 50331648, timeoutMs: 10000, intentSessionsPerCaller: 256 });
@@ -292,15 +293,18 @@ export async function createServer(opts = {}) {
   async function fileScan(body, session) {
     const hasData = body.data !== undefined, hasSha = body.sha256 !== undefined;
     if (hasData === hasSha) throw new HttpError(400, "send exactly one of data (the file, base64) or sha256");
-    if (hasData && (typeof body.data !== "string" || !body.data || !/^[A-Za-z0-9+/=_\-\s]+$/.test(body.data))) throw new HttpError(400, "data must be the file in base64");
+    if (hasData && (typeof body.data !== "string" || !body.data)) throw new HttpError(400, "data must be the file in base64");
     if (hasSha && (typeof body.sha256 !== "string" || !/^[0-9A-Fa-f]{64}$/.test(body.sha256))) throw new HttpError(400, "sha256 must be 64 hex characters");
     if (body.mediaType != null && (typeof body.mediaType !== "string" || body.mediaType.length > 128)) throw new HttpError(400, "mediaType must be a string of at most 128 characters");
-    const bytes = hasData ? Buffer.from(body.data, "base64") : null;
-    if (bytes && !bytes.length) throw new HttpError(400, "data decodes to no bytes");
+    // Strict base64 (model-proxy/file-parts.mjs strictBase64): data a lenient decoder would read differently is
+    // unscannable — not scanned, never clean; onUnknown and the fail mode decide.
+    const bytes = hasData ? strictBase64(body.data) : null;
     const s = await rt.ready();
     const cfg = fileScanPolicy(s.policy);
     if (cfg.mode === "off") return { decision: "allow", verdict: "not-scanned", mode: "off", policyId: s.policyId };
-    const r = await withTimeout(bytes ? fileScanner.scan(bytes, cfg) : fileScanner.scanHash(body.sha256, cfg), Math.max(o.timeoutMs, cfg.timeoutMs + 1000));
+    const r = hasData && !bytes
+      ? { verdict: "error", why: "unscannable", provider: cfg.provider, sha256: `raw:${createHash("sha256").update(body.data).digest("hex")}`, uploaded: false, cached: false }
+      : await withTimeout(bytes ? fileScanner.scan(bytes, cfg) : fileScanner.scanHash(body.sha256, cfg), Math.max(o.timeoutMs, cfg.timeoutMs + 1000));
     const d = fileScanDecision(r, cfg, { failMode: serveFailMode(s.policy), headless: headlessAskMode({ active: true, headless: rt.settings.headless || {} }, s.policy).mode });
     if (d.alert) {
       const sh = typeof session === "string" ? rt.hash(session) : NO_KEY;

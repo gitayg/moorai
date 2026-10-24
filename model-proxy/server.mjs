@@ -243,6 +243,9 @@ export async function createProxy(opts = {}) {
     const headless = headlessAskMode({ active: true, headless: rt.settings.headless || {} }, s.policy).mode;
     const jobs = found.parts.map((p) => fileScanner.scan(p.bytes, cfg).then((r) => ({ p, r })));
     const results = await Promise.all(jobs);
+    // Data that fails strict base64 (file-parts.mjs): not scanned, never clean. Its alert's keyed hash is of the
+    // raw text (no bytes exist that the provider would agree on).
+    for (const u of found.unscannable) results.push({ p: { mediaType: u.mediaType, bytes: { length: u.raw.length } }, r: { verdict: "error", why: "unscannable", provider: cfg.provider, sha256: `raw:${createHash("sha256").update(u.raw).digest("hex")}`, uploaded: false } });
     if (found.over) results.push({ p: { mediaType: "", bytes: { length: 0 } }, r: { verdict: "error", why: "budget", provider: cfg.provider, sha256: `over-cap:${found.over}`, uploaded: false } });
     let refusal = null;
     for (const { p, r } of results) {
@@ -637,8 +640,18 @@ export async function createProxy(opts = {}) {
       // after the response, report-only.
       const fsCfg = fileScanPolicy(s1.policy);
       if (fsCfg.mode !== "off" && KIND.has(api)) {
-        const found = fileParts(KIND.get(api), json);
-        if (found.parts.length || found.over) {
+        // Read from the lossless parse (json-lossless.mjs); when the request carries a file, the body forwarded is
+        // that object re-serialised, so the upstream receives exactly what was scanned (a repeated key cannot hide
+        // a second blob: JSON.parse keeps the last, and so does what is sent).
+        const exact = parseLossless(body);
+        const found = fileParts(KIND.get(api), exact);
+        if (found.parts.length || found.over || found.unscannable.length || found.ambiguous.length) body = Buffer.from(JSON.stringify(exact));
+        if (found.ambiguous.length) {
+          // Two spellings of one field with different content: an upstream may read either.
+          unevaluated(`file-${found.ambiguous[0]}`, "request", "input");
+          if (enforce || fm === "closed") { stats.refused++; return send(res, 403, api.errorBody(403, `MoorAI model-proxy refused this request — a file part is ambiguous (${found.ambiguous[0].replace(/[^A-Za-z0-9:_]/g, "_")} spelled two ways with different content), so the provider could read a different file than the one checked`), { "x-moorai-model-proxy": "refused" }); }
+        }
+        if (found.parts.length || found.over || found.unscannable.length) {
           if (enforce || fm === "closed") {
             const why = await scanFiles(found, fsCfg, s1, fm);
             if (why) { stats.refused++; return send(res, 403, api.errorBody(403, why), { "x-moorai-model-proxy": "refused" }); }
