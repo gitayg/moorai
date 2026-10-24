@@ -64,7 +64,7 @@ export const HELP = `moorai-model-proxy — MoorAI between an agent's model SDK 
   --file-scan-key-file  a cloud file-scanning provider's API key, first line of a root-owned file that is not
                     group- or world-writable (repeatable, one per provider); also the admin binding's fileScanKeys
                     or MOORAI_METADEFENDER_API_KEY / MOORAI_VIRUSTOTAL_API_KEY. Never the policy, never logged.
-  Policy keys read here: fileScan (scan every inline file, document or image part with OPSWAT MetaDefender
+  Policy keys read here: fileScan (scan every inline file, document or image part with MetaDefender
                     Cloud or VirusTotal before it goes upstream: mode off (default) | hash (only the SHA-256
                     leaves) | upload (unknown files are uploaded); see README "Cloud file scanning"), intentAlignment off|report|ask|block (a tool call that does not fit the person's task;
                     default report) and responseScan report|mask|block (secrets, personal data, card numbers

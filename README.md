@@ -914,7 +914,7 @@ inside a `tool_result`), OpenAI Chat `image_url` data URLs, `file` parts and `in
 messages included), Responses `input_image` / `input_file` (also in a `function_call_output`), Gemini `inlineData`
 (also in `systemInstruction` and nested `functionResponse.parts`), and
 Ollama `images`. moorai-serve's `POST /v1/file-scan` does the same for a framework that sends files some other
-way. Two providers, behind one interface: **OPSWAT MetaDefender Cloud** (`"metadefender"`, the default) and
+way. Two providers, behind one interface: **MetaDefender Cloud** (`"metadefender"`, the default) and
 **VirusTotal** (`"virustotal"`).
 
 ```json
@@ -927,11 +927,11 @@ URL of one GET to the provider (MetaDefender `GET /v4/hash/{sha256}`, VirusTotal
 no file content. VirusTotal documents that "any IoC submitted or queried via the API will be scanned and added to
 the VirusTotal dataset", so a hash lookup there tells VirusTotal the hash. `"upload"` (explicit opt-in): a file
 the hash lookup did not know, up to `maxBytes`, is also uploaded and polled to a verdict.
-- **MetaDefender Cloud** receives the file's bytes (`POST /v4/file`). By OPSWAT's documentation, submitting a
-  file gives OPSWAT permission to share the scan results with the security community; `privateScan: true` sends
+- **MetaDefender Cloud** receives the file's bytes (`POST /v4/file`). By MetaDefender Cloud's documentation, submitting a
+  file permits the provider to share the scan results with the security community; `privateScan: true` sends
   `samplesharing: 0` ("all files scanned in private mode are not stored or shared"; a paid-licence feature).
-  `region` pins one of OPSWAT's documented regional endpoints (`us-west`, `eu-central`, `ca-central`,
-  `ap-southeast`, `ap-northeast`, `ap-south`, `il-central`); otherwise OPSWAT routes to the nearest.
+  `region` pins one of MetaDefender Cloud's documented regional endpoints (`us-west`, `eu-central`, `ca-central`,
+  `ap-southeast`, `ap-northeast`, `ap-south`, `il-central`); otherwise MetaDefender Cloud routes to the nearest.
 - **VirusTotal** receives the file's bytes (`POST /api/v3/files`, or the one-time `upload_url` past 32 MB).
   **Uploads to VirusTotal are not private:** "Scanning reports produced by VirusTotal are shared with the public
   VirusTotal community" and "the contents of submitted files or pages may also be shared with premium VirusTotal

@@ -747,7 +747,7 @@ stopped. Ollama `/api/generate` text is in addition still scanned report-only by
 
 Policy `fileScan` (`cli/file-scan-policy.mjs`) has the proxy check every inline file, document or image part of
 a parsed request with a cloud file-scanning provider before the request goes upstream. Two providers behind one
-interface (`lookup(sha256)`, `upload(bytes)`, `poll(id)`): **OPSWAT MetaDefender Cloud** (`cli/file-scan-metadefender.mjs`,
+interface (`lookup(sha256)`, `upload(bytes)`, `poll(id)`): **MetaDefender Cloud** (`cli/file-scan-metadefender.mjs`,
 API v4) and **VirusTotal** (`cli/file-scan-virustotal.mjs`, API v3). The scanner, cache, rate limit, decision and
 alert are `cli/file-scan.mjs`; finding the parts is `model-proxy/file-parts.mjs`.
 
@@ -761,7 +761,7 @@ alert are `cli/file-scan.mjs`; finding the parts is `model-proxy/file-parts.mjs`
 | `timeoutMs` | the whole scan of one request's files, 100 to 120000 | 10000 |
 | `iocHash` | `true` adds a malicious file's raw SHA-256 to its alert | `false` |
 | `privateScan` | MetaDefender: `true` sends `samplesharing: 0` on upload | `false` |
-| `region` | MetaDefender regional endpoint by name: `us-west`, `eu-central`, `ca-central`, `ap-southeast`, `ap-northeast`, `ap-south`, `il-central` (never a URL) | OPSWAT's nearest (`api.metadefender.com`) |
+| `region` | MetaDefender regional endpoint by name: `us-west`, `eu-central`, `ca-central`, `ap-southeast`, `ap-northeast`, `ap-south`, `il-central` (never a URL) | MetaDefender Cloud's nearest (`api.metadefender.com`) |
 | `ratePerMinute` | provider requests per minute from this process, 1 to 10000 | 4 (VirusTotal), 60 (MetaDefender) |
 | `minEngines` | a clean verdict counts only from at least this many engines (VirusTotal: harmless + undetected + malicious + suspicious; MetaDefender: `total_avs`); fewer is unknown (`few-engines`), 1 to 1000 | 3 |
 
@@ -831,7 +831,7 @@ scan runs before forwarding either way.
 |---|---|---|
 | `off` | nothing | nothing |
 | `hash` | `GET /v4/hash/{sha256}` with the `apikey` header: the SHA-256 only | `GET /api/v3/files/{sha256}` with `x-apikey`: the SHA-256 only. VirusTotal documents that a queried indicator is added to its dataset |
-| `upload` | as `hash`, then for a hash the provider did not know and no larger than `maxBytes`: the file's bytes, `POST /v4/file` (a `filename` header), polled with `GET /v4/file/{data_id}`. By default OPSWAT may share the scan results with the security community; `privateScan: true` sends `samplesharing: 0` (a paid-licence feature: "All files scanned in private mode are not stored or shared") | as `hash`, then the file's bytes, multipart `POST /api/v3/files` (past 32 MB through the one-time `GET /files/upload_url`, accepted only on VirusTotal's own origin), polled with `GET /api/v3/analyses/{id}`. **Not private:** "Scanning reports produced by VirusTotal are shared with the public VirusTotal community" and "the contents of submitted files or pages may also be shared with premium VirusTotal customers" |
+| `upload` | as `hash`, then for a hash the provider did not know and no larger than `maxBytes`: the file's bytes, `POST /v4/file` (a `filename` header), polled with `GET /v4/file/{data_id}`. By default MetaDefender Cloud may share the scan results with the security community; `privateScan: true` sends `samplesharing: 0` (a paid-licence feature: "All files scanned in private mode are not stored or shared") | as `hash`, then the file's bytes, multipart `POST /api/v3/files` (past 32 MB through the one-time `GET /files/upload_url`, accepted only on VirusTotal's own origin), polled with `GET /api/v3/analyses/{id}`. **Not private:** "Scanning reports produced by VirusTotal are shared with the public VirusTotal community" and "the contents of submitted files or pages may also be shared with premium VirusTotal customers" |
 
 The proxy never sends a provider the request's text, headers, model, or the client's own credentials.
 

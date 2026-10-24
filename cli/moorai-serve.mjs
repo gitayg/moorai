@@ -65,8 +65,8 @@
 //                                                     file about to be sent to a model some other way than through
 //                                                     moorai-model-proxy: `data` is the file in base64, or `sha256`
 //                                                     only its hash (looked up, never uploaded). Policy fileScan
-//                                                     (cli/file-scan-policy.mjs) names the provider (OPSWAT
-//                                                     MetaDefender Cloud or VirusTotal) and the mode: "hash" sends
+//                                                     (cli/file-scan-policy.mjs) names the provider
+//                                                     (MetaDefender Cloud or VirusTotal) and the mode: "hash" sends
 //                                                     only the SHA-256, "upload" also uploads a file the provider
 //                                                     did not know. -> { decision: allow | deny, verdict:
 //                                                     malicious | clean | unknown | error | not-scanned, provider,

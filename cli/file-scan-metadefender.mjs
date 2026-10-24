@@ -1,4 +1,4 @@
-// OPSWAT MetaDefender Cloud, API v4, as documented (read 2026-10-23):
+// MetaDefender Cloud, API v4, as documented (read 2026-10-23):
 //   https://www.opswat.com/docs/mdcloud/metadefender-cloud-api-v4 — base https://api.metadefender.com/v4;
 //     GET /hash/{hash} (MD5, SHA-1 or SHA-256), POST /file (upload), GET /file/{dataId} (the result);
 //     "Free API users are sent to different queues with a lower priority"; the upload size limit is per key
@@ -15,8 +15,8 @@
 //     `samplesharing` header (paid licence only): "All files scanned in private mode are not stored or shared."
 //   https://www.opswat.com/docs/mdcloud/compliance/locations — the regional endpoints (REGIONS below).
 // WHAT LEAVES: hash mode, the SHA-256 in the URL path. Upload mode, the file's bytes (POST /file) to
-// OPSWAT's cloud; by default "submitting a file gives OPSWAT permission to share results with the
-// cybersecurity community" (private-scanning page); with fileScan.privateScan, samplesharing: 0.
+// MetaDefender Cloud; by default submitting a file permits the provider to share results with the
+// cybersecurity community (private-scanning page); with fileScan.privateScan, samplesharing: 0.
 import { call, cleanThreat, int, FileScanError } from "./file-scan-http.mjs";
 
 export const NAME = "metadefender";

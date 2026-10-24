@@ -2,7 +2,7 @@
 // scans a file before it is sent to a model (model proxy, moorai-serve /v1/file-scan; cli/file-scan.mjs).
 //
 //   fileScan: {
-//     provider:      "metadefender" (OPSWAT MetaDefender Cloud, the default) | "virustotal"
+//     provider:      "metadefender" (MetaDefender Cloud, the default) | "virustotal"
 //     mode:          "off" (default) | "hash" (only the SHA-256 leaves) | "upload" (a file the hash lookup did
 //                    not know is uploaded; explicit opt-in: see each provider module for what leaves and where)
 //     onMalicious:   "block" (default) | "report"

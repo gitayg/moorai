@@ -1,7 +1,7 @@
 // Cloud file scanning before a file reaches a model (MoorAI for AI Servers): the model proxy scans every
 // inline file, document or image part of a request (model-proxy/file-parts.mjs) and moorai-serve answers
 // POST /v1/file-scan, both through this module. The policy is cli/file-scan-policy.mjs, the keys
-// cli/file-scan-keys.mjs, the providers cli/file-scan-metadefender.mjs (OPSWAT MetaDefender Cloud) and
+// cli/file-scan-keys.mjs, the providers cli/file-scan-metadefender.mjs (MetaDefender Cloud) and
 // cli/file-scan-virustotal.mjs (VirusTotal) behind one interface: lookup(sha256), upload(bytes), poll(id).
 //
 //   scan(bytes, cfg)     hash -> lookup; in "upload" mode a hash the provider does not know (and no larger than
@@ -32,7 +32,7 @@ import { REASON } from "./provenance.mjs";
 export { FileScanError } from "./file-scan-http.mjs";
 
 export const THREAT_ID = 17;
-export const PROVIDER_LABEL = Object.freeze({ metadefender: "OPSWAT MetaDefender Cloud", virustotal: "VirusTotal" });
+export const PROVIDER_LABEL = Object.freeze({ metadefender: "MetaDefender Cloud", virustotal: "VirusTotal" });
 const DEFAULT_PAUSE_MS = 60000;
 const ERROR_WHY = new Set(["timeout", "rate-limit", "auth", "provider", "network"]);
 

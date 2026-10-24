@@ -2728,7 +2728,7 @@ present. They have not been checked against Anthropic's real signer.
 
 **Contract.** Signed policy `fileScan` (`cli/file-scan-policy.mjs`); keys from the root-owned admin binding
 `fileScanKeys`, `--file-scan-key-file <provider>=<path>` (root-owned) or `MOORAI_METADEFENDER_API_KEY` /
-`MOORAI_VIRUSTOTAL_API_KEY`, never the policy. Providers behind one interface: OPSWAT MetaDefender Cloud API v4
+`MOORAI_VIRUSTOTAL_API_KEY`, never the policy. Providers behind one interface: MetaDefender Cloud API v4
 (`cli/file-scan-metadefender.mjs`) and VirusTotal API v3 (`cli/file-scan-virustotal.mjs`).
 
 | Field | Values | Default |
