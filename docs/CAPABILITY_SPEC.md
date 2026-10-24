@@ -4275,15 +4275,19 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   write) or `prompt` (a command). No signal name, path, key or value. A sub-agent's alert carries
   `parentSession` (`SESSION_TAG`; Claude Code gives a sub-agent its parent's `session_id`, so it equals
   `session`) and an origin with `thread: "subagent"`; the verdict is the same as the main agent's.
-- **Built-in protected surfaces.** With no policy, the agent's persistent-instruction files are protected paths
+- **Built-in memory files.** With no policy, the agent's persistent-instruction files are watched
   (`PERSISTENT_INSTRUCTION_KINDS`, data/skill-surface.js: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/`,
   `AGENTS.md` / `AGENT.md` / `AGENTS.override.md`, `GEMINI.md`, `.cursorrules`, `.cursor/rules/`, `.windsurfrules`,
   Windsurf and Cline rules, `.github/copilot-instructions.md`, `.github/instructions/`, Kiro steering, Claude Code's
   `.claude/projects/<p>/memory/`, OpenClaw `SOUL.md` / `MEMORY.md` / `memory/`). A Write / Edit of one, or a shell
-  command that writes, moves or deletes one, raises `protected-surface` under #84 (default ask). Skills, commands
-  and agent definitions are not in the set. `oversight.protectMemoryFiles: false` turns the built-in set off
-  (declared `protectedPaths` still apply); a non-boolean value is ignored with a warning.
-- **Policy key.** Top-level `oversight: { v: 1, protectedPaths, protectedKeys, stopDisclosure, protectMemoryFiles }`.
+  command that writes, moves or deletes one, raises the signal `memory-file` under #84, which `decideOversight`
+  resolves to `oversight.memoryFiles` — `notify` by default (an alert, no prompt), `ask` (justify) or `block` —
+  instead of #84's justify default; with another #84 signal beside it the stricter decision stands, and a
+  `threatPolicy["84"]: "disabled"` disables it. `"off"`, or `protectMemoryFiles: false`, turns the set off; an
+  unknown value is ignored with a warning. A path that is also a declared `protectedPaths` entry raises
+  `protected-surface` instead. Skills, commands and agent definitions are not in the set. The Stop / SubagentStop
+  disclosure check does not count a `memory-file` row.
+- **Policy key.** Top-level `oversight: { v: 1, protectedPaths, protectedKeys, stopDisclosure, memoryFiles }`.
   `protectedPaths`: up to 64 globs (`**`, `*`, `?`), matched against the path relative to the session's cwd and
   at any directory boundary of an absolute path; `dir/**` also matches `dir`. `protectedKeys`: up to 64 key or
   env var names, whole-word, as written (a dotted key is not resolved through YAML nesting). A write that changes

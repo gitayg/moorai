@@ -9,6 +9,7 @@
 import { readPolicyViaHelper } from "./guardd-policy.mjs";
 import { trustedEnv } from "./server-mode.mjs";
 import { canonicalJson } from "./canonical-json.mjs";
+import { oversightPolicy } from "./oversight-surfaces.mjs";
 import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createPublicKey, verify as cryptoVerify, createHash } from "node:crypto";
@@ -282,8 +283,25 @@ export function decideThreat(policy, id, detectorId, stage = "prompt") {
 export const OVERSIGHT_THREAT = 84;
 export const OVERSIGHT_CATEGORY = "Weakening oversight";
 export const OVERSIGHT_INCOMPLETE = "analysis-incomplete";
+// "memory-file" (a write into the agent's CLAUDE.md, AGENTS.md, rules or memory files, cli/oversight-surfaces.mjs)
+// resolves to policy.oversight.memoryFiles — notify (an alert, no prompt) unless the policy says ask or block —
+// instead of #84's justify default. With other signals beside it, the stricter of the two decisions stands.
+// A policy that disables #84 disables it too.
+const MEMORY_ACT = { notify: "notify", ask: "justify", block: "block" };
 export function decideOversight(policy, signals, stage = "output") {
   if (!Array.isArray(signals) || !signals.length) return { decision: "allow", reasons: [], findings: [], kill: false, killIds: [], alternatives: [], maskIds: [] };
+  if (signals.includes("memory-file")) {
+    const rest = signals.filter((s) => s !== "memory-file");
+    const mem = MEMORY_ACT[oversightPolicy(policy, () => {}).memory] || "notify";
+    const act = threatActionFor(policy, OVERSIGHT_THREAT);
+    const md = decideOversightCore(act === "disabled" ? policy : { ...(policy || {}), killOnCritical: false, threatPolicy: { ...((policy && policy.threatPolicy) || {}), [OVERSIGHT_THREAT]: mem } }, signals, stage);
+    if (!rest.length) return md;
+    const od = decideOversightCore(policy, signals, stage);
+    return RANK[md.decision] > RANK[od.decision] ? md : od;
+  }
+  return decideOversightCore(policy, signals, stage);
+}
+function decideOversightCore(policy, signals, stage) {
   let pol = policy;
   if (signals.includes(OVERSIGHT_INCOMPLETE)) {
     const act = threatActionFor(policy, OVERSIGHT_THREAT);

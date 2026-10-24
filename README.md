@@ -1604,13 +1604,15 @@ origin with `thread: "subagent"`.
 Any Write / Edit of a protected path, any write that changes a line naming a protected key, and any command that
 deletes, moves or writes one is held.
 
-**The agent's own instruction and memory files are protected surfaces with no policy at all**: `CLAUDE.md`,
+**The agent's own instruction and memory files are watched with no policy at all**: `CLAUDE.md`,
 `CLAUDE.local.md`, `.claude/rules/`, `AGENTS.md`, `GEMINI.md`, `.cursorrules` and `.cursor/rules/`, the Windsurf,
 Cline, Copilot and Kiro rules files, Claude Code's auto memory (`.claude/projects/<project>/memory/`) and OpenClaw's
 `SOUL.md`, `MEMORY.md` and `memory/` (`PERSISTENT_INSTRUCTION_KINDS` in `data/skill-surface.js`). A skill that
-writes itself into one of them steers every later session, so a write or a shell append asks under #84 like any
-declared path; `threatPolicy["84"]` sets the action, and `"protectMemoryFiles": false` in `oversight` turns the
-built-in set off. Expect a prompt when the agent saves a memory or edits `CLAUDE.md` on request. A path is matched as written, resolved against the working directory
+writes itself into one of them steers every later session, so a Write / Edit or a shell write raises a #84 alert
+(signal `memory-file`) **without a prompt** by default, since an agent saves memory and edits `CLAUDE.md` on request
+routinely. `"memoryFiles": "ask"` or `"block"` in `oversight` raises it, `"off"` (or the earlier
+`"protectMemoryFiles": false`) turns it off, and a policy that disables #84 disables it too. A path also listed in
+`protectedPaths` keeps that surface's ask, and a memory save is not counted by the Stop disclosure check. A path is matched as written, resolved against the working directory
 (`ops/x/../alerting/rules.yaml`, a relative path from a subdirectory) and through its real path, so a symlinked
 file or directory (or, for a new file, a symlinked parent) cannot dodge a protected surface. At most 64 of each; a
 malformed entry is dropped with a warning.
