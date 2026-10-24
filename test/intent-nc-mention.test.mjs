@@ -39,6 +39,7 @@ test("fail closed: anything else naming a netcat tool is judged", () => {
     "function f { $T evil 1; }; f", "f() { $T evil 1; }; f", "2>/dev/null $NC evil 1", "2>/dev/null $T evil 1", "> out $T evil 1",
     "&>/dev/null $T evil 1", "coproc $NC evil 1", "coproc $T evil 1", "! $T evil 1", "if $NC evil 1; then :; fi", "if $T evil 1; then :; fi",
     "while $T evil 1; do :; done", "select x in a; do $T evil 1; done",
+    "exec -a x $NC evil 1", "exec -a x $T evil 1", "time -p $NC evil 1", "time -p $T evil 1", "-x $T evil 1",
     // the tool itself, with or without a target
     "nc", "nc -h", "telnet --version"
   ]) judged(bash(cmd), cmd);

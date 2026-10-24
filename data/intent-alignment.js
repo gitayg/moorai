@@ -161,16 +161,17 @@ function mayExpandToNc(word) {
 // The command position, modelled to fail closed. Segments are split on newline ; & | ( ) { } and backtick (and
 // once on newline ; & | alone, so a segment that STARTS with a substitution is seen whole). Before the command
 // word, leading redirections (`2>/dev/null`, `> out`, `&>`, `>&2`), NAME=value assignments and shell keywords
-// (! { function coproc select if then elif else while until do time exec) are skipped. Then:
+// (! { function coproc select if then elif else while until do) are skipped. Then:
 //   * the command word is a wrapper (sudo, env, timeout, xargs …), or an assignment preceded it: every word of
 //     the segment is checked, because the command could be any of them (wrapper options are not modelled);
-//   * the command word is not a plain literal (^[A-Za-z0-9._+/-]+$): every word is checked too;
+//   * the command word is not a plain literal (^[A-Za-z0-9._+/-]+$), or starts with "-": every word is checked too;
 //   * otherwise (a plain command such as echo, ls, cd) nothing more: `echo $HOME` and `ls *.txt` stay quiet.
 // "Checked": the word starts with an expansion ($X, ${X}, $(…), $'…', a backtick), which could be any command,
 // or its expansions and globs could produce a netcat name (mayExpandToNc).
 const WRAPPERS = new Set(["sudo", "doas", "env", "timeout", "nohup", "nice", "ionice", "stdbuf", "exec", "command", "builtin", "xargs",
   "time", "chroot", "setsid", "unbuffer", "busybox", "watch", "strace", "ltrace", "caffeinate", "flock", "taskset", "su", "runuser"]);
-const KEYWORDS = new Set(["!", "{", "}", "function", "coproc", "select", "if", "then", "elif", "else", "while", "until", "do", "time", "exec"]);
+// time and exec are wrappers, not keywords: they take options (`exec -a name`, `time -p`) and then run a command.
+const KEYWORDS = new Set(["!", "{", "}", "function", "coproc", "select", "if", "then", "elif", "else", "while", "until", "do"]);
 const REDIRECT = /^(?:\d*[<>]|&>|>&)/;
 const REDIRECT_ONLY = /^(?:\d*(?:<<?<?|>>?|<>)&?|&>>?|>&)$/;
 const ASSIGN = /^[A-Za-z_]\w*(?:\[[^\]]*\])?\+?=/;
@@ -190,7 +191,8 @@ function namesNetcat(c) {
     }
     if (i >= w.length) continue;
     const cmd = w[i];
-    if (assigned || WRAPPERS.has(namesOf(cmd)[1]) || !LITERAL.test(cmd)) { if (w.slice(i).some(mayRun)) return true; }
+    // A command word that starts with "-" is an option of something not modelled: fail closed as well.
+    if (assigned || WRAPPERS.has(namesOf(cmd)[1]) || !LITERAL.test(cmd) || cmd.startsWith("-")) { if (w.slice(i).some(mayRun)) return true; }
   }
   return false;
 }
