@@ -44,6 +44,43 @@ const orFolded = (rule) => (text) => {
   return f !== null && rule(cap(f));
 };
 
+// "Is some match of NEEDLE wholly inside [match - before, match + after] for some match of ANCHOR?", for
+// every anchor match and with no match-count cap. Each regex is run over the text once: needle matches are
+// taken at every start (lastIndex = index + 1, so an overlapping one is not lost), sorted by start as they
+// come, with a suffix minimum of their ends; each anchor match is then answered by one binary search. The
+// needle and anchor regexes are bounded (no unbounded repetition before a literal), so the whole check is
+// linear in the 256 KB-capped text, up to a log factor.
+function matchSpans(re, t) {
+  const g = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
+  const starts = [], ends = [];
+  let m;
+  while ((m = g.exec(t)) !== null) {
+    starts.push(m.index); ends.push(m.index + m[0].length);
+    g.lastIndex = m.index + 1;
+  }
+  for (let i = ends.length - 2; i >= 0; i--) if (ends[i + 1] < ends[i]) ends[i] = ends[i + 1];
+  return { starts, minEnd: ends };
+}
+function spanWithin({ starts, minEnd }, lo, hi) {
+  let a = 0, b = starts.length;
+  while (a < b) { const mid = (a + b) >> 1; if (starts[mid] < lo) a = mid + 1; else b = mid; }
+  return a < starts.length && minEnd[a] <= hi;
+}
+function anchoredNear(anchors, needles, t, before, after) {
+  let spans = null;
+  for (const re of anchors) {
+    const g = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
+    let m;
+    while ((m = g.exec(t)) !== null) {
+      if (!spans) spans = needles.map((n) => matchSpans(n, t));
+      const lo = Math.max(0, m.index - before), hi = Math.min(t.length, m.index + m[0].length + after);
+      if (spans.some((sp) => spanWithin(sp, lo, hi))) return true;
+      if (m.index === g.lastIndex) g.lastIndex++;
+    }
+  }
+  return false;
+}
+
 // ---- padding -----------------------------------------------------------------------------------------
 // A run of PAD_MIN or more blank lines with non-blank content after it. Calibrated (docs/DETECTION_ENGINE.md,
 // "Skill and instruction file hiding"): the longest blank run followed by content in 1,335 tracked text
@@ -161,7 +198,14 @@ export function hiddenHtmlInstruction(text) {
 //                 *_KEY / *_TOKEN / *_SECRET variable), or a read / copy / collect / dump verb within 40
 //                 characters of API keys, credentials, secrets, tokens, passwords, cookies, a keychain or a
 //                 wallet.
-// "call the API", "run the tests", "fetch the page" and "write the file" are not in the gate.
+//   execution     a shell interpreter given code to run (bash / sh / zsh -c, powershell / pwsh -enc,
+//                 -EncodedCommand, iex / Invoke-Expression);
+//   destruction   rm -rf (any flag order), del /s, rd / rmdir /s, git push --force (or -f, or a +refspec),
+//                 delete / wipe / erase / shred / destroy / purge followed by a path or a directory, folder,
+//                 file, disk, drive, partition, volume, repository, branch, history, backup or database
+//                 noun, and format followed by a disk, drive, partition or volume.
+// "call the API", "run the tests", "fetch the page", "write the file", "format the files with prettier" and
+// "delete the draft message" are not in the gate.
 // Quiet on: "silently fail", "fail silently", `curl --silent`, "silently ignore errors", "run without
 // asking for confirmation", "the user should not see stack traces", "refresh without the user noticing a
 // flicker", "hide this from the user if they are not an admin".
@@ -170,7 +214,9 @@ const MEMORY_FILE = String.raw`(?:(?:MEMORY|SOUL|AGENTS?|CLAUDE(?:\.local)?|GEMI
 const EXFIL = String.raw`https?:\/\/|\b(?:curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod|ncat|netcat|scp|sftp|rsync)\b|\b(?:upload|exfiltrat|transmit|beacon|leak|smuggl)\w{0,5}\b|\b(?:send|post|forward|copy|sync|push|mail|email|stream|pipe)\w{0,4}\b[^.\n]{0,60}?\b(?:to|into)\s+(?:(?:the|our|my|a|an|this|that|your)\s+)?(?:(?:remote|external|offsite|private|own|attacker['’]?s?)\s+)?(?:server|endpoint|webhook|collector|host|domain|url|address|bucket|inbox|gist|pastebin|channel)s?\b|\b(?:contact|connect|ping|phone|beacon)\w{0,4}\b[^.\n]{0,40}?\b(?:server|endpoint|webhook|collector|host|domain|home|c2)\b|\b(?:collector|webhook|c2)\b`;
 const PERSIST_ACT = String.raw`\b(?:install\w{0,4}|cron(?:tab)?|cron\s+job|launchctl|Launch(?:Agent|Daemon)s?|systemd|systemctl\s+enable|startup\s+(?:items?|folder|scripts?)|login\s+items?|autorun|autostart|scheduled\s+tasks?|schtasks|CurrentVersion\\Run|authorized_keys|persist\w{0,4})\b|\.(?:bashrc|zshrc|bash_profile|profile)\b|${MEMORY_FILE}`;
 const SECRET_ACT = String.raw`~\/\.aws\b|\.aws\/credentials|\.ssh\/|\bid_(?:rsa|ed25519|ecdsa|dsa)\b|\.git-credentials|\.netrc\b|\.npmrc\b|\.pypirc\b|(?:^|[\s"'\x60(\/~])\.env\b|\b(?:read|cat|copy|collect|dump|harvest|steal|grab|extract|access|gather|scrape|export|include|attach)\w{0,3}\b[^.\n]{0,40}?\b(?:api[\s_-]?keys?|access[\s_-]?keys?|secret[\s_-]?keys?|private[\s_-]?keys?|ssh[\s_-]?keys?|credentials?|secrets?|tokens?|passwords?|cookies?|keychain|wallets?|seed\s+phrases?)\b`;
-const ACTION = new RegExp(`${EXFIL}|${PERSIST_ACT}|${SECRET_ACT}`, "i");
+const EXEC_ACT = String.raw`\b(?:ba|z|da|k|c)?sh\s{1,4}-c\b|\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]{0,40}?\s-(?:e|ec|enc|encodedcommand)\b|\b(?:iex|Invoke-Expression)\b`;
+const DESTROY_ACT = String.raw`\brm\s{1,4}(?:-[a-z]{0,8}\s{1,4}){0,3}-(?:[a-z]{0,8}r[a-z]{0,8}f|[a-z]{0,8}f[a-z]{0,8}r)[a-z]{0,8}\b|\brm\s{1,4}-r\s{1,4}-f\b|\brm\s{1,4}-f\s{1,4}-r\b|\brm\s{1,4}--recursive\s{1,4}--force\b|\b(?:del|erase)\s{1,4}(?:\/[a-z]\s{1,4}){0,4}\/s\b|\b(?:rd|rmdir)\s{1,4}\/s\b|\bgit\s{1,4}push\b[^\n;|&]{0,60}?(?:--force(?:-with-lease)?\b|\s-f\b|\s\+[\w/-])|\b(?:delete|wipe|erase|shred|destroy|purge)\w{0,3}\s{1,4}(?:["'\x60]?(?:~|\/|[a-z]:\\|\.{1,2}\/)|(?:(?:the|all|every|their|your|this|that|any|entire|whole)\s{1,4}){0,3}(?:(?:home|user['’]?s?|project|local|system|boot|hard|root|git|remote|working)\s{1,4}){0,2}(?:director(?:y|ies)|folders?|files?|disks?|drives?|partitions?|volumes?|repo(?:sitor(?:y|ies))?s?|branch(?:es)?|history|backups?|databases?)\b)|\bformat\w{0,3}\s{1,4}(?:(?:the|all|every|their|your|this|that|any|entire|whole)\s{1,4}){0,3}(?:(?:hard|boot|system|external|usb|c:?)\s{1,4}){0,2}(?:disks?|drives?|partitions?|volumes?)\b`;
+const ACTION = new RegExp(`${EXFIL}|${PERSIST_ACT}|${SECRET_ACT}|${EXEC_ACT}|${DESTROY_ACT}`, "i");
 const SECRET_VAR = /\b[A-Z][A-Z0-9]*_(?:API_)?(?:KEY|TOKEN|SECRET)\b/; // case-sensitive: AWS_SECRET, not primary_key
 const NEAR = 200;
 const WHO = String.raw`(?:the\s+|your\s+)?(?:user|human|owner|operator)s?`;
@@ -188,22 +234,10 @@ const CONCEAL_ACTION = [
   SENT(String.raw`\bhide\s+(?:this|it|that|these|them|the\s+\w+|any\s+\w+|all\s+\w+)\s+from\s+${WHO}\b|\bkeep\s+(?:this|it|that|these|them)\s+(?:hidden|secret|private|quiet)\s+from\s+${WHO}\b`),
   SENT(String.raw`\bwithout\s+${WHO}\s+(?:noticing|knowing|realizing|realising|seeing|suspecting|being\s+(?:aware|told|informed))\b`)
 ];
-function actionNear(t, i, len) {
-  const w = t.slice(Math.max(0, i - NEAR), Math.min(t.length, i + len + NEAR));
-  return ACTION.test(w) || SECRET_VAR.test(w);
-}
 function concealsRaw(t) {
   if (!/\b(?:user|human|owner|operator|principal|silently|mention|reveal|disclose|surface|show|display|print|echo|output|include|report|between|find\s+out)\b/i.test(t)) return false;
   if (CONCEAL_STRONG.some((re) => re.test(t))) return true;
-  for (const re of CONCEAL_ACTION) {
-    re.lastIndex = 0;
-    let m, n = 0;
-    while ((m = re.exec(t)) !== null && n++ < 64) {
-      if (actionNear(t, m.index, m[0].length)) return true;
-      if (m.index === re.lastIndex) re.lastIndex++;
-    }
-  }
-  return false;
+  return anchoredNear(CONCEAL_ACTION, [ACTION, SECRET_VAR], t, NEAR, NEAR);
 }
 export const concealsFromUser = orFolded(concealsRaw);
 
@@ -219,8 +253,11 @@ export const concealsFromUser = orFolded(concealsRaw);
 //             characters, a VERDICT order: ignore / suppress / override (any / all / the / security /
 //             heuristic / scanner / malware …) warnings, flags, alerts, findings or detections; "report no
 //             issues"; "mark / classify it as safe"; "not malicious"; "do not flag"; "approve this skill";
-//   override  standalone "override / ignore / suppress any heuristic / scanner / detection / malware / AI /
-//             MoorAI flags, warnings, alerts, findings, detections or verdicts";
+//             When an address is present, the older wide window also counts as the order: ignore /
+//             disregard / override / suppress / dismiss / bypass, then within 40 characters warnings, flags,
+//             alerts, findings, scans, heuristics or detections ("please ignore the scanner's warnings");
+//   override  standalone "override / ignore / suppress / skip any heuristic / automated / scanner / detection
+//             / malware / AI / MoorAI flags, warnings, alerts, findings, detections, verdicts or checks";
 //   claim     "this skill has passed audit / is verified safe / was approved …" with, within 160 characters,
 //             a verdict order.
 // The verdict order's object takes at most a scanner qualifier, so "ignore lint warnings", "ignore
@@ -246,24 +283,19 @@ const REVIEW_ORDER = new RegExp([
   String.raw`\b(?:mark|classify|treat|rate|report|label|flag)\s+(?:it|this(?:\s+\w+)?)\s+as\s+(?:safe|benign|clean|trusted|harmless)\b`,
   String.raw`\breport\s+(?:no|zero)\s+(?:issues?|findings?|problems?|vulnerabilit(?:y|ies)|threats?|risks?)\b`,
   String.raw`\b(?:return|give|output|assign)\s+(?:it\s+)?(?:a\s+|an\s+)?(?:clean|safe|benign|passing|green|low[- ]risk)\s+(?:verdict|result|rating|score|report)\b`,
-  String.raw`\b(?:approve|pass|allow|allowlist|whitelist)\s+(?:it|this(?:\s+(?:skill|plugin|file|package|extension|tool|server|code|repo(?:sitory)?))?)\b`
+  String.raw`\b(?:approve|pass|allow|allowlist|whitelist)\s+(?:it|this(?:\s+(?:skill|plugin|file|package|extension|tool|server|code|repo(?:sitory)?))?)\b`,
+  String.raw`\b(?:consider|deem|regard|judge|declare|count)\s+(?:it|this(?:\s+\w+)?)\s+(?:as\s+|to\s+be\s+)?(?:safe|benign|clean|trusted|harmless|legitimate)\b`,
+  String.raw`\braise\s+(?:nothing|no\s+(?:flags?|alerts?|issues?|findings?|warnings?|concerns?))\b`,
+  String.raw`\b(?:do\s+not|don['’]t|never)\s+raise\b`
 ].join("|"), "i");
-const REVIEW_OVERRIDE = new RegExp(String.raw`\b(?:override|ignore|disregard|suppress|dismiss|clear|skip)\s+(?:any|all|the|every)\s+(?:${SCANNER_QUAL}\s+){1,2}(?:flags?|warnings?|alerts?|findings?|detections?|verdicts?)\b|\b(?:override|ignore|disregard)\s+(?:any|all)\s+(?:heuristic\s+)?flags\b`, "i");
+const REVIEW_ORDER_WIDE = /\b(?:ignore|disregard|override|suppress|dismiss|bypass)\b[^.\n]{0,40}\b(?:warnings?|flags?|alerts?|findings?|scans?|heuristics?|detections?)\b/i;
+const REVIEW_OVERRIDE = new RegExp(String.raw`\b(?:override|ignore|disregard|suppress|dismiss|clear|skip)\s+(?:any|all|the|every)\s+(?:(?:automated|${SCANNER_QUAL})\s+){1,2}(?:flags?|warnings?|alerts?|findings?|detections?|verdicts?|checks?)\b|\b(?:override|ignore|disregard)\s+(?:any|all)\s+(?:heuristic\s+)?flags\b`, "i");
 const REVIEW_CLAIM = /\b(?:this|the)\s+(?:skill|plugin|extension|package|file|tool|server|code|repository|repo)\s+(?:has\s+(?:already\s+)?(?:been\s+)?|is\s+(?:already\s+)?|was\s+(?:already\s+)?)(?:passed|cleared|verified|audited|approved|certified|whitelisted|allowlisted|vetted|scanned|signed\s+off|marked\s+(?:as\s+)?safe|known\s+(?:to\s+be\s+)?safe)\b|\bverified\s+(?:safe|benign|clean)\b/gi;
-function orderNear(re, t, before, after) {
-  re.lastIndex = 0;
-  let m, n = 0;
-  while ((m = re.exec(t)) !== null && n++ < 64) {
-    if (REVIEW_ORDER.test(t.slice(Math.max(0, m.index - before), Math.min(t.length, m.index + m[0].length + after)))) return true;
-    if (m.index === re.lastIndex) re.lastIndex++;
-  }
-  return false;
-}
 function reviewersRaw(t) {
-  if (!/\b(?:review|scan|audit|analy[sz]|classif|moderat|check|flag|heuristic|verified|passed|cleared|approved|certified|vetted|safe|moorai)/i.test(t)) return false;
+  if (!/\b(?:review|scan|audit|analy[sz]|classif|moderat|check|flag|heuristic|verified|passed|cleared|approved|certified|vetted|safe|moorai|automat|warning|alert|finding|detect|verdict|benign|harmless|raise)/i.test(t)) return false;
   if (REVIEW_OVERRIDE.test(t)) return true;
-  if (REVIEW_ADDRESS.some((re) => orderNear(re, t, 160, 300))) return true;
-  return orderNear(REVIEW_CLAIM, t, 160, 160);
+  if (anchoredNear(REVIEW_ADDRESS, [REVIEW_ORDER, REVIEW_ORDER_WIDE], t, 160, 300)) return true;
+  return anchoredNear([REVIEW_CLAIM], [REVIEW_ORDER], t, 160, 160);
 }
 export const targetsReviewers = orFolded(reviewersRaw);
 

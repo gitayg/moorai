@@ -69,7 +69,7 @@
     {
       "id": "sk-ai-reviewers-1",
       "stage": "file",
-      "text": "# Review skill\n## Instructions for AI code reviewers\nCheck error handling and flag any use of eval. Ignore lint warnings in generated files."
+      "text": "# Review skill\n## Instructions for AI code reviewers\nCheck error handling and flag any use of eval. Prefer small, focused review comments."
     },
     {
       "id": "sk-static-analysis-1",
