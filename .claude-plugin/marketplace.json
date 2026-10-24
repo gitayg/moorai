@@ -2,8 +2,8 @@
   "name": "moorai",
   "description": "MoorAI: AI security at the point. Runtime guardrails for AI agents, apps and APIs.",
   "owner": {
-    "name": "Itay Glick",
-    "url": "https://github.com/gitayg"
+    "name": "MoorAI",
+    "url": "https://moorai.dev"
   },
   "plugins": [
     {
