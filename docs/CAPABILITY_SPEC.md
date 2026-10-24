@@ -4348,13 +4348,20 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   config picked by `CURL_HOME` / `XDG_CONFIG_HOME` / `HOME` set on the command (unless `-q` / `--disable` is its
   first argument) or a wgetrc picked by `WGETRC` / `SYSTEM_WGETRC` / `HOME` (unless `--no-config`), git
   `--work-tree` / `GIT_WORK_TREE`, and `--git-dir` / `GIT_DIR`, which pick a repository whose own config may set
-  `core.worktree` (a `core.worktree` given by `-c`, `--config-env` or `GIT_CONFIG_COUNT` is ignored by git 2.39.5
-  and 2.47.3, measured), `--pathspec-from-file` — and when a write tool (cp, mv, install, rsync, curl, wget, tee,
+  `core.worktree`, and `GIT_INDEX_FILE`, the index git writes (resolved against the top of the work tree and
+  created when absent), for `git checkout`, `restore`, `rm` and `mv` alike (`cli/oversight-shell-writes.mjs`
+  `gitInvocation`, the one reader of git's global options) — measured with git 2.39.5, 2.47.3 and 2.54.0: a
+  `core.worktree` given by `-c`, `--config-env`, `GIT_CONFIG_COUNT`, `GIT_CONFIG`, `GIT_CONFIG_GLOBAL` or
+  `GIT_CONFIG_SYSTEM` is ignored, and `GIT_COMMON_DIR`, `GIT_CEILING_DIRECTORIES` and
+  `GIT_DISCOVERY_ACROSS_FILESYSTEM` leave every path where it is, so they change nothing — `--pathspec-from-file` — and when a write tool (cp, mv, install, rsync, curl, wget, tee,
   sed, patch, git checkout / restore) is given a long option that is ambiguous or that it does not have, a short
   letter it does not have, or a letter whose arity differs between GNU and BSD (`shortConflict`: cp -S, install
   -S / -D / -T, sed -l) followed by more letters of its cluster or by an option word. The `NAME=value` words a
-  command sets (before it, or after `env` / `sudo`) come from `data/shell-parse.js` `commandOf` (`env`). git `-C`
-  is cumulative (`git -C a -C b` is `a/b`; an absolute one starts over). A PowerShell segment's `cp` / `curl`
+  command sets (before it, or after `env` / `sudo`) come from `data/shell-parse.js` `commandOf` (`env`); their
+  names are matched in any case on every platform (`git_work_tree=/x`, `curl_home=/x`), since Windows environment
+  names are case-insensitive and on POSIX the extra match only over-reports. git `-C` is cumulative (`git -C a -C
+  b` is `a/b`; an absolute one starts over), and the paths of `git checkout`, `restore`, `rm` and `mv` resolve
+  under it. A PowerShell segment's `cp` / `curl`
   (cmdlet aliases) is not held to these lists. MCP filesystem write tools
   (`cli/oversight-mcp.mjs`, wired in the hook's `mcp__*` branch): a tool named by a write verb (write, edit, move,
   rename, create, append, replace, insert, patch, save, overwrite, update) and a file noun (file, text_file,

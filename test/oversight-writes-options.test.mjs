@@ -12,6 +12,8 @@
 //     letters or an option word, git's work tree moved by GIT_WORK_TREE / GIT_DIR / --git-dir, and a curl / wget
 //     config picked through CURL_HOME / XDG_CONFIG_HOME / WGETRC / SYSTEM_WGETRC / HOME are unknown; git -C is
 //     cumulative.
+//   * git rm / git mv read git's global options as checkout / restore do (one parser): a moved work tree,
+//     repository or index (GIT_INDEX_FILE too) is unknown, paths resolve under -C. Environment names match in any case.
 //
 //   node --test --import ./test/hermetic-env.mjs test/oversight-writes-options.test.mjs
 import { test, after } from "node:test";
@@ -141,4 +143,53 @@ test("curl / wget: CURL_HOME / XDG_CONFIG_HOME / HOME or WGETRC / SYSTEM_WGETRC 
     `WGETRC=/tmp/rc wget ${U}/a.tgz`, `SYSTEM_WGETRC=/tmp/rc wget ${U}/a.tgz`, `HOME=/tmp/h wget -q ${U}/a.tgz`], INC);
   // curl -q (first) reads no .curlrc; wget --no-config reads no wgetrc (measured); other variables change nothing.
   each([`HOME=/tmp/h curl -q ${U}/a`, `CURL_HOME=/tmp/x curl --disable -s ${U}/a`, `WGETRC=/tmp/rc wget --no-config ${U}/a.tgz`, `LANG=C curl -s ${U}/a`, `curl -s ${U}/a`], [], bare);
+});
+
+// ---- git rm / git mv: the same global options as checkout / restore (one parser, gitInvocation) ----
+test("git rm / mv: --work-tree / --git-dir / GIT_WORK_TREE / GIT_DIR / GIT_INDEX_FILE make the target unknown", () => {
+  // Measured (git 2.39.5, 2.47.3, 2.54.0): GIT_WORK_TREE=/x git rm f removes /x/f; git mv g h under it moves /x/g to
+  // /x/h; GIT_DIR naming a repository whose config sets core.worktree removes and moves there.
+  const moved = ["git --work-tree=/tmp/w rm src/a.js", "git --work-tree /tmp/w rm -q src/a.js", "GIT_WORK_TREE=/tmp/w git rm src/a.js",
+    "env GIT_WORK_TREE=/tmp/w git rm --cached src/a.js", "GIT_DIR=/tmp/o/.git git rm src/a.js", "git --git-dir=/tmp/o/.git rm src/a.js",
+    "git --git-dir /tmp/o/.git mv src/a.js src/b.js", "git --work-tree=/tmp/w mv src/a.js src/b.js", "sudo GIT_WORK_TREE=/tmp/w git mv src/a.js src/b.js",
+    "GIT_DIR=/tmp/o/.git git mv -k src/a.js src/b.js", "git -c x.y=z --work-tree /tmp/w rm src/a.js", "GIT_INDEX_FILE=/tmp/idx git rm --cached src/a.js",
+    "GIT_INDEX_FILE=/tmp/idx git mv src/a.js src/b.js"];
+  each(moved, INC);
+  for (const c of ["GIT_WORK_TREE=/tmp/w git rm src/a.js", "git --work-tree /tmp/w mv src/a.js src/b.js"]) has(c, "write-target-unknown", bare);
+  // A path removed by name is still judged by its name.
+  has("git --work-tree=/tmp/w rm monitoring/scope.py", "wiring-removed");
+  has("GIT_WORK_TREE=/tmp/w git rm monitoring/scope.py", "analysis-incomplete");
+});
+test("git rm / mv: -C is cumulative and the paths resolve under it", () => {
+  each(["git -C ops rm alerting/rules.yaml", "git -C ops -C alerting rm rules.yaml", "git -C /nowhere -C " + join(proj, "ops") + " rm -q alerting/rules.yaml"], ["wiring-removed", "protected-surface"]);
+  each(["git -C ops mv alerting/rules.yaml alerting/rules.yaml.off", "git -C ops -C alerting mv rules.yaml old.yaml", "git -C ops mv -- alerting/rules.yaml alerting/b.yaml"], PROT);
+  has("git -C $D rm src/a.js", "analysis-incomplete");
+});
+test("git rm / mv: benign forms stay clean", () => {
+  each(["git rm --cached src/a.js", "git -C src rm a.js", "git -C src mv a.js b.js", "GIT_PAGER=cat git rm src/a.js", "LC_ALL=C git mv src/a.js src/b.js",
+    "git -c core.quotepath=off rm src/a.js"], [], bare);
+});
+
+// ---- environment names are matched case-insensitively (Windows reads them that way) ----
+test("environment: the git, curl and wget variables match whatever their case", () => {
+  each(["git_work_tree=ops git checkout -- alerting/rules.yaml", "Git_Dir=/tmp/o/.git git restore src/a.js", "env git_work_tree=/tmp/w git rm src/a.js",
+    "git_index_file=/tmp/idx git checkout HEAD -- src/a.js", `curl_home=/tmp/x curl ${U}/a`, `Xdg_Config_Home=/tmp/x curl ${U}/a`, `home=/tmp/h curl ${U}/a`,
+    `wgetrc=/tmp/rc wget ${U}/a.tgz`, `system_wgetrc=/tmp/rc wget ${U}/a.tgz`, `Home=/tmp/h wget ${U}/a.tgz`], INC);
+  each(["git_pager=cat git checkout -- src/a.js", `lang=C curl -s ${U}/a`, `home=/tmp/h curl -q ${U}/a`, `wgetrc=/tmp/rc wget --no-config ${U}/a.tgz`], [], bare);
+});
+
+// ---- repository-selecting variables, measured one by one ----
+test("git: GIT_INDEX_FILE makes the target unknown (git writes the index it names)", () => {
+  // Measured (git 2.39.5, 2.47.3, 2.54.0): GIT_INDEX_FILE=idx git checkout HEAD -- f (and restore -s HEAD --staged f)
+  // creates idx, resolved against the top of the work tree rather than the current directory.
+  each(["GIT_INDEX_FILE=idx git checkout HEAD -- src/a.js", "GIT_INDEX_FILE=ops/alerting/x git restore -s HEAD --staged src/a.js",
+    "GIT_INDEX_FILE=/tmp/idx git restore -s HEAD -SW src/a.js"], INC);
+});
+test("git: variables measured not to move checkout / restore / rm / mv writes stay clean", () => {
+  // Measured (git 2.39.5, 2.47.3, 2.54.0), each against a/f with the command run in a: GIT_COMMON_DIR naming another
+  // repository (with or without core.worktree in its config), GIT_CONFIG / GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM
+  // naming a config with core.worktree, GIT_CEILING_DIRECTORIES and GIT_DISCOVERY_ACROSS_FILESYSTEM write a/f or
+  // nothing.
+  const vars = ["GIT_COMMON_DIR=/tmp/b/.git", "GIT_CONFIG=/tmp/cfg", "GIT_CONFIG_GLOBAL=/tmp/cfg", "GIT_CONFIG_SYSTEM=/tmp/cfg", "GIT_CEILING_DIRECTORIES=/tmp", "GIT_DISCOVERY_ACROSS_FILESYSTEM=1"];
+  each(vars.flatMap((v) => [`${v} git checkout -- src/a.js`, `${v} git restore src/a.js`, `${v} git rm src/a.js`, `${v} git mv src/a.js src/b.js`]), [], bare);
 });

@@ -20,10 +20,12 @@
 // A write position whose target is not a literal path ($VAR, $( … ), a glob, a ~user name) is returned as
 // `unknown`, and so is every write whose name is picked at run time: wget -r / -m / -i / -p / -x /
 // --content-disposition / --trust-server-names / -e / --config with no -O, curl -O with -J, curl -K, curl -o
-// naming a URL glob (#1), git --work-tree / --git-dir / GIT_WORK_TREE / GIT_DIR, git --pathspec-from-file, a curl
-// or wget config chosen through the command's environment (CURL_HOME, XDG_CONFIG_HOME, WGETRC, SYSTEM_WGETRC,
-// HOME); and any write tool given an option that is ambiguous or that the tool does not have, or a letter whose
-// arity differs between GNU and BSD with no single reading. A `-` (stdout) and the null device are no write.
+// naming a URL glob (#1), git --work-tree / --git-dir / GIT_WORK_TREE / GIT_DIR / GIT_INDEX_FILE (gitInvocation,
+// which git rm / git mv share), git --pathspec-from-file, a curl or wget config chosen through the command's
+// environment (CURL_HOME, XDG_CONFIG_HOME, WGETRC, SYSTEM_WGETRC, HOME); and any write tool given an option that is
+// ambiguous or that the tool does not have, or a letter whose arity differs between GNU and BSD with no single
+// reading. A `-` (stdout) and the null device are no write. Environment names are matched whatever their case:
+// Windows reads them case-insensitively, and on POSIX the extra match only over-reports.
 import { scanArgs } from "../data/shell-parse.js";
 import { CP, INSTALL, RSYNC, CURL, WGET, PATCH, GIT_CHECKOUT, GIT_RESTORE } from "./oversight-shell-options.mjs";
 
@@ -45,6 +47,9 @@ function urlName(u, { decode = false } = {}) {
   if (decode && name.includes("%")) { try { name = decodeURIComponent(name.replace(/%2f/gi, "%252F")); } catch { return undefined; } }
   return name || null;
 }
+
+// A `NAME=value` word set for the command (data/shell-parse.js commandOf) naming one of names, in any case.
+const envSet = (env, ...names) => env.some((e) => names.some((n) => n.toUpperCase() === String(e.name).toUpperCase()));
 
 const vals = (flags, ...names) => flags.filter((f) => names.includes(f.name)).map((f) => f.value);
 const flagged = (flags, ...names) => flags.some((f) => names.includes(f.name));
@@ -68,7 +73,6 @@ export function writeTargets(bin, args, { ps = false, env = [] } = {}) {
     if (nonLiteral(dest)) { unknown = true; return; }
     writes.push({ dest, sources, dir, ...(parents ? { parents: true } : {}) });
   };
-  const envSet = (...names) => env.some((e) => names.includes(e.name));
   const scan = (list, spec) => {
     const r = scanArgs(list, ps ? { shortValued: spec.shortValued, longValued: spec.longValued, longAll: spec.longAll, negatable: spec.negatable } : spec);
     if (!ps && unknownOption(r.flags)) unknown = true;
@@ -91,7 +95,7 @@ export function writeTargets(bin, args, { ps = false, env = [] } = {}) {
     // .curlrc found through CURL_HOME / XDG_CONFIG_HOME / HOME set for this command (measured, curl 7.88.1: its
     // `output = …` is obeyed), unless -q / --disable is the first argument (curl reads no .curlrc then).
     if (flagged(flags, "-K", "--config")) unknown = true;
-    if (envSet("CURL_HOME", "XDG_CONFIG_HOME", "HOME") && args[0] !== "-q" && args[0] !== "--disable") unknown = true;
+    if (envSet(env, "CURL_HOME", "XDG_CONFIG_HOME", "HOME") && args[0] !== "-q" && args[0] !== "--disable") unknown = true;
     const dir = vals(flags, "--output-dir").pop();
     const under = (n) => (dir != null ? `${dir}/${n}` : n);
     const globs = !flagged(flags, "-g", "--globoff");
@@ -110,7 +114,7 @@ export function writeTargets(bin, args, { ps = false, env = [] } = {}) {
     const { flags, positional } = scan(args, WGET);
     // A wgetrc found through WGETRC / SYSTEM_WGETRC / HOME set for this command (measured, wget 1.21.3: its
     // `output_document = …` is obeyed), unless --no-config.
-    if (envSet("WGETRC", "SYSTEM_WGETRC", "HOME") && !flagged(flags, "--no-config")) unknown = true;
+    if (envSet(env, "WGETRC", "SYSTEM_WGETRC", "HOME") && !flagged(flags, "--no-config")) unknown = true;
     const docs = vals(flags, "-O", "--output-document");
     for (const o of docs) add(o);
     for (const o of vals(flags, ...WGET_FILES)) add(o);
@@ -133,26 +137,11 @@ export function writeTargets(bin, args, { ps = false, env = [] } = {}) {
   } else if (bin === "dd") {
     for (const t of args) if (t.startsWith("of=")) add(t.slice(3));
   } else if (bin === "git") {
-    // The subcommand: the first word that is not a global option or its value (-C dir, -c k=v, --git-dir d).
-    let at = -1;
-    for (let i = 0; i < args.length; i++) {
-      const t = args[i];
-      if (t === "-C" || t === "-c" || t === "--git-dir" || t === "--work-tree" || t === "--namespace") { i++; continue; }
-      if (t.startsWith("-")) continue;
-      at = i; break;
-    }
-    if (at < 0 || !/^(?:checkout|restore)$/i.test(args[at])) return { writes, unknown };
-    const pre = scanArgs(args.slice(0, at), { shortValued: "Cc", longValued: ["--git-dir", "--work-tree", "--namespace"] }).flags;
-    // Another work tree moves every path: --work-tree / GIT_WORK_TREE, and --git-dir / GIT_DIR, which pick a
-    // repository whose own config may set core.worktree (measured, git 2.39.5 and 2.47.3: each writes there). A
-    // core.worktree given on the command line (-c, --config-env, GIT_CONFIG_COUNT) is ignored by both versions.
-    if (flagged(pre, "--work-tree", "--git-dir") || envSet("GIT_WORK_TREE", "GIT_DIR")) return { writes, unknown: true };
-    // -C is cumulative: `git -C a -C b` runs in a/b; an absolute one starts over; an empty one changes nothing.
-    let base = null;
-    for (const c of vals(pre, "-C")) if (c) base = base == null || /^[\/\\]/.test(c) ? c : `${base}/${c}`;
-    if (base != null && nonLiteral(base)) return { writes, unknown: true };
-    const under = (p) => (base != null && !/^[\/\\]/.test(p) ? `${base}/${p}` : p);
-    const checkout = args[at].toLowerCase() === "checkout";
+    const g = gitInvocation(args, env);
+    if (g.sub !== "checkout" && g.sub !== "restore") return { writes, unknown };
+    if (g.unknown) return { writes, unknown: true };
+    const { at, under } = g;
+    const checkout = g.sub === "checkout";
     const rest = args.slice(at + 1);
     const dd = rest.indexOf("--");
     const { flags, positional } = scan(dd >= 0 ? rest.slice(0, dd) : rest, checkout ? GIT_CHECKOUT : GIT_RESTORE);
@@ -174,6 +163,36 @@ export function writeTargets(bin, args, { ps = false, env = [] } = {}) {
     else unknown = true;
   }
   return { writes, unknown };
+}
+
+// One git command line, read for what git checkout / restore / rm / mv share. → { at, sub, unknown, under }: at, the
+// index of the subcommand (the first word that is not a global option or its value: -C dir, -c k=v, --git-dir d),
+// -1 when there is none; sub, the subcommand lowercased (null without one); unknown, the command writes where its
+// arguments do not say; under(p), a path as git resolves it against the -C base.
+//   * Another work tree moves every path: --work-tree / GIT_WORK_TREE, and --git-dir / GIT_DIR, which pick a
+//     repository whose own config may set core.worktree (measured, git 2.39.5, 2.47.3 and 2.54.0: checkout, restore,
+//     rm and mv each write there). A core.worktree given on the command line (-c, --config-env, GIT_CONFIG_COUNT) is
+//     ignored by those versions, as is one in GIT_CONFIG / GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM.
+//   * GIT_INDEX_FILE: git writes the index it names, resolved against the top of the work tree, creating it when
+//     absent (measured, the same versions: checkout <tree-ish> -- f and restore --staged).
+//   * GIT_COMMON_DIR, GIT_CEILING_DIRECTORIES and GIT_DISCOVERY_ACROSS_FILESYSTEM leave the paths where they are
+//     (measured, the same versions), so they change nothing here.
+//   * -C is cumulative: `git -C a -C b` runs in a/b; an absolute one starts over; an empty one changes nothing. A base
+//     that is not literal is unknown.
+export function gitInvocation(args, env = []) {
+  let at = -1;
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i];
+    if (t === "-C" || t === "-c" || t === "--git-dir" || t === "--work-tree" || t === "--namespace") { i++; continue; }
+    if (t.startsWith("-")) continue;
+    at = i; break;
+  }
+  const pre = scanArgs(at < 0 ? args : args.slice(0, at), { shortValued: "Cc", longValued: ["--git-dir", "--work-tree", "--namespace"] }).flags;
+  let base = null;
+  for (const c of vals(pre, "-C")) if (c) base = base == null || /^[\/\\]/.test(c) ? c : `${base}/${c}`;
+  const unknown = flagged(pre, "--work-tree", "--git-dir") || envSet(env, "GIT_WORK_TREE", "GIT_DIR", "GIT_INDEX_FILE") || (base != null && nonLiteral(base));
+  const under = (p) => (base != null && !/^[\/\\]/.test(p) ? `${base}/${p}` : p);
+  return { at, sub: at < 0 ? null : args[at].toLowerCase(), unknown, under };
 }
 
 // The targets of redirects that have no command word (`> f`, `>> f`, `2> f`, `: ` excluded: that is a

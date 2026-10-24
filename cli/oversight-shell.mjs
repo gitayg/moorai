@@ -42,7 +42,7 @@ import { splitShell, commandOf } from "../data/shell-parse.js";
 import { oversightEditSignals, assignedSignals, pathClass, pathClasses, OVERSIGHT_SIGNALS, INCOMPLETE, WRITE_UNKNOWN } from "./oversight-signals.mjs";
 import { protectedPathHit, protectedKeyInCommand, memoryPathHit, realOf } from "./oversight-surfaces.mjs";
 import { words, switchKind, listKind, valueKind, WIRING_FAMILIES, TEST_GUARD_WORDS } from "./oversight-vocab.mjs";
-import { writeTargets, bareRedirects, nonLiteral, nullTarget } from "./oversight-shell-writes.mjs";
+import { writeTargets, gitInvocation, bareRedirects, nonLiteral, nullTarget } from "./oversight-shell-writes.mjs";
 import { scanArgs, longName } from "../data/shell-parse.js";
 import { MV, TEE, SED } from "./oversight-shell-options.mjs";
 
@@ -373,9 +373,19 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
   const removed = (p) => { ctx.both(p).forEach((a) => touched.add(a)); removalSignal(p, out, ctx); };
   if (DELETE_BINS.has(bin)) { pos.forEach(removed); return; }
   if (bin === "truncate" && /-s\s*0|--size=0/.test(args.join(" "))) { pos.filter((x) => x !== "0").forEach(removed); return; }
-  if (bin === "git" && lower[0] === "rm") { pos.slice(1).forEach(removed); return; }
+  // git rm / git mv: the global options read as for checkout / restore (gitInvocation). Paths resolve under the -C
+  // base; a work tree, repository or index the command moves leaves where it writes unknown, and the paths are still
+  // judged by their names.
+  const g = bin === "git" ? gitInvocation(args, c.env) : null;
+  if (g && (g.sub === "rm" || g.sub === "mv")) {
+    if (g.unknown) unknownWrite(opts, out);
+    const rest = args.slice(g.at + 1);
+    if (g.sub === "rm") { positional(rest).map(g.under).forEach(removed); return; }
+    const dd = rest.indexOf("--");
+    judgeMove("mv", rest.map((t, i) => ((dd < 0 || i < dd) && t.startsWith("-")) || i === dd ? t : g.under(t)), true, opts, ctx, out, touched);
+    return;
+  }
   if (MOVE_BINS.has(bin)) { judgeMove(bin, args, false, opts, ctx, out, touched); return; }
-  if (bin === "git" && lower[0] === "mv") { judgeMove("mv", args.slice(args.findIndex((t) => t.toLowerCase() === "mv") + 1), true, opts, ctx, out, touched); return; }
   if (bin === "sed" || bin === "gsed" || bin === "perl") {
     const { inPlace, scripts, files, unknown } = bin === "perl" ? sedParts(bin, args) : sedArgs(args);
     if (unknown) unknownWrite(opts, out, { edits: scripts.flatMap((sc) => sedEdits(sc)) });
