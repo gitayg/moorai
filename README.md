@@ -1693,8 +1693,11 @@ command, such as `core.fsmonitor`, `core.pager` or any `alias.*`; a config file 
 `GIT_TEMPLATE_DIR` / `GIT_OBJECT_DIRECTORY` or `init` / `clone --template`, and `clone -c` with such a key, each read
 as git reads clone's and init's options: a unique prefix (`--templ=d`, `--conf k=v`), `-c` inside a cluster (`-qc k=v`),
 and an option they do not have or an ambiguous one is unknown too; a program for the other end of a transfer
-(`clone -u` / `--upload-pack`, `fetch` / `pull` / `ls-remote` / `fetch-pack --upload-pack`, `push` / `send-pack
---receive-pack` or `--exec`, `archive --exec`, any prefix of the long name); a pager,
+(`clone -u` / `--upload-pack`, `fetch` / `pull` / `ls-remote` / `fetch-pack --upload-pack`, `ls-remote --exec`, `push` /
+`send-pack --receive-pack` or `--exec`, `archive --exec`, each command's options read with its own table as git reads
+them: a unique prefix, the hidden options too, and a word taken as an option's value never ends the options, so `git
+push -o -- --receive-pack=<cmd>` runs `<cmd>` and is unknown; an option the command does not have or an ambiguous one
+is unknown too); a pager,
 editor, ssh, askpass, external-diff or proxy variable such as `GIT_PAGER` / `EDITOR` / `GIT_SSH_COMMAND` whose value
 is not empty, `cat`, `less`, `more`, `true` or `:`, or for an editor `vi`, `vim`, `nano` or `code --wait`), a
 `GIT_TRACE2*` path (it may name a directory), a `--pathspec-from-file`, and a

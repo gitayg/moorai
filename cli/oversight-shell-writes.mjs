@@ -260,14 +260,23 @@ export function gitInvocation(args, env = []) {
     if (sub === "clone" && !vals(flags, "-c", "--config").every((kv) => kv != null && safeConfigKey(kv))) opaque = true;
     if (sub === "clone" && flagged(flags, "-u", "--upload-pack")) opaque = true;
   }
-  // A program for the other end of a transfer (GIT_PACK_PROGRAM: fetch / pull / ls-remote / fetch-pack --upload-pack,
-  // push / send-pack --receive-pack and --exec, archive --exec): any long option before -- that is a prefix of one.
-  if (Object.hasOwn(GIT_PACK_PROGRAM, sub)) {
+  // A program for the other end of a transfer (GIT_PACK_PROGRAM: fetch / pull / ls-remote --upload-pack (ls-remote
+  // --exec), push / send-pack --receive-pack and --exec, archive --exec, fetch-pack --upload-pack= and --exec=). Each
+  // command's options are read with its own table, so a word taken as an option's value (-o --) never ends them; an
+  // unknown or ambiguous option is opaque. archive's first pass (first) is read as well; fetch-pack, read by hand
+  // and with no option taking the next word, is opaque on any long option before -- that is a prefix of one.
+  const pack = Object.hasOwn(GIT_PACK_PROGRAM, sub) ? GIT_PACK_PROGRAM[sub] : null;
+  if (pack?.spec) {
+    const rest = args.slice(at + 1);
+    const { flags } = scanArgs(rest, pack.spec);
+    if (unknownOption(flags) || flagged(flags, ...pack.program)) opaque = true;
+    if (pack.first && flagged(scanArgs(rest, pack.first).flags, ...pack.program)) opaque = true;
+  } else if (pack) {
     const rest = args.slice(at + 1);
     const end = rest.indexOf("--");
     for (const t of end < 0 ? rest : rest.slice(0, end)) {
       const name = t.split("=")[0];
-      if (name.length > 2 && name.startsWith("--") && GIT_PACK_PROGRAM[sub].some((o) => o.startsWith(name))) opaque = true;
+      if (name.length > 2 && name.startsWith("--") && pack.program.some((o) => o.startsWith(name))) opaque = true;
     }
   }
   let base = null, unsure = false;

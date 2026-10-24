@@ -279,7 +279,7 @@ export const GIT_OPAQUE_ENV = Object.freeze(["GIT_COMMON_DIR", "GIT_TEMPLATE_DIR
 // --no-hardlinks) are listed with their positive form too, as git accepts it. init-db is init.
 export const GIT_CLONE = opts([
   "--also-filter-submodules", "--bare", "--branch", "--bundle-uri", "--checkout", "--config", "--depth", "--dissociate", "--filter",
-  "--hardlinks", "--ipv4", "--ipv6", "--jobs", "--local", "--mirror", "--no-checkout", "--no-hardlinks", "--origin", "--progress", "--quiet",
+  "--hardlinks", "--ipv4", "--ipv6", "--jobs", "--local", "--mirror", "--naked", "--no-checkout", "--no-hardlinks", "--origin", "--progress", "--quiet",
   "--recurse-submodules", "--recursive", "--ref-format", "--reference", "--reference-if-able", "--reject-shallow", "--remote-submodules",
   "--revision", "--separate-git-dir", "--server-option", "--shallow-exclude", "--shallow-since", "--shallow-submodules", "--shared",
   "--single-branch", "--sparse", "--tags", "--template", "--upload-pack", "--verbose"
@@ -307,12 +307,51 @@ export const GIT_CONFIG = Object.freeze({
   edit: configOpts([], [], "f", "f"),
   short: { e: "--edit", f: "--file", l: "--list", t: "--type", z: "--null" }
 });
-// The options that name the program run for the other end of a transfer (`git <cmd> -h` on 2.54.0: fetch, pull and
-// ls-remote "--[no-]upload-pack <path>", push and send-pack "--[no-]receive-pack" and "--[no-]exec", archive
-// "--[no-]exec <command>"; fetch-pack's usage "--upload-pack=<git-upload-pack>", and it reads --exec= too). A command
-// value runs, measured on 2.39.5 and 2.54.0 with a local repository, as does clone -u / --upload-pack (GIT_CLONE).
-// None has a short letter (`git ls-remote -u` is refused). A long option written as any prefix of one is read as it.
+// The transfer commands, each read with its own option table (`git <cmd> -h` on 2.54.0, a superset of 2.39.5's with no
+// option changing whether it takes a value; plus the options git's source marks PARSE_OPT_HIDDEN: ls-remote --exec,
+// an alias of --upload-pack, and -h / --heads; fetch --submodule-prefix and --recurse-submodules-default; pull
+// --summary; clone --naked, in GIT_CLONE). git reads a valued option's next word as its value even when that word is
+// -- (measured, 2.39.5 and 2.54.0: `git push -o -- --receive-pack=<cmd> origin` and `git fetch -o -- --upload-pack=<cmd>`
+// run <cmd>), options after other words too, a long option by a unique prefix and --no-<option>; shortOptional: the
+// letters whose value is optional, which take only the rest of their cluster (`git pull -So --upload-pack=<cmd>`
+// runs <cmd>). program: the options that name the program run for the other end — fetch, pull and ls-remote
+// "--[no-]upload-pack <path>", push and send-pack "--[no-]receive-pack" and "--[no-]exec", archive "--[no-]exec
+// <command>"; a command value runs, measured on 2.39.5 and 2.54.0 with a local repository, as does clone -u /
+// --upload-pack (GIT_CLONE). None has a short letter (`git ls-remote -u` is refused).
+//   * archive reads -o / --output, --remote and --exec in a first pass of its own (builtin/archive.c local_opts:
+//     PARSE_OPT_KEEP_UNKNOWN_OPT, so no abbreviation, and every other option is kept without its value) up to --;
+//     first is that pass. Its full table is read too, for an option it does not have and an abbreviated --exec.
+//   * fetch-pack reads its options by hand (builtin/fetch-pack.c): exact names only, --upload-pack=<cmd> and
+//     --exec=<cmd> with = only, no option taking the next word, and -- or any other unknown word refused (measured);
+//     it has no table here, and any long option before -- that is a prefix of one of its program options is unknown.
+const gitOpts = (all, valued, short, shortValued, shortOptional = "") => opts(all, valued, short, shortValued, { negatable: true, shortOptional });
+const FETCH_PULL = ["--all", "--append", "--deepen", "--depth", "--dry-run", "--force", "--ipv4", "--ipv6", "--jobs", "--keep", "--negotiation-tip",
+  "--progress", "--prune", "--quiet", "--recurse-submodules", "--refmap", "--server-option", "--set-upstream", "--shallow-exclude", "--shallow-since",
+  "--show-forced-updates", "--tags", "--unshallow", "--update-shallow", "--upload-pack", "--verbose"];
+const FETCH_PULL_VALUED = ["--deepen", "--depth", "--negotiation-tip", "--refmap", "--server-option", "--shallow-exclude", "--shallow-since", "--upload-pack"];
+export const GIT_FETCH = gitOpts([...FETCH_PULL, "--atomic", "--auto-gc", "--auto-maintenance", "--filter", "--multiple", "--negotiate-only",
+  "--porcelain", "--prefetch", "--prune-tags", "--recurse-submodules-default", "--refetch", "--stdin", "--submodule-prefix", "--update-head-ok",
+  "--write-commit-graph", "--write-fetch-head"].sort(), [...FETCH_PULL_VALUED, "--filter", "--jobs", "--recurse-submodules-default", "--submodule-prefix"],
+"46afjkmnopPqtuv", "jo");
+export const GIT_PULL = gitOpts([...FETCH_PULL, "--allow-unrelated-histories", "--autostash", "--cleanup", "--commit", "--compact-summary", "--edit",
+  "--ff", "--ff-only", "--gpg-sign", "--log", "--rebase", "--signoff", "--squash", "--stat", "--strategy", "--strategy-option", "--summary", "--verify",
+  "--verify-signatures"].sort(), [...FETCH_PULL_VALUED, "--cleanup", "--strategy", "--strategy-option"], "46afjknopqrsStvX", "osX", "jrS");
+export const GIT_LS_REMOTE = gitOpts(["--branches", "--exec", "--exit-code", "--get-url", "--heads", "--quiet", "--refs", "--server-option", "--sort",
+  "--symref", "--tags", "--upload-pack"], ["--exec", "--server-option", "--sort", "--upload-pack"], "bhoqt", "o");
+export const GIT_PUSH = gitOpts(["--all", "--atomic", "--branches", "--delete", "--dry-run", "--exec", "--follow-tags", "--force", "--force-if-includes",
+  "--force-with-lease", "--ipv4", "--ipv6", "--mirror", "--no-verify", "--porcelain", "--progress", "--prune", "--push-option", "--quiet",
+  "--receive-pack", "--recurse-submodules", "--repo", "--set-upstream", "--signed", "--tags", "--thin", "--verbose", "--verify"],
+["--exec", "--push-option", "--receive-pack", "--recurse-submodules", "--repo"], "46dfnoquv", "o");
+export const GIT_SEND_PACK = gitOpts(["--all", "--atomic", "--dry-run", "--exec", "--force", "--force-if-includes", "--force-with-lease", "--helper-status",
+  "--mirror", "--progress", "--push-option", "--quiet", "--receive-pack", "--remote", "--signed", "--stateless-rpc", "--stdin", "--thin", "--verbose"],
+["--exec", "--push-option", "--receive-pack", "--remote"], "fnqv", "");
+export const GIT_ARCHIVE = gitOpts(["--add-file", "--add-virtual-file", "--exec", "--format", "--list", "--mtime", "--output", "--prefix", "--remote",
+  "--verbose", "--worktree-attributes"], ["--add-file", "--add-virtual-file", "--exec", "--format", "--mtime", "--output", "--prefix", "--remote"],
+"0123456789lov", "o");
+const GIT_ARCHIVE_FIRST = opts(["--exec", "--output", "--remote"], ["--exec", "--output", "--remote"], "o", "o", { negatable: true, exact: true });
 export const GIT_PACK_PROGRAM = Object.freeze({
-  fetch: ["--upload-pack"], pull: ["--upload-pack"], "ls-remote": ["--upload-pack"], "fetch-pack": ["--upload-pack", "--exec"],
-  push: ["--receive-pack", "--exec"], "send-pack": ["--receive-pack", "--exec"], archive: ["--exec"]
+  fetch: { spec: GIT_FETCH, program: ["--upload-pack"] }, pull: { spec: GIT_PULL, program: ["--upload-pack"] },
+  "ls-remote": { spec: GIT_LS_REMOTE, program: ["--upload-pack", "--exec"] }, "fetch-pack": { program: ["--upload-pack", "--exec"] },
+  push: { spec: GIT_PUSH, program: ["--receive-pack", "--exec"] }, "send-pack": { spec: GIT_SEND_PACK, program: ["--receive-pack", "--exec"] },
+  archive: { spec: GIT_ARCHIVE, first: GIT_ARCHIVE_FIRST, program: ["--exec"] }
 });

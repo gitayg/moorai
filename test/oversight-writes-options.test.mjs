@@ -27,7 +27,8 @@
 //     unique prefix; clone / init / init-db read --template and -c / --config by unique prefix and inside a short
 //     cluster; an unknown or ambiguous option on them is unknown. GIT_TRACE* naming ~ or ~/… is a write under the home
 //     directory. A commondir and a worktree's gitdir are memory-file. --upload-pack / --receive-pack / --exec (clone -u)
-//     is unknown; git config -f <file> removing or renaming is a write to <file>.
+//     is unknown; git config -f <file> removing or renaming is a write to <file>. The transfer commands read their
+//     options with their own tables (a value that is the word -- does not end them), ls-remote --exec included.
 //
 //   node --test --import ./test/hermetic-env.mjs test/oversight-writes-options.test.mjs
 import { test, after } from "node:test";
@@ -474,4 +475,34 @@ test("git config -f <file> with --unset / --unset-all / unset / --remove-section
   assert.deepEqual(gitConfigWrite(["-f", "a.cfg", "--unset", "x.y"]), { key: null, scope: "local", file: "a.cfg", remove: true });
   // A removal arms nothing, and without -f it stays clean.
   each(["git config -f a.cfg --unset core.hooksPath", "git config --unset core.fsmonitor", "git config --global --remove-section alias", "git config unset alias.x"], [], bare);
+});
+
+// ---- v1.34.4: the transfer commands' options read with their own option tables ----
+test("git: a value that is the word -- does not end the options; a later --upload-pack / --receive-pack / --exec is unknown", () => {
+  // Measured (2.39.5 and 2.54.0, a local repository): each runs the program; git takes -- as the option's value.
+  each(["git push --push-option -- --receive-pack=x origin main", "git push -o -- --receive-pack=x origin main", "git push -o -- --exec=x origin main",
+    "git push --repo -- --receive-pack=x origin main", "git fetch -o -- --upload-pack=x origin", "git fetch --server-option -- --upload-pack=x origin",
+    "git fetch --shallow-exclude -- --upload-pack=x origin", "git pull -o -- --upload-pack=x origin main", "git pull -X -- --upload-pack=x origin main",
+    "git ls-remote -o -- --upload-pack=x origin", "git ls-remote --sort -- --upload-pack=x origin", "git send-pack --push-option -- --receive-pack=x ../r main",
+    "git archive -o -- --exec=x --remote=r HEAD", "git archive --remote r --output -- --exec=x HEAD"], INC);
+  // archive reads -o / --output / --remote / --exec in a first pass that keeps every other option without its value
+  // (measured: --prefix --exec=<cmd> --remote=<repo> runs <cmd>).
+  each(["git archive --prefix --exec=x --remote=r HEAD"], INC);
+  // pull -S / -r / -j take only the rest of their cluster (-So: the key "o"), so the next word is an option (measured: it runs).
+  each(["git pull -So --upload-pack=x origin main", "git pull -S --upload-pack=x origin main"], INC);
+  // An option the command does not have, or an ambiguous prefix, is unknown.
+  each(["git push --frobnicate origin main", "git fetch --u=x origin", "git pull -Z origin main", "git ls-remote --e x origin"], INC);
+  // The real terminator, a value that is not --, a negated program option and the usual forms stay clean.
+  each(["git push -- --receive-pack=x origin", "git fetch -- --upload-pack=x", "git push -o ci.skip origin main", "git fetch --depth 1 origin",
+    "git fetch --no-upload-pack origin", "git pull --rebase=merges -j4 origin main", "git push -u origin HEAD", "git push --force-with-lease origin main",
+    "git ls-remote --heads origin", "git ls-remote -h origin", "git send-pack --remote=o ../r main", "git archive --format=tar -o out.tar HEAD",
+    "git archive -9 --prefix=p/ HEAD"], [], bare);
+});
+
+test("git: the hidden aliases of a program option (ls-remote --exec) and the hidden options of the transfer commands and clone", () => {
+  // Measured (2.39.5 and 2.54.0): ls-remote --exec is a hidden alias of --upload-pack and runs it; fetch
+  // --submodule-prefix is a hidden valued option, so -- as its value leaves --upload-pack read (it runs).
+  each(["git ls-remote --exec=x origin", "git ls-remote --exec x origin", "git ls-remote -q --exec=x origin",
+    "git fetch --submodule-prefix -- --upload-pack=x origin", "git clone --naked -u x a b"], INC);
+  each(["git clone --naked a b", "git pull --summary origin main", "git fetch --recurse-submodules-default=yes origin"], [], bare);
 });

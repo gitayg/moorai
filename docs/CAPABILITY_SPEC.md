@@ -4401,8 +4401,18 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   k=v`, `-qck=v`), all measured to copy or run the hooks on 2.39.5 and 2.54.0, and an option they do not have or an
   ambiguous one (`clone --t`: template or tags) opaque —, a program for the other end of a transfer
   (`GIT_PACK_PROGRAM` and `clone -u` / `--upload-pack`: `fetch`, `pull`, `ls-remote` and `fetch-pack --upload-pack`,
-  `push` and `send-pack --receive-pack` / `--exec`, `archive --exec`, any long option before `--` that is a prefix of
-  one; a command value measured to run with a local repository on 2.39.5 and 2.54.0), and `GIT_EXEC_ENV` set with a value outside `GIT_HARMLESS_PROGRAMS` (empty,
+  `ls-remote --exec` (a hidden alias of `--upload-pack`), `push` and `send-pack --receive-pack` / `--exec`, `archive
+  --exec`; a command value measured to run with a local repository on 2.39.5 and 2.54.0) — each command's options read
+  with its own table (`GIT_FETCH`, `GIT_PULL`, `GIT_LS_REMOTE`, `GIT_PUSH`, `GIT_SEND_PACK`, `GIT_ARCHIVE`, from `git
+  <cmd> -h` on 2.54.0 plus the options git's source marks hidden: `ls-remote --exec` / `-h` / `--heads`, `fetch
+  --submodule-prefix` / `--recurse-submodules-default`, `pull --summary`, `clone --naked`), as git reads them: anywhere,
+  a long one by a unique prefix, a valued option taking the next word even when it is `--` (`push -o -- --receive-pack=<cmd>`,
+  `fetch -o -- --upload-pack=<cmd>`, `archive -o -- --exec=<cmd> --remote=<repo>` measured to run on 2.39.5 and
+  2.54.0), an optional value only from the rest of its cluster (`pull -So --upload-pack=<cmd>` runs), and an option
+  the command does not have or an ambiguous one opaque; `archive` also as its first pass reads `-o` / `--output`,
+  `--remote` and `--exec` (no prefix, every other option kept without its value: `--prefix --exec=<cmd>` runs);
+  `fetch-pack`, which reads its options by hand with `=` values only and refuses `--`, by any long option before `--`
+  that is a prefix of one —, and `GIT_EXEC_ENV` set with a value outside `GIT_HARMLESS_PROGRAMS` (empty,
   `cat`, `less`, `more`, `true`, `:`; for `GIT_EDITOR`, `EDITOR`, `VISUAL` and `GIT_SEQUENCE_EDITOR` also `vi`,
   `vim`, `nano`, `code --wait`): `GIT_PAGER` / `PAGER` (log, diff on a terminal), `GIT_EDITOR` / `EDITOR`
   (commit), `GIT_SSH_COMMAND` / `GIT_SSH` / `GIT_PROXY_COMMAND` (fetch) and `GIT_EXTERNAL_DIFF` (diff) measured to

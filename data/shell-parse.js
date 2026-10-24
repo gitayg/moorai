@@ -204,8 +204,10 @@ export function commandOf(toks, ps) {
 // known too, as curl, wget, rsync and git accept it. With shortAll (every short option letter), a letter outside it
 // ends its cluster. shortConflict: letters one implementation reads with a value and another without (GNU cp -S
 // takes a suffix, BSD cp -S none); one followed by more letters of its cluster, or by a word that is an option, has
-// no single reading. A long option that is ambiguous or not known, a short letter not known, or a conflicting letter
-// with no single reading, is returned with `unknown: true` (its value, if any, is not taken).
+// no single reading. shortOptional: letters that take the rest of their cluster as an optional value and never the
+// next word (git's PARSE_OPT_OPTARG: `git pull -So` signs with the key "o"). A long option that is ambiguous or not
+// known, a short letter not known, or a conflicting letter with no single reading, is returned with `unknown: true`
+// (its value, if any, is not taken).
 export function longName(name, longAll, negatable = false, prefix = true) {
   if (longAll.includes(name)) return name;
   const hits = prefix ? longAll.filter((o) => o.startsWith(name)) : [];
@@ -214,7 +216,7 @@ export function longName(name, longAll, negatable = false, prefix = true) {
   const base = longName(`--${name.slice(5)}`, longAll, false, prefix);
   return base && !base.startsWith("--no-") ? `--no-${base.slice(2)}` : null;
 }
-export function scanArgs(rest, { shortValued = "", longValued = [], ps = false, longAll = null, shortAll = null, negatable = false, exact = false, shortConflict = "" } = {}) {
+export function scanArgs(rest, { shortValued = "", longValued = [], ps = false, longAll = null, shortAll = null, negatable = false, exact = false, shortConflict = "", shortOptional = "" } = {}) {
   const flags = [], positional = [];
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i];
@@ -241,6 +243,7 @@ export function scanArgs(rest, { shortValued = "", longValued = [], ps = false, 
         const ch = t[k];
         if (shortAll && !shortAll.includes(ch)) { flags.push({ name: `-${ch}`, value: null, unknown: true }); break; }
         if (shortConflict.includes(ch) && (k + 1 < t.length || (/^-./.test(rest[i + 1] || "")))) { flags.push({ name: `-${ch}`, value: null, unknown: true }); break; }
+        if (shortOptional.includes(ch)) { flags.push({ name: `-${ch}`, value: k + 1 < t.length ? t.slice(k + 1) : null }); break; }
         if (shortValued.includes(ch)) {
           const value = k + 1 < t.length ? t.slice(k + 1) : i + 1 < rest.length ? rest[++i] : null;
           flags.push({ name: `-${ch}`, value });
