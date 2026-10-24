@@ -14,8 +14,9 @@ import { DetectionEngine } from "../src/engine.js";
 import { invisibleViews, stripZeroWidth } from "../data/text-views.js";
 import { paddedHiddenContent, hiddenHtmlInstruction, concealsFromUser, targetsReviewers, persistsToMemory, PAD_MIN } from "../data/skill-hiding.js";
 import { skillIntents, INTENT_LABELS } from "../cli/skill-analysis.mjs";
-import { decideText } from "../cli/hook-core.mjs";
-import { oversightPolicy, protectedPathHit } from "../cli/oversight-surfaces.mjs";
+import { decideText, decideOversight } from "../cli/hook-core.mjs";
+import { oversightPolicy, protectedPathHit, memoryPathHit } from "../cli/oversight-surfaces.mjs";
+import { oversightChanges } from "../cli/oversight-disclosure.mjs";
 import { oversightEditSignals } from "../cli/oversight-signals.mjs";
 import { oversightCommandSignals } from "../cli/oversight-shell.mjs";
 import { skillSurfaceKind, persistentInstructionKind } from "../data/skill-surface.js";
@@ -212,6 +213,34 @@ test("persistence: ordinary maintenance instructions stay quiet", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------
+// 6b. Benign skill-file controls (test/fixtures/skill-benign-controls.json), kept out of the benchmark corpus
+// ---------------------------------------------------------------------------------------------------------
+test("benign skill-file controls: none of the five hiding detectors fires; the pre-existing detectors that do are pinned", () => {
+  const { controls } = JSON.parse(readFileSync(new URL("./fixtures/skill-benign-controls.json", import.meta.url), "utf8"));
+  assert.equal(controls.length, 12);
+  const hiding = new Set(["skill-padded-hidden-content", "skill-hidden-html-instructions", "skill-conceals-from-user", "skill-targets-reviewers", "skill-persists-to-memory"]);
+  const others = {};
+  for (const c of controls) {
+    for (const ctx of [{}, SKILL, { targetPath: "/repo/CLAUDE.md" }]) {
+      for (const stage of ["file", "index"]) {
+        const fired = ids(c.text, stage, ctx);
+        assert.ok(!fired.some((d) => hiding.has(d)), `${c.id} ${stage} ${JSON.stringify(ctx)}: ${fired.join(",")}`);
+      }
+    }
+    const pre = ids(c.text, "file", {});
+    if (pre.length) others[c.id] = pre.sort();
+  }
+  // Pre-existing detectors, recorded rather than fixed here: a licence header is legal-language by design; the
+  // "do not tell the user whether the password was wrong" guidance trips mcp-tool-poisoning's tell/user pattern;
+  // dep-typosquat reads the prose after `npm install` as package names.
+  assert.deepEqual(others, {
+    "sk-licence-1": ["legal-license-prompt"],
+    "sk-password-msg-1": ["mcp-tool-poisoning"],
+    "sk-tell-user-1": ["dep-typosquat"]
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------
 // 7. Skill triage names each technique
 // ---------------------------------------------------------------------------------------------------------
 test("skill triage: each hiding detector has its own intent label in the closed vocabulary", () => {
@@ -244,17 +273,41 @@ test("memory files: OpenClaw SOUL.md and MEMORY.md are on the skill surface", ()
   assert.equal(skillSurfaceKind("/u/.claude/projects/-r/memory/MEMORY.md"), "claude-memory", "Claude Code's memory keeps its kind");
   assert.equal(persistentInstructionKind("/r/.claude/skills/x/SKILL.md"), null, "a skill is not a persistent-instruction file");
 });
-test("memory files: a write by the agent is a #84 protected-surface change with no policy, and the policy can turn it off", () => {
+test("memory files: a write by the agent raises #84 memory-file, NOTIFY by default (an alert, no prompt)", () => {
   const s = oversightPolicy(null);
+  assert.equal(s.memory, "notify");
   for (const p of ["CLAUDE.md", "sub/AGENTS.md", ".cursorrules", "/u/.openclaw/workspace/SOUL.md", "/u/.openclaw/workspace/MEMORY.md", "/u/.claude/projects/-r/memory/MEMORY.md", ".github/copilot-instructions.md", "GEMINI.md"]) {
-    assert.ok(protectedPathHit(p, s, { cwd: "/tmp/proj" }), p);
+    assert.ok(memoryPathHit(p, s, { cwd: "/tmp/proj" }), p);
+    assert.equal(protectedPathHit(p, s, { cwd: "/tmp/proj" }), false, `${p} is not a DECLARED protected path`);
   }
-  for (const p of ["README.md", "src/app.js", "docs/CLAUDE-notes.txt", ".claude/skills/x/SKILL.md"]) assert.equal(protectedPathHit(p, s, { cwd: "/tmp/proj" }), false, p);
-  assert.deepEqual(oversightEditSignals({ path: "CLAUDE.md", before: "# a\n", after: "# a\nb\n", surfaces: s, cwd: "/tmp/proj" }), ["protected-surface"]);
-  assert.ok(oversightCommandSignals("echo 'x' >> SOUL.md", { surfaces: s, cwd: "/tmp/proj" }).includes("protected-surface"));
+  for (const p of ["README.md", "src/app.js", "docs/CLAUDE-notes.txt", ".claude/skills/x/SKILL.md"]) assert.equal(memoryPathHit(p, s, { cwd: "/tmp/proj" }), false, p);
+  assert.deepEqual(oversightEditSignals({ path: "CLAUDE.md", before: "# a\n", after: "# a\nb\n", surfaces: s, cwd: "/tmp/proj" }), ["memory-file"]);
+  assert.deepEqual(oversightCommandSignals("echo 'x' >> SOUL.md", { surfaces: s, cwd: "/tmp/proj" }), ["memory-file"]);
+  const d = decideOversight(null, ["memory-file"]);
+  assert.equal(d.decision, "allow", "no prompt by default");
+  assert.equal(d.findings.length, 1, "but an alert");
+  assert.equal(d.findings[0].threatId, 84);
+});
+
+test("memory files: policy raises it to ask or block, turns it off, and a disabled #84 stays disabled", () => {
+  const pol = (m) => ({ oversight: { v: 1, memoryFiles: m } });
+  assert.equal(decideOversight(pol("ask"), ["memory-file"]).decision, "ask");
+  assert.equal(decideOversight(pol("block"), ["memory-file"]).decision, "deny");
+  assert.equal(decideOversight(pol("notify"), ["memory-file"]).decision, "allow");
+  assert.equal(oversightPolicy(pol("off"), () => {}).memory, false);
   const off = oversightPolicy({ oversight: { v: 1, protectMemoryFiles: false } }, () => {});
-  assert.equal(protectedPathHit("CLAUDE.md", off, { cwd: "/tmp/proj" }), false);
+  assert.equal(off.memory, false);
+  assert.equal(memoryPathHit("CLAUDE.md", off, { cwd: "/tmp/proj" }), false);
+  assert.deepEqual(oversightEditSignals({ path: "CLAUDE.md", before: "a\n", after: "b\n", surfaces: off, cwd: "/tmp/proj" }), []);
+  assert.equal(decideOversight({ threatPolicy: { 84: "disabled" } }, ["memory-file"]).findings.length, 0);
+  // A memory-file write that ALSO weakens oversight is decided by the stricter of the two: the other signal's ask.
+  assert.equal(decideOversight(null, ["wiring-removed", "memory-file"]).decision, "ask");
+  // A declared protected path that is also a memory file keeps the declared surface's ask.
+  const both = oversightPolicy({ oversight: { v: 1, protectedPaths: ["CLAUDE.md"] } }, () => {});
+  assert.deepEqual(oversightEditSignals({ path: "CLAUDE.md", before: "a\n", after: "b\n", surfaces: both, cwd: "/tmp/proj" }), ["protected-surface"]);
   const warned = [];
-  oversightPolicy({ oversight: { v: 1, protectMemoryFiles: "no" } }, (m) => warned.push(m));
-  assert.ok(warned.some((m) => /protectMemoryFiles/.test(m)));
+  oversightPolicy({ oversight: { v: 1, memoryFiles: "explode", protectMemoryFiles: "no" } }, (m) => warned.push(m));
+  assert.ok(warned.some((m) => /memoryFiles/.test(m)) && warned.some((m) => /protectMemoryFiles/.test(m)));
+  // Stop's disclosure check does not count a memory save as an undisclosed oversight change.
+  assert.equal(oversightChanges([{ ev: "pre", decision: "allow", ov: ["memory-file"], tool: "Write" }]).count, 0);
 });

@@ -556,9 +556,11 @@ text files of this repository with their JSON string leaves, 154 Markdown/text f
 7,834 local Markdown and rules files (among them installed plugins' `SKILL.md` files and real `CLAUDE.md` files):
 the longest was 5 lines. On the inbound tune split (`node scripts/score-inbound.mjs`, 675 samples) the benign
 counts did not change; on `benign-corpus-v2` (prompt stage) none of the five can fire. Twelve benign skill-file
-controls were added to `test/redteam/benign-corpus.json` at stage `file`; none of the five fires on them (three
-fire pre-existing detectors: `legal-license-prompt` on a licence header, `mcp-tool-poisoning` on "do not tell the
-user whether the password was wrong", `dep-typosquat` on prose after `npm install`).
+controls live in `test/fixtures/skill-benign-controls.json`, outside the benchmark corpora so the published
+precision stays comparable; `test/skill-hiding.test.mjs` asserts none of the five fires on them (stage `file` and
+`index`, with no path, as a `SKILL.md` and as `CLAUDE.md`) and pins the three pre-existing detectors that do:
+`legal-license-prompt` on a licence header, `mcp-tool-poisoning` on "do not tell the user whether the password was
+wrong", `dep-typosquat` on prose after `npm install`.
 
 **Skill triage.** `cli/skill-analysis.mjs` names each detector with its own label (`padded-hidden-content`,
 `hidden-html-instructions`, `conceals-from-user`, `targets-reviewers`, `persists-to-memory`). Because the engine
