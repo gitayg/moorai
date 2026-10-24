@@ -12,7 +12,8 @@
 //   memoryFiles     "notify" (default), "ask", "block" or "off". The agent's PERSISTENT-INSTRUCTION files —
 //                   CLAUDE.md, CLAUDE.local.md, AGENTS.md, GEMINI.md, .cursorrules and the other rules files,
 //                   Claude Code's auto memory (.claude/projects/<p>/memory/), OpenClaw's SOUL.md / MEMORY.md /
-//                   memory/ (data/skill-surface.js PERSISTENT_INSTRUCTION_KINDS) — are watched BUILT IN, with no
+//                   memory/ (data/skill-surface.js PERSISTENT_INSTRUCTION_KINDS), and git's run-later files (a hook,
+//                   a git config, the .git file: gitRunLaterPath) — are watched BUILT IN, with no
 //                   policy at all: a skill that persists itself into the agent's memory steers every later
 //                   session. A write raises the signal "memory-file" (not "protected-surface"), and
 //                   cli/hook-core.mjs decideOversight resolves it: with NOTHING configured for #84 and no
@@ -146,10 +147,21 @@ export function protectedPathHit(path, surfaces, { cwd = "", real: useReal = fal
   const forms = pathForms(path, { cwd, real: useReal });
   return surfaces.paths.some((p) => forms.some((f) => p.re.test(f)));
 }
-// One of the agent's persistent-instruction files (oversightPolicy's built-in set), unless the policy turned it off.
+// git's own run-later surfaces: a hook (of a repository, a bare *.git, a worktree or a submodule gitdir), a config git
+// reads (where core.hooksPath, core.fsmonitor, alias.* and filter.* live: the repository's, a worktree's, a
+// submodule's, the user's global and the system one) and the .git file that names the gitdir (measured, git 2.39.5
+// and 2.54.0: a .git file naming another gitdir makes git read its config, whose core.fsmonitor runs on status).
+const GIT_RUN_LATER = [
+  /(?:^|\/)[^/]*\.git\/(?:(?:modules|worktrees)\/.+\/)?hooks\/[^/]/i,
+  /(?:^|\/)[^/]*\.git\/(?:(?:modules|worktrees)\/.+\/)?config(?:\.worktree)?$/i,
+  /(?:^|\/)\.git$/i, /(?:^|\/)\.gitconfig$/i, /(?:^|\/)\.config\/git\/config$/i, /^\/etc\/gitconfig$/i
+];
+export const gitRunLaterPath = (f) => GIT_RUN_LATER.some((re) => re.test(f));
+// One of the agent's persistent-instruction files (oversightPolicy's built-in set) or one of git's run-later
+// surfaces, unless the policy turned the set off.
 export function memoryPathHit(path, surfaces, { cwd = "", real: useReal = false } = {}) {
   if (!surfaces || !surfaces.memory || typeof path !== "string" || !path || /[\r\n\0]/.test(path)) return false;
-  return pathForms(path, { cwd, real: useReal }).some((f) => persistentInstructionKind(f) !== null);
+  return pathForms(path, { cwd, real: useReal }).some((f) => persistentInstructionKind(f) !== null || gitRunLaterPath(f));
 }
 
 const keyRe = (k) => new RegExp(`(?<![\\w\\-])${esc(k)}(?![\\w\\-])`);

@@ -1689,11 +1689,16 @@ command or configuration cannot be told (an option git does not have before the 
 there, a command that is not a git builtin: an alias, a script such as `git svn`, an external `git-<name>`, a
 builtin in another case; `--exec-path=<dir>`; a `-c` / `--config-env` / `GIT_CONFIG_KEY_<n>` key that could run a
 command, such as `core.fsmonitor`, `core.pager` or any `alias.*`; a config file picked by `GIT_CONFIG_GLOBAL` /
-`GIT_CONFIG_SYSTEM` / `HOME` / `XDG_CONFIG_HOME`), a `--pathspec-from-file`, and a
+`GIT_CONFIG_SYSTEM` / `HOME` / `XDG_CONFIG_HOME`; hooks, templates or objects elsewhere through `GIT_COMMON_DIR` /
+`GIT_TEMPLATE_DIR` / `GIT_OBJECT_DIRECTORY` or `init` / `clone --template`, and `clone -c` with such a key; a pager,
+editor, ssh, askpass, external-diff or proxy variable such as `GIT_PAGER` / `EDITOR` / `GIT_SSH_COMMAND` whose value
+is not empty, `cat`, `less`, `more`, `true` or `:`, or for an editor `vi`, `vim`, `nano` or `code --wait`), a
+`GIT_TRACE2*` path (it may name a directory), a `--pathspec-from-file`, and a
 write tool given an option it does not have, an ambiguous abbreviation, or a letter GNU and BSD read differently
 with no single reading (`cp -St x dest`: GNU takes `t` as the backup suffix) have no literal destination, judged as
-below. `git -C a -C b` runs in `a/b` (a `/` path starts over; so does a `\`, `C:` or `\\host\share` path on Windows
-or in PowerShell, while elsewhere, where git reads it as a relative name, its place is unknown), and the paths of a `git
+below. A `GIT_TRACE*` naming an absolute path is a write to that file. `git -C a -C b` runs in `a/b` (a `/` path
+starts over; so does a `\`, `C:` or `\\host\share` path on Windows, while elsewhere, PowerShell included, where git
+reads it as a relative name, its place is unknown), and the paths of a `git
 checkout`, `restore`, `rm` or `mv` resolve under it; git's global options that take the next word (`--attr-source`,
 `--config-env`, `--namespace` …) are read as git reads them.
 Environment names on the command are matched in any case (`git_work_tree=/x` too), as Windows reads them. The same paths are judged for an MCP filesystem server's write, edit, move or create
@@ -1709,9 +1714,12 @@ judged with and without the scheme and held as an incomplete analysis.
 **The agent's own instruction and memory files are watched with no policy at all**: `CLAUDE.md`,
 `CLAUDE.local.md`, `.claude/rules/`, `AGENTS.md`, `GEMINI.md`, `.cursorrules` and `.cursor/rules/`, the Windsurf,
 Cline, Copilot and Kiro rules files, Claude Code's auto memory (`.claude/projects/<project>/memory/`) and OpenClaw's
-`SOUL.md`, `MEMORY.md` and `memory/` (`PERSISTENT_INSTRUCTION_KINDS` in `data/skill-surface.js`). A skill that
-writes itself into one of them steers every later session, so a Write / Edit or a shell write raises a #84 alert
-(signal `memory-file`). **With nothing configured for #84 it is an alert without a prompt**, since an agent saves
+`SOUL.md`, `MEMORY.md` and `memory/` (`PERSISTENT_INSTRUCTION_KINDS` in `data/skill-surface.js`), and git's
+run-later files: a hook (`.git/hooks/`, a bare `*.git`, a worktree's or submodule's gitdir), a git config
+(`.git/config`, `config.worktree`, `~/.gitconfig`, `~/.config/git/config`, `/etc/gitconfig`) and the `.git` file
+that names the gitdir. A skill that writes itself into one of them steers every later session, so a Write / Edit,
+an MCP write or a shell write raises a #84 alert (signal `memory-file`), and so does `git config` setting a key
+outside the safe set (`core.hooksPath`, `core.fsmonitor`, `alias.*`, `filter.*` …; reads and unsets stay clean). **With nothing configured for #84 it is an alert without a prompt**, since an agent saves
 memory and edits `CLAUDE.md` on request routinely; once `threatPolicy["84"]` is set, a memory write gets the
 stricter of that action and `oversight.memoryFiles`, so the default never weakens an admin's policy.
 `"memoryFiles": "ask"` or `"block"` raises it, `"off"` (or `"protectMemoryFiles": false`) turns it off, an invalid

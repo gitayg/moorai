@@ -18,7 +18,11 @@
 //     word there or a command git does not have is unknown. A drive-letter or UNC path is not joined onto -C / -d.
 //   * Only a builtin, spelt as git spells it, is known; a -c / --config-env / GIT_CONFIG_* key that could run a
 //     command (alias.* included), a config file the environment picks, --exec-path=<dir> are unknown. Outside Windows
-//     and PowerShell a Windows-only rooted shape under -C / -d is unknown.
+//     a Windows-only rooted shape under -C / -d is unknown.
+//   * A pager / editor / ssh / askpass / external-diff / proxy variable outside the harmless set, GIT_COMMON_DIR,
+//     GIT_TEMPLATE_DIR, GIT_OBJECT_DIRECTORY and clone --template / -c are unknown; a GIT_TRACE* path is a write; a
+//     write to a git hook, a git config or the .git file, and git config setting an unsafe key, are memory-file.
+//     PowerShell on POSIX gets no exception.
 //
 //   node --test --import ./test/hermetic-env.mjs test/oversight-writes-options.test.mjs
 import { test, after } from "node:test";
@@ -29,6 +33,8 @@ import { join } from "node:path";
 import { oversightCommandSignals } from "../cli/oversight-shell.mjs";
 import { oversightPolicy } from "../cli/oversight-surfaces.mjs";
 import { writeTargets, gitInvocation } from "../cli/oversight-shell-writes.mjs";
+import { oversightEditSignals } from "../cli/oversight-signals.mjs";
+import { oversightMcpSignals } from "../cli/oversight-mcp.mjs";
 
 const proj = mkdtempSync(join(tmpdir(), "moorai-ovopts-"));
 after(() => rmSync(proj, { recursive: true, force: true }));
@@ -196,7 +202,8 @@ test("git: variables measured not to move checkout / restore / rm / mv writes st
   // repository (with or without core.worktree in its config), GIT_CONFIG naming a config with core.worktree,
   // GIT_CEILING_DIRECTORIES and GIT_DISCOVERY_ACROSS_FILESYSTEM write a/f or nothing. (GIT_CONFIG_GLOBAL /
   // GIT_CONFIG_SYSTEM leave the paths alone too, but the config they name can run a command: below.)
-  const vars = ["GIT_COMMON_DIR=/tmp/b/.git", "GIT_CONFIG=/tmp/cfg", "GIT_CEILING_DIRECTORIES=/tmp", "GIT_DISCOVERY_ACROSS_FILESYSTEM=1"];
+  // (GIT_COMMON_DIR leaves the paths alone too, but runs hooks from that directory: below.)
+  const vars = ["GIT_CONFIG=/tmp/cfg", "GIT_CEILING_DIRECTORIES=/tmp", "GIT_DISCOVERY_ACROSS_FILESYSTEM=1"];
   each(vars.flatMap((v) => [`${v} git checkout -- src/a.js`, `${v} git restore src/a.js`, `${v} git rm src/a.js`, `${v} git mv src/a.js src/b.js`]), [], bare);
 });
 
@@ -227,23 +234,31 @@ test("git: known valueless global options and known commands stay clean", () => 
 });
 
 // ---- a Windows absolute path (X:, \\host\share) is not joined onto the -C / -d base ----
-test("git -C / patch -d: in PowerShell or on Windows, a drive-letter or UNC path starts over instead of joining the base", () => {
-  const dest = (bin, args) => writeTargets(bin, args, { ps: true }).writes.map((w) => w.dest);
-  assert.deepEqual(dest("git", ["-C", "a", "-C", "D:/x", "checkout", "--", "f"]), ["D:/x/f"]);
-  assert.deepEqual(dest("git", ["-C", "C:\\repo", "checkout", "--", "D:\\y\\f"]), ["D:\\y\\f"]);
-  assert.deepEqual(dest("git", ["-C", "a", "-C", "\\\\host\\share", "restore", "f"]), ["\\\\host\\share/f"]);
-  assert.deepEqual(dest("git", ["-C", "a", "checkout", "--", "C:f", "\\\\h\\s\\f"]), ["C:f", "\\\\h\\s\\f"]);
-  assert.deepEqual(dest("patch", ["-d", "a", "E:/w/f.py", "fix.diff"]), ["E:/w/f.py"]);
-  const g = gitInvocation(["-C", "a", "-C", "C:repo", "rm", "f"], [], { ps: true });
-  assert.deepEqual([g.under("f"), g.under("D:/z")], ["C:repo/f", "D:/z"]);
-  // On win32 outside PowerShell (Git Bash, cmd) the same.
+test("git -C / patch -d: on Windows, a drive-letter or UNC path starts over instead of joining the base", () => {
+  // Measured: pwsh 7.4.2 on Linux with git 2.34.1 passes C:x, \y and C:f to git as relative names (a/C:x/f is
+  // written), as bash does: a PowerShell segment is rooted only on Windows.
   const real = Object.getOwnPropertyDescriptor(process, "platform");
   Object.defineProperty(process, "platform", { value: "win32" });
-  try { assert.deepEqual(writeTargets("git", ["-C", "a", "-C", "D:/x", "checkout", "--", "f"]), { writes: [{ dest: "D:/x/f", sources: null, dir: false }], unknown: false }); }
-  finally { Object.defineProperty(process, "platform", real); }
+  try {
+    for (const ps of [false, true]) {
+      const dest = (bin, args) => writeTargets(bin, args, { ps }).writes.map((w) => w.dest);
+      assert.deepEqual(dest("git", ["-C", "a", "-C", "D:/x", "checkout", "--", "f"]), ["D:/x/f"]);
+      assert.deepEqual(dest("git", ["-C", "C:\\repo", "checkout", "--", "D:\\y\\f"]), ["D:\\y\\f"]);
+      assert.deepEqual(dest("git", ["-C", "a", "-C", "\\\\host\\share", "restore", "f"]), ["\\\\host\\share/f"]);
+      assert.deepEqual(dest("git", ["-C", "a", "checkout", "--", "C:f", "\\\\h\\s\\f"]), ["C:f", "\\\\h\\s\\f"]);
+      assert.deepEqual(dest("patch", ["-d", "a", "E:/w/f.py", "fix.diff"]), ["E:/w/f.py"]);
+      const g = gitInvocation(["-C", "a", "-C", "C:repo", "rm", "f"], [], { ps });
+      assert.deepEqual([g.under("f"), g.under("D:/z")], ["C:repo/f", "D:/z"]);
+    }
+  } finally { Object.defineProperty(process, "platform", real); }
+  // In PowerShell on POSIX the place is unknown, as in bash.
+  if (process.platform !== "win32") {
+    assert.equal(writeTargets("git", ["-C", "a", "-C", "D:/x", "checkout", "--", "f"], { ps: true }).unknown, true);
+    assert.equal(writeTargets("patch", ["-d", "a", "E:/w/f.py", "fix.diff"], { ps: true }).unknown, true);
+  }
 });
 
-// ---- outside Windows and PowerShell, C:x, \x and \\host\share are relative names: whether git joins them is unknown ----
+// ---- outside Windows (PowerShell included), C:x, \x and \\host\share are relative names: whether git joins them is unknown ----
 test("git -C / patch -d on POSIX: a Windows-only rooted shape under a base is unknown; / is rooted everywhere", () => {
   // Measured (git 2.39.5, 2.54.0): `git -C a -C C:x checkout -- f` writes a/C:x/f, `git -C a -C '\y' checkout -- f`
   // writes a/\y/f, `git -C a checkout -- C:f` writes a/C:f.
@@ -299,4 +314,74 @@ test("git: config keys that cannot run anything stay clean", () => {
     "git -c http.sslVerify=false fetch", "git -c safe.directory='*' status", "git -c log.date=iso log", "git -c commit.gpgsign=false commit -m x",
     "git -c gc.auto=0 commit -m x", "git -c core.autocrlf=false checkout main", "git --config-env=user.name=NAME commit -m x",
     "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=color.ui GIT_CONFIG_VALUE_0=never git diff", "git --exec-path", "git --no-pager rm src/a.js", "git -p checkout -- src/a.js"], [], bare);
+});
+
+// ---- environment variables that run a command, set on a git segment ----
+test("git: a pager / editor / ssh / askpass / external-diff / proxy variable with a value outside the harmless set is unknown", () => {
+  // Measured (git 2.39.5, 2.54.0): GIT_PAGER / PAGER run for log and diff on a terminal, GIT_EDITOR / EDITOR for commit,
+  // GIT_SSH_COMMAND / GIT_SSH / GIT_PROXY_COMMAND for fetch, GIT_EXTERNAL_DIFF for diff; none ran for checkout,
+  // restore, rm, mv or status. The rule holds for every git command.
+  each(["GIT_PAGER='sh x' git log", "PAGER=/tmp/p git log", "GIT_PAGER=/bin/cat git log", "GIT_PAGER='cat; sh x' git log", "git_pager='sh x' git log",
+    "env GIT_PAGER='sh x' git status", "sudo PAGER='sh x' git diff", "GIT_EDITOR='code -w' git commit", "EDITOR='vim -c x' git commit", "VISUAL=emacs git commit",
+    "GIT_SEQUENCE_EDITOR='sed -i x' git rebase -i HEAD~2", "GIT_SSH_COMMAND='ssh -i k' git fetch", "GIT_SSH=/tmp/s git fetch", "GIT_ASKPASS=/tmp/a git fetch",
+    "SSH_ASKPASS=/tmp/a git fetch", "GIT_EXTERNAL_DIFF=/tmp/d git diff", "GIT_PROXY_COMMAND=/tmp/p git fetch", "GIT_PAGER=vim git log", "GIT_EDITOR=$E git commit"], INC);
+  each(["GIT_PAGER=cat git log", "PAGER=less git log", "GIT_PAGER= git log", "GIT_PAGER=more git log", "GIT_PAGER=cat git checkout -- src/a.js",
+    "GIT_EDITOR=true git commit", "GIT_EDITOR=: git commit", "EDITOR=vim git commit", "GIT_EDITOR='code --wait' git commit", "VISUAL=nano git commit",
+    "GIT_SEQUENCE_EDITOR=vi git rebase -i HEAD~2", "GIT_SSH_COMMAND=true git fetch"], [], bare);
+});
+
+// ---- hooks and config run from another place ----
+test("git: GIT_COMMON_DIR, GIT_TEMPLATE_DIR, GIT_OBJECT_DIRECTORY, -c core.hooksPath and clone --template / -c are unknown", () => {
+  // Measured (git 2.39.5, 2.54.0): GIT_COMMON_DIR runs post-checkout / post-index-change from its hooks; GIT_TEMPLATE_DIR
+  // and --template copy hooks into the new repository and clone runs post-checkout at once; clone -c / --config
+  // core.hooksPath runs hooks during the clone; GIT_OBJECT_DIRECTORY receives the objects git add writes.
+  each(["GIT_COMMON_DIR=/tmp/b/.git git status", "GIT_COMMON_DIR=/tmp/b/.git git checkout -- src/a.js", "git -c core.hooksPath=/tmp/h status",
+    "GIT_TEMPLATE_DIR=/tmp/t git clone a b", "git clone --template=/tmp/t a b", "git init --template /tmp/t x", "git clone -c core.hooksPath=/tmp/h a b",
+    "git clone --config=core.fsmonitor=x a b", "git clone --config core.pager=x a b", "GIT_OBJECT_DIRECTORY=/tmp/o git add src/a.js"], INC);
+  each(["git clone https://x.example.com/r.git", "git clone -c http.sslVerify=false a b", "git init", "git init -q x"], [], bare);
+});
+
+// ---- GIT_TRACE*: a path value is a file git writes ----
+test("git: GIT_TRACE* naming an absolute path is a write to it; 1 / 2 / true / 0 / a relative word are not", () => {
+  // Measured (git 2.39.5, 2.54.0): GIT_TRACE=/abs/CLAUDE.md git status writes it (as do GIT_TRACE_PERFORMANCE / _SETUP /
+  // _REFS / GIT_TRACE2 / _EVENT / _PERF; the others write when their trace fires); a relative value is ignored with a
+  // warning; GIT_TRACE2* naming a directory writes a file of its own name inside it.
+  has(`GIT_TRACE=${join(proj, "CLAUDE.md")} git status`, "memory-file", bare);
+  has(`GIT_TRACE_PACKET=${join(proj, "ops/alerting/t.log")} git fetch`, "protected-surface");
+  has(`git_trace=${join(proj, "CLAUDE.md")} git status`, "memory-file", bare);
+  has("GIT_TRACE2_EVENT=/tmp/traces git status", "write-target-unknown", bare);
+  has("GIT_TRACE=$T git status", "write-target-unknown", bare);
+  each(["GIT_TRACE=1 git status", "GIT_TRACE=2 git status", "GIT_TRACE=true git status", "GIT_TRACE=0 git status", "GIT_TRACE=rel.log git status", "GIT_TRACE_PACKET=1 git fetch"], [], bare);
+});
+
+// ---- planting a hook or a config git reads ----
+test("planting: a shell, Write / Edit or MCP write to a git hook, a git config or the .git file is memory-file", () => {
+  // Measured (git 2.39.5, 2.54.0): a .git FILE naming another gitdir makes git read that gitdir's config (its
+  // core.fsmonitor runs on status).
+  each(["echo x > .git/hooks/post-checkout", "cp evil.sh .git/hooks/pre-commit", "cat > .git/config <<EOF\n[core]\nfsmonitor = x\nEOF", "echo x | tee -a .git/config",
+    "echo 'gitdir: /tmp/e' > .git", "cp x sub/.git/modules/m/hooks/post-checkout", "echo x > .git/worktrees/w/config.worktree", "echo x > bare.git/hooks/update",
+    "echo x >> ~/.gitconfig", "echo x > .GIT/HOOKS/pre-push"], ["memory-file"], bare);
+  const w = (p, before = null) => oversightEditSignals({ path: join(proj, p), before, after: "x", surfaces: none, cwd: proj });
+  assert.deepEqual(w(".git/hooks/post-checkout"), ["memory-file"]);
+  assert.deepEqual(w(".git/config", "[core]\n"), ["memory-file"]);
+  assert.deepEqual(oversightMcpSignals("mcp__filesystem__write_file", { path: join(proj, ".git/config"), content: "x" }, { cwd: proj, surfaces: none }), ["memory-file"]);
+  // Stricter where the policy is: a protected .git is protected-surface.
+  const strict = oversightPolicy({ oversight: { v: 1, protectedPaths: [".git/**"] } }, () => {});
+  assert.deepEqual(oversightCommandSignals("echo x > .git/hooks/post-checkout", { surfaces: strict, cwd: proj }), ["protected-surface"]);
+  assert.deepEqual(oversightCommandSignals("echo x > .git/hooks/post-checkout", { surfaces: oversightPolicy({ oversight: { v: 1, memoryFiles: "off" } }, () => {}), cwd: proj }), []);
+  // Reads and ordinary files stay clean.
+  each(["cat .git/config", "grep x .git/hooks/pre-commit.sample", "echo x > src/hooks/post-checkout", "echo x > docs/config"], [], bare);
+});
+
+// ---- git config arming a later command ----
+test("git config: setting a key outside the safe set is memory-file; reads, unsets and safe keys stay clean", () => {
+  each(["git config core.hooksPath /tmp/h", "git config --global core.fsmonitor x", "git config --system alias.co '!sh x'", "git config --local filter.x.smudge y",
+    "git config --worktree core.pager x", "git config set core.hooksPath h", "git config --add alias.x y", "git config --replace-all core.editor x", "git config -e",
+    "git config --edit --global", "git config edit", "git -C sub config core.fsmonitor x", "git config Core.HooksPath x", "git config $K x",
+    "git config --rename-section foo core", "git config -f .git/config core.hooksPath h", "git config --file=/tmp/x.cfg include.path y"], ["memory-file"], bare);
+  has(`git config -f ${join(proj, "CLAUDE.md")} user.name x`, "memory-file", bare);
+  each(["git config --get core.hooksPath", "git config --list", "git config -l", "git config core.hooksPath", "git config get core.hooksPath",
+    "git config list --show-origin", "git config --get-regexp alias", "git config user.name x", "git config --global user.email x", "git config --unset core.hooksPath",
+    "git config pull.rebase false", "git config --global init.defaultBranch main", "git config unset alias.x",
+    "git config --get-urlmatch http.proxy https://x.example.com", "git config --get core.pager less", "git config get --url=https://x.example.com http.proxy"], [], bare);
 });

@@ -4323,9 +4323,17 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   (`PERSISTENT_INSTRUCTION_KINDS`, data/skill-surface.js: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/`,
   `AGENTS.md` / `AGENT.md` / `AGENTS.override.md`, `GEMINI.md`, `.cursorrules`, `.cursor/rules/`, `.windsurfrules`,
   Windsurf and Cline rules, `.github/copilot-instructions.md`, `.github/instructions/`, Kiro steering, Claude Code's
-  `.claude/projects/<p>/memory/`, OpenClaw `SOUL.md` / `MEMORY.md` / `memory/`). A Write / Edit of one, an MCP
-  filesystem write tool's path (below), or a shell command that writes, moves or deletes one, raises the signal
-  `memory-file` under #84. Shell writes (`cli/oversight-shell-writes.mjs`): a redirect (a bare `> path` with no
+  `.claude/projects/<p>/memory/`, OpenClaw `SOUL.md` / `MEMORY.md` / `memory/`), and git's run-later files
+  (`cli/oversight-surfaces.mjs` `gitRunLaterPath`: a hook under `.git/hooks/`, a bare `*.git/hooks/`, or a
+  worktree's or submodule's gitdir; `.git/config`, `config.worktree`, `~/.gitconfig`, `~/.config/git/config`,
+  `/etc/gitconfig`; the `.git` file, since a `.git` file naming another gitdir makes git read that gitdir's config,
+  whose `core.fsmonitor` runs on status, measured on 2.39.5 and 2.54.0). A Write / Edit of one, an MCP filesystem
+  write tool's path (below), or a shell command that writes, moves or deletes one, raises the signal `memory-file`
+  under #84, and so does `git config` setting a key outside `GIT_SAFE_CONFIG` (`cli/oversight-shell-writes.mjs`
+  `gitConfigWrite`: `git config [--global | --system | --local | --worktree | -f file] [--add | --replace-all]
+  <key> <value>`, git 2.46+ `git config set`, `--edit` / `edit`, `--rename-section`; `--get*`, `--list`, `get`,
+  `list`, a lone key, `--unset` and `unset` are reads or removals and stay clean; `-f <file>` is also a write to
+  that file). Shell writes (`cli/oversight-shell-writes.mjs`): a redirect (a bare `> path` with no
   command word too, read from the raw text, quote-aware, heredoc bodies skipped, since the parser keeps no segment
   for it), `tee` (a word after `--` too), `sed -i` / `--in-place` / BSD `-I`, `perl -pi`, `yq -i`, `Set-Content`, the
   destination of `cp` / `install` / `rsync` (a local one; `-t`, `--target-directory`, `-T` for cp; into a directory,
@@ -4369,7 +4377,18 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   `alias.*` included, may run a command: `-c core.fsmonitor=…` runs on status, checkout and `rm --cached`, and `-c
   core.pager` / `pager.log` on a terminal, measured on 2.39.5 and 2.54.0), `GIT_CONFIG_PARAMETERS`, and a config file
   picked by `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `HOME` or `XDG_CONFIG_HOME` (its `core.fsmonitor` runs,
-  measured; `GIT_CONFIG` is not read) — `--pathspec-from-file` — and when a write tool (cp, mv, install, rsync, curl, wget, tee,
+  measured; `GIT_CONFIG` is not read), `GIT_OPAQUE_ENV` (`GIT_COMMON_DIR`, whose hooks run; `GIT_TEMPLATE_DIR` and
+  `init` / `clone --template`, whose hooks are copied in and run by the clone; `GIT_OBJECT_DIRECTORY`, which `git
+  add` writes; `GIT_REDIRECT_STD*`), `clone -c` / `--config` with a key outside `GIT_SAFE_CONFIG` (`core.hooksPath`
+  there runs hooks during the clone), and `GIT_EXEC_ENV` set with a value outside `GIT_HARMLESS_PROGRAMS` (empty,
+  `cat`, `less`, `more`, `true`, `:`; for `GIT_EDITOR`, `EDITOR`, `VISUAL` and `GIT_SEQUENCE_EDITOR` also `vi`,
+  `vim`, `nano`, `code --wait`): `GIT_PAGER` / `PAGER` (log, diff on a terminal), `GIT_EDITOR` / `EDITOR`
+  (commit), `GIT_SSH_COMMAND` / `GIT_SSH` / `GIT_PROXY_COMMAND` (fetch) and `GIT_EXTERNAL_DIFF` (diff) measured to
+  run on 2.39.5 and 2.54.0, none of them for checkout, restore, rm, mv or status; `VISUAL`,
+  `GIT_SEQUENCE_EDITOR`, `GIT_ASKPASS` and `SSH_ASKPASS` by git's documentation. A `GIT_TRACE*` naming an
+  absolute path is a write to that file (written by status for `GIT_TRACE`, `_PERFORMANCE`, `_SETUP`, `_REFS`,
+  `GIT_TRACE2`, `_EVENT`, `_PERF`, measured; a relative word is ignored with a warning; `1` / `2` / `true` / `0`
+  go to a stream); a `GIT_TRACE2*` path may be a directory and is also unknown — `--pathspec-from-file` — and when a write tool (cp, mv, install, rsync, curl, wget, tee,
   sed, patch, git checkout / restore) is given a long option that is ambiguous or that it does not have, a short
   letter it does not have, or a letter whose arity differs between GNU and BSD (`shortConflict`: cp -S, install
   -S / -D / -T, sed -l) followed by more letters of its cluster or by an option word. The `NAME=value` words a
@@ -4378,9 +4397,10 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   names are case-insensitive and on POSIX the extra match only over-reports. git `-C` is cumulative (`git -C a -C
   b` is `a/b`; a rooted one starts over), and the paths of `git checkout`, `restore`, `rm` and `mv` resolve under
   it, as `patch <file>` resolves under `-d`. Rooted (`rooted` in `cli/oversight-shell-writes.mjs`) is `/…`
-  everywhere and, on Windows or in a PowerShell segment, also `\…`, a UNC `\\host\share` or a drive letter (`C:\…`,
-  `C:/…`, drive-relative `C:…`). Elsewhere those shapes are relative names to git (`git -C a -C C:x checkout -- f`
-  writes `a/C:x/f`, measured on 2.39.5 and 2.54.0), and under a base their place is unknown. A PowerShell segment's `cp` / `curl`
+  everywhere and, on Windows only, also `\…`, a UNC `\\host\share` or a drive letter (`C:\…`, `C:/…`,
+  drive-relative `C:…`). Elsewhere, PowerShell included, those shapes are relative names to git (`git -C a -C C:x
+  checkout -- f` writes `a/C:x/f`, measured with git 2.39.5 and 2.54.0 from sh and with pwsh 7.4.2 on Linux and
+  git 2.34.1), and under a base their place is unknown. A PowerShell segment's `cp` / `curl`
   (cmdlet aliases) is not held to these lists. MCP filesystem write tools
   (`cli/oversight-mcp.mjs`, wired in the hook's `mcp__*` branch): a tool named by a write verb (write, edit, move,
   rename, create, append, replace, insert, patch, save, overwrite, update) and a file noun (file, text_file,

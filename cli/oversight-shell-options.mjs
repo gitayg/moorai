@@ -252,3 +252,21 @@ export const GIT_SAFE_CONFIG = Object.freeze({
     "pull.rebase", "pull.ff", "fetch.prune", "push.default", "push.autosetupremote", "merge.ff", "diff.renames", "diff.noprefix",
     "status.showuntrackedfiles"]
 });
+// Environment variables that make git run a program (measured, git 2.39.5 and 2.54.0: GIT_PAGER / PAGER for log and
+// diff on a terminal, GIT_EDITOR / EDITOR for commit, GIT_SSH_COMMAND / GIT_SSH / GIT_PROXY_COMMAND for fetch,
+// GIT_EXTERNAL_DIFF for diff; VISUAL, GIT_SEQUENCE_EDITOR, GIT_ASKPASS and SSH_ASKPASS where git asks for an editor
+// on a terminal, a rebase todo or a password). Set on a git command with a value outside GIT_HARMLESS_PROGRAMS
+// (GIT_HARMLESS_EDITORS too for the editor ones), the command is unknown.
+export const GIT_EXEC_ENV = Object.freeze(["GIT_PAGER", "PAGER", "GIT_EDITOR", "EDITOR", "VISUAL", "GIT_SEQUENCE_EDITOR", "GIT_SSH_COMMAND", "GIT_SSH",
+  "GIT_ASKPASS", "SSH_ASKPASS", "GIT_EXTERNAL_DIFF", "GIT_PROXY_COMMAND"]);
+export const GIT_EDITOR_ENV = Object.freeze(["GIT_EDITOR", "EDITOR", "VISUAL", "GIT_SEQUENCE_EDITOR"]);
+export const GIT_HARMLESS_PROGRAMS = Object.freeze(["", "cat", "less", "more", "true", ":"]);
+export const GIT_HARMLESS_EDITORS = Object.freeze(["vi", "vim", "nano", "code --wait"]);
+// Environment variables that make git run hooks, read config or write files somewhere the command does not show:
+// GIT_COMMON_DIR (its hooks run: post-checkout, post-index-change), GIT_TEMPLATE_DIR (its hooks are copied in, and
+// clone runs post-checkout at once), GIT_OBJECT_DIRECTORY (git add writes objects there), all measured on git 2.39.5
+// and 2.54.0; GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM / HOME / XDG_CONFIG_HOME (a config whose core.fsmonitor runs),
+// GIT_CONFIG_PARAMETERS and GIT_EXEC_PATH (cd65c42's measurements); GIT_REDIRECT_STDIN / STDOUT / STDERR (Git for
+// Windows: a file in place of the stream; not measured here).
+export const GIT_OPAQUE_ENV = Object.freeze(["GIT_COMMON_DIR", "GIT_TEMPLATE_DIR", "GIT_OBJECT_DIRECTORY", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
+  "GIT_CONFIG_PARAMETERS", "GIT_EXEC_PATH", "HOME", "XDG_CONFIG_HOME", "GIT_REDIRECT_STDIN", "GIT_REDIRECT_STDOUT", "GIT_REDIRECT_STDERR"]);

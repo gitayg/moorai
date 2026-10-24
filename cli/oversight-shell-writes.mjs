@@ -27,24 +27,25 @@
 // reading. A `-` (stdout) and the null device are no write. Environment names are matched whatever their case:
 // Windows reads them case-insensitively, and on POSIX the extra match only over-reports.
 import { scanArgs } from "../data/shell-parse.js";
-import { CP, INSTALL, RSYNC, CURL, WGET, PATCH, GIT_CHECKOUT, GIT_RESTORE, GIT_GLOBAL, GIT_BUILTINS, GIT_SAFE_CONFIG } from "./oversight-shell-options.mjs";
+import { CP, INSTALL, RSYNC, CURL, WGET, PATCH, GIT_CHECKOUT, GIT_RESTORE, GIT_GLOBAL, GIT_BUILTINS, GIT_SAFE_CONFIG,
+  GIT_EXEC_ENV, GIT_EDITOR_ENV, GIT_HARMLESS_PROGRAMS, GIT_HARMLESS_EDITORS, GIT_OPAQUE_ENV } from "./oversight-shell-options.mjs";
 
 // Not a literal path: an expansion, a substitution, a glob or brace, or ~user (a bare ~ or ~/… is the home
 // directory, which the caller expands).
 export const nonLiteral = (t) => typeof t !== "string" || !t || /[$*?[\]{}`]/.test(t) || (t.startsWith("~") && !/^~(?:\/|$)/.test(t));
 export const nullTarget = (t) => /^(?:\/dev\/(?:null|stdout|stderr|fd\/[0-9]+)|\$null|nul)$/i.test(String(t));
-// Whether a path resolves against a base directory: true — it does not (rooted: /… everywhere; on Windows or in a
-// PowerShell segment also \…, \\host\share (UNC) and a drive letter C:\…, C:/…, drive-relative C:…, which names
-// another drive's directory); false — it joins the base; null — a Windows-only shape outside Windows and PowerShell,
-// where C:x, \x and \\h\s are relative names (measured, git 2.39.5 and 2.54.0: `git -C a -C C:x checkout -- f`
-// writes a/C:x/f), but the command may still reach a Windows tool: whether it joins is unknown.
-export function rooted(p, ps = false) {
+// Whether a path resolves against a base directory: true — it does not (rooted: /… everywhere; on Windows also \…,
+// \\host\share (UNC) and a drive letter C:\…, C:/…, drive-relative C:…, which names another drive's directory);
+// false — it joins the base; null — a Windows-only shape anywhere else, PowerShell included, where C:x, \x and \\h\s
+// are relative names (measured: git 2.39.5 and 2.54.0 from sh, and pwsh 7.4.2 on Linux with git 2.34.1, write
+// `git -C a -C C:x checkout -- f` to a/C:x/f), but the command may still reach a Windows tool: unknown.
+export function rooted(p) {
   if (p.startsWith("/")) return true;
   if (!/^(?:\\|[A-Za-z]:)/.test(p)) return false;
-  return ps || process.platform === "win32" ? true : null;
+  return process.platform === "win32" ? true : null;
 }
 // p under the base dir, or undefined when that is unknown (rooted null).
-const joinUnder = (base, p, ps) => { if (base == null) return p; const r = rooted(p, ps); return r === null ? undefined : r ? p : `${base}/${p}`; };
+const joinUnder = (base, p) => { if (base == null) return p; const r = rooted(p); return r === null ? undefined : r ? p : `${base}/${p}`; };
 const remote = (t) => /^[^/\\]*:/.test(t) && !/^[A-Za-z]:[\\/]/.test(t);
 const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
 
@@ -149,7 +150,17 @@ export function writeTargets(bin, args, { ps = false, env = [] } = {}) {
   } else if (bin === "dd") {
     for (const t of args) if (t.startsWith("of=")) add(t.slice(3));
   } else if (bin === "git") {
-    const g = gitInvocation(args, env, { ps });
+    // GIT_TRACE* naming a file: git writes its trace there (measured, git 2.39.5 and 2.54.0: an absolute path is
+    // written, a relative word is ignored with a warning, 1 / 2 / true / 0 go to a stream); a GIT_TRACE2* path may
+    // name a directory, which receives a file of git's naming.
+    for (const e of env) {
+      if (!/^GIT_TRACE/i.test(e.name) || /^(?:|[0-9]|true|false|yes|no|on|off)$/i.test(e.value)) continue;
+      if (nonLiteral(e.value)) { unknown = true; continue; }
+      const r = rooted(e.value);
+      if (r === null || (r && /^GIT_TRACE2/i.test(e.name))) unknown = true;
+      if (r) add(e.value);
+    }
+    const g = gitInvocation(args, env);
     if (g.opaque) return { writes, unknown: true };
     if (g.sub !== "checkout" && g.sub !== "restore") return { writes, unknown };
     if (g.unknown) return { writes, unknown: true };
@@ -168,7 +179,7 @@ export function writeTargets(bin, args, { ps = false, env = [] } = {}) {
     const { flags, positional } = scan(args, PATCH);
     const dir = vals(flags, "-d", "--directory").pop();
     if (dir != null && nonLiteral(dir)) return { writes, unknown: true };
-    const under = (p) => { const u = joinUnder(dir, p, ps); if (u === undefined) unknown = true; return u; };
+    const under = (p) => { const u = joinUnder(dir, p); if (u === undefined) unknown = true; return u; };
     const out = vals(flags, "-o", "--output");
     for (const r of vals(flags, "-r", "--reject-file")) add(r === "-" ? r : under(r));
     if (out.length) out.forEach((o) => add(o === "-" ? o : under(o)));
@@ -189,11 +200,12 @@ export function writeTargets(bin, args, { ps = false, env = [] } = {}) {
 //     options or the command) or a word that is not a builtin (an alias, a script, an external git-<name>, a typo:
 //     GIT_BUILTINS) makes it opaque; the search goes on, so `git $OPTS rm f` is still judged as a git rm, and a
 //     builtin in another case (`git Rm f`) is opaque and judged as the builtin it folds to.
-//   * A config key set on the command line (-c, --config-env) or in the environment (GIT_CONFIG_COUNT /
-//     GIT_CONFIG_KEY_<n>) outside GIT_SAFE_CONFIG may run a command (core.fsmonitor, core.pager, alias.* …), and so
-//     may a config file the environment picks (GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM, HOME, XDG_CONFIG_HOME: measured,
-//     each one's core.fsmonitor runs on status and checkout; GIT_CONFIG is not read), GIT_CONFIG_PARAMETERS and
-//     GIT_EXEC_PATH: opaque.
+//   * A config key set on the command line (-c, --config-env, and clone's own -c / --config) or in the environment
+//     (GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n>) outside GIT_SAFE_CONFIG may run a command (core.fsmonitor, core.pager,
+//     alias.* …; clone -c core.hooksPath runs hooks during the clone, measured): opaque. So is init / clone
+//     --template, an environment variable in GIT_OPAQUE_ENV (another hooks, template, object or config place), and
+//     one in GIT_EXEC_ENV (a pager, editor, ssh, askpass, external diff or proxy program) whose value is not in
+//     GIT_HARMLESS_PROGRAMS (or, for an editor, GIT_HARMLESS_EDITORS).
 //   * Another work tree moves every path: --work-tree / GIT_WORK_TREE, and --git-dir / GIT_DIR, which pick a
 //     repository whose own config may set core.worktree (measured, git 2.39.5, 2.47.3 and 2.54.0: checkout, restore,
 //     rm and mv each write there). A core.worktree given on the command line (-c, --config-env, GIT_CONFIG_COUNT) is
@@ -203,10 +215,10 @@ export function writeTargets(bin, args, { ps = false, env = [] } = {}) {
 //   * GIT_COMMON_DIR, GIT_CEILING_DIRECTORIES and GIT_DISCOVERY_ACROSS_FILESYSTEM leave the paths where they are
 //     (measured, the same versions), so they change nothing here.
 //   * -C is cumulative: `git -C a -C b` runs in a/b; a rooted one starts over; an empty one changes nothing. A base
-//     that is not literal, or a Windows-only rooted shape after another -C outside Windows and PowerShell, is
+//     that is not literal, or a Windows-only rooted shape after another -C outside Windows (PowerShell too), is
 //     unknown.
 const gitGlobalKnown = (t) => GIT_GLOBAL.valueless.includes(t) || GIT_GLOBAL.eqValued.some((o) => o !== "--exec-path" && t.startsWith(`${o}=`));
-const safeConfigKey = (kv) => {
+export const safeConfigKey = (kv) => {
   const key = String(kv ?? "").split("=")[0].toLowerCase();
   return GIT_SAFE_CONFIG.keys.includes(key) || GIT_SAFE_CONFIG.sections.some((s) => key.startsWith(`${s}.`));
 };
@@ -220,7 +232,7 @@ function envConfigSafe(env) {
   for (let n = 0; n < Number(count.value); n++) if (!get(`GIT_CONFIG_KEY_${n}`)) return false;
   return true;
 }
-export function gitInvocation(args, env = [], { ps = false } = {}) {
+export function gitInvocation(args, env = []) {
   let at = -1, opaque = false;
   for (let i = 0; i < args.length; i++) {
     const t = args[i];
@@ -231,16 +243,64 @@ export function gitInvocation(args, env = [], { ps = false } = {}) {
   }
   const pre = scanArgs(at < 0 ? args : args.slice(0, at), { shortValued: "Cc", longValued: GIT_GLOBAL.valued.filter((o) => o.startsWith("--")) }).flags;
   if (!vals(pre, "-c", "--config-env").every(safeConfigKey) || !envConfigSafe(env)) opaque = true;
-  if (envSet(env, "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS", "GIT_EXEC_PATH", "HOME", "XDG_CONFIG_HOME")) opaque = true;
+  if (envSet(env, ...GIT_OPAQUE_ENV)) opaque = true;
+  for (const e of env) {
+    const n = String(e.name).toUpperCase();
+    if (GIT_EXEC_ENV.includes(n) && !GIT_HARMLESS_PROGRAMS.includes(e.value) && !(GIT_EDITOR_ENV.includes(n) && GIT_HARMLESS_EDITORS.includes(e.value))) opaque = true;
+  }
+  // init / clone --template copies hooks in; clone's own -c / --config writes the new repository's config.
+  const sub = at < 0 ? "" : args[at].toLowerCase();
+  if (sub === "init" || sub === "clone") {
+    const rest = args.slice(at + 1);
+    for (let i = 0; i < rest.length; i++) {
+      const t = rest[i];
+      if (t === "--") break;
+      if (/^--template(?:=|$)/.test(t)) opaque = true;
+      if (sub !== "clone") continue;
+      const kv = t === "-c" || t === "--config" ? rest[++i] : /^--config=/.test(t) ? t.slice(9) : /^-c./.test(t) ? t.slice(2) : null;
+      if (kv !== null && !safeConfigKey(kv)) opaque = true;
+    }
+  }
   let base = null, unsure = false;
   for (const c of vals(pre, "-C")) {
     if (!c) continue;
-    const r = base == null ? true : rooted(c, ps);
+    const r = base == null ? true : rooted(c);
     if (r === null) unsure = true;
     base = r === false ? `${base}/${c}` : c;
   }
   const unknown = opaque || unsure || flagged(pre, "--work-tree", "--git-dir") || envSet(env, "GIT_WORK_TREE", "GIT_DIR", "GIT_INDEX_FILE") || (base != null && nonLiteral(base));
-  return { at, sub: at < 0 ? null : args[at].toLowerCase(), opaque, unknown, under: (p) => joinUnder(base, p, ps) };
+  return { at, sub: at < 0 ? null : args[at].toLowerCase(), opaque, unknown, under: (p) => joinUnder(base, p) };
+}
+
+// git config <args> (after `config`) → null when it reads, unsets or removes, else { key, scope, file }: the key it
+// sets (null for --edit / edit and --rename-section, whose result the arguments do not show), scope ("local",
+// "global", "system", "worktree") and file (-f / --file). Both forms: `git config [--add | --replace-all] <key>
+// <value>` and git 2.46+ `git config set <key> <value>`; one key and no value is a read.
+const CONFIG_VALUED = ["-f", "--file", "--blob", "--type", "--default", "--comment", "--value"];
+const CONFIG_SUB = { list: "read", get: "read", set: "set", unset: "unset", "remove-section": "unset", "rename-section": "rename", edit: "edit" };
+export function gitConfigWrite(args) {
+  let scope = "local", file = null, action = null;
+  const pos = [];
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i];
+    if (t === "--") { pos.push(...args.slice(i + 1)); break; }
+    const eq = t.startsWith("--") ? t.indexOf("=") : -1;
+    if (eq > 0) { if (t.slice(0, eq) === "--file") file = t.slice(eq + 1); continue; }
+    if (CONFIG_VALUED.includes(t)) { const v = args[++i]; if (t === "-f" || t === "--file") file = v ?? null; continue; }
+    if (/^-f./.test(t)) { file = t.slice(2); continue; }
+    if (["--global", "--system", "--local", "--worktree"].includes(t)) { scope = t.slice(2); continue; }
+    if (t === "-l" || t === "--list" || t.startsWith("--get")) action = "read";
+    else if (t === "-e" || t === "--edit") action = "edit";
+    else if (t === "--unset" || t === "--unset-all" || t === "--remove-section") action = "unset";
+    else if (t === "--rename-section") action = "rename";
+    else if (t === "--add" || t === "--replace-all") action = "set";
+    if (t.startsWith("-")) continue;
+    pos.push(t);
+  }
+  if (action === null && pos.length && Object.hasOwn(CONFIG_SUB, pos[0])) action = CONFIG_SUB[pos.shift()];
+  if (action === "read" || action === "unset") return null;
+  if (action === "edit" || action === "rename") return { key: null, scope, file };
+  return pos.length >= 2 ? { key: pos[0], scope, file } : null;
 }
 
 // The targets of redirects that have no command word (`> f`, `>> f`, `2> f`, `: ` excluded: that is a
