@@ -194,6 +194,9 @@ test("a file sent by reference raises an alert and follows onUnknown", async () 
   const con = await startConsole();
   const body = { model: "gpt-fake", messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://example.com/cat.png" } }] }] };
   const send = (px) => { fp.on((r, res) => sendJson(res, openaiCompletion({ text: "ok" }))); return request(px.url, "/openai/chat/completions", { body }); };
+  try { await byReference(send, con); } finally { await con.close(); }
+});
+async function byReference(send, con) {
   const block = await proxy("enforce", { ...HASH, onUnknown: "block" });
   try {
     const r = await send(block);
@@ -205,5 +208,5 @@ test("a file sent by reference raises an alert and follows onUnknown", async () 
     assert.equal((await send(allow)).status, 200);
     assert.ok(await waitFor(() => con.parsed().some((a) => a.fileScan && a.fileScan.why === "reference")));
     for (const a of con.alerts) assert.ok(!a.includes("example.com"), "the reference itself never leaves");
-  } finally { await allow.close(); await con.close(); }
-});
+  } finally { await allow.close(); }
+}
