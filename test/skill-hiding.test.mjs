@@ -14,7 +14,7 @@ import { DetectionEngine } from "../src/engine.js";
 import { invisibleViews, stripZeroWidth } from "../data/text-views.js";
 import { paddedHiddenContent, hiddenHtmlInstruction, concealsFromUser, targetsReviewers, persistsToMemory, PAD_MIN } from "../data/skill-hiding.js";
 import { skillIntents, INTENT_LABELS } from "../cli/skill-analysis.mjs";
-import { decideText, decideOversight } from "../cli/hook-core.mjs";
+import { decideText, decideOversight, threatActionFor } from "../cli/hook-core.mjs";
 import { oversightPolicy, protectedPathHit, memoryPathHit } from "../cli/oversight-surfaces.mjs";
 import { oversightChanges } from "../cli/oversight-disclosure.mjs";
 import { oversightEditSignals } from "../cli/oversight-signals.mjs";
@@ -275,7 +275,7 @@ test("memory files: OpenClaw SOUL.md and MEMORY.md are on the skill surface", ()
 });
 test("memory files: a write by the agent raises #84 memory-file, NOTIFY by default (an alert, no prompt)", () => {
   const s = oversightPolicy(null);
-  assert.equal(s.memory, "notify");
+  assert.equal(s.memory, "default");
   for (const p of ["CLAUDE.md", "sub/AGENTS.md", ".cursorrules", "/u/.openclaw/workspace/SOUL.md", "/u/.openclaw/workspace/MEMORY.md", "/u/.claude/projects/-r/memory/MEMORY.md", ".github/copilot-instructions.md", "GEMINI.md"]) {
     assert.ok(memoryPathHit(p, s, { cwd: "/tmp/proj" }), p);
     assert.equal(protectedPathHit(p, s, { cwd: "/tmp/proj" }), false, `${p} is not a DECLARED protected path`);
@@ -287,6 +287,28 @@ test("memory files: a write by the agent raises #84 memory-file, NOTIFY by defau
   assert.equal(d.decision, "allow", "no prompt by default");
   assert.equal(d.findings.length, 1, "but an alert");
   assert.equal(d.findings[0].threatId, 84);
+});
+
+test("memory files: an admin's #84 action is never weakened by the notify default", () => {
+  const mem = (policy) => decideOversight(policy, ["memory-file"]);
+  assert.equal(mem(null).decision, "allow", "no policy: notify");
+  assert.equal(mem({}).findings.length, 1, "no policy: still an alert");
+  assert.equal(mem({ threatPolicy: { 84: "block" } }).decision, "deny", "threatPolicy[84] block blocks a memory write");
+  assert.equal(mem({ threatPolicy: { 84: "justify" } }).decision, "ask", "threatPolicy[84] justify asks");
+  const k = mem({ threatPolicy: { 84: "kill" } });
+  assert.equal(k.decision, "deny"); assert.equal(k.kill, true, "kill is kept");
+  assert.equal(mem({ threatPolicy: { 84: "notify" } }).decision, "allow");
+  // memoryFiles and #84 together: the stricter wins, either way round.
+  assert.equal(mem({ threatPolicy: { 84: "block" }, oversight: { v: 1, memoryFiles: "ask" } }).decision, "deny");
+  assert.equal(mem({ threatPolicy: { 84: "notify" }, oversight: { v: 1, memoryFiles: "ask" } }).decision, "ask");
+  // An invalid memoryFiles, or protectMemoryFiles: true, takes #84's action (its built-in default is justify).
+  assert.equal(mem({ oversight: { v: 1, memoryFiles: "explode" } }).decision, "ask");
+  assert.equal(mem({ threatPolicy: { 84: "block" }, oversight: { v: 1, memoryFiles: "explode" } }).decision, "deny");
+  assert.equal(mem({ oversight: { v: 1, protectMemoryFiles: true } }).decision, "ask");
+  // #84 has no data tier (data/data-tiers.js), so no tierPolicy reaches it — for a memory write or any other #84 change.
+  const tiers = { tierPolicy: { pii: "block", secret: "block", source: "block", regulated: "block" } };
+  assert.equal(threatActionFor(tiers, 84), "justify");
+  assert.equal(mem(tiers).decision, "allow");
 });
 
 test("memory files: policy raises it to ask or block, turns it off, and a disabled #84 stays disabled", () => {

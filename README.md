@@ -1609,9 +1609,11 @@ deletes, moves or writes one is held.
 Cline, Copilot and Kiro rules files, Claude Code's auto memory (`.claude/projects/<project>/memory/`) and OpenClaw's
 `SOUL.md`, `MEMORY.md` and `memory/` (`PERSISTENT_INSTRUCTION_KINDS` in `data/skill-surface.js`). A skill that
 writes itself into one of them steers every later session, so a Write / Edit or a shell write raises a #84 alert
-(signal `memory-file`) **without a prompt** by default, since an agent saves memory and edits `CLAUDE.md` on request
-routinely. `"memoryFiles": "ask"` or `"block"` in `oversight` raises it, `"off"` (or the earlier
-`"protectMemoryFiles": false`) turns it off, and a policy that disables #84 disables it too. A path also listed in
+(signal `memory-file`). **With nothing configured for #84 it is an alert without a prompt**, since an agent saves
+memory and edits `CLAUDE.md` on request routinely; once `threatPolicy["84"]` is set, a memory write gets the
+stricter of that action and `oversight.memoryFiles`, so the default never weakens an admin's policy.
+`"memoryFiles": "ask"` or `"block"` raises it, `"off"` (or `"protectMemoryFiles": false`) turns it off, an invalid
+value or `"protectMemoryFiles": true` takes #84's own action, and a policy that disables #84 disables it too. A path also listed in
 `protectedPaths` keeps that surface's ask, and a memory save is not counted by the Stop disclosure check. A path is matched as written, resolved against the working directory
 (`ops/x/../alerting/rules.yaml`, a relative path from a subdirectory) and through its real path, so a symlinked
 file or directory (or, for a new file, a symlinked parent) cannot dodge a protected surface. At most 64 of each; a

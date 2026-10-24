@@ -4280,11 +4280,14 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   `AGENTS.md` / `AGENT.md` / `AGENTS.override.md`, `GEMINI.md`, `.cursorrules`, `.cursor/rules/`, `.windsurfrules`,
   Windsurf and Cline rules, `.github/copilot-instructions.md`, `.github/instructions/`, Kiro steering, Claude Code's
   `.claude/projects/<p>/memory/`, OpenClaw `SOUL.md` / `MEMORY.md` / `memory/`). A Write / Edit of one, or a shell
-  command that writes, moves or deletes one, raises the signal `memory-file` under #84, which `decideOversight`
-  resolves to `oversight.memoryFiles` — `notify` by default (an alert, no prompt), `ask` (justify) or `block` —
-  instead of #84's justify default; with another #84 signal beside it the stricter decision stands, and a
-  `threatPolicy["84"]: "disabled"` disables it. `"off"`, or `protectMemoryFiles: false`, turns the set off; an
-  unknown value is ignored with a warning. A path that is also a declared `protectedPaths` entry raises
+  command that writes, moves or deletes one, raises the signal `memory-file` under #84. `decideOversight`
+  resolves it: with nothing configured for #84 (no `threatPolicy["84"]`; #84 has no data tier, so no `tierPolicy`
+  reaches it) and no `memoryFiles`, `notify` (an alert, no prompt); with #84 configured, the stricter of
+  `memoryFiles` (`notify`, `ask` = justify, `block`) and #84's action, `killOnCritical` untouched; with
+  `memoryFiles` set and #84 not configured, `memoryFiles`. An invalid `memoryFiles` (warned) or
+  `protectMemoryFiles: true` takes #84's action (built-in justify); `"off"` or `protectMemoryFiles: false` turns
+  the set off. With another #84 signal beside it the stricter decision stands, and `threatPolicy["84"]:
+  "disabled"` disables it. A path that is also a declared `protectedPaths` entry raises
   `protected-surface` instead. Skills, commands and agent definitions are not in the set. The Stop / SubagentStop
   disclosure check does not count a `memory-file` row.
 - **Policy key.** Top-level `oversight: { v: 1, protectedPaths, protectedKeys, stopDisclosure, memoryFiles }`.

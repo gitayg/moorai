@@ -283,18 +283,29 @@ export function decideThreat(policy, id, detectorId, stage = "prompt") {
 export const OVERSIGHT_THREAT = 84;
 export const OVERSIGHT_CATEGORY = "Weakening oversight";
 export const OVERSIGHT_INCOMPLETE = "analysis-incomplete";
-// "memory-file" (a write into the agent's CLAUDE.md, AGENTS.md, rules or memory files, cli/oversight-surfaces.mjs)
-// resolves to policy.oversight.memoryFiles — notify (an alert, no prompt) unless the policy says ask or block —
-// instead of #84's justify default. With other signals beside it, the stricter of the two decisions stands.
-// A policy that disables #84 disables it too.
+// "memory-file" (a write into the agent's CLAUDE.md, AGENTS.md, rules or memory files, cli/oversight-surfaces.mjs).
+// The notify default (an alert, no prompt) applies ONLY when the admin configured nothing for #84 (no
+// threatPolicy[84], no tierPolicy covering it) and set no memoryFiles. Once #84 is configured, a memory write gets
+// the stricter of memoryFiles (if set) and #84's action, so the default never weakens an explicit policy, and
+// killOnCritical is left as the policy has it. An invalid memoryFiles or protectMemoryFiles: true takes #84's
+// action. With other #84 signals beside it, the stricter decision stands. A disabled #84 disables it too.
 const MEMORY_ACT = { notify: "notify", ask: "justify", block: "block" };
+const ACT_RANK = { notify: 1, justify: 2, block: 3, kill: 4 };
+const stricterAct = (a, b) => ((ACT_RANK[a] || 0) >= (ACT_RANK[b] || 0) ? a : b);
+function memoryFileAction(policy) {
+  const act = threatActionFor(policy, OVERSIGHT_THREAT);
+  const configured = Boolean(policy?.threatPolicy?.[OVERSIGHT_THREAT] || (TIER_OF[OVERSIGHT_THREAT] && policy?.tierPolicy?.[TIER_OF[OVERSIGHT_THREAT]]));
+  const m = oversightPolicy(policy, () => {}).memory;
+  if (MEMORY_ACT[m]) return configured ? stricterAct(MEMORY_ACT[m], act) : MEMORY_ACT[m];
+  if (m === "inherit") return act;
+  return configured ? act : "notify";
+}
 export function decideOversight(policy, signals, stage = "output") {
   if (!Array.isArray(signals) || !signals.length) return { decision: "allow", reasons: [], findings: [], kill: false, killIds: [], alternatives: [], maskIds: [] };
   if (signals.includes("memory-file")) {
     const rest = signals.filter((s) => s !== "memory-file");
-    const mem = MEMORY_ACT[oversightPolicy(policy, () => {}).memory] || "notify";
     const act = threatActionFor(policy, OVERSIGHT_THREAT);
-    const md = decideOversightCore(act === "disabled" ? policy : { ...(policy || {}), killOnCritical: false, threatPolicy: { ...((policy && policy.threatPolicy) || {}), [OVERSIGHT_THREAT]: mem } }, signals, stage);
+    const md = decideOversightCore(act === "disabled" ? policy : { ...(policy || {}), threatPolicy: { ...((policy && policy.threatPolicy) || {}), [OVERSIGHT_THREAT]: memoryFileAction(policy) } }, signals, stage);
     if (!rest.length) return md;
     const od = decideOversightCore(policy, signals, stage);
     return RANK[md.decision] > RANK[od.decision] ? md : od;

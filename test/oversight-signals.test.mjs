@@ -91,8 +91,8 @@ test("policy: a valid oversight block parses; malformed entries are dropped with
   assert.equal(bad.stopDisclosure, "alert");
   assert.ok(warns.length >= 3, JSON.stringify(warns));
   assert.ok(!warns.join(" ").includes("bad key!"), "a warning never echoes the value");
-  // memory: the built-in persistent-instruction files (CLAUDE.md, AGENTS.md, memory files) are watched with no policy, notify.
-  assert.deepEqual(oversightPolicy(null), { paths: [], keys: [], stopDisclosure: "alert", memory: "notify" });
+  // memory: the built-in persistent-instruction files (CLAUDE.md, AGENTS.md, memory files) are watched with no policy (notify unless #84 is configured).
+  assert.deepEqual(oversightPolicy(null), { paths: [], keys: [], stopDisclosure: "alert", memory: "default" });
   assert.deepEqual(oversightPolicy({ oversight: { v: 2 } }, () => {}).paths, []);
 });
 

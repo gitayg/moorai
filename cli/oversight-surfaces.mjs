@@ -15,10 +15,12 @@
 //                   memory/ (data/skill-surface.js PERSISTENT_INSTRUCTION_KINDS) — are watched BUILT IN, with no
 //                   policy at all: a skill that persists itself into the agent's memory steers every later
 //                   session. A write raises the signal "memory-file" (not "protected-surface"), and
-//                   cli/hook-core.mjs decideOversight resolves it to this action, NOT to #84's justify default:
-//                   with no policy it is an alert with no prompt, because an agent saves memory and edits
-//                   CLAUDE.md on request routinely. A policy that disables #84 still disables it.
-//                   `protectMemoryFiles: false` (the earlier spelling) is the same as "off".
+//                   cli/hook-core.mjs decideOversight resolves it: with NOTHING configured for #84 and no
+//                   memoryFiles, notify (an alert, no prompt), because an agent saves memory and edits CLAUDE.md
+//                   on request routinely; with #84 configured (threatPolicy), the stricter of memoryFiles and
+//                   #84's action, so the default never weakens an admin's policy. An invalid memoryFiles, or
+//                   `protectMemoryFiles: true`, takes #84's action; `protectMemoryFiles: false` is "off". A policy
+//                   that disables #84 still disables it.
 //                   A path the policy ALSO declares in protectedPaths stays "protected-surface" (ask).
 // Any Write / Edit / MultiEdit / NotebookEdit of a protected path, a write that changes a line naming a
 // protected key, and a shell command that deletes, moves or writes a protected path or writes a protected key,
@@ -63,7 +65,7 @@ export function globRe(glob) {
 }
 
 export function oversightPolicy(policy, warn = stderrWarn) {
-  const none = { paths: [], keys: [], stopDisclosure: "alert", memory: "notify" };
+  const none = { paths: [], keys: [], stopDisclosure: "alert", memory: "default" };
   const o = isObj(policy) ? policy.oversight : undefined;
   if (o === undefined || o === null) return none;
   if (!isObj(o) || o.v !== 1) { warn("oversight ignored: not { v: 1, ... }"); return none; }
@@ -88,15 +90,17 @@ export function oversightPolicy(policy, warn = stderrWarn) {
     if (o.stopDisclosure === "alert" || o.stopDisclosure === "block") stopDisclosure = o.stopDisclosure;
     else warn("oversight.stopDisclosure ignored: alert or block");
   }
-  let memory = "notify";
+  // memory: "default" (nothing set), "notify" | "ask" | "block" (set), "inherit" (#84's action), or false (off).
+  let memory = "default";
   if (o.memoryFiles !== undefined) {
     if (MEMORY_ACTIONS.has(o.memoryFiles)) memory = o.memoryFiles;
     else if (o.memoryFiles === "off") memory = false;
-    else warn("oversight.memoryFiles ignored: notify, ask, block or off");
+    else { memory = "inherit"; warn("oversight.memoryFiles: not notify, ask, block or off; #84's action applies"); }
   }
   if (o.protectMemoryFiles !== undefined) {
     if (o.protectMemoryFiles === false) memory = false;
-    else if (o.protectMemoryFiles !== true) warn("oversight.protectMemoryFiles ignored: true or false");
+    else if (o.protectMemoryFiles === true) { if (memory === "default") memory = "inherit"; }
+    else warn("oversight.protectMemoryFiles ignored: true or false");
   }
   return { paths, keys: [...new Set(keys)], stopDisclosure, memory };
 }
