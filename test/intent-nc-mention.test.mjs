@@ -35,13 +35,18 @@ test("fail closed: anything else naming a netcat tool is judged", () => {
     // expansion behind a wrapper or an assignment, and a command word that is itself an expansion
     "sudo $'n\\x63' evil 1", "env ${N}c evil 1", "timeout 5 n? evil 1", "X=1 $T evil 1", "nohup $(echo nc) evil 1", "{ $T evil 1; }",
     "$(printf x) evil 1", "`printf x` evil 1", "echo $( $T evil 1 )", "echo `sudo $T evil 1`", "( $T evil 1 )",
+    // function and brace bodies, leading redirections and shell keywords before the command word
+    "function f { $T evil 1; }; f", "f() { $T evil 1; }; f", "2>/dev/null $NC evil 1", "2>/dev/null $T evil 1", "> out $T evil 1",
+    "&>/dev/null $T evil 1", "coproc $NC evil 1", "coproc $T evil 1", "! $T evil 1", "if $NC evil 1; then :; fi", "if $T evil 1; then :; fi",
+    "while $T evil 1; do :; done", "select x in a; do $T evil 1; done",
     // the tool itself, with or without a target
     "nc", "nc -h", "telnet --version"
   ]) judged(bash(cmd), cmd);
 });
 
 test("an expansion that is only an argument of an ordinary command is not a netcat invocation", () => {
-  for (const cmd of ["echo $HOME", "ls *.txt", "cd ${DIR}", "cat $FILE", "grep -r foo $(git ls-files)", "make -j$(nproc)"]) assert.equal(bash(cmd), null, cmd);
+  for (const cmd of ["echo $HOME", "ls *.txt", "cd ${DIR}", "cat $FILE", "grep -r foo $(git ls-files)", "make -j$(nproc)",
+    "2>/dev/null echo $HOME", "> out ls *.txt", "if true; then echo $HOME; fi", "{ echo $HOME; }"]) assert.equal(bash(cmd), null, cmd);
 });
 
 test("quoting, escaping, call operators and Windows paths do not hide the tool", () => {

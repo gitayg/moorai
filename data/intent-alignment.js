@@ -158,26 +158,39 @@ function mayExpandToNc(word) {
   try { r = new RegExp(`^${re}$`, "i"); } catch { return true; }
   return NC_NAMES.some((n) => r.test(n));
 }
-// Words that run the word after them (wrappers and shell keywords). A segment that starts with one, or with a
-// NAME=value assignment, has every word checked for an expansion that could produce a netcat name, because the
-// command word could be any of them (wrapper options are not modelled: `timeout -s KILL 5 $NC`). Any other
-// segment has only its first word checked, so `echo $HOME` or `ls *.txt` is not a netcat invocation; a first
-// word that is itself an expansion (`$X`, `${X}`, `$(…)`, a backtick, `$'…'`) always could be one.
+// The command position, modelled to fail closed. Segments are split on newline ; & | ( ) { } and backtick (and
+// once on newline ; & | alone, so a segment that STARTS with a substitution is seen whole). Before the command
+// word, leading redirections (`2>/dev/null`, `> out`, `&>`, `>&2`), NAME=value assignments and shell keywords
+// (! { function coproc select if then elif else while until do time exec) are skipped. Then:
+//   * the command word is a wrapper (sudo, env, timeout, xargs …), or an assignment preceded it: every word of
+//     the segment is checked, because the command could be any of them (wrapper options are not modelled);
+//   * the command word is not a plain literal (^[A-Za-z0-9._+/-]+$): every word is checked too;
+//   * otherwise (a plain command such as echo, ls, cd) nothing more: `echo $HOME` and `ls *.txt` stay quiet.
+// "Checked": the word starts with an expansion ($X, ${X}, $(…), $'…', a backtick), which could be any command,
+// or its expansions and globs could produce a netcat name (mayExpandToNc).
 const WRAPPERS = new Set(["sudo", "doas", "env", "timeout", "nohup", "nice", "ionice", "stdbuf", "exec", "command", "builtin", "xargs",
-  "time", "chroot", "setsid", "unbuffer", "busybox", "watch", "strace", "ltrace", "caffeinate", "flock", "taskset", "su", "runuser",
-  "{", "!", "if", "then", "else", "elif", "do", "while", "until"]);
+  "time", "chroot", "setsid", "unbuffer", "busybox", "watch", "strace", "ltrace", "caffeinate", "flock", "taskset", "su", "runuser"]);
+const KEYWORDS = new Set(["!", "{", "}", "function", "coproc", "select", "if", "then", "elif", "else", "while", "until", "do", "time", "exec"]);
+const REDIRECT = /^(?:\d*[<>]|&>|>&)/;
+const REDIRECT_ONLY = /^(?:\d*(?:<<?<?|>>?|<>)&?|&>>?|>&)$/;
+const ASSIGN = /^[A-Za-z_]\w*(?:\[[^\]]*\])?\+?=/;
+const LITERAL = /^[A-Za-z0-9._+/-]+$/;
+const mayRun = (x) => /^(?:\$|`)/.test(x) || mayExpandToNc(x);
 function namesNetcat(c) {
   if (NC_HINT.test(c) || NC_HINT.test(c.replace(/[\\'"`]/g, ""))) return true;
   if (c.split(/[\s;&|(){}`]+/).some((w) => w && isNc(w))) return true;
-  // A word that starts with an expansion ($X, ${X}, $(…), $'…', a backtick) could be any command at all.
-  const mayRun = (x) => /^(?:\$|`)/.test(x) || mayExpandToNc(x);
-  // Twice: segments as the shell separates commands (so a segment that STARTS with `…` or $(…) is seen), and
-  // with ( ) and backticks as separators too (so the command inside a substitution, `echo $( $NC x 1 )`, is seen).
-  for (const seg of [...c.split(/[\n;&|]+/), ...c.split(/[\n;&|()`]+/)]) {
-    const w = seg.trim().replace(/^\(+\s*/, "").split(/\s+/).filter(Boolean);
-    if (!w.length) continue;
-    if (WRAPPERS.has(namesOf(w[0])[1]) || /^[A-Za-z_]\w*=/.test(w[0])) { if (w.some(mayRun)) return true; }
-    else if (mayRun(w[0])) return true;
+  for (const seg of [...c.split(/[\n;&|]+/), ...c.split(/[\n;&|(){}`]+/)]) {
+    const w = seg.trim().split(/\s+/).filter(Boolean);
+    let i = 0, assigned = false;
+    for (; i < w.length; i++) {
+      if (REDIRECT.test(w[i])) { if (REDIRECT_ONLY.test(w[i])) i++; continue; }
+      if (ASSIGN.test(w[i])) { assigned = true; continue; }
+      if (KEYWORDS.has(w[i])) continue;
+      break;
+    }
+    if (i >= w.length) continue;
+    const cmd = w[i];
+    if (assigned || WRAPPERS.has(namesOf(cmd)[1]) || !LITERAL.test(cmd)) { if (w.slice(i).some(mayRun)) return true; }
   }
   return false;
 }
