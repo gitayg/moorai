@@ -26,9 +26,10 @@
 // Not judged: an inline env prefix or `export` for one run (`OTEL_SDK_DISABLED=true npm test` is how test
 // suites run), reads, and any text in a commit message or a document. The command never leaves this module.
 //
-// Bounded, and fail closed: a command longer than MAX, a sed / perl script longer than MAX_SCRIPT, or an
-// analysis that runs past BUDGET_MS is never cut and judged clean; it raises "analysis-incomplete", which
-// cli/hook-core.mjs decideOversight asks on. The sed parsers are linear scanners (no backtracking regex).
+// Bounded, and fail closed: a command longer than MAX, a sed / perl script longer than MAX_SCRIPT, an
+// analysis that runs past BUDGET_MS, or a command the shell parser fails on is never cut and judged clean; it
+// raises "analysis-incomplete", which cli/hook-core.mjs decideOversight asks on. The sed parsers are linear
+// scanners (no backtracking regex).
 import { statSync } from "node:fs";
 import { resolve, relative, isAbsolute, dirname, basename, join } from "node:path";
 import { splitShell, commandOf } from "../data/shell-parse.js";
@@ -396,16 +397,17 @@ function changeDir(seg, prev, state) {
   return true;
 }
 
-// → the signals the command raises, in OVERSIGHT_SIGNALS order. opts: { ps, surfaces, cwd, now } (now: the
-// clock the time budget reads, for tests).
-export function oversightCommandSignals(command, { ps = false, surfaces = null, cwd = "", now = Date.now } = {}) {
+// → the signals the command raises, in OVERSIGHT_SIGNALS order. opts: { ps, surfaces, cwd, now, parse } (now:
+// the clock the time budget reads; parse: the shell splitter; both for tests).
+export function oversightCommandSignals(command, { ps = false, surfaces = null, cwd = "", now = Date.now, parse = splitShell } = {}) {
   const cmd = typeof command === "string" ? command : "";
   if (!cmd || !HINT.test(cmd)) return [];
   if (cmd.length > MAX) return [INCOMPLETE];
   const deadline = now() + BUDGET_MS;
   const out = new Set(), touched = new Set();
   let segs = [];
-  try { segs = splitShell(cmd, ps, 0, { segs: [] }).segs; } catch { segs = []; }
+  // A parser fault never leaves the command judged clean: it is analysis-incomplete.
+  try { segs = parse(cmd, ps, 0, { segs: [], heredocs: [] }).segs; } catch { out.add(INCOMPLETE); segs = []; }
   const project = resolve(typeof cwd === "string" && cwd ? cwd : process.cwd());
   const opts = { ps, surfacePaths: Boolean(surfaces && surfaces.paths && surfaces.paths.length) };
   const dirs = new Map(); // subshell scope -> { dir, stack }
