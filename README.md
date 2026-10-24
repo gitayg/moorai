@@ -561,10 +561,15 @@ the framework runs it), `moorai-serve` `/v1/tool-call`, the Agent SDK and the ho
   only); an e-mail address must appear whole. A URL's host is what WHATWG URL parsing (what `fetch` uses)
   reads from the raw value, punycode for an IDN, and it counts only when the token reading agrees:
   `https://evil.com\@apple.com/` is `evil.com`, and a URL the parser refuses, or where only one of the two
-  readings sees a host, names nothing. Each value gets one reading: a URL (any scheme, a drive letter
-  included, or a scheme-less value led by a host or an IPv4 form such as `evil.com\apple` or
-  `user@evil.com/x`), a remote path (two leading separators: `\\host\share\x`, `//host/x`), a path, or plain
-  text. Only a path is named by its file name; a URL or remote path only by its whole token or its host. A value with a control or format character names
+  readings sees a host, names nothing. Each value gets one conservative reading. Only an unambiguous local
+  path (`/`, `./`, `~/`, `X:\`, `X:/`) is ever named by its file name. A remote path (two leading separators:
+  `\\host\share\x`, `//host/x`) needs a plain hostname or IP as its first segment and is named by it, never by
+  a file name. Plain words are matched as words. Anything else the URL parser accepts, as written or behind
+  `http://` (`evil.com\apple`, `user@evil.com/x`, `src/app.js`), is a URL named only by the parser's host,
+  and refused when that host differs from the first segment's or the segment carries `%`, a stray `[`, a
+  trailing `.` or a dot look-alike such as `。`. Anything else is named only by its whole token. The cost:
+  a relative path without `./` (`src/app.js`, `docs\app.js`) is not named by its file name, and a time or
+  version string the parser reads as an IPv4 address (`10:30`, `1.2.3`) names nothing. A value with a control or format character names
   nothing, and a path with a `..` segment (raw or percent-encoded) names only itself. A number is named when
   the same number appears in the task (no leading zeros), and a non-negative one is also allowed at or under
   its cap. A miss is class `object-not-in-task`,
@@ -606,7 +611,7 @@ the framework runs it), `moorai-serve` `/v1/tool-call`, the Agent SDK and the ho
   A string with a `..` segment (on `/` or `\`, raw or percent-encoded such as `%2e%2e`), a control or format
   character (NUL included), or a percent-encoding that does not decode cleanly (a stray `%`, invalid UTF-8)
   is never allowed; decoding is lenient, one run of `%XX` at a time, so a bad escape elsewhere cannot hide a
-  `%2e%2e`. An array needs every element allowed; `true` or `{}`
+  `%2e%2e`, and an escape still left after three rounds (`%2525252e`) fails closed. An array needs every element allowed; `true` or `{}`
   allows any arguments. Tool names are exact: case-sensitive, and an MCP tool only by its full
   `mcp__<server>__<tool>` name. Default `"deny"`. A listed
   dotted key is read both literally and nested, and each one present must be allowed. A call carrying a key

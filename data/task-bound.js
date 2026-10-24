@@ -37,13 +37,16 @@
 // host, site or file name inside one). An e-mail address must appear whole. A URL's host is WHATWG URL
 // parsing's (`new URL().hostname`, punycode for an IDN), read from the raw value, and only when the token
 // reading (userinfo stopping at `\`, `#`, `?`) gives the same host; a URL the parser refuses or reads otherwise
-// names nothing. Every value gets ONE reading (readToken): remote (two leading separators, `\\host\share`), url (a
-// scheme, a drive letter included, anything `new URL()` accepts, or a scheme-less value led by a host or an
-// IPv4 form), path, or plain. Only a path is ever named by its file name; a url or remote value is named by its
-// whole token or its host. A value with a control or format character names nothing; a path with a `..`
-// segment names only itself. Percent-decoding is lenient (each run of valid `%XX` on its own, three rounds); a
-// stray `%`, or a run that is not valid UTF-8, makes the value unsafe, and the raw string is also checked for
-// `%2e` segment patterns. A number (a JSON number, or a string that is only
+// names nothing. Every value gets ONE conservative reading (readToken): path — only an unambiguous local path
+// (`/`, `./`, `../`, `~/`, `X:\`, `X:/`), the one kind ever named by a file name; remote — two leading
+// separators, whose first segment must be a plain hostname or IP (else refused); plain — no URL-ish character,
+// matched as words; url — anything else the WHATWG parser accepts as written or behind `http://`, named by the
+// parser's hostname only when it equals canonHost of the first segment and that segment has no `%`, no stray
+// `[`, no trailing `.` and no character the parser maps to `.`, refused otherwise; anything left is named only by
+// its whole token. No lexical guess decides the kind. A value with a control or format character names
+// nothing; a path with a `..` segment names only itself. Percent-decoding is lenient (each run of valid `%XX` on
+// its own, three rounds); a stray `%`, a run that is not valid UTF-8, or an escape still left after the last
+// round makes the value unsafe, and `%2e` segment patterns are looked for in every decoded form. A number (a JSON number, or a string that is only
 // a number with an optional currency sign and no leading zeros) is named when the same number appears in the
 // task, and a non-negative one is also allowed at or under intentArgs.caps["<tool>.<key>"] or
 // intentArgs.caps["<key>"]; a negative amount is never under a cap.
@@ -144,54 +147,68 @@ function atomsOf(text) {
 // the host the request really goes to. Disagreement, or a value the parser refuses, names nothing.
 const URL_RE = /^([a-z][a-z0-9+.-]{0,15}):\/\/(?:[^@\/\\\s#?]*@)?(\[[^\]\/\\]{1,64}\]|[^\/\\:?#@\s]{1,253})/i;
 const DOTTED_HOST = /^(?:[\p{L}\p{N}_-]{1,63}\.)+[\p{L}][\p{L}\p{N}-]{0,62}$/u;
-// A scheme-less value led by a host (dotted name or IPv4, optional userinfo and port) and then `/`, `\`, `?` or
-// `#` (`evil.com/apple`, `user@evil.com\x`): read as a URL.
-const HOST_LED = /^(?:[^@\/\\\s#?]*@)?((?:[\p{L}\p{N}_-]{1,63}\.)+[\p{L}][\p{L}\p{N}-]{0,62}|\d{1,3}(?:\.\d{1,3}){3})(?::\d{1,5})?(?=[\/\\?#])/u;
-const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
-const TWO_SEP = /^[\\/]{2}/;
 const EMAIL = /^[^@\s\/\\]{1,64}@[^@\s\/\\]{1,253}$/;
 const CONTROL = /[\p{Cc}\p{Cf}]/u;
 function canonHost(h) { try { return new URL(`http://${h}/`).hostname || null; } catch { return null; } }
-// ONE READING PER TOKEN, the one a consumer would make, refusing on any disagreement:
-//   remote  two leading separators (`\\host\share`, `//host/x`, `\/`, `/\`): a network path; host = its first segment
-//   url     a scheme (`^[a-z][a-z0-9+.-]*:`, so a drive letter too) or anything `new URL()` accepts; or a
-//           scheme-less host-led value. The host is the parser's, and only when the token reading (URL_RE /
-//           HOST_LED) gives the same host; a URL the parser refuses, or one where only one of the two sees a
-//           host, is { refuse }. A url or remote value is never named by a file name.
-//   path    a `/` or `\` and none of the above: may be named by its file name (unless unsafeValue)
-//   plain   anything else; a dotted host on its own (`apple.com`) yields its host
+const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+const TWO_SEP = /^[\\/]{2}/;
+// The only values ever named by a file name: an unambiguous local path.
+const LOCAL_PATH = /^(?:\/(?![\\/])|\.\/|\.\.\/|~\/|[a-z]:[\\/])/i;
+// A token with none of these characters is plain text, matched as words.
+const URLISH = /[\/\\?#@:.%[\]]/;
+const PLAIN_HOST = /^[a-z0-9.-]+$/i;
+const dots = (s) => (s.match(/\./g) || []).length;
+// A host as written in a token's first segment may name it only if it has no `%`, no `[` outside an IPv6
+// literal, no trailing `.`, and no character the parser maps to `.` (NFKC / UTS46: `。` `．` …): the dot count
+// is the same before and after canonicalising.
+function hostPartOk(seg, host) {
+  const hp = seg.slice(seg.lastIndexOf("@") + 1);
+  const v6 = /^(\[[^\]]*\])(?::\d*)?$/.exec(hp);
+  if (v6) return /^\[[0-9a-f:.]+\]$/i.test(v6[1]);
+  const name = hp.replace(/:\d*$/, "");
+  if (!name || /[%[\]]/.test(name) || name.endsWith(".")) return false;
+  return dots(name) === dots(host);
+}
+// ONE CONSERVATIVE READING PER TOKEN (no lexical guess decides what a value is):
+//   remote  two leading separators (`\\host\share`, `//host/x`, `\/`, `/\`): the first segment must be a plain
+//           hostname or IP (letters, digits, `-`, `.`, canonical as written), else { refuse }
+//   path    an unambiguous local path: `/`, `./`, `../`, `~/`, `X:\` or `X:/` — the only kind ever named by a
+//           file name (and not then if unsafeValue)
+//   plain   no URL-ish character at all: matched as words
+//   url     anything `new URL(raw)` accepts (a scheme and an authority the token reading agrees on), or that
+//           `new URL("http://" + raw)` accepts with a hostname and a non-empty first segment. Named by the
+//           parser's hostname only when it equals canonHost of the first segment and hostPartOk; else { refuse }.
+//           A scheme the parser refuses, or a parsed URL with no authority, is { refuse }.
+//   anything else is plain: named only by its whole token.
 function readToken(raw) {
   if (TWO_SEP.test(raw)) {
     const seg = raw.replace(/^[\\/]+/, "").split(/[\\/?#]/)[0];
-    return { kind: "remote", host: seg ? canonHost(seg) : null };
+    if (!seg || !PLAIN_HOST.test(seg) || seg.startsWith(".") || seg.endsWith(".") || canonHost(seg) !== seg.toLowerCase()) return { kind: "remote", refuse: true };
+    return { kind: "remote", host: seg.toLowerCase() };
   }
+  if (LOCAL_PATH.test(raw)) return { kind: "path" };
+  if (!URLISH.test(raw)) return { kind: "plain", host: null };
   let parsed = null;
   try { parsed = new URL(raw); } catch { parsed = null; }
-  if (SCHEME.test(raw) || parsed) {
-    if (!parsed) return { kind: "url", refuse: true };
+  if (parsed) {
     const m = URL_RE.exec(raw);
-    if (m) { const host = canonHost(m[2]); return host && parsed.hostname === host ? { kind: "url", host } : { kind: "url", refuse: true }; }
-    return parsed.hostname ? { kind: "url", refuse: true } : { kind: "url", host: null };
+    if (!m || !parsed.hostname) return { kind: "url", refuse: true };
+    const host = canonHost(m[2]);
+    return host && host === parsed.hostname && hostPartOk(m[2], host) ? { kind: "url", host } : { kind: "url", refuse: true };
   }
-  const led = HOST_LED.exec(raw);
-  if (led) {
-    let p;
-    try { p = new URL(`http://${raw}`); } catch { return { kind: "url", refuse: true }; }
-    const host = canonHost(led[1]);
-    return host && p.hostname === host ? { kind: "url", host } : { kind: "url", refuse: true };
+  if (SCHEME.test(raw)) return { kind: "url", refuse: true };
+  let led = null;
+  try { led = new URL(`http://${raw}`); } catch { led = null; }
+  const seg = raw.split(/[\\/?#]/)[0];
+  if (led && led.hostname && seg) {
+    const host = canonHost(seg);
+    return host && host === led.hostname && hostPartOk(seg, host) ? { kind: "url", host } : { kind: "url", refuse: true };
   }
-  // A first segment the URL parser reads as an IPv4 address (hex, octal or short forms too): a host, not a directory.
-  const first = raw.split(/[\\/?#]/)[0];
-  if (first !== raw && /^[0-9a-fx.]+$/i.test(first)) {
-    const ip = canonHost(first);
-    if (ip && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(ip)) return { kind: "url", host: ip };
-  }
-  if (isPathish(raw)) return { kind: "path" };
-  return { kind: "plain", host: DOTTED_HOST.test(raw) ? canonHost(raw) : null };
+  return { kind: "plain", host: null };
 }
 // The percent-decoded forms of a value, up to three rounds, decoding each run of valid `%XX` escapes on its own
-// (so a stray `%ZZ` elsewhere does not stop it). failed: a run that is not valid UTF-8, or a `%` that is not an
-// escape — such a value is unsafe, since a consumer may decode it some other way.
+// (so a stray `%ZZ` elsewhere does not stop it). failed: a run that is not valid UTF-8, a `%` that is not an
+// escape, or an escape still left after the last round — such a value is unsafe (a consumer may decode further).
 const ESC_RUN = /(?:%[0-9a-f]{2})+/gi;
 const STRAY = /%(?![0-9a-f]{2})/i;
 function decodedForms(s) {
@@ -204,17 +221,16 @@ function decodedForms(s) {
     if (STRAY.test(d)) failed = true;
     cur = d;
   }
+  if (/%[0-9a-f]{2}/i.test(cur)) failed = true;
   return { forms, failed };
 }
-// `..` written with dots and/or `%2e` (any case), checked on the raw string before any decoding.
+// `..` written with dots and/or `%2e` (any case), looked for in the raw string and every decoded form.
 const RAW_DOT_SEGMENT = /(?:^|[\\/])(?:\.|%2e){2}(?:[\\/]|$)/i;
 // Unsafe: a `..` path segment (on `/` or `\`), a control or format character (raw or decoded, NUL included), or a
-// percent-encoding that does not decode cleanly.
+// percent-encoding that does not decode cleanly within three rounds.
 export function unsafeValue(v) {
-  const s = String(v);
-  if (RAW_DOT_SEGMENT.test(s)) return true;
-  const { forms, failed } = decodedForms(s);
-  return failed || forms.some((x) => CONTROL.test(x) || x.split(/[\\/]/).includes(".."));
+  const { forms, failed } = decodedForms(String(v));
+  return failed || forms.some((x) => RAW_DOT_SEGMENT.test(x) || CONTROL.test(x) || x.split(/[\\/]/).includes(".."));
 }
 const isPathish = (a) => /[\\/]/.test(a);
 const baseOf = (a) => a.replace(/[\\/]+$/, "").split(/[\\/]/).pop();

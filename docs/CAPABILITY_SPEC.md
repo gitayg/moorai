@@ -824,14 +824,17 @@ is validated against.
      reading — userinfo stopping at `\`, `#`, `?`; host stopping at `\` and `@` — canonicalises to the same
      host; a refused parse or a disagreement names nothing (`https://evil.com\@apple.com/` is `evil.com`; a
      fullwidth solidus is not folded into a separator before parsing). A scheme-less value led by a dotted
-     host (userinfo, IPv4 forms and a `\` after the host included) is read as a URL. One reading per value
-     (`readToken`): remote (two leading separators), url (a scheme or drive letter, anything `new URL()`
-     accepts, or host-led), path, plain; only a path is named by its file name, a url or remote value by its
-     whole token or host. Where the parser sees a host and the token reading does not (or the reverse), the
-     value names nothing. A value with a control or format character (raw or percent-decoded) names
-     nothing; a path with a `..` segment names only itself. Decoding is lenient per run of `%XX` (three
-     rounds); a stray `%` or invalid UTF-8 makes a value unsafe; raw `%2e` segment patterns are checked
-     before decoding. A number (a JSON
+     host is read as a URL by the parser, not by a regex. One conservative reading per value (`readToken`):
+     *path* only for an unambiguous local path (`/`, `./`, `../`, `~/`, `X:\`, `X:/`), the only kind named by a
+     file name; *remote* (two leading separators) only with a plain hostname or IP first segment
+     (`[A-Za-z0-9.-]`, canonical as written), else refused; *plain* (no URL-ish character) matched as words;
+     *url* for anything `new URL(raw)` or `new URL("http://" + raw)` accepts with a hostname and a non-empty
+     first segment, named by `hostname` only when it equals `canonHost(first segment)` and that segment has no
+     `%`, no `[` outside an IPv6 literal, no trailing `.` and the same dot count canonicalised (so `。` `．`
+     are refused), else refused; anything else only by its whole token. A value with a control or format
+     character (raw or percent-decoded) names nothing; a path with a `..` segment names only itself.
+     Decoding is lenient per run of `%XX` (three rounds); a stray `%`, invalid UTF-8 or an escape left after
+     the last round makes a value unsafe; `%2e` segment patterns are checked in every decoded form. A number (a JSON
      number, or a string that is only a number with an optional currency sign, no leading zeros) is named
      when the same number is in the task, and a non-negative one is allowed at or under its cap. A miss
      is class `object-not-in-task`, decided by `policy.intentAlignment` (report / ask / block; on the hook
@@ -873,9 +876,13 @@ is validated against.
      and control characters in object-check paths. A second round: a schemed or host-led value read as a path
      and named by its file name; UNC / double-separator paths read as local; a decoder that stopped at the
      first bad escape. Each is fixed and tested (`test/task-bound-review.test.mjs`,
-     `test/task-bound-review2.test.mjs`). Trade-off: a Windows drive path (`c:\…`) parses as a URL scheme, so
-     it is named only by its whole token, never by its file name; a `%` that is not an escape makes an
-     allowlist value unsafe.
+     `test/task-bound-review2.test.mjs`). A third round made the reader structurally conservative (above;
+     `test/task-bound-review3.test.mjs`). **Trade-offs, kept on purpose:** a relative path without `./`
+     (`src/app.js`) is a URL to the parser (host `src`) and is never named by its file name; a time or version
+     string the parser reads as an IPv4 address (`10:30`, `1.2.3`) names nothing; a URL with no authority
+     (`file:///…`, `foo:bar`) names nothing (an address-shaped `mailto:` value is matched whole, as an e-mail
+     address is); a remote path with an IPv6 literal or `_` in its host is refused;
+     a `%` that is not an escape makes a value unsafe.
    - *Fail closed.* `taskAllowlists` that is not an array, or an entry whose match, tools, arguments, default
      or name cannot be read, denies everything it would have covered (reason `invalid-policy`): an unreadable
      match covers every session, the rest cover the sessions the entry matches. The surface raises a

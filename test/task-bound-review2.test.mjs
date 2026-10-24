@@ -29,7 +29,7 @@ test("URL-shaped values are never named by a file name", () => {
   assert.equal(named(T, ...post("foo:/x/apple.com")), false, "a scheme with no host: only the whole token");
   assert.equal(named(T, ...post("https://evil.com/apple.com")), false);
   assert.equal(named("post the status to https:evil.com/apple.com", ...post("https:evil.com/apple.com")), false, "parser and token reading disagree: names nothing, even typed whole");
-  assert.equal(named("update the README", ...write("c:\\docs\\README.md")), false, "a drive letter parses as a scheme: whole token only");
+  assert.equal(named("update the README", ...write("c:\\docs\\README.md")), true, "a drive-letter path is an unambiguous local path (third review round)");
   assert.equal(named("update c:\\docs\\README.md", ...write("c:\\docs\\README.md")), true, "the whole token still names it");
 });
 
