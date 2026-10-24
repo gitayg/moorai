@@ -21,7 +21,7 @@ const bash = (command, extra = {}) => ({ hook_event_name: "PreToolUse", tool_nam
 const prompt = () => ({ hook_event_name: "UserPromptSubmit", prompt: "build the eval tasks" });
 const stop = (msg, extra = {}) => ({ hook_event_name: "Stop", stop_hook_active: false, last_assistant_message: msg, background_tasks: [], session_crons: [], ...extra });
 const SUB = { agent_id: "agent-7f3", agent_type: "general-purpose" };
-const SIGNAL_NAMES = ["suppression-flag", "recipients-emptied", "wiring-removed", "safety-test-weakened", "monitoring-off", "protected-surface", "memory-file", "analysis-incomplete"];
+const SIGNAL_NAMES = ["suppression-flag", "recipients-emptied", "wiring-removed", "safety-test-weakened", "monitoring-off", "protected-surface", "memory-file", "write-target-unknown", "analysis-incomplete"];
 const ovRows = (sb) => ledger(sb).filter((r) => r.ev === "pre" && Array.isArray(r.ov));
 const noSignalNames = (alerts) => { const b = JSON.stringify(alerts); for (const n of SIGNAL_NAMES) assert.ok(!b.includes(n), `signal name on an alert: ${n}`); };
 const decisionOf = (r) => (r.json && r.json.hookSpecificOutput ? r.json.hookSpecificOutput.permissionDecision : "allow");

@@ -289,6 +289,9 @@ export const OVERSIGHT_INCOMPLETE = "analysis-incomplete";
 // the stricter of memoryFiles (if set) and #84's action, so the default never weakens an explicit policy, and
 // killOnCritical is left as the policy has it. An invalid memoryFiles or protectMemoryFiles: true takes #84's
 // action. With other #84 signals beside it, the stricter decision stands. A disabled #84 disables it too.
+// "write-target-unknown" (a shell write that cannot be placed, with only the built-in memory-file protection on
+// and a harmless payload, cli/oversight-shell.mjs) is decided the same way.
+const MEMORY_LIKE = new Set(["memory-file", "write-target-unknown"]);
 const MEMORY_ACT = { notify: "notify", ask: "justify", block: "block" };
 const ACT_RANK = { notify: 1, justify: 2, block: 3, kill: 4 };
 const stricterAct = (a, b) => ((ACT_RANK[a] || 0) >= (ACT_RANK[b] || 0) ? a : b);
@@ -302,8 +305,8 @@ function memoryFileAction(policy) {
 }
 export function decideOversight(policy, signals, stage = "output") {
   if (!Array.isArray(signals) || !signals.length) return { decision: "allow", reasons: [], findings: [], kill: false, killIds: [], alternatives: [], maskIds: [] };
-  if (signals.includes("memory-file")) {
-    const rest = signals.filter((s) => s !== "memory-file");
+  if (signals.some((s) => MEMORY_LIKE.has(s))) {
+    const rest = signals.filter((s) => !MEMORY_LIKE.has(s));
     const act = threatActionFor(policy, OVERSIGHT_THREAT);
     const md = decideOversightCore(act === "disabled" ? policy : { ...(policy || {}), threatPolicy: { ...((policy && policy.threatPolicy) || {}), [OVERSIGHT_THREAT]: memoryFileAction(policy) } }, signals, stage);
     if (!rest.length) return md;

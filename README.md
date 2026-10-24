@@ -1638,8 +1638,10 @@ malformed entry is dropped with a warning.
 parser fails on, a write whose before or after text is over 1 MiB, a Write over an existing runtime file too
 large to read (over 1 MiB), and, when `protectedPaths` are declared or `memoryFiles` is `ask` / `block` (or #84's
 action), a write whose destination is not a literal path (`cp x "$DEST"`, `curl -o $F`, `> $LOG`, `patch -p1 <
-fix.diff`, a glob copied into a directory) are never cut and judged clean (with only the built-in memory-file
-protection on, such a write is a `memory-file` alert instead: no prompt unless #84 is configured): they are held as an incomplete analysis, an ask even where the policy lowers #84 to
+fix.diff`, a glob copied into a directory) are never cut and judged clean. With only the built-in memory-file
+protection on, such a write raises `write-target-unknown` instead (an alert, no prompt unless #84 is configured),
+unless its visible text (`echo` / `printf` / heredoc / `tee` / `Set-Content` text, `sed -i` edits) would weaken
+oversight in any runtime config, code or test file, which keeps it an incomplete analysis. All of these are held: they are held as an incomplete analysis, an ask even where the policy lowers #84 to
 `notify` (never a kill on its own; a policy that disables #84 still disables it).
 
 **Stop-time disclosure (Claude Code).** At Stop and SubagentStop, if the turn made an oversight change that was

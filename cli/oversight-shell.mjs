@@ -39,7 +39,7 @@ import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve, relative, isAbsolute, dirname, basename, join } from "node:path";
 import { splitShell, commandOf } from "../data/shell-parse.js";
-import { oversightEditSignals, assignedSignals, pathClass, pathClasses, OVERSIGHT_SIGNALS, INCOMPLETE } from "./oversight-signals.mjs";
+import { oversightEditSignals, assignedSignals, pathClass, pathClasses, OVERSIGHT_SIGNALS, INCOMPLETE, WRITE_UNKNOWN } from "./oversight-signals.mjs";
 import { protectedPathHit, protectedKeyInCommand, memoryPathHit, realOf } from "./oversight-surfaces.mjs";
 import { words, switchKind, listKind, valueKind, WIRING_FAMILIES, TEST_GUARD_WORDS } from "./oversight-vocab.mjs";
 import { writeTargets, bareRedirects, nonLiteral, nullTarget } from "./oversight-shell-writes.mjs";
@@ -258,13 +258,26 @@ const envPairs = (toks) => toks.map((t) => /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exe
 // (cli/oversight-shell-writes.mjs) go to the protected-path and memory-file checks, at both the tracked
 // directory and as written; a directory destination receives each source under its own name. A destination
 // that is not literal is analysis-incomplete when there is anything to check.
-// A write whose target is not literal, proportionate to what is watched: with only the built-in memory-file
-// protection (no protectedPaths, memoryFiles not above notify) it is memory-file, notify unless #84 is
-// configured (an alert, no prompt, for routine `cmd > "$out"`); with protectedPaths declared or memoryFiles ask /
-// block / #84's action it is analysis-incomplete. Nothing when there is no write check to run.
-function unknownWrite(opts, out) {
+// A write whose target is not literal. Its visible payload (payload: { text } an echo / printf / heredoc / tee /
+// Set-Content text, or { edits } sed / perl -i edits) is first judged against every built-in path class
+// (PAYLOAD_PROBES: runtime config and code of each syntax, and a test), since the real target could be any of
+// them: if any would raise a signal, the write is analysis-incomplete under #84's action, whatever is watched.
+// Otherwise it is proportionate: with only the built-in memory-file protection (no protectedPaths, memoryFiles
+// not above notify) it is write-target-unknown, notify unless #84 is configured (an alert, no prompt, for a
+// routine `cmd > "$out"`); with protectedPaths declared or memoryFiles ask / block / #84's action it is
+// analysis-incomplete; with no write check to run, nothing.
+const PROBE_ROOT = "/moorai-probe";
+const PAYLOAD_PROBES = ["config/alerting.yaml", "config/alerting.json", "config/alerting.toml", "deploy/service.env", "src/monitoring.py", "app/monitoring.js", "tests/test_monitoring.py"].map((r) => join(PROBE_ROOT, r));
+function payloadFires(payload) {
+  if (!payload) return false;
+  if (typeof payload.text === "string" && payload.text) return PAYLOAD_PROBES.some((p) => assignedSignals(payload.text, p, PROBE_ROOT).length > 0);
+  if (Array.isArray(payload.edits)) return PAYLOAD_PROBES.some((p) => payload.edits.some((e) => oversightEditSignals({ path: p, before: e.before, after: e.after, cwd: PROBE_ROOT }).length > 0));
+  return false;
+}
+function unknownWrite(opts, out, payload = null) {
+  if (payloadFires(payload)) { out.add(INCOMPLETE); return; }
   if (!opts.watch) return;
-  out.add(opts.strictWrites ? INCOMPLETE : "memory-file");
+  out.add(opts.strictWrites ? INCOMPLETE : WRITE_UNKNOWN);
 }
 const home = (p) => (p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 function judgeWrites(wt, opts, ctx, out, touched) {
@@ -291,10 +304,10 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
   const P = ctx.project;
   // Redirect targets: whatever this segment prints goes into them.
   for (const w of seg.writes || []) {
-    if (nonLiteral(w) && !nullTarget(w)) unknownWrite(opts, out);
     let text = "";
     if (bin === "echo" || bin === "printf") text = pos.join(" ").replace(/\\n/g, "\n");
     else if (seg.heredoc) text = seg.heredoc;
+    if (nonLiteral(w) && !nullTarget(w)) unknownWrite(opts, out, { text });
     if (!text && !opts.surfacePaths && !isAbsolute(w)) { touched.add(resolve(P, w)); continue; }
     for (const abs of ctx.both(w)) { touched.add(abs); if (text) for (const s of assignedSignals(text, abs, P)) out.add(s); }
   }
@@ -313,6 +326,7 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
     const abs = [...new Set(files.flatMap((f) => ctx.both(f)))];
     abs.forEach((f) => touched.add(f));
     if (scripts.some((sc) => sc.length > MAX_SCRIPT)) { out.add(INCOMPLETE); return; }
+    if (files.some((f) => nonLiteral(f))) unknownWrite(opts, out, { edits: scripts.flatMap((sc) => sedEdits(sc)) });
     for (const f of abs) for (const sc of scripts) for (const e of sedEdits(sc)) for (const s of oversightEditSignals({ path: f, before: e.before, after: e.after, cwd: P })) out.add(s);
     return;
   }
@@ -332,6 +346,7 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
     const pc = prev && prev.sep === "|" ? commandOf(prev.tokens, prev.ps) : null;
     const text = pc && (pc.binary === "echo" || pc.binary === "printf") ? positional(prev.tokens.slice(pc.at + 1)).join(" ").replace(/\\n/g, "\n") : prev && prev.heredoc ? prev.heredoc : "";
     for (const abs of new Set(pos.flatMap((f) => ctx.both(f)))) { touched.add(abs); if (text) for (const s of assignedSignals(text, abs, P)) out.add(s); }
+    if (args.some((t) => !t.startsWith("-") && nonLiteral(t))) unknownWrite(opts, out, { text });
     return;
   }
   if (bin === "amtool" && lower[0] === "silence" && (lower[1] === "add" || lower[1] === "import")) { out.add("suppression-flag"); return; }
@@ -359,6 +374,7 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
     const p = (() => { for (let i = 0; i < args.length; i++) if (/^-(?:path|filepath|literalpath)$/i.test(args[i])) return args[i + 1]; return pos[0]; })();
     const v = (() => { for (let i = 0; i < args.length; i++) if (/^-value$/i.test(args[i])) return args[i + 1]; return pos[1] || ""; })();
     if (p) for (const abs of ctx.both(p)) { touched.add(abs); if (v) for (const s of assignedSignals(String(v).replace(/`n/g, "\n"), abs, P)) out.add(s); }
+    if (p && nonLiteral(p)) unknownWrite(opts, out, { text: String(v || "").replace(/`n/g, "\n") });
   }
 }
 

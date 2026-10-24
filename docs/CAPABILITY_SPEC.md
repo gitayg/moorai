@@ -4256,8 +4256,12 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   passes `splitShell` its `heredocs` list, so a heredoc parses), a write whose before or after is over 1 MiB, a
   Write over an existing runtime / test file the hook does not read (over 1 MiB), and, when `protectedPaths` are
   declared or `memoryFiles` is `ask` / `block` / #84's action (`opts.strictWrites`), a write position whose
-  target is not literal (with only the built-in memory-file protection on it raises `memory-file` instead:
-  notify, an alert and no prompt, unless #84 is configured) (`$`, `$( … )`, a glob or brace, a
+  target is not literal (with only the built-in memory-file protection on it raises `write-target-unknown`
+  instead, decided like `memory-file`: notify, an alert and no prompt, unless #84 is configured; not counted by
+  the Stop disclosure check. Unless its visible payload, an `echo` / `printf` / heredoc / `tee` / `Set-Content`
+  text or `sed -i` / `perl -pi` edits, would raise a signal against any built-in path class (`PAYLOAD_PROBES`:
+  YAML, JSON, TOML, env, Python and JS config or code, and a test): then it is `analysis-incomplete` whatever is
+  watched) (`$`, `$( … )`, a glob or brace, a
   `~user`; a redirect, a copy / install / download / `dd` / `git restore` / `patch` destination, an `mv`
   destination, a non-literal source copied or moved into a directory, `patch` with no file operand) raise the
   local signal `analysis-incomplete` instead of being cut and judged. `decideOversight` asks on it even when
