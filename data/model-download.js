@@ -21,16 +21,16 @@ const MAX_STATEMENTS = 400;
 export const MODEL_FILE_EXT = /\.(?:pt|pth|bin|ckpt|pkl|pickle|joblib|gguf|safetensors|onnx|h5|keras)$/i;
 const HF_HOST = /^https?:\/\/(?:[\w-]{1,40}\.)?(?:huggingface\.co|hf\.co)\//i;
 
-const unquote = (t) => String(t || "").replace(/^["']|["']$/g, "");
-const tokens = (segment) => (segment.match(/"[^"]{0,2000}"|'[^']{0,2000}'|\S{1,2000}/g) || []).slice(0, 200).map(unquote);
-function commandIndex(toks) {
+export const unquote = (t) => String(t || "").replace(/^["']|["']$/g, "");
+export const tokens = (segment) => (segment.match(/"[^"]{0,2000}"|'[^']{0,2000}'|\S{1,2000}/g) || []).slice(0, 200).map(unquote);
+export function commandIndex(toks) {
   let i = 0;
   while (i < toks.length && (/^[A-Za-z_]\w{0,40}=/.test(toks[i]) || /^(?:sudo|env|time|nohup|command|exec)$/.test(toks[i]))) i++;
   return i;
 }
-const baseName = (t) => String(t || "").split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, "");
+export const baseName = (t) => String(t || "").split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, "");
 // The value of a flag: "--flag value", "--flag=value", "-f value", "-fvalue" (short flags only).
-function flagValue(toks, names) {
+export function flagValue(toks, names) {
   for (let k = 0; k < toks.length; k++) {
     const t = toks[k];
     for (const n of names) {
@@ -73,11 +73,14 @@ function fetcher(cmd, toks, i) {
   return { file: dir ? `${dir}/${name}` : name };
 }
 
+// One shell command's statements, split as modelDownloads splits them (also used by cli/model-pins-targets.mjs).
+export const statements = (text) => text.split(/\n|;|&&|\|\||\|/).slice(0, MAX_STATEMENTS);
+
 export function modelDownloads(text) {
   if (typeof text !== "string" || text.length > MAX) return [];
   if (!/ollama|huggingface|\bhf\b|\blfs\b|hf\.co|curl|wget/i.test(text)) return [];
   const out = [];
-  for (const statement of text.split(/\n|;|&&|\|\||\|/).slice(0, MAX_STATEMENTS)) {
+  for (const statement of statements(text)) {
     const toks = tokens(statement);
     if (!toks.length) continue;
     const i = commandIndex(toks);

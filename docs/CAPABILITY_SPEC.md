@@ -2535,7 +2535,7 @@ clean, allowed, unscanned, pending, pendingDownloads, byFormat, byClass }`. Aler
 The memory is written after the posts, minus the alerts the console did not accept.
 
 **Limits.** Static only: an input-triggered backdoor, and trojaned or tampered weights, are not detectable this
-way, and the dynamic half of #13 is not built. The TF and ONNX checks are heuristics (names, not behaviour).
+way (a replaced approved file is caught by model provenance pinning, below), and the dynamic half of #13 is not built. The TF and ONNX checks are heuristics (names, not behaviour).
 joblib files with inline numpy arrays are read up to the first array. HDF5 configs that are compressed or past
 256 MB are not seen. A cached verdict is not re-evaluated when the allow-list changes until the file changes.
 The console does not yet know the `modelFiles` field or the two reason codes. Tested on macOS only.
@@ -2546,6 +2546,77 @@ for an unchanged file afterwards.
 
 **Tests.** `test/model-scan.test.mjs`, `test/model-scan-posture.test.mjs` (fixtures in
 `test/model-scan-fixtures.mjs`, all synthetic).
+
+## Model provenance pinning
+
+**Status: built and unit-tested (`test/model-pins.test.mjs`: policy, verdict, CLI, queue, store scan, the hook
+check by mode, and one load form end to end through the real hook with a signed policy from a loopback console
+stand-in). Tested on macOS only. The console does not yet know the reason code or the new fields.**
+
+A pin proves which file runs, not that the file is free of a backdoor. A trojaned fine-tune that an
+administrator approves runs as approved; pinning stops a file the administrator never approved, and an approved
+file replaced in place, from loading through a command the hook recognises.
+
+**Policy** (`cli/model-pins.mjs` `resolveModelPins`). `modelPinMode: "off" | "report" | "ask" | "block"` and
+`modelPins: [{ sha256, name?, note? }]`. Sources: the root-owned admin binding (`systemConfig()`), then the
+verified signed policy; the first that carries either key decides both, wholesale. User-writable state is never
+read. Neither key → `off`; `modelPins` alone → `report`; a mode outside the four exact lowercase values →
+`block` (`invalid`); `modelPins` not a list, or an entry without a 64-hex sha256 (a `sha256:` prefix and case
+are normalised), pins nothing (`invalid`). Warnings name the source and key, never the value.
+
+**Verdict** (`applyPins`). With pinning on, a scan record gets `pin: "pinned" | "not-approved" | "unverified"`
+(no sha256: over the 64 GiB cap, unreadable). A file that is not pinned and whose static verdict is `clean`,
+`allowed` or `unscanned` gets the verdict `not-approved`. `unsafe` and `suspicious` are never lowered or
+replaced. Pins are applied when the record is produced, not cached, so a pin change takes effect on the next run.
+
+**Background scans** (`cli/model-scan-posture.mjs`). The download drain and the opt-in store scan apply pins to
+fresh and remembered records. The detached `modelscan` worker passes the verified policy's pin keys and the admin
+binding. A queue item of kind `pin-verify` (a load the hook could not hash in time) is hashed fresh, never taken
+from the remembered verdict. Every fresh sha256 is written to the hash cache. Heartbeat `modelFiles` adds
+`not-approved`, `pinMode`, `pinSource`, `pinPolicyInvalid` when pinning is on. A not-approved file (no worse than
+clean) raises one alert per sha256: `threatId 76`, `reasonCode MODEL_NOT_APPROVED`, `stage "inventory"`,
+`tool "download:model-scan" | "inventory:model-scan" | "load:model-scan"`, `modelFile: { format, verdict,
+sizeClass, pinned: false, verified, hashPrefix (12 hex), mode, source }`. `MODEL_FILE_UNSAFE` /
+`MODEL_FILE_SUSPICIOUS` alerts add `pinned: true | false`.
+
+**Load check** (`cli/model-pins-targets.mjs`, `cli/model-pins-hook.mjs`; one call site in the PreToolUse Bash
+branch of `cli/moorai-hook.mjs`, run only when the mode is not `off`). Load forms, reusing the #76 recognisers
+(`data/model-download.js` statement splitter and tokens; `data/model-load.js` `modelLoadCalls`, calls in code
+position only):
+
+| Form | File checked |
+|---|---|
+| `llama-server` / `llama-cli` / `llama-run` / … / `llamafile` `-m`, `--model`, `-md`, `--model-draft` | that file (missing → unverified) |
+| `vllm serve <x>` (the word right after `serve`) or `--model <x>` | a local path or directory (each model file, at most 64; more → unverified); a hub id, or a model after another flag → unverified |
+| `ollama run <model>` | each model / adapter / projector blob its manifest names; not in the store → unverified |
+| `ollama create <name> [-f Modelfile]` | the `FROM` path, or the store model's blobs |
+| `torch.load`, `pickle` / `joblib` / `dill` / `cloudpickle` loads, `read_pickle`, `np.load`, `load_model`, `from_pretrained` | the first string argument when it is a local path |
+
+The sha256: the hash cache (`~/.moorai/model-pin-hashes.json`, 0600, at most 5000 entries) keyed by a hash of
+real path, device, inode, size, mtime and ctime (no path stored); else hashed on the hook path while the
+command's files fit in `HOOK_HASH_BUDGET_BYTES` (2 GiB); else `unverified` and queued as `pin-verify`. A file
+rewritten while it is hashed is not remembered. An Ollama blob's `sha256-<hex>` name is the manifest's claim and
+is compared with the file's own hash (`nameMismatch`); the name is never trusted alone, because the store is
+user-writable and nothing re-checks a blob that is replaced in place. Decision: all pinned → no change; any file
+not pinned or unverified → `report` allow, `ask` ask, `block` deny, reason token `MODEL_NOT_APPROVED`. A check
+that throws decides as an unverified file would. Alert per file (at most 10): `threatId 76`, `reasonCode
+MODEL_NOT_APPROVED`, `stage "load"`, `tool "hook:Bash"`, `decision`, `modelLoad: { kind, format, sizeClass,
+pinned: false, verified, nameMismatch?, hashPrefix, outcome: "reported" | "asked" | "blocked", mode, source }`.
+
+**Measured** (dev Mac, Apple M5 Max, node 22.23). sha256 throughput 1.94-2.0 GiB/s on a 1 GiB file in the page
+cache (`sha256File`, three runs: 527, 513, 520 ms). Load check: pinning off, `resolveModelPins` 0.001 ms per
+call; pins on and no load form, 0.002-0.004 ms; a 1 GiB file not cached, 747 ms (the hash); cached, 0.16 ms;
+over the budget, 0.8 ms. Lazy import of the check module when pinning is on: 8 ms. The hook's own wall time for
+`ls` with pinning off was 330 ms median against 347 ms on the commit before (noise; 10 runs each).
+
+**Limits.** The hash cache is user-writable: a same-user process that edits it can claim a pinned sha256 for an
+unpinned file (the same limit as every user-scope file the hook reads; moorai-guardd is the fix). A changed file
+is caught by its ctime, which an unprivileged process cannot set back. Not checked: a model loaded by a script
+file, a notebook or a server started outside the agent; a hub id from Python; a model fetched and loaded inside
+one Python call. Under `block`, a file over the budget is denied until the background scan has hashed it (about
+a minute after the first attempt on an enrolled device).
+
+**Tests.** `test/model-pins.test.mjs`.
 
 ## Egress proxy (egressRules on real connections)
 
