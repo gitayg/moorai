@@ -104,7 +104,9 @@ const UPLOAD = [
   /\bcurl\b(?<!\bcurl\b[^\n;|&]*?\bcurl)[^\n;|&]*?(?:\s-(?:[a-zA-Z]*d|F|T)\b|\s--(?:data(?:-binary|-raw|-urlencode|-ascii)?|form|upload-file|json)\b|\s-X\s*(?:POST|PUT|PATCH)\b|\s--request\s+(?:POST|PUT|PATCH)\b)/i,
   /\bwget\b[^\n;|&]*?--(?:post-data|post-file|body-data|body-file|method=(?:POST|PUT))/i,
   /\b(?:Invoke-RestMethod|Invoke-WebRequest|irm|iwr)\b[^\n;|&]*?(?:-Method\s+(?:Post|Put|Patch)|-InFile|-Body)\b/i,
-  /\b(?:nc|ncat|netcat|socat|telnet)\b/i,
+  // A netcat-family INVOCATION with a target or data (ncInvoked below), not a mention: `which nc`, `man telnet`,
+  // `apt install netcat-openbsd` and `grep telnet` are not uploads.
+  { test: (c) => ncInvoked(c) },
   // `[\w.-](?:[\w.-]*@)?[\w.-]+` is `[\w.-]+@?[\w.-]+` without the two runs overlapping ("scp a.a.a…"
   // was quadratic from a single start).
   /\b(?:scp|rsync|sftp)\b(?<!\b(?:scp|rsync|sftp)\b[^\n;|&]*?\b(?:scp|rsync|sftp))[^\n;|&]*?\s[\w.-](?:[\w.-]*@)?[\w.-]+:/i,
@@ -113,6 +115,54 @@ const UPLOAD = [
   /\bStart-BitsTransfer\b[^\n;|&]*?\s-TransferType\s{1,4}["']?Upload/i,
   UNC_COPY
 ];
+// nc / ncat / netcat / socat / telnet as a COMMAND that can carry data out. The word must be its segment's
+// command (after VAR=x assignments and the wrappers that run their arguments: sudo, env, timeout …), or sit
+// behind any command word not in MENTION — a shell `-c` string, ssh, xargs and anything unknown still count,
+// so an unrecognised form fails closed as before. MENTION is the set whose arguments are names, not commands
+// run: lookups (which, man, type, command -v …), package managers and text search / echo. Then it needs a
+// target or data: an argument other than a help/version flag, or input piped or redirected into it. A bare
+// `nc` or `telnet --version` connects nowhere.
+const NC_WORD = /^(?:nc|ncat|netcat|socat|telnet)(?:\.(?:openbsd|traditional|exe))?$/i;
+const NC_HINT = /(?<![\w.-])(?:nc|ncat|netcat|socat|telnet)(?![\w-])/i;
+const SEG_SPLIT = /([\n;|&(){}`]+)/;
+const RUNS_ARGS = new Set(["sudo", "doas", "env", "exec", "nohup", "time", "nice", "ionice", "timeout", "stdbuf", "command", "builtin", "busybox", "unbuffer"]);
+const MENTION = new Set(["which", "whereis", "whatis", "apropos", "man", "info", "help", "type", "hash", "tldr", "where", "where.exe",
+  "get-command", "gcm", "get-help", "brew", "apt", "apt-get", "apt-cache", "aptitude", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper",
+  "apk", "port", "snap", "choco", "winget", "scoop", "nix-env", "pkg", "pip", "pip3", "grep", "egrep", "fgrep", "rg", "ag", "ack", "find",
+  "locate", "ls", "echo", "printf", "file", "stat"]);
+const NC_HELP = new Set(["-h", "--help", "-help", "-?", "-V", "--version", "-version"]);
+const baseName = (w) => w.slice(w.lastIndexOf("/") + 1).toLowerCase();
+// Linear: the command is split into segments once, each segment into words once, and each word is looked at
+// a bounded number of times (one forward pass for the command word, one backward pass for "a target after").
+function ncInvoked(command) {
+  const c = String(command || "");
+  if (!NC_HINT.test(c)) return false;
+  const parts = c.split(SEG_SPLIT);
+  for (let k = 0; k < parts.length; k += 2) {
+    const w = parts[k].trim().split(/\s+/).map((x) => x.replace(/^["']+|["']+$/g, "")).filter(Boolean);
+    if (!w.some((x) => NC_WORD.test(baseName(x)))) continue;
+    let cmd = null;
+    for (let i = 0; i < w.length; i++) {
+      const x = w[i];
+      if (/^[A-Za-z_]\w*=/.test(x) || x.startsWith("-") || /^\d+[smhd]?$/.test(x)) continue;
+      const b = baseName(x);
+      if (b === "command" && /^-[vV]$/.test(w[i + 1] || "")) { cmd = "command -v"; break; }
+      if (RUNS_ARGS.has(b)) continue;
+      cmd = b;
+      break;
+    }
+    if (cmd === "command -v" || MENTION.has(cmd)) continue;
+    const sep = k > 0 ? parts[k - 1] : "";
+    const piped = /\|$/.test(sep) && !/\|\|$/.test(sep);
+    let target = false;
+    for (let i = w.length - 1; i >= 0; i--) {
+      if (NC_WORD.test(baseName(w[i])) && (target || piped)) return true;
+      if (!NC_HELP.has(w[i])) target = true;
+    }
+  }
+  return false;
+}
+
 // MoorAI's own loopback listeners, at the ports the code listens on by default: moorai-serve
 // (cli/moorai-serve.mjs DEFAULTS.port), the model proxy (model-proxy/server.mjs DEFAULTS.port) and the MCP
 // gateway (mcp-gateway/config.mjs DEFAULT_PORT); test/intent-alignment-control.test.mjs keeps them equal. Kept
