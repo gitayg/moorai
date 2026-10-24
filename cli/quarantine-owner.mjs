@@ -15,10 +15,10 @@
 // The agent's process tree (the hook's parent chain through its shells to the agent) is an extra signal: a peer
 // inside it is refused in either mode; a peer outside it proves nothing. Anything undetermined is refused.
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { dirname, win32 } from "node:path";
+import { readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import { defaultReadChain, isHookShell } from "./ai-cli-parents.mjs";
-import { tcpTable, parseNetstatTcp } from "./local-ai-inventory.mjs";
+import { tcpTable } from "./local-ai-inventory.mjs";
 
 function run(bins, args, { stderr = false, cwd } = {}) {
   for (const bin of bins) {
@@ -29,17 +29,6 @@ function run(bins, args, { stderr = false, cwd } = {}) {
     }
   }
   return null;
-}
-// Windows: a system tool by its absolute path under the Windows directory, never a bare name a planted file in
-// the working directory or on PATH could answer for. SystemRoot counts only in its standard X:\Windows form.
-export function windowsSystemBinary(rel, { env = process.env, exists = existsSync } = {}) {
-  const roots = [...new Set(["C:\\Windows", /^[A-Za-z]:\\Windows$/i.test(env.SystemRoot || "") ? env.SystemRoot : null].filter(Boolean))];
-  for (const root of roots) { const p = win32.join(root, "System32", rel); if (exists(p)) return { bin: p, cwd: win32.join(root, "System32") }; }
-  return null;
-}
-function runWin(rel, args) {
-  const t = windowsSystemBinary(rel);
-  return t ? run([t.bin], args, { cwd: t.cwd }) : null;
 }
 const LSOF = ["/usr/sbin/lsof", "/usr/bin/lsof", "/bin/lsof"];
 const PS = ["/bin/ps", "/usr/bin/ps"];
@@ -130,14 +119,13 @@ export function peerOf(serverPort, localPort, { platform = process.platform } = 
     const s = (tcpTable({ platform }).sockets || []).find((x) => x.state === "established" && x.lport === serverPort && x.rport === localPort && x.pid);
     return { pid: s ? Number(s.pid) : null, socketUid: hit.uid, why: "" };
   }
-  if (platform === "win32") {
-    const s = parseNetstatTcp(runWin("netstat.exe", ["-ano"]) || "").find((x) => x.state === "established" && x.lport === serverPort && x.rport === localPort);
-    return { pid: s ? Number(s.pid) : null, socketUid: null, why: "" };
-  }
+  // Windows: refused. The owner lookup there needs a system tool or script host the agent's user can influence
+  // (a module on PSModulePath, a Windows directory it can create on another drive), and no native helper exists.
+  if (platform === "win32") return { pid: null, socketUid: null, why: "the reader's owner cannot be verified on Windows" };
   return { pid: null, socketUid: null, why: "" };
 }
 
-// The peer's uids (effective and real); Windows: windowsSids. -> number[] | { peer, self } | null
+// The peer's uids (effective and real). -> number[] | null
 export function peerUids(pid, { platform = process.platform } = {}) {
   try {
     if (platform === "darwin") {
@@ -148,21 +136,8 @@ export function peerUids(pid, { platform = process.platform } = {}) {
       const m = readFileSync(`/proc/${pid}/status`, "utf8").match(/^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m);
       return m ? [...new Set(m.slice(1).map(Number))] : null;
     }
-    if (platform === "win32") return windowsSids(runWin("WindowsPowerShell\\v1.0\\powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsSidScript(pid)]));
   } catch { /* not readable */ }
   return null;
-}
-// Windows: the peer's owner SID (Win32_Process GetOwnerSid) and this process token's SID, never the USERNAME /
-// USERDOMAIN environment, which the agent can set. -> "S-1-…|S-1-…" on one line.
-export function windowsSidScript(pid) {
-  return `$ErrorActionPreference='Stop'; $p=Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid) | 0}"; $o=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid; [Console]::Out.Write($o.Sid + '|' + [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)`;
-}
-const SID = /^S-1-\d+(?:-\d+){1,14}$/i;
-// -> { peer, self } | null when either is missing or not a SID.
-export function windowsSids(text) {
-  const m = String(text || "").trim().match(/^([^|\s]+)\|([^|\s]+)$/);
-  if (!m || !SID.test(m[1]) || !SID.test(m[2])) return null;
-  return { peer: m[1].toUpperCase(), self: m[2].toUpperCase() };
 }
 const agentUidOf = (platform) => (platform === "win32" ? null : typeof process.getuid === "function" ? process.getuid() : null);
 
@@ -282,8 +257,7 @@ export function mergeSocketUid(pidUids, socketUid) {
 export function peerFacts({ serverPort, localPort, sameUser = false, platform = process.platform, readChain = defaultReadChain(platform), startPid = process.ppid }) {
   const { pid, socketUid, why } = peerOf(serverPort, localPort, { platform });
   let uids = null, agentUid = agentUidOf(platform);
-  if (pid && platform === "win32") { const w = peerUids(pid, { platform }); if (w) { uids = [w.peer]; agentUid = w.self; } }
-  else if (pid) uids = peerUids(pid, { platform });
+  if (pid) uids = peerUids(pid, { platform });
   const f = { pid, why, uids: mergeSocketUid(uids, socketUid), agentUid, chain: null, agent: null };
   if (!pid) return f;
   try { f.chain = readChain(pid, 32); f.agent = agentPids(readChain(startPid, 8)); } catch { /* the tree is a signal, not the boundary */ }

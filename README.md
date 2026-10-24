@@ -1405,13 +1405,14 @@ unenrolled device the claim check below shows the user a `systemMessage` at `Sto
   -sTCP:ESTABLISHED` and `nettop` must name the same pid (a process name is the executable's file name, which
   the agent chooses, so a name holding `:`, `.`, `,` or whitespace that could shift the parse refuses), then
   `ps -o uid=,ruid=`. Linux: `/proc/net/tcp{,6}` (the socket owner's uid, readable for any user), checked against
-  `/proc/<pid>/status` when the pid is readable. Windows: `netstat -ano`, and the peer's owner SID (`GetOwnerSid`)
-  against this process token's SID, never the `USERNAME` / `USERDOMAIN` environment (not verified on Windows).
+  `/proc/<pid>/status` when the pid is readable. Windows: no peer is identified (below).
   **The boundary is the OS account**: a reader whose uid differs from the agent's is accepted. **Current limit on
   macOS:** from the hook (a node process), `netstat -anv` lists no TCP sockets at all and `lsof` lists only the
   user's own, so a reader under another account is seen by `nettop` alone, cannot be confirmed, and is refused:
   on macOS outside-origin reads are refused rather than summarised unless the admin binding opts into a
-  same-user reader. Linux (`/proc`) and the same-user opt-in are the working paths. A process of the agent's own user is
+  same-user reader. On Windows the reader's owner is never verified (the lookup would need a tool or script host
+  the agent's user can influence), so every Windows reader is refused. Linux (`/proc`) and the macOS same-user
+  opt-in are the working paths. A process of the agent's own user is
   refused unless the admin binding sets `fileQuarantineSameUserReader`, because the agent can impersonate it:
   start its own listener, run a signed runtime as a code host (`ELECTRON_RUN_AS_NODE=1 … -e`), detach from its
   own process tree, or replace a binary it owns. Under that opt-in the reader's executable (macOS: lsof's first

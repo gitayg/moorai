@@ -1136,10 +1136,8 @@ is validated against.
     (`nettop -L 1 -m tcp -n -x -J state`, `<name>.<pid>` split at its last `.`): two must name the same pid, a
     name that could shift a parse (`:`, `.`, `,`, whitespace) or a disagreement refuses; Linux
     `/proc/net/tcp{,6}`, whose uid column is the socket owner's for any user, plus `tcpTable` for the pid when
-    readable, the two uids required to agree (`mergeSocketUid`); Windows `netstat -ano`, run, like PowerShell, by its absolute path under `C:\Windows\System32` (or a
-    standard-form `%SystemRoot%`) with that directory as the working directory, never by a bare name) and its uids
-    (`ps -o uid=,ruid=`, `/proc/<pid>/status`; Windows `windowsSids`: the owner SID from `GetOwnerSid` against
-    `WindowsIdentity::GetCurrent().User.Value`, both required to be SIDs), and `judgeOwner` decides
+    readable, the two uids required to agree (`mergeSocketUid`); on Windows no peer is identified, see below)
+    and its uids (`ps -o uid=,ruid=`, `/proc/<pid>/status`), and `judgeOwner` decides
     (`untrusted-reader`, nothing sent, on a refusal): pid and uid undetermined → refused; the pid or an ancestor
     above 1 in `agentPids` (the hook's parent chain through its shells to the agent, inclusive) → refused, an
     extra signal in both modes; a uid different from the hook's → accepted (the boundary); the agent's own uid →
@@ -1213,8 +1211,11 @@ is validated against.
     reader under another account is seen by `nettop` alone, is not confirmed by a second source, and is refused;
     outside-origin reads on macOS are therefore refused rather than summarised unless the admin binding opts into
     a same-user reader. Linux (`/proc`) and the same-user opt-in are the working paths. A name that is merely
-    unusual (`Model Server`, `com.docker.backend`) also refuses on macOS. The Windows path (owner SID; a
-    same-user reader is always refused there, its environment being unreadable) is not verified on Windows; LM Studio is not measured; auto-detection uses the first model `/v1/models` lists,
+    unusual (`Model Server`, `com.docker.backend`) also refuses on macOS. On Windows the reader's owner is never
+    verified, so every Windows reader is refused and outside-origin reads there are refused, not summarised: the
+    lookup would need a system tool or script host that the agent's user can influence (a module on
+    `PSModulePath`, a Windows directory it can create on a drive the system does not boot from), and no native helper
+    ships. LM Studio is not measured; auto-detection uses the first model `/v1/models` lists,
     which may be large or slow.
 17d. **Verdict provenance** — [`cli/provenance.mjs`](../cli/provenance.mjs) stamps every alert and ledger
     row with `policyId` (`pol:<tenant>:<iat>:<digest12>`, `pol:unsigned:<digest12>`, `builtin-defaults`,

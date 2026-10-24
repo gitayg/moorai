@@ -21,7 +21,7 @@ const { quarantineRead, QUARANTINE_DIR } = await import("../cli/quarantine-reade
 const { quarantineStep, mergeQuarantine } = await import("../cli/quarantine-step.mjs");
 const { resolveReader, callReader } = await import("../cli/quarantine-model.mjs");
 const OWNER = await import("../cli/quarantine-owner.mjs");
-const { judgeOwner, agentPids, pinnedExe, verifyReaderPeer, writableBy, codeSignature, peerUids, peerEnvArgs, parseNetstatPeer, parseProcTcpPeer, parseNettopPeer, parseLsofPeer, confirmPeer, windowsSids, windowsSidScript, mergeSocketUid } = await import("../cli/quarantine-owner.mjs");
+const { judgeOwner, agentPids, pinnedExe, verifyReaderPeer, writableBy, codeSignature, peerUids, peerEnvArgs, parseNetstatPeer, parseProcTcpPeer, parseNettopPeer, parseLsofPeer, confirmPeer, mergeSocketUid, peerOf, peerFacts } = await import("../cli/quarantine-owner.mjs");
 const { buildEngine } = await import("../cli/hook-core.mjs");
 const engine = buildEngine({});
 process.on("exit", () => rmTree(HOME));
@@ -341,29 +341,11 @@ test("crafted process names never yield another pid; two sources must agree", ()
   assert.equal(confirmPeer({}).pid, null);
 });
 
-test("Windows identity: SIDs only, never the environment; anything else refuses", () => {
-  assert.match(windowsSidScript(42), /GetOwnerSid/);
-  assert.match(windowsSidScript(42), /WindowsIdentity\]::GetCurrent\(\)\.User\.Value/);
-  assert.doesNotMatch(windowsSidScript(42), /USERNAME|USERDOMAIN/);
-  const other = windowsSids("S-1-5-80-1234-5678|S-1-5-21-1-2-3-1001");
-  assert.deepEqual(other, { peer: "S-1-5-80-1234-5678", self: "S-1-5-21-1-2-3-1001" });
-  assert.equal(judgeOwner({ pid: 9, uids: [other.peer], agentUid: other.self }, { platform: "win32" }).ok, true, "a service SID is another user");
-  const same = windowsSids("S-1-5-21-1-2-3-1001|s-1-5-21-1-2-3-1001");
-  assert.match(judgeOwner({ pid: 9, uids: [same.peer], agentUid: same.self }, { platform: "win32" }).why, /agent's own OS user/, "case-insensitive match is the same user");
-  for (const bad of ["", "DOMAIN\\user|S-1-5-21-1", "S-1-5-21-1-2-3-1001|", "S-1-5-80-1|DESKTOP\\me", "S-1-5-21-1-2|S-1-5-21-1-2|S-1-5"]) assert.equal(windowsSids(bad), null, bad);
-  assert.match(judgeOwner({ pid: 9, uids: null, agentUid: null }, { platform: "win32" }).why, /could not be determined/);
-});
-
-test("windows: system tools run by absolute System32 path, never a bare name; a non-standard SystemRoot is ignored", async () => {
-  const { windowsSystemBinary } = await import("../cli/quarantine-owner.mjs");
-  const seen = [];
-  const exists = (p) => { seen.push(p); return p.toLowerCase().startsWith("c:\\windows\\system32\\"); };
-  const t = windowsSystemBinary("netstat.exe", { env: { SystemRoot: "C:\\Users\\a\\evil" }, exists });
-  assert.equal(t.bin, "C:\\Windows\\System32\\netstat.exe");
-  assert.equal(t.cwd, "C:\\Windows\\System32");
-  assert.ok(seen.every((p) => /^[A-Za-z]:\\Windows\\System32\\/i.test(p)), seen.join(","));
-  const d = windowsSystemBinary("WindowsPowerShell\\v1.0\\powershell.exe", { env: { SystemRoot: "D:\\Windows" }, exists: (p) => p.startsWith("D:\\Windows\\") });
-  assert.equal(d.bin, "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
-  assert.equal(windowsSystemBinary("netstat.exe", { env: {}, exists: () => false }), null);
-  assert.equal(windowsSystemBinary("netstat.exe", { env: { SystemRoot: "C:\\Users\\a\\evil" }, exists: (p) => p.startsWith("C:\\Users\\") }), null);
+test("Windows: the reader's owner is not verified there, so every peer is refused", () => {
+  const p = peerOf(11434, 50000, { platform: "win32" });
+  assert.equal(p.pid, null);
+  assert.match(p.why, /cannot be verified on Windows/);
+  const f = peerFacts({ serverPort: 11434, localPort: 50000, platform: "win32", readChain: () => [] });
+  assert.equal(f.pid, null);
+  assert.equal(judgeOwner(f, { platform: "win32" }).ok, false);
 });
