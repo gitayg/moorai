@@ -468,7 +468,7 @@ export async function createProxy(opts = {}) {
     // open fail mode, reported unevaluated and released.
     const unjudged = (e) => { if (fm !== "open") throw e; unevaluated("evaluation", "response", "error"); return ALLOW; };
     // Intent alignment for each call (intent.mjs), when this request has a session to judge against.
-    const copts = ictx ? { intent: (tool, input, findings, name, verdict) => intent.judge(ictx, tool, input, findings, name, verdict) } : {};
+    const copts = ictx ? { intent: (tool, input, findings, name, verdict) => intent.judge(ictx, tool, input, findings, name, verdict), bound: (name, input, verdict) => intent.judgeBound(ictx, name, input, verdict) } : {};
     const decide = enforce
       ? (calls) => (calls.length ? withTimeout(checker.checkToolCalls(nums.attach(calls), copts)).catch(unjudged).then((v) => { if (v.decision === "allow") track(calls); return v; }) : Promise.resolve(ALLOW))
       : (calls) => { if (calls.length) { track(calls); const cs = nums.attach(calls); later.push(() => checker.checkToolCalls(cs, copts)); } return Promise.resolve(ALLOW); };

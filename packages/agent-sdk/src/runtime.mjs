@@ -33,11 +33,24 @@
 // options.intentStore false: this runtime does not judge intent at all (no store; captureTask records
 // nothing). For a caller that judges intent itself with its own sessions — moorai-model-proxy
 // (model-proxy/intent.mjs), whose toolCall carries no session and would otherwise be task-unknown.
+//
+// TASK-BOUND CALLS (data/task-bound.js, held by the same store). After intent alignment, toolCall judges the
+// call by the name the caller sent: (1) the object check — a high-impact call whose object fields
+// (policy.intentArgs, else the built-in recipient / account / path / URL / repository fields) name nothing
+// in the task is class "object-not-in-task", decided by policy.intentAlignment exactly as the classes above
+// (report alerts, ask asks, block denies; no live task is "task-unknown"); (2) task allowlists —
+// policy.taskAllowlists: when the session's task matches an entry (its keywords, or the explicit task id
+// set with setTaskId), a tool or argument value outside it is class "outside-task-allowlist", held at the
+// entry's default ("deny" or "ask", whatever intentAlignment says). An unreadable allowlist entry denies
+// what it would have covered and raises one "Task-bound policy invalid" alert per policy. Both read
+// the policy this runtime loaded and the root-owned admin binding (which wins key by key); the task is
+// captured whenever intentAlignment is not "off" or an allowlist is configured.
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib, intentServerLib } from "./core.mjs";
 import { decideToolCall } from "./decide.mjs";
 import { createReporter } from "./report.mjs";
+import { taskBoundLib } from "./core.mjs";
 
 const { buildEngine, decideText, loadVerifiedPolicy, readRootOwned, withSafer, saferAlternativesFor } = hookCore;
 const { resolveServerMode, systemConfigPath, settleHeadlessAsk, serviceWho, normalizeServiceId, HEADLESS_MODES } = serverModeLib;
@@ -76,7 +89,7 @@ export function resolveSettings(options = {}, { env = process.env, system } = {}
   // A trusted source sits in `headless.system` (cli/server-mode.mjs headlessAskMode reads it after the
   // env-deny check), so an env "deny" still wins over every option, as it does on the hook.
   const headless = { ...sm.headless, system: HEADLESS_MODES.includes(optAsk) ? optAsk : sm.headless.system };
-  return { sm: { ...sm, serviceId, headless }, config, consoleConfigured, passThrough: optAsk === "pass-through" && !sm.headless.envDeny };
+  return { sm: { ...sm, serviceId, headless }, config, consoleConfigured, passThrough: optAsk === "pass-through" && !sm.headless.envDeny, admin: sys };
 }
 
 export async function createMoorAI(options = {}) {
@@ -184,7 +197,8 @@ export async function createMoorAI(options = {}) {
   async function captureTask(session, prompt, owner, authenticated = true) {
     const s = await ready();
     const mode = intentModeFromPolicy(s.policy);
-    if (mode === "off" || !intent) return { mode: intent ? mode : "off", captured: false, features: 0 };
+    const lists = taskBoundLib.hasAllowlists(taskBoundLib.resolveTaskBound(s.policy, settings.admin));
+    if ((mode === "off" && !lists) || !intent) return { mode: intent ? mode : "off", captured: false, features: 0 };
     const r = intent.captureTask(session, prompt, owner, { authenticated });
     return { mode, captured: typeof session === "string" && session.length > 0 && typeof prompt === "string", features: r.features };
   }
@@ -213,15 +227,56 @@ export async function createMoorAI(options = {}) {
     return w;
   }
 
+  // The session's explicit task id, which selects the task allowlist entry naming it (data/task-bound.js).
+  // owner / authenticated as captureTask; an id an unauthenticated writer set never selects an entry.
+  async function setTaskId(session, taskId, owner, authenticated = true) {
+    await ready();
+    if (!intent || typeof intent.setTaskId !== "function") return { taskId: false };
+    return intent.setTaskId(session, taskId, owner, { authenticated });
+  }
+
+  // Task-bound checks on v (see the header). Returns v, or a copy with the adjusted decision and reason plus
+  // `intent`. Reasons are fixed text: the class, the entry's name and a reason token; never an argument.
+  const problemsPosted = new Set();
+  function boundStep(s, v, tool, input, session, sess, owner) {
+    if (v.decision === "deny" || !intent || typeof intent.judgeBound !== "function") return v;
+    const mode = intentModeFromPolicy(s.policy);
+    const objects = mode !== "off" && !(mode === "report" && (typeof session !== "string" || !session)) && !(v.intent && v.intent.class === "task-unknown");
+    const r = intent.judgeBound(session, typeof tool === "string" ? tool : v.tool, input, { policy: s.policy, admin: settings.admin }, owner, { authenticatedOnly: mode === "ask" || mode === "block", objects });
+    if (r.problems.length && !problemsPosted.has(`${s.policyId}\0${r.problems.join(",")}`)) {
+      problemsPosted.add(`${s.policyId}\0${r.problems.join(",")}`);
+      reporter.post({ threatId: 0, category: "Task-bound policy invalid", riskLevel: "High", stage: "policy", tool: `hook:${v.tool}`, reasonCode: REASON.FAIL_CLOSED, contentHash: hash(`task-bound-policy:${r.problems.join(",")}`), taskBoundPolicy: { problems: r.problems }, ...sess }, { prov: prov(s, "PreToolUse") });
+    }
+    let w = v;
+    const o = r.objects;
+    if (o && !o.aligned) {
+      if (o.firstForTarget) reporter.post({ threatId: 64, category: INTENT_CATEGORY, riskLevel: mode === "block" ? "Blocked" : "Medium", stage: "behavior", tool: `hook:${v.tool}`, reasonCode: REASON.INTENT_MISMATCH, contentHash: hash(`intent:${o.class}`), intent: { class: o.class, mode, targetHash: o.targetHash }, ...sess }, { prov: prov(s, "PreToolUse") });
+      const why = `action outside the stated task — ${INTENT_CLASS_TEXT[o.class]}`;
+      w = { ...w, intent: w.intent || { class: o.class, mode } };
+      if (mode === "block") return { ...w, decision: "deny", reason: `blocked ${v.tool} — ${why}`, alternatives: saferAlternativesFor([64]), intent: { class: o.class, mode } };
+      if (mode === "ask") w = w.decision === "allow" ? { ...w, decision: "ask", reason: `needs justification ${v.tool} — ${why}`, alternatives: saferAlternativesFor([64]), intent: { class: o.class, mode } } : { ...w, reason: `${w.reason}, ${why}` };
+    }
+    const a = r.allowlist;
+    if (a) {
+      if (a.firstForTarget) reporter.post({ threatId: 64, category: INTENT_CATEGORY, riskLevel: a.decision === "deny" ? "Blocked" : "High", stage: "behavior", tool: `hook:${v.tool}`, reasonCode: REASON.INTENT_MISMATCH, contentHash: hash(`intent:${a.class}`), intent: { class: a.class, mode: a.decision, task: a.task, reason: a.reason, targetHash: a.targetHash }, ...sess }, { prov: prov(s, "PreToolUse") });
+      const why = `outside the task allowlist${a.task ? ` "${a.task}"` : ""} (${a.reason})`;
+      const tag = { class: a.class, mode: a.decision, task: a.task };
+      if (a.decision === "deny") return { ...w, decision: "deny", reason: `blocked ${v.tool} — ${why}`, alternatives: saferAlternativesFor([64]), intent: tag };
+      w = w.decision === "allow" ? { ...w, decision: "ask", reason: `needs justification ${v.tool} — ${why}`, alternatives: saferAlternativesFor([64]), intent: tag } : { ...w, reason: `${w.reason}, ${why}` };
+    }
+    return w;
+  }
+
   // The verdict the hook reaches for one tool call (src/decide.mjs), judged for intent alignment (a call
-  // with no session has no task: a risky one is task-unknown), then settled for a headless run.
+  // with no session has no task: a risky one is task-unknown) and the task-bound checks, then settled for a
+  // headless run.
   async function toolCall({ tool, input, cwd, permissionMode = "", session, owner } = {}) {
     const s = await ready();
     const b = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId });
     const sess = sessionOf(session);
     report(s, b.findings, { tool: b.tool, decision: b.decision, sess });
     reportSignals(s, b.signals, b.tool, "PreToolUse", sess);
-    const v = intentStep(s, b, input, session, sess, owner);
+    const v = boundStep(s, intentStep(s, b, input, session, sess, owner), tool, input, session, sess, owner);
     const st = settle(s, v, { tool: v.tool, permissionMode, sess });
     const message = st.decision === "allow" ? "" : `MoorAI: ${withSafer(st.reason, v.alternatives)}`;
     return { decision: st.decision, configuredDecision: v.decision, ...summary(v.findings), reasons: v.decision === "allow" ? [] : [st.reason], alternatives: v.alternatives, kill: v.kill, message, findings: contentFree(v.findings), evaluated: v.evaluated, notEvaluated: v.notEvaluated, ...(v.intent ? { intent: v.intent } : {}), ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };
@@ -257,5 +312,5 @@ export async function createMoorAI(options = {}) {
     return { action: indexScanAction(s.policy), policyId: s.policyId, results, allowed, flagged, held, denied };
   }
 
-  return { identity, config: { serverUrl: config.serverUrl, tenant: config.tenant, enrolled: reporter.enrolled }, settings: { serviceId: sm.serviceId, serviceIdSource: options.serviceId ? "options" : sm.serviceIdSource, headless: sm.headless, passThrough: settings.passThrough }, ready, scan, toolCall, captureTask, scanForIndex, flush: () => reporter.flush(), reporter, hash, RANK };
+  return { identity, config: { serverUrl: config.serverUrl, tenant: config.tenant, enrolled: reporter.enrolled }, settings: { serviceId: sm.serviceId, serviceIdSource: options.serviceId ? "options" : sm.serviceIdSource, headless: sm.headless, passThrough: settings.passThrough, admin: settings.admin }, ready, scan, toolCall, captureTask, setTaskId, scanForIndex, flush: () => reporter.flush(), reporter, hash, RANK };
 }

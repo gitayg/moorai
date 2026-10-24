@@ -61,6 +61,19 @@
 //                                                     alerts. Such a tokenless task counts in "report" only:
 //                                                     if the policy later turns to "ask" or "block", the
 //                                                     session is judged as if it had no task (task-unknown).
+//                                                     TASK ID: { session, taskId } (with or without a prompt;
+//                                                     1-128 of A-Z a-z 0-9 . _ : -) sets the session's explicit
+//                                                     task id, answered as taskId: true. It selects the
+//                                                     policy.taskAllowlists entry whose match names it, ahead of
+//                                                     keyword matching (data/task-bound.js); the same writer
+//                                                     rules apply, and an id set without any token never
+//                                                     selects an entry. Every /v1/tool-call with a session is
+//                                                     also judged by the task-bound checks: a high-impact call
+//                                                     whose object fields (policy.intentArgs) name nothing in
+//                                                     the task (class "object-not-in-task", under
+//                                                     intentAlignment), and a tool or argument outside the
+//                                                     matching task allowlist entry (class
+//                                                     "outside-task-allowlist", held at the entry's default).
 //   POST /v1/file-scan { data | sha256, mediaType?, session? } -> the cloud file scan (cli/file-scan.mjs) of one
 //                                                     file about to be sent to a model some other way than through
 //                                                     moorai-model-proxy: `data` is the file in base64, or `sha256`
@@ -111,7 +124,7 @@ import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { createMoorAI, STAGES } from "../packages/agent-sdk/src/runtime.mjs";
-import { inboundLib, indexScanLib, intentServerLib } from "../packages/agent-sdk/src/core.mjs";
+import { inboundLib, indexScanLib, intentServerLib, taskBoundLib } from "../packages/agent-sdk/src/core.mjs";
 import { createCheckedNotifier } from "../model-proxy/checked-notify.mjs";
 import { fileScanPolicy, PROVIDERS as FILE_SCAN_PROVIDERS } from "./file-scan-policy.mjs";
 import { loadFileScanKeys } from "./file-scan-keys.mjs";
@@ -344,11 +357,15 @@ export async function createServer(opts = {}) {
     const session = body.session == null ? undefined : body.session;
     if (path === "/v1/task") {
       if (session === undefined) throw new HttpError(400, "session is required");
-      if (typeof body.prompt !== "string") throw new HttpError(400, "prompt must be a string");
-      if (body.prompt.length > MAX_TEXT) throw new HttpError(413, "prompt too long");
+      const withId = body.taskId !== undefined;
+      if (withId && !taskBoundLib.validTaskId(body.taskId)) throw new HttpError(400, "taskId must be 1-128 characters of A-Z a-z 0-9 . _ : -");
+      if (typeof body.prompt !== "string" && !(withId && body.prompt === undefined)) throw new HttpError(400, "prompt must be a string");
+      if (typeof body.prompt === "string" && body.prompt.length > MAX_TEXT) throw new HttpError(413, "prompt too long");
       // Unauthenticated (no token configured at all, so only report mode gets here): honoured in "report"
       // only; the store keeps it apart and "ask"/"block" judge without it, even after the mode changes.
-      return withTimeout(rt.captureTask(session, body.prompt, owner, tokens.length > 0 || taskTokens.length > 0), o.timeoutMs);
+      const authed = tokens.length > 0 || taskTokens.length > 0;
+      const r = typeof body.prompt === "string" ? await withTimeout(rt.captureTask(session, body.prompt, owner, authed), o.timeoutMs) : { mode: intentServerLib.intentModeFromPolicy((await rt.ready()).policy), captured: false, features: 0 };
+      return withId ? { ...r, taskId: (await rt.setTaskId(session, body.taskId, owner, authed)).taskId } : r;
     }
     if (path === "/v1/file-scan") return fileScan(body, session);
     if (path === "/v1/scan") {

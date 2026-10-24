@@ -320,7 +320,9 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
   // the arguments (readings.innerNames); a deny on any of them denies the call.
   // intent(tool, input, findings, name, verdict): intent alignment (intent.mjs), for a call that maps to a hook
   // tool and is not already denied; a verdict it returns replaces this one.
-  async function checkOne(c, intent) {
+  // bound(name, input, verdict): the task-bound checks (intent.mjs judgeBound) on the call as the model sent it,
+  // after intent alignment and not on a deny; a stricter (or equally strict, with more reasons) verdict replaces it.
+  async function checkOne(c, intent, bound) {
     const rd = c.raw == null && !c.over ? readings(c.name, c.input) : null;
     const names = [c.name];
     for (const n of rd ? rd.innerNames : []) if (!names.some((x) => foldName(x) === foldName(n))) names.push(n);
@@ -332,16 +334,19 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
     }
     const v = await checkArgs(c, rd);
     const out = ask && v.decision !== "deny" ? ask : v;
-    if (!intent || out.decision === "deny" || c.raw != null || c.over) return out;
+    if ((!intent && !bound) || out.decision === "deny" || c.raw != null || c.over) return out;
     // Every reading that maps to a hook tool, each with the findings its own decision produced; the strictest
     // intent verdict wins (deny over ask over none).
     let best = null;
-    for (const j of v.judged || []) {
+    if (intent) for (const j of v.judged || []) {
       const iv = await intent(j.tool, j.input, j.findings, c.name, out);
       if (iv && RANK[iv.decision] > RANK[best ? best.decision : "allow"]) best = iv;
       if (best && best.decision === "deny") break;
     }
-    return best || out;
+    const cur = best || out;
+    if (!bound || cur.decision === "deny") return cur;
+    const bv = await bound(c.name, c.input, cur);
+    return bv && RANK[bv.decision] >= RANK[cur.decision] ? bv : cur;
   }
 
   const decideMapped = async (m) => { const v = await rt.toolCall({ tool: m.tool, input: m.input, cwd }); return { decision: v.decision, reasons: v.reasons, findings: v.findings || [] }; };
@@ -394,10 +399,10 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
     return { decision: v.decision, reasons: v.reasons };
   }
 
-  async function checkToolCalls(calls, { intent } = {}) {
+  async function checkToolCalls(calls, { intent, bound } = {}) {
     const denied = [];
     for (const c of calls) {
-      const v = await checkOne(c, intent);
+      const v = await checkOne(c, intent, bound);
       if (v.decision === "deny") denied.push({ name: c.name, reasons: v.reasons });
     }
     return { decision: denied.length ? "deny" : "allow", denied };

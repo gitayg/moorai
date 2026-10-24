@@ -39,6 +39,7 @@ That's the exact trade MoorAI refuses.
 - **Declared workload profiles** — write down what a workload is expected to use: tools, MCP servers and destination hosts, per service (`serviceId`) or per repository (`github:owner/name`). A call outside the profile is reported as `PROFILE_DRIFT` (the kind, the out-of-profile tool, server or host, and the profile id; never a path, command or argument), or denied when the profile says `"action": "block"`; an unenrolled device coaches instead. Profiles live in the signed console policy or the root-owned machine-wide config, never in the repository. A repository match follows the git remote, which the agent can change, so block on `serviceId`. The hook, `@moorai/agent-sdk` and `moorai-serve` evaluate them, and so does the HTTP MCP gateway on every `tools/call` (tool and MCP-server kinds; the tool is named `mcp__<route>__<tool>`, as the hook names it). Details: [DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md#declared-workload-profiles).
 - **Egress rules** — `egressRules: [{ binary?, host | cidr, port?, method?, path?, action }]` plus `egressDefault`, with `action` one of `allow`, `alert` or `block`. They say which binary may reach which host or address range, port, HTTP method and path. They can apply fleet-wide (top level of the signed policy or the root-owned machine-wide config) or per workload profile. `host` is exact or `*.suffix`. `cidr` (instead of `host`) is one range or a list of up to 64 (`10.0.0.0/8`, `fd00:20::/32`); a prefix with host bits set is refused, and `/0` is accepted only for `alert` or `block`. From a call's text a cidr rule matches an IP literal inside the range (IPv4, IPv6 with or without a zone id such as `%eth0`, IPv4-mapped IPv6); it never matches a host name there, because the hook does no DNS. The egress proxy and the MCP gateway's own upstream connection match it on the resolved address. Agents older than 1.28.0 drop a cidr rule as an unknown key, and cidr rules are not accepted inside a workload profile. The first matching rule decides, and with no match the default applies. An allow rule never matches a field the call does not reveal (no method on `git clone`, no path on `ssh`). The hook, `@moorai/agent-sdk` and `moorai-serve` read the destinations a Bash/PowerShell command, WebFetch or MCP call names: URLs, curl/wget/httpie/Invoke-WebRequest methods, ssh/scp/rsync/git/nc hosts, and nested `sh -c` / `-EncodedCommand` / `$( … )`. A block denies the call (coached when unenrolled). Alert and block post a content-free `EGRESS_RULE` alert (binary, host, port, method, rule; never a path or query). The binary is the command word the line names, not the process that opens the socket. The HTTP MCP gateway and the stdio MCP proxy judge the destinations a `tools/call`'s arguments name by the same function (the tool named `mcp__<server>__<tool>`), so a deny holds the same way in the hook, the gateway and the stdio proxy; the gateway also judges its own connection to each remote MCP server (host, port, method and path, and cidr rules on the address its DNS lookup returns). Details: [DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md#egress-rules).
 - **Intent alignment** — flags a risky agent action aimed at something the user's own request never mentioned: an upload to a host the prompt never named, a destructive command or credential read on paths it never named, an MCP write to a service it never named. An upload to any service on this machine (loopback, whatever the port — MoorAI's own moorai-serve, model proxy and MCP gateway included) is always flagged (class `moorai-control`). The `UserPromptSubmit` hook keeps only keyed, device-local hashes of the sites, paths, service names and three labels (*credentials*, *destructive*, *mcp-write*) a prompt mentions — never the prompt. Report-only by default (`policy.intentAlignment: "ask"` raises the call to ask, `"off"` disables it). Lexical; the prompt is captured in Claude Code, Codex, Cursor, Gemini and Copilot — limits below. The Agent SDK and the `moorai-serve` sidecar judge it too, from an in-memory store (where `"block"` also denies the call).
+- **Task-bound tool calls** — two deterministic checks of a tool call against the person's task, with no model guarding a model. *Object check:* for a high-impact call (an MCP write, a business-impact function such as a refund or a role grant, a function whose name carries a write verb, or any tool `policy.intentArgs` names), the object of the action must be named in the task: under "cut the apple", `cut({target:"apple"})` passes and `cut({target:"hand"})` is class `object-not-in-task`, decided by `policy.intentAlignment` like the other intent classes. *Task allowlists:* `policy.taskAllowlists` restricts a session whose task matches an entry (by keywords, or an explicit task id set over `moorai-serve`'s `POST /v1/task` or the Agent SDK) to the tools and argument values the entry lists, holding anything else at the entry's default (`"deny"` or `"ask"`); an unreadable entry denies what it would have covered and raises an alert. Both run in the model proxy, `moorai-serve`, the Agent SDK and the hook's MCP path. Token matching, not semantics — limits below.
 - **Session-level escalation** — what one call cannot show, the session can. An injection-class finding on content the agent ingested (a fetched page, a command's output, an MCP result, a file it read) taints the session for 30 minutes, and an outbound action or credential-file read inside that window raises `Agent behavior: outbound action after untrusted content` (#59). Also across calls: a credential read that was staged (copied, written, encoded or archived) and then sent out; an archive then sent out; a mass read (30 distinct files) then an upload of 4 KB or more to a destination new to the session; and slow exfiltration (5 or more transfers of up to 8 KB each to one destination, summing 16 KB or more). A decaying per-session score posts one alert when it crosses its threshold. Report-only by default (`policy.sessionRisk.mode: "ask"` raises the outbound call to ask, `"off"` disables it). The state on disk is keyed hashes and counts only.
 - **Runaway circuit breaker** — an agent stuck in a loop: the same call 15 times in 5 minutes with an unchanged result, or a 2–4 call cycle repeated 5 times with unchanged results, raises `Agent behavior: runaway loop` (#38). A result that changes is progress, so `npm test` re-run while the agent fixes the code never trips it. Report-only by default; `policy.circuitBreaker.mode: "deny"` pauses the session's tool calls for 15 minutes. Token spend is not measured: no hook event carries usage.
 - **Claimed success vs reality** — at the end of a turn, when the agent's final message says the work succeeded while the turn's commands or MCP calls failed, were denied or were interrupted and were not redone, MoorAI reports `Agent reported success but tool calls failed` (Medium). The message is read in memory, never stored or sent. Report-only, and tuned for precision: on a locked split of a blind-labelled corpus, 100% precision (17 of 17) and 54.8% recall.
@@ -536,6 +537,82 @@ runs on one machine). Full contract: [`docs/DETECTION_ENGINE.md`](docs/DETECTION
 The Agent SDK and `moorai-serve` run the same check in memory ([`data/intent-server.mjs`](data/intent-server.mjs));
 see "Intent alignment in process" below.
 
+**Task-bound tool calls.** Two deterministic checks of a tool call against the person's task
+([`data/task-bound.js`](data/task-bound.js)), on the model proxy (a tool call in the model's reply, before
+the framework runs it), `moorai-serve` `/v1/tool-call`, the Agent SDK and the hook's MCP path
+([`cli/task-bound-hook.mjs`](cli/task-bound-hook.mjs)):
+
+- **Object check** (`policy.intentArgs`). For a high-impact call, the object of the action must be named in
+  the task. High-impact: a tool `intentArgs` names, an MCP write, a function in a business-impact class
+  (money, bulk-data, identity, destructive, delegation), or any other function whose name carries a write
+  verb (`send_email`, `transfer`, `move_to`). The hook's own tools (`Bash`, `Read`, `Write` …) stay with the
+  existing intent classes. The object fields are the keys `intentArgs` lists for the tool (a dotted key reads
+  a nested field), else the built-in recipient, account, destination, path, URL, repository and bucket
+  fields (`to`, `cc`, `bcc`, `recipient(s)`, `email`, `phone`, `account`, `account_id`, `to_account`,
+  `iban`, `destination`, `path`, `file_path`, `url`, `uri`, `webhook`, `repo`, `repository`, `bucket`).
+  Both sides are folded alike (Unicode NFKC, case, punctuation, the articles a / an / the, simple plurals).
+  A text value is named when its whole token (an address or path as typed), its word phrase (up to five
+  words), the host or site of a URL, or the file name or stem of a path appears in the task, or when a member
+  of its synonym group does; an e-mail address must appear whole. A number is named when the same number
+  appears in the task, and is also allowed at or under its cap. A miss is class `object-not-in-task`,
+  decided by `policy.intentAlignment`: `"report"` (default) alerts once per session and target, `"ask"`
+  asks, `"block"` denies (on the hook too, where the older intent classes stop at ask), `"off"` skips it.
+  No captured task follows the existing rule: `task-unknown` on the server surfaces, not judged on the hook.
+
+  ```json
+  "intentArgs": {
+    "cut": ["target"], "move_to": ["location"], "send_email": ["to"], "transfer": ["to_account", "amount"],
+    "synonyms": { "apple": ["granny smith"] },
+    "caps": { "transfer.amount": 100 }
+  }
+  ```
+
+- **Task allowlists** (`policy.taskAllowlists`). The strict mode for physical or high-stakes systems. When
+  a session's task matches an entry, any tool, or argument value, outside that entry is held at the entry's
+  default, whatever `intentAlignment` says. Class `outside-task-allowlist`.
+
+  ```json
+  "taskAllowlists": [
+    { "task": "harvest", "match": { "keywords": ["harvest", "pick apples"] },
+      "tools": { "cut": { "args": { "target": ["apple", "stem-*"] } }, "get_status": true }, "default": "deny" },
+    { "task": "pay-vendor", "match": { "taskId": "pay-vendor-1" },
+      "tools": { "transfer": { "args": { "amount": [{ "max": 500 }], "to_account": ["4471"] } } }, "default": "deny" }
+  ]
+  ```
+
+  A keyword entry matches when any of its keywords is named in the task. A `taskId` entry matches the
+  session's explicit task id: `POST /v1/task {session, taskId}` on the sidecar (with or without a prompt;
+  1-128 of `A-Z a-z 0-9 . _ : -`; it answers `taskId: true`) or `hooks.moorai.setTaskId(sessionId, taskId)` in
+  the SDK. An explicit task id beats keywords: when an entry names it, only those entries apply, and when
+  none does the keyword entries apply. When several entries apply, the strictest outcome wins (deny over ask
+  over allow). An allowed value is a listed value (folded), a glob (`*`, `?`), a number or a `{min, max}`
+  range; an array needs every element allowed; a key the entry does not list is not constrained; `true` or
+  `{}` allows any arguments. Default `"deny"`. On the sidecar a task id follows the task-writer rules, and
+  one set with no token configured never selects an entry. The hook and the model proxy match by keyword
+  only.
+
+Both read only the signed policy and the root-owned admin binding (`/etc/moorai/config.json`), whose key wins.
+**They fail closed:** a `taskAllowlists` that is not an array, or an entry whose match, tools, arguments,
+default or name cannot be read, denies everything it would have covered (an unreadable match: every session)
+and raises one `Task-bound policy invalid` alert (stage `policy`, reason code `FAIL_CLOSED`, fixed problem
+tokens only). An unreadable `intentArgs` tool entry checks every top-level argument of that tool. The task is
+captured whenever `intentAlignment` is not `"off"` or an allowlist is configured. Misses alert as
+`Action outside the stated task` (#64, `INTENT_MISMATCH`) with the class, the mode or outcome, the entry's
+name and a reason token (`tool-not-listed`, `argument-not-allowed`, `invalid-policy`), never an argument
+or the task; verdicts gain `intent: {class, mode}` (plus `task` for an allowlist). What is held: the keyed
+hashes of the task's words, two- to five-word phrases, whitespace-delimited tokens and numbers — in memory
+on the server surfaces (8192 per session), and on the device in `~/.moorai/task-terms.json` (0600; 768 per
+session, 32 sessions, 24 h, the `intent.key` device key). Measured added latency per tool call (median of
+50): 0.02 ms in process (SDK runtime), 1.2 ms on a hook MCP call end to end, within process noise.
+**Limits.** Token matching is not semantics: "the apple" names "apple" and says nothing about what is done
+to it, and a value the person typed is in scope even when the agent was steered into using it. It relies on
+the policy naming the object fields; a field no `intentArgs` entry or built-in default covers is not
+checked. A wider task (pasted text) names more. The hook judges MCP tool calls only, so an allowlist does
+not hold its built-in tools (`Bash`, `Write` …) there; the model proxy judges the name the model sent, not a
+dispatcher's inner tool. On the device the agent runs as the same user and can read
+the key and dictionary-attack the hashed words (the prompt is already in its transcript) or rewrite the
+file, which only relaxes the object check or makes a keyword entry match.
+
 **Protected instructions are fingerprinted, never copied.** The hook discovers the rules files the agent
 runs under (`CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/`, managed policy,
 `AGENTS.md`, `AGENTS.override.md`, `GEMINI.md`, `.github/copilot-instructions.md`, `.github/instructions/`,
@@ -896,6 +973,12 @@ out of context.") is never the task, and once a session has a task each request 
 turn, so a rewritten or summarised first turn is not learned again. It is lexical:
 an upload to a host the person named passes, even when it is exfiltration to that host. See
 [`model-proxy/README.md`](model-proxy/README.md#intent-alignment).
+
+**Task-bound tool calls.** Each tool call the model returns is also judged by the task-bound checks
+below, by the name the model sent: in `--mode enforce` an object-check miss follows `intentAlignment` and an
+allowlist miss is denied (`"deny"`) or a headless ask (`"ask"`); in `--mode report` both only alert. The proxy
+matches allowlist entries by keyword only (task ids are set over moorai-serve or the SDK), and it captures
+the person's turns whenever `intentAlignment` is not `"off"` or an allowlist is configured.
 
 **Reply text.** The text of the model's reply is scanned, on every parsed API, streaming and not, for
 secrets (#39), personal data (#15), payment-card data (#1) and a 24-word run of this request's system
