@@ -812,7 +812,9 @@ is validated against.
      (`model-proxy/business-tools.mjs`), or another function whose name carries a write verb; the hook's own
      tool vocabulary stays with the classes above. Object fields: the keys `intentArgs` lists (dotted keys
      read nested fields), else the built-in `DEFAULT_OBJECT_KEYS` (recipients, accounts, destinations, paths,
-     URLs, repositories, buckets), keys compared with case, `_` and `-` folded. The task is held as keyed
+     URLs, repositories, buckets). Every argument key equal to a field after folding case, `_`, `-` and spaces
+     is read, and a dotted field both as the literal key and nested (`collectKey`); every value found must be
+     named. The task is held as keyed
      hashes of its words, two- to five-word phrases, whitespace-delimited tokens (with the host, site and
      file name inside them) and numbers; both sides are folded with NFKC, case, punctuation, the articles
      a / an / the and simple plurals. A text value is named when its token, word phrase (≤ 5 words), URL host
@@ -832,7 +834,16 @@ is validated against.
      apply. Several applicable entries: each judges the call and the strictest outcome wins. A tool not
      listed, or a listed key whose value (each element of an array) is not allowed, is held at the entry's
      default (default `"deny"`), whatever `intentAlignment` says: class `outside-task-allowlist`, reason
-     `tool-not-listed` or `argument-not-allowed`. Globs are matched in linear time. The model proxy and the
+     `tool-not-listed` or `argument-not-allowed`. Globs are matched in linear time. Argument keys
+     (`walkKeys` over the listed keys as a tree): a listed dotted key is read literally and nested, each one
+     present must be allowed; a key equal to a listed key or segment only after folding is held
+     (`argument-key-collision`); with `unlistedArgs` `"deny"` (the default for every entry, an ask entry only
+     asking) an argument the tool's `args` do not list, at the top level or under a listed dotted path, is held
+     (`argument-not-listed`), and `"allow"` passes it; a tool listed as `true` / `{}` takes any arguments.
+     *Selection cannot be lost:* at capture the keyword entries the WHOLE prompt names (`entriesNamedIn`) are
+     recorded per session by a keyed hash of the entry's own text, apart from the capped term set; the model
+     proxy keeps the person's turns uncut while an allowlist is configured. A recorded entry or one the held
+     terms name applies. The model proxy and the
      hook match by keyword only. Tool names on both sides go through `foldName`; for `mcp__<server>__<tool>`
      the full name is tried, then the tool part.
    - *Fail closed.* `taskAllowlists` that is not an array, or an entry whose match, tools, arguments, default
@@ -843,14 +854,22 @@ is validated against.
      session on the hook. Source: the signed policy and the root-owned admin binding, the binding winning
      key by key; never user-writable state. The task is captured whenever `intentAlignment` is not `"off"`
      or an allowlist is configured.
+   - *Hook state tamper.* `~/.moorai/task-terms.json` carries an HMAC-SHA256 over its contents, keyed by
+     sha256 of the device signing key's (`data/agency-sign.mjs`) deterministic ed25519 signature over a fixed
+     label. Missing (while `intent.key` exists, i.e. a capture happened on the device), unreadable, oversized,
+     another version or an HMAC mismatch is tampered: every allowlist entry judges the call as if its task
+     matched, anything one would hold is denied (reason `state-tampered`), and each such call raises
+     `Task-bound state tampered` (threat 0, stage `policy`, `FAIL_CLOSED`, `taskBoundState: {problem}`:
+     `missing` | `unverified` | `lost-record`). The tampered file is never re-signed; the next capture writes
+     a fresh signed state with `tamperedAt`, and for 24 h a session absent from it is tampered too.
    - *Alerts and verdicts.* #64 `Action outside the stated task`, reason code `INTENT_MISMATCH`, `intent:
      {class, mode | outcome, task?, reason?}`; never an argument, a value or the task. Verdicts gain `intent:
      {class, mode}` (`task` for an allowlist). The model proxy in `--mode report` only alerts. Storage: in
-     memory on the server surfaces (`maxTerms` 8192 per session); on the device `~/.moorai/task-terms.json`
-     (0600; 768 terms per session, 32 sessions, 24 h, the `intent.key` device key).
+     memory on the server surfaces (`maxTerms` 8192 per session, matched entries apart); on the device
+     `~/.moorai/task-terms.json` (0600; per session 1536 words / tokens / numbers and 512 phrases in two tiers
+     across prompts, 32 sessions; matched-entry hashes for 1024 sessions; 24 h; the `intent.key` device key).
    - *Measured* (`test/task-bound.test.mjs`, `test/task-bound-surfaces.test.mjs`): the store's `judgeBound`
-     0.03 ms median of 50; 0.02 ms added to an SDK `toolCall`; 1.2 ms on a hook MCP call end to end (330 ms
-     either way, within process noise).
+     0.03 ms median of 50; 0.02 ms added to an SDK `toolCall`; 5.1 ms for the hook step cold in a fresh process (derived key, state read, HMAC); two end-to-end runs of 50 measured 3.0 and 10.5 ms over a 290–370 ms hook call.
    - **Limits.** Token matching is not semantics: it answers "did the person name this object", not "is
      this action on it safe" — "cut the apple" names `apple` whatever the action does to it, and a value the
      person typed is in scope even when the agent was steered into using it. It relies on the policy naming
@@ -858,8 +877,11 @@ is validated against.
      tool that is not high-impact is not object-checked at all. Pasted text widens the task. The hook judges
      MCP tool calls only (its built-in tools are not held by an allowlist); the model proxy judges the name
      the model sent, not a dispatcher's inner tool. The device
-     state shares `intent-alignment.json`'s trust boundary (the agent can read the key, dictionary-attack the
-     hashed words, or rewrite the file; that only relaxes the object check or makes a keyword entry match).
+     state shares `intent-alignment.json`'s trust boundary: the agent runs as the same user, can read both
+     keys, dictionary-attack the hashed words and re-sign an edited state; deleting `intent.key` together
+     with the state returns the device to "never captured"; more than 1024 prompted sessions in 24 h evict the
+     oldest matched-entry record (a privileged witness, `moorai-guardd`, is not installed). On the server
+     surfaces an evicted or never-captured session has no recorded entry, so no keyword entry applies.
      Not observed in a live Claude Code, LangGraph or robot-planner session.
 
 11d. **Protected-instruction leak** — the agent's own rules files leaving the device. *Threat 52.*

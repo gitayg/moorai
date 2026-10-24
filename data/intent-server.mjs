@@ -30,6 +30,11 @@
 // TASK-BOUND ADDITIONS (data/task-bound.js; additive, the signatures above are unchanged):
 //   createIntentStore({ ..., maxTerms })   default 8192 task-bound term hashes per session (dropped past it,
 //                                          which can only make a later object look LESS named)
+//   store.captureTask(sessionId, promptText, owner, { authenticated, bound: { policy, admin } })
+//                                          bound: the policy in force; the keyword allowlist entries the WHOLE
+//                                          prompt names are recorded (keyed hashes of the entries' own text),
+//                                          apart from the capped term set, so a long prompt cannot push a
+//                                          selecting keyword out of it
 //   store.setTaskId(sessionId, taskId, owner, { authenticated }) -> { taskId: boolean }
 //   store.judgeBound(sessionId, tool, input, { policy, admin }, owner, { authenticatedOnly, objects })
 //                                          -> { objects, allowlist, problems } (see judgeBound below)
@@ -70,7 +75,7 @@
 // "does this action serve the task"; a request pasted from an untrusted source puts its hosts in scope.
 import { createHmac, randomBytes } from "node:crypto";
 import { taskFeatures, featureKeys, actionTargets, assessAlignment } from "./intent-alignment.js";
-import { taskTerms, termKey, taskIdKey, validTaskId, resolveTaskBound, objectChecks, judgeObjects, applicableEntries, judgeAllowlists, OBJECT_CLASS, ALLOWLIST_CLASS } from "./task-bound.js";
+import { taskTerms, termKey, taskIdKey, validTaskId, resolveTaskBound, objectChecks, judgeObjects, applicableEntries, judgeAllowlists, entriesNamedIn, OBJECT_CLASS, ALLOWLIST_CLASS } from "./task-bound.js";
 
 export const INTENT_DEFAULTS = Object.freeze({ maxSessions: 1024, ttlMs: 24 * 3600 * 1000, maxFeatures: 512, maxTerms: 8192 });
 const MAX_SEEN = 64;
@@ -141,14 +146,14 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
       // f: every capture's features; fa: only authenticated captures' (a: one has happened).
       // w / wa: the same split for the task-bound terms (data/task-bound.js); tid: the explicit task id's
       // keyed hash, honoured only when an authenticated writer set it (tidA).
-      cur = { t, o: ow, f: new Set(), fa: new Set(), a: false, seen: new Set(), w: new Set(), wa: new Set(), tid: null, tidA: false };
+      cur = { t, o: ow, f: new Set(), fa: new Set(), a: false, seen: new Set(), w: new Set(), wa: new Set(), me: new Set(), tid: null, tidA: false };
       owners.set(ow, (owners.get(ow) || 0) + 1);
       unknown.delete(sid);
     }
     return { sid, cur };
   }
 
-  function captureTask(sessionId, promptText, owner, { authenticated = true } = {}) {
+  function captureTask(sessionId, promptText, owner, { authenticated = true, bound = null } = {}) {
     if (!validId(sessionId) || typeof promptText !== "string") return { features: 0 };
     const t = clock();
     const { sid, cur } = open(sessionId, owner, t);
@@ -164,6 +169,7 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
       if (cur.w.size < maxW) cur.w.add(k);
       if (auth && cur.wa.size < maxW) cur.wa.add(k);
     }
+    if (bound) for (const e of entriesNamedIn(resolveTaskBound(bound.policy, bound.admin).lists, promptText)) if (cur.me.size < 256) cur.me.add(h(`tb-entry:${e.key}`));
     cur.t = t;
     touch(sid, cur);
     return { features: cur.f.size };
@@ -260,7 +266,8 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
     if (cfg.lists.length) {
       const has = cur ? (term) => cur.w.has(termKey(term, h)) : null;
       const hasId = cur && cur.tid && cur.tidA ? (id) => cur.tid === taskIdKey(id, h) : null;
-      const r = judgeAllowlists(applicableEntries(cfg.lists, has, hasId), tool, input);
+      const recorded = cur && cur.me.size ? (e) => cur.me.has(h(`tb-entry:${e.key}`)) : null;
+      const r = judgeAllowlists(applicableEntries(cfg.lists, has, hasId, recorded), tool, input);
       if (r) {
         const targetHash = h(`target:${ALLOWLIST_CLASS}:${r.index}:${r.reason}:${name}`);
         allow = { decision: r.outcome, class: ALLOWLIST_CLASS, task: r.task, reason: r.reason, invalid: r.invalid, targetHash, firstForTarget: firstIn(seen, targetHash) };

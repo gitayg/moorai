@@ -152,8 +152,9 @@ export function createIntent({ lib, key, rt, enforce, now, warn = (m) => process
   function begin(kind, json, headers, trace, policy) {
     if (!store) return null;
     const mode = modeOf(policy);
-    if (mode === "off" && !(typeof store.judgeBound === "function" && hasAllowlists(resolveTaskBound(policy, rt.settings.admin)))) return null;
-    const turns = json ? userTurns(kind, json) : [];
+    const lists = typeof store.judgeBound === "function" && hasAllowlists(resolveTaskBound(policy, rt.settings.admin));
+    if (mode === "off" && !lists) return null;
+    const turns = json ? userTurns(kind, json, lists ? { max: Infinity } : undefined) : [];
     const sessionId = sessionOf({ headers, trace, turns, hmac });
     const firstTurns = captured(sessionId) ? [] : [turns[0]];
     const pending = carriesTools(kind, json) ? [...new Set([...firstTurns, turns[turns.length - 1]])].filter(Boolean) : [];
@@ -165,7 +166,7 @@ export function createIntent({ lib, key, rt, enforce, now, warn = (m) => process
     const turns = ctx.pending;
     ctx.pending = [];
     for (const t of turns) {
-      try { store.captureTask(ctx.sessionId, t); } catch { /* not captured: the store answers task-unknown */ }
+      try { store.captureTask(ctx.sessionId, t, undefined, { bound: { policy: ctx.policy, admin: rt.settings.admin } }); } catch { /* not captured: the store answers task-unknown */ }
     }
     if (turns.length) remember(ctx.sessionId);
   }

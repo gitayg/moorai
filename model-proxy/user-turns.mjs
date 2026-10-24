@@ -95,7 +95,8 @@ export function stripTurn(texts) {
 export const stripHarness = (text) => stripTurn([text]);
 
 const isObj = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
-const cut = (s) => (s.length > MAX_TURN ? s.slice(0, MAX_TURN) : s);
+let LIMIT = MAX_TURN;
+const cut = (s) => (s.length > LIMIT ? s.slice(0, LIMIT) : s);
 const partsText = (content, types) => (typeof content === "string" ? stripHarness(content)
   : Array.isArray(content) ? stripTurn(content.filter((p) => isObj(p) && types.has(p.type) && typeof p.text === "string").map((p) => p.text)) : "");
 const TEXT = new Set(["text"]);
@@ -154,9 +155,12 @@ function ollama(body) {
 
 // kind: "anthropic" | "openai-chat" | "openai-responses" | "gemini" | "ollama" (server.mjs apiKind).
 const BY_KIND = { anthropic, "openai-chat": openaiChat, "openai-responses": openaiResponses, gemini, ollama };
-export function userTurns(kind, body) {
+// max: the per-turn cut (default MAX_TURN). intent.mjs passes no cut when a task allowlist is configured, so
+// a keyword past the first MAX_TURN characters still selects its entry (data/task-bound.js entriesNamedIn).
+export function userTurns(kind, body, { max = MAX_TURN } = {}) {
   const f = BY_KIND[kind];
-  return f && isObj(body) ? f(body).filter((t) => !isCompactionSummary(t)) : [];
+  LIMIT = max;
+  try { return f && isObj(body) ? f(body).filter((t) => !isCompactionSummary(t)) : []; } finally { LIMIT = MAX_TURN; }
 }
 
 // Whether a request declares tools the model can call: a non-empty `tools` (or OpenAI Chat's legacy

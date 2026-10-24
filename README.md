@@ -546,11 +546,12 @@ the framework runs it), `moorai-serve` `/v1/tool-call`, the Agent SDK and the ho
   the task. High-impact: a tool `intentArgs` names, an MCP write, a function in a business-impact class
   (money, bulk-data, identity, destructive, delegation), or any other function whose name carries a write
   verb (`send_email`, `transfer`, `move_to`). The hook's own tools (`Bash`, `Read`, `Write` …) stay with the
-  existing intent classes. The object fields are the keys `intentArgs` lists for the tool (a dotted key reads
-  a nested field), else the built-in recipient, account, destination, path, URL, repository and bucket
+  existing intent classes. The object fields are the keys `intentArgs` lists for the tool, else the built-in recipient, account, destination, path, URL, repository and bucket
   fields (`to`, `cc`, `bcc`, `recipient(s)`, `email`, `phone`, `account`, `account_id`, `to_account`,
   `iban`, `destination`, `path`, `file_path`, `url`, `uri`, `webhook`, `repo`, `repository`, `bucket`).
-  Both sides are folded alike (Unicode NFKC, case, punctuation, the articles a / an / the, simple plurals).
+  Every argument key equal to a field after folding case, `_`, `-` and spaces is read (`to` and `To` both),
+  and a dotted field is read both as the literal key (`"arm.target"`) and as the nested one (`arm` → `target`):
+  every value found must be named. Both sides are folded alike (Unicode NFKC, case, punctuation, the articles a / an / the, simple plurals).
   A text value is named when its whole token (an address or path as typed), its word phrase (up to five
   words), the host or site of a URL, or the file name or stem of a path appears in the task, or when a member
   of its synonym group does; an e-mail address must appear whole. A number is named when the same number
@@ -586,8 +587,14 @@ the framework runs it), `moorai-serve` `/v1/tool-call`, the Agent SDK and the ho
   the SDK. An explicit task id beats keywords: when an entry names it, only those entries apply, and when
   none does the keyword entries apply. When several entries apply, the strictest outcome wins (deny over ask
   over allow). An allowed value is a listed value (folded), a glob (`*`, `?`), a number or a `{min, max}`
-  range; an array needs every element allowed; a key the entry does not list is not constrained; `true` or
-  `{}` allows any arguments. Default `"deny"`. On the sidecar a task id follows the task-writer rules, and
+  range; an array needs every element allowed; `true` or `{}` allows any arguments. Default `"deny"`. A listed
+  dotted key is read both literally and nested, and each one present must be allowed. A call carrying a key
+  that equals a listed key (or a segment of a listed dotted path) only after folding case, `_`, `-` and
+  spaces is held (`argument-key-collision`): the tool could read `Target` where the entry checked `target`.
+  `unlistedArgs` (per entry): `"deny"` (default) holds an argument the tool's `args` do not list, at the top
+  level or under a listed dotted path (`argument-not-listed`); `"allow"` lets unlisted arguments through. The
+  default is `"deny"` for `"ask"` entries too: an extra key is the same differential whatever the entry
+  does about it, and an ask entry only asks. On the sidecar a task id follows the task-writer rules, and
   one set with no token configured never selects an entry. The hook and the model proxy match by keyword
   only.
 
@@ -596,22 +603,37 @@ Both read only the signed policy and the root-owned admin binding (`/etc/moorai/
 default or name cannot be read, denies everything it would have covered (an unreadable match: every session)
 and raises one `Task-bound policy invalid` alert (stage `policy`, reason code `FAIL_CLOSED`, fixed problem
 tokens only). An unreadable `intentArgs` tool entry checks every top-level argument of that tool. The task is
-captured whenever `intentAlignment` is not `"off"` or an allowlist is configured. Misses alert as
+captured whenever `intentAlignment` is not `"off"` or an allowlist is configured. **A selected entry cannot
+be lost:** the keyword entries a prompt names are recorded at capture from the whole prompt (every word and
+phrase, however long; the model proxy then keeps the person's turns uncut), by a keyed hash of the entry's
+own text, apart from the capped term set, so a long prompt cannot push its keyword out. On the hook the state
+file carries an HMAC keyed by a key derived from the device signing key (`~/.moorai/agency-ed25519.key`); a
+state that is missing (once a capture has happened on the device), unreadable or fails the HMAC is
+**tampered**: every allowlist entry is applied as if its task matched, anything one of them would hold is
+denied (`state-tampered`), and each such call raises a content-free `Task-bound state tampered` alert. The
+tampered file is never re-signed; the next capture starts a fresh signed state recording the tamper time,
+and for 24 h a session absent from it stays tampered. Misses alert as
 `Action outside the stated task` (#64, `INTENT_MISMATCH`) with the class, the mode or outcome, the entry's
-name and a reason token (`tool-not-listed`, `argument-not-allowed`, `invalid-policy`), never an argument
+name and a reason token (`tool-not-listed`, `argument-not-allowed`, `argument-key-collision`,
+`argument-not-listed`, `invalid-policy`), never an argument
 or the task; verdicts gain `intent: {class, mode}` (plus `task` for an allowlist). What is held: the keyed
 hashes of the task's words, two- to five-word phrases, whitespace-delimited tokens and numbers — in memory
-on the server surfaces (8192 per session), and on the device in `~/.moorai/task-terms.json` (0600; 768 per
-session, 32 sessions, 24 h, the `intent.key` device key). Measured added latency per tool call (median of
-50): 0.02 ms in process (SDK runtime), 1.2 ms on a hook MCP call end to end, within process noise.
+on the server surfaces (8192 per session), and on the device in `~/.moorai/task-terms.json` (0600; per
+session 1536 words, tokens and numbers and 512 phrases, kept in those two tiers across prompts so one
+prompt's phrases never crowd out a later prompt's words, 32 sessions; matched-entry hashes for 1024
+sessions; 24 h; hashed with the `intent.key` device key). Measured added latency per tool call (median of
+50): 0.02 ms in process (SDK runtime), 5.1 ms for the hook step in a fresh process (key derivation, state read and HMAC; two end-to-end runs of 50 measured 3.0 and 10.5 ms over a 290–370 ms hook call).
 **Limits.** Token matching is not semantics: "the apple" names "apple" and says nothing about what is done
 to it, and a value the person typed is in scope even when the agent was steered into using it. It relies on
 the policy naming the object fields; a field no `intentArgs` entry or built-in default covers is not
 checked. A wider task (pasted text) names more. The hook judges MCP tool calls only, so an allowlist does
 not hold its built-in tools (`Bash`, `Write` …) there; the model proxy judges the name the model sent, not a
-dispatcher's inner tool. On the device the agent runs as the same user and can read
-the key and dictionary-attack the hashed words (the prompt is already in its transcript) or rewrite the
-file, which only relaxes the object check or makes a keyword entry match.
+dispatcher's inner tool. On the device the agent runs as the same user: it can read both keys,
+dictionary-attack the hashed words (the prompt is already in its transcript) and re-sign an edited state;
+deleting the intent key together with the state returns the device to "never captured", which no
+user-writable state can tell from a fresh install; more than 1024 prompted sessions in 24 h evict the oldest
+matched-entry record. On the server surfaces a session the store evicted (or never captured) has no
+recorded entry, so no keyword entry applies to it.
 
 **Protected instructions are fingerprinted, never copied.** The hook discovers the rules files the agent
 runs under (`CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/`, managed policy,

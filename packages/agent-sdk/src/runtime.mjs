@@ -199,7 +199,7 @@ export async function createMoorAI(options = {}) {
     const mode = intentModeFromPolicy(s.policy);
     const lists = taskBoundLib.hasAllowlists(taskBoundLib.resolveTaskBound(s.policy, settings.admin));
     if ((mode === "off" && !lists) || !intent) return { mode: intent ? mode : "off", captured: false, features: 0 };
-    const r = intent.captureTask(session, prompt, owner, { authenticated });
+    const r = intent.captureTask(session, prompt, owner, { authenticated, bound: { policy: s.policy, admin: settings.admin } });
     return { mode, captured: typeof session === "string" && session.length > 0 && typeof prompt === "string", features: r.features };
   }
 

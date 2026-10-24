@@ -23,9 +23,11 @@
 //   The hook's own tools (Bash, Read, Write, WebFetch …) are judged by the existing intent classes (egress,
 //   credentials, destructive, moorai-control): never re-judged here unless a policy names them.
 //
-// OBJECT FIELDS: the keys intentArgs lists for the tool (a dotted key reads a nested field), else the
-// built-in DEFAULT_OBJECT_KEYS (recipients, accounts, destinations, paths, URLs, repositories), matched on the
-// key with case, `_` and `-` folded. A field the call does not carry is not checked.
+// OBJECT FIELDS: the keys intentArgs lists for the tool, else the built-in DEFAULT_OBJECT_KEYS (recipients,
+// accounts, destinations, paths, URLs, repositories). Every argument key that equals a listed key after
+// folding case, `_`, `-` and spaces is read (`to` and `To` both), and a dotted key is read both as the
+// literal key ("a.b") and as the nested field (a → b), with the same folding at each level: every value
+// found must be named. A field the call does not carry is not checked.
 //
 // MATCHING. Both sides are folded the same way: Unicode NFKC, lower case, punctuation split, the articles
 // a / an / the dropped, simple plurals made singular. A text value is named in the task when its whole token
@@ -39,7 +41,7 @@
 //   intentArgs: { "<tool>": ["<key>", …], synonyms: { "<term>": ["<term>", …] }, caps: { "<tool>.<key>" | "<key>": <number> } }
 //   taskAllowlists: [{ task: "<name>", match: { keywords: ["…"] } | { taskId: "<id>" },
 //                      tools: { "<tool>": true | {} | { args: { "<key>": [<value> | "<glob>" | <number> | { min?, max? }, …] } } },
-//                      default: "deny" | "ask" }]
+//                      default: "deny" | "ask", unlistedArgs: "deny" | "allow" }]
 //   Tool names are compared after model-proxy/function-rules.mjs foldName on both sides; for an MCP tool
 //   (mcp__<server>__<tool>) the full name is tried first, then the tool part.
 //
@@ -50,7 +52,16 @@
 // each judges the call and the strictest outcome wins (deny over ask over allow). An argument value is allowed
 // when it equals a listed value (folded), matches a listed glob (`*` any run, `?` one character), equals a
 // listed number, or lies in a listed { min, max }; an array value needs every element allowed; an object value
-// is never allowed for a listed key. A key the entry does not list is not constrained.
+// is never allowed for a listed key. ARGUMENT KEYS: a listed dotted key is read both as the literal key
+// ("a.b") and as the nested field (a → b); each one present must be allowed. A call carrying a key that
+// equals a listed key (or, inside a listed dotted path, a segment) only after folding case, `_`, `-` and
+// spaces is held ("argument-key-collision"): a tool could read `Target` where the entry checked `target`.
+// unlistedArgs (per entry, "deny" default | "allow"): with "deny", an argument the entry's tool spec does not
+// list (top level, or under a listed dotted path) is held ("argument-not-listed"); a tool listed as true or
+// {} still takes any arguments.
+//
+// MATCHED ENTRIES are recorded at capture (entriesNamedIn, over the WHOLE prompt, not the capped term set)
+// by the entry's own text (entry.key), so a long prompt cannot push a selecting keyword out of the term cap.
 //
 // FAIL CLOSED. taskAllowlists that is not an array, or an entry that cannot be read, denies everything it
 // would have covered: an entry whose match is unreadable applies to every session, an entry whose tools,
@@ -79,6 +90,7 @@ const HOOK_TOOLS = new Set(["bash", "powershell", "read", "write", "edit", "mult
 const RESERVED = new Set(["synonyms", "caps"]);
 const ARTICLES = new Set(["a", "an", "the"]);
 const DEFAULTS = new Set(["deny", "ask"]);
+const UNLISTED = new Set(["deny", "allow"]);
 const RANK = { allow: 0, ask: 1, deny: 2 };
 const TASK_ID_RE = /^[A-Za-z0-9._:\-]{1,128}$/;
 
@@ -225,7 +237,7 @@ function parseTools(tools) {
   for (const [k, spec] of Object.entries(tools)) {
     const name = foldName(k);
     if (!name) return null;
-    if (spec === true || (isObj(spec) && !Object.keys(spec).length)) { out.set(name, new Map()); continue; }
+    if (spec === true || (isObj(spec) && !Object.keys(spec).length)) { out.set(name, { any: true, args: new Map() }); continue; }
     if (!isObj(spec) || Object.keys(spec).some((x) => x !== "args") || !isObj(spec.args)) return null;
     const args = new Map();
     for (const [ak, av] of Object.entries(spec.args)) {
@@ -233,7 +245,7 @@ function parseTools(tools) {
       if (!ak || !allowed) return null;
       args.set(ak, allowed);
     }
-    out.set(name, args);
+    out.set(name, { any: false, args, tree: keyTree([...args.keys()]) });
   }
   return out;
 }
@@ -251,18 +263,22 @@ const label = (t) => (typeof t === "string" ? t.replace(/[^A-Za-z0-9_.:\- ]/g, "
 
 function parseAllowlists(src, problems) {
   if (src === undefined || src === null) return [];
-  if (!Array.isArray(src)) { problems.push("taskAllowlists-not-array"); return [{ index: 0, task: "", invalid: true, always: true, match: null, tools: null, default: "deny" }]; }
+  if (!Array.isArray(src)) { problems.push("taskAllowlists-not-array"); return [{ index: 0, key: "", task: "", invalid: true, always: true, match: null, tools: null, default: "deny", unlisted: "deny" }]; }
   return src.slice(0, 256).map((e, index) => {
     const match = isObj(e) ? parseMatch(e.match) : null;
     const tools = isObj(e) ? parseTools(e.tools) : null;
     const dflt = isObj(e) && e.default === undefined ? "deny" : isObj(e) && DEFAULTS.has(e.default) ? e.default : null;
     const name = isObj(e) && typeof e.task === "string" && e.task.trim() && e.task.length <= 128 ? label(e.task) : null;
+    const unlisted = isObj(e) && e.unlistedArgs === undefined ? "deny" : isObj(e) && UNLISTED.has(e.unlistedArgs) ? e.unlistedArgs : null;
+    if (!unlisted) problems.push("taskAllowlists-unlistedArgs");
     if (!match) problems.push("taskAllowlists-match");
     if (!tools) problems.push("taskAllowlists-tools");
     if (!dflt) problems.push("taskAllowlists-default");
     if (!name) problems.push("taskAllowlists-task");
-    const invalid = !match || !tools || !dflt || !name;
-    return { index, task: name || "", invalid, always: !match, match, tools: invalid ? null : tools, default: invalid ? "deny" : dflt };
+    const invalid = !match || !tools || !dflt || !name || !unlisted;
+    let key = "";
+    try { key = JSON.stringify(e) || ""; } catch { key = ""; }
+    return { index, key, task: name || "", invalid, always: !match, match, tools: invalid ? null : tools, default: invalid ? "deny" : dflt, unlisted: unlisted || "deny" };
   });
 }
 
@@ -301,12 +317,65 @@ export function highImpact(tool, cfg) {
   return MCP_WRITE.test(tp.full) || classifyBusinessTool(tp.full).length > 0;
 }
 
-function getPath(input, key) {
-  if (own(input, key)) return input[key];
-  if (!key.includes(".")) return undefined;
-  let cur = input;
-  for (const part of key.split(".")) { if (!own(cur, part)) return undefined; cur = cur[part]; }
-  return cur;
+// Every value an argument key can name: the key itself and every key equal to it after folding, at the top
+// level; for a dotted key also the nested field, segment by segment, with the same folding at each level.
+// -> { values, collision } (collision: some key matched only after folding).
+export function collectKey(input, key) {
+  const values = [];
+  let collision = false;
+  const take = (obj, k0) => {
+    const out = [];
+    if (!isObj(obj)) return out;
+    const f = foldKey(k0);
+    for (const k of Object.keys(obj)) {
+      if (k === k0) out.push(obj[k]);
+      else if (foldKey(k) === f) { collision = true; out.push(obj[k]); }
+    }
+    return out;
+  };
+  values.push(...take(input, key));
+  if (key.includes(".")) {
+    let level = [input];
+    for (const seg of key.split(".")) level = level.flatMap((o) => take(o, seg));
+    values.push(...level);
+  }
+  return { values: values.filter((v) => v !== undefined), collision };
+}
+// The listed keys as a tree: a literal key at the top level, and each dotted key as nested segments.
+const LEAF = Symbol("leaf");
+function keyTree(keys) {
+  const root = new Map();
+  for (const k of keys) {
+    root.set(k, LEAF);
+    if (!k.includes(".")) continue;
+    let node = root;
+    const segs = k.split(".");
+    segs.forEach((seg, i) => {
+      if (i === segs.length - 1) { if (!node.has(seg)) node.set(seg, LEAF); return; }
+      let next = node.get(seg);
+      if (next === LEAF) return;
+      if (!next) { next = new Map(); node.set(seg, next); }
+      node = next;
+    });
+  }
+  return root;
+}
+// "argument-key-collision" | "argument-not-listed" | "" for the keys of input against the tree.
+function walkKeys(obj, node, unlistedDeny) {
+  const folded = new Map([...node.keys()].map((k) => [foldKey(k), k]));
+  for (const [k, v] of Object.entries(obj)) {
+    if (!node.has(k)) {
+      if (folded.has(foldKey(k))) return "argument-key-collision";
+      if (unlistedDeny) return "argument-not-listed";
+      continue;
+    }
+    const child = node.get(k);
+    if (child === LEAF || v === undefined || v === null) continue;
+    if (!isObj(v)) { if (unlistedDeny) return "argument-not-listed"; continue; }
+    const r = walkKeys(v, child, unlistedDeny);
+    if (r) return r;
+  }
+  return "";
 }
 function fieldsOf(input, keys) {
   const out = [];
@@ -314,13 +383,7 @@ function fieldsOf(input, keys) {
     for (const [k, v] of Object.entries(input)) if (typeof v === "string" || typeof v === "number" || Array.isArray(v)) out.push([k, v]);
     return out;
   }
-  const folded = new Map(Object.keys(input).map((k) => [foldKey(k), k]));
-  for (const key of keys) {
-    const v = getPath(input, key);
-    if (v !== undefined) { out.push([key, v]); continue; }
-    const k = folded.get(foldKey(key));
-    if (k !== undefined) out.push([k, input[k]]);
-  }
+  for (const key of keys) for (const v of collectKey(input, key).values) out.push([key, v]);
   return out;
 }
 
@@ -397,19 +460,43 @@ export function entryOutcome(entry, tool, input) {
   if (entry.invalid) return { outcome: "deny", reason: "invalid-policy" };
   const spec = lookup(entry.tools, toolParts(tool));
   if (spec === undefined) return { outcome: entry.default, reason: "tool-not-listed" };
+  if (spec.any) return { outcome: "allow", reason: "" };
   const inp = isObj(input) ? input : {};
-  for (const [key, allowed] of spec) if (!valueAllowed(getPath(inp, key), allowed)) return { outcome: entry.default, reason: "argument-not-allowed" };
+  const shape = walkKeys(inp, spec.tree, entry.unlisted === "deny");
+  if (shape) return { outcome: entry.default, reason: shape };
+  // walkKeys has already held every key that collides with a listed key or segment.
+  for (const [key, allowed] of spec.args) if (!collectKey(inp, key).values.every((v) => valueAllowed(v, allowed))) return { outcome: entry.default, reason: "argument-not-allowed" };
   return { outcome: "allow", reason: "" };
 }
 
 // The entries that apply to a session. has(term): the session's task terms (null: no task). hasTaskId(id):
-// whether the session's explicit task id is `id` (null: none set).
-export function applicableEntries(lists, has, hasTaskId) {
+// whether the session's explicit task id is `id` (null: none set). recorded(entry): whether the entry was
+// recorded as matched at capture (entriesNamedIn), null: none recorded.
+export function applicableEntries(lists, has, hasTaskId, recorded = null) {
   const always = lists.filter((e) => e.always);
   const byId = hasTaskId ? lists.filter((e) => !e.always && e.match.taskId !== undefined && hasTaskId(e.match.taskId)) : [];
   if (byId.length) return [...always, ...byId];
-  const byWord = has ? lists.filter((e) => !e.always && e.match.keywords && e.match.keywords.some((terms) => terms.some((t) => has(t)))) : [];
+  const byWord = lists.filter((e) => !e.always && e.match.keywords && ((recorded && recorded(e)) || (has && e.match.keywords.some((terms) => terms.some((t) => has(t))))));
   return [...always, ...byWord];
+}
+// The keyword entries a whole prompt names — every word and phrase of it, however long, not a capped set.
+export function entriesNamedIn(lists, text) {
+  const kw = lists.filter((e) => !e.always && e.match && e.match.keywords);
+  if (!kw.length || typeof text !== "string") return [];
+  const need = new Set(kw.flatMap((e) => e.match.keywords.flat()));
+  const found = new Set();
+  const lens = new Set([...need].filter((t) => t.startsWith("w:")).map((t) => t.slice(2).split(" ").length));
+  if (lens.size) {
+    const ws = wordsOf(text);
+    for (const k of lens) for (let i = 0; i + k <= ws.length; i++) { const t = `w:${k === 1 ? ws[i] : ws.slice(i, i + k).join(" ")}`; if (need.has(t)) found.add(t); }
+  }
+  if ([...need].some((t) => t.startsWith("a:"))) {
+    for (const a of atomsOf(text)) {
+      if (need.has(`a:${a}`)) found.add(`a:${a}`);
+      for (const x of atomExtras(a)) if (need.has(x)) found.add(x);
+    }
+  }
+  return kw.filter((e) => e.match.keywords.some((terms) => terms.some((t) => found.has(t))));
 }
 // Strictest wins. -> null (nothing applies, or every entry allows) | { outcome, reason, task, index, invalid }
 export function judgeAllowlists(entries, tool, input) {
