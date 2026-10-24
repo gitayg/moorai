@@ -1685,11 +1685,15 @@ whose file names are picked at run time (`wget -r` / `-m` / `-i` / `-p` / `-x` /
 wget config picked by `CURL_HOME` / `XDG_CONFIG_HOME` / `WGETRC` / `SYSTEM_WGETRC` / `HOME` set on the command), a
 git work tree, repository or index moved by `--work-tree` / `--git-dir` / `GIT_WORK_TREE` / `GIT_DIR` /
 `GIT_INDEX_FILE` (for `git checkout`, `git restore`, `git rm` and `git mv` alike), a git command line whose
-command cannot be told (an option git does not have before the subcommand, a non-literal word there, or a command
-git does not have: an alias or an external `git-<name>`), a `--pathspec-from-file`, and a
+command or configuration cannot be told (an option git does not have before the subcommand, a non-literal word
+there, a command that is not a git builtin: an alias, a script such as `git svn`, an external `git-<name>`, a
+builtin in another case; `--exec-path=<dir>`; a `-c` / `--config-env` / `GIT_CONFIG_KEY_<n>` key that could run a
+command, such as `core.fsmonitor`, `core.pager` or any `alias.*`; a config file picked by `GIT_CONFIG_GLOBAL` /
+`GIT_CONFIG_SYSTEM` / `HOME` / `XDG_CONFIG_HOME`), a `--pathspec-from-file`, and a
 write tool given an option it does not have, an ambiguous abbreviation, or a letter GNU and BSD read differently
 with no single reading (`cp -St x dest`: GNU takes `t` as the backup suffix) have no literal destination, judged as
-below. `git -C a -C b` runs in `a/b` (a `/`, `\`, `C:` or `\\host\share` path starts over), and the paths of a `git
+below. `git -C a -C b` runs in `a/b` (a `/` path starts over; so does a `\`, `C:` or `\\host\share` path on Windows
+or in PowerShell, while elsewhere, where git reads it as a relative name, its place is unknown), and the paths of a `git
 checkout`, `restore`, `rm` or `mv` resolve under it; git's global options that take the next word (`--attr-source`,
 `--config-env`, `--namespace` …) are read as git reads them.
 Environment names on the command are matched in any case (`git_work_tree=/x` too), as Windows reads them. The same paths are judged for an MCP filesystem server's write, edit, move or create

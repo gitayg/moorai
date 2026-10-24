@@ -376,13 +376,15 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
   // git rm / git mv: the global options read as for checkout / restore (gitInvocation). Paths resolve under the -C
   // base; a work tree, repository or index the command moves leaves where it writes unknown, and the paths are still
   // judged by their names.
-  const g = bin === "git" ? gitInvocation(args, c.env) : null;
+  const g = bin === "git" ? gitInvocation(args, c.env, { ps: seg.ps }) : null;
   if (g && (g.sub === "rm" || g.sub === "mv")) {
     if (g.unknown) unknownWrite(opts, out);
     const rest = args.slice(g.at + 1);
-    if (g.sub === "rm") { positional(rest).map(g.under).forEach(removed); return; }
+    // A path whose place under -C is unknown (rooted null) is unknown, and judged as written.
+    const at = (p) => { const u = g.under(p); if (u === undefined) unknownWrite(opts, out); return u ?? p; };
+    if (g.sub === "rm") { positional(rest).map(at).forEach(removed); return; }
     const dd = rest.indexOf("--");
-    judgeMove("mv", rest.map((t, i) => ((dd < 0 || i < dd) && t.startsWith("-")) || i === dd ? t : g.under(t)), true, opts, ctx, out, touched);
+    judgeMove("mv", rest.map((t, i) => ((dd < 0 || i < dd) && t.startsWith("-")) || i === dd ? t : at(t)), true, opts, ctx, out, touched);
     return;
   }
   if (MOVE_BINS.has(bin)) { judgeMove(bin, args, false, opts, ctx, out, touched); return; }

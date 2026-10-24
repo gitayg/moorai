@@ -4358,9 +4358,18 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   `--super-prefix`), those that take the next word (`-C`, `-c`, `--git-dir`, `--work-tree`, `--namespace`,
   `--config-env`, `--attr-source`, `--super-prefix`) skipping it (`cli/oversight-shell-options.mjs` `GIT_GLOBAL`);
   any other word starting with `-` before the subcommand, a non-literal word there (the search goes on, so `git
-  $OPTS rm f` is still judged as a git rm) or a command outside `GIT_COMMANDS` (the union of `git
-  --list-cmds=main,builtins,nohelpers` on 2.39.5, 2.47.3 and 2.54.0 and git's `command-list.txt`: an alias, an
-  external `git-<name>` such as `git lfs`, a typo) is unknown — `--pathspec-from-file` — and when a write tool (cp, mv, install, rsync, curl, wget, tee,
+  $OPTS rm f` is still judged as a git rm), `--exec-path=<dir>` or `GIT_EXEC_PATH` (git then runs non-builtins from
+  that directory, measured), or a command outside `GIT_BUILTINS` (the words in `git --list-cmds=builtins` on each of
+  2.39.5, 2.47.3 and 2.54.0, as spelt: an alias, a script such as `git svn` or `git send-email`, which an `alias.*`
+  shadows where it is not installed, measured, an external `git-<name>` such as `git lfs`, a typo, or a builtin in
+  another case, which 2.39.5 runs as `alias.<name>` and is still judged as the builtin) is unknown, and so is a
+  config key set by `-c`, `--config-env` or `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_<n>` outside `GIT_SAFE_CONFIG`
+  (keys that run nothing and write nowhere: `user.*`, `color.*`, `advice.*`, `log.*`, `core.quotepath`,
+  `core.autocrlf`, `init.defaultBranch`, `safe.directory`, `protocol.version`, `http.sslVerify` …; any other key,
+  `alias.*` included, may run a command: `-c core.fsmonitor=…` runs on status, checkout and `rm --cached`, and `-c
+  core.pager` / `pager.log` on a terminal, measured on 2.39.5 and 2.54.0), `GIT_CONFIG_PARAMETERS`, and a config file
+  picked by `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `HOME` or `XDG_CONFIG_HOME` (its `core.fsmonitor` runs,
+  measured; `GIT_CONFIG` is not read) — `--pathspec-from-file` — and when a write tool (cp, mv, install, rsync, curl, wget, tee,
   sed, patch, git checkout / restore) is given a long option that is ambiguous or that it does not have, a short
   letter it does not have, or a letter whose arity differs between GNU and BSD (`shortConflict`: cp -S, install
   -S / -D / -T, sed -l) followed by more letters of its cluster or by an option word. The `NAME=value` words a
@@ -4368,8 +4377,10 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   names are matched in any case on every platform (`git_work_tree=/x`, `curl_home=/x`), since Windows environment
   names are case-insensitive and on POSIX the extra match only over-reports. git `-C` is cumulative (`git -C a -C
   b` is `a/b`; a rooted one starts over), and the paths of `git checkout`, `restore`, `rm` and `mv` resolve under
-  it, as `patch <file>` resolves under `-d`. Rooted (`rooted` in `cli/oversight-shell-writes.mjs`) is `/…`, `\…`,
-  a UNC `\\host\share` or a drive letter (`C:\…`, `C:/…`, drive-relative `C:…`). A PowerShell segment's `cp` / `curl`
+  it, as `patch <file>` resolves under `-d`. Rooted (`rooted` in `cli/oversight-shell-writes.mjs`) is `/…`
+  everywhere and, on Windows or in a PowerShell segment, also `\…`, a UNC `\\host\share` or a drive letter (`C:\…`,
+  `C:/…`, drive-relative `C:…`). Elsewhere those shapes are relative names to git (`git -C a -C C:x checkout -- f`
+  writes `a/C:x/f`, measured on 2.39.5 and 2.54.0), and under a base their place is unknown. A PowerShell segment's `cp` / `curl`
   (cmdlet aliases) is not held to these lists. MCP filesystem write tools
   (`cli/oversight-mcp.mjs`, wired in the hook's `mcp__*` branch): a tool named by a write verb (write, edit, move,
   rename, create, append, replace, insert, patch, save, overwrite, update) and a file noun (file, text_file,

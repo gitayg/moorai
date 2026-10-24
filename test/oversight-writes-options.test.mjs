@@ -16,6 +16,9 @@
 //     repository or index (GIT_INDEX_FILE too) is unknown, paths resolve under -C. Environment names match in any case.
 //   * git's global options that take the next word skip it; any other option before the subcommand, a non-literal
 //     word there or a command git does not have is unknown. A drive-letter or UNC path is not joined onto -C / -d.
+//   * Only a builtin, spelt as git spells it, is known; a -c / --config-env / GIT_CONFIG_* key that could run a
+//     command (alias.* included), a config file the environment picks, --exec-path=<dir> are unknown. Outside Windows
+//     and PowerShell a Windows-only rooted shape under -C / -d is unknown.
 //
 //   node --test --import ./test/hermetic-env.mjs test/oversight-writes-options.test.mjs
 import { test, after } from "node:test";
@@ -190,10 +193,10 @@ test("git: GIT_INDEX_FILE makes the target unknown (git writes the index it name
 });
 test("git: variables measured not to move checkout / restore / rm / mv writes stay clean", () => {
   // Measured (git 2.39.5, 2.47.3, 2.54.0), each against a/f with the command run in a: GIT_COMMON_DIR naming another
-  // repository (with or without core.worktree in its config), GIT_CONFIG / GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM
-  // naming a config with core.worktree, GIT_CEILING_DIRECTORIES and GIT_DISCOVERY_ACROSS_FILESYSTEM write a/f or
-  // nothing.
-  const vars = ["GIT_COMMON_DIR=/tmp/b/.git", "GIT_CONFIG=/tmp/cfg", "GIT_CONFIG_GLOBAL=/tmp/cfg", "GIT_CONFIG_SYSTEM=/tmp/cfg", "GIT_CEILING_DIRECTORIES=/tmp", "GIT_DISCOVERY_ACROSS_FILESYSTEM=1"];
+  // repository (with or without core.worktree in its config), GIT_CONFIG naming a config with core.worktree,
+  // GIT_CEILING_DIRECTORIES and GIT_DISCOVERY_ACROSS_FILESYSTEM write a/f or nothing. (GIT_CONFIG_GLOBAL /
+  // GIT_CONFIG_SYSTEM leave the paths alone too, but the config they name can run a command: below.)
+  const vars = ["GIT_COMMON_DIR=/tmp/b/.git", "GIT_CONFIG=/tmp/cfg", "GIT_CEILING_DIRECTORIES=/tmp", "GIT_DISCOVERY_ACROSS_FILESYSTEM=1"];
   each(vars.flatMap((v) => [`${v} git checkout -- src/a.js`, `${v} git restore src/a.js`, `${v} git rm src/a.js`, `${v} git mv src/a.js src/b.js`]), [], bare);
 });
 
@@ -201,9 +204,9 @@ test("git: variables measured not to move checkout / restore / rm / mv writes st
 test("git: a global option that takes the next word does not hide the subcommand", () => {
   // Measured (git 2.54.0, `git help git` OPTIONS; git 2.39.5): --attr-source, --config-env, --namespace, --git-dir,
   // --work-tree, -C and -c take the next word; 2.39.5 also --super-prefix (which checkout / rm then refuse).
-  each(["git --attr-source HEAD checkout -- ops/alerting/rules.yaml", "git --config-env core.y=FOO checkout -- ops/alerting/rules.yaml",
+  each(["git --attr-source HEAD checkout -- ops/alerting/rules.yaml", "git --config-env user.name=FOO checkout -- ops/alerting/rules.yaml",
     "git --namespace ns restore ops/alerting/rules.yaml"], PROT);
-  each(["git --attr-source HEAD rm ops/alerting/rules.yaml", "git --config-env core.y=FOO rm ops/alerting/rules.yaml", "git --super-prefix x/ rm ops/alerting/rules.yaml"], ["wiring-removed", "protected-surface"]);
+  each(["git --attr-source HEAD rm ops/alerting/rules.yaml", "git --config-env user.name=FOO rm ops/alerting/rules.yaml", "git --super-prefix x/ rm ops/alerting/rules.yaml"], ["wiring-removed", "protected-surface"]);
   has("git --attr-source HEAD mv ops/alerting/rules.yaml ops/alerting/b.yaml", "protected-surface");
 });
 test("git: a non-literal word before the subcommand leaves the subcommand judged (v1.34.1 caught git $OPTS rm)", () => {
@@ -224,13 +227,76 @@ test("git: known valueless global options and known commands stay clean", () => 
 });
 
 // ---- a Windows absolute path (X:, \\host\share) is not joined onto the -C / -d base ----
-test("git -C / patch -d: a drive-letter or UNC path starts over instead of joining the base", () => {
-  const dest = (bin, args) => writeTargets(bin, args).writes.map((w) => w.dest);
+test("git -C / patch -d: in PowerShell or on Windows, a drive-letter or UNC path starts over instead of joining the base", () => {
+  const dest = (bin, args) => writeTargets(bin, args, { ps: true }).writes.map((w) => w.dest);
   assert.deepEqual(dest("git", ["-C", "a", "-C", "D:/x", "checkout", "--", "f"]), ["D:/x/f"]);
   assert.deepEqual(dest("git", ["-C", "C:\\repo", "checkout", "--", "D:\\y\\f"]), ["D:\\y\\f"]);
   assert.deepEqual(dest("git", ["-C", "a", "-C", "\\\\host\\share", "restore", "f"]), ["\\\\host\\share/f"]);
   assert.deepEqual(dest("git", ["-C", "a", "checkout", "--", "C:f", "\\\\h\\s\\f"]), ["C:f", "\\\\h\\s\\f"]);
   assert.deepEqual(dest("patch", ["-d", "a", "E:/w/f.py", "fix.diff"]), ["E:/w/f.py"]);
-  const g = gitInvocation(["-C", "a", "-C", "C:repo", "rm", "f"]);
+  const g = gitInvocation(["-C", "a", "-C", "C:repo", "rm", "f"], [], { ps: true });
   assert.deepEqual([g.under("f"), g.under("D:/z")], ["C:repo/f", "D:/z"]);
+  // On win32 outside PowerShell (Git Bash, cmd) the same.
+  const real = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try { assert.deepEqual(writeTargets("git", ["-C", "a", "-C", "D:/x", "checkout", "--", "f"]), { writes: [{ dest: "D:/x/f", sources: null, dir: false }], unknown: false }); }
+  finally { Object.defineProperty(process, "platform", real); }
+});
+
+// ---- outside Windows and PowerShell, C:x, \x and \\host\share are relative names: whether git joins them is unknown ----
+test("git -C / patch -d on POSIX: a Windows-only rooted shape under a base is unknown; / is rooted everywhere", () => {
+  // Measured (git 2.39.5, 2.54.0): `git -C a -C C:x checkout -- f` writes a/C:x/f, `git -C a -C '\y' checkout -- f`
+  // writes a/\y/f, `git -C a checkout -- C:f` writes a/C:f.
+  if (process.platform === "win32") return;
+  const wt = (bin, args) => writeTargets(bin, args);
+  for (const a of [["-C", "a", "-C", "C:x", "checkout", "--", "f"], ["-C", "a", "-C", "\\y", "checkout", "--", "f"], ["-C", "a", "-C", "\\\\host\\share", "restore", "f"],
+    ["-C", "a", "checkout", "--", "C:f"], ["-C", "a", "restore", "\\\\h\\s\\f"]]) assert.equal(wt("git", a).unknown, true, JSON.stringify(a));
+  assert.equal(wt("patch", ["-d", "a", "E:/w/f.py", "fix.diff"]).unknown, true);
+  assert.deepEqual(wt("git", ["-C", "a", "-C", "/x", "checkout", "--", "f"]), { writes: [{ dest: "/x/f", sources: null, dir: false }], unknown: false });
+  assert.deepEqual(wt("git", ["-C", "C:x", "checkout", "--", "f"]).writes.map((w) => w.dest), ["C:x/f"]);
+  has("git -C ops -C C:x checkout -- f", "write-target-unknown", bare);
+  has("git -C ops rm C:x/rules.yaml", "analysis-incomplete");
+  has("git -C ops mv alerting/rules.yaml C:x", "analysis-incomplete");
+});
+
+// ---- the subcommand in another case is not the builtin ----
+test("git: a subcommand in another case is unknown, and still judged as the command it folds to", () => {
+  // Measured: git 2.39.5 (Linux) runs alias.checkout for `git CHECKOUT` ("not a git command" without one); git 2.54.0
+  // (macOS) runs git-core/git-CHECKOUT, which refuses ("cannot handle CHECKOUT as a builtin"). Neither runs the builtin.
+  each(["git CHECKOUT -- src/a.js", "git Restore src/a.js", "git MV src/a.js src/b.js"], INC);
+  has("git Rm monitoring/scope.py", "wiring-removed");
+  has("git Rm monitoring/scope.py", "analysis-incomplete");
+});
+
+// ---- only a builtin is known; alias.* and keys that run a command are not ----
+test("git: a command that is not a builtin on git 2.39.5, 2.47.3 and 2.54.0 is unknown", () => {
+  // Measured: `git -c alias.svn='!touch x' svn` runs the alias where git-svn is not installed (2.39.5, 2.54.0), as do
+  // send-email and p4 (2.39.5) and instaweb (2.54.0); an installed script command (subtree) wins over the alias.
+  each(["git svn rebase", "git subtree add --prefix x y", "git send-email x.patch", "git p4 sync", "git instaweb"], INC);
+});
+test("git: -c / --config-env / GIT_CONFIG_* with a key that can run a command, or any alias.*, is unknown", () => {
+  // Measured (git 2.39.5, 2.54.0): -c core.fsmonitor=… runs it on status, checkout and rm --cached, as do
+  // GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 and GIT_CONFIG_PARAMETERS; -c core.pager=… and -c pager.log=… run on a
+  // terminal; --config-env alias.zz=VAR runs the alias.
+  each(["git -c core.fsmonitor='cp x CLAUDE.md' status", "git -c core.pager=x log", "git -c pager.log=x log", "git -c diff.external=x diff",
+    "git -c core.hooksPath=/tmp/h checkout -- src/a.js", "git -c credential.helper=x fetch", "git --config-env core.sshCommand=E fetch",
+    "git --config-env=core.editor=E commit", "git -c alias.svn='!touch pwned' svn", "git -c alias.st=status status", "git --config-env alias.rm=PW rm src/a.js",
+    "git -c filter.x.smudge=y checkout -- src/a.js", "git -c Core.FSMonitor=x status", "git -c core.worktree=/tmp/w status",
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=x git status", "git_config_count=1 git_config_key_0=core.pager git log",
+    "GIT_CONFIG_COUNT=1 git status", "GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=color.ui GIT_CONFIG_VALUE_0=never git status",
+    "GIT_CONFIG_PARAMETERS=\"'core.fsmonitor'='x'\" git status"], INC);
+});
+test("git: a config file picked through the environment, or another exec path, is unknown", () => {
+  // Measured (git 2.39.5, 2.54.0): a core.fsmonitor in the config named by GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM, or
+  // found through HOME / XDG_CONFIG_HOME, runs on status and checkout (GIT_CONFIG is not read); --exec-path=d and
+  // GIT_EXEC_PATH=d run a planted d/git-svn (a builtin such as checkout is not replaced).
+  each(["GIT_CONFIG_GLOBAL=/tmp/cfg git status", "GIT_CONFIG_SYSTEM=/tmp/cfg git checkout -- src/a.js", "HOME=/tmp/h git status",
+    "XDG_CONFIG_HOME=/tmp/x git status", "git --exec-path=/tmp/x checkout -- src/a.js", "GIT_EXEC_PATH=/tmp/x git status"], INC);
+});
+test("git: config keys that cannot run anything stay clean", () => {
+  each(["git -c color.ui=never diff", "git -c core.quotepath=off status", "git -c user.name=a -c user.email=b commit -m x",
+    "git -c advice.detachedHead=false checkout main", "git -c init.defaultBranch=main init", "git -c protocol.version=2 fetch",
+    "git -c http.sslVerify=false fetch", "git -c safe.directory='*' status", "git -c log.date=iso log", "git -c commit.gpgsign=false commit -m x",
+    "git -c gc.auto=0 commit -m x", "git -c core.autocrlf=false checkout main", "git --config-env=user.name=NAME commit -m x",
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=color.ui GIT_CONFIG_VALUE_0=never git diff", "git --exec-path", "git --no-pager rm src/a.js", "git -p checkout -- src/a.js"], [], bare);
 });

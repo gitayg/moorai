@@ -215,29 +215,40 @@ export const GIT_GLOBAL = Object.freeze({
     "--bare", "--no-replace-objects", "--no-lazy-fetch", "--no-optional-locks", "--no-advice", "--literal-pathspecs", "--glob-pathspecs",
     "--noglob-pathspecs", "--icase-pathspecs"]
 });
-// git's own commands: the union of `git --list-cmds=main,builtins,nohelpers` on git 2.39.5, 2.47.3 and 2.54.0 and the
-// commands of git's command-list.txt (master) that some distributions package apart (svn, gui, cvsimport …). A word
-// outside it is an alias, an external git-<name> or a typo, which runs something else.
-export const GIT_COMMANDS = new Set([
-  "add", "am", "annotate", "apply", "archimport", "archive", "backfill", "bisect", "blame", "branch", "bugreport",
-  "bundle", "cat-file", "check-attr", "check-ignore", "check-mailmap", "check-ref-format", "checkout",
-  "checkout-index", "cherry", "cherry-pick", "citool", "clean", "clone", "column", "commit", "commit-graph",
-  "commit-tree", "config", "count-objects", "credential", "credential-cache", "credential-osxkeychain",
-  "credential-store", "cvsexportcommit", "cvsimport", "cvsserver", "daemon", "describe", "diagnose", "diff",
-  "diff-files", "diff-index", "diff-pairs", "diff-tree", "difftool", "fast-export", "fast-import", "fetch",
-  "fetch-pack", "filter-branch", "fmt-merge-msg", "for-each-ref", "for-each-repo", "format-patch", "format-rev",
-  "fsck", "fsck-objects", "gc", "get-tar-commit-id", "grep", "gui", "hash-object", "help", "history", "hook",
-  "http-backend", "http-fetch", "http-push", "imap-send", "index-pack", "init", "init-db", "instaweb",
-  "interpret-trailers", "last-modified", "log", "ls-files", "ls-remote", "ls-tree", "mailinfo", "mailsplit",
-  "maintenance", "merge", "merge-base", "merge-file", "merge-index", "merge-octopus", "merge-one-file", "merge-ours",
-  "merge-recursive", "merge-recursive-ours", "merge-recursive-theirs", "merge-resolve", "merge-subtree", "merge-tree",
-  "mergetool", "mktag", "mktree", "multi-pack-index", "mv", "name-rev", "notes", "p4", "pack-objects",
-  "pack-redundant", "pack-refs", "patch-id", "pickaxe", "prune", "prune-packed", "pull", "push", "quiltimport",
-  "range-diff", "read-tree", "rebase", "receive-pack", "reflog", "refs", "remote", "remote-ext", "remote-fd",
-  "remote-ftp", "remote-ftps", "remote-http", "remote-https", "repack", "replace", "replay", "repo", "request-pull",
-  "rerere", "reset", "restore", "rev-list", "rev-parse", "revert", "rm", "send-email", "send-pack", "sh-i18n",
-  "sh-setup", "shell", "shortlog", "show", "show-branch", "show-index", "show-ref", "sparse-checkout", "stage",
-  "stash", "status", "stripspace", "submodule", "subtree", "svn", "switch", "symbolic-ref", "tag", "unpack-file",
-  "unpack-objects", "update-index", "update-ref", "update-server-info", "upload-archive", "upload-pack", "url-parse",
-  "var", "verify-commit", "verify-pack", "verify-tag", "version", "whatchanged", "worktree", "write-tree"
+// git's builtins: the words in `git --list-cmds=builtins` on each of git 2.39.5, 2.47.3 and 2.54.0, exactly as
+// spelt. Only these name a command git runs itself. Any other word is an alias, a script or external git-<name> (git
+// svn, subtree, send-email, lfs: measured, `git -c alias.svn='!cmd' svn` runs the alias where git-svn is not
+// installed, on 2.39.5 and 2.54.0) or a builtin in another case (2.39.5 runs alias.checkout for `git CHECKOUT`;
+// 2.54.0 on a case-insensitive disk runs git-core/git-CHECKOUT, which refuses).
+export const GIT_BUILTINS = new Set([
+  "add", "am", "annotate", "apply", "archive", "blame", "branch", "bugreport", "bundle", "cat-file", "check-attr",
+  "check-ignore", "check-mailmap", "check-ref-format", "checkout", "checkout--worker", "checkout-index", "cherry",
+  "cherry-pick", "clean", "clone", "column", "commit", "commit-graph", "commit-tree", "config", "count-objects",
+  "credential", "credential-cache", "credential-cache--daemon", "credential-store", "describe", "diagnose", "diff",
+  "diff-files", "diff-index", "diff-tree", "difftool", "fast-export", "fast-import", "fetch", "fetch-pack",
+  "fmt-merge-msg", "for-each-ref", "for-each-repo", "format-patch", "fsck", "fsck-objects", "fsmonitor--daemon", "gc",
+  "get-tar-commit-id", "grep", "hash-object", "help", "hook", "index-pack", "init", "init-db", "interpret-trailers",
+  "log", "ls-files", "ls-remote", "ls-tree", "mailinfo", "mailsplit", "maintenance", "merge", "merge-base",
+  "merge-file", "merge-index", "merge-ours", "merge-recursive", "merge-recursive-ours", "merge-recursive-theirs",
+  "merge-subtree", "merge-tree", "mktag", "mktree", "multi-pack-index", "mv", "name-rev", "notes", "pack-objects",
+  "pack-redundant", "pack-refs", "patch-id", "pickaxe", "prune", "prune-packed", "pull", "push", "range-diff",
+  "read-tree", "rebase", "receive-pack", "reflog", "remote", "remote-ext", "remote-fd", "repack", "replace", "rerere",
+  "reset", "restore", "rev-list", "rev-parse", "revert", "rm", "send-pack", "shortlog", "show", "show-branch",
+  "show-index", "show-ref", "sparse-checkout", "stage", "stash", "status", "stripspace", "submodule--helper",
+  "switch", "symbolic-ref", "tag", "unpack-file", "unpack-objects", "update-index", "update-ref",
+  "update-server-info", "upload-archive", "upload-archive--writer", "upload-pack", "var", "verify-commit",
+  "verify-pack", "verify-tag", "version", "whatchanged", "worktree", "write-tree"
 ]);
+// Config keys a git command line may set (-c, --config-env, GIT_CONFIG_KEY_<n>) that run nothing and write nowhere:
+// sections — every key under them; keys — single keys (lowercased, as git compares section and name). Any other key
+// may run a command (core.fsmonitor, core.pager, pager.*, core.editor, diff.external, credential.helper,
+// core.hooksPath, filter.*, alias.* … measured: -c core.fsmonitor=… runs on status, checkout and rm --cached, -c
+// core.pager / pager.log on a terminal, git 2.39.5 and 2.54.0) or write a file (http.cookieFile), and is unknown.
+export const GIT_SAFE_CONFIG = Object.freeze({
+  sections: ["user", "author", "committer", "color", "advice", "log", "i18n", "column"],
+  keys: ["core.quotepath", "core.autocrlf", "core.safecrlf", "core.eol", "core.filemode", "core.ignorecase", "core.precomposeunicode",
+    "core.longpaths", "core.abbrev", "init.defaultbranch", "safe.directory", "protocol.version", "http.sslverify", "http.version",
+    "http.postbuffer", "http.lowspeedlimit", "http.lowspeedtime", "commit.gpgsign", "tag.gpgsign", "gc.auto", "maintenance.auto",
+    "pull.rebase", "pull.ff", "fetch.prune", "push.default", "push.autosetupremote", "merge.ff", "diff.renames", "diff.noprefix",
+    "status.showuntrackedfiles"]
+});
