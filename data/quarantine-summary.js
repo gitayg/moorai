@@ -7,8 +7,9 @@
 // signed policy cannot), so file content never leaves the device on a policy that only the console signed.
 // With no fileQuarantineModel there is no reader: probing Ollama / LM Studio on their default ports takes
 // fileQuarantineAutodetect: true from the admin binding (any same-user process can listen on a loopback port).
-// fileQuarantineModel.executables names extra runtime executables (absolute paths; a trailing "/" is a
-// directory) the listener may be, beyond the known Ollama and LM Studio locations (cli/quarantine-owner.mjs).
+// The reader must run as a different OS user from the agent (cli/quarantine-owner.mjs). A same-user reader takes
+// fileQuarantineSameUserReader: true from the admin binding, and then fileQuarantineModel.executables (exact files)
+// and, on macOS, fileQuarantineModel.teamIds (code-signing Team IDs) pin which program it may be.
 export const QUARANTINE_MODES = Object.freeze(["off", "summary", "ask"]);
 export const QUARANTINE_DEFAULT_MODE = "off";
 
@@ -16,8 +17,9 @@ const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 
 function modelOf(v) {
   if (!isObj(v) || typeof v.url !== "string" || !v.url || v.url.length > 2048) return null;
-  const executables = Array.isArray(v.executables) ? v.executables.filter((x) => typeof x === "string" && /^(?:\/|[A-Za-z]:[\\/])/.test(x) && x.length <= 1024).slice(0, 16) : [];
-  return { url: v.url, model: typeof v.model === "string" && v.model && v.model.length <= 200 ? v.model : null, executables };
+  const executables = Array.isArray(v.executables) ? v.executables.filter((x) => typeof x === "string" && /^(?:\/|[A-Za-z]:[\\/])/.test(x) && !/[\\/]$/.test(x) && x.length <= 1024).slice(0, 16) : [];
+  const teamIds = Array.isArray(v.teamIds) ? v.teamIds.filter((x) => typeof x === "string" && /^[A-Z0-9]{10}$/.test(x)).slice(0, 16) : [];
+  return { url: v.url, model: typeof v.model === "string" && v.model && v.model.length <= 200 ? v.model : null, executables, teamIds };
 }
 
 export function fileQuarantineConfig(policy, { admin = null } = {}) {
@@ -26,7 +28,7 @@ export function fileQuarantineConfig(policy, { admin = null } = {}) {
   const mode = (QUARANTINE_MODES.includes(a.fileQuarantine) && a.fileQuarantine) || (QUARANTINE_MODES.includes(p.fileQuarantine) && p.fileQuarantine) || QUARANTINE_DEFAULT_MODE;
   const fromAdmin = modelOf(a.fileQuarantineModel);
   const model = fromAdmin || modelOf(p.fileQuarantineModel);
-  return { mode, model, modelSource: fromAdmin ? "admin" : model ? "policy" : null, allowRemote: a.fileQuarantineAllowRemote === true, autodetect: a.fileQuarantineAutodetect === true };
+  return { mode, model, modelSource: fromAdmin ? "admin" : model ? "policy" : null, allowRemote: a.fileQuarantineAllowRemote === true, autodetect: a.fileQuarantineAutodetect === true, sameUserReader: a.fileQuarantineSameUserReader === true };
 }
 
 // A loopback host: 127.0.0.0/8, ::1 (bracketed or not), "localhost". Anything else is remote.

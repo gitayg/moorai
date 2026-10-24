@@ -1114,8 +1114,9 @@ is validated against.
     by the hook at PreToolUse for the Read path, a NotebookRead path, the Bash / PowerShell read paths
     (`extractReadPaths`, the extractor origin taint uses) and the files an MCP read tool names (the 17c1 read
     set), after every check that can deny and only when none did. `fileQuarantine` `"off"` (default) |
-    `"summary"` | `"ask"`, `fileQuarantineModel { url, model?, executables? }`, and `fileQuarantineAutodetect` and
-    `fileQuarantineAllowRemote` (admin binding only) come from the root-owned admin binding, then the verified policy
+    `"summary"` | `"ask"`, `fileQuarantineModel { url, model?, executables?, teamIds? }`, and
+    `fileQuarantineAutodetect`, `fileQuarantineSameUserReader` and `fileQuarantineAllowRemote` (admin binding
+    only) come from the root-owned admin binding, then the verified policy
     ([`data/quarantine-summary.js`](../data/quarantine-summary.js) `fileQuarantineConfig`); nothing
     user-writable. A path counts when `originOf` (17c1) returns an origin. Each such file (at most 3 per call;
     more is denied under `"summary"` and asked under `"ask"`) goes through
@@ -1129,15 +1130,22 @@ is validated against.
     `cli/local-ai-inventory.mjs`'s table, probed on 127.0.0.1 with `/v1/models`; else no reader; a URL that is not
     127.0.0.0/8, `::1` or `localhost` is refused unless `fileQuarantineAllowRemote`; a fresh `http.Agent`, so no
     environment proxy applies); on a loopback reader, after connect and before the request is written,
-    [`cli/quarantine-owner.mjs`](../cli/quarantine-owner.mjs) `verifyReaderPeer`: the pid holding the server end
-    of this connection (macOS `lsof -nP -iTCP:<port> -sTCP:ESTABLISHED -Fpn`, Linux `tcpTable` over
-    `/proc/net/tcp{,6}` and `/proc/<pid>/fd`, Windows `netstat -ano`), its ancestry (`cli/ai-cli-parents.mjs`
-    `defaultReadChain`) and its executable (macOS lsof's first `txt` entry, Linux `/proc/<pid>/exe`, Windows
-    `ExecutablePath`), judged by `judgeOwner`: refused (`untrusted-reader`, nothing sent) when the pid or any
-    ancestor above 1 is in `agentPids` (the hook's parent chain through its shells to the agent process, inclusive),
-    when the executable's real path is not under `knownRuntimePaths` (Ollama.app, Homebrew `Cellar/ollama`,
-    `/usr/local/bin/ollama`, LM Studio.app, `~/.lmstudio`, and the Linux and Windows equivalents) or
-    `fileQuarantineModel.executables`, or when any of pid, ancestry, agent or executable is undetermined; one
+    [`cli/quarantine-owner.mjs`](../cli/quarantine-owner.mjs) `verifyReaderPeer`: `peerFacts` finds the server
+    end of THIS connection (`peerOf`: macOS `netstat -anv`, which lists every user's sockets with a pid, else
+    `lsof -nP -iTCP:<port> -sTCP:ESTABLISHED -Fpn`; Linux `/proc/net/tcp{,6}`, whose uid column is the socket
+    owner's for any user, plus `tcpTable` for the pid when readable; Windows `netstat -ano`) and its uids
+    (`ps -o uid=,ruid=`, `/proc/<pid>/status`, Windows `GetOwner` best effort), and `judgeOwner` decides
+    (`untrusted-reader`, nothing sent, on a refusal): pid and uid undetermined → refused; the pid or an ancestor
+    above 1 in `agentPids` (the hook's parent chain through its shells to the agent, inclusive) → refused, an
+    extra signal in both modes; a uid different from the hook's → accepted (the boundary); the agent's own uid →
+    refused unless `fileQuarantineSameUserReader`, and then only when the executable (macOS lsof's first `txt`
+    entry, Linux `/proc/<pid>/exe`) is an exact file in `executables`, `writableBy` finds neither it nor a parent
+    directory writable by the agent's uid (owner, a group it is in, or everyone), on macOS `codesign --verify
+    --strict` passes and `codesign -dv` reports a `TeamIdentifier` in `teamIds`, and the environment (`ps eww`,
+    `/proc/<pid>/environ`) and arguments (`ps -ww -o command=`, `/proc/<pid>/cmdline`) are readable and carry no
+    `ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS`, `LD_PRELOAD`, `LD_AUDIT`, `DYLD_*`, `-e`, `--eval`, `-p`, `--print`,
+    `-r`, `--require`, `--import`, `--loader`, `-c`, `--inspect`, `--remote-debugging-port` or script path (`.js`,
+    `.mjs`, `.cjs`, `.ts`, `.py`, `.sh`, `.rb`, `.pl`, `.lua`); one
     chat-completions request with no tools, temperature
     0, `max_tokens` 700 and a deadline of min(9 s, 12 s after the hook started); the reply validated by
     `validateSummary` (one JSON object, optionally fenced; `docType`, `title`, `language`, `summary`,
@@ -1162,12 +1170,17 @@ is validated against.
     either mode), `asked`), `surface`,
     `fileQuarantine`, `source`, `app`, `hostHash`, `modelKind` (`local` | `remote`), `format`, `bytes`,
     `chars`, `truncated`, `summaryChars`, `keyFacts`, `aiDirected`, `cached`; no path, name or text. Origin
-    taint (17c1) runs unchanged. **Measured** (macOS, a stub model on 127.0.0.1 run daemonized outside the hook's tree, median of 20 hook
-    runs, a fresh HOME per series): a quarantined Read 396 ms with `"off"`, 705 ms summarised, 440 ms cached; a
-    plain Read 437 / 416 ms with `"off"` / `"summary"`. `verifyReaderPeer` median 249 ms (n = 10) against a
-    Homebrew Ollama, which it passes (`/opt/homebrew/Cellar/ollama/0.40.3/libexec/ollama`, parent launchd; `ps -o
-    comm=` reports the wrapper `/opt/homebrew/opt/ollama/bin/ollama`, which is why lsof's `txt` entry is read).
-    Ollama llama3.2 (3B) on the same machine: 5.5 to 8.0 s per first summary of a two-line invoice once loaded,
+    taint (17c1) runs unchanged. **Measured** (macOS, a stub model on 127.0.0.1 run daemonized outside the hook's tree and presented as
+    another OS user by a test-only preload, median of 20 hook runs, a fresh HOME per series): a quarantined Read
+    401 ms with `"off"`, 598 ms summarised, 430 ms cached; a plain Read 433 / 428 ms with `"off"` / `"summary"`.
+    On this Mac the Homebrew Ollama runs as the user (uid 502 via `ps -o uid=,ruid=` and `lsof -Fu`), is
+    ad-hoc signed (`Signature=adhoc`, `TeamIdentifier=not set`; `codesign --verify --strict` still exits 0, which
+    is why a Team ID is required) and lives in a user-owned `/opt/homebrew`: `verifyReaderPeer` refuses it by
+    default (median 179 ms, n = 10) and under the same-user opt-in ("writable by the agent's user", 360 ms). A
+    root-owned loopback listener read as pid and uid 0 through `netstat -anv` and `ps` from a shell; from a node
+    process in this test environment `netstat -anv` printed no TCP rows (lsof still worked), so the netstat path
+    was not exercised from the hook here, and the cross-user acceptance was driven with an injected uid, not run
+    live against a reader under another account. Ollama llama3.2 (3B) on the same machine: 5.5 to 8.0 s per first summary of a two-line invoice once loaded,
     schema-valid, the planted instruction reported as AI-directed text and not repeated; while Ollama swaps
     models the 9 s deadline passes and the read is refused.
     **Limits:** a summary is model-written text and can still carry a cleverly worded instruction that no
@@ -1181,13 +1194,16 @@ is validated against.
     formats beyond those listed (images, archives, EPUB; doc, rtf and odt off macOS; PDF without
     `pdftotext`) are not summarised; the endpoint hook only — the model proxy, MoorAI for AI Servers and
     `@moorai/agent-sdk` do not run it; the agent runs as the same user and can edit `~/.moorai/quarantine`
-    (a cached summary is re-scanned, not trusted). The listener check: a process the agent starts and detaches
-    (re-parented to launchd or init) leaves its tree, so the executable allow-list is what refuses it — but an
-    allowed runtime the agent starts that way (an Ollama with request logging, say) passes; the known install
-    locations are writable by the user on a typical Mac (`/opt/homebrew`, an app dragged into `/Applications`,
-    `~/.lmstudio`), so a same-user process can replace the binary there; a process of another user (a Linux
-    Ollama system service) cannot be read and is refused; LM Studio's process layout and the Windows path are
-    not measured; auto-detection uses the first model `/v1/models` lists, which may be large or slow.
+    (a cached summary is re-scanned, not trusted). **A reader running as the agent's own OS user can be
+    impersonated by that agent**: it can open its own listener, start a pinned, signed runtime with its own
+    model or with request logging, or (where a pin is loose) host code in it, and a detached process leaves the
+    agent's process tree; the same-user pins narrow this but do not close it. Only a reader under a separate OS
+    account is a hard boundary, and that boundary assumes the agent cannot act as that account (no sudo, no
+    write access to the service's files). On macOS a peer of another user is found only through `netstat -anv`;
+    if that lists nothing (as it did from node in this test environment) the reader is refused. The Windows path
+    (owner via `GetOwner`; a same-user reader is always refused there, its environment being unreadable) is not
+    verified on Windows; LM Studio is not measured; auto-detection uses the first model `/v1/models` lists,
+    which may be large or slow.
 17d. **Verdict provenance** — [`cli/provenance.mjs`](../cli/provenance.mjs) stamps every alert and ledger
     row with `policyId` (`pol:<tenant>:<iat>:<digest12>`, `pol:unsigned:<digest12>`, `builtin-defaults`,
     `offline-fail-closed-default`, `none`, `not-loaded`), `policySource`, `reasonCode` (the branch that

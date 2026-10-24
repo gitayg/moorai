@@ -20,7 +20,8 @@ process.env.USERPROFILE = HOME;
 const { quarantineRead, QUARANTINE_DIR } = await import("../cli/quarantine-reader.mjs");
 const { quarantineStep, mergeQuarantine } = await import("../cli/quarantine-step.mjs");
 const { resolveReader, callReader } = await import("../cli/quarantine-model.mjs");
-const { judgeOwner, agentPids, allowedExe, verifyReaderPeer } = await import("../cli/quarantine-owner.mjs");
+const OWNER = await import("../cli/quarantine-owner.mjs");
+const { judgeOwner, agentPids, pinnedExe, verifyReaderPeer, writableBy, codeSignature, peerUids, peerEnvArgs, parseNetstatPeer, parseProcTcpPeer } = await import("../cli/quarantine-owner.mjs");
 const { buildEngine } = await import("../cli/hook-core.mjs");
 const engine = buildEngine({});
 process.on("exit", () => rmTree(HOME));
@@ -40,6 +41,11 @@ test("fileQuarantine: admin binding wins, default off, remote allowance only fro
   const c = fileQuarantineConfig({ fileQuarantineModel: { url: "http://127.0.0.1:1/v1", model: "p" } }, { admin: { fileQuarantineModel: { url: "http://127.0.0.1:2/v1" } } });
   assert.equal(c.model.url, "http://127.0.0.1:2/v1");
   assert.equal(c.modelSource, "admin");
+  assert.equal(fileQuarantineConfig({ fileQuarantineSameUserReader: true }).sameUserReader, false, "the signed policy cannot allow a same-user reader");
+  assert.equal(fileQuarantineConfig({}, { admin: { fileQuarantineSameUserReader: true } }).sameUserReader, true);
+  const m = fileQuarantineConfig({ fileQuarantineModel: { url: "http://127.0.0.1:1", executables: ["/opt/rt/ollama", "/opt/rt/", "rel/x"], teamIds: ["ABCDE12345", "bad"] } }).model;
+  assert.deepEqual(m.executables, ["/opt/rt/ollama"], "exact absolute files only");
+  assert.deepEqual(m.teamIds, ["ABCDE12345"]);
 });
 
 test("loopback rule: only 127/8, ::1 and localhost without the admin allowance", () => {
@@ -222,39 +228,92 @@ test("auto-detection: off without the admin binding's fileQuarantineAutodetect; 
   } finally { st.close(); }
 });
 
-test("owner judgement: the agent's tree, an unknown executable or anything undetermined is refused", () => {
+test("owner judgement: a different OS user is the boundary; a same-user reader needs the admin opt-in and every pin", () => {
   const agent = agentPids([{ pid: 50, image: "sh" }, { pid: 40, image: "claude" }, { pid: 30, image: "Terminal" }]);
   assert.deepEqual([...agent], [50, 40], "through the hook's shells to the agent, not above it");
-  const allowed = ["/Applications/Ollama.app/", "/usr/local/bin/ollama"];
-  const ok = { pid: 900, exe: "/Applications/Ollama.app/Contents/Resources/ollama", chain: [{ pid: 900 }, { pid: 1 }], agent, allowed, platform: "linux" };
-  assert.equal(judgeOwner(ok).ok, true);
-  assert.match(judgeOwner({ ...ok, chain: [{ pid: 900 }, { pid: 77 }, { pid: 40 }, { pid: 30 }, { pid: 1 }] }).why, /inside the agent's process tree/);
-  assert.match(judgeOwner({ ...ok, chain: [{ pid: 900 }, { pid: 30 }, { pid: 1 }] }).ok ? "" : "x", /^$/, "a shared ancestor above the agent (the terminal) is not the agent's tree");
-  assert.match(judgeOwner({ ...ok, exe: "/tmp/fake-ollama" }).why, /not a known local model runtime/);
-  assert.match(judgeOwner({ ...ok, pid: null }).why, /could not be determined/);
-  assert.match(judgeOwner({ ...ok, exe: null }).why, /executable could not be determined/);
-  assert.match(judgeOwner({ ...ok, chain: [] }).why, /ancestry could not be read/);
-  assert.match(judgeOwner({ ...ok, agent: new Set() }).why, /agent's process could not be determined/);
-  assert.equal(allowedExe("/usr/local/bin/ollama-evil", allowed, { platform: "linux" }), false, "a file entry is exact");
-  assert.equal(allowedExe("/Applications/Ollama.app.evil/x", allowed, { platform: "linux" }), false, "a directory entry is a whole-segment prefix");
+  const base = { pid: 900, agentUid: 502, chain: [{ pid: 900 }, { pid: 1 }], agent };
+  const other = { ...base, uids: [499, 499] };
+  assert.deepEqual(judgeOwner(other, { platform: "darwin" }), { ok: true, why: "", sameUser: false }, "a different-uid peer is accepted with no pins");
+  assert.match(judgeOwner({ ...other, chain: [{ pid: 900 }, { pid: 40 }, { pid: 1 }] }, { platform: "darwin" }).why, /inside the agent's process tree/, "the tree is an extra signal in either mode");
+  assert.equal(judgeOwner({ ...other, chain: null }, { platform: "darwin" }).ok, true, "an unreadable tree does not decide a cross-user peer");
+  assert.match(judgeOwner({ ...base, uids: null }).why, /OS user could not be determined/);
+  assert.match(judgeOwner({ ...base, pid: null }).why, /process could not be determined/);
+  assert.match(judgeOwner({ ...base, uids: [502, 502] }, { platform: "darwin" }).why, /agent's own OS user/, "same uid, no opt-in: refused");
+  assert.match(judgeOwner({ ...base, uids: [499, 502] }, { platform: "darwin" }).why, /agent's own OS user/, "either uid matching counts");
+  const exe = "/opt/rt/ollama";
+  const same = { ...base, uids: [502, 502], exe, writable: false, signature: { valid: true, teamId: "ABCDE12345" }, env: ["PATH=/usr/bin"], args: ["serve"] };
+  const pins = { sameUser: true, executables: [exe], teamIds: ["ABCDE12345"], platform: "linux" };
+  const mac = { ...pins, platform: "darwin" };
+  assert.equal(judgeOwner(same, mac).ok, true, "every pin met");
+  assert.match(judgeOwner({ ...same, writable: true }, mac).why, /writable by the agent's user/);
+  assert.match(judgeOwner({ ...same, writable: null }, mac).why, /could not be determined/);
+  assert.match(judgeOwner(same, { ...mac, executables: ["/opt/rt/"] }).why, /not a file fileQuarantineModel.executables pins/, "a directory never pins");
+  assert.match(judgeOwner({ ...same, signature: { valid: true, teamId: null } }, mac).why, /Team ID/, "ad-hoc / no Team ID");
+  assert.match(judgeOwner({ ...same, signature: { valid: true, teamId: "ZZZZZ99999" } }, mac).why, /Team ID/, "a Team ID not listed");
+  assert.match(judgeOwner({ ...same, signature: { valid: false, teamId: "ABCDE12345" } }, mac).why, /no valid code signature/);
+  assert.match(judgeOwner({ ...same, env: ["PATH=/usr/bin", "ELECTRON_RUN_AS_NODE=1"] }, mac).why, /code-host environment/);
+  assert.match(judgeOwner({ ...same, env: ["DYLD_INSERT_LIBRARIES=/tmp/x.dylib"] }, mac).why, /code-host environment/);
+  assert.match(judgeOwner({ ...same, env: ["NODE_OPTIONS=--require /tmp/x.js"] }, mac).why, /code-host environment/);
+  assert.match(judgeOwner({ ...same, args: ["-e", "require('http')"] }, mac).why, /code-evaluation argument/);
+  assert.match(judgeOwner({ ...same, args: ["/tmp/listener.js"] }, mac).why, /code-evaluation argument or a script/);
+  assert.match(judgeOwner({ ...same, env: null }, mac).why, /could not be read/);
+  assert.match(judgeOwner({ ...same, args: null }, mac).why, /could not be read/);
+  assert.equal(judgeOwner({ ...same, signature: null }, pins).ok, true, "the Team ID pin is macOS-only");
+  assert.equal(pinnedExe("/opt/rt/ollama-evil", [exe], { platform: "linux" }), false);
 });
 
-test("owner check on a real connection: this process as the listener is refused from inside its tree, allowed from outside", { skip: process.platform !== "darwin" && process.platform !== "linux" && "lsof / proc" }, async () => {
+test("owner facts on this machine: uid, writability, code signature and environment readers", { skip: process.platform !== "darwin" && "macOS readers" }, () => {
+  assert.deepEqual(peerUids(process.pid), [process.getuid(), process.getuid()]);
+  const ea = peerEnvArgs(process.pid);
+  assert.ok(Array.isArray(ea.env) && ea.env.some((x) => x.startsWith("PATH=")), "own environment readable");
+  assert.ok(Array.isArray(ea.args));
+  assert.equal(writableBy("/bin/ls", process.getuid()), false, "root-owned system binary");
+  const mine = join(HOME, "mine-exe");
+  writeFileSync(mine, "x");
+  assert.equal(writableBy(mine, process.getuid()), true, "a file the user owns");
+  assert.equal(writableBy(join(HOME, "absent"), process.getuid()), null);
+  const ls = codeSignature("/bin/ls");
+  assert.equal(ls.valid, true);
+  assert.equal(ls.teamId, null, "a platform binary carries no Team ID");
+});
+
+test("owner check on a real connection: this process (the agent's own user) is refused, and nothing is sent", { skip: process.platform !== "darwin" && process.platform !== "linux" && "lsof / proc" }, async () => {
   const st = await stub(() => JSON.stringify(GOOD));
   const outsider = spawn("/bin/sleep", ["30"], { stdio: "ignore" });
   const NODE_EXE = realpathSync(process.execPath);
   try {
     const reader = { endpoint: st.cfg.model.url.replace(/\/v1$/, "/v1/chat/completions"), model: "stub" };
     const msgs = [{ role: "user", content: "x" }];
-    const inside = await callReader(reader, msgs, { verify: (c) => verifyReaderPeer({ ...c, startPid: process.pid, executables: [NODE_EXE] }) });
-    assert.equal(inside.ok, false);
-    assert.equal(inside.untrusted, true);
+    const noOptIn = await callReader(reader, msgs, { verify: (c) => verifyReaderPeer({ ...c, startPid: outsider.pid }) });
+    assert.equal(noOptIn.untrusted, true);
+    assert.match(noOptIn.why, /agent's own OS user/);
+    const inside = await callReader(reader, msgs, { verify: (c) => verifyReaderPeer({ ...c, startPid: process.pid }) });
     assert.match(inside.why, /inside the agent's process tree/);
-    const unknown = await callReader(reader, msgs, { verify: (c) => verifyReaderPeer({ ...c, startPid: outsider.pid }) });
-    assert.match(unknown.why || "", /not a known local model runtime/);
+    const optIn = await callReader(reader, msgs, { verify: (c) => verifyReaderPeer({ ...c, startPid: outsider.pid, sameUser: true, executables: [NODE_EXE], teamIds: ["ABCDE12345"] }) });
+    assert.equal(optIn.ok, false, "a user-owned node binary fails the same-user pins");
+    assert.match(optIn.why, process.platform === "darwin" ? /writable by the agent's user|Team ID/ : /writable|could not/);
     assert.equal(st.chats, 0, "nothing was sent on a refusal");
-    const fine = await callReader(reader, msgs, { verify: (c) => verifyReaderPeer({ ...c, startPid: outsider.pid, executables: [NODE_EXE] }) });
-    assert.equal(fine.ok, true, fine.why);
-    assert.equal(st.chats, 1);
+    const cross = await callReader(reader, msgs, { verify: (c) => verifyReaderPeer({ ...c, startPid: outsider.pid, gather: (a) => { const { peerFacts } = OWNER; const f = peerFacts(a); f.uids = f.uids.map((u) => u + 1000); return f; } }) });
+    assert.equal(cross.ok, true, cross.why);
+    assert.equal(st.chats, 1, "an (injected) other-user peer gets the request");
   } finally { outsider.kill(); st.close(); }
+});
+
+test("peer lookup parsers: macOS netstat -anv rows (any user's process) and Linux /proc/net/tcp (socket uid)", () => {
+  const ns = [
+    "tcp4       0      0  127.0.0.1.11434        127.0.0.1.58964        ESTABLISHED            0            0  408300  146988           ollama:2018   00102 0000000c 0000000003293623 00000080 01000800      2      0 000000",
+    "tcp4       0      0  127.0.0.1.58964        127.0.0.1.11434        ESTABLISHED            0            0  408300  146988           Python:41483  00002 00000000 0000000003293622 00000080 04000900      2      0 000000",
+    "tcp4       0      0  127.0.0.1.11369        127.0.0.1.58963        ESTABLISHED            0            0  408300  146988   Model Service:66458  00182 0000000c 0000000003293617 00100081 01080800      2      0 000000"
+  ].join("\n");
+  assert.equal(parseNetstatPeer(ns, 11434, 58964), 2018, "the server end, not our own end");
+  assert.equal(parseNetstatPeer(ns, 11369, 58963), 66458, "a process name with a space");
+  assert.equal(parseNetstatPeer(ns, 11434, 1), null);
+  const proc = [
+    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
+    "   0: 0100007F:2CAA 0100007F:E644 01 00000000:00000000 00:00000000 00000000   997        0 81234 1 0000000000000000 20 4 30 10 -1",
+    "   1: 0100007F:E644 0100007F:2CAA 01 00000000:00000000 00:00000000 00000000  1000        0 81235 1 0000000000000000 20 4 30 10 -1"
+  ].join("\n");
+  assert.deepEqual(parseProcTcpPeer(proc, 11434, 58948), { uid: 997, inode: "81234" });
+  assert.equal(parseProcTcpPeer(proc, 11434, 1), null);
+  assert.equal(judgeOwner({ pid: null, uids: [997], agentUid: 1000 }, { platform: "linux" }).ok, true, "an unreadable pid with the socket's uid of another user");
 });

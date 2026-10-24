@@ -6,7 +6,8 @@
 //   the first model its /v1/models lists. Neither: no reader.
 // A non-loopback URL is refused unless the admin binding allows it, so file text stays on the device by default.
 // On a loopback URL the request that carries the file is held until cli/quarantine-owner.mjs has checked the
-// process that accepted the connection; a refusal sends nothing and is "untrusted".
+// process that accepted the connection (a different OS user, by default); a refusal sends nothing and is
+// "untrusted".
 // Requests go through a fresh http.Agent, never the global one, so no environment proxy can carry them elsewhere.
 import http from "node:http";
 import https from "node:https";
@@ -65,14 +66,14 @@ export async function resolveReader(cfg, { deadline = Date.now() + 2000, runtime
     if (!ep.ok) return { ok: false, why: ep.why, kind: ep.kind || null };
     const model = cfg.model.model || await firstModel(ep.modelsUrl, Math.min(PROBE_MS * 3, left()));
     if (!model) return { ok: false, why: "the configured reader lists no model", kind: ep.kind };
-    return { ok: true, endpoint: ep.endpoint, model, kind: ep.kind, runtime: "configured", executables: cfg.model.executables || [] };
+    return { ok: true, endpoint: ep.endpoint, model, kind: ep.kind, runtime: "configured", executables: cfg.model.executables || [], teamIds: cfg.model.teamIds || [] };
   }
   if (!cfg || cfg.autodetect !== true) return { ok: false, why: "no reader configured (fileQuarantineModel unset; auto-detection needs fileQuarantineAutodetect in the admin binding)", kind: null };
   for (const r of runtimes.filter((x) => AUTODETECT.includes(x.runtime))) {
     for (const port of r.ports) {
       const ep = modelEndpoint(`http://127.0.0.1:${port}`);
       const model = await firstModel(ep.modelsUrl, Math.min(PROBE_MS, left()));
-      if (model) return { ok: true, endpoint: ep.endpoint, model, kind: "local", runtime: r.runtime, executables: [] };
+      if (model) return { ok: true, endpoint: ep.endpoint, model, kind: "local", runtime: r.runtime, executables: [], teamIds: [] };
     }
   }
   return { ok: false, why: "no local model runtime answered", kind: null };

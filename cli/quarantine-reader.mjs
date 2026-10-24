@@ -7,8 +7,8 @@
 // Outcomes: "summarised"; "unsupported" (binary or an unreadable format: the agent is told only that, nothing is
 // sent to a model); "withheld" (the summary itself raised a Prompt Injection finding); "no-reader" (no model, a
 // refused URL, a timeout or output that fails the schema); "untrusted-reader" (the process that accepted the
-// loopback connection is in the agent's process tree, is not a known model runtime, or could not be determined:
-// cli/quarantine-owner.mjs; nothing was sent). The caller fails closed on the last three.
+// loopback connection runs as the agent's own OS user without the admin's same-user opt-in, fails the same-user
+// pins, sits in the agent's process tree, or could not be determined: cli/quarantine-owner.mjs; nothing was sent). The caller fails closed on the last three.
 //
 // ON DISK (~/.moorai/quarantine, directory 0700, files 0600, swept after 24 h): <sha256(path, mtime, size)>.json
 // holds the validated summary fields and sizes; <same>.md is the framed summary a rewritten Read points at. A
@@ -88,7 +88,7 @@ export async function quarantineRead(path, { cfg, engine, origin = null, deadlin
   const reader = await resolveReader(cfg, { deadline: Math.min(deadline, Date.now() + 2000), ...(runtimes ? { runtimes } : {}) });
   if (!reader.ok) return result("no-reader", { ...base, why: reader.why, modelKind: reader.kind || null });
   // A loopback reader: the accepting process is checked before the file is sent.
-  const verify = reader.kind === "local" ? (c) => verifyPeer({ ...c, executables: reader.executables || [] }) : null;
+  const verify = reader.kind === "local" ? (c) => verifyPeer({ ...c, sameUser: !!(cfg && cfg.sameUserReader), executables: reader.executables || [], teamIds: reader.teamIds || [] }) : null;
   const reply = await callReader(reader, readerMessages(x.text, randomBytes(8).toString("hex")), { timeoutMs: Math.max(1, Math.min(READER_TIMEOUT_MS, deadline - Date.now())), verify });
   if (!reply.ok) return result(reply.untrusted ? "untrusted-reader" : "no-reader", { ...base, why: reply.why, modelKind: reader.kind });
   const v = validateSummary(reply.content);

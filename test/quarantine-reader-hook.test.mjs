@@ -4,9 +4,11 @@
 // MoorAI's summary file, a `cat` and an MCP read_file are denied with the summary in the reason, and the planted
 // sentence reaches the agent nowhere; invalid output, an injected summary, no reachable model and a non-loopback
 // model URL all fail closed; "ask" asks; "off" leaves phase 1 alone; a plain file is untouched; alerts are
-// content-free. The stub runs daemonized (outside this test's process tree) with node named as an allowed runtime
-// executable; started as this test's child it is the agent's own listener and is refused, as is an executable no
-// policy names; with no fileQuarantineModel nothing is auto-detected (the signed policy cannot turn that on).
+// content-free. The stub runs daemonized (outside this test's process tree), and the hook is started with a
+// test-only preload that makes the listener check see it as another OS user (tests cannot create users): the
+// default boundary. Without the preload the stub is the agent's own user and is refused, even when the signed
+// policy asks for a same-user reader (only the admin binding can); started as this test's child it sits in the
+// agent's process tree and is refused; with no fileQuarantineModel nothing is auto-detected.
 //
 //   node --test --import ./test/hermetic-env.mjs test/quarantine-reader-hook.test.mjs
 import { test } from "node:test";
@@ -77,9 +79,10 @@ function makeHome(st) {
   if (MAC) assert.equal(spawnSync("/usr/bin/xattr", ["-w", "com.apple.quarantine", "0081;6adca4d1;Chrome;FB371173-B671-4DB8-BB86-AF9A746F0860", join(home, "work", "invoice.txt")]).status, 0);
   return home;
 }
-const policyFor = (st, mode, url = `http://127.0.0.1:${st.mport}/v1`) => ({ captureTier: "content-free", fileQuarantine: mode, fileQuarantineModel: { url, model: "stub", executables: [NODE_EXE] } });
-async function runHook(home, payload) {
-  const child = spawn(process.execPath, [HOOK], { cwd: home, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, HOME: home, USERPROFILE: home, MOORAI_OFFLINE_MODE: "" } });
+const policyFor = (st, mode, url = `http://127.0.0.1:${st.mport}/v1`) => ({ captureTier: "content-free", fileQuarantine: mode, fileQuarantineModel: { url, model: "stub" } });
+const OTHER_USER = join(ROOT, "test", "fixtures", "quarantine-peer-register.mjs");
+async function runHook(home, payload, { otherUser = true } = {}) {
+  const child = spawn(process.execPath, [...(otherUser ? ["--import", OTHER_USER] : []), HOOK], { cwd: home, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, HOME: home, USERPROFILE: home, MOORAI_OFFLINE_MODE: "" } });
   let out = "";
   child.stdout.on("data", (c) => { out += c; });
   child.stderr.on("data", () => {});
@@ -262,14 +265,15 @@ test("(l) a listener inside the agent's process tree is refused before the file 
   }, { stubOpts: { daemon: false } });
 });
 
-test("(m) a listener outside the agent's tree whose executable is not a known runtime is refused", macOnly, async () => {
+test("(m) a reader running as the agent's own OS user is refused without the admin's same-user opt-in", macOnly, async () => {
   await scenario("summary", async (st, home) => {
-    const r = await runHook(home, pre("q-m", "Read", { file_path: join(home, "work", "invoice.txt") }));
+    const r = await runHook(home, pre("q-m", "Read", { file_path: join(home, "work", "invoice.txt") }), { otherUser: false });
     assert.equal(r.decision, "deny", r.raw);
-    assert.match(r.reason, /not a known local model runtime/);
-    assert.equal((await stubState(st)).chats, 0);
+    assert.match(r.reason, /runs as the agent's own OS user/);
+    assert.equal((await stubState(st)).chats, 0, "nothing was sent");
     assert.equal(quar(st.alerts)[0].outcome, "untrusted-reader");
-  }, { policy: (st) => ({ captureTier: "content-free", fileQuarantine: "summary", fileQuarantineModel: { url: `http://127.0.0.1:${st.mport}/v1`, model: "stub" } }) });
+    assert.ok(!r.raw.includes(INJECTED));
+  }, { policy: (st) => ({ captureTier: "content-free", fileQuarantine: "summary", fileQuarantineSameUserReader: true, fileQuarantineModel: { url: `http://127.0.0.1:${st.mport}/v1`, model: "stub", executables: [NODE_EXE] } }) });
 });
 
 test("(n) no fileQuarantineModel: no auto-detection, so no reader (a running Ollama is not used)", macOnly, async () => {
