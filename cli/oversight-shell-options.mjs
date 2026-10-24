@@ -202,3 +202,42 @@ export const RSYNC = opts([
   "--rsync-path", "--skip-compress", "--sockopts", "--stderr", "--stop-after", "--stop-at", "--suffix", "--temp-dir",
   "--timeout", "--usermap", "--write-batch"
 ], "0468@ABCDEFHIJKLMNOPRSTUVWXabcdefghiklmnopqrstuvxyz", "@BMTef", { negatable: true, exact: true });
+
+// git's global options, the words before the subcommand (cli/oversight-shell-writes.mjs gitInvocation). From git
+// 2.54.0 `git help git` OPTIONS, and git 2.39.5's --super-prefix; measured on both: valued — the ones that take the
+// next word as their value (`git --attr-source HEAD checkout`, `git --config-env k=VAR rm`); each of them also takes
+// `--opt=value`, as do --exec-path and --list-cmds; valueless — the rest. git has no abbreviations here
+// (`--no-pag` and `--git-di=` are unknown options) and no attached short value (`-Cdir`, `-ck=v` are unknown).
+export const GIT_GLOBAL = Object.freeze({
+  valued: ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source", "--super-prefix"],
+  eqValued: ["--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source", "--super-prefix", "--exec-path", "--list-cmds"],
+  valueless: ["-v", "--version", "-h", "--help", "-p", "--paginate", "-P", "--no-pager", "--exec-path", "--html-path", "--man-path", "--info-path",
+    "--bare", "--no-replace-objects", "--no-lazy-fetch", "--no-optional-locks", "--no-advice", "--literal-pathspecs", "--glob-pathspecs",
+    "--noglob-pathspecs", "--icase-pathspecs"]
+});
+// git's own commands: the union of `git --list-cmds=main,builtins,nohelpers` on git 2.39.5, 2.47.3 and 2.54.0 and the
+// commands of git's command-list.txt (master) that some distributions package apart (svn, gui, cvsimport …). A word
+// outside it is an alias, an external git-<name> or a typo, which runs something else.
+export const GIT_COMMANDS = new Set([
+  "add", "am", "annotate", "apply", "archimport", "archive", "backfill", "bisect", "blame", "branch", "bugreport",
+  "bundle", "cat-file", "check-attr", "check-ignore", "check-mailmap", "check-ref-format", "checkout",
+  "checkout-index", "cherry", "cherry-pick", "citool", "clean", "clone", "column", "commit", "commit-graph",
+  "commit-tree", "config", "count-objects", "credential", "credential-cache", "credential-osxkeychain",
+  "credential-store", "cvsexportcommit", "cvsimport", "cvsserver", "daemon", "describe", "diagnose", "diff",
+  "diff-files", "diff-index", "diff-pairs", "diff-tree", "difftool", "fast-export", "fast-import", "fetch",
+  "fetch-pack", "filter-branch", "fmt-merge-msg", "for-each-ref", "for-each-repo", "format-patch", "format-rev",
+  "fsck", "fsck-objects", "gc", "get-tar-commit-id", "grep", "gui", "hash-object", "help", "history", "hook",
+  "http-backend", "http-fetch", "http-push", "imap-send", "index-pack", "init", "init-db", "instaweb",
+  "interpret-trailers", "last-modified", "log", "ls-files", "ls-remote", "ls-tree", "mailinfo", "mailsplit",
+  "maintenance", "merge", "merge-base", "merge-file", "merge-index", "merge-octopus", "merge-one-file", "merge-ours",
+  "merge-recursive", "merge-recursive-ours", "merge-recursive-theirs", "merge-resolve", "merge-subtree", "merge-tree",
+  "mergetool", "mktag", "mktree", "multi-pack-index", "mv", "name-rev", "notes", "p4", "pack-objects",
+  "pack-redundant", "pack-refs", "patch-id", "pickaxe", "prune", "prune-packed", "pull", "push", "quiltimport",
+  "range-diff", "read-tree", "rebase", "receive-pack", "reflog", "refs", "remote", "remote-ext", "remote-fd",
+  "remote-ftp", "remote-ftps", "remote-http", "remote-https", "repack", "replace", "replay", "repo", "request-pull",
+  "rerere", "reset", "restore", "rev-list", "rev-parse", "revert", "rm", "send-email", "send-pack", "sh-i18n",
+  "sh-setup", "shell", "shortlog", "show", "show-branch", "show-index", "show-ref", "sparse-checkout", "stage",
+  "stash", "status", "stripspace", "submodule", "subtree", "svn", "switch", "symbolic-ref", "tag", "unpack-file",
+  "unpack-objects", "update-index", "update-ref", "update-server-info", "upload-archive", "upload-pack", "url-parse",
+  "var", "verify-commit", "verify-pack", "verify-tag", "version", "whatchanged", "worktree", "write-tree"
+]);

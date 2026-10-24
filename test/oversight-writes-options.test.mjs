@@ -14,6 +14,8 @@
 //     cumulative.
 //   * git rm / git mv read git's global options as checkout / restore do (one parser): a moved work tree,
 //     repository or index (GIT_INDEX_FILE too) is unknown, paths resolve under -C. Environment names match in any case.
+//   * git's global options that take the next word skip it; any other option before the subcommand, a non-literal
+//     word there or a command git does not have is unknown. A drive-letter or UNC path is not joined onto -C / -d.
 //
 //   node --test --import ./test/hermetic-env.mjs test/oversight-writes-options.test.mjs
 import { test, after } from "node:test";
@@ -23,6 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { oversightCommandSignals } from "../cli/oversight-shell.mjs";
 import { oversightPolicy } from "../cli/oversight-surfaces.mjs";
+import { writeTargets, gitInvocation } from "../cli/oversight-shell-writes.mjs";
 
 const proj = mkdtempSync(join(tmpdir(), "moorai-ovopts-"));
 after(() => rmSync(proj, { recursive: true, force: true }));
@@ -192,4 +195,42 @@ test("git: variables measured not to move checkout / restore / rm / mv writes st
   // nothing.
   const vars = ["GIT_COMMON_DIR=/tmp/b/.git", "GIT_CONFIG=/tmp/cfg", "GIT_CONFIG_GLOBAL=/tmp/cfg", "GIT_CONFIG_SYSTEM=/tmp/cfg", "GIT_CEILING_DIRECTORIES=/tmp", "GIT_DISCOVERY_ACROSS_FILESYSTEM=1"];
   each(vars.flatMap((v) => [`${v} git checkout -- src/a.js`, `${v} git restore src/a.js`, `${v} git rm src/a.js`, `${v} git mv src/a.js src/b.js`]), [], bare);
+});
+
+// ---- git's global options: every one that takes the next word, and fail closed on anything else ----
+test("git: a global option that takes the next word does not hide the subcommand", () => {
+  // Measured (git 2.54.0, `git help git` OPTIONS; git 2.39.5): --attr-source, --config-env, --namespace, --git-dir,
+  // --work-tree, -C and -c take the next word; 2.39.5 also --super-prefix (which checkout / rm then refuse).
+  each(["git --attr-source HEAD checkout -- ops/alerting/rules.yaml", "git --config-env core.y=FOO checkout -- ops/alerting/rules.yaml",
+    "git --namespace ns restore ops/alerting/rules.yaml"], PROT);
+  each(["git --attr-source HEAD rm ops/alerting/rules.yaml", "git --config-env core.y=FOO rm ops/alerting/rules.yaml", "git --super-prefix x/ rm ops/alerting/rules.yaml"], ["wiring-removed", "protected-surface"]);
+  has("git --attr-source HEAD mv ops/alerting/rules.yaml ops/alerting/b.yaml", "protected-surface");
+});
+test("git: a non-literal word before the subcommand leaves the subcommand judged (v1.34.1 caught git $OPTS rm)", () => {
+  has("git $OPTS rm monitoring/scope.py", "wiring-removed");
+  has("git $OPTS rm monitoring/scope.py", "analysis-incomplete");
+  has("git ${G} mv monitoring/scope.py /tmp/x.py", "wiring-removed");
+  has("git $OPTS checkout -- src/a.js", "analysis-incomplete");
+});
+test("git: an option git does not have before the subcommand, or a command git does not have, is unknown", () => {
+  each(["git --bogus rm src/a.js", "git --bogus x checkout -- src/a.js", "git -Cops rm src/a.js", "git --no-pag checkout -- src/a.js",
+    "git co -- ops/alerting/rules.yaml", "git $CMD -- src/a.js", "git lfs pull"], INC);
+  has("git co -- src/a.js", "write-target-unknown", bare);
+});
+test("git: known valueless global options and known commands stay clean", () => {
+  each(["git --no-pager rm src/a.js", "git -p checkout -- src/a.js", "git -P log --oneline", "git --paginate diff", "git --literal-pathspecs restore src/a.js",
+    "git --no-optional-locks status", "git --git-dir=.git status", "git --exec-path", "git --version", "git -v", "git help -a", "git status",
+    "git -c color.ui=never diff", "git --attr-source=HEAD diff", "git --list-cmds=main", "git --bare log"], [], bare);
+});
+
+// ---- a Windows absolute path (X:, \\host\share) is not joined onto the -C / -d base ----
+test("git -C / patch -d: a drive-letter or UNC path starts over instead of joining the base", () => {
+  const dest = (bin, args) => writeTargets(bin, args).writes.map((w) => w.dest);
+  assert.deepEqual(dest("git", ["-C", "a", "-C", "D:/x", "checkout", "--", "f"]), ["D:/x/f"]);
+  assert.deepEqual(dest("git", ["-C", "C:\\repo", "checkout", "--", "D:\\y\\f"]), ["D:\\y\\f"]);
+  assert.deepEqual(dest("git", ["-C", "a", "-C", "\\\\host\\share", "restore", "f"]), ["\\\\host\\share/f"]);
+  assert.deepEqual(dest("git", ["-C", "a", "checkout", "--", "C:f", "\\\\h\\s\\f"]), ["C:f", "\\\\h\\s\\f"]);
+  assert.deepEqual(dest("patch", ["-d", "a", "E:/w/f.py", "fix.diff"]), ["E:/w/f.py"]);
+  const g = gitInvocation(["-C", "a", "-C", "C:repo", "rm", "f"]);
+  assert.deepEqual([g.under("f"), g.under("D:/z")], ["C:repo/f", "D:/z"]);
 });

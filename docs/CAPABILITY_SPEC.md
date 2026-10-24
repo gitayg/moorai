@@ -4353,15 +4353,23 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   `gitInvocation`, the one reader of git's global options) — measured with git 2.39.5, 2.47.3 and 2.54.0: a
   `core.worktree` given by `-c`, `--config-env`, `GIT_CONFIG_COUNT`, `GIT_CONFIG`, `GIT_CONFIG_GLOBAL` or
   `GIT_CONFIG_SYSTEM` is ignored, and `GIT_COMMON_DIR`, `GIT_CEILING_DIRECTORIES` and
-  `GIT_DISCOVERY_ACROSS_FILESYSTEM` leave every path where it is, so they change nothing — `--pathspec-from-file` — and when a write tool (cp, mv, install, rsync, curl, wget, tee,
+  `GIT_DISCOVERY_ACROSS_FILESYSTEM` leave every path where it is, so they change nothing — a git command line
+  whose command cannot be told: git's global options are read from git 2.54.0 `git help git` (and 2.39.5's
+  `--super-prefix`), those that take the next word (`-C`, `-c`, `--git-dir`, `--work-tree`, `--namespace`,
+  `--config-env`, `--attr-source`, `--super-prefix`) skipping it (`cli/oversight-shell-options.mjs` `GIT_GLOBAL`);
+  any other word starting with `-` before the subcommand, a non-literal word there (the search goes on, so `git
+  $OPTS rm f` is still judged as a git rm) or a command outside `GIT_COMMANDS` (the union of `git
+  --list-cmds=main,builtins,nohelpers` on 2.39.5, 2.47.3 and 2.54.0 and git's `command-list.txt`: an alias, an
+  external `git-<name>` such as `git lfs`, a typo) is unknown — `--pathspec-from-file` — and when a write tool (cp, mv, install, rsync, curl, wget, tee,
   sed, patch, git checkout / restore) is given a long option that is ambiguous or that it does not have, a short
   letter it does not have, or a letter whose arity differs between GNU and BSD (`shortConflict`: cp -S, install
   -S / -D / -T, sed -l) followed by more letters of its cluster or by an option word. The `NAME=value` words a
   command sets (before it, or after `env` / `sudo`) come from `data/shell-parse.js` `commandOf` (`env`); their
   names are matched in any case on every platform (`git_work_tree=/x`, `curl_home=/x`), since Windows environment
   names are case-insensitive and on POSIX the extra match only over-reports. git `-C` is cumulative (`git -C a -C
-  b` is `a/b`; an absolute one starts over), and the paths of `git checkout`, `restore`, `rm` and `mv` resolve
-  under it. A PowerShell segment's `cp` / `curl`
+  b` is `a/b`; a rooted one starts over), and the paths of `git checkout`, `restore`, `rm` and `mv` resolve under
+  it, as `patch <file>` resolves under `-d`. Rooted (`rooted` in `cli/oversight-shell-writes.mjs`) is `/…`, `\…`,
+  a UNC `\\host\share` or a drive letter (`C:\…`, `C:/…`, drive-relative `C:…`). A PowerShell segment's `cp` / `curl`
   (cmdlet aliases) is not held to these lists. MCP filesystem write tools
   (`cli/oversight-mcp.mjs`, wired in the hook's `mcp__*` branch): a tool named by a write verb (write, edit, move,
   rename, create, append, replace, insert, patch, save, overwrite, update) and a file noun (file, text_file,

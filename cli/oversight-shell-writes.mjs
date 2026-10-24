@@ -27,12 +27,15 @@
 // reading. A `-` (stdout) and the null device are no write. Environment names are matched whatever their case:
 // Windows reads them case-insensitively, and on POSIX the extra match only over-reports.
 import { scanArgs } from "../data/shell-parse.js";
-import { CP, INSTALL, RSYNC, CURL, WGET, PATCH, GIT_CHECKOUT, GIT_RESTORE } from "./oversight-shell-options.mjs";
+import { CP, INSTALL, RSYNC, CURL, WGET, PATCH, GIT_CHECKOUT, GIT_RESTORE, GIT_GLOBAL, GIT_COMMANDS } from "./oversight-shell-options.mjs";
 
 // Not a literal path: an expansion, a substitution, a glob or brace, or ~user (a bare ~ or ~/… is the home
 // directory, which the caller expands).
 export const nonLiteral = (t) => typeof t !== "string" || !t || /[$*?[\]{}`]/.test(t) || (t.startsWith("~") && !/^~(?:\/|$)/.test(t));
 export const nullTarget = (t) => /^(?:\/dev\/(?:null|stdout|stderr|fd\/[0-9]+)|\$null|nul)$/i.test(String(t));
+// A path that does not resolve against a base directory: POSIX /…, a Windows \…, \\host\share (UNC) or a drive
+// letter (C:\…, C:/…, and drive-relative C:…, which names another drive's directory, never the base).
+export const rooted = (p) => /^(?:[\/\\]|[A-Za-z]:)/.test(p);
 const remote = (t) => /^[^/\\]*:/.test(t) && !/^[A-Za-z]:[\\/]/.test(t);
 const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
 
@@ -138,6 +141,7 @@ export function writeTargets(bin, args, { ps = false, env = [] } = {}) {
     for (const t of args) if (t.startsWith("of=")) add(t.slice(3));
   } else if (bin === "git") {
     const g = gitInvocation(args, env);
+    if (g.opaque) return { writes, unknown: true };
     if (g.sub !== "checkout" && g.sub !== "restore") return { writes, unknown };
     if (g.unknown) return { writes, unknown: true };
     const { at, under } = g;
@@ -155,7 +159,7 @@ export function writeTargets(bin, args, { ps = false, env = [] } = {}) {
     const { flags, positional } = scan(args, PATCH);
     const dir = vals(flags, "-d", "--directory").pop();
     if (dir != null && nonLiteral(dir)) return { writes, unknown: true };
-    const under = (p) => (dir != null && !/^[\/\\]/.test(p) ? `${dir}/${p}` : p);
+    const under = (p) => (dir != null && !rooted(p) ? `${dir}/${p}` : p);
     const out = vals(flags, "-o", "--output");
     for (const r of vals(flags, "-r", "--reject-file")) add(r === "-" ? r : under(r));
     if (out.length) out.forEach((o) => add(o === "-" ? o : under(o)));
@@ -165,10 +169,16 @@ export function writeTargets(bin, args, { ps = false, env = [] } = {}) {
   return { writes, unknown };
 }
 
-// One git command line, read for what git checkout / restore / rm / mv share. → { at, sub, unknown, under }: at, the
-// index of the subcommand (the first word that is not a global option or its value: -C dir, -c k=v, --git-dir d),
-// -1 when there is none; sub, the subcommand lowercased (null without one); unknown, the command writes where its
-// arguments do not say; under(p), a path as git resolves it against the -C base.
+// One git command line, read for what git checkout / restore / rm / mv share. → { at, sub, opaque, unknown, under }:
+// at, the index of the subcommand (the first word that is not a global option or its value), -1 when there is none;
+// sub, the subcommand lowercased (null without one); opaque, which command runs, and so what it writes, cannot be
+// told; unknown, the command writes where its arguments do not say (opaque included); under(p), a path as git
+// resolves it against the -C base.
+//   * Global options are read as git reads them (GIT_GLOBAL, cli/oversight-shell-options.mjs): the ones that take
+//     the next word skip it. Any other word starting with - (an option git does not have, an abbreviation, -Cdir), a
+//     word that is not literal ($OPTS may be options or the command) or a word git has no command for (an alias, an
+//     external git-<name>, a typo: GIT_COMMANDS) makes it opaque; the search goes on, so `git $OPTS rm f` is still
+//     judged as a git rm.
 //   * Another work tree moves every path: --work-tree / GIT_WORK_TREE, and --git-dir / GIT_DIR, which pick a
 //     repository whose own config may set core.worktree (measured, git 2.39.5, 2.47.3 and 2.54.0: checkout, restore,
 //     rm and mv each write there). A core.worktree given on the command line (-c, --config-env, GIT_CONFIG_COUNT) is
@@ -177,22 +187,24 @@ export function writeTargets(bin, args, { ps = false, env = [] } = {}) {
 //     absent (measured, the same versions: checkout <tree-ish> -- f and restore --staged).
 //   * GIT_COMMON_DIR, GIT_CEILING_DIRECTORIES and GIT_DISCOVERY_ACROSS_FILESYSTEM leave the paths where they are
 //     (measured, the same versions), so they change nothing here.
-//   * -C is cumulative: `git -C a -C b` runs in a/b; an absolute one starts over; an empty one changes nothing. A base
-//     that is not literal is unknown.
+//   * -C is cumulative: `git -C a -C b` runs in a/b; a rooted one (rooted: /, \, \\host\share, C:) starts over; an
+//     empty one changes nothing. A base that is not literal is unknown.
+const gitGlobalKnown = (t) => GIT_GLOBAL.valueless.includes(t) || GIT_GLOBAL.eqValued.some((o) => t.startsWith(`${o}=`));
 export function gitInvocation(args, env = []) {
-  let at = -1;
+  let at = -1, opaque = false;
   for (let i = 0; i < args.length; i++) {
     const t = args[i];
-    if (t === "-C" || t === "-c" || t === "--git-dir" || t === "--work-tree" || t === "--namespace") { i++; continue; }
-    if (t.startsWith("-")) continue;
+    if (GIT_GLOBAL.valued.includes(t)) { i++; continue; }
+    if (t.startsWith("-")) { if (!gitGlobalKnown(t)) opaque = true; continue; }
+    if (nonLiteral(t) || !GIT_COMMANDS.has(t.toLowerCase())) { opaque = true; continue; }
     at = i; break;
   }
-  const pre = scanArgs(at < 0 ? args : args.slice(0, at), { shortValued: "Cc", longValued: ["--git-dir", "--work-tree", "--namespace"] }).flags;
+  const pre = scanArgs(at < 0 ? args : args.slice(0, at), { shortValued: "Cc", longValued: GIT_GLOBAL.valued.filter((o) => o.startsWith("--")) }).flags;
   let base = null;
-  for (const c of vals(pre, "-C")) if (c) base = base == null || /^[\/\\]/.test(c) ? c : `${base}/${c}`;
-  const unknown = flagged(pre, "--work-tree", "--git-dir") || envSet(env, "GIT_WORK_TREE", "GIT_DIR", "GIT_INDEX_FILE") || (base != null && nonLiteral(base));
-  const under = (p) => (base != null && !/^[\/\\]/.test(p) ? `${base}/${p}` : p);
-  return { at, sub: at < 0 ? null : args[at].toLowerCase(), unknown, under };
+  for (const c of vals(pre, "-C")) if (c) base = base == null || rooted(c) ? c : `${base}/${c}`;
+  const unknown = opaque || flagged(pre, "--work-tree", "--git-dir") || envSet(env, "GIT_WORK_TREE", "GIT_DIR", "GIT_INDEX_FILE") || (base != null && nonLiteral(base));
+  const under = (p) => (base != null && !rooted(p) ? `${base}/${p}` : p);
+  return { at, sub: at < 0 ? null : args[at].toLowerCase(), opaque, unknown, under };
 }
 
 // The targets of redirects that have no command word (`> f`, `>> f`, `2> f`, `: ` excluded: that is a
