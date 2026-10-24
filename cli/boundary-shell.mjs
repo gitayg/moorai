@@ -12,7 +12,7 @@
 // Linear time (this runs inside PreToolUse on agent-written commands and manifests): no line-anchored pattern
 // lets \s span a newline, no two quantifiers overlap, manifest lines over LINE_MAX are blanked (a name on such
 // a line is not seen, so an install of it counts as new), and a command over MAX_CMD is not cut and judged
-// clean: it is "analysis-incomplete".
+// clean: it is "analysis-incomplete", as is a command the shell parser (or the check itself) fails on.
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { splitShell, commandOf, scanArgs, has, MAX_CMD } from "../data/shell-parse.js";
@@ -136,22 +136,25 @@ function installsOf(toks, ps) {
   return [];
 }
 
-// The installs a command makes, as [{ eco, names }], whatever the manifests say.
-export function installedPackages(command, { ps = false } = {}) {
+// The installs a command makes, as [{ eco, names }], whatever the manifests say; null when the command could not
+// be read (the parser, or reading one of its segments, failed), which is never "no installs". parse: the shell
+// splitter, for tests.
+export function installedPackages(command, { ps = false, parse = splitShell } = {}) {
   if (typeof command !== "string" || !command || command.length > MAX_CMD) return [];
   let segs = [];
-  try { segs = splitShell(command, ps, 0, { segs: [], heredocs: [] }).segs; } catch { return []; }
+  try { segs = parse(command, ps, 0, { segs: [], heredocs: [] }).segs; } catch { return null; }
   const out = [];
-  for (const s of segs) { try { out.push(...installsOf(s.tokens, s.ps)); } catch { /* an unreadable segment adds nothing */ } }
+  for (const s of segs) { try { out.push(...installsOf(s.tokens, s.ps)); } catch { return null; } }
   return out;
 }
 
 // cwd is the session's working directory: a package its manifest already declares is not new. After a cd in
 // the command the directory is not known, and the package is counted.
-export function boundaryCommandSignals(command, { cwd = "", ps = false } = {}) {
+export function boundaryCommandSignals(command, { cwd = "", ps = false, parse = splitShell } = {}) {
   try {
     if (typeof command === "string" && command.length > MAX_CMD) return [BOUNDARY_INCOMPLETE];
-    const inst = installedPackages(command, { ps });
+    const inst = installedPackages(command, { ps, parse });
+    if (inst === null) return [BOUNDARY_INCOMPLETE];
     if (!inst.length) return [];
     const moved = /(?:^|[\s;&|(])(?:cd|pushd|Set-Location)\s/.test(command);
     const known = new Map();
@@ -160,5 +163,5 @@ export function boundaryCommandSignals(command, { cwd = "", ps = false } = {}) {
       if (names.some((n) => !known.get(eco).has(n))) return ["new-dependency"];
     }
     return [];
-  } catch { return []; }
+  } catch { return [BOUNDARY_INCOMPLETE]; }
 }

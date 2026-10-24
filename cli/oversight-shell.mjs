@@ -11,7 +11,11 @@
 //     servicemonitor / podmonitor / alertmanagerconfig), a monitoring component deleted, scaled to zero,
 //     stopped or uninstalled (kubectl, helm, systemctl, service, docker);
 //   * a persistent env var that turns monitoring or alerting off (setx, launchctl setenv, kubectl set env,
-//     heroku config:set, fly secrets set, [Environment]::SetEnvironmentVariable).
+//     heroku config:set, fly secrets set, [Environment]::SetEnvironmentVariable);
+//   * a write onto a memory file or a protected path: besides redirects, tee, sed -i and Set-Content, a cp /
+//     install / rsync / mv destination, a curl / wget download, dd of=, git checkout -- / git restore, patch and
+//     a bare `> path` (cli/oversight-shell-writes.mjs). While there is a write check to run (memory files on or
+//     protected paths declared), a write position whose target is not literal is "analysis-incomplete".
 // Where a path lands: every path is resolved against the segment's working directory, tracked across
 // segments (cd / pushd / popd / Set-Location / Push-Location / Pop-Location with a literal target; a `cd`
 // inside a subshell, a pipeline or a background job does not move the shell around it), then judged relative
@@ -31,16 +35,19 @@
 // raises "analysis-incomplete", which cli/hook-core.mjs decideOversight asks on. The sed parsers are linear
 // scanners (no backtracking regex).
 import { statSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve, relative, isAbsolute, dirname, basename, join } from "node:path";
 import { splitShell, commandOf } from "../data/shell-parse.js";
 import { oversightEditSignals, assignedSignals, pathClass, pathClasses, OVERSIGHT_SIGNALS, INCOMPLETE } from "./oversight-signals.mjs";
 import { protectedPathHit, protectedKeyInCommand, memoryPathHit, realOf } from "./oversight-surfaces.mjs";
 import { words, switchKind, listKind, valueKind, WIRING_FAMILIES, TEST_GUARD_WORDS } from "./oversight-vocab.mjs";
+import { writeTargets, bareRedirects, nonLiteral, nullTarget } from "./oversight-shell-writes.mjs";
 
 const MAX = 262144;
 const MAX_SCRIPT = 65536;
 const BUDGET_MS = 250;
-const HINT = /\b(?:rm|unlink|shred|trash|del|erase|remove-item|ri|rd|rmdir|mv|move|move-item|rename-item|git|sed|gsed|perl|yq|jq|tee|echo|printf|cat|amtool|kubectl|helm|systemctl|service|docker|podman|setx|launchctl|heroku|fly|flyctl|set-content|add-content|out-file|truncate|setenvironmentvariable)\b|>/i;
+const HINT = /\b(?:rm|unlink|shred|trash|del|erase|remove-item|ri|rd|rmdir|mv|move|move-item|rename-item|git|sed|gsed|perl|yq|jq|tee|echo|printf|cat|amtool|kubectl|helm|systemctl|service|docker|podman|setx|launchctl|heroku|fly|flyctl|set-content|add-content|out-file|truncate|setenvironmentvariable|cp|install|rsync|curl|wget|dd|patch)\b|>/i;
+const WRITE_BINS = new Set(["cp", "install", "rsync", "curl", "wget", "dd", "patch"]);
 const DELETE_BINS = new Set(["rm", "unlink", "shred", "trash", "del", "erase", "remove-item", "ri", "rd", "rmdir"]);
 const MOVE_BINS = new Set(["mv", "move", "move-item", "rename-item"]);
 const MON_CRD = /^(?:prometheusrules?|servicemonitors?|podmonitors?|alertmanagerconfigs?|alertmanagers?|probes?|thanosrulers?)(?:\.monitoring\.coreos\.com)?(?:\/|$)/i;
@@ -147,6 +154,8 @@ function judgeMove(bin, args, git, opts, ctx, out, touched) {
   const m = moveParts(bin, args, git, opts.ps);
   if (!m) { for (const p of args.filter((t) => !t.startsWith("-"))) ctx.both(p).forEach((a) => touched.add(a)); return; }
   const literal = m.dest && !NOT_LITERAL.test(m.dest) && m.dest !== "/dev/null";
+  // A destination (or, into a directory, a source name) that is not literal: where it writes is unknown.
+  if (opts.watch && m.dest !== "/dev/null" && (!literal || m.sources.some((s) => nonLiteral(s)))) out.add(INCOMPLETE);
   const pairs = [ctx.at, ctx.written].map((place) => {
     const destAbs = literal ? place(m.dest) : null;
     if (destAbs) touched.add(destAbs);
@@ -158,10 +167,11 @@ function judgeMove(bin, args, git, opts, ctx, out, touched) {
     for (const { place, destAbs, dirDest } of pairs) {
       const srcAbs = place(s);
       touched.add(srcAbs);
+      const final = destAbs ? (m.rename ? join(dirname(srcAbs), m.dest) : dirDest ? join(destAbs, basename(srcAbs)) : destAbs) : null;
+      if (final) touched.add(final);
       const kinds = new Set([srcClass(ctx.rel(srcAbs)), srcClass(s)].filter(Boolean));
       if (!kinds.size) continue;
       if (!destAbs) { keeps = false; continue; }
-      const final = m.rename ? join(dirname(srcAbs), m.dest) : dirDest ? join(destAbs, basename(srcAbs)) : destAbs;
       if (opts.linkedEarlier || !keepsAt(final, kinds, ctx)) keeps = false;
     }
     if (!keeps) removalSignal(s, out, ctx);
@@ -243,6 +253,25 @@ function classifyPairs(pairs, context, out) {
 }
 const envPairs = (toks) => toks.map((t) => /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(t)).filter(Boolean).map((m) => ({ key: m[1], value: m[2] }));
 
+// The literal destinations a copy, install, download, dd, git checkout / restore or patch writes
+// (cli/oversight-shell-writes.mjs) go to the protected-path and memory-file checks, at both the tracked
+// directory and as written; a directory destination receives each source under its own name. A destination
+// that is not literal is analysis-incomplete when there is anything to check.
+const home = (p) => (p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
+function judgeWrites(wt, opts, ctx, out, touched) {
+  if (wt.unknown && opts.watch) out.add(INCOMPLETE);
+  for (const { dest, sources, dir } of wt.writes) {
+    for (const destAbs of ctx.both(home(dest))) {
+      touched.add(destAbs);
+      if (!sources || !(dir ?? isDir(destAbs))) continue;
+      for (const src of sources) {
+        if (nonLiteral(src)) { if (opts.watch) out.add(INCOMPLETE); continue; }
+        touched.add(join(destAbs, basename(home(src).replace(/[\/\\]+$/, ""))));
+      }
+    }
+  }
+}
+
 function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
   const toks = seg.tokens;
   const c = commandOf(toks, seg.ps);
@@ -253,6 +282,7 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
   const P = ctx.project;
   // Redirect targets: whatever this segment prints goes into them.
   for (const w of seg.writes || []) {
+    if (opts.watch && nonLiteral(w) && !nullTarget(w)) out.add(INCOMPLETE);
     let text = "";
     if (bin === "echo" || bin === "printf") text = pos.join(" ").replace(/\\n/g, "\n");
     else if (seg.heredoc) text = seg.heredoc;
@@ -260,6 +290,8 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
     for (const abs of ctx.both(w)) { touched.add(abs); if (text) for (const s of assignedSignals(text, abs, P)) out.add(s); }
   }
   if (!c) return;
+  if (WRITE_BINS.has(bin) || bin === "git") judgeWrites(writeTargets(bin, args), opts, ctx, out, touched);
+  if (WRITE_BINS.has(bin)) return;
   const removed = (p) => { ctx.both(p).forEach((a) => touched.add(a)); removalSignal(p, out, ctx); };
   if (DELETE_BINS.has(bin)) { pos.forEach(removed); return; }
   if (bin === "truncate" && /-s\s*0|--size=0/.test(args.join(" "))) { pos.filter((x) => x !== "0").forEach(removed); return; }
@@ -410,6 +442,8 @@ export function oversightCommandSignals(command, { ps = false, surfaces = null, 
   try { segs = parse(cmd, ps, 0, { segs: [], heredocs: [] }).segs; } catch { out.add(INCOMPLETE); segs = []; }
   const project = resolve(typeof cwd === "string" && cwd ? cwd : process.cwd());
   const opts = { ps, surfacePaths: Boolean(surfaces && surfaces.paths && surfaces.paths.length) };
+  // watch: there is a write check to run (memory files on, or protected paths declared).
+  opts.watch = Boolean(surfaces && (surfaces.memory || opts.surfacePaths));
   const dirs = new Map(); // subshell scope -> { dir, stack }
   // Execution order is not parse order (a later segment, a background job): a link-maker anywhere counts.
   opts.linkedEarlier = segs.some((s) => { try { return makesLink(s) || (!s.ps && s.sep === "&"); } catch { return true; } });
@@ -426,6 +460,16 @@ export function oversightCommandSignals(command, { ps = false, surfaces = null, 
     } catch { /* one segment never sinks the rest */ }
   }
   if (!out.has(INCOMPLETE) && now() > deadline) out.add(INCOMPLETE);
+  // A redirect with no command word (`> f`): the parser keeps no segment for it, so it is read from the text.
+  if (opts.watch) {
+    try {
+      for (const t of bareRedirects(cmd, ps)) {
+        if (nullTarget(t)) continue;
+        if (nonLiteral(t)) { out.add(INCOMPLETE); continue; }
+        for (const abs of new Set([resolve(project, home(t)), resolve(project, t)])) touched.add(abs);
+      }
+    } catch { out.add(INCOMPLETE); }
+  }
   // PowerShell / .NET persistent env var, read from the raw text.
   for (const m of cmd.matchAll(/SetEnvironmentVariable\(\s*["']([A-Za-z_][\w]*)["']\s*,\s*["']([^"']*)["']\s*,\s*["']?(?:\[EnvironmentVariableTarget\]::)?(?:User|Machine)/gi)) classifyPairs([{ key: m[1], value: m[2] }], "", out);
   if (surfaces) {

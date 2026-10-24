@@ -4252,9 +4252,13 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   (a backslash takes the next character, the first unescaped delimiter ends a field, a backslash or line
   terminator is never a delimiter) and the quoted-prose scanner remembers each position per quote kind; the
   tests time 50 KB pathological inputs under 50 ms in a child process. A command over 256 KiB, a `sed` / `perl`
-  script over 64 KiB, a command check past 250 ms, a write whose before or after is over 1 MiB, and a Write over
-  an existing runtime / test file the hook does not read (over 1 MiB) raise the local signal
-  `analysis-incomplete` instead of being cut and judged. `decideOversight` asks on it even when
+  script over 64 KiB, a command check past 250 ms, a command the shell parser throws on (`cli/oversight-shell.mjs`
+  passes `splitShell` its `heredocs` list, so a heredoc parses), a write whose before or after is over 1 MiB, a
+  Write over an existing runtime / test file the hook does not read (over 1 MiB), and, while memory files or
+  protected paths are watched, a write position whose target is not literal (`$`, `$( … )`, a glob or brace, a
+  `~user`; a redirect, a copy / install / download / `dd` / `git restore` / `patch` destination, an `mv`
+  destination, a non-literal source copied or moved into a directory, `patch` with no file operand) raise the
+  local signal `analysis-incomplete` instead of being cut and judged. `decideOversight` asks on it even when
   `threatPolicy["84"]` is `notify`, turns `kill` into `block` when it is the only signal, and honours `disabled`.
   An incomplete-only call is not an oversight change for the Stop disclosure check.
 - **Precision.** Measured on `test/oversight-fixtures.mjs`: every positive (the two report cases as 6 edits and 7
@@ -4279,14 +4283,30 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   (`PERSISTENT_INSTRUCTION_KINDS`, data/skill-surface.js: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/`,
   `AGENTS.md` / `AGENT.md` / `AGENTS.override.md`, `GEMINI.md`, `.cursorrules`, `.cursor/rules/`, `.windsurfrules`,
   Windsurf and Cline rules, `.github/copilot-instructions.md`, `.github/instructions/`, Kiro steering, Claude Code's
-  `.claude/projects/<p>/memory/`, OpenClaw `SOUL.md` / `MEMORY.md` / `memory/`). A Write / Edit of one, or a shell
-  command that writes, moves or deletes one, raises the signal `memory-file` under #84. `decideOversight`
+  `.claude/projects/<p>/memory/`, OpenClaw `SOUL.md` / `MEMORY.md` / `memory/`). A Write / Edit of one, an MCP
+  filesystem write tool's path (below), or a shell command that writes, moves or deletes one, raises the signal
+  `memory-file` under #84. Shell writes (`cli/oversight-shell-writes.mjs`): a redirect (a bare `> path` with no
+  command word too, read from the raw text, quote-aware, heredoc bodies skipped, since the parser keeps no segment
+  for it), `tee`, `sed -i` / `perl -pi`, `yq -i`, `Set-Content`, the destination of `cp` / `install` / `rsync` (a
+  local one; `-t`, `--target-directory`, `-T`; into a directory, each source under its own name) and `mv`, `curl
+  -o` / `--output` / `-O` (the URL's name, under `--output-dir`), `wget -O` / `--output-document`, its log `-o` /
+  `-a`, and without `-O` or `-r` the URL's own name under `-P`, `dd of=`, `git checkout [<tree-ish>] -- <path>`,
+  `git restore <path>` (`-C dir` applied) and `patch <file>` / `patch -o <file>`. MCP filesystem write tools
+  (`cli/oversight-mcp.mjs`, wired in the hook's `mcp__*` branch): a tool named by a write verb (write, edit, move,
+  rename, create, append, replace, insert, patch, save, overwrite, update) and a file noun (file, text_file,
+  directory, dir, folder, block, text, content, path, document), or a bare `write` / `edit`, unless its arguments
+  name a remote repository or bucket (`namesRemoteLocation`). Its path arguments map onto the Write / Edit check:
+  `content` / `text` → Write (append mode: the file's text plus it), `edits: [{ oldText, newText }]` → MultiEdit,
+  `old_string` / `new_string` → Edit, a move's destination → a Write of the source's text and its source → a
+  path-only check, anything else (`create_directory`) → a path-only check; the alert is reported at stage
+  `output`. `decideOversight`
   resolves it: with nothing configured for #84 (no `threatPolicy["84"]`; #84 has no data tier, so no `tierPolicy`
   reaches it) and no `memoryFiles`, `notify` (an alert, no prompt); with #84 configured, the stricter of
   `memoryFiles` (`notify`, `ask` = justify, `block`) and #84's action, `killOnCritical` untouched; with
   `memoryFiles` set and #84 not configured, `memoryFiles`. An invalid `memoryFiles` (warned) or
   `protectMemoryFiles: true` takes #84's action (built-in justify); `"off"` or `protectMemoryFiles: false` turns
-  the set off. With another #84 signal beside it the stricter decision stands, and `threatPolicy["84"]:
+  the set off. With both keys set the stricter wins: `protectMemoryFiles: false` turns the set off only when
+  `memoryFiles` is not set, and `protectMemoryFiles: true` raises `"off"` or `"notify"` to #84's action. With another #84 signal beside it the stricter decision stands, and `threatPolicy["84"]:
   "disabled"` disables it. A path that is also a declared `protectedPaths` entry raises
   `protected-surface` instead. Skills, commands and agent definitions are not in the set. The Stop / SubagentStop
   disclosure check does not count a `memory-file` row.
@@ -4319,7 +4339,8 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   continuations is a second bound. Shim hosts: alert only. The check is heuristic and precision-first (doubt
   reads as disclosed); it cannot tell a true statement from a false one.
 - **Not covered.** It judges the agent's own tool calls on this device. Changes made elsewhere (CI, a person,
-  another tool, an MCP server that writes files, a web console), a monitor renamed or rewritten so that no
+  another tool, an MCP write tool whose name has no write verb and file noun or that takes no path argument, a
+  write through the Claude Desktop MCP proxy, a web console), a monitor renamed or rewritten so that no
   oversight word remains, a test that weakens an assertion without an absence form or a skip, the full text of
   an Edit to a file over 1 MiB (only its snippets are judged), NotebookEdit cells (no before), paths held in shell variables (a `cd` to one fails closed when a later path is judged), a move to a new name in
   the same directory that keeps an oversight word (`alerting.py` to `alerting_unused.py`), and an unenrolled device's Stop (no console, no
@@ -4491,7 +4512,8 @@ in CI.
   read by splitting); manifests in cwd read to check whether an install is new are blanked the same way (a name
   on such a line is not seen, so the install counts as new). A write is `analysis-incomplete`, the fifth `tb`
   kind, when the file is over 1 MiB before or after it, or when it adds a line over 4 KiB that was not there
-  before; a shell command over `MAX_CMD` (256 KiB) is too. It is never judged clean: like any signal it counts at
+  before; a shell command over `MAX_CMD` (256 KiB) is too, and so is a command the shell parser (or reading one of
+  its segments) fails on (`cli/boundary-shell.mjs`; `threatModelCommand` credits no threat-model write for it). It is never judged clean: like any signal it counts at
   Stop and appears in `trustBoundary.kinds`. The PreToolUse verdict is not changed (85 is notify-only, unlike
   #84, which asks on its `analysis-incomplete`). Measured by `test/boundary-redos.test.mjs`: each adversarial
   input (a `[` and 200,000 spaces, 4,000-space headers, 200,000-newline runs before a non-matching line,

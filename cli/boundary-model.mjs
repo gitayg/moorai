@@ -93,14 +93,18 @@ const READ_MAX = 262_144;
 function readSmall(p) { try { const st = statSync(p); return st.isFile() && st.size <= READ_MAX ? readFileSync(p, "utf8") : null; } catch { return null; } }
 
 // The threat-model files a shell command writes (redirect, tee, sed / perl -i, cp / mv / install target),
-// as absolute paths. A .hcl target counts when it is a threatcl spec now or the command carries one.
+// as absolute paths. A .hcl target counts when it is a threatcl spec now or the command carries one. A command
+// the shell parser (or reading one of its segments) fails on credits no write: this module has no incomplete
+// marker, and a threat-model write is what clears the #85 Stop check, so none is the strict answer
+// (cli/boundary-shell.mjs reports the same command as analysis-incomplete). It never throws, so the caller still
+// records the call's other fields. parse: the shell splitter, for tests.
 const IN_PLACE = new Set(["sed", "gsed", "perl"]);
 const COPY = new Set(["cp", "mv", "install", "rsync"]);
-export function threatModelCommand(command, { cwd = "", tm = null, ps = false } = {}) {
+export function threatModelCommand(command, { cwd = "", tm = null, ps = false, parse = splitShell } = {}) {
   if (typeof command !== "string" || !command || command.length > MAX_CMD) return [];
   const base = typeof cwd === "string" && cwd ? cwd : process.cwd();
   let segs = [];
-  try { segs = splitShell(command, ps, 0, { segs: [], heredocs: [] }).segs; } catch { return []; }
+  try { segs = parse(command, ps, 0, { segs: [], heredocs: [] }).segs; } catch { return []; }
   const carries = /(?:^|\n)[ \t]*threatmodel[ \t]+"/.test(command);
   const out = new Set();
   const consider = (t) => {
@@ -109,20 +113,22 @@ export function threatModelCommand(command, { cwd = "", tm = null, ps = false } 
     if (isHcl(t) && (carries || isThreatModelText(readSmall(abs)))) out.add(abs);
     else if (tm && tm.paths && tm.paths.length && protectedPathHit(t, tm, { cwd: base, real: true })) out.add(abs);
   };
-  for (const s of segs) {
-    for (const w of s.writes || []) consider(w);
-    const c = commandOf(s.tokens, s.ps);
-    if (!c) continue;
-    const rest = s.tokens.slice(c.at + 1);
-    if (c.binary === "tee") scanArgs(rest, {}).positional.forEach(consider);
-    else if (IN_PLACE.has(c.binary) && rest.some((t) => /^-[A-Za-z]*i/.test(t) || t.startsWith("--in-place"))) {
-      const { positional } = scanArgs(rest, { shortValued: c.binary === "perl" ? "e" : "ef", longValued: ["--expression", "--file"] });
-      positional.slice(c.binary === "perl" || rest.some((t) => /^-[A-Za-z]*e/.test(t)) ? 0 : 1).forEach(consider);
-    } else if (COPY.has(c.binary)) {
-      const { positional } = scanArgs(rest, { shortValued: "tSm", longValued: ["--target-directory", "--suffix", "--mode"] });
-      if (positional.length >= 2) consider(positional[positional.length - 1]);
+  try {
+    for (const s of segs) {
+      for (const w of s.writes || []) consider(w);
+      const c = commandOf(s.tokens, s.ps);
+      if (!c) continue;
+      const rest = s.tokens.slice(c.at + 1);
+      if (c.binary === "tee") scanArgs(rest, {}).positional.forEach(consider);
+      else if (IN_PLACE.has(c.binary) && rest.some((t) => /^-[A-Za-z]*i/.test(t) || t.startsWith("--in-place"))) {
+        const { positional } = scanArgs(rest, { shortValued: c.binary === "perl" ? "e" : "ef", longValued: ["--expression", "--file"] });
+        positional.slice(c.binary === "perl" || rest.some((t) => /^-[A-Za-z]*e/.test(t)) ? 0 : 1).forEach(consider);
+      } else if (COPY.has(c.binary)) {
+        const { positional } = scanArgs(rest, { shortValued: "tSm", longValued: ["--target-directory", "--suffix", "--mode"] });
+        if (positional.length >= 2) consider(positional[positional.length - 1]);
+      }
     }
-  }
+  } catch { return []; }
   return [...out];
 }
 

@@ -23,6 +23,7 @@ import { buildEngine, decideText, decideCredFileRead, decideTransit, transitEnvT
 import { oversightEditSignals, beforeAfter } from "./oversight-signals.mjs";
 import { oversightCommandSignals } from "./oversight-shell.mjs";
 import { oversightPolicy } from "./oversight-surfaces.mjs";
+import { oversightMcpSignals } from "./oversight-mcp.mjs";
 import { assessOversightDisclosure } from "./oversight-disclosure.mjs";
 import { fetchExecFacts } from "../data/net-exec.js";
 import { fetchedExecHit, recordFetched } from "./fetch-exec-state.mjs";
@@ -3459,13 +3460,30 @@ async function main() {
     if (RANK[fsr.decision] > RANK[g.decision]) { g.decision = fsr.decision; g.reason = fsr.reasons.join(", "); g.alternatives = fsr.alternatives; }
     else if (fsr.decision !== "allow" && fsr.decision === g.decision) g.reason = [g.reason, ...fsr.reasons].filter(Boolean).join(", ");
     if (fsr.kill) { g.kill = true; g.killIds = [...(g.killIds || []), ...fsr.killIds]; }
-    if (g.decision !== "allow") why(detectorReason([...g.findings, ...fsr.findings]));
+    // #84 — an MCP filesystem write (write_file, edit_file, move_file, create_directory …) gets the Write / Edit
+    // oversight check on the paths it names (cli/oversight-mcp.mjs): memory files, protected paths, and the
+    // before / after judgement of runtime code and tests. Merged by rank, never downgrading.
+    // Reported at stage "output", as the Write branch reports it.
+    let ovFindings = [];
+    {
+      let movs = [];
+      try { movs = oversightMcpSignals(tool, ti, { cwd: typeof input.cwd === "string" ? input.cwd : "", surfaces: oversightPolicy(policy, () => {}) }); } catch { movs = ["analysis-incomplete"]; }
+      if (movs.length) {
+        const od = decideOversight(policy, movs, "output");
+        OVERSIGHT_SIG = movs;
+        ovFindings = od.findings;
+        if (RANK[od.decision] > RANK[g.decision]) { g.decision = od.decision; g.reason = od.reasons.join(", "); g.alternatives = od.alternatives; }
+        if (od.kill) { g.kill = true; g.killIds = [...(g.killIds || []), ...od.killIds]; }
+      }
+    }
+    if (g.decision !== "allow") why(detectorReason([...g.findings, ...fsr.findings, ...ovFindings]));
     // #33 — fail-closed MCP floor: raise an otherwise-allowed MCP call to "ask" (justify). Inert unless
     // policy.mcpFloor is set (only the offline fail-closed default sets it), so normal policies are unaffected.
     const floored = mcpFloor(policy, g.decision);
     if (floored !== g.decision) { g.decision = floored; g.reason = g.reason || "fail-closed default: MCP requires justification"; why(REASON.MCP_FLOOR); VERDICT.enforcement = ENFORCEMENT.STRENGTHENED; }
     report(g.findings, "egress", `hook:${tool}`, g.decision === "deny", policy.captureTier, { toolName: tool, argText: args }, signApproval(tool, argsH, g.decision === "deny" ? "deny" : "allow"));
     for (const f of fsr.files) report(f.findings, "file", `hook:${tool}`, g.decision === "deny", policy.captureTier, { filePath: f.arg, toolName: tool }, signApproval(tool, argsH, g.decision === "deny" ? "deny" : "allow"));
+    if (ovFindings.length) report(ovFindings, "output", `hook:${tool}`, g.decision === "deny", policy.captureTier, { toolName: tool }, signApproval(tool, argsH, g.decision === "deny" ? "deny" : "allow"));
     const allFindings = [...g.findings, ...fsr.findings];
     // The behaviour ledger gets the file's findings only when the tool SENDS it. Every mcp__* call is
     // already a trifecta "callout" leg, so a read_file of a file with a secret and an injected line would
