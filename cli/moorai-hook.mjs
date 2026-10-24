@@ -71,6 +71,7 @@ import { sessionRiskStep, circuitStep, circuitOutcome, originOf as fileOriginOf 
 import { quarantineStep, mergeQuarantine } from "./quarantine-step.mjs";
 import { fileQuarantineConfig } from "../data/quarantine-summary.js";
 import { captureTask, judgeAction, CLASS_TEXT } from "./intent-alignment.mjs";
+import { taskBoundStep } from "./task-bound-hook.mjs";
 import { promptScanPlan, promptBlockers } from "./prompt-scan.mjs";
 import { serverMode, cloudAgentPosture, serviceWho, settleHeadlessAsk, settleBypassAsk, tamperAlert, trustedEnv, refusedTrustEnv, systemConfigPath, systemConfig, workloadIdentity, workerEnv, hookProcessEnvName } from "./server-mode.mjs";
 import { hookFailMode, failClosedApplies, failClosedOutput, failClosedVerdict, failClosedAlert, failReason, HOOK_DECISION_BUDGET_MS } from "./hook-fail.mjs";
@@ -3588,7 +3589,7 @@ async function main() {
     }
     logBehavior(tool, tool, sent.text, { decision: g.decision, findings: sent.findings }, "egress");
     if (g.kill) killSession(tool, g.killIds, "egress");
-    const it = intentStep(policy, tool, ti, allFindings, g.decision, g.reason ? [g.reason] : [], g.alternatives);
+    const it = taskBoundStep(policy, SESSION_ID, tool, ti, intentStep(policy, tool, ti, allFindings, g.decision, g.reason ? [g.reason] : [], g.alternatives), { post: (a) => post({ ...a, ts: new Date().toISOString(), ...IDENTITY }), coach: COACH, verdict: VERDICT });
     // mask: every string leaf of the arguments is rewritable; the serialized form is what was scanned.
     const mm = settleMask(engine, policy, { tool, stage: "prompt", ctx: { egress: true }, ids: g.maskIds, value: ti, scanOf: (v) => JSON.stringify(v), dec: it.dec, reasons: it.reasons, alts: it.alts, text: args });
     // Quarantined reader: an MCP filesystem read of an outside-origin file, as for a shell read.

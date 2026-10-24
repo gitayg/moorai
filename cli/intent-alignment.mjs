@@ -25,6 +25,7 @@ import { STATE_DIR } from "./state-dirs.mjs";
 import { taskFeatures, featureKeys, actionTargets, assessAlignment, LABELS } from "../data/intent-alignment.js";
 import { localHost } from "../data/model-escalation.mjs";
 import { semanticEnabled } from "../data/semantic-escalation.js";
+import { captureTaskTerms } from "./task-bound-hook.mjs";
 
 export const INTENT_FILE = "intent-alignment.json";
 export const INTENT_KEY_FILE = "intent.key";
@@ -48,6 +49,8 @@ const USER_SOURCES = new Set(["user", "sdk", "loop_wakeup", "schedule_wakeup"]);
 export function isUserPrompt(input) { return !input.source || USER_SOURCES.has(input.source); }
 
 let _key;
+// The device key, for cli/task-bound-hook.mjs (the task-bound terms are hashed with the same key).
+export function deviceKey(create) { return key(create); }
 function key(create) {
   if (_key) return _key;
   const p = join(STATE_DIR, INTENT_KEY_FILE);
@@ -113,6 +116,7 @@ export async function modelLabels(prompt, policy) {
 
 // UserPromptSubmit. Returns nothing; writes only hashes.
 export async function captureTask(input, policy) {
+  captureTaskTerms(input, policy);
   try {
     if (intentMode(policy) === "off" || !input.session_id || typeof input.prompt !== "string" || !isUserPrompt(input)) return;
     const k = key(true);
@@ -162,5 +166,7 @@ export const CLASS_TEXT = {
   credentials: "a credential read your request never mentioned",
   destructive: "a destructive command on paths your request never mentioned",
   "mcp-write": "an MCP write to a service your request never mentioned",
-  "moorai-control": "an upload to a service on this machine (loopback), such as MoorAI's own control endpoints"
+  "moorai-control": "an upload to a service on this machine (loopback), such as MoorAI's own control endpoints",
+  "object-not-in-task": "a high-impact call whose object your request never named",
+  "outside-task-allowlist": "a tool or argument outside the allowlist for this task"
 };

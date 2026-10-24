@@ -40,3 +40,4 @@ export const toolTagsLib = await load("cli/tool-tags.mjs");
 export const exceptionsLib = await load("cli/exceptions.mjs");
 export const agentNamesLib = await load("cli/agent-names.mjs");
 export const intentServerLib = await load("data/intent-server.mjs");
+export const taskBoundLib = await load("data/task-bound.js");

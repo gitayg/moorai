@@ -74,6 +74,18 @@
 // contentHash = the tenant-keyed hash of the class and the store's keyed target hash. Never a prompt, a
 // path, a host or an argument.
 //
+// TASK-BOUND CALLS (data/task-bound.js, the same store's judgeBound). Every tool call the model returns, by the
+// name the model sent and whatever it maps to, after the proxy's own verdict and intent alignment and not when
+// either is a deny: (1) the object check — a high-impact call (an MCP write, a business-impact function, a
+// write-verb function, a tool policy.intentArgs names) whose object fields name nothing in the person's task is
+// class "object-not-in-task", decided by intentAlignment as above; (2) task allowlists — when the session's
+// task matches a policy.taskAllowlists entry by its keywords, a tool or argument value outside the entry is
+// class "outside-task-allowlist": in --mode enforce denied ("deny") or a headless ask ("ask"), whatever
+// intentAlignment says; in --mode report only alerted. The proxy has no explicit task id (only keyword
+// entries match here: moorai-serve and the SDK set ids). The turns are captured whenever intentAlignment is
+// not "off" or an allowlist is configured. An unreadable allowlist entry denies what it would have covered
+// and raises one "Task-bound policy invalid" alert per policy.
+//
 // THE KEY. One HMAC key per process for the store and the conversation hash: read from --intent-key-file
 // (64 hex characters, in a file owned by root and not group- or world-writable, readRootOwned; on Windows a
 // protected file) so several proxy replicas hash alike, else 32 random bytes at start. It never leaves the
@@ -85,6 +97,7 @@ import { settleHeadlessAsk } from "../cli/server-mode.mjs";
 import { readRootOwned } from "../cli/hook-core.mjs";
 import { CLASS_TEXT as HOOK_CLASS_TEXT } from "../cli/intent-alignment.mjs";
 import { userTurns, carriesTools } from "./user-turns.mjs";
+import { resolveTaskBound, hasAllowlists } from "../data/task-bound.js";
 
 export const SESSION_ID_HEADER = "x-moorai-session-id";
 export const CLAUDE_SESSION_HEADER = "x-claude-code-session-id";
@@ -139,12 +152,13 @@ export function createIntent({ lib, key, rt, enforce, now, warn = (m) => process
   function begin(kind, json, headers, trace, policy) {
     if (!store) return null;
     const mode = modeOf(policy);
-    if (mode === "off") return null;
-    const turns = json ? userTurns(kind, json) : [];
+    const lists = typeof store.judgeBound === "function" && hasAllowlists(resolveTaskBound(policy, rt.settings.admin));
+    if (mode === "off" && !lists) return null;
+    const turns = json ? userTurns(kind, json, lists ? { max: Infinity } : undefined) : [];
     const sessionId = sessionOf({ headers, trace, turns, hmac });
     const firstTurns = captured(sessionId) ? [] : [turns[0]];
     const pending = carriesTools(kind, json) ? [...new Set([...firstTurns, turns[turns.length - 1]])].filter(Boolean) : [];
-    return { sessionId, mode, pending };
+    return { sessionId, mode, pending, policy };
   }
   // The provider answered 2xx: capture the task. Once per request.
   function commit(ctx) {
@@ -152,7 +166,7 @@ export function createIntent({ lib, key, rt, enforce, now, warn = (m) => process
     const turns = ctx.pending;
     ctx.pending = [];
     for (const t of turns) {
-      try { store.captureTask(ctx.sessionId, t); } catch { /* not captured: the store answers task-unknown */ }
+      try { store.captureTask(ctx.sessionId, t, undefined, { bound: { policy: ctx.policy, admin: rt.settings.admin } }); } catch { /* not captured: the store answers task-unknown */ }
     }
     if (turns.length) remember(ctx.sessionId);
   }
@@ -160,7 +174,7 @@ export function createIntent({ lib, key, rt, enforce, now, warn = (m) => process
   // check.mjs calls this for a mapped tool call whose verdict is not a deny. Returns the verdict that replaces
   // it, or null to keep it.
   async function judge(ctx, tool, input, findings, name, verdict) {
-    if (!ctx || !store) return null;
+    if (!ctx || !store || ctx.mode === "off") return null;
     let r;
     try { r = store.judge(ctx.sessionId, tool, input, findings || []); } catch { return null; }
     if (!r || r.aligned) return null;
@@ -185,5 +199,47 @@ export function createIntent({ lib, key, rt, enforce, now, warn = (m) => process
     return { decision: h.decision, reasons: [h.reason] };
   }
 
-  return { begin, commit, judge, get active() { return store !== null; }, size: () => { try { return store ? store.size() : 0; } catch { return 0; } } };
+  // check.mjs calls this once per tool call (the name and arguments the model sent) whose verdict is not a deny.
+  // Returns the verdict that replaces it, or null to keep it.
+  const problemsPosted = new Set();
+  async function judgeBound(ctx, name, input, verdict) {
+    if (!ctx || !store || typeof store.judgeBound !== "function") return null;
+    let r;
+    try { r = store.judgeBound(ctx.sessionId, String(name || ""), input, { policy: ctx.policy, admin: rt.settings.admin }, undefined, { objects: ctx.mode !== "off" }); } catch { return null; }
+    const s = await rt.ready();
+    const label = String(name || "function").replace(/[^A-Za-z0-9_.:\-]/g, "_").slice(0, 64);
+    const prov = { prov: { policyId: s.policyId, policySource: s.source, event: "PreToolUse" } };
+    if (r.problems.length && !problemsPosted.has(`${s.policyId}\0${r.problems.join(",")}`)) {
+      problemsPosted.add(`${s.policyId}\0${r.problems.join(",")}`);
+      rt.reporter.post({ threatId: 0, category: "Task-bound policy invalid", riskLevel: "High", stage: "policy", tool: `model-proxy:${label}`, decision: "notify", reasonCode: REASON.FAIL_CLOSED, contentHash: rt.hash(`task-bound-policy:${r.problems.join(",")}`), taskBoundPolicy: { problems: r.problems } }, prov);
+    }
+    let out = null;
+    const cur = () => out || verdict || { decision: "allow", reasons: [] };
+    const o = r.objects;
+    if (o && !o.aligned) {
+      const why = `action outside the stated task — ${CLASS_TEXT[o.class] || o.class}`;
+      if (o.firstForTarget) rt.reporter.post({ threatId: 64, category: CATEGORY, riskLevel: "Medium", stage: "behavior", tool: `model-proxy:${label}`, decision: ctx.mode === "block" ? "deny" : ctx.mode === "ask" ? "ask" : "notify", reasonCode: REASON.INTENT_MISMATCH, contentHash: rt.hash(`intent:${o.class}:${o.targetHash}`), intent: { class: o.class, mode: ctx.mode } }, prov);
+      if (enforce && ctx.mode === "block") return { decision: "deny", reasons: [why] };
+      if (enforce && ctx.mode === "ask") out = askOf(s, label, why, cur(), prov);
+    }
+    const a = r.allowlist;
+    if (a) {
+      const why = `outside the task allowlist${a.task ? ` "${a.task}"` : ""} (${a.reason})`;
+      if (a.firstForTarget) rt.reporter.post({ threatId: 64, category: CATEGORY, riskLevel: a.decision === "deny" ? "Blocked" : "High", stage: "behavior", tool: `model-proxy:${label}`, decision: a.decision, reasonCode: REASON.INTENT_MISMATCH, contentHash: rt.hash(`intent:${a.class}:${a.targetHash}`), intent: { class: a.class, mode: a.decision, task: a.task, reason: a.reason } }, prov);
+      if (enforce && a.decision === "deny") return { decision: "deny", reasons: [why] };
+      if (enforce) out = askOf(s, label, why, cur(), prov);
+    }
+    return out && out.decision !== "allow" ? out : null;
+  }
+  // An ask on top of verdict v, settled by server mode's headless rule as judge() settles one.
+  function askOf(s, label, why, v, prov) {
+    if (v && v.decision === "deny") return v;
+    if (v && v.decision === "ask") return { ...v, reasons: [...(v.reasons || []), why] };
+    if (rt.settings.passThrough) return { decision: "ask", reasons: [why] };
+    const h = settleHeadlessAsk({ active: true, headless: rt.settings.headless }, s.policy, { decision: "ask", reason: `needs justification ${why}`, tool: label });
+    if (h.alert) rt.reporter.post({ ...h.alert, tool: `model-proxy:${label}`, reasonCode: REASON.HEADLESS_ASK, enforcement: h.decision === "deny" ? "STRENGTHENED" : "LIMITED" }, prov);
+    return { decision: h.decision, reasons: [h.reason] };
+  }
+
+  return { begin, commit, judge, judgeBound, get active() { return store !== null; }, size: () => { try { return store ? store.size() : 0; } catch { return 0; } } };
 }

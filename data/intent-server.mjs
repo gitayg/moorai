@@ -27,6 +27,21 @@
 //                 Sessions are namespaced by owner: a task set under one owner is invisible to, and cannot
 //                 be replaced by, another. Omitted or not a string -> "" (one shared namespace).
 //
+// TASK-BOUND ADDITIONS (data/task-bound.js; additive, the signatures above are unchanged):
+//   createIntentStore({ ..., maxTerms })   default 8192 task-bound term hashes per session (dropped past it,
+//                                          which can only make a later object look LESS named)
+//   store.captureTask(sessionId, promptText, owner, { authenticated, bound: { policy, admin } })
+//                                          bound: the policy in force; the keyword allowlist entries the WHOLE
+//                                          prompt names are recorded (keyed hashes of the entries' own text),
+//                                          apart from the capped term set, so a long prompt cannot push a
+//                                          selecting keyword out of it
+//   store.setTaskId(sessionId, taskId, owner, { authenticated }) -> { taskId: boolean }
+//   store.judgeBound(sessionId, tool, input, { policy, admin }, owner, { authenticatedOnly, objects })
+//                                          -> { objects, allowlist, problems } (see judgeBound below)
+//   captureTask also keeps the keyed hashes of the task's words, two- to five-word phrases, whitespace-
+//   delimited tokens and numbers (taskTerms), for the object check and keyword allowlist matching. Like the
+//   features, they live in memory under this process's key and are never returned or written.
+//
 // DETAILS OF THE CONTRACT (implementation notes, not new signatures):
 //   key           omitted -> 32 random bytes, so the hashes are unlinkable outside this process.
 //   maxSessions   default 1024 live sessions in all. A new session over the cap evicts the least recently
@@ -60,8 +75,9 @@
 // "does this action serve the task"; a request pasted from an untrusted source puts its hosts in scope.
 import { createHmac, randomBytes } from "node:crypto";
 import { taskFeatures, featureKeys, actionTargets, assessAlignment } from "./intent-alignment.js";
+import { taskTerms, termKey, taskIdKey, validTaskId, resolveTaskBound, objectChecks, judgeObjects, applicableEntries, judgeAllowlists, entriesNamedIn, OBJECT_CLASS, ALLOWLIST_CLASS } from "./task-bound.js";
 
-export const INTENT_DEFAULTS = Object.freeze({ maxSessions: 1024, ttlMs: 24 * 3600 * 1000, maxFeatures: 512 });
+export const INTENT_DEFAULTS = Object.freeze({ maxSessions: 1024, ttlMs: 24 * 3600 * 1000, maxFeatures: 512, maxTerms: 8192 });
 const MAX_SEEN = 64;
 export const INTENT_MODES = Object.freeze(["off", "report", "ask", "block"]);
 // The category every surface files a misaligned action under (cli/moorai-hook.mjs intentStep;
@@ -73,12 +89,14 @@ export const INTENT_CLASS_TEXT = Object.freeze({
   credentials: "a credential read your request never mentioned",
   destructive: "a destructive command on paths your request never mentioned",
   "mcp-write": "an MCP write to a service your request never mentioned",
-  "moorai-control": "an upload to a service on this machine (loopback), such as MoorAI's own control endpoints"
+  "moorai-control": "an upload to a service on this machine (loopback), such as MoorAI's own control endpoints",
+  [OBJECT_CLASS]: "a high-impact call whose object your request never named",
+  [ALLOWLIST_CLASS]: "a tool or argument outside the allowlist for this task"
 });
 
 const posInt = (v, d) => (Number.isInteger(v) && v > 0 ? v : d);
 
-export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, maxSessionsPerOwner } = {}) {
+export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, maxSessionsPerOwner, maxTerms } = {}) {
   const k = Buffer.isBuffer(key) ? Buffer.from(key) : typeof key === "string" && key ? Buffer.from(key, "utf8") : randomBytes(32);
   const h = (s) => createHmac("sha256", k).update(String(s), "utf8").digest("hex").slice(0, 16);
   const cap = posInt(maxSessions, INTENT_DEFAULTS.maxSessions);
@@ -86,6 +104,7 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
   const maxUnknown = cap * 4;
   const ttl = posInt(ttlMs, INTENT_DEFAULTS.ttlMs);
   const maxF = posInt(maxFeatures, INTENT_DEFAULTS.maxFeatures);
+  const maxW = posInt(maxTerms, INTENT_DEFAULTS.maxTerms);
   const clock = typeof now === "function" ? now : Date.now;
   // Map insertion order is the LRU order: a touched session is re-inserted at the end.
   const sessions = new Map();
@@ -117,9 +136,7 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
     evictLruOf(big);
   }
 
-  function captureTask(sessionId, promptText, owner, { authenticated = true } = {}) {
-    if (!validId(sessionId) || typeof promptText !== "string") return { features: 0 };
-    const t = clock();
+  function open(sessionId, owner, t) {
     prune(t);
     const ow = ownerOf(owner);
     const sid = sidOf(ow, sessionId);
@@ -127,19 +144,49 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
     if (!cur) {
       makeRoom(ow);
       // f: every capture's features; fa: only authenticated captures' (a: one has happened).
-      cur = { t, o: ow, f: new Set(), fa: new Set(), a: false, seen: new Set() };
+      // w / wa: the same split for the task-bound terms (data/task-bound.js); tid: the explicit task id's
+      // keyed hash, honoured only when an authenticated writer set it (tidA).
+      cur = { t, o: ow, f: new Set(), fa: new Set(), a: false, seen: new Set(), w: new Set(), wa: new Set(), me: new Set(), tid: null, tidA: false };
       owners.set(ow, (owners.get(ow) || 0) + 1);
       unknown.delete(sid);
     }
+    return { sid, cur };
+  }
+
+  function captureTask(sessionId, promptText, owner, { authenticated = true, bound = null } = {}) {
+    if (!validId(sessionId) || typeof promptText !== "string") return { features: 0 };
+    const t = clock();
+    const { sid, cur } = open(sessionId, owner, t);
     const auth = authenticated !== false;
     if (auth) cur.a = true;
     for (const fk of featureKeys(taskFeatures(promptText), h)) {
       if (cur.f.size < maxF) cur.f.add(fk);
       if (auth && cur.fa.size < maxF) cur.fa.add(fk);
     }
+    for (const term of taskTerms(promptText)) {
+      if (cur.w.size >= maxW && (!auth || cur.wa.size >= maxW)) break;
+      const k = termKey(term, h);
+      if (cur.w.size < maxW) cur.w.add(k);
+      if (auth && cur.wa.size < maxW) cur.wa.add(k);
+    }
+    if (bound) for (const e of entriesNamedIn(resolveTaskBound(bound.policy, bound.admin).lists, promptText)) if (cur.me.size < 256) cur.me.add(h(`tb-entry:${e.key}`));
     cur.t = t;
     touch(sid, cur);
     return { features: cur.f.size };
+  }
+
+  // The session's explicit task id (moorai-serve POST /v1/task { taskId }, the SDK's setTaskId), which selects
+  // the task allowlist entry that names it. Only the id's keyed hash is kept; a later id replaces it. One set
+  // by an unauthenticated writer is kept but never selects an entry.
+  function setTaskId(sessionId, taskId, owner, { authenticated = true } = {}) {
+    if (!validId(sessionId) || !validTaskId(taskId)) return { taskId: false };
+    const t = clock();
+    const { sid, cur } = open(sessionId, owner, t);
+    cur.tid = taskIdKey(taskId, h);
+    cur.tidA = authenticated !== false;
+    cur.t = t;
+    touch(sid, cur);
+    return { taskId: true };
   }
 
   const firstIn = (seen, th) => {
@@ -174,9 +221,64 @@ export function createIntentStore({ key, maxSessions, ttlMs, maxFeatures, now, m
     return { aligned: r.aligned, class: action.cls, targetHash, firstForTarget: firstIn(cur.seen, targetHash) };
   }
 
+  // Task-bound checks (data/task-bound.js) for ANY tool call, by the name the caller sent:
+  //   objects    the object check for a high-impact call: null (not high-impact, no object field, or
+  //              opts.objects false) | { aligned, class: "object-not-in-task" | "task-unknown", unmatched,
+  //              fields, targetHash, firstForTarget }. No live task (or, with authenticatedOnly, no
+  //              authenticated capture) is task-unknown, as judge() answers.
+  //   allowlist  null (no entry applies, or every applicable entry allows) | { decision: "deny" | "ask",
+  //              class: "outside-task-allowlist", task: <entry name>, reason: "tool-not-listed" |
+  //              "argument-not-allowed" | "invalid-policy", invalid, targetHash, firstForTarget }. Keyword
+  //              entries match on every capture's terms (a wider match only restricts more); the task id
+  //              counts only when an authenticated writer set it.
+  //   problems   the policy's fixed problem tokens (resolveTaskBound), for the caller's alert.
+  // src: { policy, admin } — the signed policy and the root-owned admin binding, never user state.
+  function judgeBound(sessionId, tool, input, src, owner, { authenticatedOnly = false, objects = true } = {}) {
+    const cfg = resolveTaskBound(src && src.policy, src && src.admin);
+    const checks = objects ? objectChecks(tool, input, cfg.args) : null;
+    if (!checks && !cfg.lists.length) return { objects: null, allowlist: null, problems: cfg.problems };
+    const t = clock();
+    const sid = sidOf(ownerOf(owner), validId(sessionId) ? sessionId : "");
+    let cur = validId(sessionId) ? sessions.get(sid) : undefined;
+    if (cur && t - cur.t >= ttl) { bury(sid, cur); cur = undefined; }
+    if (cur) { cur.t = t; touch(sid, cur); }
+    let seen = cur ? cur.seen : unknown.get(sid);
+    if (!seen) {
+      seen = new Set();
+      unknown.set(sid, seen);
+      while (unknown.size > maxUnknown) unknown.delete(unknown.keys().next().value);
+    }
+    const name = String(tool || "").slice(0, 256);
+    let obj = null;
+    if (checks) {
+      const live = cur && (!authenticatedOnly || cur.a);
+      if (!live) {
+        const targetHash = h(`target:task-unknown:${name}:${checks.map((c) => c.key).join("|")}`);
+        obj = { aligned: false, class: "task-unknown", unmatched: checks.length, fields: checks.length, targetHash, firstForTarget: firstIn(seen, targetHash) };
+      } else {
+        const terms = authenticatedOnly ? cur.wa : cur.w;
+        const r = judgeObjects(checks, (term) => terms.has(termKey(term, h)));
+        const targetHash = h(`target:${OBJECT_CLASS}:${name}:${r.target}`);
+        obj = { aligned: r.aligned, class: OBJECT_CLASS, unmatched: r.unmatched, fields: r.fields, targetHash, firstForTarget: r.aligned ? false : firstIn(seen, targetHash) };
+      }
+    }
+    let allow = null;
+    if (cfg.lists.length) {
+      const has = cur ? (term) => cur.w.has(termKey(term, h)) : null;
+      const hasId = cur && cur.tid && cur.tidA ? (id) => cur.tid === taskIdKey(id, h) : null;
+      const recorded = cur && cur.me.size ? (e) => cur.me.has(h(`tb-entry:${e.key}`)) : null;
+      const r = judgeAllowlists(applicableEntries(cfg.lists, has, hasId, recorded), tool, input);
+      if (r) {
+        const targetHash = h(`target:${ALLOWLIST_CLASS}:${r.index}:${r.reason}:${name}`);
+        allow = { decision: r.outcome, class: ALLOWLIST_CLASS, task: r.task, reason: r.reason, invalid: r.invalid, targetHash, firstForTarget: firstIn(seen, targetHash) };
+      }
+    }
+    return { objects: obj, allowlist: allow, problems: cfg.problems };
+  }
+
   function size() { prune(clock()); return sessions.size; }
 
-  return { captureTask, judge, size };
+  return { captureTask, judge, size, setTaskId, judgeBound };
 }
 
 export function intentModeFromPolicy(policy) {

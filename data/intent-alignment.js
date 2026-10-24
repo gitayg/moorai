@@ -385,7 +385,7 @@ function egressTargets(command) {
   return { hosts: [...hosts], control: [...control], wsl };
 }
 
-const MCP_WRITE = /(?:^|[_-])(?:create|update|delete|remove|send|post|write|push|publish|upload|comment|merge|add|edit|put|set|insert|close|reply|share|invite|move|rename|archive|transfer|execute|run|deploy|submit|patch)(?:[_-]|$)/i;
+export const MCP_WRITE = /(?:^|[_-])(?:create|update|delete|remove|send|post|write|push|publish|upload|comment|merge|add|edit|put|set|insert|close|reply|share|invite|move|rename|archive|transfer|execute|run|deploy|submit|patch)(?:[_-]|$)/i;
 
 // Operands of a destructive command that look like paths (contain a slash or a dot, or are a bare
 // word following rm/rmdir/shred). Flags and the command word itself are skipped.
