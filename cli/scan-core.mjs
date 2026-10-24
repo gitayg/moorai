@@ -92,7 +92,7 @@ function mergeFindings(a, b) {
 // detectors too, per DetectionEngine._wantStages) and, for a JSON config, additionally at stage "tool"
 // over the extracted descriptor strings. Returns the content-free findings + the file verdict.
 export function scanFileText({ engine, policy, text, relativePath, surfaceKind }) {
-  const fileDec = decideText(engine, policy, text, "file");
+  const fileDec = decideText(engine, policy, text, "file", { ctx: { readPath: relativePath } });
   let decision = fileDec.decision;
   let raw = fileDec.findings;
 
@@ -103,7 +103,7 @@ export function scanFileText({ engine, policy, text, relativePath, surfaceKind }
     raw = mergeFindings(raw, toolDec.findings);
   }
 
-  const intentLabels = skillIntents(text, raw);
+  const intentLabels = skillIntents(text, raw, { readPath: relativePath });
   const findings = raw.map((f) => ({
     relativePath,
     surfaceKind,

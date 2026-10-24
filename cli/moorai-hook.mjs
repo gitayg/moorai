@@ -1707,7 +1707,7 @@ function reportSkillFile(path, text, d) {
     // keying would break dedup for no confidentiality gain — this one was the exception that made
     // the classification guard's own "all remaining sites are non-content" claim untrue.
     const fp = fileFingerprint(text);
-    const intents = skillIntents(text, d.findings);
+    const intents = skillIntents(text, d.findings, { readPath: path });
     const injected = (d.findings || []).some((f) => [3, 40, 50, 51].includes(f.threatId));
     const key = `${kind}|${path}`;
     const base = rulesBaseline();
@@ -3122,7 +3122,9 @@ async function main() {
     // context.tree: the file, from the bytes just read, before it is judged. A skill or instruction file is
     // a "skill" leaf. Judged before the host runs the Read, so a Read denied below keeps its leaf.
     if (READ_BUF) { const sk = isSkillSurface(ti.file_path); ctxEnter(sk ? "skill" : "file", sk ? "skill" : "path", agentPath(ti.file_path, input.cwd), READ_BUF, input.cwd); }
-    const d = decideText(engine, policy, text, "file", { ctx: { template: isEnvTemplate(ti.file_path) } });
+    // readPath: the skill-file hiding detectors (data/detectors-skill-hiding.js) judge layout tells only on
+    // the skill surface, and keep phrasing tells off files that are not on it.
+    const d = decideText(engine, policy, text, "file", { ctx: { template: isEnvTemplate(ti.file_path), readPath: ti.file_path } });
     // #55 on the PATH — what `cat <path>` gets in the Bash branch below. Merged, never downgrading.
     const pd = decideCredFileRead(engine, policy, ti.file_path);
     d.findings.push(...pd.findings);
@@ -3175,7 +3177,7 @@ async function main() {
     const cmdEgress = uploading || extractHosts(ti.command || "").length > 0;
     for (const p of readPaths) {
       const t = readFileCapped(agentPath(p, input.cwd)); btext += t + "\n";
-      const d = decideText(engine, policy, t, "file", { ctx: { template: isEnvTemplate(p), egress: uploading } });
+      const d = decideText(engine, policy, t, "file", { ctx: { template: isEnvTemplate(p), egress: uploading, readPath: p } });
       finds.push(...d.findings);
       if (d.kill) killIds.push(...d.killIds);
       if (RANK[d.decision] > RANK[dec]) { dec = d.decision; reasons = d.reasons; alts = d.alternatives; }
