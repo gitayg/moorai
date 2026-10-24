@@ -1690,13 +1690,16 @@ there, a command that is not a git builtin: an alias, a script such as `git svn`
 builtin in another case; `--exec-path=<dir>`; a `-c` / `--config-env` / `GIT_CONFIG_KEY_<n>` key that could run a
 command, such as `core.fsmonitor`, `core.pager` or any `alias.*`; a config file picked by `GIT_CONFIG_GLOBAL` /
 `GIT_CONFIG_SYSTEM` / `HOME` / `XDG_CONFIG_HOME`; hooks, templates or objects elsewhere through `GIT_COMMON_DIR` /
-`GIT_TEMPLATE_DIR` / `GIT_OBJECT_DIRECTORY` or `init` / `clone --template`, and `clone -c` with such a key; a pager,
+`GIT_TEMPLATE_DIR` / `GIT_OBJECT_DIRECTORY` or `init` / `clone --template`, and `clone -c` with such a key, each read
+as git reads clone's and init's options: a unique prefix (`--templ=d`, `--conf k=v`), `-c` inside a cluster (`-qc k=v`),
+and an option they do not have or an ambiguous one is unknown too; a pager,
 editor, ssh, askpass, external-diff or proxy variable such as `GIT_PAGER` / `EDITOR` / `GIT_SSH_COMMAND` whose value
 is not empty, `cat`, `less`, `more`, `true` or `:`, or for an editor `vi`, `vim`, `nano` or `code --wait`), a
 `GIT_TRACE2*` path (it may name a directory), a `--pathspec-from-file`, and a
 write tool given an option it does not have, an ambiguous abbreviation, or a letter GNU and BSD read differently
 with no single reading (`cp -St x dest`: GNU takes `t` as the backup suffix) have no literal destination, judged as
-below. A `GIT_TRACE*` naming an absolute path is a write to that file. `git -C a -C b` runs in `a/b` (a `/` path
+below. A `GIT_TRACE*` naming an absolute path, `~` or `~/…` (the shell expands it after `=`) is a write to that file,
+and one naming `~user/…` is unknown. `git -C a -C b` runs in `a/b` (a `/` path
 starts over; so does a `\`, `C:` or `\\host\share` path on Windows, while elsewhere, PowerShell included, where git
 reads it as a relative name, its place is unknown), and the paths of a `git
 checkout`, `restore`, `rm` or `mv` resolve under it; git's global options that take the next word (`--attr-source`,
@@ -1716,10 +1719,15 @@ judged with and without the scheme and held as an incomplete analysis.
 Cline, Copilot and Kiro rules files, Claude Code's auto memory (`.claude/projects/<project>/memory/`) and OpenClaw's
 `SOUL.md`, `MEMORY.md` and `memory/` (`PERSISTENT_INSTRUCTION_KINDS` in `data/skill-surface.js`), and git's
 run-later files: a hook (`.git/hooks/`, a bare `*.git`, a worktree's or submodule's gitdir), a git config
-(`.git/config`, `config.worktree`, `~/.gitconfig`, `~/.config/git/config`, `/etc/gitconfig`) and the `.git` file
-that names the gitdir. A skill that writes itself into one of them steers every later session, so a Write / Edit,
+(`.git/config`, `config.worktree`, `~/.gitconfig`, `~/.config/git/config`, `/etc/gitconfig`), the `.git` file
+that names the gitdir, a gitdir's `commondir` (`.git/commondir`, `.git/worktrees/<w>/commondir`,
+`.git/modules/<m>/commondir`: git reads the config and runs the hooks of the directory it names) and a worktree's
+`gitdir` (`.git/worktrees/<w>/gitdir`: `git worktree repair` writes a `.git` file where it points). A skill that writes itself into one of them steers every later session, so a Write / Edit,
 an MCP write or a shell write raises a #84 alert (signal `memory-file`), and so does `git config` setting a key
-outside the safe set (`core.hooksPath`, `core.fsmonitor`, `alias.*`, `filter.*` …; reads and unsets stay clean). **With nothing configured for #84 it is an alert without a prompt**, since an agent saves
+outside the safe set (`core.hooksPath`, `core.fsmonitor`, `alias.*`, `filter.*` …; reads and unsets stay clean),
+read as git reads it: options only before the key (`git config core.pager --get` sets `core.pager` to `--get`), a
+unique prefix of a long option (`--fil=f`, `--comm`), the subcommand only as the first word; an option `git config`
+does not have, or an ambiguous one, leaves the write unknown. **With nothing configured for #84 it is an alert without a prompt**, since an agent saves
 memory and edits `CLAUDE.md` on request routinely; once `threatPolicy["84"]` is set, a memory write gets the
 stricter of that action and `oversight.memoryFiles`, so the default never weakens an admin's policy.
 `"memoryFiles": "ask"` or `"block"` raises it, `"off"` (or `"protectMemoryFiles": false`) turns it off, an invalid

@@ -379,10 +379,11 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
   const g = bin === "git" ? gitInvocation(args, c.env) : null;
   // git config setting a key outside the safe set arms every later git command (a hook path, an fsmonitor, an alias
   // …): memory-file, as a write to a hook or a config is; the file it writes (-f, or the repository's .git/config
-  // under -C) is judged as written.
+  // under -C) is judged as written. An option git config does not have, or an ambiguous one, leaves the write unknown.
   if (g && g.sub === "config") {
     const w = gitConfigWrite(args.slice(g.at + 1));
     if (!w) return;
+    if (w.unknown) { unknownWrite(opts, out); return; }
     if (w.file != null) { if (nonLiteral(w.file)) unknownWrite(opts, out); else ctx.both(home(w.file)).forEach((a) => touched.add(a)); }
     if (w.key !== null && !nonLiteral(w.key) && safeConfigKey(w.key)) return;
     opts.armed = true;

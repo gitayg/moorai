@@ -23,6 +23,10 @@
 //     GIT_TEMPLATE_DIR, GIT_OBJECT_DIRECTORY and clone --template / -c are unknown; a GIT_TRACE* path is a write; a
 //     write to a git hook, a git config or the .git file, and git config setting an unsafe key, are memory-file.
 //     PowerShell on POSIX gets no exception.
+//   * git config reads options only before its first word, a subcommand only as the first word, a long option by a
+//     unique prefix; clone / init / init-db read --template and -c / --config by unique prefix and inside a short
+//     cluster; an unknown or ambiguous option on them is unknown. GIT_TRACE* naming ~ or ~/… is a write under the home
+//     directory. A commondir and a worktree's gitdir are memory-file.
 //
 //   node --test --import ./test/hermetic-env.mjs test/oversight-writes-options.test.mjs
 import { test, after } from "node:test";
@@ -32,7 +36,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { oversightCommandSignals } from "../cli/oversight-shell.mjs";
 import { oversightPolicy } from "../cli/oversight-surfaces.mjs";
-import { writeTargets, gitInvocation } from "../cli/oversight-shell-writes.mjs";
+import { writeTargets, gitInvocation, gitConfigWrite } from "../cli/oversight-shell-writes.mjs";
 import { oversightEditSignals } from "../cli/oversight-signals.mjs";
 import { oversightMcpSignals } from "../cli/oversight-mcp.mjs";
 
@@ -384,4 +388,63 @@ test("git config: setting a key outside the safe set is memory-file; reads, unse
     "git config list --show-origin", "git config --get-regexp alias", "git config user.name x", "git config --global user.email x", "git config --unset core.hooksPath",
     "git config pull.rebase false", "git config --global init.defaultBranch main", "git config unset alias.x",
     "git config --get-urlmatch http.proxy https://x.example.com", "git config --get core.pager less", "git config get --url=https://x.example.com http.proxy"], [], bare);
+});
+
+// ---- v1.34.3: git config reads options only before its first word ----
+test("git config: a word after the key is a value, never an option (git stops at the first non-option)", () => {
+  // Measured (git 2.39.5 and 2.54.0): `git config core.pager --get-x` sets core.pager to "--get-x"; `alias.x --get`,
+  // `core.fsmonitor --list` / `-l` / `--unset` / `--global` each set the key to that word; `core.fsmonitor x --get`
+  // sets it with the value pattern "--get"; `set core.fsmonitor --list` (2.54.0) sets it to "--list".
+  each(["git config core.pager --get-x", "git config alias.x --get", "git config alias.x '--get'", "git config core.fsmonitor --list",
+    "git config core.fsmonitor -l", "git config core.fsmonitor --unset", "git config core.fsmonitor --global", "git config core.fsmonitor x --get",
+    "git config core.fsmonitor -- --list", "git config set core.fsmonitor --list", "git config --add core.pager --get", "git config core.fsmonitor -e"], MEM, bare);
+  each(["git config --get-regexp alias x", "git config --unset core.pager x", "git config --global --get core.pager", "git config user.name --list",
+    "git config get core.pager --list"], [], bare);
+});
+
+// ---- v1.34.3: abbreviated long options on git config / clone / init ----
+test("git config: an abbreviated long option is the option it is a unique prefix of; an unknown or ambiguous one is unknown", () => {
+  // Measured (2.39.5 and 2.54.0): --fil=f writes f, --glob writes ~/.gitconfig, --typ takes the next word; 2.54.0:
+  // --comm takes the next word as the comment (`--comm user.name core.fsmonitor x` sets core.fsmonitor).
+  each(["git config --comm user.name core.fsmonitor x", "git config set --comm user.name core.fsmonitor x"], MEM, bare);
+  has(`git config --fil=${join(proj, "CLAUDE.md")} user.name x`, "memory-file", bare);
+  has(`git config set --fil=${join(proj, "CLAUDE.md")} user.name x`, "memory-file", bare);
+  has(`git config -zf${join(proj, "CLAUDE.md")} user.name x`, "memory-file", bare);
+  assert.deepEqual(gitConfigWrite(["--glob", "core.fsmonitor", "x"]), { key: "core.fsmonitor", scope: "global", file: null });
+  assert.deepEqual(gitConfigWrite(["--wor", "--no-wor", "core.fsmonitor", "x"]), { key: "core.fsmonitor", scope: "local", file: null });
+  assert.deepEqual(gitConfigWrite(["-f", "a.cfg", "--no-file", "core.fsmonitor", "x"]), { key: "core.fsmonitor", scope: "local", file: null });
+  each(["git config --typ bool user.name true", "git config -t bool user.name true", "git config --def x --get core.pager"], [], bare);
+  each(["git config --bogus core.fsmonitor x", "git config --fi=a.cfg user.name x", "git config -x user.name y", "git config set --bogus user.name x"], ["write-target-unknown"], bare);
+});
+test("git clone / init: an abbreviated --template / --config and a -c in a short cluster are read; an unknown option is unknown", () => {
+  // Measured (2.39.5 and 2.54.0): clone --templ=d / --temp d copy d's hooks and run post-checkout; clone --conf / --co
+  // core.hooksPath=h, -qc core.hooksPath=h and -qccore.hooksPath=h run h's post-checkout; init --templ=d / --t d copy
+  // d's hooks; clone --t is ambiguous (template, tags) and --bogus unknown (git refuses both).
+  each(["git clone --templ=/tmp/t a b", "git clone --temp /tmp/t a b", "git clone a b --templ=/tmp/t", "git clone --conf core.hooksPath=/tmp/h a b",
+    "git clone --co core.hooksPath=/tmp/h a b", "git clone -qc core.hooksPath=/tmp/h a b", "git clone -qccore.hooksPath=/tmp/h a b",
+    "git init --templ=/tmp/t x", "git init --t /tmp/t x", "git init-db --templ=/tmp/t x", "git clone --t=/tmp/t a b", "git clone --bogus a b", "git init --bogus x"], INC);
+  each(["git clone -b main a b", "git clone --depth 1 a b", "git clone -b --template a b", "git clone -qc http.sslVerify=false a b", "git init -qb main x",
+    "git clone --no-template a b", "git clone -- --template=/tmp/t d", "git clone --recursive a b", "git init --shared=group x"], [], bare);
+});
+
+// ---- v1.34.3: GIT_TRACE* naming ~/… ----
+test("git: GIT_TRACE* naming ~ or ~/… is a write under the home directory; ~user/… is unknown", () => {
+  // Measured: bash 5.3.15 / 5.2.15 / 3.2.57, zsh 5.9 and dash expand ~/ after = in an assignment word before a command
+  // (`GIT_TRACE=~/CLAUDE.md git status` writes $HOME/CLAUDE.md); ~root/… expands to root's home.
+  has("GIT_TRACE=~/CLAUDE.md git status", "memory-file", bare);
+  has("GIT_TRACE_PERFORMANCE=~/.claude/CLAUDE.md git status", "memory-file", bare);
+  has("GIT_TRACE2_EVENT=~/traces git status", "write-target-unknown", bare);
+  has("GIT_TRACE=~root/CLAUDE.md git status", "write-target-unknown", bare);
+});
+
+// ---- v1.34.3: gitdir redirect files ----
+test("planting: a commondir or a worktree's gitdir is memory-file; alternates and a submodule's gitdir are not", () => {
+  // Measured (2.39.5 and 2.54.0): a commondir naming another directory (.git/commondir, .git/worktrees/<w>/commondir,
+  // .git/modules/<m>/commondir) makes git read that directory's config (core.fsmonitor runs) and hooks
+  // (post-index-change runs); .git/worktrees/<w>/gitdir names the worktree, and `git worktree repair` then writes a .git
+  // file there. objects/info/alternates, .git/gitdir, .git/modules/<m>/gitdir and info/ files run nothing.
+  each(["echo /tmp/e > .git/commondir", "echo /tmp/e > .git/worktrees/w/commondir", "echo /tmp/e > .git/modules/m/commondir", "echo /tmp/e > bare.git/commondir",
+    "echo /tmp/e/.git > .git/worktrees/w/gitdir", "echo x > .git/modules/m/worktrees/w/commondir"], MEM, bare);
+  assert.deepEqual(oversightEditSignals({ path: join(proj, ".git/commondir"), before: null, after: "/tmp/e", surfaces: none, cwd: proj }), ["memory-file"]);
+  each(["echo x > .git/objects/info/alternates", "echo x > .git/modules/m/gitdir", "echo x > .git/gitdir", "echo x > docs/commondir", "echo x > .git/info/attributes"], [], bare);
 });

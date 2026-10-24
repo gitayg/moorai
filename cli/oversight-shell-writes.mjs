@@ -26,9 +26,9 @@
 // ambiguous or that the tool does not have, or a letter whose arity differs between GNU and BSD with no single
 // reading. A `-` (stdout) and the null device are no write. Environment names are matched whatever their case:
 // Windows reads them case-insensitively, and on POSIX the extra match only over-reports.
-import { scanArgs } from "../data/shell-parse.js";
+import { scanArgs, longName } from "../data/shell-parse.js";
 import { CP, INSTALL, RSYNC, CURL, WGET, PATCH, GIT_CHECKOUT, GIT_RESTORE, GIT_GLOBAL, GIT_BUILTINS, GIT_SAFE_CONFIG,
-  GIT_EXEC_ENV, GIT_EDITOR_ENV, GIT_HARMLESS_PROGRAMS, GIT_HARMLESS_EDITORS, GIT_OPAQUE_ENV } from "./oversight-shell-options.mjs";
+  GIT_EXEC_ENV, GIT_EDITOR_ENV, GIT_HARMLESS_PROGRAMS, GIT_HARMLESS_EDITORS, GIT_OPAQUE_ENV, GIT_CLONE, GIT_INIT, GIT_CONFIG } from "./oversight-shell-options.mjs";
 
 // Not a literal path: an expansion, a substitution, a glob or brace, or ~user (a bare ~ or ~/… is the home
 // directory, which the caller expands).
@@ -156,7 +156,9 @@ export function writeTargets(bin, args, { ps = false, env = [] } = {}) {
     for (const e of env) {
       if (!/^GIT_TRACE/i.test(e.name) || /^(?:|[0-9]|true|false|yes|no|on|off)$/i.test(e.value)) continue;
       if (nonLiteral(e.value)) { unknown = true; continue; }
-      const r = rooted(e.value);
+      // ~ and ~/… are the home directory: the shell expands them after = (measured: bash, zsh and dash), and the caller
+      // resolves them; ~user/… is not literal (above).
+      const r = /^~(?:\/|$)/.test(e.value) ? true : rooted(e.value);
       if (r === null || (r && /^GIT_TRACE2/i.test(e.name))) unknown = true;
       if (r) add(e.value);
     }
@@ -248,18 +250,14 @@ export function gitInvocation(args, env = []) {
     const n = String(e.name).toUpperCase();
     if (GIT_EXEC_ENV.includes(n) && !GIT_HARMLESS_PROGRAMS.includes(e.value) && !(GIT_EDITOR_ENV.includes(n) && GIT_HARMLESS_EDITORS.includes(e.value))) opaque = true;
   }
-  // init / clone --template copies hooks in; clone's own -c / --config writes the new repository's config.
+  // init / clone --template copies hooks in; clone's own -c / --config writes the new repository's config. Their
+  // options are read as git reads them (GIT_CLONE, GIT_INIT): anywhere before --, a long one by a unique prefix
+  // (--templ=d, --conf k=v), -c inside a cluster (-qc k=v, -qck=v); an unknown or ambiguous option is opaque.
   const sub = at < 0 ? "" : args[at].toLowerCase();
-  if (sub === "init" || sub === "clone") {
-    const rest = args.slice(at + 1);
-    for (let i = 0; i < rest.length; i++) {
-      const t = rest[i];
-      if (t === "--") break;
-      if (/^--template(?:=|$)/.test(t)) opaque = true;
-      if (sub !== "clone") continue;
-      const kv = t === "-c" || t === "--config" ? rest[++i] : /^--config=/.test(t) ? t.slice(9) : /^-c./.test(t) ? t.slice(2) : null;
-      if (kv !== null && !safeConfigKey(kv)) opaque = true;
-    }
+  if (sub === "init" || sub === "init-db" || sub === "clone") {
+    const { flags } = scanArgs(args.slice(at + 1), sub === "clone" ? GIT_CLONE : GIT_INIT);
+    if (unknownOption(flags) || flagged(flags, "--template")) opaque = true;
+    if (sub === "clone" && !vals(flags, "-c", "--config").every((kv) => kv != null && safeConfigKey(kv))) opaque = true;
   }
   let base = null, unsure = false;
   for (const c of vals(pre, "-C")) {
@@ -272,35 +270,62 @@ export function gitInvocation(args, env = []) {
   return { at, sub: at < 0 ? null : args[at].toLowerCase(), opaque, unknown, under: (p) => joinUnder(base, p) };
 }
 
-// git config <args> (after `config`) → null when it reads, unsets or removes, else { key, scope, file }: the key it
-// sets (null for --edit / edit and --rename-section, whose result the arguments do not show), scope ("local",
-// "global", "system", "worktree") and file (-f / --file). Both forms: `git config [--add | --replace-all] <key>
-// <value>` and git 2.46+ `git config set <key> <value>`; one key and no value is a read.
-const CONFIG_VALUED = ["-f", "--file", "--blob", "--type", "--default", "--comment", "--value"];
+// git config <args> (after `config`) → null when it reads, unsets or removes; { unknown: true } when an option is one
+// git config does not have, is ambiguous, or lacks its value (git refuses it; another version may not); else { key,
+// scope, file }: the key it sets (null for --edit / edit and --rename-section / rename-section, whose result the
+// arguments do not show), scope ("local", "global", "system", "worktree") and file (-f / --file). Both forms: `git config
+// [--add | --replace-all] <key> <value> [<value-pattern>]` and git 2.46+ `git config set <key> <value>`; one key and no
+// value is a read. As git reads it (GIT_CONFIG, cli/oversight-shell-options.mjs): the subcommand only as the first word,
+// options only up to the first other word or -- (every word after it is a key or a value: `git config core.pager
+// --get` sets core.pager to "--get"), a long option by a unique prefix, --no-<option> where git takes it (--no-global
+// and --no-file put the scope back), short letters clustered (-zf <file>, -f<file>).
 const CONFIG_SUB = { list: "read", get: "read", set: "set", unset: "unset", "remove-section": "unset", "rename-section": "rename", edit: "edit" };
-export function gitConfigWrite(args) {
-  let scope = "local", file = null, action = null;
-  const pos = [];
+const CONFIG_ACTION = { "--get": "read", "--get-all": "read", "--get-regexp": "read", "--get-urlmatch": "read", "--get-color": "read", "--get-colorbool": "read",
+  "--list": "read", "--edit": "edit", "--unset": "unset", "--unset-all": "unset", "--remove-section": "unset", "--rename-section": "rename", "--add": "set", "--replace-all": "set" };
+function configOptions(args, spec) {
+  const flags = [];
   for (let i = 0; i < args.length; i++) {
     const t = args[i];
-    if (t === "--") { pos.push(...args.slice(i + 1)); break; }
-    const eq = t.startsWith("--") ? t.indexOf("=") : -1;
-    if (eq > 0) { if (t.slice(0, eq) === "--file") file = t.slice(eq + 1); continue; }
-    if (CONFIG_VALUED.includes(t)) { const v = args[++i]; if (t === "-f" || t === "--file") file = v ?? null; continue; }
-    if (/^-f./.test(t)) { file = t.slice(2); continue; }
-    if (["--global", "--system", "--local", "--worktree"].includes(t)) { scope = t.slice(2); continue; }
-    if (t === "-l" || t === "--list" || t.startsWith("--get")) action = "read";
-    else if (t === "-e" || t === "--edit") action = "edit";
-    else if (t === "--unset" || t === "--unset-all" || t === "--remove-section") action = "unset";
-    else if (t === "--rename-section") action = "rename";
-    else if (t === "--add" || t === "--replace-all") action = "set";
-    if (t.startsWith("-")) continue;
-    pos.push(t);
+    if (t === "--") return { flags, pos: args.slice(i + 1) };
+    if (!t.startsWith("-") || t === "-") return { flags, pos: args.slice(i) };
+    if (t.startsWith("--")) {
+      const eq = t.indexOf("=");
+      const name = longName(eq > 0 ? t.slice(0, eq) : t, spec.longAll, true);
+      if (name === null) return null;
+      if (name.startsWith("--no-")) { if (eq > 0 || !spec.neg.includes(`--${name.slice(5)}`)) return null; flags.push({ name: `--${name.slice(5)}`, unset: true }); continue; }
+      if (!spec.longValued.includes(name)) { if (eq > 0) return null; flags.push({ name }); continue; }
+      const value = eq > 0 ? t.slice(eq + 1) : args[++i];
+      if (value === undefined) return null;
+      flags.push({ name, value });
+      continue;
+    }
+    for (let k = 1; k < t.length; k++) {
+      const ch = t[k];
+      if (!spec.shortAll.includes(ch)) return null;
+      const name = GIT_CONFIG.short[ch];
+      if (!spec.shortValued.includes(ch)) { flags.push({ name }); continue; }
+      const value = k + 1 < t.length ? t.slice(k + 1) : args[++i];
+      if (value === undefined) return null;
+      flags.push({ name, value });
+      break;
+    }
   }
-  if (action === null && pos.length && Object.hasOwn(CONFIG_SUB, pos[0])) action = CONFIG_SUB[pos.shift()];
+  return { flags, pos: [] };
+}
+export function gitConfigWrite(args) {
+  const sub = Object.hasOwn(CONFIG_SUB, args[0]) ? args[0] : null;
+  if (sub !== null && CONFIG_SUB[sub] === "read") return null;
+  const r = configOptions(sub !== null ? args.slice(1) : args, sub !== null ? GIT_CONFIG[sub] : GIT_CONFIG.legacy);
+  if (r === null) return { unknown: true };
+  let scope = "local", file = null, action = sub !== null ? CONFIG_SUB[sub] : null;
+  for (const f of r.flags) {
+    if (f.name === "--file") file = f.unset ? null : f.value;
+    else if (["--global", "--system", "--local", "--worktree"].includes(f.name)) { if (!f.unset) scope = f.name.slice(2); else if (scope === f.name.slice(2)) scope = "local"; }
+    else if (sub === null && Object.hasOwn(CONFIG_ACTION, f.name)) action = CONFIG_ACTION[f.name];
+  }
   if (action === "read" || action === "unset") return null;
   if (action === "edit" || action === "rename") return { key: null, scope, file };
-  return pos.length >= 2 ? { key: pos[0], scope, file } : null;
+  return r.pos.length >= 2 ? { key: r.pos[0], scope, file } : null;
 }
 
 // The targets of redirects that have no command word (`> f`, `>> f`, `2> f`, `: ` excluded: that is a

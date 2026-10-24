@@ -4327,13 +4327,26 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   (`cli/oversight-surfaces.mjs` `gitRunLaterPath`: a hook under `.git/hooks/`, a bare `*.git/hooks/`, or a
   worktree's or submodule's gitdir; `.git/config`, `config.worktree`, `~/.gitconfig`, `~/.config/git/config`,
   `/etc/gitconfig`; the `.git` file, since a `.git` file naming another gitdir makes git read that gitdir's config,
-  whose `core.fsmonitor` runs on status, measured on 2.39.5 and 2.54.0). A Write / Edit of one, an MCP filesystem
+  whose `core.fsmonitor` runs on status, measured on 2.39.5 and 2.54.0; a gitdir's `commondir` — `.git/commondir`,
+  `.git/worktrees/<w>/commondir`, `.git/modules/<m>/commondir` — since git reads the config and runs the hooks of the
+  directory it names, `core.fsmonitor` and `post-index-change` measured to run on 2.39.5 and 2.54.0; a worktree's
+  `.git/worktrees/<w>/gitdir`, since `git worktree repair` writes a `.git` file where it points, measured on both;
+  `objects/info/alternates`, `info/` files, `.git/gitdir` and `.git/modules/<m>/gitdir` were measured to run nothing
+  and are not watched). A Write / Edit of one, an MCP filesystem
   write tool's path (below), or a shell command that writes, moves or deletes one, raises the signal `memory-file`
   under #84, and so does `git config` setting a key outside `GIT_SAFE_CONFIG` (`cli/oversight-shell-writes.mjs`
   `gitConfigWrite`: `git config [--global | --system | --local | --worktree | -f file] [--add | --replace-all]
   <key> <value>`, git 2.46+ `git config set`, `--edit` / `edit`, `--rename-section`; `--get*`, `--list`, `get`,
   `list`, a lone key, `--unset` and `unset` are reads or removals and stay clean; `-f <file>` is also a write to
-  that file). Shell writes (`cli/oversight-shell-writes.mjs`): a redirect (a bare `> path` with no
+  that file). It reads the command line as git does (`GIT_CONFIG` in `cli/oversight-shell-options.mjs`, the options
+  of `git config --get -h` and of `git config set -h` / `unset -h` / `rename-section -h` / `remove-section -h` /
+  `edit -h` on 2.54.0): a subcommand only as the first word (`git config --global set k v` is the key `set`),
+  options only up to the first other word or `--` (measured, 2.39.5 and 2.54.0: `git config core.pager --get-x`,
+  `alias.x --get`, `core.fsmonitor --list` / `-l` / `--unset` each set the key to that word), a long option by a
+  unique prefix (`--fil=f` writes `f`, `--glob` the global file, 2.54.0's `--comm` takes the next word as its
+  comment), `--no-global` / `--no-file` putting the scope back, and short letters clustered (`-zf <file>`,
+  `-f<file>`). An option it does not have, an ambiguous one or one missing its value (git refuses each) leaves the
+  write unknown. Shell writes (`cli/oversight-shell-writes.mjs`): a redirect (a bare `> path` with no
   command word too, read from the raw text, quote-aware, heredoc bodies skipped, since the parser keeps no segment
   for it), `tee` (a word after `--` too), `sed -i` / `--in-place` / BSD `-I`, `perl -pi`, `yq -i`, `Set-Content`, the
   destination of `cp` / `install` / `rsync` (a local one; `-t`, `--target-directory`, `-T` for cp; into a directory,
@@ -4378,9 +4391,13 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   core.pager` / `pager.log` on a terminal, measured on 2.39.5 and 2.54.0), `GIT_CONFIG_PARAMETERS`, and a config file
   picked by `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `HOME` or `XDG_CONFIG_HOME` (its `core.fsmonitor` runs,
   measured; `GIT_CONFIG` is not read), `GIT_OPAQUE_ENV` (`GIT_COMMON_DIR`, whose hooks run; `GIT_TEMPLATE_DIR` and
-  `init` / `clone --template`, whose hooks are copied in and run by the clone; `GIT_OBJECT_DIRECTORY`, which `git
-  add` writes; `GIT_REDIRECT_STD*`), `clone -c` / `--config` with a key outside `GIT_SAFE_CONFIG` (`core.hooksPath`
-  there runs hooks during the clone), and `GIT_EXEC_ENV` set with a value outside `GIT_HARMLESS_PROGRAMS` (empty,
+  `init` / `init-db` / `clone --template`, whose hooks are copied in and run by the clone; `GIT_OBJECT_DIRECTORY`,
+  which `git add` writes; `GIT_REDIRECT_STD*`), `clone -c` / `--config` with a key outside `GIT_SAFE_CONFIG`
+  (`core.hooksPath` there runs hooks during the clone) — clone's and init's options read as git reads them
+  (`GIT_CLONE` / `GIT_INIT`, from `git clone -h` / `git init -h` on 2.54.0): anywhere before `--`, a long one by a
+  unique prefix (`--templ=d`, `--temp d`, `--conf k=v`, `--co k=v`, init `--t d`), `-c` inside a cluster (`-qc
+  k=v`, `-qck=v`), all measured to copy or run the hooks on 2.39.5 and 2.54.0, and an option they do not have or an
+  ambiguous one (`clone --t`: template or tags) opaque —, and `GIT_EXEC_ENV` set with a value outside `GIT_HARMLESS_PROGRAMS` (empty,
   `cat`, `less`, `more`, `true`, `:`; for `GIT_EDITOR`, `EDITOR`, `VISUAL` and `GIT_SEQUENCE_EDITOR` also `vi`,
   `vim`, `nano`, `code --wait`): `GIT_PAGER` / `PAGER` (log, diff on a terminal), `GIT_EDITOR` / `EDITOR`
   (commit), `GIT_SSH_COMMAND` / `GIT_SSH` / `GIT_PROXY_COMMAND` (fetch) and `GIT_EXTERNAL_DIFF` (diff) measured to
@@ -4388,7 +4405,8 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   `GIT_SEQUENCE_EDITOR`, `GIT_ASKPASS` and `SSH_ASKPASS` by git's documentation. A `GIT_TRACE*` naming an
   absolute path is a write to that file (written by status for `GIT_TRACE`, `_PERFORMANCE`, `_SETUP`, `_REFS`,
   `GIT_TRACE2`, `_EVENT`, `_PERF`, measured; a relative word is ignored with a warning; `1` / `2` / `true` / `0`
-  go to a stream); a `GIT_TRACE2*` path may be a directory and is also unknown — `--pathspec-from-file` — and when a write tool (cp, mv, install, rsync, curl, wget, tee,
+  go to a stream), and so is one naming `~` or `~/…`, resolved under the home directory (bash 5.3.15 / 5.2.15 /
+  3.2.57, zsh 5.9 and dash expand it after `=` in an assignment word, measured), while `~user/…` is unknown; a `GIT_TRACE2*` path may be a directory and is also unknown — `--pathspec-from-file` — and when a write tool (cp, mv, install, rsync, curl, wget, tee,
   sed, patch, git checkout / restore) is given a long option that is ambiguous or that it does not have, a short
   letter it does not have, or a letter whose arity differs between GNU and BSD (`shortConflict`: cp -S, install
   -S / -D / -T, sed -l) followed by more letters of its cluster or by an option word. The `NAME=value` words a

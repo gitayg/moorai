@@ -270,3 +270,40 @@ export const GIT_HARMLESS_EDITORS = Object.freeze(["vi", "vim", "nano", "code --
 // Windows: a file in place of the stream; not measured here).
 export const GIT_OPAQUE_ENV = Object.freeze(["GIT_COMMON_DIR", "GIT_TEMPLATE_DIR", "GIT_OBJECT_DIRECTORY", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
   "GIT_CONFIG_PARAMETERS", "GIT_EXEC_PATH", "HOME", "XDG_CONFIG_HOME", "GIT_REDIRECT_STDIN", "GIT_REDIRECT_STDOUT", "GIT_REDIRECT_STDERR"]);
+// git clone / init / config: each one's options as `git clone -h`, `git init -h`, `git config --get -h` (the
+// action-style command line) and `git config set -h` / `unset -h` / `rename-section -h` / `remove-section -h` /
+// `edit -h` print them on git 2.54.0 (a superset of 2.39.5's, which has no config subcommands, --comment, --show-names
+// or --append). git reads a unique prefix of a long option as that option and takes --no-<option> (measured, 2.39.5
+// and 2.54.0: `git clone --templ=d`, `--conf core.hooksPath=h`, `git init --t d`, `git config --fil=f`, `--glob`);
+// an unknown or ambiguous one is refused. Options the help lists only by their --no- name (clone --no-checkout,
+// --no-hardlinks) are listed with their positive form too, as git accepts it. init-db is init.
+export const GIT_CLONE = opts([
+  "--also-filter-submodules", "--bare", "--branch", "--bundle-uri", "--checkout", "--config", "--depth", "--dissociate", "--filter",
+  "--hardlinks", "--ipv4", "--ipv6", "--jobs", "--local", "--mirror", "--no-checkout", "--no-hardlinks", "--origin", "--progress", "--quiet",
+  "--recurse-submodules", "--recursive", "--ref-format", "--reference", "--reference-if-able", "--reject-shallow", "--remote-submodules",
+  "--revision", "--separate-git-dir", "--server-option", "--shallow-exclude", "--shallow-since", "--shallow-submodules", "--shared",
+  "--single-branch", "--sparse", "--tags", "--template", "--upload-pack", "--verbose"
+], ["--branch", "--bundle-uri", "--config", "--depth", "--filter", "--jobs", "--origin", "--ref-format", "--reference", "--reference-if-able",
+  "--revision", "--separate-git-dir", "--server-option", "--shallow-exclude", "--shallow-since", "--template", "--upload-pack"], "46bcjlnoqsuv", "bcjou", { negatable: true });
+export const GIT_INIT = opts([
+  "--bare", "--initial-branch", "--object-format", "--quiet", "--ref-format", "--separate-git-dir", "--shared", "--template"
+], ["--initial-branch", "--object-format", "--ref-format", "--separate-git-dir", "--template"], "bq", "b", { negatable: true });
+// git config reads options only up to its first other word (measured, 2.39.5 and 2.54.0: `git config core.pager --get`
+// sets core.pager to "--get"); a subcommand is read only as the first word (`git config --global set k v` is the key
+// "set"). neg: the options that take --no-<option> (the help's "--[no-]"; an action does not).
+const CONFIG_WHERE = ["--blob", "--file", "--global", "--local", "--system", "--worktree"];
+const CONFIG_TYPE = ["--bool", "--bool-or-int", "--bool-or-str", "--expiry-date", "--int", "--path", "--type"];
+const CONFIG_NEG = ["--all", "--append", "--blob", "--comment", "--default", "--file", "--fixed-value", "--global", "--includes", "--local", "--name-only",
+  "--null", "--regexp", "--show-names", "--show-origin", "--show-scope", "--system", "--type", "--url", "--value", "--worktree"];
+const configOpts = (more, valued, short, shortValued) => opts([...CONFIG_WHERE, ...more].sort(), ["--blob", "--file", ...valued], short, shortValued, { neg: CONFIG_NEG });
+export const GIT_CONFIG = Object.freeze({
+  legacy: configOpts([...CONFIG_TYPE, "--add", "--comment", "--default", "--edit", "--fixed-value", "--get", "--get-all", "--get-color", "--get-colorbool",
+    "--get-regexp", "--get-urlmatch", "--includes", "--list", "--name-only", "--null", "--remove-section", "--rename-section", "--replace-all",
+    "--show-names", "--show-origin", "--show-scope", "--unset", "--unset-all"], ["--comment", "--default", "--type"], "eflzt", "ft"),
+  set: configOpts([...CONFIG_TYPE, "--all", "--append", "--comment", "--fixed-value", "--value"], ["--comment", "--type", "--value"], "ft", "ft"),
+  unset: configOpts(["--all", "--fixed-value", "--value"], ["--value"], "f", "f"),
+  "rename-section": configOpts([], [], "f", "f"),
+  "remove-section": configOpts([], [], "f", "f"),
+  edit: configOpts([], [], "f", "f"),
+  short: { e: "--edit", f: "--file", l: "--list", t: "--type", z: "--null" }
+});
