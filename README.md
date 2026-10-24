@@ -526,8 +526,8 @@ capture time, bounded by `MOORAI_INTENT_TIMEOUT_MS` (default 1500). Limits: it i
 so an upload to a host the user named passes; text pasted into a prompt widens the task; the agent runs
 as the same user and can tamper with the state file; `Write`/`Edit`, data in a GET query string and
 `git push` to a new remote are not judged; upload forms other than curl and wget uploads, `Invoke-RestMethod` /
-`Invoke-WebRequest` with a body or upload method, nc / ncat / socat / telnet with a target or piped data, or
-named by any command that is not a pure lookup (`which nc`, `man telnet`, `command -v nc`, `apt install ncat` are not uploads; `find -exec nc …`, `man -P …`, `apt-get -o …` are), scp / rsync / sftp to a remote,
+`Invoke-WebRequest` with a body or upload method, nc / ncat / socat / telnet named in any command except a plain lookup
+(`which nc`, `type -a nc`, `command -v nc`, `man 1 nc` are not uploads; a package manager, `find -exec`, an option, an env assignment, quoting or expansion naming one is), scp / rsync / sftp to a remote,
 a BITS upload and a copy onto a UNC share (python, node, perl or ruby scripts, `/dev/tcp`, some curl short-flag clusters, PowerShell abbreviated or colon parameters) are not
 classed as uploads by the intent check; the Codex, Cursor, Gemini and Copilot hosts do not mark
 machine-injected turns, so there a hook-forced continuation counts as part of the task; Codex runs the

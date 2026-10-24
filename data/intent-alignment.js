@@ -115,76 +115,78 @@ const UPLOAD = [
   /\bStart-BitsTransfer\b[^\n;|&]*?\s-TransferType\s{1,4}["']?Upload/i,
   UNC_COPY
 ];
-// nc / ncat / netcat / socat / telnet as a COMMAND that can carry data out. FAIL CLOSED: a segment holding a
-// netcat word is judged unless its command is cleanly a PURE LOOKUP, whose arguments are names and never run:
-// which, whereis, type, whatis, apropos, `command -v|-V`, man without a pager or HTML-browser option
-// (-P/--pager/-H/--html run a command), and apt / apt-get / brew / dnf install, remove or show without `-o`
-// (an APT option can name a hook that runs). Everything else stays judged: find -exec, xargs, rg/ag --pre,
-// ack, grep, a shell `-c` string, ssh, any unknown command. Then it needs a target or data: an argument
-// other than a help/version flag, or input piped into it. A bare `nc` or `telnet --version` connects nowhere.
-// Words are compared as the shell would run them: quotes and backslashes removed (`'nc'`, `"n"c`, `n\c`),
-// a leading call operator (`&`, `.`) dropped, the last path segment taken on / or \ (`C:\tools\nc.exe`), and
-// a .exe suffix dropped.
+// nc / ncat / netcat / socat / telnet as an upload. FAIL CLOSED: a command segment (split on newline ; | &)
+// that names a netcat tool is judged, unless it is a PLAIN LOOKUP, and nothing that can be argued about is one:
+//   * no environment assignment and no shell metacharacter anywhere in the segment ($ ` * ? [ ] { } ( ) quotes
+//     backslash < >), so nothing is expanded, globbed, quoted, redirected or substituted;
+//   * the command word is exactly which, whereis, type, whatis or apropos (options: only -a, for which and
+//     type), or the pair `command -v`, or man with no option at all and every argument a section number
+//     (1-9, optionally a letter) or a plain lower-case name;
+//   * every other argument is a plain name (^[A-Za-z0-9._+-]+$, not starting with "-").
+// Package managers, search tools, runners (find -exec, xargs), the tool's own help flags and everything else
+// stay judged. "Names a netcat tool": a word that runs as one once quotes and backslashes are removed, a
+// leading call operator is dropped, a Windows or POSIX path is cut to its last segment and .exe is dropped
+// (`'nc'`, `n\c`, `C:\tools\nc.exe`), or a command word whose expansion or glob could produce one
+// (`$'n\x63'`, `n?`, `${N}c`, `$NC`).
 const NC_NAME = /^(?:nc|ncat|netcat|socat|telnet)(?:\.(?:openbsd|traditional))?$/i;
+const NC_NAMES = ["nc", "ncat", "netcat", "socat", "telnet"];
 const NC_HINT = /(?<![\w.-])(?:nc|ncat|netcat|socat|telnet)(?![\w-])/i;
-const SEG_SPLIT = /([\n;|&(){}`]+)/;
-const RUNS_ARGS = new Set(["sudo", "doas", "env", "exec", "nohup", "time", "nice", "ionice", "timeout", "stdbuf", "builtin", "unbuffer"]);
+const SEG_SPLIT = /[\n;|&]+/;
+const SHELL_META = /[$`*?[\]{}()'"\\<>]/;
+const PLAIN = /^[A-Za-z0-9._+][A-Za-z0-9._+-]*$/;
+const MAN_ARG = /^(?:[1-9][a-z]?|[a-z0-9._+][a-z0-9._+-]*)$/;
 const LOOKUP = new Set(["which", "whereis", "type", "whatis", "apropos"]);
-const PKG = new Set(["apt", "apt-get", "brew", "dnf"]);
-const PKG_SUB = new Set(["install", "remove", "show"]);
-const NC_HELP = new Set(["-h", "--help", "-help", "-?", "-V", "--version", "-version"]);
-const unquote = (w) => w.replace(/['"`]/g, "");
+const WRAPPERS = new Set(["sudo", "doas", "env", "exec", "nohup", "time", "nice", "ionice", "timeout", "stdbuf", "builtin", "unbuffer", "command", "xargs"]);
 const dropExe = (b) => b.replace(/\.exe$/i, "");
-// The names a word can run as: path split before backslashes are removed (C:\tools\nc.exe), and after (n\c).
 function namesOf(word) {
-  const w = unquote(word).replace(/^[&.]+(?=[^&.])/, "");
+  const w = word.replace(/['"`]/g, "").replace(/^[&.]+(?=[^&.])/, "");
   const a = w.split(/[\/\\]/).pop();
   const b = w.replace(/\\/g, "").replace(/^[&.]+(?=[^&.])/, "").split("/").pop();
   return [dropExe(a).toLowerCase(), dropExe(b).toLowerCase()];
 }
 const isNc = (word) => namesOf(word).some((n) => NC_NAME.test(n));
-const plain = (word) => namesOf(word)[1];
-function pureLookup(w, i) {
-  const b = plain(w[i]);
-  if (LOOKUP.has(b)) return true;
-  if (b === "command") return /^-[vV]$/.test(unquote(w[i + 1] || ""));
-  const rest = w.slice(i + 1).map((x) => unquote(x).replace(/\\/g, ""));
-  if (b === "man") return !rest.some((x) => /^(?:-[A-Za-z]*[PH]|--pager|--html)/.test(x));
-  if (PKG.has(b)) {
-    if (rest.some((x) => /^(?:-o|--option)/.test(x))) return false;
-    const sub = rest.find((x) => !x.startsWith("-"));
-    return PKG_SUB.has(sub);
+// A command word with expansion or a glob: could it produce a netcat name? Each expansion is any text, each
+// glob character its usual match; the literal remainder must fit. ANSI-C quoting ($'…') is any text too.
+function mayExpandToNc(word) {
+  if (!/[$*?[]/.test(word)) return false;
+  let re = "";
+  for (let i = 0; i < word.length && re.length < 512; i++) {
+    const ch = word[i];
+    if (ch === "$") { re += ".*"; if (word[i + 1] === "{") { const e = word.indexOf("}", i); i = e < 0 ? word.length : e; } else if (word[i + 1] === "'" || word[i + 1] === '"') { const q = word[i + 1]; const e = word.indexOf(q, i + 2); i = e < 0 ? word.length : e; } else while (i + 1 < word.length && /\w/.test(word[i + 1])) i++; continue; }
+    if (ch === "*") { re += ".*"; continue; }
+    if (ch === "?") { re += "."; continue; }
+    if (ch === "[") { const e = word.indexOf("]", i); re += "."; i = e < 0 ? word.length : e; continue; }
+    if (ch === "'" || ch === '"' || ch === "\\") continue;
+    re += ch.replace(/[.+^(){}|\\/]/g, "\\$&");
   }
+  let r;
+  try { r = new RegExp(`^${re}$`, "i"); } catch { return true; }
+  return NC_NAMES.some((n) => r.test(n));
+}
+// The first word that runs: past VAR=value assignments, the wrappers that run their arguments, and their flags.
+function commandWord(w) {
+  for (let i = 0; i < w.length; i++) {
+    if (/^[A-Za-z_]\w*=/.test(w[i])) continue;
+    if (WRAPPERS.has(namesOf(w[i])[1])) { while (i + 1 < w.length && /^-|^\d+[smhd]?$/.test(w[i + 1])) i++; continue; }
+    return w[i];
+  }
+  return "";
+}
+function plainLookup(seg, w) {
+  if (SHELL_META.test(seg) || w.some((x) => x.includes("="))) return false;
+  const plainArgs = (args, allowA) => args.length > 0 && args.every((x) => (allowA && x === "-a") || (PLAIN.test(x) && !x.startsWith("-")));
+  if (LOOKUP.has(w[0])) return plainArgs(w.slice(1), w[0] === "which" || w[0] === "type");
+  if (w[0] === "command" && w[1] === "-v") return plainArgs(w.slice(2), false);
+  if (w[0] === "man") return w.length > 1 && w.slice(1).every((x) => MAN_ARG.test(x));
   return false;
 }
-// Linear: the command is split into segments once, each segment into words once, and each word is looked at
-// a bounded number of times.
 function ncInvoked(command) {
   const c = String(command || "");
-  const hint = (t) => NC_HINT.test(t) || NC_HINT.test(t.replace(/[\\'"`]/g, ""));
-  if (!hint(c)) return false;
-  const parts = c.split(SEG_SPLIT);
-  for (let k = 0; k < parts.length; k += 2) {
-    const w = parts[k].trim().split(/\s+/).filter(Boolean);
-    if (!w.some(isNc) && !hint(parts[k])) continue;
-    let at = -1;
-    for (let i = 0; i < w.length; i++) {
-      const x = unquote(w[i]);
-      if (/^[A-Za-z_]\w*=/.test(x) || /^\d+[smhd]?$/.test(x)) continue;
-      if (RUNS_ARGS.has(plain(w[i]))) { while (i + 1 < w.length && unquote(w[i + 1]).startsWith("-")) i++; continue; }
-      at = i;
-      break;
-    }
-    if (at >= 0 && pureLookup(w, at)) continue;
-    // The tool is the command itself: judged with a target or piped data; a bare `nc` or `nc -h` connects nowhere.
-    if (at >= 0 && isNc(w[at])) {
-      const sep = k > 0 ? parts[k - 1] : "";
-      if (/\|$/.test(sep) && !/\|\|$/.test(sep)) return true;
-      if (w.slice(at + 1).some((x) => { const y = unquote(x).replace(/\\/g, ""); return y && !NC_HELP.has(y); })) return true;
-      continue;
-    }
-    // Anywhere else (an argument of find -exec, xargs, ssh, a shell -c string, an option value): fail closed.
-    return true;
+  for (const seg of c.split(SEG_SPLIT)) {
+    const w = seg.trim().split(/\s+/).filter(Boolean);
+    if (!w.length) continue;
+    const names = NC_HINT.test(seg) || NC_HINT.test(seg.replace(/[\\'"`]/g, "")) || w.some(isNc) || mayExpandToNc(commandWord(w));
+    if (names && !plainLookup(seg, w)) return true;
   }
   return false;
 }
