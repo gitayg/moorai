@@ -21,7 +21,7 @@ const { quarantineRead, QUARANTINE_DIR } = await import("../cli/quarantine-reade
 const { quarantineStep, mergeQuarantine } = await import("../cli/quarantine-step.mjs");
 const { resolveReader, callReader } = await import("../cli/quarantine-model.mjs");
 const OWNER = await import("../cli/quarantine-owner.mjs");
-const { judgeOwner, agentPids, pinnedExe, verifyReaderPeer, writableBy, codeSignature, peerUids, peerEnvArgs, parseNetstatPeer, parseProcTcpPeer } = await import("../cli/quarantine-owner.mjs");
+const { judgeOwner, agentPids, pinnedExe, verifyReaderPeer, writableBy, codeSignature, peerUids, peerEnvArgs, parseNetstatPeer, parseProcTcpPeer, parseNettopPeer, parseLsofPeer, confirmPeer, windowsSids, windowsSidScript, mergeSocketUid } = await import("../cli/quarantine-owner.mjs");
 const { buildEngine } = await import("../cli/hook-core.mjs");
 const engine = buildEngine({});
 process.on("exit", () => rmTree(HOME));
@@ -305,8 +305,8 @@ test("peer lookup parsers: macOS netstat -anv rows (any user's process) and Linu
     "tcp4       0      0  127.0.0.1.58964        127.0.0.1.11434        ESTABLISHED            0            0  408300  146988           Python:41483  00002 00000000 0000000003293622 00000080 04000900      2      0 000000",
     "tcp4       0      0  127.0.0.1.11369        127.0.0.1.58963        ESTABLISHED            0            0  408300  146988   Model Service:66458  00182 0000000c 0000000003293617 00100081 01080800      2      0 000000"
   ].join("\n");
-  assert.equal(parseNetstatPeer(ns, 11434, 58964), 2018, "the server end, not our own end");
-  assert.equal(parseNetstatPeer(ns, 11369, 58963), 66458, "a process name with a space");
+  assert.deepEqual(parseNetstatPeer(ns, 11434, 58964), { pid: 2018 }, "the server end, not our own end");
+  assert.deepEqual(parseNetstatPeer(ns, 11369, 58963), { ambiguous: true }, "a name with whitespace is ambiguous, not parsed");
   assert.equal(parseNetstatPeer(ns, 11434, 1), null);
   const proc = [
     "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
@@ -316,4 +316,40 @@ test("peer lookup parsers: macOS netstat -anv rows (any user's process) and Linu
   assert.deepEqual(parseProcTcpPeer(proc, 11434, 58948), { uid: 997, inode: "81234" });
   assert.equal(parseProcTcpPeer(proc, 11434, 1), null);
   assert.equal(judgeOwner({ pid: null, uids: [997], agentUid: 1000 }, { platform: "linux" }).ok, true, "an unreadable pid with the socket's uid of another user");
+  assert.deepEqual(mergeSocketUid([997, 997], 997), [997, 997]);
+  assert.deepEqual(mergeSocketUid(null, 997), [997], "the socket's uid alone when the pid is another user's");
+  assert.equal(mergeSocketUid([1000], 997), null, "pid and socket owner disagree: undetermined");
+  assert.deepEqual(mergeSocketUid([1000], null), [1000]);
+});
+
+test("crafted process names never yield another pid; two sources must agree", () => {
+  // Measured on this Mac: an executable named "x:1 ollama" (pid 44323) as netstat -anv, nettop and lsof print it.
+  const ns = "tcp4       0      0  127.0.0.1.57620        127.0.0.1.57621        ESTABLISHED            0            0  408300  146988       x:1 ollama:44323  00102 00000104 0000000003355eeb 00000081 01000800      2      0 000000";
+  assert.deepEqual(parseNetstatPeer(ns, 57620, 57621), { ambiguous: true }, "never pid 1");
+  const one = "tcp4       0      0  127.0.0.1.57620        127.0.0.1.57621        ESTABLISHED            0            0  408300  146988           x:1:44323  00102 00000104 0000000003355eeb 00000081 01000800      2      0 000000";
+  assert.deepEqual(parseNetstatPeer(one, 57620, 57621), { ambiguous: true }, "a colon in the name");
+  const nt = "launchd.1,,\nx:1 ollama.44323,,\ntcp4 127.0.0.1:57620<->127.0.0.1:57621,Established,";
+  assert.deepEqual(parseNettopPeer(nt, 57620, 57621), { ambiguous: true });
+  assert.deepEqual(parseNettopPeer("ollama.2018,,\ntcp4 127.0.0.1:11434<->127.0.0.1:56612,Established,", 11434, 56612), { pid: 2018 });
+  assert.deepEqual(parseNettopPeer("ollama.2018,,\ntcp6 ::1.11434<->::1.56612,Established,", 11434, 56612), { pid: 2018 });
+  assert.equal(parseNettopPeer("ollama.2018,,\ntcp4 127.0.0.1:11434<->*:*,Listen,", 11434, 56612), null);
+  assert.deepEqual(parseLsofPeer("p44323\ncx:1 ollama\nf13\nn127.0.0.1:57620->127.0.0.1:57621\n", 57620, 57621), { pid: 44323 }, "lsof's pid record, not the name");
+  assert.deepEqual(confirmPeer({ netstat: null, lsof: { pid: 7 }, nettop: { pid: 7 } }), { pid: 7, sources: ["lsof", "nettop"] });
+  assert.match(confirmPeer({ netstat: null, lsof: null, nettop: { pid: 7 } }).why, /second source/, "another user's process seen by nettop alone");
+  assert.match(confirmPeer({ netstat: { pid: 1 }, lsof: { pid: 7 }, nettop: null }).why, /disagree/);
+  assert.match(confirmPeer({ netstat: { ambiguous: true }, lsof: { pid: 7 }, nettop: { pid: 7 } }).why, /ambiguous/);
+  assert.equal(confirmPeer({}).pid, null);
+});
+
+test("Windows identity: SIDs only, never the environment; anything else refuses", () => {
+  assert.match(windowsSidScript(42), /GetOwnerSid/);
+  assert.match(windowsSidScript(42), /WindowsIdentity\]::GetCurrent\(\)\.User\.Value/);
+  assert.doesNotMatch(windowsSidScript(42), /USERNAME|USERDOMAIN/);
+  const other = windowsSids("S-1-5-80-1234-5678|S-1-5-21-1-2-3-1001");
+  assert.deepEqual(other, { peer: "S-1-5-80-1234-5678", self: "S-1-5-21-1-2-3-1001" });
+  assert.equal(judgeOwner({ pid: 9, uids: [other.peer], agentUid: other.self }, { platform: "win32" }).ok, true, "a service SID is another user");
+  const same = windowsSids("S-1-5-21-1-2-3-1001|s-1-5-21-1-2-3-1001");
+  assert.match(judgeOwner({ pid: 9, uids: [same.peer], agentUid: same.self }, { platform: "win32" }).why, /agent's own OS user/, "case-insensitive match is the same user");
+  for (const bad of ["", "DOMAIN\\user|S-1-5-21-1", "S-1-5-21-1-2-3-1001|", "S-1-5-80-1|DESKTOP\\me", "S-1-5-21-1-2|S-1-5-21-1-2|S-1-5"]) assert.equal(windowsSids(bad), null, bad);
+  assert.match(judgeOwner({ pid: 9, uids: null, agentUid: null }, { platform: "win32" }).why, /could not be determined/);
 });

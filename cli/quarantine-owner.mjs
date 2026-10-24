@@ -2,11 +2,11 @@
 // a signed runtime as a code host (ELECTRON_RUN_AS_NODE=1, `-e`), detach from the agent's process tree, or replace a
 // binary it owns. So the boundary is the OS account: the process that ACCEPTED this connection (found from the
 // connection itself, before a byte of the request is written) must run as a different user from the hook.
-//   peer pid + uid  macOS  netstat -anv (every user's sockets), else lsof -nP -iTCP:<port> -sTCP:ESTABLISHED -Fpn
-//                          (this user's), then ps -o uid=,ruid=
+//   peer pid + uid  macOS  two of netstat -anv, lsof -Fpn and nettop must name the same pid (parseNetstatPeer et al.),
+//                          then ps -o uid=,ruid=
 //                   Linux  /proc/net/tcp{,6} (the socket's uid, readable for any user) + /proc/<pid>/fd (tcpTable)
 //                          and /proc/<pid>/status Uid when the pid is readable
-//                   Windows netstat -ano, Win32_Process GetOwner (best effort; not verified on Windows)
+//                   Windows netstat -ano, the owner SID (GetOwnerSid) against this token's SID (not verified on Windows)
 // A same-user reader is accepted only under the admin binding's fileQuarantineSameUserReader, and is weaker by
 // construction (the agent can impersonate it). Even then its executable must be an exact file in
 // fileQuarantineModel.executables, neither it nor any parent directory writable by the agent's user, on macOS
@@ -33,17 +33,61 @@ function run(bins, args, { stderr = false } = {}) {
 const LSOF = ["/usr/sbin/lsof", "/usr/bin/lsof", "/bin/lsof"];
 const PS = ["/bin/ps", "/usr/bin/ps"];
 
-// `netstat -anv` (macOS): every user's sockets with process:pid, which lsof run as a user does not show.
-// -> pid | null for the ESTABLISHED row <host>.<serverPort> -> <host>.<localPort>.
+// Peer lookups on macOS. Process names are the executable's file name, which the agent chooses ("x:1 ollama"
+// renders as "x:1 ollama:44323"), so a name is never parsed for a pid: a field is "<name><sep><pid>" split at its
+// LAST separator, and a name that holds the separator, whitespace, a comma or a line break is ambiguous, which
+// refuses. Each returns { pid } | { ambiguous: true } | null.
+const PLAIN_NAME = /^[^\s:.,]+$/;
+// `netstat -anv`: every user's sockets. Fixed layout: proto recv-q send-q local foreign state rxbytes txbytes
+// rhiwat shiwat process:pid, then eight fixed columns (state options gencnt flags flags1 usecnt rtncnt fltrs).
 export function parseNetstatPeer(text, serverPort, localPort) {
   for (const line of String(text || "").split("\n")) {
     if (!/^tcp/.test(line)) continue;
     const t = line.trim().split(/\s+/);
-    if (t.length < 11 || t[5] !== "ESTABLISHED" || !t[3].endsWith(`.${serverPort}`) || !t[4].endsWith(`.${localPort}`)) continue;
-    const m = t.slice(10).join(" ").match(/:(\d+)(?:\s|$)/);
-    if (m) return Number(m[1]);
+    if (t.length < 19 || t[5] !== "ESTABLISHED" || !t[3].endsWith(`.${serverPort}`) || !t[4].endsWith(`.${localPort}`)) continue;
+    const field = t.slice(10, t.length - 8);
+    if (field.length !== 1) return { ambiguous: true };
+    const i = field[0].lastIndexOf(":");
+    const name = field[0].slice(0, i), pid = field[0].slice(i + 1);
+    if (i <= 0 || !/^\d+$/.test(pid) || !/^[^\s:,]+$/.test(name)) return { ambiguous: true };
+    return { pid: Number(pid) };
   }
   return null;
+}
+// `nettop -L 1 -m tcp -n -x -J state`: a "<name>.<pid>,," line, then that process's "tcp4 <local><-><remote>,<State>,"
+// lines. Reads every user's sockets through the kernel's network statistics, a source independent of netstat.
+export function parseNettopPeer(text, serverPort, localPort) {
+  let proc = null;
+  const endsPort = (a, port) => new RegExp(`[:.]${port}$`).test(a);
+  for (const line of String(text || "").split("\n")) {
+    if (!/^(?:tcp|udp)/.test(line)) { proc = line; continue; }
+    const m = line.match(/^tcp[46]? (\S+)<->(\S+),([A-Za-z]+),/);
+    if (!m || m[3] !== "Established" || !endsPort(m[1], serverPort) || !endsPort(m[2], localPort)) continue;
+    const h = String(proc || "").match(/^(.*)\.(\d+),,$/);
+    if (!h || !PLAIN_NAME.test(h[1])) return { ambiguous: true };
+    return { pid: Number(h[2]) };
+  }
+  return null;
+}
+// `lsof -nP -iTCP:<port> -sTCP:ESTABLISHED -Fpn`: the pid comes from lsof's own "p" record, not from a name, but
+// lsof run as a user lists only that user's processes.
+export function parseLsofPeer(text, serverPort, localPort) {
+  let pid = null;
+  for (const line of String(text || "").split("\n")) {
+    if (line.startsWith("p")) pid = Number(line.slice(1));
+    else if (line.startsWith("n")) { const m = line.match(/:(\d+)->.*:(\d+)$/); if (m && Number(m[1]) === serverPort && Number(m[2]) === localPort && pid) return { pid }; }
+  }
+  return null;
+}
+// Two independent sources must name the same pid; an ambiguous source or a disagreement refuses.
+// -> { pid, sources } | { pid: null, why }
+export function confirmPeer(results) {
+  const named = Object.entries(results).filter(([, r]) => r);
+  if (named.some(([, r]) => r.ambiguous)) return { pid: null, why: "a process name made the peer lookup ambiguous" };
+  const pids = [...new Set(named.map(([, r]) => r.pid))];
+  if (pids.length > 1) return { pid: null, why: "the peer lookups disagree on the process" };
+  if (named.length < 2) return { pid: null, why: named.length ? "the peer process could not be confirmed by a second source" : "the reader's process could not be determined" };
+  return { pid: pids[0], sources: named.map(([k]) => k) };
 }
 // /proc/net/tcp{,6} (Linux): the ESTABLISHED row local :<serverPort> remote :<localPort> -> { uid, inode } | null.
 // The uid column is the socket owner's and readable for every user's sockets.
@@ -57,35 +101,32 @@ export function parseProcTcpPeer(text, serverPort, localPort) {
   return null;
 }
 
-// The server end of 127.0.0.1:<localPort> -> :<serverPort>: { pid, socketUid }. pid is null when it cannot be read
-// (another user's process on Linux), socketUid is Linux-only.
+// The server end of 127.0.0.1:<localPort> -> :<serverPort>: { pid, socketUid, why }. pid is null when it cannot be
+// read or confirmed (macOS: two of netstat, lsof and nettop must agree), socketUid is Linux-only.
 export function peerOf(serverPort, localPort, { platform = process.platform } = {}) {
   if (platform === "darwin") {
-    const ns = parseNetstatPeer(run(["/usr/sbin/netstat"], ["-anv"]), serverPort, localPort);
-    if (ns) return { pid: ns, socketUid: null };
-    const out = run(LSOF, ["-nP", `-iTCP:${serverPort}`, "-sTCP:ESTABLISHED", "-Fpn"]);
-    let pid = null;
-    for (const line of String(out || "").split("\n")) {
-      if (line.startsWith("p")) pid = Number(line.slice(1));
-      else if (line.startsWith("n")) { const m = line.match(/:(\d+)->.*:(\d+)$/); if (m && Number(m[1]) === serverPort && Number(m[2]) === localPort && pid) return { pid, socketUid: null }; }
-    }
-    return { pid: null, socketUid: null };
+    const c = confirmPeer({
+      netstat: parseNetstatPeer(run(["/usr/sbin/netstat"], ["-anv"]), serverPort, localPort),
+      lsof: parseLsofPeer(run(LSOF, ["-nP", `-iTCP:${serverPort}`, "-sTCP:ESTABLISHED", "-Fpn"]), serverPort, localPort),
+      nettop: parseNettopPeer(run(["/usr/bin/nettop"], ["-L", "1", "-m", "tcp", "-n", "-x", "-J", "state"]), serverPort, localPort)
+    });
+    return { pid: c.pid, socketUid: null, why: c.why || "" };
   }
   if (platform === "linux") {
     let hit = null;
     for (const f of ["/proc/net/tcp", "/proc/net/tcp6"]) { try { hit = parseProcTcpPeer(readFileSync(f, "utf8"), serverPort, localPort); } catch { /* absent */ } if (hit) break; }
-    if (!hit) return { pid: null, socketUid: null };
+    if (!hit) return { pid: null, socketUid: null, why: "" };
     const s = (tcpTable({ platform }).sockets || []).find((x) => x.state === "established" && x.lport === serverPort && x.rport === localPort && x.pid);
-    return { pid: s ? Number(s.pid) : null, socketUid: hit.uid };
+    return { pid: s ? Number(s.pid) : null, socketUid: hit.uid, why: "" };
   }
   if (platform === "win32") {
     const s = parseNetstatTcp(runCmd("netstat", ["-ano"]) || "").find((x) => x.state === "established" && x.lport === serverPort && x.rport === localPort);
-    return { pid: s ? Number(s.pid) : null, socketUid: null };
+    return { pid: s ? Number(s.pid) : null, socketUid: null, why: "" };
   }
-  return { pid: null, socketUid: null };
+  return { pid: null, socketUid: null, why: "" };
 }
 
-// The peer's uids (effective and real). Windows: [owner === this user ? own uid marker : other marker]. -> number[] | null
+// The peer's uids (effective and real); Windows: windowsSids. -> number[] | { peer, self } | null
 export function peerUids(pid, { platform = process.platform } = {}) {
   try {
     if (platform === "darwin") {
@@ -96,17 +137,23 @@ export function peerUids(pid, { platform = process.platform } = {}) {
       const m = readFileSync(`/proc/${pid}/status`, "utf8").match(/^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m);
       return m ? [...new Set(m.slice(1).map(Number))] : null;
     }
-    if (platform === "win32") {
-      const out = run(["powershell.exe"], ["-NoProfile", "-NonInteractive", "-Command", `$o=Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid) | 0}" | Invoke-CimMethod -MethodName GetOwner; "$($o.Domain)\\$($o.User)"`]);
-      const who = String(out || "").trim().toLowerCase();
-      if (!who || who === "\\") return null;
-      const me = `${process.env.USERDOMAIN || ""}\\${process.env.USERNAME || ""}`.toLowerCase();
-      return [who === me ? -1 : -2];
-    }
+    if (platform === "win32") return windowsSids(run(["powershell.exe"], ["-NoProfile", "-NonInteractive", "-Command", windowsSidScript(pid)]));
   } catch { /* not readable */ }
   return null;
 }
-const agentUidOf = (platform) => (platform === "win32" ? -1 : typeof process.getuid === "function" ? process.getuid() : null);
+// Windows: the peer's owner SID (Win32_Process GetOwnerSid) and this process token's SID, never the USERNAME /
+// USERDOMAIN environment, which the agent can set. -> "S-1-…|S-1-…" on one line.
+export function windowsSidScript(pid) {
+  return `$ErrorActionPreference='Stop'; $p=Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid) | 0}"; $o=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid; [Console]::Out.Write($o.Sid + '|' + [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)`;
+}
+const SID = /^S-1-\d+(?:-\d+){1,14}$/i;
+// -> { peer, self } | null when either is missing or not a SID.
+export function windowsSids(text) {
+  const m = String(text || "").trim().match(/^([^|\s]+)\|([^|\s]+)$/);
+  if (!m || !SID.test(m[1]) || !SID.test(m[2])) return null;
+  return { peer: m[1].toUpperCase(), self: m[2].toUpperCase() };
+}
+const agentUidOf = (platform) => (platform === "win32" ? null : typeof process.getuid === "function" ? process.getuid() : null);
 
 export function exePath(pid, { platform = process.platform } = {}) {
   try {
@@ -194,7 +241,7 @@ export function pinnedExe(exe, executables, { platform = process.platform } = {}
 // Pure. facts: { pid, uids, agentUid, chain, agent, exe, writable, signature: { valid, teamId }, env, args }.
 // opts: { sameUser, executables, teamIds, platform }. -> { ok, why, sameUser }
 export function judgeOwner(f, { sameUser = false, executables = [], teamIds = [], platform = process.platform } = {}) {
-  if (!f || (!f.pid && !(Array.isArray(f.uids) && f.uids.length))) return { ok: false, why: "the reader's process could not be determined" };
+  if (!f || (!f.pid && !(Array.isArray(f.uids) && f.uids.length))) return { ok: false, why: (f && f.why) || "the reader's process could not be determined" };
   if (!Array.isArray(f.uids) || !f.uids.length || f.agentUid == null) return { ok: false, why: "the reader's OS user could not be determined" };
   if (Array.isArray(f.chain) && f.agent && f.chain.some((c) => c.pid > 1 && f.agent.has(c.pid))) return { ok: false, why: "the reader runs inside the agent's process tree" };
   if (!f.uids.includes(f.agentUid)) return { ok: true, why: "", sameUser: false };
@@ -212,12 +259,21 @@ export function judgeOwner(f, { sameUser = false, executables = [], teamIds = []
   return { ok: true, why: "", sameUser: true };
 }
 
+// Linux: the socket table's owner uid (kernel-reported, any user) with the pid's uids when the pid is readable; the
+// two must agree, or the uid is undetermined. -> uids | null
+export function mergeSocketUid(pidUids, socketUid) {
+  if (socketUid == null) return pidUids || null;
+  if (!pidUids) return [socketUid];
+  return pidUids.includes(socketUid) ? pidUids : null;
+}
+
 // The facts judgeOwner needs, read from the system. The same-user facts are read only when they can matter.
 export function peerFacts({ serverPort, localPort, sameUser = false, platform = process.platform, readChain = defaultReadChain(platform), startPid = process.ppid }) {
-  const { pid, socketUid } = peerOf(serverPort, localPort, { platform });
-  const uids = pid ? peerUids(pid, { platform }) : null;
-  const f = { pid, uids: uids || (socketUid != null ? [socketUid] : null), agentUid: agentUidOf(platform), chain: null, agent: null };
-  if (uids && socketUid != null && !uids.includes(socketUid)) f.uids = [...uids, socketUid];
+  const { pid, socketUid, why } = peerOf(serverPort, localPort, { platform });
+  let uids = null, agentUid = agentUidOf(platform);
+  if (pid && platform === "win32") { const w = peerUids(pid, { platform }); if (w) { uids = [w.peer]; agentUid = w.self; } }
+  else if (pid) uids = peerUids(pid, { platform });
+  const f = { pid, why, uids: mergeSocketUid(uids, socketUid), agentUid, chain: null, agent: null };
   if (!pid) return f;
   try { f.chain = readChain(pid, 32); f.agent = agentPids(readChain(startPid, 8)); } catch { /* the tree is a signal, not the boundary */ }
   if (sameUser && Array.isArray(f.uids) && f.uids.includes(f.agentUid)) {

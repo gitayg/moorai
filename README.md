@@ -1401,11 +1401,17 @@ unenrolled device the claim check below shows the user a `systemMessage` at `Sto
   | `fileQuarantineAllowRemote` | admin binding only: `true` lets `fileQuarantineModel.url` name a host other than loopback (127.0.0.0/8, `::1`, `localhost`) | `false` |
 
   The listener check runs on a loopback reader after the connection is open and before the request is written,
-  on the process that accepted that connection: macOS `netstat -anv` (it lists every user's sockets with their
-  pid), else `lsof -nP -iTCP:<port> -sTCP:ESTABLISHED` (this user's), then `ps -o uid=,ruid=`; Linux
-  `/proc/net/tcp{,6}` (the socket owner's uid, readable for any user) and `/proc/<pid>/status`; Windows
-  `netstat -ano` and the process owner (best effort, not verified on Windows). **The boundary is the OS
-  account**: a reader whose uid differs from the agent's is accepted. A process of the agent's own user is
+  on the process that accepted that connection. macOS: two of `netstat -anv`, `lsof -nP -iTCP:<port>
+  -sTCP:ESTABLISHED` and `nettop` must name the same pid (a process name is the executable's file name, which
+  the agent chooses, so a name holding `:`, `.`, `,` or whitespace that could shift the parse refuses), then
+  `ps -o uid=,ruid=`. Linux: `/proc/net/tcp{,6}` (the socket owner's uid, readable for any user), checked against
+  `/proc/<pid>/status` when the pid is readable. Windows: `netstat -ano`, and the peer's owner SID (`GetOwnerSid`)
+  against this process token's SID, never the `USERNAME` / `USERDOMAIN` environment (not verified on Windows).
+  **The boundary is the OS account**: a reader whose uid differs from the agent's is accepted. **Current limit on
+  macOS:** from the hook (a node process), `netstat -anv` lists no TCP sockets at all and `lsof` lists only the
+  user's own, so a reader under another account is seen by `nettop` alone, cannot be confirmed, and is refused:
+  on macOS outside-origin reads are refused rather than summarised unless the admin binding opts into a
+  same-user reader. Linux (`/proc`) and the same-user opt-in are the working paths. A process of the agent's own user is
   refused unless the admin binding sets `fileQuarantineSameUserReader`, because the agent can impersonate it:
   start its own listener, run a signed runtime as a code host (`ELECTRON_RUN_AS_NODE=1 … -e`), detach from its
   own process tree, or replace a binary it owns. Under that opt-in the reader's executable (macOS: lsof's first
@@ -1418,8 +1424,8 @@ unenrolled device the claim check below shows the user a `systemMessage` at `Sto
   hook's shells and the agent process) is refused; that check is an extra signal, not a boundary, since a
   detached process leaves the tree. Measured on this Mac: the Homebrew Ollama runs as the user (uid 502),
   ad-hoc signed with no Team ID, in a user-owned `/opt/homebrew`, so it is refused by default and under the
-  opt-in (check median 179 ms by default, 360 ms with the same-user pins); a root-owned listener's pid and uid 0
-  read correctly from `netstat -anv` and `ps`.
+  opt-in; a root-owned listener's pid and uid 0 read correctly from `netstat -anv` and `ps` run from a shell, and
+  from node only `nettop` sees it ("could not be confirmed by a second source").
 
   What is read: plain text (txt, md, csv, json, logs and any file that reads as UTF-8 text), HTML with tags,
   scripts and styles removed, docx / xlsx / pptx (document, comments, headers, footers, notes and shared-string
@@ -1435,9 +1441,10 @@ unenrolled device the claim check below shows the user a `systemMessage` at `Sto
   on every use and removed after 24 hours; the file's own text is never stored. A Read is rewritten with no
   `permissionDecision`, so the host's own permission check runs on the summary file's path (which is outside
   the project). Measured on macOS with a stub model on 127.0.0.1 run outside the hook's process tree and seen as
-  another OS user (a test preload shifts its uid; median of 20 hook runs, a fresh HOME per series): a
-  quarantined Read 401 ms with `fileQuarantine: "off"`, 598 ms summarised (listener check and model call), 430
-  ms from the cached summary; a plain Read 433 ms with `"off"` and 428 ms with `"summary"`. With Ollama's llama3.2 (3B) on the same machine a first summary took 5.5 to 8
+  another OS user (a test preload shifts its uid; median of 20 hook runs, a fresh HOME per series, on a machine
+  at load average 265): a quarantined Read 645 ms with `fileQuarantine: "off"`, 811 ms summarised (listener
+  check and model call), 735 ms from the cached summary; a plain Read 548 ms with `"off"` and 518 ms with
+  `"summary"`. A second run under the same load gave 691 / 1212 / 533 / 509 / 501 ms. With Ollama's llama3.2 (3B) on the same machine a first summary took 5.5 to 8
   seconds, and a model that is still loading, or that Ollama is swapping in, runs past the deadline and the read
   is refused.
 

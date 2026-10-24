@@ -13,7 +13,7 @@
 //   node --test --import ./test/hermetic-env.mjs test/quarantine-reader-hook.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, existsSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, existsSync, realpathSync, symlinkSync, copyFileSync, chmodSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -36,19 +36,31 @@ const NODE_EXE = realpathSync(process.execPath);
 
 // The console (policy + alerts) runs in this process; the model stub runs as its own process, daemonized by
 // default (re-parented, outside this test's process tree, as a model runtime the user started would be).
-async function startStub({ daemon = true } = {}) {
+// A copy of node under a crafted file name ("x:1 ollama"): process listings show "x:1 ollama:<pid>", which a parser
+// that takes the first ":<digits>" reads as pid 1. Homebrew's node loads libnode from ../lib, so that is linked too.
+function craftedNode(dir) {
+  const real = realpathSync(process.execPath);
+  mkdirSync(join(dir, "bin"));
+  symlinkSync(join(dirname(dirname(real)), "lib"), join(dir, "lib"));
+  const exe = join(dir, "bin", "x:1 ollama");
+  copyFileSync(real, exe);
+  chmodSync(exe, 0o755);
+  return exe;
+}
+async function startStub({ daemon = true, crafted = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "moorai-quar-stub-"));
   const info = join(dir, "info.json");
-  const child = spawn(process.execPath, [STUB, info, daemon ? "daemon" : "serve"], { stdio: "ignore", detached: false });
+  const exe = crafted ? craftedNode(dir) : process.execPath;
+  const child = spawn(exe, [STUB, info, daemon ? "daemon" : "serve"], { stdio: "ignore", detached: false });
   for (let i = 0; i < 200 && !existsSync(info); i++) await new Promise((r) => setTimeout(r, 25));
   const { port, pid } = JSON.parse(readFileSync(info, "utf8"));
-  rmTree(dir);
+  const cleanup = () => rmTree(dir);
   const call = (path, body) => new Promise((resolve) => {
     const req = http.request({ host: "127.0.0.1", port, path, method: body === undefined ? "GET" : "POST" }, (res) => { let b = ""; res.on("data", (c) => { b += c; }); res.on("end", () => { try { resolve(JSON.parse(b)); } catch { resolve(null); } }); });
     req.on("error", () => resolve(null));
     req.end(body === undefined ? undefined : body);
   });
-  return { port, pid, child, call, stop: async () => { await call("/__quit", ""); try { process.kill(pid); } catch { /* gone */ } } };
+  return { port, pid, child, call, stop: async () => { await call("/__quit", ""); try { process.kill(pid); } catch { /* gone */ } cleanup(); } };
 }
 async function withServer(fn, { stubOpts } = {}) {
   const st = { alerts: [], policy: { captureTier: "content-free" } };
@@ -283,4 +295,14 @@ test("(n) no fileQuarantineModel: no auto-detection, so no reader (a running Oll
     assert.match(r.reason, /no reader configured/);
     assert.equal(quar(st.alerts)[0].outcome, "no-reader");
   }, { policy: () => ({ captureTier: "content-free", fileQuarantine: "summary", fileQuarantineAutodetect: true }) });
+});
+
+test("(o) a listener whose executable name is crafted to read as another pid (\"x:1 ollama\") is refused", macOnly, async () => {
+  await scenario("summary", async (st, home) => {
+    const r = await runHook(home, pre("q-o", "Read", { file_path: join(home, "work", "invoice.txt") }));
+    assert.equal(r.decision, "deny", r.raw);
+    assert.match(r.reason, /process name made the peer lookup ambiguous/);
+    assert.equal((await stubState(st)).chats, 0, "nothing was sent");
+    assert.equal(quar(st.alerts)[0].outcome, "untrusted-reader");
+  }, { stubOpts: { crafted: true } });
 });

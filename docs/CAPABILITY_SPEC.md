@@ -1131,10 +1131,14 @@ is validated against.
     127.0.0.0/8, `::1` or `localhost` is refused unless `fileQuarantineAllowRemote`; a fresh `http.Agent`, so no
     environment proxy applies); on a loopback reader, after connect and before the request is written,
     [`cli/quarantine-owner.mjs`](../cli/quarantine-owner.mjs) `verifyReaderPeer`: `peerFacts` finds the server
-    end of THIS connection (`peerOf`: macOS `netstat -anv`, which lists every user's sockets with a pid, else
-    `lsof -nP -iTCP:<port> -sTCP:ESTABLISHED -Fpn`; Linux `/proc/net/tcp{,6}`, whose uid column is the socket
-    owner's for any user, plus `tcpTable` for the pid when readable; Windows `netstat -ano`) and its uids
-    (`ps -o uid=,ruid=`, `/proc/<pid>/status`, Windows `GetOwner` best effort), and `judgeOwner` decides
+    end of THIS connection (`peerOf`: macOS `confirmPeer` over `parseNetstatPeer` (`netstat -anv`, fixed
+    columns, the process field split at its last `:`), `parseLsofPeer` (lsof's `p` record) and `parseNettopPeer`
+    (`nettop -L 1 -m tcp -n -x -J state`, `<name>.<pid>` split at its last `.`): two must name the same pid, a
+    name that could shift a parse (`:`, `.`, `,`, whitespace) or a disagreement refuses; Linux
+    `/proc/net/tcp{,6}`, whose uid column is the socket owner's for any user, plus `tcpTable` for the pid when
+    readable, the two uids required to agree (`mergeSocketUid`); Windows `netstat -ano`) and its uids
+    (`ps -o uid=,ruid=`, `/proc/<pid>/status`; Windows `windowsSids`: the owner SID from `GetOwnerSid` against
+    `WindowsIdentity::GetCurrent().User.Value`, both required to be SIDs), and `judgeOwner` decides
     (`untrusted-reader`, nothing sent, on a refusal): pid and uid undetermined → refused; the pid or an ancestor
     above 1 in `agentPids` (the hook's parent chain through its shells to the agent, inclusive) → refused, an
     extra signal in both modes; a uid different from the hook's → accepted (the boundary); the agent's own uid →
@@ -1171,16 +1175,20 @@ is validated against.
     `fileQuarantine`, `source`, `app`, `hostHash`, `modelKind` (`local` | `remote`), `format`, `bytes`,
     `chars`, `truncated`, `summaryChars`, `keyFacts`, `aiDirected`, `cached`; no path, name or text. Origin
     taint (17c1) runs unchanged. **Measured** (macOS, a stub model on 127.0.0.1 run daemonized outside the hook's tree and presented as
-    another OS user by a test-only preload, median of 20 hook runs, a fresh HOME per series): a quarantined Read
-    401 ms with `"off"`, 598 ms summarised, 430 ms cached; a plain Read 433 / 428 ms with `"off"` / `"summary"`.
-    On this Mac the Homebrew Ollama runs as the user (uid 502 via `ps -o uid=,ruid=` and `lsof -Fu`), is
+    another OS user by a test-only preload, median of 20 hook runs, a fresh HOME per series, load average 265):
+    a quarantined Read 645 ms with `"off"`, 811 ms summarised, 735 ms cached; a plain Read 548 / 518 ms with
+    `"off"` / `"summary"` (a second run: 691 / 1212 / 533 / 509 / 501 ms). On this Mac the Homebrew Ollama runs as the user (uid 502 via `ps -o uid=,ruid=` and `lsof -Fu`), is
     ad-hoc signed (`Signature=adhoc`, `TeamIdentifier=not set`; `codesign --verify --strict` still exits 0, which
     is why a Team ID is required) and lives in a user-owned `/opt/homebrew`: `verifyReaderPeer` refuses it by
-    default (median 179 ms, n = 10) and under the same-user opt-in ("writable by the agent's user", 360 ms). A
-    root-owned loopback listener read as pid and uid 0 through `netstat -anv` and `ps` from a shell; from a node
-    process in this test environment `netstat -anv` printed no TCP rows (lsof still worked), so the netstat path
-    was not exercised from the hook here, and the cross-user acceptance was driven with an injected uid, not run
-    live against a reader under another account. Ollama llama3.2 (3B) on the same machine: 5.5 to 8.0 s per first summary of a two-line invoice once loaded,
+    default and under the same-user opt-in ("writable by the agent's user"). A
+    root-owned loopback listener read as pid and uid 0 through `netstat -anv` and `ps` from a shell. An executable
+    named `x:1 ollama` is printed by netstat as `x:1 ollama:44323`, which a first-`:<digits>` parse read as pid 1
+    (launchd, root): `parseNetstatPeer` and `parseNettopPeer` now return ambiguous for it and the read is refused.
+    From node, `netstat -anv` prints no TCP rows at all, and neither does anything node spawns (`/bin/sh`,
+    `python3`, an empty environment); from a shell or a Python started by the shell it prints every socket. The
+    unified log showed no TCC decision for it, so the cause is not established. `lsof` and `nettop` work from node.
+    The cross-user acceptance was driven with an injected uid, not run live against a reader under another
+    account. Ollama llama3.2 (3B) on the same machine: 5.5 to 8.0 s per first summary of a two-line invoice once loaded,
     schema-valid, the planted instruction reported as AI-directed text and not repeated; while Ollama swaps
     models the 9 s deadline passes and the read is refused.
     **Limits:** a summary is model-written text and can still carry a cleverly worded instruction that no
@@ -1199,10 +1207,13 @@ is validated against.
     model or with request logging, or (where a pin is loose) host code in it, and a detached process leaves the
     agent's process tree; the same-user pins narrow this but do not close it. Only a reader under a separate OS
     account is a hard boundary, and that boundary assumes the agent cannot act as that account (no sudo, no
-    write access to the service's files). On macOS a peer of another user is found only through `netstat -anv`;
-    if that lists nothing (as it did from node in this test environment) the reader is refused. The Windows path
-    (owner via `GetOwner`; a same-user reader is always refused there, its environment being unreadable) is not
-    verified on Windows; LM Studio is not measured; auto-detection uses the first model `/v1/models` lists,
+    write access to the service's files). **On macOS the cross-user reader cannot currently be identified from the
+    hook**: `netstat -anv` lists no TCP sockets to a node process and `lsof` lists only the user's own, so a
+    reader under another account is seen by `nettop` alone, is not confirmed by a second source, and is refused;
+    outside-origin reads on macOS are therefore refused rather than summarised unless the admin binding opts into
+    a same-user reader. Linux (`/proc`) and the same-user opt-in are the working paths. A name that is merely
+    unusual (`Model Server`, `com.docker.backend`) also refuses on macOS. The Windows path (owner SID; a
+    same-user reader is always refused there, its environment being unreadable) is not verified on Windows; LM Studio is not measured; auto-detection uses the first model `/v1/models` lists,
     which may be large or slow.
 17d. **Verdict provenance** — [`cli/provenance.mjs`](../cli/provenance.mjs) stamps every alert and ledger
     row with `policyId` (`pol:<tenant>:<iat>:<digest12>`, `pol:unsigned:<digest12>`, `builtin-defaults`,
