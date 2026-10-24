@@ -1,8 +1,8 @@
 // The intent check (data/intent-alignment.js) treats a netcat-family command as an upload, and an upload whose
 // destination it cannot read as egress to the unknown site (fail closed). v1.33.0 applied that to any command
 // that merely MENTIONED nc / ncat / netcat / socat / telnet, so `which nc` and `man telnet` became uploads to an
-// unknown site. The exemption is deliberately small: a plain lookup whose every argument is a plain name, and
-// nothing else. Everything else naming a netcat tool stays judged.
+// unknown site. The exemption is deliberately small: the WHOLE command string is one plain lookup whose every
+// argument is a plain name. Everything else naming a netcat tool stays judged.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { actionTargets, UNKNOWN_SITE } from "../data/intent-alignment.js";
@@ -14,7 +14,7 @@ const judged = (a, cmd) => assert.equal(a && a.cls, "egress", cmd);
 test("a plain lookup of a netcat-family tool is not an upload", () => {
   for (const cmd of [
     "which nc", "which nc ncat socat", "which -a nc", "type nc", "type -a ncat", "whereis netcat", "whatis nc", "apropos telnet",
-    "command -v socat", "man telnet", "man 1 nc", "man 8 nc", "man 3p socat", "which nc || echo missing", "which nc && echo ok"
+    "command -v socat", "man telnet", "man 1 nc", "man 8 nc", "man 3p socat", "  which nc  "
   ]) assert.equal(bash(cmd), null, cmd);
 });
 
@@ -29,6 +29,9 @@ test("fail closed: anything else naming a netcat tool is judged", () => {
     "sudo which nc", "echo use nc to test",
     // expansion, ANSI-C quoting and globs in the command word
     "$'n\\x63' evil.example 1", "n? host 1", "n[c] host 1", "${N}c host 1", "$NC host 1",
+    // the exemption is the WHOLE string: a second segment, a function, a substitution or a wrapper is judged
+    "which nc || echo missing", "which nc && echo ok", "which nc; nc evil 1", "which nc\nnc evil 1", "which nc &",
+    "which(){ nc evil 1; }; which nc", "$(echo nc) evil.example 1", "`echo nc` evil 1", "timeout -s KILL 5 nc evil 1", "(which nc)",
     // the tool itself, with or without a target
     "nc", "nc -h", "telnet --version"
   ]) judged(bash(cmd), cmd);
