@@ -103,6 +103,7 @@ import { resolveContainment, containmentDecision, wrapFallback, hostKind, capabl
 import { guardHit, guardAlert, guardReason } from "./containment-guard.mjs";
 import { mxcCapable } from "./mxc-detect.mjs";
 import { queueModelDownload, modelScanDue } from "./model-scan-queue.mjs";
+import { resolveModelPins, MODEL_NOT_APPROVED } from "./model-pins.mjs";
 import { approvalGate } from "./approval-routing.mjs";
 import { receiptIntake, receiptRequest, receiptAnswer } from "./receipt-step.mjs";
 
@@ -1515,7 +1516,7 @@ async function runModelScanWorker() {
     const { modelScanPosture } = await import("./model-scan-posture.mjs");
     // Downloads only: the store inventory belongs to the daily posture worker.
     const ms = (policy && typeof policy.modelScan === "object" && policy.modelScan) || {};
-    const r = modelScanPosture({ policy: { modelScan: { ...ms, inventory: "off" } }, stateDir: STATE_DIR });
+    const r = modelScanPosture({ policy: { ...(policy && typeof policy === "object" ? policy : {}), modelScan: { ...ms, inventory: "off" } }, stateDir: STATE_DIR, admin: ADMIN });
     if (r) {
       const failed = [];
       await Promise.all(r.alerts.map(async (a) => { let res = null; try { res = await post({ ...a, ...IDENTITY }); } catch { res = null; } if (!res || !res.ok) failed.push(a); }));
@@ -3345,6 +3346,10 @@ async function main() {
     // OT protocol clients (cli/ot-protocol-client.mjs): the command and every script decoded from it (embedded
     // scripts are PowerShell, base64/hex payloads go to a POSIX shell); the strictest result is kept.
     { const ot = otShellCheck({ command: ti.command, shell: ps ? "ps" : "sh", scripts: [...embedded.map((text) => ({ text, shell: "ps" })), ...decodedPayloads.map((text) => ({ text, shell: "sh" }))], policy, readScript: scriptReader(typeof input.cwd === "string" ? input.cwd : process.cwd()), tool }); if (ot) { post({ ...ot.alert, ts: new Date().toISOString(), ...IDENTITY }); if (ot.kill) killSession(tool, ot.killIds, "file"); if (RANK[ot.decision] > RANK[dec]) { dec = ot.decision; reasons = [ot.reason]; alts = []; why(OT_PROTOCOL_CLIENT); } } }
+    // Model provenance pins (cli/model-pins-hook.mjs): a load or serve of a model file this command names, checked
+    // against the approved sha256 list from the admin binding or the verified policy only. Loaded only when pinning is on.
+    // A check that throws decides as an unverified file would: asked or denied by mode, never silently allowed.
+    { const pinMode = resolveModelPins(VERIFIED_POLICY ?? null, { admin: ADMIN, warn: () => {} }).mode; if (pinMode !== "off") { try { const mp = (await import("./model-pins-hook.mjs")).modelPinCheck({ command: ti.command, cwd: typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd(), policy: VERIFIED_POLICY ?? null, admin: ADMIN, stateDir: STATE_DIR, tool }); if (mp) { for (const a of mp.alerts) post({ ...a, ts: new Date().toISOString(), ...IDENTITY }); if (RANK[mp.decision] > RANK[dec]) { dec = mp.decision; reasons = [mp.reason]; alts = []; why(MODEL_NOT_APPROVED); } } } catch { const fd = pinMode === "block" ? "deny" : pinMode === "ask" ? "ask" : "allow"; if (RANK[fd] > RANK[dec]) { dec = fd; reasons = ["model provenance check failed"]; alts = []; why(MODEL_NOT_APPROVED); } } } }
     if (reportEnvelope(policy, tool, { tool: "Bash", paths: readPaths }, "file") && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; alts = saferAlternativesFor([64]); why(REASON.ENVELOPE); }
     // Cumulative deletion volume: the first deletion after this session crossed the threshold asks. Only
     // ever allow -> ask (or adds the reason to an existing ask); never touches a deny.

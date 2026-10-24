@@ -82,6 +82,22 @@ function scanUnsafeModelLoad(text) {
   return REMOTE_CODE_CLI.test(text);
 }
 
+// Every model-load call in code position, with its argument text, whatever its arguments (the model
+// provenance pin check, cli/model-pins-targets.mjs, reads the path a call names). → [{ name, args }]
+export function modelLoadCalls(text) {
+  const out = [];
+  if (typeof text !== "string" || text.length > MAX) return out;
+  const re = new RegExp(CALL.source, "g");
+  let m, n = 0;
+  while ((m = re.exec(text)) !== null && n++ < MAX_CALLS) {
+    let start = m.index;
+    while (start > 0 && start > m.index - 120 && /[\w.]/.test(text[start - 1])) start--;
+    if (!inCodePosition(text, start)) continue;
+    out.push({ name: m[1], args: argsOf(text, m.index + m[0].length - 1) });
+  }
+  return out;
+}
+
 // Memoised on the last text, for the reason data/obfuscation-signal.js gives: _matchDetector re-invokes
 // refine() once per prefilter occurrence.
 let lastText = null, lastHit = false;

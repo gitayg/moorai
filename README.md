@@ -58,6 +58,7 @@ That's the exact trade MoorAI refuses.
 - **Installed IDE-extension scanning** — `moorai-ide-extensions` (and the AIBOM's `ideExtensionScan`) reads the extensions installed in VS Code, Insiders, VSCodium, Cursor, Windsurf, Kiro and VS Code Server, and JetBrains plugins (id and version from `META-INF/plugin.xml` in the plugin jar). VS Code-family extensions are checked for a published malicious id and version (`ide-ext-known-malicious`: 14 OSV malicious-package records for Open VSX and Marketplace extensions, and Amazon Q 1.84.0, CVE-2025-8217), a run of 16 or more invisible Unicode selectors in a bundled script (`ide-ext-invisible-code`, the GlassWorm loader technique), a near-miss of a widely installed id (`ide-ext-typosquat`), a widely installed name under another publisher (`ide-ext-publisher-impersonation`) and a `.vsix` side-load recorded in `extensions.json` (`ide-ext-sideloaded`). Report-only; output is editor, id, version, AI flag, codes, risk and advisory ids, never a path or file contents. Reads are bounded (8 MB per file, 48 MB per extension, 512 MB per run) and a skipped file is reported as `truncated`. JetBrains plugins are inventoried and classified as AI or not; the other checks cover the VS Code family.
 - **Browser Guard, store build and managed install** — the MV3 extension in [`browser-ext/`](browser-ext/) now has store icons, a managed-storage schema (`serverUrl`, `installToken`, `mode`, `reportEnabled`, `lockSettings`; a managed value wins over the user's), a background worker that posts the content-free alerts (a content script's fetch runs under the page's origin, so it could not reach a console), store listing and privacy text, `scripts/browser-ext-package.mjs` (deterministic store zip, or a self-hosted build carrying the console origin) and Chrome/Edge force-install templates in [`browser-ext/policy/`](browser-ext/policy/) (macOS `.mobileconfig`, Windows `.reg`, Linux JSON, ADMX/ADML, Intune steps) rendered by `scripts/browser-ext-policy.mjs --id <id>`. Publishing to the Chrome Web Store and Edge Add-ons is still to do, so the store id does not exist yet.
 - **Static model-file scanning** — `moorai-model-scan` inspects pickle / PyTorch, Keras, TensorFlow SavedModel, ONNX, GGUF and SafeTensors files without loading them: dangerous pickle imports, Lambda-layer bytecode, Python-calling TF ops, custom ONNX op domains and escaping external-data paths, GGUF chat templates that reach Python internals or carry instructions, malformed SafeTensors headers. Model downloads an agent runs are reported (#76) and scanned in the background, and the local model stores can be scanned on the daily posture run. Static only: input-triggered backdoors and trojaned weights are out of reach. See [Model file scanning](#model-file-scanning).
+- **Model provenance pinning** — the administrator lists the sha256 of each approved model file (`modelPins`, signed policy or admin binding) and picks `modelPinMode` `report`, `ask` or `block`. A model file that is not on the list is `not-approved` in the background scans, and an agent's `llama-server -m`, `vllm serve`, `ollama run` / `ollama create`, or Python load of a local model file that is not pinned is reported, held or denied. A pin proves which file runs, not that the file is free of a backdoor. See [Model provenance pinning](#model-provenance-pinning).
 - **Local secret-egress detection** — fingerprints your local secret values (`.env`, cloud creds) on-device as keyed one-way hashes and blocks an outbound command or tool-call that carries one verbatim — catching a real secret leaving even when it isn't in a recognizable token shape. Only the hash + a verdict leave.
 - **Insecure-defaults screening** — flags misconfigurations agents habitually emit (SSRF, path traversal, XXE, JWT `alg=none`, TLS-verify-off, wildcard CORS, `debug=True`, insecure randomness for tokens, hardcoded creds, world-writable perms, open redirect) — on top of the SQLi/XSS/RCE/deserialization coverage.
 - **Sub-agent / A2A oversight** — records agent-to-agent delegation (sub-agent spawns), scans the delegated prompt for injection, and applies the parent's entitlement envelope to the child so a delegated action can't slip past the parent's controls. The delegation alert names a Claude Code built-in sub-agent type (`general-purpose`, `Explore`, `Plan` …) in clear; a custom type's name, which can say what the user is working on, travels only as the tenant-keyed hash. Every alert also says which agent it is about (`agentName`: `claude-code` from the hook and `moorai-guard`, or `codex` / `cursor` / `gemini` / `copilot` through `moorai-agent-hook` (a Factory Droid alert carries no `agentName` until the console's vocabulary has `droid`); the MCP client the stdio MCP proxy was installed into, `claude-code` / `cursor` / `claude-desktop`; `gateway` from the HTTP MCP gateway; `agent-sdk`, `serve`, `model-proxy` or `inference-hook` from those surfaces), which the console shows as `agent_name`, and, where the agent states it, that agent product's own version (`agentVersion`, e.g. `2.1.295`; never MoorAI's version). Only Claude Code (`AI_AGENT=claude-code_<v>_harness` in the hook and stdio MCP server environment) and Cursor (`CURSOR_VERSION` in the hook environment) state one; Codex, Gemini CLI, Copilot CLI and Droid put no version in their hook payload or environment, so their alerts carry none, and a version is never probed or guessed on the verdict path. The value must match `^[0-9A-Za-z.+-]{1,32}$` on both sides or it is dropped. [`cli/agent-names.mjs`](cli/agent-names.mjs) holds the vocabulary, which must stay a subset of the console's.
@@ -2033,9 +2034,55 @@ suspicious file raises one alert per file content: #76 with reasonCode `MODEL_FI
   of backlog item #13 (probing a model with adversarial prompts) is not built.
 - **The TensorFlow and ONNX checks are heuristics**: they read op names, domains and paths, not what a custom
   op library or a callback would do.
-- **Weights are not inspected** for trojans or tampering.
+- **Weights are not inspected** for trojans. Tampering with an approved file is caught by
+  [model provenance pinning](#model-provenance-pinning), not by the scan.
 - A joblib file with inline numpy arrays is read only up to its first array (`partial-parse`, medium); the
   HDF5 search sees only an uncompressed `model_config` in the first 256 MB.
+
+### Model provenance pinning
+
+Static scanning cannot see trojaned weights or a backdoor that waits for a trigger word. Pinning answers a
+different question: is this the exact file the administrator approved? It proves which file runs, not that the
+file is free of a backdoor.
+
+```json
+{
+  "modelPinMode": "block",
+  "modelPins": [
+    { "sha256": "9f2c…64 hex…", "name": "llama-3.2-3b-instruct-q4", "note": "approved 2026-10" }
+  ]
+}
+```
+
+- **Who sets it.** The root-owned admin binding (`/etc/moorai/config.json`, `%ProgramData%\MoorAI\config.json`)
+  or the signed policy, in that order; the first that carries either key decides both. User-writable files,
+  including `~/.moorai/config.json`, are never read for pins.
+- **Modes.** `off` (default), `report` (alert only), `ask` (hold the command for the user), `block` (deny).
+  `modelPins` without a mode means `report`. A mode that is not one of the four exact values means `block`; a
+  `modelPins` that is not a list, or an entry without a valid sha256, pins nothing.
+- **The background scans.** With pinning on, every file the download scan and the store scan read gets
+  `pin: pinned | not-approved | unverified`, and a file that is not pinned and no worse than `clean` gets the
+  verdict `not-approved`. `unsafe` and `suspicious` stay as they are: a pin never overrides a static finding.
+  `moorai-model-scan --pin <sha256>` (or `--policy` with `modelPins`) does the same on the command line and
+  exits 1 on a `not-approved` file.
+- **At load time (PreToolUse, Bash).** The hook checks the model files a command names: `llama-server`,
+  `llama-cli` and the other llama.cpp tools with `-m` / `--model` / `-md`; `vllm serve <path>` or `--model <path>` (a hub id cannot
+  be named before it is fetched and counts as unverified); `ollama run <model>` (the model blobs its manifest
+  names) and `ollama create` (the Modelfile's `FROM` path or store model); and `torch.load`, `pickle` /
+  `joblib` / `dill` loads, `np.load`, `load_model` and `from_pretrained` with a local path, in code the command
+  runs. A command that runs a script file is not looked into.
+- **The hash.** A file's sha256 comes from a local cache when the file is unchanged since it was last hashed
+  (path, inode, size, mtime and ctime), or is computed on the hook path while the command's files fit in 2 GiB
+  (1.9-2.0 GiB/s measured on the dev Mac, so about 1 to 1.5 s). A larger file is `unverified`: asked or denied by mode, never allowed silently,
+  and queued for the background scan, which hashes it so the next attempt is decided from the cache. An Ollama
+  blob's name is compared with its own hash, never trusted alone.
+- **What leaves the device.** Threat #76, reasonCode `MODEL_NOT_APPROVED`: the load kind, the format, a size
+  class, `pinned: false`, whether the file was hashed, the first 12 hex of its sha256 and the outcome. Never a
+  path, a file name or a model name. The heartbeat's `modelFiles` adds `not-approved`, `pinMode` and
+  `pinSource` when pinning is on.
+- **Limits.** The hash cache is in the user's home: a same-user process that edits it can make an unpinned file
+  pass. Loads by a script file, a notebook, a server started outside the agent, or a hub id from Python are not
+  checked. The console does not yet know `MODEL_NOT_APPROVED` or the `pin` fields. Tested on macOS only.
 
 ### Capability tags: what a tool call can do
 
@@ -2897,7 +2944,7 @@ npx moorai-scan --package github:owner/repo   # a whole source repository — an
 - **`moorai-outbox`** shows and sends the alert outbox (`status [--json]`, `flush`) and writes a device bundle for a console the device cannot reach (`export --out <file.zip> [--include-trail]`). See [Store-and-forward alerts](#store-and-forward-alerts).
 - **`moorai-helper status [--json]`** reports whether the privileged helper `moorai-guardd` is installed, running and answering with a valid device-key proof, as a content-free status (`healthy`, `not-ready`, `installed-not-running`, `untrusted`, …). See [Privileged helper (moorai-guardd)](#privileged-helper-moorai-guardd).
 - **`node cli/moorai-windows-validate.mjs [--out <file>] [--strict] [--require-windows] [--only <ids>] [--json]`** runs the agent's enforced surfaces on the machine it is started on (the hook on Bash and the `PowerShell` tool, the hook launched through `powershell.exe`, the MCP gateway by hook and over HTTP, egress rules in the hook and the egress proxy, MXC detection and enforcement) against a loopback console and throwaway home directories, and writes a content-free report: probe ids, outcomes from a fixed list, alert counts, the Windows build. It is built for Windows; on macOS and Linux the three Windows-only probes are skipped, and `--require-windows` turns a skip into the verdict `incomplete`. It is not a package bin: run it from the agent tree. It has run on macOS only so far, not yet on Windows. See [Windows runtime validation](docs/CAPABILITY_SPEC.md#windows-runtime-validation-moorai-windows-validate).
-- **`moorai-model-scan <path|dir>`** inspects model files without loading or executing them and gives each one a verdict (unsafe, suspicious, clean, allowed, unscanned), its format, findings and sha256. See [Model file scanning](#model-file-scanning).
+- **`moorai-model-scan <path|dir>`** inspects model files without loading or executing them and gives each one a verdict (unsafe, suspicious, clean, allowed, unscanned), its format, findings and sha256. `--pin <sha256>` adds the not-approved verdict for files off the approved list. See [Model file scanning](#model-file-scanning) and [Model provenance pinning](#model-provenance-pinning).
 - **`moorai-cloud-setup <copilot-coding-agent|claude-code-web|codex-cloud>`** binds server mode inside a cloud coding agent's setup step (as root; `--install-dir`, `--root` for an image build, `--print-hooks` for the host's hook registration). Exit 0 done, 2 usage or missing binding, 3 host blocked (Codex cloud), 4 token exchange refused. See [`examples/cloud/`](examples/cloud/README.md).
 
   **Package code (`--packages`, `--package`).** With `--packages`, each MCP server whose config launches a package (`npx`, `pnpm dlx`, `bunx`, `yarn dlx`, `uvx`, `uv tool run`, `pipx run`) is downloaded from the public registry, its digest checked (npm `sha512` integrity, PyPI `sha256`; a mismatch fails closed), extracted into a temporary directory with traversal, link and size guards, and analysed statically — nothing in it is executed. Only the package name and version leave the device, and only with the flag (or `MOORAI_SCAN_PACKAGES=1`); without it the packages are listed as not analysed. Package code gets its own checks — install scripts that download or run remote code, runtime self-install, environment or credential harvesting next to a network send, obfuscated `eval`, socket reverse shells, typosquatted names, known-malicious packages (by name, PyPI names compared in their PEP 503 form, and by the exact published SHA-256 of a known-bad artifact or of any extracted file, `data/known-bad-artifacts.js`: `pkg-known-malicious`, block), and a hard-coded fetch from a free throwaway web host such as `tiiny.site`, a paste site or an anonymous tunnel (`pkg-throwaway-host`, a `CAUTION` warning only, never a verdict; the host is matched as a suffix of the parsed hostname against `data/throwaway-hosts.js`, and only in live code that also makes a network call) — and the prompt-oriented detectors are scoped by file type: in code and docs they report at most `CAUTION`, because an MCP server spawning processes or calling APIs is expected. `DO-NOT-INSTALL` needs concrete evidence of malicious or unsafe-by-construction behaviour. Docker images and remote-only servers are reported as not analysed.

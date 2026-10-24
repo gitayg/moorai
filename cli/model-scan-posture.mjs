@@ -14,10 +14,19 @@
 //                                                     costs nothing: its verdict is remembered)
 //   }
 //
+// Provenance pins (cli/model-pins.mjs): with modelPinMode / modelPins in the admin binding or the signed
+// policy, each record carries `pin` ("pinned" | "not-approved" | "unverified") and a file that is not pinned
+// and no worse than clean gets the verdict "not-approved". unsafe and suspicious stay as they are. A queue
+// item of kind "pin-verify" (a load the hook could not hash in time) is hashed fresh, never from the
+// remembered verdict, and its sha256 fills the hook's hash cache.
+//
 // What leaves the device. Heartbeat field `modelFiles`: counts only (scanned, unsafe, suspicious,
-// clean, allowed, unscanned, pending, by format, by finding class at medium or above). Alerts, once per
+// clean, allowed, unscanned, pending, by format, by finding class at medium or above; with pins on, also
+// not-approved, the pin mode and its source). Alerts, once per
 // file content: threat #76, reasonCode MODEL_FILE_UNSAFE / MODEL_FILE_SUSPICIOUS, the format, verdict,
-// severity, finding classes and the file's sha256. Never a path, a file name, a model name or any
+// severity, finding classes and the file's sha256 (with pins on, also pinned true/false). A file that is
+// only not approved: reasonCode MODEL_NOT_APPROVED with the format, a size class, pinned false, verified,
+// and the first 12 hex of its sha256 (not the whole hash). Never a path, a file name, a model name or any
 // detail text. Local state (~/.moorai/model-scan-state.json, 0600) keys remembered verdicts by a hash of
 // path, size and mtime, so no path is stored there either.
 import { readFileSync, writeFileSync, mkdirSync, renameSync, readdirSync, statSync } from "node:fs";
@@ -27,6 +36,8 @@ import { homedir } from "node:os";
 import { modelStoreDirs } from "./local-ai-inventory.mjs";
 import { findModelFiles, scanModelFile, verdictCounts, SCAN_LIMITS, SEVERITY_RANK } from "./model-scan.mjs";
 import { readQueue, writeQueue, QUEUE_FILE, QUEUE_TTL_MS, SETTLE_MS } from "./model-scan-queue.mjs";
+import { resolveModelPins, applyPins, fileIdentity, rememberHashes, sizeClass, hashPrefix, MODEL_NOT_APPROVED } from "./model-pins.mjs";
+import { systemConfig } from "./server-mode.mjs";
 
 export const MODEL_SCAN_STATE = "model-scan-state.json";
 export const MODEL_FILE_REASON = { unsafe: "MODEL_FILE_UNSAFE", suspicious: "MODEL_FILE_SUSPICIOUS" };
@@ -83,27 +94,34 @@ export function downloadActivity(dir, since, { maxEntries = 50_000, maxDepth = 8
 // → { field, alerts, notes, commit(failed) }, or null when nothing was due (inventory off and no queued
 // download). write false: read-only (moorai doctor) — nothing is scanned, the queue is not touched.
 export function modelScanPosture({ policy = null, home = homedir(), env = process.env, platform = process.platform, stateDir = join(home, ".moorai"),
-  write = true, now = Date.now(), ts = new Date(now).toISOString(), limits = SCAN_LIMITS, stores = null, scan = scanModelFile } = {}) {
+  write = true, now = Date.now(), ts = new Date(now).toISOString(), limits = SCAN_LIMITS, stores = null, scan = scanModelFile, admin } = {}) {
   if (!write) return null;
   const pol = modelScanPolicy(policy);
+  let adm = admin;
+  if (adm === undefined) { try { adm = systemConfig(); } catch { adm = null; } }
+  const pins = resolveModelPins(policy, { admin: adm, warn: () => {} });
+  const pinOn = pins.mode !== "off";
   const queue = pol.downloads === "scan" ? readQueue(stateDir) : [];
   if (pol.inventory === "off" && !queue.length) return null;
   const state = readState(stateDir);
   const nextFiles = {};
   const records = [];
   let budget = pol.maxBytesPerRun, pending = 0;
-  const one = (path, size, source) => {
+  const hashed = [];
+  const one = (path, size, source, { fresh = false } = {}) => {
     let st;
     try { st = statSync(path); } catch { return; }
     const key = fileKey(path, st);
     const prev = state.files[key];
-    if (prev && prev.v) { nextFiles[key] = prev; records.push({ format: prev.f, verdict: prev.v, severity: prev.sev || null, sha256: prev.s || null, findings: (prev.c || []).map((c) => ({ class: c, severity: "medium" })), source, cached: true }); return; }
+    if (prev && prev.v && !fresh) { nextFiles[key] = prev; records.push(applyPins({ format: prev.f, verdict: prev.v, severity: prev.sev || null, sha256: prev.s || null, size: st.size, findings: (prev.c || []).map((c) => ({ class: c, severity: "medium" })), source, cached: true }, pins)); return; }
     if (Math.min(size, limits.maxFileBytes) > budget) { pending++; return; }
     budget -= Math.min(size, limits.maxFileBytes);
+    const before = fileIdentity(path);
     const r = scan(path, { allowHashes: pol.allowHashes, limits });
     r.source = source;
-    records.push(r);
     nextFiles[key] = { v: r.verdict, f: r.format, s: r.sha256, sev: r.severity, c: classesOf(r) };
+    if (r.sha256 && before) hashed.push({ before, path, sha256: r.sha256 });
+    records.push(applyPins(r, pins));
   };
 
   // 1. Downloads the hook queued.
@@ -111,6 +129,15 @@ export function modelScanPosture({ policy = null, home = homedir(), env = proces
   let downloadsScanned = 0;
   for (const item of queue) {
     if (!item || typeof item.path !== "string" || now - item.ts >= QUEUE_TTL_MS) continue;
+    if (item.kind === "pin-verify") {
+      let size;
+      try { size = statSync(item.path).size; } catch { continue; }
+      const before = pending;
+      one(item.path, size, "load", { fresh: true });
+      downloadsScanned++;
+      if (pending > before) keep.push(item);
+      continue;
+    }
     const since = item.ts - 5 * 60 * 1000;
     const act = downloadActivity(item.path, since);
     if (!act.exists) { if (now - item.ts < MISSING_GRACE_MS) keep.push(item); continue; }
@@ -134,7 +161,8 @@ export function modelScanPosture({ policy = null, home = homedir(), env = proces
   }
 
   const counts = verdictCounts(records);
-  const field = { inventory: pol.inventory, downloads: pol.downloads, stores: storeCount, ...counts, pending, pendingDownloads: keep.length };
+  const field = { inventory: pol.inventory, downloads: pol.downloads, stores: storeCount, ...counts, pending, pendingDownloads: keep.length,
+    ...(pinOn ? { pinMode: pins.mode, pinSource: pins.source, pinPolicyInvalid: pins.invalid, "not-approved": counts["not-approved"] || 0 } : {}) };
 
   // Alerts: once per file content (sha256), unsafe and suspicious only.
   const alerted = new Set(state.alerted);
@@ -146,13 +174,29 @@ export function modelScanPosture({ policy = null, home = homedir(), env = proces
     alerts.push({
       threatId: 76, reasonCode: MODEL_FILE_REASON[r.verdict], category: CATEGORY[r.verdict], riskLevel: RISK[r.severity] || "Medium",
       stage: "inventory", tool: r.source === "download" ? "download:model-scan" : "inventory:model-scan", ts,
-      contentHash: `model-file:${id}`, modelFile: { format: r.format, verdict: r.verdict, severity: r.severity, classes: classesOf(r), sha256: id }
+      contentHash: `model-file:${id}`, modelFile: { format: r.format, verdict: r.verdict, severity: r.severity, classes: classesOf(r), sha256: id, ...(pinOn ? { pinned: r.pin === "pinned" } : {}) }
     });
   }
+  // Not approved (and otherwise no worse than clean): once per file content, the hash prefix only.
+  const pinKey = (r) => `pin:${r.sha256 || "unverified"}`;
+  for (const r of records) {
+    if (r.verdict !== "not-approved") continue;
+    const k = pinKey(r);
+    if ((r.sha256 && alerted.has(k)) || alerts.some((a) => a._k === k)) continue;
+    const prefix = hashPrefix(r.sha256);
+    alerts.push({
+      _k: k, threatId: 76, reasonCode: MODEL_NOT_APPROVED, category: "Model file not approved", riskLevel: "Medium", stage: "inventory",
+      tool: r.source === "download" ? "download:model-scan" : r.source === "load" ? "load:model-scan" : "inventory:model-scan", ts,
+      contentHash: `model-pin:${prefix || "unverified"}`,
+      modelFile: { format: r.format, verdict: r.verdict, sizeClass: sizeClass(r.size), pinned: false, verified: !!r.sha256, hashPrefix: prefix, mode: pins.mode, source: pins.source }
+    });
+  }
+  for (const a of alerts) if (a._k) Object.defineProperty(a, "_k", { enumerable: false });
 
   const commit = (failed = []) => {
-    const lost = new Set((Array.isArray(failed) ? failed : []).map((a) => a && a.modelFile && a.modelFile.sha256));
-    const nextAlerted = [...new Set([...state.alerted, ...alerts.map((a) => a.modelFile.sha256)])].filter((h) => !lost.has(h)).slice(-STATE_CAP);
+    const idOf = (a) => a && (a._k || (a.modelFile && a.modelFile.sha256));
+    const lost = new Set((Array.isArray(failed) ? failed : []).map(idOf));
+    const nextAlerted = [...new Set([...state.alerted, ...alerts.map(idOf).filter((k) => k && k !== "pin:unverified")])].filter((h) => !lost.has(h)).slice(-STATE_CAP);
     // Downloads remembered from earlier runs stay remembered until the cap, so a store scan does not forget them.
     const files = pol.inventory === "scan" ? { ...nextFiles } : { ...state.files, ...nextFiles };
     const keys = Object.keys(files);
@@ -162,6 +206,7 @@ export function modelScanPosture({ policy = null, home = homedir(), env = proces
       const file = join(stateDir, MODEL_SCAN_STATE), tmp = `${file}.${process.pid}.tmp`;
       writeFileSync(tmp, JSON.stringify({ files, alerted: nextAlerted }), { mode: 0o600 });
       renameSync(tmp, file);
+      rememberHashes(stateDir, hashed);
       // Re-read: the hook may have queued another download while this run scanned. Only the entries this
       // run finished (or dropped) leave the queue.
       if (queue.length) {
