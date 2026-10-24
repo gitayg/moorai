@@ -266,3 +266,49 @@ test("with scanning on, a multipart or binary POST to a path the proxy does not 
     try { assert.equal((await request(off.url, "/openai/some/unknown/endpoint", multipart)).status, 200, "scanning off changes nothing"); } finally { await off.close(); }
   } finally { await con.close(); }
 });
+
+// ---- any % in the path; file parts in any JSON body, whatever the path ----
+test("with scanning on, any % escape in the path is refused in enforce mode (%3A, %2F, %25, an unreserved one) and alerted in report mode", async () => {
+  const con = await startConsole();
+  try {
+    const e = await proxy("enforce", HASH);
+    try {
+      for (const p of ["/gemini/v1beta/models/x%3AbatchGenerateContent", "/openai/chat%2Fcompletions", "/anthropic/v1/messages%25", "/anthropic/v1/m%65ssages"]) {
+        fp.on((r, res) => sendJson(res, { ok: true }));
+        const n = fp.requests.length;
+        const r = await request(e.url, p, { body: { a: 1 } });
+        assert.equal(r.status, 403, `${p}: ${r.raw}`);
+        assert.equal(fp.requests.length, n, p);
+      }
+    } finally { await e.close(); }
+    const rep = await proxy("report", HASH, { ...OPEN, console: { serverUrl: con.url, tenant: "t", installToken: "tok-bypass-5" } });
+    try {
+      fp.on((r, res) => sendJson(res, { ok: true }));
+      assert.equal((await request(rep.url, "/openai/some%2Fthing", { body: { a: 1 } })).status, 200);
+      assert.ok(await waitFor(() => con.parsed().some((a) => /file-scan-path/.test(a.tool))));
+    } finally { await rep.close(); }
+  } finally { await con.close(); }
+});
+
+test("file parts are scanned in any JSON body, whatever the path: count_tokens, Gemini countTokens (also nested generateContentRequest), Responses input_tokens, an unknown route", async () => {
+  const px = await proxy("enforce", HASH);
+  const gpart = (b) => ({ inlineData: { mimeType: "application/pdf", data: b64(b) } });
+  const cases = [
+    ["/anthropic/v1/messages/count_tokens", (b) => ({ model: "claude-fake", messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: b64(b) } }] }] })],
+    ["/gemini/v1beta/models/gemini-fake:countTokens", (b) => ({ contents: [{ role: "user", parts: [gpart(b)] }] })],
+    ["/gemini/v1beta/models/gemini-fake:countTokens", (b) => ({ generateContentRequest: { model: "models/gemini-fake", contents: [{ role: "user", parts: [gpart(b)] }] } })],
+    ["/openai/responses/input_tokens", (b) => ({ model: "gpt-fake", input: [{ role: "user", content: [{ type: "input_file", filename: "a.pdf", file_data: durl(b, "application/pdf") }] }] })],
+    ["/openai/some/new/endpoint", (b) => ({ anything: { deeply: [{ nested: { parts: [gpart(b)] } }] } })]
+  ];
+  try {
+    for (const [p, body] of cases) {
+      fp.on((r, res) => sendJson(res, { total_tokens: 1 }));
+      const n = fp.requests.length;
+      const r = await request(px.url, p, { body: body(BAD) });
+      assert.equal(r.status, 403, `${p}: ${r.raw}`);
+      assert.match(r.raw.toString(), /malicious file/, p);
+      assert.equal(fp.requests.length, n, p);
+      assert.equal((await request(px.url, p, { body: body(GOOD) })).status, 200, `${p} clean`);
+    }
+  } finally { await px.close(); }
+});

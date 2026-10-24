@@ -33,14 +33,23 @@
 // not scanned (onUnknown and its fail mode decide), never as clean. A data: URL that is not base64 is
 // percent-decoded; one that does not decode is unscannable.
 //
+// ANY JSON BODY (kind "any"). The whole body is walked, whatever the path, and every object is tested against every
+// API's file shapes above: an Anthropic image / document block, an OpenAI image_url / file / input_audio part, a
+// Responses input_image / input_file / computer_call_output, a Gemini inlineData / fileData part, an Ollama `images`
+// array of strings. So a sibling endpoint (count_tokens, countTokens, input_tokens, a batch, an unknown route) or a
+// file nested anywhere is found. Bounded: ANY_DEPTH levels and ANY_NODES objects; past either, unscannable.
+//
 // -> { parts: [{ where, mediaType, bytes, filename? }], over, unscannable: [{ where, mediaType, raw }], refs:
 // [{ where, ref }], ambiguous: [where] } — at most MAX_PARTS of each; `over` counts the rest, which the caller treats
 // as not scanned.
+import { createHash } from "node:crypto";
 export const MAX_PARTS = 32;
 
 const isObj = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
 const arr = (v) => (Array.isArray(v) ? v : []);
 const MAX_DEPTH = 16;
+export const ANY_DEPTH = 64;
+export const ANY_NODES = 200000;
 
 export function strictBase64(s, { urlSafe = false } = {}) {
   if (typeof s !== "string") return null;
@@ -117,6 +126,35 @@ export function fileParts(kind, body) {
   // Past MAX_DEPTH nothing is read further: the place is recorded unscannable (onUnknown and the fail mode decide),
   // never skipped as if it held no file.
   const deep = (where) => add(where, "", null, undefined, "");
+  if (kind === "any") {
+    let nodes = 0, stopped = false;
+    const visit = (v, depth) => {
+      if (stopped || v === null || typeof v !== "object") return;
+      if (depth > ANY_DEPTH || ++nodes > ANY_NODES) { stopped = true; deep("any:limit"); return; }
+      if (Array.isArray(v)) { for (const x of v) visit(x, depth + 1); return; }
+      const t = v.type;
+      if ((t === "image" || t === "document") && isObj(v.source)) {
+        if (v.source.type === "base64") b64(`any:${t}`, v.source.media_type, v.source.data);
+        else if (v.source.type === "url") ref(`any:${t}:url`, v.source.url);
+        else if (v.source.type === "file") ref(`any:${t}:file`, v.source.file_id);
+      } else if (t === "image_url") dataField("any:image_url", isObj(v.image_url) ? v.image_url.url : v.image_url);
+      else if (t === "file" && isObj(v.file)) { dataField("any:file", v.file.file_data, v.file.filename); ref("any:file:id", v.file.file_id); }
+      else if (t === "input_audio" && isObj(v.input_audio)) b64("any:input_audio", `audio/${String(v.input_audio.format || "unknown").replace(/[^a-z0-9.+-]/gi, "")}`, v.input_audio.data);
+      else if (t === "input_image") { dataField("any:input_image", v.image_url); ref("any:input_image:id", v.file_id); }
+      else if (t === "input_file") { dataField("any:input_file", v.file_data, v.filename); ref("any:input_file:id", v.file_id); ref("any:input_file:url", v.file_url); }
+      else if (t === "computer_call_output" && isObj(v.output)) { dataField("any:computer_screenshot", v.output.image_url); ref("any:computer_screenshot:id", v.output.file_id); }
+      for (const d of both(v, "inlineData", "inline_data", "any:inlineData")) {
+        if (!isObj(d)) continue;
+        const [mt] = both(d, "mimeType", "mime_type", "any:mimeType");
+        b64("any:inlineData", mt, d.data, undefined, { urlSafe: true });
+      }
+      for (const fd of both(v, "fileData", "file_data", "any:fileData")) if (isObj(fd)) for (const u of both(fd, "fileUri", "file_uri", "any:fileUri")) ref("any:fileData", u);
+      if (Array.isArray(v.images) && v.images.length && v.images.every((x) => typeof x === "string")) for (const s of v.images) b64("any:images", "image/unknown", s);
+      for (const k of Object.keys(v)) visit(v[k], depth + 1);
+    };
+    visit(body, 0);
+    return { parts, over, unscannable, refs, ambiguous };
+  }
   if (!isObj(body)) return { parts, over, unscannable, refs, ambiguous };
 
   if (kind === "anthropic") {
@@ -172,6 +210,25 @@ export function fileParts(kind, body) {
     for (const m of arr(body.messages)) if (isObj(m)) for (const s of arr(m.images)) b64("ollama:images", "image/unknown", s);
   }
   return { parts, over, unscannable, refs, ambiguous };
+}
+
+// Two results as one, a file found by both counted once (by its bytes; an unscannable value or a reference by its
+// text), under the same caps.
+export function mergeFileParts(...list) {
+  const out = { parts: [], over: 0, unscannable: [], refs: [], ambiguous: [] };
+  const seen = new Set();
+  const key = { parts: (x) => `p:${createHash("sha256").update(x.bytes).digest("hex")}`, unscannable: (x) => `u:${x.raw}:${x.raw ? "" : x.where}`, refs: (x) => `r:${x.ref}` };
+  for (const f of list) {
+    out.over += f.over || 0;
+    for (const k of ["parts", "unscannable", "refs"]) for (const x of f[k] || []) {
+      const id = key[k](x);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (out[k].length >= MAX_PARTS) out.over++; else out[k].push(x);
+    }
+    for (const a of f.ambiguous || []) if (!out.ambiguous.includes(a)) out.ambiguous.push(a);
+  }
+  return out;
 }
 
 // Anthropic Message Batches (POST …/v1/messages/batches): {requests: [{custom_id, params: <a Messages request>}]};

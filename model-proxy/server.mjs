@@ -62,7 +62,7 @@ import { createTextGuard, guardBody } from "./text-guard.mjs";
 import { parseLossless } from "./json-lossless.mjs";
 import { textAlert, textRefusal } from "./text-report.mjs";
 import * as codecs from "./text-codecs.mjs";
-import { fileParts, batchFileParts } from "./file-parts.mjs";
+import { fileParts, batchFileParts, mergeFileParts } from "./file-parts.mjs";
 import { fileScanPolicy } from "../cli/file-scan-policy.mjs";
 import { loadFileScanKeys } from "../cli/file-scan-keys.mjs";
 import { createFileScanner, fileScanDecision, fileScanAlert, mimeClass, PROVIDER_LABEL } from "../cli/file-scan.mjs";
@@ -310,12 +310,14 @@ export async function createProxy(opts = {}) {
   //     mode or under a closed fail mode, otherwise forwarded re-serialised with an UNEVALUATED_BAD_INPUT alert.
   //   * Two spellings of one field with different content (file-parts.mjs): the same rule.
   //   * The files: before the upstream when enforcing or under a closed fail mode, else after the response.
-  async function fileScanRequest(kind, errApi, req, res, ref, s, fm, later, cfg) {
+  //   * Every body is also walked whole for any API's file shapes (file-parts.mjs kind "any"), whatever the path; kind
+  //     "any" alone for a path no parser knows (where a top-level JSON array is accepted).
+  async function fileScanRequest(kind, errApi, req, res, ref, s, fm, later, cfg, label = "file-scan-body") {
     const coding = String(req.headers["content-encoding"] || "").trim().toLowerCase();
     const exact = !coding || coding === "identity" ? parseLossless(ref.body) : null;
-    if (!exact || typeof exact !== "object" || Array.isArray(exact)) {
-      unevaluated("file-scan-body", "request", "input");
-      return (enforce || fm === "closed") && refuseFile(res, errApi, "the request body could not be read for files (it carries a content coding or is not a JSON object), so it cannot be checked");
+    if (!exact || typeof exact !== "object" || (Array.isArray(exact) && kind !== "any")) {
+      unevaluated(label, "request", "input");
+      return (enforce || fm === "closed") && refuseFile(res, errApi, "the request body could not be read for files (multipart, binary, a content coding, or not a JSON object), so it is not scanned and cannot be checked");
     }
     const sc = strictScan(ref.body.toString("utf8"));
     const dupe = ["duplicate-key", "key-collision"].find((p) => sc.problems.has(p));
@@ -324,7 +326,7 @@ export async function createProxy(opts = {}) {
       if (enforce || fm === "closed") return refuseFile(res, errApi, `the request body ${PROBLEM_TEXT[dupe]} (duplicate keys are a parser differential), so the provider could read a file the scan never saw`);
     }
     ref.body = Buffer.from(JSON.stringify(exact));
-    const found = kind === "anthropic-batch" ? batchFileParts(exact) : fileParts(kind, exact);
+    const found = mergeFileParts(kind === "anthropic-batch" ? batchFileParts(exact) : kind === "any" ? {} : fileParts(kind, exact), fileParts("any", exact));
     if (found.ambiguous.length) {
       unevaluated(`file-${found.ambiguous[0]}`, "request", "input");
       if (enforce || fm === "closed") return refuseFile(res, errApi, `a file part is ambiguous (${found.ambiguous[0].replace(/[^A-Za-z0-9:_]/g, "_")} spelled two ways with different content), so the provider could read a different file than the one checked`);
@@ -682,6 +684,13 @@ export async function createProxy(opts = {}) {
     if (db) return refuseDecoy(res, api, db, "body");
 
     const fm = failMode((await rt.ready()).policy);
+    // With fileScan on, a path carrying any % escape is not matched at all: %3A, %2F, %25 … could name an endpoint
+    // (":batchGenerateContent", "/files") that no pattern here sees. Refused in enforce mode or under a closed fail
+    // mode; otherwise alerted and forwarded with the path as matched.
+    if (scanOn && path.slice(route.prefix.length).includes("%")) {
+      unevaluated("file-scan-path", "request", "input");
+      if (enforce || fm === "closed") return refuseFile(res, api, "the request path carries a percent-escape, so the endpoint it names cannot be matched and checked for files (policy fileScan)");
+    }
     // A signed usage budget in state "exceeded" with action "block" (budget.mjs): refused in enforce mode, before
     // anything is judged or forwarded; reported in report mode.
     if (api) {
@@ -730,8 +739,8 @@ export async function createProxy(opts = {}) {
     // File-carrying endpoints the APIs above do not parse (fileEndpoint), with policy fileScan on.
     if (!api && scanOn) {
       const ep = fileEndpoint(req.method, matchPath(rest));
-      const s2 = ep ? await rt.ready() : null;
-      const fsCfg = s2 ? fileScanPolicy(s2.policy) : null;
+      const s2 = await rt.ready();
+      const fsCfg = fileScanPolicy(s2.policy);
       if (ep && fsCfg.mode !== "off") {
         if (ep.kind === "upload") {
           unevaluated("file-scan-endpoint", "request", "input");
@@ -741,17 +750,13 @@ export async function createProxy(opts = {}) {
           if (await fileScanRequest(ep.kind, ep.api, req, res, ref, s2, fm, later, fsCfg)) return;
           body = ref.body;
         }
-      } else if (!ep && body.length && (req.method === "POST" || req.method === "PUT" || req.method === "PATCH")) {
-        // Any other path this proxy does not parse: a body that is not plain JSON (multipart, binary, a content coding,
-        // unparseable) could carry a file nothing here reads. Refused in enforce mode or under a closed fail mode,
-        // alerted otherwise. A JSON body there is forwarded unscanned (README "Cloud file scanning").
-        const ct = String(req.headers["content-type"] || "").toLowerCase();
-        const coding = String(req.headers["content-encoding"] || "").trim().toLowerCase();
-        const v = /^application\/(?:[a-z0-9.!#$&^_-]+\+)?json\b/.test(ct) && (!coding || coding === "identity") ? parseLossless(body) : null;
-        if (!v || typeof v !== "object") {
-          unevaluated("file-scan-unparsed", "request", "input");
-          if (enforce || fm === "closed") return refuseFile(res, null, "a request body this proxy does not parse (multipart, binary or not JSON) is not scanned for files (policy fileScan), and your organization blocks what MoorAI cannot evaluate");
-        }
+      } else if (!ep && fsCfg.mode !== "off" && body.length && (req.method === "POST" || req.method === "PUT" || req.method === "PATCH")) {
+        // Any other path: a JSON body is walked for any API's file shapes and scanned like a model request; a body that
+        // is not JSON (multipart, binary, a content coding) could carry a file nothing here reads, so it is refused in
+        // enforce mode or under a closed fail mode and alerted otherwise.
+        const ref = { body };
+        if (await fileScanRequest("any", null, req, res, ref, s2, fm, later, fsCfg, "file-scan-unparsed")) return;
+        body = ref.body;
       }
     }
 

@@ -969,9 +969,10 @@ Batches and Gemini `cachedContents` are scanned like model requests. **Not scann
 a provider file id, Gemini `fileData`) is not fetched: it is alerted and `onUnknown` decides; the upload endpoints
 (Anthropic / OpenAI `/files`, OpenAI `/uploads`, Gemini `/upload/…`, Gemini `:batchGenerateContent`) are not read and
 are refused in enforce mode or under a closed fail mode, alerted otherwise; a body with a content coding or that is
-not a JSON object, and a multipart or binary body to any path the proxy does not parse, are handled the same way;
-paths are normalised (encoded characters, `//`, a trailing slash, case) before they are matched and forwarded; other
-unparsed paths with a JSON body (OpenAI Batch input files, file attachments by id) are not scanned; scanning before embedding (`/v1/index-scan`) is not wired yet. Deep CDR (MetaDefender's
+not a JSON object, a multipart or binary body to any path the proxy does not parse, and a path with any `%` escape are
+handled the same way; paths are normalised (`//`, dot segments, a trailing slash, case) before they are matched and
+forwarded; every JSON body on any path is walked for every API's file shapes (`count_tokens`, `countTokens`,
+`input_tokens`, unknown routes); a file uploaded earlier and used only by an id the proxy does not see is not scanned; scanning before embedding (`/v1/index-scan`) is not wired yet. Deep CDR (MetaDefender's
 sanitisation) is not used.
 See [`model-proxy/README.md`](model-proxy/README.md#cloud-file-scanning).
 
