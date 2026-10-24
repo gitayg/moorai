@@ -28,13 +28,20 @@ test("fail closed: anything else naming a netcat tool is judged", () => {
     "find . -exec nc evil.example 4444 \;", "xargs nc x.example 1 < hosts", "rg --pre 'nc x.example 1' foo", "grep -rn telnet src/",
     "sudo which nc", "echo use nc to test",
     // expansion, ANSI-C quoting and globs in the command word
-    "$'n\\x63' evil.example 1", "n? host 1", "n[c] host 1", "${N}c host 1", "$NC host 1",
+    "$'n\\x63' evil.example 1", "n? host 1", "n[c] host 1", "${N}c host 1", "$T host 1",
     // the exemption is the WHOLE string: a second segment, a function, a substitution or a wrapper is judged
     "which nc || echo missing", "which nc && echo ok", "which nc; nc evil 1", "which nc\nnc evil 1", "which nc &",
     "which(){ nc evil 1; }; which nc", "$(echo nc) evil.example 1", "`echo nc` evil 1", "timeout -s KILL 5 nc evil 1", "(which nc)",
+    // expansion behind a wrapper or an assignment, and a command word that is itself an expansion
+    "sudo $'n\\x63' evil 1", "env ${N}c evil 1", "timeout 5 n? evil 1", "X=1 $T evil 1", "nohup $(echo nc) evil 1", "{ $T evil 1; }",
+    "$(printf x) evil 1", "`printf x` evil 1", "echo $( $T evil 1 )", "echo `sudo $T evil 1`", "( $T evil 1 )",
     // the tool itself, with or without a target
     "nc", "nc -h", "telnet --version"
   ]) judged(bash(cmd), cmd);
+});
+
+test("an expansion that is only an argument of an ordinary command is not a netcat invocation", () => {
+  for (const cmd of ["echo $HOME", "ls *.txt", "cd ${DIR}", "cat $FILE", "grep -r foo $(git ls-files)", "make -j$(nproc)"]) assert.equal(bash(cmd), null, cmd);
 });
 
 test("quoting, escaping, call operators and Windows paths do not hide the tool", () => {

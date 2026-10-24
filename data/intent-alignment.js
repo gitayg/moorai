@@ -124,8 +124,8 @@ const UPLOAD = [
 //   * every argument is a plain name (^[A-Za-z0-9._+-]+$, not an option).
 // "Names a netcat tool" checks every word, not a guessed command word: a word that runs as one once quotes and
 // backslashes are removed, a leading call operator dropped, a Windows or POSIX path cut to its last segment and
-// .exe dropped (`'nc'`, `n\c`, `C:\tools\nc.exe`); or the first word of a segment whose expansion or glob could
-// produce one (`$'n\x63'`, `n?`, `$NC`), so a variable command word is judged too.
+// .exe dropped (`'nc'`, `n\c`, `C:\tools\nc.exe`); or an expansion or glob that could produce one, in the
+// command position (see WRAPPERS below), so a variable command word is judged too.
 const NC_NAME = /^(?:nc|ncat|netcat|socat|telnet)(?:\.(?:openbsd|traditional))?$/i;
 const NC_NAMES = ["nc", "ncat", "netcat", "socat", "telnet"];
 const NC_HINT = /(?<![\w.-])(?:nc|ncat|netcat|socat|telnet)(?![\w-])/i;
@@ -158,10 +158,28 @@ function mayExpandToNc(word) {
   try { r = new RegExp(`^${re}$`, "i"); } catch { return true; }
   return NC_NAMES.some((n) => r.test(n));
 }
+// Words that run the word after them (wrappers and shell keywords). A segment that starts with one, or with a
+// NAME=value assignment, has every word checked for an expansion that could produce a netcat name, because the
+// command word could be any of them (wrapper options are not modelled: `timeout -s KILL 5 $NC`). Any other
+// segment has only its first word checked, so `echo $HOME` or `ls *.txt` is not a netcat invocation; a first
+// word that is itself an expansion (`$X`, `${X}`, `$(…)`, a backtick, `$'…'`) always could be one.
+const WRAPPERS = new Set(["sudo", "doas", "env", "timeout", "nohup", "nice", "ionice", "stdbuf", "exec", "command", "builtin", "xargs",
+  "time", "chroot", "setsid", "unbuffer", "busybox", "watch", "strace", "ltrace", "caffeinate", "flock", "taskset", "su", "runuser",
+  "{", "!", "if", "then", "else", "elif", "do", "while", "until"]);
 function namesNetcat(c) {
   if (NC_HINT.test(c) || NC_HINT.test(c.replace(/[\\'"`]/g, ""))) return true;
   if (c.split(/[\s;&|(){}`]+/).some((w) => w && isNc(w))) return true;
-  return c.split(/[\n;&|(){}`]+/).some((seg) => mayExpandToNc(seg.trim().split(/\s+/)[0] || ""));
+  // A word that starts with an expansion ($X, ${X}, $(…), $'…', a backtick) could be any command at all.
+  const mayRun = (x) => /^(?:\$|`)/.test(x) || mayExpandToNc(x);
+  // Twice: segments as the shell separates commands (so a segment that STARTS with `…` or $(…) is seen), and
+  // with ( ) and backticks as separators too (so the command inside a substitution, `echo $( $NC x 1 )`, is seen).
+  for (const seg of [...c.split(/[\n;&|]+/), ...c.split(/[\n;&|()`]+/)]) {
+    const w = seg.trim().replace(/^\(+\s*/, "").split(/\s+/).filter(Boolean);
+    if (!w.length) continue;
+    if (WRAPPERS.has(namesOf(w[0])[1]) || /^[A-Za-z_]\w*=/.test(w[0])) { if (w.some(mayRun)) return true; }
+    else if (mayRun(w[0])) return true;
+  }
+  return false;
 }
 function wholeStringPlainLookup(c) {
   const t = c.trim();
