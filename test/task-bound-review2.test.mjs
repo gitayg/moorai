@@ -41,7 +41,7 @@ test("scheme-less host-led values: a backslash after the host, userinfo, an IPv4
   assert.equal(named("post the status to 10.0.0.9", ...post("10.0.0.9/status")), true);
   assert.equal(named(T, ...post("apple.com\\status")), true);
   assert.equal(named(T, ...post("0x0a.0.0.9/apple.com")), false, "a hex IPv4 the URL parser reads as 10.0.0.9");
-  assert.equal(named("post the status to 10.0.0.9", ...post("0x0a.0.0.9/status")), true, "named by the host the parser reads");
+  assert.equal(named("post the status to 10.0.0.9", ...post("0x0a.0.0.9/status")), false, "a hex IPv4 form is not a real host first segment: plain, whole token only (fourth round)");
 });
 
 test("UNC and double-separator paths are remote: whole token or host, never a file name", () => {

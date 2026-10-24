@@ -824,14 +824,18 @@ is validated against.
      reading — userinfo stopping at `\`, `#`, `?`; host stopping at `\` and `@` — canonicalises to the same
      host; a refused parse or a disagreement names nothing (`https://evil.com\@apple.com/` is `evil.com`; a
      fullwidth solidus is not folded into a separator before parsing). A scheme-less value led by a dotted
-     host is read as a URL by the parser, not by a regex. One conservative reading per value (`readToken`):
-     *path* only for an unambiguous local path (`/`, `./`, `../`, `~/`, `X:\`, `X:/`), the only kind named by a
-     file name; *remote* (two leading separators) only with a plain hostname or IP first segment
-     (`[A-Za-z0-9.-]`, canonical as written), else refused; *plain* (no URL-ish character) matched as words;
-     *url* for anything `new URL(raw)` or `new URL("http://" + raw)` accepts with a hostname and a non-empty
-     first segment, named by `hostname` only when it equals `canonHost(first segment)` and that segment has no
-     `%`, no `[` outside an IPv6 literal, no trailing `.` and the same dot count canonicalised (so `。` `．`
-     are refused), else refused; anything else only by its whole token. A value with a control or format
+     host is read as a URL by the parser, not by a regex. `unsafeValue` runs first on every value: a `..`
+     segment, a control character or a leftover or malformed escape names nothing, whatever the kind. Then one
+     conservative reading (`readToken`): *path* only for an unambiguous local path (`/`, `./`, `~/`, and a drive
+     letter `X:\` / `X:/` not followed by another separator, only under a filesystem-path key: `path`,
+     `file_path`, `filename`, `file`, `dir`, `directory`, `folder`, `cwd`), the only kind named by a file name;
+     *remote* (two leading separators) only with a plain hostname or IP first segment (`[A-Za-z0-9.-]`,
+     canonical as written), else refused; *url* for a value `new URL(raw)` accepts with a scheme and authority,
+     or a scheme-less value whose first segment is a real host (a dotted name with a 2-63 letter last label, a
+     dotted-quad IPv4, a bracketed IPv6), named by `hostname` only when it equals `canonHost(segment)` and the
+     segment has no `%`, no `[` outside an IPv6 literal, no trailing `.` and the same dot count canonicalised
+     (so `。` `．` are refused), else refused; *plain* for everything else, named only by its whole token, and
+     by words only with no URL-ish character. A value with a control or format
      character (raw or percent-decoded) names nothing; a path with a `..` segment names only itself.
      Decoding is lenient per run of `%XX` (three rounds); a stray `%`, invalid UTF-8 or an escape left after
      the last round makes a value unsafe; `%2e` segment patterns are checked in every decoded form. A number (a JSON
@@ -877,9 +881,12 @@ is validated against.
      and named by its file name; UNC / double-separator paths read as local; a decoder that stopped at the
      first bad escape. Each is fixed and tested (`test/task-bound-review.test.mjs`,
      `test/task-bound-review2.test.mjs`). A third round made the reader structurally conservative (above;
-     `test/task-bound-review3.test.mjs`). **Trade-offs, kept on purpose:** a relative path without `./`
-     (`src/app.js`) is a URL to the parser (host `src`) and is never named by its file name; a time or version
-     string the parser reads as an IPv4 address (`10:30`, `1.2.3`) names nothing; a URL with no authority
+     `test/task-bound-review3.test.mjs`), and a fourth tied host-led reading to a real-host first segment, ran
+     `unsafeValue` on every kind and limited drive letters to filesystem-path keys
+     (`test/task-bound-review4.test.mjs`). **Trade-offs, kept on purpose:** a relative path (`src/app.js`,
+     `reports/x`), a value with userinfo or a port, a hex IP form, a time or a version (`10:30`, `1.2.3`) is
+     named only by its whole token; a multi-word value with a URL-ish character (`St. Louis`) names nothing;
+     a URL with no authority
      (`file:///…`, `foo:bar`) names nothing (an address-shaped `mailto:` value is matched whole, as an e-mail
      address is); a remote path with an IPv6 literal or `_` in its host is refused;
      a `%` that is not an escape makes a value unsafe.

@@ -37,13 +37,15 @@
 // host, site or file name inside one). An e-mail address must appear whole. A URL's host is WHATWG URL
 // parsing's (`new URL().hostname`, punycode for an IDN), read from the raw value, and only when the token
 // reading (userinfo stopping at `\`, `#`, `?`) gives the same host; a URL the parser refuses or reads otherwise
-// names nothing. Every value gets ONE conservative reading (readToken): path — only an unambiguous local path
-// (`/`, `./`, `../`, `~/`, `X:\`, `X:/`), the one kind ever named by a file name; remote — two leading
-// separators, whose first segment must be a plain hostname or IP (else refused); plain — no URL-ish character,
-// matched as words; url — anything else the WHATWG parser accepts as written or behind `http://`, named by the
-// parser's hostname only when it equals canonHost of the first segment and that segment has no `%`, no stray
-// `[`, no trailing `.` and no character the parser maps to `.`, refused otherwise; anything left is named only by
-// its whole token. No lexical guess decides the kind. A value with a control or format character names
+// names nothing. A value that is unsafe (a `..` segment, a control character, a leftover or malformed escape)
+// names nothing, whatever its kind. Otherwise every value gets ONE conservative reading (readToken): path — only
+// an unambiguous local path (`/`, `./`, `~/`, and `X:\` / `X:/` only under a filesystem-path key), the one kind
+// ever named by a file name; remote — two leading separators, whose first segment must be a plain hostname or IP
+// (else refused); url — a value the WHATWG parser accepts with a scheme and authority, or a scheme-less value
+// whose first segment is a real host (a dotted name with a 2-63 letter last label, a dotted-quad IPv4, a bracketed
+// IPv6), named by the parser's hostname only when it equals canonHost of that segment and the segment has no `%`,
+// no stray `[`, no trailing `.` and no character the parser maps to `.`, refused otherwise; plain — anything
+// else, named only by its whole token, and by words only when it has no URL-ish character at all. A value with a control or format character names
 // nothing; a path with a `..` segment names only itself. Percent-decoding is lenient (each run of valid `%XX` on
 // its own, three rounds); a stray `%`, a run that is not valid UTF-8, or an escape still left after the last
 // round makes the value unsafe, and `%2e` segment patterns are looked for in every decoded form. A number (a JSON number, or a string that is only
@@ -152,8 +154,14 @@ const CONTROL = /[\p{Cc}\p{Cf}]/u;
 function canonHost(h) { try { return new URL(`http://${h}/`).hostname || null; } catch { return null; } }
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 const TWO_SEP = /^[\\/]{2}/;
-// The only values ever named by a file name: an unambiguous local path.
-const LOCAL_PATH = /^(?:\/(?![\\/])|\.\/|\.\.\/|~\/|[a-z]:[\\/])/i;
+// The only values ever named by a file name: an unambiguous local path. A drive letter (`X:\`, `X:/`, not
+// `X://`) counts only under a key known to hold a filesystem path (FS_KEYS); elsewhere it is plain.
+const LOCAL_PATH = /^(?:\/(?![\\/])|\.\/|\.\.\/|~\/)/;
+const DRIVE = /^[a-z]:[\\/](?![\\/])/i;
+const FS_KEYS = new Set(["path", "filepath", "filename", "file", "dir", "directory", "folder", "cwd", "workdir", "workingdirectory"]);
+// A scheme-less value is host-led only when its first segment is a real host: a dotted name whose last label is
+// 2-63 letters, a dotted-quad IPv4 literal, or a bracketed IPv6 literal. No userinfo, no port.
+const REAL_HOST = /^(?:(?:[\p{L}\p{N}-]{1,63}\.)+\p{L}{2,63}|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:.]+\])$/iu;
 // A token with none of these characters is plain text, matched as words.
 const URLISH = /[\/\\?#@:.%[\]]/;
 const PLAIN_HOST = /^[a-z0-9.-]+$/i;
@@ -172,20 +180,23 @@ function hostPartOk(seg, host) {
 // ONE CONSERVATIVE READING PER TOKEN (no lexical guess decides what a value is):
 //   remote  two leading separators (`\\host\share`, `//host/x`, `\/`, `/\`): the first segment must be a plain
 //           hostname or IP (letters, digits, `-`, `.`, canonical as written), else { refuse }
-//   path    an unambiguous local path: `/`, `./`, `../`, `~/`, `X:\` or `X:/` — the only kind ever named by a
-//           file name (and not then if unsafeValue)
+//   path    an unambiguous local path: `/`, `./`, `../`, `~/`, or (under a filesystem-path key only) `X:\` /
+//           `X:/` not followed by another separator — the only kind ever named by a file name
 //   plain   no URL-ish character at all: matched as words
-//   url     anything `new URL(raw)` accepts (a scheme and an authority the token reading agrees on), or that
-//           `new URL("http://" + raw)` accepts with a hostname and a non-empty first segment. Named by the
+//   url     anything `new URL(raw)` accepts (a scheme and an authority the token reading agrees on), or a
+//           scheme-less value whose first segment is a REAL_HOST, read as `new URL("http://" + raw)`. Named by the
 //           parser's hostname only when it equals canonHost of the first segment and hostPartOk; else { refuse }.
 //           A scheme the parser refuses, or a parsed URL with no authority, is { refuse }.
-//   anything else is plain: named only by its whole token.
-function readToken(raw) {
+//   anything else is plain: named only by its whole token (and by words when it has no URL-ish character).
+// The caller runs unsafeValue first: a `..` segment, a control character or a leftover escape refuses any kind.
+// fsKey: the value sits under a key known to hold a filesystem path (a drive letter is then a local path).
+function readToken(raw, { fsKey = false } = {}) {
   if (TWO_SEP.test(raw)) {
     const seg = raw.replace(/^[\\/]+/, "").split(/[\\/?#]/)[0];
     if (!seg || !PLAIN_HOST.test(seg) || seg.startsWith(".") || seg.endsWith(".") || canonHost(seg) !== seg.toLowerCase()) return { kind: "remote", refuse: true };
     return { kind: "remote", host: seg.toLowerCase() };
   }
+  if (DRIVE.test(raw)) return fsKey ? { kind: "path" } : { kind: "plain", host: null };
   if (LOCAL_PATH.test(raw)) return { kind: "path" };
   if (!URLISH.test(raw)) return { kind: "plain", host: null };
   let parsed = null;
@@ -197,14 +208,12 @@ function readToken(raw) {
     return host && host === parsed.hostname && hostPartOk(m[2], host) ? { kind: "url", host } : { kind: "url", refuse: true };
   }
   if (SCHEME.test(raw)) return { kind: "url", refuse: true };
-  let led = null;
-  try { led = new URL(`http://${raw}`); } catch { led = null; }
   const seg = raw.split(/[\\/?#]/)[0];
-  if (led && led.hostname && seg) {
-    const host = canonHost(seg);
-    return host && host === led.hostname && hostPartOk(seg, host) ? { kind: "url", host } : { kind: "url", refuse: true };
-  }
-  return { kind: "plain", host: null };
+  if (!REAL_HOST.test(seg)) return { kind: "plain", host: null };
+  let led = null;
+  try { led = new URL(`http://${raw}`); } catch { return { kind: "url", refuse: true }; }
+  const host = canonHost(seg);
+  return host && host === led.hostname && hostPartOk(seg, host) ? { kind: "url", host } : { kind: "url", refuse: true };
 }
 // The percent-decoded forms of a value, up to three rounds, decoding each run of valid `%XX` escapes on its own
 // (so a stray `%ZZ` elsewhere does not stop it). failed: a run that is not valid UTF-8, a `%` that is not an
@@ -236,13 +245,14 @@ const isPathish = (a) => /[\\/]/.test(a);
 const baseOf = (a) => a.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
 // The host / site / file-name terms inside one raw token. An e-mail address yields none: it must match whole.
 // refuse: a URL-shaped token whose host the parser and this reading do not agree on (or that does not parse).
-function atomExtras(a) {
+function atomExtras(a, opts) {
   const out = [];
   if (!a || EMAIL.test(a)) return { terms: out, url: false };
-  const r = readToken(a);
+  if (unsafeValue(a)) return { terms: out, url: true, refuse: true };
+  const r = readToken(a, opts);
   if (r.refuse) return { terms: out, url: true, refuse: true };
   if (r.host) { out.push(`a:${r.host}`); out.push(`a:${siteOf(r.host)}`); }
-  if (r.kind === "path" && !unsafeValue(a)) {
+  if (r.kind === "path") {
     const b = baseOf(a);
     if (b) {
       out.push(`a:${fold(b)}`);
@@ -250,7 +260,8 @@ function atomExtras(a) {
       if (stem.length && stem.length <= MAX_NGRAM) out.push(`w:${stem.join(" ")}`);
     }
   }
-  return { terms: out, url: r.kind === "url" || r.kind === "remote" };
+  // words: only a plain value with no URL-ish character (`red bin`, `Apple`) is matched as words.
+  return { terms: out, url: r.kind === "url" || r.kind === "remote", words: r.kind === "plain" && !URLISH.test(a) };
 }
 // Sentences and clauses: phrases are never formed across `. ! ? ; : ,` (followed by a space or the end) or a line break.
 const segmentsOf = (text) => String(text).split(/[.!?;:,]+(?=\s|$)|[\r\n]+/);
@@ -289,16 +300,16 @@ export const validTaskId = (id) => typeof id === "string" && TASK_ID_RE.test(id)
 // The terms that would name a text value in a task. None for a value carrying a control or format character,
 // or a URL whose host the parser and the token reading disagree on; only the whole token for a path with a
 // `..` segment (raw or percent-encoded).
-export function valueTerms(v) {
+export function valueTerms(v, opts) {
   const raw = String(v).trim();
-  if (CONTROL.test(raw) || decodedForms(raw).forms.some((x) => CONTROL.test(x))) return [];
+  if (unsafeValue(raw)) return [];
   const out = new Set();
   const a = stripEdge(raw);
-  const x = atomExtras(a);
+  const x = atomExtras(a, opts);
   if (x.refuse) return [];
   if (a && a.length <= MAX_VALUE && !/\s/.test(a)) out.add(`a:${fold(a)}`);
   for (const t of x.terms) out.add(t);
-  if (!EMAIL.test(a) && !x.url && !unsafeValue(raw)) {
+  if (x.words) {
     const ws = wordsOf(raw);
     if (ws.length && ws.length <= MAX_NGRAM) out.add(`w:${ws.join(" ")}`);
   }
@@ -534,7 +545,7 @@ export function objectChecks(tool, input, cfg) {
         continue;
       }
       if (typeof v !== "string") { checks.push({ key, kind: "text", terms: [], opaque: true }); continue; }
-      let terms = valueTerms(v);
+      let terms = valueTerms(v, { fsKey: FS_KEYS.has(foldKey(key)) });
       if (cfg && cfg.groups.length && terms.length) {
         const gs = new Set(wholeTerms(v).flatMap((t) => cfg.index.get(t) || []));
         for (const g of gs) terms = [...terms, ...cfg.groups[g]];

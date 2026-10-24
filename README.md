@@ -561,15 +561,18 @@ the framework runs it), `moorai-serve` `/v1/tool-call`, the Agent SDK and the ho
   only); an e-mail address must appear whole. A URL's host is what WHATWG URL parsing (what `fetch` uses)
   reads from the raw value, punycode for an IDN, and it counts only when the token reading agrees:
   `https://evil.com\@apple.com/` is `evil.com`, and a URL the parser refuses, or where only one of the two
-  readings sees a host, names nothing. Each value gets one conservative reading. Only an unambiguous local
-  path (`/`, `./`, `~/`, `X:\`, `X:/`) is ever named by its file name. A remote path (two leading separators:
-  `\\host\share\x`, `//host/x`) needs a plain hostname or IP as its first segment and is named by it, never by
-  a file name. Plain words are matched as words. Anything else the URL parser accepts, as written or behind
-  `http://` (`evil.com\apple`, `user@evil.com/x`, `src/app.js`), is a URL named only by the parser's host,
-  and refused when that host differs from the first segment's or the segment carries `%`, a stray `[`, a
-  trailing `.` or a dot look-alike such as `。`. Anything else is named only by its whole token. The cost:
-  a relative path without `./` (`src/app.js`, `docs\app.js`) is not named by its file name, and a time or
-  version string the parser reads as an IPv4 address (`10:30`, `1.2.3`) names nothing. A value with a control or format character names
+  readings sees a host, names nothing. A value with a `..` segment, a control character or a leftover or
+  malformed escape names nothing, whatever its kind. Each other value gets one conservative reading. Only an
+  unambiguous local path (`/`, `./`, `~/`, and a drive letter `X:\` / `X:/` under a filesystem-path key such as
+  `path` or `file_path`) is ever named by its file name. A remote path (two leading separators:
+  `\\host\share\x`, `//host/x`) needs a plain hostname or IP as its first segment and is named by it. A URL
+  with a scheme, or a scheme-less value whose first segment is a real host (`docs.example.com/x`,
+  `10.0.0.9/x`, `evil.com\apple`), is named only by the parser's host, and refused when that host differs from
+  the segment's or the segment carries `%`, a stray `[`, a trailing `.` or a dot look-alike such as `。`.
+  Everything else is plain: named only by its whole token, and by words only when it has no `/ \ ? # @ : . %`.
+  The cost: a relative path (`src/app.js`, `reports/x`), a value with userinfo or a port, a hex IP, a time or
+  a version (`10:30`, `1.2.3`) is named only by its whole token; a multi-word value with one of those
+  characters (`St. Louis`) and an unsafe value such as `50%` name nothing. A value with a control or format character names
   nothing, and a path with a `..` segment (raw or percent-encoded) names only itself. A number is named when
   the same number appears in the task (no leading zeros), and a non-negative one is also allowed at or under
   its cap. A miss is class `object-not-in-task`,

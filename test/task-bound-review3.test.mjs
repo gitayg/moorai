@@ -26,9 +26,9 @@ const allows = (args, input) => tb.entryOutcome(tb.resolveTaskBound({ taskAllowl
 test("scheme-less first segments: %, a trailing dot and dot look-alikes are refused; userinfo is read as the parser reads it", () => {
   for (const v of ["evil.com%2e/x", "evil.com./x", "evil。com/x", "evil．com/x", "evil.com%2e./x", "ev%69l.com/x"]) {
     assert.equal(named("post the x to evil.com", ...post(v)), false, `${v}: refused`);
-    assert.equal(named(`post the x to ${v}`, ...post(v)), false, `${v}: refused even when typed whole`);
+    assert.equal(named(`post the x to ${v}`, ...post(v)), true, `${v}: not a real host first segment, so plain — named only by its whole token (fourth round)`);
   }
-  assert.equal(named("post it to evil.com", ...post("a@evil.com/x")), true, "named by the host the parser reads");
+  assert.equal(named("post it to evil.com", ...post("a@evil.com/x")), false, "userinfo: not a real host first segment, plain (fourth round)");
   assert.equal(named("post the x to a", ...post("a@evil.com/x")), false, "never by the userinfo or the path");
 });
 
