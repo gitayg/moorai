@@ -31,13 +31,10 @@
 // exists (a capture happened on this device). Tampered: every allowlist entry is applied to the call as if
 // its task matched, and anything one of them would hold is denied (reason "state-tampered"), with a
 // content-free "Task-bound state tampered" alert on every such call; the tampered file is never re-signed. The
-// next capture starts a fresh signed state that records the tamper time and CARRIES OVER the (keyed) session
-// ids the tampered file still showed, if it could be parsed. For 24 h after the tamper a session is judged
-// normally only when it is PROVEN NEW: its first capture in the fresh state came after the tamper, it is not
-// carried over, and its transcript (the hook input's transcript_path) was created after the tamper. Any other
-// session — carried over, never captured since, or captured without that proof (then marked carried over) —
-// has every allowlist entry applied as if selected, as for a tampered file, so neither deleting the file nor
-// a new prompt in an old session reopens it. Each session's first capture time is recorded.
+// next capture starts a fresh signed state that records the tamper time (a fixed timestamp, HMAC-covered).
+// For the whole 24 h window after it, EVERY session — an old one capturing a new prompt, one created after the
+// tamper, any number of new ones — is judged the same way: every allowlist entry applied as if selected. No
+// proof of newness, no per-session list to evict. The cost: legitimate new sessions are held for the window too.
 //
 // WHO DECIDES. The verified policy the hook loaded and the root-owned admin binding (cli/server-mode.mjs
 // systemConfig), which wins key by key. Nothing user-writable.
@@ -51,9 +48,7 @@
 // hashed words (the prompt is already in its own transcript) and re-sign an edited file; deleting the
 // intent key together with the file returns the device to "never captured", which no user-writable state
 // can tell from a fresh install; more than MAX_MATCH_SESSIONS prompted sessions in 24 h evict the oldest
-// session's record; the proof of newness is a transcript file's creation time, which the same user can
-// reset by recreating the file of a session the tampered state no longer showed (a deleted state shows
-// none). A privileged witness (moorai-guardd) would close these; it is not installed.
+// session's record. A privileged witness (moorai-guardd) would close these; it is not installed.
 import { createHmac, createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { deviceReceiptSigner } from "../data/agency-sign.mjs";
@@ -96,33 +91,25 @@ function macKey() {
 }
 const macOf = (k, body) => createHmac("sha256", k).update(`task-terms:v${VERSION}\0${body}`, "utf8").digest("hex");
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-const fresh = () => ({ v: VERSION, s: {}, m: {}, tamperedAt: 0, carried: [] });
-const SID = /^[0-9a-f]{16}$/;
-// The session ids a state that failed verification still shows, when it parses: they are carried over.
-function priorSessions(o) {
-  if (!isObj(o)) return [];
-  const ids = [...(isObj(o.s) ? Object.keys(o.s) : []), ...(isObj(o.m) ? Object.keys(o.m) : []), ...(Array.isArray(o.carried) ? o.carried : [])];
-  return [...new Set(ids.filter((x) => typeof x === "string" && SID.test(x)))];
-}
-const bodyOf = (o) => ({ v: o.v, s: o.s, m: o.m, tamperedAt: Number(o.tamperedAt) || 0, carried: Array.isArray(o.carried) ? o.carried : [] });
-// -> { st, status: "ok" | "missing" | "bad", prior: [session ids a bad but parseable file showed] }
+const fresh = () => ({ v: VERSION, s: {}, m: {}, tamperedAt: 0 });
+const bodyOf = (o) => ({ v: o.v, s: o.s, m: o.m, tamperedAt: Number(o.tamperedAt) || 0 });
+// -> { st, status: "ok" | "missing" | "bad" }
 function readState() {
   const p = join(STATE_DIR, TERMS_FILE);
   let raw;
   try {
-    if (statSync(p).size > MAX_BYTES) return { st: fresh(), status: "bad", prior: [] };
+    if (statSync(p).size > MAX_BYTES) return { st: fresh(), status: "bad" };
     raw = readFileSync(p, "utf8");
-  } catch (e) { return { st: fresh(), status: e && e.code === "ENOENT" ? "missing" : "bad", prior: [] }; }
-  let o;
-  try { o = JSON.parse(raw); } catch { return { st: fresh(), status: "bad", prior: [] }; }
+  } catch (e) { return { st: fresh(), status: e && e.code === "ENOENT" ? "missing" : "bad" }; }
   try {
+    const o = JSON.parse(raw);
     const k = macKey();
-    if (!k || !isObj(o) || o.v !== VERSION || !isObj(o.s) || !isObj(o.m) || typeof o.mac !== "string") return { st: fresh(), status: "bad", prior: priorSessions(o) };
+    if (!k || !isObj(o) || o.v !== VERSION || !isObj(o.s) || !isObj(o.m) || typeof o.mac !== "string") return { st: fresh(), status: "bad" };
     const want = Buffer.from(macOf(k, JSON.stringify(bodyOf(o))), "hex");
     const got = Buffer.from(o.mac, "hex");
-    if (got.length !== want.length || !timingSafeEqual(got, want)) return { st: fresh(), status: "bad", prior: priorSessions(o) };
-    return { st: bodyOf(o), status: "ok", prior: [] };
-  } catch { return { st: fresh(), status: "bad", prior: priorSessions(o) }; }
+    if (got.length !== want.length || !timingSafeEqual(got, want)) return { st: fresh(), status: "bad" };
+    return { st: bodyOf(o), status: "ok" };
+  } catch { return { st: fresh(), status: "bad" }; }
 }
 function writeState(st) {
   try {
@@ -130,8 +117,7 @@ function writeState(st) {
     if (!k) return;
     const now = Date.now();
     const keep = (o, n) => Object.fromEntries(Object.entries(o).filter(([, v]) => v && now - v.t < TTL_MS).sort((a, b) => b[1].t - a[1].t).slice(0, n));
-    const inWindow = now - st.tamperedAt < TTL_MS;
-    const body = { v: VERSION, s: keep(st.s, MAX_SESSIONS), m: keep(st.m, MAX_MATCH_SESSIONS), tamperedAt: inWindow ? st.tamperedAt : 0, carried: inWindow ? [...new Set(st.carried)].slice(-4 * MAX_MATCH_SESSIONS) : [] };
+    const body = { v: VERSION, s: keep(st.s, MAX_SESSIONS), m: keep(st.m, MAX_MATCH_SESSIONS), tamperedAt: inWindow(st, now) ? st.tamperedAt : 0 };
     mkdirSync(STATE_DIR, { recursive: true });
     const p = join(STATE_DIR, TERMS_FILE);
     const tmp = `${p}.${process.pid}.tmp`;
@@ -141,33 +127,20 @@ function writeState(st) {
 }
 // Missing counts as tampered once a capture has happened on this device (the intent device key exists).
 const tamperedStatus = (status) => status === "bad" || (status === "missing" && deviceKey(false) !== null);
-// Proof that a session started after time t: its transcript file was created after t.
-function createdAfter(path, t) {
-  try {
-    if (typeof path !== "string" || !path || path.length > 4096) return false;
-    const b = statSync(path).birthtimeMs;
-    return b > 0 && b > t;
-  } catch { return false; }
-}
-// Within 24 h of a tamper: whether a session must be judged as if every allowlist entry were selected.
-function unproven(st, sid, now) {
-  if (!(now - st.tamperedAt < TTL_MS)) return false;
-  const rec = isObj(st.m[sid]) ? st.m[sid] : null;
-  return st.carried.includes(sid) || !rec || rec.ok !== true || !(Number(rec.f) >= st.tamperedAt);
-}
+// The 24 h after a detected tamper, during which every session is held as for a tampered file.
+const inWindow = (st, now) => st.tamperedAt > 0 && now - st.tamperedAt < TTL_MS;
 
 export function captureTaskTerms(input, policy) {
   try {
     if (!input || !input.session_id || typeof input.prompt !== "string" || !isUserPrompt(input)) return;
     if (boundMode(policy) === "off" && !hasAllowlists(resolveTaskBound(policy, admin()))) return;
-    const before = readState();
-    const tamperedBefore = tamperedStatus(before.status);
+    const tamperedBefore = tamperedStatus(readState().status);
     const k = deviceKey(true);
     if (!k) return;
     const h = hasher(k);
-    let { st, status, prior } = readState();
-    // A tampered file is never re-signed: start fresh, remember when, and carry over the sessions it showed.
-    if (tamperedBefore || status === "bad") st = { ...fresh(), tamperedAt: Date.now(), carried: [...new Set([...before.prior, ...prior])] };
+    let { st, status } = readState();
+    // A tampered file is never re-signed: start fresh and remember when; the window holds every session.
+    if (tamperedBefore || status === "bad") st = { ...fresh(), tamperedAt: Date.now() };
     const sid = h(`session:${input.session_id}`);
     const now = Date.now();
     const cur = isObj(st.s[sid]) ? st.s[sid] : { t: 0, n: 0, wu: [], wn: [], seen: [] };
@@ -178,16 +151,9 @@ export function captureTaskTerms(input, policy) {
     }
     st.s[sid] = { t: now, n: (cur.n || 0) + 1, wu: [...wu], wn: [...wn], seen: Array.isArray(cur.seen) ? cur.seen : [] };
     const lists = resolveTaskBound(policy, admin()).lists;
-    const rec = isObj(st.m[sid]) ? st.m[sid] : null;
-    const e = new Set(rec && Array.isArray(rec.e) ? rec.e : []);
+    const e = new Set(isObj(st.m[sid]) && Array.isArray(st.m[sid].e) ? st.m[sid].e : []);
     for (const x of entriesNamedIn(lists, input.prompt)) if (e.size < MAX_MATCHES) e.add(h(`tb-entry:${x.key}`));
-    // First capture of this session in this state: proven new, or (within 24 h of a tamper) carried over.
-    let ok = rec ? rec.ok === true : true;
-    if (!rec && now - st.tamperedAt < TTL_MS) {
-      ok = !st.carried.includes(sid) && createdAfter(input.transcript_path, st.tamperedAt);
-      if (!ok) st.carried = [...st.carried, sid];
-    }
-    st.m[sid] = { t: now, e: [...e], f: rec && Number(rec.f) ? Number(rec.f) : now, ok };
+    st.m[sid] = { t: now, e: [...e] };
     writeState(st);
   } catch { /* capture is advisory */ }
 }
@@ -209,9 +175,9 @@ export function taskBoundStep(policy, sessionId, tool, toolInput, it, { post = (
     const now = Date.now();
     const live = isObj(st.s[sid]) && now - st.s[sid].t < TTL_MS ? st.s[sid] : null;
     const matched = isObj(st.m[sid]) && now - st.m[sid].t < TTL_MS && Array.isArray(st.m[sid].e) ? new Set(st.m[sid].e) : null;
-    // Within 24 h of a tamper, a session not proven new is judged as if every entry were selected.
-    const carriedOver = cfg.lists.length > 0 && !tamperedFile && unproven(st, sid, now);
-    const tampered = tamperedFile || carriedOver;
+    // Within 24 h of a detected tamper, every session is judged as if every entry were selected.
+    const window = cfg.lists.length > 0 && !tamperedFile && inWindow(st, now);
+    const tampered = tamperedFile || window;
     const cur = live || { t: now, n: 0, wu: [], wn: [], seen: [] };
     const terms = cur.n ? new Set([...(cur.wu || []), ...(cur.wn || [])]) : null;
     const has = terms ? (t) => terms.has(termKey(t, h)) : null;
@@ -234,7 +200,7 @@ export function taskBoundStep(policy, sessionId, tool, toolInput, it, { post = (
     if (dec !== "deny" && tampered) {
       const r = judgeAllowlists(cfg.lists, tool, toolInput);
       if (r) {
-        post({ threatId: 0, category: "Task-bound state tampered", riskLevel: "High", stage: "policy", tool: `hook:${tool}`, reasonCode: REASON.FAIL_CLOSED, contentHash: `task-bound-state:${tamperedFile ? status : "carried-over"}`, taskBoundState: { problem: tamperedFile ? (status === "missing" ? "missing" : "unverified") : "carried-over" } });
+        post({ threatId: 0, category: "Task-bound state tampered", riskLevel: "High", stage: "policy", tool: `hook:${tool}`, reasonCode: REASON.FAIL_CLOSED, contentHash: `task-bound-state:${tamperedFile ? status : "tamper-window"}`, taskBoundState: { problem: tamperedFile ? (status === "missing" ? "missing" : "unverified") : "tamper-window" } });
         if (verdict) verdict.reason = REASON.INTENT_MISMATCH;
         return { dec: "deny", reasons: [`outside the task allowlist (state-tampered)`], alts: saferAlternativesFor([64]) };
       }

@@ -1,19 +1,18 @@
 // Per-file runner:  node --test --import ./test/hermetic-env.mjs test/task-bound-recovery.test.mjs
 //
 // Task-bound recovery and key-tree shape (cli/task-bound-hook.mjs, data/task-bound.js):
-//   1. after the hook's state is tampered with, a session that existed before cannot get back out of the
-//      fail-closed path by capturing a new prompt into the fresh state: the sessions the tampered state held are
-//      carried over (keyed, HMAC-protected), and within 24 h any session not proven new — its transcript created
-//      after the tamper — has every allowlist entry applied as if selected;
+//   1. after the hook's state is tampered with, EVERY session — an old one that captures a new prompt, one
+//      created after the tamper, a flood of new ones — has every allowlist entry applied as if selected for the
+//      whole 24 h window: a fixed tamper time in the HMAC-protected state, no proof of newness, no list to evict;
 //   2. listed argument keys form a tree in which a dotted key below a listed leaf is cut off, never attached
 //      to a higher node.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import http from "node:http";
 import { rmTree } from "./fs-cleanup.mjs";
 import * as tb from "../data/task-bound.js";
@@ -73,10 +72,9 @@ async function withHook(fn) {
   const transcript = (session) => { const p = join(home, "transcripts", `${session}.jsonl`); rmSync(p, { force: true }); writeFileSync(p, "{}\n"); return p; };
   const prompt = (session, text, tp) => run({ hook_event_name: "UserPromptSubmit", session_id: session, prompt: text, source: "user", ...(tp ? { transcript_path: tp } : {}) });
   const mcp = (session, tool, input) => run({ hook_event_name: "PreToolUse", session_id: session, tool_name: tool, tool_input: input });
-  try { await fn({ prompt, mcp, transcript, alerts, state: join(home, ".moorai", "task-terms.json") }); } finally { srv.close(); rmTree(home); }
+  try { await fn({ prompt, mcp, transcript, alerts, home, state: join(home, ".moorai", "task-terms.json") }); } finally { srv.close(); rmTree(home); }
 }
 const later = () => new Promise((r) => setTimeout(r, 20));
-const birthtimes = (() => { try { const d = mkdtempSync(join(tmpdir(), "bt-")); const p = join(d, "f"); writeFileSync(p, ""); const ok = statSync(p).birthtimeMs > 0; rmTree(d); return ok; } catch { return false; } })();
 
 test("recovery: tamper, then a new prompt in the same session — allowlisted tools stay held", async () => {
   await withHook(async ({ prompt, mcp, transcript, state }) => {
@@ -92,33 +90,51 @@ test("recovery: tamper, then a new prompt in the same session — allowlisted to
   });
 });
 
-test("recovery: a session the tampered state held is carried over even if its transcript looks new", async () => {
-  await withHook(async ({ prompt, mcp, transcript, state }) => {
-    await prompt("s1", "harvest the orchard", transcript("s1"));
-    const o = JSON.parse(readFileSync(state, "utf8"));
-    if (o.m) o.m = {};
-    writeFileSync(state, JSON.stringify(o)); // edited: fails the HMAC, its session keys still readable
-    await prompt("s2", "write a poem", null); // this capture records the tamper and carries s1 over
-    await later();
-    const t1 = transcript("s1"); // s1's transcript recreated after the tamper: it looks new
-    if (birthtimes) assert.ok(statSync(t1).birthtimeMs > statSync(state).mtimeMs - 1);
-    await prompt("s1", "write a poem", t1);
-    assert.equal(await mcp("s1", "mcp__robot__open_gate", {}), "deny", "carried over: held despite a new-looking transcript");
-  });
-});
-
-test("recovery: within the window only a session proven new (transcript created after the tamper) is judged normally", async () => {
+test("recovery: a session created after the tamper is held for the whole window, transcript or not", async () => {
   await withHook(async ({ prompt, mcp, transcript, state }) => {
     await prompt("s1", "harvest the orchard", transcript("s1"));
     rmSync(state);
-    await prompt("s1", "write a poem", null); // this capture records the tamper
+    await prompt("s2", "write a poem", null); // this capture records the tamper
     await later();
-    if (birthtimes) {
-      await prompt("s3", "write a poem", transcript("s3"));
-      assert.equal(await mcp("s3", "mcp__robot__open_gate", {}), "allow", "a new session");
-    }
-    await prompt("s4", "write a poem", null);
-    assert.equal(await mcp("s4", "mcp__robot__open_gate", {}), "deny", "no proof of newness: held");
-    assert.equal(await mcp("s5", "mcp__robot__open_gate", {}), "deny", "never captured since the tamper: held");
+    await prompt("s3", "write a poem", transcript("s3")); // a session (and transcript) created after the tamper
+    assert.equal(await mcp("s3", "mcp__robot__open_gate", {}), "deny", "every session is held within the window");
+    assert.equal(await mcp("s3", "mcp__robot__cut", { target: "apple" }), "allow", "what every entry allows is not held");
+    assert.equal(await mcp("s9", "mcp__robot__open_gate", {}), "deny", "never captured since the tamper: held");
+  });
+});
+
+test("recovery: a flood of 1000 new sessions after the tamper — every one of them, and the old one, stay held", async () => {
+  await withHook(async ({ prompt, mcp, transcript, state, home }) => {
+    await prompt("s1", "harvest the orchard", transcript("s1"));
+    rmSync(state);
+    await prompt("s1", "write a poem", null); // records the tamper
+    await later();
+    // 1000 new sessions, each with its own freshly created transcript, captured in one process (as 1000 prompt
+    // hooks would): the hook module's own capture, under the same HOME.
+    const script = `
+      const { captureTaskTerms } = await import(${JSON.stringify(pathToFileURL(join(ROOT, "cli", "task-bound-hook.mjs")).href)});
+      const { writeFileSync } = await import("node:fs");
+      const policy = ${JSON.stringify(POLICY)};
+      for (let i = 0; i < 1000; i++) {
+        const tp = ${JSON.stringify(join(home, "transcripts"))} + "/flood-" + i + ".jsonl";
+        writeFileSync(tp, "{}\\n");
+        captureTaskTerms({ session_id: "flood-" + i, prompt: "write a poem number " + i, source: "user", transcript_path: tp }, policy);
+      }`;
+    const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    for (const sid of ["flood-0", "flood-500", "flood-999", "s1"]) assert.equal(await mcp(sid, "mcp__robot__open_gate", {}), "deny", sid);
+  });
+});
+
+test("recovery: the tamper time is under the HMAC — editing it away is itself a tamper", async () => {
+  await withHook(async ({ prompt, mcp, transcript, state }) => {
+    await prompt("s1", "harvest the orchard", transcript("s1"));
+    rmSync(state);
+    await prompt("s2", "write a poem", null); // records the tamper
+    const o = JSON.parse(readFileSync(state, "utf8"));
+    assert.ok(o.tamperedAt > 0);
+    o.tamperedAt = 0;
+    writeFileSync(state, JSON.stringify(o));
+    assert.equal(await mcp("s2", "mcp__robot__open_gate", {}), "deny");
   });
 });

@@ -862,15 +862,13 @@ is validated against.
      another version or an HMAC mismatch is tampered: every allowlist entry judges the call as if its task
      matched, anything one would hold is denied (reason `state-tampered`), and each such call raises
      `Task-bound state tampered` (threat 0, stage `policy`, `FAIL_CLOSED`, `taskBoundState: {problem}`:
-     `missing` | `unverified` | `carried-over`). The tampered file is never re-signed; the next capture writes
-     a fresh signed state with `tamperedAt` and `carried` (the keyed session ids the tampered file still
-     showed, if it parsed; HMAC-covered). Each session records its first capture time (`f`) and whether it
-     was proven new (`ok`). For 24 h after `tamperedAt` a session is judged normally only when proven new —
-     first captured in the fresh state after the tamper, not carried over, and its `transcript_path` file
-     created (birth time) after the tamper; any other session (carried over, not captured since, or captured
-     without that proof, which is then added to `carried`) has every allowlist entry applied as if selected,
-     as for a tampered file. Without file birth times (some Linux filesystems) no session is proven new
-     within the window.
+     `missing` | `unverified` | `tamper-window`). The tampered file is never re-signed; the next capture writes
+     a fresh signed state with `tamperedAt`, a fixed timestamp under the HMAC. For the whole 24 h after it,
+     every session (an old one capturing a new prompt, one created after the tamper, any number of new ones)
+     has every allowlist entry applied as if selected, as for a tampered file. There is no proof that a
+     session is new (file timestamps fall back to ctime on some filesystems and the agent's user can change
+     the files) and no per-session list to flood. **Trade-off:** legitimate new sessions are held for the
+     window too; anything every entry allows still runs.
    - *Alerts and verdicts.* #64 `Action outside the stated task`, reason code `INTENT_MISMATCH`, `intent:
      {class, mode | outcome, task?, reason?}`; never an argument, a value or the task. Verdicts gain `intent:
      {class, mode}` (`task` for an allowlist). The model proxy in `--mode report` only alerts. Storage: in
@@ -888,8 +886,7 @@ is validated against.
      the model sent, not a dispatcher's inner tool. The device
      state shares `intent-alignment.json`'s trust boundary: the agent runs as the same user, can read both
      keys, dictionary-attack the hashed words and re-sign an edited state; deleting `intent.key` together
-     with the state returns the device to "never captured"; the proof of newness is a transcript's birth
-     time, which it can reset by recreating the transcript of a session the tampered state no longer showed; more than 1024 prompted sessions in 24 h evict the
+     with the state returns the device to "never captured"; more than 1024 prompted sessions in 24 h evict the
      oldest matched-entry record (a privileged witness, `moorai-guardd`, is not installed). On the server
      surfaces an evicted or never-captured session has no recorded entry, so no keyword entry applies.
      Not observed in a live Claude Code, LangGraph or robot-planner session.

@@ -199,11 +199,11 @@ test("hook: after a tamper, the next capture does not reopen the sessions the ol
     await prompt("s2", "write a poem"); // this capture records the tamper
     await new Promise((r) => setTimeout(r, 20));
     const tp = join(home, "s3.jsonl");
-    writeFileSync(tp, "{}\n"); // s3's transcript, created after the tamper: proven new
+    writeFileSync(tp, "{}\n"); // s3's transcript, created after the tamper
     await prompt("s3", "write a poem", tp);
     assert.equal(await mcp("s1", "mcp__robot__open_gate", {}), "deny", "s1's record was lost: still closed");
     assert.equal(await mcp("s2", "mcp__robot__open_gate", {}), "deny", "captured after the tamper without proof of newness: held");
-    if (statSync(tp).birthtimeMs > 0) assert.equal(await mcp("s3", "mcp__robot__open_gate", {}), "allow", "a session proven new is judged normally");
+    assert.equal(await mcp("s3", "mcp__robot__open_gate", {}), "deny", "within the window every session is held, a new one too");
   });
   await withHook(MCP_HARVEST, async ({ mcp, alerts }) => {
     assert.equal(await mcp("s9", "mcp__robot__open_gate", {}), "allow", "never captured on this device: no task, nothing tampered");
