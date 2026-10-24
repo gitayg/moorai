@@ -1681,9 +1681,12 @@ command), `tee`, `sed -i` / `perl -pi`, `yq -i`, `Set-Content`, a copy or instal
 each tool reads them: a unique prefix of a long option is that option (`cp --target=d`, `wget --output-doc=f`,
 `git restore --sour`), as GNU `getopt_long`, git and curl 7.x accept it; rsync takes full names only. A download
 whose file names are picked at run time (`wget -r` / `-m` / `-i` / `-p` / `-x` / `--content-disposition` /
-`--trust-server-names` / `-e` without `-O`, `curl -O -J`, `curl -K`, `curl -o` naming a `#1` URL glob), a
-`--pathspec-from-file`, and a write tool given an option it does not have or an ambiguous abbreviation have no
-literal destination, judged as below. The same paths are judged for an MCP filesystem server's write, edit, move or create
+`--trust-server-names` / `-e` without `-O`, `curl -O -J`, `curl -K`, `curl -o` naming a `#1` URL glob, a curl or
+wget config picked by `CURL_HOME` / `XDG_CONFIG_HOME` / `WGETRC` / `SYSTEM_WGETRC` / `HOME` set on the command), a
+git work tree moved by `--work-tree` / `--git-dir` / `GIT_WORK_TREE` / `GIT_DIR`, a `--pathspec-from-file`, and a
+write tool given an option it does not have, an ambiguous abbreviation, or a letter GNU and BSD read differently
+with no single reading (`cp -St x dest`: GNU takes `t` as the backup suffix) have no literal destination, judged as
+below. `git -C a -C b` runs in `a/b`. The same paths are judged for an MCP filesystem server's write, edit, move or create
 tool (`write_file`, `edit_file`, `move_file`, `create_directory`, `edit_block`, `create_text_file` …), exactly as
 for a Write / Edit. A named remote-repository tool (github / gitlab / gitea / bitbucket `create_or_update_file`,
 `push_files` …) writes no local file and is not judged. Remote is decided by the tool alone: an `owner`, `repo`,

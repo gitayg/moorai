@@ -271,6 +271,9 @@ function sedArgs(args) {
       for (let k = 1; k < t.length; k++) {
         const ch = t[k];
         if (!SED.shortAll.includes(ch)) { unknown = true; break; }
+        // -l: GNU takes a value (`-li` is -l "i", not in place), BSD none: followed by more letters or an option word
+        // it has no single reading.
+        if (ch === "l" && (k + 1 < t.length || /^-./.test(args[i + 1] || ""))) { unknown = true; break; }
         if (ch === "i" || ch === "I") { inPlace = true; if (k + 1 === t.length && args[i + 1] === "") i++; break; }
         if (ch === "e" || ch === "f") {
           const v = k + 1 < t.length ? t.slice(k + 1) : args[++i] ?? "";
@@ -365,7 +368,7 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
     for (const abs of ctx.both(w)) { touched.add(abs); if (text) for (const s of assignedSignals(text, abs, P)) out.add(s); }
   }
   if (!c) return;
-  if (WRITE_BINS.has(bin) || bin === "git") judgeWrites(writeTargets(bin, args, { ps: seg.ps }), opts, ctx, out, touched);
+  if (WRITE_BINS.has(bin) || bin === "git") judgeWrites(writeTargets(bin, args, { ps: seg.ps, env: c.env }), opts, ctx, out, touched);
   if (WRITE_BINS.has(bin)) return;
   const removed = (p) => { ctx.both(p).forEach((a) => touched.add(a)); removalSignal(p, out, ctx); };
   if (DELETE_BINS.has(bin)) { pos.forEach(removed); return; }

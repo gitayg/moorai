@@ -4344,11 +4344,18 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   full names only), `--no-<option>` for curl, wget, rsync and git. A write position is unknown (write-target-unknown
   / analysis-incomplete, as for a non-literal target) when the tool picks the name at run time — wget `-r` / `-m` /
   `-i` / `-p` / `-x` / `--protocol-directories` / `--content-disposition` / `--trust-server-names` / `-e` /
-  `--config` with no `-O`, curl `-O` with `-J`, curl `-K`, curl `-o` naming a `#N` URL glob without `-g`, git
-  `--work-tree` / `-c core.worktree=`, `--pathspec-from-file` — and when a write tool (cp, mv, install, rsync,
-  curl, wget, tee, sed, patch, git checkout / restore) is given a long option that is ambiguous or that it does
-  not have, or a short letter it does not have. A PowerShell segment's `cp` / `curl` (cmdlet aliases) is not held
-  to these lists. MCP filesystem write tools
+  `--config` with no `-O`, curl `-O` with `-J`, curl `-K`, curl `-o` naming a `#N` URL glob without `-g`, a curl
+  config picked by `CURL_HOME` / `XDG_CONFIG_HOME` / `HOME` set on the command (unless `-q` / `--disable` is its
+  first argument) or a wgetrc picked by `WGETRC` / `SYSTEM_WGETRC` / `HOME` (unless `--no-config`), git
+  `--work-tree` / `GIT_WORK_TREE`, and `--git-dir` / `GIT_DIR`, which pick a repository whose own config may set
+  `core.worktree` (a `core.worktree` given by `-c`, `--config-env` or `GIT_CONFIG_COUNT` is ignored by git 2.39.5
+  and 2.47.3, measured), `--pathspec-from-file` — and when a write tool (cp, mv, install, rsync, curl, wget, tee,
+  sed, patch, git checkout / restore) is given a long option that is ambiguous or that it does not have, a short
+  letter it does not have, or a letter whose arity differs between GNU and BSD (`shortConflict`: cp -S, install
+  -S / -D / -T, sed -l) followed by more letters of its cluster or by an option word. The `NAME=value` words a
+  command sets (before it, or after `env` / `sudo`) come from `data/shell-parse.js` `commandOf` (`env`). git `-C`
+  is cumulative (`git -C a -C b` is `a/b`; an absolute one starts over). A PowerShell segment's `cp` / `curl`
+  (cmdlet aliases) is not held to these lists. MCP filesystem write tools
   (`cli/oversight-mcp.mjs`, wired in the hook's `mcp__*` branch): a tool named by a write verb (write, edit, move,
   rename, create, append, replace, insert, patch, save, overwrite, update) and a file noun (file, text_file,
   directory, dir, folder, block, text, content, path, document), or a bare `write` / `edit`, except a named

@@ -8,6 +8,10 @@
 //   * Literal destinations the tools also write: curl --output-dir with -o, curl -D / -c / --trace / --stderr,
 //     wget --default-page and a URL with no scheme or a %-escaped name, patch -r, cp --parents, git checkout
 //     <tree-ish> <path> without --.
+//   * A short letter GNU and BSD read with different arity (cp -S, install -S / -D / -T, sed -l) followed by more
+//     letters or an option word, git's work tree moved by GIT_WORK_TREE / GIT_DIR / --git-dir, and a curl / wget
+//     config picked through CURL_HOME / XDG_CONFIG_HOME / WGETRC / SYSTEM_WGETRC / HOME are unknown; git -C is
+//     cumulative.
 //
 //   node --test --import ./test/hermetic-env.mjs test/oversight-writes-options.test.mjs
 import { test, after } from "node:test";
@@ -65,7 +69,7 @@ test("patch -r (rejects: the diff's own text), cp --parents, git checkout <tree-
   each(["patch -r CLAUDE.md a.txt fix.diff", "patch --reject-file=CLAUDE.md a.txt fix.diff", "git checkout HEAD CLAUDE.md", "git checkout CLAUDE.md",
     "git checkout HEAD~3 AGENTS.md"], MEM);
   each(["cp --parents alerting/rules.yaml ops", "cp --parents -t ops alerting/rules.yaml"], PROT);
-  each(["git --work-tree=ops checkout HEAD -- alerting/rules.yaml", "git -c core.worktree=ops checkout HEAD -- alerting/rules.yaml"], INC);
+  each(["git --work-tree=ops checkout HEAD -- alerting/rules.yaml"], INC);
 });
 
 // ---- finding 2: abbreviated long options ----
@@ -100,4 +104,41 @@ test("benign: full option names, negations and common flags stay clean", () => {
     "git restore --no-overlay src/app.js", "sed -i 's/a/b/' src/app.js", "sed -i.bak -e 's/a/b/' src/app.js", "sed -n '1,5p' src/app.js",
     "echo x | tee --append out.log", "echo x | tee -a out.log", "patch -p1 src/a.py fix.diff", "patch --dry-run src/a.py fix.diff"
   ], [], bare);
+});
+
+// ---- a short letter whose arity differs between GNU and BSD (cp / install -S, install -D / -T, sed -l) ----
+const has = (cmd, sig, f = sh) => { const s = f(cmd); assert.ok(s.includes(sig), `${cmd}: ${JSON.stringify(s)}`); return s; };
+test("arity conflict: more letters after the conflicting one in its cluster, or an option word after it, is unknown", () => {
+  // Measured: GNU `cp -St x dest` / `cp -S -t x dest` / `install -St x dest` take "t" / "-t" as the backup suffix and
+  // write dest; macOS `install -Dt x dest` / `install -Tt x dest` take "t" as destdir / tags and write dest.
+  for (const c of ["cp -St x ops/alerting/rules.yaml", "cp -S -t x ops/alerting/rules.yaml", "install -St x ops/alerting/rules.yaml",
+    "install -Dt x ops/alerting/rules.yaml", "install -Tt x ops/alerting/rules.yaml", "install -D -t x ops/alerting/rules.yaml", "install -Sm 644 x b.txt"]) has(c, "analysis-incomplete");
+  for (const c of ["cp -St x ops/alerting/rules.yaml", "install -Dt x ops/alerting/rules.yaml"]) has(c, "protected-surface");
+  has("sed -li 's/a/b/' CLAUDE.md", "analysis-incomplete");
+  has("cp -St x CLAUDE.md", "write-target-unknown", bare);
+});
+test("arity conflict: the letter alone, before a plain word, keeps the destination as the last word", () => {
+  each(["cp -S .bak a.txt b.txt", "install -m 644 -D a.txt build/a.txt", "install -S a.txt b.txt", "cp -pS a.txt b.txt"], [], bare);
+});
+
+// ---- git: the work tree from the environment, and -C applied cumulatively ----
+test("git: GIT_WORK_TREE or GIT_DIR in the command's prefix (or after env / sudo), or --git-dir, makes the target unknown", () => {
+  // Measured (git 2.39.5, 2.47.3): GIT_WORK_TREE=/x git checkout HEAD -- f writes /x/f; GIT_DIR / --git-dir naming a
+  // repository whose config sets core.worktree writes there.
+  each(["GIT_WORK_TREE=ops git checkout HEAD -- alerting/rules.yaml", "env GIT_WORK_TREE=ops git checkout -- alerting/rules.yaml",
+    "sudo GIT_WORK_TREE=ops git restore alerting/rules.yaml", "GIT_DIR=/tmp/o/.git git restore src/a.js", "GIT_DIR=/tmp/o/.git GIT_WORK_TREE=/tmp/w git checkout -- f",
+    "git --git-dir=/tmp/o/.git checkout -- src/a.js", "git --git-dir /tmp/o/.git restore src/a.js"], INC);
+  each(["GIT_PAGER=cat git checkout -- src/a.js", "LC_ALL=C git restore src/a.js"], [], bare);
+});
+test("git: -C is cumulative (git -C a -C b is a/b; an absolute one starts over)", () => {
+  each(["git -C ops -C alerting checkout -- rules.yaml", "git -C /nowhere -C " + join(proj, "ops") + " restore alerting/rules.yaml"], PROT);
+});
+
+// ---- curl / wget: a config file chosen through the environment ----
+test("curl / wget: CURL_HOME / XDG_CONFIG_HOME / HOME or WGETRC / SYSTEM_WGETRC / HOME in the prefix makes the target unknown", () => {
+  // Measured (curl 7.88.1, wget 1.21.3): each points the tool at a config whose output= / output_document= is obeyed.
+  each([`CURL_HOME=/tmp/x curl ${U}/a`, `XDG_CONFIG_HOME=/tmp/x curl -s ${U}/a`, `HOME=/tmp/h curl ${U}/a`, `env CURL_HOME=/tmp/x curl ${U}/a`,
+    `WGETRC=/tmp/rc wget ${U}/a.tgz`, `SYSTEM_WGETRC=/tmp/rc wget ${U}/a.tgz`, `HOME=/tmp/h wget -q ${U}/a.tgz`], INC);
+  // curl -q (first) reads no .curlrc; wget --no-config reads no wgetrc (measured); other variables change nothing.
+  each([`HOME=/tmp/h curl -q ${U}/a`, `CURL_HOME=/tmp/x curl --disable -s ${U}/a`, `WGETRC=/tmp/rc wget --no-config ${U}/a.tgz`, `LANG=C curl -s ${U}/a`, `curl -s ${U}/a`], [], bare);
 });

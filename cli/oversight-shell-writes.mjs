@@ -20,8 +20,10 @@
 // A write position whose target is not a literal path ($VAR, $( … ), a glob, a ~user name) is returned as
 // `unknown`, and so is every write whose name is picked at run time: wget -r / -m / -i / -p / -x /
 // --content-disposition / --trust-server-names / -e / --config with no -O, curl -O with -J, curl -K, curl -o
-// naming a URL glob (#1), git --work-tree / -c core.worktree, git --pathspec-from-file; and any write tool given
-// an option that is ambiguous or that the tool does not have. A `-` (stdout) and the null device are no write.
+// naming a URL glob (#1), git --work-tree / --git-dir / GIT_WORK_TREE / GIT_DIR, git --pathspec-from-file, a curl
+// or wget config chosen through the command's environment (CURL_HOME, XDG_CONFIG_HOME, WGETRC, SYSTEM_WGETRC,
+// HOME); and any write tool given an option that is ambiguous or that the tool does not have, or a letter whose
+// arity differs between GNU and BSD with no single reading. A `-` (stdout) and the null device are no write.
 import { scanArgs } from "../data/shell-parse.js";
 import { CP, INSTALL, RSYNC, CURL, WGET, PATCH, GIT_CHECKOUT, GIT_RESTORE } from "./oversight-shell-options.mjs";
 
@@ -55,8 +57,10 @@ const WGET_RUNTIME = ["-r", "--recursive", "-m", "--mirror", "-i", "--input-file
 // directory (null: dest itself is the file); dir: true / false, or null when the caller decides (an existing
 // directory); parents: each source lands under its whole path (cp --parents). → { writes: [...], unknown } for
 // the command's binary and its arguments. ps: a PowerShell segment (cp / curl there are cmdlet aliases with
-// their own parameters), whose options are not held to the tools' lists.
-export function writeTargets(bin, args, { ps = false } = {}) {
+// their own parameters), whose options are not held to the tools' lists. env: the `NAME=value` words set for the
+// command (data/shell-parse.js commandOf), read for the variables that move git's work tree or pick curl's /
+// wget's config file.
+export function writeTargets(bin, args, { ps = false, env = [] } = {}) {
   const writes = [];
   let unknown = false;
   const add = (dest, sources = null, dir = false, parents = false) => {
@@ -64,6 +68,7 @@ export function writeTargets(bin, args, { ps = false } = {}) {
     if (nonLiteral(dest)) { unknown = true; return; }
     writes.push({ dest, sources, dir, ...(parents ? { parents: true } : {}) });
   };
+  const envSet = (...names) => env.some((e) => names.includes(e.name));
   const scan = (list, spec) => {
     const r = scanArgs(list, ps ? { shortValued: spec.shortValued, longValued: spec.longValued, longAll: spec.longAll, negatable: spec.negatable } : spec);
     if (!ps && unknownOption(r.flags)) unknown = true;
@@ -82,8 +87,11 @@ export function writeTargets(bin, args, { ps = false } = {}) {
     add(dest, sources, target != null || parents ? true : noTarget ? false : sources.length > 1 || /[\/\\]$/.test(dest) ? true : null, parents);
   } else if (bin === "curl") {
     const { flags, positional } = scan(args, CURL);
-    // -K / --config: more options from a file. -o naming a URL glob match (#1) unless globbing is off (-g).
+    // -K / --config: more options from a file. -o naming a URL glob match (#1) unless globbing is off (-g). A
+    // .curlrc found through CURL_HOME / XDG_CONFIG_HOME / HOME set for this command (measured, curl 7.88.1: its
+    // `output = …` is obeyed), unless -q / --disable is the first argument (curl reads no .curlrc then).
     if (flagged(flags, "-K", "--config")) unknown = true;
+    if (envSet("CURL_HOME", "XDG_CONFIG_HOME", "HOME") && args[0] !== "-q" && args[0] !== "--disable") unknown = true;
     const dir = vals(flags, "--output-dir").pop();
     const under = (n) => (dir != null ? `${dir}/${n}` : n);
     const globs = !flagged(flags, "-g", "--globoff");
@@ -100,6 +108,9 @@ export function writeTargets(bin, args, { ps = false } = {}) {
     }
   } else if (bin === "wget") {
     const { flags, positional } = scan(args, WGET);
+    // A wgetrc found through WGETRC / SYSTEM_WGETRC / HOME set for this command (measured, wget 1.21.3: its
+    // `output_document = …` is obeyed), unless --no-config.
+    if (envSet("WGETRC", "SYSTEM_WGETRC", "HOME") && !flagged(flags, "--no-config")) unknown = true;
     const docs = vals(flags, "-O", "--output-document");
     for (const o of docs) add(o);
     for (const o of vals(flags, ...WGET_FILES)) add(o);
@@ -132,9 +143,13 @@ export function writeTargets(bin, args, { ps = false } = {}) {
     }
     if (at < 0 || !/^(?:checkout|restore)$/i.test(args[at])) return { writes, unknown };
     const pre = scanArgs(args.slice(0, at), { shortValued: "Cc", longValued: ["--git-dir", "--work-tree", "--namespace"] }).flags;
-    // Another work tree (--work-tree, -c core.worktree=…) moves every path.
-    if (flagged(pre, "--work-tree") || vals(pre, "-c").some((v) => /^core\.worktree=/i.test(v || ""))) return { writes, unknown: true };
-    const base = vals(pre, "-C").pop();
+    // Another work tree moves every path: --work-tree / GIT_WORK_TREE, and --git-dir / GIT_DIR, which pick a
+    // repository whose own config may set core.worktree (measured, git 2.39.5 and 2.47.3: each writes there). A
+    // core.worktree given on the command line (-c, --config-env, GIT_CONFIG_COUNT) is ignored by both versions.
+    if (flagged(pre, "--work-tree", "--git-dir") || envSet("GIT_WORK_TREE", "GIT_DIR")) return { writes, unknown: true };
+    // -C is cumulative: `git -C a -C b` runs in a/b; an absolute one starts over; an empty one changes nothing.
+    let base = null;
+    for (const c of vals(pre, "-C")) if (c) base = base == null || /^[\/\\]/.test(c) ? c : `${base}/${c}`;
     if (base != null && nonLiteral(base)) return { writes, unknown: true };
     const under = (p) => (base != null && !/^[\/\\]/.test(p) ? `${base}/${p}` : p);
     const checkout = args[at].toLowerCase() === "checkout";

@@ -9,9 +9,18 @@
 //     and 8.14.1 `curl --help all`; rsync 3.4.4 `rsync --help`;
 //   * the macOS (BSD) letters, from its man pages: cp -c -N -X, mv -h, install -B -f -h -l -M -T -U, sed -a -H -I
 //     -l, patch -C -x (--check, --debug).
-// A letter whose value differs between GNU and BSD (cp / install -S, install -D / -T, sed -l / -i) is read as
-// taking none: its value is then read as one more source or file, so the destination stays the last word (and
-// install -T, GNU's "not a directory" but BSD's tags, leaves the caller to decide whether it is a directory).
+// A letter whose value differs between GNU and BSD (shortConflict) — cp -S (GNU `cp --help` "-S, --suffix=SUFFIX";
+// macOS cp(1) "-S Do not attempt to preserve holes"), install -S (GNU "--suffix=SUFFIX"; macOS install(1) "-S Flush
+// each file to disk"), install -D (GNU "create all leading components of DEST", no value; macOS "-D destdir"),
+// install -T (GNU "--no-target-directory"; macOS "-T tags"), sed -l (GNU "-l N"; macOS "-l Make output line
+// buffered") — is read as taking none when it ends its cluster before a plain word: that word is then one more
+// source or file, so the destination stays the last word (and install -T leaves the caller to decide whether it is
+// a directory). Followed by more letters of its cluster or by an option word it has no single reading (measured:
+// GNU `cp -St x dest` and `cp -S -t x dest` take "t" / "-t" as the suffix and write dest; macOS `install -Dt x dest`
+// writes dest), and the write target is unknown. sed -i (GNU: an attached suffix only; macOS: a required one, a
+// word of its own) is read by the caller. mv, tee, patch and the single-implementation tools (curl, wget, rsync,
+// git) have no such letter: BSD mv has no -S / -t, and every letter BSD patch shares with GNU patch has the same
+// arity (macOS patch(1), GNU `patch --help`).
 const opts = (all, valued, short, shortValued, more = {}) => Object.freeze({ longAll: all, longValued: valued, shortAll: short, shortValued, ...more });
 
 export const CP = opts([
@@ -19,7 +28,7 @@ export const CP = opts([
   "--interactive", "--keep-directory-symlink", "--link", "--no-clobber", "--no-dereference", "--no-preserve", "--no-target-directory",
   "--one-file-system", "--parents", "--preserve", "--recursive", "--reflink", "--remove-destination", "--sparse",
   "--strip-trailing-slashes", "--suffix", "--symbolic-link", "--target-directory", "--update", "--verbose", "--version"
-], ["--no-preserve", "--sparse", "--suffix", "--target-directory"], "abcdfHilLNnPpRrSstTuvXxZ", "t");
+], ["--no-preserve", "--sparse", "--suffix", "--target-directory"], "abcdfHilLNnPpRrSstTuvXxZ", "t", { shortConflict: "S" });
 export const MV = opts([
   "--backup", "--context", "--debug", "--exchange", "--force", "--help", "--interactive", "--no-clobber", "--no-copy",
   "--no-target-directory", "--strip-trailing-slashes", "--suffix", "--target-directory", "--update", "--verbose", "--version"
@@ -27,7 +36,7 @@ export const MV = opts([
 export const INSTALL = opts([
   "--backup", "--compare", "--context", "--debug", "--directory", "--group", "--help", "--mode", "--no-target-directory", "--owner",
   "--preserve-context", "--preserve-timestamps", "--strip", "--strip-program", "--suffix", "--target-directory", "--verbose", "--version"
-], ["--group", "--mode", "--owner", "--strip-program", "--suffix", "--target-directory"], "BbCcDdfghlMmopSsTtUvZ", "BfghlMmot");
+], ["--group", "--mode", "--owner", "--strip-program", "--suffix", "--target-directory"], "BbCcDdfghlMmopSsTtUvZ", "BfghlMmot", { shortConflict: "DST" });
 export const TEE = opts(["--append", "--help", "--ignore-interrupts", "--output-error", "--version"], [], "aip", "");
 // sed: -i / -I (in place) are read by the caller: GNU takes an attached suffix only, BSD a required one.
 export const SED = opts([
