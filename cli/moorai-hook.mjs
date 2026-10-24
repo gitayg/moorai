@@ -67,7 +67,9 @@ import { decideInbound, surfaceOf, inboundText } from "./inbound.mjs";
 import { observeDrift, driftConfig, cloudProfiles, normalizeRemote } from "../data/learned-drift.js";
 import { deletionTally, assessDeletionVolume, deletionConfig } from "../data/deletion-volume.js";
 import { readStateJson, writeStateJson, repoIdentity, LEARNED_DRIFT_FILE, DELETION_VOLUME_FILE } from "./drift-state.mjs";
-import { sessionRiskStep, circuitStep, circuitOutcome } from "./session-state.mjs";
+import { sessionRiskStep, circuitStep, circuitOutcome, originOf as fileOriginOf } from "./session-state.mjs";
+import { quarantineStep, mergeQuarantine } from "./quarantine-step.mjs";
+import { fileQuarantineConfig } from "../data/quarantine-summary.js";
 import { captureTask, judgeAction, CLASS_TEXT } from "./intent-alignment.mjs";
 import { promptScanPlan, promptBlockers } from "./prompt-scan.mjs";
 import { serverMode, cloudAgentPosture, serviceWho, settleHeadlessAsk, settleBypassAsk, tamperAlert, trustedEnv, refusedTrustEnv, systemConfigPath, systemConfig, workloadIdentity, workerEnv, hookProcessEnvName } from "./server-mode.mjs";
@@ -543,6 +545,9 @@ let SESSION_ESC = null;
 // the level a gated action inside an origin-taint window earned ("ask" | "block"), applied by emit. Never weakens.
 let ORIGIN_IN = null;
 let ORIGIN_ESC = null;
+// Quarantined reader (cli/quarantine-step.mjs): the framed summary an "ask" carries to the agent as
+// additionalContext, set by quarantineFor's caller, read by emit.
+let QUAR_CONTEXT = null;
 // #84: the oversight signals this PreToolUse call raised (cli/oversight-signals.mjs), recorded on its ledger
 // row as `ov` (local, content-free enums) so Stop / SubagentStop can check the final message discloses the change.
 let OVERSIGHT_SIG = null;
@@ -1855,6 +1860,28 @@ function agentPath(p, cwd) {
   return resolve(cwd, p);
 }
 
+// The quarantined reader for one PreToolUse read (cli/quarantine-step.mjs). fileQuarantine comes from the admin
+// binding and the verified policy only (data/quarantine-summary.js fileQuarantineConfig). Its alerts post here;
+// the caller merges the verdict (mergeQuarantine) and emits. The model call has until 12 s after the hook started,
+// inside HOOK_DECISION_BUDGET_MS. -> null | the step's verdict.
+async function quarantineFor(surface, paths, engine) {
+  const cfg = fileQuarantineConfig(VERIFIED_POLICY ?? null, { admin: ADMIN });
+  if (cfg.mode === "off" || EVENT !== "PreToolUse") return null;
+  const cwd = CALL.cwd || process.cwd();
+  const abs = paths.filter((p) => typeof p === "string" && p).map((p) => resolve(cwd, p.replace(/^~(?=[\/\\]|$)/, os.homedir())));
+  let q = null;
+  try {
+    q = await quarantineStep({ cfg, surface, paths: abs, originOf: (p) => fileOriginOf(p, { cwd }), engine, rewrites: canRewrite(), deadline: Date.now() - process.uptime() * 1000 + 12000 });
+  } catch {
+    // Fail closed: a step that threw never lets the raw read through unasked.
+    q = cfg.mode === "summary" ? { decision: "deny", reason: "outside-origin file; no quarantined reader available (reader error)", rewrite: null, context: null, alerts: [] } : { decision: "ask", reason: "outside-origin file; no quarantined reader available (reader error). Approve to give the agent the raw file", rewrite: null, context: null, alerts: [] };
+  }
+  if (!q) return null;
+  for (const a of q.alerts) post({ ...a, tool: `hook:${CALL.tool}`, ts: new Date().toISOString(), ...IDENTITY });
+  why(REASON.QUARANTINE_READ);
+  return q;
+}
+
 // #3 — kill enforcement for the interactive session. A "kill" verdict still denies THIS call (below),
 // but also drops a content-free sentinel the Tauri host watches for to terminate the whole agent PTY —
 // detect-and-prevent, not just deny-one-call. Emits a session-kill alert (→ server/SIEM). Only the
@@ -2027,8 +2054,12 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
   if (tg) recordSessionTags({ sessionId: SESSION_ID, tags: COACH || decision !== "deny" ? tg.tags.tags : [], fired: tg.fired });
   if (CALL.active) recordExceptionUse(tg);
   const hint = CALL.active && decision !== "allow" && !COACH && !SERVER.active ? hintFor(reason, tg) : "";
-  const mnote = rewrite ? maskNote("this tool call's input", rewrite.count, rewrite.ids) : "";
+  // A quarantined-reader rewrite (cli/quarantine-step.mjs) carries its own notes: `note` for the agent, `userNote`
+  // for the user's systemMessage.
+  const mnote = rewrite ? (rewrite.note || maskNote("this tool call's input", rewrite.count, rewrite.ids)) : "";
   const note = [mnote, wrapped ? WRAP_NOTE : ""].filter(Boolean).join(" ");
+  const qctx = QUAR_CONTEXT;
+  QUAR_CONTEXT = null;
   let updated = wrapped || (rewrite ? rewrite.value : null);
   // Approval receipt (cli/receipt-step.mjs): on the FINAL verdict only. An allow to a listed MCP server / tool goes
   // on with the receipt; an ask or another tool goes on with the model's _moorai stripped; a deny carries nothing.
@@ -2040,10 +2071,15 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
   else if (COACH && (LEAK_COACH || PROFILE_COACH)) process.stdout.write(coachOut("PreToolUse", (LEAK_COACH || PROFILE_COACH).reason, (LEAK_COACH || PROFILE_COACH).alts));
   else if (decision !== "allow") {
     const upd = updated && decision === "ask" ? { updatedInput: updated, additionalContext: note } : {};
+    // An "ask" from the quarantined reader: the summary rides as additionalContext ("String added to Claude's
+    // context alongside the tool result").
+    if (qctx && decision === "ask") upd.additionalContext = [upd.additionalContext, qctx].filter(Boolean).join("\n\n");
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision === "deny" ? "deny" : "ask", permissionDecisionReason: `MoorAI: ${withSafer(reason, alternatives)}${hint ? ` ${hint}` : ""}`, ...upd } }));
   } else if (updated) {
-    // No permissionDecision: a wrap, like a mask, must not auto-approve the call (see MASK above).
-    process.stdout.write(JSON.stringify({ ...(mnote ? { systemMessage: mnote } : {}), hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: updated, ...(note ? { additionalContext: note } : {}) } }));
+    // No permissionDecision: a wrap, like a mask, must not auto-approve the call (see MASK above). Nor does a
+    // quarantined-reader rewrite: the normal permission flow runs on the summary file's path.
+    const um = rewrite && rewrite.userNote ? rewrite.userNote : mnote;
+    process.stdout.write(JSON.stringify({ ...(um ? { systemMessage: um } : {}), hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: updated, ...(note ? { additionalContext: note } : {}) } }));
   }
   askStep(decision);
   return exitHook();
@@ -3167,6 +3203,14 @@ async function main() {
     if (reportEnvelope(policy, "Read", { tool: "Read", paths: [ti.file_path] }, "file") && rdec !== "deny") { rdec = "deny"; ralts = saferAlternativesFor([64]); why(REASON.ENVELOPE); }
     let rreasons = d.reasons;
     ({ dec: rdec, reasons: rreasons, alts: ralts } = intentStep(policy, "Read", ti, d.findings, rdec, rreasons, ralts));
+    // Quarantined reader: an outside-origin file reaches the agent as a summary, or not at all. Its raw text is
+    // then never escalated to the agent's provider either.
+    const rq = rdec !== "deny" && typeof ti.file_path === "string" ? await quarantineFor("read", [ti.file_path], engine) : null;
+    if (rq) {
+      const m = mergeQuarantine({ dec: rdec, reasons: rreasons, alts: ralts }, rq);
+      QUAR_CONTEXT = m.context;
+      return emit(m.dec, m.reason, m.alts, m.rewrite);
+    }
     // AFTER every check that can still deny, and skipped entirely on a deny: escalation can send the
     // text to the agent's own provider, so running it first meant content the policy was about to
     // block had already left the device. The mcp__/Task branches always denied before their external
@@ -3311,9 +3355,14 @@ async function main() {
     ({ dec, reasons, alts } = intentStep(policy, tool, ti, finds, dec, reasons, alts));
     let bmask;
     ({ dec, reasons, alts, rewrite: bmask } = settleMask(engine, policy, { tool, stage: "prompt", ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" }, ids: cmdD.maskIds, value: ti, only: ["command"], scanOf: (v) => v.command, dec, reasons, alts, text: ti.command }));
+    // Quarantined reader: a command that reads an outside-origin file is denied with the summary in the reason
+    // ("summary") or put to the user ("ask"). The command cannot be rewritten to a summary, so it never runs as is.
+    let qtext = null;
+    const bq = dec !== "deny" && readPaths.length ? await quarantineFor("shell", readPaths, engine) : null;
+    if (bq) { const m = mergeQuarantine({ dec, reasons, alts, rewrite: bmask }, bq); ({ dec, alts, rewrite: bmask } = m); qtext = m.reason; QUAR_CONTEXT = m.context; }
     // See the Read branch: escalation runs last and never on a deny, so a local-secret-egress or
     // out-of-envelope command cannot ship its content to the provider on its way to being blocked.
-    if (dec !== "deny") await maybeEscalate(policy, btext, "file", `hook:${tool}`, { findings: finds }, engine);
+    if (dec !== "deny" && !bq) await maybeEscalate(policy, btext, "file", `hook:${tool}`, { findings: finds }, engine);
     // Recorded last, so the destination map stores the verdict the call ACTUALLY got rather than the
     // interim one — a host reached by a command that was then denied must read as denied.
     recordDestinations(tool, "host", extractHosts(ti.command), dec);
@@ -3324,7 +3373,7 @@ async function main() {
     if (dec !== "deny" && finds.some((f) => f.detectorId === "model-download") && isEnrolled(CONFIG) && !(policy.modelScan && policy.modelScan.downloads === "off")) {
       queueModelDownload(ti.command, { cwd: typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd(), stateDir: STATE_DIR });
     }
-    return emit(dec, `${killIds.length ? "killed session" : "blocked"} via ${tool} — ${reasons.join(", ")}`, alts, bmask);
+    return emit(dec, qtext ?? `${killIds.length ? "killed session" : "blocked"} via ${tool} — ${reasons.join(", ")}`, alts, bmask);
   }
   // ---- the write family: Write / Edit / MultiEdit / NotebookEdit ----
   //
@@ -3519,6 +3568,7 @@ async function main() {
     // otherwise close the whole trifecta (#59) in one call — measured: it did, where a Read of the same
     // file raises two legs and no #59. A read_file is logged as before; an upload of that file is not.
     const sent = fsr.sends ? { findings: allFindings, text: fsr.text ? `${args}\n${fsr.text}` : args } : { findings: g.findings, text: args };
+    let mcpReads = [];
     {
       // Origin taint: a tool that hands a named local file to the model (not one that sends or writes it) reads
       // it; metadata-only tools (get_file_info, list, search, stat) do not. The write targets and messaging
@@ -3529,12 +3579,21 @@ async function main() {
       try { wpaths = mcpWriteCalls(tool, ti).map((c) => c.path); } catch { wpaths = []; }
       const gates = [...(OVERSIGHT_SIG && OVERSIGHT_SIG.includes("memory-file") ? ["memory-write"] : []), ...(wpaths.some(extensionPath) ? ["extension-install"] : []), ...(mcpMessageTool(tool) ? ["message"] : [])];
       ORIGIN_IN = { cwd: CALL.cwd, reads, gates };
+      mcpReads = reads;
     }
     logBehavior(tool, tool, sent.text, { decision: g.decision, findings: sent.findings }, "egress");
     if (g.kill) killSession(tool, g.killIds, "egress");
     const it = intentStep(policy, tool, ti, allFindings, g.decision, g.reason ? [g.reason] : [], g.alternatives);
     // mask: every string leaf of the arguments is rewritable; the serialized form is what was scanned.
     const mm = settleMask(engine, policy, { tool, stage: "prompt", ctx: { egress: true }, ids: g.maskIds, value: ti, scanOf: (v) => JSON.stringify(v), dec: it.dec, reasons: it.reasons, alts: it.alts, text: args });
+    // Quarantined reader: an MCP filesystem read of an outside-origin file, as for a shell read.
+    const mq = mm.dec !== "deny" && mcpReads.length ? await quarantineFor("mcp", mcpReads, engine) : null;
+    if (mq) {
+      const m = mergeQuarantine({ dec: mm.dec, reasons: mm.reasons, alts: mm.alts, rewrite: mm.rewrite }, mq);
+      QUAR_CONTEXT = m.context;
+      audit(m.dec, Boolean(m.rewrite));
+      return emit(m.dec, m.reason, m.alts, m.rewrite);
+    }
     audit(mm.dec, Boolean(mm.rewrite));
     return emit(mm.dec, `${g.kill ? "killed session" : mm.dec === "ask" ? "needs justification" : "blocked"} ${tool} — ${mm.reasons.join(", ")}`, mm.alts, mm.rewrite);
   }
@@ -3569,6 +3628,8 @@ async function main() {
   if (tool === "NotebookRead" && typeof ti.notebook_path === "string") {
     ORIGIN_IN = { cwd: CALL.cwd, reads: [agentPath(ti.notebook_path, input.cwd)] };
     logBehavior("NotebookRead", ti.notebook_path, "", { decision: "allow", findings: [] }, "file");
+    const nq = await quarantineFor("notebook", [ti.notebook_path], engine);
+    if (nq) { const m = mergeQuarantine({ dec: "allow" }, nq); QUAR_CONTEXT = m.context; return emit(m.dec, m.reason, m.alts, m.rewrite); }
   }
   // A tool no branch reads (Glob, Grep, LS, …) still carries tags: a tag action or rule that applies to
   // it decides through emit(); otherwise it is allowed unread, as before, and its tags join the session.

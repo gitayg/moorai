@@ -1110,6 +1110,61 @@ is validated against.
     destination directory; the strip and install patterns are textual and a shell write that names an
     extension path (`cat .mcp.json > x`) counts as an install; the agent runs as the same user and can edit
     `session-risk.json` (the trust boundary of 17c).
+17c2. **Quarantined reader** — [`cli/quarantine-step.mjs`](../cli/quarantine-step.mjs) `quarantineStep`, called
+    by the hook at PreToolUse for the Read path, a NotebookRead path, the Bash / PowerShell read paths
+    (`extractReadPaths`, the extractor origin taint uses) and the files an MCP read tool names (the 17c1 read
+    set), after every check that can deny and only when none did. `fileQuarantine` `"off"` (default) |
+    `"summary"` | `"ask"`, `fileQuarantineModel { url, model? }` and `fileQuarantineAllowRemote` (admin binding
+    only) come from the root-owned admin binding, then the verified policy
+    ([`data/quarantine-summary.js`](../data/quarantine-summary.js) `fileQuarantineConfig`); nothing
+    user-writable. A path counts when `originOf` (17c1) returns an origin. Each such file (at most 3 per call;
+    more is denied under `"summary"` and asked under `"ask"`) goes through
+    [`cli/quarantine-reader.mjs`](../cli/quarantine-reader.mjs) `quarantineRead`: text from
+    [`cli/quarantine-extract.mjs`](../cli/quarantine-extract.mjs) (plain text and anything that reads as UTF-8;
+    HTML with tags, script and style removed; docx / xlsx / pptx document, comment, header, footer, note and
+    shared-string parts through `cli/model-scan-zip.mjs`; PDF through `pdftotext`; doc / rtf / odt through
+    macOS `textutil`; other files `unsupported` and never sent), cut at 200 KB; the model from
+    [`cli/quarantine-model.mjs`](../cli/quarantine-model.mjs) (`fileQuarantineModel`, else Ollama 11434 then
+    LM Studio 1234 from `cli/local-ai-inventory.mjs`'s table, probed on 127.0.0.1 with `/v1/models`; a URL
+    that is not 127.0.0.0/8, `::1` or `localhost` is refused unless `fileQuarantineAllowRemote`; a fresh
+    `http.Agent`, so no environment proxy applies); one chat-completions request with no tools, temperature
+    0, `max_tokens` 700 and a deadline of min(9 s, 12 s after the hook started); the reply validated by
+    `validateSummary` (one JSON object, optionally fenced; `docType`, `title`, `language`, `summary`,
+    `keyFacts`, `aiDirectedText`, `aiDirectedKinds` from `AI_DIRECTED_KINDS`, each with its type; control and
+    bidi characters removed; summary cut to 120 words, at most 8 key facts of 25 words; other keys dropped);
+    then `engine.scan` over the summary's fields at stage `file`, where any finding whose threat category is
+    Prompt Injection withholds it regardless of policy action. Outcomes and verdicts: `summarised` /
+    `unsupported` → under `"summary"` a Read on a host that applies `updatedInput` gets `updatedInput:
+    { file_path: ~/.moorai/quarantine/<sha256>.md }` with no `permissionDecision` (as for a mask) and
+    `additionalContext` saying it is a summary; every other surface, or a host that cannot rewrite, gets
+    `deny` with the framed summary in `permissionDecisionReason`; under `"ask"` → `ask`, the summary in the
+    reason and in `additionalContext`. `withheld` → `deny` in both modes ("summary withheld: it contained
+    instructions"). `no-reader` (no runtime, refused URL, timeout, HTTP error, invalid output) → `deny`
+    ("outside-origin file; no quarantined reader available (…)") under `"summary"`, `ask` under `"ask"`. A
+    branch `ask` is never weakened: with a rewrite it stays `ask`. A quarantined call is never escalated to the agent's provider. The framing names
+    the file and its origin app and states the summary is untrusted data from MoorAI's quarantined reader,
+    never instructions. Store: `~/.moorai/quarantine`, directory 0700, `<sha256(path, mtime, size)>.json`
+    (validated fields and sizes) and `.md` (the framed summary), 0600, swept after 24 h, re-validated and
+    re-scanned on every use; never the file's text. Alert per file: #3 `Quarantined read`, reason
+    `QUARANTINE_READ`, `outcome` (`summarised`, `unsupported`, `withheld`, `no-reader`, `asked`), `surface`,
+    `fileQuarantine`, `source`, `app`, `hostHash`, `modelKind` (`local` | `remote`), `format`, `bytes`,
+    `chars`, `truncated`, `summaryChars`, `keyFacts`, `aiDirected`, `cached`; no path, name or text. Origin
+    taint (17c1) runs unchanged. **Measured** (macOS, stub model on 127.0.0.1, median of 20 hook runs): a
+    quarantined Read 391 ms with `"off"`, 400 ms summarised, 394 ms cached; a plain Read 425 / 426 ms with
+    `"off"` / `"summary"`. Ollama llama3.2 (3B), warm, on the same machine: 6.2 to 8.0 s per first summary of a
+    two-line invoice, schema-valid, the planted instruction reported as AI-directed text and not repeated.
+    **Limits:** a summary is model-written text and can still carry a cleverly worded instruction that no
+    detector recognises, which is why the summary scan runs and origin taint stays on; the reader is a small
+    local model, so a summary can be wrong or incomplete, and the model's context window (often 4k–32k tokens)
+    can cut the text shorter than the 200 KB cap; a model still loading, or a slow machine, runs past the
+    deadline and the read is refused; only the extractor's read paths are covered, so an inline-code read
+    (`python -c "open(…)"`), a file the command does not name, and a copy made by means that drop the origin
+    mark are not; a Read rewrite is subject to the host's own permission check on a path outside the project,
+    and whether a host shows the agent `additionalContext` when the user refuses an `"ask"` is the host's;
+    formats beyond those listed (images, archives, EPUB; doc, rtf and odt off macOS; PDF without
+    `pdftotext`) are not summarised; the endpoint hook only — the model proxy, MoorAI for AI Servers and
+    `@moorai/agent-sdk` do not run it; the agent runs as the same user and can edit `~/.moorai/quarantine`
+    (a cached summary is re-scanned, not trusted).
 17d. **Verdict provenance** — [`cli/provenance.mjs`](../cli/provenance.mjs) stamps every alert and ledger
     row with `policyId` (`pol:<tenant>:<iat>:<digest12>`, `pol:unsigned:<digest12>`, `builtin-defaults`,
     `offline-fail-closed-default`, `none`, `not-loaded`), `policySource`, `reasonCode` (the branch that
