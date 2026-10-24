@@ -11,7 +11,12 @@
 //     servicemonitor / podmonitor / alertmanagerconfig), a monitoring component deleted, scaled to zero,
 //     stopped or uninstalled (kubectl, helm, systemctl, service, docker);
 //   * a persistent env var that turns monitoring or alerting off (setx, launchctl setenv, kubectl set env,
-//     heroku config:set, fly secrets set, [Environment]::SetEnvironmentVariable).
+//     heroku config:set, fly secrets set, [Environment]::SetEnvironmentVariable);
+//   * a write onto a memory file or a protected path: besides redirects, tee, sed -i and Set-Content, a cp /
+//     install / rsync / mv destination, a curl / wget download, dd of=, git checkout -- / git restore, patch and
+//     a bare `> path` (cli/oversight-shell-writes.mjs). A write position whose target is not literal is
+//     "analysis-incomplete" when protected paths are declared or memoryFiles is ask / block / #84's action, and
+//     "memory-file" (notify by default: an alert, no prompt) when only the built-in memory-file protection is on.
 // Where a path lands: every path is resolved against the segment's working directory, tracked across
 // segments (cd / pushd / popd / Set-Location / Push-Location / Pop-Location with a literal target; a `cd`
 // inside a subshell, a pipeline or a background job does not move the shell around it), then judged relative
@@ -26,20 +31,24 @@
 // Not judged: an inline env prefix or `export` for one run (`OTEL_SDK_DISABLED=true npm test` is how test
 // suites run), reads, and any text in a commit message or a document. The command never leaves this module.
 //
-// Bounded, and fail closed: a command longer than MAX, a sed / perl script longer than MAX_SCRIPT, or an
-// analysis that runs past BUDGET_MS is never cut and judged clean; it raises "analysis-incomplete", which
-// cli/hook-core.mjs decideOversight asks on. The sed parsers are linear scanners (no backtracking regex).
+// Bounded, and fail closed: a command longer than MAX, a sed / perl script longer than MAX_SCRIPT, an
+// analysis that runs past BUDGET_MS, or a command the shell parser fails on is never cut and judged clean; it
+// raises "analysis-incomplete", which cli/hook-core.mjs decideOversight asks on. The sed parsers are linear
+// scanners (no backtracking regex).
 import { statSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve, relative, isAbsolute, dirname, basename, join } from "node:path";
 import { splitShell, commandOf } from "../data/shell-parse.js";
-import { oversightEditSignals, assignedSignals, pathClass, pathClasses, OVERSIGHT_SIGNALS, INCOMPLETE } from "./oversight-signals.mjs";
+import { oversightEditSignals, assignedSignals, pathClass, pathClasses, OVERSIGHT_SIGNALS, INCOMPLETE, WRITE_UNKNOWN } from "./oversight-signals.mjs";
 import { protectedPathHit, protectedKeyInCommand, memoryPathHit, realOf } from "./oversight-surfaces.mjs";
 import { words, switchKind, listKind, valueKind, WIRING_FAMILIES, TEST_GUARD_WORDS } from "./oversight-vocab.mjs";
+import { writeTargets, bareRedirects, nonLiteral, nullTarget } from "./oversight-shell-writes.mjs";
 
 const MAX = 262144;
 const MAX_SCRIPT = 65536;
 const BUDGET_MS = 250;
-const HINT = /\b(?:rm|unlink|shred|trash|del|erase|remove-item|ri|rd|rmdir|mv|move|move-item|rename-item|git|sed|gsed|perl|yq|jq|tee|echo|printf|cat|amtool|kubectl|helm|systemctl|service|docker|podman|setx|launchctl|heroku|fly|flyctl|set-content|add-content|out-file|truncate|setenvironmentvariable)\b|>/i;
+const HINT = /\b(?:rm|unlink|shred|trash|del|erase|remove-item|ri|rd|rmdir|mv|move|move-item|rename-item|git|sed|gsed|perl|yq|jq|tee|echo|printf|cat|amtool|kubectl|helm|systemctl|service|docker|podman|setx|launchctl|heroku|fly|flyctl|set-content|add-content|out-file|truncate|setenvironmentvariable|cp|install|rsync|curl|wget|dd|patch)\b|>/i;
+const WRITE_BINS = new Set(["cp", "install", "rsync", "curl", "wget", "dd", "patch"]);
 const DELETE_BINS = new Set(["rm", "unlink", "shred", "trash", "del", "erase", "remove-item", "ri", "rd", "rmdir"]);
 const MOVE_BINS = new Set(["mv", "move", "move-item", "rename-item"]);
 const MON_CRD = /^(?:prometheusrules?|servicemonitors?|podmonitors?|alertmanagerconfigs?|alertmanagers?|probes?|thanosrulers?)(?:\.monitoring\.coreos\.com)?(?:\/|$)/i;
@@ -146,6 +155,8 @@ function judgeMove(bin, args, git, opts, ctx, out, touched) {
   const m = moveParts(bin, args, git, opts.ps);
   if (!m) { for (const p of args.filter((t) => !t.startsWith("-"))) ctx.both(p).forEach((a) => touched.add(a)); return; }
   const literal = m.dest && !NOT_LITERAL.test(m.dest) && m.dest !== "/dev/null";
+  // A destination (or, into a directory, a source name) that is not literal: where it writes is unknown.
+  if (m.dest !== "/dev/null" && (!literal || m.sources.some((s) => nonLiteral(s)))) unknownWrite(opts, out);
   const pairs = [ctx.at, ctx.written].map((place) => {
     const destAbs = literal ? place(m.dest) : null;
     if (destAbs) touched.add(destAbs);
@@ -157,10 +168,11 @@ function judgeMove(bin, args, git, opts, ctx, out, touched) {
     for (const { place, destAbs, dirDest } of pairs) {
       const srcAbs = place(s);
       touched.add(srcAbs);
+      const final = destAbs ? (m.rename ? join(dirname(srcAbs), m.dest) : dirDest ? join(destAbs, basename(srcAbs)) : destAbs) : null;
+      if (final) touched.add(final);
       const kinds = new Set([srcClass(ctx.rel(srcAbs)), srcClass(s)].filter(Boolean));
       if (!kinds.size) continue;
       if (!destAbs) { keeps = false; continue; }
-      const final = m.rename ? join(dirname(srcAbs), m.dest) : dirDest ? join(destAbs, basename(srcAbs)) : destAbs;
       if (opts.linkedEarlier || !keepsAt(final, kinds, ctx)) keeps = false;
     }
     if (!keeps) removalSignal(s, out, ctx);
@@ -242,6 +254,46 @@ function classifyPairs(pairs, context, out) {
 }
 const envPairs = (toks) => toks.map((t) => /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(t)).filter(Boolean).map((m) => ({ key: m[1], value: m[2] }));
 
+// The literal destinations a copy, install, download, dd, git checkout / restore or patch writes
+// (cli/oversight-shell-writes.mjs) go to the protected-path and memory-file checks, at both the tracked
+// directory and as written; a directory destination receives each source under its own name. A destination
+// that is not literal is analysis-incomplete when there is anything to check.
+// A write whose target is not literal. Its visible payload (payload: { text } an echo / printf / heredoc / tee /
+// Set-Content text, or { edits } sed / perl -i edits) is first judged against every built-in path class
+// (PAYLOAD_PROBES: runtime config and code of each syntax, and a test), since the real target could be any of
+// them: if any would raise a signal, the write is analysis-incomplete under #84's action, whatever is watched.
+// Otherwise it is proportionate: with only the built-in memory-file protection (no protectedPaths, memoryFiles
+// not above notify) it is write-target-unknown, notify unless #84 is configured (an alert, no prompt, for a
+// routine `cmd > "$out"`); with protectedPaths declared or memoryFiles ask / block / #84's action it is
+// analysis-incomplete; with no write check to run, nothing.
+const PROBE_ROOT = "/moorai-probe";
+const PAYLOAD_PROBES = ["config/alerting.yaml", "config/alerting.json", "config/alerting.toml", "deploy/service.env", "src/monitoring.py", "app/monitoring.js", "tests/test_monitoring.py"].map((r) => join(PROBE_ROOT, r));
+function payloadFires(payload) {
+  if (!payload) return false;
+  if (typeof payload.text === "string" && payload.text) return PAYLOAD_PROBES.some((p) => assignedSignals(payload.text, p, PROBE_ROOT).length > 0);
+  if (Array.isArray(payload.edits)) return PAYLOAD_PROBES.some((p) => payload.edits.some((e) => oversightEditSignals({ path: p, before: e.before, after: e.after, cwd: PROBE_ROOT }).length > 0));
+  return false;
+}
+function unknownWrite(opts, out, payload = null) {
+  if (payloadFires(payload)) { out.add(INCOMPLETE); return; }
+  if (!opts.watch) return;
+  out.add(opts.strictWrites ? INCOMPLETE : WRITE_UNKNOWN);
+}
+const home = (p) => (p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
+function judgeWrites(wt, opts, ctx, out, touched) {
+  if (wt.unknown) unknownWrite(opts, out);
+  for (const { dest, sources, dir } of wt.writes) {
+    for (const destAbs of ctx.both(home(dest))) {
+      touched.add(destAbs);
+      if (!sources || !(dir ?? isDir(destAbs))) continue;
+      for (const src of sources) {
+        if (nonLiteral(src)) { unknownWrite(opts, out); continue; }
+        touched.add(join(destAbs, basename(home(src).replace(/[\/\\]+$/, ""))));
+      }
+    }
+  }
+}
+
 function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
   const toks = seg.tokens;
   const c = commandOf(toks, seg.ps);
@@ -255,10 +307,13 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
     let text = "";
     if (bin === "echo" || bin === "printf") text = pos.join(" ").replace(/\\n/g, "\n");
     else if (seg.heredoc) text = seg.heredoc;
+    if (nonLiteral(w) && !nullTarget(w)) unknownWrite(opts, out, { text });
     if (!text && !opts.surfacePaths && !isAbsolute(w)) { touched.add(resolve(P, w)); continue; }
     for (const abs of ctx.both(w)) { touched.add(abs); if (text) for (const s of assignedSignals(text, abs, P)) out.add(s); }
   }
   if (!c) return;
+  if (WRITE_BINS.has(bin) || bin === "git") judgeWrites(writeTargets(bin, args), opts, ctx, out, touched);
+  if (WRITE_BINS.has(bin)) return;
   const removed = (p) => { ctx.both(p).forEach((a) => touched.add(a)); removalSignal(p, out, ctx); };
   if (DELETE_BINS.has(bin)) { pos.forEach(removed); return; }
   if (bin === "truncate" && /-s\s*0|--size=0/.test(args.join(" "))) { pos.filter((x) => x !== "0").forEach(removed); return; }
@@ -271,6 +326,7 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
     const abs = [...new Set(files.flatMap((f) => ctx.both(f)))];
     abs.forEach((f) => touched.add(f));
     if (scripts.some((sc) => sc.length > MAX_SCRIPT)) { out.add(INCOMPLETE); return; }
+    if (files.some((f) => nonLiteral(f))) unknownWrite(opts, out, { edits: scripts.flatMap((sc) => sedEdits(sc)) });
     for (const f of abs) for (const sc of scripts) for (const e of sedEdits(sc)) for (const s of oversightEditSignals({ path: f, before: e.before, after: e.after, cwd: P })) out.add(s);
     return;
   }
@@ -290,6 +346,7 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
     const pc = prev && prev.sep === "|" ? commandOf(prev.tokens, prev.ps) : null;
     const text = pc && (pc.binary === "echo" || pc.binary === "printf") ? positional(prev.tokens.slice(pc.at + 1)).join(" ").replace(/\\n/g, "\n") : prev && prev.heredoc ? prev.heredoc : "";
     for (const abs of new Set(pos.flatMap((f) => ctx.both(f)))) { touched.add(abs); if (text) for (const s of assignedSignals(text, abs, P)) out.add(s); }
+    if (args.some((t) => !t.startsWith("-") && nonLiteral(t))) unknownWrite(opts, out, { text });
     return;
   }
   if (bin === "amtool" && lower[0] === "silence" && (lower[1] === "add" || lower[1] === "import")) { out.add("suppression-flag"); return; }
@@ -317,6 +374,7 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
     const p = (() => { for (let i = 0; i < args.length; i++) if (/^-(?:path|filepath|literalpath)$/i.test(args[i])) return args[i + 1]; return pos[0]; })();
     const v = (() => { for (let i = 0; i < args.length; i++) if (/^-value$/i.test(args[i])) return args[i + 1]; return pos[1] || ""; })();
     if (p) for (const abs of ctx.both(p)) { touched.add(abs); if (v) for (const s of assignedSignals(String(v).replace(/`n/g, "\n"), abs, P)) out.add(s); }
+    if (p && nonLiteral(p)) unknownWrite(opts, out, { text: String(v || "").replace(/`n/g, "\n") });
   }
 }
 
@@ -396,18 +454,24 @@ function changeDir(seg, prev, state) {
   return true;
 }
 
-// → the signals the command raises, in OVERSIGHT_SIGNALS order. opts: { ps, surfaces, cwd, now } (now: the
-// clock the time budget reads, for tests).
-export function oversightCommandSignals(command, { ps = false, surfaces = null, cwd = "", now = Date.now } = {}) {
+// → the signals the command raises, in OVERSIGHT_SIGNALS order. opts: { ps, surfaces, cwd, now, parse } (now:
+// the clock the time budget reads; parse: the shell splitter; both for tests).
+export function oversightCommandSignals(command, { ps = false, surfaces = null, cwd = "", now = Date.now, parse = splitShell } = {}) {
   const cmd = typeof command === "string" ? command : "";
   if (!cmd || !HINT.test(cmd)) return [];
   if (cmd.length > MAX) return [INCOMPLETE];
   const deadline = now() + BUDGET_MS;
   const out = new Set(), touched = new Set();
   let segs = [];
-  try { segs = splitShell(cmd, ps, 0, { segs: [] }).segs; } catch { segs = []; }
+  // A parser fault never leaves the command judged clean: it is analysis-incomplete.
+  try { segs = parse(cmd, ps, 0, { segs: [], heredocs: [] }).segs; } catch { out.add(INCOMPLETE); segs = []; }
   const project = resolve(typeof cwd === "string" && cwd ? cwd : process.cwd());
   const opts = { ps, surfacePaths: Boolean(surfaces && surfaces.paths && surfaces.paths.length) };
+  // watch: there is a write check to run (memory files on, or protected paths declared).
+  opts.watch = Boolean(surfaces && (surfaces.memory || opts.surfacePaths));
+  // strictWrites: an admin asked for more than the built-in notify (protected paths, or memoryFiles ask / block /
+  // #84's action), so a write that cannot be placed is analysis-incomplete rather than a memory-file alert.
+  opts.strictWrites = opts.surfacePaths || Boolean(surfaces && ["ask", "block", "inherit"].includes(surfaces.memory));
   const dirs = new Map(); // subshell scope -> { dir, stack }
   // Execution order is not parse order (a later segment, a background job): a link-maker anywhere counts.
   opts.linkedEarlier = segs.some((s) => { try { return makesLink(s) || (!s.ps && s.sep === "&"); } catch { return true; } });
@@ -424,6 +488,16 @@ export function oversightCommandSignals(command, { ps = false, surfaces = null, 
     } catch { /* one segment never sinks the rest */ }
   }
   if (!out.has(INCOMPLETE) && now() > deadline) out.add(INCOMPLETE);
+  // A redirect with no command word (`> f`): the parser keeps no segment for it, so it is read from the text.
+  if (opts.watch) {
+    try {
+      for (const t of bareRedirects(cmd, ps)) {
+        if (nullTarget(t)) continue;
+        if (nonLiteral(t)) { unknownWrite(opts, out); continue; }
+        for (const abs of new Set([resolve(project, home(t)), resolve(project, t)])) touched.add(abs);
+      }
+    } catch { out.add(INCOMPLETE); }
+  }
   // PowerShell / .NET persistent env var, read from the raw text.
   for (const m of cmd.matchAll(/SetEnvironmentVariable\(\s*["']([A-Za-z_][\w]*)["']\s*,\s*["']([^"']*)["']\s*,\s*["']?(?:\[EnvironmentVariableTarget\]::)?(?:User|Machine)/gi)) classifyPairs([{ key: m[1], value: m[2] }], "", out);
   if (surfaces) {

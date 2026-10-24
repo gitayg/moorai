@@ -19,8 +19,10 @@
 //                   memoryFiles, notify (an alert, no prompt), because an agent saves memory and edits CLAUDE.md
 //                   on request routinely; with #84 configured (threatPolicy), the stricter of memoryFiles and
 //                   #84's action, so the default never weakens an admin's policy. An invalid memoryFiles, or
-//                   `protectMemoryFiles: true`, takes #84's action; `protectMemoryFiles: false` is "off". A policy
-//                   that disables #84 still disables it.
+//                   `protectMemoryFiles: true`, takes #84's action; `protectMemoryFiles: false` is "off". With both
+//                   keys set the stricter wins: `protectMemoryFiles: false` never turns off a memoryFiles that is
+//                   set, and `protectMemoryFiles: true` raises "off" or "notify" to #84's action. A policy that
+//                   disables #84 still disables it.
 //                   A path the policy ALSO declares in protectedPaths stays "protected-surface" (ask).
 // Any Write / Edit / MultiEdit / NotebookEdit of a protected path, a write that changes a line naming a
 // protected key, and a shell command that deletes, moves or writes a protected path or writes a protected key,
@@ -97,9 +99,11 @@ export function oversightPolicy(policy, warn = stderrWarn) {
     else if (o.memoryFiles === "off") memory = false;
     else { memory = "inherit"; warn("oversight.memoryFiles: not notify, ask, block or off; #84's action applies"); }
   }
+  // With both keys set, the stricter wins: false turns the set off only when memoryFiles is not set; true
+  // raises "off" and "notify" (and nothing set) to #84's action.
   if (o.protectMemoryFiles !== undefined) {
-    if (o.protectMemoryFiles === false) memory = false;
-    else if (o.protectMemoryFiles === true) { if (memory === "default") memory = "inherit"; }
+    if (o.protectMemoryFiles === false) { if (memory === "default") memory = false; }
+    else if (o.protectMemoryFiles === true) { if (memory === "default" || memory === false || memory === "notify") memory = "inherit"; }
     else warn("oversight.protectMemoryFiles ignored: true or false");
   }
   return { paths, keys: [...new Set(keys)], stopDisclosure, memory };

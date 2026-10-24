@@ -15,6 +15,9 @@
 //   memory-file           the write touches one of the agent's persistent-instruction or memory files (CLAUDE.md,
 //                         AGENTS.md, rules files, auto memory, SOUL.md …): built in, notify by default
 //                         (cli/oversight-surfaces.mjs memoryFiles, cli/hook-core.mjs decideOversight);
+//   write-target-unknown  a shell write whose target is not a literal path, with only the built-in memory-file
+//                         protection on and no visible payload that would weaken oversight in any file: an
+//                         alert, decided like memory-file (notify unless #84 is configured; cli/oversight-shell.mjs);
 //   analysis-incomplete   the write was not read whole (before or after over MAX, or an existing file too large
 //                         for the hook to read under a Write): never cut and judged clean, it fails closed
 //                         (cli/hook-core.mjs decideOversight asks on it).
@@ -33,9 +36,10 @@ import { notRuntimeReason, TOOLING_PATH } from "./mcp-package/paths.mjs";
 import { protectedPathHit, protectedKeyChanged, memoryPathHit, realOf } from "./oversight-surfaces.mjs";
 import { words, switchKind, listKind, wiringFamily, TEST_GUARD_WORDS, valueKind } from "./oversight-vocab.mjs";
 
-export const OVERSIGHT_SIGNALS = Object.freeze(["suppression-flag", "recipients-emptied", "wiring-removed", "safety-test-weakened", "monitoring-off", "protected-surface", "memory-file", "analysis-incomplete"]);
+export const OVERSIGHT_SIGNALS = Object.freeze(["suppression-flag", "recipients-emptied", "wiring-removed", "safety-test-weakened", "monitoring-off", "protected-surface", "memory-file", "write-target-unknown", "analysis-incomplete"]);
 export const INCOMPLETE = "analysis-incomplete";
 export const MEMORY_FILE = "memory-file";
+export const WRITE_UNKNOWN = "write-target-unknown";
 const MAX = 1_048_576;
 const order = (set) => OVERSIGHT_SIGNALS.filter((s) => set.has(s));
 

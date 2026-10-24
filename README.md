@@ -1602,7 +1602,19 @@ origin with `thread: "subagent"`.
 ```
 
 Any Write / Edit of a protected path, any write that changes a line naming a protected key, and any command that
-deletes, moves or writes one is held.
+deletes, moves or writes one is held. A command writes a path through a redirect (also a bare `> path` with no
+command), `tee`, `sed -i` / `perl -pi`, `yq -i`, `Set-Content`, a copy or install onto it (`cp`, `install`,
+`rsync`, the `mv` destination; into a directory, the file under its own name), a download to it (`curl -o` /
+`--output` / `-O`, `wget -O` / `-o`, or the URL's own name), `dd of=`, `git checkout -- <path>`, `git restore
+<path>` or `patch <path>`. The same paths are judged for an MCP filesystem server's write, edit, move or create
+tool (`write_file`, `edit_file`, `move_file`, `create_directory`, `edit_block`, `create_text_file` …), exactly as
+for a Write / Edit. A named remote-repository tool (github / gitlab / gitea / bitbucket `create_or_update_file`,
+`push_files` …) writes no local file and is not judged. Remote is decided by the tool alone: an `owner`, `repo`,
+`url` or `bucket` argument on any other tool changes nothing, and a relative path is resolved against the working
+directory. A move whose source is not exactly one readable local file (several sources, too large, unreadable)
+is held as an incomplete analysis when the destination is runtime code or a test.
+A path with an `http`, `https`, `s3`, `gs`, `git` or `ssh` scheme is not local; any other `scheme:` path is
+judged with and without the scheme and held as an incomplete analysis.
 
 **The agent's own instruction and memory files are watched with no policy at all**: `CLAUDE.md`,
 `CLAUDE.local.md`, `.claude/rules/`, `AGENTS.md`, `GEMINI.md`, `.cursorrules` and `.cursor/rules/`, the Windsurf,
@@ -1613,16 +1625,23 @@ writes itself into one of them steers every later session, so a Write / Edit or 
 memory and edits `CLAUDE.md` on request routinely; once `threatPolicy["84"]` is set, a memory write gets the
 stricter of that action and `oversight.memoryFiles`, so the default never weakens an admin's policy.
 `"memoryFiles": "ask"` or `"block"` raises it, `"off"` (or `"protectMemoryFiles": false`) turns it off, an invalid
-value or `"protectMemoryFiles": true` takes #84's own action, and a policy that disables #84 disables it too. A path also listed in
+value or `"protectMemoryFiles": true` takes #84's own action, and a policy that disables #84 disables it too. With
+both keys set the stricter wins: `"protectMemoryFiles": false` never turns off a `memoryFiles` that is set, and
+`"protectMemoryFiles": true` raises `"off"` or `"notify"` to #84's action. A path also listed in
 `protectedPaths` keeps that surface's ask, and a memory save is not counted by the Stop disclosure check. A path is matched as written, resolved against the working directory
 (`ops/x/../alerting/rules.yaml`, a relative path from a subdirectory) and through its real path, so a symlinked
 file or directory (or, for a new file, a symlinked parent) cannot dodge a protected surface. At most 64 of each; a
 malformed entry is dropped with a warning.
 
 **Bounded, and fail closed.** The checks run in linear time (no backtracking pattern). A command longer than
-256 KiB, a `sed` / `perl` script longer than 64 KiB, a command whose check runs past 250 ms, a write whose before
-or after text is over 1 MiB, and a Write over an existing runtime file too large to read (over 1 MiB) are never
-cut and judged clean: they are held as an incomplete analysis, an ask even where the policy lowers #84 to
+256 KiB, a `sed` / `perl` script longer than 64 KiB, a command whose check runs past 250 ms, a command the shell
+parser fails on, a write whose before or after text is over 1 MiB, a Write over an existing runtime file too
+large to read (over 1 MiB), and, when `protectedPaths` are declared or `memoryFiles` is `ask` / `block` (or #84's
+action), a write whose destination is not a literal path (`cp x "$DEST"`, `curl -o $F`, `> $LOG`, `patch -p1 <
+fix.diff`, a glob copied into a directory) are never cut and judged clean. With only the built-in memory-file
+protection on, such a write raises `write-target-unknown` instead (an alert, no prompt unless #84 is configured),
+unless its visible text (`echo` / `printf` / heredoc / `tee` / `Set-Content` text, `sed -i` edits) would weaken
+oversight in any runtime config, code or test file, which keeps it an incomplete analysis. All of these are held: they are held as an incomplete analysis, an ask even where the policy lowers #84 to
 `notify` (never a kill on its own; a policy that disables #84 still disables it).
 
 **Stop-time disclosure (Claude Code).** At Stop and SubagentStop, if the turn made an oversight change that was
@@ -1636,7 +1655,8 @@ check is a heuristic: a sentence that names monitoring, alerting, a recipient li
 change verb counts as a disclosure unless the verb is negated, so it cannot tell a true statement from a false one.
 
 **What it does not cover.** It judges the agent's own tool calls on this device. A change made elsewhere (in
-CI, by a person, by another tool, through an MCP server that edits files), a monitor disabled through a web
+CI, by a person, by another tool, through an MCP server whose write tool is not named as one or takes no path
+argument), a monitor disabled through a web
 console, and a renamed or rewritten monitor that keeps no oversight word are not seen. An Edit of a file over
 1 MiB is judged on its old and new snippets only. Details: [docs/CAPABILITY_SPEC.md](docs/CAPABILITY_SPEC.md#weakening-oversight-84).
 
