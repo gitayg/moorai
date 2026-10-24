@@ -1674,9 +1674,16 @@ origin with `thread: "subagent"`.
 Any Write / Edit of a protected path, any write that changes a line naming a protected key, and any command that
 deletes, moves or writes one is held. A command writes a path through a redirect (also a bare `> path` with no
 command), `tee`, `sed -i` / `perl -pi`, `yq -i`, `Set-Content`, a copy or install onto it (`cp`, `install`,
-`rsync`, the `mv` destination; into a directory, the file under its own name), a download to it (`curl -o` /
-`--output` / `-O`, `wget -O` / `-o`, or the URL's own name), `dd of=`, `git checkout -- <path>`, `git restore
-<path>` or `patch <path>`. The same paths are judged for an MCP filesystem server's write, edit, move or create
+`rsync`, the `mv` destination; into a directory, the file under its own name, or its whole path with `cp
+--parents`), a download to it (`curl -o` / `--output` / `-O` under `--output-dir`, `curl -D` / `-c` / `--trace` /
+`--stderr`, `wget -O` / `-o`, or the URL's own name, `%`-escapes decoded as wget does), `dd of=`, `git checkout
+[<tree-ish>] [--] <path>`, `git restore <path>`, or `patch <path>` and its reject file `-r`. Options are read as
+each tool reads them: a unique prefix of a long option is that option (`cp --target=d`, `wget --output-doc=f`,
+`git restore --sour`), as GNU `getopt_long`, git and curl 7.x accept it; rsync takes full names only. A download
+whose file names are picked at run time (`wget -r` / `-m` / `-i` / `-p` / `-x` / `--content-disposition` /
+`--trust-server-names` / `-e` without `-O`, `curl -O -J`, `curl -K`, `curl -o` naming a `#1` URL glob), a
+`--pathspec-from-file`, and a write tool given an option it does not have or an ambiguous abbreviation have no
+literal destination, judged as below. The same paths are judged for an MCP filesystem server's write, edit, move or create
 tool (`write_file`, `edit_file`, `move_file`, `create_directory`, `edit_block`, `create_text_file` …), exactly as
 for a Write / Edit. A named remote-repository tool (github / gitlab / gitea / bitbucket `create_or_update_file`,
 `push_files` …) writes no local file and is not judged. Remote is decided by the tool alone: an `owner`, `repo`,
@@ -1708,7 +1715,7 @@ malformed entry is dropped with a warning.
 parser fails on, a write whose before or after text is over 1 MiB, a Write over an existing runtime file too
 large to read (over 1 MiB), and, when `protectedPaths` are declared or `memoryFiles` is `ask` / `block` (or #84's
 action), a write whose destination is not a literal path (`cp x "$DEST"`, `curl -o $F`, `> $LOG`, `patch -p1 <
-fix.diff`, a glob copied into a directory) are never cut and judged clean. With only the built-in memory-file
+fix.diff`, a glob copied into a directory, `wget -r`, `curl -OJ`, `cp --frobnicate`) are never cut and judged clean. With only the built-in memory-file
 protection on, such a write raises `write-target-unknown` instead (an alert, no prompt unless #84 is configured),
 unless its visible text (`echo` / `printf` / heredoc / `tee` / `Set-Content` text, `sed -i` edits) would weaken
 oversight in any runtime config, code or test file, which keeps it an incomplete analysis. All of these are held: they are held as an incomplete analysis, an ask even where the policy lowers #84 to

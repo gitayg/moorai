@@ -43,6 +43,8 @@ import { oversightEditSignals, assignedSignals, pathClass, pathClasses, OVERSIGH
 import { protectedPathHit, protectedKeyInCommand, memoryPathHit, realOf } from "./oversight-surfaces.mjs";
 import { words, switchKind, listKind, valueKind, WIRING_FAMILIES, TEST_GUARD_WORDS } from "./oversight-vocab.mjs";
 import { writeTargets, bareRedirects, nonLiteral, nullTarget } from "./oversight-shell-writes.mjs";
+import { scanArgs, longName } from "../data/shell-parse.js";
+import { MV, TEE, SED } from "./oversight-shell-options.mjs";
 
 const MAX = 262144;
 const MAX_SCRIPT = 65536;
@@ -101,9 +103,12 @@ function removalSignal(p, out, ctx) {
 // mv / git mv / Move-Item / Rename-Item → { sources, dest, destIsDir, rename } (rename: Rename-Item's -NewName, a
 // name in the source's directory).
 const psName = (t, full, min = 2) => { const n = t.slice(1).toLowerCase(); return n.length >= min && full.startsWith(n); };
+// mv's options are read as GNU getopt_long reads them (a unique prefix is the option: `--targ=d`); an option mv
+// does not have, or an ambiguous one, leaves the destination unknown (cli/oversight-shell-options.mjs).
 function moveParts(bin, args, git, ps) {
   const pos = [];
-  let target = null, noTarget = false, newName = null;
+  let target = null, noTarget = false, newName = null, unknown = false;
+  const strict = bin === "mv" && !git && !ps;
   for (let i = 0; i < args.length; i++) {
     const t = args[i];
     if (t === "--") { pos.push(...args.slice(i + 1)); break; }
@@ -117,13 +122,20 @@ function moveParts(bin, args, git, ps) {
       else if (["filter", "include", "exclude", "credential"].some((f) => psName(name, f))) val();
       continue;
     }
-    if (!git && (t === "--target-directory" || t === "--suffix")) { const v = args[++i]; if (t === "--target-directory") target = v; continue; }
-    if (!git && t.startsWith("--target-directory=")) { target = t.slice("--target-directory=".length); continue; }
-    if (!git && t === "--no-target-directory") { noTarget = true; continue; }
+    if (!git && t.startsWith("--") && t.length > 2) {
+      const eq = t.indexOf("=");
+      const name = strict ? longName(eq > 0 ? t.slice(0, eq) : t, MV.longAll) : eq > 0 ? t.slice(0, eq) : t;
+      if (name === null) { unknown = true; continue; }
+      const v = eq > 0 ? t.slice(eq + 1) : name === "--target-directory" || name === "--suffix" ? args[++i] : null;
+      if (name === "--target-directory") target = v;
+      if (name === "--no-target-directory") noTarget = true;
+      continue;
+    }
     if (t.startsWith("--")) continue;
     if (!git && /^-[A-Za-z]/.test(t)) {
       for (let j = 1; j < t.length; j++) {
         const ch = t[j];
+        if (strict && !MV.shortAll.includes(ch)) { unknown = true; break; }
         if (ch === "T") noTarget = true;
         if (ch === "t" || ch === "S") { const v = j + 1 < t.length ? t.slice(j + 1) : args[++i]; if (ch === "t") target = v; break; }
       }
@@ -136,9 +148,10 @@ function moveParts(bin, args, git, ps) {
     if (newName == null) { if (pos.length < 2) return null; newName = pos[1]; }
     return { sources: pos.slice(0, 1), dest: newName, destIsDir: false, rename: true };
   }
-  if (target != null) return { sources: pos, dest: target, destIsDir: true, rename: false };
-  if (pos.length < 2) return null;
-  return { sources: pos.slice(0, -1), dest: pos[pos.length - 1], destIsDir: noTarget ? false : null, rename: false };
+  const u = unknown ? { unknown: true } : {};
+  if (target != null) return { sources: pos, dest: target, destIsDir: true, rename: false, ...u };
+  if (pos.length < 2) return unknown ? { sources: pos, dest: null, destIsDir: null, rename: false, unknown: true } : null;
+  return { sources: pos.slice(0, -1), dest: pos[pos.length - 1], destIsDir: noTarget ? false : null, rename: false, ...u };
 }
 const isDir = (abs) => { try { return statSync(abs).isDirectory(); } catch { return false; } };
 // A destination keeps the source when, lexically and through its real path, it stays inside the project with
@@ -156,7 +169,7 @@ function judgeMove(bin, args, git, opts, ctx, out, touched) {
   if (!m) { for (const p of args.filter((t) => !t.startsWith("-"))) ctx.both(p).forEach((a) => touched.add(a)); return; }
   const literal = m.dest && !NOT_LITERAL.test(m.dest) && m.dest !== "/dev/null";
   // A destination (or, into a directory, a source name) that is not literal: where it writes is unknown.
-  if (m.dest !== "/dev/null" && (!literal || m.sources.some((s) => nonLiteral(s)))) unknownWrite(opts, out);
+  if (m.dest !== "/dev/null" && (!literal || m.unknown || m.sources.some((s) => nonLiteral(s)))) unknownWrite(opts, out);
   const pairs = [ctx.at, ctx.written].map((place) => {
     const destAbs = literal ? place(m.dest) : null;
     if (destAbs) touched.add(destAbs);
@@ -234,6 +247,45 @@ function sedParts(binary, args) {
   return { inPlace, scripts, files };
 }
 
+// sed / gsed, GNU and BSD: -i[SUFFIX] / --in-place[=SUFFIX] (GNU), -i / -I EXTENSION (BSD: a word of its own, '' for
+// none, which is consumed here when it is empty), -e / --expression, -f / --file (the script is in a file: every
+// word is then a file), long options read by unique prefix (`--in-pl`, `--expr=`). An option sed does not have, or
+// an ambiguous one, is `unknown`: it could be in place.
+function sedArgs(args) {
+  let inPlace = false, unknown = false, fromFile = false;
+  const scripts = [], words = [];
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i];
+    if (t === "--") { words.push(...args.slice(i + 1)); break; }
+    if (t.startsWith("--") && t.length > 2) {
+      const eq = t.indexOf("=");
+      const name = longName(eq > 0 ? t.slice(0, eq) : t, SED.longAll);
+      if (name === null) { unknown = true; continue; }
+      const v = eq > 0 ? t.slice(eq + 1) : SED.longValued.includes(name) ? args[++i] ?? "" : null;
+      if (name === "--in-place") inPlace = true;
+      else if (name === "--expression") scripts.push(v ?? "");
+      else if (name === "--file") fromFile = true;
+      continue;
+    }
+    if (t.startsWith("-") && t.length > 1) {
+      for (let k = 1; k < t.length; k++) {
+        const ch = t[k];
+        if (!SED.shortAll.includes(ch)) { unknown = true; break; }
+        if (ch === "i" || ch === "I") { inPlace = true; if (k + 1 === t.length && args[i + 1] === "") i++; break; }
+        if (ch === "e" || ch === "f") {
+          const v = k + 1 < t.length ? t.slice(k + 1) : args[++i] ?? "";
+          if (ch === "e") scripts.push(v); else fromFile = true;
+          break;
+        }
+      }
+      continue;
+    }
+    words.push(t);
+  }
+  if (!scripts.length && !fromFile && words.length) scripts.push(words.shift());
+  return { inPlace, scripts, files: words, unknown };
+}
+
 // yq / jq assignment expressions: .a.b = value | .c = []
 function exprAssignments(expr) {
   const out = [];
@@ -282,13 +334,14 @@ function unknownWrite(opts, out, payload = null) {
 const home = (p) => (p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
 function judgeWrites(wt, opts, ctx, out, touched) {
   if (wt.unknown) unknownWrite(opts, out);
-  for (const { dest, sources, dir } of wt.writes) {
+  for (const { dest, sources, dir, parents } of wt.writes) {
     for (const destAbs of ctx.both(home(dest))) {
       touched.add(destAbs);
       if (!sources || !(dir ?? isDir(destAbs))) continue;
       for (const src of sources) {
         if (nonLiteral(src)) { unknownWrite(opts, out); continue; }
-        touched.add(join(destAbs, basename(home(src).replace(/[\/\\]+$/, ""))));
+        // cp --parents: the source's whole path under the destination (cp drops a leading /).
+        touched.add(join(destAbs, parents ? home(src).replace(/^[\/\\]+/, "") : basename(home(src).replace(/[\/\\]+$/, ""))));
       }
     }
   }
@@ -312,7 +365,7 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
     for (const abs of ctx.both(w)) { touched.add(abs); if (text) for (const s of assignedSignals(text, abs, P)) out.add(s); }
   }
   if (!c) return;
-  if (WRITE_BINS.has(bin) || bin === "git") judgeWrites(writeTargets(bin, args), opts, ctx, out, touched);
+  if (WRITE_BINS.has(bin) || bin === "git") judgeWrites(writeTargets(bin, args, { ps: seg.ps }), opts, ctx, out, touched);
   if (WRITE_BINS.has(bin)) return;
   const removed = (p) => { ctx.both(p).forEach((a) => touched.add(a)); removalSignal(p, out, ctx); };
   if (DELETE_BINS.has(bin)) { pos.forEach(removed); return; }
@@ -321,8 +374,9 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
   if (MOVE_BINS.has(bin)) { judgeMove(bin, args, false, opts, ctx, out, touched); return; }
   if (bin === "git" && lower[0] === "mv") { judgeMove("mv", args.slice(args.findIndex((t) => t.toLowerCase() === "mv") + 1), true, opts, ctx, out, touched); return; }
   if (bin === "sed" || bin === "gsed" || bin === "perl") {
-    const { inPlace, scripts, files } = sedParts(bin, args);
-    if (!inPlace) return;
+    const { inPlace, scripts, files, unknown } = bin === "perl" ? sedParts(bin, args) : sedArgs(args);
+    if (unknown) unknownWrite(opts, out, { edits: scripts.flatMap((sc) => sedEdits(sc)) });
+    if (!inPlace && !unknown) return;
     const abs = [...new Set(files.flatMap((f) => ctx.both(f)))];
     abs.forEach((f) => touched.add(f));
     if (scripts.some((sc) => sc.length > MAX_SCRIPT)) { out.add(INCOMPLETE); return; }
@@ -345,8 +399,11 @@ function judgeSegment(seg, all, idx, opts, out, touched, ctx) {
     const prev = all[idx - 1];
     const pc = prev && prev.sep === "|" ? commandOf(prev.tokens, prev.ps) : null;
     const text = pc && (pc.binary === "echo" || pc.binary === "printf") ? positional(prev.tokens.slice(pc.at + 1)).join(" ").replace(/\\n/g, "\n") : prev && prev.heredoc ? prev.heredoc : "";
-    for (const abs of new Set(pos.flatMap((f) => ctx.both(f)))) { touched.add(abs); if (text) for (const s of assignedSignals(text, abs, P)) out.add(s); }
-    if (args.some((t) => !t.startsWith("-") && nonLiteral(t))) unknownWrite(opts, out, { text });
+    // tee's files: every word that is not an option, a word after -- included (`tee -- -x/../f`); an option tee
+    // does not have, or an ambiguous one, leaves the target unknown.
+    const { flags, positional: files } = seg.ps ? { flags: [], positional: pos } : scanArgs(args, TEE);
+    for (const abs of new Set(files.flatMap((f) => ctx.both(f)))) { touched.add(abs); if (text) for (const s of assignedSignals(text, abs, P)) out.add(s); }
+    if (flags.some((f) => f.unknown) || files.some((t) => nonLiteral(t))) unknownWrite(opts, out, { text });
     return;
   }
   if (bin === "amtool" && lower[0] === "silence" && (lower[1] === "add" || lower[1] === "import")) { out.add("suppression-flag"); return; }

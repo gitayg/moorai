@@ -33,6 +33,17 @@
 // not scanned (onUnknown and its fail mode decide), never as clean. A data: URL that is not base64 is
 // percent-decoded; one that does not decode is unscannable.
 //
+// KEY CASE. Go's encoding/json, which Ollama is built on, matches an object key to a struct field ignoring case
+// ("To unmarshal JSON into a struct, Unmarshal matches incoming object keys to the keys used by Marshal (either
+// the struct field name or its tag), ignoring case." — pkg.go.dev/encoding/json), with Unicode simple folding (ſ
+// is s, the Kelvin sign is k; measured, go1.26: {"Images": …}, messages[].IMAGES, "imageſ" and "Messages" all
+// reach Ollama's images, "ımages" does not). Ollama's /api/chat and /api/generate read messages / images that
+// way, and its /v1/responses decodes input_image / input_file parts (type, image_url, file_data) the same way. So
+// every field here is read under any key that folds to its name, whatever the API (a case-sensitive upstream
+// ignores the variant; reading it too can only add a file to scan). Two keys of one object that fold to the same
+// field are `ambiguous` (Go keeps the last; there is no safe single choice), as two spellings are. A `type` value
+// is compared exactly (Ollama's switch on it is).
+//
 // ANY JSON BODY (kind "any"). The whole body is walked, whatever the path, and every object is tested against every
 // API's file shapes above: an Anthropic image / document block, an OpenAI image_url / file / input_audio part, a
 // Responses input_image / input_file / computer_call_output, a Gemini inlineData / fileData part, an Ollama `images`
@@ -46,6 +57,20 @@ import { createHash } from "node:crypto";
 export const MAX_PARTS = 32;
 
 const isObj = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+// A key as Go's encoding/json folds it, for the ASCII field names read here: ASCII case, and the two non-ASCII
+// letters whose fold orbit holds an ASCII one (U+017F ſ with s, U+212A Kelvin with k).
+const fold = (k) => k.replace(/\u017f/g, "s").replace(/\u212a/g, "k").toLowerCase();
+const KEYS = new WeakMap();
+// The keys of o that fold to `name` (lower case), in order.
+function keysOf(o, name) {
+  let m = KEYS.get(o);
+  if (!m) {
+    m = new Map();
+    for (const k of Object.keys(o)) { const f = fold(k); const l = m.get(f); if (l) l.push(k); else m.set(f, [k]); }
+    KEYS.set(o, m);
+  }
+  return m.get(name) || [];
+}
 const arr = (v) => (Array.isArray(v) ? v : []);
 const MAX_DEPTH = 16;
 export const ANY_DEPTH = 64;
@@ -117,10 +142,20 @@ export function fileParts(kind, body) {
     if (typeof s === "string" && s.length) add(where, mediaType, strictBase64(s, opts), filename, s);
     else if (s !== undefined && s !== null && s !== "") add(where, mediaType, null, filename, "");
   };
+  // A field read as a case-insensitive upstream reads it (KEY CASE): the value of the last key that folds to its
+  // name; more than one such key is `ambiguous`. g: one value; gs: every value (each is scanned).
+  const gs = (o, name) => {
+    if (!isObj(o)) return [];
+    const ks = keysOf(o, name.toLowerCase());
+    if (ks.length > 1) ambiguous.push(`case:${name}`);
+    return ks.map((k) => o[k]).filter((v) => v !== undefined);
+  };
+  const g = (o, name) => gs(o, name).pop();
+  const arrs = (o, name) => gs(o, name).flatMap(arr);
   // Both spellings of a field: every present value, and `ambiguous` when two are present and differ.
   const both = (o, a, b, where) => {
-    const vals = [o[a], o[b]].filter((v) => v !== undefined);
-    if (vals.length === 2 && canon(vals[0]) !== canon(vals[1])) ambiguous.push(where);
+    const vals = [...gs(o, a), ...gs(o, b)];
+    if (vals.length >= 2 && new Set(vals.map(canon)).size > 1) ambiguous.push(where);
     return vals;
   };
   // Past MAX_DEPTH nothing is read further: the place is recorded unscannable (onUnknown and the fail mode decide),
@@ -132,24 +167,26 @@ export function fileParts(kind, body) {
       if (stopped || v === null || typeof v !== "object") return;
       if (depth > ANY_DEPTH || ++nodes > ANY_NODES) { stopped = true; deep("any:limit"); return; }
       if (Array.isArray(v)) { for (const x of v) visit(x, depth + 1); return; }
-      const t = v.type;
-      if ((t === "image" || t === "document") && isObj(v.source)) {
-        if (v.source.type === "base64") b64(`any:${t}`, v.source.media_type, v.source.data);
-        else if (v.source.type === "url") ref(`any:${t}:url`, v.source.url);
-        else if (v.source.type === "file") ref(`any:${t}:file`, v.source.file_id);
-      } else if (t === "image_url") dataField("any:image_url", isObj(v.image_url) ? v.image_url.url : v.image_url);
-      else if (t === "file" && isObj(v.file)) { dataField("any:file", v.file.file_data, v.file.filename); ref("any:file:id", v.file.file_id); }
-      else if (t === "input_audio" && isObj(v.input_audio)) b64("any:input_audio", `audio/${String(v.input_audio.format || "unknown").replace(/[^a-z0-9.+-]/gi, "")}`, v.input_audio.data);
-      else if (t === "input_image") { dataField("any:input_image", v.image_url); ref("any:input_image:id", v.file_id); }
-      else if (t === "input_file") { dataField("any:input_file", v.file_data, v.filename); ref("any:input_file:id", v.file_id); ref("any:input_file:url", v.file_url); }
-      else if (t === "computer_call_output" && isObj(v.output)) { dataField("any:computer_screenshot", v.output.image_url); ref("any:computer_screenshot:id", v.output.file_id); }
+      const t = g(v, "type");
+      const src = g(v, "source");
+      if ((t === "image" || t === "document") && isObj(src)) {
+        const st = g(src, "type");
+        if (st === "base64") b64(`any:${t}`, g(src, "media_type"), g(src, "data"));
+        else if (st === "url") ref(`any:${t}:url`, g(src, "url"));
+        else if (st === "file") ref(`any:${t}:file`, g(src, "file_id"));
+      } else if (t === "image_url") { const iu = g(v, "image_url"); dataField("any:image_url", isObj(iu) ? g(iu, "url") : iu); }
+      else if (t === "file" && isObj(g(v, "file"))) { const f = g(v, "file"); dataField("any:file", g(f, "file_data"), g(f, "filename")); ref("any:file:id", g(f, "file_id")); }
+      else if (t === "input_audio" && isObj(g(v, "input_audio"))) { const a = g(v, "input_audio"); b64("any:input_audio", `audio/${String(g(a, "format") || "unknown").replace(/[^a-z0-9.+-]/gi, "")}`, g(a, "data")); }
+      else if (t === "input_image") { dataField("any:input_image", g(v, "image_url")); ref("any:input_image:id", g(v, "file_id")); }
+      else if (t === "input_file") { dataField("any:input_file", g(v, "file_data"), g(v, "filename")); ref("any:input_file:id", g(v, "file_id")); ref("any:input_file:url", g(v, "file_url")); }
+      else if (t === "computer_call_output" && isObj(g(v, "output"))) { const o = g(v, "output"); dataField("any:computer_screenshot", g(o, "image_url")); ref("any:computer_screenshot:id", g(o, "file_id")); }
       for (const d of both(v, "inlineData", "inline_data", "any:inlineData")) {
         if (!isObj(d)) continue;
         const [mt] = both(d, "mimeType", "mime_type", "any:mimeType");
-        b64("any:inlineData", mt, d.data, undefined, { urlSafe: true });
+        b64("any:inlineData", mt, g(d, "data"), undefined, { urlSafe: true });
       }
       for (const fd of both(v, "fileData", "file_data", "any:fileData")) if (isObj(fd)) for (const u of both(fd, "fileUri", "file_uri", "any:fileUri")) ref("any:fileData", u);
-      if (Array.isArray(v.images) && v.images.length && v.images.every((x) => typeof x === "string")) for (const s of v.images) b64("any:images", "image/unknown", s);
+      for (const ims of gs(v, "images")) if (Array.isArray(ims) && ims.length && ims.every((x) => typeof x === "string")) for (const s of ims) b64("any:images", "image/unknown", s);
       for (const k of Object.keys(v)) visit(v[k], depth + 1);
     };
     visit(body, 0);
@@ -161,33 +198,37 @@ export function fileParts(kind, body) {
     const block = (b, depth) => {
       if (!isObj(b)) return;
       if (depth > MAX_DEPTH) { deep("anthropic:depth"); return; }
-      if ((b.type === "image" || b.type === "document") && isObj(b.source) && b.source.type === "base64") b64(`anthropic:${b.type}`, b.source.media_type, b.source.data);
-      else if ((b.type === "image" || b.type === "document") && isObj(b.source) && b.source.type === "url") ref(`anthropic:${b.type}:url`, b.source.url);
-      else if ((b.type === "image" || b.type === "document") && isObj(b.source) && b.source.type === "file") ref(`anthropic:${b.type}:file`, b.source.file_id);
-      else if (b.type === "tool_result") for (const c of arr(b.content)) block(c, depth + 1);
+      const t = g(b, "type"), src = g(b, "source"), st = g(src, "type");
+      if ((t === "image" || t === "document") && isObj(src) && st === "base64") b64(`anthropic:${t}`, g(src, "media_type"), g(src, "data"));
+      else if ((t === "image" || t === "document") && isObj(src) && st === "url") ref(`anthropic:${t}:url`, g(src, "url"));
+      else if ((t === "image" || t === "document") && isObj(src) && st === "file") ref(`anthropic:${t}:file`, g(src, "file_id"));
+      else if (t === "tool_result") for (const c of arrs(b, "content")) block(c, depth + 1);
     };
-    for (const m of arr(body.messages)) if (isObj(m)) for (const b of arr(m.content)) block(b, 0);
+    for (const m of arrs(body, "messages")) if (isObj(m)) for (const b of arrs(m, "content")) block(b, 0);
   } else if (kind === "openai-chat") {
-    for (const m of arr(body.messages)) {
+    for (const m of arrs(body, "messages")) {
       if (!isObj(m)) continue;
-      for (const p of arr(m.content)) {
+      for (const p of arrs(m, "content")) {
         if (!isObj(p)) continue;
-        if (p.type === "image_url") dataField("openai:image_url", isObj(p.image_url) ? p.image_url.url : p.image_url);
-        else if (p.type === "file" && isObj(p.file)) { dataField("openai:file", p.file.file_data, p.file.filename); ref("openai:file:id", p.file.file_id); }
-        else if (p.type === "input_audio" && isObj(p.input_audio)) b64("openai:input_audio", `audio/${String(p.input_audio.format || "unknown").replace(/[^a-z0-9.+-]/gi, "")}`, p.input_audio.data);
+        const t = g(p, "type");
+        if (t === "image_url") { const iu = g(p, "image_url"); dataField("openai:image_url", isObj(iu) ? g(iu, "url") : iu); }
+        else if (t === "file" && isObj(g(p, "file"))) { const f = g(p, "file"); dataField("openai:file", g(f, "file_data"), g(f, "filename")); ref("openai:file:id", g(f, "file_id")); }
+        else if (t === "input_audio" && isObj(g(p, "input_audio"))) { const a = g(p, "input_audio"); b64("openai:input_audio", `audio/${String(g(a, "format") || "unknown").replace(/[^a-z0-9.+-]/gi, "")}`, g(a, "data")); }
       }
     }
   } else if (kind === "openai-responses") {
     const part = (p) => {
       if (!isObj(p)) return;
-      if (p.type === "input_image") { dataField("responses:input_image", p.image_url); ref("responses:input_image:id", p.file_id); }
-      else if (p.type === "input_file") { dataField("responses:input_file", p.file_data, p.filename); ref("responses:input_file:id", p.file_id); ref("responses:input_file:url", p.file_url); }
+      const t = g(p, "type");
+      if (t === "input_image") { dataField("responses:input_image", g(p, "image_url")); ref("responses:input_image:id", g(p, "file_id")); }
+      else if (t === "input_file") { dataField("responses:input_file", g(p, "file_data"), g(p, "filename")); ref("responses:input_file:id", g(p, "file_id")); ref("responses:input_file:url", g(p, "file_url")); }
     };
-    for (const it of arr(body.input)) {
+    for (const it of arrs(body, "input")) {
       if (!isObj(it)) continue;
-      if (it.type === "computer_call_output") { if (isObj(it.output)) { dataField("responses:computer_screenshot", it.output.image_url); ref("responses:computer_screenshot:id", it.output.file_id); } continue; }
-      if (it.type === "function_call_output" || it.type === "custom_tool_call_output") { for (const p of arr(it.output)) part(p); continue; }
-      for (const p of arr(it.content)) part(p);
+      const t = g(it, "type");
+      if (t === "computer_call_output") { const o = g(it, "output"); if (isObj(o)) { dataField("responses:computer_screenshot", g(o, "image_url")); ref("responses:computer_screenshot:id", g(o, "file_id")); } continue; }
+      if (t === "function_call_output" || t === "custom_tool_call_output") { for (const p of arrs(it, "output")) part(p); continue; }
+      for (const p of arrs(it, "content")) part(p);
     }
   } else if (kind === "gemini") {
     const walk = (list, depth) => {
@@ -197,17 +238,17 @@ export function fileParts(kind, body) {
         for (const d of both(p, "inlineData", "inline_data", "gemini:inlineData")) {
           if (!isObj(d)) continue;
           const [mt] = both(d, "mimeType", "mime_type", "gemini:mimeType");
-          b64("gemini:inlineData", mt, d.data, undefined, { urlSafe: true });
+          b64("gemini:inlineData", mt, g(d, "data"), undefined, { urlSafe: true });
         }
         for (const fd of both(p, "fileData", "file_data", "gemini:fileData")) if (isObj(fd)) for (const u of both(fd, "fileUri", "file_uri", "gemini:fileUri")) ref("gemini:fileData", u);
-        for (const fr of both(p, "functionResponse", "function_response", "gemini:functionResponse")) if (isObj(fr)) walk(fr.parts, depth + 1);
+        for (const fr of both(p, "functionResponse", "function_response", "gemini:functionResponse")) if (isObj(fr)) walk(arrs(fr, "parts"), depth + 1);
       }
     };
-    for (const si of both(body, "systemInstruction", "system_instruction", "gemini:systemInstruction")) if (isObj(si)) walk(si.parts, 0);
-    for (const c of arr(body.contents)) if (isObj(c)) walk(c.parts, 0);
+    for (const si of both(body, "systemInstruction", "system_instruction", "gemini:systemInstruction")) if (isObj(si)) walk(arrs(si, "parts"), 0);
+    for (const c of arrs(body, "contents")) if (isObj(c)) walk(arrs(c, "parts"), 0);
   } else if (kind === "ollama") {
-    for (const s of arr(body.images)) b64("ollama:images", "image/unknown", s);
-    for (const m of arr(body.messages)) if (isObj(m)) for (const s of arr(m.images)) b64("ollama:images", "image/unknown", s);
+    for (const s of arrs(body, "images")) b64("ollama:images", "image/unknown", s);
+    for (const m of arrs(body, "messages")) if (isObj(m)) for (const s of arrs(m, "images")) b64("ollama:images", "image/unknown", s);
   }
   return { parts, over, unscannable, refs, ambiguous };
 }

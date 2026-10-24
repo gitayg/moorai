@@ -4327,11 +4327,28 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   filesystem write tool's path (below), or a shell command that writes, moves or deletes one, raises the signal
   `memory-file` under #84. Shell writes (`cli/oversight-shell-writes.mjs`): a redirect (a bare `> path` with no
   command word too, read from the raw text, quote-aware, heredoc bodies skipped, since the parser keeps no segment
-  for it), `tee`, `sed -i` / `perl -pi`, `yq -i`, `Set-Content`, the destination of `cp` / `install` / `rsync` (a
-  local one; `-t`, `--target-directory`, `-T`; into a directory, each source under its own name) and `mv`, `curl
-  -o` / `--output` / `-O` (the URL's name, under `--output-dir`), `wget -O` / `--output-document`, its log `-o` /
-  `-a`, and without `-O` or `-r` the URL's own name under `-P`, `dd of=`, `git checkout [<tree-ish>] -- <path>`,
-  `git restore <path>` (`-C dir` applied) and `patch <file>` / `patch -o <file>`. MCP filesystem write tools
+  for it), `tee` (a word after `--` too), `sed -i` / `--in-place` / BSD `-I`, `perl -pi`, `yq -i`, `Set-Content`, the
+  destination of `cp` / `install` / `rsync` (a local one; `-t`, `--target-directory`, `-T` for cp; into a directory,
+  each source under its own name, under its whole path with `cp --parents`) and `mv`, `curl -o` / `--output` / `-O`
+  (the URL's name; both under `--output-dir`), `curl -D` / `-c` / `--trace` / `--trace-ascii` / `--stderr` /
+  `--libcurl` / `--etag-save` / `--hsts` / `--alt-svc`, `wget -O` / `--output-document`, its log `-o` / `-a`,
+  `--save-cookies` / `--rejected-log` / `--hsts-file`, and without `-O` the URL's own name (`%`-escapes but `%2F`
+  decoded, as wget 1.21.3 does; `index.html` or `--default-page` for a bare host) under `-P`; a URL with no scheme
+  is read as http, as both tools do; `dd of=`, `git checkout [<tree-ish>] [--] <path>` (without `--` every word
+  but an `@{…}` revision is judged as a path, since git decides at run time), `git restore <path>` (`-C dir`
+  applied) and `patch <file>` / `patch -o <file>` / `patch -r <rejects>`. Options are read as each tool reads them
+  (`cli/oversight-shell-options.mjs`, the union of the tools' own `--help` lists: GNU coreutils 9.1 / 9.7, sed
+  4.9, patch 2.7.6, git 2.39.5 / 2.47.3, Wget 1.21.3 / 1.25.0, curl 7.88.1 / 8.7.1 / 8.14.1, rsync 3.4.4, and the
+  macOS BSD letters): a unique prefix of a long option resolves to it (`data/shell-parse.js` `longName`, as GNU
+  `getopt_long`, git and curl 7.x accept; curl 8.7.1 and rsync 3.4.4 reject abbreviations, and rsync's are read as
+  full names only), `--no-<option>` for curl, wget, rsync and git. A write position is unknown (write-target-unknown
+  / analysis-incomplete, as for a non-literal target) when the tool picks the name at run time — wget `-r` / `-m` /
+  `-i` / `-p` / `-x` / `--protocol-directories` / `--content-disposition` / `--trust-server-names` / `-e` /
+  `--config` with no `-O`, curl `-O` with `-J`, curl `-K`, curl `-o` naming a `#N` URL glob without `-g`, git
+  `--work-tree` / `-c core.worktree=`, `--pathspec-from-file` — and when a write tool (cp, mv, install, rsync,
+  curl, wget, tee, sed, patch, git checkout / restore) is given a long option that is ambiguous or that it does
+  not have, or a short letter it does not have. A PowerShell segment's `cp` / `curl` (cmdlet aliases) is not held
+  to these lists. MCP filesystem write tools
   (`cli/oversight-mcp.mjs`, wired in the hook's `mcp__*` branch): a tool named by a write verb (write, edit, move,
   rename, create, append, replace, insert, patch, save, overwrite, update) and a file noun (file, text_file,
   directory, dir, folder, block, text, content, path, document), or a bare `write` / `edit`, except a named

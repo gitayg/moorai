@@ -775,7 +775,7 @@ alert are `cli/file-scan.mjs`; finding the parts is `model-proxy/file-parts.mjs`
 | Anthropic Message Batches (`POST …/messages/batches`) | every `requests[].params` read as a Messages request |
 | Gemini `POST …/cachedContents` | read as a Gemini request (`contents`, `systemInstruction`) |
 | Gemini | `inlineData` in `contents[].parts[]`, `systemInstruction.parts[]` and every nested `functionResponse.parts[]` |
-| Ollama | `images[]` in `/api/chat` messages and `/api/generate` |
+| Ollama | `images[]` in `/api/chat` messages and `/api/generate`, under any key Go's `encoding/json` folds to `images` / `messages` (`Images`, `IMAGES`) |
 
 **Files the scan cannot read, and what happens to them** (all with `fileScan` on; `mode: "off"` changes nothing):
 
@@ -804,7 +804,14 @@ An Anthropic `document` whose source is text is scanned as text, as before. At m
 scanned; the rest count as not scanned (the fail mode decides). The request body is the same whether `stream` is set or not, so the
 scan runs before forwarding either way.
 
-**What is scanned is what is sent.** Three rules keep the bytes scanned and the bytes the provider reads the same:
+**What is scanned is what is sent.** Four rules keep the bytes scanned and the bytes the provider reads the same:
+- *Key case.* Go's `encoding/json`, which Ollama is built on, matches an object key to a struct field ignoring
+  case, with Unicode simple folding (measured: `{"Images": …}`, `messages[].IMAGES`, `"imageſ"` and `"Messages"` all
+  reach Ollama's images; `"ımages"` does not). Ollama's `/v1/responses` decodes `input_image` / `input_file` parts
+  the same way. So every file field, in every API's shape and in the any-body walk, is read under any key that
+  folds to its name (a `type` value is still compared exactly). Two keys of one object that fold to the same field
+  are ambiguous (Go keeps the last one): refused in enforce mode or under a closed fail mode, otherwise forwarded
+  with a content-free `UNEVALUATED_BAD_INPUT` alert.
 - *Dual spellings.* Gemini's API is proto3 JSON, whose parsers take both `inlineData` and `inline_data` (likewise
   `mimeType` / `mime_type`, `functionResponse` / `function_response`, `systemInstruction` / `system_instruction`).
   Both are scanned; when both are present with different content the request is ambiguous: refused in enforce mode

@@ -195,7 +195,21 @@ export function commandOf(toks, ps) {
 }
 
 // Option scanning: which tokens are values of a flag (skipped), which are positional.
-export function scanArgs(rest, { shortValued = "", longValued = [], ps = false } = {}) {
+// With longAll (every long option the tool knows, valued or not), a long option is read the way GNU getopt_long
+// reads it: an exact name, else the one option it is a unique prefix of (`--target=d` is --target-directory; with
+// exact, as rsync's popt reads them, only the full name); with negatable, `--no-<option>` (and its prefixes) is
+// known too, as curl, wget, rsync and git accept it. With shortAll (every short option letter), a letter outside it
+// ends its cluster. A long option that is ambiguous or not known, or a short letter not known, is returned with
+// `unknown: true` (its value, if any, is not taken).
+export function longName(name, longAll, negatable = false, prefix = true) {
+  if (longAll.includes(name)) return name;
+  const hits = prefix ? longAll.filter((o) => o.startsWith(name)) : [];
+  if (hits.length === 1) return hits[0];
+  if (hits.length || !negatable || !name.startsWith("--no-") || name.length < 6) return null;
+  const base = longName(`--${name.slice(5)}`, longAll, false, prefix);
+  return base && !base.startsWith("--no-") ? `--no-${base.slice(2)}` : null;
+}
+export function scanArgs(rest, { shortValued = "", longValued = [], ps = false, longAll = null, shortAll = null, negatable = false, exact = false } = {}) {
   const flags = [], positional = [];
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i];
@@ -210,7 +224,9 @@ export function scanArgs(rest, { shortValued = "", longValued = [], ps = false }
     }
     if (t.startsWith("--") && t.length > 2) {
       const eq = t.indexOf("=");
-      const name = eq > 0 ? t.slice(0, eq) : t;
+      const written = eq > 0 ? t.slice(0, eq) : t;
+      const name = longAll ? longName(written, longAll, negatable, !exact) : written;
+      if (name === null) { flags.push({ name: written, value: eq > 0 ? t.slice(eq + 1) : null, unknown: true }); continue; }
       const value = eq > 0 ? t.slice(eq + 1) : longValued.includes(name) && i + 1 < rest.length ? rest[++i] : null;
       flags.push({ name, value });
       continue;
@@ -218,6 +234,7 @@ export function scanArgs(rest, { shortValued = "", longValued = [], ps = false }
     if (t.startsWith("-") && t.length > 1 && !ps) {
       for (let k = 1; k < t.length; k++) {
         const ch = t[k];
+        if (shortAll && !shortAll.includes(ch)) { flags.push({ name: `-${ch}`, value: null, unknown: true }); break; }
         if (shortValued.includes(ch)) {
           const value = k + 1 < t.length ? t.slice(k + 1) : i + 1 < rest.length ? rest[++i] : null;
           flags.push({ name: `-${ch}`, value });
