@@ -115,50 +115,76 @@ const UPLOAD = [
   /\bStart-BitsTransfer\b[^\n;|&]*?\s-TransferType\s{1,4}["']?Upload/i,
   UNC_COPY
 ];
-// nc / ncat / netcat / socat / telnet as a COMMAND that can carry data out. The word must be its segment's
-// command (after VAR=x assignments and the wrappers that run their arguments: sudo, env, timeout …), or sit
-// behind any command word not in MENTION — a shell `-c` string, ssh, xargs and anything unknown still count,
-// so an unrecognised form fails closed as before. MENTION is the set whose arguments are names, not commands
-// run: lookups (which, man, type, command -v …), package managers and text search / echo. Then it needs a
-// target or data: an argument other than a help/version flag, or input piped or redirected into it. A bare
-// `nc` or `telnet --version` connects nowhere.
-const NC_WORD = /^(?:nc|ncat|netcat|socat|telnet)(?:\.(?:openbsd|traditional|exe))?$/i;
+// nc / ncat / netcat / socat / telnet as a COMMAND that can carry data out. FAIL CLOSED: a segment holding a
+// netcat word is judged unless its command is cleanly a PURE LOOKUP, whose arguments are names and never run:
+// which, whereis, type, whatis, apropos, `command -v|-V`, man without a pager or HTML-browser option
+// (-P/--pager/-H/--html run a command), and apt / apt-get / brew / dnf install, remove or show without `-o`
+// (an APT option can name a hook that runs). Everything else stays judged: find -exec, xargs, rg/ag --pre,
+// ack, grep, a shell `-c` string, ssh, any unknown command. Then it needs a target or data: an argument
+// other than a help/version flag, or input piped into it. A bare `nc` or `telnet --version` connects nowhere.
+// Words are compared as the shell would run them: quotes and backslashes removed (`'nc'`, `"n"c`, `n\c`),
+// a leading call operator (`&`, `.`) dropped, the last path segment taken on / or \ (`C:\tools\nc.exe`), and
+// a .exe suffix dropped.
+const NC_NAME = /^(?:nc|ncat|netcat|socat|telnet)(?:\.(?:openbsd|traditional))?$/i;
 const NC_HINT = /(?<![\w.-])(?:nc|ncat|netcat|socat|telnet)(?![\w-])/i;
 const SEG_SPLIT = /([\n;|&(){}`]+)/;
-const RUNS_ARGS = new Set(["sudo", "doas", "env", "exec", "nohup", "time", "nice", "ionice", "timeout", "stdbuf", "command", "builtin", "busybox", "unbuffer"]);
-const MENTION = new Set(["which", "whereis", "whatis", "apropos", "man", "info", "help", "type", "hash", "tldr", "where", "where.exe",
-  "get-command", "gcm", "get-help", "brew", "apt", "apt-get", "apt-cache", "aptitude", "dpkg", "dnf", "yum", "rpm", "pacman", "zypper",
-  "apk", "port", "snap", "choco", "winget", "scoop", "nix-env", "pkg", "pip", "pip3", "grep", "egrep", "fgrep", "rg", "ag", "ack", "find",
-  "locate", "ls", "echo", "printf", "file", "stat"]);
+const RUNS_ARGS = new Set(["sudo", "doas", "env", "exec", "nohup", "time", "nice", "ionice", "timeout", "stdbuf", "builtin", "unbuffer"]);
+const LOOKUP = new Set(["which", "whereis", "type", "whatis", "apropos"]);
+const PKG = new Set(["apt", "apt-get", "brew", "dnf"]);
+const PKG_SUB = new Set(["install", "remove", "show"]);
 const NC_HELP = new Set(["-h", "--help", "-help", "-?", "-V", "--version", "-version"]);
-const baseName = (w) => w.slice(w.lastIndexOf("/") + 1).toLowerCase();
+const unquote = (w) => w.replace(/['"`]/g, "");
+const dropExe = (b) => b.replace(/\.exe$/i, "");
+// The names a word can run as: path split before backslashes are removed (C:\tools\nc.exe), and after (n\c).
+function namesOf(word) {
+  const w = unquote(word).replace(/^[&.]+(?=[^&.])/, "");
+  const a = w.split(/[\/\\]/).pop();
+  const b = w.replace(/\\/g, "").replace(/^[&.]+(?=[^&.])/, "").split("/").pop();
+  return [dropExe(a).toLowerCase(), dropExe(b).toLowerCase()];
+}
+const isNc = (word) => namesOf(word).some((n) => NC_NAME.test(n));
+const plain = (word) => namesOf(word)[1];
+function pureLookup(w, i) {
+  const b = plain(w[i]);
+  if (LOOKUP.has(b)) return true;
+  if (b === "command") return /^-[vV]$/.test(unquote(w[i + 1] || ""));
+  const rest = w.slice(i + 1).map((x) => unquote(x).replace(/\\/g, ""));
+  if (b === "man") return !rest.some((x) => /^(?:-[A-Za-z]*[PH]|--pager|--html)/.test(x));
+  if (PKG.has(b)) {
+    if (rest.some((x) => /^(?:-o|--option)/.test(x))) return false;
+    const sub = rest.find((x) => !x.startsWith("-"));
+    return PKG_SUB.has(sub);
+  }
+  return false;
+}
 // Linear: the command is split into segments once, each segment into words once, and each word is looked at
-// a bounded number of times (one forward pass for the command word, one backward pass for "a target after").
+// a bounded number of times.
 function ncInvoked(command) {
   const c = String(command || "");
-  if (!NC_HINT.test(c)) return false;
+  const hint = (t) => NC_HINT.test(t) || NC_HINT.test(t.replace(/[\\'"`]/g, ""));
+  if (!hint(c)) return false;
   const parts = c.split(SEG_SPLIT);
   for (let k = 0; k < parts.length; k += 2) {
-    const w = parts[k].trim().split(/\s+/).map((x) => x.replace(/^["']+|["']+$/g, "")).filter(Boolean);
-    if (!w.some((x) => NC_WORD.test(baseName(x)))) continue;
-    let cmd = null;
+    const w = parts[k].trim().split(/\s+/).filter(Boolean);
+    if (!w.some(isNc) && !hint(parts[k])) continue;
+    let at = -1;
     for (let i = 0; i < w.length; i++) {
-      const x = w[i];
-      if (/^[A-Za-z_]\w*=/.test(x) || x.startsWith("-") || /^\d+[smhd]?$/.test(x)) continue;
-      const b = baseName(x);
-      if (b === "command" && /^-[vV]$/.test(w[i + 1] || "")) { cmd = "command -v"; break; }
-      if (RUNS_ARGS.has(b)) continue;
-      cmd = b;
+      const x = unquote(w[i]);
+      if (/^[A-Za-z_]\w*=/.test(x) || /^\d+[smhd]?$/.test(x)) continue;
+      if (RUNS_ARGS.has(plain(w[i]))) { while (i + 1 < w.length && unquote(w[i + 1]).startsWith("-")) i++; continue; }
+      at = i;
       break;
     }
-    if (cmd === "command -v" || MENTION.has(cmd)) continue;
-    const sep = k > 0 ? parts[k - 1] : "";
-    const piped = /\|$/.test(sep) && !/\|\|$/.test(sep);
-    let target = false;
-    for (let i = w.length - 1; i >= 0; i--) {
-      if (NC_WORD.test(baseName(w[i])) && (target || piped)) return true;
-      if (!NC_HELP.has(w[i])) target = true;
+    if (at >= 0 && pureLookup(w, at)) continue;
+    // The tool is the command itself: judged with a target or piped data; a bare `nc` or `nc -h` connects nowhere.
+    if (at >= 0 && isNc(w[at])) {
+      const sep = k > 0 ? parts[k - 1] : "";
+      if (/\|$/.test(sep) && !/\|\|$/.test(sep)) return true;
+      if (w.slice(at + 1).some((x) => { const y = unquote(x).replace(/\\/g, ""); return y && !NC_HELP.has(y); })) return true;
+      continue;
     }
+    // Anywhere else (an argument of find -exec, xargs, ssh, a shell -c string, an option value): fail closed.
+    return true;
   }
   return false;
 }

