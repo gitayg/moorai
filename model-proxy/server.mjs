@@ -62,6 +62,11 @@ import { createTextGuard, guardBody } from "./text-guard.mjs";
 import { parseLossless } from "./json-lossless.mjs";
 import { textAlert, textRefusal } from "./text-report.mjs";
 import * as codecs from "./text-codecs.mjs";
+import { fileParts } from "./file-parts.mjs";
+import { fileScanPolicy } from "../cli/file-scan-policy.mjs";
+import { loadFileScanKeys } from "../cli/file-scan-keys.mjs";
+import { createFileScanner, fileScanDecision, fileScanAlert, mimeClass, PROVIDER_LABEL } from "../cli/file-scan.mjs";
+import { headlessAskMode } from "../cli/server-mode.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({
@@ -221,6 +226,45 @@ export async function createProxy(opts = {}) {
   const piiKey = randomBytes(32);
   const LOW_ENTROPY = new Set([1, 15]);
   const findingHash = (id, match) => (LOW_ENTROPY.has(id) ? `proc:${createHmac("sha256", piiKey).update(String(match), "utf8").digest("hex").slice(0, 16)}` : rt.hash(match));
+  // Cloud file scanning (cli/file-scan.mjs, policy fileScan): every inline file, document or image part of a
+  // request (file-parts.mjs) looked up — or, in "upload" mode, uploaded — at the policy's provider before the
+  // request goes upstream. The keys come only from the root-owned admin binding, a root-owned key file
+  // (--file-scan-key-file) or this process's environment (cli/file-scan-keys.mjs); opts.fileScanKeys is an
+  // embedder's own (tests). opts.fileScanEndpoints / fileScanFetch / fileScanPollMs: test seams.
+  const fileScanner = createFileScanner({
+    keys: { ...loadFileScanKeys({ admin, keyFiles: o.fileScanKeyFiles || {}, env: o.env || process.env }).keys, ...(o.fileScanKeys || {}) },
+    endpoints: o.fileScanEndpoints || {}, fetch: o.fileScanFetch || globalThis.fetch, pollMs: o.fileScanPollMs ?? 1000
+  });
+  const fileAlerted = new Set();
+  // Scans one request's files. Returns the refusal text when the request must not go upstream — enforce: any
+  // file whose decision is deny; report: only a fail-closed one (what cannot be judged, as for text) — else
+  // null. One content-free alert per file, verdict and decision per process (a conversation re-sends its files).
+  async function scanFiles(found, cfg, s, fm) {
+    const headless = headlessAskMode({ active: true, headless: rt.settings.headless || {} }, s.policy).mode;
+    const jobs = found.parts.map((p) => fileScanner.scan(p.bytes, cfg).then((r) => ({ p, r })));
+    const results = await Promise.all(jobs);
+    if (found.over) results.push({ p: { mediaType: "", bytes: { length: 0 } }, r: { verdict: "error", why: "budget", provider: cfg.provider, sha256: `over-cap:${found.over}`, uploaded: false } });
+    let refusal = null;
+    for (const { p, r } of results) {
+      const d = fileScanDecision(r, cfg, { failMode: fm, headless });
+      if (d.alert) {
+        const k = `${r.sha256}|${r.verdict}|${d.decision}|${d.failClosed}`;
+        if (!fileAlerted.has(k)) {
+          if (fileAlerted.size >= 4096) fileAlerted.clear();
+          fileAlerted.add(k);
+          try { rt.reporter.post(fileScanAlert({ result: r, cfg, decision: d, hash: rt.hash, tool: "model-proxy:file-scan", mime: p.mediaType, size: p.bytes.length }), { prov: { policyId: s.policyId, policySource: s.source, event: "ModelRequest" } }); } catch { /* report-only */ }
+        }
+      }
+      if (refusal || d.action !== "deny" || !(enforce || d.failClosed)) continue;
+      const label = PROVIDER_LABEL[r.provider] || r.provider;
+      const what = r.verdict === "malicious" ? `malicious file (${label}: ${r.detections ?? 0} of ${r.engines ?? 0} engines${r.threat ? `, ${r.threat}` : ""})`
+        : d.failClosed ? `not scanned (${r.why}), and your organization blocks what MoorAI cannot evaluate`
+        : d.headlessAsk ? `${r.verdict === "unknown" ? `unknown to ${label}` : `not scanned (${r.why})`}; it needs an approval and this server has no approver`
+        : `${r.verdict === "unknown" ? `unknown to ${label}` : `not scanned (${r.why})`}; your organization blocks files the scan cannot vouch for`;
+      refusal = `MoorAI model-proxy refused this request — file (${mimeClass(p.mediaType)}): ${what}`;
+    }
+    return refusal;
+  }
   const routes = Object.entries(o.routes).map(([prefix, base]) => ({ prefix: prefix === "/" ? "" : prefix.replace(/\/+$/, ""), base: String(base).replace(/\/+$/, "") })).sort((a, b) => b.prefix.length - a.prefix.length);
   const agents = { "http:": new http.Agent({ keepAlive: true, maxSockets: o.maxConnections }), "https:": new https.Agent({ keepAlive: true, maxSockets: o.maxConnections }) };
   const loopbackBind = isLoopback(o.host);
@@ -589,6 +633,18 @@ export async function createProxy(opts = {}) {
           echo: createEcho(items.filter((it) => it.kind === "system").map((it) => it.text).join("\n"), echoKey),
           risk: (id) => (threats && threats.get(id) && threats.get(id).riskLevel) || "High" };
       }
+      // Cloud file scan (policy fileScan): before the upstream when enforcing or under a closed fail mode, else
+      // after the response, report-only.
+      const fsCfg = fileScanPolicy(s1.policy);
+      if (fsCfg.mode !== "off" && KIND.has(api)) {
+        const found = fileParts(KIND.get(api), json);
+        if (found.parts.length || found.over) {
+          if (enforce || fm === "closed") {
+            const why = await scanFiles(found, fsCfg, s1, fm);
+            if (why) { stats.refused++; return send(res, 403, api.errorBody(403, why), { "x-moorai-model-proxy": "refused" }); }
+          } else later.push(() => scanFiles(found, fsCfg, s1, fm));
+        }
+      }
       if (enforce && items.length) {
         let v = null;
         try { v = await withTimeout(checker.checkRequest(items)); } catch {
@@ -657,5 +713,5 @@ export async function createProxy(opts = {}) {
   const addr = server.address();
   const url = `http://${addr.family === "IPv6" ? `[${addr.address}]` : addr.address}:${addr.port}`;
   const close = async () => { await new Promise((r) => server.close(() => r())); server.closeAllConnections?.(); for (const a of Object.values(agents)) a.destroy(); if (tracker) tracker.stop(); await trail.close(); await usage.close(); await rt.flush(); };
-  return { server, url, runtime: rt, close, stats: () => ({ ...stats, inflight, cache: checker.cacheSize(), intentSessions: intent.size(), ...(tracker ? { unchecked: tracker.stats() } : {}) }) };
+  return { server, url, runtime: rt, close, stats: () => ({ ...stats, inflight, cache: checker.cacheSize(), intentSessions: intent.size(), fileScan: fileScanner.stats(), ...(tracker ? { unchecked: tracker.stats() } : {}) }) };
 }

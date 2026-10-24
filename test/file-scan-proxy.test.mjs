@@ -226,3 +226,20 @@ test("the API key never appears in the proxy's log, its alerts or its error bodi
     for (const l of lines) assert.ok(!l.includes(TEST_KEY), "log");
   } finally { process.stderr.write = orig; await wrongKeyMd.close(); await con.close(); }
 });
+
+test("a key in the policy is never used: with no admin, file or environment key the provider is not called", async () => {
+  const before = md.requests.length;
+  const px = await proxy("enforce", { provider: "metadefender", mode: "hash", apiKey: TEST_KEY, key: TEST_KEY }, { fileScanKeys: {} });
+  try {
+    const r = await send(px, "anthropic image", BAD, false);
+    assert.equal(r.status, 403, "enforce: no key is an error, closed by default");
+    assert.match(r.raw.toString(), /not scanned \(no-key\)/);
+    assert.equal(md.requests.length, before);
+  } finally { await px.close(); }
+});
+
+test("moorai-model-proxy --file-scan-key-file <provider>=<path> (repeatable); an unknown provider is refused", async () => {
+  const { parseArgs } = await import("../model-proxy/moorai-model-proxy.mjs");
+  assert.deepEqual(parseArgs(["--file-scan-key-file", "metadefender=/etc/moorai/md.key", "--file-scan-key-file", "virustotal=/etc/moorai/vt.key"], {}).fileScanKeyFiles, { metadefender: "/etc/moorai/md.key", virustotal: "/etc/moorai/vt.key" });
+  assert.throws(() => parseArgs(["--file-scan-key-file", "other=/x"], {}), /metadefender, virustotal/);
+});
