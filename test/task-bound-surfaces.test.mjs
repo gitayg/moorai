@@ -199,9 +199,11 @@ test("moorai-serve: amounts — the task's amount and under the cap pass, over b
 test("moorai-serve: task allowlists by task id and keywords; strictest wins; invalid denies; taskId validated", async () => {
   await withServe({ taskAllowlists: LISTS }, async ({ task, call }) => {
     assert.equal((await task({ session: "v1", taskId: "bad id!" })).status, 400);
-    const set = await task({ session: "v1", prompt: "harvest the orchard and pay", taskId: "pay-vendor-1" });
+    const set = await task({ session: "v1", prompt: "pay the vendor", taskId: "pay-vendor-1" });
     assert.equal(set.json.taskId, true);
-    assert.equal((await call({ tool: "transfer", input: { amount: 400, to_account: "4471" }, session: "v1" })).json.decision, "allow", "the task id's entry beats the harvest keyword");
+    assert.equal((await call({ tool: "transfer", input: { amount: 400, to_account: "4471" }, session: "v1" })).json.decision, "allow", "the task id's entry");
+    await task({ session: "v2", prompt: "harvest the orchard and pay", taskId: "pay-vendor-1" });
+    assert.equal((await call({ tool: "transfer", input: { amount: 400, to_account: "4471" }, session: "v2" })).json.decision, "deny", "a task id only adds: the harvest keyword entry still holds transfer");
     const over = await call({ tool: "transfer", input: { amount: 900, to_account: "4471" }, session: "v1" });
     assert.equal(over.json.decision, "deny");
     assert.equal(over.json.configuredDecision, "deny", "the entry's default, not an ask the headless rule settled");
@@ -252,7 +254,7 @@ test("Agent SDK: an SDK tool cut(hand) is denied under block after the prompt \"
 
 test("Agent SDK: setTaskId selects the allowlist entry; a miss is denied", async () => {
   const s = sdk({ taskAllowlists: LISTS });
-  await s.call("UserPromptSubmit", { prompt: "harvest and pay the vendor" });
+  await s.call("UserPromptSubmit", { prompt: "pay the vendor" });
   await s.hooks.moorai.setTaskId("s1", "pay-vendor-1");
   assert.equal(s.decision(await s.call("PreToolUse", { tool_name: "transfer", tool_input: { amount: 100, to_account: "4471" } })), "allow");
   assert.equal(s.decision(await s.call("PreToolUse", { tool_name: "transfer", tool_input: { amount: 100, to_account: "9999" } })), "deny");

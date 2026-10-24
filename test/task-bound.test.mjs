@@ -121,9 +121,10 @@ test("allowlist: several entries match → the strictest outcome wins", () => {
   assert.deepEqual(pick(allow(askFirst, "inspect then harvest", "open_gate", {})), { outcome: "deny", reason: "tool-not-listed", task: "harvest" }, "whatever the order of the entries");
 });
 
-test("allowlist: an explicit task id beats keywords; numeric ranges", () => {
-  assert.equal(allow(LISTS, "harvest and pay", "transfer", { amount: 400, to_account: "4471" }, "pay-vendor-1"), null, "the taskId entry alone applies");
-  assert.deepEqual(pick(allow(LISTS, "harvest and pay", "transfer", { amount: 900, to_account: "4471" }, "pay-vendor-1")), { outcome: "deny", reason: "argument-not-allowed", task: "pay-vendor" });
+test("allowlist: an explicit task id adds its entry (it never replaces keyword entries); numeric ranges", () => {
+  assert.equal(allow(LISTS, "pay the vendor", "transfer", { amount: 400, to_account: "4471" }, "pay-vendor-1"), null, "the taskId entry allows it");
+  assert.deepEqual(pick(allow(LISTS, "pay the vendor", "transfer", { amount: 900, to_account: "4471" }, "pay-vendor-1")), { outcome: "deny", reason: "argument-not-allowed", task: "pay-vendor" });
+  assert.deepEqual(pick(allow(LISTS, "harvest and pay", "transfer", { amount: 400, to_account: "4471" }, "pay-vendor-1")), { outcome: "deny", reason: "tool-not-listed", task: "harvest" }, "the harvest keyword entry still applies");
   assert.deepEqual(pick(allow(LISTS, "harvest and pay", "transfer", { amount: 400, to_account: "4471" }, "unknown-id")), { outcome: "deny", reason: "tool-not-listed", task: "harvest" }, "an id no entry names falls back to keywords");
 });
 
@@ -177,10 +178,11 @@ test("store: authenticatedOnly ignores unauthenticated captures and task ids", (
   assert.equal(s.judgeBound("s1", "cut", { target: "hand" }, { policy: ROBOT }).objects.aligned, true);
   assert.equal(s.judgeBound("s1", "cut", { target: "hand" }, { policy: ROBOT }, "", { authenticatedOnly: true }).objects.class, "task-unknown");
   const t = createIntentStore({ key: KEY });
-  t.captureTask("s1", "harvest and pay");
+  t.captureTask("s1", "pay the vendor");
   assert.deepEqual(t.setTaskId("s1", "pay-vendor-1", "", { authenticated: false }), { taskId: true });
-  assert.equal(t.judgeBound("s1", "transfer", { amount: 400, to_account: "4471" }, { policy: LISTS }).allowlist.reason, "tool-not-listed", "an unauthenticated task id never selects an entry");
+  assert.equal(t.judgeBound("s1", "transfer", { amount: 900, to_account: "4471" }, { policy: LISTS }).allowlist, null, "an unauthenticated task id never selects an entry");
   t.setTaskId("s1", "pay-vendor-1");
+  assert.equal(t.judgeBound("s1", "transfer", { amount: 900, to_account: "4471" }, { policy: LISTS }).allowlist.reason, "argument-not-allowed");
   assert.equal(t.judgeBound("s1", "transfer", { amount: 400, to_account: "4471" }, { policy: LISTS }).allowlist, null);
   assert.deepEqual(t.setTaskId("s1", "bad id!"), { taskId: false });
 });

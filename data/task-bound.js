@@ -31,28 +31,42 @@
 //
 // MATCHING. Both sides are folded the same way: Unicode NFKC, lower case, punctuation split, the articles
 // a / an / the dropped, simple plurals made singular. A text value is named in the task when its whole token
-// (an address or path as typed), its word phrase (up to five words), the host or site of a URL, or the file
-// name / stem of a path appears in the task, or when a member of its intentArgs.synonyms group does. An e-mail
-// address must appear whole. A number (a JSON number, or a string that is only a number with an optional
-// currency sign) is named when the same number appears in the task, and is also allowed at or under
-// intentArgs.caps["<tool>.<key>"] or intentArgs.caps["<key>"].
+// (an address or path as typed), its word phrase (up to five words, never across `. ! ? ; : ,` or a line break
+// in the task), the host or site of a URL, or the file name / stem of a path appears in the task, or when a
+// member of its intentArgs.synonyms group does (a group is keyed and expanded on whole values only, never on a
+// host, site or file name inside one). An e-mail address must appear whole. A URL's host is WHATWG URL
+// parsing's (`new URL().hostname`, punycode for an IDN), read from the raw value, and only when the token
+// reading (userinfo stopping at `\`, `#`, `?`) gives the same host; a URL the parser refuses or reads otherwise
+// names nothing, and a scheme-less value led by a dotted host (`evil.com/apple`, `//evil.com/x`) is a URL, not a
+// path. A value with a control or format character names nothing; a path with a `..` segment (raw or
+// percent-encoded) names only itself, never by its file name. A number (a JSON number, or a string that is only
+// a number with an optional currency sign and no leading zeros) is named when the same number appears in the
+// task, and a non-negative one is also allowed at or under intentArgs.caps["<tool>.<key>"] or
+// intentArgs.caps["<key>"]; a negative amount is never under a cap.
 //
 // POLICY SHAPES (the signed policy, or the root-owned admin binding, which wins key by key; never user state):
 //   intentArgs: { "<tool>": ["<key>", …], synonyms: { "<term>": ["<term>", …] }, caps: { "<tool>.<key>" | "<key>": <number> } }
 //   taskAllowlists: [{ task: "<name>", match: { keywords: ["…"] } | { taskId: "<id>" },
 //                      tools: { "<tool>": true | {} | { args: { "<key>": [<value> | "<glob>" | <number> | { min?, max? }, …] } } },
-//                      default: "deny" | "ask", unlistedArgs: "deny" | "allow" }]
-//   Tool names are compared after model-proxy/function-rules.mjs foldName on both sides; for an MCP tool
-//   (mcp__<server>__<tool>) the full name is tried first, then the tool part.
+//                      default: "deny" | "ask", unlistedArgs: "deny" | "allow", foldArgs: ["<key>", …] }]
+//   intentArgs tool names are compared after model-proxy/function-rules.mjs foldName on both sides; for an MCP
+//   tool the full name is tried first, then the tool part (marking more tools only checks more). taskAllowlists
+//   tool names are EXACT: as written, case-sensitive, and an MCP tool only by its full mcp__<server>__<tool>
+//   name, so another server's tool of the same name, or another casing, is not listed.
 //
 // TASK ALLOWLIST MATCHING. A keyword entry matches when ANY of its keywords is named in the task (a broader
 // match only ever restricts more). A taskId entry matches the session's explicit task id (moorai-serve
-// POST /v1/task, the SDK's setTaskId). An explicit task id beats keywords: when an entry names the session's
-// task id, only those entries apply; when none does, the keyword entries apply. When several entries apply,
-// each judges the call and the strictest outcome wins (deny over ask over allow). An argument value is allowed
-// when it equals a listed value (folded), matches a listed glob (`*` any run, `?` one character), equals a
-// listed number, or lies in a listed { min, max }; an array value needs every element allowed; an object value
-// is never allowed for a listed key. ARGUMENT KEYS: a listed dotted key is read both as the literal key
+// POST /v1/task, the SDK's setTaskId). A task id only ADDS entries: the entries it selects apply together with
+// the keyword-matched ones, so whoever sets an id cannot pick a weaker entry in place of a stricter one. When
+// several entries apply, each judges the call and the strictest outcome wins (deny over ask over allow). An
+// argument value is allowed when it equals a listed value exactly as the tool receives it (raw: no case or
+// Unicode folding, no trimming; only keys the entry lists in foldArgs compare folded), matches a listed glob
+// (`?` one character and `*` any run, neither crossing `/` or `\`; `**` any run across segments), equals a
+// listed number, or lies in a listed { min, max } (min defaults to 0, so a negative needs an explicit min). A
+// number is a JSON number or a string that is exactly a plain decimal (no spaces, grouping, currency, exponent,
+// hex or leading zeros). A string with a `..` segment (on `/` or `\`, raw or percent-decoded up to three
+// rounds), or a control or format character (raw or decoded, NUL included), is never allowed. An array value
+// needs every element allowed; an object value is never allowed for a listed key. ARGUMENT KEYS: a listed dotted key is read both as the literal key
 // ("a.b") and as the nested field (a → b); each one present must be allowed. A call carrying a key that
 // equals a listed key (or, inside a listed dotted path, a segment) only after folding case, `_`, `-` and
 // spaces is held ("argument-key-collision"): a tool could read `Target` where the entry checked `target`.
@@ -111,39 +125,78 @@ export function wordsOf(s) {
 }
 const EDGE = /^[\s"'`(\[{<]+|[\s"'`)\]}>.,;:!?]+$/g;
 const stripEdge = (s) => s.replace(EDGE, "");
+// Whitespace-delimited tokens AS TYPED (not folded): a URL is parsed from the raw text, since NFKC folding can
+// turn a character the URL parser does not treat as a separator (a fullwidth solidus) into one that it does.
 function atomsOf(text) {
   const out = [];
-  for (const raw of fold(text).split(/\s+/)) {
+  for (const raw of String(text).split(/\s+/)) {
     const a = stripEdge(raw);
     if (a && a.length <= MAX_VALUE) out.push(a);
   }
   return out;
 }
-const URL_RE = /^[a-z][a-z0-9+.-]{0,15}:\/\/(?:[^@\/\s]*@)?(\[[^\]]{1,64}\]|[^\/:?#\s]{1,253})/;
-const DOTTED_HOST = /^(?:[a-z0-9_-]{1,63}\.)+[a-z][a-z0-9-]{0,62}$/;
-const EMAIL = /^[^@\s\/]{1,64}@[^@\s\/]{1,253}$/;
-const isPathish = (a) => /[\\/]/.test(a) && !URL_RE.test(a);
+// A URL's host is what WHATWG URL parsing (fetch, and most tools) says, and only when this regex reads the same
+// host: the userinfo stops at `\`, `#` and `?`, and the host stops at `\` and `@` too, so the two can only agree on
+// the host the request really goes to. Disagreement, or a value the parser refuses, names nothing.
+const URL_RE = /^([a-z][a-z0-9+.-]{0,15}):\/\/(?:[^@\/\\\s#?]*@)?(\[[^\]\/\\]{1,64}\]|[^\/\\:?#@\s]{1,253})/i;
+const DOTTED_HOST = /^(?:[\p{L}\p{N}_-]{1,63}\.)+[\p{L}][\p{L}\p{N}-]{0,62}$/u;
+// A scheme-less value led by a dotted host and a path, query or fragment (`evil.com/apple`): read as a URL.
+const HOST_LED = /^((?:[\p{L}\p{N}_-]{1,63}\.)+[\p{L}][\p{L}\p{N}-]{0,62})(?::\d{1,5})?(?=[\/?#])/u;
+const EMAIL = /^[^@\s\/\\]{1,64}@[^@\s\/\\]{1,253}$/;
+const CONTROL = /[\p{Cc}\p{Cf}]/u;
+function canonHost(h) { try { return new URL(`http://${h}/`).hostname || null; } catch { return null; } }
+// -> null (not URL-shaped) | { host } | { refuse: true }
+function urlOf(raw) {
+  const s = raw.startsWith("//") ? `https:${raw}` : raw;
+  const m = URL_RE.exec(s);
+  const led = m ? null : HOST_LED.exec(s);
+  if (!m && !led) return null;
+  let parsed;
+  try { parsed = new URL(m ? s : `http://${s}`); } catch { return { refuse: true }; }
+  const host = canonHost(m ? m[2] : led[1]);
+  return host && parsed.hostname === host ? { host } : { refuse: true };
+}
+// The percent-decoded forms of a value (up to three rounds), so `%2e%2e` and `%252e%252e` are seen as `..`.
+function decodedForms(s) {
+  const out = [s];
+  let cur = s;
+  for (let i = 0; i < 3; i++) {
+    let d;
+    try { d = decodeURIComponent(cur); } catch { break; }
+    if (d === cur) break;
+    out.push(d);
+    cur = d;
+  }
+  return out;
+}
+// A `..` path segment (on `/` or `\`), or a control or format character, in the value or a decoded form of it.
+export const unsafeValue = (s) => decodedForms(String(s)).some((x) => CONTROL.test(x) || x.split(/[\\/]/).includes(".."));
+const isPathish = (a) => /[\\/]/.test(a);
 const baseOf = (a) => a.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
-// The host / site / file-name terms inside one token. An e-mail address yields none: it must match whole.
+// The host / site / file-name terms inside one raw token. An e-mail address yields none: it must match whole.
+// refuse: a URL-shaped token whose host the parser and this reading do not agree on (or that does not parse).
 function atomExtras(a) {
   const out = [];
-  if (!a || EMAIL.test(a)) return out;
-  const u = URL_RE.exec(a);
-  const host = u ? u[1] : DOTTED_HOST.test(a) ? a : null;
+  if (!a || EMAIL.test(a)) return { terms: out, url: false };
+  const u = urlOf(a);
+  if (u && u.refuse) return { terms: out, url: true, refuse: true };
+  const host = u ? u.host : DOTTED_HOST.test(a) ? canonHost(a) : null;
   if (host) { out.push(`a:${host}`); out.push(`a:${siteOf(host)}`); }
-  if (isPathish(a)) {
+  if (!u && isPathish(a) && !unsafeValue(a)) {
     const b = baseOf(a);
     if (b) {
-      out.push(`a:${b}`);
+      out.push(`a:${fold(b)}`);
       const stem = wordsOf(b.replace(/\.[^.]{1,8}$/, ""));
       if (stem.length && stem.length <= MAX_NGRAM) out.push(`w:${stem.join(" ")}`);
     }
   }
-  return out;
+  return { terms: out, url: Boolean(u) };
 }
+// Sentences and clauses: phrases are never formed across `. ! ? ; : ,` (followed by a space or the end) or a line break.
+const segmentsOf = (text) => String(text).split(/[.!?;:,]+(?=\s|$)|[\r\n]+/);
 export function canonNumber(s) {
   const t = String(s).replace(/[$€£¥\s]/g, "");
-  if (!/^-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/.test(t)) return null;
+  if (!/^-?(?:[1-9]\d{0,2}(?:,\d{3})+|0|[1-9]\d*)(?:\.\d+)?$/.test(t)) return null;
   const n = Number(t.replace(/,/g, ""));
   return Number.isFinite(n) ? String(n) : null;
 }
@@ -162,30 +215,37 @@ export function taskTerms(prompt) {
   const text = String(prompt || "").slice(0, 20000);
   const out = [], seen = new Set();
   const add = (t) => { if (!seen.has(t)) { seen.add(t); out.push(t); } };
-  const ws = wordsOf(text);
-  for (const w of ws) add(`w:${w}`);
-  for (const a of atomsOf(text)) { add(`a:${a}`); for (const x of atomExtras(a)) add(x); }
+  for (const w of wordsOf(text)) add(`w:${w}`);
+  for (const a of atomsOf(text)) { add(`a:${fold(a)}`); for (const x of atomExtras(a).terms) add(x); }
   for (const n of numbersIn(text)) add(`n:${n}`);
-  for (let k = 2; k <= MAX_NGRAM; k++) for (let i = 0; i + k <= ws.length; i++) add(`w:${ws.slice(i, i + k).join(" ")}`);
+  const segs = segmentsOf(text).map(wordsOf);
+  for (let k = 2; k <= MAX_NGRAM; k++) for (const ws of segs) for (let i = 0; i + k <= ws.length; i++) add(`w:${ws.slice(i, i + k).join(" ")}`);
   return out;
 }
 export const termKey = (term, h) => h(`tb:${term}`);
 export const taskIdKey = (id, h) => h(`tb-taskid:${id}`);
 export const validTaskId = (id) => typeof id === "string" && TASK_ID_RE.test(id);
 
-// The terms that would name a text value in a task.
+// The terms that would name a text value in a task. None for a value carrying a control or format character,
+// or a URL whose host the parser and the token reading disagree on; only the whole token for a path with a
+// `..` segment (raw or percent-encoded).
 export function valueTerms(v) {
-  const s = fold(v).trim();
+  const raw = String(v).trim();
+  if (CONTROL.test(raw) || decodedForms(raw).some((x) => CONTROL.test(x))) return [];
   const out = new Set();
-  const a = stripEdge(s);
-  if (a && a.length <= MAX_VALUE && !/\s/.test(a)) out.add(`a:${a}`);
-  for (const x of atomExtras(a)) out.add(x);
-  if (!EMAIL.test(a) && !URL_RE.test(a)) {
-    const ws = wordsOf(s);
+  const a = stripEdge(raw);
+  const x = atomExtras(a);
+  if (x.refuse) return [];
+  if (a && a.length <= MAX_VALUE && !/\s/.test(a)) out.add(`a:${fold(a)}`);
+  for (const t of x.terms) out.add(t);
+  if (!EMAIL.test(a) && !x.url && !unsafeValue(raw)) {
+    const ws = wordsOf(raw);
     if (ws.length && ws.length <= MAX_NGRAM) out.add(`w:${ws.join(" ")}`);
   }
   return [...out];
 }
+// The terms that name a value as a whole (its token and its phrase): what a synonym group is keyed and expanded on.
+const wholeTerms = (v) => valueTerms(v).filter((t) => t === `a:${fold(stripEdge(String(v).trim()))}` || t === `w:${wordsOf(String(v).trim()).join(" ")}`);
 const numberOf = (v) => (typeof v === "number" && Number.isFinite(v) ? String(v) : typeof v === "string" ? canonNumber(v.trim()) : null);
 
 // ---- policy ----
@@ -205,7 +265,7 @@ function parseIntentArgs(src, problems) {
     if (!isObj(src.synonyms)) problems.push("intentArgs-synonyms");
     else for (const [k, v] of Object.entries(src.synonyms)) {
       if (!Array.isArray(v) || !v.every((x) => typeof x === "string" && x && x.length <= MAX_VALUE)) { problems.push("intentArgs-synonyms"); continue; }
-      const terms = [...new Set([k, ...v].flatMap(valueTerms))];
+      const terms = [...new Set([k, ...v].flatMap(wholeTerms))];
       const gi = cfg.groups.push(terms) - 1;
       for (const t of terms) { if (!cfg.index.has(t)) cfg.index.set(t, []); cfg.index.get(t).push(gi); }
     }
@@ -219,14 +279,16 @@ function parseIntentArgs(src, problems) {
   return cfg;
 }
 
+// A listed value: a number { n }, a { min, max } range (min defaults to 0, so a negative amount needs an explicit
+// min), an exact string { s } or a glob { g }. Strings are kept raw and folded, each compiled once.
 function parseAllowed(list) {
   if (!Array.isArray(list) || !list.length || list.length > 256) return null;
   const out = [];
   for (const x of list) {
     if (typeof x === "number" && Number.isFinite(x)) out.push({ n: x });
-    else if (typeof x === "string" && x.length && x.length <= MAX_VALUE) out.push(/[*?]/.test(x) ? { g: fold(x).trim() } : { s: fold(x).trim() });
+    else if (typeof x === "string" && x.length && x.length <= MAX_VALUE) out.push(/[*?]/.test(x) ? { g: compileGlob(x), gf: compileGlob(fold(x)) } : { s: x, sf: fold(x) });
     else if (isObj(x) && (own(x, "min") || own(x, "max")) && Object.keys(x).every((k) => k === "min" || k === "max")
-      && (!own(x, "min") || (typeof x.min === "number" && Number.isFinite(x.min))) && (!own(x, "max") || (typeof x.max === "number" && Number.isFinite(x.max)))) out.push({ min: own(x, "min") ? x.min : -Infinity, max: own(x, "max") ? x.max : Infinity });
+      && (!own(x, "min") || (typeof x.min === "number" && Number.isFinite(x.min))) && (!own(x, "max") || (typeof x.max === "number" && Number.isFinite(x.max)))) out.push({ min: own(x, "min") ? x.min : 0, max: own(x, "max") ? x.max : Infinity });
     else return null;
   }
   return out;
@@ -235,8 +297,8 @@ function parseTools(tools) {
   if (!isObj(tools)) return null;
   const out = new Map();
   for (const [k, spec] of Object.entries(tools)) {
-    const name = foldName(k);
-    if (!name) return null;
+    const name = k; // exact: a tool name is matched as written, never folded or by its bare MCP part
+    if (!name || name.length > 256) return null;
     if (spec === true || (isObj(spec) && !Object.keys(spec).length)) { out.set(name, { any: true, args: new Map() }); continue; }
     if (!isObj(spec) || Object.keys(spec).some((x) => x !== "args") || !isObj(spec.args)) return null;
     const args = new Map();
@@ -263,7 +325,7 @@ const label = (t) => (typeof t === "string" ? t.replace(/[^A-Za-z0-9_.:\- ]/g, "
 
 function parseAllowlists(src, problems) {
   if (src === undefined || src === null) return [];
-  if (!Array.isArray(src)) { problems.push("taskAllowlists-not-array"); return [{ index: 0, key: "", task: "", invalid: true, always: true, match: null, tools: null, default: "deny", unlisted: "deny" }]; }
+  if (!Array.isArray(src)) { problems.push("taskAllowlists-not-array"); return [{ index: 0, key: "", task: "", invalid: true, always: true, match: null, tools: null, default: "deny", unlisted: "deny", foldArgs: new Set() }]; }
   return src.slice(0, 256).map((e, index) => {
     const match = isObj(e) ? parseMatch(e.match) : null;
     const tools = isObj(e) ? parseTools(e.tools) : null;
@@ -271,14 +333,16 @@ function parseAllowlists(src, problems) {
     const name = isObj(e) && typeof e.task === "string" && e.task.trim() && e.task.length <= 128 ? label(e.task) : null;
     const unlisted = isObj(e) && e.unlistedArgs === undefined ? "deny" : isObj(e) && UNLISTED.has(e.unlistedArgs) ? e.unlistedArgs : null;
     if (!unlisted) problems.push("taskAllowlists-unlistedArgs");
+    const foldArgs = isObj(e) && e.foldArgs === undefined ? new Set() : isObj(e) && Array.isArray(e.foldArgs) && e.foldArgs.length <= 64 && e.foldArgs.every((k) => typeof k === "string" && k) ? new Set(e.foldArgs) : null;
+    if (!foldArgs) problems.push("taskAllowlists-foldArgs");
     if (!match) problems.push("taskAllowlists-match");
     if (!tools) problems.push("taskAllowlists-tools");
     if (!dflt) problems.push("taskAllowlists-default");
     if (!name) problems.push("taskAllowlists-task");
-    const invalid = !match || !tools || !dflt || !name || !unlisted;
+    const invalid = !match || !tools || !dflt || !name || !unlisted || !foldArgs;
     let key = "";
     try { key = JSON.stringify(e) || ""; } catch { key = ""; }
-    return { index, key, task: name || "", invalid, always: !match, match, tools: invalid ? null : tools, default: invalid ? "deny" : dflt, unlisted: unlisted || "deny" };
+    return { index, key, task: name || "", invalid, always: !match, match, tools: invalid ? null : tools, default: invalid ? "deny" : dflt, unlisted: unlisted || "deny", foldArgs: foldArgs || new Set() };
   });
 }
 
@@ -411,8 +475,8 @@ export function objectChecks(tool, input, cfg) {
       }
       if (typeof v !== "string") { checks.push({ key, kind: "text", terms: [], opaque: true }); continue; }
       let terms = valueTerms(v);
-      if (cfg && cfg.groups.length) {
-        const gs = new Set(terms.flatMap((t) => cfg.index.get(t) || []));
+      if (cfg && cfg.groups.length && terms.length) {
+        const gs = new Set(wholeTerms(v).flatMap((t) => cfg.index.get(t) || []));
         for (const g of gs) terms = [...terms, ...cfg.groups[g]];
       }
       checks.push({ key, kind: "text", terms: [...new Set(terms)] });
@@ -427,7 +491,7 @@ export function judgeObjects(checks, has) {
   let unmatched = 0, target = "";
   for (const c of checks) {
     const named = c.terms.some((t) => has(t));
-    const ok = named || (c.kind === "number" && c.cap !== undefined && c.value <= c.cap);
+    const ok = named || (c.kind === "number" && c.cap !== undefined && c.value >= 0 && c.value <= c.cap);
     if (!ok) { unmatched++; if (!target) target = `${c.key}\0${c.terms[0] || "opaque"}`; }
   }
   return { aligned: unmatched === 0, unmatched, fields: checks.length, target };
@@ -435,42 +499,67 @@ export function judgeObjects(checks, has) {
 
 // ---- task allowlists ----
 
-function globMatch(p, s) {
-  let i = 0, j = 0, star = -1, mark = 0;
-  while (j < s.length) {
-    if (i < p.length && (p[i] === "?" || p[i] === s[j])) { i++; j++; }
-    else if (i < p.length && p[i] === "*") { star = i++; mark = j; }
-    else if (star >= 0) { i = star + 1; j = ++mark; }
-    else return false;
+// Globs: `?` one character and `*` any run, neither crossing `/` or `\`; `**` any run across segments. Matched
+// position by position over the compiled tokens: linear in the value for each token, no backtracking.
+const isSep = (c) => c === "/" || c === "\\";
+function compileGlob(p) {
+  const t = [];
+  for (let i = 0; i < p.length; i++) {
+    if (p[i] === "*") { if (p[i + 1] === "*") { t.push("**"); while (p[i + 1] === "*") i++; } else t.push("*"); }
+    else if (p[i] === "?") t.push("?");
+    else t.push({ c: p[i] });
   }
-  while (i < p.length && p[i] === "*") i++;
-  return i === p.length;
+  return t;
 }
-function scalarAllowed(v, allowed) {
+function globMatch(tokens, s) {
+  let cur = new Uint8Array(s.length + 1);
+  cur[0] = 1;
+  for (const tk of tokens) {
+    const next = new Uint8Array(s.length + 1);
+    if (tk === "**" || tk === "*") {
+      let on = 0;
+      for (let j = 0; j <= s.length; j++) {
+        if (cur[j]) on = 1;
+        if (on) next[j] = 1;
+        if (tk === "*" && j < s.length && isSep(s[j])) on = 0;
+      }
+    } else {
+      for (let j = 0; j < s.length; j++) if (cur[j] && (tk === "?" ? !isSep(s[j]) : s[j] === tk.c)) next[j + 1] = 1;
+    }
+    cur = next;
+  }
+  return cur[s.length] === 1;
+}
+// A number as a tool receives it: a JSON number, or a string that is exactly a plain decimal (no sign but `-`, no
+// spaces, grouping, currency, exponent, hex or leading zeros).
+const strictNumber = (v) => (typeof v === "number" ? (Number.isFinite(v) ? v : null) : typeof v === "string" && /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(v) ? Number(v) : null);
+// folded: the entry marks this key (foldArgs) as compared case- and Unicode-folded; otherwise values match raw.
+function scalarAllowed(v, allowed, folded) {
   if (typeof v === "boolean") v = String(v);
   if (typeof v !== "string" && typeof v !== "number") return false;
-  const n = numberOf(v);
-  const s = typeof v === "string" ? fold(v).trim() : String(v);
-  if (s.length > MAX_VALUE * 8) return false;
-  return allowed.some((a) => (a.s !== undefined ? a.s === s : a.g !== undefined ? globMatch(a.g, s) : a.n !== undefined ? n !== null && Number(n) === a.n : n !== null && Number(n) >= a.min && Number(n) <= a.max));
+  if (typeof v === "number" && !Number.isFinite(v)) return false;
+  if (typeof v === "string" && (v.length > MAX_VALUE * 8 || unsafeValue(v))) return false;
+  const n = strictNumber(v);
+  const s = typeof v === "string" ? (folded ? fold(v) : v) : String(v);
+  return allowed.some((a) => (a.s !== undefined ? (folded ? a.sf : a.s) === s : a.g !== undefined ? globMatch(folded ? a.gf : a.g, s) : a.n !== undefined ? n !== null && n === a.n : n !== null && n >= a.min && n <= a.max));
 }
-function valueAllowed(v, allowed) {
+function valueAllowed(v, allowed, folded) {
   if (v === undefined || v === null) return true;
-  if (Array.isArray(v)) return v.length <= 1024 && v.every((x) => !Array.isArray(x) && !isObj(x) && scalarAllowed(x, allowed));
+  if (Array.isArray(v)) return v.length <= 1024 && v.every((x) => !Array.isArray(x) && !isObj(x) && scalarAllowed(x, allowed, folded));
   if (isObj(v)) return false;
-  return scalarAllowed(v, allowed);
+  return scalarAllowed(v, allowed, folded);
 }
 // The outcome of one entry for one call: "allow" or the entry's default, with a fixed reason token.
 export function entryOutcome(entry, tool, input) {
   if (entry.invalid) return { outcome: "deny", reason: "invalid-policy" };
-  const spec = lookup(entry.tools, toolParts(tool));
+  const spec = entry.tools.get(String(tool ?? ""));
   if (spec === undefined) return { outcome: entry.default, reason: "tool-not-listed" };
   if (spec.any) return { outcome: "allow", reason: "" };
   const inp = isObj(input) ? input : {};
   const shape = walkKeys(inp, spec.tree, entry.unlisted === "deny");
   if (shape) return { outcome: entry.default, reason: shape };
   // walkKeys has already held every key that collides with a listed key or segment.
-  for (const [key, allowed] of spec.args) if (!collectKey(inp, key).values.every((v) => valueAllowed(v, allowed))) return { outcome: entry.default, reason: "argument-not-allowed" };
+  for (const [key, allowed] of spec.args) if (!collectKey(inp, key).values.every((v) => valueAllowed(v, allowed, entry.foldArgs.has(key)))) return { outcome: entry.default, reason: "argument-not-allowed" };
   return { outcome: "allow", reason: "" };
 }
 
@@ -480,9 +569,8 @@ export function entryOutcome(entry, tool, input) {
 export function applicableEntries(lists, has, hasTaskId, recorded = null) {
   const always = lists.filter((e) => e.always);
   const byId = hasTaskId ? lists.filter((e) => !e.always && e.match.taskId !== undefined && hasTaskId(e.match.taskId)) : [];
-  if (byId.length) return [...always, ...byId];
   const byWord = lists.filter((e) => !e.always && e.match.keywords && ((recorded && recorded(e)) || (has && e.match.keywords.some((terms) => terms.some((t) => has(t))))));
-  return [...always, ...byWord];
+  return [...always, ...byId, ...byWord];
 }
 // The keyword entries a whole prompt names — every word and phrase of it, however long, not a capped set.
 export function entriesNamedIn(lists, text) {
@@ -497,8 +585,8 @@ export function entriesNamedIn(lists, text) {
   }
   if ([...need].some((t) => t.startsWith("a:"))) {
     for (const a of atomsOf(text)) {
-      if (need.has(`a:${a}`)) found.add(`a:${a}`);
-      for (const x of atomExtras(a)) if (need.has(x)) found.add(x);
+      if (need.has(`a:${fold(a)}`)) found.add(`a:${fold(a)}`);
+      for (const x of atomExtras(a).terms) if (need.has(x)) found.add(x);
     }
   }
   return kw.filter((e) => e.match.keywords.some((terms) => terms.some((t) => found.has(t))));

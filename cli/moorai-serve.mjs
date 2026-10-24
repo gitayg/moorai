@@ -63,9 +63,9 @@
 //                                                     session is judged as if it had no task (task-unknown).
 //                                                     TASK ID: { session, taskId } (with or without a prompt;
 //                                                     1-128 of A-Z a-z 0-9 . _ : -) sets the session's explicit
-//                                                     task id, answered as taskId: true. It selects the
-//                                                     policy.taskAllowlists entry whose match names it, ahead of
-//                                                     keyword matching (data/task-bound.js); the same writer
+//                                                     task id, answered as taskId: true. It adds the
+//                                                     policy.taskAllowlists entry whose match names it to the
+//                                                     keyword-matched ones (data/task-bound.js); the same writer
 //                                                     rules apply, and an id set without any token never
 //                                                     selects an entry. Every /v1/tool-call with a session is
 //                                                     also judged by the task-bound checks: a high-impact call

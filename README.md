@@ -556,9 +556,15 @@ the framework runs it), `moorai-serve` `/v1/tool-call`, the Agent SDK and the ho
   and a dotted field is read both as the literal key (`"arm.target"`) and as the nested one (`arm` → `target`):
   every value found must be named. Both sides are folded alike (Unicode NFKC, case, punctuation, the articles a / an / the, simple plurals).
   A text value is named when its whole token (an address or path as typed), its word phrase (up to five
-  words), the host or site of a URL, or the file name or stem of a path appears in the task, or when a member
-  of its synonym group does; an e-mail address must appear whole. A number is named when the same number
-  appears in the task, and is also allowed at or under its cap. A miss is class `object-not-in-task`,
+  words, never across a sentence or clause break in the task), the host or site of a URL, or the file name or
+  stem of a path appears in the task, or when a member of its synonym group does (groups match whole values
+  only); an e-mail address must appear whole. A URL's host is what WHATWG URL parsing (what `fetch` uses)
+  reads from the raw value, punycode for an IDN, and it counts only when the token reading agrees:
+  `https://evil.com\@apple.com/` is `evil.com`, and a URL the parser refuses names nothing. A scheme-less
+  `evil.com/apple` or `//evil.com/x` is a URL, not a path. A value with a control or format character names
+  nothing, and a path with a `..` segment (raw or percent-encoded) names only itself. A number is named when
+  the same number appears in the task (no leading zeros), and a non-negative one is also allowed at or under
+  its cap. A miss is class `object-not-in-task`,
   decided by `policy.intentAlignment`: `"report"` (default) alerts once per session and target, `"ask"`
   asks, `"block"` denies (on the hook too, where the older intent classes stop at ask), `"off"` skips it.
   No captured task follows the existing rule: `task-unknown` on the server surfaces, not judged on the hook.
@@ -587,10 +593,17 @@ the framework runs it), `moorai-serve` `/v1/tool-call`, the Agent SDK and the ho
   A keyword entry matches when any of its keywords is named in the task. A `taskId` entry matches the
   session's explicit task id: `POST /v1/task {session, taskId}` on the sidecar (with or without a prompt;
   1-128 of `A-Z a-z 0-9 . _ : -`; it answers `taskId: true`) or `hooks.moorai.setTaskId(sessionId, taskId)` in
-  the SDK. An explicit task id beats keywords: when an entry names it, only those entries apply, and when
-  none does the keyword entries apply. When several entries apply, the strictest outcome wins (deny over ask
-  over allow). An allowed value is a listed value (folded), a glob (`*`, `?`), a number or a `{min, max}`
-  range; an array needs every element allowed; `true` or `{}` allows any arguments. Default `"deny"`. A listed
+  the SDK. A task id only adds: the entries it selects apply together with the keyword-matched ones, so
+  whoever can set an id cannot swap a stricter entry for a weaker one. When several entries apply, the
+  strictest outcome wins (deny over ask over allow). Values match exactly as the tool receives them: no case
+  or Unicode folding and no trimming, except for keys an entry lists in `foldArgs`. A listed value is an exact
+  string, a glob (`?` one character and `*` any run, neither crossing `/` or `\`; `**` crosses segments), a
+  number, or a `{min, max}` range (`min` defaults to 0, so negatives need an explicit `min`). A number is a JSON
+  number or a string that is exactly a plain decimal (`"100 "`, `"0100"`, `"1e2"`, `"$100"`, `"0x64"` are not).
+  A string with a `..` segment (on `/` or `\`, raw or percent-encoded such as `%2e%2e`) or a control or
+  format character (NUL included) is never allowed. An array needs every element allowed; `true` or `{}`
+  allows any arguments. Tool names are exact: case-sensitive, and an MCP tool only by its full
+  `mcp__<server>__<tool>` name. Default `"deny"`. A listed
   dotted key is read both literally and nested, and each one present must be allowed. A call carrying a key
   that equals a listed key (or a segment of a listed dotted path) only after folding case, `_`, `-` and
   spaces is held (`argument-key-collision`): the tool could read `Target` where the entry checked `target`.

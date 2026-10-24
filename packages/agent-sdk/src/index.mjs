@@ -101,7 +101,8 @@ export function moorAIHooks(options = {}) {
   const hooks = { PreToolUse: m(preToolUse), PostToolUse: m(postToolUse), UserPromptSubmit: m(userPromptSubmit) };
   // Not enumerable, so `hooks` stays exactly the Record<HookEvent, HookCallbackMatcher[]> the SDK reads.
   // setTaskId(sessionId, taskId): the session's explicit task id, which selects the policy.taskAllowlists entry
-  // that names it (an explicit id beats keyword matching). The application's own code calls it, never the model.
+  // that names it, on top of the keyword-matched entries (an id only adds restrictions). The application's own
+  // code calls it, never the model.
   Object.defineProperty(hooks, "moorai", { value: { runtime, flush: async () => (rt ? (await rt).flush() : undefined), setTaskId: async (sessionId, taskId) => (await runtime()).setTaskId(sessionId, taskId) }, enumerable: false });
   return hooks;
 }

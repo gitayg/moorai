@@ -817,10 +817,17 @@ is validated against.
      named. The task is held as keyed
      hashes of its words, two- to five-word phrases, whitespace-delimited tokens (with the host, site and
      file name inside them) and numbers; both sides are folded with NFKC, case, punctuation, the articles
-     a / an / the and simple plurals. A text value is named when its token, word phrase (≤ 5 words), URL host
-     or site, or path file name or stem is among them, or a member of its synonym group is; an e-mail
-     address only whole. A number (a JSON number, or a string that is only a number with an optional
-     currency sign) is named when the same number is in the task, and is allowed at or under its cap. A miss
+     a / an / the and simple plurals. A text value is named when its token, word phrase (≤ 5 words; task
+     phrases never span `. ! ? ; : ,` or a line break), URL host or site, or path file name or stem is among
+     them, or a member of its synonym group is (groups keyed and expanded on whole values only); an e-mail
+     address only whole. URL hosts: `new URL(raw).hostname` (WHATWG, punycode), counted only when the token
+     reading — userinfo stopping at `\`, `#`, `?`; host stopping at `\` and `@` — canonicalises to the same
+     host; a refused parse or a disagreement names nothing (`https://evil.com\@apple.com/` is `evil.com`; a
+     fullwidth solidus is not folded into a separator before parsing). A scheme-less value led by a dotted
+     host, or a protocol-relative `//host/…`, is read as a URL. A value with a control or format character
+     (raw or percent-decoded) names nothing; a path with a `..` segment names only itself. A number (a JSON
+     number, or a string that is only a number with an optional currency sign, no leading zeros) is named
+     when the same number is in the task, and a non-negative one is allowed at or under its cap. A miss
      is class `object-not-in-task`, decided by `policy.intentAlignment` (report / ask / block; on the hook
      `"block"` denies this class, where the older classes stop at ask). No captured task: `task-unknown` on
      the server surfaces, not judged on the hook. An unreadable `intentArgs` tool entry checks every top-level
@@ -829,9 +836,14 @@ is validated against.
      true | {} | { args: { "<key>": [value | glob | number | { min?, max? }, …] } } }, default: "deny" |
      "ask" }]`). A keyword entry applies when any keyword is named in the task (on every capture, since a
      wider match only restricts more); a `taskId` entry applies when the session's explicit task id (sidecar
-     `POST /v1/task {session, taskId}`, SDK `setTaskId`) is its id and an authenticated writer set it. An
-     explicit task id beats keywords: entries naming it apply alone; when none does, the keyword entries
-     apply. Several applicable entries: each judges the call and the strictest outcome wins. A tool not
+     `POST /v1/task {session, taskId}`, SDK `setTaskId`) is its id and an authenticated writer set it. A task
+     id only adds: id-selected entries apply together with keyword-matched ones, so setting an id cannot
+     replace a stricter entry with a weaker one. Several applicable entries: each judges the call and the
+     strictest outcome wins. Values are compared as the tool receives them: raw (no folding, no trimming)
+     unless the entry lists the key in `foldArgs`; globs `?` and `*` stop at `/` and `\`, `**` crosses
+     segments (linear-time matcher); `{min, max}` defaults `min` to 0; numbers are JSON numbers or plain decimal
+     strings only; a string with a `..` segment (raw or percent-decoded, three rounds) or a control or format
+     character is never allowed. Tool names are exact (case-sensitive; MCP tools only by the full name). A tool not
      listed, or a listed key whose value (each element of an array) is not allowed, is held at the entry's
      default (default `"deny"`), whatever `intentAlignment` says: class `outside-task-allowlist`, reason
      `tool-not-listed` or `argument-not-allowed`. Globs are matched in linear time. Argument keys
@@ -846,8 +858,13 @@ is validated against.
      recorded per session by a keyed hash of the entry's own text, apart from the capped term set; the model
      proxy keeps the person's turns uncut while an allowlist is configured. A recorded entry or one the held
      terms name applies. The model proxy and the
-     hook match by keyword only. Tool names on both sides go through `foldName`; for `mcp__<server>__<tool>`
-     the full name is tried, then the tool part.
+     hook match by keyword only. For the object check, tool names go through `foldName` (marking more tools
+     only checks more); for allowlists they are exact.
+   - *Review (v1.36.1).* A parser-differential pass over this module: the URL host reading above; allowlist
+     globs crossing `/`, folded values and traversal; a task id that could replace a stricter entry; allowlist
+     tool names folded or matched by their bare MCP part; synonym groups expanding on a site or file name inside
+     a value; negative amounts under a cap and zero-padded numbers; phrases across sentence breaks; traversal
+     and control characters in object-check paths. Each is fixed and tested (`test/task-bound-review.test.mjs`).
    - *Fail closed.* `taskAllowlists` that is not an array, or an entry whose match, tools, arguments, default
      or name cannot be read, denies everything it would have covered (reason `invalid-policy`): an unreadable
      match covers every session, the rest cover the sessions the entry matches. The surface raises a
