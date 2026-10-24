@@ -824,8 +824,14 @@ is validated against.
      reading — userinfo stopping at `\`, `#`, `?`; host stopping at `\` and `@` — canonicalises to the same
      host; a refused parse or a disagreement names nothing (`https://evil.com\@apple.com/` is `evil.com`; a
      fullwidth solidus is not folded into a separator before parsing). A scheme-less value led by a dotted
-     host, or a protocol-relative `//host/…`, is read as a URL. A value with a control or format character
-     (raw or percent-decoded) names nothing; a path with a `..` segment names only itself. A number (a JSON
+     host (userinfo, IPv4 forms and a `\` after the host included) is read as a URL. One reading per value
+     (`readToken`): remote (two leading separators), url (a scheme or drive letter, anything `new URL()`
+     accepts, or host-led), path, plain; only a path is named by its file name, a url or remote value by its
+     whole token or host. Where the parser sees a host and the token reading does not (or the reverse), the
+     value names nothing. A value with a control or format character (raw or percent-decoded) names
+     nothing; a path with a `..` segment names only itself. Decoding is lenient per run of `%XX` (three
+     rounds); a stray `%` or invalid UTF-8 makes a value unsafe; raw `%2e` segment patterns are checked
+     before decoding. A number (a JSON
      number, or a string that is only a number with an optional currency sign, no leading zeros) is named
      when the same number is in the task, and a non-negative one is allowed at or under its cap. A miss
      is class `object-not-in-task`, decided by `policy.intentAlignment` (report / ask / block; on the hook
@@ -864,7 +870,12 @@ is validated against.
      globs crossing `/`, folded values and traversal; a task id that could replace a stricter entry; allowlist
      tool names folded or matched by their bare MCP part; synonym groups expanding on a site or file name inside
      a value; negative amounts under a cap and zero-padded numbers; phrases across sentence breaks; traversal
-     and control characters in object-check paths. Each is fixed and tested (`test/task-bound-review.test.mjs`).
+     and control characters in object-check paths. A second round: a schemed or host-led value read as a path
+     and named by its file name; UNC / double-separator paths read as local; a decoder that stopped at the
+     first bad escape. Each is fixed and tested (`test/task-bound-review.test.mjs`,
+     `test/task-bound-review2.test.mjs`). Trade-off: a Windows drive path (`c:\…`) parses as a URL scheme, so
+     it is named only by its whole token, never by its file name; a `%` that is not an escape makes an
+     allowlist value unsafe.
    - *Fail closed.* `taskAllowlists` that is not an array, or an entry whose match, tools, arguments, default
      or name cannot be read, denies everything it would have covered (reason `invalid-policy`): an unreadable
      match covers every session, the rest cover the sessions the entry matches. The surface raises a

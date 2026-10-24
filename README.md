@@ -560,8 +560,11 @@ the framework runs it), `moorai-serve` `/v1/tool-call`, the Agent SDK and the ho
   stem of a path appears in the task, or when a member of its synonym group does (groups match whole values
   only); an e-mail address must appear whole. A URL's host is what WHATWG URL parsing (what `fetch` uses)
   reads from the raw value, punycode for an IDN, and it counts only when the token reading agrees:
-  `https://evil.com\@apple.com/` is `evil.com`, and a URL the parser refuses names nothing. A scheme-less
-  `evil.com/apple` or `//evil.com/x` is a URL, not a path. A value with a control or format character names
+  `https://evil.com\@apple.com/` is `evil.com`, and a URL the parser refuses, or where only one of the two
+  readings sees a host, names nothing. Each value gets one reading: a URL (any scheme, a drive letter
+  included, or a scheme-less value led by a host or an IPv4 form such as `evil.com\apple` or
+  `user@evil.com/x`), a remote path (two leading separators: `\\host\share\x`, `//host/x`), a path, or plain
+  text. Only a path is named by its file name; a URL or remote path only by its whole token or its host. A value with a control or format character names
   nothing, and a path with a `..` segment (raw or percent-encoded) names only itself. A number is named when
   the same number appears in the task (no leading zeros), and a non-negative one is also allowed at or under
   its cap. A miss is class `object-not-in-task`,
@@ -600,8 +603,10 @@ the framework runs it), `moorai-serve` `/v1/tool-call`, the Agent SDK and the ho
   string, a glob (`?` one character and `*` any run, neither crossing `/` or `\`; `**` crosses segments), a
   number, or a `{min, max}` range (`min` defaults to 0, so negatives need an explicit `min`). A number is a JSON
   number or a string that is exactly a plain decimal (`"100 "`, `"0100"`, `"1e2"`, `"$100"`, `"0x64"` are not).
-  A string with a `..` segment (on `/` or `\`, raw or percent-encoded such as `%2e%2e`) or a control or
-  format character (NUL included) is never allowed. An array needs every element allowed; `true` or `{}`
+  A string with a `..` segment (on `/` or `\`, raw or percent-encoded such as `%2e%2e`), a control or format
+  character (NUL included), or a percent-encoding that does not decode cleanly (a stray `%`, invalid UTF-8)
+  is never allowed; decoding is lenient, one run of `%XX` at a time, so a bad escape elsewhere cannot hide a
+  `%2e%2e`. An array needs every element allowed; `true` or `{}`
   allows any arguments. Tool names are exact: case-sensitive, and an MCP tool only by its full
   `mcp__<server>__<tool>` name. Default `"deny"`. A listed
   dotted key is read both literally and nested, and each one present must be allowed. A call carrying a key
