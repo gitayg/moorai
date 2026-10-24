@@ -314,7 +314,11 @@ export async function createProxy(opts = {}) {
   //     "any" alone for a path no parser knows (where a top-level JSON array is accepted).
   async function fileScanRequest(kind, errApi, req, res, ref, s, fm, later, cfg, label = "file-scan-body") {
     const coding = String(req.headers["content-encoding"] || "").trim().toLowerCase();
-    const exact = !coding || coding === "identity" ? parseLossless(ref.body) : null;
+    // On a path no parser knows, the body is read as JSON only when its Content-Type says so (application/json or
+    // application/*+json): the upstream reads it by its declared type, so a JSON-looking multipart or text body is
+    // unscannable. The Content-Type checked is the one forwarded (headers go upstream as sent).
+    const jsonType = kind !== "any" || /^application\/(?:[a-z0-9.!#$&^_-]+\+)?json[ \t]*(?:;|$)/i.test(String(req.headers["content-type"] || "").trim());
+    const exact = jsonType && (!coding || coding === "identity") ? parseLossless(ref.body) : null;
     if (!exact || typeof exact !== "object" || (Array.isArray(exact) && kind !== "any")) {
       unevaluated(label, "request", "input");
       return (enforce || fm === "closed") && refuseFile(res, errApi, "the request body could not be read for files (multipart, binary, a content coding, or not a JSON object), so it is not scanned and cannot be checked");

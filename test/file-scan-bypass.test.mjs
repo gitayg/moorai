@@ -312,3 +312,23 @@ test("file parts are scanned in any JSON body, whatever the path: count_tokens, 
     }
   } finally { await px.close(); }
 });
+
+test("an unparsed path scans a body as JSON only when its Content-Type says JSON; a JSON-looking body sent as multipart/form-data or text/plain is refused in enforce mode", async () => {
+  const px = await proxy("enforce", HASH);
+  const body = (b) => JSON.stringify({ parts: [{ inlineData: { mimeType: "application/pdf", data: b64(b) } }] });
+  try {
+    fp.on((r, res) => sendJson(res, { ok: true }));
+    const n = fp.requests.length;
+    for (const ct of ["multipart/form-data; boundary=x", "text/plain", "application/x-www-form-urlencoded"]) {
+      const r = await request(px.url, "/openai/some/new/endpoint", { body: body(GOOD), headers: { "content-type": ct } });
+      assert.equal(r.status, 403, `${ct}: ${r.raw}`);
+      assert.match(r.raw.toString(), /not scanned/);
+    }
+    assert.equal(fp.requests.length, n);
+    for (const ct of ["application/json", "application/json; charset=utf-8", "application/vnd.api+json"]) {
+      assert.equal((await request(px.url, "/openai/some/new/endpoint", { body: body(GOOD), headers: { "content-type": ct } })).status, 200, ct);
+      assert.equal(fp.requests[fp.requests.length - 1].headers["content-type"], ct, "forwarded with the Content-Type that was checked");
+      assert.equal((await request(px.url, "/openai/some/new/endpoint", { body: body(BAD), headers: { "content-type": ct } })).status, 403, `${ct} malicious`);
+    }
+  } finally { await px.close(); }
+});
