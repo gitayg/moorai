@@ -353,3 +353,17 @@ test("Windows identity: SIDs only, never the environment; anything else refuses"
   for (const bad of ["", "DOMAIN\\user|S-1-5-21-1", "S-1-5-21-1-2-3-1001|", "S-1-5-80-1|DESKTOP\\me", "S-1-5-21-1-2|S-1-5-21-1-2|S-1-5"]) assert.equal(windowsSids(bad), null, bad);
   assert.match(judgeOwner({ pid: 9, uids: null, agentUid: null }, { platform: "win32" }).why, /could not be determined/);
 });
+
+test("windows: system tools run by absolute System32 path, never a bare name; a non-standard SystemRoot is ignored", async () => {
+  const { windowsSystemBinary } = await import("../cli/quarantine-owner.mjs");
+  const seen = [];
+  const exists = (p) => { seen.push(p); return p.toLowerCase().startsWith("c:\\windows\\system32\\"); };
+  const t = windowsSystemBinary("netstat.exe", { env: { SystemRoot: "C:\\Users\\a\\evil" }, exists });
+  assert.equal(t.bin, "C:\\Windows\\System32\\netstat.exe");
+  assert.equal(t.cwd, "C:\\Windows\\System32");
+  assert.ok(seen.every((p) => /^[A-Za-z]:\\Windows\\System32\\/i.test(p)), seen.join(","));
+  const d = windowsSystemBinary("WindowsPowerShell\\v1.0\\powershell.exe", { env: { SystemRoot: "D:\\Windows" }, exists: (p) => p.startsWith("D:\\Windows\\") });
+  assert.equal(d.bin, "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+  assert.equal(windowsSystemBinary("netstat.exe", { env: {}, exists: () => false }), null);
+  assert.equal(windowsSystemBinary("netstat.exe", { env: { SystemRoot: "C:\\Users\\a\\evil" }, exists: (p) => p.startsWith("C:\\Users\\") }), null);
+});

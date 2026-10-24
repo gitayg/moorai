@@ -15,20 +15,31 @@
 // The agent's process tree (the hook's parent chain through its shells to the agent) is an extra signal: a peer
 // inside it is refused in either mode; a peer outside it proves nothing. Anything undetermined is refused.
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { dirname, win32 } from "node:path";
 import { defaultReadChain, isHookShell } from "./ai-cli-parents.mjs";
-import { tcpTable, parseNetstatTcp, runCmd } from "./local-ai-inventory.mjs";
+import { tcpTable, parseNetstatTcp } from "./local-ai-inventory.mjs";
 
-function run(bins, args, { stderr = false } = {}) {
+function run(bins, args, { stderr = false, cwd } = {}) {
   for (const bin of bins) {
-    try { return execFileSync(bin, args, { encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", stderr ? "pipe" : "ignore"] }); } catch (e) {
+    try { return execFileSync(bin, args, { encoding: "utf8", timeout: 3000, cwd, stdio: ["ignore", "pipe", stderr ? "pipe" : "ignore"] }); } catch (e) {
       if (e && e.code === "ENOENT") continue;
       if (stderr && typeof e?.stderr === "string") return e.stderr;
       return typeof e?.stdout === "string" && e.stdout ? e.stdout : null;
     }
   }
   return null;
+}
+// Windows: a system tool by its absolute path under the Windows directory, never a bare name a planted file in
+// the working directory or on PATH could answer for. SystemRoot counts only in its standard X:\Windows form.
+export function windowsSystemBinary(rel, { env = process.env, exists = existsSync } = {}) {
+  const roots = [...new Set(["C:\\Windows", /^[A-Za-z]:\\Windows$/i.test(env.SystemRoot || "") ? env.SystemRoot : null].filter(Boolean))];
+  for (const root of roots) { const p = win32.join(root, "System32", rel); if (exists(p)) return { bin: p, cwd: win32.join(root, "System32") }; }
+  return null;
+}
+function runWin(rel, args) {
+  const t = windowsSystemBinary(rel);
+  return t ? run([t.bin], args, { cwd: t.cwd }) : null;
 }
 const LSOF = ["/usr/sbin/lsof", "/usr/bin/lsof", "/bin/lsof"];
 const PS = ["/bin/ps", "/usr/bin/ps"];
@@ -120,7 +131,7 @@ export function peerOf(serverPort, localPort, { platform = process.platform } = 
     return { pid: s ? Number(s.pid) : null, socketUid: hit.uid, why: "" };
   }
   if (platform === "win32") {
-    const s = parseNetstatTcp(runCmd("netstat", ["-ano"]) || "").find((x) => x.state === "established" && x.lport === serverPort && x.rport === localPort);
+    const s = parseNetstatTcp(runWin("netstat.exe", ["-ano"]) || "").find((x) => x.state === "established" && x.lport === serverPort && x.rport === localPort);
     return { pid: s ? Number(s.pid) : null, socketUid: null, why: "" };
   }
   return { pid: null, socketUid: null, why: "" };
@@ -137,7 +148,7 @@ export function peerUids(pid, { platform = process.platform } = {}) {
       const m = readFileSync(`/proc/${pid}/status`, "utf8").match(/^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m);
       return m ? [...new Set(m.slice(1).map(Number))] : null;
     }
-    if (platform === "win32") return windowsSids(run(["powershell.exe"], ["-NoProfile", "-NonInteractive", "-Command", windowsSidScript(pid)]));
+    if (platform === "win32") return windowsSids(runWin("WindowsPowerShell\\v1.0\\powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsSidScript(pid)]));
   } catch { /* not readable */ }
   return null;
 }

@@ -1136,7 +1136,8 @@ is validated against.
     (`nettop -L 1 -m tcp -n -x -J state`, `<name>.<pid>` split at its last `.`): two must name the same pid, a
     name that could shift a parse (`:`, `.`, `,`, whitespace) or a disagreement refuses; Linux
     `/proc/net/tcp{,6}`, whose uid column is the socket owner's for any user, plus `tcpTable` for the pid when
-    readable, the two uids required to agree (`mergeSocketUid`); Windows `netstat -ano`) and its uids
+    readable, the two uids required to agree (`mergeSocketUid`); Windows `netstat -ano`, run, like PowerShell, by its absolute path under `C:\Windows\System32` (or a
+    standard-form `%SystemRoot%`) with that directory as the working directory, never by a bare name) and its uids
     (`ps -o uid=,ruid=`, `/proc/<pid>/status`; Windows `windowsSids`: the owner SID from `GetOwnerSid` against
     `WindowsIdentity::GetCurrent().User.Value`, both required to be SIDs), and `judgeOwner` decides
     (`untrusted-reader`, nothing sent, on a refusal): pid and uid undetermined → refused; the pid or an ancestor
