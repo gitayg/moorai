@@ -91,7 +91,8 @@ test("policy: a valid oversight block parses; malformed entries are dropped with
   assert.equal(bad.stopDisclosure, "alert");
   assert.ok(warns.length >= 3, JSON.stringify(warns));
   assert.ok(!warns.join(" ").includes("bad key!"), "a warning never echoes the value");
-  assert.deepEqual(oversightPolicy(null), { paths: [], keys: [], stopDisclosure: "alert" });
+  // memory: the built-in persistent-instruction surface (CLAUDE.md, AGENTS.md, memory files) is on with no policy.
+  assert.deepEqual(oversightPolicy(null), { paths: [], keys: [], stopDisclosure: "alert", memory: true });
   assert.deepEqual(oversightPolicy({ oversight: { v: 2 } }, () => {}).paths, []);
 });
 

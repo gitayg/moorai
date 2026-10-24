@@ -117,7 +117,7 @@
     "confidence": "\"high\" = payload core resolved from explicit text; \"medium\" = resolved from family/axis/category convention; \"low\" = no AMTSO value fits cleanly, or the sample is out of AMTSO's agentic scope. Run with --review to list every low-confidence sample."
   },
   "_counts": {
-    "samples": 1347,
+    "samples": 1359,
     "files": 7
   },
   "labels": {
@@ -14973,6 +14973,138 @@
       "core": "benign"
     },
     "v2-obf-gib-006": {
+      "scope": "benign-control",
+      "attackVector": "+none (benign control)",
+      "targetOfProtection": "agent host",
+      "environmentType": "+unspecified (environment-agnostic prompt)",
+      "harmType": "+none (benign control)",
+      "severity": "+none (benign control)",
+      "requiredCapability": "no tool use",
+      "confidence": "medium",
+      "core": "benign"
+    },
+    "sk-licence-1": {
+      "scope": "benign-control",
+      "attackVector": "+none (benign control)",
+      "targetOfProtection": "agent host",
+      "environmentType": "+unspecified (environment-agnostic prompt)",
+      "harmType": "+none (benign control)",
+      "severity": "+none (benign control)",
+      "requiredCapability": "no tool use",
+      "confidence": "medium",
+      "core": "benign"
+    },
+    "sk-curl-silent-1": {
+      "scope": "benign-control",
+      "attackVector": "+none (benign control)",
+      "targetOfProtection": "agent host",
+      "environmentType": "+unspecified (environment-agnostic prompt)",
+      "harmType": "+none (benign control)",
+      "severity": "+none (benign control)",
+      "requiredCapability": "no tool use",
+      "confidence": "medium",
+      "core": "benign"
+    },
+    "sk-silent-errors-1": {
+      "scope": "benign-control",
+      "attackVector": "+none (benign control)",
+      "targetOfProtection": "agent host",
+      "environmentType": "+unspecified (environment-agnostic prompt)",
+      "harmType": "+none (benign control)",
+      "severity": "+none (benign control)",
+      "requiredCapability": "no tool use",
+      "confidence": "medium",
+      "core": "benign"
+    },
+    "sk-codeblock-1": {
+      "scope": "benign-control",
+      "attackVector": "+none (benign control)",
+      "targetOfProtection": "agent host",
+      "environmentType": "+unspecified (environment-agnostic prompt)",
+      "harmType": "+none (benign control)",
+      "severity": "+none (benign control)",
+      "requiredCapability": "no tool use",
+      "confidence": "medium",
+      "core": "benign"
+    },
+    "sk-emoji-1": {
+      "scope": "benign-control",
+      "attackVector": "+none (benign control)",
+      "targetOfProtection": "agent host",
+      "environmentType": "+unspecified (environment-agnostic prompt)",
+      "harmType": "+none (benign control)",
+      "severity": "+none (benign control)",
+      "requiredCapability": "no tool use",
+      "confidence": "medium",
+      "core": "benign"
+    },
+    "sk-rtl-1": {
+      "scope": "benign-control",
+      "attackVector": "+none (benign control)",
+      "targetOfProtection": "agent host",
+      "environmentType": "+unspecified (environment-agnostic prompt)",
+      "harmType": "+none (benign control)",
+      "severity": "+none (benign control)",
+      "requiredCapability": "no tool use",
+      "confidence": "medium",
+      "core": "benign"
+    },
+    "sk-password-msg-1": {
+      "scope": "benign-control",
+      "attackVector": "+none (benign control)",
+      "targetOfProtection": "agent host",
+      "environmentType": "+unspecified (environment-agnostic prompt)",
+      "harmType": "+none (benign control)",
+      "severity": "+none (benign control)",
+      "requiredCapability": "no tool use",
+      "confidence": "medium",
+      "core": "benign"
+    },
+    "sk-claude-md-1": {
+      "scope": "benign-control",
+      "attackVector": "+none (benign control)",
+      "targetOfProtection": "agent host",
+      "environmentType": "+unspecified (environment-agnostic prompt)",
+      "harmType": "+none (benign control)",
+      "severity": "+none (benign control)",
+      "requiredCapability": "no tool use",
+      "confidence": "medium",
+      "core": "benign"
+    },
+    "sk-reviewers-1": {
+      "scope": "benign-control",
+      "attackVector": "+none (benign control)",
+      "targetOfProtection": "agent host",
+      "environmentType": "+unspecified (environment-agnostic prompt)",
+      "harmType": "+none (benign control)",
+      "severity": "+none (benign control)",
+      "requiredCapability": "no tool use",
+      "confidence": "medium",
+      "core": "benign"
+    },
+    "sk-todo-1": {
+      "scope": "benign-control",
+      "attackVector": "+none (benign control)",
+      "targetOfProtection": "agent host",
+      "environmentType": "+unspecified (environment-agnostic prompt)",
+      "harmType": "+none (benign control)",
+      "severity": "+none (benign control)",
+      "requiredCapability": "no tool use",
+      "confidence": "medium",
+      "core": "benign"
+    },
+    "sk-ask-1": {
+      "scope": "benign-control",
+      "attackVector": "+none (benign control)",
+      "targetOfProtection": "agent host",
+      "environmentType": "+unspecified (environment-agnostic prompt)",
+      "harmType": "+none (benign control)",
+      "severity": "+none (benign control)",
+      "requiredCapability": "no tool use",
+      "confidence": "medium",
+      "core": "benign"
+    },
+    "sk-tell-user-1": {
       "scope": "benign-control",
       "attackVector": "+none (benign control)",
       "targetOfProtection": "agent host",

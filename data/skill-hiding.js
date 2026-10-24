@@ -26,9 +26,9 @@ const cap = (s) => (typeof s === "string" ? (s.length > MAX ? s.slice(0, MAX) : 
 
 // ---- padding -----------------------------------------------------------------------------------------
 // A run of PAD_MIN or more blank (whitespace- or invisible-only) lines with non-whitespace content after
-// it. Calibrated (docs/DETECTION_ENGINE.md, "Skill and instruction file hiding"): the longest blank run in
-// any tracked text file of this repository, any JSON string leaf of the benign corpora and the Markdown in
-// node_modules is far below it; the padding in the write-up's samples runs to hundreds of lines.
+// it. Calibrated (docs/DETECTION_ENGINE.md, "Skill and instruction file hiding"): the longest blank run
+// followed by content in 1,335 tracked text files of this repository (and their JSON string leaves), 154
+// Markdown files under node_modules and 7,834 local Markdown / rules files was 5 lines.
 export const PAD_MIN = 60;
 const BLANK_LINE = /^[\s\u200B-\u200D\u2060\uFEFF]*$/;
 export function paddedHiddenContent(text, min = PAD_MIN) {
@@ -149,14 +149,15 @@ export function concealsFromUser(text) {
 
 // ---- text aimed at reviewers and scanners ------------------------------------------------------------
 // The skill speaks to whatever reviews it rather than to the agent that runs it:
-//   address   "note to (any / all) automated (skill / code / security) reviewers / scanners / auditors",
-//             "automated reviewers: …", "to the AI reviewing this skill";
+//   address   "note to (any / all) automated / AI / LLM / bot (skill / code / security) reviewers / scanners /
+//             auditors", a line opening "automated reviewers:", "if you are an AI reviewing this skill";
 //   override  "override / ignore / disregard / suppress any (heuristic / automated / scanner / detection)
 //             flags, warnings, alerts or findings";
-//   claim     "this skill has passed audit / is verified safe / was approved by …" paired, within the same
-//             stretch of text, with an order to ignore, skip, suppress or not flag.
+//   claim     "this skill has passed audit / is verified safe / was approved …" with, within 160 characters,
+//             an order to ignore or suppress warnings / flags / findings, or not to flag / scan / quarantine.
 // Quiet on: "we use automated code reviewers", "ignore deprecation warnings", "ignore lint warnings in
-// generated files", "this package has been audited by X" with no order attached.
+// generated files", "this package has been audited by X" with no order attached, "Security scanners: run
+// semgrep", "Note for security reviewers: …" (a human reviewer is not addressed by these rules).
 const REVIEWER = String.raw`(?:automated|ai|a\.i\.|llm|machine|bot)\s+(?:skill\s+|code\s+|security\s+|plugin\s+|package\s+)?(?:reviewers?|scanners?|auditors?|analy[sz]ers?|classifiers?|moderators?|checkers?|review\s+(?:tools?|systems?|agents?|bots?)|scanning\s+(?:tools?|systems?))`;
 const REVIEW_ADDRESS = [
   new RegExp(String.raw`\b(?:note|notice|message|instructions?|attention|memo|directive)\s+(?:to|for)\s+(?:any\s+|all\s+|the\s+)?${REVIEWER}\b`, "i"),
