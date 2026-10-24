@@ -948,7 +948,8 @@ never waits past `timeoutMs`. Report mode forwards everything and alerts after t
 a closed fail mode a file it could not scan is refused first. What is scanned is what is sent: base64 is decoded strictly
 (data that is not is unscannable, never clean), both spellings of a Gemini field are scanned (different content
 in `inlineData` and `inline_data` is refused as ambiguous), nested `functionResponse.parts` and tool results are
-walked, and a request carrying a file is forwarded re-serialised from the parsed body.
+walked (a part nested past 16 levels is unscannable), a request body that repeats a JSON key is refused in
+enforce mode, and with scanning on every parsed body is forwarded re-serialised from the parsed object.
 
 **Keys** come only from the root-owned admin binding (`"fileScanKeys": {"metadefender": "…"}`), a root-owned key
 file (`--file-scan-key-file metadefender=/etc/moorai/metadefender.key`) or the server's environment

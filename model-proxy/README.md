@@ -790,9 +790,16 @@ scan runs before forwarding either way.
   and must re-encode to the same text. One that fails is **unscannable**: never clean, never looked up, decided as
   an error (closed fail mode refuses; open applies `onUnknown`). A Gemini blob sent unpadded is valid to Gemini but
   unscannable here.
-- *Re-serialised body.* When a request carries a file part (or an unscannable or ambiguous one), the body forwarded
-  is the parsed object re-serialised (lossless numbers, `json-lossless.mjs`), so a repeated key cannot carry a second
-  blob past the scan: the value scanned is the only one sent.
+- *Duplicate keys.* With file scanning on, a request body that repeats a JSON key, or has keys that differ only in
+  case (Go's `encoding/json`, which Ollama uses, folds case), is a parser differential: a reader that keeps the first
+  occurrence could see a file the last-wins parse never did. It is refused (403, the provider's error shape) in
+  enforce mode or under a closed fail mode; otherwise it is forwarded re-serialised with a content-free
+  `UNEVALUATED_BAD_INPUT` alert.
+- *Re-serialised body.* With file scanning on, every parsed request body is forwarded as the parsed object
+  re-serialised (lossless numbers, `json-lossless.mjs`), file or not, so the value scanned is the only one sent.
+  With `mode: "off"` the body is forwarded byte for byte, as before.
+- *Depth.* Nested parts are read 16 levels deep (`tool_result` in `tool_result`, `functionResponse.parts`); a part
+  past that is recorded unscannable, not skipped.
 
 **What leaves the server.**
 

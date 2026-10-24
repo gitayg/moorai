@@ -144,15 +144,16 @@ test("proxy: base64 with an injected invalid character or mid-string padding is 
   } finally { await con.close(); }
 });
 
-test("proxy: the body forwarded is the one scanned — a duplicate key is re-serialised away", async () => {
-  const px = await proxy("enforce", HASH);
+test("proxy (report, open): the body forwarded is the one scanned — a duplicate key is re-serialised away", async () => {
+  const px = await proxy("report", HASH, { resolveFailMode: () => ({ mode: "open", source: "policy" }) });
   try {
     // JSON.parse keeps the last "data" (GOOD, clean); a reader that keeps the first would see BAD.
     const raw = `{"model":"claude-fake","max_tokens":8,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"${b64(BAD)}","data":"${b64(GOOD)}"}}]}],"n":12345678901234567890}`;
-    const n = fp.requests.length;
+    const n = fp.requests.length, m = md.requests.length;
     fp.on((r, res) => sendJson(res, anthropicMessage({ text: "ok" })));
     const r = await request(px.url, "/anthropic/v1/messages", { body: raw });
     assert.equal(r.status, 200, String(r.raw));
+    assert.ok(await waitFor(() => md.requests.length > m), "report mode scans after the response");
     assert.equal(fp.requests.length, n + 1);
     const sent = fp.requests[n].body.toString("utf8");
     assert.ok(!sent.includes(b64(BAD)), "the unscanned duplicate reached the upstream");
@@ -175,4 +176,73 @@ test("moorai-serve /v1/file-scan: data that fails strict base64 is unscannable (
     assert.deepEqual([res.json.verdict, res.json.why], ["error", "unscannable"]);
     assert.equal(md.requests.length, before);
   } finally { await s.close(); }
+});
+
+// ---- depth cap ----
+const nestGemini = (levels, leaf) => { let parts = [leaf]; for (let i = 0; i < levels; i++) parts = [{ functionResponse: { name: `f${i}`, response: {}, parts } }]; return { contents: [{ role: "user", parts }] }; };
+const nestAnthropic = (levels, leaf) => { let content = [leaf]; for (let i = 0; i < levels; i++) content = [{ type: "tool_result", tool_use_id: `t${i}`, content }]; return { messages: [{ role: "user", content }] }; };
+
+test("fileParts: a blob nested past the depth cap is unscannable, not silently skipped", () => {
+  const g = fileParts("gemini", nestGemini(40, { inlineData: { mimeType: "image/png", data: b64(BAD) } }));
+  assert.equal(g.parts.length, 0);
+  assert.ok(g.unscannable.length >= 1, "past the cap must be recorded");
+  const a = fileParts("anthropic", nestAnthropic(40, { type: "image", source: { type: "base64", media_type: "image/png", data: b64(BAD) } }));
+  assert.equal(a.parts.length, 0);
+  assert.ok(a.unscannable.length >= 1);
+  assert.equal(fileParts("gemini", nestGemini(3, { inlineData: { mimeType: "image/png", data: b64(BAD) } })).parts.length, 1, "within the cap it is scanned");
+});
+
+test("proxy enforce: a blob nested past the depth cap follows the fail mode (closed: refused as not scanned)", async () => {
+  const px = await proxy("enforce", HASH, { resolveFailMode: () => ({ mode: "closed", source: "policy" }) });
+  try {
+    const n = fp.requests.length;
+    const r = await gemini(px, nestGemini(40, { inlineData: { mimeType: "image/png", data: b64(BAD) } }));
+    assert.equal(r.status, 403, String(r.raw));
+    assert.match(r.raw.toString(), /not scanned \(unscannable\)/);
+    assert.equal(fp.requests.length, n);
+  } finally { await px.close(); }
+});
+
+// ---- duplicate keys ----
+// The parser's last-wins view has no file; a reader that keeps the first "contents" would get BAD.
+const DUP = `{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"image/png","data":"${b64(BAD)}"}}]}],"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`;
+const rawGemini = (px, raw) => { fp.on((r, res) => sendJson(res, geminiResponse({ text: "ok" }))); return request(px.url, "/gemini/v1beta/models/gemini-fake:generateContent", { body: raw }); };
+
+test("proxy: with file scanning on, a request body with duplicate keys is refused in enforce mode", async () => {
+  const px = await proxy("enforce", HASH);
+  try {
+    const n = fp.requests.length;
+    const r = await rawGemini(px, DUP);
+    assert.equal(r.status, 403, String(r.raw));
+    assert.match(r.raw.toString(), /duplicate/);
+    assert.equal(fp.requests.length, n);
+  } finally { await px.close(); }
+});
+
+test("proxy: report mode with a duplicate-key body forwards only the re-serialised body (what was scanned), never the hidden first occurrence", async () => {
+  const px = await proxy("report", HASH, { resolveFailMode: () => ({ mode: "open", source: "policy" }) });
+  try {
+    const n = fp.requests.length;
+    const r = await rawGemini(px, DUP);
+    assert.equal(r.status, 200, String(r.raw));
+    const sent = fp.requests[n].body.toString("utf8");
+    assert.ok(!sent.includes(b64(BAD)), "the duplicate's hidden file reached the upstream");
+    assert.equal(sent, JSON.stringify(JSON.parse(DUP)));
+  } finally { await px.close(); }
+});
+
+test("proxy: with file scanning on, every parsed body is forwarded re-serialised, file or not; with it off, verbatim", async () => {
+  const raw = `{ "contents" : [ { "role" : "user", "parts" : [ { "text" : "hi" } ] } ] }`;
+  const on = await proxy("enforce", HASH);
+  try {
+    const n = fp.requests.length;
+    assert.equal((await rawGemini(on, raw)).status, 200);
+    assert.equal(fp.requests[n].body.toString("utf8"), JSON.stringify(JSON.parse(raw)));
+  } finally { await on.close(); }
+  const off = await proxy("enforce", undefined);
+  try {
+    const n = fp.requests.length;
+    assert.equal((await rawGemini(off, raw)).status, 200);
+    assert.equal(fp.requests[n].body.toString("utf8"), raw, "scanning off changes nothing");
+  } finally { await off.close(); }
 });

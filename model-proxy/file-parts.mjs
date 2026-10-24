@@ -78,7 +78,11 @@ export function fileParts(kind, body) {
   let over = 0;
   const add = (where, mediaType, bytes, filename, raw) => {
     const mt = String(mediaType || "application/octet-stream").toLowerCase().slice(0, 128);
-    if (bytes === null) { unscannable.push({ where, mediaType: mt, raw: typeof raw === "string" ? raw : "" }); return; }
+    if (bytes === null) {
+      if (unscannable.length >= MAX_PARTS) { over++; return; }
+      unscannable.push({ where, mediaType: mt, raw: typeof raw === "string" ? raw : "" });
+      return;
+    }
     if (!bytes.length) return;
     if (parts.length >= MAX_PARTS) { over++; return; }
     parts.push({ where, mediaType: mt, bytes, ...(typeof filename === "string" ? { filename: filename.slice(0, 128) } : {}) });
@@ -94,11 +98,15 @@ export function fileParts(kind, body) {
     if (vals.length === 2 && canon(vals[0]) !== canon(vals[1])) ambiguous.push(where);
     return vals;
   };
+  // Past MAX_DEPTH nothing is read further: the place is recorded unscannable (onUnknown and the fail mode decide),
+  // never skipped as if it held no file.
+  const deep = (where) => add(where, "", null, undefined, "");
   if (!isObj(body)) return { parts, over, unscannable, ambiguous };
 
   if (kind === "anthropic") {
     const block = (b, depth) => {
-      if (!isObj(b) || depth > MAX_DEPTH) return;
+      if (!isObj(b)) return;
+      if (depth > MAX_DEPTH) { deep("anthropic:depth"); return; }
       if ((b.type === "image" || b.type === "document") && isObj(b.source) && b.source.type === "base64") b64(`anthropic:${b.type}`, b.source.media_type, b.source.data);
       else if (b.type === "tool_result") for (const c of arr(b.content)) block(c, depth + 1);
     };
@@ -126,7 +134,7 @@ export function fileParts(kind, body) {
     }
   } else if (kind === "gemini") {
     const walk = (list, depth) => {
-      if (depth > MAX_DEPTH) return;
+      if (depth > MAX_DEPTH) { if (arr(list).length) deep("gemini:depth"); return; }
       for (const p of arr(list)) {
         if (!isObj(p)) continue;
         for (const d of both(p, "inlineData", "inline_data", "gemini:inlineData")) {

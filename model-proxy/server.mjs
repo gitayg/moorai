@@ -43,7 +43,7 @@ import * as gemini from "./gemini.mjs";
 import * as ollama from "./ollama.mjs";
 import { createSplitter } from "./sse.mjs";
 import { createLineSplitter } from "./ndjson.mjs";
-import { strictBytes, PROBLEM_TEXT } from "./json-strict.mjs";
+import { strictBytes, strictScan, PROBLEM_TEXT } from "./json-strict.mjs";
 import { createChecker } from "./check.mjs";
 import { wrapReporter, unevaluatedReporter, uncheckedReporter, refusalMessage, REQUEST } from "./report.mjs";
 import { createUncheckedTracker, DEFAULT_MAX as UNCHECKED_MAX, MAX_ID } from "./unchecked.mjs";
@@ -640,12 +640,22 @@ export async function createProxy(opts = {}) {
       // after the response, report-only.
       const fsCfg = fileScanPolicy(s1.policy);
       if (fsCfg.mode !== "off" && KIND.has(api)) {
-        // Read from the lossless parse (json-lossless.mjs); when the request carries a file, the body forwarded is
-        // that object re-serialised, so the upstream receives exactly what was scanned (a repeated key cannot hide
-        // a second blob: JSON.parse keeps the last, and so does what is sent).
+        // Read from the lossless parse (json-lossless.mjs), and the body forwarded is always that object re-serialised,
+        // file or not, so the upstream receives exactly what was scanned. A body that repeats a key, or has keys that
+        // differ only in case (Go's encoding/json, Ollama's, folds them), is a parser differential: a reader that keeps
+        // the first occurrence could see a file the last-wins parse never did. Refused in enforce mode or under a closed
+        // fail mode; otherwise forwarded re-serialised (the hidden occurrence never leaves) with an UNEVALUATED_BAD_INPUT alert.
         const exact = parseLossless(body);
+        if (exact && typeof exact === "object") {
+          const sc = strictScan(body.toString("utf8"));
+          const dupe = ["duplicate-key", "key-collision"].find((p) => sc.problems.has(p));
+          if (dupe) {
+            unevaluated(`file-scan-${dupe}`, "request", "input");
+            if (enforce || fm === "closed") { stats.refused++; return send(res, 403, api.errorBody(403, `MoorAI model-proxy refused this request — the request body ${PROBLEM_TEXT[dupe]} (duplicate keys are a parser differential), so the provider could read a file the scan never saw`), { "x-moorai-model-proxy": "refused" }); }
+          }
+          body = Buffer.from(JSON.stringify(exact));
+        }
         const found = fileParts(KIND.get(api), exact);
-        if (found.parts.length || found.over || found.unscannable.length || found.ambiguous.length) body = Buffer.from(JSON.stringify(exact));
         if (found.ambiguous.length) {
           // Two spellings of one field with different content: an upstream may read either.
           unevaluated(`file-${found.ambiguous[0]}`, "request", "input");
