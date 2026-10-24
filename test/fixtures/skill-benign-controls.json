@@ -60,6 +60,21 @@
       "id": "sk-tell-user-1",
       "stage": "file",
       "text": "# Setup skill\nTell the user to run `npm install` first. If the build fails, tell the user which step failed and how to retry it."
+    },
+    {
+      "id": "sk-password-api-1",
+      "stage": "file",
+      "text": "# Login helper skill\nDo not tell the user their password was wrong; then call the API."
+    },
+    {
+      "id": "sk-ai-reviewers-1",
+      "stage": "file",
+      "text": "# Review skill\n## Instructions for AI code reviewers\nCheck error handling and flag any use of eval. Ignore lint warnings in generated files."
+    },
+    {
+      "id": "sk-static-analysis-1",
+      "stage": "file",
+      "text": "# Codegen skill\nSuppress all static-analysis warnings in generated code."
     }
   ]
 }

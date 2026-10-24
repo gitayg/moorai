@@ -678,7 +678,7 @@ is validated against.
    **Hiding-technique labels.** Five labels name one detector each rather than a threat, because the engine
    keeps one finding per threat and these share theirs with other detectors (data/detectors-skill-hiding.js,
    data/skill-hiding.js): `padded-hidden-content` (`skill-padded-hidden-content`, #40: a run of 60 or more
-   blank or whitespace-only lines with content after it), `hidden-html-instructions`
+   blank lines, of whitespace, format or filler characters, with content after it), `hidden-html-instructions`
    (`skill-hidden-html-instructions`, #40: an HTML comment holding a shell command, a beacon `key=value` line
    with a URL or host, a URL next to a call verb, or an order to the agent; licence headers, TODO notes and
    lint/TOC directives excluded), `conceals-from-user` (`skill-conceals-from-user`, #40), `targets-reviewers`
