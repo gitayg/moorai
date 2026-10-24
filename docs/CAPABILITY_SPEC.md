@@ -2723,6 +2723,7 @@ present. They have not been checked against Anthropic's real signer.
 | `maxBytes` / `timeoutMs` | 1–681574400 / 100–120000 | 33554432 / 10000 |
 | `iocHash`, `privateScan` | `true` | `false` |
 | `region` (MetaDefender), `ratePerMinute` | a documented region name / 1–10000 | nearest / 60 MetaDefender, 4 VirusTotal |
+| `minEngines` | 1–1000: a clean verdict from fewer engines is unknown (`few-engines`) | 3 |
 
 | Capability | Behaviour | Evidence |
 |---|---|---|
@@ -2735,7 +2736,10 @@ present. They have not been checked against Anthropic's real signer.
 | Alert | `File scan: malicious file` (threat #17, `FILE_SCAN`), `File scan: unknown file` / `File scan: file not scanned` (threat 0, `FILE_SCAN`); `fileScan: {provider, verdict, mode, detections?, engines?, threat?, mimeClass, sizeBucket, uploaded, why?}`; `contentHash` keyed; raw `sha256` only for malicious with `iocHash` | test/file-scan-core.test.mjs, test/file-scan-proxy.test.mjs |
 | Key handling | sent only in the provider's header to its own origin (`redirect: "error"`; VirusTotal's `upload_url` must be same-origin); never in a log, alert, error or refusal | test/file-scan-providers.test.mjs, test/file-scan-proxy.test.mjs |
 
-**Not built.** Deep CDR; files sent by reference; scan-before-embed for files (`/v1/index-scan`).
+| Unreadable bodies and other endpoints | A parsed-path body with a content coding or not a JSON object, and the upload endpoints (`/files`, `/uploads`, Gemini `/upload/…`, `:batchGenerateContent`): refused in enforce or closed fail mode, else `UNEVALUATED_BAD_INPUT` (`model-proxy:file-scan-body` / `file-scan-endpoint`). Anthropic `/messages/batches` and Gemini `cachedContents` are parsed and scanned | test/file-scan-bypass.test.mjs |
+| References | URL and file-id references (and Responses `computer_call_output` by id) alert with `why: "reference"` and apply `onUnknown`; a non-data-URL `file_data` / `image_url` value is unscannable | test/file-scan-bypass.test.mjs |
+
+**Not built.** Deep CDR; fetching files sent by reference; scanning upload endpoints; scan-before-embed for files (`/v1/index-scan`).
 
 ## Living off the AI detectors (v1.15.0)
 

@@ -62,7 +62,7 @@ import { createTextGuard, guardBody } from "./text-guard.mjs";
 import { parseLossless } from "./json-lossless.mjs";
 import { textAlert, textRefusal } from "./text-report.mjs";
 import * as codecs from "./text-codecs.mjs";
-import { fileParts } from "./file-parts.mjs";
+import { fileParts, batchFileParts } from "./file-parts.mjs";
 import { fileScanPolicy } from "../cli/file-scan-policy.mjs";
 import { loadFileScanKeys } from "../cli/file-scan-keys.mjs";
 import { createFileScanner, fileScanDecision, fileScanAlert, mimeClass, PROVIDER_LABEL } from "../cli/file-scan.mjs";
@@ -132,6 +132,17 @@ function originOk(origin, allow) {
 const digest = (s) => createHash("sha256").update(String(s)).digest();
 const apiFor = (method, path) => (method !== "POST" ? null : /\/messages$/.test(path) ? anthropic : /\/chat\/completions$/.test(path) ? openai : /\/responses$/.test(path) ? openaiResponses : /\/embeddings$/.test(path) ? openaiEmbeddings : gemini.isPath(path) ? gemini : ollama.isPath(path) ? ollama : null);
 // The retryable status of the proxy's own budget errors: OpenAI, Gemini and Ollama 503, Anthropic 529 (overloaded).
+// Endpoints that carry files outside the parsed APIs, with policy fileScan on: Anthropic Message Batches and Gemini
+// cachedContents are read and scanned like their model requests; the Files / uploads APIs (Anthropic and OpenAI
+// /files, OpenAI /uploads and their parts, Gemini's /upload/… media uploads) and Gemini batch generation are not
+// read, so they are refused in enforce mode or under a closed fail mode and alerted otherwise.
+const UPLOAD_PATHS = [/^(?:\/v1(?:beta)?)?\/files$/, /^(?:\/v1)?\/uploads(?:\/[^/]+\/parts)?$/, /^\/upload\//, /:batchGenerateContent$/];
+function fileEndpoint(method, path) {
+  if (method === "POST" && /\/messages\/batches$/.test(path)) return { kind: "anthropic-batch", api: anthropic };
+  if (method === "POST" && /\/cachedContents$/.test(path)) return { kind: "gemini", api: gemini };
+  if ((method === "POST" || method === "PUT" || method === "PATCH") && UPLOAD_PATHS.some((re) => re.test(path))) return { kind: "upload", api: null };
+  return null;
+}
 const busy = (api) => (api && api !== anthropic ? 503 : 529);
 // A response (body, SSE event data, NDJSON line) that is not strict JSON has no one reading (json-strict.mjs):
 // enforce does not forward it; report mode forwards it and reports it.
@@ -245,6 +256,9 @@ export async function createProxy(opts = {}) {
     const results = await Promise.all(jobs);
     // Data that fails strict base64 (file-parts.mjs): not scanned, never clean. Its alert's keyed hash is of the
     // raw text (no bytes exist that the provider would agree on).
+    // A file sent by reference (a URL or a provider file id): its content is not in the request; unknown, so an
+    // alert and onUnknown. The keyed hash is of the reference; the reference itself never leaves.
+    for (const x of found.refs || []) results.push({ p: { mediaType: "", bytes: { length: 0 } }, r: { verdict: "unknown", why: "reference", provider: cfg.provider, sha256: `ref:${createHash("sha256").update(x.ref).digest("hex")}`, uploaded: false } });
     for (const u of found.unscannable) results.push({ p: { mediaType: u.mediaType, bytes: { length: u.raw.length } }, r: { verdict: "error", why: "unscannable", provider: cfg.provider, sha256: `raw:${createHash("sha256").update(u.raw).digest("hex")}`, uploaded: false } });
     if (found.over) results.push({ p: { mediaType: "", bytes: { length: 0 } }, r: { verdict: "error", why: "budget", provider: cfg.provider, sha256: `over-cap:${found.over}`, uploaded: false } });
     let refusal = null;
@@ -262,11 +276,48 @@ export async function createProxy(opts = {}) {
       const label = PROVIDER_LABEL[r.provider] || r.provider;
       const what = r.verdict === "malicious" ? `malicious file (${label}: ${r.detections ?? 0} of ${r.engines ?? 0} engines${r.threat ? `, ${r.threat}` : ""})`
         : d.failClosed ? `not scanned (${r.why}), and your organization blocks what MoorAI cannot evaluate`
-        : d.headlessAsk ? `${r.verdict === "unknown" ? `unknown to ${label}` : `not scanned (${r.why})`}; it needs an approval and this server has no approver`
-        : `${r.verdict === "unknown" ? `unknown to ${label}` : `not scanned (${r.why})`}; your organization blocks files the scan cannot vouch for`;
+        : `${r.why === "reference" ? "sent by reference (a URL or a file id the scan cannot read)" : r.verdict === "unknown" ? `unknown to ${label}` : `not scanned (${r.why})`}; ${d.headlessAsk ? "it needs an approval and this server has no approver" : "your organization blocks files the scan cannot vouch for"}`;
       refusal = `MoorAI model-proxy refused this request — file (${mimeClass(p.mediaType)}): ${what}`;
     }
     return refusal;
+  }
+  const refuseFile = (res, errApi, message) => { stats.refused++; send(res, 403, errorPayload(errApi, 403, `MoorAI model-proxy refused this request — ${message}`), { "x-moorai-model-proxy": "refused" }); return true; };
+  // The cloud file scan of one request body (policy fileScan on). kind: a file-parts.mjs API kind, or
+  // "anthropic-batch". ref.body is replaced by the body to forward. Returns true when the request was refused.
+  //   * A body that carries a content coding, or is not a JSON object, cannot be read for files: refused in enforce
+  //     mode or under a closed fail mode, otherwise forwarded with an UNEVALUATED_BAD_INPUT alert.
+  //   * Read from the lossless parse (json-lossless.mjs), and the body forwarded is always that object re-serialised,
+  //     file or not, so the upstream receives exactly what was scanned. A body that repeats a key, or has keys that
+  //     differ only in case (Go's encoding/json, Ollama's, folds them), is a parser differential: refused in enforce
+  //     mode or under a closed fail mode, otherwise forwarded re-serialised with an UNEVALUATED_BAD_INPUT alert.
+  //   * Two spellings of one field with different content (file-parts.mjs): the same rule.
+  //   * The files: before the upstream when enforcing or under a closed fail mode, else after the response.
+  async function fileScanRequest(kind, errApi, req, res, ref, s, fm, later, cfg) {
+    const coding = String(req.headers["content-encoding"] || "").trim().toLowerCase();
+    const exact = !coding || coding === "identity" ? parseLossless(ref.body) : null;
+    if (!exact || typeof exact !== "object" || Array.isArray(exact)) {
+      unevaluated("file-scan-body", "request", "input");
+      return (enforce || fm === "closed") && refuseFile(res, errApi, "the request body could not be read for files (it carries a content coding or is not a JSON object), so it cannot be checked");
+    }
+    const sc = strictScan(ref.body.toString("utf8"));
+    const dupe = ["duplicate-key", "key-collision"].find((p) => sc.problems.has(p));
+    if (dupe) {
+      unevaluated(`file-scan-${dupe}`, "request", "input");
+      if (enforce || fm === "closed") return refuseFile(res, errApi, `the request body ${PROBLEM_TEXT[dupe]} (duplicate keys are a parser differential), so the provider could read a file the scan never saw`);
+    }
+    ref.body = Buffer.from(JSON.stringify(exact));
+    const found = kind === "anthropic-batch" ? batchFileParts(exact) : fileParts(kind, exact);
+    if (found.ambiguous.length) {
+      unevaluated(`file-${found.ambiguous[0]}`, "request", "input");
+      if (enforce || fm === "closed") return refuseFile(res, errApi, `a file part is ambiguous (${found.ambiguous[0].replace(/[^A-Za-z0-9:_]/g, "_")} spelled two ways with different content), so the provider could read a different file than the one checked`);
+    }
+    if (!(found.parts.length || found.over || found.unscannable.length || found.refs.length)) return false;
+    if (!(enforce || fm === "closed")) { later.push(() => scanFiles(found, cfg, s, fm)); return false; }
+    const why = await scanFiles(found, cfg, s, fm);
+    if (!why) return false;
+    stats.refused++;
+    send(res, 403, errorPayload(errApi, 403, why), { "x-moorai-model-proxy": "refused" });
+    return true;
   }
   const routes = Object.entries(o.routes).map(([prefix, base]) => ({ prefix: prefix === "/" ? "" : prefix.replace(/\/+$/, ""), base: String(base).replace(/\/+$/, "") })).sort((a, b) => b.prefix.length - a.prefix.length);
   const agents = { "http:": new http.Agent({ keepAlive: true, maxSockets: o.maxConnections }), "https:": new https.Agent({ keepAlive: true, maxSockets: o.maxConnections }) };
@@ -636,37 +687,12 @@ export async function createProxy(opts = {}) {
           echo: createEcho(items.filter((it) => it.kind === "system").map((it) => it.text).join("\n"), echoKey),
           risk: (id) => (threats && threats.get(id) && threats.get(id).riskLevel) || "High" };
       }
-      // Cloud file scan (policy fileScan): before the upstream when enforcing or under a closed fail mode, else
-      // after the response, report-only.
+      // Cloud file scan (policy fileScan): fileScanRequest above.
       const fsCfg = fileScanPolicy(s1.policy);
       if (fsCfg.mode !== "off" && KIND.has(api)) {
-        // Read from the lossless parse (json-lossless.mjs), and the body forwarded is always that object re-serialised,
-        // file or not, so the upstream receives exactly what was scanned. A body that repeats a key, or has keys that
-        // differ only in case (Go's encoding/json, Ollama's, folds them), is a parser differential: a reader that keeps
-        // the first occurrence could see a file the last-wins parse never did. Refused in enforce mode or under a closed
-        // fail mode; otherwise forwarded re-serialised (the hidden occurrence never leaves) with an UNEVALUATED_BAD_INPUT alert.
-        const exact = parseLossless(body);
-        if (exact && typeof exact === "object") {
-          const sc = strictScan(body.toString("utf8"));
-          const dupe = ["duplicate-key", "key-collision"].find((p) => sc.problems.has(p));
-          if (dupe) {
-            unevaluated(`file-scan-${dupe}`, "request", "input");
-            if (enforce || fm === "closed") { stats.refused++; return send(res, 403, api.errorBody(403, `MoorAI model-proxy refused this request — the request body ${PROBLEM_TEXT[dupe]} (duplicate keys are a parser differential), so the provider could read a file the scan never saw`), { "x-moorai-model-proxy": "refused" }); }
-          }
-          body = Buffer.from(JSON.stringify(exact));
-        }
-        const found = fileParts(KIND.get(api), exact);
-        if (found.ambiguous.length) {
-          // Two spellings of one field with different content: an upstream may read either.
-          unevaluated(`file-${found.ambiguous[0]}`, "request", "input");
-          if (enforce || fm === "closed") { stats.refused++; return send(res, 403, api.errorBody(403, `MoorAI model-proxy refused this request — a file part is ambiguous (${found.ambiguous[0].replace(/[^A-Za-z0-9:_]/g, "_")} spelled two ways with different content), so the provider could read a different file than the one checked`), { "x-moorai-model-proxy": "refused" }); }
-        }
-        if (found.parts.length || found.over || found.unscannable.length) {
-          if (enforce || fm === "closed") {
-            const why = await scanFiles(found, fsCfg, s1, fm);
-            if (why) { stats.refused++; return send(res, 403, api.errorBody(403, why), { "x-moorai-model-proxy": "refused" }); }
-          } else later.push(() => scanFiles(found, fsCfg, s1, fm));
-        }
+        const ref = { body };
+        if (await fileScanRequest(KIND.get(api), api, req, res, ref, s1, fm, later, fsCfg)) return;
+        body = ref.body;
       }
       if (enforce && items.length) {
         let v = null;
@@ -679,6 +705,23 @@ export async function createProxy(opts = {}) {
         // Report mode under a closed fail mode: what cannot be judged is refused before it is forwarded.
         if (fm === "closed") { const denied = await checker.unjudged(items); if (denied.length) return refuse(res, api, { decision: "deny", denied }, "request"); }
         later.push(() => checker.checkRequest(items));
+      }
+    }
+
+    // File-carrying endpoints the APIs above do not parse (fileEndpoint), with policy fileScan on.
+    if (!api) {
+      const ep = fileEndpoint(req.method, rest);
+      const s2 = ep ? await rt.ready() : null;
+      const fsCfg = s2 ? fileScanPolicy(s2.policy) : null;
+      if (ep && fsCfg.mode !== "off") {
+        if (ep.kind === "upload") {
+          unevaluated("file-scan-endpoint", "request", "input");
+          if (enforce || fm === "closed") return refuseFile(res, null, "a file uploaded through this endpoint is not scanned (policy fileScan), and your organization blocks what MoorAI cannot evaluate; send the file inline in a model request instead");
+        } else {
+          const ref = { body };
+          if (await fileScanRequest(ep.kind, ep.api, req, res, ref, s2, fm, later, fsCfg)) return;
+          body = ref.body;
+        }
       }
     }
 

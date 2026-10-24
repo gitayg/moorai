@@ -763,6 +763,7 @@ alert are `cli/file-scan.mjs`; finding the parts is `model-proxy/file-parts.mjs`
 | `privateScan` | MetaDefender: `true` sends `samplesharing: 0` on upload | `false` |
 | `region` | MetaDefender regional endpoint by name: `us-west`, `eu-central`, `ca-central`, `ap-southeast`, `ap-northeast`, `ap-south`, `il-central` (never a URL) | OPSWAT's nearest (`api.metadefender.com`) |
 | `ratePerMinute` | provider requests per minute from this process, 1 to 10000 | 4 (VirusTotal), 60 (MetaDefender) |
+| `minEngines` | a clean verdict counts only from at least this many engines (VirusTotal: harmless + undetected + malicious + suspicious; MetaDefender: `total_avs`); fewer is unknown (`few-engines`), 1 to 1000 | 3 |
 
 **Parts read.** Every turn, any role (a conversation re-sends its earlier files; the cache answers those):
 
@@ -770,14 +771,24 @@ alert are `cli/file-scan.mjs`; finding the parts is `model-proxy/file-parts.mjs`
 |---|---|
 | Anthropic Messages | `image` and `document` blocks with `source.type: "base64"`, also inside a `tool_result`'s content |
 | OpenAI Chat Completions | `image_url` with a `data:` URL, `file` with `file_data` (a `data:` URL), `input_audio` (`data`); any role, a `tool` message's content included |
-| OpenAI Responses | `input_image` (`image_url` `data:` URL) and `input_file` (`file_data`), in a message or a `function_call_output` |
+| OpenAI Responses | `input_image` (`image_url` `data:` URL) and `input_file` (`file_data`), in a message or a `function_call_output`; a `computer_call_output` screenshot (`output.image_url`) |
+| Anthropic Message Batches (`POST …/messages/batches`) | every `requests[].params` read as a Messages request |
+| Gemini `POST …/cachedContents` | read as a Gemini request (`contents`, `systemInstruction`) |
 | Gemini | `inlineData` in `contents[].parts[]`, `systemInstruction.parts[]` and every nested `functionResponse.parts[]` |
 | Ollama | `images[]` in `/api/chat` messages and `/api/generate` |
 
-Not read, because the request carries no content to scan: a URL (`image_url` `https://…`, Gemini `fileData.fileUri`),
-a provider file id (OpenAI `file_id`, Anthropic `source.type: "file"`), an Anthropic `url` source. An Anthropic
-`document` whose source is text is scanned as text, as before. At most 32 parts per request are scanned; the rest
-count as not scanned (the fail mode decides). The request body is the same whether `stream` is set or not, so the
+**Files the scan cannot read, and what happens to them** (all with `fileScan` on; `mode: "off"` changes nothing):
+
+| What | Handling |
+|---|---|
+| A file sent by reference: a URL (`image_url` / `file_url` `https://…`, an Anthropic `url` source, Gemini `fileData.fileUri`) or a provider file id (OpenAI `file_id`, Anthropic `source.type: "file"`) | not fetched; an alert (`why: "reference"`, keyed hash of the reference, never the reference) and `onUnknown` decides |
+| A `file_data` / `image_url` value that is neither a `data:` URL nor a URL (raw base64, a non-string), base64 that is not strict, a part nested past 16 levels | unscannable: an error, so the fail mode decides (open: `onUnknown`) |
+| A body on a parsed path with a `Content-Encoding` other than identity, or that is not a JSON object (a BOM, protobuf) | refused in enforce mode or under a closed fail mode; otherwise forwarded with an `UNEVALUATED_BAD_INPUT` alert (`model-proxy:file-scan-body`) |
+| Upload endpoints: Anthropic and OpenAI `…/files`, OpenAI `…/uploads` and `…/uploads/{id}/parts`, Gemini `/upload/…` media uploads, Gemini `:batchGenerateContent` | not read; refused in enforce mode or under a closed fail mode, otherwise alerted (`model-proxy:file-scan-endpoint`) and forwarded. A file uploaded there and later used by id is a reference (above) |
+| Any other path the proxy does not parse (OpenAI Batch input files, vector-store and Assistants file attachments by id, realtime / audio endpoints) | not scanned |
+
+An Anthropic `document` whose source is text is scanned as text, as before. At most 32 parts per request are
+scanned; the rest count as not scanned (the fail mode decides). The request body is the same whether `stream` is set or not, so the
 scan runs before forwarding either way.
 
 **What is scanned is what is sent.** Three rules keep the bytes scanned and the bytes the provider reads the same:
@@ -852,7 +863,8 @@ unknown or unscanned file is threat 0. The raw SHA-256 is added only for a malic
 clean file raises nothing.
 
 **Not built.** Deep CDR (MetaDefender's sanitisation, `GET /v4/file/converted/{dataId}`) is not used. Files sent by
-reference are not fetched. Scan-before-embed for files (`/v1/index-scan`) is not wired.
+reference are not fetched (they are alerted and `onUnknown` decides). Upload endpoints are refused or alerted, not
+scanned. Scan-before-embed for files (`/v1/index-scan`) is not wired.
 
 ## Report vs enforce
 

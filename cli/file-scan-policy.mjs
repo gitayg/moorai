@@ -13,6 +13,8 @@
 //     privateScan:   MetaDefender only: true sends samplesharing: 0 on upload (a paid licence feature)
 //     region:        MetaDefender only: one of the documented regional endpoints by name (cli/file-scan-metadefender.mjs
 //                    REGIONS); never a URL
+//     minEngines:    a "clean" verdict counts only when at least this many engines judged the file, default 3;
+//                    fewer is "unknown" (why "few-engines"); 1 - 1000. A detection is malicious whatever the count
 //     ratePerMinute: provider requests per minute from this process, default 4 for VirusTotal (its public API)
 //                    and 60 for MetaDefender; 1 - 10000
 //   }
@@ -57,6 +59,7 @@ export function fileScanPolicy(policy) {
     privateScan: f.privateScan === true,
     region,
     ratePerMinute: num("ratePerMinute", 1, 10000) ?? DEFAULT_RATE[provider],
+    minEngines: num("minEngines", 1, 1000) ?? 3,
     problems
   };
 }

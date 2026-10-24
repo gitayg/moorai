@@ -140,7 +140,12 @@ export function createFileScanner({ keys = {}, fetch: fetchImpl = globalThis.fet
     } finally { clearTimeout(timer); }
   }
 
+  // A clean verdict from fewer engines than cfg.minEngines is unknown (applied on every answer, cached or not).
+  const thin = (v, cfg) => (v.verdict === "clean" && (v.engines ?? 0) < (cfg.minEngines ?? 3) ? { ...v, verdict: "unknown", why: "few-engines" } : v);
   async function run(sha, bytes, cfg) {
+    return thin(await answer(sha, bytes, cfg), cfg);
+  }
+  async function answer(sha, bytes, cfg) {
     if (!cfg || cfg.mode === "off") return { verdict: "not-scanned", provider: cfg ? cfg.provider : undefined, sha256: sha, mode: "off", uploaded: false, cached: false };
     const upload = cfg.mode === "upload" && bytes !== null;
     const k = `${cfg.provider}|${upload ? "upload" : "hash"}|${sha}`;

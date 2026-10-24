@@ -25,7 +25,8 @@ export const NAME = "virustotal";
 export const DEFAULT_BASE = "https://www.virustotal.com/api/v3";
 export const DIRECT_MAX = 32 * 1024 * 1024;
 
-const total = (s) => Object.values(s && typeof s === "object" ? s : {}).reduce((n, v) => n + int(v), 0);
+// The engines that judged the file (a timeout, failure or unsupported type is not a verdict).
+const total = (s) => (s && typeof s === "object" ? int(s.harmless) + int(s.undetected) + int(s.malicious) + int(s.suspicious) : 0);
 function threatOf(attrs, results) {
   const label = cleanThreat(attrs && attrs.popular_threat_classification && attrs.popular_threat_classification.suggested_threat_label);
   if (label) return label;

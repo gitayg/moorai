@@ -964,8 +964,14 @@ that provider until the reset it names.
 **Alerts** are content-free: provider, verdict, detection and engine counts, the provider's threat name when it
 gives one, the MIME class, a size bucket and a keyed hash of the SHA-256. A malicious file is threat #17
 (dangerous files, `REASON` `FILE_SCAN`); its raw SHA-256, a public indicator, is added only with
-`iocHash: true`. Not scanned: a file sent by reference (a URL, a provider file id, Gemini `fileData`); scanning
-before embedding (`/v1/index-scan`) is not wired yet. Deep CDR (MetaDefender's sanitisation) is not used.
+`iocHash: true`. A clean verdict needs at least `minEngines` engines (default 3); fewer is unknown. Anthropic Message
+Batches and Gemini `cachedContents` are scanned like model requests. **Not scanned:** a file sent by reference (a URL,
+a provider file id, Gemini `fileData`) is not fetched: it is alerted and `onUnknown` decides; the upload endpoints
+(Anthropic / OpenAI `/files`, OpenAI `/uploads`, Gemini `/upload/…`, Gemini `:batchGenerateContent`) are not read and
+are refused in enforce mode or under a closed fail mode, alerted otherwise; a body with a content coding or that is
+not a JSON object is handled the same way; other unparsed paths (OpenAI Batch input files, file attachments by id)
+are not scanned; scanning before embedding (`/v1/index-scan`) is not wired yet. Deep CDR (MetaDefender's
+sanitisation) is not used.
 See [`model-proxy/README.md`](model-proxy/README.md#cloud-file-scanning).
 
 **Token usage and budgets.** The proxy reads each response's token counts and posts content-free hourly totals to

@@ -11,8 +11,11 @@
 //   gemini             contents[].parts[] and systemInstruction.parts[] inlineData {mimeType, data}
 //                      (ai.google.dev/api/caching#Blob), and the parts nested in a functionResponse.parts[].
 //   ollama             messages[].images[] (/api/chat) and images[] (/api/generate): base64 strings, no media type.
-// NOT read (no content in the request to scan): a URL (image_url https://…, Gemini fileData.fileUri), a
-// provider file id (Anthropic source.type "file", OpenAI file_id), an Anthropic url source.
+//                      Also a computer_call_output's screenshot (output.image_url).
+// REFERENCES (no content in the request to scan): a URL (image_url / file_url https://…, an Anthropic url source,
+// Gemini fileData.fileUri) or a provider file id (OpenAI file_id, Anthropic source.type "file") is listed in `refs`;
+// the caller alerts and applies onUnknown. A file_data / image_url value that is neither a data: URL nor a
+// reference (raw base64, a non-string) is unscannable.
 //
 // DUAL SPELLINGS. Gemini's REST API is proto3 JSON, whose parsers accept both the lowerCamelCase and the
 // original snake_case field name (inlineData / inline_data, mimeType / mime_type, functionResponse /
@@ -30,8 +33,9 @@
 // not scanned (onUnknown and its fail mode decide), never as clean. A data: URL that is not base64 is
 // percent-decoded; one that does not decode is unscannable.
 //
-// -> { parts: [{ where, mediaType, bytes, filename? }], over, unscannable: [{ where, mediaType, raw }], ambiguous:
-// [where] } — at most MAX_PARTS parts; `over` counts the rest, which the caller treats as not scanned.
+// -> { parts: [{ where, mediaType, bytes, filename? }], over, unscannable: [{ where, mediaType, raw }], refs:
+// [{ where, ref }], ambiguous: [where] } — at most MAX_PARTS of each; `over` counts the rest, which the caller treats
+// as not scanned.
 export const MAX_PARTS = 32;
 
 const isObj = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
@@ -74,7 +78,7 @@ function canon(v) {
 }
 
 export function fileParts(kind, body) {
-  const parts = [], unscannable = [], ambiguous = [];
+  const parts = [], unscannable = [], ambiguous = [], refs = [];
   let over = 0;
   const add = (where, mediaType, bytes, filename, raw) => {
     const mt = String(mediaType || "application/octet-stream").toLowerCase().slice(0, 128);
@@ -86,6 +90,18 @@ export function fileParts(kind, body) {
     if (!bytes.length) return;
     if (parts.length >= MAX_PARTS) { over++; return; }
     parts.push({ where, mediaType: mt, bytes, ...(typeof filename === "string" ? { filename: filename.slice(0, 128) } : {}) });
+  };
+  const ref = (where, value) => {
+    if (value === undefined || value === null || value === "") return;
+    if (refs.length >= MAX_PARTS) { over++; return; }
+    refs.push({ where, ref: typeof value === "string" ? value.slice(0, 2048) : JSON.stringify(value).slice(0, 2048) });
+  };
+  // A field that takes a data: URL: decoded; a URL is a reference; anything else present is unscannable.
+  const dataField = (where, value, filename) => {
+    if (value === undefined || value === null || value === "") return;
+    if (typeof value === "string" && /^data:/i.test(value)) { const d = fromDataUrl(value); add(where, d.mediaType, d.bytes, filename, d.raw); return; }
+    if (typeof value === "string" && /^(?:https?|gs):\/\//i.test(value)) { ref(`${where}:url`, value); return; }
+    add(where, "", null, filename, typeof value === "string" ? value : "");
   };
   // A base64 field: a non-empty string strictly decoded; any other non-empty value is unscannable.
   const b64 = (where, mediaType, s, filename, opts) => {
@@ -101,13 +117,15 @@ export function fileParts(kind, body) {
   // Past MAX_DEPTH nothing is read further: the place is recorded unscannable (onUnknown and the fail mode decide),
   // never skipped as if it held no file.
   const deep = (where) => add(where, "", null, undefined, "");
-  if (!isObj(body)) return { parts, over, unscannable, ambiguous };
+  if (!isObj(body)) return { parts, over, unscannable, refs, ambiguous };
 
   if (kind === "anthropic") {
     const block = (b, depth) => {
       if (!isObj(b)) return;
       if (depth > MAX_DEPTH) { deep("anthropic:depth"); return; }
       if ((b.type === "image" || b.type === "document") && isObj(b.source) && b.source.type === "base64") b64(`anthropic:${b.type}`, b.source.media_type, b.source.data);
+      else if ((b.type === "image" || b.type === "document") && isObj(b.source) && b.source.type === "url") ref(`anthropic:${b.type}:url`, b.source.url);
+      else if ((b.type === "image" || b.type === "document") && isObj(b.source) && b.source.type === "file") ref(`anthropic:${b.type}:file`, b.source.file_id);
       else if (b.type === "tool_result") for (const c of arr(b.content)) block(c, depth + 1);
     };
     for (const m of arr(body.messages)) if (isObj(m)) for (const b of arr(m.content)) block(b, 0);
@@ -116,19 +134,20 @@ export function fileParts(kind, body) {
       if (!isObj(m)) continue;
       for (const p of arr(m.content)) {
         if (!isObj(p)) continue;
-        if (p.type === "image_url" && isObj(p.image_url)) { const d = fromDataUrl(p.image_url.url); if (d) add("openai:image_url", d.mediaType, d.bytes, undefined, d.raw); }
-        else if (p.type === "file" && isObj(p.file)) { const d = fromDataUrl(p.file.file_data); if (d) add("openai:file", d.mediaType, d.bytes, p.file.filename, d.raw); }
+        if (p.type === "image_url") dataField("openai:image_url", isObj(p.image_url) ? p.image_url.url : p.image_url);
+        else if (p.type === "file" && isObj(p.file)) { dataField("openai:file", p.file.file_data, p.file.filename); ref("openai:file:id", p.file.file_id); }
         else if (p.type === "input_audio" && isObj(p.input_audio)) b64("openai:input_audio", `audio/${String(p.input_audio.format || "unknown").replace(/[^a-z0-9.+-]/gi, "")}`, p.input_audio.data);
       }
     }
   } else if (kind === "openai-responses") {
     const part = (p) => {
       if (!isObj(p)) return;
-      if (p.type === "input_image") { const d = fromDataUrl(p.image_url); if (d) add("responses:input_image", d.mediaType, d.bytes, undefined, d.raw); }
-      else if (p.type === "input_file") { const d = fromDataUrl(p.file_data); if (d) add("responses:input_file", d.mediaType, d.bytes, p.filename, d.raw); }
+      if (p.type === "input_image") { dataField("responses:input_image", p.image_url); ref("responses:input_image:id", p.file_id); }
+      else if (p.type === "input_file") { dataField("responses:input_file", p.file_data, p.filename); ref("responses:input_file:id", p.file_id); ref("responses:input_file:url", p.file_url); }
     };
     for (const it of arr(body.input)) {
       if (!isObj(it)) continue;
+      if (it.type === "computer_call_output") { if (isObj(it.output)) { dataField("responses:computer_screenshot", it.output.image_url); ref("responses:computer_screenshot:id", it.output.file_id); } continue; }
       if (it.type === "function_call_output" || it.type === "custom_tool_call_output") { for (const p of arr(it.output)) part(p); continue; }
       for (const p of arr(it.content)) part(p);
     }
@@ -142,6 +161,7 @@ export function fileParts(kind, body) {
           const [mt] = both(d, "mimeType", "mime_type", "gemini:mimeType");
           b64("gemini:inlineData", mt, d.data, undefined, { urlSafe: true });
         }
+        for (const fd of both(p, "fileData", "file_data", "gemini:fileData")) if (isObj(fd)) for (const u of both(fd, "fileUri", "file_uri", "gemini:fileUri")) ref("gemini:fileData", u);
         for (const fr of both(p, "functionResponse", "function_response", "gemini:functionResponse")) if (isObj(fr)) walk(fr.parts, depth + 1);
       }
     };
@@ -151,5 +171,19 @@ export function fileParts(kind, body) {
     for (const s of arr(body.images)) b64("ollama:images", "image/unknown", s);
     for (const m of arr(body.messages)) if (isObj(m)) for (const s of arr(m.images)) b64("ollama:images", "image/unknown", s);
   }
-  return { parts, over, unscannable, ambiguous };
+  return { parts, over, unscannable, refs, ambiguous };
+}
+
+// Anthropic Message Batches (POST …/v1/messages/batches): {requests: [{custom_id, params: <a Messages request>}]};
+// every request's params read as a Messages body, merged under the same caps.
+export function batchFileParts(body) {
+  const out = { parts: [], over: 0, unscannable: [], refs: [], ambiguous: [] };
+  for (const r of arr(isObj(body) ? body.requests : null)) {
+    if (!isObj(r)) continue;
+    const f = fileParts("anthropic", r.params);
+    out.over += f.over;
+    for (const k of ["parts", "unscannable", "refs"]) for (const x of f[k]) { if (out[k].length >= MAX_PARTS) out.over++; else out[k].push(x); }
+    out.ambiguous.push(...f.ambiguous);
+  }
+  return out;
 }
