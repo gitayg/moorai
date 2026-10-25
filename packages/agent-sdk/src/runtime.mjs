@@ -47,7 +47,7 @@
 // captured whenever intentAlignment is not "off" or an allowlist is configured.
 import { readFileSync } from "node:fs";
 import os from "node:os";
-import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib, intentServerLib } from "./core.mjs";
+import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib, intentServerLib, secretTaintLib, secretLearnLib, sessionRiskLib } from "./core.mjs";
 import { decideToolCall } from "./decide.mjs";
 import { createReporter } from "./report.mjs";
 import { taskBoundLib } from "./core.mjs";
@@ -60,6 +60,8 @@ const { OFFLINE_DEFAULT_POLICY } = offlineDefault;
 const { decideInbound, surfaceOf, inboundText } = inboundLib;
 const { decideIndexChunk, indexScanAction, indexSource, INDEX_MAX_CHUNKS } = indexScanLib;
 const { createIntentStore, intentModeFromPolicy, INTENT_CATEGORY, INTENT_CLASS_TEXT } = intentServerLib;
+// The TTL of a session-read secret: the session-risk window, resolved as the hook resolves it.
+const sessionRiskWindowMs = (policy) => { try { return sessionRiskLib.sessionRiskConfig(policy).windowMin * 60000; } catch { return 30 * 60000; } };
 
 // The hook's NO_POLICY_BASELINE, byte for byte: no threat configuration, so threatActionFor falls through
 // to BUILTIN_DEFAULT_ACTIONS (cli/moorai-hook.mjs explains why this differs from the offline default).
@@ -111,6 +113,38 @@ export async function createMoorAI(options = {}) {
   const identity = { user: who.user, device: who.device, platform: os.platform(), tenant: config.tenant, actor: hash(`${who.user}@${who.device}`), surface, ...(agentName ? { agentName } : {}) };
   const reporter = options.reporter || createReporter({ config, identity, fetchImpl: options.fetch });
   const intent = options.intentStore === false ? null : createIntentStore(options.intentStore || {});
+  // #65 session-read secrets (cli/secret-taint.mjs): what inbound tool results carried, as keyed
+  // fingerprints in memory under a random per-process key, one tracker per owner (moorai-serve's bearer
+  // principal; "" otherwise) and session id. A call with a session id matches that session's tracker plus
+  // its owner's unattributed one; a call with none matches the union of its owner's live trackers.
+  let evictCtx = null;
+  const ownerKey = (o) => (typeof o === "string" ? o : "");
+  const sessKey = (x) => (typeof x === "string" ? x : "");
+  const post65 = (s, tool, sess, category, contentHash, secretTaint) => reporter.post({ threatId: 65, category, riskLevel: "High", stage: "output", tool: `hook:${tool}`, contentHash, secretTaint, ...sess }, { prov: prov(s, "PostToolUse") });
+  const secrets = options.secretTracker === false ? null : secretTaintLib.memorySessions({
+    maxSessions: options.secretSessions || secretTaintLib.MAX_MEMORY_SESSIONS,
+    ...(options.secretEvictedMax ? { evictedMax: options.secretEvictedMax } : {}),
+    onEvict: ({ evictedLive, evictedMapTrimmed }) => {
+      if (!evictCtx) return;
+      if (evictedLive) post65(evictCtx.s, evictCtx.tool, evictCtx.sess, "Session secret tracking evicted a live session", "secret-evict", { evictedLive });
+      if (evictedMapTrimmed) post65(evictCtx.s, evictCtx.tool, evictCtx.sess, "Session secret tracking evicted-session map full", "secret-evict-map", { evictedMapTrimmed });
+    }
+  });
+  const trackerFor = (s, sess, session, owner) => (secrets ? { kr: secrets.kr, entries: () => secrets.entries(ownerKey(owner), sessKey(session), { ttl: sessionRiskWindowMs(s.policy) }), overflowed: () => secrets.overflowed(ownerKey(owner), sessKey(session)), learn: (values, tool, cred) => learnValues(s, values, tool, sess, cred, session, owner) } : null);
+  function learnInbound(s, text, tool, sess, session, owner) {
+    if (!secrets || tool === "WebFetch" || tool === "WebSearch") return;
+    try { learnValues(s, secretLearnLib.learnableSecrets(text), tool, sess, false, session, owner); } catch { /* tracking is evidence; never the verdict */ }
+  }
+  function learnValues(s, values, tool, sess, cred = false, session = "", owner = "") {
+    try {
+      if (!values.length) return;
+      evictCtx = { s, tool, sess };
+      const r = secrets.learn(ownerKey(owner), sessKey(session), values, { ttl: sessionRiskWindowMs(s.policy), cred });
+      evictCtx = null;
+      if (r.report) post65(s, tool, sess, "Session secret tracking cap reached", `secret-cap:${r.cap}`, { pool: r.pool, cap: r.cap, dropped: r.dropped, overQuota: r.overQuota, kept: r.size, retained: r.retained });
+      if (r.reportRetained) post65(s, tool, sess, "Session secret retained store full", `secret-retain:${r.retainCap}`, { retainCap: r.retainCap, retainedDropped: r.retainedDropped });
+    } catch { evictCtx = null; /* tracking is evidence; never the verdict */ }
+  }
 
   let state = null, loading = null, loadedAt = 0;
   async function loadPolicy() {
@@ -183,6 +217,7 @@ export async function createMoorAI(options = {}) {
       : decideText(s.engine, s.policy, t, stage, { ctx: c });
     const findings = d.findings.map((f) => ({ ...f, stage }));
     const sess = sessionOf(meta.session);
+    if (c.inbound === true) learnInbound(s, t, typeof c.tool === "string" ? c.tool : tool, sess, meta.session, meta.owner);
     report(s, findings, { tool, decision: d.decision, event: meta.event || "Scan", sess });
     const st = meta.settle === false ? { decision: d.decision, headlessAsk: null } : settle(s, { decision: d.decision, reason: d.reasons.join(", ") }, { tool, sess });
     return { decision: st.decision, configuredDecision: d.decision, ...summary(findings), reasons: d.reasons, alternatives: d.alternatives, kill: d.kill, findings: contentFree(findings), ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };
@@ -272,8 +307,8 @@ export async function createMoorAI(options = {}) {
   // headless run.
   async function toolCall({ tool, input, cwd, permissionMode = "", session, owner } = {}) {
     const s = await ready();
-    const b = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId });
     const sess = sessionOf(session);
+    const b = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId, secretTracker: trackerFor(s, sess, session, owner) });
     report(s, b.findings, { tool: b.tool, decision: b.decision, sess });
     reportSignals(s, b.signals, b.tool, "PreToolUse", sess);
     const v = boundStep(s, intentStep(s, b, input, session, sess, owner), tool, input, session, sess, owner);

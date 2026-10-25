@@ -2660,6 +2660,126 @@ admin learns that a device has a local model whose **name** says its safety trai
   (`llamauncensored`) is missed. An Ollama server on a non-default port whose models live outside the
   directories above is missed. Not mirrored in the desktop host (`src-tauri`) yet, so the console does not receive it.
 
+## Local secret egress (#65): encoded forms and session-read secrets
+
+#65 checks every outbound flow for a secret value the device holds, by value rather than by shape:
+[`cli/secret-egress.mjs`](../cli/secret-egress.mjs) reads the local secret stores (the project's `.env*`
+files, `~/.aws/credentials`, `~/.npmrc`, `~/.netrc`, `.git-credentials`), and
+[`cli/secret-taint.mjs`](../cli/secret-taint.mjs) adds the secrets the agent read during the session.
+A match reuses #65's decision (`threatPolicy[65]`, built-in `block`; `justify` on the write path) and its
+alert, `Local secret value egress`, which carries `secretEgress: [{ hashPrefix, encoding, source }]` next
+to the existing `contentHash`: the first 8 hex digits of the tenant-keyed hash, the form that matched, and
+`store` or `session-read`. No value, form or length leaves the device.
+
+**Encodings** ([`cli/secret-forms.mjs`](../cli/secret-forms.mjs)). Each tracked value is held as its forms:
+raw; JSON-escaped (when escaping changes it); byte-reversed; standard base64 and URL-safe base64 at each of
+the three byte alignments (the characters of `base64(prefix + value + suffix)` that depend only on the
+value, so a value encoded alone, padded or unpadded, or anywhere inside a larger base64 blob, contains one
+of them); lower- and upper-case hex. The outbound text is also read percent-decoded (every `%XX` replaced
+by its byte, so any percent-encoding of the value reads back raw) and unwrapped (CR, LF and the JSON escapes
+`\n` / `\r` removed, so base64 or hex wrapped at a line width reads unbroken). The reversed form was kept on
+a measurement: over 3,086 benign texts (633 KB, the six benign corpora) it added 0 matches, both for 50
+synthetic secrets and for 480 secret-shaped tokens taken from the corpora themselves.
+
+**Matching** ([`cli/secret-match.mjs`](../cli/secret-match.mjs)). A form is stored as its length, a 24-bit
+fingerprint of its first 8 bytes and a 96-bit HMAC-SHA-256 of the whole form. One 8-byte window slides over
+each view of the outbound text once, with a polynomial rolling hash under a key-derived odd base, finished
+by a keyed mixer; a window whose fingerprint is in a bitmap is confirmed by the HMAC of the bytes starting
+there; the bitmap is sized to the number of forms, so a large tracked set does not raise the chance-hit rate.
+One pass per view whatever the number of secrets or lengths. The verbatim check of store secrets
+still covers the whole text; the raw text is scanned up to 16 MiB and each decoded view up to 4 MiB, and at
+most 20,000 HMACs run per check. Text left unread past those limits while anything is tracked (source
+`scan-cap`), an exhausted HMAC budget (`scan-budget`) and a session that lost tracked records
+(`cap-overflow`, below) are each reported as a match with encoding `unverified`, in the hook, the SDK
+runtime, `moorai-serve`, the model proxy and the MCP gateway alike.
+
+**Decision.** A confirmed match applies #65's action (`threatPolicy[65]`, built-in `block`). An unverified
+match applies `secretEgress.unverified`, read from the root-owned admin binding first, then the signed
+policy: `"ask"` (the default) holds the call for a person, `"block"` applies #65's action, `"report"` only
+alerts. Any other value is ignored. A host with no ask prompt settles the ask by its existing rule: Codex turns
+it into a deny with a message, and server mode, the SDK runtime, `moorai-serve` and the model proxy apply the
+headless-ask rule (deny unless the policy allows it with a report). Under a #65 action other than block or
+kill, every match only alerts.
+
+**Session-read secrets** ([`cli/secret-learn.mjs`](../cli/secret-learn.mjs),
+[`cli/secret-taint-hook.mjs`](../cli/secret-taint-hook.mjs)). The hook learns from the file a `Read`
+names (read by the hook before the call, since `Read` has no `PostToolUse` matcher), a `Bash` /
+`PowerShell` result and an `mcp__*` result: the prefix-anchored #39 provider tokens (GitHub, GitLab, Slack,
+Stripe, AWS key ids, Google, OpenAI / Anthropic, npm, PyPI, SendGrid, Twilio), JWTs, an Azure `AccountKey`,
+a database URL's password and the entropy-gated named assignments (`FOO_TOKEN=…`); and every `KEY=value`
+line (through the store parser and its `isSecretish` bar) when the source is credential-like: a `Read` of a
+`.env` (not `.env.example` / `.sample` / `.template`), a credentials, `.npmrc`, `.netrc`, `.pypirc`,
+`.git-credentials`, `.pgpass`, `.tfvars` or `secrets.*` file, gh's `hosts.yml`, a docker or kube config; a
+command that reads one or dumps the environment; an MCP call whose arguments name one. `WebFetch` and
+`WebSearch` results never teach. The SDK runtime (behind `moorai-serve` and the model proxy) learns from a
+`Read` through `toolCall` as the hook does, and from every inbound scan (`/v1/scan` with `ctx.inbound`, the
+SDK's `PostToolUse`, a tool result in a model-proxy request) except `WebFetch` / `WebSearch`, provider tokens
+and named assignments only. The MCP gateway learns from each remote result it forwards.
+
+- **Pools and quota.** Values from a credential source (a credential file, an environment dump, an MCP read
+  of a credential path) live in a `cred` pool; values pattern-matched out of any other text live in a
+  `pattern` pool; 64 each, so secret-shaped junk never displaces a credential-file secret. One learn call
+  adds at most 32 records to a pool. Overflowing a pool loses nothing and holds nothing: what a pool evicts,
+  and what a call learned past its quota, moves to the retained store and is still matched. One alert per
+  window, `Session secret tracking cap reached` (#65, `secretTaint: { pool, cap, dropped, overQuota, kept,
+  retained }`).
+- **Retained store.** The same matching material packed at 18 bytes a form (no value): 4,096 records per
+  session in the hook, 1,024 per session in memory, each for its TTL. Only when the retained store itself is
+  full is a record lost; the session is then overflowed until that record would have expired, and every
+  egress check of that session returns `unverified` (source `cap-overflow`). Other sessions are unaffected.
+  One alert per window, `Session secret retained store full` (`secretTaint: { retainCap, retainedDropped }`).
+
+- **Where it is kept.** Hook: `~/.moorai/secret-taint.json` (0600, `v: 2`, `fpw: 24`) under an HMAC of the
+  device's `session.key`, per keyed session id: the pools (each secret's tenant-keyed alert hash, last-read
+  time and forms as `[encoding, length, fingerprint, HMAC]`, so the value's byte length is in the file), a
+  generation and the retained record count; the retained store is `~/.moorai/secret-taint.d/<keyed id>.bin`
+  (0600), headed by the same generation. A learn writes the retained file first and the JSON second, and
+  every learn and every read takes the lockfile (`secret-taint.json.lock`, O_EXCL, a lock older than 5 s is
+  removed), so parallel calls keep every learn and a reader never pairs two writes. A state file of another
+  version or fingerprint width, or a retained file that is missing, oversized (over 2 MiB), truncated or of
+  another generation (a writer killed between the two writes), holds its session as unverified until its
+  last read + TTL. SDK runtime: the same records in memory under a random per-process key, one tracker per
+  owner (moorai-serve's bearer principal, `""` otherwise) and session id. A call with a session id matches
+  that session plus the owner's unattributed tracker; a call with none (the model proxy's tool calls) matches
+  the union of the owner's live trackers. MCP gateway: one tracker per route.
+- **Session table.** 16 sessions in the file; 256 per owner in memory. A session with nothing live is
+  dropped. A live one is evicted only when the table is full of live sessions, least recently learned first;
+  its keyed id goes to an evicted-until map (4,096 keys per table) holding its last learn + TTL (or its
+  overflow window), and until then that session is unverified (`cap-overflow`). When that map is full, its
+  soonest-expiring keys leave it and the table's `overflowedUntil` is raised to the latest of their expiries:
+  every session of that table (in memory, of that owner only) is unverified until then. Alerts:
+  `Session secret tracking evicted a live session` (`secretTaint: { evictedLive }`) and
+  `Session secret tracking evicted-session map full` (`secretTaint: { evictedMapTrimmed }`).
+- **TTL.** A secret expires `policy.sessionRisk.windowMin` (30 min by default) after it was last read; a
+  re-read refreshes it.
+- **Sinks.** Session-read secrets are matched where a flow leaves: a `Bash` / `PowerShell` command with
+  network egress (an upload or a named host), a `WebFetch`, an MCP tool call (hook, SDK `toolCall`,
+  `moorai-serve /v1/tool-call`, the model proxy's tool calls in responses, the MCP gateway). Store secrets,
+  raw or encoded, are matched where #65 ran before: every shell command, `WebFetch`, MCP call and new-file
+  write.
+- **Cost** (median of 50, 50 tracked secrets over 40 lengths, 100 KB payload, Apple silicon): 0.9–4.0 ms per
+  check for session secrets and 2.0–4.6 ms for store secrets, against 0.3–0.9 ms for the verbatim-only check.
+  A 2 MB payload in three views takes 70–78 ms. Worst cases: 380–415 ms for a 17 MB payload (16 MiB raw plus
+  two 4 MiB decoded views, then held as unverified), 36–50 ms for an exhausted HMAC budget. With a full
+  in-memory retained store (about 29,000 forms) a check costs 12 ms on 100 KB and 33 ms on 2 MB. Extracting
+  learnable values from a 256 KB result costs 3–7 ms.
+
+**Limits.** Encryption, compression, XOR, custom alphabets, base32 / base85, hex with separators
+(`41:42`, `\x41`), nested encodings (base64 of hex), and a value split across separate strings or arguments
+are not covered. A secret shorter than 8 characters, or one that fails `isSecretish`, is not tracked. The
+model proxy's request bodies (what goes to the model provider) are not a #65 sink; its tool calls are.
+The hook cannot tell a local MCP server from a remote one, so every MCP call is a sink. In the runtime,
+`KEY=value` lines are learned only from a `Read` (an inbound scan does not see the tool input). A call with
+no session id is held when any live session of its owner is unverified. Outbound text past the scan limits
+is not read: an egress of more than 16 MiB (or a decoded view over 4 MiB) is unverified whenever a secret is
+tracked, and asks by default. A session that loses records from a full retained store
+is unverified for every egress until they would have expired. A secret past its TTL is no longer matched.
+The gateway's tracker is per route, not per client session, and the gateway forwards an `ask` outside server
+mode. If the lockfile cannot be taken within 2 s the update or read runs unlocked. The agent runs as the same OS user
+and can read `session.key` and edit the state file. A stolen state file without the key yields no value
+and no cheap test of a guess against the HMAC; the 24-bit fingerprint of a form's first 8 bytes is the
+weakest part of it, and recovering it reveals at most those 8 bytes.
+
 ## Download-then-run, secret-file upload and out-of-band collection hosts
 
 Built against a published trigger-backdoor study whose model, inside a coding agent, downloaded a script
