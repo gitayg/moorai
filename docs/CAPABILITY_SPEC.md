@@ -2660,6 +2660,82 @@ admin learns that a device has a local model whose **name** says its safety trai
   (`llamauncensored`) is missed. An Ollama server on a non-default port whose models live outside the
   directories above is missed. Not mirrored in the desktop host (`src-tauri`) yet, so the console does not receive it.
 
+## Local secret egress (#65): encoded forms and session-read secrets
+
+#65 checks every outbound flow for a secret value the device holds, by value rather than by shape:
+[`cli/secret-egress.mjs`](../cli/secret-egress.mjs) reads the local secret stores (the project's `.env*`
+files, `~/.aws/credentials`, `~/.npmrc`, `~/.netrc`, `.git-credentials`), and
+[`cli/secret-taint.mjs`](../cli/secret-taint.mjs) adds the secrets the agent read during the session.
+A match reuses #65's decision (`threatPolicy[65]`, built-in `block`; `justify` on the write path) and its
+alert, `Local secret value egress`, which carries `secretEgress: [{ hashPrefix, encoding, source }]` next
+to the existing `contentHash`: the first 8 hex digits of the tenant-keyed hash, the form that matched, and
+`store` or `session-read`. No value, form or length leaves the device.
+
+**Encodings** ([`cli/secret-forms.mjs`](../cli/secret-forms.mjs)). Each tracked value is held as its forms:
+raw; JSON-escaped (when escaping changes it); byte-reversed; standard base64 and URL-safe base64 at each of
+the three byte alignments (the characters of `base64(prefix + value + suffix)` that depend only on the
+value, so a value encoded alone, padded or unpadded, or anywhere inside a larger base64 blob, contains one
+of them); lower- and upper-case hex. The outbound text is also read percent-decoded (every `%XX` replaced
+by its byte, so any percent-encoding of the value reads back raw) and unwrapped (CR, LF and the JSON escapes
+`\n` / `\r` removed, so base64 or hex wrapped at a line width reads unbroken). The reversed form was kept on
+a measurement: over 3,086 benign texts (633 KB, the six benign corpora) it added 0 matches, both for 50
+synthetic secrets and for 480 secret-shaped tokens taken from the corpora themselves.
+
+**Matching** ([`cli/secret-match.mjs`](../cli/secret-match.mjs)). A form is stored as its length, a 20-bit
+fingerprint of its first 8 bytes and a 96-bit HMAC-SHA-256 of the whole form. One 8-byte window slides over
+each view of the outbound text once, with a polynomial rolling hash under a key-derived odd base, finished
+by a keyed mixer; a window whose fingerprint is in a bitmap is confirmed by the HMAC of the bytes starting
+there. One pass per view whatever the number of secrets or lengths. The verbatim check of store secrets
+still covers the whole text; each view is scanned up to 1 MiB (past it the call is marked capped, as a
+truncated file scan is), and at most 20,000 HMACs run per check. An exhausted HMAC budget is reported as a
+match with encoding `unverified` (fail closed).
+
+**Session-read secrets** ([`cli/secret-learn.mjs`](../cli/secret-learn.mjs),
+[`cli/secret-taint-hook.mjs`](../cli/secret-taint-hook.mjs)). The hook learns from the file a `Read`
+names (read by the hook before the call, since `Read` has no `PostToolUse` matcher), a `Bash` /
+`PowerShell` result and an `mcp__*` result: the prefix-anchored #39 provider tokens (GitHub, GitLab, Slack,
+Stripe, AWS key ids, Google, OpenAI / Anthropic, npm, PyPI, SendGrid, Twilio), JWTs, an Azure `AccountKey`,
+a database URL's password and the entropy-gated named assignments (`FOO_TOKEN=…`); and every `KEY=value`
+line (through the store parser and its `isSecretish` bar) when the source is credential-like: a `Read` of a
+`.env` (not `.env.example` / `.sample` / `.template`), a credentials, `.npmrc`, `.netrc`, `.pypirc`,
+`.git-credentials`, `.pgpass`, `.tfvars` or `secrets.*` file, gh's `hosts.yml`, a docker or kube config; a
+command that reads one or dumps the environment; an MCP call whose arguments name one. `WebFetch` and
+`WebSearch` results never teach. The SDK runtime (behind `moorai-serve` and the model proxy) learns from a
+`Read` through `toolCall` as the hook does, and from every inbound scan (`/v1/scan` with `ctx.inbound`, the
+SDK's `PostToolUse`, a tool result in a model-proxy request) except `WebFetch` / `WebSearch`, provider tokens
+and named assignments only. The MCP gateway learns from each remote result it forwards.
+
+- **Where it is kept.** Hook: `~/.moorai/secret-taint.json` (0600) under an HMAC of the device's
+  `session.key`, per keyed session id: each secret's tenant-keyed alert hash, its last-read time and its
+  forms as `[encoding, length, fingerprint, HMAC]` (so the value's byte length is in the file). 16 sessions. SDK runtime and gateway: the same records
+  in memory under a random per-process key, one set per process.
+- **TTL.** A secret expires `policy.sessionRisk.windowMin` (30 min by default) after it was last read; a
+  re-read refreshes it.
+- **Cap.** 64 secrets per session (per process for the runtime and the gateway). Past it the oldest are
+  dropped and learning continues, so the newest read is always matched; one content-free alert,
+  `Session secret tracking cap reached` (#65, `secretTaint: { cap, dropped, kept }`), per window.
+- **Sinks.** Session-read secrets are matched where a flow leaves: a `Bash` / `PowerShell` command with
+  network egress (an upload or a named host), a `WebFetch`, an MCP tool call (hook, SDK `toolCall`,
+  `moorai-serve /v1/tool-call`, the model proxy's tool calls in responses, the MCP gateway). Store secrets,
+  raw or encoded, are matched where #65 ran before: every shell command, `WebFetch`, MCP call and new-file
+  write.
+- **Cost** (median of 50, 50 tracked secrets over 40 lengths, 100 KB payload, Apple silicon): 0.9–4.0 ms per
+  check for session secrets and 2.0–4.6 ms for store secrets, against 0.3–0.9 ms for the verbatim-only check.
+  Worst cases: 31–40 ms for a 1.25 MB payload in three views (each truncated at 1 MiB), 36–50 ms for an
+  exhausted HMAC budget. Extracting learnable values from a 256 KB result costs 3–7 ms.
+
+**Limits.** Encryption, compression, XOR, custom alphabets, base32 / base85, hex with separators
+(`41:42`, `\x41`), nested encodings (base64 of hex), and a value split across separate strings or arguments
+are not covered. A secret shorter than 8 characters, or one that fails `isSecretish`, is not tracked. The
+model proxy's request bodies (what goes to the model provider) are not a #65 sink; its tool calls are.
+The hook cannot tell a local MCP server from a remote one, so every MCP call is a sink. In the runtime,
+`KEY=value` lines are learned only from a `Read` (an inbound scan does not see the tool input), and one set
+serves every session and principal of the process. A secret evicted by the cap or the TTL is no longer matched. Parallel hook calls
+can lose one another's update to the state file, which costs one learn. The agent runs as the same OS user
+and can read `session.key` and edit the state file. A stolen state file without the key yields no value
+and no cheap test of a guess against the HMAC; the 20-bit fingerprint of a form's first 8 bytes is the
+weakest part of it, and recovering it reveals at most those 8 bytes.
+
 ## Download-then-run, secret-file upload and out-of-band collection hosts
 
 Built against a published trigger-backdoor study whose model, inside a coding agent, downloaded a script

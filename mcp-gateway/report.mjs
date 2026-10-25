@@ -110,8 +110,9 @@ export function alertFindings(server, tool, findings, blocked, stage = "mcp") {
 }
 
 // #65 — only the one-way hashes of the matched local secrets leave, as in the hook.
-export function alertEgress(server, tool, hits, blocked) {
-  post({ threatId: 65, category: "Local secret value egress", riskLevel: blocked ? "Blocked" : "Critical", stage: "egress", tool: t(tool), mcpServer: server, ts: now(), contentHash: "egress:" + hits.join("."), ...IDENTITY });
+// `matches` (optional): [{ hash, encoding, source }] from cli/secret-egress.mjs egressMatches.
+export function alertEgress(server, tool, hits, blocked, matches) {
+  post({ threatId: 65, category: "Local secret value egress", riskLevel: blocked ? "Blocked" : "Critical", stage: "egress", tool: t(tool), mcpServer: server, ts: now(), contentHash: "egress:" + hits.join("."), ...(matches ? { secretEgress: matches.slice(0, 16).map((m) => ({ hashPrefix: m.hash.slice(0, 11), encoding: m.encoding, source: m.source })) } : {}), ...IDENTITY });
 }
 
 export function alertTool(server, toolName, { category, riskLevel, threatId = 0, hash, decision = "notify", reasonCode, driftCheck }) {

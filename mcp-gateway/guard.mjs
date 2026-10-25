@@ -32,7 +32,10 @@ import { createRecheck, RECHECK_SOURCE } from "../mcp-proxy/tool-recheck.mjs";
 import { isEnrolled } from "../data/enforcement.js";
 import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
 import { indexWriteScan } from "../cli/index-tools.mjs";
-import { egressHits } from "../cli/secret-egress.mjs";
+import { egressMatches } from "../cli/secret-egress.mjs";
+import { memoryTracker } from "../cli/secret-taint.mjs";
+import { learnableSecrets } from "../cli/secret-learn.mjs";
+import { sessionRiskConfig } from "../data/session-risk.js";
 import { assessServer, addToolSignals } from "../cli/mcp-reputation.mjs";
 import { reputationAction, reputationAlert, reputationSummary } from "../data/mcp-reputation.js";
 import { settleHeadlessAsk } from "../cli/server-mode.mjs";
@@ -86,6 +89,9 @@ export function createGuard(route) {
   let clientRoots = [];
   const REP_DECL = { url: route.url };
   const DRIFT = createDriftTracker({ server: SERVER });
+  // #65 secrets this route's results carried (cli/secret-taint.mjs), in memory under a per-process key.
+  const SECRETS = memoryTracker();
+  const secretTtl = () => { try { return sessionRiskConfig(state.POLICY).windowMin * 60000; } catch { return 30 * 60000; } };
   const RECHECK = createRecheck({ tracker: DRIFT });
   // Coach (unenrolled, unmanaged) never blocks, so block mode degrades to today's alert path there.
   const driftBlocking = () => !state.COACH && toolDriftMode(state.POLICY) === "block";
@@ -193,10 +199,11 @@ export function createGuard(route) {
     // machine (cwd dotenv files, ~/.aws/credentials, ~/.npmrc, ~/.netrc, .git-credentials).
     let egress = null;
     if (!early) {
-      const hits = egressHits(args);
+      const em = egressMatches(args, undefined, { tracker: { kr: SECRETS.kr, entries: () => SECRETS.entries({ ttl: secretTtl() }) } });
+      const hits = [...new Set(em.matches.map((m) => m.hash))];
       if (hits.length) {
         const act = threatActionFor(POLICY, 65);
-        egress = { hits, block: act === "block" || act === "kill" };
+        egress = { hits, matches: em.matches, block: act === "block" || act === "kill" };
         if (egress.block && g.decision !== "deny") { g.decision = "deny"; g.gate = "egress"; g.reason = `${tool} — local secret egress`; }
       }
     }
@@ -228,7 +235,7 @@ export function createGuard(route) {
 
     if (state.COACH && g.decision === "deny") {
       coachNote(`MCP tool call ${tool} (server ${SERVER})`, g.reason, g.alternatives);
-      if (egress) alertEgress(SERVER, tool, egress.hits, false);
+      if (egress) alertEgress(SERVER, tool, egress.hits, false, egress.matches);
       alertFindings(SERVER, tool, g.findings, false);
       alertFindings(SERVER, tool, fileFindings, false, "file");
       alertFindings(SERVER, tool, indexFindings, false, "index");
@@ -237,14 +244,14 @@ export function createGuard(route) {
     }
     if (g.decision === "deny") {
       alertBlock(SERVER, tool, g.gate, argsHash);
-      if (egress) alertEgress(SERVER, tool, egress.hits, egress.block);
+      if (egress) alertEgress(SERVER, tool, egress.hits, egress.block, egress.matches);
       alertFindings(SERVER, tool, g.findings, true);
       alertFindings(SERVER, tool, fileFindings, true, "file");
       alertFindings(SERVER, tool, indexFindings, g.gate === "index", "index");
       auditCall(SERVER, tool, "deny", argsHash);
       return { block: g.reason || "policy" };
     }
-    if (egress) alertEgress(SERVER, tool, egress.hits, false);
+    if (egress) alertEgress(SERVER, tool, egress.hits, false, egress.matches);
     alertFindings(SERVER, tool, g.findings, false);
     alertFindings(SERVER, tool, fileFindings, false, "file");
     alertFindings(SERVER, tool, indexFindings, false, "index");
@@ -384,6 +391,8 @@ export function createGuard(route) {
       const result = resultOfResponse(msg);
       if (!result) return null;
       const label = toolName || "mcp";
+      // A secret in this result joins the route's tracked set, matched on later calls' arguments.
+      try { const vals = learnableSecrets(inboundText(result)); if (vals.length) SECRETS.learn(vals, { ttl: secretTtl() }); } catch { /* evidence only */ }
       // null when the scan missed the deadline (withDeadline) and there was text to judge; { unjudged }
       // when it threw or could not run. Open: forward (as always). Closed: replace what was not judged.
       const verdict = await withDeadline(scanResult(result).catch(() => ({ unjudged: "error" })), CAPS.resultDeadlineMs);

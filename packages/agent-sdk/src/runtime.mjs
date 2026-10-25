@@ -47,7 +47,7 @@
 // captured whenever intentAlignment is not "off" or an allowlist is configured.
 import { readFileSync } from "node:fs";
 import os from "node:os";
-import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib, intentServerLib } from "./core.mjs";
+import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib, intentServerLib, secretTaintLib, secretLearnLib, sessionRiskLib } from "./core.mjs";
 import { decideToolCall } from "./decide.mjs";
 import { createReporter } from "./report.mjs";
 import { taskBoundLib } from "./core.mjs";
@@ -60,6 +60,8 @@ const { OFFLINE_DEFAULT_POLICY } = offlineDefault;
 const { decideInbound, surfaceOf, inboundText } = inboundLib;
 const { decideIndexChunk, indexScanAction, indexSource, INDEX_MAX_CHUNKS } = indexScanLib;
 const { createIntentStore, intentModeFromPolicy, INTENT_CATEGORY, INTENT_CLASS_TEXT } = intentServerLib;
+// The TTL of a session-read secret: the session-risk window, resolved as the hook resolves it.
+const sessionRiskWindowMs = (policy) => { try { return sessionRiskLib.sessionRiskConfig(policy).windowMin * 60000; } catch { return 30 * 60000; } };
 
 // The hook's NO_POLICY_BASELINE, byte for byte: no threat configuration, so threatActionFor falls through
 // to BUILTIN_DEFAULT_ACTIONS (cli/moorai-hook.mjs explains why this differs from the offline default).
@@ -111,6 +113,21 @@ export async function createMoorAI(options = {}) {
   const identity = { user: who.user, device: who.device, platform: os.platform(), tenant: config.tenant, actor: hash(`${who.user}@${who.device}`), surface, ...(agentName ? { agentName } : {}) };
   const reporter = options.reporter || createReporter({ config, identity, fetchImpl: options.fetch });
   const intent = options.intentStore === false ? null : createIntentStore(options.intentStore || {});
+  // #65 session-read secrets (cli/secret-taint.mjs): what inbound tool results carried, as keyed
+  // fingerprints in memory under a random per-process key; matched at the egress sinks of toolCall.
+  const secrets = options.secretTracker === false ? null : secretTaintLib.memoryTracker({ cap: secretTaintLib.DEFAULT_CAP });
+  const trackerFor = (s, sess) => (secrets ? { kr: secrets.kr, entries: () => secrets.entries({ ttl: sessionRiskWindowMs(s.policy) }), learn: (values, tool) => learnValues(s, values, tool, sess) } : null);
+  function learnInbound(s, text, tool, sess) {
+    if (!secrets || tool === "WebFetch" || tool === "WebSearch") return;
+    try { learnValues(s, secretLearnLib.learnableSecrets(text), tool, sess); } catch { /* tracking is evidence; never the verdict */ }
+  }
+  function learnValues(s, values, tool, sess) {
+    try {
+      if (!values.length) return;
+      const r = secrets.learn(values, { ttl: sessionRiskWindowMs(s.policy) });
+      if (r.report) reporter.post({ threatId: 65, category: "Session secret tracking cap reached", riskLevel: "High", stage: "output", tool: `hook:${tool}`, contentHash: `secret-cap:${r.cap}`, secretTaint: { cap: r.cap, dropped: r.dropped, kept: r.size }, ...sess }, { prov: prov(s, "PostToolUse") });
+    } catch { /* tracking is evidence; never the verdict */ }
+  }
 
   let state = null, loading = null, loadedAt = 0;
   async function loadPolicy() {
@@ -183,6 +200,7 @@ export async function createMoorAI(options = {}) {
       : decideText(s.engine, s.policy, t, stage, { ctx: c });
     const findings = d.findings.map((f) => ({ ...f, stage }));
     const sess = sessionOf(meta.session);
+    if (c.inbound === true) learnInbound(s, t, typeof c.tool === "string" ? c.tool : tool, sess);
     report(s, findings, { tool, decision: d.decision, event: meta.event || "Scan", sess });
     const st = meta.settle === false ? { decision: d.decision, headlessAsk: null } : settle(s, { decision: d.decision, reason: d.reasons.join(", ") }, { tool, sess });
     return { decision: st.decision, configuredDecision: d.decision, ...summary(findings), reasons: d.reasons, alternatives: d.alternatives, kill: d.kill, findings: contentFree(findings), ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };
@@ -272,8 +290,8 @@ export async function createMoorAI(options = {}) {
   // headless run.
   async function toolCall({ tool, input, cwd, permissionMode = "", session, owner } = {}) {
     const s = await ready();
-    const b = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId });
     const sess = sessionOf(session);
+    const b = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId, secretTracker: trackerFor(s, sess) });
     report(s, b.findings, { tool: b.tool, decision: b.decision, sess });
     reportSignals(s, b.signals, b.tool, "PreToolUse", sess);
     const v = boundStep(s, intentStep(s, b, input, session, sess, owner), tool, input, session, sess, owner);
