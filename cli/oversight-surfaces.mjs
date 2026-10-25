@@ -12,7 +12,11 @@
 //   memoryFiles     "notify" (default), "ask", "block" or "off". The agent's PERSISTENT-INSTRUCTION files —
 //                   CLAUDE.md, CLAUDE.local.md, AGENTS.md, GEMINI.md, .cursorrules and the other rules files,
 //                   Claude Code's auto memory (.claude/projects/<p>/memory/), OpenClaw's SOUL.md / MEMORY.md /
-//                   memory/ (data/skill-surface.js PERSISTENT_INSTRUCTION_KINDS), and git's run-later files (a hook,
+//                   memory/ (data/skill-surface.js PERSISTENT_INSTRUCTION_KINDS), the agent and editor settings that
+//                   skip an approval or run a command (.claude/settings.json, .vscode/settings.json, .vscode/mcp.json,
+//                   .vscode/tasks.json, .cursor/mcp.json, .codex/config.toml, .gemini/settings.json, .mcp.json,
+//                   settings.VisualStudio.json, hook files …: data/skill-surface.js AGENT_SETTINGS_KINDS), and git's
+//                   run-later files (a hook,
 //                   a git config, the .git file, a commondir, a worktree's gitdir: gitRunLaterPath) — are watched BUILT IN, with no
 //                   policy at all: a skill that persists itself into the agent's memory steers every later
 //                   session. A write raises the signal "memory-file" (not "protected-surface"), and
@@ -34,12 +38,18 @@
 // for a file that does not exist yet the real path of its nearest existing ancestor plus the rest, so a
 // symlinked file or directory cannot dodge a protected surface. Each form is matched relative to cwd and as an
 // absolute path (a relative glob matches at any directory boundary of it, so cwd's own real path is not needed).
+// Each form is also matched in its Win32 canonical form, on every platform (data/path-canon.js): trailing dots and
+// spaces stripped from every segment ("CLAUDE.md.", ".git./config "), an alternate-data-stream suffix dropped
+// ("CLAUDE.md::$DATA", "a.md:s:$DATA") with a drive letter kept, and an 8.3 short-name segment ("CLAUDE~1.MD",
+// "VSCODE~1") read as each long name it can abbreviate — resolved through realpath.native on win32 when it exists,
+// otherwise matched by its stem and extension, failing toward protection. Policy globs match case-insensitively.
 //
 // A malformed entry is dropped with a warning that names its position, never its value. Pure apart from the
 // warning sink and the realpath lookups of protectedPathHit({ real: true }).
 import { realpathSync } from "node:fs";
 import { resolve, dirname, basename, join } from "node:path";
-import { persistentInstructionKind } from "../data/skill-surface.js";
+import { persistentInstructionKind, agentSettingsKind } from "../data/skill-surface.js";
+import { winCanonical, hasShortName, expandShortNames } from "../data/path-canon.js";
 
 
 const MAX_ENTRIES = 64, MAX_LEN = 256;
@@ -132,20 +142,68 @@ export function realOf(abs) {
   }
   return null;
 }
-export function pathForms(path, { cwd = "", real: useReal = false } = {}) {
+// The names an 8.3 short-name segment of a built-in surface can stand for (data/path-canon.js
+// shortNameCandidates): every literal segment of the persistent-instruction, agent-settings and git run-later
+// paths. A segment whose name is not listed is still read as its alias's own stem ("FOO~1.MD" as "FOO.MD"), which
+// covers the entries that match on an extension (.claude/rules/*.md, *.git).
+export const BUILTIN_LONG_NAMES = Object.freeze([
+  "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "AGENT.md", "AGENTS.override.md", "GEMINI.md", "SOUL.md", "MEMORY.md",
+  ".cursorrules", ".windsurfrules", ".clinerules", "copilot-instructions.md", "global_rules.md",
+  ".claude", ".cursor", ".windsurf", ".devin", "windsurf", "devin", ".cline", "Cline", ".github", ".copilot", ".kiro",
+  ".openclaw", ".codeium", ".vscode", ".vs", ".codex", ".gemini", "gemini-cli", "GeminiCli", "antigravity-cli",
+  ".agents", ".factory", ".amp", ".amazonq", "amazonq", ".zed", ".continue", ".opencode", "opencode", ".config",
+  "rules", "projects", "memory", "memories", "instructions", "steering", "workspace", "hooks", "mcpServers",
+  "settings", "Application Support", "Program Files", "ProgramData",
+  "settings.json", "settings.local.json", "managed-settings.json", "managed-settings.d", "managed-mcp.json",
+  ".mcp.json", ".claude.json", "claude_desktop_config.json", "mcp.json", "mcp_config.json", "cline_mcp_settings.json",
+  "hooks.json", "system-defaults.json", "tasks.json", "config.toml", "opencode.json", "permissions.json", "cli.json",
+  "cli-config.json", "settings.VisualStudio.json",
+  ".git", ".gitconfig", "git", "config", "config.worktree", "commondir", "gitdir", "worktrees", "modules", "gitconfig"
+]);
+const WIN = process.platform === "win32";
+const nativeReal = (p) => { try { return realpathSync.native(p); } catch { return null; } };
+// → { forms, overflow }. Each path form (as written, resolved against cwd, and with { real: true } its real path) is
+// added in its Win32 canonical form (data/path-canon.js: trailing dots and spaces stripped from every segment, the
+// alternate-data-stream suffix dropped, separators as "/"), and a form with an 8.3 short-name segment is expanded to
+// each long name the alias can stand for (names: the built-in ones plus each policy glob's segments). On win32 with
+// { real: true } an alias that exists is resolved through realpath.native (GetFinalPathNameByHandle) instead.
+// overflow: more expansions than the bound; the caller counts it as a hit (fail toward protection).
+function formsOf(path, { cwd = "", real: useReal = false, globSegs = [], platform = WIN ? "win32" : "", realNative = nativeReal } = {}) {
   const base = typeof cwd === "string" && cwd ? cwd : process.cwd();
   const forms = new Set([path]);
   let resolved = null;
   try { resolved = resolve(base, path); forms.add(resolved); } catch { resolved = null; }
   if (useReal && resolved) { const r = realOf(resolved); if (r) forms.add(r); }
+  let longOnWin = false;
+  if (useReal && resolved && platform === "win32" && hasShortName(resolved)) {
+    const n = realNative(resolved);
+    if (n) { forms.add(n); longOnWin = !hasShortName(n); }
+  }
+  for (const f of [...forms]) forms.add(winCanonical(f));
+  let overflow = false;
+  if (!longOnWin) {
+    for (const f of [...forms]) {
+      if (!hasShortName(f)) continue;
+      const e = expandShortNames(winCanonical(f), BUILTIN_LONG_NAMES, globSegs);
+      if (e.overflow) overflow = true;
+      for (const x of e.forms) forms.add(x);
+    }
+  }
   const out = new Set();
   for (const f of forms) { out.add(slashes(f)); out.add(norm(f, cwd)); }
-  return [...out];
+  return { forms: [...out], overflow };
 }
-export function protectedPathHit(path, surfaces, { cwd = "", real: useReal = false } = {}) {
-  if (!surfaces || !surfaces.paths || !surfaces.paths.length || typeof path !== "string" || !path || /[\r\n\0]/.test(path)) return false;
-  const forms = pathForms(path, { cwd, real: useReal });
-  return surfaces.paths.some((p) => forms.some((f) => p.re.test(f)));
+export function pathForms(path, opts = {}) { return formsOf(path, opts).forms; }
+const okPath = (path) => typeof path === "string" && !!path && !/[\r\n\0]/.test(path);
+// Policy globs match case-insensitively on every platform (Windows and macOS file systems are case-insensitive by
+// default, and an extra match only fails closed).
+const ciCache = new WeakMap();
+const ci = (re) => { let r = ciCache.get(re); if (!r) { r = new RegExp(re.source, "i"); ciCache.set(re, r); } return r; };
+const globSegsOf = (surfaces) => surfaces.paths.flatMap((p) => String(p.glob || "").replace(/\\/g, "/").split("/"));
+export function protectedPathHit(path, surfaces, { cwd = "", real: useReal = false, platform, realNative } = {}) {
+  if (!surfaces || !surfaces.paths || !surfaces.paths.length || !okPath(path)) return false;
+  const { forms, overflow } = formsOf(path, { cwd, real: useReal, globSegs: globSegsOf(surfaces), ...(platform !== undefined ? { platform } : {}), ...(realNative ? { realNative } : {}) });
+  return overflow || surfaces.paths.some((p) => forms.some((f) => ci(p.re).test(f)));
 }
 // git's own run-later surfaces: a hook (of a repository, a bare *.git, a worktree or a submodule gitdir), a config git
 // reads (where core.hooksPath, core.fsmonitor, alias.* and filter.* live: the repository's, a worktree's, a
@@ -164,11 +222,13 @@ const GIT_RUN_LATER = [
   /(?:^|\/)\.git$/i, /(?:^|\/)\.gitconfig$/i, /(?:^|\/)\.config\/git\/config$/i, /^\/etc\/gitconfig$/i
 ];
 export const gitRunLaterPath = (f) => GIT_RUN_LATER.some((re) => re.test(f));
-// One of the agent's persistent-instruction files (oversightPolicy's built-in set) or one of git's run-later
-// surfaces, unless the policy turned the set off.
-export function memoryPathHit(path, surfaces, { cwd = "", real: useReal = false } = {}) {
-  if (!surfaces || !surfaces.memory || typeof path !== "string" || !path || /[\r\n\0]/.test(path)) return false;
-  return pathForms(path, { cwd, real: useReal }).some((f) => persistentInstructionKind(f) !== null || gitRunLaterPath(f));
+// One of the agent's persistent-instruction files (oversightPolicy's built-in set), one of the agent and editor
+// settings files that grant approvals or run commands (data/skill-surface.js AGENT_SETTINGS_KINDS) or one of git's
+// run-later surfaces, unless the policy turned the set off.
+export function memoryPathHit(path, surfaces, { cwd = "", real: useReal = false, platform, realNative } = {}) {
+  if (!surfaces || !surfaces.memory || !okPath(path)) return false;
+  const { forms, overflow } = formsOf(path, { cwd, real: useReal, ...(platform !== undefined ? { platform } : {}), ...(realNative ? { realNative } : {}) });
+  return overflow || forms.some((f) => persistentInstructionKind(f) !== null || agentSettingsKind(f) !== null || gitRunLaterPath(f));
 }
 
 const keyRe = (k) => new RegExp(`(?<![\\w\\-])${esc(k)}(?![\\w\\-])`);

@@ -4694,7 +4694,18 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   directory it names, `core.fsmonitor` and `post-index-change` measured to run on 2.39.5 and 2.54.0; a worktree's
   `.git/worktrees/<w>/gitdir`, since `git worktree repair` writes a `.git` file where it points, measured on both;
   `objects/info/alternates`, `info/` files, `.git/gitdir` and `.git/modules/<m>/gitdir` were measured to run nothing
-  and are not watched). A Write / Edit of one, an MCP filesystem
+  and are not watched), and the agent and editor settings that skip an approval or run a command with no further
+  prompt (`AGENT_SETTINGS_KINDS`, data/skill-surface.js: Claude Code `.claude/settings.json`,
+  `.claude/settings.local.json`, managed settings, `.claude/hooks/` and `~/.claude.json`; `.vscode/settings.json`
+  (`chat.tools.terminal.autoApprove`, `chat.tools.global.autoApprove`, `task.allowAutomaticTasks`),
+  `.vscode/mcp.json`, `.vscode/tasks.json` (a `folderOpen` task runs on open); Cursor `.cursor/mcp.json`,
+  `.cursor/permissions.json` (`mcpAllowlist`, `terminalAllowlist`), `.cursor/cli.json`, `~/.cursor/cli-config.json`;
+  Codex `.codex/config.toml` (`approval_policy`, `sandbox_mode`, `mcp_servers`); Gemini CLI `.gemini/settings.json`;
+  Windsurf / Devin `hooks.json` and `mcp_config.json`; Visual Studio `settings.VisualStudio.json`, `.vs/mcp.json`
+  and `.mcp.json` (`%USERPROFILE%` or the solution directory); every other hook file and dedicated MCP-server
+  configuration in the skill-surface table). Prompt files (`.github/prompts/`), skills, commands, subagent
+  definitions, JetBrains run configurations and dev containers are not in the set: each runs only when someone
+  invokes or opens it, and writing one is the origin-taint `extension-install` class. A Write / Edit of one, an MCP filesystem
   write tool's path (below), or a shell command that writes, moves or deletes one, raises the signal `memory-file`
   under #84, and so does `git config` setting a key outside `GIT_SAFE_CONFIG` (`cli/oversight-shell-writes.mjs`
   `gitConfigWrite`: `git config [--global | --system | --local | --worktree | -f file] [--add | --replace-all]
@@ -4832,6 +4843,27 @@ and after), [`cli/oversight-shell.mjs`](../cli/oversight-shell.mjs) (Bash / Powe
   paths) as its `realpathSync`, or for a path that does not exist yet the real path of its nearest existing
   ancestor plus the rest; each relative to cwd and to cwd's real path, and absolute. A malformed entry is dropped
   with a stderr warning naming its position, never its value; an older agent ignores the key.
+- **Canonical path forms (Win32).** Every protected-path, memory-file, agent-settings and git run-later check
+  (`cli/oversight-surfaces.mjs` `pathForms`, so a Write / Edit, a shell write, an MCP filesystem write and the
+  origin-taint `memory-write` gate alike) also matches each form in its Win32 canonical form
+  (`data/path-canon.js`), on every platform, since the agent may write to a Windows share, a WSL path or a checkout
+  a Windows machine opens, and an extra form only adds matches: trailing dots and spaces are stripped from every
+  segment (`CLAUDE.md.`, `CLAUDE.md. `, `.git./config` name `CLAUDE.md` and `.git/config` under Win32
+  normalisation; a segment of only dots is kept); an alternate-data-stream suffix is dropped from any segment
+  (`:stream`, `:stream:$TYPE`, `::$DATA`), with a drive letter kept (`C:\proj\CLAUDE.md.`, drive-relative
+  `C:CLAUDE.md`); and an 8.3 short-name segment (`^[^~\\/]{1,6}~\d+(\.[^.]{0,3})?$`, `CLAUDE~1.MD`, `VSCODE~1`) is read
+  as every long name it can abbreviate under the NTFS alias rules (leading dots dropped, the base without spaces
+  and dots, upper-cased, its first six characters, or two characters and a four-hex-digit hash; the first three
+  characters of the extension), from the built-in surfaces' literal names (`BUILTIN_LONG_NAMES`), each policy
+  glob's segments (a wildcard segment gets a long name built to fit both the glob and the alias) and the alias's
+  own stem and extension. On win32 a short name that exists is resolved through `realpathSync.native` instead;
+  elsewhere, or when it does not resolve, the stem match stands, failing toward protection: `CLAUDE~1.MD` is
+  `CLAUDE.md`, `CLAUDE.local.md` or any `CLAUDE*.MD`. More than 1024 spellings counts as a hit. Policy globs match
+  case-insensitively; the built-in surfaces already do. Motivation: CVE-2026-103572 (Visual Studio and SSMS
+  Copilot) reached code execution by writing a protected settings or MCP file under a trailing-dot name. The
+  origin-taint `extension-install` class reads the canonical form too (`data/origin-taint.js` `extensionPath`). A
+  `cp` / `mv` destination containing `$` (`'CLAUDE.md::$DATA'`) is not literal to the shell reader and stays
+  `write-target-unknown`, which the `memory-write` gate counts.
 - **Stop / SubagentStop.** The rows in scope (a sub-agent's own calls; for the main agent, every call since the
   user's last prompt, its sub-agents' included) with an `ov` signal count when the call was allowed, ran after an
   ask (a PostToolUse / PostToolUseFailure with the same `tool_use_id`), or was asked on a tool Claude Code does

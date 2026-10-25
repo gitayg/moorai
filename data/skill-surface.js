@@ -207,6 +207,60 @@ export function persistentInstructionKind(path) {
   return k && PERSISTENT.has(k) ? k : null;
 }
 
+// The AGENT-SETTINGS subset: agent and editor files whose documented effect is to skip an approval prompt or to run
+// a command with no further prompt (a hook, an MCP server the client starts, a task that runs on folder open, an
+// approval or sandbox mode). A write into one is how an agent widens its own permissions, so
+// cli/oversight-surfaces.mjs watches these beside the persistent-instruction files (signal "memory-file").
+// The kinds from SURFACE above, with the docs each entry already cites:
+//   claude-settings, claude-managed-settings  permissions.allow / defaultMode and `hooks` (code.claude.com/docs/en/settings)
+//   claude-hook                               hook scripts the settings run (code.claude.com/docs/en/hooks-guide)
+//   claude-user-config                        ~/.claude.json: user and local MCP servers (code.claude.com/docs/en/mcp)
+//   droid-settings, gemini-settings, kiro-hook, antigravity-hooks, windsurf-hooks, cline-hook, plugin-hooks
+//                                             lifecycle hooks that run shell commands (the docs cited at each entry)
+//   managed-mcp, .mcp.json, claude-desktop-config, amp-settings, opencode-config, cursor-mcp, cline-mcp,
+//   windsurf-mcp, vscode-mcp, continue-mcp, zed-mcp, amazon-q-mcp, kiro-mcp, antigravity-mcp
+//                                             an MCP server entry is a command the client launches; Visual Studio reads
+//                                             %USERPROFILE%\.mcp.json, <solution>\.mcp.json, .vscode\mcp.json and
+//                                             .cursor\mcp.json and restarts the servers when the file is saved
+//                                             (learn.microsoft.com/visualstudio/ide/mcp-servers)
+//   codex-config                              approval_policy, sandbox_mode and mcp_servers in .codex/config.toml
+//   vscode-tasks                              a task with runOptions.runOn "folderOpen" runs on open
+// Skills, commands, prompt files, subagent definitions, JetBrains run configurations and dev containers are left
+// out: each is used only when someone invokes or opens it, and installing one is the "extension-install" origin gate.
+const SETTINGS_FROM_SURFACE = [
+  "claude-settings", "claude-managed-settings", "claude-hook", "claude-user-config",
+  "droid-settings", "gemini-settings", "kiro-hook", "antigravity-hooks", "windsurf-hooks", "cline-hook", "plugin-hooks",
+  "managed-mcp", ".mcp.json", "claude-desktop-config", "amp-settings", "opencode-config", "cursor-mcp", "cline-mcp",
+  "windsurf-mcp", "vscode-mcp", "continue-mcp", "zed-mcp", "amazon-q-mcp", "kiro-mcp", "antigravity-mcp",
+  "codex-config", "vscode-tasks"
+];
+// Settings files SURFACE does not list (they carry no instructions to scan), matched here only:
+const SETTINGS_ONLY = [
+  // VS Code workspace settings: chat.tools.terminal.autoApprove and chat.tools.global.autoApprove skip the
+  //   confirmation for terminal commands and tools (code.visualstudio.com/docs/agents/approvals), and
+  //   task.allowAutomaticTasks lets a folderOpen task run.
+  [/(^|[/\\])\.vscode[/\\]settings\.json$/i, "vscode-settings"],
+  // Cursor: permissions.json, ~/.cursor/ or <workspace>/.cursor/, mcpAllowlist and terminalAllowlist "can run without
+  //   approval" (cursor.com/docs/reference/permissions); the CLI's permissions.allow, <project>/.cursor/cli.json and
+  //   ~/.cursor/cli-config.json (cursor.com/docs/cli/reference/permissions).
+  [/(^|[/\\])\.cursor[/\\](permissions|cli|cli-config)\.json$/i, "cursor-permissions"],
+  // Visual Studio: per-solution settings in settings.VisualStudio.json beside the .sln / .slnx (Visual Studio blog,
+  //   September 2026), and <solution>\.vs\mcp.json, an MCP configuration "Specific to Visual Studio"
+  //   (learn.microsoft.com/visualstudio/ide/mcp-servers). CVE-2026-103572 (Visual Studio and SSMS Copilot) reached
+  //   code execution by writing these settings and MCP files under a trailing-dot name.
+  [/(^|[/\\])settings\.VisualStudio\.json$/i, "visualstudio-settings"],
+  [/(^|[/\\])\.vs[/\\]mcp\.json$/i, "visualstudio-mcp"]
+];
+export const AGENT_SETTINGS_KINDS = Object.freeze([...SETTINGS_FROM_SURFACE, ...SETTINGS_ONLY.map(([, k]) => k)]);
+const SETTINGS = new Set(SETTINGS_FROM_SURFACE);
+export function agentSettingsKind(path) {
+  const k = skillSurfaceKind(path);
+  if (k && SETTINGS.has(k)) return k;
+  const p = String(path || "");
+  for (const [re, kind] of SETTINGS_ONLY) if (re.test(p)) return kind;
+  return null;
+}
+
 export function skillSurfaceKind(path) {
   const p = String(path || "");
   for (const [re, kind] of SURFACE) if (re.test(p)) return kind;

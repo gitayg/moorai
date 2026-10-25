@@ -1956,7 +1956,14 @@ run-later files: a hook (`.git/hooks/`, a bare `*.git`, a worktree's or submodul
 (`.git/config`, `config.worktree`, `~/.gitconfig`, `~/.config/git/config`, `/etc/gitconfig`), the `.git` file
 that names the gitdir, a gitdir's `commondir` (`.git/commondir`, `.git/worktrees/<w>/commondir`,
 `.git/modules/<m>/commondir`: git reads the config and runs the hooks of the directory it names) and a worktree's
-`gitdir` (`.git/worktrees/<w>/gitdir`: `git worktree repair` writes a `.git` file where it points). A skill that writes itself into one of them steers every later session, so a Write / Edit,
+`gitdir` (`.git/worktrees/<w>/gitdir`: `git worktree repair` writes a `.git` file where it points), and the agent
+and editor settings that skip an approval or run a command with no further prompt: `.claude/settings.json` and
+`.claude/settings.local.json`, `.claude/hooks/`, `.vscode/settings.json` (terminal and tool auto-approval),
+`.vscode/mcp.json`, `.vscode/tasks.json` (a task can run on folder open), `.cursor/mcp.json`,
+`.cursor/permissions.json`, `.cursor/cli.json`, `.codex/config.toml`, `.gemini/settings.json`, Windsurf's
+`hooks.json`, Visual Studio's `settings.VisualStudio.json`, `.vs/mcp.json` and `.mcp.json`, and the other hook and
+MCP-server files (`AGENT_SETTINGS_KINDS` in `data/skill-surface.js`; prompt files, skills and commands, which run
+only when invoked, are not in it). A skill that writes itself into one of them steers every later session, so a Write / Edit,
 an MCP write or a shell write raises a #84 alert (signal `memory-file`), and so does `git config` setting a key
 outside the safe set (`core.hooksPath`, `core.fsmonitor`, `alias.*`, `filter.*` …; reads and unsets stay clean),
 read as git reads it: options only before the key (`git config core.pager --get` sets `core.pager` to `--get`), a
@@ -1972,7 +1979,13 @@ both keys set the stricter wins: `"protectMemoryFiles": false` never turns off a
 `"protectMemoryFiles": true` raises `"off"` or `"notify"` to #84's action. A path also listed in
 `protectedPaths` keeps that surface's ask, and a memory save is not counted by the Stop disclosure check. A path is matched as written, resolved against the working directory
 (`ops/x/../alerting/rules.yaml`, a relative path from a subdirectory) and through its real path, so a symlinked
-file or directory (or, for a new file, a symlinked parent) cannot dodge a protected surface. At most 64 of each; a
+file or directory (or, for a new file, a symlinked parent) cannot dodge a protected surface. Every one of those
+forms is also matched as Windows reads it, on every platform: trailing dots and spaces are stripped from each
+segment (`CLAUDE.md.`, `CLAUDE.md. `, `.git/config.`), an alternate data stream suffix is dropped (`CLAUDE.md::$DATA`,
+`CLAUDE.md:s`) with a drive letter kept (`C:\proj\CLAUDE.md.`), and an 8.3 short name (`CLAUDE~1.MD`,
+`VSCODE~1\SETTIN~1.JSO`) is read as each long name it can stand for (on Windows an existing one is resolved to its
+long name; otherwise the name's first characters and extension decide, failing toward protection). Policy globs
+match regardless of case. At most 64 of each; a
 malformed entry is dropped with a warning.
 
 **Bounded, and fail closed.** The checks run in linear time (no backtracking pattern). A command longer than

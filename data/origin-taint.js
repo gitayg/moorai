@@ -12,6 +12,7 @@
 //
 // Pure and browser-safe: text in, classes out. Every pattern is bounded to one shell segment.
 import { skillSurfaceKind, persistentInstructionKind } from "./skill-surface.js";
+import { winCanonical } from "./path-canon.js";
 
 export const ORIGIN_LEVELS = Object.freeze(["off", "notify", "ask", "block"]);
 export const ORIGIN_DEFAULT_LEVEL = "notify";
@@ -51,10 +52,11 @@ export function mcpMessageTool(tool) { return String(tool || "").startsWith("mcp
 
 // A path whose write installs an agent extension: a skill-surface file that is not a persistent-instruction file
 // (those are "memory-write"): an MCP config, a skill, a command, an agent definition, a plugin manifest, a hook
-// config, an IDE auto-run config (data/skill-surface.js).
+// config, an IDE auto-run config (data/skill-surface.js). Matched as written and in its Win32 canonical form
+// (data/path-canon.js: ".mcp.json.", ".vscode/tasks.json::$DATA").
 export function extensionPath(path) {
   const p = String(path || "");
-  return !!p && skillSurfaceKind(p) !== null && persistentInstructionKind(p) === null;
+  return !!p && [...new Set([p, winCanonical(p)])].some((f) => skillSurfaceKind(f) !== null && persistentInstructionKind(f) === null);
 }
 
 // The gated classes one shell command carries, other than "outbound" (data/session-risk.js classifyEvent) and
