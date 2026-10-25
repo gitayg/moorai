@@ -2698,8 +2698,14 @@ match applies `secretEgress.unverified`, read from the root-owned admin binding 
 policy: `"ask"` (the default) holds the call for a person, `"block"` applies #65's action, `"report"` only
 alerts. Any other value is ignored. A host with no ask prompt settles the ask by its existing rule: Codex turns
 it into a deny with a message, and server mode, the SDK runtime, `moorai-serve` and the model proxy apply the
-headless-ask rule (deny unless the policy allows it with a report). Under a #65 action other than block or
-kill, every match only alerts.
+headless-ask rule (deny unless the policy allows it with a report). On a host with no approver, ask becomes
+deny: the MCP gateway settles a #65 ask by the headless-ask rule outside server mode too
+([`cli/server-mode.mjs`](../cli/server-mode.mjs) `settleNoApproverAsk`: deny, with a content-free
+`Headless approval denied (no approver)` alert, unless the policy sets `headlessAsk: "allow-with-report"`),
+because it answers an MCP client, not a person, and forwarding the ask would release the call. An SDK
+runtime or `moorai-serve` started with `headlessAsk: "pass-through"` (the host's own approver decides) and
+a model proxy in report-only mode return the ask unsettled, as for every other ask. Under a #65 action
+other than block or kill, every match only alerts.
 
 **Session-read secrets** ([`cli/secret-learn.mjs`](../cli/secret-learn.mjs),
 [`cli/secret-taint-hook.mjs`](../cli/secret-taint-hook.mjs)). The hook learns from the file a `Read`
@@ -2774,8 +2780,9 @@ no session id is held when any live session of its owner is unverified. Outbound
 is not read: an egress of more than 16 MiB (or a decoded view over 4 MiB) is unverified whenever a secret is
 tracked, and asks by default. A session that loses records from a full retained store
 is unverified for every egress until they would have expired. A secret past its TTL is no longer matched.
-The gateway's tracker is per route, not per client session, and the gateway forwards an `ask` outside server
-mode. If the lockfile cannot be taken within 2 s the update or read runs unlocked. The agent runs as the same OS user
+The gateway's tracker is per route, not per client session; outside server mode the gateway still forwards
+an `ask` from its other checks (only a #65 ask is settled). An unenrolled gateway (coach) forwards even the
+settled deny, with a note, as it does every deny. If the lockfile cannot be taken within 2 s the update or read runs unlocked. The agent runs as the same OS user
 and can read `session.key` and edit the state file. A stolen state file without the key yields no value
 and no cheap test of a guess against the HMAC; the 24-bit fingerprint of a form's first 8 bytes is the
 weakest part of it, and recovering it reveals at most those 8 bytes.

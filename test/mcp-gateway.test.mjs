@@ -174,6 +174,38 @@ test("GATEWAY: a local secret sent base64-encoded, and a token a remote result c
   });
 });
 
+// An unverified-only #65 match: a 5 MB argument with a %XX escape makes a percent-decoded view past the
+// 4 MiB decoded-view limit, so with a local secret to look for the scan reports "scan-cap" and nothing
+// confirmed. secretEgress.unverified defaults to "ask"; outside server mode the gateway has no one to ask.
+test("GATEWAY: outside server mode an unverified-only #65 match (default ask) is refused, content-free; policy headlessAsk allow-with-report forwards it", async () => {
+  const local = "ProjDbPassw0rd-" + Math.random().toString(36).slice(2, 12);
+  const marker = "UNVERIFIEDMARKER" + Math.random().toString(36).slice(2, 10);
+  const big = marker + " %41 " + "c".repeat(5 * 1024 * 1024);
+  await scenario({ policy: { captureTier: "content-free" }, cwdFiles: { ".env": `DB_PASSWORD=${local}\n` }, upstream: { resultText: "ok" } }, async ({ con, up, base }) => {
+    const r = await rpc(base, call(13, "create_issue", { body: big }));
+    assert.equal(r.json.result.isError, true, `an unverified-only ask was forwarded: ${r.text.slice(0, 300)}`);
+    assert.match(r.text, /no approver/);
+    assert.equal(up.calls().length, 0, "the call reached the upstream");
+    await settle();
+    const eg = con.alerts.find((a) => a.threatId === 65 && Array.isArray(a.secretEgress));
+    assert.ok(eg, `no #65 alert: ${JSON.stringify(con.alerts.map((a) => a.threatId + ":" + a.category))}`);
+    assert.deepEqual(eg.secretEgress.map((m) => [m.encoding, m.source]), [["unverified", "scan-cap"]]);
+    assert.equal(eg.riskLevel, "Blocked");
+    const h = con.alerts.find((a) => a.contentHash === "headless-ask:deny");
+    assert.ok(h, `no no-approver alert: ${JSON.stringify(con.alerts.map((a) => a.category))}`);
+    assert.deepEqual(h.headlessAsk, { mode: "deny", source: "default" });
+    const all = JSON.stringify(con.alerts);
+    for (const f of [local, marker, "cccccccccccccccc"]) assert.ok(!all.includes(f), "argument or secret content leaked into an alert");
+  });
+  await scenario({ policy: { captureTier: "content-free", headlessAsk: "allow-with-report" }, cwdFiles: { ".env": `DB_PASSWORD=${local}\n` }, upstream: { resultText: "ok" } }, async ({ con, up, base }) => {
+    const r = await rpc(base, call(14, "create_issue", { body: big }));
+    assert.notEqual(r.json.result.isError, true, `allow-with-report did not forward: ${r.text.slice(0, 300)}`);
+    assert.equal(up.calls().length, 1);
+    await settle();
+    assert.ok(con.alerts.some((a) => a.contentHash === "headless-ask:allow"), `no allow-with-report alert: ${JSON.stringify(con.alerts.map((a) => a.category))}`);
+  });
+});
+
 test("GATEWAY: a session-read token after the 1 MiB mark of a 2 MB argument is denied; a clean 2 MB argument is forwarded (#65)", async () => {
   const tok = "ghp_" + Array.from({ length: 36 }, (_, i) => "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"[(i * 11 + Date.now()) % 36]).join("");
   const big = (mid) => "a".repeat(1100 * 1024) + " " + mid + " " + "b".repeat(900 * 1024);

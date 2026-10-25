@@ -340,7 +340,9 @@ or large bodies.
   a note on the gateway's stderr (the operator's log). "ask" (justify) forwards, because no banner exists
   — except in **server mode** (`cli/server-mode.mjs`), where the hook's headless rule settles it: deny,
   unless the system file or the org policy says `allow-with-report`. Server mode also enforces without a
-  token and reports under the workload identity, as the hook does.
+  token and reports under the workload identity, as the hook does. A #65 ask (`secretEgress.unverified`,
+  default "ask") is settled the same way outside server mode too: on a host with no approver, ask becomes
+  deny, unless the org policy says `headlessAsk: "allow-with-report"`.
 - The tool listing is report-first and byte-identical, always.
 - Not fail-open: a request body over 16 MB is refused (413) rather than forwarded unscanned, because
   forwarding it would let an agent pad its arguments past the scan. So is a batch of more than 64

@@ -360,6 +360,16 @@ export function settleHeadlessAsk(sm, policy, { decision, reason, tool = "", per
   };
 }
 
+// A host that has no approver even outside server mode (the MCP gateway answers an MCP client, not a
+// person): an "ask" it forwarded would simply run. Settled like a headless ask — deny, unless policy
+// headlessAsk is "allow-with-report" — with its own note. In server mode, settleHeadlessAsk as is.
+export const NO_APPROVER_NOTE = "held for approval, but this host has no approver to ask";
+export function settleNoApproverAsk(sm, policy, args) {
+  if (sm && sm.active) return settleHeadlessAsk(sm, policy, args);
+  const r = settleHeadlessAsk({ active: true, headless: { envDeny: false, system: "" } }, policy, args);
+  return r.decision === "deny" ? { ...r, reason: r.reason.replace(HEADLESS_NOTE, NO_APPROVER_NOTE) } : r;
+}
+
 // Claude Code's bypass mode (--dangerously-skip-permissions, permission_mode "bypassPermissions") skips
 // every permission prompt, so a PreToolUse "ask" is never shown and the call simply runs (measured live:
 // a #55 "ask" on a credentials read let the read through). Like a headless ask, nobody will approve it:

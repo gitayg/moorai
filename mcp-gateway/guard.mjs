@@ -21,7 +21,8 @@
 // (open, the default) or refuses it (closed, on an enforcing device). Otherwise only an explicit deny
 // under an enforcing device refuses; "ask" forwards (no banner exists)
 // except in server mode, where the hook's headless rule settles it (deny unless policy says
-// allow-with-report).
+// allow-with-report), and except a #65 "ask" (secretEgress.unverified), which is settled the same way
+// in every mode: the gateway has no approver, so forwarding it would release it.
 import { fileURLToPath } from "node:url";
 import { mcpGateway, decideText, threatActionFor } from "../cli/hook-core.mjs";
 import { CAPS, toolScanText, toolIdentity, resultOfResponse } from "../mcp-proxy/tool-scan.mjs";
@@ -38,7 +39,7 @@ import { learnableSecrets } from "../cli/secret-learn.mjs";
 import { sessionRiskConfig } from "../data/session-risk.js";
 import { assessServer, addToolSignals } from "../cli/mcp-reputation.mjs";
 import { reputationAction, reputationAlert, reputationSummary } from "../data/mcp-reputation.js";
-import { settleHeadlessAsk } from "../cli/server-mode.mjs";
+import { settleHeadlessAsk, settleNoApproverAsk } from "../cli/server-mode.mjs";
 import { contentHash } from "../cli/content-hash.mjs";
 import { state, ensurePolicy, ADMIN } from "./policy.mjs";
 import { profileCheck } from "./profile.mjs";
@@ -197,7 +198,7 @@ export function createGuard(route) {
 
     // #65 — a local secret VALUE shipped as an argument. The hook's check, against the secrets on THIS
     // machine (cwd dotenv files, ~/.aws/credentials, ~/.npmrc, ~/.netrc, .git-credentials).
-    let egress = null;
+    let egress = null, egressAsk = false;
     if (!early) {
       const em = egressMatches(args, undefined, { tracker: { kr: SECRETS.kr, entries: () => SECRETS.entries({ ttl: secretTtl() }), overflowed: () => SECRETS.overflowed() } });
       const hits = [...new Set(em.matches.map((m) => m.hash))];
@@ -205,7 +206,7 @@ export function createGuard(route) {
         const v = secretEgressVerdict(em.matches, { action: threatActionFor(POLICY, 65), level: unverifiedLevel(POLICY, ADMIN) });
         egress = { hits, matches: em.matches, block: v === "deny" };
         if (egress.block && g.decision !== "deny") { g.decision = "deny"; g.gate = "egress"; g.reason = `${tool} — local secret egress`; }
-        else if (v === "ask" && g.decision === "allow") { g.decision = "ask"; g.gate = "egress"; g.reason = `${tool} — outbound content MoorAI could not check for a tracked secret`; }
+        else if (v === "ask" && g.decision === "allow") { g.decision = "ask"; g.gate = "egress"; g.reason = `${tool} — outbound content MoorAI could not check for a tracked secret`; egressAsk = true; }
       }
     }
 
@@ -232,6 +233,14 @@ export function createGuard(route) {
       if (s.alert) alertHeadless(SERVER, tool, s.alert);
       g.decision = s.decision;
       if (s.decision === "deny") g.reason = s.reason;
+    }
+    // #65 outside server mode: nobody can answer an unverified-secret "ask" here either; settled as a
+    // headless ask (deny unless policy headlessAsk is "allow-with-report"), never forwarded as is.
+    if (g.decision === "ask" && egressAsk) {
+      const s = settleNoApproverAsk(SERVER_MODE, POLICY, { decision: "ask", reason: g.reason, tool });
+      if (s.alert) alertHeadless(SERVER, tool, s.alert);
+      g.decision = s.decision;
+      if (s.decision === "deny") { g.reason = s.reason; egress.block = true; }
     }
 
     if (state.COACH && g.decision === "deny") {
