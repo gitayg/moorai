@@ -25,6 +25,7 @@ import { withRestart } from "../src/regex-restart.js";
 import { TAG_SMUGGLING, SUPPLEMENT_VS_SMUGGLING, BASIC_VS_SMUGGLING, BIDI_MARK_RUN, wellFormedSelectorSequence } from "./invisible-selectors.js";
 import { SECURITY_TOOLING_DISABLE } from "./security-tooling.js";
 import { ciPipelinePoisoningHit } from "./ci-pipeline.js";
+import { destructiveIssued } from "./destructive-mention.js";
 import { persistenceHit } from "./persistence.js";
 
 // ---------------------------------------------------------------------------------------------------
@@ -330,6 +331,20 @@ export const INHIBIT_RECOVERY = [
   /(?<![\w.-])gcloud\s[^;&|\n]{0,80}?\b(?:compute\s+snapshots|sql\s+backups)\s+delete\b/i,
   /(?<![\w.-])az\s+snapshot\s+delete\b/i,
   /(?<![\w.-])az\s+backup\s+protection\s+disable\b[^;&|\n]{0,200}?--delete-backup-data(?:\s+|=)true\b/i
+];
+
+// Every destructive-command (#43) pattern, named so its prose gate reads the same list the detector matches.
+const DESTRUCTIVE_COMMAND = [
+  ...RECURSIVE_FORCE_DELETE,
+  ...INHIBIT_RECOVERY,
+  /\bsudo\s+rm\b/i,
+  /\bgit\s+push\s+(--force\b|-f\b)/i,
+  /\bgit\s+reset\s+--hard\b/i,
+  /\bdrop\s+(database|table|schema)\b/i,
+  /\btruncate\s+table\b/i,
+  /\bdelete\s+from\s+\w+\s*;?\s*$/i,
+  /\b(mkfs|diskutil\s+erase|dd\s+if=\S+\s+of=\/dev\/)/i,
+  /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/
 ];
 
 // Install Root Certificate (ATT&CK T1553.004): commands that add a certificate to a system, user or
@@ -839,18 +854,12 @@ export const DETECTORS = [
     stage: "prompt",
     mode: "warn",
     hint: "Contains a destructive, hard-to-reverse command — review before it runs.",
-    patterns: [
-      ...RECURSIVE_FORCE_DELETE,
-      ...INHIBIT_RECOVERY,
-      /\bsudo\s+rm\b/i,
-      /\bgit\s+push\s+(--force\b|-f\b)/i,
-      /\bgit\s+reset\s+--hard\b/i,
-      /\bdrop\s+(database|table|schema)\b/i,
-      /\btruncate\s+table\b/i,
-      /\bdelete\s+from\s+\w+\s*;?\s*$/i,
-      /\b(mkfs|diskutil\s+erase|dd\s+if=\S+\s+of=\/dev\/)/i,
-      /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/
-    ]
+    patterns: DESTRUCTIVE_COMMAND,
+    // A turn the caller marks as prose (ctx.prose) that only discusses the command — asks why it is
+    // dangerous, what it does, compares or warns against it, and asks nothing to run — executes nothing;
+    // the tool call that would run it is judged as a command. Every other caller keeps the verdict
+    // (data/destructive-mention.js, test/destructive-mention.test.mjs).
+    gate: (text, ctx) => destructiveIssued(text, ctx, DESTRUCTIVE_COMMAND)
   },
   {
     detectorId: "phi-hipaa",
