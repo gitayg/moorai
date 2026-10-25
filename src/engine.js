@@ -310,7 +310,15 @@ export class DetectionEngine {
   // _firstMatch, so existing detectors are unaffected. refine also receives the FULL scanned text as
   // a second arg (ignored by string-only refines), so a proximity gate like taint-lite can look
   // beyond the matched span for a nearby source without widening the pattern.
+  // `gate(text, ctx)`, when a detector has one, is asked after a match is found and false drops the finding.
+  // Unlike refine it never changes how the patterns run (refine's path recompiles them through safeRegex,
+  // which refuses most hand-written built-ins), so a gate cannot silently lose a pattern.
   _matchDetector(text, d, ctx) {
+    const m = this._matchPatterns(text, d, ctx);
+    return m !== null && d.gate && !d.gate(text, ctx) ? null : m;
+  }
+
+  _matchPatterns(text, d, ctx) {
     if (!d.refine) return this._firstMatch(text, d.patterns);
     for (const p of d.patterns) {
       const g = safeRegex(p.source, p.flags.includes("g") ? p.flags : p.flags + "g");

@@ -186,6 +186,11 @@ export function readings(name, input) {
   return { maps, innerNames: [...innerNames], overflow, problem, ambiguous: overflow || problem || keys.size > 1 };
 }
 const RANK = { allow: 0, ask: 1, deny: 2 };
+// A user turn is prose: it runs nothing itself, and what the model runs because of it comes back as a tool call
+// (checkToolCalls). Detectors that judge a command about to run read ctx.prose (#43, data/destructive-mention.js).
+// A system turn (operator or injected context), a tool result and a tool call's arguments are never marked.
+const PROSE_KINDS = new Set(["prompt"]);
+const proseItem = (it) => (PROSE_KINDS.has(it.kind) ? { ...it, ctx: { ...it.ctx, prose: true } } : it);
 const AMBIGUOUS = "tool call arguments can be read more than one way (a wrapped, repeated or alias field disagrees), so a client may run something other than what was checked";
 
 function mapDirect(name, input = {}) {
@@ -252,7 +257,8 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
           // blocked event loop per 512 K characters (measured), ≈6 s for a 32 MB body.
           if (closed) { denied.push({ kind: it.kind, reasons: [`not evaluated: over the ${itemCap}-character scan cap`] }); continue; }
         }
-        const r = reportContext(s, it) ? await scanContext(rt, it, it.text.slice(0, itemCap), { settle }) : await rt.scan(it.text.slice(0, itemCap), it.stage, it.ctx, { tool: it.kind, event: "ModelRequest", settle });
+        const pi = proseItem(it);
+        const r = reportContext(s, it) ? await scanContext(rt, pi, it.text.slice(0, itemCap), { settle }) : await rt.scan(it.text.slice(0, itemCap), it.stage, pi.ctx, { tool: it.kind, event: "ModelRequest", settle });
         v = remember(key, { decision: r.decision, reasons: r.reasons });
       }
       if (v.decision === "deny") denied.push({ kind: it.kind, reasons: v.reasons });

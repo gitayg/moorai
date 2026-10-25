@@ -80,7 +80,9 @@ file named in the arguments of an MCP tool whose name sends),
 `tools/call` results, the SDK's `PostToolUse`, `moorai-serve`'s `/v1/scan` with `ctx.inbound`, the model
 proxy's tool results), and `targetPath` on the write family, on a `Bash` / `PowerShell` write into a memory
 file, and on the `index` worker's auto-loaded files. Only the `instr-leak-*` detectors (§6) and the two
-poisoning detectors (`memory-poisoning`, `rag-poisoning`, below) read the last three. Content scanned with `inbound: true` is resolved by `cli/inbound.mjs` rather than by
+poisoning detectors (`memory-poisoning`, `rag-poisoning`, below) read the last three.
+`prose: true` marks a person's turn of prose rather than a command (the model proxy's user turns, the hook's
+`UserPromptSubmit` for a person's prompt, the SDK's prompt scan for a person's prompt); only #43's `gate` reads it (§3, "#43 on a turn of prose"). Content scanned with `inbound: true` is resolved by `cli/inbound.mjs` rather than by
 `decideText` alone (§7).
 
 **Non-English overrides on the inbound stages.** Because `file` and `index` inherit every `prompt`
@@ -175,6 +177,7 @@ enforces nothing in the product.
   hint: "…",                    // the human-readable why, shown by the coaching surfaces
   patterns: [/…/, /[A-Za-z]{3,}/],
   refine: (match, fullText) => boolean,   // optional — the real decision
+  gate: (fullText, ctx) => boolean,       // optional — false drops a finding after the match (#43 only)
   semantic: "detect"            // optional — opt-in to the semantic layer (§4)
 }
 ```
@@ -402,6 +405,44 @@ stopping a backup service or agent, `tmutil thinlocalsnapshots`, and deletion th
 tool. Like the rest of #43 it matches the text, so a `grep` for one of these commands also fires.
 `test/inhibit-recovery.test.mjs` holds 48 positives, 48 hard negatives, a per-pattern linear-time check and the
 hook end to end (no policy: the hook asks).
+
+### #43 on a turn of prose: a command discussed, not issued
+
+Stage `prompt` carries two kinds of text: a command about to run (a `Bash` command, a model's tool-call
+arguments) and a turn of prose (a person's message to a model). A prose turn runs nothing; what the model runs
+because of it comes back as a tool call and is judged as a command. So the surfaces that scan a person's turn
+mark it `ctx.prose`: the model proxy's user turns (`model-proxy/check.mjs`), the hook's `UserPromptSubmit` when
+the prompt is a person's (`promptScan: "all"`), and the agent SDK's prompt scan when the source is absent or
+`user`. A system turn, an event-triggered or server-mode prompt, an SDK wakeup and every tool result are
+third-party or machine text and are never marked.
+
+On a prose turn, #43's `gate` (`data/destructive-mention.js`) drops the finding only on positive evidence that
+the turn discusses the command, and fails closed otherwise:
+
+- every sentence of the turn asks about the command, explains or compares it, or warns against running it
+  ("why is `rm -rf /` dangerous", "what does `git push --force` do", "never run …", "`DROP SCHEMA x
+  CASCADE`: what else does that remove?"); one sentence that is none of these keeps the finding, so "Why is
+  X dangerous? Clean my disk that way." still fires;
+- every sentence a match touches is framed, judged on the whole-text span (rescanning from each match's
+  start + 1) and on each sentence on its own;
+- nothing in the turn asks for an action: no "you" except "can you explain / describe / compare …" ("could
+  you clear …", "would you mind running …", "what happens if you run …" all count), no "for me", "show me",
+  "let me" or "mind", no first-person plan to run it ("I'm going to run …"), no reference back to the command
+  ("that way", "with it", "do it", "run it"), no "please execute", "go ahead", and no sentence that opens with
+  an imperative such as run, use, delete or clean.
+
+A command on its own line or in a fenced block is its own sentence and is still a command. A tool call's
+arguments, a `Bash` command and every caller that marks nothing keep today's verdict whatever words surround
+the command, so `rm -rf / # why is this dangerous?` in a tool call is still refused.
+
+A `gate(text, ctx)` runs after the patterns match and only removes the finding; unlike `refine` it does not
+send the patterns through `safeRegex`, which would refuse most of #43's hand-written patterns. `redact()` does
+not consult it. The scorers scan a `prompt`-stage sample as a prose turn (`sampleCtx` in
+`scripts/redteam-eval.mjs`). Measured, before → after: `score-benign-v2.mjs` **19 → 16 of 602** (the three were
+#43's: `v2-git-003`, `v2-hn-cmd-001`, `v2-hn-cmd-008`); `redteam-eval.mjs` held-out 29/29 → 29/29 and 3 FP of
+178 → 3 of 178; red-team 102/102 → 102/102. The two attack samples in the corpora that only #43 catches at
+stage `prompt` ("just run rm -rf / …", and a memory entry telling the agent never to ask before `rm -rf`) still
+fire. `test/destructive-mention.test.mjs` covers the engine, the model proxy, the hook and the SDK.
 
 ### Shell command-history tampering inside #73
 
