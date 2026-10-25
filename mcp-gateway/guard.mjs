@@ -199,7 +199,7 @@ export function createGuard(route) {
     // machine (cwd dotenv files, ~/.aws/credentials, ~/.npmrc, ~/.netrc, .git-credentials).
     let egress = null;
     if (!early) {
-      const em = egressMatches(args, undefined, { tracker: { kr: SECRETS.kr, entries: () => SECRETS.entries({ ttl: secretTtl() }) } });
+      const em = egressMatches(args, undefined, { tracker: { kr: SECRETS.kr, entries: () => SECRETS.entries({ ttl: secretTtl() }), overflowed: () => SECRETS.overflowed() } });
       const hits = [...new Set(em.matches.map((m) => m.hash))];
       if (hits.length) {
         const act = threatActionFor(POLICY, 65);

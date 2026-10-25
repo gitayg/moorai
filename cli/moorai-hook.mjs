@@ -35,7 +35,7 @@ import { boundaryTurnSnapshot } from "./boundary-update.mjs";
 import { maskValue, maskNote } from "./mask.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressMatches } from "./secret-egress.mjs";
-import { hookTracker, learnFromTool, capAlert } from "./secret-taint-hook.mjs";
+import { hookTracker, learnFromTool, capAlert, evictAlert } from "./secret-taint-hook.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, recordDestination, readDestinations, requestKill } from "./signals.mjs";
 import { readState, STATE_DIR } from "./state-dirs.mjs";
 import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
@@ -1929,6 +1929,7 @@ function checkSecretEgress(policy, text, tool, stage, { learned = false } = {}) 
 function learnSecrets(policy, tool, ti, text) {
   const r = learnFromTool({ policy, sessionId: SESSION_ID, tool, toolInput: ti, text });
   if (r && r.report) post({ ...capAlert(r, tool), ts: new Date().toISOString(), ...IDENTITY });
+  if (r && r.evictedLive) post({ ...evictAlert(r, tool), ts: new Date().toISOString(), ...IDENTITY });
 }
 
 // Intent alignment for an already-risky call (cli/intent-alignment.mjs). Posts one content-free alert

@@ -12,14 +12,16 @@
 // a key-derived base and mask, so a state file read without the key yields neither the value nor a
 // cheap test of a guess.
 //
-// WORST CASE: each view is scanned up to MAX_SCAN bytes (callers keep their own verbatim check over the
-// whole text) and at most MAX_CONFIRM HMACs run per check. A truncated view is reported (`truncated`); an
-// exhausted HMAC budget is reported (`exhausted`) and the caller treats it as a match (fail closed).
+// WORST CASE: the raw text is scanned up to MAX_RAW bytes and each decoded view up to MAX_SCAN bytes, and at
+// most MAX_CONFIRM HMACs run per check. A truncated view (`truncated`) and an exhausted HMAC budget
+// (`exhausted`) are both reported, and cli/secret-egress.mjs turns either into an unverified match (fail
+// closed).
 import { createHmac, randomBytes } from "node:crypto";
 import { percentView, unwrapView, toBytes } from "./secret-forms.mjs";
 
 export const K = 8;
-export const MAX_SCAN = 1 << 20;
+export const MAX_SCAN = 4 << 20;
+export const MAX_RAW = 16 << 20;
 export const MAX_CONFIRM = 20000;
 const FP_BITS = 20;
 const H_HEX = 24;
@@ -67,8 +69,8 @@ export function buildIndex(kr, entries) {
 
 // Scan one byte string; true when it was truncated. `found`: Map sid -> { enc, view }; `budget`: { left }
 // shared across views.
-function scanView(ix, s, view, found, budget) {
-  const n = Math.min(s.length, MAX_SCAN);
+function scanView(ix, s, view, found, budget, cap) {
+  const n = Math.min(s.length, cap);
   if (n < K) return n < s.length;
   const { kr, bits, byFp, pk1 } = ix;
   let h = 0;
@@ -90,8 +92,8 @@ function scanView(ix, s, view, found, budget) {
 }
 
 // Every tracked secret present in `text`: { hits: [{ sid, enc, view }], truncated, exhausted }. `enc` is
-// the form that matched; a raw-form match inside the percent-decoded view reports "url". `truncated`: a
-// view was longer than MAX_SCAN and its tail was not scanned. `exhausted`: the HMAC budget ran out before
+// the form that matched; a raw-form match inside the percent-decoded view reports "url". `truncated`: the
+// raw text was longer than MAX_RAW, or a decoded view longer than MAX_SCAN, and its tail was not scanned. `exhausted`: the HMAC budget ran out before
 // the scan finished — the caller fails closed on it.
 export function scanText(ix, text) {
   const out = { hits: [], truncated: false, exhausted: false };
@@ -103,7 +105,7 @@ export function scanText(ix, text) {
   const pv = percentView(raw); if (pv) views.push(["url", pv]);
   const uv = unwrapView(raw); if (uv) views.push(["unwrapped", uv]);
   for (const [name, s] of views) {
-    if (scanView(ix, s, name, found, budget)) out.truncated = true;
+    if (scanView(ix, s, name, found, budget, name === "raw" ? MAX_RAW : MAX_SCAN)) out.truncated = true;
     if (budget.left < 0) { out.exhausted = true; break; }
   }
   for (const [sid, m] of found) out.hits.push({ sid, enc: m.view === "url" && m.enc === "raw" ? "url" : m.enc, view: m.view });

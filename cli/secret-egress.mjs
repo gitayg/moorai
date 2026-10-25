@@ -70,9 +70,13 @@ function storeRecords(kr, cwd) {
 
 // Every local or session-read secret present in `text`, content-free:
 //   { matches: [{ hash, encoding, source: "store" | "session-read" }], truncated, exhausted }
-// One match per secret: verbatim (whole text) first, else the first form the encoded scan meets (each view
-// up to MAX_SCAN bytes; `truncated` past it). `exhausted` (the scan's HMAC budget ran out) adds a match
-// with encoding "unverified" so the caller fails closed. opts.tracker: { kr, entries() } (cli/secret-taint.mjs).
+// One match per secret: verbatim (whole text) first, else the first form the encoded scan meets.
+// FAIL CLOSED: each of these adds a match with encoding "unverified", so #65's action applies —
+//   source "scan-budget"   the scan's HMAC budget ran out (`exhausted`)
+//   source "scan-cap"      text past the scan limits was not read (`truncated`: raw text over MAX_RAW, a
+//                          decoded view over MAX_SCAN) while there was something to match
+//   source "cap-overflow"  the tracker's session evicted or refused a secret it read, which is still live
+// opts.tracker: { kr, entries(), overflowed?() } (cli/secret-taint.mjs).
 export function egressMatches(text, cwd, opts = {}) {
   const t = String(text || "");
   const out = { matches: [], truncated: false, exhausted: false };
@@ -89,6 +93,7 @@ export function egressMatches(text, cwd, opts = {}) {
     done.add(sid);
     out.matches.push({ hash, encoding: "raw", source: "store" });
   });
+  if (tracker && typeof tracker.overflowed === "function" && tracker.overflowed()) out.matches.push({ hash: "overflow", encoding: "unverified", source: "cap-overflow" });
   const entries = [...entriesOf(records.filter(Boolean), "store"), ...(tracker ? tracker.entries() : [])];
   if (!entries.length) return out;
   const r = scanText(buildIndex(kr, entries), t);
@@ -102,6 +107,7 @@ export function egressMatches(text, cwd, opts = {}) {
   }
   out.truncated = r.truncated;
   if (r.exhausted) { out.exhausted = true; out.matches.push({ hash: "budget", encoding: "unverified", source: "scan-budget" }); }
+  else if (r.truncated) out.matches.push({ hash: "truncated", encoding: "unverified", source: "scan-cap" });
   return out;
 }
 

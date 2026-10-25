@@ -114,18 +114,25 @@ export async function createMoorAI(options = {}) {
   const reporter = options.reporter || createReporter({ config, identity, fetchImpl: options.fetch });
   const intent = options.intentStore === false ? null : createIntentStore(options.intentStore || {});
   // #65 session-read secrets (cli/secret-taint.mjs): what inbound tool results carried, as keyed
-  // fingerprints in memory under a random per-process key; matched at the egress sinks of toolCall.
-  const secrets = options.secretTracker === false ? null : secretTaintLib.memoryTracker({ cap: secretTaintLib.DEFAULT_CAP });
-  const trackerFor = (s, sess) => (secrets ? { kr: secrets.kr, entries: () => secrets.entries({ ttl: sessionRiskWindowMs(s.policy) }), learn: (values, tool) => learnValues(s, values, tool, sess) } : null);
-  function learnInbound(s, text, tool, sess) {
+  // fingerprints in memory under a random per-process key, one tracker per caller session id (a call with no
+  // session shares the "" tracker); matched at the egress sinks of toolCall for the same session.
+  let evictCtx = null;
+  const secrets = options.secretTracker === false ? null : secretTaintLib.memorySessions({
+    maxSessions: options.secretSessions || secretTaintLib.MAX_MEMORY_SESSIONS,
+    onEvict: (n) => { if (evictCtx) reporter.post({ threatId: 65, category: "Session secret tracking evicted a live session", riskLevel: "High", stage: "output", tool: `hook:${evictCtx.tool}`, contentHash: "secret-evict", secretTaint: { evictedLive: n }, ...evictCtx.sess }, { prov: prov(evictCtx.s, "PostToolUse") }); }
+  });
+  const trackerFor = (s, sess, session) => (secrets ? { kr: secrets.kr, entries: () => secrets.entries(session, { ttl: sessionRiskWindowMs(s.policy) }), overflowed: () => secrets.overflowed(session), learn: (values, tool, cred) => learnValues(s, values, tool, sess, cred, session) } : null);
+  function learnInbound(s, text, tool, sess, session) {
     if (!secrets || tool === "WebFetch" || tool === "WebSearch") return;
-    try { learnValues(s, secretLearnLib.learnableSecrets(text), tool, sess); } catch { /* tracking is evidence; never the verdict */ }
+    try { learnValues(s, secretLearnLib.learnableSecrets(text), tool, sess, false, session); } catch { /* tracking is evidence; never the verdict */ }
   }
-  function learnValues(s, values, tool, sess) {
+  function learnValues(s, values, tool, sess, cred = false, session = "") {
     try {
       if (!values.length) return;
-      const r = secrets.learn(values, { ttl: sessionRiskWindowMs(s.policy) });
-      if (r.report) reporter.post({ threatId: 65, category: "Session secret tracking cap reached", riskLevel: "High", stage: "output", tool: `hook:${tool}`, contentHash: `secret-cap:${r.cap}`, secretTaint: { cap: r.cap, dropped: r.dropped, kept: r.size }, ...sess }, { prov: prov(s, "PostToolUse") });
+      evictCtx = { s, tool, sess };
+      const r = secrets.learn(typeof session === "string" ? session : "", values, { ttl: sessionRiskWindowMs(s.policy), cred });
+      evictCtx = null;
+      if (r.report) reporter.post({ threatId: 65, category: "Session secret tracking cap reached", riskLevel: "High", stage: "output", tool: `hook:${tool}`, contentHash: `secret-cap:${r.cap}`, secretTaint: { pool: r.pool, cap: r.cap, dropped: r.dropped, overQuota: r.overQuota, kept: r.size }, ...sess }, { prov: prov(s, "PostToolUse") });
     } catch { /* tracking is evidence; never the verdict */ }
   }
 
@@ -200,7 +207,7 @@ export async function createMoorAI(options = {}) {
       : decideText(s.engine, s.policy, t, stage, { ctx: c });
     const findings = d.findings.map((f) => ({ ...f, stage }));
     const sess = sessionOf(meta.session);
-    if (c.inbound === true) learnInbound(s, t, typeof c.tool === "string" ? c.tool : tool, sess);
+    if (c.inbound === true) learnInbound(s, t, typeof c.tool === "string" ? c.tool : tool, sess, meta.session);
     report(s, findings, { tool, decision: d.decision, event: meta.event || "Scan", sess });
     const st = meta.settle === false ? { decision: d.decision, headlessAsk: null } : settle(s, { decision: d.decision, reason: d.reasons.join(", ") }, { tool, sess });
     return { decision: st.decision, configuredDecision: d.decision, ...summary(findings), reasons: d.reasons, alternatives: d.alternatives, kill: d.kill, findings: contentFree(findings), ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };
@@ -291,7 +298,7 @@ export async function createMoorAI(options = {}) {
   async function toolCall({ tool, input, cwd, permissionMode = "", session, owner } = {}) {
     const s = await ready();
     const sess = sessionOf(session);
-    const b = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId, secretTracker: trackerFor(s, sess) });
+    const b = decideToolCall(s.engine, s.policy, { tool, toolInput: input, cwd, actor: identity.actor, serviceId: sm.serviceId, secretTracker: trackerFor(s, sess, typeof session === "string" ? session : "") });
     report(s, b.findings, { tool: b.tool, decision: b.decision, sess });
     reportSignals(s, b.signals, b.tool, "PreToolUse", sess);
     const v = boundStep(s, intentStep(s, b, input, session, sess, owner), tool, input, session, sess, owner);

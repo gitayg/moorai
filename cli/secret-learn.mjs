@@ -9,7 +9,8 @@
 import { SECRET_DETECTORS, looksLikeAssignedSecret } from "../data/secrets-patterns.js";
 import { parseEnv, isSecretish } from "./secret-egress.mjs";
 
-export const MAX_PER_RESULT = 64;
+// Well above the tracker's per-call quota, so a result past this bound always also overflows the quota.
+export const MAX_PER_RESULT = 4096;
 const SCAN_CAP = 262144;
 
 const PROVIDER_IDS = new Set(["secret-github", "secret-gitlab", "secret-slack", "secret-stripe", "secret-aws-akia", "secret-google-api", "secret-openai-anthropic", "secret-npm", "secret-pypi", "secret-sendgrid", "secret-twilio"]);

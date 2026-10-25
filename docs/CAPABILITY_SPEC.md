@@ -2686,9 +2686,11 @@ fingerprint of its first 8 bytes and a 96-bit HMAC-SHA-256 of the whole form. On
 each view of the outbound text once, with a polynomial rolling hash under a key-derived odd base, finished
 by a keyed mixer; a window whose fingerprint is in a bitmap is confirmed by the HMAC of the bytes starting
 there. One pass per view whatever the number of secrets or lengths. The verbatim check of store secrets
-still covers the whole text; each view is scanned up to 1 MiB (past it the call is marked capped, as a
-truncated file scan is), and at most 20,000 HMACs run per check. An exhausted HMAC budget is reported as a
-match with encoding `unverified` (fail closed).
+still covers the whole text; the raw text is scanned up to 16 MiB and each decoded view up to 4 MiB, and at
+most 20,000 HMACs run per check. Fail closed: text left unread past those limits while anything is tracked
+(source `scan-cap`), an exhausted HMAC budget (`scan-budget`) and a session past its cap (`cap-overflow`,
+below) are each reported as a match with encoding `unverified`, so #65's action applies, in the hook, the
+SDK runtime, `moorai-serve`, the model proxy and the MCP gateway alike.
 
 **Session-read secrets** ([`cli/secret-learn.mjs`](../cli/secret-learn.mjs),
 [`cli/secret-taint-hook.mjs`](../cli/secret-taint-hook.mjs)). The hook learns from the file a `Read`
@@ -2707,13 +2709,28 @@ and named assignments only. The MCP gateway learns from each remote result it fo
 
 - **Where it is kept.** Hook: `~/.moorai/secret-taint.json` (0600) under an HMAC of the device's
   `session.key`, per keyed session id: each secret's tenant-keyed alert hash, its last-read time and its
-  forms as `[encoding, length, fingerprint, HMAC]` (so the value's byte length is in the file). 16 sessions. SDK runtime and gateway: the same records
-  in memory under a random per-process key, one set per process.
+  forms as `[encoding, length, fingerprint, HMAC]` (so the value's byte length is in the file). Every update
+  is a read-merge-write under a lockfile (`secret-taint.json.lock`, O_EXCL, a lock older than 5 s is
+  removed), so parallel hook calls keep every learn. SDK runtime: the same records in memory under a random
+  per-process key, one tracker per caller session id (a call with no session id, such as the model proxy's,
+  shares one). MCP gateway: one tracker per route.
+- **Session table.** 16 sessions in the file, 256 per runtime process. A session with no live secret and no
+  overflow window is dropped. A live one is evicted only when the table is full of live sessions, least
+  recently learned first; its keyed id then goes to an evicted-until map (4,096 keys) holding its last learn
+  + TTL (or its overflow window), and until then that session fails closed as `cap-overflow`. Each eviction
+  of a live session raises `Session secret tracking evicted a live session` (#65,
+  `secretTaint: { evictedLive }`).
 - **TTL.** A secret expires `policy.sessionRisk.windowMin` (30 min by default) after it was last read; a
   re-read refreshes it.
-- **Cap.** 64 secrets per session (per process for the runtime and the gateway). Past it the oldest are
-  dropped and learning continues, so the newest read is always matched; one content-free alert,
-  `Session secret tracking cap reached` (#65, `secretTaint: { cap, dropped, kept }`), per window.
+- **Pools, quota and cap.** Values from a credential source (a credential file, an environment dump, an
+  MCP read of a credential path) live in a `cred` pool; values pattern-matched out of any other text live in
+  a `pattern` pool; 64 secrets each, so text full of secret-shaped junk can never evict a credential-file
+  secret. One learn call adds at most 32 new secrets. Past a pool's cap the oldest are dropped and the newest
+  kept. **Overflow fails closed:** when a pool evicts a secret, or a call goes past its quota, the session is
+  overflowed until everything it could not keep would have expired, and every egress check of that session
+  returns an `unverified` match (source `cap-overflow`), so #65's action applies to it; other sessions are
+  unaffected. One content-free alert per window, `Session secret tracking cap reached` (#65,
+  `secretTaint: { pool, cap, dropped, overQuota, kept }`).
 - **Sinks.** Session-read secrets are matched where a flow leaves: a `Bash` / `PowerShell` command with
   network egress (an upload or a named host), a `WebFetch`, an MCP tool call (hook, SDK `toolCall`,
   `moorai-serve /v1/tool-call`, the model proxy's tool calls in responses, the MCP gateway). Store secrets,
@@ -2721,17 +2738,21 @@ and named assignments only. The MCP gateway learns from each remote result it fo
   write.
 - **Cost** (median of 50, 50 tracked secrets over 40 lengths, 100 KB payload, Apple silicon): 0.9–4.0 ms per
   check for session secrets and 2.0–4.6 ms for store secrets, against 0.3–0.9 ms for the verbatim-only check.
-  Worst cases: 31–40 ms for a 1.25 MB payload in three views (each truncated at 1 MiB), 36–50 ms for an
-  exhausted HMAC budget. Extracting learnable values from a 256 KB result costs 3–7 ms.
+  A 2 MB payload in three views takes 70–78 ms. Worst cases: 380–415 ms for a 17 MB payload (16 MiB raw plus
+  two 4 MiB decoded views, then held as unverified), 36–50 ms for an exhausted HMAC budget. Extracting
+  learnable values from a 256 KB result costs 3–7 ms.
 
 **Limits.** Encryption, compression, XOR, custom alphabets, base32 / base85, hex with separators
 (`41:42`, `\x41`), nested encodings (base64 of hex), and a value split across separate strings or arguments
 are not covered. A secret shorter than 8 characters, or one that fails `isSecretish`, is not tracked. The
 model proxy's request bodies (what goes to the model provider) are not a #65 sink; its tool calls are.
 The hook cannot tell a local MCP server from a remote one, so every MCP call is a sink. In the runtime,
-`KEY=value` lines are learned only from a `Read` (an inbound scan does not see the tool input), and one set
-serves every session and principal of the process. A secret evicted by the cap or the TTL is no longer matched. Parallel hook calls
-can lose one another's update to the state file, which costs one learn. The agent runs as the same OS user
+`KEY=value` lines are learned only from a `Read` (an inbound scan does not see the tool input), and calls
+without a session id share one tracker. Outbound text past the scan limits is held, not read: an egress of
+more than 16 MiB (or a decoded view over 4 MiB) is refused under #65 whenever a secret is tracked. A session
+that overflows its cap is held for every egress until its secrets would have expired. A secret past its TTL
+is no longer matched. The gateway's tracker is per route, not per client session. If the lockfile cannot be
+taken within 2 s the update runs unlocked and may lose one learn. The agent runs as the same OS user
 and can read `session.key` and edit the state file. A stolen state file without the key yields no value
 and no cheap test of a guess against the HMAC; the 20-bit fingerprint of a form's first 8 bytes is the
 weakest part of it, and recovering it reveals at most those 8 bytes.

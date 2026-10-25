@@ -162,7 +162,7 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
   if (tool === "Read") {
     const text = readFileCapped(agentPath(ti.file_path, cwd));
     // #65, as the hook's Read branch: a secret in the file joins the caller's session-read set.
-    if (secretTracker && secretTracker.learn) { try { const vals = learnableSecrets(text, { kv: isCredentialPath(ti.file_path) }); if (vals.length) secretTracker.learn(vals, "Read"); } catch { /* evidence only */ } }
+    if (secretTracker && secretTracker.learn) { try { const vals = learnableSecrets(text, { kv: isCredentialPath(ti.file_path) }); if (vals.length) secretTracker.learn(vals, "Read", isCredentialPath(ti.file_path)); } catch { /* evidence only */ } }
     const d = decideText(engine, policy, text, "file", { ctx: { template: isEnvTemplate(ti.file_path) } });
     const pd = decideCredFileRead(engine, policy, ti.file_path);
     d.findings.push(...pd.findings);
