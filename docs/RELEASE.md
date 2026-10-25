@@ -37,6 +37,20 @@ The sidecar is uploaded last, after the tarball and signature succeed, so a fail
 upload never advertises a version whose artifact isn't there. The logic lives in
 `scripts/release-updater.mjs` and is covered by `test/release-updater.test.mjs`.
 
+## On the version tag (CI)
+
+Pushing a `v*` tag runs these workflows:
+
+| Workflow | Output |
+|---|---|
+| `release-windows.yml` | the NSIS `-setup.exe` and `latest.json`, on the tag's GitHub Release (tauri-action creates it) |
+| `release-linux.yml` | `moorai_<v>_all.deb`, `moorai-<v>-linux.tar.gz` and `SHA256SUMS`, on the same Release, after an install and hook smoke test in `ubuntu:20.04` (amd64, arm64) |
+| `release-macos.yml` | the signed, notarized DMG and updater artifacts, uploaded to AppCrane (not to the Release) |
+| `publish-server-image.yml` | `ghcr.io/gitayg/moorai-server:<version>` |
+
+`release-linux.yml` waits up to 25 minutes for the Release and creates it only if none appeared; uploads use
+`--clobber`, so a re-run replaces the Linux assets.
+
 ## Signing
 
 If `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID` are

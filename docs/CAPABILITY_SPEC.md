@@ -4215,15 +4215,29 @@ is installed and healthy.
   prerm disables on removal; purge deletes `/var/lib/moorai`.
 - **Hooks block only with management evidence.** As on every OS, an unenrolled device coaches; it enforces once
   enrolled or when the administrator writes `fail-closed` to the root-owned `/etc/moorai/offline-posture`.
+- **Released on every version tag (v1.37.0 on).** [`.github/workflows/release-linux.yml`](../.github/workflows/release-linux.yml)
+  runs on `v*` tags (and manually, build and test only) on `ubuntu-latest` with Node 22: it checks the tag
+  equals `package.json`'s version, builds with `--out dist/linux`, writes `SHA256SUMS` for the `.deb` and the
+  tarball, and runs [`packaging/linux/smoke-test.sh`](../packaging/linux/smoke-test.sh) in `ubuntu:20.04`
+  (glibc 2.31) on `linux/amd64` and `linux/arm64` (QEMU). The smoke test installs the `.deb` without Node
+  (it must install and print the missing-Node warning), installs Node 22 from nodejs.org checked against
+  `SHASUMS256.txt`, runs `moorai-install-hooks`, then runs the installed `moorai-hook` on a source-file Read
+  (exit 0, no output) and on a credential-file Read under the root-owned fail-closed posture (exit 0, `deny`);
+  any other result fails the job. It then attaches `moorai_<v>_all.deb`, `moorai-<v>-linux.tar.gz` and
+  `SHA256SUMS` to the tag's GitHub Release with `gh release upload --clobber` and the repository's
+  `GITHUB_TOKEN` (`contents: write`, no other secret). The Release is normally created by `release-windows.yml`
+  (tauri-action, which reuses an existing Release for the tag); the Linux job waits up to 25 minutes for it and
+  creates it only if none appeared. `moorai.spec` and the guardd package are not attached. The desktop app is
+  not built for Linux.
 - **Measured.** `test/linux-package.test.mjs` reads the archives back with the system `tar`, installs the
   tarball into a temp root, runs the installed hook installer and runs the installed hook on a credential-file
   Read (`deny` under the fail-closed posture) and a source-file Read (allowed). In Docker (images already on the
   build machine, arm64): on Debian 12 with Node 22, `dpkg -i` of both packages, `moorai-install-hooks` as a
   non-root user, a credential-file Read denied under the root-owned fail-closed posture and a source-file Read
   allowed, then `dpkg --purge` / `dpkg -r`; on Ubuntu 24.04 without Node, `dpkg -i` succeeds with the warning,
-  `moorai-install-hooks` refuses with a clear message, and the tarball installs into `/` and uninstalls. Not run:
-  systemd (no container ran it), RHEL or any rpm, Ubuntu 22.04, amd64, Wayland or X11 (there is no Linux
-  clipboard guard or desktop app).
+  `moorai-install-hooks` refuses with a clear message, and the tarball installs into `/` and uninstalls. On Ubuntu 20.04
+  (amd64 and arm64), the release smoke test above. Not run: systemd (no container ran it), RHEL or any rpm,
+  Ubuntu 22.04, Wayland or X11 (there is no Linux clipboard guard or desktop app).
 ## Live conformance tier (agent hosts, MCP clients, AI Servers)
 
 An opt-in tier (`npm run test:live`; full description in [`HOST_CONFORMANCE.md`](HOST_CONFORMANCE.md))

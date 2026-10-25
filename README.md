@@ -86,7 +86,7 @@ Because you can read the code. The agent is **MIT and open source** — the whol
 
 **macOS (Apple silicon)** — download the `.dmg` from [app.moorai.dev/download/app](https://app.moorai.dev/download/app) (it is not attached to GitHub Releases), or `brew install --cask gitayg/tap/moorai` — see [packaging/README.md](packaging/README.md). The app updates itself in place.
 **Windows** — download the `-setup.exe` from [Releases](https://github.com/gitayg/moorai/releases) (built in the open by CI). The installer is not Authenticode-signed yet, so Windows SmartScreen may warn on first run; in-app updates are verified with the updater signature.
-**Linux** — build the `.deb` and tarball from a checkout with `node scripts/build-linux-package.mjs` (see [Linux package](#linux-package)); they are not attached to Releases yet.
+**Linux** — download `moorai_<version>_all.deb` (Debian, Ubuntu) or `moorai-<version>-linux.tar.gz` and `SHA256SUMS` from [Releases](https://github.com/gitayg/moorai/releases), built in the open by CI on every version tag from v1.37.0 (see [Linux package](#linux-package)). This is the agent (CLI, hooks, engine); there is no Linux desktop app.
 
 Community edition: runs standalone, no account required. **Without enrollment MoorAI coaches**: it runs the
 same detection and built-in defaults, and shows you (and, where the agent's hook protocol allows, the agent)
@@ -180,9 +180,15 @@ Enroll the device (below) to have the same finding denied, held for sign-off, or
 
 ### Linux package
 
+Every GitHub Release from v1.37.0 on carries `moorai_<version>_all.deb`, `moorai-<version>-linux.tar.gz` and `SHA256SUMS`,
+built by [`release-linux.yml`](.github/workflows/release-linux.yml) on the version tag:
+
 ```bash
-node scripts/build-linux-package.mjs --out dist/linux
-sudo dpkg -i dist/linux/moorai_<version>_all.deb   # or: tar -xzf moorai-<version>-linux.tar.gz && sudo sh moorai-<version>/install.sh
+V=1.37.0   # the release you are installing
+base=https://github.com/gitayg/moorai/releases/download/v$V
+curl -fL -O "$base/moorai_${V}_all.deb" -O "$base/moorai-$V-linux.tar.gz" -O "$base/SHA256SUMS"
+sha256sum -c SHA256SUMS
+sudo dpkg -i "moorai_${V}_all.deb"    # or: tar -xzf "moorai-$V-linux.tar.gz" && sudo sh "moorai-$V/install.sh"
 moorai-install-hooks                               # as each user: registers the hooks in ~/.claude/settings.json
 sudo systemctl --global enable moorai-hooks.service        # optional: register them at every user's login
 systemctl --user enable --now moorai-serve.service         # optional: the loopback engine sidecar
@@ -191,10 +197,17 @@ systemctl --user enable --now moorai-serve.service         # optional: the loopb
 The package puts the agent under `/usr/lib/moorai`, links every `moorai-*` command into `/usr/bin`, and ships two
 systemd user units (both disabled until you enable them). It needs Node.js 18 or newer, which it recommends rather
 than depends on; without it, `dpkg -i` succeeds with a warning and `moorai-install-hooks` refuses. The builder also
-writes `moorai.spec` for `rpmbuild` (not yet built or tested on an rpm distribution). Builds are reproducible for a
-given commit. As everywhere, the hooks coach until the device is enrolled or the administrator writes `fail-closed`
-to the root-owned `/etc/moorai/offline-posture`. Run `moorai-hook uninstall` as each user before removing the
-package. Tested on Debian 12 and Ubuntu 24.04 containers (arm64); systemd itself and RHEL were not exercised.
+writes `moorai.spec` for `rpmbuild` (not yet built or tested on an rpm distribution, and not attached to
+Releases). Builds are reproducible for a given commit; to build from a checkout, run
+`node scripts/build-linux-package.mjs --out dist/linux`. The `.deb` is architecture `all` (pure Node, no native
+code), so the one package serves amd64 and arm64. As everywhere, the hooks coach until the device is enrolled or the
+administrator writes `fail-closed` to the root-owned `/etc/moorai/offline-posture`. Run `moorai-hook uninstall` as
+each user before removing the package. Before upload, the release job installs the `.deb` in `ubuntu:20.04`
+(glibc 2.31) on amd64 and arm64 and runs the installed hook ([`packaging/linux/smoke-test.sh`](packaging/linux/smoke-test.sh)):
+`dpkg -i` without Node installs with the warning, then with Node 22 a source-file Read is allowed and a
+credential-file Read under the fail-closed posture is denied. Also tested on Debian 12 and Ubuntu 24.04
+containers (arm64); systemd itself and RHEL were not exercised. The release covers the agent only; the desktop
+app is not built for Linux.
 
 ### Privileged helper (moorai-guardd)
 
