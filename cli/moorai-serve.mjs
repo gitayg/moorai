@@ -381,7 +381,7 @@ export async function createServer(opts = {}) {
       const stage = body.stage === undefined ? "prompt" : body.stage;
       if (!STAGES.includes(stage)) throw new HttpError(400, `stage must be one of ${STAGES.join(", ")}`);
       const text = engineCtx.inbound === true ? inboundLib.inboundText(raw, MAX_TEXT) : raw;
-      return withTimeout(rt.scan(text, stage, engineCtx, { tool: tool || "scan", event: "Scan", decoded: true, session }), o.timeoutMs);
+      return withTimeout(rt.scan(text, stage, engineCtx, { tool: tool || "scan", event: "Scan", decoded: true, session, owner }), o.timeoutMs);
     }
     if (path === "/v1/index-scan") {
       // Chunks an application is about to embed (cli/index-scan.mjs). Strings, or objects whose string

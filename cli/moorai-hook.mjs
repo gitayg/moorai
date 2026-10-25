@@ -34,8 +34,8 @@ import { boundaryWriteFields, boundaryCommandFields, boundaryAtStop, BOUNDARY_TH
 import { boundaryTurnSnapshot } from "./boundary-update.mjs";
 import { maskValue, maskNote } from "./mask.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
-import { egressMatches } from "./secret-egress.mjs";
-import { hookTracker, learnFromTool, capAlert, evictAlert } from "./secret-taint-hook.mjs";
+import { egressMatches, secretEgressVerdict, unverifiedLevel } from "./secret-egress.mjs";
+import { hookTracker, learnFromTool, capAlert, evictAlert, retainedAlert, evictedMapAlert } from "./secret-taint-hook.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, recordDestination, readDestinations, requestKill } from "./signals.mjs";
 import { readState, STATE_DIR } from "./state-dirs.mjs";
 import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
@@ -1911,25 +1911,29 @@ function reportEnvelope(policy, tool, ctx, stage) {
 // Tier-2 / #65 — local secret-value egress. Fingerprints local secrets on-device and checks the
 // outbound text for each one, raw or encoded (cli/secret-forms.mjs); `learned` adds the secrets this
 // session read (cli/secret-taint-hook.mjs). Only the matched hashes, the encoding and the source kind
-// leave. Blocks when policy #65 is block/kill.
+// leave. Returns "deny" (a confirmed match under a block/kill #65, or an unverified one at level "block"),
+// "ask" (an unverified one at level "ask"; secretEgress.unverified, admin binding or signed policy), or false.
 function checkSecretEgress(policy, text, tool, stage, { learned = false } = {}) {
   try {
     const r = egressMatches(text, undefined, { tracker: learned ? hookTracker(policy, SESSION_ID) : null });
     if (r.truncated) VERDICT.capped = true;
     if (!r.matches.length) return false;
     const hits = [...new Set(r.matches.map((m) => m.hash))];
-    const act = threatActionFor(policy, 65);
-    const block = act === "block" || act === "kill";
-    post({ threatId: 65, category: "Local secret value egress", riskLevel: block ? "Blocked" : "Critical", stage, tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "egress:" + hits.join("."), secretEgress: r.matches.slice(0, 16).map((m) => ({ hashPrefix: m.hash.slice(0, 11), encoding: m.encoding, source: m.source })), ...destField(extractHosts(text)), ...IDENTITY });
-    return block;
+    const v = secretEgressVerdict(r.matches, { action: threatActionFor(policy, 65), level: unverifiedLevel(policy, ADMIN) });
+    const block = v === "deny";
+    post({ threatId: 65, category: "Local secret value egress", riskLevel: block ? "Blocked" : v === "ask" ? "High" : "Critical", stage, decision: block ? "deny" : v === "ask" ? "ask" : "notify", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "egress:" + hits.join("."), secretEgress: r.matches.slice(0, 16).map((m) => ({ hashPrefix: m.hash.slice(0, 11), encoding: m.encoding, source: m.source })), ...destField(extractHosts(text)), ...IDENTITY });
+    return v === "deny" || v === "ask" ? v : false;
   } catch { return false; }
 }
+const UNVERIFIED_REASON = "outbound content MoorAI could not check for a tracked secret";
 // Session-read secrets (cli/secret-taint-hook.mjs): learn from a tool result; a cap overflow is reported
 // once per window, content-free.
 function learnSecrets(policy, tool, ti, text) {
   const r = learnFromTool({ policy, sessionId: SESSION_ID, tool, toolInput: ti, text });
   if (r && r.report) post({ ...capAlert(r, tool), ts: new Date().toISOString(), ...IDENTITY });
   if (r && r.evictedLive) post({ ...evictAlert(r, tool), ts: new Date().toISOString(), ...IDENTITY });
+  if (r && r.reportRetained) post({ ...retainedAlert(r, tool), ts: new Date().toISOString(), ...IDENTITY });
+  if (r && r.evictedMapTrimmed) post({ ...evictedMapAlert(r, tool), ts: new Date().toISOString(), ...IDENTITY });
 }
 
 // Intent alignment for an already-risky call (cli/intent-alignment.mjs). Posts one content-free alert
@@ -3358,7 +3362,7 @@ async function main() {
     }
     logBehavior(tool, ti.command || "bash", btext, { decision: dec, findings: finds }, "file", clipboardSignals(ti.command));
     if (killIds.length) killSession(tool, killIds, "file");
-    if (checkSecretEgress(policy, ti.command, tool, "egress", { learned: cmdEgress }) && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); why(REASON.SECRET_EGRESS); }
+    { const sv = checkSecretEgress(policy, ti.command, tool, "egress", { learned: cmdEgress }); if (sv === "deny" && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); why(REASON.SECRET_EGRESS); } else if (sv === "ask" && dec === "allow") { dec = "ask"; reasons = [UNVERIFIED_REASON]; alts = saferAlternativesFor([65]); why(REASON.SECRET_EGRESS); } }
     // OT protocol clients (cli/ot-protocol-client.mjs): the command and every script decoded from it (embedded
     // scripts are PowerShell, base64/hex payloads go to a POSIX shell); the strictest result is kept.
     { const ot = otShellCheck({ command: ti.command, shell: ps ? "ps" : "sh", scripts: [...embedded.map((text) => ({ text, shell: "ps" })), ...decodedPayloads.map((text) => ({ text, shell: "sh" }))], policy, readScript: scriptReader(typeof input.cwd === "string" ? input.cwd : process.cwd()), tool }); if (ot) { post({ ...ot.alert, ts: new Date().toISOString(), ...IDENTITY }); if (ot.kill) killSession(tool, ot.killIds, "file"); if (RANK[ot.decision] > RANK[dec]) { dec = ot.decision; reasons = [ot.reason]; alts = []; why(OT_PROTOCOL_CLIENT); } } }
@@ -3503,7 +3507,7 @@ async function main() {
     if (d.kill) killSession("WebFetch", d.killIds, "egress");
     const epD = decideEndpoints(policy, url);
     if (epD.decision === "deny") { why(REASON.ENDPOINT_NOT_ALLOWED); dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: "hook:WebFetch", ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...destField(epD.hosts), ...IDENTITY }); }
-    if (checkSecretEgress(policy, `${url}\n${prompt}`, "WebFetch", "egress", { learned: true }) && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); why(REASON.SECRET_EGRESS); }
+    { const sv = checkSecretEgress(policy, `${url}\n${prompt}`, "WebFetch", "egress", { learned: true }); if (sv === "deny" && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); why(REASON.SECRET_EGRESS); } else if (sv === "ask" && dec === "allow") { dec = "ask"; reasons = [UNVERIFIED_REASON]; alts = saferAlternativesFor([65]); why(REASON.SECRET_EGRESS); } }
     if (reportEnvelope(policy, "WebFetch", { tool: "WebFetch" }, "egress") && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; alts = saferAlternativesFor([64]); why(REASON.ENVELOPE); }
     let fmask;
     ({ dec, reasons, alts, rewrite: fmask } = settleMask(engine, policy, { tool: "WebFetch", stage: "prompt", ctx: { egress: true }, ids: d.maskIds, value: ti, only: ["url", "prompt"], scanOf: (v) => `${typeof v.url === "string" ? v.url : ""}\n${typeof v.prompt === "string" ? v.prompt : ""}`, dec, reasons, alts, text: `${url}\n${prompt}` }));
@@ -3548,7 +3552,8 @@ async function main() {
     const epD = decideEndpoints(policy, args);
     if (epD.decision === "deny") { why(REASON.ENDPOINT_NOT_ALLOWED); post({ threatId: 63, category: "Unapproved model endpoint", riskLevel: "Blocked", stage: "egress", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(epD.hosts.join(",")), ...destField(epD.hosts), ...IDENTITY }); audit("deny"); return emit("deny", epD.reason, saferAlternativesFor([63])); }
     // Tier-2 / #65 — a local secret value shipped as an MCP tool argument.
-    if (checkSecretEgress(policy, args, tool, "egress", { learned: true })) { why(REASON.SECRET_EGRESS); audit("deny"); return emit("deny", `${tool} — local secret egress`, saferAlternativesFor([65])); }
+    const secretV = checkSecretEgress(policy, args, tool, "egress", { learned: true });
+    if (secretV === "deny") { why(REASON.SECRET_EGRESS); audit("deny"); return emit("deny", `${tool} — local secret egress`, saferAlternativesFor([65])); }
     // Files the arguments NAME. An upload / attach / send / filesystem tool that takes a path reads the
     // file itself, so the argument scan above sees only the path — `{"path":"customers.csv"}` shipped a
     // file of keys and SSNs unscanned while `cat customers.csv` raised #39. Each local regular file gets
@@ -3578,6 +3583,7 @@ async function main() {
     if (g.decision !== "allow") why(detectorReason([...g.findings, ...fsr.findings, ...ovFindings]));
     // #33 — fail-closed MCP floor: raise an otherwise-allowed MCP call to "ask" (justify). Inert unless
     // policy.mcpFloor is set (only the offline fail-closed default sets it), so normal policies are unaffected.
+    if (secretV === "ask" && g.decision === "allow") { g.decision = "ask"; g.reason = `${tool} — ${UNVERIFIED_REASON}`; g.alternatives = saferAlternativesFor([65]); why(REASON.SECRET_EGRESS); }
     const floored = mcpFloor(policy, g.decision);
     if (floored !== g.decision) { g.decision = floored; g.reason = g.reason || "fail-closed default: MCP requires justification"; why(REASON.MCP_FLOOR); VERDICT.enforcement = ENFORCEMENT.STRENGTHENED; }
     report(g.findings, "egress", `hook:${tool}`, g.decision === "deny", policy.captureTier, { toolName: tool, argText: args }, signApproval(tool, argsH, g.decision === "deny" ? "deny" : "allow"));

@@ -32,7 +32,7 @@ import { createRecheck, RECHECK_SOURCE } from "../mcp-proxy/tool-recheck.mjs";
 import { isEnrolled } from "../data/enforcement.js";
 import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
 import { indexWriteScan } from "../cli/index-tools.mjs";
-import { egressMatches } from "../cli/secret-egress.mjs";
+import { egressMatches, secretEgressVerdict, unverifiedLevel } from "../cli/secret-egress.mjs";
 import { memoryTracker } from "../cli/secret-taint.mjs";
 import { learnableSecrets } from "../cli/secret-learn.mjs";
 import { sessionRiskConfig } from "../data/session-risk.js";
@@ -40,7 +40,7 @@ import { assessServer, addToolSignals } from "../cli/mcp-reputation.mjs";
 import { reputationAction, reputationAlert, reputationSummary } from "../data/mcp-reputation.js";
 import { settleHeadlessAsk } from "../cli/server-mode.mjs";
 import { contentHash } from "../cli/content-hash.mjs";
-import { state, ensurePolicy } from "./policy.mjs";
+import { state, ensurePolicy, ADMIN } from "./policy.mjs";
 import { profileCheck } from "./profile.mjs";
 import { failClosed, failReason, alertFailClosed } from "./fail.mjs";
 import { CONFIG, IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, alertProfile, alertDriftCall, alertRecheckFailed, recordLedger } from "./report.mjs";
@@ -202,9 +202,10 @@ export function createGuard(route) {
       const em = egressMatches(args, undefined, { tracker: { kr: SECRETS.kr, entries: () => SECRETS.entries({ ttl: secretTtl() }), overflowed: () => SECRETS.overflowed() } });
       const hits = [...new Set(em.matches.map((m) => m.hash))];
       if (hits.length) {
-        const act = threatActionFor(POLICY, 65);
-        egress = { hits, matches: em.matches, block: act === "block" || act === "kill" };
+        const v = secretEgressVerdict(em.matches, { action: threatActionFor(POLICY, 65), level: unverifiedLevel(POLICY, ADMIN) });
+        egress = { hits, matches: em.matches, block: v === "deny" };
         if (egress.block && g.decision !== "deny") { g.decision = "deny"; g.gate = "egress"; g.reason = `${tool} — local secret egress`; }
+        else if (v === "ask" && g.decision === "allow") { g.decision = "ask"; g.gate = "egress"; g.reason = `${tool} — outbound content MoorAI could not check for a tracked secret`; }
       }
     }
 

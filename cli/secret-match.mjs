@@ -1,14 +1,14 @@
 // #65 — find any tracked secret form in an outbound text, holding the forms only as keyed hashes.
 //
-// A tracked form is { len, fp, h }: its byte length, a 20-bit keyed fingerprint of its first K bytes, and
+// A tracked form is { len, fp, h }: its byte length, a 24-bit keyed fingerprint of its first K bytes, and
 // a 96-bit HMAC-SHA-256 of the whole form. The scan slides one K-byte window over each view of the text
 // once, with a polynomial rolling hash (secret odd base, mod 2^32) finished by a keyed 32-bit mixer; a
 // window whose fingerprint is in the bitmap is confirmed by the HMAC of the `len` bytes starting there.
 // One pass per view whatever the number of secrets or distinct lengths: O(bytes) plus one HMAC per
-// fingerprint hit (true matches, plus about bytes * forms / 2^20 chance hits).
+// fingerprint hit (true matches, plus about bytes * forms / 2^24 chance hits).
 //
 // WHY A KEYED PREFILTER: the forms of a session-read secret persist on disk between hook processes, and
-// only as these three numbers. The HMAC is the match; the fingerprint is a 20-bit digest of K bytes under
+// only as these three numbers. The HMAC is the match; the fingerprint is a 24-bit digest of K bytes under
 // a key-derived base and mask, so a state file read without the key yields neither the value nor a
 // cheap test of a guess.
 //
@@ -23,7 +23,7 @@ export const K = 8;
 export const MAX_SCAN = 4 << 20;
 export const MAX_RAW = 16 << 20;
 export const MAX_CONFIRM = 20000;
-const FP_BITS = 20;
+export const FP_BITS = 24;
 const H_HEX = 24;
 
 // A keyring from 32 key bytes: the HMAC key and the rolling-hash base and mask derived from it.
@@ -54,17 +54,21 @@ export function trackForm(kr, form) {
 }
 
 // The index over tracked entries: [{ len, fp, h, sid, enc }]. `sid` names the secret (any string), `enc` the form.
+// The bitmap is sized to the entries (2^16 to 2^24 bits, ~1/32 full at most): fingerprints keep all 24
+// bits and the bitmap reads their top `b` bits, so a large retained set does not raise the chance-hit rate.
 export function buildIndex(kr, entries) {
-  const bits = new Uint32Array(1 << (FP_BITS - 5));
+  const b = Math.max(16, Math.min(FP_BITS, Math.ceil(Math.log2(Math.max(1, entries.length) * 32))));
+  const bshift = FP_BITS - b;
+  const bits = new Uint32Array(1 << (b - 5));
   const byFp = new Map();
   for (const e of entries) {
     if (!e || !(e.len >= K) || typeof e.h !== "string") continue;
-    const fp = e.fp >>> 0;
-    bits[fp >>> 5] |= 1 << (fp & 31);
+    const fp = e.fp >>> 0, bi = fp >>> bshift;
+    bits[bi >>> 5] |= 1 << (bi & 31);
     const l = byFp.get(fp);
     if (l) l.push(e); else byFp.set(fp, [e]);
   }
-  return { kr, bits, byFp, size: entries.length, pk1: powK1(kr.base) };
+  return { kr, bits, bshift, byFp, size: entries.length, pk1: powK1(kr.base) };
 }
 
 // Scan one byte string; true when it was truncated. `found`: Map sid -> { enc, view }; `budget`: { left }
@@ -72,12 +76,12 @@ export function buildIndex(kr, entries) {
 function scanView(ix, s, view, found, budget, cap) {
   const n = Math.min(s.length, cap);
   if (n < K) return n < s.length;
-  const { kr, bits, byFp, pk1 } = ix;
+  const { kr, bits, bshift, byFp, pk1 } = ix;
   let h = 0;
   for (let i = 0; i < K; i++) h = (Math.imul(h, kr.base) + s.charCodeAt(i)) >>> 0;
   for (let i = 0; ; i++) {
-    const fp = finish(h, kr);
-    if (bits[fp >>> 5] & (1 << (fp & 31))) {
+    const fp = finish(h, kr), bi = fp >>> bshift;
+    if (bits[bi >>> 5] & (1 << (bi & 31))) {
       for (const e of byFp.get(fp) || []) {
         if (i + e.len > n) continue;
         if (found.has(e.sid)) continue;

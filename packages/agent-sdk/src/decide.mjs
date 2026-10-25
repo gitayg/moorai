@@ -42,7 +42,8 @@ const {
 } = hookCore;
 const { systemConfigPath } = serverModeLib;
 const { scanMcpFileArgs } = mcpFileArgs;
-const { egressMatches } = secretEgress;
+const { egressMatches, secretEgressVerdict, unverifiedLevel } = secretEgress;
+const UNVERIFIED_REASON = "outbound content MoorAI could not check for a tracked secret";
 const { learnableSecrets, isCredentialPath } = secretLearnLib;
 const { extractHosts } = modelEndpoints;
 const { OUTBOUND_UPLOAD } = outboundUpload;
@@ -86,15 +87,16 @@ function envelopeBlocks(policy, ctx, actor, stage, signals) {
 }
 // #65 as the hook's checkSecretEgress: local secrets raw or encoded, plus — at an egress sink, when the
 // caller passes one — the secrets its tracker learned from tool results (cli/secret-taint.mjs).
-function secretEgressBlocks(policy, text, cwd, stage, signals, tracker = null) {
+// Returns "deny" | "ask" | false, as the hook's checkSecretEgress; `admin` is the root-owned admin binding.
+function secretEgressBlocks(policy, text, cwd, stage, signals, tracker = null, admin = null) {
   try {
     const r = egressMatches(text, cwd, { tracker });
     if (!r.matches.length) return false;
     const hits = [...new Set(r.matches.map((m) => m.hash))];
-    const act = threatActionFor(policy, 65);
-    const block = act === "block" || act === "kill";
-    signals.push({ threatId: 65, category: "Local secret value egress", riskLevel: block ? "Blocked" : "Critical", stage, key: `egress:${hits.join(".")}`, secretEgress: r.matches.slice(0, 16).map((m) => ({ hashPrefix: m.hash.slice(0, 11), encoding: m.encoding, source: m.source })) });
-    return block;
+    const v = secretEgressVerdict(r.matches, { action: threatActionFor(policy, 65), level: unverifiedLevel(policy, admin) });
+    const block = v === "deny";
+    signals.push({ threatId: 65, category: "Local secret value egress", riskLevel: block ? "Blocked" : v === "ask" ? "High" : "Critical", stage, key: `egress:${hits.join(".")}`, secretEgress: r.matches.slice(0, 16).map((m) => ({ hashPrefix: m.hash.slice(0, 11), encoding: m.encoding, source: m.source })) });
+    return v === "deny" || v === "ask" ? v : false;
   } catch { return false; }
 }
 function endpointSignal(epD, signals) {
@@ -210,7 +212,7 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
     for (const script of scripts) merge(decideText(engine, policy, script, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" } }));
     const epD = decideEndpoints(policy, ti.command);
     if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); endpointSignal(epD, signals); }
-    if (secretEgressBlocks(policy, ti.command, cwd, "egress", signals, cmdEgress ? secretTracker : null) && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); }
+    { const sv = secretEgressBlocks(policy, ti.command, cwd, "egress", signals, cmdEgress ? secretTracker : null, systemConfig); if (sv === "deny" && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); } else if (sv === "ask" && dec === "allow") { dec = "ask"; reasons = [UNVERIFIED_REASON]; alts = saferAlternativesFor([65]); } }
     if (envelopeBlocks(policy, { tool: "Bash", paths: readPaths }, actor, "file", signals) && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; alts = saferAlternativesFor([64]); }
     return out(dec, `${killIds.length ? "killed session" : "blocked"} via ${tool} — ${reasons.join(", ")}`, alts, tagged(finds, "file"), { kill: killIds.length > 0, killIds });
   }
@@ -231,7 +233,7 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
     if (kd.kill) { d.kill = true; d.killIds.push(...kd.killIds); }
     const epD = decideEndpoints(policy, text);
     if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); endpointSignal(epD, signals); }
-    if (secretEgressBlocks(policy, text, cwd, "file", signals) && dec === "allow") { dec = "ask"; reasons = ["local secret written to a new file"]; alts = saferAlternativesFor([65]); }
+    if (secretEgressBlocks(policy, text, cwd, "file", signals, null, systemConfig) && dec === "allow") { dec = "ask"; reasons = ["local secret written to a new file"]; alts = saferAlternativesFor([65]); }
     if (envelopeBlocks(policy, { tool, paths: [path] }, actor, "file", signals) && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; alts = saferAlternativesFor([64]); }
     return out(dec, `${d.kill ? "killed session" : dec === "ask" ? "needs justification" : "blocked"} ${tool} of ${basename(path || "file")} — ${reasons.join(", ")}`, alts, tagged(d.findings, "output"), { kill: d.kill, killIds: d.killIds });
   }
@@ -243,7 +245,7 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
     let dec = d.decision, reasons = d.reasons.slice(), alts = d.alternatives;
     const epD = decideEndpoints(policy, url);
     if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); endpointSignal(epD, signals); }
-    if (secretEgressBlocks(policy, `${url}\n${prompt}`, cwd, "egress", signals, secretTracker) && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); }
+    { const sv = secretEgressBlocks(policy, `${url}\n${prompt}`, cwd, "egress", signals, secretTracker, systemConfig); if (sv === "deny" && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); } else if (sv === "ask" && dec === "allow") { dec = "ask"; reasons = [UNVERIFIED_REASON]; alts = saferAlternativesFor([65]); } }
     if (envelopeBlocks(policy, { tool: "WebFetch" }, actor, "egress", signals) && dec !== "deny") { dec = "deny"; reasons = ["out-of-envelope (entitlement drift)"]; alts = saferAlternativesFor([64]); }
     return out(dec, `${d.kill ? "killed session" : dec === "ask" ? "needs justification" : "blocked"} WebFetch — ${reasons.join(", ")}`, alts, tagged(d.findings, "egress"), { kill: d.kill, killIds: d.killIds });
   }
@@ -257,11 +259,13 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
     if (envelopeBlocks(policy, { tool, mcpServer: server }, actor, "egress", signals)) return out("deny", `${tool} — out-of-envelope MCP server`, saferAlternativesFor([64]), []);
     const epD = decideEndpoints(policy, args);
     if (epD.decision === "deny") { endpointSignal(epD, signals); return out("deny", epD.reason, saferAlternativesFor([63]), []); }
-    if (secretEgressBlocks(policy, args, cwd, "egress", signals, secretTracker)) return out("deny", `${tool} — local secret egress`, saferAlternativesFor([65]), []);
+    const secretV = secretEgressBlocks(policy, args, cwd, "egress", signals, secretTracker, systemConfig);
+    if (secretV === "deny") return out("deny", `${tool} — local secret egress`, saferAlternativesFor([65]), []);
     const fsr = scanMcpFileArgs(engine, policy, { tool, args: ti, bases: [typeof cwd === "string" && cwd ? cwd : base], argIds: g.findings.map((f) => f.threatId) });
     if (RANK[fsr.decision] > RANK[g.decision]) { g.decision = fsr.decision; g.reason = fsr.reasons.join(", "); g.alternatives = fsr.alternatives; }
     else if (fsr.decision !== "allow" && fsr.decision === g.decision) g.reason = [g.reason, ...fsr.reasons].filter(Boolean).join(", ");
     if (fsr.kill) { g.kill = true; g.killIds = [...(g.killIds || []), ...fsr.killIds]; }
+    if (secretV === "ask" && g.decision === "allow") { g.decision = "ask"; g.reason = `${tool} — ${UNVERIFIED_REASON}`; g.alternatives = saferAlternativesFor([65]); }
     const floored = mcpFloor(policy, g.decision);
     if (floored !== g.decision) { g.decision = floored; g.reason = g.reason || "fail-closed default: MCP requires justification"; }
     const reasons = g.reason ? [g.reason] : [];

@@ -117,3 +117,26 @@ export function egressMatches(text, cwd, opts = {}) {
 export function egressHits(text, cwd, opts) {
   return [...new Set(egressMatches(text, cwd, opts).matches.map((m) => m.hash))];
 }
+
+// What an unverified match (encoding "unverified": text past the scan limits, an exhausted HMAC budget, a
+// session that lost tracked records or whose state could not be verified) does: "ask" (the default) holds the
+// call for a person (a host with no prompt settles it by its existing rule), "block" applies #65's action,
+// "report" only alerts. From the root-owned admin binding first, then the signed
+// policy: `secretEgress.unverified`. A confirmed match always applies #65's action.
+export const UNVERIFIED_LEVELS = Object.freeze(["ask", "block", "report"]);
+export function unverifiedLevel(policy, admin) {
+  for (const src of [admin, policy]) {
+    const v = src && typeof src === "object" && src.secretEgress && typeof src.secretEgress === "object" ? src.secretEgress.unverified : undefined;
+    if (UNVERIFIED_LEVELS.includes(v)) return v;
+  }
+  return "ask";
+}
+// The verdict for a set of matches: "deny" | "ask" | "report" (alert only) | null (no match).
+// action: threatActionFor(policy, 65); level: unverifiedLevel(policy, admin).
+export function secretEgressVerdict(matches, { action, level = "ask" }) {
+  if (!matches || !matches.length) return null;
+  const enforce = action === "block" || action === "kill";
+  if (!enforce) return "report";
+  if (matches.some((m) => m.encoding !== "unverified")) return "deny";
+  return level === "ask" ? "ask" : level === "report" ? "report" : "deny";
+}
