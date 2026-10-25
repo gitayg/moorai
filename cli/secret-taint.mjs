@@ -15,7 +15,10 @@
 // Every record expires `ttlMs` after it was last read (the session-risk window, 30 min by default).
 // OVERFLOW: only when the retained store itself is full is a record lost; the session is then `overflowed`
 // until that record would have expired, and every egress check consulting the tracker returns an
-// `unverified` match (cli/secret-egress.mjs). Overflowing a pool does not.
+// `unverified` match (cli/secret-egress.mjs). Overflowing a pool does not. A learn call passed `truncated`
+// (cli/secret-learn.mjs: text past its total bound went unread, or its per-result cap was reached with
+// values pending) holds the session the same way until now + TTL (`learnCap`), since a secret the result
+// carried may never have been tracked.
 //
 // SESSION TABLE: MAX_SESSIONS sessions (16 in the hook's state file; 256 per owner in memory). A session with
 // nothing live is dropped; a live one is evicted only when the table is full of live sessions, least recently
@@ -100,7 +103,7 @@ export function unpackRecords(buf) {
 }
 
 // One learn call into a session { x: pool records, ou, oa, ra } and its retained records. Pure.
-function learnInto(kr, sess, retained, values, { now, ttlMs, cap, quota, retainCap, cred, hashFn }) {
+function learnInto(kr, sess, retained, values, { now, ttlMs, cap, quota, retainCap, cred, truncated = false, hashFn }) {
   const pool = cred ? "cred" : "pattern";
   const live = (Array.isArray(sess.x) ? sess.x : []).filter((r) => r && now - r.t <= ttlMs);
   let kept = retained.filter((r) => r && now - r.t <= ttlMs);
@@ -134,6 +137,7 @@ function learnInto(kr, sess, retained, values, { now, ttlMs, cap, quota, retainC
     kept.push(r);
   }
   kept.sort((a, b) => a.t - b.t);
+  if (truncated) ou = Math.max(ou, now + ttlMs);
   if (kept.length > retainCap) {
     retainedDropped = kept.length - retainCap;
     for (const r of kept.slice(0, retainedDropped)) ou = Math.max(ou, r.t + ttlMs);
@@ -142,8 +146,9 @@ function learnInto(kr, sess, retained, values, { now, ttlMs, cap, quota, retainC
   const poolFull = dropped > 0 || overQuota > 0;
   const report = poolFull && !(sess.oa && now - sess.oa <= ttlMs);
   const reportRetained = retainedDropped > 0 && !(sess.ra && now - sess.ra <= ttlMs);
-  const next = { t: now, x: pools, ...(ou ? { ou } : {}), ...(report ? { oa: now } : sess.oa ? { oa: sess.oa } : {}), ...(reportRetained ? { ra: now } : sess.ra ? { ra: sess.ra } : {}) };
-  return { next, retained: kept, res: { added, dropped, overQuota, retainedDropped, retained: kept.length, overflow: poolFull, report, reportRetained, unverified: !!ou, size: pools.length, cap, retainCap, pool } };
+  const reportLearnCap = !!truncated && !(sess.la && now - sess.la <= ttlMs);
+  const next = { t: now, x: pools, ...(ou ? { ou } : {}), ...(report ? { oa: now } : sess.oa ? { oa: sess.oa } : {}), ...(reportRetained ? { ra: now } : sess.ra ? { ra: sess.ra } : {}), ...(reportLearnCap ? { la: now } : sess.la ? { la: sess.la } : {}) };
+  return { next, retained: kept, res: { added, dropped, overQuota, retainedDropped, retained: kept.length, overflow: poolFull, report, reportRetained, learnCap: !!truncated, reportLearnCap, unverified: !!ou, size: pools.length, cap, retainCap, pool } };
 }
 
 function liveUntilOf(sess, retained, now, ttl) {
@@ -160,8 +165,8 @@ export function memoryTracker({ key, ttlMs = DEFAULT_TTL_MS, cap = POOL_CAP, quo
   let retained = Buffer.alloc(0);
   return {
     kr,
-    learn(values, { now = Date.now(), ttl = ttlMs, cred = false } = {}) {
-      const r = learnInto(kr, sess, unpackRecords(retained), values, { now, ttlMs: ttl, cap, quota, retainCap, cred, hashFn });
+    learn(values, { now = Date.now(), ttl = ttlMs, cred = false, truncated = false } = {}) {
+      const r = learnInto(kr, sess, unpackRecords(retained), values, { now, ttlMs: ttl, cap, quota, retainCap, cred, truncated, hashFn });
       sess = r.next;
       retained = packRecords(r.retained);
       return r.res;
@@ -236,14 +241,14 @@ export function sessionTracker({ sessionId, io, ttlMs = DEFAULT_TTL_MS, cap = PO
   });
   return {
     kr,
-    learn(values, { now = Date.now(), ttl = ttlMs, cred = false } = {}) {
+    learn(values, { now = Date.now(), ttl = ttlMs, cred = false, truncated = false } = {}) {
       let res = null;
       const apply = (raw) => {
         const st = norm(raw, ttl);
         const sess = st.s[sk] && typeof st.s[sk] === "object" ? st.s[sk] : { x: [] };
         const ret = retainedOf(sess, sess.rc > 0 ? readBin(sk) : null);
         if (!ret.ok) sess.ou = Math.max(sess.ou || 0, (sess.t || now) + ttl);
-        const r = learnInto(kr, sess, ret.recs, values, { now, ttlMs: ttl, cap, quota, retainCap, cred, hashFn });
+        const r = learnInto(kr, sess, ret.recs, values, { now, ttlMs: ttl, cap, quota, retainCap, cred, truncated, hashFn });
         res = r.res;
         const g = ((sess.g || 0) + 1) >>> 0;
         writeBin(sk, r.retained.length ? wrapRetained(g, packRecords(r.retained)) : null);
@@ -324,12 +329,12 @@ export function memorySessions({ key, maxSessions = MAX_MEMORY_SESSIONS, evicted
   };
   return {
     kr: keyring(k),
-    learn(owner, session, values, { now = Date.now(), ttl = ttlMs, cred = false } = {}) {
+    learn(owner, session, values, { now = Date.now(), ttl = ttlMs, cred = false, truncated = false } = {}) {
       const o = String(owner || ""), x = ownerOf(o), sid = String(session || "");
       let s = x.table.get(sid);
       if (!s) { s = { tr: memoryTracker({ key: k, ttlMs, cap, quota, retainCap, hashFn }), t: now }; x.table.set(sid, s); }
       s.t = now;
-      const r = s.tr.learn(values, { now, ttl, cred });
+      const r = s.tr.learn(values, { now, ttl, cred, truncated });
       upkeep(o, x, now, ttl);
       return r;
     },

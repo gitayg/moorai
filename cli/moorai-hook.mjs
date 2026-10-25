@@ -35,7 +35,8 @@ import { boundaryTurnSnapshot } from "./boundary-update.mjs";
 import { maskValue, maskNote } from "./mask.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { egressMatches, secretEgressVerdict, unverifiedLevel } from "./secret-egress.mjs";
-import { hookTracker, learnFromTool, capAlert, evictAlert, retainedAlert, evictedMapAlert } from "./secret-taint-hook.mjs";
+import { hookTracker, learnFromTool, capAlert, evictAlert, retainedAlert, evictedMapAlert, learnCapAlert } from "./secret-taint-hook.mjs";
+import { learnSource, LEARN_TOTAL } from "./secret-learn.mjs";
 import { recordExposure, recordAgentEvent, readAgentEvents, recordAction, rulesBaseline, setRulesBaseline, recordDestination, readDestinations, requestKill } from "./signals.mjs";
 import { readState, STATE_DIR } from "./state-dirs.mjs";
 import { applyCaptureTier, commandShape } from "../data/capture-tiers.js";
@@ -1927,10 +1928,11 @@ function checkSecretEgress(policy, text, tool, stage, { learned = false } = {}) 
 }
 const UNVERIFIED_REASON = "outbound content MoorAI could not check for a tracked secret";
 // Session-read secrets (cli/secret-taint-hook.mjs): learn from a tool result; a cap overflow is reported
-// once per window, content-free.
-function learnSecrets(policy, tool, ti, text) {
-  const r = learnFromTool({ policy, sessionId: SESSION_ID, tool, toolInput: ti, text });
+// once per window, content-free. `src` = { text, truncated } (cli/secret-learn.mjs learnSource).
+function learnSecrets(policy, tool, ti, src) {
+  const r = learnFromTool({ policy, sessionId: SESSION_ID, tool, toolInput: ti, text: src.text, truncated: src.truncated });
   if (r && r.report) post({ ...capAlert(r, tool), ts: new Date().toISOString(), ...IDENTITY });
+  if (r && r.reportLearnCap) post({ ...learnCapAlert(r, tool), ts: new Date().toISOString(), ...IDENTITY });
   if (r && r.evictedLive) post({ ...evictAlert(r, tool), ts: new Date().toISOString(), ...IDENTITY });
   if (r && r.reportRetained) post({ ...retainedAlert(r, tool), ts: new Date().toISOString(), ...IDENTITY });
   if (r && r.evictedMapTrimmed) post({ ...evictedMapAlert(r, tool), ts: new Date().toISOString(), ...IDENTITY });
@@ -2595,7 +2597,8 @@ async function handlePostToolUse(input, tool, policy, engine) {
   const text = field.text;
   const ti = input.tool_input || {};
   decoyUsed(text, "PostToolUse", tool);
-  learnSecrets(policy, tool, ti, text);
+  // Learned from the whole result (up to LEARN_TOTAL), not the 64 KB scan text.
+  learnSecrets(policy, tool, ti, learnSource(field.value));
   const url = typeof ti.url === "string" ? ti.url : (typeof ti.query === "string" ? ti.query : "");
   // OUTBOUND-ONLY DETECTORS MUST NOT JUDGE INBOUND CONTENT. The "output" stage historically meant
   // "content the agent is about to emit"; wiring PostToolUse to it made it ALSO mean "content the agent
@@ -3196,8 +3199,9 @@ async function main() {
   if (tool === "Read") {
     READ_BUF = null;
     const text = readFileCapped(agentPath(ti.file_path, input.cwd));
-    // #65 — the agent is about to read this file: any secret in it joins the session's tracked set.
-    learnSecrets(policy, "Read", ti, text);
+    // #65 — the agent is about to read this file: any secret in it joins the session's tracked set. Learned
+    // from the whole file up to LEARN_TOTAL, not the 256 KiB scan head; a larger file holds the session.
+    learnSecrets(policy, "Read", ti, READ_BUF && READ_BUF.length > 262144 ? { text: fileScanText(READ_BUF.subarray(0, LEARN_TOTAL)), truncated: READ_BUF.length > LEARN_TOTAL } : { text, truncated: false });
     // context.tree: the file, from the bytes just read, before it is judged. A skill or instruction file is
     // a "skill" leaf. Judged before the host runs the Read, so a Read denied below keeps its leaf.
     if (READ_BUF) { const sk = isSkillSurface(ti.file_path); ctxEnter(sk ? "skill" : "file", sk ? "skill" : "path", agentPath(ti.file_path, input.cwd), READ_BUF, input.cwd); }

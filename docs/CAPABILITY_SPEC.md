@@ -2699,7 +2699,8 @@ policy: `"ask"` (the default) holds the call for a person, `"block"` applies #65
 alerts. Any other value is ignored. A host with no ask prompt settles the ask by its existing rule: Codex turns
 it into a deny with a message, and server mode, the SDK runtime, `moorai-serve` and the model proxy apply the
 headless-ask rule (deny unless the policy allows it with a report). On a host with no approver, ask becomes
-deny: the MCP gateway settles a #65 ask by the headless-ask rule outside server mode too
+deny: the MCP gateway settles a #65 ask by the headless-ask rule outside server mode too, including on a call
+another of its checks already holds for approval
 ([`cli/server-mode.mjs`](../cli/server-mode.mjs) `settleNoApproverAsk`: deny, with a content-free
 `Headless approval denied (no approver)` alert, unless the policy sets `headlessAsk: "allow-with-report"`),
 because it answers an MCP client, not a person, and forwarding the ask would release the call. An SDK
@@ -2720,8 +2721,21 @@ command that reads one or dumps the environment; an MCP call whose arguments nam
 `WebSearch` results never teach. The SDK runtime (behind `moorai-serve` and the model proxy) learns from a
 `Read` through `toolCall` as the hook does, and from every inbound scan (`/v1/scan` with `ctx.inbound`, the
 SDK's `PostToolUse`, a tool result in a model-proxy request) except `WebFetch` / `WebSearch`, provider tokens
-and named assignments only. The MCP gateway learns from each remote result it forwards.
+and named assignments only. The MCP gateway learns from each remote result it scans.
 
+- **How much is read.** Learning reads the whole result, past the scan surfaces' own caps: the hook learns
+  from the whole file a `Read` names and the whole tool response, not the 256 KiB file head or the 64 KB
+  result scan text; the SDK runtime from the whole `Read` file, the SDK's `PostToolUse` response and a
+  model-proxy tool result over the scan cap (passed whole as `learnFrom`); the MCP gateway from every string
+  of the parsed result. Up to 16 MiB (the egress raw-scan bound), in line-aligned 256 KiB chunks, in two
+  passes: credential values first (every `KEY=value` line of a credential source, then named assignments,
+  an Azure `AccountKey` and a database URL's password), provider tokens and JWTs second, so provider-shaped
+  junk ahead of a credential line cannot crowd it out. At most 4,096 values per result.
+- **Learn cap.** A result whose secrets could not all be learned (text past 16 MiB, or 4,096 values collected
+  with another still pending) holds its session as unverified (`cap-overflow`) until now + TTL, since a
+  secret it carried may never have been tracked; `secretEgress.unverified` decides it, as for every
+  unverified match. One alert per window, `Session secret learning truncated` (#65, `secretTaint:
+  { learnCap: true }`).
 - **Pools and quota.** Values from a credential source (a credential file, an environment dump, an MCP read
   of a credential path) live in a `cred` pool; values pattern-matched out of any other text live in a
   `pattern` pool; 64 each, so secret-shaped junk never displaces a credential-file secret. One learn call
@@ -2768,7 +2782,10 @@ and named assignments only. The MCP gateway learns from each remote result it fo
   A 2 MB payload in three views takes 70–78 ms. Worst cases: 380–415 ms for a 17 MB payload (16 MiB raw plus
   two 4 MiB decoded views, then held as unverified), 36–50 ms for an exhausted HMAC budget. With a full
   in-memory retained store (about 29,000 forms) a check costs 12 ms on 100 KB and 33 ms on 2 MB. Extracting
-  learnable values from a 256 KB result costs 3–7 ms.
+  learnable values (median of 20, log-shaped text with a token every few hundred lines) costs 8–12 ms for a
+  1 MiB result and 140–176 ms for a 16 MiB one (the higher figure with `KEY=value` parsing); 16 MiB of one
+  newline-free line costs 111–113 ms, and 16 MiB of nothing but `KEY=value` lines from a credential source
+  366 ms.
 
 **Limits.** Encryption, compression, XOR, custom alphabets, base32 / base85, hex with separators
 (`41:42`, `\x41`), nested encodings (base64 of hex), and a value split across separate strings or arguments
@@ -2781,7 +2798,9 @@ is not read: an egress of more than 16 MiB (or a decoded view over 4 MiB) is unv
 tracked, and asks by default. A session that loses records from a full retained store
 is unverified for every egress until they would have expired. A secret past its TTL is no longer matched.
 The gateway's tracker is per route, not per client session; outside server mode the gateway still forwards
-an `ask` from its other checks (only a #65 ask is settled). An unenrolled gateway (coach) forwards even the
+an `ask` from its other checks alone (a call #65 also asks about is settled). A gateway response over 1 MB is
+forwarded unscanned, as before, so it is neither learned from nor held as unverified. A session that read a
+result it could not fully learn is unverified for every egress for one window. An unenrolled gateway (coach) forwards even the
 settled deny, with a note, as it does every deny. If the lockfile cannot be taken within 2 s the update or read runs unlocked. The agent runs as the same OS user
 and can read `session.key` and edit the state file. A stolen state file without the key yields no value
 and no cheap test of a guess against the HMAC; the 24-bit fingerprint of a form's first 8 bytes is the

@@ -44,7 +44,7 @@ const { systemConfigPath } = serverModeLib;
 const { scanMcpFileArgs } = mcpFileArgs;
 const { egressMatches, secretEgressVerdict, unverifiedLevel } = secretEgress;
 const UNVERIFIED_REASON = "outbound content MoorAI could not check for a tracked secret";
-const { learnableSecrets, isCredentialPath } = secretLearnLib;
+const { learnableSecrets, isCredentialPath, LEARN_TOTAL } = secretLearnLib;
 const { extractHosts } = modelEndpoints;
 const { OUTBOUND_UPLOAD } = outboundUpload;
 const { callTags, tagGate, applyTagGate, tagHitAlert } = toolTagsLib;
@@ -60,6 +60,15 @@ const FILE_CAP = 262144;
 
 function readFileCapped(fp) {
   try { if (!fp) return ""; return fileScanText(readFileSync(fp).subarray(0, FILE_CAP)); } catch { return ""; }
+}
+// The file's head for the scan, and what #65 learns from: the whole file up to LEARN_TOTAL (`truncated` past it).
+function readFileForLearn(fp) {
+  try {
+    if (!fp) return { text: "", learn: { text: "", truncated: false } };
+    const buf = readFileSync(fp);
+    const text = fileScanText(buf.subarray(0, FILE_CAP));
+    return { text, learn: buf.length > FILE_CAP ? { text: fileScanText(buf.subarray(0, LEARN_TOTAL)), truncated: buf.length > LEARN_TOTAL } : { text, truncated: false } };
+  } catch { return { text: "", learn: { text: "", truncated: false } }; }
 }
 function agentPath(p, cwd) {
   if (typeof p !== "string" || !p || isAbsolute(p) || p.startsWith("~") || typeof cwd !== "string" || !cwd) return p;
@@ -162,9 +171,11 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
   if (wp.decision === "deny") return out("deny", wp.reason, [], [], { ...(wp.profile ? { profileId: wp.profile.id } : {}), driftKinds: wp.kinds, reasonCode: wp.reasonCode });
 
   if (tool === "Read") {
-    const text = readFileCapped(agentPath(ti.file_path, cwd));
-    // #65, as the hook's Read branch: a secret in the file joins the caller's session-read set.
-    if (secretTracker && secretTracker.learn) { try { const vals = learnableSecrets(text, { kv: isCredentialPath(ti.file_path) }); if (vals.length) secretTracker.learn(vals, "Read", isCredentialPath(ti.file_path)); } catch { /* evidence only */ } }
+    const rd = readFileForLearn(agentPath(ti.file_path, cwd));
+    const text = rd.text;
+    // #65, as the hook's Read branch: a secret in the file joins the caller's session-read set; a file whose
+    // secrets could not all be learned holds the session as unverified.
+    if (secretTracker && secretTracker.learn) { try { const cred = isCredentialPath(ti.file_path); const r = learnableSecrets(rd.learn.text, { kv: cred }); const cut = rd.learn.truncated || r.truncated; if (r.values.length || cut) secretTracker.learn(r.values, "Read", cred, cut); } catch { /* evidence only */ } }
     const d = decideText(engine, policy, text, "file", { ctx: { template: isEnvTemplate(ti.file_path) } });
     const pd = decideCredFileRead(engine, policy, ti.file_path);
     d.findings.push(...pd.findings);

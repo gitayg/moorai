@@ -21,8 +21,9 @@
 // (open, the default) or refuses it (closed, on an enforcing device). Otherwise only an explicit deny
 // under an enforcing device refuses; "ask" forwards (no banner exists)
 // except in server mode, where the hook's headless rule settles it (deny unless policy says
-// allow-with-report), and except a #65 "ask" (secretEgress.unverified), which is settled the same way
-// in every mode: the gateway has no approver, so forwarding it would release it.
+// allow-with-report), and except a call #65 asks about (secretEgress.unverified), whatever else also
+// asked, which is settled the same way in every mode: the gateway has no approver, so forwarding it would
+// release it.
 import { fileURLToPath } from "node:url";
 import { mcpGateway, decideText, threatActionFor } from "../cli/hook-core.mjs";
 import { CAPS, toolScanText, toolIdentity, resultOfResponse } from "../mcp-proxy/tool-scan.mjs";
@@ -35,7 +36,7 @@ import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
 import { indexWriteScan } from "../cli/index-tools.mjs";
 import { egressMatches, secretEgressVerdict, unverifiedLevel } from "../cli/secret-egress.mjs";
 import { memoryTracker } from "../cli/secret-taint.mjs";
-import { learnableSecrets } from "../cli/secret-learn.mjs";
+import { learnableSecrets, learnSource } from "../cli/secret-learn.mjs";
 import { sessionRiskConfig } from "../data/session-risk.js";
 import { assessServer, addToolSignals } from "../cli/mcp-reputation.mjs";
 import { reputationAction, reputationAlert, reputationSummary } from "../data/mcp-reputation.js";
@@ -206,7 +207,14 @@ export function createGuard(route) {
         const v = secretEgressVerdict(em.matches, { action: threatActionFor(POLICY, 65), level: unverifiedLevel(POLICY, ADMIN) });
         egress = { hits, matches: em.matches, block: v === "deny" };
         if (egress.block && g.decision !== "deny") { g.decision = "deny"; g.gate = "egress"; g.reason = `${tool} — local secret egress`; }
-        else if (v === "ask" && g.decision === "allow") { g.decision = "ask"; g.gate = "egress"; g.reason = `${tool} — outbound content MoorAI could not check for a tracked secret`; egressAsk = true; }
+        else if (v === "ask") {
+          // Recorded whatever another check already decided: an "ask" from any rule is settled below as a
+          // no-approver ask when #65 also asked, never forwarded with an unverified secret egress in it.
+          egressAsk = true;
+          const why = `${tool} — outbound content MoorAI could not check for a tracked secret`;
+          if (g.decision === "allow") { g.decision = "ask"; g.gate = "egress"; g.reason = why; }
+          else if (g.decision === "ask") g.reason = [g.reason, why].filter(Boolean).join(", ");
+        }
       }
     }
 
@@ -401,8 +409,10 @@ export function createGuard(route) {
       const result = resultOfResponse(msg);
       if (!result) return null;
       const label = toolName || "mcp";
-      // A secret in this result joins the route's tracked set, matched on later calls' arguments.
-      try { const vals = learnableSecrets(inboundText(result)); if (vals.length) SECRETS.learn(vals, { ttl: secretTtl() }); } catch { /* evidence only */ }
+      // A secret in this result joins the route's tracked set, matched on later calls' arguments. Learned
+      // from the whole result (up to LEARN_TOTAL), not the 64 KB scan text; a result whose secrets could not
+      // all be learned holds the route as unverified until now + TTL.
+      try { const src = learnSource(result); const r = learnableSecrets(src.text); const cut = src.truncated || r.truncated; if (r.values.length || cut) SECRETS.learn(r.values, { ttl: secretTtl(), truncated: cut }); } catch { /* evidence only */ }
       // null when the scan missed the deadline (withDeadline) and there was text to judge; { unjudged }
       // when it threw or could not run. Open: forward (as always). Closed: replace what was not judged.
       const verdict = await withDeadline(scanResult(result).catch(() => ({ unjudged: "error" })), CAPS.resultDeadlineMs);

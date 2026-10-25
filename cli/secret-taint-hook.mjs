@@ -105,16 +105,19 @@ export function credentialSource(tool, toolInput) {
   return false;
 }
 
-// Learn from one tool result. Returns the tracker's learn result, or null when nothing was learnable.
-export function learnFromTool({ policy, sessionId, tool, toolInput, text, io }) {
+// Learn from one tool result. `truncated`: the caller could not hand over all of it (cli/secret-learn.mjs
+// learnSource, a file past LEARN_TOTAL); with learnableSecrets' own truncation it holds the session as
+// unverified. Returns the tracker's learn result, or null when nothing was learnable and nothing was cut.
+export function learnFromTool({ policy, sessionId, tool, toolInput, text, truncated = false, io }) {
   try {
-    if (!sessionId || !text) return null;
+    if (!sessionId || (!text && !truncated)) return null;
     if (!(tool === "Read" || tool === "Bash" || tool === "PowerShell" || tool.startsWith("mcp__"))) return null;
     const cred = credentialSource(tool, toolInput);
-    const values = learnableSecrets(text, { kv: cred });
-    if (!values.length) return null;
+    const r = learnableSecrets(text, { kv: cred });
+    const cut = truncated || r.truncated;
+    if (!r.values.length && !cut) return null;
     const tr = hookTracker(policy, sessionId, io);
-    return tr ? tr.learn(values, { cred }) : null;
+    return tr ? tr.learn(r.values, { cred, truncated: cut }) : null;
   } catch { return null; }
 }
 
@@ -124,6 +127,11 @@ export function capAlert(r, tool) {
 }
 export function secretTaintFields(r) {
   return { pool: r.pool, cap: r.cap, dropped: r.dropped, overQuota: r.overQuota, kept: r.size, retained: r.retained };
+}
+// The content-free alert for a result whose secrets could not all be learned (text past the learn bound, or
+// the per-result cap reached with values pending): the session is unverified until now + TTL.
+export function learnCapAlert(r, tool) {
+  return { threatId: 65, category: "Session secret learning truncated", riskLevel: "High", stage: "output", tool: `hook:${tool}`, contentHash: "secret-learn-cap", secretTaint: { learnCap: true } };
 }
 // The content-free alert for live sessions evicted from a full session table (they fail closed until expiry).
 export function evictAlert(r, tool) {

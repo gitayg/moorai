@@ -130,17 +130,24 @@ export async function createMoorAI(options = {}) {
       if (evictedMapTrimmed) post65(evictCtx.s, evictCtx.tool, evictCtx.sess, "Session secret tracking evicted-session map full", "secret-evict-map", { evictedMapTrimmed });
     }
   });
-  const trackerFor = (s, sess, session, owner) => (secrets ? { kr: secrets.kr, entries: () => secrets.entries(ownerKey(owner), sessKey(session), { ttl: sessionRiskWindowMs(s.policy) }), overflowed: () => secrets.overflowed(ownerKey(owner), sessKey(session)), learn: (values, tool, cred) => learnValues(s, values, tool, sess, cred, session, owner) } : null);
-  function learnInbound(s, text, tool, sess, session, owner) {
+  const trackerFor = (s, sess, session, owner) => (secrets ? { kr: secrets.kr, entries: () => secrets.entries(ownerKey(owner), sessKey(session), { ttl: sessionRiskWindowMs(s.policy) }), overflowed: () => secrets.overflowed(ownerKey(owner), sessKey(session)), learn: (values, tool, cred, truncated) => learnValues(s, values, tool, sess, cred, session, owner, truncated) } : null);
+  // `from`: the caller's whole result (meta.learnFrom), when the scan text it passed was capped; learned
+  // through learnSource up to LEARN_TOTAL, so a secret past the scan cap is still tracked.
+  function learnInbound(s, text, tool, sess, session, owner, from) {
     if (!secrets || tool === "WebFetch" || tool === "WebSearch") return;
-    try { learnValues(s, secretLearnLib.learnableSecrets(text), tool, sess, false, session, owner); } catch { /* tracking is evidence; never the verdict */ }
-  }
-  function learnValues(s, values, tool, sess, cred = false, session = "", owner = "") {
     try {
-      if (!values.length) return;
+      const src = from !== undefined && from !== null ? secretLearnLib.learnSource(from) : { text, truncated: false };
+      const r = secretLearnLib.learnableSecrets(src.text);
+      learnValues(s, r.values, tool, sess, false, session, owner, src.truncated || r.truncated);
+    } catch { /* tracking is evidence; never the verdict */ }
+  }
+  function learnValues(s, values, tool, sess, cred = false, session = "", owner = "", truncated = false) {
+    try {
+      if (!values.length && !truncated) return;
       evictCtx = { s, tool, sess };
-      const r = secrets.learn(ownerKey(owner), sessKey(session), values, { ttl: sessionRiskWindowMs(s.policy), cred });
+      const r = secrets.learn(ownerKey(owner), sessKey(session), values, { ttl: sessionRiskWindowMs(s.policy), cred, truncated });
       evictCtx = null;
+      if (r.reportLearnCap) post65(s, tool, sess, "Session secret learning truncated", "secret-learn-cap", { learnCap: true });
       if (r.report) post65(s, tool, sess, "Session secret tracking cap reached", `secret-cap:${r.cap}`, { pool: r.pool, cap: r.cap, dropped: r.dropped, overQuota: r.overQuota, kept: r.size, retained: r.retained });
       if (r.reportRetained) post65(s, tool, sess, "Session secret retained store full", `secret-retain:${r.retainCap}`, { retainCap: r.retainCap, retainedDropped: r.retainedDropped });
     } catch { evictCtx = null; /* tracking is evidence; never the verdict */ }
@@ -217,7 +224,7 @@ export async function createMoorAI(options = {}) {
       : decideText(s.engine, s.policy, t, stage, { ctx: c });
     const findings = d.findings.map((f) => ({ ...f, stage }));
     const sess = sessionOf(meta.session);
-    if (c.inbound === true) learnInbound(s, t, typeof c.tool === "string" ? c.tool : tool, sess, meta.session, meta.owner);
+    if (c.inbound === true) learnInbound(s, t, typeof c.tool === "string" ? c.tool : tool, sess, meta.session, meta.owner, meta.learnFrom);
     report(s, findings, { tool, decision: d.decision, event: meta.event || "Scan", sess });
     const st = meta.settle === false ? { decision: d.decision, headlessAsk: null } : settle(s, { decision: d.decision, reason: d.reasons.join(", ") }, { tool, sess });
     return { decision: st.decision, configuredDecision: d.decision, ...summary(findings), reasons: d.reasons, alternatives: d.alternatives, kill: d.kill, findings: contentFree(findings), ...(st.headlessAsk ? { headlessAsk: st.headlessAsk } : {}), policyId: s.policyId };

@@ -258,7 +258,7 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
           if (closed) { denied.push({ kind: it.kind, reasons: [`not evaluated: over the ${itemCap}-character scan cap`] }); continue; }
         }
         const pi = proseItem(it);
-        const r = reportContext(s, it) ? await scanContext(rt, pi, it.text.slice(0, itemCap), { settle }) : await rt.scan(it.text.slice(0, itemCap), it.stage, pi.ctx, { tool: it.kind, event: "ModelRequest", settle });
+        const r = reportContext(s, it) ? await scanContext(rt, pi, it.text.slice(0, itemCap), { settle }) : await rt.scan(it.text.slice(0, itemCap), it.stage, pi.ctx, { tool: it.kind, event: "ModelRequest", settle, ...(it.text.length > itemCap ? { learnFrom: it.text } : {}) });
         v = remember(key, { decision: r.decision, reasons: r.reasons });
       }
       if (v.decision === "deny") denied.push({ kind: it.kind, reasons: v.reasons });
