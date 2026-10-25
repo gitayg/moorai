@@ -48,8 +48,12 @@ Pushing a `v*` tag runs these workflows:
 | `release-macos.yml` | the signed, notarized DMG and updater artifacts, uploaded to AppCrane (not to the Release) |
 | `publish-server-image.yml` | `ghcr.io/gitayg/moorai-server:<version>` |
 
-`release-linux.yml` waits up to 25 minutes for the Release and creates it only if none appeared; uploads use
-`--clobber`, so a re-run replaces the Linux assets.
+`release-linux.yml` runs two jobs. `build` has a read-only token: it builds the packages, writes `SHA256SUMS`,
+runs the smoke test and uploads all three as the `moorai-linux` build artifact; its one third-party action,
+`docker/setup-qemu-action`, is pinned to a full commit SHA. `publish` runs on tags only, with `contents: write`
+and no checkout or third-party action: it downloads the artifact, runs `sha256sum -c SHA256SUMS`, waits up to
+25 minutes for the Release and creates it only if none appeared, then uploads with `--clobber`, so a re-run
+replaces the Linux assets. A manual run (`workflow_dispatch`) runs `build` only.
 
 ## Signing
 

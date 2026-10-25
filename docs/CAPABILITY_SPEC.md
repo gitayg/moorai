@@ -4350,9 +4350,12 @@ is installed and healthy.
   (it must install and print the missing-Node warning), installs Node 22 from nodejs.org checked against
   `SHASUMS256.txt`, runs `moorai-install-hooks`, then runs the installed `moorai-hook` on a source-file Read
   (exit 0, no output) and on a credential-file Read under the root-owned fail-closed posture (exit 0, `deny`);
-  any other result fails the job. It then attaches `moorai_<v>_all.deb`, `moorai-<v>-linux.tar.gz` and
-  `SHA256SUMS` to the tag's GitHub Release with `gh release upload --clobber` and the repository's
-  `GITHUB_TOKEN` (`contents: write`, no other secret). The Release is normally created by `release-windows.yml`
+  any other result fails the job. That `build` job has a read-only token, and its one third-party action,
+  `docker/setup-qemu-action`, is pinned to a full commit SHA; it uploads the packages and `SHA256SUMS` as a
+  build artifact. A separate `publish` job (tags only; `contents: write`, no checkout, no third-party action)
+  downloads that artifact, runs `sha256sum -c SHA256SUMS`, and attaches `moorai_<v>_all.deb`,
+  `moorai-<v>-linux.tar.gz` and `SHA256SUMS` to the tag's GitHub Release with `gh release upload --clobber`
+  and the repository's `GITHUB_TOKEN` (no other secret). The Release is normally created by `release-windows.yml`
   (tauri-action, which reuses an existing Release for the tag); the Linux job waits up to 25 minutes for it and
   creates it only if none appeared. `moorai.spec` and the guardd package are not attached. The desktop app is
   not built for Linux.

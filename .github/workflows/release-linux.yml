@@ -12,21 +12,25 @@ name: release-linux
 #
 # Push a version tag (v1.37.0) to build, test and attach; package.json's version must match the tag. Or run
 # manually (workflow_dispatch) to build and test only (packages uploaded as a build artifact).
-# Uses only the repository's GITHUB_TOKEN; no secrets.
+# Uses only the repository's GITHUB_TOKEN; no secrets. Two jobs: `build` (read-only token) builds, smoke-tests
+# and uploads the packages as an artifact; `publish` (contents: write, tags only) runs no third-party action,
+# checks the artifact against SHA256SUMS and attaches it. The one third-party action, docker/setup-qemu-action,
+# is pinned to a full commit SHA and runs only in the read-only job.
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
 
-# gh release create / upload write repo contents.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  linux:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v5
 
@@ -47,7 +51,7 @@ jobs:
           sha256sum moorai_*_all.deb moorai-*-linux.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
       # Install the .deb (first without Node: it must install and warn), install Node from nodejs.org
       # (checked against SHASUMS256.txt), register the hooks, run the installed hook on a benign Read (exit 0,
@@ -74,8 +78,24 @@ jobs:
             dist/linux/SHA256SUMS
           if-no-files-found: warn
 
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # gh release create / upload write repo contents. No checkout and no third-party action in this job.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: moorai-linux
+          path: dist/linux
+
+      - name: Check the packages against SHA256SUMS
+        run: cd dist/linux && sha256sum -c SHA256SUMS
+
       - name: Attach to the GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
