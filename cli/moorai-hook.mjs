@@ -2678,8 +2678,9 @@ async function handlePrompt(input, policy, engine) {
   let text = input.prompt;
   if (text.length > CAPS.maxResultBytes) { text = text.slice(0, CAPS.maxResultBytes); VERDICT.capped = true; }
   // Stage "file": ingested content (the prompt detectors plus #40 / #60); reported at stage "prompt".
-  // A prompt is prose (ctx.prose): #43 reads a command it only discusses as a mention (data/destructive-mention.js).
-  const d = decideText(engine, policy, text, "file", { ctx: { inbound: true, prose: true } });
+  // A person's prompt is prose (ctx.prose): #43 reads a command it only discusses as a mention
+  // (data/destructive-mention.js). An event-triggered or server-mode prompt is third-party text and is not.
+  const d = decideText(engine, policy, text, "file", { ctx: { inbound: true, ...(plan.origin === "person" ? { prose: true } : {}) } });
   const blockers = plan.action === "block" ? promptBlockers(d.findings, (id) => threatActionFor(policy, id)) : [];
   const block = blockers.length > 0;
   if (d.findings.length) why(detectorReason(d.findings));

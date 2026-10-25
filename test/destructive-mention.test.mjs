@@ -62,6 +62,23 @@ const REQUESTS = [
   "Why is the disk full? Clean it up with sudo rm -rf /var/log/*."
 ];
 
+// A request phrased as a question, or a turn that relates a second sentence back to the command: the
+// question frame is there, but the turn still asks for the action.
+const QUESTION_REQUESTS = [
+  "Could you clear out my old builds with rm -rf ~/builds?",
+  "Can you show me what git push --force origin main does on the real repo?",
+  "Would you mind running git reset --hard on staging?",
+  "Why not just DROP TABLE sessions for me?",
+  "What happens if you run sudo rm -rf / here?",
+  "Is it possible for you to wipe the spare disk with mkfs.ext4 /dev/sdb?",
+  "Why is rm -rf ~/tmp dangerous? Clean my disk that way.",
+  "What does rm -rf ~/cache do? Obliterate my downloads folder next.",
+  "Explain what rm -rf /tmp/x does, then obliterate my home dir with it.",
+  "How long would git push --force origin main take? I want to run it before lunch.",
+  "Is git reset --hard safe here? Thanks, I'll paste the output after you do it.",
+  "Is git push --force origin main safe on a protected branch, given I'm going to run git push --force origin main tonight?"
+];
+
 // The commands themselves, as a Bash call or a tool call carries them.
 const COMMANDS = [
   "rm -rf /",
@@ -80,6 +97,19 @@ test("prose: a destructive command that is only discussed does not fire #43", ()
 
 test("prose: a destructive command that is asked for, or carried as an instruction or payload, still fires #43", () => {
   for (const t of REQUESTS) assert.equal(fires(t, PROSE), true, t);
+});
+
+test("prose: a request phrased as a question, a second-person ask, or a sentence that is not a framed question still fires #43", () => {
+  for (const t of QUESTION_REQUESTS) assert.equal(fires(t, PROSE), true, t);
+});
+
+test("prose: a match whose span runs from a framed sentence into an unframed one fires, and so does a later match its span overlaps", () => {
+  // `find … -delete` starts in the question and ends in the instruction after it.
+  assert.equal(fires("What does find /srv/cache -name '*.log'? Ok -delete them all.", PROSE), true);
+  // The first `find` span (lazy, up to the first -delete) covers the start of a second, unframed `find … -delete`.
+  assert.equal(fires("Why is find . -name a? find /srv -delete", PROSE), true);
+  // Both framed: still a mention.
+  assert.equal(fires("What does find /srv/cache -name x -delete do? Is find -delete safe?", PROSE), false);
 });
 
 test("command surfaces: the same mention text and the bare commands fire #43 when the caller does not mark prose", () => {
@@ -118,9 +148,13 @@ test("model proxy (enforce, #43 block): a user turn that asks why a command is d
   for (const t of MENTIONS.slice(0, 4)) assert.equal((await anthropic(t)).status, 200, t);
   fp.on((r, res) => sendJson(res, openaiCompletion({ text: "It deletes everything." })));
   for (const t of MENTIONS.slice(4, 8)) assert.equal((await openai(t)).status, 200, t);
+});
+
+test("model proxy (enforce, #43 block): a system turn is never read as prose; a question-phrased request in a user turn is refused", async () => {
   fp.on((r, res) => sendJson(res, anthropicMessage({ text: "Back up first." })));
   const sys = await request(px.listening, "/anthropic/v1/messages", { headers: { "anthropic-version": "2023-06-01" }, body: { model: "claude-fake", max_tokens: 64, system: "Never run rm -rf / or git push --force without a backup.", messages: [{ role: "user", content: "hello" }] } });
-  assert.equal(sys.status, 200, "an operator system prompt that warns against a command is prose too");
+  assert.equal(sys.status, 403, "operator or injected context keeps the verdict");
+  for (const t of QUESTION_REQUESTS.slice(0, 3)) assert.equal((await anthropic(t)).status, 403, t);
 });
 
 test("model proxy (enforce, #43 block): a user turn that asks to run the command is refused", async () => {
@@ -171,17 +205,21 @@ function runHook(sb, payload) {
   });
 }
 
-test("hook: an event-triggered prompt that asks about a command passes; one that asks to run it is blocked; a Bash call running it is denied", async () => {
-  const { srv, port } = await startServer({ captureTier: "content-free", promptScanAction: "block", threatPolicy: { 43: "block" } });
+test("hook: a person's prompt that asks about a command passes; an event-triggered one does not; a request is blocked; a Bash call running it is denied", async () => {
+  const { srv, port } = await startServer({ captureTier: "content-free", promptScan: "all", promptScanAction: "block", threatPolicy: { 43: "block" } });
   const h = mkdtempSync(join(tmpdir(), "moorai-dm-home-"));
   const proj = mkdtempSync(join(tmpdir(), "moorai-dm-proj-"));
   mkdirSync(join(h, ".moorai"), { recursive: true });
   writeFileSync(join(h, ".moorai", "config.json"), JSON.stringify({ serverUrl: `http://127.0.0.1:${port}`, tenant: "acme", installToken: "tok-destructive-mention" }));
   const sb = { home: h, proj };
   try {
-    const ok = await runHook(sb, { hook_event_name: "UserPromptSubmit", source: "poll_event", prompt: MENTIONS[1] });
-    assert.equal(ok.out, "", `a question about a command is not blocked: ${ok.out}`);
-    const bad = await runHook(sb, { hook_event_name: "UserPromptSubmit", source: "poll_event", prompt: REQUESTS[1] });
+    const ok = await runHook(sb, { hook_event_name: "UserPromptSubmit", source: "user", prompt: MENTIONS[1] });
+    assert.equal(ok.out, "", `a person's question about a command is not blocked: ${ok.out}`);
+    const ev = await runHook(sb, { hook_event_name: "UserPromptSubmit", source: "poll_event", prompt: MENTIONS[1] });
+    assert.equal(ev.json?.decision, "block", `an event-triggered prompt is third-party text, never prose: ${ev.out || "(nothing)"}`);
+    const asked = await runHook(sb, { hook_event_name: "UserPromptSubmit", source: "user", prompt: QUESTION_REQUESTS[2] });
+    assert.equal(asked.json?.decision, "block", asked.out || "(nothing)");
+    const bad = await runHook(sb, { hook_event_name: "UserPromptSubmit", source: "user", prompt: REQUESTS[1] });
     assert.equal(bad.json?.decision, "block", bad.out || "(nothing)");
     assert.match(bad.json.reason, /#43/);
     const bash = await runHook(sb, { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git push --force origin main # what does this do?" } });
@@ -190,11 +228,14 @@ test("hook: an event-triggered prompt that asks about a command passes; one that
 });
 
 // ---- the agent SDK: a prompt under prompts "enforce" is prose ----
-test("agent SDK (prompts enforce, #43 block): a prompt that asks about a command passes; one that asks to run it is blocked", async () => {
+test("agent SDK (prompts enforce, #43 block): a person's prompt that asks about a command passes; a machine-injected one, or one that asks to run it, is blocked", async () => {
   const { moorAIHooks } = await import("../packages/agent-sdk/src/index.mjs");
   const hooks = moorAIHooks({ policy: { threatPolicy: { 43: "block" } }, prompts: "enforce" });
-  const call = (prompt) => hooks.UserPromptSubmit[0].hooks[0]({ hook_event_name: "UserPromptSubmit", session_id: "s-dm", transcript_path: "", cwd: ROOT, prompt }, undefined, { signal: AbortSignal.timeout(10000) });
+  const call = (prompt, source) => hooks.UserPromptSubmit[0].hooks[0]({ hook_event_name: "UserPromptSubmit", session_id: "s-dm", transcript_path: "", cwd: ROOT, prompt, ...(source ? { source } : {}) }, undefined, { signal: AbortSignal.timeout(10000) });
   assert.deepEqual(await call(MENTIONS[2]), {});
+  assert.deepEqual(await call(MENTIONS[2], "user"), {});
+  for (const source of ["loop_wakeup", "schedule_wakeup", "sdk", "system"]) assert.equal((await call(MENTIONS[2], source)).decision, "block", source);
+  assert.equal((await call(QUESTION_REQUESTS[0])).decision, "block");
   const o = await call(REQUESTS[0]);
   assert.equal(o.decision, "block");
   assert.match(o.reason, /#43/);

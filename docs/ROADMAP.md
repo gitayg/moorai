@@ -267,8 +267,8 @@ point of view; position and document *that* as the durable evidence store.
 
   **PRECISION DEBT (next wave's target list, from benign-corpus-v2):** `dlp-phone` fires on
   `ghp_…0123456789` (trailing digits look like a phone number); `destructive-command` tells DISCUSSING a
-  command from ISSUING one only on a turn the surface marks as prose (`ctx.prose`: the model proxy's turns, the
-  hook's scanned prompt, the SDK's prompt scan; docs/DETECTION_ENGINE.md §3), and still fires on a memory or
+  command from ISSUING one only on a person's turn the surface marks as prose (`ctx.prose`: the model proxy's
+  user turns, the hook's and the SDK's prompt scan for a person's prompt; docs/DETECTION_ENGINE.md §3), and still fires on a memory or
   rules file that mentions one; `secret-*` fires on the canonical documentation placeholders this repo's own convention mandates
   (`AKIAIOSFODNN7EXAMPLE`, `ghp_ABCDEF…`); `inj-override-structural` fires on an override verb with a
   NON-AGENT object (`"the linter should ignore all previous rules"`); `dep-typosquat` fires on a prompt

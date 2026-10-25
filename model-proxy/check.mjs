@@ -186,10 +186,10 @@ export function readings(name, input) {
   return { maps, innerNames: [...innerNames], overflow, problem, ambiguous: overflow || problem || keys.size > 1 };
 }
 const RANK = { allow: 0, ask: 1, deny: 2 };
-// A user or system turn is prose: it runs nothing itself, and what the model runs because of it comes back as a
-// tool call (checkToolCalls). Detectors that judge a command about to run read ctx.prose (#43,
-// data/destructive-mention.js); a tool call's arguments are never marked.
-const PROSE_KINDS = new Set(["prompt", "system"]);
+// A user turn is prose: it runs nothing itself, and what the model runs because of it comes back as a tool call
+// (checkToolCalls). Detectors that judge a command about to run read ctx.prose (#43, data/destructive-mention.js).
+// A system turn (operator or injected context), a tool result and a tool call's arguments are never marked.
+const PROSE_KINDS = new Set(["prompt"]);
 const proseItem = (it) => (PROSE_KINDS.has(it.kind) ? { ...it, ctx: { ...it.ctx, prose: true } } : it);
 const AMBIGUOUS = "tool call arguments can be read more than one way (a wrapped, repeated or alias field disagrees), so a client may run something other than what was checked";
 

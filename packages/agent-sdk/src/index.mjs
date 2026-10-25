@@ -85,7 +85,7 @@ export function moorAIHooks(options = {}) {
   async function userPromptSubmit(input) {
     if (!input || input.hook_event_name !== "UserPromptSubmit") return {};
     try {
-      const v = await (await runtime()).scan(typeof input.prompt === "string" ? input.prompt : "", "prompt", { prose: true }, { event: "UserPromptSubmit", tool: "UserPromptSubmit", settle: options.prompts === "enforce", session: input.session_id });
+      const v = await (await runtime()).scan(typeof input.prompt === "string" ? input.prompt : "", "prompt", !input.source || input.source === "user" ? { prose: true } : {}, { event: "UserPromptSubmit", tool: "UserPromptSubmit", settle: options.prompts === "enforce", session: input.session_id });
       // The task, for intent alignment: the prompt passed to query() and every later user turn arrive here.
       // Only a person's prompt is the task (the hook's isUserPrompt): a machine-injected source could put
       // its own destination in scope. Captured only AFTER the scan, and only when it did not deny the

@@ -855,9 +855,9 @@ export const DETECTORS = [
     mode: "warn",
     hint: "Contains a destructive, hard-to-reverse command — review before it runs.",
     patterns: DESTRUCTIVE_COMMAND,
-    // A turn the caller marks as prose (ctx.prose) that only discusses the command — asks why it is
-    // dangerous, what it does, compares or warns against it, and asks nothing to run — executes nothing;
-    // the tool call that would run it is judged as a command. Every other caller keeps the verdict
+    // A person's turn the caller marks as prose (ctx.prose) whose every sentence asks about, explains,
+    // compares or warns against the command, and that asks for no action anywhere, executes nothing; the
+    // tool call that would run it is judged as a command. Every other caller keeps the verdict
     // (data/destructive-mention.js, test/destructive-mention.test.mjs).
     gate: (text, ctx) => destructiveIssued(text, ctx, DESTRUCTIVE_COMMAND)
   },
