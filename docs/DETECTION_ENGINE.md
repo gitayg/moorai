@@ -3390,3 +3390,21 @@ results is the core of both ASI01 and MCP06. Everything else is bounded.
   its best credit; detectors are counted but do not set the status, because session risk, the MCP allow-list and
   file metadata are mechanisms outside `data/detectors.js`. Partial techniques are split into bounded by design
   (any partial credit carries the design bound) and open gap (`attackSummary()` in `data/attack.js`).
+
+## 18. CWE and CAPEC tags
+
+Every rule also carries `cwe` and `capec`, each an array of `{ id, title }`. The two read differently from
+the mappings above: `cwe` names the software weakness the threat exploits, `capec` the attack pattern the
+threat is. Neither is a mechanism claim, so the §15 standard does not apply; the standard is that the id
+describes this threat, not a superset or a consequence of it.
+
+* **Always arrays.** `[]` is a reviewed "no honest mapping" and must carry a one-line `cweNote` or
+  `capecNote` saying why: a person sharing data or relying on an answer exploits no weakness and has no
+  adversary, and CAPEC 3.9 has no pattern for prompt injection, data destruction or exfiltration.
+* **Ids MITRE allows.** CWE categories, views, deprecated entries and entries MITRE marks DISCOURAGED for
+  mapping are not used. That rules out CWE-1426 (Improper Validation of Generative AI Output), so
+  "generated output acted on unvalidated" rules get `[]`; prompt-injection rules credit CWE-1427. CAPEC Meta
+  patterns (130, 154, 169, 586) are used only where no Standard or Detailed pattern fits.
+* **Canonical titles.** `data/cwe-capec.js` holds the id and title tables (CWE 4.20 names from
+  cwe.mitre.org, CAPEC 3.9 names from the OWASP Threat Model Library's `capec-names.json`, both checked on
+  2026-10-26). `test/cwe-capec.test.mjs` pins every title and fails on a title that is not the canonical name.

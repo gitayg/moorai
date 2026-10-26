@@ -22,7 +22,11 @@
       "owaspMcp": "string[] — every OWASP MCP Top 10 (2025, beta) risk, MCP01–MCP10, the rule's own mechanism addresses. Always an array; [] is a reviewed \"no credit\". Ids and titles: data/owasp-frameworks.js.",
       "owaspMcpPartial": "optional { MCPxx: limit } — a bounded credit, as atlasPartial. Every key must also appear in owaspMcp.",
       "attack": "{ id, coverage, reason }[] — every MITRE ATT&CK Enterprise v20 technique the threat genuinely corresponds to. coverage: full (a shipped mechanism addresses the technique as an AI agent MoorAI watches performs it), partial (part of it; reason states the bound) or none (the technique corresponds, but MoorAI ships no runtime mechanism for it). Coverage is a mechanism claim, not a detection rate. Always an array; [] is a reviewed \"no technique corresponds\". Ids come from data/attack-v20-techniques.json; read the tag through data/attack.js. Optional on a partial credit: bound \"design\" with a one-line boundReason when the forms it does not catch are indistinguishable from an agent's legitimate work or outside anything an agent-side hook, proxy or gateway observes; bound \"gap\", or no field, when MoorAI has not built the detection. Read it through data/attack.js attackBound().",
-      "attackNote": "string, present only when `attack` is [] — one line on why no ATT&CK v20 technique corresponds to the threat."
+      "attackNote": "string, present only when `attack` is [] — one line on why no ATT&CK v20 technique corresponds to the threat.",
+      "cwe": "{ id, title }[] — every MITRE CWE (4.20) weakness the threat exploits. id is the integer CWE number; title is MITRE's exact entry name, from data/cwe-capec.js CWE_TITLES. A weakness is credited only when it is the one the threat exploits, never one the threat's outcome would introduce (insecure generated code contains CWE-89; it does not exploit it) and never a superset or consequence of an id already credited. Base or Variant entries are preferred; no category, view, deprecated entry, or entry MITRE marks DISCOURAGED for mapping (CWE-1426). Always an array; [] is a reviewed \"no honest mapping\".",
+      "cweNote": "string, present only when `cwe` is [] — one line on why no CWE weakness is credited (a person's own sharing or reliance on an answer is not a software weakness).",
+      "capec": "{ id, title }[] — every MITRE CAPEC (3.9) attack pattern the threat is. id is the integer CAPEC number; title is the canonical name, from data/cwe-capec.js CAPEC_TITLES. Credited only when the pattern describes the threat itself, not the condition it uses or what follows it; a Meta pattern only where no Standard or Detailed pattern fits. Always an array; [] is a reviewed \"no honest mapping\".",
+      "capecNote": "string, present only when `capec` is [] — one line on why no CAPEC attack pattern is credited (no adversary acts, or CAPEC has no pattern for it, as for prompt injection)."
     }
   },
   "sources": {
@@ -76,7 +80,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "A person sharing data with an AI tool is not an adversary technique; the agent-driven exfiltration routes are credited on #59, #65, #71 and #78.",
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "A person's choice of what to share with, or how to use, an AI tool: a policy and behaviour issue, not a software weakness.",
+      "capec": [],
+      "capecNote": "No adversary acts: a person's sharing or use of an AI tool is not an attack pattern."
     },
     {
       "id": 2,
@@ -112,7 +120,15 @@
           "reason": "eight prompt-stage detectors match override, jailbreak-template, prefix-forcing, persona and persuasion prompts typed to the model"
         }
       ],
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [
+        {
+          "id": 1427,
+          "title": "Improper Neutralization of Input Used for LLM Prompting"
+        }
+      ],
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no attack pattern for prompt injection: its injection patterns describe syntax injected into a code or command interpreter, not instructions written in natural language."
     },
     {
       "id": 3,
@@ -152,7 +168,15 @@
           "reason": "override directives in fetched pages, files, command output, MCP results and sub-agent reports are scanned after the tool runs"
         }
       ],
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [
+        {
+          "id": 1427,
+          "title": "Improper Neutralization of Input Used for LLM Prompting"
+        }
+      ],
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no attack pattern for prompt injection: its injection patterns describe syntax injected into a code or command interpreter, not instructions written in natural language."
     },
     {
       "id": 4,
@@ -185,7 +209,19 @@
           "reason": "MoorAI does not inventory or judge browser extensions it did not ship"
         }
       ],
-      "stride": "Elevation of Privilege"
+      "stride": "Elevation of Privilege",
+      "cwe": [
+        {
+          "id": 829,
+          "title": "Inclusion of Functionality from Untrusted Control Sphere"
+        }
+      ],
+      "capec": [
+        {
+          "id": 698,
+          "title": "Install Malicious Extension"
+        }
+      ]
     },
     {
       "id": 5,
@@ -208,7 +244,15 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Over-broad plugin scopes are a configuration weakness, not an adversary technique.",
-      "stride": "Elevation of Privilege"
+      "stride": "Elevation of Privilege",
+      "cwe": [
+        {
+          "id": 250,
+          "title": "Execution with Unnecessary Privileges"
+        }
+      ],
+      "capec": [],
+      "capecNote": "An agent or add-on acting within the access it was given: a condition an attack uses, not an attack pattern, and no CAPEC entry describes it."
     },
     {
       "id": 6,
@@ -230,7 +274,15 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "An AI product surfacing documents a user may technically open is an authorisation gap, not an adversary technique.",
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [
+        {
+          "id": 732,
+          "title": "Incorrect Permission Assignment for Critical Resource"
+        }
+      ],
+      "capec": [],
+      "capecNote": "No adversary acts: an employee is shown documents their existing access already allows."
     },
     {
       "id": 7,
@@ -253,7 +305,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Unsanctioned AI use by an employee is not an adversary technique; an unknown process calling an AI API is reported by the posture heartbeat, outside this rule.",
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "A person's choice of what to share with, or how to use, an AI tool: a policy and behaviour issue, not a software weakness.",
+      "capec": [],
+      "capecNote": "No adversary acts: a person's sharing or use of an AI tool is not an attack pattern."
     },
     {
       "id": 8,
@@ -275,7 +331,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Model error, not adversary behaviour.",
-      "stride": "Repudiation"
+      "stride": "Repudiation",
+      "cwe": [],
+      "cweNote": "A person relying on generated content as fact or advice. No CWE entry describes that; CWE-1426 (Improper Validation of Generative AI Output) describes a product passing output on, and MITRE marks it DISCOURAGED for mapping (CWE 4.20).",
+      "capec": [],
+      "capecNote": "No adversary acts: relying on a wrong, biased or unreviewed answer is not an attack pattern."
     },
     {
       "id": 9,
@@ -298,7 +358,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "A person sharing intellectual property with an AI tool is not an adversary technique.",
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "A person's choice of what to share with, or how to use, an AI tool: a policy and behaviour issue, not a software weakness.",
+      "capec": [],
+      "capecNote": "No adversary acts: a person's sharing or use of an AI tool is not an attack pattern."
     },
     {
       "id": 10,
@@ -331,7 +395,15 @@
           "reason": "the adversary's own content generation happens off the victim's devices"
         }
       ],
-      "stride": "Spoofing"
+      "stride": "Spoofing",
+      "cwe": [],
+      "cweNote": "Social engineering aimed at a person: the attack exploits human trust, not a weakness in software.",
+      "capec": [
+        {
+          "id": 98,
+          "title": "Phishing"
+        }
+      ]
     },
     {
       "id": 11,
@@ -364,7 +436,15 @@
           "reason": "the impersonation itself is not detected"
         }
       ],
-      "stride": "Spoofing"
+      "stride": "Spoofing",
+      "cwe": [],
+      "cweNote": "Social engineering aimed at a person: the attack exploits human trust, not a weakness in software.",
+      "capec": [
+        {
+          "id": 195,
+          "title": "Principal Spoof"
+        }
+      ]
     },
     {
       "id": 12,
@@ -397,7 +477,19 @@
           "reason": "impersonation by call or video reaches the person, not an agent"
         }
       ],
-      "stride": "Spoofing"
+      "stride": "Spoofing",
+      "cwe": [],
+      "cweNote": "Social engineering aimed at a person: the attack exploits human trust, not a weakness in software.",
+      "capec": [
+        {
+          "id": 195,
+          "title": "Principal Spoof"
+        },
+        {
+          "id": 656,
+          "title": "Voice Phishing"
+        }
+      ]
     },
     {
       "id": 13,
@@ -425,7 +517,19 @@
           "reason": "voice and SMS lures reach the person, not an agent"
         }
       ],
-      "stride": "Spoofing"
+      "stride": "Spoofing",
+      "cwe": [],
+      "cweNote": "Social engineering aimed at a person: the attack exploits human trust, not a weakness in software.",
+      "capec": [
+        {
+          "id": 656,
+          "title": "Voice Phishing"
+        },
+        {
+          "id": 164,
+          "title": "Mobile Phishing"
+        }
+      ]
     },
     {
       "id": 14,
@@ -448,7 +552,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "An agent acting for its user is the product working; the risky action classes are credited on #43, #47, #48 and #56.",
-      "stride": "Elevation of Privilege"
+      "stride": "Elevation of Privilege",
+      "cwe": [],
+      "cweNote": "The root cause is generated output acted on without validation. CWE-1426 (Improper Validation of Generative AI Output) names it, but MITRE marks it DISCOURAGED for mapping (CWE 4.20), and no other entry fits without stretching.",
+      "capec": [],
+      "capecNote": "An agent or add-on acting within the access it was given: a condition an attack uses, not an attack pattern, and no CAPEC entry describes it."
     },
     {
       "id": 15,
@@ -471,7 +579,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "A privacy obligation, not an adversary technique.",
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "A person's choice of what to share with, or how to use, an AI tool: a policy and behaviour issue, not a software weakness.",
+      "capec": [],
+      "capecNote": "No adversary acts: a person's sharing or use of an AI tool is not an attack pattern."
     },
     {
       "id": 16,
@@ -493,7 +605,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Output bias is not adversary behaviour.",
-      "stride": "Repudiation"
+      "stride": "Repudiation",
+      "cwe": [],
+      "cweNote": "A person relying on generated content as fact or advice. No CWE entry describes that; CWE-1426 (Improper Validation of Generative AI Output) describes a product passing output on, and MITRE marks it DISCOURAGED for mapping (CWE 4.20).",
+      "capec": [],
+      "capecNote": "No adversary acts: relying on a wrong, biased or unreviewed answer is not an attack pattern."
     },
     {
       "id": 17,
@@ -520,7 +636,11 @@
           "reason": "out-links warns on every link in a reply; it does not judge the destination (#75 does for deceptive ones)"
         }
       ],
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [],
+      "cweNote": "The root cause is generated output acted on without validation. CWE-1426 (Improper Validation of Generative AI Output) names it, but MITRE marks it DISCOURAGED for mapping (CWE 4.20), and no other entry fits without stretching.",
+      "capec": [],
+      "capecNote": "No adversary pattern fits: the rule covers any risky link, file or script an answer suggests, whoever caused it."
     },
     {
       "id": 18,
@@ -543,7 +663,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Data retention in a conversation is a governance risk, not an adversary technique.",
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "A person's choice of what to share with, or how to use, an AI tool: a policy and behaviour issue, not a software weakness.",
+      "capec": [],
+      "capecNote": "No adversary acts: a person's sharing or use of an AI tool is not an attack pattern."
     },
     {
       "id": 19,
@@ -566,7 +690,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Meeting transcription by an approved assistant is a governance risk, not an adversary technique.",
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "A person's choice of what to share with, or how to use, an AI tool: a policy and behaviour issue, not a software weakness.",
+      "capec": [],
+      "capecNote": "No adversary acts: a person's sharing or use of an AI tool is not an attack pattern."
     },
     {
       "id": 20,
@@ -589,7 +717,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Over-inclusive summaries are a governance risk, not an adversary technique.",
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "A person's choice of what to share with, or how to use, an AI tool: a policy and behaviour issue, not a software weakness.",
+      "capec": [],
+      "capecNote": "No adversary acts: a person's sharing or use of an AI tool is not an attack pattern."
     },
     {
       "id": 21,
@@ -624,7 +756,15 @@
           "boundReason": "Content indexed before MoorAI was installed, or embedded by a pipeline that never calls MoorAI, never passes any agent-side hook, proxy or gateway."
         }
       ],
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [
+        {
+          "id": 1427,
+          "title": "Improper Neutralization of Input Used for LLM Prompting"
+        }
+      ],
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no attack pattern for poisoning an AI knowledge base, nor for prompt injection."
     },
     {
       "id": 22,
@@ -655,7 +795,19 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "ATT&CK v20 has no technique for persistence through an agent's memory; ATLAS AML.T0080 covers it.",
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [
+        {
+          "id": 1427,
+          "title": "Improper Neutralization of Input Used for LLM Prompting"
+        }
+      ],
+      "capec": [
+        {
+          "id": 75,
+          "title": "Manipulating Writeable Configuration Files"
+        }
+      ]
     },
     {
       "id": 23,
@@ -678,7 +830,15 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Over-permissioned agent design is a configuration weakness, not an adversary technique.",
-      "stride": "Elevation of Privilege"
+      "stride": "Elevation of Privilege",
+      "cwe": [
+        {
+          "id": 250,
+          "title": "Execution with Unnecessary Privileges"
+        }
+      ],
+      "capec": [],
+      "capecNote": "An agent or add-on acting within the access it was given: a condition an attack uses, not an attack pattern, and no CAPEC entry describes it."
     },
     {
       "id": 24,
@@ -700,7 +860,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "A tool misused through misinterpretation is not adversary behaviour; injected misuse is credited on #3, #40 and #59.",
-      "stride": "Elevation of Privilege"
+      "stride": "Elevation of Privilege",
+      "cwe": [],
+      "cweNote": "The root cause is generated output acted on without validation. CWE-1426 (Improper Validation of Generative AI Output) names it, but MITRE marks it DISCOURAGED for mapping (CWE 4.20), and no other entry fits without stretching.",
+      "capec": [],
+      "capecNote": "An agent or add-on acting within the access it was given: a condition an attack uses, not an attack pattern, and no CAPEC entry describes it."
     },
     {
       "id": 25,
@@ -741,7 +905,19 @@
           "reason": "server allow-list, first-launch reputation and tool-drift quarantine bound which MCP servers an agent loads; a new malicious package with a clean name scores good"
         }
       ],
-      "stride": "Elevation of Privilege"
+      "stride": "Elevation of Privilege",
+      "cwe": [
+        {
+          "id": 1427,
+          "title": "Improper Neutralization of Input Used for LLM Prompting"
+        },
+        {
+          "id": 829,
+          "title": "Inclusion of Functionality from Untrusted Control Sphere"
+        }
+      ],
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no tool-poisoning pattern; a misleading tool description is prompt injection, which CAPEC does not cover."
     },
     {
       "id": 26,
@@ -769,7 +945,19 @@
           "reason": "MoorAI does not see sign-ins to an AI provider; identity-provider territory"
         }
       ],
-      "stride": "Spoofing"
+      "stride": "Spoofing",
+      "cwe": [
+        {
+          "id": 308,
+          "title": "Use of Single-factor Authentication"
+        }
+      ],
+      "capec": [
+        {
+          "id": 600,
+          "title": "Credential Stuffing"
+        }
+      ]
     },
     {
       "id": 27,
@@ -792,7 +980,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Data left in history or workspace is a governance risk, not an adversary technique.",
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "A person's choice of what to share with, or how to use, an AI tool: a policy and behaviour issue, not a software weakness.",
+      "capec": [],
+      "capecNote": "No adversary acts: a person's sharing or use of an AI tool is not an attack pattern."
     },
     {
       "id": 28,
@@ -820,7 +1012,15 @@
           "reason": "MoorAI does not judge third-party browser extensions"
         }
       ],
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [
+        {
+          "id": 250,
+          "title": "Execution with Unnecessary Privileges"
+        }
+      ],
+      "capec": [],
+      "capecNote": "An agent or add-on acting within the access it was given: a condition an attack uses, not an attack pattern, and no CAPEC entry describes it."
     },
     {
       "id": 29,
@@ -842,7 +1042,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Fabricated sources are model error; adversary-planted answers are T1608.007, credited on #70.",
-      "stride": "Repudiation"
+      "stride": "Repudiation",
+      "cwe": [],
+      "cweNote": "A person relying on generated content as fact or advice. No CWE entry describes that; CWE-1426 (Improper Validation of Generative AI Output) describes a product passing output on, and MITRE marks it DISCOURAGED for mapping (CWE 4.20).",
+      "capec": [],
+      "capecNote": "No adversary acts: relying on a wrong, biased or unreviewed answer is not an attack pattern."
     },
     {
       "id": 30,
@@ -870,7 +1074,15 @@
           "reason": "generated invoices are not inspected and bank details are not verified"
         }
       ],
-      "stride": "Spoofing"
+      "stride": "Spoofing",
+      "cwe": [],
+      "cweNote": "Social engineering aimed at a person: the attack exploits human trust, not a weakness in software.",
+      "capec": [
+        {
+          "id": 195,
+          "title": "Principal Spoof"
+        }
+      ]
     },
     {
       "id": 31,
@@ -898,7 +1110,11 @@
           "reason": "synthetic personas, photos and voices are not analysed"
         }
       ],
-      "stride": "Spoofing"
+      "stride": "Spoofing",
+      "cwe": [],
+      "cweNote": "Social engineering aimed at a person: the attack exploits human trust, not a weakness in software.",
+      "capec": [],
+      "capecNote": "A fabricated identity: CAPEC-151 Identity Spoofing and CAPEC-195 Principal Spoof both describe impersonating an entity that exists."
     },
     {
       "id": 32,
@@ -933,7 +1149,11 @@
           "reason": "a Write/Edit into a CI/CD config adding a fetch-to-shell step, a pipeline-secret exfiltration, or a pull_request_target trigger; report-only"
         }
       ],
-      "stride": "Elevation of Privilege"
+      "stride": "Elevation of Privilege",
+      "cwe": [],
+      "cweNote": "The root cause is generated output acted on without validation. CWE-1426 (Improper Validation of Generative AI Output) names it, but MITRE marks it DISCOURAGED for mapping (CWE 4.20), and no other entry fits without stretching.",
+      "capec": [],
+      "capecNote": "No adversary pattern fits: the code is the employee's own request, not attacker-supplied."
     },
     {
       "id": 33,
@@ -956,7 +1176,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Data residency is a governance obligation, not an adversary technique.",
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "A person's choice of what to share with, or how to use, an AI tool: a policy and behaviour issue, not a software weakness.",
+      "capec": [],
+      "capecNote": "No adversary acts: a person's sharing or use of an AI tool is not an attack pattern."
     },
     {
       "id": 34,
@@ -978,7 +1202,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Model error, not adversary behaviour.",
-      "stride": "Repudiation"
+      "stride": "Repudiation",
+      "cwe": [],
+      "cweNote": "A person relying on generated content as fact or advice. No CWE entry describes that; CWE-1426 (Improper Validation of Generative AI Output) describes a product passing output on, and MITRE marks it DISCOURAGED for mapping (CWE 4.20).",
+      "capec": [],
+      "capecNote": "No adversary acts: relying on a wrong, biased or unreviewed answer is not an attack pattern."
     },
     {
       "id": 35,
@@ -1000,7 +1228,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Human over-reliance, not adversary behaviour.",
-      "stride": "Repudiation"
+      "stride": "Repudiation",
+      "cwe": [],
+      "cweNote": "A person relying on generated content as fact or advice. No CWE entry describes that; CWE-1426 (Improper Validation of Generative AI Output) describes a product passing output on, and MITRE marks it DISCOURAGED for mapping (CWE 4.20).",
+      "capec": [],
+      "capecNote": "No adversary acts: relying on a wrong, biased or unreviewed answer is not an attack pattern."
     },
     {
       "id": 36,
@@ -1022,7 +1254,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Context mixing inside one conversation is model behaviour, not an adversary technique.",
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "Mixing customers in one conversation is a usage practice: nothing crosses a session boundary the product enforces, which CWE-488 (Exposure of Data Element to Wrong Session) requires.",
+      "capec": [],
+      "capecNote": "No adversary acts: a person's sharing or use of an AI tool is not an attack pattern."
     },
     {
       "id": 37,
@@ -1045,7 +1281,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Over-sharing an AI answer is a governance risk, not an adversary technique.",
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "A person's choice of what to share with, or how to use, an AI tool: a policy and behaviour issue, not a software weakness.",
+      "capec": [],
+      "capecNote": "No adversary acts: a person's sharing or use of an AI tool is not an attack pattern."
     },
     {
       "id": 38,
@@ -1078,7 +1318,15 @@
           "reason": "LLMjacking runs stolen keys from the adversary's own infrastructure, which no hook sees; the circuit breaker stops a looping agent, not a hijacker"
         }
       ],
-      "stride": "Denial of Service"
+      "stride": "Denial of Service",
+      "cwe": [
+        {
+          "id": 770,
+          "title": "Allocation of Resources Without Limits or Throttling"
+        }
+      ],
+      "capec": [],
+      "capecNote": "No adversary acts: unbounded use by a person or agent is not an attack pattern, and CAPEC-130 Excessive Allocation needs an attacker crafting requests."
     },
     {
       "id": 39,
@@ -1120,7 +1368,15 @@
           "boundReason": "Creating or using an app password at the identity provider, or a person handing one over outside an AI tool, happens outside any agent-side hook."
         }
       ],
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [
+        {
+          "id": 201,
+          "title": "Insertion of Sensitive Information Into Sent Data"
+        }
+      ],
+      "capec": [],
+      "capecNote": "Accidental or agent-driven disclosure of a secret: no adversary pattern describes it."
     },
     {
       "id": 40,
@@ -1163,7 +1419,15 @@
           "reason": "ingested content telling the agent to stop analysing or to mark a sample safe is flagged; only for an analysing agent that runs under MoorAI"
         }
       ],
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [
+        {
+          "id": 1427,
+          "title": "Improper Neutralization of Input Used for LLM Prompting"
+        }
+      ],
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no attack pattern for prompt injection: its injection patterns describe syntax injected into a code or command interpreter, not instructions written in natural language."
     },
     {
       "id": 41,
@@ -1185,7 +1449,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Legal drafting guidance, not an adversary technique.",
-      "stride": "Repudiation"
+      "stride": "Repudiation",
+      "cwe": [],
+      "cweNote": "A person relying on generated content as fact or advice. No CWE entry describes that; CWE-1426 (Improper Validation of Generative AI Output) describes a product passing output on, and MITRE marks it DISCOURAGED for mapping (CWE 4.20).",
+      "capec": [],
+      "capecNote": "No adversary acts: relying on a wrong, biased or unreviewed answer is not an attack pattern."
     },
     {
       "id": 42,
@@ -1207,7 +1475,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "HR drafting guidance, not an adversary technique.",
-      "stride": "Repudiation"
+      "stride": "Repudiation",
+      "cwe": [],
+      "cweNote": "A person relying on generated content as fact or advice. No CWE entry describes that; CWE-1426 (Improper Validation of Generative AI Output) describes a product passing output on, and MITRE marks it DISCOURAGED for mapping (CWE 4.20).",
+      "capec": [],
+      "capecNote": "No adversary acts: relying on a wrong, biased or unreviewed answer is not an attack pattern."
     },
     {
       "id": 43,
@@ -1249,7 +1521,11 @@
           "reason": "shadow-copy, boot-recovery, Windows Server Backup, Time Machine, APFS, zfs, ESXi and cloud snapshot or recovery-point deletion via the agent's shell; stopping a backup service is not matched"
         }
       ],
-      "stride": "Elevation of Privilege"
+      "stride": "Elevation of Privilege",
+      "cwe": [],
+      "cweNote": "The root cause is generated output acted on without validation. CWE-1426 (Improper Validation of Generative AI Output) names it, but MITRE marks it DISCOURAGED for mapping (CWE 4.20), and no other entry fits without stretching.",
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no data-destruction attack pattern."
     },
     {
       "id": 44,
@@ -1272,7 +1548,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "A health-data obligation, not an adversary technique.",
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "A person's choice of what to share with, or how to use, an AI tool: a policy and behaviour issue, not a software weakness.",
+      "capec": [],
+      "capecNote": "No adversary acts: a person's sharing or use of an AI tool is not an attack pattern."
     },
     {
       "id": 45,
@@ -1294,7 +1574,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Licence contamination is a legal risk, not an adversary technique.",
-      "stride": "Repudiation"
+      "stride": "Repudiation",
+      "cwe": [],
+      "cweNote": "A person relying on generated content as fact or advice. No CWE entry describes that; CWE-1426 (Improper Validation of Generative AI Output) describes a product passing output on, and MITRE marks it DISCOURAGED for mapping (CWE 4.20).",
+      "capec": [],
+      "capecNote": "No adversary acts: relying on a wrong, biased or unreviewed answer is not an attack pattern."
     },
     {
       "id": 46,
@@ -1376,7 +1660,15 @@
           "reason": "a shell rc file written by a command that also fetches or executes; an ordinary alias or PATH edit is not flagged"
         }
       ],
-      "stride": "Elevation of Privilege"
+      "stride": "Elevation of Privilege",
+      "cwe": [],
+      "cweNote": "An authorised user asking the agent for a high-impact change: the control is a human approval step, and no CWE entry names its absence.",
+      "capec": [
+        {
+          "id": 578,
+          "title": "Disable Security Software"
+        }
+      ]
     },
     {
       "id": 47,
@@ -1419,7 +1711,11 @@
           "reason": "Slack and Discord webhook posts"
         }
       ],
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "An authorised user asking the agent for a high-impact change: the control is a human approval step, and no CWE entry names its absence.",
+      "capec": [],
+      "capecNote": "An agent or add-on acting within the access it was given: a condition an attack uses, not an attack pattern, and no CAPEC entry describes it."
     },
     {
       "id": 48,
@@ -1471,7 +1767,11 @@
           "reason": "a public key appended to an authorized_keys file through the agent's shell or a Write/Edit tool call, and ssh-copy-id to the local host"
         }
       ],
-      "stride": "Elevation of Privilege"
+      "stride": "Elevation of Privilege",
+      "cwe": [],
+      "cweNote": "An authorised user asking the agent for a high-impact change: the control is a human approval step, and no CWE entry names its absence.",
+      "capec": [],
+      "capecNote": "An agent or add-on acting within the access it was given: a condition an attack uses, not an attack pattern, and no CAPEC entry describes it."
     },
     {
       "id": 49,
@@ -1498,7 +1798,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "An authorised production deploy is not an adversary technique; MoorAI gates it for approval.",
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [],
+      "cweNote": "An authorised user asking the agent for a high-impact change: the control is a human approval step, and no CWE entry names its absence.",
+      "capec": [],
+      "capecNote": "An agent or add-on acting within the access it was given: a condition an attack uses, not an attack pattern, and no CAPEC entry describes it."
     },
     {
       "id": 50,
@@ -1547,7 +1851,15 @@
           "reason": "a base64/hex payload decoded straight into a shell, or a PowerShell -EncodedCommand; the hook decodes it and re-scans the real payload"
         }
       ],
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [
+        {
+          "id": 1427,
+          "title": "Improper Neutralization of Input Used for LLM Prompting"
+        }
+      ],
+      "capec": [],
+      "capecNote": "Hidden steering text is prompt injection by concealment: CAPEC-636 covers data hidden in a file's spare storage structures, not invisible characters or markup in visible content, and CAPEC has no prompt-injection pattern."
     },
     {
       "id": 51,
@@ -1574,7 +1886,19 @@
           "reason": "sysprompt-extract matches system-prompt extraction probes only"
         }
       ],
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [
+        {
+          "id": 1427,
+          "title": "Improper Neutralization of Input Used for LLM Prompting"
+        },
+        {
+          "id": 497,
+          "title": "Exposure of Sensitive System Information to an Unauthorized Control Sphere"
+        }
+      ],
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no attack pattern for prompt injection: its injection patterns describe syntax injected into a code or command interpreter, not instructions written in natural language."
     },
     {
       "id": 52,
@@ -1596,7 +1920,15 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Instruction leakage maps to ATLAS AML.T0056; ATT&CK v20 has no equivalent.",
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [
+        {
+          "id": 497,
+          "title": "Exposure of Sensitive System Information to an Unauthorized Control Sphere"
+        }
+      ],
+      "capec": [],
+      "capecNote": "Disclosure in the model's own reply: no CAPEC pattern describes it."
     },
     {
       "id": 53,
@@ -1618,7 +1950,19 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "An oversized prompt is a cost and availability risk; ATT&CK v20 has no technique for model input size.",
-      "stride": "Denial of Service"
+      "stride": "Denial of Service",
+      "cwe": [
+        {
+          "id": 770,
+          "title": "Allocation of Resources Without Limits or Throttling"
+        }
+      ],
+      "capec": [
+        {
+          "id": 130,
+          "title": "Excessive Allocation"
+        }
+      ]
     },
     {
       "id": 54,
@@ -1675,7 +2019,15 @@
           "boundReason": "Running Python is the agent's ordinary work, so the interpreter itself is not judged; its malicious uses are judged by their own rules, such as reverse shells here."
         }
       ],
-      "stride": "Elevation of Privilege"
+      "stride": "Elevation of Privilege",
+      "cwe": [
+        {
+          "id": 94,
+          "title": "Improper Control of Generation of Code ('Code Injection')"
+        }
+      ],
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no reverse-shell pattern; CAPEC-88 OS Command Injection describes input injected into a command the product builds, not an agent running a whole command."
     },
     {
       "id": 55,
@@ -1751,7 +2103,19 @@
           "reason": "a command reaching a cloud or container metadata endpoint (169.254.169.254, metadata.google.internal, 169.254.170.2, and obfuscated spellings); the shared host set is data/metadata-hosts.js"
         }
       ],
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [
+        {
+          "id": 312,
+          "title": "Cleartext Storage of Sensitive Information"
+        }
+      ],
+      "capec": [
+        {
+          "id": 639,
+          "title": "Probe System Files"
+        }
+      ]
     },
     {
       "id": 56,
@@ -1784,7 +2148,11 @@
           "reason": "dropDatabase or deleteMany, aws s3 rb, terminate-instances, kubectl delete --all and gh repo delete issued through a tool"
         }
       ],
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [],
+      "cweNote": "The root cause is generated output acted on without validation. CWE-1426 (Improper Validation of Generative AI Output) names it, but MITRE marks it DISCOURAGED for mapping (CWE 4.20), and no other entry fits without stretching.",
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no data-destruction attack pattern."
     },
     {
       "id": 57,
@@ -1834,7 +2202,19 @@
           "reason": "an editor extension side-loaded from a local .vsix or URL (code/cursor/windsurf --install-extension), or written into the extensions directory; marketplace installs by id pass"
         }
       ],
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [
+        {
+          "id": 494,
+          "title": "Download of Code Without Integrity Check"
+        }
+      ],
+      "capec": [
+        {
+          "id": 185,
+          "title": "Malicious Software Download"
+        }
+      ]
     },
     {
       "id": 58,
@@ -1855,7 +2235,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "A second-opinion verdict; the technique is the one on the rule it escalates.",
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [],
+      "cweNote": "A routing signal (a local model's second opinion on ambiguous content), not a threat of its own; the weakness is that of the category the model flagged.",
+      "capec": [],
+      "capecNote": "A routing signal, not a threat of its own; the attack pattern is that of the category the model flagged."
     },
     {
       "id": 59,
@@ -1908,7 +2292,15 @@
           "reason": "an archive created and then sent out in the same session"
         }
       ],
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [
+        {
+          "id": 1427,
+          "title": "Improper Neutralization of Input Used for LLM Prompting"
+        }
+      ],
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no attack pattern for prompt injection: its injection patterns describe syntax injected into a code or command interpreter, not instructions written in natural language."
     },
     {
       "id": 60,
@@ -1959,7 +2351,23 @@
           "reason": "directives in MCP tool descriptions and schemas the model reads"
         }
       ],
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [
+        {
+          "id": 1427,
+          "title": "Improper Neutralization of Input Used for LLM Prompting"
+        },
+        {
+          "id": 829,
+          "title": "Inclusion of Functionality from Untrusted Control Sphere"
+        }
+      ],
+      "capec": [
+        {
+          "id": 75,
+          "title": "Manipulating Writeable Configuration Files"
+        }
+      ]
     },
     {
       "id": 61,
@@ -1986,7 +2394,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "Vulnerable code the agent writes is a defect, not an adversary technique.",
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [],
+      "cweNote": "The rule screens generated code for weaknesses it would contain (e.g. CWE-89, CWE-79, CWE-95, CWE-78); those are introduced, not exploited, and the root cause, CWE-1426 Improper Validation of Generative AI Output, is DISCOURAGED for mapping (CWE 4.20).",
+      "capec": [],
+      "capecNote": "No adversary acts: insecure generated code is a quality failure, not an attack pattern."
     },
     {
       "id": 62,
@@ -2027,7 +2439,19 @@
           "reason": "the agent's install command is the user-execution step; judged by name only"
         }
       ],
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [
+        {
+          "id": 829,
+          "title": "Inclusion of Functionality from Untrusted Control Sphere"
+        }
+      ],
+      "capec": [
+        {
+          "id": 185,
+          "title": "Malicious Software Download"
+        }
+      ]
     },
     {
       "id": 63,
@@ -2054,7 +2478,19 @@
           "reason": "a model base-URL override or a direct call to a non-approved model provider, judged by host"
         }
       ],
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [
+        {
+          "id": 15,
+          "title": "External Control of System or Configuration Setting"
+        }
+      ],
+      "capec": [
+        {
+          "id": 13,
+          "title": "Subverting Environment Variable Values"
+        }
+      ]
     },
     {
       "id": 67,
@@ -2092,7 +2528,23 @@
           "reason": "a CA override set by environment variable on the agent or in its commands is reported; a CA added to a system trust store is #46's"
         }
       ],
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [
+        {
+          "id": 15,
+          "title": "External Control of System or Configuration Setting"
+        }
+      ],
+      "capec": [
+        {
+          "id": 13,
+          "title": "Subverting Environment Variable Values"
+        },
+        {
+          "id": 479,
+          "title": "Malicious Root Certificate"
+        }
+      ]
     },
     {
       "id": 64,
@@ -2129,7 +2581,15 @@
       },
       "attack": [],
       "attackNote": "An out-of-envelope action is a policy signal, not one ATT&CK technique; each action class carries its own credit.",
-      "stride": "Elevation of Privilege"
+      "stride": "Elevation of Privilege",
+      "cwe": [
+        {
+          "id": 250,
+          "title": "Execution with Unnecessary Privileges"
+        }
+      ],
+      "capec": [],
+      "capecNote": "An agent or add-on acting within the access it was given: a condition an attack uses, not an attack pattern, and no CAPEC entry describes it."
     },
     {
       "id": 65,
@@ -2172,7 +2632,15 @@
           "reason": "a local secret value appearing verbatim in an outbound command, MCP argument or prompt; non-secret data is not fingerprinted"
         }
       ],
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [
+        {
+          "id": 201,
+          "title": "Insertion of Sensitive Information Into Sent Data"
+        }
+      ],
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no exfiltration or out-of-band collection attack pattern."
     },
     {
       "id": 66,
@@ -2208,7 +2676,15 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "ATT&CK v20 has no agent-delegation technique; ATLAS AML.T0118 covers it.",
-      "stride": "Elevation of Privilege"
+      "stride": "Elevation of Privilege",
+      "cwe": [
+        {
+          "id": 441,
+          "title": "Unintended Proxy or Intermediary ('Confused Deputy')"
+        }
+      ],
+      "capec": [],
+      "capecNote": "An agent or add-on acting within the access it was given: a condition an attack uses, not an attack pattern, and no CAPEC entry describes it."
     },
     {
       "id": 68,
@@ -2249,7 +2725,23 @@
           "reason": "links that open an assistant with a prompt prefilled through ?q= and ask it to persist"
         }
       ],
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [
+        {
+          "id": 1427,
+          "title": "Improper Neutralization of Input Used for LLM Prompting"
+        },
+        {
+          "id": 352,
+          "title": "Cross-Site Request Forgery (CSRF)"
+        }
+      ],
+      "capec": [
+        {
+          "id": 62,
+          "title": "Cross Site Request Forgery"
+        }
+      ]
     },
     {
       "id": 69,
@@ -2277,7 +2769,23 @@
           "reason": "ingested content asking the agent to enumerate its tools, permissions or reachable paths"
         }
       ],
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [
+        {
+          "id": 1427,
+          "title": "Improper Neutralization of Input Used for LLM Prompting"
+        },
+        {
+          "id": 497,
+          "title": "Exposure of Sensitive System Information to an Unauthorized Control Sphere"
+        }
+      ],
+      "capec": [
+        {
+          "id": 169,
+          "title": "Footprinting"
+        }
+      ]
     },
     {
       "id": 70,
@@ -2325,7 +2833,15 @@
           "boundReason": "AI search engines retrieve and rank pages on the provider's side, and whether ordinary page text is true is beyond what an agent-side hook can judge."
         }
       ],
-      "stride": "Spoofing"
+      "stride": "Spoofing",
+      "cwe": [
+        {
+          "id": 1427,
+          "title": "Improper Neutralization of Input Used for LLM Prompting"
+        }
+      ],
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no attack pattern for prompt injection: its injection patterns describe syntax injected into a code or command interpreter, not instructions written in natural language."
     },
     {
       "id": 71,
@@ -2356,7 +2872,11 @@
           "reason": "markdown images and link previews whose URL carries conversation data, fetched by the client while rendering"
         }
       ],
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "The root cause is generated output acted on without validation. CWE-1426 (Improper Validation of Generative AI Output) names it, but MITRE marks it DISCOURAGED for mapping (CWE 4.20), and no other entry fits without stretching.",
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no pattern for exfiltration through rendered output."
     },
     {
       "id": 72,
@@ -2397,7 +2917,19 @@
           "reason": "directives in EXIF, XMP, ID3 and PDF metadata fields only"
         }
       ],
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [
+        {
+          "id": 1427,
+          "title": "Improper Neutralization of Input Used for LLM Prompting"
+        }
+      ],
+      "capec": [
+        {
+          "id": 636,
+          "title": "Hiding Malicious Data or Code within Files"
+        }
+      ]
     },
     {
       "id": 73,
@@ -2448,7 +2980,15 @@
           "reason": "session logging turned off: set +o history, unset HISTFILE, HISTFILE=/dev/null, a zero HISTSIZE/SAVEHIST, or PSReadLine HistorySaveStyle SaveNothing"
         }
       ],
-      "stride": "Repudiation"
+      "stride": "Repudiation",
+      "cwe": [],
+      "cweNote": "The root cause is generated output acted on without validation. CWE-1426 (Improper Validation of Generative AI Output) names it, but MITRE marks it DISCOURAGED for mapping (CWE 4.20), and no other entry fits without stretching.",
+      "capec": [
+        {
+          "id": 268,
+          "title": "Audit Log Manipulation"
+        }
+      ]
     },
     {
       "id": 74,
@@ -2486,7 +3026,15 @@
           "reason": "ingested instructions telling the model to copy themselves into replies, files, commits or other agents"
         }
       ],
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [
+        {
+          "id": 1427,
+          "title": "Improper Neutralization of Input Used for LLM Prompting"
+        }
+      ],
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no attack pattern for prompt injection: its injection patterns describe syntax injected into a code or command interpreter, not instructions written in natural language."
     },
     {
       "id": 75,
@@ -2522,7 +3070,19 @@
           "reason": "a link whose shown address differs from its real host, a userinfo-hidden host, or bidi or zero-width characters inside the URL"
         }
       ],
-      "stride": "Spoofing"
+      "stride": "Spoofing",
+      "cwe": [
+        {
+          "id": 451,
+          "title": "User Interface (UI) Misrepresentation of Critical Information"
+        }
+      ],
+      "capec": [
+        {
+          "id": 154,
+          "title": "Resource Location Spoofing"
+        }
+      ]
     },
     {
       "id": 76,
@@ -2558,7 +3118,19 @@
           "reason": "model-load calls that execute code from the file (pickle loads, weights_only=False, trust_remote_code)"
         }
       ],
-      "stride": "Elevation of Privilege"
+      "stride": "Elevation of Privilege",
+      "cwe": [
+        {
+          "id": 502,
+          "title": "Deserialization of Untrusted Data"
+        }
+      ],
+      "capec": [
+        {
+          "id": 586,
+          "title": "Object Injection"
+        }
+      ]
     },
     {
       "id": 77,
@@ -2599,7 +3171,11 @@
           "reason": "model weights or datasets piped into an upload or pushed to a model hub"
         }
       ],
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "Collection and egress are what follows once the agent is steered; the weakness that let it be steered (e.g. CWE-1427) belongs to the rule that sees the entry point, not to this one.",
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no exfiltration or out-of-band collection attack pattern."
     },
     {
       "id": 78,
@@ -2640,7 +3216,11 @@
           "reason": "data carried in a DNS lookup to interactsh-style OAST hosts"
         }
       ],
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "Collection and egress are what follows once the agent is steered; the weakness that let it be steered (e.g. CWE-1427) belongs to the rule that sees the entry point, not to this one.",
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no exfiltration or out-of-band collection attack pattern."
     },
     {
       "id": 79,
@@ -2673,7 +3253,11 @@
           "boundReason": "A connectivity check to an ordinary host is the agent's everyday work, so only contact with a known request-capture host is judged."
         }
       ],
-      "stride": "Information Disclosure"
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "Collection and egress are what follows once the agent is steered; the weakness that let it be steered (e.g. CWE-1427) belongs to the rule that sees the entry point, not to this one.",
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no exfiltration or out-of-band collection attack pattern."
     },
     {
       "id": 80,
@@ -2709,7 +3293,19 @@
           "reason": "a cloned repository's install or start scripts run in the same command (notify mode)"
         }
       ],
-      "stride": "Tampering"
+      "stride": "Tampering",
+      "cwe": [
+        {
+          "id": 494,
+          "title": "Download of Code Without Integrity Check"
+        }
+      ],
+      "capec": [
+        {
+          "id": 185,
+          "title": "Malicious Software Download"
+        }
+      ]
     },
     {
       "id": 84,
@@ -2745,7 +3341,15 @@
           "reason": "an agent's own edits and commands that suppress alerting, empty alert routes, remove monitor, audit-log or telemetry wiring, stop or delete a monitoring component, or weaken a monitoring test"
         }
       ],
-      "stride": "Repudiation"
+      "stride": "Repudiation",
+      "cwe": [],
+      "cweNote": "The root cause is generated output acted on without validation. CWE-1426 (Improper Validation of Generative AI Output) names it, but MITRE marks it DISCOURAGED for mapping (CWE 4.20), and no other entry fits without stretching.",
+      "capec": [
+        {
+          "id": 578,
+          "title": "Disable Security Software"
+        }
+      ]
     },
     {
       "id": 85,
@@ -2771,7 +3375,11 @@
       "owaspMcp": [],
       "attack": [],
       "attackNote": "An agent changing a trust boundary in code it writes without updating the threat model is a review gap, not an adversary technique.",
-      "stride": "Elevation of Privilege"
+      "stride": "Elevation of Privilege",
+      "cwe": [],
+      "cweNote": "A missing threat-model review is a development-process gap, not a weakness in the product.",
+      "capec": [],
+      "capecNote": "No adversary acts: a trust-boundary change made during ordinary work is not an attack pattern."
     }
   ]
 }
