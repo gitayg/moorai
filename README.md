@@ -1457,7 +1457,8 @@ HTTPS_PROXY=http://127.0.0.1:8850 HTTP_PROXY=http://127.0.0.1:8850 http_proxy=ht
   `--request-timeout-ms` (60 s), `--idle-timeout-ms` (120 s, also for tunnels), `--connect-timeout-ms`
   (10 s), `--dns-timeout-ms` (5 s) and `--hello-timeout-ms` (5 s: from a CONNECT client's first byte, a TLS
   ClientHello still incomplete then closes the tunnel, `egressRefusal: "tls-timeout"`; the ClientHello may
-  span at most 16 TLS records). An error while judging, or a policy that cannot be loaded, refuses
+  span at most 16 TLS records; a client that closes the tunnel before its first byte frees the
+  connection at once). An error while judging, or a policy that cannot be loaded, refuses
   the connection.
 - **Alerts.** Alerts are content-free, sent to the console and OpenTelemetry the way the MCP gateway
   sends them: category `Egress rule`, `reasonCode` `EGRESS_RULE`, `egressBinary: null`, host, port and

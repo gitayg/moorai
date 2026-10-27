@@ -194,11 +194,15 @@ function cliBox() {
   const base = win ? dir : "C:\\box";
   const at = (p) => (win ? p : join(dir, p));
   const home = `${base}\\Users\\dev`;
-  const env = {
-    ...process.env, USERPROFILE: home, APPDATA: `${home}\\AppData\\Roaming`, LOCALAPPDATA: `${home}\\AppData\\Local`,
+  const box = {
+    USERPROFILE: home, APPDATA: `${home}\\AppData\\Roaming`, LOCALAPPDATA: `${home}\\AppData\\Local`,
     ProgramData: `${base}\\ProgramData`, ProgramFiles: `${base}\\Program Files`, "ProgramFiles(x86)": `${base}\\Program Files (x86)`, SystemRoot: `${base}\\Windows`
   };
-  for (const k of Object.keys(env)) if (/^(node_options|programw6432|commonprogram)/i.test(k)) delete env[k];
+  // Drop every case variant of the boxed names first: Git Bash on the Windows runner exports SYSTEMROOT in
+  // upper case, the CLI reads names case-insensitively, and the runner's real C:\Windows used to win.
+  const boxed = new Set(Object.keys(box).map((k) => k.toLowerCase()));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !boxed.has(k.toLowerCase()) && !/^(node_options|programw6432|commonprogram)/i.test(k)));
+  Object.assign(env, box);
   const ws = `${base}\\src\\proj`;
   mkdirSync(at(ws), { recursive: true });
   const cli = fileURLToPath(new URL("../cli/mxc-policy.mjs", import.meta.url));

@@ -291,6 +291,9 @@ export function createEgressProxy(cfg = {}, deps = {}) {
     const held = [];
     let timer = null;
     const drop = () => { up.destroy(); csock.destroy(); };
+    // The server socket is half-open, and csock is not piped yet, so a client that closes before its first
+    // byte is judged would sit here until the idle timeout, holding a --max-connections slot (120 s).
+    const onEnd = () => drop();
     const onData = (c) => {
       held.push(c);
       const hello = sniffer.push(c);
@@ -300,6 +303,7 @@ export function createEgressProxy(cfg = {}, deps = {}) {
       }
       clearTimeout(timer);
       csock.removeListener("data", onData);
+      csock.removeListener("end", onEnd);
       const refused = judgeHello(hello, t, a.st, tc);
       if (refused) {
         if (refused.kind !== "rule") alertRefusal(refused.kind, { host: refused.host, port, method: null }, tc);
@@ -310,6 +314,7 @@ export function createEgressProxy(cfg = {}, deps = {}) {
       csock.pipe(up);
     };
     csock.on("close", () => clearTimeout(timer));
+    csock.on("end", onEnd);
     csock.on("data", onData);
     if (head && head.length) onData(Buffer.from(head));
   }
