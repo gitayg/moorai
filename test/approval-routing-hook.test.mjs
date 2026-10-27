@@ -185,14 +185,16 @@ test("grant ttl: the identical action is allowed on every call until validUntil,
   const home = sandbox(c);
   try {
     const { req } = await heldOnce(c, home);
-    c.state.approvals = [grantFor(req, { grant: "ttl", validMs: 2500 })];
+    // The window outlasts two hook runs on a loaded runner (2.5 s did not), and the wait ends at validUntil.
+    const g = grantFor(req, { grant: "ttl", validMs: 10000 });
+    c.state.approvals = [g];
     dropCache(home);
     assert.equal(decision(await runHook(home, bash(HELD))), "allow");
     assert.equal(decision(await runHook(home, bash(HELD))), "allow");
     await until(() => byCode(c, "APPROVAL_USED").length >= 1);
     await sleep(300);
     assert.equal(byCode(c, "APPROVAL_USED").length, 1, "USED once per grant");
-    await sleep(2600);
+    await sleep(Math.max(0, Date.parse(g.validUntil) - Date.now()) + 300);
     const after = await runHook(home, bash(HELD));
     assert.equal(decision(after), "deny", `past validUntil the grant is not honoured: ${after.out}`);
   } finally { await c.close(); rmTree(home); }

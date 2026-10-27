@@ -194,15 +194,11 @@ function cliBox() {
   const base = win ? dir : "C:\\box";
   const at = (p) => (win ? p : join(dir, p));
   const home = `${base}\\Users\\dev`;
-  const box = {
-    USERPROFILE: home, APPDATA: `${home}\\AppData\\Roaming`, LOCALAPPDATA: `${home}\\AppData\\Local`,
+  const env = {
+    ...process.env, USERPROFILE: home, APPDATA: `${home}\\AppData\\Roaming`, LOCALAPPDATA: `${home}\\AppData\\Local`,
     ProgramData: `${base}\\ProgramData`, ProgramFiles: `${base}\\Program Files`, "ProgramFiles(x86)": `${base}\\Program Files (x86)`, SystemRoot: `${base}\\Windows`
   };
-  // Drop every case variant of the boxed names first: Git Bash on the Windows runner exports SYSTEMROOT in
-  // upper case, the CLI reads names case-insensitively, and the runner's real C:\Windows used to win.
-  const boxed = new Set(Object.keys(box).map((k) => k.toLowerCase()));
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !boxed.has(k.toLowerCase()) && !/^(node_options|programw6432|commonprogram)/i.test(k)));
-  Object.assign(env, box);
+  for (const k of Object.keys(env)) if (/^(node_options|programw6432|commonprogram)/i.test(k)) delete env[k];
   const ws = `${base}\\src\\proj`;
   mkdirSync(at(ws), { recursive: true });
   const cli = fileURLToPath(new URL("../cli/mxc-policy.mjs", import.meta.url));
@@ -235,7 +231,12 @@ test("CLI --fs-deny lists only protected paths that exist (wxc-exec fails a miss
     const r = b.run(["--agent", "claude", "--workspace", b.ws, "--command", "claude.exe", "--fs-deny"]);
     assert.equal(r.status, 0, r.stderr);
     const denied = JSON.parse(r.stdout).filesystem.deniedPaths;
-    assert.deepEqual(denied, [`${b.home}\\.ssh`]);
+    // The child keeps the runner's real SystemRoot on Windows (node cannot start without it), so the real
+    // C:\Windows\Tasks dirs exist there and are denied too; the builder judged against the same disk agrees.
+    const expected = buildMxcPolicy({ agent: "claude", workspace: b.ws, commandLine: "claude.exe", env: b.env, hookRoots: [], egressAllow: [], captureDenials: false, fsDenySupported: true }, { exists: b.exists });
+    assert.deepEqual(denied, expected.policy.filesystem.deniedPaths);
+    assert.ok(denied.includes(`${b.home}\\.ssh`), "the existing .ssh is denied");
+    for (const d of denied) assert.ok(b.exists(d), `${d} exists`);
   } finally { b.done(); }
 });
 

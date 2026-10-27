@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, readFileSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { startConsole, sandbox, runHook, ledger, settle } from "./lifecycle-harness.mjs";
+import { ABS_SKIP, scalingRatio } from "./timing.mjs";
 
 const CAT = "Trust boundary changed without a threat-model update";
 const BASE = { captureTier: "content-free", threatPolicy: {} };
@@ -109,8 +110,23 @@ test("normalizeModel: whitespace and comments (#, //, /* */, <!-- --> in Markdow
   assert.equal(normalizeModel("# Model\n\n- card flow\n<!-- reviewed -->\n", "tm.md"), normalizeModel("# Model\n- card flow\n", "tm.md"));
 });
 
-test("normalizeModel is linear: 1 MiB of comment openers, quotes and whitespace in well under 200 ms", () => {
-  for (const s of ["/*".repeat(500000), '"'.repeat(1000000), " \n\t".repeat(350000), "<!--".repeat(250000), "#//".repeat(340000)]) {
+const HOSTILE = [["/*", 500000], ['"', 1000000], [" \n\t", 350000], ["<!--", 250000], ["#//", 340000]];
+
+// A scaling ratio, not a wall-clock budget (test/timing.mjs): 200 ms read 234-302 ms on a shared CI runner.
+// MEASURED (scalingRatio, M-series Mac): 5-19x for 8x the input, "#//" peaking at 20.4x once; a quadratic
+// pass reads 64x, so the bound sits halfway between.
+test("normalizeModel is linear: 8x the comment openers, quotes and whitespace cost < 32x", () => {
+  for (const [u, n] of HOSTILE) {
+    const small = u.repeat(n / 8), large = u.repeat(n);
+    const r = scalingRatio(() => { normalizeModel(small, "x.md"); normalizeModel(small, "x.hcl"); }, () => { normalizeModel(large, "x.md"); normalizeModel(large, "x.hcl"); });
+    assert.ok(r.ratio < 32, `${JSON.stringify(u)}: 8x the input cost ${r.ratio.toFixed(2)}x (${r.small.toFixed(3)}ms → ${r.large.toFixed(3)}ms)`);
+  }
+});
+
+// The original absolute budget, kept OPT-IN (see test/timing.mjs): set MOORAI_PERF_ABS=1 on an idle machine.
+test("normalizeModel: 1 MiB of comment openers, quotes and whitespace in well under 200 ms (opt-in: MOORAI_PERF_ABS=1)", { skip: ABS_SKIP }, () => {
+  for (const [u, n] of HOSTILE) {
+    const s = u.repeat(n);
     const t0 = performance.now();
     normalizeModel(s, "x.md");
     normalizeModel(s, "x.hcl");

@@ -178,7 +178,11 @@ test("runner --live against an in-test model server: the real model proxy refuse
     assert.equal(by["openai-responses-secret"].observed, "refuse", "the proxy parses the Responses API, so the credential is refused before the model");
     const gw = reps["mcp-gateway-mcp-sdk"];
     assert.ok(gw, `files: ${files}`);
-    assert.deepEqual(gw.targets[0].cases.map((c) => [c.id, c.status]), [["sdk-echo-allow", "pass"], ["sdk-echo-deny", "pass"]]);
+    // The SDK pair needs @modelcontextprotocol/sdk, a devDependency; the ci workflow runs without `npm ci`.
+    let sdkInstalled = true;
+    try { import.meta.resolve("@modelcontextprotocol/sdk/server/index.js"); } catch { sdkInstalled = false; }
+    if (sdkInstalled) assert.deepEqual(gw.targets[0].cases.map((c) => [c.id, c.status]), [["sdk-echo-allow", "pass"], ["sdk-echo-deny", "pass"]]);
+    else assert.equal(gw.targets[0].cases.some((c) => c.status === "pass"), false, "no SDK case passes without the SDK");
     for (const [id, rep] of Object.entries(reps)) if (id.startsWith("sdk-")) { assert.equal(rep.targets[0].ran, false); assert.ok(["sdk-not-installed", "no-live-tier"].includes(rep.targets[0].reason), id); }
     assert.ok(reps["server-image-amd64"], "the amd64 image row is recorded");
     const raw = files.map((f) => readFileSync(join(out, f), "utf8")).join("\n");

@@ -140,7 +140,10 @@ test("a slow console never holds the decision: stdout in under a second while th
     c.st.delayMs = 5000;
     const r = await runHook(home, pre);
     assert.match(r.out, /"permissionDecision":"deny"/);
-    assert.ok(r.firstOut < 1000, `decision after ${r.firstOut} ms`);
+    // Relative, not a wall-clock budget (test/timing.mjs): a loaded runner slows the hook's start, which
+    // delays both ends alike, but the decision is on stdout at least 1 s before the 1.5 s post gives up.
+    assert.ok(r.total - r.firstOut > 1000, `decision after ${r.firstOut} ms, hook exited after ${r.total} ms`);
+    assert.ok(r.firstOut < 5000, `decision after ${r.firstOut} ms, not before the console answered`);
     // The direct post timed out at 1.5 s: the alert went to the outbox and the worker delivers it.
     assert.ok(await until(() => state(home).lastDeliveredSeq > 0 || c.st.batches > 0, 25000), "the worker never sent the queued alert");
     console.log(`[slow console] decision on stdout after ${r.firstOut} ms, hook exited after ${r.total} ms`);
