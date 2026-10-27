@@ -1878,6 +1878,7 @@ command text (the hook, the Agent SDK, `moorai-serve`) gets them.
 | #55 Credential / secret-file access | `secret-file-upload` | a network client sending a file that is a credential file by `cred-file-access`'s own definition (the verdict `cat <path>` gets, so `.env.example` is excluded): curl `-d`/`--data`/`--data-binary`/`--json @f`, `--data-urlencode [name]@f`, `-F name=@f` / `name=<f`, `-T`/`--upload-file f`; wget `--post-file`/`--body-file`; `nc`/`ncat`/`netcat`/`telnet` with `< f` or piped from `cat f`; `socat FILE:f TCP:…`; `Invoke-RestMethod`/`Invoke-WebRequest -InFile f`; `cat f \| curl --data-binary @-` | `justify` (ask) |
 | #78 Data sent to an out-of-band collection host (new, High) | `oast-exfil` | a body, upload, non-GET method, query string or substituted value (`$(…)` in a URL or a DNS name) to a listed host, or input piped/redirected into a socket client aimed at one | `notify` (report) |
 | #79 Out-of-band collection host contacted (new, Medium) | `oast-contact` | a listed host contacted with no data: a GET, `nslookup`/`dig`/`host`/`ping` | `notify` (report) |
+| #86 Data uploaded to public cloud storage (new in 1.40.0, Medium) | `object-storage-upload` | curl, wget or `Invoke-WebRequest` sending a body, `-T`/`--upload-file` or a non-GET method to a public object-storage endpoint or a pre-signed URL (below) | `notify` (report) |
 
 **Why these threat ids.** #57 is the same supply-chain act as `curl … | sh`, split into "write the script"
 and "run it", so it reuses #57 and its `justify`. A secret file being sent is #55's file, so #55; #65 means a
@@ -1916,6 +1917,32 @@ download then read (`cat`, `less`, `head`, `sha256sum`), release tarball then `t
 `npm install`, `curl -d @payload.json` to an API, `.env.example` / `.env.sample` uploads, `chmod +x` on a
 local script, `bash -n` (syntax check), `wget -P .` then an unrelated script, prose naming a collection
 host. For that reason #78 and #79 stay `notify`; promoting them needs a corpus that exercises them.
+
+**Uploads to public cloud storage (#86, 1.40.0).** Cohere published (October 2026) the trace of an
+open-weight model that, asked to write a detection rule, ran one Bash call that listed `/tmp`, checked for
+`curl wget python3 jq`, read `/etc/resolv.conf` and PUT a probe payload to an Alibaba OSS bucket nobody had
+named. Replayed through the real hook at 1.39.0 it got no finding and was allowed (an `egressDefault: "block"`
+policy denied it). `object-storage-upload` fires when a network client's destination in the parsed command
+both writes (`upload`: a body, `-T`, a form or a non-GET method; a query string alone is not a write) and is
+either a public object-storage endpoint or a pre-signed URL (`signed`), both read in
+[`data/net-exec.js`](../data/net-exec.js) `netDestinations` from
+[`data/object-storage-hosts.js`](../data/object-storage-hosts.js). Endpoints are matched by the provider's
+own naming at a label boundary (`*.oss-<region>.aliyuncs.com`, `*.s3[.-]…amazonaws.com[.cn]`,
+`*.blob|dfs.core.windows.net`, `storage.googleapis.com`, `*.r2.cloudflarestorage.com`, `*.r2.dev`,
+`*.cos.<region>.myqcloud.com`, `*.obs.<region>.myhuaweicloud.com`, DigitalOcean Spaces, Backblaze B2,
+Wasabi), never by bucket name: the sampled continuations used a different bucket almost every time. A
+signed URL counts on any host, because the signature is what grants the write. **Why a new id:** #78 means a
+request-capture service, whose whole purpose is collection; a bucket is ordinary infrastructure, so #86 is
+Medium and report-only, and credits T1567.002 (Exfiltration to Cloud Storage, partial: provider CLIs are
+not read) and AML.T0086 (bounded). **Not covered:** the providers' CLIs (`aws s3 cp`, `gsutil cp`,
+`az storage blob upload`, `rclone`), which write with the account the user configured and are how deploys
+publish; paste sites and arbitrary hosts (in the 64 sampled continuations, 28 uploads reached a storage
+endpoint and are caught; the other 36 went to paste sites, localhost, the Alibaba metadata address, which
+`cloud-metadata-access` already flags, and invented domains). **Benign evidence:** no benign corpus
+(benign-corpus, -v2, Hebrew, Arabic, Russian, web-content) fires it, and none mentions a storage domain,
+so that is weak evidence; the quiet cases are pinned in `test/object-upload-detectors.test.mjs` (bucket
+downloads, signed and unsigned; `aws s3 cp`; `git push`; an API POST; a PUT to a non-storage host with a
+token query; prose naming a bucket).
 
 Tests: `test/net-exec-detectors.test.mjs` (every form above, the quiet cases, content-free findings, 60 KB
 adversarial inputs) and `test/fetch-exec-hook.test.mjs` (the real hook process: the single-command and
@@ -2826,7 +2853,7 @@ Recorded because a confidently wrong document is what created the task to rewrit
 | Latency budget: Tier-1 < 20 ms, Tier-2 ≈ 800 ms | Measured Tier-1 is 0.26–2.47 ms per scan (§11). The semantic guard is 3500 ms by default, not 800. |
 | `detectors.json` and `threats.json` are versioned and the engine pins a schema version | `data/threats.json` has a `meta` block; the engine pins no schema version and validates none. |
 | "Every detector ships positive/negative test cases" | There is no per-detector fixture requirement. Evidence is corpus-level (`test/redteam/`) and the promotion bar in §5 is stated in terms of corpora, not fixtures. |
-| Detectability map over ~40 threats | The matrix is 82 threats. The map is stale and has been dropped rather than half-updated; [BENCHMARK.md](BENCHMARK.md) carries measured coverage instead. |
+| Detectability map over ~40 threats | The matrix is 83 threats. The map is stale and has been dropped rather than half-updated; [BENCHMARK.md](BENCHMARK.md) carries measured coverage instead. |
 
 ---
 
@@ -3117,6 +3144,7 @@ the standard a credit has to pass.
 | AML.T0035 AI Artifact Collection (one command) | `model-artifact-collection` | #77 | prompt |
 | AML.T0086 Exfiltration via AI Agent Tool Invocation (listed collection hosts only) | `oast-exfil` | #78 | prompt, output |
 | AML.T0086 Exfiltration via AI Agent Tool Invocation (listed hosts, contact without a payload) | `oast-contact` | #79 | prompt, output |
+| AML.T0086 Exfiltration via AI Agent Tool Invocation (raw HTTP uploads to object storage only) | `object-storage-upload` | #86 | prompt, output |
 
 `egress-rendered-extended` reads the rendering channels `egress-rendered-image` does not — data in a URL
 path segment, hex- or base64-encoded text, a secret-named parameter, reference-style markdown images,

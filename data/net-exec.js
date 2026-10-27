@@ -13,6 +13,7 @@
 // over the command; every regex here is anchored over one token. Browser-safe (no node: imports). Never
 // throws: every exported function catches and returns its empty result.
 import { splitShell, commandOf, scanArgs, has, val, SHELLS, PWSH, MAX_CMD, MAX_DEPTH, HOSTLIKE, CURL_SHORT, CURL_LONG, WGET_SHORT, WGET_LONG, IWR_VALUED } from "./shell-parse.js";
+import { signedUrl } from "./object-storage-hosts.js";
 
 const ROOTED = /^(?:[A-Za-z]:\/|\/|~(?:\/|$))/;
 
@@ -638,6 +639,8 @@ function urlCarriesData(t) { return /\?[^#]*=/.test(t) || /\$/.test(t); }
 // [{ host, send }] for each destination a network client in the command names. `send`: a body, an upload,
 // a non-GET method, a query string, a substituted value in the name, or input piped / redirected into a
 // socket client.
+// An HTTP client's destination also carries `upload` (a body, an upload or a non-GET method: the command
+// writes, a query string alone does not) and `signed` (the URL is pre-signed, data/object-storage-hosts.js).
 export function netDestinations(cmd, { ps = false } = {}) {
   const out = [];
   try {
@@ -668,7 +671,7 @@ export function netDestinations(cmd, { ps = false } = {}) {
           for (const t of seg.rest) {
             if (!URL_TOKEN.test(t) && !(HOSTLIKE.test(t) && t.includes("."))) continue;
             if (/^-/.test(t)) continue;
-            out.push({ host: hostOf(t), send: send || urlCarriesData(t) });
+            out.push({ host: hostOf(t), send: send || urlCarriesData(t), upload: send, signed: signedUrl(t) });
           }
           continue;
         }

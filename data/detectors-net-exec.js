@@ -27,11 +27,17 @@
 //       instruction in ingested content that redirects what the agent does is #40's definition (indirect /
 //       second-order injection), and #40 is what the other ingest-stage instruction detectors report.
 //       File, index and tool-result stages only: on a prompt the user is the one choosing the source.
+//   #86 object-storage-upload — a raw HTTP upload (curl / wget / Invoke-WebRequest with a body, -T or a
+//       non-GET method) to a public object-storage endpoint or to a pre-signed URL
+//       (data/object-storage-hosts.js). Its own id: #78 means a request-capture service, whose whole
+//       purpose is collection, while a bucket is ordinary infrastructure, so the two need different risk
+//       levels. A download from a bucket, signed or not, is not an upload and stays silent.
 //
 // ONCE: refine() runs once per text and the reported match is one character, so no command, path or host
 // ever reaches a finding. Each refine checks a cheap prefilter before parsing.
 import { fetchExecFacts, uploadedFiles, netDestinations, urlDestinations, cloneRunFacts } from "./net-exec.js";
 import { oastHost, OAST_MENTION } from "./oast-hosts.js";
+import { objectStorageHost, OBJECT_STORAGE_MENTION } from "./object-storage-hosts.js";
 import { installSteeringHit } from "./install-steering.js";
 
 const ONCE = /^[\s\S]/;
@@ -124,6 +130,15 @@ export function netExecDetectors(detectors) {
       hint: "Contacts a public out-of-band / request-capture host with no data attached (a GET or DNS lookup).",
       patterns: [ONCE],
       refine: (_m, text, ctx) => oastVerdict(text, ctx) === "contact"
+    },
+    {
+      detectorId: "object-storage-upload",
+      threatId: 86,
+      stages: ["prompt", "output"],
+      mode: "warn",
+      hint: "Uploads data with curl, wget or Invoke-WebRequest to a public object-storage bucket (S3, Azure Blob, GCS, Alibaba OSS, R2, COS, OBS) or to a pre-signed URL.",
+      patterns: [ONCE],
+      refine: (_m, text) => OBJECT_STORAGE_MENTION.test(text) && netDestinations(text).some((d) => d.upload && (d.signed || objectStorageHost(d.host)))
     }
   ];
 }

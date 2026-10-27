@@ -1,22 +1,22 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-24T01:11:45.587Z
+> Generated: 2026-10-27T16:14:14.683Z
 
-- **Detectors:** 125
-- **Threats:** 82
+- **Detectors:** 126
+- **Threats:** 83
 - **Adversarial corpus:** 102/102 passed (100.0%)
 - **OWASP LLM Top 10:** 10/10 items covered by ≥1 on-device detector
 - **OWASP Top 10 for Agentic Applications:** 1/10 covered, 6 partial, 3 uncovered
 - **OWASP MCP Top 10:** 1/10 covered, 5 partial, 4 uncovered
-- **MITRE ATT&CK v20.0 (AI-agent scope):** 2/71 covered, 55 partial (9 bounded by design, 46 open gap), 14 uncovered (agent lane: 2/58 covered, 53 partial (8 bounded by design, 45 open gap), 3 uncovered)
+- **MITRE ATT&CK v20.0 (AI-agent scope):** 2/71 covered, 56 partial (9 bounded by design, 47 open gap), 13 uncovered (agent lane: 2/58 covered, 54 partial (8 bounded by design, 46 open gap), 2 uncovered)
 
 ## OWASP LLM Top 10 (2025) coverage
 
 | Item | Name | Threats | Detectors | Status |
 |------|------|--------:|----------:|--------|
 | LLM01 | Prompt Injection | 8 | 25 | ✅ covered |
-| LLM02 | Sensitive Information Disclosure | 20 | 44 | ✅ covered |
+| LLM02 | Sensitive Information Disclosure | 21 | 45 | ✅ covered |
 | LLM03 | Supply Chain | 8 | 6 | ✅ covered |
 | LLM04 | Data & Model Poisoning | 1 | 2 | ✅ covered |
 | LLM05 | Improper Output Handling | 7 | 16 | ✅ covered |
@@ -31,7 +31,7 @@
 | Item | Name | Threats | Partial | Detectors | Status |
 |------|------|--------:|--------:|----------:|--------|
 | ASI01 | Agent Goal Hijack | 9 | 7 | 33 | ✅ covered |
-| ASI02 | Tool Misuse and Exploitation | 9 | 9 | 7 | ◐ partial |
+| ASI02 | Tool Misuse and Exploitation | 10 | 10 | 8 | ◐ partial |
 | ASI03 | Identity and Privilege Abuse | 4 | 4 | 6 | ◐ partial |
 | ASI04 | Agentic Supply Chain Vulnerabilities | 3 | 3 | 11 | ◐ partial |
 | ASI05 | Unexpected Code Execution (RCE) | 6 | 6 | 15 | ◐ partial |
@@ -104,7 +104,7 @@ risk, the MCP allow-list) are counted under Threats but add no detectors. Source
 | T1016.001 | Internet Connection Discovery | agent | 1 | 1 | ◐ partial (by design) |
 | T1567 | Exfiltration Over Web Service | agent | 2 | 2 | ◐ partial (open gap) |
 | T1567.001 | Exfiltration to Code Repository | agent | 0 | 0 | — |
-| T1567.002 | Exfiltration to Cloud Storage | agent | 0 | 0 | — |
+| T1567.002 | Exfiltration to Cloud Storage | agent | 1 | 1 | ◐ partial (open gap) |
 | T1567.003 | Exfiltration to Text Storage Sites | agent | 0 | 0 | — |
 | T1567.004 | Exfiltration Over Webhook | agent | 2 | 2 | ◐ partial (open gap) |
 | T1048.003 | Exfiltration Over Unencrypted Non-C2 Protocol | agent | 1 | 1 | ◐ partial (open gap) |

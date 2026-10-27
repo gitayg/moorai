@@ -128,6 +128,7 @@ const AGENTIC = [
   [65, "ASI02", "known local secret values only", "the secret-value fingerprint is matched against outbound commands and MCP tool arguments"],
   [77, "ASI02", "model files and caches, one command", "model-artifact-collection matches weights or datasets staged into an upload"],
   [78, "ASI02", "listed collection hosts only", "oast-exfil matches data sent to a public request-capture host"],
+  [86, "ASI02", "raw HTTP uploads to object storage only", "object-storage-upload matches a curl, wget or Invoke-WebRequest upload to a public bucket or a pre-signed URL"],
   [46, "ASI03", "IAM, sudo and security-setting changes, gated on human approval", "action-security-config matches IAM grants, sudoers edits, firewall opening"],
   [48, "ASI03", "identity and credential creation, gated on human approval", "action-credential-create matches create-access-key, adduser, service-account creation"],
   [55, "ASI03", "local credential files and keychain only", "cred-file-access matches the agent reading the authentication material it runs with"],

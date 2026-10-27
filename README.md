@@ -1840,9 +1840,16 @@ body is read as part of the command when what it feeds runs it (`bash <<EOF`, `s
 - **A public out-of-band collection host** (interactsh, Burp Collaborator, webhook.site, Pipedream,
   Request Catcher, Beeceptor, Canarytokens): data sent is #78 (High), a plain GET or DNS lookup is #79
   (Medium). Both report by default; set them in `threatPolicy` to ask or block.
+- **An upload to public cloud storage** (#86, Medium, reports by default): curl, wget or
+  `Invoke-WebRequest` sending a body, `-T` or a non-GET method to an S3, Azure Blob, Google Cloud Storage,
+  Alibaba OSS, Cloudflare R2, Tencent COS, Huawei OBS, DigitalOcean Spaces, Backblaze B2 or Wasabi
+  endpoint, or to any pre-signed URL (`X-Amz-Signature`, `OSSAccessKeyId`, an Azure SAS `sig=`,
+  `X-Goog-Signature`). A download from a bucket, signed or not, is not an upload. Set `threatPolicy["86"]`
+  to ask or block, or allow-list your own buckets with egress rules.
 
-Not seen: a downloaded file renamed before it runs, paths held in variables, `scp`/`rsync` uploads, and
-hosts outside the list. [docs/DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md) §6 and §13 have the detail.
+Not seen: a downloaded file renamed before it runs, paths held in variables, `scp`/`rsync` uploads, hosts
+outside the list, and uploads through the providers' own CLIs (`aws s3 cp`, `gsutil cp`, `az storage blob
+upload`, `rclone`), which write with the account the user configured. [docs/DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md) §6 and §13 have the detail.
 
 ### Weakening oversight (#84)
 
@@ -3397,12 +3404,12 @@ complete tool detail, and no argument text reached the console.
 ATT&CK v20 (13 October 2026) added Direct Prompt Injection (T1699), Indirect Prompt Injection (T1698),
 AI-Enabled Exfiltration (T1700), Impair Autonomous Defenses (T1685.007) and AI Result Poisoning (T1608.007),
 and rewrote Compromise Software Dependencies and Development Tools (T1195.001) to name agent skill files and
-IDE task files. 48 of the 82 rules map to 65 v20 techniques through 93 credits: 3 full, 77 partial and 13
+IDE task files. 49 of the 83 rules map to 66 v20 techniques through 94 credits: 3 full, 78 partial and 13
 `none`. 34 rules (data classes, governance, review and model-error risks) have no ATT&CK counterpart, and each says why.
 
 Over the 71 v20 techniques an AI agent can perform or be aimed at (`ATTACK_SCOPE` in `data/attack.js`), 2 are
-covered, 55 partial and 14 uncovered. Of the 58 in the agent lane, the actions a hook, proxy or gateway sees,
-2 are covered, 53 partial and 3 uncovered; of those 53 partial, 8 are bounded by design and 45 are open gaps. The other 13 are identity, email, endpoint or adversary-infrastructure
+covered, 56 partial and 13 uncovered. Of the 58 in the agent lane, the actions a hook, proxy or gateway sees,
+2 are covered, 54 partial and 2 uncovered; of those 54 partial, 8 are bounded by design and 46 are open gaps. The other 13 are identity, email, endpoint or adversary-infrastructure
 techniques that no MoorAI surface sees directly; two of them are partly covered: Financial Theft (T1657), where the
 payment-fraud detector coaches when payment or bank-detail change wording reaches an AI tool, and Steal Application
 Specific Passwords (T1697), where an app password read, typed or sent through an agent, a tool or a model call is kept
@@ -3431,8 +3438,8 @@ in `data/threats.json` to get technique ids, coverage and reason. The console's 
 ### MITRE CWE and CAPEC
 
 Every rule in `data/threats.json` carries `cwe` and `capec`, each an array of `{ id, title }`: the CWE
-weakness the threat exploits and the CAPEC attack pattern the threat is. 37 of the 82 rules credit 16 CWE
-entries (42 credits) and 24 credit 19 CAPEC patterns (27 credits). 37 rules credit neither: a person pasting
+weakness the threat exploits and the CAPEC attack pattern the threat is. 37 of the 83 rules credit 16 CWE
+entries (42 credits) and 24 credit 19 CAPEC patterns (27 credits). 38 rules credit neither: a person pasting
 data into an AI tool or relying on a wrong answer exploits no software weakness and involves no adversary, and
 CAPEC 3.9 has no pattern for prompt injection or exfiltration. An empty array is a reviewed "no honest
 mapping" and carries a one-line `cweNote` or `capecNote`. CWE-1426 (Improper Validation of Generative AI
@@ -3667,7 +3674,7 @@ so internal files can move without breaking consumers.
 
 ## How it works
 
-A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against an 82-threat matrix (17 categories) + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is MIT; the console is commercial.
+A small Rust (Tauri) host wraps the agent's terminal; a local webview runs the detection engine. Prompts, file reads, tool calls, and outputs are checked against an 83-threat matrix (17 categories) + content rules + org-defined detector packs — entirely on the device. A separate, proprietary **management console** adds a multi-tenant dashboard, SSO, fleet policy, and content-free compliance exports (AIBOM, EU AI Act records, board AI-readiness report, SIEM streaming). Open-core: this agent is MIT; the console is commercial.
 
 ## Learn more
 

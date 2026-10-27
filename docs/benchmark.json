@@ -1,9 +1,9 @@
 {
   "name": "MoorAI Agent Security Benchmark",
-  "generatedAt": "2026-10-24T01:11:45.587Z",
+  "generatedAt": "2026-10-27T16:14:14.683Z",
   "engine": {
-    "detectors": 125,
-    "threats": 82,
+    "detectors": 126,
+    "threats": 83,
     "corpusCases": 102
   },
   "corpus": {
@@ -20,8 +20,8 @@
         "detectors": 25
       },
       "LLM02": {
-        "threats": 20,
-        "detectors": 44
+        "threats": 21,
+        "detectors": 45
       },
       "LLM03": {
         "threats": 8,
@@ -72,9 +72,9 @@
         "status": "covered"
       },
       "ASI02": {
-        "threats": 9,
-        "partialThreats": 9,
-        "detectors": 7,
+        "threats": 10,
+        "partialThreats": 10,
+        "detectors": 8,
         "status": "partial"
       },
       "ASI03": {
@@ -202,17 +202,17 @@
     "source": "https://attack.mitre.org/resources/updates/",
     "total": 71,
     "covered": 2,
-    "partial": 55,
-    "uncovered": 14,
+    "partial": 56,
+    "uncovered": 13,
     "partialDesign": 9,
-    "partialGap": 46,
+    "partialGap": 47,
     "agentLane": {
       "total": 58,
       "covered": 2,
-      "partial": 53,
-      "uncovered": 3,
+      "partial": 54,
+      "uncovered": 2,
       "partialDesign": 8,
-      "partialGap": 45
+      "partialGap": 46
     },
     "byItem": {
       "T1698": {
@@ -473,9 +473,10 @@
       },
       "T1567.002": {
         "lane": "agent",
-        "threats": 0,
-        "detectors": 0,
-        "status": "uncovered"
+        "threats": 1,
+        "detectors": 1,
+        "status": "partial",
+        "partialBound": "gap"
       },
       "T1567.003": {
         "lane": "agent",
