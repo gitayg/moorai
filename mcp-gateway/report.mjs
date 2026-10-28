@@ -18,6 +18,7 @@ import { isEnrolled, literacyTouchpoint, coachMessage } from "../cli/hook-core.m
 import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
 import { contentHash, actorHash, NO_KEY } from "../cli/content-hash.mjs";
+import { RUG_PULL_THREAT } from "../mcp-proxy/tool-drift.mjs";
 import { emitOtel } from "../cli/otel.mjs";
 import { serverMode, serviceWho, workloadIdentity } from "../cli/server-mode.mjs";
 import { traceFields } from "../model-proxy/trace-w3c.mjs";
@@ -138,7 +139,7 @@ export function alertResult(server, toolName, findings, blocked) {
 // A tools/call refused because block-mode tool drift quarantined the tool (mcp-proxy/tool-drift.mjs).
 // `rechecked`: the verdict came from a re-list the gateway made before the call (driftCheck "recheck").
 export function alertDriftCall(server, tool, category, argsHash, rechecked = false) {
-  const a = { threatId: 0, category, riskLevel: "Blocked", stage: "mcp", tool: t(tool), decision: "deny", reasonCode: "MCP_TOOL_DRIFT", ...(rechecked ? { driftCheck: "recheck" } : {}), mcpServer: server, ts: now(), contentHash: argsHash, ...IDENTITY };
+  const a = { threatId: RUG_PULL_THREAT, category, riskLevel: "Blocked", stage: "mcp", tool: t(tool), decision: "deny", reasonCode: "MCP_TOOL_DRIFT", ...(rechecked ? { driftCheck: "recheck" } : {}), mcpServer: server, ts: now(), contentHash: argsHash, ...IDENTITY };
   post(a);
   ledger(a);
 }

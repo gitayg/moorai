@@ -6,11 +6,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseLsofTcp, parseNetstatTcp, parseProcTcp, procSocketOwners, tcpTable, bindClass, procHexAddr } from "../cli/local-ai-inventory.mjs";
-import { localModelServers, exposureAlerts, tcpReachable, EXPOSURE_REASON, EXPOSURE_CATEGORY } from "../cli/local-model-exposure.mjs";
+import { localModelServers, exposureAlerts, tcpReachable, EXPOSURE_REASON, EXPOSURE_CATEGORY, EXPOSURE_THREAT } from "../cli/local-model-exposure.mjs";
 import { inventoryPosture } from "../cli/agent-posture.mjs";
 import { rmTree } from "./fs-cleanup.mjs";
 
@@ -142,6 +142,44 @@ test("LOCAL_MODEL_EXPOSED: contract fields, once per change, policy off silences
   assert.equal(exposureAlerts(a, { policy: { localModelExposure: "alert" } }).alerts.length, 1);
 });
 
+test("LOCAL_MODEL_EXPOSED is attributed to threat rule #89, content-free", () => {
+  const rule = JSON.parse(readFileSync(new URL("../data/threats.json", import.meta.url), "utf8")).threats.find((t) => t.id === 89);
+  assert.ok(rule, "data/threats.json has rule #89");
+  assert.equal(rule.threat, EXPOSURE_CATEGORY, "the alert's category is rule #89's name");
+  assert.equal(rule.atlas, "AML.T0132");
+  assert.equal(rule.riskLevel, "Medium");
+  assert.equal(EXPOSURE_THREAT, 89);
+  const servers = [
+    { runtime: "ollama", port: 11434, bind: "loopback", viaProxy: false },
+    { runtime: "lmstudio", port: 1234, bind: "lan", viaProxy: false },
+    { runtime: "llamacpp", port: 8080, bind: "all-interfaces", viaProxy: false }
+  ];
+  const { alerts } = exposureAlerts(servers, { ts: "2026-10-28T00:00:00.000Z" });
+  assert.equal(alerts.length, 3);
+  for (const a of alerts) {
+    assert.equal(a.threatId, 89);
+    assert.equal(a.riskLevel, rule.riskLevel);
+    assert.deepEqual(Object.keys(a).sort(), ["bind", "category", "contentHash", "port", "reasonCode", "riskLevel", "runtime", "stage", "threatId", "tool", "ts"]);
+    assert.match(a.contentHash, /^local-model:(ollama|lmstudio|llamacpp)\|\d+\|(loopback|lan|all-interfaces)$/);
+  }
+});
+
+test("a loopback server reachable only via the proxy (viaProxy true) raises nothing, end to end", async (t) => {
+  const loopOnly = parseLsofTcp(`COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+ollama 40155 u 3u IPv4 0x6 0t0 TCP 127.0.0.1:11434 (LISTEN)
+`);
+  const servers = await localModelServers(loopOnly, { connect: never });
+  assert.deepEqual(servers, [{ runtime: "ollama", port: 11434, bind: "loopback", viaProxy: true }]);
+  assert.deepEqual(exposureAlerts(servers).alerts, []);
+  const root = mkdtempSync(join(tmpdir(), "moorai-inv-proxy-"));
+  t.after(() => rmTree(root));
+  const home = join(root, "home"); mkdirSync(home);
+  const inv = await inventoryPosture({ policy: null, home, machineDir: join(root, "machine"), sample: () => ({ sockets: loopOnly, source: "lsof" }), connect: never,
+    resolve: false, ts: "2026-10-28T10:00:00.000Z", procs: { exeOf: () => new Map(), argvOf: () => new Map(), sigOf: () => false } });
+  assert.deepEqual(inv.fields.localModelServers, [{ runtime: "ollama", port: 11434, bind: "loopback", viaProxy: true }]);
+  assert.deepEqual(inv.alerts.filter((a) => a.reasonCode === EXPOSURE_REASON || a.threatId === 89), []);
+});
+
 test("inventoryPosture: top-level fields; the second scan of an unchanged device raises nothing", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "moorai-inv-"));
   t.after(() => rmTree(root));
@@ -157,6 +195,7 @@ test("inventoryPosture: top-level fields; the second scan of an unchanged device
   assert.deepEqual(a.fields.aiApiCallers, [{ processImage: "claude", provider: "anthropic", known: false }], "a name with no executable path is unknown");
   assert.deepEqual(a.fields.decoyKeys, { placed: 0, source: "none" });
   assert.equal(a.alerts.filter((x) => x.reasonCode === "LOCAL_MODEL_EXPOSED").length, 4);
+  assert.ok(a.alerts.filter((x) => x.reasonCode === "LOCAL_MODEL_EXPOSED").every((x) => x.threatId === 89), "every exposure alert carries #89");
   assert.deepEqual(a.alerts.filter((x) => x.reasonCode === "AI_API_CALLER_UNKNOWN").map((x) => [x.processImage, x.provider]), [["claude", "anthropic"]]);
   const b = await inventoryPosture(opts);
   assert.deepEqual(b.alerts, []);

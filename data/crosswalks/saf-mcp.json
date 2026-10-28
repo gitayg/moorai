@@ -1010,7 +1010,9 @@
     {
       "id": "SAF-T1207",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        25
+      ],
       "evidence": [
         "reputation-cli",
         "tool-drift"
@@ -1120,7 +1122,9 @@
     {
       "id": "SAF-T1201",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        25
+      ],
       "evidence": [
         "tool-drift",
         "tool-drift-block",
@@ -1220,7 +1224,9 @@
     {
       "id": "SAF-T1406",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        25
+      ],
       "evidence": [
         "tool-drift",
         "tool-identity"
@@ -1230,7 +1236,9 @@
     {
       "id": "SAF-T1401",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        25
+      ],
       "evidence": [
         "tool-drift",
         "tool-drift-block"
@@ -1268,7 +1276,9 @@
     {
       "id": "SAF-T1405",
       "status": "partial",
-      "threats": [],
+      "threats": [
+        25
+      ],
       "evidence": [
         "tool-drift-block",
         "tool-identity"

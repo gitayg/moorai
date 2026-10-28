@@ -38,6 +38,9 @@ import { toolIdentity } from "./tool-scan.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "./tool-baseline.mjs";
 
 export const TOOL_DRIFT_REASON = "MCP_TOOL_DRIFT";
+// A tool changed, added or shadowed after approval is reported under #25 (MCP / Connector Tool Poisoning),
+// which credits AML.T0109 AI Supply Chain Rug Pull for this before/after comparison.
+export const RUG_PULL_THREAT = 25;
 export const APPROVED_FILE = "mcp-tool-approved.json";
 export const MAX_APPROVED_TOOLS = 2048;   // per server baseline in a policy; a larger one is ignored as malformed
 const MAX_HWM_ENTRIES = 512;

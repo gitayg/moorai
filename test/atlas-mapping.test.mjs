@@ -165,8 +165,9 @@ test("ATLAS-MAP: distinct technique coverage, in and out of the Agentic AI set",
   const scored = Object.entries(ATLAS).filter(([id, v]) => v.agentic && !id.includes(".", 7)).length;
 
   assert.equal(scored, 76, "the scored Agentic AI set is 76 top-level techniques");
-  assert.equal(distinct.size, 33, "distinct ATLAS techniques credited across the rule base");
-  assert.equal(agenticTop.length, 31, "credited techniques inside the 76-technique Agentic AI set");
+  // v1.41.0 adds AML.T0103 (#88), AML.T0109 (#25) and AML.T0132 (#89), all three in the Agentic AI set.
+  assert.equal(distinct.size, 36, "distinct ATLAS techniques credited across the rule base");
+  assert.equal(agenticTop.length, 34, "credited techniques inside the 76-technique Agentic AI set");
 });
 
 // ---------------------------------------------------------------------------------------------

@@ -882,9 +882,13 @@
         "OWASP"
       ],
       "owasp": "LLM03",
-      "atlas": "AML.T0110",
+      "atlas": [
+        "AML.T0110",
+        "AML.T0109"
+      ],
       "atlasPartial": {
-        "AML.T0110": "approved-connector allow-list only"
+        "AML.T0110": "approved-connector allow-list only",
+        "AML.T0109": "MCP tool descriptions and schemas changed after approval, at the MCP guard and gateway only"
       },
       "owaspAgentic": [
         "ASI04"
@@ -3420,6 +3424,68 @@
       "cweNote": "Collection and egress are what follows once the agent is steered; the weakness that let it be steered (e.g. CWE-1427) belongs to the rule that sees the entry point, not to this one.",
       "capec": [],
       "capecNote": "CAPEC (3.9) has no exfiltration or cloud-storage upload attack pattern."
+    },
+    {
+      "id": 88,
+      "category": "Agents & Permissions",
+      "threat": "AI agent launched or installed by an agent",
+      "example": "The agent starts another AI agent outside the conversation's own sub-agent tooling, or installs or schedules one: a headless agent CLI (claude -p, codex exec, gemini -p, aider --yes, cursor-agent, opencode run, goose run), an agent CLI installed with npm, pip or brew, or an agent run registered as a cron job, launchd agent, systemd unit or scheduled task.",
+      "response": "Review why the agent is deploying another agent. A second agent started from a shell runs with its own permissions and none of the parent's approvals, and a scheduled one keeps running after the session ends.",
+      "saferAlternative": "Use the agent's own sub-agent feature, which inherits the parent's tools and approvals, and start long-running agents yourself.",
+      "severity": 4,
+      "likelihood": 2,
+      "riskScore": 8,
+      "riskLevel": "Medium",
+      "sources": [
+        "Agent safety"
+      ],
+      "owasp": "LLM06",
+      "atlas": "AML.T0103",
+      "atlasPartial": {
+        "AML.T0103": "agent CLIs launched, installed or scheduled from a shell command"
+      },
+      "owaspAgentic": [],
+      "owaspMcp": [],
+      "attack": [],
+      "attackNote": "ATT&CK v20 has no technique for deploying an AI agent; ATLAS AML.T0103 covers it.",
+      "stride": "Elevation of Privilege",
+      "cwe": [],
+      "cweNote": "Starting a program the user's account may run is not a weakness in the product; the control is who approves it.",
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no attack pattern for deploying an AI agent."
+    },
+    {
+      "id": 89,
+      "category": "Permissions & Exposure",
+      "threat": "Local model server reachable without MoorAI",
+      "example": "A local model server (Ollama, LM Studio, llama.cpp, vLLM) listens on a port any local process can open, or on every interface, with no authentication. Any program on the machine, or on the network for a non-loopback bind, can run the models without passing MoorAI's model proxy.",
+      "response": "Bind the server to loopback and reach it through MoorAI's model proxy, or let only the proxy's account reach its port.",
+      "saferAlternative": "Run local models on 127.0.0.1 behind MoorAI's model proxy (route /ollama).",
+      "severity": 3,
+      "likelihood": 3,
+      "riskScore": 9,
+      "riskLevel": "Medium",
+      "sources": [
+        "Agent safety"
+      ],
+      "owasp": "LLM10",
+      "atlas": "AML.T0132",
+      "atlasPartial": {
+        "AML.T0132": "local model servers on this device only"
+      },
+      "owaspAgentic": [],
+      "owaspMcp": [],
+      "attack": [],
+      "attackNote": "Reported by the posture scan, not a command, so no ATT&CK technique is credited.",
+      "stride": "Elevation of Privilege",
+      "cwe": [
+        {
+          "id": 306,
+          "title": "Missing Authentication for Critical Function"
+        }
+      ],
+      "capec": [],
+      "capecNote": "An exposed service is a condition, not an attack pattern."
     }
   ]
 }

@@ -1879,6 +1879,7 @@ command text (the hook, the Agent SDK, `moorai-serve`) gets them.
 | #78 Data sent to an out-of-band collection host (new, High) | `oast-exfil` | a body, upload, non-GET method, query string or substituted value (`$(…)` in a URL or a DNS name) to a listed host, or input piped/redirected into a socket client aimed at one | `notify` (report) |
 | #79 Out-of-band collection host contacted (new, Medium) | `oast-contact` | a listed host contacted with no data: a GET, `nslookup`/`dig`/`host`/`ping` | `notify` (report) |
 | #86 Data uploaded to public cloud storage (new in 1.40.0, Medium) | `object-storage-upload` | curl, wget or `Invoke-WebRequest` sending a body, `-T`/`--upload-file` or a non-GET method to a public object-storage endpoint or a pre-signed URL (below) | `notify` (report) |
+| #88 AI agent launched or installed by an agent (new in 1.41.0, Medium) | `agent-deploy`, `agent-deploy-schedule-file` | a shell command that runs an agent CLI non-interactively, installs one globally or by a vendor script that is run, or schedules one; a Write of a launchd, systemd or cron file that runs one (below) | `notify` (report) |
 
 **Why these threat ids.** #57 is the same supply-chain act as `curl … | sh`, split into "write the script"
 and "run it", so it reuses #57 and its `justify`. A secret file being sent is #55's file, so #55; #65 means a
@@ -1917,6 +1918,27 @@ download then read (`cat`, `less`, `head`, `sha256sum`), release tarball then `t
 `npm install`, `curl -d @payload.json` to an API, `.env.example` / `.env.sample` uploads, `chmod +x` on a
 local script, `bash -n` (syntax check), `wget -P .` then an unrelated script, prose naming a collection
 host. For that reason #78 and #79 stay `notify`; promoting them needs a corpus that exercises them.
+
+**An AI agent launched or installed by an agent (#88, 1.41.0).** `agent-deploy` reads a Bash or PowerShell
+command the way the shell runs it ([`data/agent-launch.js`](../data/agent-launch.js), on `splitShell` and
+`commandOf`, with #46's `persistenceHit` and #57's `fetchExecFacts`), so it sees through `sh -c`, `pwsh
+-Command`, `cmd /c`, `eval`/`iex`, heredocs fed to a shell, and the command ssh, tmux, screen, watch, setsid,
+`systemd-run`, `launchctl submit` and `at` run. It fires on an agent CLI in its non-interactive form (`claude
+-p`, `codex exec`, `gemini -p`, `aider --message`, `cursor-agent -p`, `opencode run`, `goose run`, `droid exec`,
+`amp -x`, also through npx, bunx, uvx, `pipx run` and the like), on a global install of an agent CLI (npm, pnpm,
+yarn, bun, pip, pipx, uv, brew, winget, go) or a vendor install script that is run, and on a scheduler command
+that names one. `agent-deploy-schedule-file` fires on a Write of a LaunchAgents/LaunchDaemons plist, a systemd
+unit or timer, or a cron table whose content names an agent CLI. Commands are judged at the prompt stage only,
+as #43, #46 and #80 are: the output stage carries model replies and written files, where `claude -p` is
+mentioned, not run. `--help`, `--version` and a bare interactive `claude` never fire. **Why a new id:** #66 is
+the agent's own sub-agent tool, which inherits the parent's tools and approvals; a shell launch does not.
+Medium, report-only, and credits AML.T0103 Deploy AI Agent (bounded). **Not covered:** an interactive `claude`,
+an agent in a docker image, a CI workflow file that runs `claude -p`, a script written in one call and run in a
+later one, local (non-global) npm installs, Windows Task Scheduler XML written with Write; the flags of agent
+CLIs other than claude, copilot, cursor-agent and gemini are from the vendors' documentation and not pinned in
+`data/host-versions.json`. **Benign evidence:** 0 hits on every benign corpus (benign-corpus, -v2, Arabic,
+Hebrew, Russian, the web-content tune half), but only one of their 1,472 samples names an agent CLI; 0 on the
+286 paragraphs of README.md and docs/*.md that do. Pinned in `test/agent-deploy-detectors.test.mjs`.
 
 **Uploads to public cloud storage (#86, 1.40.0).** Cohere published (October 2026) the trace of an
 open-weight model that, asked to write a detection rule, ran one Bash call that listed `/tmp`, checked for
@@ -2853,7 +2875,7 @@ Recorded because a confidently wrong document is what created the task to rewrit
 | Latency budget: Tier-1 < 20 ms, Tier-2 ≈ 800 ms | Measured Tier-1 is 0.26–2.47 ms per scan (§11). The semantic guard is 3500 ms by default, not 800. |
 | `detectors.json` and `threats.json` are versioned and the engine pins a schema version | `data/threats.json` has a `meta` block; the engine pins no schema version and validates none. |
 | "Every detector ships positive/negative test cases" | There is no per-detector fixture requirement. Evidence is corpus-level (`test/redteam/`) and the promotion bar in §5 is stated in terms of corpora, not fixtures. |
-| Detectability map over ~40 threats | The matrix is 83 threats. The map is stale and has been dropped rather than half-updated; [BENCHMARK.md](BENCHMARK.md) carries measured coverage instead. |
+| Detectability map over ~40 threats | The matrix is 85 threats. The map is stale and has been dropped rather than half-updated; [BENCHMARK.md](BENCHMARK.md) carries measured coverage instead. |
 
 ---
 
@@ -3145,6 +3167,9 @@ the standard a credit has to pass.
 | AML.T0086 Exfiltration via AI Agent Tool Invocation (listed collection hosts only) | `oast-exfil` | #78 | prompt, output |
 | AML.T0086 Exfiltration via AI Agent Tool Invocation (listed hosts, contact without a payload) | `oast-contact` | #79 | prompt, output |
 | AML.T0086 Exfiltration via AI Agent Tool Invocation (raw HTTP uploads to object storage only) | `object-storage-upload` | #86 | prompt, output |
+| AML.T0103 Deploy AI Agent (headless agent CLI runs, agent CLI installs and scheduled agent runs issued as shell commands) | `agent-deploy`; `agent-deploy-schedule-file` | #88 | prompt; output (Write of a launchd, systemd or cron file) |
+| AML.T0109 AI Supply Chain Rug Pull (MCP tool descriptions and schemas changed after approval, at the MCP guard and gateway only) | tool drift (`mcp-proxy/tool-drift.mjs`, `tool-baseline.mjs`) | #25 | MCP `tools/list` and calls |
+| AML.T0132 Misconfigured or Publicly Exposed AI Services (local model servers on this device only) | `LOCAL_MODEL_EXPOSED` (`cli/local-model-exposure.mjs`) | #89 | posture heartbeat |
 
 `egress-rendered-extended` reads the rendering channels `egress-rendered-image` does not — data in a URL
 path segment, hex- or base64-encoded text, a secret-named parameter, reference-style markdown images,
@@ -3310,8 +3335,10 @@ appends a bounded credit's limit in parentheses.
 | #68 Crafted AI assistant link | T0131, **T0080** | `craftedAssistantLink` requires the decoded payload to ask for *persistence* — a durable cross-session memory write — as a condition separate from the link shape |
 | #70 Content aimed only at the AI client | T0134, **T0130** | `steeringDirectiveHit` is a separately required half: a clause aimed at what the agent will *say*, which involves no contradiction and no cloaking |
 
-The rule base credits **33 distinct techniques (31 in the 76-technique Agentic AI set;** AML.T0011.000
-is a sub-technique and is not counted in the top-level set**)**. The re-map took coverage from 16 (15)
+The rule base credits **36 distinct techniques (34 in the 76-technique Agentic AI set;** AML.T0011.000
+is a sub-technique and is not counted in the top-level set**)**. v1.41.0 adds AML.T0103 (#88 agent launched or
+installed by an agent), AML.T0109 (#25, MCP tool drift after approval at the guard and gateway) and AML.T0132
+(#89 local model server reachable without MoorAI), each bounded. The re-map took coverage from 16 (15)
 to 28 (27); #73–#77 add AML.T0092, AML.T0061, AML.T0067, AML.T0011.000 and AML.T0035. The count is asserted in `test/atlas-mapping.test.mjs`, which also validates every
 credited id against a checked-in copy of ATLAS 2026.09 (`test/atlas-techniques-2026-09.json`) rather
 than against memory.

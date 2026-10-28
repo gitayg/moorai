@@ -25,6 +25,7 @@ export const CWE_TITLES = Object.freeze({
   94: "Improper Control of Generation of Code ('Code Injection')",
   201: "Insertion of Sensitive Information Into Sent Data",
   250: "Execution with Unnecessary Privileges",
+  306: "Missing Authentication for Critical Function",
   308: "Use of Single-factor Authentication",
   312: "Cleartext Storage of Sensitive Information",
   352: "Cross-Site Request Forgery (CSRF)",

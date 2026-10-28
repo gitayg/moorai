@@ -1,9 +1,9 @@
 {
   "name": "MoorAI Agent Security Benchmark",
-  "generatedAt": "2026-10-27T16:14:14.683Z",
+  "generatedAt": "2026-10-28T11:12:28.761Z",
   "engine": {
-    "detectors": 126,
-    "threats": 83,
+    "detectors": 128,
+    "threats": 85,
     "corpusCases": 102
   },
   "corpus": {
@@ -36,8 +36,8 @@
         "detectors": 16
       },
       "LLM06": {
-        "threats": 17,
-        "detectors": 8
+        "threats": 18,
+        "detectors": 10
       },
       "LLM07": {
         "threats": 3,
@@ -52,7 +52,7 @@
         "detectors": 4
       },
       "LLM10": {
-        "threats": 2,
+        "threats": 3,
         "detectors": 1
       }
     }
@@ -699,5 +699,5 @@
       }
     }
   },
-  "latency": {"measured":false}
+  "latency": {"measured":true,"method":"nearest-rank","machine":{"cpu":"Apple M5 Max","cores":18,"os":"darwin 27.0.0 arm64","node":"v22.23.4"},"rows":[{"id":"scan-prompt","label":"In process: `engine.scan` at `prompt`","sample":"one benign-corpus-v2 text","warmup":50,"n":610,"p50Ms":3.234,"p95Ms":5.197,"p99Ms":null,"maxMs":22.201},{"id":"scan-file","label":"In process: `engine.scan` at `file`","sample":"one benign-corpus-v2 text","warmup":50,"n":610,"p50Ms":3.528,"p95Ms":5.567,"p99Ms":null,"maxMs":7.368},{"id":"scan-output","label":"In process: `engine.scan` at `output`","sample":"one benign-corpus-v2 text","warmup":50,"n":610,"p50Ms":0.566,"p95Ms":1.057,"p99Ms":null,"maxMs":1.701},{"id":"sdk-decide","label":"In process: Agent SDK tool-call decision","sample":"one `PreToolUse` from the ten-call mix","warmup":200,"n":2000,"p50Ms":2.279,"p95Ms":7.823,"p99Ms":8.113,"maxMs":9.419},{"id":"hook-e2e","label":"Process: hook end-to-end (`PreToolUse`)","sample":"spawn → stdin JSON → exit","warmup":5,"n":200,"p50Ms":206.848,"p95Ms":243.54,"p99Ms":null,"maxMs":266.868},{"id":"node-floor","label":"Process: Node startup floor (`node -e \"\"`)","sample":"spawn → exit, interleaved with the hook","warmup":5,"n":200,"p50Ms":42.356,"p95Ms":44.848,"p99Ms":null,"maxMs":50.553}],"hookDecisions":{"allow":140,"advise":60},"sdkDecisions":{"allow":1400,"deny":600}}
 }

@@ -21,6 +21,7 @@ import { CLOUD_METADATA_DETECTORS } from "./detectors-cloud-metadata.js";
 import { poisoningDetectors } from "./detectors-poisoning.js";
 import { netExecDetectors } from "./detectors-net-exec.js";
 import { SKILL_HIDING_DETECTORS } from "./detectors-skill-hiding.js";
+import { AGENT_DEPLOY_DETECTORS } from "./detectors-agent-deploy.js";
 import { withRestart } from "../src/regex-restart.js";
 import { TAG_SMUGGLING, SUPPLEMENT_VS_SMUGGLING, BASIC_VS_SMUGGLING, BIDI_MARK_RUN, wellFormedSelectorSequence } from "./invisible-selectors.js";
 import { SECURITY_TOOLING_DISABLE } from "./security-tooling.js";
@@ -1820,6 +1821,8 @@ DETECTORS.push(...poisoningDetectors(DETECTORS));
 // command structurally; the upload check reuses cred-file-access, so they too are appended here
 // (data/detectors-net-exec.js).
 DETECTORS.push(...netExecDetectors(DETECTORS));
+// An agent launching, installing or scheduling another agent (#88): data/detectors-agent-deploy.js.
+DETECTORS.push(...AGENT_DEPLOY_DETECTORS);
 // Hiding techniques in skill and instruction files (padding, HTML comments, concealment from the user, text
 // aimed at reviewers, persistence into memory) go LAST, so where another detector of the same threat also
 // fires, the engine keeps the specific one and skill triage names it (data/detectors-skill-hiding.js).

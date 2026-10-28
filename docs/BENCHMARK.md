@@ -1,10 +1,10 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-27T16:14:14.683Z
+> Generated: 2026-10-28T11:12:28.761Z
 
-- **Detectors:** 126
-- **Threats:** 83
+- **Detectors:** 128
+- **Threats:** 85
 - **Adversarial corpus:** 102/102 passed (100.0%)
 - **OWASP LLM Top 10:** 10/10 items covered by ≥1 on-device detector
 - **OWASP Top 10 for Agentic Applications:** 1/10 covered, 6 partial, 3 uncovered
@@ -20,11 +20,11 @@
 | LLM03 | Supply Chain | 8 | 6 | ✅ covered |
 | LLM04 | Data & Model Poisoning | 1 | 2 | ✅ covered |
 | LLM05 | Improper Output Handling | 7 | 16 | ✅ covered |
-| LLM06 | Excessive Agency | 17 | 8 | ✅ covered |
+| LLM06 | Excessive Agency | 18 | 10 | ✅ covered |
 | LLM07 | System Prompt Leakage | 3 | 6 | ✅ covered |
 | LLM08 | Vector & Embedding Weaknesses | 3 | 13 | ✅ covered |
 | LLM09 | Misinformation | 13 | 4 | ✅ covered |
-| LLM10 | Unbounded Consumption | 2 | 1 | ✅ covered |
+| LLM10 | Unbounded Consumption | 3 | 1 | ✅ covered |
 
 ## OWASP Top 10 for Agentic Applications (2026) coverage
 
@@ -157,16 +157,16 @@ categories and threat ids, never prompt content.
 
 ## Latency
 
-> Latency not measured in this run (`--no-latency`).
+> Latency measured on Apple M5 Max (18 logical cores), darwin 27.0.0 arm64, Node v22.23.4. Hook decisions in the run (unenrolled, so a flagged call is advised, not blocked): allow 140, advise 60.
 
 | Path | One sample | n | Warm-up | p50 | p95 | p99 | max |
 |------|------------|--:|--------:|----:|----:|----:|----:|
-| In process: `engine.scan` at `prompt` | one benign-corpus-v2 text | — | 50 | — | — | — | — |
-| In process: `engine.scan` at `file` | one benign-corpus-v2 text | — | 50 | — | — | — | — |
-| In process: `engine.scan` at `output` | one benign-corpus-v2 text | — | 50 | — | — | — | — |
-| In process: Agent SDK tool-call decision | one `PreToolUse` from the ten-call mix | — | 200 | — | — | — | — |
-| Process: hook end-to-end (`PreToolUse`) | spawn → stdin JSON → exit | — | 5 | — | — | — | — |
-| Process: Node startup floor (`node -e ""`) | spawn → exit, interleaved with the hook | — | 5 | — | — | — | — |
+| In process: `engine.scan` at `prompt` | one benign-corpus-v2 text | 610 | 50 | 3.23 ms | 5.20 ms | — | 22.2 ms |
+| In process: `engine.scan` at `file` | one benign-corpus-v2 text | 610 | 50 | 3.53 ms | 5.57 ms | — | 7.37 ms |
+| In process: `engine.scan` at `output` | one benign-corpus-v2 text | 610 | 50 | 0.57 ms | 1.06 ms | — | 1.70 ms |
+| In process: Agent SDK tool-call decision | one `PreToolUse` from the ten-call mix | 2000 | 200 | 2.28 ms | 7.82 ms | 8.11 ms | 9.42 ms |
+| Process: hook end-to-end (`PreToolUse`) | spawn → stdin JSON → exit | 200 | 5 | 206.8 ms | 243.5 ms | — | 266.9 ms |
+| Process: Node startup floor (`node -e ""`) | spawn → exit, interleaved with the hook | 200 | 5 | 42.4 ms | 44.8 ms | — | 50.6 ms |
 
 The cost a Claude Code user pays per tool call is the **hook end-to-end** row: one `node
 cli/moorai-hook.mjs` process spawned per `PreToolUse`, timed from spawn to exit, in a throwaway home

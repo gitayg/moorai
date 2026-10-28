@@ -94,6 +94,7 @@ const CWE_VERIFIED = {
   94: "Improper Control of Generation of Code ('Code Injection')",
   201: "Insertion of Sensitive Information Into Sent Data",
   250: "Execution with Unnecessary Privileges",
+  306: "Missing Authentication for Critical Function", // read 2026-10-28: Base, mapping ALLOWED
   308: "Use of Single-factor Authentication",
   312: "Cleartext Storage of Sensitive Information",
   352: "Cross-Site Request Forgery (CSRF)",
@@ -159,7 +160,8 @@ const MAP = {
   61: [[], []], 62: [[829], [185]], 63: [[15], [13]], 64: [[250], []], 65: [[201], []], 66: [[441], []],
   67: [[15], [13, 479]], 68: [[1427, 352], [62]], 69: [[1427, 497], [169]], 70: [[1427], []], 71: [[], []], 72: [[1427], [636]],
   73: [[], [268]], 74: [[1427], []], 75: [[451], [154]], 76: [[502], [586]], 77: [[], []], 78: [[], []],
-  79: [[], []], 80: [[494], [185]], 84: [[], [578]], 85: [[], []], 86: [[], []]
+  79: [[], []], 80: [[494], [185]], 84: [[], [578]], 85: [[], []], 86: [[], []],
+  88: [[], []], 89: [[306], []]
 };
 
 test("CWE-CAPEC: every rule's credits match the reviewed map", () => {

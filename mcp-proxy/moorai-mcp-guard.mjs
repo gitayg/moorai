@@ -75,7 +75,7 @@ import { buildEngine, mcpGateway, decideText, literacyTouchpoint, loadVerifiedPo
 import { CAPS, toolsOfResponse, toolScanText, toolIdentity, resultOfResponse } from "./tool-scan.mjs";
 import { decideInbound, inboundText } from "../cli/inbound.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "./tool-baseline.mjs";
-import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON } from "./tool-drift.mjs";
+import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON, RUG_PULL_THREAT } from "./tool-drift.mjs";
 import { createRecheck, RECHECK_SOURCE, RECHECK_FAILED_CATEGORY } from "./tool-recheck.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { applyCaptureTier } from "../data/capture-tiers.js";
@@ -744,7 +744,7 @@ async function observeTools(tools, { driftDone = false, shape = { complete: fals
     DRIFT.observe(name, cur);
     for (const sig of driftSignals(baseline[cur.key], cur)) {
       if (!seenOnce(sig.token)) continue;
-      alertTool(name, { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token });
+      alertTool(name, { threatId: RUG_PULL_THREAT, category: sig.category, riskLevel: sig.riskLevel, hash: sig.token });
     }
     recordTool(baseline, cur, ++counter);
     dirty = true;
@@ -1115,7 +1115,7 @@ function judgeListing(tools, shape, driftCheck) {
     for (const q of ev.quarantined) {
       for (const sig of q.signals) {
         if (!seenOnce(`quarantine|${sig.token}`)) continue;
-        alertTool(q.name, { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "quarantine", reasonCode: TOOL_DRIFT_REASON, driftCheck });
+        alertTool(q.name, { threatId: RUG_PULL_THREAT, category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "quarantine", reasonCode: TOOL_DRIFT_REASON, driftCheck });
       }
     }
     for (const sig of ev.removed) {
@@ -1127,7 +1127,7 @@ function judgeListing(tools, shape, driftCheck) {
 }
 
 function alertDriftCall(tool, q, argsHash, rechecked = false) {
-  post({ threatId: 0, category: q.category, riskLevel: "Blocked", stage: "mcp", tool: `desktop:${tool}`, decision: "deny", reasonCode: TOOL_DRIFT_REASON, ...(rechecked ? { driftCheck: RECHECK_SOURCE } : {}), mcpServer: SERVER, ts: new Date().toISOString(), contentHash: argsHash, ...IDENTITY });
+  post({ threatId: RUG_PULL_THREAT, category: q.category, riskLevel: "Blocked", stage: "mcp", tool: `desktop:${tool}`, decision: "deny", reasonCode: TOOL_DRIFT_REASON, ...(rechecked ? { driftCheck: RECHECK_SOURCE } : {}), mcpServer: SERVER, ts: new Date().toISOString(), contentHash: argsHash, ...IDENTITY });
 }
 
 // ---- the guard's own tools/list before a block-mode call (tool-recheck.mjs) ----

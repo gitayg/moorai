@@ -29,7 +29,7 @@ import { mcpGateway, decideText, threatActionFor } from "../cli/hook-core.mjs";
 import { CAPS, toolScanText, toolIdentity, resultOfResponse } from "../mcp-proxy/tool-scan.mjs";
 import { decideInbound, inboundText } from "../cli/inbound.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "../mcp-proxy/tool-baseline.mjs";
-import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON } from "../mcp-proxy/tool-drift.mjs";
+import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON, RUG_PULL_THREAT } from "../mcp-proxy/tool-drift.mjs";
 import { createRecheck, RECHECK_SOURCE } from "../mcp-proxy/tool-recheck.mjs";
 import { isEnrolled } from "../data/enforcement.js";
 import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
@@ -285,7 +285,7 @@ export function createGuard(route) {
       for (const q of ev.quarantined) {
         for (const sig of q.signals) {
           if (!seenOnce(`${SERVER}|quarantine|${sig.token}`)) continue;
-          alertTool(SERVER, q.name, { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "quarantine", reasonCode: TOOL_DRIFT_REASON, driftCheck });
+          alertTool(SERVER, q.name, { threatId: RUG_PULL_THREAT, category: sig.category, riskLevel: sig.riskLevel, hash: sig.token, decision: "quarantine", reasonCode: TOOL_DRIFT_REASON, driftCheck });
         }
       }
       for (const sig of ev.removed) {
@@ -342,7 +342,7 @@ export function createGuard(route) {
       DRIFT.observe(name, cur);
       for (const sig of driftSignals(baseline[cur.key], cur)) {
         if (!seenOnce(`${SERVER}|${sig.token}`)) continue;
-        alertTool(SERVER, name, { category: sig.category, riskLevel: sig.riskLevel, hash: sig.token });
+        alertTool(SERVER, name, { threatId: RUG_PULL_THREAT, category: sig.category, riskLevel: sig.riskLevel, hash: sig.token });
       }
       recordTool(baseline, cur, ++counter);
       dirty = true;

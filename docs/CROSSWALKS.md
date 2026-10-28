@@ -67,10 +67,11 @@ The same rules as the ATLAS and OWASP mappings:
   [`data/crosswalks/components.json`](../data/crosswalks/components.json): a name, a file and a symbol in
   that file. The test fails if the file is gone or no longer contains the symbol. `threats` lists the
   rule-base ids the credit rests on, and the test checks each against `data/threats.json`.
-- **Some credits carry no rule id.** The tool-drift and shadowing alerts, the quarantine of a drifted tool,
-  MCP server reputation, the egress proxy and `moorai-agentwatch` post `threatId: 0`: no rule in
-  `data/threats.json` owns them. A credit that rests only on them has `threats: []` and its evidence. Seven
-  SAF-MCP credits are like that (SAF-T1111, T1201, T1207, T1401, T1405, T1406, T1506).
+- **Some credits carry no rule id.** MCP server reputation, the egress proxy and `moorai-agentwatch` post
+  `threatId: 0`: no rule in `data/threats.json` owns them. A credit that rests only on them has `threats: []`
+  and its evidence. Two SAF-MCP credits are like that (SAF-T1111, T1506). The tool-drift and shadowing alerts
+  and the quarantine of a drifted tool post #25 (MCP / Connector Tool Poisoning), so the five credits that rest
+  on them (SAF-T1201, T1207, T1401, T1405, T1406) name #25.
 
 ## Coverage
 

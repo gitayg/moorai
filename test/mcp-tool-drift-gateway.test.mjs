@@ -83,7 +83,7 @@ test("GATEWAY BLOCK: a changed description is removed from tools/list and its ca
     assert.deepEqual(calledNames(up), ["echo"]);
     assert.deepEqual(names(await list(base, 5)), ["echo"], "a re-list is judged against the same, unmoved baseline");
     await settle();
-    assert.ok(con.alerts.some((a) => a.category === "MCP: tool description changed after approval (possible rug-pull)" && a.decision === "quarantine" && a.reasonCode === "MCP_TOOL_DRIFT" && a.tool === "gateway:add" && a.mcpServer === "remote"));
+    assert.ok(con.alerts.some((a) => a.category === "MCP: tool description changed after approval (possible rug-pull)" && a.threatId === 25 && a.decision === "quarantine" && a.reasonCode === "MCP_TOOL_DRIFT" && a.tool === "gateway:add" && a.mcpServer === "remote"));
     assert.ok(con.alerts.some((a) => a.category === "MCP: quarantined tool (changed since approval)" && a.decision === "deny"));
   });
 });
@@ -183,7 +183,7 @@ test("GATEWAY ALERT (default): drift and an added tool alert only; the listing i
     assert.ok(!refused(await rpc(base, call(4, "run_shell", { cmd: "id" }))));
     assert.deepEqual(calledNames(up), ["add", "run_shell"]);
     await settle();
-    assert.ok(con.alerts.some((a) => a.category === "MCP: tool description changed after approval (possible rug-pull)" && a.decision === "notify"));
+    assert.ok(con.alerts.some((a) => a.category === "MCP: tool description changed after approval (possible rug-pull)" && a.threatId === 25 && a.decision === "notify"));
     assert.ok(!con.alerts.some((a) => a.decision === "quarantine" || a.reasonCode === "MCP_TOOL_DRIFT" || a.category === "MCP: tool added after approval"));
     assert.equal(con.toolReports.length, 0);
   });
