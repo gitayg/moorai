@@ -120,10 +120,12 @@ test("one runtime per moorAIHooks(): built on the first callback and reused, no 
   const hooks = moorAIHooks({});
   const a = hooks.moorai.runtime(), b = hooks.moorai.runtime();
   assert.equal(a, b);
-  const t0 = performance.now();
+  // CPU time, not wall clock (test/timing.mjs): a contended runner stretches the wall clock, not the work.
+  const c0 = process.cpuUsage();
   for (let i = 0; i < 200; i++) await call(hooks, "PreToolUse", pre("Bash", { command: `echo ${i}` }));
-  const per = (performance.now() - t0) / 200;
-  assert.ok(per < 20, `per-call ${per.toFixed(2)} ms — a spawned process costs ~100 ms`);
+  const d = process.cpuUsage(c0);
+  const per = (d.user + d.system) / 1000 / 200;
+  assert.ok(per < 20, `per-call ${per.toFixed(2)} ms of CPU — a spawned process costs ~100 ms`);
 });
 
 test("kill: a policy 'kill' denies the call and ends the run (continue: false)", async () => {

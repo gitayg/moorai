@@ -1846,7 +1846,8 @@ body is read as part of the command when what it feeds runs it (`bash <<EOF`, `s
   Alibaba OSS, Cloudflare R2, Tencent COS, Huawei OBS, DigitalOcean Spaces, Backblaze B2 or Wasabi
   endpoint, or to any pre-signed URL (`X-Amz-Signature`, `OSSAccessKeyId`, an Azure SAS `sig=`,
   `X-Goog-Signature`). A download from a bucket, signed or not, is not an upload. Set `threatPolicy["86"]`
-  to ask or block, or allow-list your own buckets with egress rules.
+  to ask or block; the setting covers every bucket, your own included (an `egressRules` allow does not
+  exempt one).
 
 Not seen: a downloaded file renamed before it runs, paths held in variables, `scp`/`rsync` uploads, hosts
 outside the list, and uploads through the providers' own CLIs (`aws s3 cp`, `gsutil cp`, `az storage blob

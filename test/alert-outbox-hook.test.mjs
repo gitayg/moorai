@@ -105,10 +105,16 @@ test("console unreachable: the alert is queued, the decision is not held, and it
   try {
     // Nothing listens on the port: connection refused. The device is enrolled with no policy yet, so the
     // built-in defaults decide (#54 reverse shell: deny) and the alert goes to the outbox.
+    // Paired with a run against a console that answers, moments apart, so a slow runner slows both alike:
+    // the absolute 2 s this used to assert read over 2 s on a shared CI runner with nothing held.
+    const live = await fakeConsole();
+    const baseHome = setup(live.url);
+    let base;
+    try { base = await runHook(baseHome, pre); } finally { await live.close(); rmTree(baseHome); }
     const r = await runHook(home, pre);
     assert.equal(r.status, 0, r.err);
     assert.match(r.out, /"permissionDecision":"deny"/);
-    assert.ok(r.firstOut < 2000, `decision after ${r.firstOut} ms`);
+    assert.ok(r.firstOut - base.firstOut < 1000, `decision after ${r.firstOut} ms, ${base.firstOut} ms with the console up`);
     assert.ok(await until(() => outbox(home).length > 0 && !state(home).lease, 15000), "nothing queued");
     const queued = outbox(home);
     assert.ok(queued.every((e) => Number.isSafeInteger(e.seq) && e.seq > 0), "queued alerts keep their seq");

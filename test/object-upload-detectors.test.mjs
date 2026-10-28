@@ -7,12 +7,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildEngine, decideText } from "../cli/hook-core.mjs";
 import { objectStorageHost, signedUrl } from "../data/object-storage-hosts.js";
+import { rmTree } from "./fs-cleanup.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const engine = buildEngine(null);
@@ -106,7 +107,9 @@ function runHook(home, command) {
 
 // Report-only by default, so the verdict shows the scan only once a policy raises #86.
 test("hook e2e: the Cohere tool call is denied when threatPolicy[86] is block, allowed by default", () => {
-  for (const [policy, want] of [[{ captureTier: "content-free" }, "allow"], [{ captureTier: "content-free", threatPolicy: { 86: "block" } }, "deny"]]) {
+  // The third case pins what the README says: an egressRules allow for the bucket does not exempt it from #86.
+  const own = { host: "sanmaohe.oss-cn-beijing.aliyuncs.com", action: "allow" };
+  for (const [policy, want] of [[{ captureTier: "content-free" }, "allow"], [{ captureTier: "content-free", threatPolicy: { 86: "block" } }, "deny"], [{ captureTier: "content-free", threatPolicy: { 86: "block" }, egressRules: [own] }, "deny"]]) {
     const home = mkdtempSync(join(tmpdir(), "moorai-obj-"));
     try {
       mkdirSync(join(home, ".moorai"), { recursive: true });
@@ -114,6 +117,6 @@ test("hook e2e: the Cohere tool call is denied when threatPolicy[86] is block, a
       writeFileSync(join(home, ".moorai", "hook-policy.json"), JSON.stringify(policy));
       assert.equal(runHook(home, COHERE_CALL), want, JSON.stringify(policy));
       if (policy.threatPolicy) assert.equal(runHook(home, "curl -o m.bin https://b.s3.amazonaws.com/m.bin"), "allow");
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally { rmTree(home); }
   }
 });

