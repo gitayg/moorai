@@ -304,11 +304,13 @@ test("ledger: the cost of a write does not grow with the ledger (empty vs at the
   const small = side("small", []);
   const large = side("large", Array.from({ length: CAP }, (_, i) => seedLine(i)));
   let i = 0;
-  const inodes = new Set();
+  // A compaction rewrites the large ledger shorter. Counted by size, not inode: Linux reuses a freed inode
+  // number for the next file renamed in, so distinct inodes undercounted (2 seen on a CI runner).
+  let compactions = 0, lastSize = statSync(large.file).size;
   const write = (s, empty) => () => {
     renameSync(s.file, LIVE); if (existsSync(s.meta)) renameSync(s.meta, META);
     recordAction(row(i++));
-    const ino = statSync(LIVE).ino; if (!empty) inodes.add(ino); // a compaction renames a new file in
+    if (!empty) { const size = statSync(LIVE).size; if (size < lastSize) compactions++; lastSize = size; }
     renameSync(LIVE, s.file); if (existsSync(META)) renameSync(META, s.meta);
     truncateSync(empty ? s.file : s.scratch, 0);
   };
@@ -316,7 +318,7 @@ test("ledger: the cost of a write does not grow with the ledger (empty vs at the
   // least one compaction (one per ~250 rows at this row size), so the best-of cannot pick around it.
   // minReps holds that where a write costs more CPU: on a loaded Windows runner minMs alone left 63 reps.
   const r = scalingRatio(write(small, true), write(large, false), 3, 1000, 500);
-  t.diagnostic(`at-cap / empty write cost: ${r.ratio.toFixed(2)}x (${r.small.toFixed(3)} ms vs ${r.large.toFixed(3)} ms CPU, ${r.reps} reps)`);
+  t.diagnostic(`at-cap / empty write cost: ${r.ratio.toFixed(2)}x (${r.small.toFixed(3)} ms vs ${r.large.toFixed(3)} ms CPU, ${r.reps} reps, ${compactions} compactions)`);
   assert.ok(r.ratio < 1.5, `a write at the cap costs ${r.ratio.toFixed(2)}x a write to an empty ledger (${r.small.toFixed(3)} ms vs ${r.large.toFixed(3)} ms CPU, ${r.reps} reps)`);
-  assert.ok(inodes.size > 3, `the large ledger compacted ${inodes.size - 1} times; the samples did not include the amortised compaction`);
+  assert.ok(compactions > 2, `the large ledger compacted ${compactions} times; the samples did not include the amortised compaction`);
 });

