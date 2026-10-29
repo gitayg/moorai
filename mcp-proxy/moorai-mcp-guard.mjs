@@ -85,6 +85,8 @@ import { emitOtel } from "../cli/otel.mjs";
 import { assessServer, addToolSignals } from "../cli/mcp-reputation.mjs";
 import { reputationAction, reputationAlert, reputationSummary } from "../data/mcp-reputation.js";
 import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
+import { decideMcpToolClass, toolClassAlert, createAnnotationClasses } from "../cli/mcp-tool-class.mjs";
+import { labelAlertFields } from "../cli/sensitivity-labels.mjs";
 import { indexWriteScan } from "../cli/index-tools.mjs";
 import { recordMcpCall, flushMcpUsage, usageHost, usageIdentity } from "../cli/mcp-usage-beat.mjs";
 import { exitWhenDrained } from "../cli/exit-drain.mjs";
@@ -283,15 +285,21 @@ function auditCall(tool, decision, argsHash) {
     }, {}, (POLICY && POLICY.captureTier) || "content-free"));
   } catch { /* ledger is best-effort; never affects the decision */ }
 }
-function alertBlock(tool, gate, reason, argsHash) {
+function alertBlock(tool, gate, reason, argsHash, tc) {
+  if (gate === "class") { alertToolClass(tool, tc, "deny"); return; }
   const category = gate === "server" ? "MCP: unapproved server" : gate === "args" ? "MCP: denied tool argument" : gate === "file" ? "MCP: blocked file argument" : gate === "index" ? "MCP: blocked vector-store write" : "MCP: blocked tool argument";
   post({ threatId: 0, category, riskLevel: "Blocked", stage: "mcp", tool: `desktop:${tool}`, decision: "deny", mcpServer: SERVER, ts: new Date().toISOString(), contentHash: argsHash, ...IDENTITY });
   // Coach-as-literacy: the blocked-call message Claude Desktop shows the user is a literacy touchpoint.
   try { post({ ...literacyTouchpoint({ threatId: 0, category, tool: `desktop:${tool}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
 }
+// A call the class default (policy mcpToolClassDefaults) decided: content-free (class, verdict, source).
+function alertToolClass(tool, tc, decision) {
+  post({ ...toolClassAlert(tc, { tool, server: SERVER, toolPrefix: "desktop", decision }), ts: new Date().toISOString(), ...IDENTITY });
+  if (decision === "deny") { try { post({ ...literacyTouchpoint({ threatId: 0, category: "MCP: tool blocked by class default", tool: `desktop:${tool}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ } }
+}
 function alertFindings(tool, findings, blocked, argsHash, stage = "mcp") {
   for (const f of findings || []) {
-    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool: `desktop:${tool}`, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: contentHash(f.match || ""), ...IDENTITY });
+    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool: `desktop:${tool}`, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: contentHash(f.match || ""), ...labelAlertFields(f), ...IDENTITY });
     if (blocked || f.riskLevel === "High" || f.riskLevel === "Critical") {
       try { post({ ...literacyTouchpoint({ threatId: f.threatId, category: f.category, tool: `desktop:${tool}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
     }
@@ -607,6 +615,12 @@ async function gateCall(rawLine, msg) {
     if (fsr && RANK[fsr.decision] > RANK[g.decision]) { g.decision = fsr.decision; g.gate = "file"; g.reason = fsr.reasons.join(", "); g.alternatives = fsr.alternatives; }
     else if (fsr && fsr.decision !== "allow" && fsr.decision === g.decision) g.reason = [g.reason, ...fsr.reasons].filter(Boolean).join(", ");
     const fileFindings = fsr ? fsr.findings : [];
+    // labelPolicy: a named file whose sensitivity label could not be established was not evaluated. Closed
+    // refuses the call (failMode.mcpGateway); open forwards it as before.
+    if (fsr && fsr.unevaluated && g.decision !== "deny") {
+      const fm = failClosed();
+      if (fm) { replied = true; alertFailClosed("mcp", "label", fm, tool); auditCall(tool, "deny", argsHash); writeBlock(msg.id, gatewayFailReason("label")); return; }
+    }
 
     // A vector-store write (cli/index-tools.mjs: policy.indexTools or the name / argument heuristic):
     // its document arguments are content headed for an index, scanned at the "index" stage. Report-first;
@@ -618,7 +632,13 @@ async function gateCall(rawLine, msg) {
     const seenIds = new Set((g.findings || []).map((f) => f.threatId));
     const indexFindings = ix ? ix.findings.filter((f) => !seenIds.has(f.threatId)) : [];
 
+    // Default policy by tool class (policy.mcpToolClassDefaults, ../cli/mcp-tool-class.mjs), with the
+    // tool's annotations from this server's listings. Decides only when stricter than everything above.
+    const tc = decideMcpToolClass(POLICY, { tool, server: SERVER, annotation: ANNOTATIONS.get(tool) });
+    if (tc && RANK[tc.decision] > RANK[g.decision]) { g.decision = tc.decision; g.gate = "class"; g.reason = tc.reason; g.alternatives = []; g.toolClass = tc; }
+
     if (COACH && g.decision === "deny") {
+      if (g.gate === "class") alertToolClass(tool, tc, "coach");
       coachNote(`MCP tool call ${tool}`, g.reason, g.alternatives);
       auditCall(tool, "coach", argsHash);
       rememberCall(msg.id, tool);
@@ -628,7 +648,7 @@ async function gateCall(rawLine, msg) {
 
     if (g.decision === "deny") {
       // Blocked: do NOT forward. The real server never receives the call. Return a clean tool error.
-      alertBlock(tool, g.gate, g.reason, argsHash);
+      alertBlock(tool, g.gate, g.reason, argsHash, g.toolClass);
       alertFindings(tool, g.findings, true, argsHash);
       alertFindings(tool, fileFindings, true, argsHash, "file");
       alertFindings(tool, indexFindings, g.gate === "index", argsHash, "index");
@@ -637,6 +657,7 @@ async function gateCall(rawLine, msg) {
       return;
     }
     // allow OR coach ("ask"): Claude Desktop has no interactive banner, so coach = allow + record.
+    if (g.gate === "class") alertToolClass(tool, tc, g.decision);
     alertFindings(tool, g.findings, false, argsHash);
     alertFindings(tool, fileFindings, false, argsHash, "file");
     alertFindings(tool, indexFindings, false, argsHash, "index");
@@ -672,6 +693,8 @@ async function gateCall(rawLine, msg) {
 // resolve to "notify" via threatActionFor), so this is inert unless an admin armed it. Enforcement
 // lands on the next tools/call, never on the list itself.
 const QUARANTINE = new Set();
+// The strictest MCP annotation class each tool has advertised (the class default reads it at tools/call).
+const ANNOTATIONS = createAnnotationClasses();
 
 const SEEN_ALERTS = new Set(); // dedup content-free tokens; a long-lived session re-lists often
 const MAX_SEEN = 2048;
@@ -979,6 +1002,7 @@ async function gateResult(lineBuf) {
     // `mcpToolDrift: "block"` judges it first (test/mcp-tool-drift-proxy.test.mjs).
     const tools = toolsOfResponse(msg);
     if (tools) {
+      ANNOTATIONS.observe(tools); // before the client can see the listing, so its next call is classed by it
       // Alert mode (the default): unchanged — forwarded byte-for-byte first, observed off the path.
       // Block mode: judged BEFORE forwarding; a quarantined tool is left out of the list the client
       // gets. The original bytes still go whenever nothing is quarantined.
@@ -1169,7 +1193,7 @@ function ownRelistAnswer(msg) {
 function relistUnreadable() { for (const settle of [...RELIST_WAIT.values()]) settle(null); }
 // The re-list is a whole listing the guard asked for: complete, and a tool it no longer carries loses
 // its verdict (a call to it is refused as not in a checked listing).
-const judgeRecheck = (tools) => judgeListing(tools, { complete: true, continued: false, last: true, own: true }, RECHECK_SOURCE);
+const judgeRecheck = (tools) => (ANNOTATIONS.observe(tools), judgeListing(tools, { complete: true, continued: false, last: true, own: true }, RECHECK_SOURCE));
 // Open fail mode: the call goes on to the rest of the gate, and this says the re-list did not happen.
 function alertRecheckFailed(tool, why, argsHash) {
   const a = { threatId: 0, category: RECHECK_FAILED_CATEGORY, riskLevel: "Medium", stage: "mcp", tool: `desktop:${tool}`, decision: "allow", reasonCode: TOOL_DRIFT_REASON, driftCheck: RECHECK_SOURCE, failMode: "open", failWhy: why === "timeout" ? "timeout" : "error", mcpServer: SERVER, ts: new Date().toISOString(), contentHash: `mcp:tool:recheck-failed:${why === "timeout" ? "timeout" : "error"}`, ...IDENTITY };

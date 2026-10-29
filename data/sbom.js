@@ -5,7 +5,8 @@
 //
 // SACRED RULE — content-free: the AIBOM component is NEVER spread. Each serializer reads only the known,
 // content-free component fields (type, name, provider, local, version, riskLevel, capabilities, editor,
-// kind), so a stray field on a component can never reach an SBOM. No token value, prompt, or file
+// kind, and the use fields usageStatus / lastUsed / calls30d, each checked against its own shape), so a
+// stray field on a component can never reach an SBOM. No token value, prompt, or file
 // content is ever present in the AIBOM, and none is introduced here.
 //
 // Deterministic: identical AIBOM -> byte-identical output (ids derived from the inventory, timestamp
@@ -39,6 +40,17 @@ function componentsOf(d) { return Array.isArray(d && d.components) ? d.component
 function seedOf(d) { return componentsOf(d).map((c) => `${c.type}|${c.name}|${str(c.version)}`).join("\n"); }
 function capList(caps) { return ["net", "fs", "cred"].filter((k) => caps && caps[k]); }
 
+// Installed vs used (cli/aibom-usage.mjs). Only the known vocabulary, a YYYY-MM-DD date and a non-negative
+// integer pass; anything else on those fields is dropped. → [[name, value]] in a fixed order.
+const USAGE_STATUSES = new Set(["used", "never-seen", "not-observable"]);
+function usageOf(c) {
+  const out = [];
+  if (USAGE_STATUSES.has(c.usageStatus)) out.push(["usageStatus", c.usageStatus]);
+  if (typeof c.lastUsed === "string" && /^\d{4}-\d{2}-\d{2}$/.test(c.lastUsed)) out.push(["lastUsed", c.lastUsed]);
+  if (Number.isInteger(c.calls30d) && c.calls30d >= 0) out.push(["calls30d", String(c.calls30d)]);
+  return out;
+}
+
 const CDX_TYPE = {
   model: "machine-learning-model",
   agent: "application",
@@ -59,6 +71,7 @@ function cdxProps(c) {
   add("moorai:riskLevel", c.riskLevel);
   const caps = capList(c.capabilities);
   if (caps.length) add("moorai:capabilities", caps.join(","));
+  for (const [k, v] of usageOf(c)) add(`moorai:${k}`, v);
   return p;
 }
 
@@ -96,6 +109,7 @@ function spdxComment(c) {
   if (caps.length) parts.push(`caps=${caps.join("|")}`);
   if (c.editor) parts.push(`editor=${c.editor}`);
   if (c.kind) parts.push(`kind=${c.kind}`);
+  for (const [k, v] of usageOf(c)) parts.push(`${k}=${v}`);
   return parts.join("; ");
 }
 

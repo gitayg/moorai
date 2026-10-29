@@ -19,7 +19,7 @@ import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideCredFileRead, decideTransit, transitEnvText, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideAuthorizedKeysWrite, decodedCommandPayloads, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, policyIatIso, policyAgeMs, policyFreshByIat, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision, evaluateProfile, rejectedAlert, PROFILE_DRIFT, decideThreat, decideOversight, OVERSIGHT_THREAT } from "./hook-core.mjs";
+import { buildEngine, decideText, decideCredFileRead, decideTransit, transitEnvText, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideAuthorizedKeysWrite, decodedCommandPayloads, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, decideMcpToolClass, toolClassAlert, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, policyIatIso, policyAgeMs, policyFreshByIat, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision, evaluateProfile, rejectedAlert, PROFILE_DRIFT, decideThreat, decideOversight, OVERSIGHT_THREAT } from "./hook-core.mjs";
 import { oversightEditSignals, beforeAfter } from "./oversight-signals.mjs";
 import { oversightCommandSignals } from "./oversight-shell.mjs";
 import { oversightPolicy } from "./oversight-surfaces.mjs";
@@ -47,6 +47,7 @@ import { extractHosts } from "../data/model-endpoints.js";
 import { registerInstructionFingerprints } from "./instruction-fingerprints.mjs";
 import { hookReputation } from "./mcp-reputation.mjs";
 import { scanMcpFileArgs } from "./mcp-file-args.mjs";
+import { decideSensitivityLabel, labelAlertFields } from "./sensitivity-labels.mjs";
 import { OUTBOUND_UPLOAD } from "../data/outbound-upload.js";
 import { isNewDestination } from "../data/destination-map.js";
 import { signApproval, argsHash, deviceReceiptSigner } from "../data/agency-sign.mjs";
@@ -82,6 +83,7 @@ import { recordMcpCall, scheduleMcpUsageFlush } from "./mcp-usage-beat.mjs";
 import { REASON, ENFORCEMENT, policyIdOf, stampAlert } from "./provenance.mjs";
 import { seenOnce as seenOnceIn } from "./seen-once.mjs";
 import { recordRow, readSessionRows, localHash } from "./session-ledger.mjs";
+import { resolvedRepo } from "./workload-profile.mjs";
 import { commandClass, normalizeCommand, verifyFamily, outcomeOfResponse, outcomeOfFailure, assessTurn } from "./claim-check.mjs";
 import { callTags, sessionTagsOf, recordSessionTags, tagGate, applyTagGate, tagHitAlert } from "./tool-tags.mjs";
 import { readExceptionStore, liveExceptions, matchCallExceptions, applyExceptions, exceptionHint, selfExceptionAttempt } from "./exceptions.mjs";
@@ -753,7 +755,10 @@ let HEADLESS_CTX = { tool: "", permissionMode: "" };
 // decided, and a short-circuit is never recorded as a pass.
 let PROV = { policyId: "unresolved", policySource: "", offline: false };
 let EVENT = "";
-const VERDICT = { reason: null, basis: null, enforcement: null, findings: 0, capped: false, uneval: null };
+const VERDICT = { reason: null, basis: null, enforcement: null, findings: 0, capped: false, capWhy: null, uneval: null };
+// labelPolicy: a file's sensitivity label could not be established. Capped like a size cap; the fail-closed
+// reason names the label unless a size cap also applied.
+function labelUnevaluated() { if (!VERDICT.capped) VERDICT.capWhy = "label"; VERDICT.capped = true; }
 function why(code) { VERDICT.reason = code; }
 function detectorReason(findings) {
   const f = findings || [];
@@ -794,6 +799,8 @@ function beginRow(input, tool) {
     const ti = input.tool_input || {};
     const row = { ts: new Date().toISOString(), s: localHash(typeof input.session_id === "string" ? input.session_id : ""), a: typeof input.agent_id === "string" && input.agent_id ? localHash(input.agent_id) : "", ev: LEDGER_EV[input.hook_event_name] || "unknown", tool };
     if (typeof input.tool_use_id === "string") row.u = localHash(input.tool_use_id);
+    // The workload the row belongs to, in clear as alerts already name it (device svc:<id>): server mode only.
+    if (SERVER.active && SERVER.serviceId) row.svc = SERVER.serviceId;
     if (SHELL_TOOLS.has(tool) && typeof ti.command === "string") {
       row.cls = commandClass(ti.command);
       row.k = localHash(normalizeCommand(ti.command));
@@ -1078,6 +1085,7 @@ function report(findings, stage, tool, blocked, tier, extras, agency) {
     const base = { threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool, ts: new Date().toISOString(), contentHash: contentHash(f.match || ""), ...IDENTITY };
     // The leaf whose content this finding came from (context.tree): the patient-zero pointer.
     if (CTX_LEAF) base.contextLeaf = CTX_LEAF;
+    Object.assign(base, labelAlertFields(f)); // labelPolicy: label GUID, keyed name hash, action, verdict
     // Provenance: a finding whose configured action enforces (block / kill / justify / mask) is an
     // enforcing record, so a coached or PostToolUse one reads LIMITED rather than AS_CONFIGURED.
     try { if (f.threatId > 0 && ["block", "kill", "justify", "mask"].includes(threatActionFor(POLICY, f.threatId))) base.enforcing = true; } catch { /* metadata only */ }
@@ -1805,6 +1813,9 @@ let PROFILE_COACH = null;
 function profileStep(policy, tool, ti, cwd) {
   try {
     const r = evaluateProfile({ policy, system: parseRootOwnedJson(systemConfigPath()), serviceId: SERVER.active ? SERVER.serviceId : "", cwd, tool, toolInput: ti, coach: COACH });
+    // The repo the match just resolved (only when a profile has a repo key), never a new read: the row's repo.
+    const rp = resolvedRepo(cwd);
+    if (rp && ROW && !ROW.done) ROW.repo = rp;
     const ts = new Date().toISOString();
     for (const a of r.alerts) post({ ...a, tool: `hook:${tool}`, ts, ...IDENTITY });
     if (r.coach && !PROFILE_COACH) PROFILE_COACH = { reason: r.coach, alts: [] };
@@ -1849,7 +1860,7 @@ function readFileCapped(fp) {
     if (!fp) return "";
     const buf = readFileSync(fp);
     READ_BUF = buf;
-    if (buf.length > 262144) VERDICT.capped = true; // only the first 256 KiB is scanned
+    if (buf.length > 262144) { VERDICT.capped = true; VERDICT.capWhy = null; } // only the first 256 KiB is scanned
     return fileScanText(buf.subarray(0, 262144));
   } catch { return ""; }
 }
@@ -2029,8 +2040,9 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
     const fm = hookFailMode({ policy: VERIFIED_POLICY ?? null, admin: ADMIN });
     if (fm.mode === "closed") {
       VERDICT.basis = REASON.UNEVALUATED_SIZE_CAP; why(REASON.FAIL_CLOSED); VERDICT.enforcement = ENFORCEMENT.STRENGTHENED;
-      decision = "deny"; reason = failReason("size-cap"); alternatives = []; rewrite = null;
-      post({ ...failClosedAlert("size-cap", fm.source), ts: new Date().toISOString(), ...IDENTITY });
+      const capWhy = VERDICT.capWhy === "label" ? "label" : "size-cap";
+      decision = "deny"; reason = failReason(capWhy); alternatives = []; rewrite = null;
+      post({ ...failClosedAlert(capWhy, fm.source), ts: new Date().toISOString(), ...IDENTITY });
     }
   }
   // MXC wrap (cli/containment-enforce.mjs, containmentClaudeCode "wrap"): the final command — masked, if a
@@ -3220,6 +3232,12 @@ async function main() {
     d.findings.push(...md.findings);
     if (md.kill) { d.kill = true; d.killIds.push(...md.killIds); }
     if (RANK[md.decision] > RANK[d.decision]) { d.decision = md.decision; d.reasons = md.reasons; d.alternatives = md.alternatives; }
+    // labelPolicy: a Purview / MIP sensitivity label on the file (cli/sensitivity-labels.mjs), action "read".
+    // A label it could not establish is a capped evaluation: the hook's fail mode settles an allow (emit).
+    const ld = decideSensitivityLabel(engine, policy, agentPath(ti.file_path, input.cwd), "read");
+    d.findings.push(...ld.findings);
+    if (ld.unevaluated) labelUnevaluated();
+    if (RANK[ld.decision] > RANK[d.decision]) { d.decision = ld.decision; d.reasons = ld.reasons; d.alternatives = ld.alternatives; }
     if (d.decision !== "allow") why(detectorReason(d.findings));
     report(d.findings, "file", "hook:Read", d.decision === "deny", policy.captureTier, { filePath: ti.file_path, toolName: "Read" });
     ORIGIN_IN = { cwd: CALL.cwd, reads: typeof ti.file_path === "string" ? [agentPath(ti.file_path, input.cwd)] : [] };
@@ -3279,6 +3297,11 @@ async function main() {
       finds.push(...mdB.findings);
       if (mdB.kill) killIds.push(...mdB.killIds);
       if (RANK[mdB.decision] > RANK[dec]) { dec = mdB.decision; reasons = mdB.reasons; alts = mdB.alternatives; }
+      // labelPolicy on the same path: "send" when the command uploads (the `uploading` flag), else "read".
+      const ldB = decideSensitivityLabel(engine, policy, agentPath(p, input.cwd), uploading ? "send" : "read");
+      finds.push(...ldB.findings);
+      if (ldB.unevaluated) labelUnevaluated();
+      if (RANK[ldB.decision] > RANK[dec]) { dec = ldB.decision; reasons = ldB.reasons; alts = ldB.alternatives; }
       if (isSkillSurface(p)) reportSkillFile(p, t, d);
       // #55 on the PATH, for PowerShell only. For Bash the command TEXT already carries it (`cat .env`
       // hits cred-file-access); `gc .env`, `Select-String -Path .env` and `-InFile id_rsa` do not, so
@@ -3570,6 +3593,7 @@ async function main() {
     if (RANK[fsr.decision] > RANK[g.decision]) { g.decision = fsr.decision; g.reason = fsr.reasons.join(", "); g.alternatives = fsr.alternatives; }
     else if (fsr.decision !== "allow" && fsr.decision === g.decision) g.reason = [g.reason, ...fsr.reasons].filter(Boolean).join(", ");
     if (fsr.kill) { g.kill = true; g.killIds = [...(g.killIds || []), ...fsr.killIds]; }
+    if (fsr.unevaluated) labelUnevaluated(); // a file's sensitivity label could not be established (labelPolicy)
     // #84 — an MCP filesystem write (write_file, edit_file, move_file, create_directory …) gets the Write / Edit
     // oversight check on the paths it names (cli/oversight-mcp.mjs): memory files, protected paths, and the
     // before / after judgement of runtime code and tests. Merged by rank, never downgrading.
@@ -3590,6 +3614,15 @@ async function main() {
     // #33 — fail-closed MCP floor: raise an otherwise-allowed MCP call to "ask" (justify). Inert unless
     // policy.mcpFloor is set (only the offline fail-closed default sets it), so normal policies are unaffected.
     if (secretV === "ask" && g.decision === "allow") { g.decision = "ask"; g.reason = `${tool} — ${UNVERIFIED_REASON}`; g.alternatives = saferAlternativesFor([65]); why(REASON.SECRET_EGRESS); }
+    // Default policy by tool class (policy.mcpToolClassDefaults, cli/mcp-tool-class.mjs): read / write /
+    // destructive / unknown, from the admin's override or the tool's name (the hook sees no tools/list, so
+    // no annotations). Merged by rank: it decides only when it is stricter than everything above. Inert
+    // unless the policy sets it.
+    const tc = decideMcpToolClass(policy, { tool, server });
+    if (tc && RANK[tc.decision] > RANK[g.decision]) {
+      g.decision = tc.decision; g.reason = tc.reason; g.alternatives = []; why(REASON.MCP_TOOL_CLASS);
+      post({ ...toolClassAlert(tc, { tool, server, toolPrefix: "hook", decision: COACH ? "coach" : tc.decision }), ts: new Date().toISOString(), ...IDENTITY });
+    }
     const floored = mcpFloor(policy, g.decision);
     if (floored !== g.decision) { g.decision = floored; g.reason = g.reason || "fail-closed default: MCP requires justification"; why(REASON.MCP_FLOOR); VERDICT.enforcement = ENFORCEMENT.STRENGTHENED; }
     report(g.findings, "egress", `hook:${tool}`, g.decision === "deny", policy.captureTier, { toolName: tool, argText: args }, signApproval(tool, argsH, g.decision === "deny" ? "deny" : "allow"));

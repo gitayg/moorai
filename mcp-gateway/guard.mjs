@@ -34,6 +34,7 @@ import { createRecheck, RECHECK_SOURCE } from "../mcp-proxy/tool-recheck.mjs";
 import { isEnrolled } from "../data/enforcement.js";
 import { scanMcpFileArgs } from "../cli/mcp-file-args.mjs";
 import { indexWriteScan } from "../cli/index-tools.mjs";
+import { decideMcpToolClass, createAnnotationClasses } from "../cli/mcp-tool-class.mjs";
 import { egressMatches, secretEgressVerdict, unverifiedLevel } from "../cli/secret-egress.mjs";
 import { memoryTracker } from "../cli/secret-taint.mjs";
 import { learnableSecrets, learnSource } from "../cli/secret-learn.mjs";
@@ -45,7 +46,7 @@ import { contentHash } from "../cli/content-hash.mjs";
 import { state, ensurePolicy, ADMIN } from "./policy.mjs";
 import { profileCheck } from "./profile.mjs";
 import { failClosed, failReason, alertFailClosed } from "./fail.mjs";
-import { CONFIG, IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, alertProfile, alertDriftCall, alertRecheckFailed, recordLedger } from "./report.mjs";
+import { CONFIG, IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, alertProfile, alertDriftCall, alertRecheckFailed, alertToolClass, recordLedger } from "./report.mjs";
 
 const RANK = { allow: 1, ask: 2, deny: 3 };
 
@@ -95,6 +96,8 @@ export function createGuard(route) {
   const SECRETS = memoryTracker();
   const secretTtl = () => { try { return sessionRiskConfig(state.POLICY).windowMin * 60000; } catch { return 30 * 60000; } };
   const RECHECK = createRecheck({ tracker: DRIFT });
+  // The strictest MCP annotation class each tool of this route has advertised (../cli/mcp-tool-class.mjs).
+  const ANNOTATIONS = createAnnotationClasses();
   // Coach (unenrolled, unmanaged) never blocks, so block mode degrades to today's alert path there.
   const driftBlocking = () => !state.COACH && toolDriftMode(state.POLICY) === "block";
   let REP = null;
@@ -161,7 +164,7 @@ export function createGuard(route) {
       if (fetchPage && RECHECK.due(state.POLICY)) {
         // a listing observed off-path (forwarded before the policy loaded) is older: judged first
         if (obsInFlight) await withDeadline(obsQueue, CAPS.resultDeadlineMs);
-        const rc = await RECHECK.ensureFresh({ policy: state.POLICY, fetchPage, judge: (tools) => judgeListing(tools, { complete: true, continued: false, last: true, own: true }, RECHECK_SOURCE) });
+        const rc = await RECHECK.ensureFresh({ policy: state.POLICY, fetchPage, judge: (tools) => (ANNOTATIONS.observe(tools), judgeListing(tools, { complete: true, continued: false, last: true, own: true }, RECHECK_SOURCE)) });
         if (!rc.ok) {
           // Closed: refused, the upstream never receives a call MoorAI could not check. Open: forwarded, with an alert.
           const fm = failClosed();
@@ -224,6 +227,12 @@ export function createGuard(route) {
     if (fsr && RANK[fsr.decision] > RANK[g.decision]) { g.decision = fsr.decision; g.gate = "file"; g.reason = fsr.reasons.join(", "); g.alternatives = fsr.alternatives; }
     else if (fsr && fsr.decision !== "allow" && fsr.decision === g.decision) g.reason = [g.reason, ...fsr.reasons].filter(Boolean).join(", ");
     const fileFindings = fsr ? fsr.findings : [];
+    // labelPolicy: a named file whose sensitivity label could not be established was not evaluated. Closed
+    // refuses the call (failMode.mcpGateway); open forwards it as before.
+    if (fsr && fsr.unevaluated && g.decision !== "deny") {
+      const fm = failClosed();
+      if (fm) { alertFailClosed("mcp", "label", fm, tool, SERVER); auditCall(SERVER, tool, "deny", argsHash); return { block: failReason("label"), failClosed: true }; }
+    }
 
     // A vector-store write (cli/index-tools.mjs: policy.indexTools or the name / argument heuristic):
     // its document arguments are content headed for an index, scanned at the "index" stage. Report-first;
@@ -234,6 +243,13 @@ export function createGuard(route) {
     else if (ix && ix.verdict === "hold" && g.decision === "allow") { g.decision = "ask"; g.gate = "index"; g.reason = `${tool} — vector-store write held for review: ${ix.reasons.join(", ")}`; }
     const seenIds = new Set((g.findings || []).map((f) => f.threatId));
     const indexFindings = ix ? ix.findings.filter((f) => !seenIds.has(f.threatId)) : [];
+
+    // Default policy by tool class (policy.mcpToolClassDefaults, ../cli/mcp-tool-class.mjs), with the
+    // tool's annotations from this route's listings. Decides only when stricter than everything above;
+    // its "ask" is settled below like any other.
+    const tc = early ? null : decideMcpToolClass(POLICY, { tool, server: SERVER, annotation: ANNOTATIONS.get(tool) });
+    if (tc && RANK[tc.decision] > RANK[g.decision]) { g.decision = tc.decision; g.gate = "class"; g.reason = tc.reason; g.alternatives = []; }
+    const classDecided = g.gate === "class";
 
     // Server mode: no human will answer an "ask". The hook's rule decides it (deny by default).
     if (g.decision === "ask" && SERVER_MODE.active) {
@@ -252,6 +268,7 @@ export function createGuard(route) {
     }
 
     if (state.COACH && g.decision === "deny") {
+      if (classDecided) alertToolClass(SERVER, tool, tc, "coach");
       coachNote(`MCP tool call ${tool} (server ${SERVER})`, g.reason, g.alternatives);
       if (egress) alertEgress(SERVER, tool, egress.hits, false, egress.matches);
       alertFindings(SERVER, tool, g.findings, false);
@@ -261,7 +278,8 @@ export function createGuard(route) {
       return { block: null };
     }
     if (g.decision === "deny") {
-      alertBlock(SERVER, tool, g.gate, argsHash);
+      if (classDecided) alertToolClass(SERVER, tool, tc, "deny");
+      else alertBlock(SERVER, tool, g.gate, argsHash);
       if (egress) alertEgress(SERVER, tool, egress.hits, egress.block, egress.matches);
       alertFindings(SERVER, tool, g.findings, true);
       alertFindings(SERVER, tool, fileFindings, true, "file");
@@ -269,6 +287,7 @@ export function createGuard(route) {
       auditCall(SERVER, tool, "deny", argsHash);
       return { block: g.reason || "policy" };
     }
+    if (classDecided) alertToolClass(SERVER, tool, tc, g.decision);
     if (egress) alertEgress(SERVER, tool, egress.hits, false, egress.matches);
     alertFindings(SERVER, tool, g.findings, false);
     alertFindings(SERVER, tool, fileFindings, false, "file");
@@ -394,6 +413,7 @@ export function createGuard(route) {
         if (!tools.length) return null;
         const last = r.nextCursor == null;
         const shape = { complete: !paged && last, continued: paged, last, tightenOnly };
+        ANNOTATIONS.observe(tools); // before the listing is forwarded, so the client's next call is classed by it
         if (TOOLSCAN_THROW_FROM && ++listingsSeen >= TOOLSCAN_THROW_FROM) throw new Error("injected tool-scan fault (test hook)");
         // Alert mode (the default): a listing is never altered. Block mode: a quarantined tool is left
         // out of it; with nothing quarantined the original still goes.

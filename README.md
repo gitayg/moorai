@@ -32,11 +32,12 @@ That's the exact trade MoorAI refuses.
 - **Model-endpoint allow-listing** — bounds *which LLM endpoints* an agent may talk to. A base-URL override (`ANTHROPIC_BASE_URL=…`, `GOOGLE_GEMINI_BASE_URL=…` and the other variables in `BASE_URL_ENV_VARS`, [`data/model-endpoints.js`](data/model-endpoints.js)) or a direct call to a non-approved provider is flagged/blocked at the endpoint — the exfil-via-rogue-endpoint defense, host-level and content-free (loopback / local models always allowed).
 - **Transit-override detection (#67)** — the allow-list above asks *where* the agent is sending; this asks *what the traffic passes through on the way*. Setting `HTTPS_PROXY` plus a CA override (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, …) on an agent leaves the destination untouched — so the endpoint allow-list still passes it — while every request transits an interceptor that reads the prompt, the generated code and the API key in cleartext. Measured, not theorised: with those two variables set, a real Claude Code session decrypted at the proxy with the client reporting the TLS as **authorized**, because the injected CA makes the forged chain legitimately trusted. It needs no privileges. The hook reads the agent's own environment on every call, and every shell command the agent runs, for a proxy or CA override (`decideTransit` in `cli/hook-core.mjs`). It reports by proxy **host** and variable **name** only, never the CA path or its contents, once per session for the environment; with `policy.transitAllow` set, an unsanctioned proxy denies the command, or every tool call of an agent launched behind it. System proxy settings and a CA trusted through an IDE or tool config file are not read. Adding a certificate to a trust store (`security add-trusted-cert`, `certutil -addstore Root`, `Import-Certificate` into a Root store, a copy into a Linux CA anchor directory, `keytool -importcert` into `cacerts`) is a #46 security-settings change, so the hook asks first.
 - **Slopsquatting firewall** — an offline typosquat / hallucinated-package classifier (Damerau-Levenshtein against a curated popular-package list + a known-bad set) gates `npm/pip/cargo install` of near-miss names (`reqeusts`, `lodahs`) and documented hallucinations, checked entirely on-device (name only).
-- **MCP hardening** — an approval-gating lifecycle for MCP servers, **rug-pull detection** (in the console, for devices running the desktop app: a server whose transport, capability flags or launch-risk flag change after approval goes back to pending, and its calls are refused when `mcpGate` is on; a changed command, arguments or package version with the same flags is not detected), **tool drift alerts and blocking** (reported under #25, which credits ATLAS AML.T0109 AI Supply Chain Rug Pull at the MCP guard and gateway only; by default a drifted tool alerts once and is then re-baselined; with policy `mcpToolDrift: "block"`, a tool whose description or schema changed since an admin approved the server, a tool added after approval, or a tool name another server owns is removed from the agent's tool list and its calls are refused until re-approval; a call made on a stale tool list is checked against a fresh one, which MoorAI requests itself once the last listing is older than `mcpToolRecheckSeconds` (default 300 s) or the server says its list changed; the approved tool fingerprints ride in the signed policy; see [`mcp-proxy/README.md`](mcp-proxy/README.md)), an opt-in, **experimental** **MCP server network sandbox** on macOS (policy or admin binding `mcpServerSandbox: "network"`: the stdio guard starts each local server under `sandbox-exec` built from the egress rules; with `egressDefault: "block"` the server process's own network connections and DNS reach loopback only, and it cannot send AppleEvents or run `/usr/bin/open` / `/usr/bin/osascript`; it is not full containment: file and process access are not restricted, so a server can still write a LaunchAgent or cron job, edit MCP-client or MoorAI config, or run `launchctl`, and that work runs later outside the sandbox, and other routes to another app were not measured; where no backend exists it follows `failMode.mcpGateway`), an **invisible-payload scanner** (Unicode tag-block / ANSI escapes / bidi-override / variation-selector smuggling) that catches instructions hidden from human review, and a tool-description check that reports a tool telling the model to read a credential file (`~/.ssh/id_rsa`, `~/.aws/credentials`, `.env`, a browser or keychain store) and pass its contents into a call.
+- **MCP hardening** — an approval-gating lifecycle for MCP servers, **rug-pull detection** (in the console, for devices running the desktop app: a server whose transport, capability flags or launch-risk flag change after approval goes back to pending, and its calls are refused when `mcpGate` is on; a changed command, arguments or package version with the same flags is not detected), **tool drift alerts and blocking** (reported under #25, which credits ATLAS AML.T0109 AI Supply Chain Rug Pull at the MCP guard and gateway only; by default a drifted tool alerts once and is then re-baselined; with policy `mcpToolDrift: "block"`, a tool whose description or schema changed since an admin approved the server, a tool added after approval, or a tool name another server owns is removed from the agent's tool list and its calls are refused until re-approval; a call made on a stale tool list is checked against a fresh one, which MoorAI requests itself once the last listing is older than `mcpToolRecheckSeconds` (default 300 s) or the server says its list changed; the approved tool fingerprints ride in the signed policy; see [`mcp-proxy/README.md`](mcp-proxy/README.md)), a **default policy by tool class** (policy `mcpToolClassDefaults: { read, write, destructive, unknown }`, each `"allow"`, `"ask"` or `"block"`, at the Claude Code hook, the stdio MCP guard and the remote MCP gateway; each MCP tool is classed read, write, destructive or unknown. The class comes from the admin's `mcpToolClasses` override first, then the tool's MCP annotations (`readOnlyHint`, `destructiveHint`, guard and gateway only), then the verbs in its name. Annotations are claims made by the server being governed, so they can only make a tool stricter than its name says, never looser. The class verdict applies when nothing stricter decided, including for a tool added after approval. "ask" works the way it already works on each surface (the hook asks the user; server mode denies it by default); without the field nothing changes; see [CAPABILITY_SPEC.md](docs/CAPABILITY_SPEC.md) 11g3), an opt-in, **experimental** **MCP server network sandbox** on macOS (policy or admin binding `mcpServerSandbox: "network"`: the stdio guard starts each local server under `sandbox-exec` built from the egress rules; with `egressDefault: "block"` the server process's own network connections and DNS reach loopback only, and it cannot send AppleEvents or run `/usr/bin/open` / `/usr/bin/osascript`; it is not full containment: file and process access are not restricted, so a server can still write a LaunchAgent or cron job, edit MCP-client or MoorAI config, or run `launchctl`, and that work runs later outside the sandbox, and other routes to another app were not measured; where no backend exists it follows `failMode.mcpGateway`), an **invisible-payload scanner** (Unicode tag-block / ANSI escapes / bidi-override / variation-selector smuggling) that catches instructions hidden from human review, and a tool-description check that reports a tool telling the model to read a credential file (`~/.ssh/id_rsa`, `~/.aws/credentials`, `.env`, a browser or keychain store) and pass its contents into a call.
 - **Skill Analysis** — an inventory + *intent* view of the whole **skill surface** an agent auto-loads, not just its rules file: `SKILL.md` and `.claude/skills/**`, subagent definitions (`.claude/agents/*.md`), slash commands (`.claude/commands/**`), MCP server configs (`.mcp.json`, `~/.claude.json`, `managed-mcp.json`, `claude_desktop_config.json`), the settings files that can carry **hooks** (`.claude/settings.json`, `settings.local.json`, `managed-settings.json`), plugin manifests and their hook/monitor declarations, path-scoped rules and memory files, plus the other vendors' equivalents: rules and instruction files (`.cursorrules`, `.windsurfrules`, Windsurf and Cline rule folders, Copilot `.github/instructions`, Codex `AGENTS.override.md`, `GEMINI.md`, Amp `AGENT.md`, Kiro steering), the settings files that carry hooks or MCP servers (`.gemini/settings.json`, `.amp/settings.json`, `opencode.json`, Kiro hooks), and the commands, workflows, prompt files, custom agents and specs an agent injects when invoked (Cursor, Windsurf, Cline, Copilot, Codex, Gemini, OpenCode, Kiro). Every file gets its **kind**, a set of **intent category labels** — *hidden-instructions*, *instruction-override*, *external-network-egress*, *security-control-or-privilege-change*, *references-credentials*, *invisible-characters*, *padded-hidden-content*, *hidden-html-instructions*, *conceals-from-user*, *targets-reviewers*, *persists-to-memory*, … — and a **drift fingerprint** per file. The labels are renames of findings the existing detection engine already produced; **no text, matched span, or excerpt is ever attached**, so a poisoned skill can be triaged without reading it off the device.
 - **Per-agent destination map** — the observed counterpart to your allow-lists: for each agent/tool, *which external destinations it actually reached*. **Hosts** (never a URL path or query string — they are not captured in the first place) and **MCP server names**, with call counts, first/last-seen, and the allow/ask/deny verdict each call actually got. Kept in an on-device ledger; the console gets one content-free alert the first time an agent touches a new destination, over the existing alert path. View it with `moorai-destinations`.
 - **Agent entitlement envelope** — declare each agent's authorized tools / path-prefixes / MCP servers; an action outside the envelope is flagged as **entitlement drift** and alerted or blocked — least-privilege for agents, content-free.
 - **Declared workload profiles** — write down what a workload is expected to use: tools, MCP servers and destination hosts, per service (`serviceId`) or per repository (`github:owner/name`). A call outside the profile is reported as `PROFILE_DRIFT` (the kind, the out-of-profile tool, server or host, and the profile id; never a path, command or argument), or denied when the profile says `"action": "block"`; an unenrolled device coaches instead. Profiles live in the signed console policy or the root-owned machine-wide config, never in the repository. A repository match follows the git remote, which the agent can change, so block on `serviceId`. The hook, `@moorai/agent-sdk` and `moorai-serve` evaluate them, and so does the HTTP MCP gateway on every `tools/call` (tool and MCP-server kinds; the tool is named `mcp__<route>__<tool>`, as the hook names it). Details: [DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md#declared-workload-profiles).
+- **Watch, then enforce** — `moorai-profile learn` drafts a declared workload profile from what the device already recorded: the tools and MCP servers from the session ledger (every `PreToolUse` call) and the hosts from the destination map, over a window (`--days`, default 14). The draft is in the exact `workloadProfiles` schema with `"action": "report"`, plus a diff against the profile in force (added, removed and kept tools, MCP servers and hosts, with call counts and last-seen). Calls MoorAI denied, or coached on an unenrolled device, are not learned and are listed as excluded. A kind with nothing observed is left out (unconstrained), never written as an empty list. It refuses to draft from fewer than 5 sessions or 3 distinct days unless `--force`. Each session-ledger row names its workload (`svc`, server mode's serviceId; `repo`, when a repo-keyed profile resolved it), so `--service-id` / `--repo` learn from that workload's rows; older rows without the field are used device-wide and counted. Names and hosts only; it reads local records and sends nothing. Adopt the draft into the signed policy's `workloadProfiles`, watch `PROFILE_DRIFT` in report mode, and flip `"action"` to `"block"` when a re-run reports nothing outside it. Details: [*Learn a profile, then enforce it*](#learn-a-profile-then-enforce-it).
 - **Egress rules** — `egressRules: [{ binary?, host | cidr, port?, method?, path?, action }]` plus `egressDefault`, with `action` one of `allow`, `alert` or `block`. They say which binary may reach which host or address range, port, HTTP method and path. They can apply fleet-wide (top level of the signed policy or the root-owned machine-wide config) or per workload profile. `host` is exact or `*.suffix`. `cidr` (instead of `host`) is one range or a list of up to 64 (`10.0.0.0/8`, `fd00:20::/32`); a prefix with host bits set is refused, and `/0` is accepted only for `alert` or `block`. From a call's text a cidr rule matches an IP literal inside the range (IPv4, IPv6 with or without a zone id such as `%eth0`, IPv4-mapped IPv6); it never matches a host name there, because the hook does no DNS. The egress proxy and the MCP gateway's own upstream connection match it on the resolved address. Agents older than 1.28.0 drop a cidr rule as an unknown key, and cidr rules are not accepted inside a workload profile. The first matching rule decides, and with no match the default applies. An allow rule never matches a field the call does not reveal (no method on `git clone`, no path on `ssh`). The hook, `@moorai/agent-sdk` and `moorai-serve` read the destinations a Bash/PowerShell command, WebFetch or MCP call names: URLs, curl/wget/httpie/Invoke-WebRequest methods, ssh/scp/rsync/git/nc hosts, and nested `sh -c` / `-EncodedCommand` / `$( … )`. A block denies the call (coached when unenrolled). Alert and block post a content-free `EGRESS_RULE` alert (binary, host, port, method, rule; never a path or query). The binary is the command word the line names, not the process that opens the socket. The HTTP MCP gateway and the stdio MCP proxy judge the destinations a `tools/call`'s arguments name by the same function (the tool named `mcp__<server>__<tool>`), so a deny holds the same way in the hook, the gateway and the stdio proxy; the gateway also judges its own connection to each remote MCP server (host, port, method and path, and cidr rules on the address its DNS lookup returns). Details: [DETECTION_ENGINE.md](docs/DETECTION_ENGINE.md#egress-rules).
 - **Intent alignment** — flags a risky agent action aimed at something the user's own request never mentioned: an upload to a host the prompt never named, a destructive command or credential read on paths it never named, an MCP write to a service it never named. An upload to any service on this machine (loopback, whatever the port — MoorAI's own moorai-serve, model proxy and MCP gateway included) is always flagged (class `moorai-control`). The `UserPromptSubmit` hook keeps only keyed, device-local hashes of the sites, paths, service names and three labels (*credentials*, *destructive*, *mcp-write*) a prompt mentions — never the prompt. Report-only by default (`policy.intentAlignment: "ask"` raises the call to ask, `"off"` disables it). Lexical; the prompt is captured in Claude Code, Codex, Cursor, Gemini and Copilot — limits below. The Agent SDK and the `moorai-serve` sidecar judge it too, from an in-memory store (where `"block"` also denies the call).
 - **Task-bound tool calls** — two deterministic checks of a tool call against the person's task, with no model guarding a model. *Object check:* for a high-impact call (an MCP write, a business-impact function such as a refund or a role grant, a function whose name carries a write verb, or any tool `policy.intentArgs` names), the object of the action must be named in the task: under "cut the apple", `cut({target:"apple"})` passes and `cut({target:"hand"})` is class `object-not-in-task`, decided by `policy.intentAlignment` like the other intent classes. *Task allowlists:* `policy.taskAllowlists` restricts a session whose task matches an entry (by keywords, or an explicit task id set over `moorai-serve`'s `POST /v1/task` or the Agent SDK) to the tools and argument values the entry lists, holding anything else at the entry's default (`"deny"` or `"ask"`); an unreadable entry denies what it would have covered and raises an alert. Both run in the model proxy, `moorai-serve`, the Agent SDK and the hook's MCP path. Token matching, not semantics — limits below.
@@ -2308,9 +2309,9 @@ file is read, so nothing the agent can write turns a closed surface open.
 
 | Surface | Own default | Closed |
 |---|---|---|
-| Coding-agent hook (`hook`) | open: the call proceeds and the ledger records it as UNEVALUATED | The PreToolUse call is denied (exit 2, the deny JSON on stdout, the reason on stderr): an internal error, the 15 s decision budget, unreadable input, a Read past the 256 KiB scan cap. Other events (PostToolUse, UserPromptSubmit, Stop) still fail open. With no policy at all, the fail-closed offline default applies. |
+| Coding-agent hook (`hook`) | open: the call proceeds and the ledger records it as UNEVALUATED | The PreToolUse call is denied (exit 2, the deny JSON on stdout, the reason on stderr): an internal error, the 15 s decision budget, unreadable input, a Read past the 256 KiB scan cap, a file whose sensitivity label MoorAI could not read under a `labelPolicy`. Other events (PostToolUse, UserPromptSubmit, Stop) still fail open. With no policy at all, the fail-closed offline default applies. |
 | Model proxy (`modelProxy`) | enforce mode refuses, report mode forwards | Content it cannot judge (an item past `--max-scan-chars`, more than `--max-scan-items` new items, tool-call arguments past a cap, an engine error or the evaluation budget) is refused. In report mode, only request items past a cap, which are known before forwarding. |
-| MCP stdio guard and HTTP MCP gateway (`mcpGateway`) | open: forwarded unchanged | A `tools/call` that cannot be evaluated gets an `isError` tool result and the server never receives it; a tool result whose scan failed, missed its deadline or hit its overload window is replaced by an `isError` result. A reputation threshold with no score yet refuses the call. With no policy, the fail-closed default applies. |
+| MCP stdio guard and HTTP MCP gateway (`mcpGateway`) | open: forwarded unchanged | A `tools/call` that cannot be evaluated gets an `isError` tool result and the server never receives it; a tool result whose scan failed, missed its deadline or hit its overload window is replaced by an `isError` result. A reputation threshold with no score yet refuses the call. A named file whose sensitivity label MoorAI could not read under a `labelPolicy` refuses the call. With no policy, the fail-closed default applies. |
 | Inference hooks server (`inferenceHook`) | the operator's `--fail` flag (open unless set) | The server answers deny. |
 
 Every fail-closed refusal raises one content-free alert with `reasonCode: "FAIL_CLOSED"`, carrying
@@ -2333,6 +2334,90 @@ or array in one of those fields, or a payload that is not a JSON object, is unre
 An object in an envelope field (`session_id`, `cwd`, `agent_id`, `agent_type`, `permission_mode`,
 `tool_use_id`) is dropped and the call is still judged. A tool named after an `Object.prototype` member is an
 unknown tool. MCP tool arguments are free-form and are read as JSON, whatever their types.
+
+### Microsoft Purview sensitivity labels
+
+Files your organization labels in Microsoft Purview (Microsoft Information Protection) carry the label in
+their own metadata. MoorAI reads that label when an AI agent reads a file or sends it out, and applies the
+action you set for the label: report it, ask the user to sign off, or block it. Only the label metadata is
+read. The document body is never decompressed or decoded.
+
+```json
+{
+  "labelPolicy": {
+    "rules": [
+      { "match": { "id": "1f2e3d4c-5b6a-4789-8abc-0123456789ab" }, "onRead": "notify", "onSend": "block" },
+      { "match": { "name": "Confidential" }, "onSend": "justify" }
+    ],
+    "protected": { "onRead": "notify", "onSend": "block" }
+  }
+}
+```
+
+- **`rules`**: up to 256. `match.id` is the label GUID (braces and letter case ignored) and is the stable
+  choice. `match.name` is the label's display name, compared case-insensitively. A name rule matches only a
+  file that stores the name: Office files labelled through custom document properties, and PDFs. Office files
+  that use the newer `docMetadata/LabelInfo.xml` part store only the GUID.
+- **`onRead`** applies when the agent reads the file (the Read tool, a shell command that reads it, an MCP
+  tool such as `read_file`). **`onSend`** applies when the file leaves the device: a shell upload (`curl -F
+  file=@…`, `-T`, `--data-binary @…`, `Invoke-RestMethod -InFile`) or an MCP tool whose name says it
+  ships the file (`upload_file`, `send_email`, `attach…`, `share…`). Each is `notify`, `justify` (ask) or
+  `block`. An action you leave out does nothing. When several rules match, the strictest wins.
+- **`protected`**: a file a label encrypted with rights management. Its label cannot be read without the
+  user's rights, so MoorAI treats it as "protected, label unknown" and applies this action. A PDF a label
+  encrypted still exposes its label, so both its label rule and `protected` apply (strictest wins). An
+  Office file encrypted with a password only is not a labelled file.
+- Absent, or with no valid rule, nothing changes and no file is opened for it.
+
+**Where MoorAI looks.**
+
+| File | Label metadata read |
+|---|---|
+| .docx, .xlsx, .pptx and the other Office Open XML types | `docProps/custom.xml` properties `MSIP_Label_<GUID>_Enabled`, `_Name`, `_SiteId`, `_Method`; `docMetadata/LabelInfo.xml` `<label id enabled siteId removed>`. Where both exist for one tenant, LabelInfo wins, and `removed="1"` clears the tenant's label. |
+| PDF | the same `MSIP_Label_*` keys in the document Info dictionary or in XMP, in the first and last 256 KiB |
+| Rights-protected Office file | an OLE compound file holding `EncryptedPackage` and `DRMEncryptedDataSpace` (Office Open XML) or `\x09DRMContent` (Office binary): `protected` |
+| Rights-protected PDF | an Encrypt dictionary with the `MicrosoftIRMServices` filter: `protected` |
+
+Only a label with `Enabled` true (or `enabled="1"` and not removed) counts. The ZIP directory is read from
+the end of the file, at most 1 MiB of it and 20,000 entries; each XML part is inflated to at most 1 MiB.
+
+**When the label cannot be read.** An Office or PDF file whose label MoorAI cannot establish (a truncated or
+corrupt package, a directory or part past its cap, ZIP64, an encrypted ZIP entry) is an unevaluated read.
+Your fail mode decides it: with `failMode.hook` (or `failMode.mcpGateway`) `"closed"` the call is denied with
+`failWhy: "label"`; open, it proceeds as before. Without a `labelPolicy` no file is ever unevaluated for
+this reason.
+
+**Alerts.** One content-free alert per labelled file, on #1 Sensitive data leak, category
+`Sensitivity-labelled file read by an AI agent` / `… sent by an AI agent` (`Rights-protected file …` for
+`protected`), at stage `file`. It carries:
+
+```json
+{ "threatId": 1, "stage": "file", "contentHash": "h2:…",
+  "sensitivityLabel": { "state": "labelled", "action": "send", "verdict": "block",
+                        "labelId": "1f2e3d4c-5b6a-4789-8abc-0123456789ab", "labelNameHash": "h2:…", "source": "custom" } }
+```
+
+`contentHash` is the keyed hash of the resolved file path; `labelNameHash` is the keyed hash of the label
+name (lower case). The file's content, its name and the label name are not in the alert; a plain path is
+added only under a capture tier that allows `filePath`, as for every other file finding. The hook, the
+Claude Desktop MCP proxy and the HTTP MCP gateway (on a `--local-files` route) all apply the policy.
+
+Sources: Microsoft Learn, [MIP SDK FAQ: metadata storage
+changes](https://learn.microsoft.com/en-us/information-protection/develop/faq); [MS-OFFCRYPTO 2.6.3
+LabelInfo versus Custom Document
+Properties](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-offcrypto/13939de6-c833-44ab-b213-e0088bf02341);
+[MS-OFFCRYPTO 2.6.2 LabelInfo Stream
+Locations](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-offcrypto/0c4ec12d-aba0-4dd4-8fd1-710da6735219);
+[MS-OFFCRYPTO CT_ClassificationLabel](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-offcrypto/80e2b2e1-bd48-415d-a3b9-aa61a108f651);
+[MS-OFFCRYPTO 2.2.2 DataSpaceInfo storage
+(IRMDS)](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-offcrypto/7b65cd15-d09c-4393-a9f4-3ad673b1821b);
+[MS-OFFCRYPTO 2.2.10 Protected Content
+Stream](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-offcrypto/278b0e42-9080-48fc-806f-7d4f6b264fb0).
+
+Not read: labels in legacy binary Office files (.doc/.xls/.ppt document summary information), the
+`LabelInfo` stream inside a rights-protected Office file, PDF Info dictionaries stored in a compressed
+object stream, and labels on email (.msg/.eml). A file copied into an archive, renamed to a non-Office
+extension and not carrying `[Content_Types].xml`, or pasted as text is not a labelled file.
 
 ### Living off the AI: four detectors
 
@@ -3044,6 +3129,104 @@ literal is not recorded; a **dotless** internal hostname is captured only when i
 base-URL env-var override (`OLLAMA_HOST=http://gpu-box:11434`), not from a plain URL. It is an
 inventory of observed reach, not a network tap.
 
+### Learn a profile, then enforce it
+
+```bash
+npx moorai-profile learn --service-id github:acme/app:release:build    # report + draft on stdout
+npx moorai-profile learn --repo github:acme/app --days 30 --json       # machine-readable
+npx moorai-profile learn --service-id ci-build --out draft.json        # also write the draft alone
+```
+
+`learn` reads two on-device records: the session ledger (`~/.moorai/session-ledger.jsonl`, one row per
+hook call) for tool names and the MCP servers in `mcp__<server>__<tool>` names, and the destination map
+(`~/.moorai/destinations.jsonl`) for hosts. In server mode the hook writes the workload on each ledger
+row: `svc` (the serviceId, the same name alerts carry as `device: svc:<id>`) and, when a declared profile
+with a `repo` key made the hook resolve the call's repository, `repo` (the normalised remote that profile
+is matched against). Both are identifiers in clear in a file that stays on the device; neither is written
+outside those cases, and the hook reads no repository just to stamp it. It writes a draft declared workload profile with
+`"action": "report"`, sorted so two runs over the same records give the same bytes:
+
+```json
+{
+  "id": "learned-ci-build",
+  "description": "Learned by moorai-profile from 6 session(s) on 6 day(s), 2026-10-14 to 2026-10-28",
+  "match": { "serviceId": "ci-build" },
+  "action": "report",
+  "tools": ["Bash", "Edit", "Read", "mcp__github__create_issue"],
+  "mcpServers": ["github"],
+  "hosts": ["registry.npmjs.org"]
+}
+```
+
+and a diff against the profile in force for the same match (first match wins, as at enforcement), or
+against `--compare <id>`:
+
+```
+  tools:
+    + Edit  6 call(s), last 2026-10-25T10:00:00.000Z
+    - Write  (declared, not observed)
+      Bash  6 call(s), last 2026-10-25T10:00:00.000Z
+```
+
+`+` is observed and outside the profile in force, `-` is declared and not observed, and an unmarked line is
+observed and inside it. A glob covers an item exactly as the checker judges it. The profiles in force are
+read from the device's verified policy cache (the console is not contacted) and the root-owned machine-wide
+config, or from `--policy <file>` (a policy JSON or a bare list).
+
+| Flag | Meaning |
+|---|---|
+| `--service-id <id>` | `match.serviceId` of the draft (server mode's workload name). Tools and MCP servers come from ledger rows with that `svc`, hosts from destination records of `device: svc:<id>`. |
+| `--repo <remote>` | `match.repo` of the draft (`github:owner/name`, `gitlab:group/name`, `host:path` or a clone URL). Tools and MCP servers come from ledger rows with that `repo`. |
+| `--days <n>` | Window length in days, ending at `--until` (default 14). |
+| `--until <date>` | Window end (default now). |
+| `--id <slug>` | Draft profile id (default `learned-<serviceId or repo>`). |
+| `--min-sessions <n>`, `--min-days <n>` | Least observation to draft from (default 5 sessions and 3 distinct days). Below it the command exits 3. |
+| `--force` | Draft anyway below the minimum; the `thin-data` warning stays in the output. |
+| `--policy <file>`, `--compare <id>` | What to diff against. |
+| `--json` | `{ ok, profile, observation, items, diff, excluded, skipped, warnings }`. |
+| `--out <file>` | Also write the draft profile alone. |
+
+What is learned and what is not:
+- A call the hook denied, or coached on an unenrolled device, is not learned. An item seen only that way
+  is listed under `excluded` with its denial count, so a draft never sanctions what MoorAI already stopped.
+- A kind with nothing observed in the window is left out of the draft (unconstrained) and named in a
+  `no-<kind>` warning. It is never written as `[]`, which allows nothing.
+- Loopback hosts are not listed; loopback is always in profile.
+- A name that is not a valid profile entry is left out and counted in `skipped`, never printed.
+- A ledger row that names another workload (`svc` or `repo` different from the match) is dropped. A row
+  without the field (written before the hook stamped it, or a call no repo-keyed profile resolved) is
+  learned device-wide. `observation.scope` counts both: `sessionRows: { matched, deviceWide }` and
+  `hostRows: { matched, deviceWide }`, and the report prints them. Warning `tools-unscoped` (with the count)
+  appears only when device-wide ledger rows were used.
+- Destination records name no repository, so with `--repo` alone hosts are learned from every session on
+  the device (warning `hosts-unscoped`).
+- The session ledger keeps its newest 2000 rows and the destination map its newest 2000. When the oldest
+  row a record still holds is newer than the window start, warning `window-truncated` names the record and
+  that date: the window covers fewer days than asked (retention, or a recent install). `observation`
+  reports the sessions, distinct days and first/last record actually inside the window.
+
+**Adopt, watch, enforce.**
+1. Add the draft to the policy's `workloadProfiles` list. In the console, open the policy's **Workload
+   profiles** editor, paste the draft into the JSON list and save, or post the whole list:
+   `POST /api/policy/workload-profiles { tenant, policyId, workloadProfiles: [ ...existing, draft ] }`
+   (the list replaces the policy's list; the console validates it with the agent's rules and refuses the
+   whole save on any bad profile). `workloadProfiles` is a top-level key of the signed policy, so the
+   console signs it with the rest of the policy and every device verifies it before use. A device without
+   a console reads the same list from `workloadProfiles` in the root-owned machine-wide config
+   (`/etc/moorai/config.json`; Windows `<ProgramData>\MoorAI\config.json`). A profile in the repository
+   or in `~/.moorai` is never read.
+2. Watch. In report mode every call outside the profile posts `PROFILE_DRIFT` (`driftKind`, `driftItem`,
+   `profileId`, `profileAction: "report"`) and is allowed. Re-run `moorai-profile learn` with the same
+   match: the diff is now against the adopted profile, and `diff.readyToBlock` is `true` (the report says
+   "Nothing observed outside …") when the window holds no tool, MCP server or host outside it.
+3. Enforce. Change `"action": "report"` to `"action": "block"` on that profile and save the policy again.
+   A call outside the profile is then denied with a reason naming only the profile id and the kinds. An
+   unenrolled device is coached instead. A repository match follows the git remote, which the agent can
+   edit, so block on `serviceId`.
+
+If the profile in force carries `egressRules` or `egressDefault`, the report says so: they are not learned,
+so copy them into the draft before it replaces that profile.
+
 ### Is MoorAI actually protecting this machine — and why did it decide that?
 
 ```bash
@@ -3093,6 +3276,7 @@ npx moorai-context-proof --verify ./README.md --all   # patient zero — which l
 npx moorai-honeytokens register               # register a content-free canary (only its one-way hash is stored)
 npx moorai-attest                             # export governed records as an in-toto / SLSA provenance attestation (SSCS interchange)
 npx moorai-aibom --format cyclonedx           # export the AI Bill of Materials as a CycloneDX 1.6 SBOM (also --format spdx)
+npx moorai-aibom --unused-days 30             # configured but unused for 30 days: MCP servers, models and agent hosts to remove
 npx moorai-scan ./some-skill                  # PRE-INSTALL gate — a content-free verdict on a skill/agent artifact before you install it
 npx moorai-scan ./.mcp.json --packages        # …and download + statically analyse the npm/PyPI package each MCP server launches
 npx moorai-scan --package npm:@scope/server   # one package (also pypi:<name>, github:<owner>/<repo>[/<skill-path>])
@@ -3108,6 +3292,7 @@ npx moorai-scan --package github:owner/repo   # a whole source repository — an
 - **AIBOM: agent hosts without a model setting.** `moorai-aibom` lists Google Antigravity, Windsurf, Kiro and Cline in `agentHosts` (`{agent, source}`) and as `agent` components when the home their vendor documents has entries (`~/.gemini/config` or `~/.gemini/antigravity{,-cli,-ide}`, `~/.codeium/windsurf`, `~/.kiro`, `~/.cline` or `~/Documents/Cline`; a directory listing only), and reads their user MCP configs (`~/.gemini/config/mcp_config.json`, `~/.codeium/windsurf/mcp_config.json`, `~/.kiro/settings/mcp.json`, `~/.cline/data/settings/cline_mcp_settings.json`) into `mcpServers` with the same content-free shape as the others: server name, scope, transport, capability flags, risk level and reputation, never an env value or URL.
 - **AIBOM: MCP server reputation.** `moorai-aibom` reports each MCP server's first-seen reputation (`{score, band, reasons}`, a 0-100 score, band good/fair/poor/bad and category codes such as `mcp-typosquat` or `pkg-install-script-remote`), scored offline from the package name and the copy npx already installed, and counts poor and bad servers in `summary.mcpLowReputation`. `moorai-shadow` carries the same reputation, and an unsanctioned server with a poor or bad band ranks high whatever its inferred scope. The scoring, the opt-in registry lookup and feed, and the `blockBelow` policy are documented in [`mcp-proxy/README.md`](mcp-proxy/README.md).
 - **AIBOM: installed IDE extensions.** `moorai-aibom` runs the IDE-extension scan (`cli/ide-extensions.mjs`) and reports `ideExtensionScan` (`scanned`, `ai`, `flagged`, `truncated`, and the AI or flagged extensions with their codes, risk and advisory ids) plus `summary.ideExtensionsScanned` and `summary.ideExtensionsFlagged`; the Markdown report has an "IDE extension scan" table. The existing `editorExtensions` list is unchanged.
+- **AIBOM: installed vs actually used.** `moorai-aibom` joins each entry to the on-device records of what was used. Every component and every `mcpServers` entry carries `lastUsed` (`YYYY-MM-DD`, UTC, or `null`), `calls30d` (calls in the last 30 days, today included, or `null` when MoorAI does not count that kind of asset) and `usageStatus`: `used` (a use is on record), `never-seen` (a MoorAI surface watches this entry, or records this kind of asset, and no use names it) or `not-observable` (nothing MoorAI runs or records covers this entry on this device). Not observable is never reported as 0 or as never seen. MCP servers are matched to `~/.moorai/destinations.jsonl` (each MCP call the hook saw; 90 days, 2,000 rows) and `~/.moorai/mcp-usage.json` (per-day counts from the hook, the stdio guard and the HTTP gateway; 14 days). A Claude Code call to a guarded server is seen by the hook and by the guard, so per server and UTC day the count is the largest any one surface recorded, never the sum: `calls30d` is a floor. Server names match the way Claude Code builds `mcp__<server>__` tool names (characters outside `[A-Za-z0-9_-]` become `_`), case-insensitively. An MCP server entry is observable only when something watches it, listed in its `watchedBy`: `hook:<host>` when the MoorAI hook is registered in the host whose config declares the server (read the way `moorai-doctor` reads the host's hook file; for Claude Code also managed settings or the moorai plugin), `guard` when the entry launches through the stdio guard, and `gateway` when its URL is the gateway on loopback port 8848. An entry nothing watches is `not-observable` and is never a removal candidate, even when the same server name is used elsewhere. The model Claude Code is configured for is matched to the hourly request counts in `~/.moorai/token-usage-transcript.json` (read from Claude Code's transcripts on an enrolled device; 40 days): the exact id, the id plus a date or `-latest`, or a family alias (`opus`, `sonnet`, `haiku`, `opusplan`; a `[1m]` suffix is ignored). Local models and other agents' models are not observable on the device: the model proxy sends its counts to the console and keeps none. Agent hosts get `lastUsed` from their own session store's newest modification time (Claude Code, Codex, Antigravity, Windsurf, Cline), with `calls30d: null`; Aider and Kiro are not observable. Editor extensions and skills are not observable. `usageEvidence` says, per kind, whether it is observable and the oldest day on record, and `summary` counts `used`, `neverSeen` and `usageNotObservable`. The Markdown report adds a Use column to the MCP server table and an "Installed vs used" table; CSV appends `usageStatus=…; lastUsed=…; calls30d=…` to each row's detail. `--sort used` orders components and MCP servers most used first and `--sort unused` least used first, with not-observable entries last either way. `--unused-days N` (1-3650; `--format json|md`) lists the MCP servers, models and agent hosts configured here with no use in the last N days, each with a short reason that names the surfaces watching an MCP server, as removal candidates. A never-seen entry is listed only when the record for its kind reaches back N days; otherwise it is listed under `undecided`. Not-observable entries are never listed. CycloneDX exports carry `moorai:usageStatus`, `moorai:lastUsed` and `moorai:calls30d` component properties; SPDX exports carry `usageStatus=…; lastUsed=…; calls30d=…` in the package comment. A `null` value is left out, never written as 0. Output is names, counts and dates only. Tests: `test/aibom-usage.test.mjs`.
 - **`moorai-compliance`** maps the device's existing content-free signals to framework controls and marks each **covered / partial / not-covered honestly** — the evidence layer a cost-pressured SOC can actually keep. `--format stix` emits the findings as a STIX 2.1 bundle (custom `x-moorai-finding` objects + hash-keyed indicators) for threat-intel interchange.
 - **`moorai-verify-chain`** walks each on-device evidence log and verifies its prev-hash chain — a deleted, reordered, or in-place-edited record breaks the chain and is reported. Every log line and every emitted OTel span is chain-stamped (`cli/record-chain.mjs`), so the record hash proves each record and the chain proves the *sequence* (immutable once streamed to your SIEM). A record whose chain head could not be read or saved is stamped `seq` 0, linked to the genesis, and shows as a break.
 - **`moorai-context-proof`** reads the on-device context trees (see [Forensic evidence: context.tree](#forensic-evidence-contexttree)). `--verify <file|-> (--session <keyed id> | --all)` hashes a file or stdin and lists every leaf whose blob hash matches, each with its RFC 6962 inclusion proof; `--session <keyed id> --index <n> [--size <m>]` prints one leaf, its proof and the root of the first `m` leaves, which equals a record's `contextRoot` when `m` is its `contextSize`. Hashes only; exit 0 found, 1 no match, 2 usage.

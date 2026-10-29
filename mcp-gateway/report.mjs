@@ -18,7 +18,9 @@ import { isEnrolled, literacyTouchpoint, coachMessage } from "../cli/hook-core.m
 import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
 import { contentHash, actorHash, NO_KEY } from "../cli/content-hash.mjs";
+import { labelAlertFields } from "../cli/sensitivity-labels.mjs";
 import { RUG_PULL_THREAT } from "../mcp-proxy/tool-drift.mjs";
+import { toolClassAlert } from "../cli/mcp-tool-class.mjs";
 import { emitOtel } from "../cli/otel.mjs";
 import { serverMode, serviceWho, workloadIdentity } from "../cli/server-mode.mjs";
 import { traceFields } from "../model-proxy/trace-w3c.mjs";
@@ -103,7 +105,7 @@ export function alertBlock(server, tool, gate, argsHash) {
 
 export function alertFindings(server, tool, findings, blocked, stage = "mcp") {
   for (const f of findings || []) {
-    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool: t(tool), mcpServer: server, ts: now(), contentHash: contentHash(f.match || ""), ...IDENTITY });
+    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool: t(tool), mcpServer: server, ts: now(), contentHash: contentHash(f.match || ""), ...labelAlertFields(f), ...IDENTITY });
     if (blocked || f.riskLevel === "High" || f.riskLevel === "Critical") {
       try { post({ ...literacyTouchpoint({ threatId: f.threatId, category: f.category, tool: t(tool) }), ...IDENTITY }); } catch { /* evidence */ }
     }
@@ -150,6 +152,14 @@ export function alertRecheckFailed(server, tool, why, argsHash) {
   const w = why === "timeout" ? "timeout" : "error";
   const a = { threatId: 0, category: "MCP: tool list re-check failed", riskLevel: "Medium", stage: "mcp", tool: t(tool), decision: "allow", reasonCode: "MCP_TOOL_DRIFT", driftCheck: "recheck", failMode: "open", failWhy: w, mcpServer: server, ts: now(), contentHash: `mcp:tool:recheck-failed:${w}`, ...IDENTITY };
   post(a);
+  ledger(a);
+}
+
+// A call the class default (policy mcpToolClassDefaults) decided. `decision`: what the call finally got.
+export function alertToolClass(server, tool, tc, decision) {
+  const a = { ...toolClassAlert(tc, { tool, server, toolPrefix: "gateway", decision }), ts: now(), ...IDENTITY };
+  post(a);
+  if (decision === "deny") { try { post({ ...literacyTouchpoint({ threatId: 0, category: a.category, tool: t(tool) }), ...IDENTITY }); } catch { /* evidence */ } }
   ledger(a);
 }
 

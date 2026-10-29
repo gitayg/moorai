@@ -1307,7 +1307,7 @@ the verdict as it stood.
 
 Each file gets what the `Bash` branch gives a path a command reads: the content scan at `file` (with
 `template` set for `.env.example`, `.env.sample` and `.env.template`), `decideFileMetadata` (#72), and `decideCredFileRead`
-(#55) on the path as resolved and on its real path. The #55 check is skipped when the argument scan
+(#55) on the path as resolved and on its real path. Under a signed `labelPolicy` it also gets its Microsoft Purview / MIP sensitivity label ([`cli/sensitivity-labels.mjs`](../cli/sensitivity-labels.mjs)), read from the file's metadata only (OOXML `docProps/custom.xml` / `docMetadata/LabelInfo.xml`, PDF Info / XMP, the OLE IRM data space): `read`, or `send` on the same `uploading` / `mcpToolSends` evidence, gives a #1 finding with a `sensitivityLabel` object, and an Office or PDF candidate whose label cannot be read is unevaluated and follows the surface's fail mode. The #55 check is skipped when the argument scan
 already raised #55, because the path text is in the arguments. The file verdict merges by rank and never
 lowers the argument verdict; a `kill` kills the session. Each file's findings are reported at stage
 `file`, with the argument as `filePath` only under a capture tier that allows it, as on a `Read`.
@@ -1693,6 +1693,17 @@ malformed, sources, fail-open), `test/workload-profile-hook.test.mjs` (the real 
 an enrolled and an unenrolled laptop, the trust test, the SDK), the third case in
 `test/agent-sdk-parity.test.mjs`, and `test/mcp-gateway-profile.test.mjs` (a real gateway in server mode:
 block, report, coach and the trust rules).
+
+**Learning a draft.** `moorai-profile learn --service-id <id> | --repo <remote>` turns the device's own
+records into a draft in this exact shape, with `"action": "report"`: tool names from the session ledger's
+`PreToolUse` rows, MCP servers from the `<server>` of those `mcp__<server>__<tool>` names, and hosts from the
+destination map, over `--days` (default 14). Each session-ledger row carries `svc` in server mode and
+`repo` when this module resolved the repository for a repo-keyed profile (`resolvedRepo`), so the draft
+narrows to the workload's own rows. Calls the hook denied or coached are not learned; a kind with
+nothing observed is omitted rather than written as `[]`; loopback is never listed. The diff against the
+profile in force is computed with `driftOf`, so a glob covers a learned item exactly as it would at
+enforcement. Adopt the draft in report mode, watch `PROFILE_DRIFT`, and set `"action": "block"` once a
+re-run reports `readyToBlock`. See the README section *Learn a profile, then enforce it*.
 
 ### Egress rules
 

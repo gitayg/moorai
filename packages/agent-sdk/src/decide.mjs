@@ -37,7 +37,7 @@ import { hookCore, mcpFileArgs, secretEgress, secretLearnLib, modelEndpoints, ou
 const {
   decideText, decideCredFileRead, decideFileMetadata, decideAgentStateWrite, decideAuthorizedKeysWrite, isEnvTemplate, fileScanText,
   decodedCommandPayloads, decideTransit, decideThreat,
-  decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, mcpFloor,
+  decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, mcpGateway, mcpFloor, decideMcpToolClass,
   saferAlternativesFor, PS_OUTBOUND_UPLOAD, evaluateProfile, rejectedAlert, readRootOwned
 } = hookCore;
 const { systemConfigPath } = serverModeLib;
@@ -277,6 +277,12 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
     else if (fsr.decision !== "allow" && fsr.decision === g.decision) g.reason = [g.reason, ...fsr.reasons].filter(Boolean).join(", ");
     if (fsr.kill) { g.kill = true; g.killIds = [...(g.killIds || []), ...fsr.killIds]; }
     if (secretV === "ask" && g.decision === "allow") { g.decision = "ask"; g.reason = `${tool} — ${UNVERIFIED_REASON}`; g.alternatives = saferAlternativesFor([65]); }
+    // The hook's class default (policy.mcpToolClassDefaults): by override or name, merged by rank.
+    const tc = decideMcpToolClass(policy, { tool, server });
+    if (tc && RANK[tc.decision] > RANK[g.decision]) {
+      g.decision = tc.decision; g.reason = tc.reason; g.alternatives = [];
+      signals.push({ threatId: 0, category: tc.decision === "deny" ? "MCP: tool blocked by class default" : "MCP: tool held by class default", riskLevel: tc.decision === "deny" ? "Blocked" : "Medium", stage: "mcp", key: `mcp-class:${tc.toolClass}:${tool}` });
+    }
     const floored = mcpFloor(policy, g.decision);
     if (floored !== g.decision) { g.decision = floored; g.reason = g.reason || "fail-closed default: MCP requires justification"; }
     const reasons = g.reason ? [g.reason] : [];

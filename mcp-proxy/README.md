@@ -45,7 +45,9 @@ MCP host  ⇄  moorai-mcp-guard  ⇄  real MCP server
      names (absolute, `~`, `file://`, or relative to the proxy's cwd and then to the client's MCP roots,
      kept from its `roots/list` answer, at most 16) gets what the Claude Code hook gives a file a `Bash`
      command reads: its content at the `file` stage, its metadata (#72) and its location against the
-     credential list (#55). Same helper as the hook's `mcp__*` branch
+     credential list (#55), and, under a signed `labelPolicy`, its Microsoft Purview sensitivity label
+     (`../cli/sensitivity-labels.mjs`; a label that cannot be read follows `failMode.mcpGateway`). Same
+     helper as the hook's `mcp__*` branch
      ([`../cli/mcp-file-args.mjs`](../cli/mcp-file-args.mjs)). A relative path is left alone when the call
      names a remote `owner` / `repo` / `repository` / `project_id` / `bucket` and the tool's name does
      not send. Only regular files are read (a symlink to a regular file is judged by its target; never
@@ -56,6 +58,10 @@ MCP host  ⇄  moorai-mcp-guard  ⇄  real MCP server
   5. **vector-store writes** — when the tool writes documents into a vector store or memory (below),
      its arguments are scanned at the `index` stage too. Report-first; refused only under
      `policy.indexScanAction: "block"`.
+  6. **class default** (policy `mcpToolClassDefaults`; [`../cli/mcp-tool-class.mjs`](../cli/mcp-tool-class.mjs)),
+     merged by rank after the argument, file and vector-store checks and before an ask is settled. The
+     tool's `annotations` from this server's listings count only when they make it stricter. Alert:
+     `MCP: tool blocked by class default` / `MCP: tool held by class default`, `reasonCode: "MCP_TOOL_CLASS"`.
 - **Block** → the call is **not** forwarded; the proxy returns a JSON-RPC *result* to the host that
   is an MCP tool error (`isError: true`, using the request's `id`), so the model sees a clean refusal
   instead of a hang. The real server never receives the call.

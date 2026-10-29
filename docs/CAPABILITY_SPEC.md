@@ -1134,6 +1134,65 @@ is validated against.
    never re-lists. The full failure table is in
    [`mcp-proxy/README.md`](../mcp-proxy/README.md).
 
+11g3. **Default MCP tool policy by class** — policy `mcpToolClassDefaults` and `mcpToolClasses`
+   ([`cli/mcp-tool-class.mjs`](../cli/mcp-tool-class.mjs)), at the Claude Code hook (`mcp__*` calls), the
+   stdio guard and the HTTP gateway, and mirrored in `@moorai/agent-sdk`.
+
+   ```json
+   "mcpToolClassDefaults": { "read": "allow", "write": "ask", "destructive": "block", "unknown": "ask" },
+   "mcpToolClasses": { "github": { "merge_pull_request": "destructive", "delete_branch": "write" } }
+   ```
+
+   Every MCP tool call is put in one class, from the first source that names one:
+
+   1. **override**: `mcpToolClasses[<server label>][<tool name>]` (`"read"`, `"write"` or `"destructive"`)
+      in the signed policy. It wins outright, in either direction. The server label is the one the
+      allow-list uses: the Claude Code MCP server name, the guard's `--server` label, the gateway route label.
+   2. **annotation**: the tool's MCP `ToolAnnotations` from the server's `tools/list` (`destructiveHint:
+      true` makes it destructive, `readOnlyHint: false` makes it write, `readOnlyHint: true` makes it read).
+      Only explicit values count; the spec's defaults are not applied. The hook sees no listing, so it
+      classes by override and name only.
+   3. **heuristic**: whole-word verbs in the tool name, split on `_ - . /`, spaces and camelCase. Any of
+      `delete del drop remove rm destroy purge truncate revoke force wipe erase unlink kill terminate`
+      makes it destructive. Otherwise any of `create update write send post set put add insert edit patch
+      upload push move rename replace modify append` makes it write. Otherwise any of `get list read search
+      describe find view show` makes it read.
+   4. **unknown**: none of the above.
+
+   **Annotations can only tighten.** A server writes its own annotations, so an annotation counts only when
+   the verdict its class gets is stricter than the verdict of the name's class. On a tie it counts only
+   when its class is stricter (read < unknown < write < destructive). A `delete_repo` that claims
+   `readOnlyHint: true` stays destructive; a `get_report` that says `destructiveHint: true` becomes
+   destructive. The guard and the gateway keep the strictest annotation class each tool name has
+   advertised for the life of the process, so listing a tool again cannot loosen it. A changed annotation
+   is also schema drift (#25, entry 11g2).
+
+   **Verdicts.** `"allow"`, `"ask"` and `"block"` (deny). A class with no verdict, or one that is not one
+   of the three values, gets no verdict. The class verdict is merged by rank with the surface's own
+   verdict, so it decides only when it is stricter than everything else. A server allow-list,
+   entitlement, workload-profile, argument-rule, secret-egress or detector deny still denies, and a class
+   `"block"` blocks a call a detector only asked about. One explicit allow outranks it: a tool with a
+   non-empty `mcpToolRules[<tool>].allow` list (whose pattern the call's arguments matched) gets no class
+   verdict. A deny-only `mcpToolRules` entry does not exempt the tool. The ask follows each surface: the
+   hook asks the user (in server mode `headlessAsk` settles it, deny by default); the stdio guard
+   forwards and records it; the gateway forwards and records it, and in server mode settles it as the
+   hook does. On an unenrolled device a class block is coached, not enforced.
+
+   **Tools added after approval** get their class verdict at call time like any other tool. In alert
+   mode an added tool is forwarded and classed. Under `mcpToolDrift: "block"` it is quarantined first,
+   and once an admin re-approves it its class verdict applies.
+
+   **Alert** (content-free, posted when the class verdict decided the call): `threatId: 0`, `category`
+   `"MCP: tool blocked by class default"` (class verdict block) or `"MCP: tool held by class default"`
+   (class verdict ask), `riskLevel` `"Blocked"` when the call was denied, else `"Medium"`, `stage: "mcp"`,
+   `tool` (`hook:`, `desktop:` or `gateway:` plus the tool name), `mcpServer`, `decision` (what the call
+   finally got: `deny`, `ask`, `coach`, or `allow` when server mode's `headlessAsk` is
+   `allow-with-report`), `reasonCode: "MCP_TOOL_CLASS"`, `toolClass`, `toolClassSource` (`override`,
+   `annotation` or `heuristic`), `contentHash: "mcp:tool-class:<class>:<verdict>"`. No argument, result
+   or annotation text leaves the device.
+
+   **Default.** With `mcpToolClassDefaults` absent, not an object, or naming no valid verdict, every
+   surface behaves as before.
 11h. **Event-triggered and headless prompts** — [`cli/prompt-scan.mjs`](../cli/prompt-scan.mjs). A
    prompt a person typed is their instruction and is not scanned; one that arrives any other way can
    carry a third party's text. `policy.promptScan`: `"untrusted"` (default) scans a prompt whose `source`
@@ -1355,7 +1414,7 @@ is validated against.
     row with `policyId` (`pol:<tenant>:<iat>:<digest12>`, `pol:unsigned:<digest12>`, `builtin-defaults`,
     `offline-fail-closed-default`, `none`, `not-loaded`), `policySource`, `reasonCode` (the branch that
     decided; enum in the module, including the MCP gateway's `SCHEMA_INVALID`, `RESPONSE_TOO_LARGE` and
-    `CLIENT_COOLDOWN`, and `MCP_TOOL_DRIFT` for a tool quarantined under `mcpToolDrift: "block"`), `basisCode` when an override decided, and `enforcement`
+    `CLIENT_COOLDOWN`, `MCP_TOOL_DRIFT` for a tool quarantined under `mcpToolDrift: "block"`, and `MCP_TOOL_CLASS` for a call the `mcpToolClassDefaults` class verdict decided), `basisCode` when an override decided, and `enforcement`
     `AS_CONFIGURED` | `STRENGTHENED` | `LIMITED` | `UNEVALUATED`. A control that never ran — bad stdin, a
     hook error, no policy after an error, break-glass, an unsupported tool, an empty result, a size cap —
     is `UNEVALUATED`, never a pass.
@@ -1423,6 +1482,30 @@ is validated against.
     environment is the match to rely on for a block. Hosts built at runtime are not seen. `PostToolUse`,
     prompts and `Stop` are not compared. The HTTP MCP gateway does not compare hosts. Tested on macOS
     only.
+17f.1. **Learned draft profiles** — [`cli/profile-learn.mjs`](../cli/profile-learn.mjs), CLI
+    [`cli/moorai-profile.mjs`](../cli/moorai-profile.mjs) (`moorai-profile learn`). Drafts a 17f profile
+    from on-device records over a window (`--days`, default 14, ending `--until`): `tools` from the session
+    ledger's `PreToolUse` rows, `mcpServers` from `serverOf()` of those tool names (as `profileSubject`
+    derives it), `hosts` from the destination map's `host` rows, narrowed to `device: svc:<serviceId>` when
+    `--service-id` is given. The hook stamps each ledger row with `svc` (server mode's serviceId) and, when
+    the profile check resolved it for a repo-keyed profile (`resolvedRepo`, no new `.git/config` read),
+    `repo`; ledger rows are kept when their `svc`/`repo` equal the match, dropped when they name another
+    workload, and used device-wide when the field is absent (counted in `observation.scope`). Output: the profile with `action: "report"` (validated by `validateProfile`
+    before it is printed), `observation` (sessions, distinct days, calls, host observations, first/last
+    seen), per-item counts and last-seen, `excluded` (items seen only on denied or coached calls), `skipped`
+    (counts of names that are not valid entries), `warnings`, and a diff against the first matching profile
+    in force (or `--compare <id>`) judged with the checker's own `driftOf`, with `readyToBlock` true when
+    nothing observed falls outside it. A kind with no observation is omitted, never `[]`. Below
+    `--min-sessions` (5) or `--min-days` (3) it exits 3 unless `--force`. Lists are sorted; output is
+    byte-identical for the same records. Names and hosts only; reads local files and the verified policy
+    cache, writes only `--out`, sends nothing. Warnings: `tools-unscoped` (device-wide ledger rows used, with
+    the count), `hosts-unscoped` (repo-only match: destination records carry no repo), `window-truncated`
+    (a record's oldest retained row is newer than the window start), `thin-data`, `no-<kind>`,
+    `skipped-names`, `same-id`. Test: `test/profile-learn.test.mjs` (fixture ledger → expected
+    draft; round trip through `evaluateProfile`: an unlearned tool is `PROFILE_DRIFT` in report mode and
+    denied once `action` is `block`; window; exclusion; svc/repo narrowing and the device-wide fallback;
+    window truncation; diff; determinism; thin-data refusal; the real hook in server mode writing `svc`, and
+    `repo` only under a repo-keyed profile).
 17g. **Egress rules** — [`cli/egress-rules.mjs`](../cli/egress-rules.mjs), evaluated inside
     `evaluateProfile()`. `egressRules: [{ id?, binary?, host | cidr, port?, method?, path?, action }]` and
     `egressDefault`, with `action` one of `allow`, `alert` or `block`. They can sit at the top level of the
@@ -2831,6 +2914,40 @@ Limits: renamed or copied downloads, variable paths, `scp`/`rsync`/`httpie` uplo
 file, and unlisted hosts are not seen. Benign corpora were unchanged (v2 20/602) but barely exercise these
 shapes (2 of 610 samples contain curl/wget). Tested on macOS only.
 
+## Microsoft Purview sensitivity labels (`labelPolicy`)
+
+`cli/sensitivity-labels.mjs` reads a Microsoft Purview / MIP sensitivity label from a file's metadata and
+returns the signed policy's verdict for an agent reading the file (`read`) or sending it (`send`). Shared
+by the hook (Read; each path a Bash/PowerShell command reads, `send` when the command uploads, the branch's
+`uploading` flag), `cli/mcp-file-args.mjs` (each file an MCP call names, `send` when `mcpToolSends`), and
+through it the Claude Desktop stdio proxy and the HTTP MCP gateway's `--local-files` routes.
+
+- **Policy**: `labelPolicy: { rules: [{ match: { id } | { name }, onRead?, onSend? }], protected?: { onRead?, onSend? } }`,
+  actions `notify | justify | block` (allow+report / ask / deny). Parsed and validated per call
+  (`labelPolicy()`); entries that do not validate are dropped with a warning naming the key, never the value.
+  Inactive (absent, or nothing valid) = no file is opened.
+- **Reading**: positioned reads only. ZIP: end-of-central-directory search in the last 64 KiB + 22 bytes,
+  central directory ≤ 1 MiB and ≤ 20,000 entries, `docProps/custom.xml` and `docMetadata/LabelInfo.xml`
+  inflated with `inflateRawSync` under `maxOutputLength` 1 MiB. MS-OFFCRYPTO 2.6.3 precedence (policy
+  unknown to the reader): a tenant (siteId) with a LabelInfo `label` element is read from LabelInfo only;
+  `removed="1"` clears it; a LabelInfo label borrows the custom-property name of the same GUID. PDF: the
+  first and last 256 KiB, Info-dictionary literal/hex (UTF-16BE) strings and XMP elements/attributes. OLE:
+  the directory along the FAT chain from the header DIFAT (≤ 256 sectors); IRM = `EncryptedPackage` +
+  `DRMEncryptedDataSpace`, or `\x09DRMContent` / `\x09DRMDataSpace`. Only enabled labels count.
+- **State**: `none | labelled | protected | unreadable`. `unreadable` only for an Office candidate (an
+  Office Open XML extension, or a ZIP with `[Content_Types].xml`) or an OLE file with an Office Open XML
+  extension: missing EOCD, ZIP64, directory/entry/part caps, encrypted entry, unknown method, corrupt
+  headers. It sets `unevaluated`; the hook marks the call capped (`failWhy: "label"` on a fail-closed deny,
+  `basisCode: UNEVALUATED_SIZE_CAP`), the proxy and gateway refuse under `failMode.mcpGateway: "closed"`
+  (`gatewayFailReason("label")`).
+- **Finding**: threat #1, `detectorId: "sensitivity-label"`, `match: "label-path:<resolved path>"` (the
+  reporters' `contentHash` is its keyed hash), `sensitivityLabel: { state, action, verdict, labelId?,
+  labelNameHash?, source? }` copied onto the alert by each reporter (`labelAlertFields`). Strictest
+  matching rule wins; one finding per file.
+- **Tests**: `test/sensitivity-labels.test.mjs` (parsing, precedence, caps, verdicts),
+  `test/sensitivity-labels-hook.test.mjs` (real hook: Read, Bash read/upload, MCP upload, fail mode),
+  `test/sensitivity-labels-proxy.test.mjs`, `test/sensitivity-labels-gateway.test.mjs`; fixtures generated by
+  `test/fixtures/label-files.mjs`.
 ## OT protocol clients from an agent shell (F30, agent side)
 
 [`cli/ot-protocol-client.mjs`](../cli/ot-protocol-client.mjs) over
@@ -4528,6 +4645,44 @@ version into `docs/conformance/`.
   blocked. Surfaces: `moorai-ide-extensions [--format json|md] [--flagged]` and the AIBOM's `ideExtensionScan`
   with `summary.ideExtensionsScanned` / `ideExtensionsFlagged`.
 
+## AIBOM: installed vs actually used (`cli/aibom-usage.mjs`)
+
+- **Fields.** Every AIBOM component and every `mcpServers` entry: `lastUsed` (`YYYY-MM-DD` UTC | null),
+  `calls30d` (integer, last 30 days including today | null = not counted), `usageStatus`
+  (`used` | `never-seen` | `not-observable`). Not observable is never 0 and never `never-seen`.
+- **MCP observability (per entry).** `watchedBy`: `hook:<host>` when MoorAI's hook is registered for the
+  host of the entry's scope (claude -> claude-code, cursor, antigravity, windsurf, kiro, cline; MoorAI
+  entries in the host's hook file as `cli/doctor-hosts.mjs` reads it, for Claude Code also managed settings
+  or an installed moorai plugin; registration only, staleness is `moorai-doctor`'s), `guard` when the launch
+  argv runs `moorai-mcp-guard.mjs`, `gateway` when the URL is loopback port 8848. Empty `watchedBy` ->
+  `not-observable`. Watched with no record -> `never-seen`.
+- **MCP servers.** `~/.moorai/destinations.jsonl` rows with `kind: "mcp"` (hook; 90 days, 2,000 rows of any
+  kind) and `~/.moorai/mcp-usage.json` days (hook, stdio guard, gateway; 14 days; hosts on one path add up).
+  Per server and UTC day: the largest count of any one surface, never the sum. Name match: Claude Code's
+  `mcp__` normalisation (`[^A-Za-z0-9_-]` -> `_`), case-folded; same-named servers in two configs share a
+  record.
+- **Models.** Only the model in `~/.claude/settings.json`, against `~/.moorai/token-usage-transcript.json`
+  buckets (`hour`, `model`, `requests`; enrolled devices; 40 days): exact id, id + `-YYYYMMDD` or `-latest`,
+  or alias `opus` | `sonnet` | `haiku` | `opusplan` (opus or sonnet), `[1m]` stripped. Every other model,
+  local ones included: not observable.
+- **Agent hosts.** `lastActive()` from `cli/agent-posture.mjs` (newest session-store mtime, hour):
+  `claude` -> claude-code, `codex`, `antigravity`, `windsurf`, `cline`; `calls30d: null`. Others: not
+  observable. Editor extensions, skills: not observable.
+- **Evidence.** `usageEvidence: { windowDays, mcpServers: { recorded, since, hookedHosts, sources,
+  observableWhen, countRule },
+  models: { observable, since, sources, scope }, agents: { observable, sources, hosts, calls },
+  notObservable }`; `summary.used`, `summary.neverSeen`, `summary.usageNotObservable`.
+- **CLI.** `--sort used|unused` (not-observable last). `--unused-days N` (1-3650, else exit 2) ->
+  `{ generatedAt, device, unusedDays, candidates, undecided, usageEvidence }`, each row
+  `{ type, name, scopes?, watchedBy? (MCP: the watched entries only), lastUsed, calls30d, reason }`; the MCP
+  reason ends `(watched by hook:claude-code, guard)`; never seen first, then oldest last use. A
+  never-seen MCP server or model is a candidate only when its kind's `since` is at least N days back,
+  else `undecided`; a never-seen agent host (empty session store) is a candidate.
+- **Exports.** CycloneDX 1.6 component `properties` `moorai:usageStatus`, `moorai:lastUsed`,
+  `moorai:calls30d`; SPDX 2.3 package `comment` `usageStatus=…; lastUsed=…; calls30d=…`. `data/sbom.js` passes
+  only the status vocabulary, a `YYYY-MM-DD` date and a non-negative integer; null is omitted.
+- **Content-free.** Names, counts and dates. Read-only: nothing is posted; the console builds its own
+  granted-vs-used view (right-sizing) from the device report and `/api/mcp-usage`.
 ## Browser Guard store build and managed force-install
 
 - **Config precedence** (`browser-ext/config.js`): `chrome.storage.managed` (admin policy, schema
@@ -5261,7 +5416,7 @@ in CI.
   pre-tool hooks instead (`cli/moorai-agent-hook.mjs`; README, *Other agents*).
 - **Files an MCP call names by path.** An argument that names a local file (absolute, `~`, `file://`,
   or relative to the agent's cwd; in the proxy, its cwd and then the client's MCP roots) gets the file's
-  content scanned at `file`, its metadata (#72) and its location (#55), in both the Claude Code hook and
+  content scanned at `file`, its metadata (#72), its location (#55), and its sensitivity label under `labelPolicy`, in both the Claude Code hook and
   the proxy ([`cli/mcp-file-args.mjs`](../cli/mcp-file-args.mjs)). Only regular files; at most 12 files,
   256 KB each, 1 MB and 1 s per call. **Blind spots:** files past the caps are skipped silently; a
   relative path in a call that names a remote `owner`/`repo`/`repository`/`project_id`/`bucket` is not

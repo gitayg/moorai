@@ -32,13 +32,15 @@ const WHY = {
   error: "the MoorAI hook failed while evaluating it",
   budget: "the MoorAI hook ran past its decision budget",
   "bad-input": "the MoorAI hook could not read the call",
-  "size-cap": "it reads more content than MoorAI scans"
+  "size-cap": "it reads more content than MoorAI scans",
+  label: "MoorAI could not read the sensitivity label of a file it reads"
 };
 const BASIS = {
   error: REASON.UNEVALUATED_HOOK_ERROR,
   budget: REASON.UNEVALUATED_EARLY_EXIT,
   "bad-input": REASON.UNEVALUATED_BAD_INPUT,
-  "size-cap": REASON.UNEVALUATED_SIZE_CAP
+  "size-cap": REASON.UNEVALUATED_SIZE_CAP,
+  label: REASON.UNEVALUATED_SIZE_CAP
 };
 
 export function failReason(why) {

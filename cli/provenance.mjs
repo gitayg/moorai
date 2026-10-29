@@ -53,6 +53,7 @@ export const REASON = Object.freeze({
   RESPONSE_TOO_LARGE: "RESPONSE_TOO_LARGE",       // MCP gateway: an upstream response exceeded the configured cap (limitBytes)
   CLIENT_COOLDOWN: "CLIENT_COOLDOWN",             // MCP gateway: a client in a cool-down after repeated refusals (cooldownSeconds)
   MCP_TOOL_DRIFT: "MCP_TOOL_DRIFT",               // policy mcpToolDrift "block": a tool changed / was added / shadows since approval (mcp-proxy/tool-drift.mjs)
+  MCP_TOOL_CLASS: "MCP_TOOL_CLASS",               // policy mcpToolClassDefaults: the tool's class (read / write / destructive / unknown) decided ask or block (cli/mcp-tool-class.mjs)
   OBSERVATION_ONLY: "OBSERVATION_ONLY",           // an event this hook records but does not judge
   FAIL_CLOSED: "FAIL_CLOSED",                     // the surface could not decide (error, budget, scan cap) and the admin-chosen fail mode is closed: denied
   CONTAINMENT_MISSING: "CONTAINMENT_MISSING",     // containmentRequired (Windows): an agent that can run its commands in MXC is not set to (cli/containment-enforce.mjs)

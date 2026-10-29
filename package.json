@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "1.41.0",
+  "version": "1.42.0",
   "license": "MIT",
   "description": "MoorAI agent — AI security at the point. Runtime guardrails for AI agents, apps and APIs (community edition, MIT)",
   "type": "module",
@@ -16,6 +16,7 @@
     "moorai-redteam": "cli/moorai-redteam.mjs",
     "moorai-agentwatch": "cli/moorai-agentwatch.mjs",
     "moorai-destinations": "cli/moorai-destinations.mjs",
+    "moorai-profile": "cli/moorai-profile.mjs",
     "moorai-trace": "cli/moorai-trace.mjs",
     "moorai-shadow": "cli/moorai-shadow.mjs",
     "moorai-compliance": "cli/moorai-compliance.mjs",

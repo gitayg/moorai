@@ -6,10 +6,10 @@ after the repo is public and the name is secured).
 
 ## npm — the CLI tools
 
-`package.json` is already publish-ready: `bin` exposes 16 CLIs (`moorai-scan`, `moorai-aibom`,
+`package.json` is already publish-ready: `bin` exposes 37 CLIs, among them `moorai-scan`, `moorai-aibom`,
 `moorai-guard`, `moorai-hook`, `moorai-ledger`, `moorai-redteam`, `moorai-agentwatch`,
-`moorai-destinations`, `moorai-trace`, `moorai-shadow`, `moorai-compliance`, `moorai-verify-chain`,
-`moorai-stix`, `moorai-honeytokens`, `moorai-attest`, `moorai-receipt`), `exports` exposes
+`moorai-destinations`, `moorai-profile`, `moorai-trace`, `moorai-shadow`, `moorai-compliance`, `moorai-verify-chain`,
+`moorai-stix`, `moorai-honeytokens`, `moorai-attest` and `moorai-receipt`; `exports` exposes
 `moorai/scan`, and `files` ships only `scan.mjs cli/ src/ data/ scripts/redteam.mjs
 scripts/accepted-failures.mjs test/redteam/corpus.json` (not the Rust/Tauri host). `npm pack
 --dry-run` lists 81 files, 457.0 kB packed.

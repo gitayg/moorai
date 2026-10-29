@@ -532,6 +532,8 @@ export function decideMcpServer(policy, serverName) {
 export { redosReason, safeRegex };
 // Enrollment decides coach vs enforce for every surface — see data/enforcement.js.
 export { isEnrolled, enforcementAllowed, coachMessage, coachReason } from "../data/enforcement.js";
+// Default MCP tool policy by class (policy mcpToolClassDefaults) — see ./mcp-tool-class.mjs.
+export { decideMcpToolClass, toolClassAlert } from "./mcp-tool-class.mjs";
 
 // Execution bound. A pattern that survives redosReason() still costs O(n²) in the worst case because
 // `.test()` retries at every start position: measured at 50 KB, the worst surviving shapes ("a*b",

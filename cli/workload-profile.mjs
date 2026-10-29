@@ -102,6 +102,9 @@ export function repoOf(cwd, { repoIdentity = defaultRepoIdentity, cache = REPO_C
   cache.set(cwd, repo);
   return repo;
 }
+// The repo a profile match already resolved for cwd in this process, or "" when none did: never a new
+// .git/config read. The hook stamps it on the session-ledger row (moorai-profile learn narrows by it).
+export function resolvedRepo(cwd, cache = REPO_CACHE) { return typeof cwd === "string" && cache.has(cwd) ? cache.get(cwd) : ""; }
 export function _resetRepoCacheForTests() { REPO_CACHE.clear(); }
 
 // ---- validation ----
