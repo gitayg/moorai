@@ -2345,7 +2345,7 @@ results; object results get the proxy's 64 KB harvest, where `JSON.stringify` ga
 - **The door rule set also drops** #44, #52, #54, #61, #62, #76 (the measured `DOOR_DROP` below, minus
   #69, which stays: agent recon is an instruction to the agent, it caught 7 of 7 recon attacks in the tune
   split on the paths that kept it, and fired on 1 of 842 real `node_modules` files).
-- **Data-class findings are kept at riskLevel `Info`** (#1 payment card, #9 source / IP, #15 PII, #44 PHI
+- **Data-class findings are kept at riskLevel `Info`** (#90 payment card, #1 IBAN, #9 source / IP, #15 PII, #44 PHI
   on web content). One finding per threat per result, as the engine already returns them. They stay in the
   verdict, so session risk and the lethal-trifecta legs still see them, but they are reported at `Info`
   rather than as alerts, and they never move the decision unless the org policy names that threat or its
@@ -2358,7 +2358,8 @@ results; object results get the proxy's 64 KB harvest, where `JSON.stringify` ga
   gateway forward the result with an alert (an ask forwards there, §8), and the model proxy in enforce
   mode refuses the request, as it does for any ask. Before, the advisory on an injected page came from an
   accidental #55 match.
-- **#39 in a result stays an alert-level, report-only finding** (`CRED_RESULT_DECISION`, below).
+- **#39 in a result is an alert-level finding that never asks or blocks by default; a surface that can rewrite
+  the result masks it** (`CRED_RESULT_DECISION`, below).
 - The decision is recomputed from what survives, and content-rule findings (`threatId 0`) keep their
   resolution.
 
@@ -2432,15 +2433,20 @@ same pages went #32 61 → 0, #17 39 → 8, #15 26 → 0; the 842 real files wen
 `CLAUDE.md`, measured separately). `scripts/score-webfetch-benign.mjs`, which counts any posted finding including `Info`: 27 →
 23 of 149 (18.1% → 15.4%), advisories 5 → 3.
 
-**`CRED_RESULT_DECISION` — why a credential in a result stays report-only.** #39 fired on 0 of the 95 tune
+**`CRED_RESULT_DECISION` — why a credential in a result is masked, not asked about.** #39 fired on 0 of the 95 tune
 attacks (the corpora's attacks ask the agent to fetch a credential; none carries one) and on 11 of 1,422
 tune benign samples: 5 of 149 web pages (credential-rotation runbooks and API docs with sample keys), 5
 of 389 benign-v2 prompts, 1 of 842 real files. On the locked split, scored once: 0 of 77 attacks and 11 of 964 benign (6 of 144 web pages, 3 of 561 real files). Escalating it to `ask` would add no
 detection here and would put a sign-off request on about 3% of benign fetched pages — a deny under server
 mode's headless rule on the surfaces that settle. What makes a credential in a result dangerous is the
 agent sending it on, and that is judged on the way out (#65 is a built-in block; the secret-egress
-fingerprints run on every outbound call). An org that wants results carrying secrets withheld sets #39
-or `tierPolicy.secret` to `block` (the proxy and the gateway then replace the result) or `mask`.
+fingerprints run on every outbound call). So by default the decision is `mask`: the hook (`updatedToolOutput`),
+the MCP gateway and guard, and the model proxy in enforce mode replace the span and deliver the rest
+(cli/result-mask.mjs); a caller that cannot rewrite gets `notify`, and the hook adds a `decision: "block"`
+reason telling the model not to use or repeat the value. Benign cost on the tune split plus 278 real files
+(`scripts/score-result-mask.mjs`): 6 of 858 masked, 3 of 858 where the mask fails. An org that wants results
+carrying secrets withheld sets #39 or `tierPolicy.secret` to `block` (the proxy and the gateway then replace
+the result); `notify` restores report-only.
 
 **Cost.** `engine.scan` at `output` on real 18–64 KB files: median +0.1 to +1.7 ms; the two new detectors
 alone 0.3–1.5 ms at 64 KB. Per tune sample in process: SDK median 2.45 → 2.50 ms (p95 19.4 → 19.1),
@@ -2564,7 +2570,7 @@ The attack side is a no-regression check on in-sample sets, not fresh recall.
 
 Left alone, with the reason: the canonical example credentials (`AKIA…EXAMPLE`, the jwt.io token, an
 `AIza…EXAMPLE…` key) because the repository's own tests and red-team corpus use them as the secret, and
-#39 on inbound content is report-only anyway (`CRED_RESULT_DECISION`); `postgres:postgres@` (a default
+#39 on inbound content never asks or blocks by default (`CRED_RESULT_DECISION`); `postgres:postgres@` (a default
 credential is still a credential); the quoted injection in an advisory and the "override the previous
 instruction" note (a quoted-for-a-reader signal is exactly what turned a published design's false
 positives into false negatives); "you must delete" in `inj-untrusted-directive` (one sample is the only
@@ -2601,6 +2607,49 @@ attacker already has, still fires; `test/mcp-package-precision.test.mjs` relies 
 pattern in 7.5 ms.
 
 ---
+
+### #90: cardholder data
+
+`dlp-payment-card` and `pci-cvv` report #90 "Cardholder data handled by an AI agent" (Critical); #1 keeps
+`dlp-iban` and `clipboard-to-sink`. The card detector matches 13 to 19 digits with an optional space or dash
+between them, then its `refine()` ([`data/card-iin.js`](../data/card-iin.js) `cardNumberValid`) requires the
+Luhn check digit and leading digits inside an issuer range one of eight networks issues from, at a length that
+network issues: Visa 4 (13, 16, 19 digits), Mastercard 51–55 and 2221–2720 (16), American Express 34 and 37
+(15), Discover 6011, 644–649, 65 and 622126–622925 (16–19), JCB 3528–3589 (16–19), Diners Club 300–305,
+3095, 36, 38–39 (14–19), UnionPay 62 and 8100–8171 (16–19), Maestro 5018, 5020, 5038, 5893, 6304, 6759,
+6761–6763 (13–19). The ranges were written from the networks' published numbering. `browser-ext/detectors.js`
+carries a copy; `browser-ext/test-detectors.mjs` fails if the ranges or any verdict differ.
+
+Measured against the 1.42.0 detector (`{13,16}` digits and Luhn only), each input run through both:
+
+| Input | Before | After |
+|---|---|---|
+| A Luhn-valid number at both ends of every range above, at every length its network issues, contiguous and in groups of four (432) | 230 | 432 |
+| Luhn-valid 13–16-digit runs starting outside every range (40) | 40 | 0 |
+| Text files in `node_modules` (3,038) | 16 (14 on nil-UUID runs `00000000-0000-0000-`) | 2 (the test card 4111111111111111 in two zod test files) |
+| benign-corpus, -v2, Arabic, Hebrew, Russian, web-content tune half, vector2–5, poisoning, corpus.json (1,991 samples) | 0 | 0 |
+
+None of the corpora holds a card number, so the last row says nothing about recall; the benign-v2 gate reads
+16 / 602 before and after, `scripts/score-webfetch-benign.mjs` (tune half) 10 / 149 before and after.
+Networks outside the eight (Mir, RuPay's own ranges, private-label cards) are not detected.
+
+**Policy.** `threatActionFor` reads `threatPolicy[90]`, and with none `threatPolicy[1]`
+([`data/cardholder.js`](../data/cardholder.js) `threatPolicyEntry`), before the data tier, so a signed
+policy written for #1 keeps governing cards. #90 is in the `regulated` tier with #1 and #44 and has no
+built-in default: with nothing set it reports, as #1 does. The inbound rule (§7) treats #90 as a data class,
+and #1's entry counts as naming it.
+
+**Evidence.** A #90 record never carries `matchText` or `argText` at any capture tier
+([`data/capture-tiers.js`](../data/capture-tiers.js), both `applyCaptureTier` and `stripAboveTier`), and its
+`contentHash` is `proc:` and 16 hex, an HMAC under a key random to the process
+([`cli/span-hash.mjs`](../cli/span-hash.mjs)): the hook, the MCP proxy, the gateway, the Agent SDK and the
+model proxy (its reply scan already did this for cards and personal data), `moorai-guard`, `moorai-scan`,
+the ingest replay, the desktop app (`src/span-hash.js`, a key per page) and the browser extension (a key per
+page load). The install-token-keyed hash would let anyone holding the token enumerate a card back to its
+number. The hook is one process per tool call, so no two hook alerts on the same card share a hash. The hook
+still checks honeytokens against the install-token-keyed hash of the span, on the device, and never sends it.
+The exposure ledger records the secret classes only (#39, #55, #65, by threat id), so it holds no #90 row; the action-audit log and its
+exports (`moorai-trace`, `moorai-stix`, `moorai-attest`) carry the `proc:` hash as they carry any other.
 
 ## 8. The MCP proxy
 
@@ -2886,7 +2935,7 @@ Recorded because a confidently wrong document is what created the task to rewrit
 | Latency budget: Tier-1 < 20 ms, Tier-2 ≈ 800 ms | Measured Tier-1 is 0.26–2.47 ms per scan (§11). The semantic guard is 3500 ms by default, not 800. |
 | `detectors.json` and `threats.json` are versioned and the engine pins a schema version | `data/threats.json` has a `meta` block; the engine pins no schema version and validates none. |
 | "Every detector ships positive/negative test cases" | There is no per-detector fixture requirement. Evidence is corpus-level (`test/redteam/`) and the promotion bar in §5 is stated in terms of corpora, not fixtures. |
-| Detectability map over ~40 threats | The matrix is 85 threats. The map is stale and has been dropped rather than half-updated; [BENCHMARK.md](BENCHMARK.md) carries measured coverage instead. |
+| Detectability map over ~40 threats | The matrix is 86 threats. The map is stale and has been dropped rather than half-updated; [BENCHMARK.md](BENCHMARK.md) carries measured coverage instead. |
 
 ---
 

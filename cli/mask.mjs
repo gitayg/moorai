@@ -21,12 +21,16 @@
 // of the device's KEYED content hash of the span (cli/content-hash.mjs), mapped 0-f → a-p so the tag can
 // never look like a phone number, a card fragment or a hex key to the very detectors that verify it. No
 // character of the span survives, and without the enrollment key the tag cannot be tested against a guess.
+// A #90 card span takes its letters from the process-keyed hash instead (cli/span-hash.mjs): 32 bits of the
+// install-token-keyed hash would let anyone holding the token test a card whose issuer range and last four
+// digits are known against the tag.
 //
 // VERIFY, DON'T ASSUME. A detector's match can come from the engine's normalisation pass (a secret inside
 // base64) or from its score promotion, and neither is a span of the raw text. The caller therefore
 // re-scans the masked text and treats ANY surviving finding of a masked threat as a failed mask — which
 // falls back to the configured action rather than letting a half-masked payload through as "masked".
 import { TIER_OF } from "../data/data-tiers.js";
+import { spanHash } from "./span-hash.mjs";
 import { safeRegex } from "../src/safe-regex.js";
 import { globalMatches } from "../src/regex-restart.js";
 
@@ -43,7 +47,7 @@ export const MASK_CAPS = { maxBytes: 262144, maxNodes: 4096, maxDepth: 16 };
 
 const LETTERS = "abcdefghijklmnop";
 export function placeholder(threatId, span, hash) {
-  const hex = String(hash(span) || "").replace(/^h2:/, "").replace(/[^0-9a-f]/g, "");
+  const hex = String(spanHash(threatId, span, hash) || "").replace(/^(h2|proc):/, "").replace(/[^0-9a-f]/g, "");
   const tag = hex ? hex.slice(0, 8).split("").map((c) => LETTERS[parseInt(c, 16)]).join("") : "nokey";
   return `[MOORAI:${TIER_OF[threatId] || "data"}:${tag}]`;
 }

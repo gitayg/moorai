@@ -3,6 +3,7 @@ import { compilePacks } from "../data/detector-packs.js";
 import { CONTENT_RULES } from "../data/content-rules.js";
 import { effectiveContentPolicy } from "../data/content-defaults.js";
 import { TIER_OF } from "../data/data-tiers.js";
+import { threatPolicyEntry } from "../data/cardholder.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { DetectionEngine } from "./engine.js";
 import { Audit } from "./audit.js";
@@ -400,7 +401,7 @@ function toAgent(text) { sendRaw(text + "\r"); }
 // Per-threat action wins; else the data-tier default (policy.tierPolicy) for the threat's tier;
 // else "notify". Lets an admin govern by data class without losing any per-threat override.
 function threatAction(id) {
-  const explicit = policy?.threatPolicy?.[id];
+  const explicit = threatPolicyEntry(policy, id);
   if (explicit) return explicit;
   const tier = TIER_OF[id];
   const tierAct = tier && policy?.tierPolicy?.[tier];

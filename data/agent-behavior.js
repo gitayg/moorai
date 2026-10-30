@@ -172,7 +172,7 @@ export function assessCrossServerTrifecta(events) {
 
 // Derive the three content-free trifecta legs for a single tool call from what the hook already knows:
 // the tool name, the stage, and the finding classes (threat ids) — no prompt/file content required.
-const SENSITIVE_THREATS = new Set([1, 9, 15, 39, 44, 45, 55]); // secrets, PII, PHI, source/IP, cards
+const SENSITIVE_THREATS = new Set([1, 9, 15, 39, 44, 45, 55, 90]); // secrets, PII, PHI, source/IP, cards
 const UNTRUSTED_THREATS = new Set([3, 40, 50]);                 // injection, indirect/RAG, invisible text
 const CALLOUT_THREATS = new Set([2, 47, 54, 56, 57]);           // exfil, external comms, reverse shell, MCP-destructive, install
 export function trifectaLegs(tool, stage, findings, flags) {

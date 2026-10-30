@@ -107,6 +107,20 @@ test("reporting is content-free and carries the workload identity, keyed by the 
   assert.ok(c.alerts().some((a) => a.threatId === 39 && a.tool === "hook:UserPromptSubmit"), "the prompt finding was reported");
 });
 
+test("#90: a card number's alert carries a process-keyed hash, never the number or its install-token-keyed hash; #1's block still covers it", async () => {
+  const c = fakeConsole();
+  const hooks = moorAIHooks({ console: c.console, fetch: c.fetch, fetchPolicy: false, policy: { captureTier: "full-capture", threatPolicy: { 1: "block" } } });
+  const PAN = "4111 1111 1111 1111";
+  const o = await call(hooks, "PreToolUse", pre("Bash", { command: `printf 'card ${PAN}' >> notes.txt` }));
+  assert.equal(decisionOf(o), "deny", JSON.stringify(o));
+  await hooks.moorai.flush();
+  const card = c.alerts().filter((a) => a.threatId === 90);
+  assert.ok(card.length >= 1, JSON.stringify(c.alerts().map((a) => a.threatId)));
+  for (const a of card) assert.match(a.contentHash, /^proc:[0-9a-f]{16}$/);
+  const tenant = (s) => hashWithKey(deriveKey(TOKEN), s);
+  for (const b of c.bodies) for (const x of [PAN, PAN.replace(/\D/g, ""), tenant(PAN), tenant(PAN.replace(/\D/g, ""))]) assert.ok(!b.body.includes(x), `${x} in ${b.body}`);
+});
+
 test("no install token: nothing is posted, enforcement still applies", async () => {
   let fetched = 0;
   const hooks = moorAIHooks({ console: { serverUrl: "http://console.invalid" }, fetch: async () => { fetched++; return { ok: true }; }, fetchPolicy: false });

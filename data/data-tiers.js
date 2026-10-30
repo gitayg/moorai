@@ -5,7 +5,7 @@ export const DATA_TIERS = {
   pii: [15],          // emails, phone, national ID, passport — personal data
   secret: [39],       // API keys, tokens, private keys
   source: [9],        // IP: roadmap, architecture, source, trade secrets
-  regulated: [1, 44]  // payment-card / PCI, PHI / HIPAA
+  regulated: [1, 44, 90]  // payment-card / PCI (#90 cards, #1 IBAN), PHI / HIPAA
 };
 
 // Reverse index: threatId → tier.

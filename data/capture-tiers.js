@@ -19,6 +19,12 @@ export const CAPTURE_FIELDS = {
 
 const ALL_FIELDS = [...new Set(Object.values(CAPTURE_FIELDS).flat())];
 
+// Content fields a finding of these threats never carries, at any tier: #90 cardholder data, whose number a
+// matched span or an argument would hold in the clear (data/cardholder.js). Keyed on the record's threatId.
+export const SPAN_TEXT_FIELDS = ["matchText", "argText"];
+export const NO_SPAN_TEXT_THREATS = [90];
+const spanTextBarred = (obj) => NO_SPAN_TEXT_THREATS.includes(Number(obj && obj.threatId));
+
 export function captureRank(tier) { return CAPTURE_RANK[tier] || 0; }
 
 // Return `base` merged with ONLY the extras allowed at `tier`. content-free (or an unknown tier) →
@@ -28,6 +34,7 @@ export function applyCaptureTier(base, extras, tier) {
   const out = { ...base };
   if (!allowed.length || !extras) return out;
   for (const k of allowed) if (extras[k] != null && extras[k] !== "") out[k] = extras[k];
+  if (spanTextBarred(base)) for (const k of SPAN_TEXT_FIELDS) delete out[k];
   return out;
 }
 
@@ -36,6 +43,7 @@ export function stripAboveTier(obj, tier) {
   const allowed = new Set(CAPTURE_FIELDS[tier] || []);
   const out = { ...obj };
   for (const k of ALL_FIELDS) if (!allowed.has(k)) delete out[k];
+  if (spanTextBarred(obj)) for (const k of SPAN_TEXT_FIELDS) delete out[k];
   return out;
 }
 

@@ -3,7 +3,7 @@
 // rewrites events). Four kinds of finding:
 //   secret          #39  the engine's output-stage secret detectors (data/detectors.js secret-*, dlp-jwt,
 //                        dlp-private-key …)
-//   payment-card    #1   dlp-payment-card (Luhn-checked), pci-cvv
+//   payment-card    #90  dlp-payment-card (Luhn and issuer-range checked), pci-cvv
 //   personal-data   #15  dlp-email, dlp-phone, dlp-national-id, pii-passport
 //   system-prompt   #52  the reply reproduces a run of at least ECHO_MIN_WORDS consecutive words of THIS
 //                        request's system prompt (below)
@@ -45,8 +45,8 @@ import { createHmac, randomBytes } from "node:crypto";
 import { globalMatches } from "../src/regex-restart.js";
 import { threatActionFor } from "../cli/hook-core.mjs";
 
-export const CLASSES = Object.freeze({ 39: "secret", 1: "payment-card", 15: "personal-data", 52: "system-prompt" });
-const PRIORITY = [39, 1, 15, 52];
+export const CLASSES = Object.freeze({ 39: "secret", 90: "payment-card", 15: "personal-data", 52: "system-prompt" });
+const PRIORITY = [39, 90, 15, 52];
 export const HOLD = 256;
 export const TAIL = 256;
 export const BATCH = 4096;

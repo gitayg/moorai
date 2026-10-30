@@ -4,7 +4,7 @@
 > Generated: 2026-10-28T11:12:28.761Z
 
 - **Detectors:** 128
-- **Threats:** 85
+- **Threats:** 86
 - **Adversarial corpus:** 102/102 passed (100.0%)
 - **OWASP LLM Top 10:** 10/10 items covered by ≥1 on-device detector
 - **OWASP Top 10 for Agentic Applications:** 1/10 covered, 6 partial, 3 uncovered
@@ -16,7 +16,7 @@
 | Item | Name | Threats | Detectors | Status |
 |------|------|--------:|----------:|--------|
 | LLM01 | Prompt Injection | 8 | 25 | ✅ covered |
-| LLM02 | Sensitive Information Disclosure | 21 | 45 | ✅ covered |
+| LLM02 | Sensitive Information Disclosure | 22 | 45 | ✅ covered |
 | LLM03 | Supply Chain | 8 | 6 | ✅ covered |
 | LLM04 | Data & Model Poisoning | 1 | 2 | ✅ covered |
 | LLM05 | Improper Output Handling | 7 | 16 | ✅ covered |

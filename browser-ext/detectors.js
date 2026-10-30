@@ -56,10 +56,19 @@
     const hex = /^[0-9a-f]+$/i.test(val);
     return shannonEntropy(val) >= (hex ? 3.0 : 3.5);
   }
-  // The Luhn check every payment-card number carries — copied from data/detectors.js luhnValid.
-  function luhnValid(m) {
-    const d = String(m).replace(/\D/g, "");
-    if (d.length < 13 || d.length > 16) return false;
+  // #90 — a payment-card number: 13-19 digits, the Luhn check digit, and an issuer range and length a card
+  // network issues — copied from data/card-iin.js (test-detectors.mjs fails if the two differ).
+  const CARD_NETWORKS = [
+    { network: "visa", ranges: [[4, 4]], lengths: [13, 16, 19] },
+    { network: "mastercard", ranges: [[51, 55], [2221, 2720]], lengths: [16] },
+    { network: "amex", ranges: [[34, 34], [37, 37]], lengths: [15] },
+    { network: "discover", ranges: [[6011, 6011], [644, 649], [65, 65], [622126, 622925]], lengths: [16, 17, 18, 19] },
+    { network: "jcb", ranges: [[3528, 3589]], lengths: [16, 17, 18, 19] },
+    { network: "diners", ranges: [[300, 305], [3095, 3095], [36, 36], [38, 39]], lengths: [14, 15, 16, 17, 18, 19] },
+    { network: "unionpay", ranges: [[62, 62], [8100, 8171]], lengths: [16, 17, 18, 19] },
+    { network: "maestro", ranges: [[5018, 5018], [5020, 5020], [5038, 5038], [5893, 5893], [6304, 6304], [6759, 6759], [6761, 6763]], lengths: [13, 14, 15, 16, 17, 18, 19] }
+  ];
+  function luhnValid(d) {
     let sum = 0;
     for (let i = 0; i < d.length; i++) {
       let n = d.charCodeAt(d.length - 1 - i) - 48;
@@ -67,6 +76,28 @@
       sum += n;
     }
     return sum % 10 === 0;
+  }
+  function cardNetwork(d) {
+    for (const n of CARD_NETWORKS) {
+      if (!n.lengths.includes(d.length)) continue;
+      for (const [lo, hi] of n.ranges) {
+        const p = Number(d.slice(0, String(lo).length));
+        if (p >= lo && p <= hi) return n.network;
+      }
+    }
+    return null;
+  }
+  function cardNumberValid(m) {
+    const d = String(m).replace(/\D/g, "");
+    if (d.length < 13 || d.length > 19) return false;
+    return luhnValid(d) && cardNetwork(d) !== null;
+  }
+  // A card number's hash is keyed per page load, not with the install token, which could enumerate it back
+  // to the number (data/cardholder.js); "proc:" says so. Every other finding keeps the tenant-keyed hash.
+  const PROC_KEY = root.crypto.getRandomValues(new Uint8Array(32));
+  const PROCESS_KEYED = [90];
+  function spanHash(threatId, span) {
+    return PROCESS_KEYED.includes(threatId) ? "proc:" + H.hashWithKey(PROC_KEY, span).slice(H.HASH_PREFIX.length) : H.contentHash(span);
   }
   const valueOf = (m) => {
     const mm = String(m).match(/["']?([A-Za-z0-9\-_.\/+=]{20,})["']?\s*$/);
@@ -125,9 +156,9 @@
     { detectorId: "dlp-phone", threatId: 15, category: "Information & Privacy", riskLevel: "High",
       label: "a phone number", patterns: [/(?<!\d)(?:\+?\d{1,3}[ .-]?)?\(?\d{2,4}\)?[ .-]?\d{3}[ .-]?\d{4}(?!\d)/] },
 
-    // === Payment data — threat #1 "Information & Privacy" / Critical (from data/detectors.js) ===
-    { detectorId: "dlp-payment-card", threatId: 1, category: "Information & Privacy", riskLevel: "Critical",
-      label: "a payment-card number", patterns: [/\b(?:\d[ -]?){13,16}\b/], refine: (m) => luhnValid(m) },
+    // === Payment data — #90 cardholder data / Critical and #1 IBAN (from data/detectors.js) ===
+    { detectorId: "dlp-payment-card", threatId: 90, category: "Information & Privacy", riskLevel: "Critical",
+      label: "a payment-card number", patterns: [/\b(?:\d[ -]?){13,19}\b/], refine: (m) => cardNumberValid(m) },
     { detectorId: "dlp-iban", threatId: 1, category: "Information & Privacy", riskLevel: "High",
       label: "an IBAN / bank account", patterns: [/\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/] },
 
@@ -174,7 +205,7 @@
           category: d.category,
           riskLevel: d.riskLevel,
           label: d.label,
-          contentHash: H.contentHash(span)  // keyed one-way; the span itself is discarded by the caller
+          contentHash: spanHash(d.threatId, span)  // keyed one-way; the span itself is discarded by the caller
         });
         break; // one finding per detector, like the engine's per-detector dedup
       }
@@ -193,7 +224,7 @@
     return findings.reduce((a, f) => (!a || (RISK_RANK[f.riskLevel] || 0) > (RISK_RANK[a.riskLevel] || 0) ? f : a), null);
   }
 
-  const api = { DETECTORS, scan, worst, isHighSeverity, shannonEntropy, looksLikeSecret, RISK_RANK };
+  const api = { DETECTORS, scan, worst, isHighSeverity, shannonEntropy, looksLikeSecret, RISK_RANK, CARD_NETWORKS, cardNumberValid };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api; // Node (unit test)
   root.MoorAIDetectors = api;                                               // content-script isolated world

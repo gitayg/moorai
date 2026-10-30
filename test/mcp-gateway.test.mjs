@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { policyCanonical, policyDigest, POLICY_SIG_VERSION, publicKeyId } from "../cli/hook-core.mjs";
+import { hashWithKey, deriveKey } from "../cli/content-hash.mjs";
 import { startUpstream } from "../mcp-gateway/test/fake-upstream.mjs";
 import { rmTree, stopChild } from "./fs-cleanup.mjs";
 
@@ -301,6 +302,33 @@ test("GATEWAY: an injected tool result is flagged under the default policy and f
     const res = con.alerts.filter((a) => a.stage === "result");
     assert.ok(res.some((a) => a.threatId === 3), `result injection not flagged: ${JSON.stringify(con.alerts.map((a) => a.stage + ":" + a.threatId))}`);
     assert.ok(res.every((a) => a.tool === "gateway:weather"));
+  });
+});
+
+// #90: a card number in a tool result is reported as a data class (riskLevel Info, forwarded) unless the policy
+// names #90, #1 or the regulated tier; its hash is process-keyed, never the number or its install-token-keyed hash.
+test("GATEWAY: a card number in a tool result is #90 at Info and forwarded; with threatPolicy[1] block it is withheld; no number or tenant-keyed card hash in any alert", async () => {
+  const PAN = "4111 1111 1111 1111";
+  const TEXT = `Customer on file. Card ${PAN}, expires 12/26.`;
+  const tenant = (s) => hashWithKey(deriveKey("tok"), s);
+  const clean = (alerts) => { for (const a of alerts) { const s = JSON.stringify(a); for (const x of [PAN, PAN.replace(/\D/g, ""), tenant(PAN), tenant(PAN.replace(/\D/g, ""))]) assert.ok(!s.includes(x), `${x} in ${s}`); } };
+  await scenario({ policy: { captureTier: "full-capture" }, upstream: { resultText: TEXT } }, async ({ con, base }) => {
+    const r = await rpc(base, call(31, "crm", { id: 7 }));
+    assert.equal(r.json.result.content[0].text, TEXT, "a data-class finding on a result is not withheld by default");
+    await settle();
+    const card = con.alerts.filter((a) => a.stage === "result" && a.threatId === 90);
+    assert.equal(card.length, 1, JSON.stringify(con.alerts.map((a) => a.stage + ":" + a.threatId)));
+    assert.equal(card[0].riskLevel, "Info");
+    assert.match(card[0].contentHash, /^proc:[0-9a-f]{16}$/);
+    clean(con.alerts);
+  });
+  await scenario({ policy: { captureTier: "full-capture", threatPolicy: { 1: "block" } }, upstream: { resultText: TEXT } }, async ({ con, base }) => {
+    const r = await rpc(base, call(32, "crm", { id: 7 }));
+    assert.equal(r.json.result.isError, true, `threatPolicy[1] block did not withhold a card result: ${r.text}`);
+    await settle();
+    const card = con.alerts.filter((a) => a.stage === "result" && a.threatId === 90);
+    assert.equal(card[0].riskLevel, "Blocked");
+    clean(con.alerts);
   });
 });
 

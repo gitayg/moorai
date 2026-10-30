@@ -187,15 +187,15 @@ test("a numeric id past 2^53 in tool-call arguments is NOT refused in enforce or
   }
 });
 
-test("the content scan reads a number past 2^53 as sent: a card number JSON.parse rounds (…1055 → …1056, failing Luhn) is still found", async () => {
-  const CARD = "9007199254741055";
+test("the content scan reads a number past 2^53 as sent: a 19-digit card number JSON.parse rounds (…1110 → …1168, failing Luhn) is still found", async () => {
+  const CARD = "4111111111111111110";
   assert.notEqual(String(JSON.parse(CARD)), CARD, "JSON.parse changes it");
   const n0 = con.alerts.length;
   fp.on((r, res) => sendJson(res, withArgs("get_user", `{"card":${CARD}}`)));
   assert.equal((await chat(px.enforce)).status, 200, "a warn-level finding is not a refusal");
   fp.on((r, res) => sendJson(res, anthropicBody(`{"card":${CARD}}`)));
   assert.equal((await anthropicChat(px.enforce)).status, 200);
-  const found = () => con.parsed().slice(n0).filter((x) => x.threatId === 1 && x.tool === "model-proxy:get_user").length;
+  const found = () => con.parsed().slice(n0).filter((x) => x.threatId === 90 && x.tool === "model-proxy:get_user").length;
   assert.ok(await waitFor(() => found() >= 2), `payment-card alerts: ${found()} ${JSON.stringify(con.parsed().slice(n0).map((x) => [x.threatId, x.tool]))}`);
 });
 

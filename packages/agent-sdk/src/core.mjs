@@ -32,6 +32,7 @@ export const secretTaintLib = await load("cli/secret-taint.mjs");
 export const secretLearnLib = await load("cli/secret-learn.mjs");
 export const sessionRiskLib = await load("data/session-risk.js");
 export const contentHashLib = await load("cli/content-hash.mjs");
+export const spanHashLib = await load("cli/span-hash.mjs");
 export const inboundLib = await load("cli/inbound.mjs");
 export const indexScanLib = await load("cli/index-scan.mjs");
 export const provenance = await load("cli/provenance.mjs");

@@ -26,7 +26,7 @@ const SYS = "You are the Acme billing assistant for the northern region. Always 
 const ECHO = SYS.split(" ").slice(9, 41).join(" ");
 const USER = "Can you help me with my invoice?";
 const reply = (x) => `Here is what you asked for: ${x}. Let me know if you need anything else.`;
-const CASES = { secret: { x: SECRET, cls: "secret", id: 39 }, email: { x: EMAIL, cls: "personal-data", id: 15 }, card: { x: CARD, cls: "payment-card", id: 1 }, echo: { x: ECHO, cls: "system-prompt", id: 52 } };
+const CASES = { secret: { x: SECRET, cls: "secret", id: 39 }, email: { x: EMAIL, cls: "personal-data", id: 15 }, card: { x: CARD, cls: "payment-card", id: 90 }, echo: { x: ECHO, cls: "system-prompt", id: 52 } };
 const CATEGORY = /^Model proxy: .* (in|reproduced in) the model's reply$/;
 
 let fp;

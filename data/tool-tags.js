@@ -16,9 +16,9 @@ const TAG_SET = new Set(TAGS);
 export const isTag = (t) => TAG_SET.has(t);
 
 // Threats whose finding on a READ means the call read private data. The data tiers that carry private
-// data (data/data-tiers.js: 15 PII, 39 secrets, 1 payment card, 44 PHI) and #55 credential-file access.
+// data (data/data-tiers.js: 15 PII, 39 secrets, 90 payment card, 1 IBAN, 44 PHI) and #55 credential-file access.
 // Tier "source" (#9: roadmap / architecture prose) is left out: it fires on ordinary design documents.
-export const PRIVATE_FINDING_IDS = Object.freeze([1, 15, 39, 44, 55]);
+export const PRIVATE_FINDING_IDS = Object.freeze([1, 15, 39, 44, 55, 90]);
 
 // The built-in host tools. Bash / PowerShell get `exec` here and the rest from the parsed command.
 export const BUILTIN_TOOL_TAGS = Object.freeze({

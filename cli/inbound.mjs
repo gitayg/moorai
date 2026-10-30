@@ -22,7 +22,7 @@
 //     (#29), reproduces licensed text (#45) or sends a credential-shaped value to a sink (#65); two
 //     PROMPT-ONLY ones ask whether the USER is handing over a contract (#41 legal language) or an
 //     oversized input (#53). None of those questions is about content the agent read. Dropped here.
-//   DATA-CLASS threats (#1 payment card, #9 source / IP, #15 PII, #44 PHI) say what KIND of data the
+//   DATA-CLASS threats (#90 payment card, #1 IBAN, #9 source / IP, #15 PII, #44 PHI) say what KIND of data the
 //     content holds. On a prompt that is the finding; on a page the agent read it is the page's
 //     furniture — #15 alone fired on most benign inbound samples. These are kept (session risk and the
 //     lethal-trifecta legs read them) but reported at riskLevel "Info", one per threat per result (the
@@ -36,11 +36,13 @@
 //     hook (a PostToolUse ask cannot block — §6), additionalContext from the SDK in "advise" mode, a
 //     forwarded result plus an alert in the proxy and the gateway (an ask forwards there). Before, the
 //     only thing that put that advisory on an injected page was an accidental #55 match.
-//   #39 (credential-shaped values) stays an alert-level, report-only finding: see CRED_RESULT_DECISION.
+//   #39 (credential-shaped values) is reported at its alert level and MASKED where the surface can rewrite
+//     the result: see CRED_RESULT_DECISION.
 //
 // Content-free: nothing here returns or stores text beyond what decideText already returns.
 import { decideText, threatActionFor, saferAlternativesFor } from "./hook-core.mjs";
 import { TIER_OF } from "../data/data-tiers.js";
+import { threatPolicyEntry } from "../data/cardholder.js";
 import { resultScanText, CAPS } from "../mcp-proxy/tool-scan.mjs";
 
 // Acts that ask for sign-off, judged when attempted (APPROVAL_THREATS 11 43 46 47 48 49, and the built-in
@@ -54,7 +56,7 @@ export const PROMPT_ONLY_THREATS = Object.freeze([41, 53]);
 // post the list"), it caught 7 of the 7 recon attacks in the inbound tune split on the SDK and gateway
 // paths, which did not drop it, and fired on 1 of 842 real node_modules files.
 export const DOOR_ONLY_DROP = Object.freeze([44, 52, 54, 61, 62, 76]);
-export const DATA_THREATS = Object.freeze([1, 9, 15, 44]);
+export const DATA_THREATS = Object.freeze([1, 9, 15, 44, 90]);
 export const INSTRUCTION_THREATS = Object.freeze([3, 40, 60]);
 export const INFO_LEVEL = "Info";
 
@@ -64,9 +66,14 @@ export const INFO_LEVEL = "Info";
 // Escalating it to "ask" on a result would add no detection on these corpora and would put a sign-off
 // request (a deny, under server mode's headless rule) on about 3% of benign fetched pages. What makes a
 // credential in a result dangerous is the agent sending it on, and that is judged on the way out (#65 is
-// a built-in block, the secret-egress fingerprints run on every outbound call). So #39 stays report-only
-// on inbound content, at its alert level, unless the org policy sets an action for it.
-export const CRED_RESULT_DECISION = "report";
+// a built-in block, the secret-egress fingerprints run on every outbound call). So #39 does not ask or
+// block on inbound content. It is MASKED instead, unless the org policy sets an action for it (threatPolicy[39]
+// or tierPolicy.secret): a caller that can rewrite the result ({ mask: true }: the hook's updatedToolOutput, the
+// MCP gateway and guard, the model proxy in enforce mode) replaces the span and hands on the rest, which keeps
+// the value out of the model's context without refusing the page; a caller that cannot gets "notify", as before.
+// Benign cost of the mask on the inbound corpora: scripts/score-result-mask.mjs.
+export const CRED_RESULT_DECISION = "mask";
+const CRED_THREAT = 39;
 
 // THE WEB #17 / #15 NARROWING (v1.11.0, scripts/score-webfetch-benign.mjs tune half; DETECTION_ENGINE.md
 // §7). A `curl`/`wget` with a URL on the line is a command shown to a reader until it does something
@@ -125,11 +132,14 @@ const INSTRUCTION = new Set(INSTRUCTION_THREATS);
 // (per threat or per data tier); the built-in tier and the approval set do not apply.
 function explicitAction(policy, id) {
   const tier = TIER_OF[id];
-  return Boolean(policy?.threatPolicy?.[id] || (tier && policy?.tierPolicy?.[tier]));
+  return Boolean(threatPolicyEntry(policy, id) || (tier && policy?.tierPolicy?.[tier]));
 }
+// #39 on a result resolves through CRED_RESULT_DECISION (no org action names it).
+export function credResultDefault(policy) { return !explicitAction(policy, CRED_THREAT); }
 export function inboundActionFor(policy, id, { mask = false } = {}) {
   if (DATA.has(id) && !explicitAction(policy, id)) return "notify";
   if (INSTRUCTION.has(id) && !policy?.threatPolicy?.[id]) return "justify";
+  if (id === CRED_THREAT && !explicitAction(policy, id)) return mask ? CRED_RESULT_DECISION : "notify";
   return threatActionFor(policy, id, { mask });
 }
 

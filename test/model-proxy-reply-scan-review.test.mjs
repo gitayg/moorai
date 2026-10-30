@@ -2,7 +2,7 @@
 //
 // Response text scanning in the model proxy, the v1.33.0 security review's findings (model-proxy/server.mjs,
 // response-scan.mjs, text-guard.mjs, text-codecs.mjs):
-//   M3  a payment card or personal data (#1, #15) is low-entropy: its alert's contentHash is keyed with a
+//   M3  a payment card or personal data (#90, #15) is low-entropy: its alert's contentHash is keyed with a
 //       random per-process key, so the install-token key cannot enumerate it back to the value.
 //   M4  mask / block also remove the token log-probabilities (`logprobs`, `top_logprobs`, `logprobsResult`)
 //       that repeat the reply text token by token.
@@ -74,7 +74,7 @@ test("M3: a card number's and personal data's contentHash is not the install-tok
   const a = await call("report", "/openai/chat/completions", CHAT(false), (res) => sendJson(res, body));
   const rt = proxies.report.px.runtime;
   const forms = (x) => [x, `${x} `, x.replace(/\D/g, ""), x.toLowerCase(), `${x}.`];
-  const card = a.alerts.filter((x) => x.threatId === 1), personal = a.alerts.filter((x) => x.threatId === 15);
+  const card = a.alerts.filter((x) => x.threatId === 90), personal = a.alerts.filter((x) => x.threatId === 15);
   assert.equal(card.length, 1, JSON.stringify(a.alerts.map((x) => x.threatId)));
   assert.equal(personal.length, 2);
   for (const al of [...card, ...personal]) for (const v of [CARD, PHONE, EMAIL]) for (const f of forms(v)) assert.notEqual(al.contentHash, rt.hash(f), `#${al.threatId}: reversible with the install-token key`);
@@ -82,9 +82,9 @@ test("M3: a card number's and personal data's contentHash is not the install-tok
   assert.equal(a.alerts.find((x) => x.threatId === 39).contentHash, rt.hash(SECRET));
   // Correlation within one process only: the same card again in this proxy has the same hash; another proxy differs.
   const again = await call("report", "/openai/chat/completions", CHAT(false), (res) => sendJson(res, body));
-  assert.equal(again.alerts.find((x) => x.threatId === 1).contentHash, card[0].contentHash);
+  assert.equal(again.alerts.find((x) => x.threatId === 90).contentHash, card[0].contentHash);
   const other = await call("report2", "/openai/chat/completions", CHAT(false), (res) => sendJson(res, body));
-  assert.notEqual(other.alerts.find((x) => x.threatId === 1).contentHash, card[0].contentHash);
+  assert.notEqual(other.alerts.find((x) => x.threatId === 90).contentHash, card[0].contentHash);
 });
 
 // ---- M4 ----
@@ -164,7 +164,7 @@ test("L4: report mode finds a card with spaces in it across the 4096-character b
   const s = createScanner({ dets, policy: {}, hold: false, onFind: (f) => found.push(f) });
   for (let i = 0; i < text.length; i += 7) s.push("c", text.slice(i, i + 7), false);
   s.push("c", "", true);
-  assert.deepEqual(found.map((f) => f.id), [1], "the card was found");
+  assert.deepEqual(found.map((f) => f.id), [90], "the card was found");
   // The tail stays bounded.
   assert.ok(BATCH + TAIL > 0);
 });

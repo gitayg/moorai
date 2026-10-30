@@ -40,7 +40,10 @@ X-Install-Token: <token>
 `contentHash` is a **keyed one-way hash** — HMAC-SHA-256 under your tenant's install token, the same
 hash the agent uses (`cli/content-hash.mjs`), so a span hashes identically in the browser and in the
 CLI. With no install token configured it is the explicit `h2:nokey` marker, never a weaker hash. Of the
-matched span — the matched text is used only to compute that hash and is then discarded. No prompt text,
+matched span — the matched text is used only to compute that hash and is then discarded. A payment-card
+number (#90) is the exception: its hash is keyed with a random value made when the page loads (`proc:` and
+16 hex), because a card number comes from a space small enough that anyone holding the install token could
+enumerate the tenant-keyed hash back to it; two pages, or a reload, hash the same card differently. No prompt text,
 no matched substring, and only the URL **host** (never the full URL or query string) is included.
 Reporting **fails open and silent**: any network error, or no configured server, simply sends nothing.
 
@@ -74,7 +77,8 @@ There is **no bundled ML model** — detection is deterministic regex/rules only
 
 `detectors.js` is a small, self-contained, faithful subset of the agent's detectors, ported verbatim from:
 
-- `data/detectors.js` — `dlp-email`, `dlp-national-id`, `dlp-payment-card`, `dlp-iban`,
+- `data/detectors.js` — `dlp-email`, `dlp-national-id`, `dlp-payment-card` (with the issuer ranges of
+  `data/card-iin.js`), `dlp-iban`,
   `dlp-private-key`, `dlp-jwt`, `dlp-phone`, `inj-ignore`
 - `data/secrets-patterns.js` — prefix-anchored provider tokens (AWS, GitHub, Slack, Stripe, Google,
   OpenAI/Anthropic, DB connection strings) plus the **entropy + allowlist gate** for the two "shapeless"

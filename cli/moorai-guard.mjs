@@ -16,6 +16,8 @@ import { systemConfig, trustedEnv } from "./server-mode.mjs";
 import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { recordExposure, recordIntent } from "./signals.mjs";
 import { contentHash, actorHash } from "./content-hash.mjs";
+import { spanHash } from "./span-hash.mjs";
+import { threatPolicyEntry } from "../data/cardholder.js";
 import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
 import { takeEscalationOutcomes } from "../data/model-escalation.mjs";
 import { atlasIds } from "../data/atlas.js";
@@ -191,8 +193,8 @@ function postEscalationOutcomes() {
 function reportAlert(finding, content, blocked = false, stage = "egress") {
   const alert = {
     threatId: finding.threat.id, category: finding.threat.category,
-    riskLevel: blocked ? "Blocked" : calibrateRisk(finding.threat.riskLevel, { stage, category: finding.threat.category }), // #10
-    stage, tool: "claude -p", ts: new Date().toISOString(), contentHash: contentHash(content), ...IDENTITY
+    riskLevel: blocked ? "Blocked" : calibrateRisk(finding.threat.riskLevel, { stage, threatId: finding.threat.id }), // #10
+    stage, tool: "claude -p", ts: new Date().toISOString(), contentHash: spanHash(finding.threat.id, content), ...IDENTITY
   };
   recordExposure(alert); // #5 — local content-free exposure ledger (secret classes only)
   return post(alert);
@@ -301,9 +303,8 @@ async function main() {
   if (policy && policy.captureTier && policy.captureTier !== "content-free") {
     process.stderr.write(`\x1b[33m⚠ MoorAI capture: ${policy.captureTier} — this policy records ${policy.captureTier === "full-capture" ? "prompt / argument text" : "metadata (file paths, tool names, command shape)"}.\x1b[0m\n`);
   }
-  const tp = policy?.threatPolicy || {};
   const cp = effectiveContentPolicy(policy); // built-in NSFW notify default under the org's entries
-  const action = (f) => tp[f.threat.id] || "notify";
+  const action = (f) => threatPolicyEntry(policy, f.threat.id) || "notify";
   const allFindings = engine.scan(prompt, "prompt").filter((f) => action(f) !== "disabled");
   const contentOn = Object.keys(cp).filter((id) => cp[id] && cp[id] !== "disabled");
   const allContent = contentOn.length ? engine.scanContent(prompt, contentOn) : [];

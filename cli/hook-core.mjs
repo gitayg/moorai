@@ -24,7 +24,8 @@ import { extractEndpointHosts, endpointApproved, extractTransitOverrides, proxyA
 import { statePath, latchPath, breadcrumbPath } from "./state-dirs.mjs";
 import { machinePath, systemTool } from "./machine-dir.mjs";
 import { readConsoleBackoff, backoffSkipsFetch, recordConsoleFailure, clearConsoleBackoff } from "./console-backoff.mjs";
-import { TIER_OF } from "../data/data-tiers.js";
+import { TIER_OF, DATA_TIERS } from "../data/data-tiers.js";
+import { threatPolicyEntry } from "../data/cardholder.js";
 import { APPROVAL_THREATS } from "../data/human-approval.js";
 import { compilePacks } from "../data/detector-packs.js";
 import { fileMetadataText } from "../data/file-metadata.js";
@@ -103,7 +104,7 @@ export const MASK_FALLBACKS = new Set(["notify", "justify", "block"]);
 export function threatActionFor(policy, id, opts = {}) {
   const tier = TIER_OF[id];
   let masked = false;
-  for (const act of [policy?.threatPolicy?.[id], tier && policy?.tierPolicy?.[tier]]) {
+  for (const act of [threatPolicyEntry(policy, id), tier && policy?.tierPolicy?.[tier]]) {
     if (!act) continue;
     if (act !== "mask") return act;
     if (masked) continue;
@@ -141,11 +142,14 @@ export function literacyTouchpoint({ threatId = 0, category = "", tool = "moorai
 // read into an agent's context (stage "file") or shipped as an MCP tool-call argument (stage "mcp"/
 // "egress") is worse than one typed into a prompt the user can still edit before sending. Label-only:
 // this adjusts the reported riskLevel, never the allow/ask/deny decision.
+// A secret class is keyed on the threat id: data tier "secret" (#39, a credential in content) plus #55
+// (credential-file access) and #65 (a local secret value sent out). It used to be a regex over the category,
+// which no secret threat's category matches (#39 is "Information & Privacy"), so nothing was raised or recorded.
 const LEVELS = ["Low", "Medium", "High", "Critical"];
-const SECRET_RE = /secret|credential|api[\s-]?key|token|password|private key/i;
-export function isSecretCategory(category) { return SECRET_RE.test(String(category || "")); }
-export function calibrateRisk(base, { stage, category } = {}) {
-  if (!isSecretCategory(category)) return base;
+export const SECRET_THREATS = Object.freeze([...DATA_TIERS.secret, 55, 65]);
+export function isSecretThreat(threatId) { return SECRET_THREATS.includes(Number(threatId)); }
+export function calibrateRisk(base, { stage, threatId } = {}) {
+  if (!isSecretThreat(threatId)) return base;
   const i = LEVELS.indexOf(base);
   if (i < 0) return base;
   if (stage === "file" || stage === "mcp" || stage === "egress") return LEVELS[Math.min(i + 1, LEVELS.length - 1)];
@@ -203,7 +207,7 @@ export function decideText(engine, policy, text, stage, opts = {}) {
     if (opts.only && !opts.only.includes(f.threat.id)) continue;
     const act = threatActionFor(policy, f.threat.id, { mask: !!opts.mask });
     if (act === "disabled") continue;
-    const level = calibrateRisk(f.threat.riskLevel, { stage, category: f.threat.category });
+    const level = calibrateRisk(f.threat.riskLevel, { stage, threatId: f.threat.id });
     out.findings.push({ threatId: f.threat.id, category: f.threat.category, riskLevel: level, match: f.match, detectorId: f.detectorId });
     if (act === "mask") { if (!out.maskIds.includes(f.threat.id)) out.maskIds.push(f.threat.id); continue; }
     // #3 — "kill" terminates the whole session, not just this call. It still denies the call (Claude
@@ -260,7 +264,7 @@ export function decideThreat(policy, id, detectorId, stage = "prompt") {
   if (!t) return out;
   const act = threatActionFor(policy, id);
   if (act === "disabled") return out;
-  const level = calibrateRisk(t.riskLevel, { stage, category: t.category });
+  const level = calibrateRisk(t.riskLevel, { stage, threatId: id });
   out.findings.push({ threatId: id, category: t.category, riskLevel: level, match: "", detectorId });
   if (act === "block" || act === "kill") { out.decision = "deny"; out.reasons.push(`#${id} ${t.category}`); }
   else if (act === "justify") { out.decision = "ask"; out.reasons.push(`#${id} ${t.category} (needs sign-off)`); }

@@ -70,7 +70,7 @@ test("ATTACK-V20: every fixture id is well formed, and every sub-technique's par
 test("ATTACK-V20: every rule carries the tag, and the schema documents it", () => {
   assert.ok(meta.schema.attack, "meta.schema.attack is missing");
   assert.ok(meta.schema.attackNote, "meta.schema.attackNote is missing");
-  assert.equal(threats.length, 85);
+  assert.equal(threats.length, 86);
   for (const t of threats) assert.ok(Array.isArray(t.attack), `#${t.id} attack must be an array`);
 });
 
@@ -140,7 +140,7 @@ test("ATTACK-V20: the counts per coverage level", () => {
   const rules = (l) => threats.filter((t) => t.attack.length > 0 && attackCoverage(t) === l).length;
   assert.deepEqual(
     { full: rules("full"), partial: rules("partial"), none: rules("none"), unmapped: threats.filter((t) => t.attack.length === 0).length },
-    { full: 2, partial: 38, none: 9, unmapped: 36 }
+    { full: 2, partial: 38, none: 9, unmapped: 37 }
   );
 });
 

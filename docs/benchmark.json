@@ -3,7 +3,7 @@
   "generatedAt": "2026-10-28T11:12:28.761Z",
   "engine": {
     "detectors": 128,
-    "threats": 85,
+    "threats": 86,
     "corpusCases": 102
   },
   "corpus": {
@@ -20,7 +20,7 @@
         "detectors": 25
       },
       "LLM02": {
-        "threats": 21,
+        "threats": 22,
         "detectors": 45
       },
       "LLM03": {

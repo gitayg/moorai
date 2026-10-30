@@ -17,6 +17,7 @@
 // one-way fingerprint of the matched span the live alert carries.
 import os from "node:os";
 import { contentHash, actorHash, NO_KEY } from "../content-hash.mjs";
+import { spanHash } from "../span-hash.mjs";
 import { reasonCodeOf, ENFORCEMENT } from "../provenance.mjs";
 import { isEnrolled } from "../hook-core.mjs";
 
@@ -40,7 +41,7 @@ export function historicalAlert(config, { agent, sessionId, toolUseId = "", even
     stage: finding.stage,
     tool: tool ? `hook:${tool}` : "hook:UserPromptSubmit",
     ts: ts || now.toISOString(),
-    contentHash: contentHash(finding.match || ""),
+    contentHash: spanHash(finding.threatId, finding.match || ""),
     ...identity(config),
     ...(session ? { session } : {}),
     replayed: true,

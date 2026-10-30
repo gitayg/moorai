@@ -28,6 +28,7 @@ import { SECURITY_TOOLING_DISABLE } from "./security-tooling.js";
 import { ciPipelinePoisoningHit } from "./ci-pipeline.js";
 import { destructiveIssued } from "./destructive-mention.js";
 import { persistenceHit } from "./persistence.js";
+import { cardNumberValid } from "./card-iin.js";
 
 // ---------------------------------------------------------------------------------------------------
 // Content-free helpers for the additive detectors appended at the end of DETECTORS. All pure,
@@ -206,18 +207,6 @@ function _perturbedInjection(text) {
 // Credential-shaped egress: a high-entropy, credential-shaped token heading to an OUTBOUND sink (a URL
 // query value, an Authorization header, curl/nc data) that the exact secret-egress matchers (assignment
 // shape / known prefixes) don't fire on. Complements those; content-free (entropy + shape only).
-// #1 — the Luhn check every payment-card number carries (dlp-payment-card's refine).
-function luhnValid(m) {
-  const d = String(m).replace(/\D/g, "");
-  if (d.length < 13 || d.length > 16) return false;
-  let sum = 0;
-  for (let i = 0; i < d.length; i++) {
-    let n = d.charCodeAt(d.length - 1 - i) - 48;
-    if (i % 2) { n *= 2; if (n > 9) n -= 9; }
-    sum += n;
-  }
-  return sum % 10 === 0;
-}
 // #44 — phi-hipaa's clinical nouns, and the clinical terms one of them needs nearby.
 const PHI_NOUN = String.raw`(?:diagnos(?:is|es|ed)|prescri(?:be|bed|ption)|lab results|prognosis|treatment plan)`;
 const PHI_CLINICAL = String.raw`(?:patients?|clinical|clinic|clinician|physician|doctor|nurse|hospital|medical|medication|dosage|dose|\d+[ \t]?mg|symptoms?|disease|disorder|syndrome|cancer|tumou?r|oncolog\w*|diabet\w*|hypertension|infection|surgery|surgical|pharmacy|pharmacist|ICD(?:-1[01])?|HIPAA|DOB|date of birth|mental health|therapy|psychiatr\w*|chronic|allerg\w*)(?![A-Za-z])`;
@@ -696,16 +685,18 @@ export const DETECTORS = [
   },
   {
     detectorId: "dlp-payment-card",
-    threatId: 1,
+    threatId: 90,
     stage: "prompt",
     stages: ["prompt", "output"], // #4
     mode: "warn",
     hint: "Looks like a payment-card number.",
-    patterns: [/\b(?:\d[ -]?){13,16}\b/],
-    // A card number carries a Luhn check digit; a digit run that fails it is not one. The shape alone
-    // fired on an RFC bit-position ruler ("0 1 2 3 … 9 0 1") on a fetched standards page
-    // (scripts/score-webfetch-benign.mjs). Letter-spaced, grouped and contiguous cards still fire.
-    refine: (m) => luhnValid(m)
+    patterns: [/\b(?:\d[ -]?){13,19}\b/],
+    // A card number carries a Luhn check digit and starts inside a range a card network issues from, at a
+    // length that network issues (data/card-iin.js); a digit run that fails either is not one. The shape
+    // alone fired on an RFC bit-position ruler ("0 1 2 3 … 9 0 1") on a fetched standards page
+    // (scripts/score-webfetch-benign.mjs), and Luhn alone on nil-UUID runs ("00000000-0000-0000-") in code.
+    // Letter-spaced, grouped and contiguous cards still fire.
+    refine: (m) => cardNumberValid(m)
   },
   {
     detectorId: "dlp-iban",
@@ -893,7 +884,7 @@ export const DETECTORS = [
   },
   {
     detectorId: "pci-cvv",
-    threatId: 1,
+    threatId: 90,
     stage: "prompt",
     stages: ["prompt", "output"], // #4
     mode: "warn",

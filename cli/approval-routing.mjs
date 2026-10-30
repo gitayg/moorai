@@ -26,6 +26,7 @@ import { readFileSync, writeFileSync, mkdirSync, renameSync, chmodSync } from "n
 import { join } from "node:path";
 import { canonicalJson, verifyPolicySignature } from "./hook-core.mjs";
 import { WIRE_RE, receiptActionHashInput } from "./approval-receipts.mjs";
+import { TOOL_CLASSES, classifyMcpTool } from "./mcp-tool-class.mjs";
 
 export const APPROVAL_REQUESTED = "APPROVAL_REQUESTED";
 export const APPROVAL_USED = "APPROVAL_USED";
@@ -42,7 +43,7 @@ export const HOLDS = Object.freeze(["block", "ask"]);
 export const GRANTS = Object.freeze(["once", "ttl"]);
 export const ROUTABLE_REASON_CODES = Object.freeze(["OT_PROTOCOL_CLIENT", "EGRESS_RULE", "MCP_TOOL_ARGS"]);
 export const OT_OPS = Object.freeze(["read", "write", "unknown"]);
-export const MATCH_KEYS = Object.freeze(["threatId", "functionTool", "mcpTool", "egressRuleId", "reasonCode", "otOp"]);
+export const MATCH_KEYS = Object.freeze(["threatId", "functionTool", "mcpTool", "egressRuleId", "reasonCode", "otOp", "toolClass"]);
 const RULE_KEYS = ["id", "label", "match", "holds", "group", "timeoutSec", "onTimeout", "grant", "grantTtlSec"];
 export const SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MCP_TOOL_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\/[A-Za-z0-9_.:-]{1,128}$/;
@@ -69,7 +70,8 @@ const MATCHERS = {
   mcpTool: (v) => list(v, (x) => typeof x === "string" && MCP_TOOL_RE.test(x), "mcpTool"),
   egressRuleId: (v) => list(v, (x) => typeof x === "string" && SLUG_RE.test(x), "egressRuleId"),
   reasonCode: (v) => list(v, (x) => ROUTABLE_REASON_CODES.includes(x), "reasonCode"),
-  otOp: (v) => list(v, (x) => OT_OPS.includes(x), "otOp")
+  otOp: (v) => list(v, (x) => OT_OPS.includes(x), "otOp"),
+  toolClass: (v) => list(v, (x) => TOOL_CLASSES.includes(x), "toolClass")
 };
 
 // The same rule validation as the console (server/approval-routing.js). → { value } | { error } (the error never
@@ -136,8 +138,9 @@ function functionToolMatches(keys, name) {
 const allIn = (vals, allowed) => Array.isArray(vals) && vals.length > 0 && vals.every((v) => allowed.includes(v));
 
 // facts: { threatIds: [driving threat ids], functionTool, mcpTool: "server/tool", egressRuleIds: [...], reasonCode,
-// otOp }. Every key the rule sets must match. Threat ids and egress rule ids must ALL be covered by the rule, so an
-// approval for one threat never lifts a second, unrelated one on the same call.
+// otOp, toolClass (the MCP tool's class, cli/mcp-tool-class.mjs) }. Every key the rule sets must match. Threat ids
+// and egress rule ids must ALL be covered by the rule, so an approval for one threat never lifts a second, unrelated
+// one on the same call.
 export function ruleMatches(rule, verdict, facts = {}) {
   if (!rule || !rule.holds.includes(verdict)) return false;
   const m = rule.match;
@@ -147,6 +150,7 @@ export function ruleMatches(rule, verdict, facts = {}) {
   if (m.egressRuleId && !allIn(facts.egressRuleIds, m.egressRuleId)) return false;
   if (m.reasonCode && !m.reasonCode.includes(facts.reasonCode)) return false;
   if (m.otOp && !m.otOp.includes(facts.otOp)) return false;
+  if (m.toolClass && !m.toolClass.includes(facts.toolClass)) return false;
   return true;
 }
 export function matchRule(rules, verdict, facts) { return (rules || []).find((r) => ruleMatches(r, verdict, facts)) || null; }
@@ -172,6 +176,12 @@ export function actionHashOf(tool, input, hash, receiptFor = null) {
 export function mcpToolOf(tool) {
   const m = /^mcp__(.+?)__(.+)$/.exec(String(tool || ""));
   return m ? `${m[1]}/${m[2]}` : "";
+}
+
+// An MCP call's class under the policy (override, then name: the hook sees no annotations); "" for any other tool.
+export function toolClassOf(policy, tool) {
+  const m = /^mcp__(.+?)__(.+)$/.exec(String(tool || ""));
+  return m ? classifyMcpTool(policy, { server: m[1], tool }).toolClass : "";
 }
 
 // The decided approvals of a policy, only when its signature verifies under a key the device holds (anchor or pin):
@@ -277,8 +287,8 @@ export function decideHeld({ rule, verdict, actionHash, threatId = 0, grants = [
 // A request for an MCP call covered by approvalReceipts adds approval.receiptArgsDigest (the tenant-keyed digest of
 // argsSha256, safe to store) and approval.receiptRequest { aud, tool, argsSha256 }: the raw hash the console needs
 // to mint a receipt, which it must strip before alert storage and SIEM (docs/approval-receipts.md §5).
-export function approvalAlert(ev, { tool = "", surface = "hook", destClass, hash } = {}) {
-  const base = { threatId: Number.isInteger(ev.threatId) ? ev.threatId : 0, stage: "PreToolUse", tool: tool ? `hook:${tool}` : "hook", contentHash: ev.actionHash };
+export function approvalAlert(ev, { tool = "", surface = "hook", destClass, hash, toolClass = "" } = {}) {
+  const base = { threatId: Number.isInteger(ev.threatId) ? ev.threatId : 0, stage: "PreToolUse", tool: tool ? `hook:${tool}` : "hook", contentHash: ev.actionHash, ...(toolClass ? { toolClass } : {}) };
   if (ev.kind === APPROVAL_REQUESTED) {
     return { ...base, category: "Approval requested", riskLevel: "High", decision: "deny", reasonCode: APPROVAL_REQUESTED,
       approval: { v: 1, requestId: ev.requestId, ruleId: ev.ruleId, surface, verdict: ev.verdict, actionHash: ev.actionHash, requestedAt: ev.requestedAt, expiresAt: ev.expiresAt, ...(destClass ? { destClass } : {}), ...(ev.receiptFor && hash ? { receiptArgsDigest: hash(ev.receiptFor.argsSha256), receiptRequest: { aud: ev.receiptFor.aud, tool: ev.receiptFor.tool, argsSha256: ev.receiptFor.argsSha256 } } : {}) } };
@@ -290,7 +300,8 @@ export function approvalAlert(ev, { tool = "", surface = "hook", destClass, hash
 // The verdict reasons a hold may follow: the call was judged in full (detectors, content rules) or stopped at an
 // egress rule. Fail-closed, tamper, containment, kill, decoy, circuit breaker and the other early stops are never
 // routed: a grant would otherwise release a call that was not judged.
-const ROUTABLE_BASIS = new Set(["", "DETECTOR_MATCH", "CONTENT_RULE", "EGRESS_RULE"]);
+// MCP_TOOL_CLASS: the class default (cli/mcp-tool-class.mjs), applied after every other check on the MCP call.
+const ROUTABLE_BASIS = new Set(["", "DETECTOR_MATCH", "CONTENT_RULE", "EGRESS_RULE", "MCP_TOOL_CLASS"]);
 const ENFORCING = new Set(["block", "justify", "ask", "kill", "mask"]);
 
 // The hook's gate. deps:
@@ -309,12 +320,12 @@ export function approvalGate({ load, tenant = "", enabled = true, hash, threatAc
     const rules = enabled ? approvalRules(policy, { warn }) : [];
     return (ctx = { policy, rules, grants: rules.length ? signedApprovals(policy, { keys: (trust && trust.keys) || [], tenant }) : [] });
   }
-  function run(c, rule, verdict, actionHash, threatId, tool, allowGrant, receiptFor = null) {
+  function run(c, rule, verdict, actionHash, threatId, tool, allowGrant, receiptFor = null, toolClass = "") {
     const r = decideHeld({ rule, verdict, actionHash, threatId, grants: c.grants, state: readApprovalState(stateDir), nowMs: now(), allowGrant, newId, receiptFor });
     if (r.outcome === "allow") granted = { requestId: r.requestId, receipt: r.receipt || null };
     // A request whose pending record cannot be written is still held (deny); its alert is still sent.
     if (r.changed) writeApprovalState(stateDir, r.state);
-    for (const ev of r.events) { try { post(approvalAlert(ev, { tool, hash })); } catch { /* delivery is the outbox's job */ } }
+    for (const ev of r.events) { try { post(approvalAlert(ev, { tool, hash, toolClass })); } catch { /* delivery is the outbox's job */ } }
     return r;
   }
   return {
@@ -331,9 +342,10 @@ export function approvalGate({ load, tenant = "", enabled = true, hash, threatAc
         egress = { egressRuleIds: ids.every((x) => typeof x === "string" && x) ? ids : [] };
         const c = await context();
         if (!c.rules.length) return false;
-        const rule = matchRule(c.rules, "block", { reasonCode: "EGRESS_RULE", egressRuleIds: egress.egressRuleIds, mcpTool: mcpToolOf(tool) });
+        const toolClass = toolClassOf(c.policy, tool);
+        const rule = matchRule(c.rules, "block", { reasonCode: "EGRESS_RULE", egressRuleIds: egress.egressRuleIds, mcpTool: mcpToolOf(tool), toolClass });
         if (!rule) return false;
-        const r = run(c, rule, "block", actionHashOf(tool, ti, hash, receiptFor), 0, tool, true, receiptFor);
+        const r = run(c, rule, "block", actionHashOf(tool, ti, hash, receiptFor), 0, tool, true, receiptFor, toolClass);
         if (r.outcome === "allow") { egress = null; return true; }
         return false;
       } catch { return false; }
@@ -352,11 +364,11 @@ export function approvalGate({ load, tenant = "", enabled = true, hash, threatAc
         if (acts.some(([, a]) => a === "kill") || (verdict === "block" && killOnCritical)) return null;
         const c = await context();
         if (!c.rules.length) return null;
-        const facts = { threatIds: acts.filter(([, a]) => ENFORCING.has(a)).map(([id]) => id), mcpTool: mcpToolOf(tool) };
+        const facts = { threatIds: acts.filter(([, a]) => ENFORCING.has(a)).map(([id]) => id), mcpTool: mcpToolOf(tool), toolClass: toolClassOf(c.policy, tool) };
         if (b === "EGRESS_RULE") { facts.reasonCode = "EGRESS_RULE"; facts.egressRuleIds = egress ? egress.egressRuleIds : []; }
         const rule = matchRule(c.rules, verdict, facts);
         if (!rule) return null;
-        const r = run(c, rule, verdict, actionHashOf(tool, ti, hash, receiptFor), facts.threatIds[0] || 0, tool, b !== "EGRESS_RULE", receiptFor);
+        const r = run(c, rule, verdict, actionHashOf(tool, ti, hash, receiptFor), facts.threatIds[0] || 0, tool, b !== "EGRESS_RULE", receiptFor, facts.toolClass);
         if (r.outcome === "allow") return { decision: "allow", reason: "", alternatives: [], rewrite: v.rewrite ?? null, reasonCode: r.reasonCode, requestId: r.requestId };
         return { decision: "deny", reason: r.reason, alternatives: [], rewrite: null, reasonCode: r.reasonCode, requestId: r.requestId };
       } catch { return null; }

@@ -2,13 +2,13 @@
 // The alert carries the threat id, a fixed category, the risk level, the class, the configured and the applied
 // mode, how much of the match had already been passed on when it was found (sent: none | partial | all), and
 // contentHash: the tenant-keyed hash of the matched text (for a system-prompt echo, of the run's first keyed
-// shingle); for a payment card (#1) or personal data (#15), an HMAC under a per-process random key instead
+// shingle); for a payment card (#90) or personal data (#15), an HMAC under a per-process random key instead
 // ("proc:…", server.mjs findingHash), so the install token cannot enumerate it back to the value. Never the
 // text, the match, the system prompt or a position in either.
 import { REASON, ENFORCEMENT } from "../cli/provenance.mjs";
 import { CLASSES } from "./response-scan.mjs";
 
-const LABEL = { 39: "secret or credential", 1: "payment-card data", 15: "personal data", 52: "system prompt" };
+const LABEL = { 39: "secret or credential", 90: "payment-card data", 15: "personal data", 52: "system prompt" };
 export const textCategory = (id) => (id === 52 ? "Model proxy: system prompt reproduced in the model's reply" : `Model proxy: ${LABEL[id] || "sensitive data"} in the model's reply`);
 
 // mode: what was applied (report unless --mode enforce); configured: the policy's responseScan.

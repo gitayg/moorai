@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { mcpGateway, decideText, threatActionFor } from "../cli/hook-core.mjs";
 import { CAPS, toolScanText, toolIdentity, resultOfResponse } from "../mcp-proxy/tool-scan.mjs";
 import { decideInbound, inboundText } from "../cli/inbound.mjs";
+import { maskResult, maskAlert, maskedMcpResult } from "../cli/result-mask.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "../mcp-proxy/tool-baseline.mjs";
 import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON, RUG_PULL_THREAT } from "../mcp-proxy/tool-drift.mjs";
 import { createRecheck, RECHECK_SOURCE } from "../mcp-proxy/tool-recheck.mjs";
@@ -43,6 +44,7 @@ import { assessServer, addToolSignals } from "../cli/mcp-reputation.mjs";
 import { reputationAction, reputationAlert, reputationSummary } from "../data/mcp-reputation.js";
 import { settleHeadlessAsk, settleNoApproverAsk } from "../cli/server-mode.mjs";
 import { contentHash } from "../cli/content-hash.mjs";
+import { spanHash } from "../cli/span-hash.mjs";
 import { state, ensurePolicy, ADMIN } from "./policy.mjs";
 import { profileCheck } from "./profile.mjs";
 import { failClosed, failReason, alertFailClosed } from "./fail.mjs";
@@ -348,7 +350,7 @@ export function createGuard(route) {
           alertTool(SERVER, name, {
             threatId: f.threatId, category: f.category,
             riskLevel: d.decision === "deny" && !state.COACH ? "Blocked" : f.riskLevel,
-            hash: contentHash(f.match || ""),
+            hash: spanHash(f.threatId, f.match || ""),
             decision: d.decision === "deny" ? (state.COACH ? "coach" : "quarantine") : "notify"
           });
         }
@@ -394,7 +396,7 @@ export function createGuard(route) {
     const text = inboundText(result);
     if (!text) return null;
     const t0 = Date.now();
-    const d = decideInbound(state.ENGINE, state.POLICY, text, { surface: "door", stage: "file" });
+    const d = decideInbound(state.ENGINE, state.POLICY, text, { surface: "door", stage: "file", mask: !state.COACH });
     winSpent += Date.now() - t0;
     return d;
   }
@@ -441,9 +443,14 @@ export function createGuard(route) {
       else if (verdict && verdict.unjudged) unjudged = verdict.unjudged;
       if (unjudged) return failClosedResult(msg, unjudged, label);
       if (!verdict || !verdict.findings.length) return null;
+      // A masked threat (#39 by default; cli/result-mask.mjs): the result goes on with the span replaced, or,
+      // when the mask did not verify, the threat takes its action without the mask.
+      const mk = verdict.maskIds && verdict.maskIds.length && msg.id != null ? maskResult(state.ENGINE, state.POLICY, result, { stage: "file", hash: contentHash, verdict }) : null;
+      if (mk && mk.failed && mk.fallback.decision === "deny") Object.assign(verdict, { decision: "deny", reasons: [...verdict.reasons, ...mk.fallback.reasons] });
       const blocked = !state.COACH && verdict.decision === "deny" && msg.id != null;
       if (state.COACH && verdict.decision === "deny") coachNote(`MCP tool result from ${label} (server ${SERVER})`, verdict.reasons.join(", "), verdict.alternatives);
       alertResult(SERVER, label, verdict.findings, blocked);
+      if (!blocked && mk && !mk.failed) { post({ ...maskAlert({ tool: `gateway:${label}`, stage: "result", ids: mk.ids, count: mk.count }), mcpServer: SERVER, ...IDENTITY }); return maskedMcpResult(msg, mk); }
       if (!blocked) return null;
       return { jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: `MoorAI blocked this MCP tool result: ${verdict.reasons.join(", ") || "policy"}` }], isError: true } };
     } catch {

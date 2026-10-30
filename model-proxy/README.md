@@ -203,8 +203,8 @@ up.
   blocked or asked about per policy, exactly as in a user turn.
   - **Opt-in, signed policy or admin binding only:** `"operatorContext": { "privacy": "report" }` (the only
     value besides the default `"enforce"`) makes PII-class findings in operator context report-only: threats
-    1, 9, 15, 18, 27, 36 and 44 (card numbers, IBANs, email addresses, phone and national ids, IP markers,
-    health data). They are reported at stage `context` (`decision: "notify"`, the threat's own risk level,
+    1, 9, 15, 18, 27, 36, 44 and 90 (IBANs, email addresses, phone and national ids, IP markers, health data,
+    card numbers). They are reported at stage `context` (`decision: "notify"`, the threat's own risk level,
     never `Blocked`; `enforcement: LIMITED` when the policy's action for it is block or justify) and do not
     refuse the request. It is read from the root-owned admin binding (`operatorContext` in
     `/etc/moorai/config.json`, which wins, either value) or from a console-signed policy this device
@@ -338,6 +338,7 @@ A function with no hook branch is classed by its **name** into an impact class
 | `identity` | `impersonate`, `sudo`, `login_as`; a grant verb with `role`, `permission`, `privilege`, `admin`, `superuser`, `scope`, `acl`, `owner`; a reset verb with `password`, `mfa`, `2fa`, `otp`, `totp`, `passcode`, `credential(s)`, `recovery`; a delete / disable / suspend / close / ban / lock verb with `account`, `user`, `member`, `profile`, `identity`, `login` |
 | `destructive` | `delete`, `purge`, `wipe`, `destroy`, `truncate`, `erase`, `shred`, `nuke`, `obliterate`; `drop` with `table`, `database`, `db`, `collection`, `schema`, `index`, `bucket`, `keyspace` |
 | `delegation` | `handoff`, `hand_off`, `fanout`, `fan_out`, `delegate`, `spawn`; `transfer_to_<agent>`; a call / invoke / run / dispatch / launch / start / create / assign / route / forward / send / ask / consult verb with `agent`, `subagent`, `worker`, `crew`, `swarm` |
+| `detokenize` | the MCP detokenize names ([`../cli/mcp-tool-class.mjs`](../cli/mcp-tool-class.mjs) `detokenizeName`): `detokenize`, `decrypt`, `unseal`, `unmask`, `unredact`, `deanonymize`, `reidentify`, `decipher`, `unprotect`; a value-read verb (`get`, `read`, `fetch`, `retrieve`, `reveal`, `show` …) with `secret(s)`, `password(s)`, `credential(s)`, a card number (`pan`, `cvv`, `card_number`, `credit_card`) or `vault` (with `read`, `fetch`, `retrieve`, `reveal`, `access`, `export`, `dump`); not a listing or metadata name (`list_secrets`, `get_secret_metadata`) and not a bare `get_card`. Read verbs do not exclude it: reading the value is the impact |
 
 - **Words.** The name is normalized as `functionToolActions` normalizes it (NFKC, invisible characters and a
   `functions.` / `tools.` / `default_api.` prefix removed), camelCase is split, and the result is cut into
@@ -352,8 +353,12 @@ A function with no hook branch is classed by its **name** into an impact class
   to the read verb, because reading everything is its impact (`get_all_users`, `fetch_all_customer_records`);
   a read-noun ending still excludes it (`get_export_status`). A name can be in more than one class
   (`delete_account` is `identity` and `destructive`).
-- **Action.** Built in: `alert` for every class — reported, never refused, in every mode. A signed policy
-  sets a class's action:
+- **Action.** Built in: `alert` for every class — reported, never refused, in every mode — except `detokenize`,
+  whose built-in action is `ask`: encrypted or tokenized data plus a tool that makes it readable is readable
+  data. In enforce mode that ask is settled by the headless rule (deny unless `headlessAsk` is
+  `allow-with-report`); in report mode it is forwarded and filed. `detokenize` takes `businessToolActions.detokenize`,
+  else `mcpToolClassDefaults.detokenize` (`allow` / `ask` / `block`, the MCP class default), else `ask`. A signed
+  policy sets a class's action:
 
   ```json
   { "businessToolActions": { "money": "block", "bulk-data": "ask", "identity": "ask", "destructive": "alert", "delegation": "allow" } }
@@ -361,7 +366,7 @@ A function with no hook branch is classed by its **name** into an impact class
 
   The vocabulary is `functionToolActions`': `block`, `ask` (settled by the headless rule in enforce mode),
   `alert`, `allow` (the class is not reported). A missing class or a value outside the vocabulary keeps
-  `alert`. A name in several classes takes the strictest of their actions.
+  `alert` (`ask` for `detokenize`). A name in several classes takes the strictest of their actions.
 - **The most specific rule wins.** A `functionToolActions` key that names the function itself — an exact
   name or a wildcard with a real prefix (`issue_*`) — decides the call and its class is not applied, `allow`
   included: `{"functionToolActions": {"apply_coupon": "allow"}}` beside `"money": "block"` lets
@@ -643,7 +648,7 @@ API the proxy parses, streaming and not. Code: [`response-scan.mjs`](response-sc
 | Class | Threat | What finds it |
 |---|---|---|
 | `secret` | #39 | the engine's output-stage secret detectors (`secret-*`, `dlp-jwt`, `dlp-private-key` …) |
-| `payment-card` | #1 | `dlp-payment-card` (Luhn-checked), `pci-cvv` |
+| `payment-card` | #90 | `dlp-payment-card` (Luhn and issuer-range checked, `data/card-iin.js`), `pci-cvv` |
 | `personal-data` | #15 | `dlp-email`, `dlp-phone`, `dlp-national-id`, `pii-passport` |
 | `system-prompt` | #52 | the reply reproduces a run of at least 24 consecutive words of this request's system prompt |
 
@@ -721,7 +726,7 @@ personal data; "Model proxy: system prompt reproduced in the model's reply"), `t
 threat's, `Blocked` in block mode), `stage: "output"`, `tool: "model-proxy:response-text"`, `decision`
 (`deny` for a configured block, else `notify`), `responseScan: {class, mode, applied, sent}`, and
 `contentHash`: for a secret, the tenant-keyed hash of the matched text (for an echo, of the run's first
-keyed shingle), so the console can correlate it; **for a payment card (#1) or personal data (#15), an HMAC
+keyed shingle), so the console can correlate it; **for a payment card (#90) or personal data (#15), an HMAC
 under a key random to this proxy process** (`proc:` and 16 hex), because those values come from small
 spaces (a card is 10^16 candidates less the Luhn check, a phone number 10^10) and the tenant-keyed hash
 could be enumerated back to the value by anyone holding the install token. The same card seen twice by one

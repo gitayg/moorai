@@ -18,6 +18,7 @@ import { isEnrolled, literacyTouchpoint, coachMessage } from "../cli/hook-core.m
 import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
 import { contentHash, actorHash, NO_KEY } from "../cli/content-hash.mjs";
+import { spanHash } from "../cli/span-hash.mjs";
 import { labelAlertFields } from "../cli/sensitivity-labels.mjs";
 import { RUG_PULL_THREAT } from "../mcp-proxy/tool-drift.mjs";
 import { toolClassAlert } from "../cli/mcp-tool-class.mjs";
@@ -105,7 +106,7 @@ export function alertBlock(server, tool, gate, argsHash) {
 
 export function alertFindings(server, tool, findings, blocked, stage = "mcp") {
   for (const f of findings || []) {
-    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool: t(tool), mcpServer: server, ts: now(), contentHash: contentHash(f.match || ""), ...labelAlertFields(f), ...IDENTITY });
+    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool: t(tool), mcpServer: server, ts: now(), contentHash: spanHash(f.threatId, f.match || ""), ...labelAlertFields(f), ...IDENTITY });
     if (blocked || f.riskLevel === "High" || f.riskLevel === "Critical") {
       try { post({ ...literacyTouchpoint({ threatId: f.threatId, category: f.category, tool: t(tool) }), ...IDENTITY }); } catch { /* evidence */ }
     }
@@ -129,7 +130,7 @@ export function alertTool(server, toolName, { category, riskLevel, threatId = 0,
 
 export function alertResult(server, toolName, findings, blocked) {
   for (const f of findings || []) {
-    const a = { threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage: "result", tool: t(toolName), decision: blocked ? "deny" : "notify", mcpServer: server, ts: now(), contentHash: contentHash(f.match || ""), ...IDENTITY };
+    const a = { threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage: "result", tool: t(toolName), decision: blocked ? "deny" : "notify", mcpServer: server, ts: now(), contentHash: spanHash(f.threatId, f.match || ""), ...IDENTITY };
     post(a);
     if (blocked || f.riskLevel === "High" || f.riskLevel === "Critical") {
       try { post({ ...literacyTouchpoint({ threatId: f.threatId, category: f.category, tool: t(toolName) }), ...IDENTITY }); } catch { /* evidence */ }

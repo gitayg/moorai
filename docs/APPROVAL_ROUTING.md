@@ -16,8 +16,11 @@ Code: `cli/approval-routing.mjs`, wired into `cli/moorai-hook.mjs` (Claude Code 
   "timeoutSec": 600, "onTimeout": "deny", "grant": "once", "grantTtlSec": 900 } ] }
 ```
 
-- `match` keys: `threatId`, `mcpTool` (`server/tool`), `egressRuleId`, `reasonCode` (`EGRESS_RULE`,
-  `OT_PROTOCOL_CLIENT`, `MCP_TOOL_ARGS`), `otOp`, `functionTool`. Every key a rule sets must match. Threat ids and
+- `match` keys: `threatId`, `mcpTool` (`server/tool`), `toolClass` (`read`, `write`, `destructive`, `detokenize`,
+  `unknown`: the MCP tool's class, [`cli/mcp-tool-class.mjs`](../cli/mcp-tool-class.mjs)), `egressRuleId`,
+  `reasonCode` (`EGRESS_RULE`, `OT_PROTOCOL_CLIENT`, `MCP_TOOL_ARGS`), `otOp`, `functionTool`. Every key a rule sets
+  must match. The hook classes an `mcp__*` call by the policy's `mcpToolClasses` override, then its name (it sees no
+  annotations); any other tool has no class, so a `toolClass` rule never matches it. Threat ids and
   egress rule ids must all be covered by the rule, so approving one threat never releases a second threat on the
   same call. The hook supplies no function name and no OT operation, and its only reason code is `EGRESS_RULE`, so a
   rule that needs `functionTool`, `otOp`, `OT_PROTOCOL_CLIENT` or `MCP_TOOL_ARGS` never matches in the hook.
@@ -33,7 +36,7 @@ Code: `cli/approval-routing.mjs`, wired into `cli/moorai-hook.mjs` (Claude Code 
 2. **Request.** The device generates `apr_` + 26 Crockford base32 characters (128 random bits) and posts one
    `APPROVAL_REQUESTED` alert through the normal alert path (direct post, or the alert outbox when the console does
    not answer). The `approval` object carries the request id, rule id, surface `hook`, the held verdict, the action
-   hash, and the request and expiry times. The action hash is the keyed per-tenant hash of the tool name and the
+   hash, and the request and expiry times. For an `mcp__*` call the alert also carries `toolClass`. The action hash is the keyed per-tenant hash of the tool name and the
    key-sorted tool input. No command, path, URL or argument text is sent. For an MCP call covered by the policy's
    `approvalReceipts`, the action hash is taken over `{ argsSha256, aud, tool }` instead and the `approval` object also
    carries `receiptArgsDigest` (the keyed digest of the argument hash) and `receiptRequest: { aud, tool, argsSha256 }`,
@@ -56,8 +59,9 @@ Code: `cli/approval-routing.mjs`, wired into `cli/moorai-hook.mjs` (Claude Code 
 
 ## What is held, and what is not
 
-- Held: verdicts reached after the call was fully judged (detector findings and content rules), and the early stop
-  of a named egress rule.
+- Held: verdicts reached after the call was fully judged (detector findings, content rules, and the MCP class
+  default `mcpToolClassDefaults`, including the built-in ask for detokenize tools), and the early stop of a named
+  egress rule.
 - An egress grant is honoured at the egress check only, and the call then goes through the remaining checks. A
   detector block on the same call still stands.
 - Never held: fail-closed denies, policy tamper, containment, decoys, the circuit breaker and other behaviour

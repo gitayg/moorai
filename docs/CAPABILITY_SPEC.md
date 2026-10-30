@@ -7,7 +7,7 @@
 MoorAI is a **native desktop "Managed AI Host"** for office workers, paired with a **central
 server** for policy and visibility. The employee does their AI work *inside* MoorAI — a native
 app with an embedded, managed webview — so the host sees every prompt, response, paste, and
-upload natively (no browser extension, no DOM hacks). It detects the 85-threat matrix in real
+upload natively (no browser extension, no DOM hacks). It detects the 86-threat matrix in real
 time, **coaches the employee** with the matrix's guidance, and **reports redacted alerts** to a
 central server so the security team has visibility.
 
@@ -29,7 +29,7 @@ risk, and (c) **deterministic prevention** where policy calls for it. Because ad
 it still does not prevent Shadow AI by construction; it reduces risk for those who opt in and
 surfaces organization-wide risk signals.
 
-- **Rule-base:** [`data/threats.json`](../data/threats.json) — 85 threats, 17 categories, English.
+- **Rule-base:** [`data/threats.json`](../data/threats.json) — 86 threats, 17 categories, English.
   Each threat is a rule: `example` = trigger context, `response` = intervention,
   `riskScore = severity × likelihood`.
 - **Intervention model:** risk-tiered and policy-driven — `notify` (report) → `justify` (ask) →
@@ -550,15 +550,15 @@ applies a settings file's `env` to hook processes is taken from its documentatio
 ## Risk distribution (from the matrix)
 
 Counts are the shipped `riskLevel` labels in `data/threats.json` — the field the engine actually
-ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 85 threats.
+ranks findings by ([`src/engine.js`](../src/engine.js)) — across all 86 threats.
 
 | Level | Count | Nominal score band |
 |---|---|---|
-| Critical | 17 | ≥ 20 |
+| Critical | 18 | ≥ 20 |
 | High | 49 | 12–19 |
 | Medium | 19 | 6–11 |
 
-Note: 8 of the 85 threats carry a `riskLevel` label outside the nominal band their `riskScore`
+Note: 8 of the 86 threats carry a `riskLevel` label outside the nominal band their `riskScore`
 would place them in (e.g. #65 scores 15 but is labeled Critical; #43 scores 6 but is labeled High).
 The label wins at runtime; the bands in `meta.scoring` are documentation, not an invariant the data
 is validated against.
@@ -1145,8 +1145,8 @@ is validated against.
 
    Every MCP tool call is put in one class, from the first source that names one:
 
-   1. **override**: `mcpToolClasses[<server label>][<tool name>]` (`"read"`, `"write"` or `"destructive"`)
-      in the signed policy. It wins outright, in either direction. The server label is the one the
+   1. **override**: `mcpToolClasses[<server label>][<tool name>]` (`"read"`, `"write"`, `"destructive"` or
+      `"detokenize"`) in the signed policy. It wins outright, in either direction. The server label is the one the
       allow-list uses: the Claude Code MCP server name, the guard's `--server` label, the gateway route label.
    2. **annotation**: the tool's MCP `ToolAnnotations` from the server's `tools/list` (`destructiveHint:
       true` makes it destructive, `readOnlyHint: false` makes it write, `readOnlyHint: true` makes it read).
@@ -1156,12 +1156,32 @@ is validated against.
       `delete del drop remove rm destroy purge truncate revoke force wipe erase unlink kill terminate`
       makes it destructive. Otherwise any of `create update write send post set put add insert edit patch
       upload push move rename replace modify append` makes it write. Otherwise any of `get list read search
-      describe find view show` makes it read.
+      describe find view show` makes it read. A detokenize name (below) is classed detokenize unless its
+      verb class has a strictly stricter verdict (`decrypt_and_delete` under `destructive: "block"` stays
+      destructive).
    4. **unknown**: none of the above.
+
+   **Detokenize.** A tool that turns protected data readable. Access to encrypted or tokenized data together
+   with such a tool is access to the readable data, so this class has a built-in verdict, `"ask"`, that
+   applies with `mcpToolClassDefaults` absent; `mcpToolClassDefaults.detokenize` replaces it (`"allow"`,
+   `"ask"` or `"block"`). No other class has a built-in verdict. A name is detokenize when its whole tokens
+   hold `detokenize`, `detokenise`, `decrypt`, `unseal`, `unmask`, `unredact`, `deanonymize`, `reidentify`,
+   `decipher` or `unprotect` (also split: `de_tokenize`, `re-identify`, `un_mask`); or a value-read verb
+   (`get read fetch retrieve reveal show view access export dump copy print display peek lookup load
+   resolve`) beside `secret(s)`, `password(s)`, `passwd`, `passphrase`, `credential(s)`, a card number
+   (`pan`, `cvv`, `cvc`, `card` + `number`, `credit` + `card`), or `vault` with `read fetch retrieve reveal
+   access export dump`. A listing or metadata name is not (`list_secrets`, `get_secret_metadata`, any of
+   `list metadata info status policy names count exists rotation tags`), and neither is a bare `get_card`
+   (a board card) or `get_vault`. A value-read tool on a server whose label names a secret store (`vault`,
+   `secret(s)`, `keychain`, `keyring`, `1password`, `bitwarden`, `lastpass` …) is detokenize (`vault/get`).
+   Measured on every MCP and function tool name in the repository's tests and fixtures (171 distinct
+   `mcp__server__tool` names, 644 tool-position names): the only hits are `vault/get`, `vault/dump` and
+   `vault/get_secret`. A name the heuristic misses needs an `mcpToolClasses` override.
 
    **Annotations can only tighten.** A server writes its own annotations, so an annotation counts only when
    the verdict its class gets is stricter than the verdict of the name's class. On a tie it counts only
-   when its class is stricter (read < unknown < write < destructive). A `delete_repo` that claims
+   when its class is stricter (read < unknown < write < destructive < detokenize), so an annotation never moves
+   a detokenize name to a class with a looser verdict. A `delete_repo` that claims
    `readOnlyHint: true` stays destructive; a `get_report` that says `destructiveHint: true` becomes
    destructive. The guard and the gateway keep the strictest annotation class each tool name has
    advertised for the life of the process, so listing a tool again cannot loosen it. A changed annotation
@@ -1192,7 +1212,12 @@ is validated against.
    or annotation text leaves the device.
 
    **Default.** With `mcpToolClassDefaults` absent, not an object, or naming no valid verdict, every
-   surface behaves as before.
+   surface behaves as before for read, write, destructive and unknown tools; a detokenize tool gets the
+   built-in ask.
+
+   **Approval routing.** An `approvalRouting` rule can match `toolClass` (a list of class names), so one
+   rule holds every detokenize call; the `APPROVAL_REQUESTED` alert carries `toolClass` (see
+   [APPROVAL_ROUTING.md](APPROVAL_ROUTING.md)).
 11h. **Event-triggered and headless prompts** — [`cli/prompt-scan.mjs`](../cli/prompt-scan.mjs). A
    prompt a person typed is their instruction and is not scanned; one that arrives any other way can
    carry a third party's text. `policy.promptScan`: `"untrusted"` (default) scans a prompt whose `source`
@@ -2684,7 +2709,7 @@ and is not already denied is judged by `data/intent-server.mjs` against the sess
 
 **Reply text scanning** ([`model-proxy/response-scan.mjs`](../model-proxy/response-scan.mjs),
 [`text-codecs.mjs`](../model-proxy/text-codecs.mjs), [`text-guard.mjs`](../model-proxy/text-guard.mjs)).
-- Found: #39 secrets, #1 payment-card data, #15 personal data (the engine's output-stage detectors for
+- Found: #39 secrets, #90 payment-card data, #15 personal data (the engine's output-stage detectors for
   those threats, policy-built, packs included; a `disabled` threat is skipped) and #52 a 24-word run of
   this request's system prompt (8-word shingles, HMAC-SHA256 with a per-process key, 48 bits kept, at most
   8,192; prompts under 24 words are not tracked; nothing but the hashes is kept).
@@ -2703,7 +2728,7 @@ and is not already denied is judged by `data/intent-server.mjs` against the sess
   mode, 0.2 µs in report mode.
 - Alert: `category` "Model proxy: <class> in the model's reply" / "… system prompt reproduced in the
   model's reply", `stage: "output"`, `tool: "model-proxy:response-text"`, `responseScan: {class, mode,
-  applied, sent}`, `contentHash` (tenant-keyed hash of the match; for #1 and #15, low-entropy values, an
+  applied, sent}`, `contentHash` (tenant-keyed hash of the match; for #90 and #15, low-entropy values, an
   HMAC under a per-process random key, `proc:…`, which the install token cannot enumerate). One per class
   and hash per response, at most 32.
 - Token log-probabilities (`logprobs`, `top_logprobs`, Gemini `logprobsResult`) are removed from every event
@@ -3992,7 +4017,7 @@ is sent during the console back-off.
 tool call. Built-in tools by name; Bash/PowerShell from `extractReadPaths`, `netDestinations`,
 `urlDestinations` and a list of remote CLIs and package managers; MCP tools from `_meta["moorai/tags"]`
 (added, never subtracted) plus name words and known remote servers (inferred). `read-private` also comes
-from a stage-"file" finding of #1, #15, #39, #44 or #55 on a read.
+from a stage-"file" finding of #1, #15, #39, #44, #55 or #90 on a read.
 
 **Policy keys** (verified policy and root-owned system config only):
 - `tagActions: { <tag>: "block" | "ask" | "alert" | "allow" }`: static per call; stricter of the two sources.

@@ -60,6 +60,8 @@ import { createIntent, loadIntentKey } from "./intent.mjs";
 import { responseScanMode, responseDetectors, createEcho, createScanner } from "./response-scan.mjs";
 import { createTextGuard, guardBody } from "./text-guard.mjs";
 import { parseLossless } from "./json-lossless.mjs";
+import { createResultMasker } from "./result-mask.mjs";
+import { maskAlert } from "../cli/result-mask.mjs";
 import { textAlert, textRefusal } from "./text-report.mjs";
 import * as codecs from "./text-codecs.mjs";
 import { fileParts, batchFileParts, mergeFileParts } from "./file-parts.mjs";
@@ -246,14 +248,14 @@ export async function createProxy(opts = {}) {
   const intent = createIntent({ lib: intentLib, key: loadIntentKey({ key: o.intentKey, keyFile: o.intentKeyFile }).key, rt, enforce, now: o.intentNow });
   // Response text scanning (response-scan.mjs): the system-prompt shingle key, random per process.
   const echoKey = randomBytes(32);
-  // A payment card (#1) or personal data (#15) in the reply is a value from a small space (a card is 10^16
+  // A payment card (#90) or personal data (#15) in the reply is a value from a small space (a card is 10^16
   // candidates less the Luhn check, a phone number 10^10): its contentHash is not the tenant-keyed hash, which
   // anyone holding the install token could enumerate back to the value, but an HMAC under a key random to this
   // process ("proc:" and 16 hex). The same value seen twice by this process hashes alike; nothing outside it —
   // the console, another proxy, a restart — can link or reverse it. A secret (#39, high entropy) and a
   // system-prompt echo (#52, a keyed shingle) keep the tenant-keyed hash, so the console can correlate them.
   const piiKey = randomBytes(32);
-  const LOW_ENTROPY = new Set([1, 15]);
+  const LOW_ENTROPY = new Set([1, 15, 90]);
   const findingHash = (id, match) => (LOW_ENTROPY.has(id) ? `proc:${createHmac("sha256", piiKey).update(String(match), "utf8").digest("hex").slice(0, 16)}` : rt.hash(match));
   // Cloud file scanning (cli/file-scan.mjs, policy fileScan): every inline file, document or image part of a
   // request (file-parts.mjs) looked up — or, in "upload" mode, uploaded — at the policy's provider before the
@@ -298,6 +300,19 @@ export async function createProxy(opts = {}) {
       refusal = `MoorAI model-proxy refused this request — file (${mimeClass(p.mediaType)}): ${what}`;
     }
     return refusal;
+  }
+  // Enforce mode: the tool results a request carries, with a masked threat (#39 by default) replaced before the
+  // body goes upstream (result-mask.mjs). A body with a content coding is forwarded as sent. → { body | null, deny }
+  // (deny: a mask that did not verify for a threat whose action without the mask is block).
+  const resultMasker = createResultMasker({ hash: rt.hash });
+  function maskResults(kind, req, body, s) {
+    const coding = String(req.headers["content-encoding"] || "").trim().toLowerCase();
+    const exact = !coding || coding === "identity" ? parseLossless(body) : null;
+    if (!exact || typeof exact !== "object" || Array.isArray(exact)) return { body: null, deny: null };
+    const r = resultMasker.mask(kind, exact, { engine: s.engine, policy: s.policy, policyId: s.policyId });
+    for (const m of r.masked) if (m.fresh) rt.reporter.post(maskAlert({ tool: `model-proxy:${kind}`, stage: "output", ids: m.ids, count: m.count }), { prov: { policyId: s.policyId, policySource: s.source, event: "ModelRequest" } });
+    const f = r.failed.find((x) => x.fallback.decision === "deny");
+    return { body: r.changed ? Buffer.from(JSON.stringify(exact)) : null, deny: f ? { decision: "deny", denied: [{ kind: "tool_result", reasons: f.fallback.reasons }] } : null };
   }
   const refuseFile = (res, errApi, message) => { stats.refused++; send(res, 403, errorPayload(errApi, 403, `MoorAI model-proxy refused this request — ${message}`), { "x-moorai-model-proxy": "refused" }); return true; };
   // The cloud file scan of one request body (policy fileScan on). kind: a file-parts.mjs API kind, or
@@ -733,6 +748,11 @@ export async function createProxy(opts = {}) {
           unevaluated("evaluation", "request", "error");
         }
         if (v && v.decision === "deny") return refuse(res, api, v, "request");
+        if (KIND.has(api)) {
+          const rm = maskResults(KIND.get(api), req, body, s1);
+          if (rm.deny) return refuse(res, api, rm.deny, "request");
+          if (rm.body) body = rm.body;
+        }
       } else if (items.length) {
         // Report mode under a closed fail mode: what cannot be judged is refused before it is forwarded.
         if (fm === "closed") { const denied = await checker.unjudged(items); if (denied.length) return refuse(res, api, { decision: "deny", denied }, "request"); }

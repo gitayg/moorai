@@ -31,7 +31,7 @@ export function explainText(engine, policy, text, stage, { ctx, coach = false, a
     threatId: threat.id,
     threat: threat.threat,
     category: threat.category,
-    severity: calibrateRisk(threat.riskLevel, { stage, category: threat.category }),
+    severity: calibrateRisk(threat.riskLevel, { stage, threatId: threat.id }),
     riskScore: threat.riskScore,
     ...(showMatch && match != null ? { match: engine._clip(String(match)) } : {})
   });

@@ -177,7 +177,7 @@
       "symbol": "S(\"secret-github\""
     },
     "det-pii": {
-      "name": "Personal and payment data detectors (#1, #15)",
+      "name": "Personal and payment data detectors (#1, #15, #90)",
       "path": "data/detectors.js",
       "symbol": "detectorId: \"dlp-payment-card\""
     },
@@ -462,7 +462,7 @@
       "symbol": "export function decideImageInspection"
     },
     "mask": {
-      "name": "Masking a finding in place (Claude Code hook)",
+      "name": "Masking a finding in place (Claude Code hook; tool results at the MCP guard, MCP gateway and model proxy)",
       "path": "cli/mask.mjs",
       "symbol": "export function isMaskable"
     },

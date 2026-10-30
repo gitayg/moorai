@@ -24,7 +24,7 @@ import { relative, basename } from "node:path";
 import { decideText, threatActionFor } from "../hook-core.mjs";
 import { tierOf, jsonStrings } from "../scan-core.mjs";
 import { skillIntents } from "../skill-analysis.mjs";
-import { contentHash } from "../content-hash.mjs";
+import { spanHash } from "../span-hash.mjs";
 import { skillSurfaceKind } from "../../data/skill-surface.js";
 import { stripComments } from "./heuristics.mjs";
 import { notRuntimeReason } from "./paths.mjs";
@@ -95,7 +95,7 @@ function toFindings(raw, text, relativePath, surfaceKind, policy, cap, repoRoot 
       threatId: f.threatId,
       category: f.category,
       intentLabels: downgraded ? [...intentLabels, why] : intentLabels,
-      contentHash: contentHash(f.match),
+      contentHash: spanHash(f.threatId, f.match),
       tier: downgraded ? "justify" : tier
     };
   });

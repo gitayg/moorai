@@ -3486,6 +3486,33 @@
       ],
       "capec": [],
       "capecNote": "An exposed service is a condition, not an attack pattern."
+    },
+    {
+      "id": 90,
+      "category": "Information & Privacy",
+      "threat": "Cardholder data handled by an AI agent",
+      "example": "A prompt, a file the agent reads, a tool argument, an MCP tool result or the model's reply holds a payment-card number (primary account number) or a card security code.",
+      "response": "Card numbers and security codes are cardholder data. Keep them out of AI prompts, agent context and tool calls unless the workflow is approved for cardholder data.",
+      "saferAlternative": "Use a token or the last four digits instead of the full card number, and never give a card security code to an AI tool.",
+      "severity": 5,
+      "likelihood": 4,
+      "riskScore": 20,
+      "riskLevel": "Critical",
+      "sources": [
+        "PCI DSS",
+        "Regulated data"
+      ],
+      "owasp": "LLM02",
+      "atlas": "AML.T0057",
+      "owaspAgentic": [],
+      "owaspMcp": [],
+      "attack": [],
+      "attackNote": "A cardholder-data obligation, not an adversary technique; the agent-driven exfiltration routes are credited on #59, #65, #71 and #78.",
+      "stride": "Information Disclosure",
+      "cwe": [],
+      "cweNote": "A person's choice of what to share with, or how to use, an AI tool: a policy and behaviour issue, not a software weakness.",
+      "capec": [],
+      "capecNote": "No adversary acts: a person's sharing or use of an AI tool is not an attack pattern."
     }
   ]
 }

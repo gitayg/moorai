@@ -30,7 +30,7 @@ const NEGATIVE = [
 ];
 
 test("classifyBusinessTool: every catalogue example is classed, by folded name, camelCase and namespace prefixes included", () => {
-  assert.deepEqual([...BUSINESS_CLASSES], ["money", "bulk-data", "identity", "destructive", "delegation"]);
+  assert.deepEqual([...BUSINESS_CLASSES], ["money", "bulk-data", "identity", "destructive", "delegation", "detokenize"]);
   for (const [cls, names] of Object.entries(POSITIVE)) for (const n of names) assert.ok(classifyBusinessTool(n).includes(cls), `${n} → ${cls}, got ${JSON.stringify(classifyBusinessTool(n))}`);
 });
 
@@ -38,8 +38,8 @@ test("classifyBusinessTool: read-only and unrelated names are not classed (get_c
   for (const n of NEGATIVE) assert.deepEqual(classifyBusinessTool(n), [], `${n} classed as ${JSON.stringify(classifyBusinessTool(n))}`);
 });
 
-test("businessToolActionsFrom: alert by default for every class; a valid policy entry replaces it; anything else is ignored", () => {
-  const all = (a) => Object.fromEntries(BUSINESS_CLASSES.map((c) => [c, a]));
+test("businessToolActionsFrom: alert by default for every class but detokenize (ask); a valid policy entry replaces it; anything else is ignored", () => {
+  const all = (a) => ({ ...Object.fromEntries(BUSINESS_CLASSES.map((c) => [c, a])), detokenize: "ask" });
   assert.deepEqual(businessToolActionsFrom(null), all("alert"));
   assert.deepEqual(businessToolActionsFrom({ businessToolActions: ["block"] }), all("alert"));
   assert.deepEqual(businessToolActionsFrom({ businessToolActions: { money: "block", identity: "ask", destructive: "allow", "bulk-data": "deny", delegation: 5, other: "block" } }), { ...all("alert"), money: "block", identity: "ask", destructive: "allow" });

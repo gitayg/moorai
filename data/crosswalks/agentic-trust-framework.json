@@ -315,14 +315,15 @@
       "threats": [
         1,
         15,
-        44
+        44,
+        90
       ],
       "evidence": [
         "det-pii",
         "det-phi",
         "mask"
       ],
-      "limit": "pattern detectors for the listed entity types; masking on the Claude Code hook only"
+      "limit": "pattern detectors for the listed entity types; masking on the Claude Code hook, and on tool results at the MCP guard, the MCP gateway and the model proxy in enforce mode"
     },
     {
       "id": "D-4",

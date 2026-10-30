@@ -74,6 +74,7 @@ import { loadConfig } from "../cli/config.mjs";
 import { buildEngine, mcpGateway, decideText, literacyTouchpoint, loadVerifiedPolicy, ratchetPosture, isEnrolled, enforcementAllowed, coachMessage, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath } from "../cli/hook-core.mjs";
 import { CAPS, toolsOfResponse, toolScanText, toolIdentity, resultOfResponse } from "./tool-scan.mjs";
 import { decideInbound, inboundText } from "../cli/inbound.mjs";
+import { maskResult, maskAlert, maskedMcpResult } from "../cli/result-mask.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "./tool-baseline.mjs";
 import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON, RUG_PULL_THREAT } from "./tool-drift.mjs";
 import { createRecheck, RECHECK_SOURCE, RECHECK_FAILED_CATEGORY } from "./tool-recheck.mjs";
@@ -81,6 +82,7 @@ import { OFFLINE_DEFAULT_POLICY } from "../data/offline-default.js";
 import { applyCaptureTier } from "../data/capture-tiers.js";
 import { recordAction } from "../cli/signals.mjs";
 import { contentHash, actorHash } from "../cli/content-hash.mjs";
+import { spanHash } from "../cli/span-hash.mjs";
 import { emitOtel } from "../cli/otel.mjs";
 import { assessServer, addToolSignals } from "../cli/mcp-reputation.mjs";
 import { reputationAction, reputationAlert, reputationSummary } from "../data/mcp-reputation.js";
@@ -299,7 +301,7 @@ function alertToolClass(tool, tc, decision) {
 }
 function alertFindings(tool, findings, blocked, argsHash, stage = "mcp") {
   for (const f of findings || []) {
-    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool: `desktop:${tool}`, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: contentHash(f.match || ""), ...labelAlertFields(f), ...IDENTITY });
+    post({ threatId: f.threatId, category: f.category, riskLevel: blocked ? "Blocked" : f.riskLevel, stage, tool: `desktop:${tool}`, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: spanHash(f.threatId, f.match || ""), ...labelAlertFields(f), ...IDENTITY });
     if (blocked || f.riskLevel === "High" || f.riskLevel === "Critical") {
       try { post({ ...literacyTouchpoint({ threatId: f.threatId, category: f.category, tool: `desktop:${tool}` }), ...IDENTITY }); } catch { /* evidence, not enforcement */ }
     }
@@ -751,7 +753,7 @@ async function observeTools(tools, { driftDone = false, shape = { complete: fals
         alertTool(name, {
           threatId: f.threatId, category: f.category,
           riskLevel: d.decision === "deny" && !COACH ? "Blocked" : f.riskLevel,
-          hash: contentHash(f.match || ""),
+          hash: spanHash(f.threatId, f.match || ""),
           decision: d.decision === "deny" ? (COACH ? "coach" : "quarantine") : "notify"
         });
       }
@@ -945,7 +947,7 @@ async function scanResult(result) {
   const t0 = Date.now();
   // The inbound rules (cli/inbound.mjs) at this surface's "file" stage: action and output-only threats
   // dropped, data-class findings at Info — the same resolution the hook and the SDK give a result.
-  const d = decideInbound(ENGINE, POLICY, text, { surface: "door", stage: "file" });
+  const d = decideInbound(ENGINE, POLICY, text, { surface: "door", stage: "file", mask: !COACH });
   winSpent += Date.now() - t0;
   return d;
 }
@@ -956,7 +958,7 @@ async function scanResult(result) {
 // opportunity, not a repeat of the first.
 function alertResult(toolName, findings, blocked) {
   for (const f of findings || []) {
-    const hash = contentHash(f.match || "");
+    const hash = spanHash(f.threatId, f.match || "");
     const riskLevel = blocked ? "Blocked" : f.riskLevel;
     const decision = blocked ? "deny" : "notify";
     post({ threatId: f.threatId, category: f.category, riskLevel, stage: "result", tool: `desktop:${toolName}`, decision, mcpServer: SERVER, ts: new Date().toISOString(), contentHash: hash, ...IDENTITY });
@@ -1042,14 +1044,22 @@ async function gateResult(lineBuf) {
     }
     if (!verdict || !verdict.findings.length) return pass();
 
-    // Report-first. Only an explicit block/kill resolution refuses; the house default for #39 is
-    // "notify", so an unconfigured device reports and forwards.
+    // Report-first. Only an explicit block/kill resolution refuses; the house default for #39 is a mask
+    // (cli/inbound.mjs CRED_RESULT_DECISION), so an unconfigured device reports and forwards the masked result.
+    // A masked threat (#39 by default; cli/result-mask.mjs): forwarded with the span replaced, or, when the
+    // mask did not verify, the threat takes its action without the mask.
+    const mk = verdict.maskIds && verdict.maskIds.length && msg.id != null ? maskResult(ENGINE, POLICY, result, { stage: "file", hash: contentHash, verdict }) : null;
+    if (mk && mk.failed && mk.fallback.decision === "deny") Object.assign(verdict, { decision: "deny", reasons: [...verdict.reasons, ...mk.fallback.reasons] });
     const blocked = !COACH && verdict.decision === "deny" && msg.id != null;
     const call = takeCall(msg.id), toolName = call.tool;
     if (COACH && verdict.decision === "deny") coachNote(`MCP tool result from ${toolName}`, verdict.reasons.join(", "), verdict.alternatives);
     if (blocked) {
       done = true;
       process.stdout.write(blockedResultLine(msg.id, verdict.reasons.join(", ") || "policy"));
+    } else if (mk && !mk.failed) {
+      done = true;
+      process.stdout.write(JSON.stringify(maskedMcpResult(msg, mk)) + "\n");
+      TRACE.run(call.trace, () => post({ ...maskAlert({ tool: `desktop:${toolName}`, stage: "result", ids: mk.ids, count: mk.count }), mcpServer: SERVER, ...IDENTITY }));
     } else pass();
     TRACE.run(call.trace, () => alertResult(toolName, verdict.findings, blocked));
   } catch {

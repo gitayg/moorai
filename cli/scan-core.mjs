@@ -18,7 +18,7 @@ import { readFileSync, readdirSync, statSync, lstatSync } from "node:fs";
 import { join, relative, basename, dirname } from "node:path";
 import { buildEngine, decideText, threatActionFor } from "./hook-core.mjs";
 import { skillIntents } from "./skill-analysis.mjs";
-import { contentHash } from "./content-hash.mjs";
+import { spanHash } from "./span-hash.mjs";
 import { skillSurfaceKind } from "../data/skill-surface.js";
 
 // Worst-first order. The overall verdict is the WORST across every scanned file.
@@ -110,7 +110,7 @@ export function scanFileText({ engine, policy, text, relativePath, surfaceKind }
     threatId: f.threatId,
     category: f.category,
     intentLabels,
-    contentHash: contentHash(f.match),   // hashed, never the span itself; NO_KEY when unenrolled
+    contentHash: spanHash(f.threatId, f.match),   // hashed, never the span itself; NO_KEY when unenrolled
     tier: tierOf(threatActionFor(policy, f.threatId))
   }));
 

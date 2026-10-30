@@ -47,7 +47,7 @@
 // captured whenever intentAlignment is not "off" or an allowlist is configured.
 import { readFileSync } from "node:fs";
 import os from "node:os";
-import { hookCore, serverModeLib, contentHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib, intentServerLib, secretTaintLib, secretLearnLib, sessionRiskLib } from "./core.mjs";
+import { hookCore, serverModeLib, contentHashLib, spanHashLib, provenance, offlineDefault, inboundLib, indexScanLib, agentNamesLib, intentServerLib, secretTaintLib, secretLearnLib, sessionRiskLib } from "./core.mjs";
 import { decideToolCall } from "./decide.mjs";
 import { createReporter } from "./report.mjs";
 import { taskBoundLib } from "./core.mjs";
@@ -55,6 +55,7 @@ import { taskBoundLib } from "./core.mjs";
 const { buildEngine, decideText, loadVerifiedPolicy, readRootOwned, withSafer, saferAlternativesFor } = hookCore;
 const { resolveServerMode, systemConfigPath, settleHeadlessAsk, serviceWho, normalizeServiceId, HEADLESS_MODES } = serverModeLib;
 const { hashWithKey, deriveKey, NO_KEY } = contentHashLib;
+const { spanHash } = spanHashLib;
 const { policyIdOf, REASON } = provenance;
 const { OFFLINE_DEFAULT_POLICY } = offlineDefault;
 const { decideInbound, surfaceOf, inboundText } = inboundLib;
@@ -182,7 +183,7 @@ export async function createMoorAI(options = {}) {
 
   function report(s, findings, { tool, decision, event = "PreToolUse", sess = {} }) {
     for (const f of findings) {
-      reporter.post({ threatId: f.threatId, category: f.category, riskLevel: decision === "deny" ? "Blocked" : f.riskLevel, stage: f.stage, tool: `hook:${tool}`, contentHash: hash(f.match || ""), ...sess }, { prov: prov(s, event) });
+      reporter.post({ threatId: f.threatId, category: f.category, riskLevel: decision === "deny" ? "Blocked" : f.riskLevel, stage: f.stage, tool: `hook:${tool}`, contentHash: spanHash(f.threatId, f.match || "", hash), ...sess }, { prov: prov(s, event) });
     }
   }
   function reportSignals(s, signals, tool, event = "PreToolUse", sess = {}) {
@@ -346,7 +347,7 @@ export async function createMoorAI(options = {}) {
     for (let i = 0; i < chunks.length; i++) {
       const r = decideIndexChunk(s.engine, s.policy, chunks[i], { source });
       for (const f of r.findings) {
-        reporter.post({ threatId: f.threatId, category: f.category, riskLevel: r.verdict === "deny" ? "Blocked" : f.riskLevel, stage: "index", tool: "index:embed", decision: decisionOf[r.verdict] || "notify", contentHash: hash(f.match || ""), ...(sourceHash ? { indexSource: sourceHash } : {}), ...sess }, { prov: prov(s, "IndexScan") });
+        reporter.post({ threatId: f.threatId, category: f.category, riskLevel: r.verdict === "deny" ? "Blocked" : f.riskLevel, stage: "index", tool: "index:embed", decision: decisionOf[r.verdict] || "notify", contentHash: spanHash(f.threatId, f.match || "", hash), ...(sourceHash ? { indexSource: sourceHash } : {}), ...sess }, { prov: prov(s, "IndexScan") });
       }
       ({ deny: denied, hold: held, flag: flagged }[r.verdict] || allowed).push(i);
       results.push({ index: i, verdict: r.verdict, ...summary(r.findings), reasons: r.reasons, findings: contentFree(r.findings), ...(r.claims.length ? { claims: r.claims } : {}) });
