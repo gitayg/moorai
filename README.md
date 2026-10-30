@@ -3163,6 +3163,91 @@ policy in force or a candidate (`--policy`). The output is what **enforce mode**
   not what a line holds; Kiro keeps sessions in an undocumented SQLite database in `~/.kiro/`; Cline's
   `~/.cline/data/sessions/` format is not documented; Cursor, Copilot CLI and Droid do not document theirs.
 
+#### Quarry trace export
+
+```bash
+node cli/moorai-ingest.mjs --discover --format quarry --out ./traces   # one <agent>-<hash>.json per session
+node cli/moorai-ingest.mjs --discover --format quarry --content full   # JSONL on stdout, with transcript text
+```
+
+`--format quarry` writes each transcript file as a scan input for Cisco's Project Quarry (Apache-2.0), an
+open rule language for agent conversations, instead of the summary: the OpenAI-shaped
+`{"messages": [...]}` object Quarry accepts, with user, assistant and tool messages in transcript order,
+each tool call under the host's own tool name (`Bash`, `Read`, `mcp__<server>__<tool>`; Codex `shell`,
+`exec_command`, `apply_patch`, and `local_shell` for a `local_shell_call` record, which has no name; Gemini CLI `run_shell_command`, `web_fetch`, ...) and each
+result linked to its call by a generated `call_<n>` id. With `--out` each session goes to
+`<agent>-<device-keyed hash of the session id>.json` (mode 0600); without it, one object per line on stdout.
+
+- **The format is alpha upstream.** The export is checked against Quarry 0.1.0 at commit `eadc6e3`
+  (`quarry/safety/validator.py`, `quarry/types/context.py`, `quarry/safety/limits.py`): no repeated
+  call id, no result without an earlier call, no key outside the OpenAI shape, arguments always a JSON
+  object, and Quarry's input limits (10,000 messages, 1,000 tool calls, 10,000 timeline items, 1 MB per
+  call's arguments, nesting depth 100). Quarry rejects an over-limit input rather than trimming it, so the
+  export cuts the session's tail at those limits, or at 4 MB of JSON (Quarry's 50 MB total is measured as
+  Python object size, which its source puts at 5-12x the JSON size), and says how much it dropped.
+- **`--content free` (the default) carries no transcript text.** Every message's content is empty, except
+  a tool response's, which holds that result's MoorAI facts as JSON. A call's `function.arguments` holds
+  only MoorAI facts: `moorai_tags` (the call's capability tags, as the live hook computes them),
+  `moorai_inferred_tags`, `moorai_replayed`, and for a call the replay judges `moorai_decision`,
+  `moorai_threats` and `moorai_findings` (threat id, category, risk, stage), plus
+  `moorai_output_decision` and `moorai_output_threats` where the hook scans the result. That level
+  supports order and tag rules only, for example
+  `called_tool("WebFetch") after called_tool("Read")` or
+  `any c in tool_calls where c.arguments.moorai_tags contains "network"`. A prompt's findings are not in
+  the export (a user message has no field for them).
+- **Text rules need `--content full`**: the prompts, assistant text, results and each call's real input,
+  next to the same `moorai_*` keys, every text cut to 256 KiB. It prints a notice on stderr, writes only to
+  `--out` or stdout on this device, and `--report` cannot be combined with `--format quarry`.
+- An input MoorAI cannot pass through as a JSON object (malformed, too deep, over 1 MB) is left out at the
+  full level and marked `moorai_input_omitted`. Codex call outputs are linked to their calls but not
+  scanned, as the Codex hook registers no result scan.
+
+### Org detector packs and `scope`
+
+The signed policy's `detectorPacks` adds the organisation's own patterns to the engine:
+`[{ "packId", "detectors": [{ "detectorId", "threatId", "stage", "mode", "hint", "patterns", "flags", "scope" }] }]`.
+A pattern is a regular-expression string, compiled through the ReDoS guard (`src/safe-regex.js`); a refused
+pattern is skipped, and a detector with no usable pattern or a non-integer `threatId` is skipped. Each detector
+reports an existing threat id, so `threatPolicy`, `tierPolicy` and the capture tier resolve it as they resolve a
+built-in finding (an id the agent does not know yields no finding), and its alerts are content-free like any
+other at the default tier. Packs apply wherever the engine is built from the policy:
+the hook (and the hosts whose hooks map onto it), `@moorai/agent-sdk` and `moorai-serve`, the model proxy, the
+MCP proxy and gateway, the Inference hooks server, transcript replay (`moorai-ingest`) and the desktop app.
+
+**Without `scope`** a pack detector runs by `stage`: `"prompt"` (the default) wherever the engine scans at the
+prompt or file stage, for example the prompt the hook scans, a shell command, a file read, a WebFetch URL and
+prompt, a Task prompt and MCP arguments; `"output"` on Write / Edit content and on the tool results the hook and
+the SDK scan.
+
+**`scope`** (agent v1.44.0 and later) is an optional, non-empty array of `"user-prompt"`, `"tool-result"` and
+`"command"`. A scoped detector ignores `stage` and runs only at call sites of the kinds it lists
+(`data/pack-scope.js`, `src/engine.js`):
+
+| Kind | Where it runs |
+|---|---|
+| `user-prompt` | The hook's UserPromptSubmit scan (Claude Code, and the prompt events of the hosts mapped onto it), only where the prompt is already scanned: `promptScan: "all"` for a typed prompt; the default `"untrusted"` scans only event-triggered and server-mode prompts; `"off"` none. The hook scans the first 65,536 characters. The SDK's UserPromptSubmit callback (every prompt it receives). In the model proxy, each item it marks as a user turn: a `user` message's text, an Ollama `prompt` / `suffix`, and embeddings input. In the Inference hooks server, a user message's text blocks. Replay, under the same `promptScan` rule. The desktop app's prompt box. |
+| `tool-result` | Every tool result scanned as inbound content (`cli/inbound.mjs`): the hook's and the SDK's PostToolUse (WebFetch, WebSearch, Bash, PowerShell, Agent / Task, `mcp__*`), the MCP proxy's and gateway's `tools/call` results, the model proxy's tool-role messages, `tool_result` blocks, Gemini function responses and Anthropic `document` blocks, the Inference hooks server's `tool_result` blocks, and `moorai-serve` `/v1/scan` with `ctx.inbound`. Also the content of a file a tool reads: a Read, and in the hook and the SDK each file a Bash or PowerShell command reads (the paths resolved from the command, an upload included). |
+| `command` | A Bash or PowerShell command in the hook (also Monitor) and the SDK (`decideToolCall`, `moorai-serve` `/v1/tool-call`), including the scripts it carries (a base64 payload decoded into a shell; in the hook also `-EncodedCommand` and an `Invoke-Expression` string), and the shell tools of the hosts mapped to Bash. In the model proxy and the Inference hooks server, a tool call they map to Bash or PowerShell (a shell-named function with a `command` or `cmd` argument, Anthropic's `bash` tool). Replay (the command and its `-EncodedCommand` / `Invoke-Expression` scripts). |
+
+No kind applies to Write / Edit content, a WebFetch URL or prompt, a Task prompt, MCP tool arguments (including
+one named `command`), system messages, the model's reply text, a function call the model proxy does not map to a
+shell, index (RAG) scans, `moorai-scan`, MCP package checks, the clipboard guard, or files dropped into the
+desktop app: a scoped detector does not run there. `moorai-serve` `/v1/scan` runs one only when `ctx.scope`
+names its kind (`ctx.inbound` makes the kind `tool-result`). A threat whose action is `mask` is masked through a
+scoped detector where its kind runs (the hook's command and result rewrites, the MCP proxy, gateway and model
+proxy result masks).
+
+- **Unknown kinds are ignored.** If none of a detector's kinds is known, the detector is dropped rather than
+  run everywhere.
+- **Agents before v1.44.0 ignore `scope`** and run the detector at its `stage` on every surface of that stage.
+  The console sets `stage: "prompt"` for `user-prompt` and `command` and `"output"` for `tool-result`, so on an
+  older agent a `user-prompt` or `command` detector runs at every prompt- and file-stage scan (file reads,
+  WebFetch and Task prompts, MCP arguments, system messages, the MCP proxy's and gateway's results), and a
+  `tool-result` detector at every output-stage scan (Write / Edit content too) but not on file reads or on the
+  MCP proxy's and gateway's results (those are scanned at the file stage).
+- Opt-in semantic escalation re-scans without a kind, so a finding that only a scoped detector made does not stop
+  its miss-recovery pass.
+
 ### Review what was exposed — on-device, no server
 
 ```bash

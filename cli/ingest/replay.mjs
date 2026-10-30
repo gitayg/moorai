@@ -82,7 +82,7 @@ export function createReplayer(policy, { actor = actorHash(os.userInfo().usernam
     const v = verdict();
     if (tool === "Read") {
       const text = fileScanText(Buffer.from(String(readText || "")).subarray(0, FILE_CAP));
-      merge(v, decideText(engine, policy, text, "file", { ctx: { template: isEnvTemplate(ti.file_path) } }), "file");
+      merge(v, decideText(engine, policy, text, "file", { ctx: { template: isEnvTemplate(ti.file_path), scope: "tool-result" } }), "file");
       merge(v, decideCredFileRead(engine, policy, ti.file_path), "file");
       envelope(v, { tool: "Read", paths: [ti.file_path] }, "file");
       return { tool, ...settle(v) };
@@ -96,9 +96,9 @@ export function createReplayer(policy, { actor = actorHash(os.userInfo().usernam
       const cmdEgress = uploading || extractHosts(cmd).length > 0;
       const readPaths = extractReadPaths(cmd, { ...(ps ? { shell: "powershell" } : {}), env: process.env, home: os.homedir(), insensitive: process.platform === "win32" });
       if (ps) for (const p of readPaths) merge(v, decideCredFileRead(engine, policy, p), "file");
-      merge(v, decideText(engine, policy, cmd, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" }, mask: canMask }), "file");
+      merge(v, decideText(engine, policy, cmd, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh", scope: "command" }, mask: canMask }), "file");
       for (const w of shellMemoryWrites(shellText)) merge(v, decideText(engine, policy, w.text, "output", { ctx: { targetPath: w.path }, only: [22] }), "file");
-      for (const s of scripts) merge(v, decideText(engine, policy, s, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" } }), "file");
+      for (const s of scripts) merge(v, decideText(engine, policy, s, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh", scope: "command" } }), "file");
       endpoints(v, cmd);
       envelope(v, { tool: "Bash", paths: readPaths }, "file");
       return { tool, ...settle(v) };
@@ -167,7 +167,7 @@ export function createReplayer(policy, { actor = actorHash(os.userInfo().usernam
     if (!plan.scan) return { scanned: false, decision: "allow", findings: [] };
     let text = input.prompt;
     if (text.length > CAPS.maxResultBytes) text = text.slice(0, CAPS.maxResultBytes);
-    const d = decideText(engine, policy, text, "file", { ctx: { inbound: true } });
+    const d = decideText(engine, policy, text, "file", { ctx: { inbound: true, scope: "user-prompt" } });
     const blockers = plan.action === "block" ? promptBlockers(d.findings, (id) => threatActionFor(policy, id)) : [];
     return { scanned: true, decision: blockers.length ? "deny" : "allow", findings: d.findings.map((f) => ({ ...f, stage: "prompt" })) };
   }

@@ -25,9 +25,9 @@ export function maskResult(engine, policy, value, { stage = "file", surface = "d
   const ids = d.maskIds || [];
   if (!ids.length || d.decision === "deny") return null;
   try {
-    const r = maskValue(engine, value, { stage, ids, ctx: { inbound: true }, hash });
+    const r = maskValue(engine, value, { stage, ids, ctx: { inbound: true, scope: "tool-result" }, hash });
     if (r.complete && r.count) {
-      const left = decideText(engine, policy, inboundText(r.value), stage, { ctx: { inbound: true }, only: ids, mask: true });
+      const left = decideText(engine, policy, inboundText(r.value), stage, { ctx: { inbound: true, scope: "tool-result" }, only: ids, mask: true });
       if (!left.findings.some((f) => ids.includes(f.threatId))) return { ids, value: r.value, count: r.count };
     }
   } catch { /* a failed mask falls back */ }

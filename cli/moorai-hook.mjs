@@ -2677,7 +2677,7 @@ async function handlePostToolUse(input, tool, policy, engine) {
   // A mask is attempted even alongside a block: "block" leaves the original output in front of the
   // model, so withholding the span is the only thing here that actually keeps it out of context.
   const m = d.maskIds && d.maskIds.length
-    ? settleMask(engine, policy, { tool, stage: "output", ctx: { inbound: true }, ids: d.maskIds, value: field.value, scanOf: scanTextOf, where: "result", dec: d.decision === "deny" ? "ask" : d.decision, reasons: d.reasons, alts: d.alternatives, text })
+    ? settleMask(engine, policy, { tool, stage: "output", ctx: { inbound: true, scope: "tool-result" }, ids: d.maskIds, value: field.value, scanOf: scanTextOf, where: "result", dec: d.decision === "deny" ? "ask" : d.decision, reasons: d.reasons, alts: d.alternatives, text })
     : null;
   let dec = d.decision, reasons = d.reasons, alts = d.alternatives;
   if (m && dec !== "deny") ({ dec, reasons, alts } = m);
@@ -2766,7 +2766,7 @@ async function handlePrompt(input, policy, engine) {
   // Stage "file": ingested content (the prompt detectors plus #40 / #60); reported at stage "prompt".
   // A person's prompt is prose (ctx.prose): #43 reads a command it only discusses as a mention
   // (data/destructive-mention.js). An event-triggered or server-mode prompt is third-party text and is not.
-  const d = decideText(engine, policy, text, "file", { ctx: { inbound: true, ...(plan.origin === "person" ? { prose: true } : {}) } });
+  const d = decideText(engine, policy, text, "file", { ctx: { inbound: true, scope: "user-prompt", ...(plan.origin === "person" ? { prose: true } : {}) } });
   const blockers = plan.action === "block" ? promptBlockers(d.findings, (id) => threatActionFor(policy, id)) : [];
   const block = blockers.length > 0;
   if (d.findings.length) why(detectorReason(d.findings));
@@ -3273,7 +3273,7 @@ async function main() {
     if (READ_BUF) { const sk = isSkillSurface(ti.file_path); ctxEnter(sk ? "skill" : "file", sk ? "skill" : "path", agentPath(ti.file_path, input.cwd), READ_BUF, input.cwd); }
     // readPath: the skill-file hiding detectors (data/detectors-skill-hiding.js) judge layout tells only on
     // the skill surface, and keep phrasing tells off files that are not on it.
-    const d = decideText(engine, policy, text, "file", { ctx: { template: isEnvTemplate(ti.file_path), readPath: ti.file_path } });
+    const d = decideText(engine, policy, text, "file", { ctx: { template: isEnvTemplate(ti.file_path), readPath: ti.file_path, scope: "tool-result" } });
     // #55 on the PATH — what `cat <path>` gets in the Bash branch below. Merged, never downgrading.
     const pd = decideCredFileRead(engine, policy, ti.file_path);
     d.findings.push(...pd.findings);
@@ -3341,7 +3341,7 @@ async function main() {
     const cmdEgress = uploading || extractHosts(ti.command || "").length > 0;
     for (const p of readPaths) {
       const t = readFileCapped(agentPath(p, input.cwd)); btext += t + "\n";
-      const d = decideText(engine, policy, t, "file", { ctx: { template: isEnvTemplate(p), egress: uploading, readPath: p } });
+      const d = decideText(engine, policy, t, "file", { ctx: { template: isEnvTemplate(p), egress: uploading, readPath: p, scope: "tool-result" } });
       finds.push(...d.findings);
       if (d.kill) killIds.push(...d.killIds);
       if (RANK[d.decision] > RANK[dec]) { dec = d.decision; reasons = d.reasons; alts = d.alternatives; }
@@ -3373,7 +3373,7 @@ async function main() {
     // scans above stay mask-less — a secret inside a file the command reads is not in the input at all,
     // so "mask" resolves to its fallback there (threatActionFor).
     // Monitor: whether Claude Code applies updatedInput to it is unmeasured, so a mask there resolves to its fallback.
-    const cmdD = decideText(engine, policy, ti.command, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" }, mask: canRewrite() && tool !== "Monitor" });
+    const cmdD = decideText(engine, policy, ti.command, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh", scope: "command" }, mask: canRewrite() && tool !== "Monitor" });
     finds.push(...cmdD.findings);
     if (cmdD.kill) killIds.push(...cmdD.killIds);
     if (RANK[cmdD.decision] > RANK[dec]) { dec = cmdD.decision; reasons = cmdD.reasons; alts = cmdD.alternatives; }
@@ -3415,7 +3415,7 @@ async function main() {
     }
     // The decoded scripts get the same command scan. Not maskable: the text is not in the input as written.
     for (const script of scripts) {
-      const sd = decideText(engine, policy, script, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" } });
+      const sd = decideText(engine, policy, script, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh", scope: "command" } });
       finds.push(...sd.findings);
       if (sd.kill) killIds.push(...sd.killIds);
       if (RANK[sd.decision] > RANK[dec]) { dec = sd.decision; reasons = sd.reasons; alts = sd.alternatives; }
@@ -3462,7 +3462,7 @@ async function main() {
     }
     ({ dec, reasons, alts } = intentStep(policy, tool, ti, finds, dec, reasons, alts));
     let bmask;
-    ({ dec, reasons, alts, rewrite: bmask } = settleMask(engine, policy, { tool, stage: "prompt", ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" }, ids: cmdD.maskIds, value: ti, only: ["command"], scanOf: (v) => v.command, dec, reasons, alts, text: ti.command }));
+    ({ dec, reasons, alts, rewrite: bmask } = settleMask(engine, policy, { tool, stage: "prompt", ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh", scope: "command" }, ids: cmdD.maskIds, value: ti, only: ["command"], scanOf: (v) => v.command, dec, reasons, alts, text: ti.command }));
     // Quarantined reader: a command that reads an outside-origin file is denied with the summary in the reason
     // ("summary") or put to the user ("ask"). The command cannot be rewritten to a summary, so it never runs as is.
     let qtext = null;

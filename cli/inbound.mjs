@@ -176,7 +176,7 @@ export function applyInbound(res, policy, text, { surface = "door", mask = false
 // Scan inbound text and resolve it. `stage`: the hook and the SDK scan results at "output"; the proxy and
 // the gateway at "file" (mcp-proxy/moorai-mcp-guard.mjs records why). The rules above are the same on both.
 export function decideInbound(engine, policy, text, { surface = "door", stage = "output", mask = false } = {}) {
-  const raw = decideText(engine, policy, text, stage, { ctx: { inbound: true }, mask });
+  const raw = decideText(engine, policy, text, stage, { ctx: { inbound: true, scope: "tool-result" }, mask });
   return applyInbound(raw, policy, text, { surface, mask });
 }
 

@@ -190,7 +190,7 @@ const RANK = { allow: 0, ask: 1, deny: 2 };
 // (checkToolCalls). Detectors that judge a command about to run read ctx.prose (#43, data/destructive-mention.js).
 // A system turn (operator or injected context), a tool result and a tool call's arguments are never marked.
 const PROSE_KINDS = new Set(["prompt"]);
-const proseItem = (it) => (PROSE_KINDS.has(it.kind) ? { ...it, ctx: { ...it.ctx, prose: true } } : it);
+const proseItem = (it) => (PROSE_KINDS.has(it.kind) ? { ...it, ctx: { ...it.ctx, prose: true, scope: "user-prompt" } } : it);
 const AMBIGUOUS = "tool call arguments can be read more than one way (a wrapped, repeated or alias field disagrees), so a client may run something other than what was checked";
 
 function mapDirect(name, input = {}) {
@@ -235,7 +235,7 @@ export function createChecker(rt, { enforce, cwd, onUnevaluated, maxItems = MAX_
   const cacheKey = randomBytes(32);
   const keyOf = (s) => createHmac("sha256", cacheKey).update(s, "utf8").digest("base64");
   const reportContext = (s, it) => Boolean(it.context) && contextPrivacy(s) === "report";
-  const itemKey = (s, it) => keyOf(`${s.policyId}\0${it.stage}${reportContext(s, it) ? ":context" : ""}\0${it.text}`);
+  const itemKey = (s, it) => keyOf(`${s.policyId}\0${it.stage}${reportContext(s, it) ? ":context" : ""}${PROSE_KINDS.has(it.kind) ? ":user" : ""}\0${it.text}`);
 
   async function checkRequest(items) {
     const s = await rt.ready();

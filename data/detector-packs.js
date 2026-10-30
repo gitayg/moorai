@@ -12,6 +12,7 @@
 // character-class aware. Patterns are compiled as RegExp, never eval'd.
 
 import { safeRegex } from "../src/safe-regex.js";
+import { packScope } from "./pack-scope.js";
 
 // Pack flags are sanitized rather than passed through: an invalid flag makes RegExp throw, which
 // would silently drop the whole pattern. Empty string, not safeRegex's "i" default — pack patterns
@@ -23,7 +24,8 @@ function safePattern(src, flags) {
 const slug = (s, fallback) => String(s || fallback).replace(/[^\w-]/g, "").slice(0, 40) || fallback;
 
 // Compile a list of packs ({ packId, detectors: [{ detectorId, threatId, stage, mode, hint, patterns,
-// flags }] }) into detector objects. Anything malformed is skipped, never thrown.
+// flags, scope }] }) into detector objects. Anything malformed is skipped, never thrown. `scope`
+// (data/pack-scope.js) is kept on the detector; a scope with no kind this agent knows drops the detector.
 export function compilePacks(packs) {
   const out = [];
   for (const pack of Array.isArray(packs) ? packs : []) {
@@ -31,6 +33,8 @@ export function compilePacks(packs) {
     for (const d of Array.isArray(pack?.detectors) ? pack.detectors : []) {
       const threatId = Number(d?.threatId);
       if (!Number.isInteger(threatId)) continue;
+      const scope = packScope(d?.scope);
+      if (scope === null) continue;
       const patterns = (Array.isArray(d?.patterns) ? d.patterns : []).map((p) => safePattern(p, d?.flags)).filter(Boolean);
       if (!patterns.length) continue;
       out.push({
@@ -39,7 +43,8 @@ export function compilePacks(packs) {
         stage: d?.stage === "output" ? "output" : "prompt",
         mode: d?.mode === "coach" ? "coach" : "warn",
         hint: String(d?.hint || "Custom (org policy) pattern matched").slice(0, 160),
-        patterns
+        patterns,
+        ...(scope ? { scope } : {})
       });
     }
   }

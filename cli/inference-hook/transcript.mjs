@@ -31,7 +31,7 @@ export function promptItems(frame) {
     const blocks = typeof m.content === "string" ? [{ type: "text", text: m.content }] : Array.isArray(m.content) ? m.content : [];
     for (const b of blocks) {
       if (!b || typeof b !== "object") continue;
-      if (b.type === "text" && typeof b.text === "string") out.push({ kind: "prompt", stage: "prompt", ctx: {}, text: b.text });
+      if (b.type === "text" && typeof b.text === "string") out.push({ kind: "prompt", stage: "prompt", ctx: { scope: "user-prompt" }, text: b.text });
       else if (b.type === "tool_result") {
         const t = textOf(b.content);
         if (t) out.push({ kind: "tool_result", stage: "output", ctx: { inbound: true, tool: inboundTool(b.tool_name) }, text: t });

@@ -44,7 +44,10 @@ export class DetectionEngine {
   // stages also run the "prompt" detectors (secrets/PII/injection). Without this, dropped files and
   // OCR'd images were never threat-scanned. Prompt/output stay isolated.
   _wantStages(stage) { return (stage === "file" || stage === "index") ? ["prompt", stage] : [stage]; }
-  _inStage(d, want) { return (d.stages || [d.stage]).some((s) => want.includes(s)); }
+  // A detector-pack detector with a `scope` (data/pack-scope.js) is never stage-matched: it runs only where
+  // the caller names one of its kinds as ctx.scope, at any stage. Built-ins carry no scope.
+  _inStage(d, want) { return !d.scope && (d.stages || [d.stage]).some((s) => want.includes(s)); }
+  _runs(d, want, ctx) { return d.scope ? !!ctx && d.scope.includes(ctx.scope) : this._inStage(d, want); }
 
   // #5 — the choke-point for content the agent INGESTS INTO ITS CONTEXT without a user typing it and
   // without a tool call. Written for "a local vector store / RAG index before it's embedded", and it
@@ -107,7 +110,7 @@ export class DetectionEngine {
     const want = this._wantStages(stage);
 
     for (const d of this.detectors) {
-      if (!this._inStage(d, want)) continue;
+      if (!this._runs(d, want, ctx)) continue;
       const match = this._matchDetector(text, d, ctx);
       if (!match) continue;
 
@@ -159,7 +162,7 @@ export class DetectionEngine {
     if (!views.length) return;
     for (const v of views) {
       for (const d of this.detectors) {
-        if (d.threatId === 50 || d.rawOnly || !this._inStage(d, want)) continue;
+        if (d.threatId === 50 || d.rawOnly || !this._runs(d, want, ctx)) continue;
         const threat = this.threat(d.threatId);
         if (!threat || byThreat.has(threat.id)) continue;
         const match = this._matchDetector(v, d, ctx);

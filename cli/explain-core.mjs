@@ -36,7 +36,7 @@ export function explainText(engine, policy, text, stage, { ctx, coach = false, a
     ...(showMatch && match != null ? { match: engine._clip(String(match)) } : {})
   });
   for (const det of engine.detectors) {
-    if (!engine._inStage(det, want)) continue;
+    if (!engine._runs(det, want, ctx)) continue;
     const raw = firstRaw(engine, det, text);
     if (!raw) continue;
     const threat = engine.threat(det.threatId);

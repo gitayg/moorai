@@ -176,7 +176,7 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
     // #65, as the hook's Read branch: a secret in the file joins the caller's session-read set; a file whose
     // secrets could not all be learned holds the session as unverified.
     if (secretTracker && secretTracker.learn) { try { const cred = isCredentialPath(ti.file_path); const r = learnableSecrets(rd.learn.text, { kv: cred }); const cut = rd.learn.truncated || r.truncated; if (r.values.length || cut) secretTracker.learn(r.values, "Read", cred, cut); } catch { /* evidence only */ } }
-    const d = decideText(engine, policy, text, "file", { ctx: { template: isEnvTemplate(ti.file_path) } });
+    const d = decideText(engine, policy, text, "file", { ctx: { template: isEnvTemplate(ti.file_path), scope: "tool-result" } });
     const pd = decideCredFileRead(engine, policy, ti.file_path);
     d.findings.push(...pd.findings);
     if (pd.kill) { d.kill = true; d.killIds.push(...pd.killIds); }
@@ -204,11 +204,11 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
       if (RANK[d.decision] > RANK[dec]) { dec = d.decision; reasons = d.reasons; alts = d.alternatives; }
     };
     for (const p of readPaths) {
-      merge(decideText(engine, policy, readFileCapped(agentPath(p, cwd)), "file", { ctx: { template: isEnvTemplate(p), egress: uploading } }));
+      merge(decideText(engine, policy, readFileCapped(agentPath(p, cwd)), "file", { ctx: { template: isEnvTemplate(p), egress: uploading, scope: "tool-result" } }));
       merge(decideFileMetadata(engine, policy, agentPath(p, cwd)));
       if (ps) merge(decideCredFileRead(engine, policy, p));
     }
-    merge(decideText(engine, policy, ti.command, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" } }));
+    merge(decideText(engine, policy, ti.command, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh", scope: "command" } }));
     // Base64/hex payloads the command decodes straight into a shell (T1027.010), as the hook adds them to
     // the scripts it re-scans: a pure function of the command, so decided here exactly as there.
     const scripts = decodedCommandPayloads(command);
@@ -220,7 +220,7 @@ function decideBranch(engine, policy, { tool: rawTool = "", toolInput, cwd, acto
       if (trD.decision === "deny" && dec !== "deny") { dec = "deny"; reasons = [trD.reason]; alts = saferAlternativesFor([67]); }
       else if (RANK[xd.decision] > RANK[dec]) { dec = xd.decision; reasons = xd.reasons; alts = xd.alternatives; }
     }
-    for (const script of scripts) merge(decideText(engine, policy, script, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh" } }));
+    for (const script of scripts) merge(decideText(engine, policy, script, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh", scope: "command" } }));
     const epD = decideEndpoints(policy, ti.command);
     if (epD.decision === "deny") { dec = "deny"; reasons = [epD.reason]; alts = saferAlternativesFor([63]); endpointSignal(epD, signals); }
     { const sv = secretEgressBlocks(policy, ti.command, cwd, "egress", signals, cmdEgress ? secretTracker : null, systemConfig); if (sv === "deny" && dec !== "deny") { dec = "deny"; reasons = ["local secret egress"]; alts = saferAlternativesFor([65]); } else if (sv === "ask" && dec === "allow") { dec = "ask"; reasons = [UNVERIFIED_REASON]; alts = saferAlternativesFor([65]); } }

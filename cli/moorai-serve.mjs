@@ -136,7 +136,7 @@ import { strictBase64 } from "../model-proxy/file-parts.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULTS = Object.freeze({ host: "127.0.0.1", port: 8790, maxBody: 1048576, maxFileBody: 50331648, timeoutMs: 10000, intentSessionsPerCaller: 256 });
-const CTX_KEYS = { template: "boolean", egress: "boolean", inbound: "boolean", targetPath: "string", tool: "string" };
+const CTX_KEYS = { template: "boolean", egress: "boolean", inbound: "boolean", targetPath: "string", tool: "string", scope: "string" };
 const MAX_TEXT = 4 * 1048576;
 
 export function isLoopback(host) {

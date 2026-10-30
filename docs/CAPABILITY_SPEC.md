@@ -4143,6 +4143,53 @@ and a bounded directory walk. Malformed lines and unparseable Codex arguments ar
   for it was not observed. Prompts are scanned only as `promptScan` allows, as in the live hook: a typed
   prompt is not scanned under the default.
 
+**Quarry trace export.** `--format quarry` (`cli/ingest/quarry.mjs`, readers in `cli/ingest/quarry-trace.mjs`,
+observer hook in `cli/ingest/run.mjs`) writes each transcript as the OpenAI-shaped `{messages}` object
+Cisco's Project Quarry scans, checked against Quarry 0.1.0 at `eadc6e3` (`quarry/safety/validator.py`,
+`quarry/types/context.py`, `quarry/safety/limits.py`). `--content free` (default) carries tool names,
+order and `moorai_*` facts (capability tags, replay decision, threat ids) and no text; `--content full`
+adds the text, stays on the device, and cannot be combined with `--report`. Tests:
+`test/ingest-quarry.test.mjs`.
+
+## Org detector packs: `scope` (v1.44.0)
+
+`policy.detectorPacks` (`data/detector-packs.js` `compilePacks`, applied by `buildEngine` in
+`cli/hook-core.mjs` and by the desktop webview `src/app.js`) adds org patterns as detectors that report an
+existing threat id. A pack detector may carry `scope`, a non-empty array of `"user-prompt"`, `"tool-result"`
+and `"command"` (`data/pack-scope.js`). `compilePacks` keeps the known kinds on the detector object, ignores
+unknown ones and drops a detector with none left; a value that is not an array is no scope.
+
+**Engine.** `DetectionEngine._runs(d, want, ctx)` (`src/engine.js`): a scoped detector runs only when
+`ctx.scope` is one of its kinds, at any stage; an unscoped detector is stage-matched exactly as before.
+`_inStage` never matches a scoped detector, so the paths that read the detector list by stage (`redact`,
+the model proxy's response-text detectors, the clipboard scan, semantic escalation) do not run one; the mask
+walk (`cli/mask.mjs`) and `moorai-explain` use `_runs` with the call's ctx.
+
+**Call sites that name a kind.**
+- `user-prompt`: the hook's UserPromptSubmit scan (only when `promptScanPlan` scans it: `promptScan: "all"`
+  for a typed prompt, otherwise event-triggered and server-mode prompts; the first 65,536 characters), the
+  SDK's UserPromptSubmit callback, the model proxy's user-turn items (`check.mjs` `proseItem`: a user
+  message's text, an Ollama prompt / suffix, embeddings input; the verdict cache is keyed per user turn), the
+  Inference hooks server's user text blocks, replay's prompt scan, the desktop prompt box.
+- `tool-result`: `decideInbound` (`cli/inbound.mjs`), so every inbound result surface (hook and SDK
+  PostToolUse, MCP proxy and gateway results, model proxy tool results and document blocks, Inference hooks
+  `tool_result` blocks, `/v1/scan` with `ctx.inbound`) and the result masks (`cli/result-mask.mjs`, the hook's
+  `settleMask` on a result); a Read's content and each file a shell command reads in the hook and the SDK;
+  replay's Read.
+- `command`: the hook's Bash / PowerShell / Monitor command scan, its carried scripts and its command mask;
+  the SDK's Bash / PowerShell command and decoded payloads; the Inference hooks server's tool calls mapped to
+  Bash / PowerShell (and the model proxy's, through the SDK runtime's `toolCall`); replay's command and
+  embedded scripts. `moorai-serve` `/v1/scan` accepts `ctx.scope` from the caller.
+
+Everything else (Write / Edit content, WebFetch URL and prompt, Task prompt, MCP arguments, system messages,
+reply text, index scans, `moorai-scan`, MCP package checks) names no kind, so no scoped detector runs there.
+Agents before v1.44.0 ignore `scope` and run the detector by its `stage`. Tests:
+`test/detector-pack-scope.test.mjs` (the real hook process for each kind, the SDK, the model proxy checker,
+the Inference hooks evaluator, replay, `moorai-serve`, the masks).
+
+**Limits.** Opt-in semantic escalation re-scans without a kind, so its miss-recovery pass can still run when
+only a scoped detector found something. The desktop prompt-box wiring is not covered by a test.
+
 ## Hook adapters built from vendor docs: Antigravity, Windsurf, Kiro, Cline
 
 `cli/moorai-agent-hook.mjs <antigravity|windsurf|kiro|cline>` runs the same shim as the other adapters

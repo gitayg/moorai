@@ -41,7 +41,9 @@ const MAX_LOCAL = 500;    // --show-local rows kept in memory
 const MAX_ALERTS = 5000;  // --report alerts kept in memory
 
 // opts: { policy, policyId, policySource, agents, roots, explicit, days, bounds, clock, collectAlerts,
-//         config, collectLocal }
+//         config, collectLocal, observer }
+// observer (the Quarry trace export, cli/ingest/quarry.mjs): record(file, rec) for every parsed record,
+// verdict(ev, stage, v) for every replayed call ("pre", "post"), fileEnd(file) after each file.
 export async function runIngest(opts) {
   const bounds = { ...DEFAULT_BOUNDS, ...(opts.bounds || {}) };
   const clock = opts.clock || Date.now;
@@ -80,6 +82,7 @@ export async function runIngest(opts) {
     }
     const mask = ev.agent === "claude-code"; // the Codex hook runs through the shim, which cannot rewrite
     const pre = replay.pre(ev.input, { mask, readText: ev.readText });
+    opts.observer?.verdict(ev, "pre", pre);
     if (pre.unsupported) { S.events.unsupported++; sum.session(ev.agent, ev.sessionId); return; }
     sum.add(ev.agent, ev.sessionId, "call", pre, ev.ts);
     keep(ev, "pre", pre.tool, pre);
@@ -87,6 +90,7 @@ export async function runIngest(opts) {
     if (pre.decision === "deny" || ev.isError || ev.response === undefined) return;
     const post = replay.post(pre.tool, ev.response, { mask });
     if (!post) return;
+    opts.observer?.verdict(ev, "post", post);
     sum.add(ev.agent, ev.sessionId, "post", post, ev.ts);
     keep(ev, "post", pre.tool, post);
   };
@@ -104,34 +108,35 @@ export async function runIngest(opts) {
         if (!d.tooLarge) {
           let doc;
           try { doc = JSON.parse(d.text); } catch { S.skipped.malformedLines++; }
-          if (doc) for (const ev of parser.pushDocument(doc)) handle(ev);
+          if (doc) { opts.observer?.record(f, doc); for (const ev of parser.pushDocument(doc)) handle(ev); }
         }
       } catch { S.skipped.unreadableFiles++; }
       S.bytesRead += st.bytes || 0;
       if (st.cutByFile) S.truncated.filesCut++;
       if (st.cutByBudget) S.truncated.bytes = true;
-      finish(parser);
+      finish(parser, f);
       continue;
     }
     try {
       for await (const item of boundedLines(f.path, { maxFileBytes: bounds.maxFileBytes, maxLineBytes: bounds.maxLineBytes, budget, state: st })) {
-        if (clock() > deadline) { S.truncated.time = true; S.bytesRead += st.bytes || 0; finish(parser); break outer; }
+        if (clock() > deadline) { S.truncated.time = true; S.bytesRead += st.bytes || 0; finish(parser, f); break outer; }
         if (item.oversize) { S.skipped.oversizeLines++; continue; }
         if (item.partial) { S.skipped.partialLines++; continue; }
         if (!item.line.trim()) continue;
         let rec;
         try { rec = JSON.parse(item.line); } catch { S.skipped.malformedLines++; continue; }
         if (!rec || typeof rec !== "object" || Array.isArray(rec)) { S.skipped.malformedLines++; continue; }
+        opts.observer?.record(f, rec);
         for (const ev of parser.push(rec)) handle(ev);
       }
     } catch { S.skipped.unreadableFiles++; }
     S.bytesRead += st.bytes || 0;
     if (st.cutByFile) S.truncated.filesCut++;
     if (st.cutByBudget) S.truncated.bytes = true;
-    finish(parser);
+    finish(parser, f);
   }
 
-  function finish(parser) {
+  function finish(parser, f) {
     for (const ev of parser.end()) handle(ev);
     if (parser.unsupported) S.events.unsupported += parser.unsupported;
     if (parser.malformedArgs) S.skipped.malformedArgs += parser.malformedArgs;
@@ -142,6 +147,7 @@ export async function runIngest(opts) {
       r.moorai ||= e.moorai;
       r.sessionId = sid;
     }
+    opts.observer?.fileEnd(f);
   }
 
   const result = sum.result({ policyId: opts.policyId, policySource: opts.policySource, days: opts.days ?? 30, bounds, coverage: !!opts.coverage });

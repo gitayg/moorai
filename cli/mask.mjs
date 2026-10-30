@@ -52,9 +52,9 @@ export function placeholder(threatId, span, hash) {
   return `[MOORAI:${TIER_OF[threatId] || "data"}:${tag}]`;
 }
 
-function spanDetectors(engine, stage, ids) {
+function spanDetectors(engine, stage, ids, ctx) {
   const want = engine._wantStages(stage);
-  return engine.detectors.filter((d) => ids.has(d.threatId) && d.mode !== "coach" && !NOT_A_SPAN.has(d.detectorId) && engine._inStage(d, want));
+  return engine.detectors.filter((d) => ids.has(d.threatId) && d.mode !== "coach" && !NOT_A_SPAN.has(d.detectorId) && engine._runs(d, want, ctx));
 }
 
 // Every occurrence every span detector of a masked threat accepts, merged, replaced right to left.
@@ -92,7 +92,7 @@ function maskString(s, dets, ctx, hash) {
 // other key is copied through untouched.
 export function maskValue(engine, value, { stage, ids, ctx, hash, only } = {}) {
   const set = ids instanceof Set ? ids : new Set(ids || []);
-  const dets = spanDetectors(engine, stage, set);
+  const dets = spanDetectors(engine, stage, set, ctx);
   const budget = { bytes: MASK_CAPS.maxBytes, nodes: MASK_CAPS.maxNodes, ok: true };
   let count = 0;
   const walk = (v, depth) => {

@@ -432,9 +432,9 @@ function reviewContent(text, reviewStage, mount) {
   return blocked;
 }
 
-function renderFindings(text, stage, mount) {
+function renderFindings(text, stage, mount, ctx) {
   let blocked = false;
-  for (const f of engine.scan(text, stage)) {
+  for (const f of engine.scan(text, stage, ctx)) {
     const act = threatAction(f.threat.id);
     if (act === "disabled") continue;
     lastFound++;
@@ -481,7 +481,7 @@ function blocksIn(text) {
   const cp = effectiveContentPolicy(policy); // built-in NSFW notify default under the org's entries
   const enabled = Object.keys(cp).filter((id) => cp[id] && cp[id] !== "disabled");
   for (const c of engine.scanContent(text, enabled)) { const a = cp[c.ruleId] || "disabled"; if (a === "block" || a === "justify") out.push({ match: c.match, label: c.label }); }
-  for (const f of engine.scan(text, "prompt")) { const a = threatAction(f.threat.id); if (a === "block" || a === "justify") out.push({ match: f.match, label: f.threat.category }); }
+  for (const f of engine.scan(text, "prompt", { scope: "user-prompt" })) { const a = threatAction(f.threat.id); if (a === "block" || a === "justify") out.push({ match: f.match, label: f.threat.category }); }
   return out;
 }
 
@@ -513,7 +513,7 @@ function sendMessage() {
 
   lastFound = 0;
   const cb = reviewContent(text, "shared", review);
-  const fb = renderFindings(text, "prompt", review);
+  const fb = renderFindings(text, "prompt", review, { scope: "user-prompt" });
   renderLog();
 
   if (cb || fb) {

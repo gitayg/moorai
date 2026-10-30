@@ -8,7 +8,7 @@
 //   system-prompt   #52  the reply reproduces a run of at least ECHO_MIN_WORDS consecutive words of THIS
 //                        request's system prompt (below)
 // The first three are the detection engine the proxy already judges outbound content with (the runtime's
-// policy-built engine, its detector packs included), restricted to those threats' detectors that declare the
+// policy-built engine, its detector packs without a `scope` included), restricted to those threats' detectors that declare the
 // "output" stage; a threat the policy sets "disabled" is not looked for.
 //
 // SYSTEM-PROMPT ECHO, keyed shingles. The request's system text (every outbound item of kind "system") is
@@ -74,7 +74,7 @@ export function responseDetectors(engine) {
   list = [];
   for (const d of engine.detectors || []) {
     if (!CLASSES[d.threatId] || d.threatId === 52 || d.mode === "coach") continue;
-    if (!(d.stages || [d.stage]).includes("output")) continue;
+    if (d.scope || !(d.stages || [d.stage]).includes("output")) continue;
     const patterns = [];
     for (const p of d.patterns || []) { try { patterns.push({ p, g: new RegExp(p.source, p.flags.includes("g") ? p.flags : `${p.flags}g`) }); } catch { /* skipped */ } }
     list.push({ id: d.threatId, refine: d.refine, patterns });
