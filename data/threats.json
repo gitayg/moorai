@@ -900,7 +900,7 @@
         "MCP09"
       ],
       "owaspMcpPartial": {
-        "MCP09": "calls to servers off the approved allow-list; no discovery of deployed servers"
+        "MCP09": "calls to servers off the approved allow-list; the AIBOM lists configured and listening servers but raises no finding"
       },
       "attack": [
         {
@@ -2162,7 +2162,7 @@
       "id": 57,
       "category": "Add-ons & Tools",
       "threat": "Unsanctioned or malicious package install",
-      "example": "The agent installs software from an untrusted source — piping a remote script to a shell (curl … | bash), pip/npm/cargo/go install from a URL, git, or an alternate index, or an auto-yes npx of an unvetted package, or a PowerShell download run through Invoke-Expression (`irm … | iex`, `iex (New-Object Net.WebClient).DownloadString(…)`).",
+      "example": "The agent installs software from an untrusted source — piping a remote script to a shell (curl … | bash), pip/npm/cargo/go install from a URL, git, or an alternate index, or an auto-yes npx of an unvetted package, or a PowerShell download run through Invoke-Expression (`irm … | iex`, `iex (New-Object Net.WebClient).DownloadString(…)`), or installs a release published from a compromised maintainer account or pipeline (litellm==1.107.0, chalk@5.6.1).",
       "response": "This installs code from an untrusted source (remote install script, alternate package index, or unvetted package). Warn before it runs — a malicious or typosquatted package is a supply-chain compromise vector.",
       "saferAlternative": "Download the script, read it, check its checksum, then run the local copy.",
       "severity": 4,
@@ -2176,15 +2176,19 @@
       "owasp": "LLM03",
       "atlas": "AML.T0010",
       "owaspAgentic": [
+        "ASI04",
         "ASI05"
       ],
       "owaspAgenticPartial": {
+        "ASI04": "known-compromised package releases denied at install and MCP launch; MCP server packages held by version pin and critical checks",
         "ASI05": "remote scripts piped to a shell and installs from untrusted sources"
       },
       "owaspMcp": [
+        "MCP04",
         "MCP05"
       ],
       "owaspMcpPartial": {
+        "MCP04": "MCP server launches held when unpinned, off the org's pinned version or failing a critical pre-install check (mcpPackagePolicy), and known-compromised releases denied at install and at MCP launch; exact versions only, no transitive dependencies, no signature verification",
         "MCP05": "remote scripts piped to a shell and installs from untrusted sources"
       },
       "attack": [
@@ -2204,6 +2208,11 @@
           "id": "T1176.002",
           "coverage": "partial",
           "reason": "an editor extension side-loaded from a local .vsix or URL (code/cursor/windsurf --install-extension), or written into the extensions directory; marketplace installs by id pass"
+        },
+        {
+          "id": "T1195.001",
+          "coverage": "partial",
+          "reason": "a release on the shipped or signed known-compromised list is denied at install and MCP server launch; MCP server versions are held to the org's pins; an unlisted compromise passes"
         }
       ],
       "stride": "Tampering",
@@ -3444,7 +3453,12 @@
       "atlasPartial": {
         "AML.T0103": "agent CLIs launched, installed or scheduled from a shell command"
       },
-      "owaspAgentic": [],
+      "owaspAgentic": [
+        "ASI10"
+      ],
+      "owaspAgenticPartial": {
+        "ASI10": "an agent launching, installing or scheduling another agent CLI from a shell command; report-only by default"
+      },
       "owaspMcp": [],
       "attack": [],
       "attackNote": "ATT&CK v20 has no technique for deploying an AI agent; ATLAS AML.T0103 covers it.",
@@ -3513,6 +3527,120 @@
       "cweNote": "A person's choice of what to share with, or how to use, an AI tool: a policy and behaviour issue, not a software weakness.",
       "capec": [],
       "capecNote": "No adversary acts: a person's sharing or use of an AI tool is not an attack pattern."
+    },
+    {
+      "id": 91,
+      "category": "Add-ons & Tools",
+      "threat": "MCP server asks the client to share its context",
+      "example": "An MCP server sends a sampling request with includeContext \"allServers\", asking the client to put context from every connected MCP server into a generation the server receives.",
+      "response": "Do not let an MCP server's sampling request pull in context from other servers; refuse includeContext by policy.",
+      "saferAlternative": "Set samplingContextAction to \"block\" in the signed policy, or use MCP servers that do not request context.",
+      "severity": 3,
+      "likelihood": 2,
+      "riskScore": 6,
+      "riskLevel": "Medium",
+      "sources": [
+        "Agent safety"
+      ],
+      "owasp": "LLM02",
+      "atlas": "AML.T0057",
+      "atlasPartial": {
+        "AML.T0057": "context requested through MCP sampling, at the MCP guard and gateway only"
+      },
+      "owaspAgentic": [],
+      "owaspMcp": [
+        "MCP10"
+      ],
+      "owaspMcpPartial": {
+        "MCP10": "includeContext on MCP sampling requests at the MCP guard and gateway; other context sharing between users or sessions is not observed"
+      },
+      "attack": [],
+      "attackNote": "A protocol field on a server's request, not a host command, so no ATT&CK technique is credited.",
+      "stride": "Information Disclosure",
+      "cwe": [
+        {
+          "id": 201,
+          "title": "Insertion of Sensitive Information Into Sent Data"
+        }
+      ],
+      "capec": [],
+      "capecNote": "CAPEC (3.9) has no pattern for a protocol context-inclusion request."
+    },
+    {
+      "id": 92,
+      "category": "Information & Privacy",
+      "threat": "Over-sharing to an MCP tool",
+      "example": "An agent pastes a whole customer export, a base64-encoded document or the conversation so far into one MCP tool argument (a ticket, a chat message, a page) on a remote server.",
+      "response": "Send only the part the tool needs. Review MCP calls whose arguments carry a whole file, an encoded blob or a conversation.",
+      "saferAlternative": "Send only the part of the file or conversation the tool needs, or reference it instead of pasting it.",
+      "severity": 3,
+      "likelihood": 3,
+      "riskScore": 9,
+      "riskLevel": "Medium",
+      "sources": [
+        "OWASP"
+      ],
+      "owasp": "LLM02",
+      "atlas": "AML.T0057",
+      "atlasPartial": {
+        "AML.T0057": "what an agent sends in one MCP call only"
+      },
+      "owaspAgentic": [],
+      "owaspMcp": [
+        "MCP10"
+      ],
+      "owaspMcpPartial": {
+        "MCP10": "what an agent sends in one MCP call (size, encoded blob, pasted file or conversation); context reuse across sessions, agents or tenants is not observed"
+      },
+      "attack": [],
+      "attackNote": "Over-sharing by the agent itself is a data-handling failure, not an adversary technique; exfiltration by an adversary is #65 / #1.",
+      "stride": "Information Disclosure",
+      "cwe": [
+        {
+          "id": 201,
+          "title": "Insertion of Sensitive Information Into Sent Data"
+        }
+      ],
+      "capec": [],
+      "capecNote": "No adversary acts: an agent sending more than a tool needs is not an attack pattern."
+    },
+    {
+      "id": 93,
+      "category": "Agents & Permissions",
+      "threat": "Cascading agent failure",
+      "example": "One agent's fault spreads across calls and agents: a burst of sub-agent spawns, sub-agents nested past the intended depth, the same failing call retried again and again, or a session that keeps running after MoorAI has denied call after call.",
+      "response": "Cap the session: limit sub-agent spawns per window and nesting depth, stop a call that keeps failing, and hold a session that keeps tripping controls until a person looks.",
+      "saferAlternative": "Give each delegated task a bounded scope and a retry budget, and stop to review after repeated failures or denials.",
+      "severity": 3,
+      "likelihood": 3,
+      "riskScore": 9,
+      "riskLevel": "Medium",
+      "sources": [
+        "OWASP_Agentic"
+      ],
+      "owasp": "LLM06",
+      "atlas": "AML.T0034",
+      "atlasPartial": {
+        "AML.T0034": "sub-agent spawn bursts and nesting, repeated failing calls and denied-call holds in one session"
+      },
+      "owaspAgentic": [
+        "ASI08"
+      ],
+      "owaspAgenticPartial": {
+        "ASI08": "per-session sub-agent spawn rate and depth, consecutive identical failing calls, and a hold after repeated denials, in the Claude Code hook and the Agent SDK; no validation of one agent's output before another consumes it, no cross-session or cross-host fan-out view, failures counted only where the host reports them"
+      },
+      "owaspMcp": [],
+      "attack": [],
+      "attackNote": "A fault spreading across an agent's own calls and sub-agents is not an adversary technique in ATT&CK v20.",
+      "stride": "Denial of Service",
+      "cwe": [
+        {
+          "id": 770,
+          "title": "Allocation of Resources Without Limits or Throttling"
+        }
+      ],
+      "capec": [],
+      "capecNote": "No adversary acts: a fault spreading through an agent's own calls is not an attack pattern, and CAPEC-130 Excessive Allocation needs an attacker crafting requests."
     }
   ]
 }

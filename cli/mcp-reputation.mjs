@@ -472,7 +472,7 @@ export function hookReputation(label, { policy = {}, enforce = false, home = hom
   const action = reputationAction(rep, p, { enforce });
   const report = (rep.firstSeen || rep.versionChanged) && action !== "allow";
   const alert = reputationAlert(rep, { server: label, decision: action, identityHash: identityHash ? identityHash(`mcp-reputation:${rep.key}`) : "", tool: `hook:mcp__${label}` });
-  return { action, rep, report, alert };
+  return { action, rep, report, alert, decl };
 }
 
 export { REP_REV };

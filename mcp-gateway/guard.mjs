@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { mcpGateway, decideText, threatActionFor } from "../cli/hook-core.mjs";
 import { CAPS, toolScanText, toolIdentity, resultOfResponse } from "../mcp-proxy/tool-scan.mjs";
 import { decideInbound, inboundText } from "../cli/inbound.mjs";
+import { serverRequestsOf, gateServerRequest } from "../mcp-proxy/sampling-scan.mjs";
 import { maskResult, maskAlert, maskedMcpResult } from "../cli/result-mask.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "../mcp-proxy/tool-baseline.mjs";
 import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON, RUG_PULL_THREAT } from "../mcp-proxy/tool-drift.mjs";
@@ -405,8 +406,21 @@ export function createGuard(route) {
   // `paged`: the request asked for a later page, so an absent tool is not a removed one.
   // `tightenOnly`: a listing that answers no outstanding tools/list (server.mjs): judged, and filtered,
   // but it can only quarantine a tool, never clear one (tool-drift.mjs evaluateListing).
-  async function gateResult(msg, toolName, { paged = false, tightenOnly = false } = {}) {
+  async function gateResult(msg, toolName, { paged = false, tightenOnly = false, replyUpstream = null, methodOf = null } = {}) {
     try {
+      // A server -> client sampling / elicitation request (../mcp-proxy/sampling-scan.mjs): judged, then
+      // forwarded or refused (the server gets a JSON-RPC error upstream, the client a notice in its place).
+      const sreq = serverRequestsOf(msg);
+      if (sreq) {
+        if (sreq.shape === "request") await withDeadline(ensurePolicy(), CAPS.resultDeadlineMs);
+        const isToolCall = sreq.shape !== "request" && !!methodOf && methodOf(msg.id) === "tools/call";
+        const ref = gateServerRequest(msg, sreq, {
+          engine: state.ENGINE, policy: state.POLICY, coach: state.COACH, server: SERVER, toolPrefix: "gateway", label: isToolCall ? toolName : null, isToolCall,
+          identity: IDENTITY, post, record: recordLedger, failClosed, coachNote
+        });
+        if (ref) { if (ref.toServer && replyUpstream) replyUpstream(ref.toServer); return ref.toClient; }
+        if (sreq.shape === "request") return null;
+      }
       // The upstream says its tool list changed: the next block-mode call re-lists first. Forwarded as ever.
       if (msg && msg.method === "notifications/tools/list_changed") { DRIFT.markStale(); return null; }
       const r = msg && msg.result;

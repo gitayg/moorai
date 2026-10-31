@@ -42,6 +42,7 @@ export const REASON = Object.freeze({
   BINDING_REFUSED: "BINDING_REFUSED",             // a user config.json disagreed with the admin (root-owned) binding and was refused
   POLICY_STALE: "POLICY_STALE",                   // the enforced policy's signed iat is older than the maximum age (ageMinutes)
   BEHAVIOR_SIGNAL: "BEHAVIOR_SIGNAL",             // session-level behaviour (trifecta, autonomy, clipboard, drift)
+  CASCADE_LIMIT: "CASCADE_LIMIT",                 // policy.cascadeLimits: sub-agent spawn rate or depth, a call that keeps failing, a session held after repeated denials (data/cascade-limits.js)
   HONEYTOKEN: "HONEYTOKEN",
   SKILL_FILE: "SKILL_FILE",
   MODEL_ESCALATION: "MODEL_ESCALATION",
@@ -54,6 +55,9 @@ export const REASON = Object.freeze({
   CLIENT_COOLDOWN: "CLIENT_COOLDOWN",             // MCP gateway: a client in a cool-down after repeated refusals (cooldownSeconds)
   MCP_TOOL_DRIFT: "MCP_TOOL_DRIFT",               // policy mcpToolDrift "block": a tool changed / was added / shadows since approval (mcp-proxy/tool-drift.mjs)
   MCP_TOOL_CLASS: "MCP_TOOL_CLASS",               // policy mcpToolClassDefaults: the tool's class (read / write / destructive / unknown) decided ask or block (cli/mcp-tool-class.mjs)
+  MCP_PACKAGE_POLICY: "MCP_PACKAGE_POLICY",       // policy mcpPackagePolicy: an MCP server package unpinned, off the org's pin, failing a critical check, or a known-compromised release (cli/mcp-package-policy.mjs)
+  PACKAGE_KNOWN_BAD: "PACKAGE_KNOWN_BAD",         // a known-compromised package release installed or run (cli/package-known-bad.mjs; shipped list plus knownBadPackages)
+  MCP_OAUTH: "MCP_OAUTH",                         // MCP gateway, policy mcpOAuth: a bearer token's audience / issuer / scope / reuse, a challenge's scope, or an authorization server's metadata (oauthCheck; mcp-gateway/oauth-gate.mjs)
   OBSERVATION_ONLY: "OBSERVATION_ONLY",           // an event this hook records but does not judge
   FAIL_CLOSED: "FAIL_CLOSED",                     // the surface could not decide (error, budget, scan cap) and the admin-chosen fail mode is closed: denied
   CONTAINMENT_MISSING: "CONTAINMENT_MISSING",     // containmentRequired (Windows): an agent that can run its commands in MXC is not set to (cli/containment-enforce.mjs)
@@ -66,6 +70,7 @@ export const REASON = Object.freeze({
   FILE_SCAN: "FILE_SCAN",                         // a cloud file-scanning provider's verdict on a file sent to a model (cli/file-scan.mjs): malicious, unknown or not scanned
   ORIGIN_TAINT: "ORIGIN_TAINT",                   // origin taint: a gated action after the session read an outside-origin file, or an origin mark removed (data/origin-taint.js)
   QUARANTINE_READ: "QUARANTINE_READ",             // fileQuarantine: an outside-origin read replaced by the quarantined reader's summary, withheld, refused for want of a reader, or put to the user (cli/quarantine-step.mjs)
+  AGENT_IDENTITY: "AGENT_IDENTITY",               // an agent session identity (X-MoorAI-Agent-Identity) absent under require, expired, invalid, foreign or revoked (cli/agent-session-identity.mjs)
   // A control that never ran for this call. Never a pass.
   UNEVALUATED_NO_POLICY: "UNEVALUATED_NO_POLICY",
   UNEVALUATED_HOOK_ERROR: "UNEVALUATED_HOOK_ERROR",
@@ -123,6 +128,7 @@ const CATEGORY_REASON = [
   [/^(Policy signature rejected|Policy key pin|Offline posture|Break-glass marker rejected|Policy: environment set|Server-mode configuration refused)/, REASON.POLICY_TAMPER],
   [/^(Autonomous-agent behavior|Lethal trifecta exposure|Clipboard read then outbound upload|Cross-server toxic flow|Agent behavior: |Agent drift: )/, REASON.BEHAVIOR_SIGNAL],
   [/^Agent destination: /, REASON.DESTINATION],
+  [/^Cascade limit: /, REASON.CASCADE_LIMIT],
   [/^Honeytoken canary triggered$/, REASON.HONEYTOKEN],
   [/^Trust boundary changed without a threat-model update$/, REASON.BOUNDARY_UNMODELLED],
   [/^Threat model failed validation$/, REASON.BOUNDARY_MODEL_INVALID],
@@ -135,6 +141,7 @@ const CATEGORY_REASON = [
   [/^MCP gateway: invalid message$/, REASON.SCHEMA_INVALID],
   [/^MCP gateway: response too large$/, REASON.RESPONSE_TOO_LARGE],
   [/^MCP gateway: client cool-down$/, REASON.CLIENT_COOLDOWN],
+  [/^MCP gateway: (OAuth |bearer token reused)/, REASON.MCP_OAUTH],
   [/^MCP: (tool added after approval|tool removed after approval|quarantined tool \(changed since approval\)|tool not in a checked listing|tool list re-check failed)$/, REASON.MCP_TOOL_DRIFT],
   [/^MCP tool call$/, REASON.NO_MATCH],
   [/^Fail-closed: /, REASON.FAIL_CLOSED],

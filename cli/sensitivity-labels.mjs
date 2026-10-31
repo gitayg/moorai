@@ -107,6 +107,7 @@ export function labelPolicy(policy, warn = stderrWarn) {
 // Reading the label
 // ---------------------------------------------------------------------------------------------
 function readAt(fd, pos, len) {
+  if (Buffer.isBuffer(fd)) return fd.subarray(Math.max(0, pos), Math.max(0, pos) + Math.max(0, len));
   const buf = Buffer.allocUnsafe(Math.max(0, len));
   let n = 0;
   while (n < len) { const r = readSync(fd, buf, n, len - n, pos + n); if (!r) break; n += r; }
@@ -290,31 +291,46 @@ export function readSensitivityLabels(path, { caps = LABEL_CAPS } = {}) {
     fd = openSync(path, FS.O_RDONLY | (FS.O_NONBLOCK || 0));
     const st = fstatSync(fd);
     if (!st.isFile() || st.size < 8) return none;
-    const size = st.size;
-    const magic = readAt(fd, 0, 8);
-    const office = OFFICE_EXT.test(String(path));
-    let labels = [], prot = false;
-    if (magic.readUInt32LE(0) === 0x04034b50) {
-      const z = zipLabels(fd, size, caps);
-      if (z.why) return office || z.ooxml ? { state: "unreadable", labels: [], protected: false, why: z.why } : none;
-      labels = z.labels;
-    } else if (magic.readUInt32BE(0) === 0xd0cf11e0 && magic.readUInt32BE(4) === 0xa1b11ae1) {
-      let names;
-      try { names = cfbNames(fd, size, caps); } catch (e) { return office ? { state: "unreadable", labels: [], protected: false, why: e && e.message === "directory-cap" ? "directory-cap" : "malformed" } : none; }
-      prot = (names.has("EncryptedPackage") && names.has("DRMEncryptedDataSpace")) || names.has("\u0009DRMContent") || names.has("\u0009DRMDataSpace");
-    } else if (magic.toString("latin1", 0, 5) === "%PDF-") {
-      const p = pdfLabels(fd, size, caps);
-      labels = p.labels;
-      prot = p.protected;
-    } else return none;
-    labels = labels.filter((l) => l.enabled);
-    if (labels.length) return { state: "labelled", labels, protected: prot };
-    return prot ? { state: "protected", labels: [], protected: true } : none;
+    return labelsOf(fd, st.size, OFFICE_EXT.test(String(path)), caps);
   } catch {
     return none; // the file could not be opened: the content scan of the same call sees the same
   } finally {
     if (fd >= 0) { try { closeSync(fd); } catch { /* closed */ } }
   }
+}
+
+// The same reader over bytes already in memory (a file an MCP argument carries base64-encoded). `name`
+// (optional) is a file name, read only for its extension, as `path` is above.
+export function readSensitivityLabelsBytes(buf, name = "", { caps = LABEL_CAPS } = {}) {
+  const none = { state: "none", labels: [], protected: false };
+  try {
+    if (!Buffer.isBuffer(buf) || buf.length < 8) return none;
+    return labelsOf(buf, buf.length, OFFICE_EXT.test(String(name)), caps);
+  } catch {
+    return none;
+  }
+}
+
+function labelsOf(fd, size, office, caps) {
+  const none = { state: "none", labels: [], protected: false };
+  const magic = readAt(fd, 0, 8);
+  let labels = [], prot = false;
+  if (magic.readUInt32LE(0) === 0x04034b50) {
+    const z = zipLabels(fd, size, caps);
+    if (z.why) return office || z.ooxml ? { state: "unreadable", labels: [], protected: false, why: z.why } : none;
+    labels = z.labels;
+  } else if (magic.readUInt32BE(0) === 0xd0cf11e0 && magic.readUInt32BE(4) === 0xa1b11ae1) {
+    let names;
+    try { names = cfbNames(fd, size, caps); } catch (e) { return office ? { state: "unreadable", labels: [], protected: false, why: e && e.message === "directory-cap" ? "directory-cap" : "malformed" } : none; }
+    prot = (names.has("EncryptedPackage") && names.has("DRMEncryptedDataSpace")) || names.has("\u0009DRMContent") || names.has("\u0009DRMDataSpace");
+  } else if (magic.toString("latin1", 0, 5) === "%PDF-") {
+    const p = pdfLabels(fd, size, caps);
+    labels = p.labels;
+    prot = p.protected;
+  } else return none;
+  labels = labels.filter((l) => l.enabled);
+  if (labels.length) return { state: "labelled", labels, protected: prot };
+  return prot ? { state: "protected", labels: [], protected: true } : none;
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -124,7 +124,7 @@ export function createReplayer(policy, { actor = actorHash(os.userInfo().usernam
       const server = tool.split("__")[1] || "";
       const args = JSON.stringify(ti);
       const g = mcpGateway(engine, policy, { tool, server, args, mask: canMask });
-      if (g.gate === "server") { synthetic(v, 0, "MCP: unapproved server", "High", "mcp", "deny"); return { tool, ...v }; }
+      if (g.gate === "server") { synthetic(v, 25, "MCP: unapproved server", "High", "mcp", "deny"); return { tool, ...v }; }
       if (g.gate === "args") { synthetic(v, 0, "MCP: denied tool argument", "High", "mcp", "deny"); return { tool, ...v }; }
       envelope(v, { tool, mcpServer: server }, "egress");
       if (v.decision === "deny") return { tool, ...v };

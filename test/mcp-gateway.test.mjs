@@ -143,6 +143,18 @@ test("GATEWAY: a secret in the arguments is denied with an MCP tool error carryi
   });
 });
 
+test("GATEWAY: a call to a server off the mcpAllow list is denied and reported under #25", async () => {
+  await scenario({ policy: { captureTier: "content-free", mcpAllow: ["github"] } }, async ({ con, up, base }) => {
+    const r = await rpc(base, call(3, "echo", { msg: "hi" }));
+    assert.equal(r.json.result.isError, true, r.text);
+    assert.equal(up.calls().length, 0);
+    await settle();
+    const a = con.alerts.find((x) => x.category === "MCP: unapproved server");
+    assert.ok(a, JSON.stringify(con.alerts.map((x) => x.category)));
+    assert.equal(a.threatId, 25);
+  });
+});
+
 test("GATEWAY: a LOCAL secret value (#65 secret egress) in the arguments is denied", async () => {
   const local = "ProjDbPassw0rd-9f8e7d6c5b4a";
   await scenario({ policy: { captureTier: "content-free" }, cwdFiles: { ".env": `DB_PASSWORD=${local}\n` } }, async ({ con, up, base }) => {

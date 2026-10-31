@@ -76,7 +76,8 @@ export function rewriteChallenge(value, gatewayMetadataUrl) {
   const i = params.findIndex(([k]) => k.toLowerCase() === "resource_metadata");
   const upstreamMetadata = i >= 0 ? params[i][1] : null;
   const rest = params.filter(([k]) => k.toLowerCase() !== "resource_metadata");
-  return { value: `Bearer ${[["resource_metadata", gatewayMetadataUrl], ...rest].map(([k, v]) => `${k}=${quote(v)}`).join(", ")}`, upstreamMetadata };
+  const sc = params.find(([k]) => k.toLowerCase() === "scope");
+  return { value: `Bearer ${[["resource_metadata", gatewayMetadataUrl], ...rest].map(([k, v]) => `${k}=${quote(v)}`).join(", ")}`, upstreamMetadata, scope: sc ? sc[1] : null };
 }
 
 function sameOrigin(a, b) { try { return new URL(a).origin === new URL(b).origin; } catch { return false; } }
@@ -92,14 +93,14 @@ export function metadataCandidates(routeUrl, remembered) {
   return [...new Set(out)];
 }
 
-// One GET → parsed JSON object | null. opts: { agent, lookup } (the egress-checked lookup).
+// One GET → parsed JSON object | null. opts: { agent, lookup } (the egress-checked lookup; agent false: a new connection).
 export function getJson(url, { agent, lookup } = {}) {
   return new Promise((resolve) => {
     let u;
     try { u = new URL(url); } catch { return resolve(null); }
     const lib = u.protocol === "https:" ? https : u.protocol === "http:" ? http : null;
     if (!lib) return resolve(null);
-    const req = lib.request(u, { method: "GET", headers: { accept: "application/json", "accept-encoding": "identity" }, ...(agent ? { agent } : {}), ...(lookup ? { lookup } : {}), timeout: TIMEOUT_MS }, (res) => {
+    const req = lib.request(u, { method: "GET", headers: { accept: "application/json", "accept-encoding": "identity" }, ...(agent !== undefined ? { agent } : {}), ...(lookup ? { lookup } : {}), timeout: TIMEOUT_MS }, (res) => {
       if (res.statusCode !== 200) { res.resume(); return resolve(null); }
       const chunks = []; let n = 0;
       res.on("data", (c) => { n += c.length; if (n > MAX_BYTES) { req.destroy(); return resolve(null); } chunks.push(c); });
@@ -115,16 +116,21 @@ export function getJson(url, { agent, lookup } = {}) {
 const isHttpsOrLoopback = (s) => { try { const u = new URL(s); return u.protocol === "https:" || (u.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(u.hostname)); } catch { return false; } };
 
 // Per-route state: the upstream's metadata URL learned from a challenge, and a short cache.
-export function createDiscovery({ fetchJson = getJson } = {}) {
+// checkDoc(route, doc, fetchJson) → null | { status, body }: a check on the upstream's metadata before it is
+// served (./oauth-gate.mjs). onChallenge(route, scope): the `scope` of an upstream challenge.
+export function createDiscovery({ fetchJson = getJson, checkDoc = null, onChallenge = null } = {}) {
   const state = new Map();
-  const of = (route) => { let s = state.get(route.path); if (!s) state.set(route.path, (s = { remembered: null, doc: null, at: 0 })); return s; };
+  const of = (route) => { let s = state.get(route.path); if (!s) state.set(route.path, (s = { remembered: null, doc: null, at: 0, reading: null })); return s; };
   return {
     // Called with each upstream 401 / 403: remembers the upstream's metadata URL and returns the header to send.
     challenge(route, value, gatewayMetadataUrl) {
       const r = rewriteChallenge(value, gatewayMetadataUrl);
       if (r.upstreamMetadata && sameOrigin(r.upstreamMetadata, route.url)) of(route).remembered = r.upstreamMetadata;
+      if (onChallenge && r.scope) Promise.resolve().then(() => onChallenge(route, r.scope)).catch(() => {});
       return r.value;
     },
+    // The upstream's last metadata read and accepted for the route, or null.
+    known(route) { const s = state.get(route.path); return s ? s.doc : null; },
     // → { status, body } for GET /.well-known/oauth-protected-resource/<route>. resourceUrl: the gateway route.
     async metadata(route, resourceUrl, opts = {}) {
       const s = of(route);
@@ -132,17 +138,24 @@ export function createDiscovery({ fetchJson = getJson } = {}) {
       let doc = s.doc && Date.now() - s.at < CACHE_MS ? s.doc : null;
       let mismatch = false;
       if (!doc) {
-        for (const url of metadataCandidates(route.url, s.remembered)) {
-          const d = await fetchJson(url, opts);
-          if (!d) continue;
-          if (typeof d.resource !== "string" || canonicalResource(d.resource) !== want) { mismatch = true; continue; }
-          if (!Array.isArray(d.authorization_servers) || !d.authorization_servers.length || !d.authorization_servers.every((a) => typeof a === "string" && isHttpsOrLoopback(a))) { mismatch = true; continue; }
-          doc = d;
-          break;
-        }
-        if (doc) { s.doc = doc; s.at = Date.now(); }
+        // Concurrent requests for the route share one read (the endpoint is unauthenticated).
+        if (!s.reading) s.reading = (async () => {
+          let found = null, bad = false;
+          for (const url of metadataCandidates(route.url, s.remembered)) {
+            const d = await fetchJson(url, opts);
+            if (!d) continue;
+            if (typeof d.resource !== "string" || canonicalResource(d.resource) !== want) { bad = true; continue; }
+            if (!Array.isArray(d.authorization_servers) || !d.authorization_servers.length || !d.authorization_servers.every((a) => typeof a === "string" && isHttpsOrLoopback(a))) { bad = true; continue; }
+            found = d;
+            break;
+          }
+          if (found) { s.doc = found; s.at = Date.now(); }
+          return { found, bad };
+        })().finally(() => { s.reading = null; });
+        ({ found: doc, bad: mismatch } = await s.reading);
       }
       if (!doc) return mismatch ? { status: 502, body: { error: "the upstream's protected resource metadata does not describe this route's upstream" } } : { status: 404, body: { error: "the upstream publishes no protected resource metadata" } };
+      if (checkDoc) { const refused = await checkDoc(route, doc, (url) => fetchJson(url, { ...opts, authServer: true })); if (refused) return refused; }
       return { status: 200, body: { ...doc, resource: resourceUrl } };
     }
   };

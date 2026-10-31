@@ -50,6 +50,18 @@ call blocked. In `"report"` mode a call with no `session_id` at all is not judge
 `createMoorAI({ intentStore: false })` turns the step off for a caller that judges intent itself with its own
 sessions (`moorai-model-proxy` does: its `toolCall` carries no session, so every risky call would be `task-unknown`).
 
+### Cascade limits
+
+`policy.cascadeLimits` (see the repository README, *Cascade limits*) is judged in `PreToolUse` per `session_id`,
+in memory under a random per-process key: sub-agent spawn rate, sub-agent depth (the hook input's `agent_id`;
+`PostToolUse(Agent)`'s `tool_response.agentId` binds a child to its spawner), the same call after consecutive
+failures (the `PostToolUseFailure` callback `moorAIHooks` registers), and a session held after repeated
+denials. `"report"` (default) alerts once per limit per session, `"ask"` raises an allow to ask (settled by the
+headless rule), `"block"` denies; a branch deny stays a deny. `createMoorAI()` exposes the inputs as
+`toolCall({ ..., session, agent, agentType, toolUseId })`, `toolFailure({ tool, input, session, agent })` and
+`spawnResult({ session, agent, toolUseId, childId })`; `createMoorAI({ cascade: false })` turns it off. The state
+is per process, so a restart forgets it.
+
 ## Scan content before it is embedded
 
 For an application that runs its own RAG or memory ingestion. A poisoned chunk in a retrieval index is

@@ -28,6 +28,7 @@ import { fetchExecFacts, unpackFacts } from "../data/net-exec.js";
 import { shellGateClasses, originStripFacts, extensionPath, mcpMessageTool } from "../data/origin-taint.js";
 import { fetchedExecHit, recordFetched } from "./fetch-exec-state.mjs";
 import { otShellCheck, scriptReader, OT_PROTOCOL_CLIENT } from "./ot-protocol-client.mjs";
+import { knownBadShellCheck, KNOWN_BAD_REASON, KNOWN_BAD_ALTERNATIVE } from "./package-known-bad.mjs";
 import { boundaryWriteFields, boundaryCommandFields, boundaryAtStop, BOUNDARY_THREAT, BOUNDARY_CATEGORY, BOUNDARY_INVALID_CATEGORY, BOUNDARY_BLOCK_REASON } from "./boundary-stop.mjs";
 import { boundaryTurnSnapshot } from "./boundary-update.mjs";
 import { maskValue, maskNote } from "./mask.mjs";
@@ -44,6 +45,7 @@ import { skillIntents } from "./skill-analysis.mjs";
 import { extractHosts } from "../data/model-endpoints.js";
 import { registerInstructionFingerprints } from "./instruction-fingerprints.mjs";
 import { decideSensitivityLabel, labelAlertFields } from "./sensitivity-labels.mjs";
+import { oversharingAlertFields } from "./mcp-outbound.mjs";
 import { OUTBOUND_UPLOAD } from "../data/outbound-upload.js";
 import { isNewDestination } from "../data/destination-map.js";
 import { signApproval, argsHash, deviceReceiptSigner } from "../data/agency-sign.mjs";
@@ -68,6 +70,7 @@ import { observeDrift, driftConfig, cloudProfiles, normalizeRemote } from "../da
 import { deletionTally, assessDeletionVolume, deletionConfig } from "../data/deletion-volume.js";
 import { readStateJson, writeStateJson, repoIdentity, LEARNED_DRIFT_FILE, DELETION_VOLUME_FILE } from "./drift-state.mjs";
 import { sessionRiskStep, circuitStep, circuitOutcome, originOf as fileOriginOf } from "./session-state.mjs";
+import { cascadeStep, cascadeFailStep, cascadeBindStep, cascadeDeniedStep } from "./cascade-state.mjs";
 import { fileQuarantineConfig } from "../data/quarantine-summary.js";
 import { captureTask, judgeAction, CLASS_TEXT } from "./intent-alignment.mjs";
 import { taskBoundStep } from "./task-bound-hook.mjs";
@@ -124,9 +127,9 @@ const RANK = { allow: 1, ask: 2, deny: 3 };
 // Both are plain array literals so test/hook-tool-coverage.test.mjs can READ them out of this file and
 // assert every dispatched tool has a matcher covering it. It reads rather than imports because main()
 // runs at module scope and awaits stdin, so an `import()` of this module never resolves.
-const PRETOOL_MATCHERS = ["Read", "Bash", "PowerShell", "Monitor", "mcp__.*", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"];
+const PRETOOL_MATCHERS = ["Read", "Bash", "PowerShell", "Monitor", "mcp__.*", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "ReadMcpResourceTool"];
 // One representative name per branch in main(); "mcp__github__create_issue" stands for the mcp__* family.
-const DISPATCHED_TOOLS = ["Read", "Bash", "PowerShell", "Monitor", "mcp__github__create_issue", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"];
+const DISPATCHED_TOOLS = ["Read", "Bash", "PowerShell", "Monitor", "mcp__github__create_issue", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "ReadMcpResourceTool"];
 // The Cursor CLI runs these same Claude Code hooks but renames the tools it hands them. Measured in
 // cursor-agent 2026.05.27: its Claude-compat map is {Bash:"Shell", Edit:"Write", ...} and the Shell
 // input is {command, cwd, timeout?}, so a "Shell" payload is a Bash payload under another name and was
@@ -577,6 +580,13 @@ let SESSION_ESC = null;
 // the level a gated action inside an origin-taint window earned ("ask" | "block"), applied by emit. Never weakens.
 let ORIGIN_IN = null;
 let ORIGIN_ESC = null;
+// Cascade limits (cli/cascade-state.mjs): CASCADE_ESC is an "ask" this PreToolUse call earned, applied by emit (allow -> ask,
+// never touching a deny); CASCADE_DROVE marks a deny the limits made, which does not count toward their denied limit.
+let CASCADE_ESC = null;
+let CASCADE_DROVE = false;
+// An MCP read call's identity (cli/mcp-harvest.mjs readIdentity), set by the mcp__ and ReadMcpResourceTool branches
+// before logBehavior: the session-risk mass read counts it as one distinct read.
+let MCP_READ_ID = null;
 // Quarantined reader (cli/quarantine-step.mjs): the framed summary an "ask" carries to the agent as
 // additionalContext, set by quarantineFor's caller, read by emit.
 let QUAR_CONTEXT = null;
@@ -1112,6 +1122,7 @@ function report(findings, stage, tool, blocked, tier, extras, agency) {
     // The leaf whose content this finding came from (context.tree): the patient-zero pointer.
     if (CTX_LEAF) base.contextLeaf = CTX_LEAF;
     Object.assign(base, labelAlertFields(f)); // labelPolicy: label GUID, keyed name hash, action, verdict
+    Object.assign(base, oversharingAlertFields(f)); // mcpOversharing: signal names, sizes, keyed hash of the arguments
     // Provenance: a finding whose configured action enforces (block / kill / justify / mask) is an
     // enforcing record, so a coached or PostToolUse one reads LIMITED rather than AS_CONFIGURED.
     try { if (f.threatId > 0 && ["block", "kill", "justify", "mask"].includes(threatActionFor(POLICY, f.threatId))) base.enforcing = true; } catch { /* metadata only */ }
@@ -1182,7 +1193,9 @@ function logBehavior(tool, identity, scannedText, d, stage, lineage = {}) {
   // Session-level escalation (data/session-risk.js): taint, score, slow exfil, sequences. Content-free.
   const oin = EVENT !== "PostToolUse" ? ORIGIN_IN : null;
   ORIGIN_IN = null;
-  const sr = sessionRiskStep({ policy: POLICY, admin: ADMIN, sessionId: SESSION_ID, event: EVENT, tool, identity, text: scannedText, findings: d.findings, stage, coach: COACH, origin: oin });
+  const readId = EVENT !== "PostToolUse" ? MCP_READ_ID : null;
+  MCP_READ_ID = null;
+  const sr = sessionRiskStep({ policy: POLICY, admin: ADMIN, sessionId: SESSION_ID, event: EVENT, tool, identity, text: scannedText, findings: d.findings, stage, coach: COACH, origin: oin, readId });
   for (const a of sr.alerts) post({ ...a, tool: `hook:${tool}`, ts: new Date().toISOString(), ...IDENTITY });
   if (sr.escalate && EVENT !== "PostToolUse") SESSION_ESC = sr.escalate;
   if (sr.origin && EVENT !== "PostToolUse" && (sr.origin.level === "ask" || sr.origin.level === "block")) ORIGIN_ESC = sr.origin;
@@ -1959,6 +1972,28 @@ function killSession(tool, ids, stage) {
   post({ threatId: 0, category: "Session terminated (kill)", riskLevel: "Blocked", stage, tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: "kill:" + ids.join("."), ...IDENTITY });
 }
 
+// Operator stop (cli/session-stop.mjs): a stop the verified policy carries for this session or device denies the
+// call. The first call of a session posts the acknowledgement, then SIGTERMs the agent (and, for a device stop,
+// drops the desktop host's kill-session sentinel). → true when it answered the call.
+async function operatorStop(tool) {
+  const ss = await import("./session-stop.mjs");
+  const stop = ss.stopFor(VERIFIED_POLICY, SESSION_TAG);
+  if (!stop) return false;
+  why(REASON.SESSION_KILL);
+  if (!seenOnce(`stop:${stop.id}:${SESSION_TAG || "-"}`)) {
+    const pid = ss.findAgentPid({ startPid: hookPeerPid(), shim: process.env.MOORAI_HOOK_HOST === "shim" });
+    await post({ ...ss.stopAlert(stop, { tool: `hook:${tool}`, signalled: pid > 0 }), ts: new Date().toISOString(), ...IDENTITY });
+    if (stop.scope === "device") requestKill({ tool, ids: [], stage: "policy", stopId: stop.id });
+    ss.signalAgent(pid);
+  }
+  const reason = ss.stopReason(stop);
+  if (EVENT === "PreToolUse") { await emit("deny", reason); return true; }
+  settleRow(verdictFields("deny"));
+  process.stdout.write(JSON.stringify({ decision: "block", reason: `MoorAI: ${reason}` }));
+  await exitHook();
+  return true;
+}
+
 // T1-5 / #64 — report agent entitlement drift content-free (only the out-of-scope reason tokens leave)
 // and return whether policy says to block it. entitlementMode: "off" (default) | "alert" | "block".
 function reportEnvelope(policy, tool, ctx, stage) {
@@ -2073,6 +2108,11 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
     else reason = `${reason}, ${why2}`;
     SESSION_ESC = null;
   }
+  if (CASCADE_ESC && decision !== "deny") {
+    if (decision === "allow") { decision = "ask"; reason = CASCADE_ESC.reason; alternatives = []; why(REASON.CASCADE_LIMIT); CASCADE_DROVE = true; }
+    else reason = `${reason}, ${CASCADE_ESC.reason}`;
+  }
+  CASCADE_ESC = null;
   // Server mode: nobody can answer an "ask" (cli/server-mode.mjs settleHeadlessAsk) — deny by default.
   if (SERVER.active && decision === "ask" && !COACH) {
     const h = settleHeadlessAsk(SERVER, POLICY, { decision, reason, ...HEADLESS_CTX });
@@ -2137,6 +2177,7 @@ async function emit(decision, reason, alternatives = [], rewrite = null) {
   // A Task / Agent call the host runs (or is asked about; a coached device runs it): its span becomes the
   // parent of the sub-agent's records (cli/trace-spawns.mjs).
   if (SPAWN && (COACH || decision !== "deny")) recordSpawn(SPAWN);
+  if (decision === "deny" && CALL.active && EVENT === "PreToolUse" && !COACH && !CASCADE_DROVE) cascadeDeniedStep({ policy: POLICY, sessionId: SESSION_ID });
   SPAWN = null;
   // The allow trail: one queued, content-free record for a call the host is told it may run.
   const tr = decision === "allow" && CALL.active ? recordAllowed(tg, rewrite) : false;
@@ -2704,6 +2745,12 @@ async function handlePostToolUse(input, tool, policy, engine) {
   if (text.length >= CAPS.maxResultBytes) VERDICT.capped = true;
   report(d.findings, "output", `hook:${tool}`, d.decision === "deny", policy.captureTier, { toolName: tool });
   logBehavior(tool, url || tool, text, d, "output");
+  if (tool.startsWith("mcp__")) {
+    // The size of an MCP read's result joins its server's harvest budget (cli/mcp-read-step.mjs): a count only,
+    // measured as the length of the hook input that carries the result (the scan text is capped at 64 KB).
+    const { harvestResultStep } = await import("./mcp-read-step.mjs");
+    for (const a of harvestResultStep({ policy, sessionId: SESSION_ID, server: tool.split("__")[1] || "", tool, bytes: RAW_INPUT.length, toolLabel: `hook:${tool}` })) post({ ...a, ts: new Date().toISOString(), ...IDENTITY });
+  }
   circuitOutcome({ policy, sessionId: SESSION_ID, agentId: input.agent_id, tool, toolInput: ti, responseText: text });
   if (d.kill) killSession(tool, d.killIds, "output");
   // A mask is attempted even alongside a block: "block" leaves the original output in front of the
@@ -3082,6 +3129,7 @@ async function main() {
   // PostToolUse(Agent): tool_response.agentId names the sub-agent this call spawned, which binds that
   // child's records to the call's span exactly (a background spawn reports it at launch).
   if (EVENT === "PostToolUse" && (tool === "Agent" || tool === "Task") && input.tool_response && typeof input.tool_response === "object") bindSpawnResult({ sessionId: input.session_id, toolUseId: input.tool_use_id, agentId: input.tool_response.agentId });
+  if (EVENT === "PostToolUse" && (tool === "Agent" || tool === "Task") && input.tool_response && typeof input.tool_response === "object") cascadeBindStep({ sessionId: input.session_id, agentId: input.agent_id, toolUseId: input.tool_use_id, childId: input.tool_response.agentId });
   if (nti.bad.length || nin.bad.length) {
     VERDICT.uneval = REASON.UNEVALUATED_BAD_INPUT;
     if (failClosedApplies({ event: EVENT, raw: EVENT ? "" : RAW_INPUT }) && await failClosedNow("bad-input")) return;
@@ -3093,6 +3141,7 @@ async function main() {
   // Outcome and compaction records need no policy: written and done before the policy load.
   if (EVENT === "PostToolUseFailure" || EVENT === "PreCompact") {
     if (EVENT === "PostToolUseFailure") circuitOutcome({ sessionId: input.session_id, agentId: input.agent_id, tool, toolInput: ti, failed: true });
+    if (EVENT === "PostToolUseFailure") cascadeFailStep({ sessionId: input.session_id, agentId: input.agent_id, tool, toolInput: ti });
     const trig = input.trigger === "manual" || input.trigger === "auto" ? input.trigger : "other";
     settleRow({ ...(EVENT === "PreCompact" ? { trigger: trig } : {}), ...unevaluated(REASON.OBSERVATION_ONLY) });
     return exitHook();
@@ -3238,6 +3287,7 @@ async function main() {
   POLICY = policy; // read by logBehavior's agent-detection hand-off (maybeAgentScan)
   PROV = { policyId: policyIdOf(policy, { builtin: NO_POLICY_BASELINE, offline: OFFLINE_DEFAULT_POLICY }), policySource: policy === NO_POLICY_BASELINE ? "builtin" : policy === OFFLINE_DEFAULT_POLICY ? "offline-default" : source || "", offline: policy === OFFLINE_DEFAULT_POLICY, ...(policyIat && policy !== NO_POLICY_BASELINE && policy !== OFFLINE_DEFAULT_POLICY ? { policyIat } : {}) };
   TRAIL = actionTrailMode(policy); // the allow trail: from the signed policy only (cli/action-trail.mjs)
+  if (!COACH && (EVENT === "PreToolUse" || EVENT === "UserPromptSubmit") && Array.isArray(VERIFIED_POLICY?.agentStops) && VERIFIED_POLICY.agentStops.length && await operatorStop(tool || EVENT)) return;
   const engine = buildEngine(policy);
   // Instruction-leak fingerprints of the rules files this agent runs under (lazy: nothing is read until a
   // scan reaches a fingerprint detector with enough text). data/detectors-instruction-leak.js.
@@ -3293,6 +3343,12 @@ async function main() {
   const cb = circuitStep({ policy, sessionId: SESSION_ID, agentId: input.agent_id, tool, toolInput: ti, coach: COACH });
   for (const a of cb.alerts) post({ ...a, tool: `hook:${tool}`, ts: new Date().toISOString(), ...IDENTITY });
   if (cb.deny) { why(REASON.BEHAVIOR_SIGNAL); return emit("deny", cb.deny.reason); }
+  // Cascade limits (data/cascade-limits.js): spawn rate, depth, a call that keeps failing, a session MoorAI keeps
+  // denying. Report by default; "block" denies here, "ask" is applied by emit. An unenrolled device is coached once.
+  const cs = cascadeStep({ policy, sessionId: SESSION_ID, agentId: input.agent_id, agentType: input.agent_type, tool, toolInput: ti, toolUseId: input.tool_use_id });
+  for (const a of cs.alerts) post({ ...a, tool: `hook:${tool}`, ts: new Date().toISOString(), ...IDENTITY });
+  if (cs.level === "block" && !COACH) { why(REASON.CASCADE_LIMIT); CASCADE_DROVE = true; return emit("deny", cs.reason); }
+  if (COACH ? cs.alerts.length > 0 : cs.level === "ask") CASCADE_ESC = { reason: COACH ? cs.first : cs.reason };
   // Declared workload profile (cli/workload-profile.mjs): a tool, MCP server or host outside it is drift.
   // The same call judges egress rules (cli/egress-rules.mjs): binary, host, port, method, path.
   const wp = profileStep(policy, tool, ti, input.cwd);
@@ -3485,6 +3541,9 @@ async function main() {
     // OT protocol clients (cli/ot-protocol-client.mjs): the command and every script decoded from it (embedded
     // scripts are PowerShell, base64/hex payloads go to a POSIX shell); the strictest result is kept.
     { const ot = otShellCheck({ command: ti.command, shell: ps ? "ps" : "sh", scripts: [...embedded.map((text) => ({ text, shell: "ps" })), ...decodedPayloads.map((text) => ({ text, shell: "sh" }))], policy, readScript: scriptReader(typeof input.cwd === "string" ? input.cwd : process.cwd()), tool }); if (ot) { post({ ...ot.alert, ts: new Date().toISOString(), ...IDENTITY }); if (ot.kill) killSession(tool, ot.killIds, "file"); if (RANK[ot.decision] > RANK[dec]) { dec = ot.decision; reasons = [ot.reason]; alts = []; why(OT_PROTOCOL_CLIENT); } } }
+    // A known-compromised package release (or install script) the command installs or runs (cli/package-known-bad.mjs):
+    // the shipped list plus the verified policy's knownBadPackages. Denied unless that policy sets ask or report.
+    { const kbc = knownBadShellCheck({ command: ti.command, shell: ps ? "ps" : "sh", scripts: [...embedded.map((text) => ({ text, shell: "ps" })), ...decodedPayloads.map((text) => ({ text, shell: "sh" }))], policy: VERIFIED_POLICY ?? null, tool, hash: contentHash }); if (kbc) { post({ ...kbc.alert, ts: new Date().toISOString(), ...IDENTITY }); if (RANK[kbc.decision] > RANK[dec]) { dec = kbc.decision; reasons = [kbc.reason]; alts = [KNOWN_BAD_ALTERNATIVE]; why(KNOWN_BAD_REASON); } } }
     // Model provenance pins (cli/model-pins-hook.mjs): a load or serve of a model file this command names, checked
     // against the approved sha256 list from the admin binding or the verified policy only. Loaded only when pinning is on.
     // A check that throws decides as an unverified file would: asked or denied by mode, never silently allowed.
@@ -3643,7 +3702,10 @@ async function main() {
     const argsH = argsHash(args); // #20 — content-free hash of the args (never the args themselves)
     // On-device AI Agent Gateway: one named chokepoint for every MCP tool-call — server allow-list (#3)
     // → per-tool arg rules (#18) → argument content scan (#2), same order and short-circuits as before.
-    const g = mcpGateway(engine, policy, { tool, server, args, mask: canRewrite() });
+    const { oversightMcpSignals, mcpWriteCalls, mcpWriteTool } = await import("./oversight-mcp.mjs");
+    const { localWriteCheck } = await import("./mcp-local-write.mjs");
+    const { findServerDecl } = await import("./mcp-reputation.mjs");
+    const g = mcpGateway(engine, policy, { tool, server, args, mask: canRewrite(), localWrite: localWriteCheck({ policy, label: server, decl: () => findServerDecl(server, { cwd: CALL.cwd || (typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd()) }) }) });
     // Content-free gateway ledger: record ONE audit line per MCP call (pass, coach, or block) so the
     // console can prove what every agent was allowed to do — closing the gap where denials and clean
     // passes recorded nothing locally. Best-effort; never affects the allow/deny decision.
@@ -3657,7 +3719,7 @@ async function main() {
       recordDestinations(tool, "mcp", [server], decision);
       recordDestinations(tool, "host", extractHosts(args), decision);
     };
-    if (g.gate === "server") { why(REASON.MCP_SERVER_NOT_ALLOWED); post({ threatId: 0, category: "MCP: unapproved server", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(server), ...IDENTITY, ...(signApproval(tool, argsH, "deny") || {}) }); audit("deny"); return emit("deny", g.reason, saferAlternativesFor([25])); }
+    if (g.gate === "server") { why(REASON.MCP_SERVER_NOT_ALLOWED); post({ threatId: 25, category: "MCP: unapproved server", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: djb2(server), ...IDENTITY, ...(signApproval(tool, argsH, "deny") || {}) }); audit("deny"); return emit("deny", g.reason, saferAlternativesFor([25])); }
     if (g.gate === "args") { why(REASON.MCP_ARG_RULE); post({ threatId: 0, category: "MCP: denied tool argument", riskLevel: "Blocked", stage: "mcp", tool: `hook:${tool}`, ts: new Date().toISOString(), contentHash: contentHash(args), ...IDENTITY, ...(signApproval(tool, argsH, "deny") || {}) }); audit("deny"); return emit("deny", g.reason); }
     // MCP server reputation: evidence about the server's package (registry age, repo link, SkillTriage
     // verdict). Reported on first sight or a version change; refused only below an org's blockBelow.
@@ -3666,6 +3728,12 @@ async function main() {
     try { rep = hookReputation(server, { policy: policy.mcpReputation, enforce: !COACH, identityHash: contentHash, catalogue: policy.mcpCatalogue }); } catch { /* reputation is evidence; fail open */ }
     if (rep && rep.report) post({ ...rep.alert, ...IDENTITY });
     if (rep && (rep.action === "block" || rep.action === "coach")) { why(REASON.MCP_REPUTATION); audit("deny"); return emit("deny", `${tool} — MCP server reputation ${rep.rep.score}/100 (${rep.rep.band}: ${rep.rep.reasons.join(", ")}) is below your organization's threshold`); }
+    // MCP server package policy (cli/mcp-package-policy.mjs): an unpinned or unapproved version, a failed critical
+    // check, a known-bad release. From the verified policy only. A block denies here; an ask joins the gate below.
+    let pkHold = null;
+    { const { mcpPackageHook } = await import("./mcp-package-policy.mjs"); try { pkHold = mcpPackageHook(server, { rep, policy: VERIFIED_POLICY ?? null, identityHash: contentHash }); } catch { pkHold = null; } }
+    if (pkHold && pkHold.report) post({ ...pkHold.alert, ...(COACH && pkHold.decision !== "allow" ? { decision: "coach" } : {}), ts: new Date().toISOString(), ...IDENTITY });
+    if (pkHold && pkHold.decision === "deny") { why(pkHold.reasonCode); audit("deny"); return emit("deny", pkHold.reason); }
     // T1-5 — entitlement envelope: an MCP server outside the agent's declared scope is drift.
     if (reportEnvelope(policy, tool, { tool, mcpServer: server }, "egress")) { why(REASON.ENVELOPE); audit("deny"); return emit("deny", `${tool} — out-of-envelope MCP server`, saferAlternativesFor([64])); }
     // T1-1 — model-endpoint allow-list on the serialized args (a tool arg pointing at a rogue LLM host).
@@ -3681,7 +3749,6 @@ async function main() {
     // location (cli/mcp-file-args.mjs). Merged by rank, never downgrading; reported at stage "file" like
     // the Bash branch, with the path only under a capture tier that allows filePath (as the Read branch).
     const { scanMcpFileArgs, mcpToolSends } = await import("./mcp-file-args.mjs");
-    const { oversightMcpSignals, mcpWriteCalls, mcpWriteTool } = await import("./oversight-mcp.mjs");
     const fsr = scanMcpFileArgs(engine, policy, { tool, args: ti, bases: [typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd()], argIds: g.findings.map((f) => f.threatId) });
     if (RANK[fsr.decision] > RANK[g.decision]) { g.decision = fsr.decision; g.reason = fsr.reasons.join(", "); g.alternatives = fsr.alternatives; }
     else if (fsr.decision !== "allow" && fsr.decision === g.decision) g.reason = [g.reason, ...fsr.reasons].filter(Boolean).join(", ");
@@ -3715,6 +3782,19 @@ async function main() {
     if (tc && RANK[tc.decision] > RANK[g.decision]) {
       g.decision = tc.decision; g.reason = tc.reason; g.alternatives = []; why(REASON.MCP_TOOL_CLASS);
       post({ ...toolClassAlert(tc, { tool, server, toolPrefix: "hook", decision: COACH ? "coach" : tc.decision }), ts: new Date().toISOString(), ...IDENTITY });
+    }
+    if (pkHold && pkHold.decision === "ask" && RANK.ask > RANK[g.decision]) { g.decision = "ask"; g.reason = pkHold.reason; g.alternatives = []; why(pkHold.reasonCode); }
+    // MCP data harvesting (per-server read budgets) and the path scope check (cli/mcp-read-step.mjs). Merged by
+    // rank, never downgrading; report-only unless policy.mcpHarvest / policy.mcpScope says ask or block.
+    {
+      const { harvestCallStep, scopeCallStep } = await import("./mcp-read-step.mjs");
+      const hv = harvestCallStep({ policy, sessionId: SESSION_ID, server, tool, args: ti, toolLabel: `hook:${tool}` });
+      MCP_READ_ID = hv.readId;
+      const sc = scopeCallStep({ policy, server, tool, args: ti, cwd: CALL.cwd || (typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd()), toolLabel: `hook:${tool}` });
+      const hd = hv.level === "block" ? "deny" : hv.level;
+      if (RANK[hd] > RANK[g.decision]) { g.decision = hd; g.reason = hv.reason; g.alternatives = saferAlternativesFor([59]); why(REASON.BEHAVIOR_SIGNAL); }
+      if (sc && RANK[sc.decision] > RANK[g.decision]) { g.decision = sc.decision; g.reason = sc.reason; g.alternatives = saferAlternativesFor([64]); why(REASON.ENVELOPE); }
+      for (const a of [...hv.alerts, ...(sc ? [sc.alert] : [])]) post({ ...a, ...(COACH && a.decision !== "allow" ? { decision: "coach" } : {}), ts: new Date().toISOString(), ...IDENTITY });
     }
     const floored = mcpFloor(policy, g.decision);
     if (floored !== g.decision) { g.decision = floored; g.reason = g.reason || "fail-closed default: MCP requires justification"; why(REASON.MCP_FLOOR); VERDICT.enforcement = ENFORCEMENT.STRENGTHENED; }
@@ -3783,6 +3863,22 @@ async function main() {
     const tm = settleMask(engine, policy, { tool: "Task", stage: "prompt", ctx: {}, ids: pd.maskIds, value: ti, only: ["prompt"], scanOf: (v) => v.prompt || "", dec: "allow", reasons: [], alts: [], text: ti.prompt || "" });
     return emit(tm.dec, tm.dec === "allow" ? "sub-agent delegation logged" : `Task (sub-agent delegation) — ${tm.reasons.join(", ")}`, tm.alts, tm.rewrite);
   }
+  // ReadMcpResourceTool ({server, uri}): Claude Code's resources/read. Counted toward the server's harvest budget and
+  // the session-risk mass read, and a file:// URI is judged against the server's declared scope. The resource's
+  // content is not scanned here (no PostToolUse matcher is registered for it).
+  if (tool === "ReadMcpResourceTool" && typeof ti.server === "string" && ti.server) {
+    const { harvestCallStep, scopeCallStep } = await import("./mcp-read-step.mjs");
+    const label = `hook:mcp__${ti.server}`;
+    const hv = harvestCallStep({ policy, sessionId: SESSION_ID, server: ti.server, tool, args: typeof ti.uri === "string" ? ti.uri : "", method: "resources/read", toolLabel: label });
+    const sc = scopeCallStep({ policy, server: ti.server, tool: "resources/read", args: { uri: ti.uri }, cwd: CALL.cwd || (typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd()), toolLabel: label });
+    for (const a of [...hv.alerts, ...(sc ? [sc.alert] : [])]) post({ ...a, ...(COACH && a.decision !== "allow" ? { decision: "coach" } : {}), ts: new Date().toISOString(), ...IDENTITY });
+    MCP_READ_ID = hv.readId;
+    logBehavior(tool, tool, "", { decision: "allow", findings: [] }, "file");
+    let dec = hv.level === "block" ? "deny" : hv.level, reason = hv.reason, alts = saferAlternativesFor([59]);
+    if (dec !== "allow") why(REASON.BEHAVIOR_SIGNAL);
+    if (sc && RANK[sc.decision] > RANK[dec]) { dec = sc.decision; reason = sc.reason; alts = saferAlternativesFor([64]); why(REASON.ENVELOPE); }
+    if (dec !== "allow") return emit(dec, `${dec === "ask" ? "needs justification" : "blocked"} MCP resource read — ${reason}`, alts);
+  }
   // NotebookRead (older hosts): the notebook is read unscanned, as before, and its origin taints the session.
   if (tool === "NotebookRead" && typeof ti.notebook_path === "string") {
     ORIGIN_IN = { cwd: CALL.cwd, reads: [agentPath(ti.notebook_path, input.cwd)] };
@@ -3793,7 +3889,7 @@ async function main() {
   // A tool no branch reads (Glob, Grep, LS, …) still carries tags: a tag action or rule that applies to
   // it decides through emit(); otherwise it is allowed unread, as before, and its tags join the session.
   const ug = tagStep();
-  if (ug && ug.gate.decision !== "allow") return emit("allow", "");
+  if ((ug && ug.gate.decision !== "allow") || CASCADE_ESC) return emit("allow", "");
   if (ug) recordSessionTags({ sessionId: SESSION_ID, tags: ug.tags.tags, fired: ug.fired });
   const tr = recordAllowed(ug, null);
   CALL.active = false;

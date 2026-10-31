@@ -70,7 +70,7 @@ test("ATTACK-V20: every fixture id is well formed, and every sub-technique's par
 test("ATTACK-V20: every rule carries the tag, and the schema documents it", () => {
   assert.ok(meta.schema.attack, "meta.schema.attack is missing");
   assert.ok(meta.schema.attackNote, "meta.schema.attackNote is missing");
-  assert.equal(threats.length, 86);
+  assert.equal(threats.length, 89);
   for (const t of threats) assert.ok(Array.isArray(t.attack), `#${t.id} attack must be an array`);
 });
 
@@ -135,12 +135,12 @@ test("ATTACK-V20: the counts per coverage level", () => {
   const count = (l) => credits.filter((c) => c.coverage === l).length;
   assert.deepEqual(
     { credits: credits.length, full: count("full"), partial: count("partial"), none: count("none") },
-    { credits: 94, full: 3, partial: 78, none: 13 }
+    { credits: 95, full: 3, partial: 79, none: 13 }
   );
   const rules = (l) => threats.filter((t) => t.attack.length > 0 && attackCoverage(t) === l).length;
   assert.deepEqual(
     { full: rules("full"), partial: rules("partial"), none: rules("none"), unmapped: threats.filter((t) => t.attack.length === 0).length },
-    { full: 2, partial: 38, none: 9, unmapped: 37 }
+    { full: 2, partial: 38, none: 9, unmapped: 40 }
   );
 });
 
@@ -154,7 +154,7 @@ test("ATTACK-V20: the credits for the techniques v20 added", () => {
   assert.deepEqual(who("T1696"), []);
   assert.deepEqual(who("T1697"), ["39:partial"]);
   // T1195.001 is the one major-version change in v20 Enterprise: it now names agent skill files and IDE task files.
-  assert.deepEqual(who("T1195.001"), ["4:none", "25:partial", "60:partial", "62:partial", "80:partial"]);
+  assert.deepEqual(who("T1195.001"), ["4:none", "25:partial", "57:partial", "60:partial", "62:partial", "80:partial"]);
 });
 
 test("ATTACK-V20: transit interception is credited partial now that the hook calls decideTransit", () => {

@@ -39,13 +39,13 @@ const decisionOf = (o) => (o.hookSpecificOutput && o.hookSpecificOutput.permissi
 
 test("moorAIHooks returns the SDK's hooks record: event -> HookCallbackMatcher[] with async callbacks; allow is {}", async () => {
   const hooks = moorAIHooks({ policy: { captureTier: "content-free" } });
-  assert.deepEqual(Object.keys(hooks).sort(), ["PostToolUse", "PreToolUse", "UserPromptSubmit"]);
+  assert.deepEqual(Object.keys(hooks).sort(), ["PostToolUse", "PostToolUseFailure", "PreToolUse", "UserPromptSubmit"]);
   for (const k of Object.keys(hooks)) {
     assert.ok(Array.isArray(hooks[k]) && hooks[k].length === 1);
     assert.equal(typeof hooks[k][0].hooks[0], "function");
     assert.equal(hooks[k][0].matcher, undefined, "no matcher: every tool, as the hook's matcher set plus the unknown-tool allow");
   }
-  assert.deepEqual(JSON.parse(JSON.stringify(hooks)), { PreToolUse: [{ hooks: [null] }], PostToolUse: [{ hooks: [null] }], UserPromptSubmit: [{ hooks: [null] }] }, "nothing but matchers is enumerable");
+  assert.deepEqual(JSON.parse(JSON.stringify(hooks)), { PreToolUse: [{ hooks: [null] }], PostToolUse: [{ hooks: [null] }], PostToolUseFailure: [{ hooks: [null] }], UserPromptSubmit: [{ hooks: [null] }] }, "nothing but matchers is enumerable");
   assert.deepEqual(await call(hooks, "PreToolUse", pre("Bash", { command: "ls -la src" })), {});
   // A callback registered under the wrong event answers {} rather than misreading the input.
   assert.deepEqual(await call(hooks, "PreToolUse", { hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: {}, tool_response: "x" }), {});

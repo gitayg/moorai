@@ -40,7 +40,19 @@ MCP host  ⇄  moorai-mcp-guard  ⇄  real MCP server
   (from `cli/hook-core.mjs`), in this order, steps 1–3 short-circuiting on the first deny:
   1. **server allow-list** (#3) — is this MCP server allowed at all?
   2. **per-tool argument rules** (#18) — deny/allow regexes for this tool's arguments.
-  3. **argument content scan** (#2) — the shared MoorAI detectors over the serialized arguments.
+  3. **argument content scan** (#2) — the shared MoorAI detectors over the serialized arguments, then
+     over the argument values with their line breaks and over base64 / `data:` content an argument carries
+     (decoded in memory; a decoded Office or PDF file gets `labelPolicy`'s send verdict), plus the
+     over-sharing signal (`mcpOversharing`: size, encoded blob, a pasted file or conversation; reported by
+     default). A write-shaped call is exempt from that signal only when the wrapped server is the reference
+     filesystem server by its launch command, or its label is in `mcpOversharing.localWriteServers`
+     ([`../cli/mcp-local-write.mjs`](../cli/mcp-local-write.mjs)); the tool name alone never exempts.
+     See [`../cli/mcp-outbound.mjs`](../cli/mcp-outbound.mjs).
+  3b. **local secret egress** (#65) — a value from the project's `.env*`, `~/.aws/credentials`,
+     `~/.npmrc`, `~/.netrc` or `.git-credentials`, or one this server's results carried earlier in the
+     process, found in the arguments verbatim or encoded. Refused by default (#65 resolves to block); an
+     unverified match is denied unless the policy sets `headlessAsk: "allow-with-report"`. Only hash
+     prefixes, encodings and source kinds leave ([`../cli/mcp-secret-egress.mjs`](../cli/mcp-secret-egress.mjs)).
   4. **files the arguments name** — unless step 1 or 2 refused the call, every local file an argument
      names (absolute, `~`, `file://`, or relative to the proxy's cwd and then to the client's MCP roots,
      kept from its `roots/list` answer, at most 16) gets what the Claude Code hook gives a file a `Bash`
@@ -149,6 +161,17 @@ them can block.
   zero alerts. A result that resolves to `deny` is replaced by an MCP tool error (`isError: true`, same
   JSON-RPC `id`); anything else is forwarded unchanged. Default is still report-first — the built-in
   default resolves #39 to `notify` and forwards — so only an explicit `deny` blocks.
+- **Sampling and elicitation requests** the server sends the client — `sampling/createMessage` and
+  `elicitation/create`, as a JSON-RPC request or inside a result's `inputRequests` (MCP 2026-07-28) — are
+  scanned before the client sees them ([`sampling-scan.mjs`](sampling-scan.mjs)): system prompt, messages,
+  request-scoped tools, the elicitation message, URL and schema, at stage `file`, plus an `includeContext`
+  of `"allServers"` / `"thisServer"` reported as a context request. Report-first; refused when a finding
+  resolves to block, or under `policy.samplingScanAction: "block"` (an instruction threat) or
+  `policy.samplingContextAction: "block"` (any `includeContext`). A refused request is answered to the
+  server with JSON-RPC error `-1` and replaced, for the client, by a `notifications/message` from logger
+  `moorai`; a refused `inputRequests` result becomes an `isError` tool result. Every `inputRequests` entry
+  is read. Text past the tool-result bounds (64 KB, 512 objects, depth 8) leaves the request not judged:
+  `failMode.mcpGateway` closed refuses it, open forwards it and reports it. Alerts at stage `sampling`.
 - **Everything else** — `initialize`, notifications, and all other responses — passes through
   **verbatim and transparently**.
 
@@ -348,6 +371,17 @@ unreachable 8, mismatch 2 (one of them a false positive after a rename, `blender
 **Limits.** Sigstore signatures on provenance are read, not re-verified. The manifest is read at `HEAD`,
 so a package renamed after publishing reads as a mismatch. Repositories on bitbucket.org and codeberg.org
 are not verified.
+
+### the server's PACKAGE: pinned, approved, not known-bad (`mcpPackagePolicy`)
+
+The launch command the guard wraps also decides whether calls are held by the signed policy's
+`mcpPackagePolicy` (`../cli/mcp-package-policy.mjs`): an npm or PyPI launch with no exact version, a version
+other than the policy's pin, a reputation reason that fails a critical `moorai-mcp-check` check (including the
+registry codes when `mcpReputation.lookup` is on), or a release on the known-bad list (`knownBadPackages`,
+default block). `report` (the default) posts one content-free alert with the reputation's first-sight alert;
+`block` answers each `tools/call` with an `isError` result the server never receives; `ask` forwards and
+records, because a desktop host has no prompt. A version change the reputation cache noticed is reported, not
+held. Local, docker and remote servers are not judged here. The same policy runs in the Claude Code hook.
 
 ### Trace context in `params._meta`
 
@@ -659,11 +693,13 @@ proxy sees nothing.
 | `trace-meta.mjs`           | Sets a forwarded `tools/call`'s `params._meta.traceparent` / `tracestate` by editing the line in place. |
 | `tool-scan.mjs`            | Caps, and the composition of the scan text for a `tools/list` entry and a `tools/call` result. |
 | `tool-baseline.mjs`        | Cross-call tool baseline — shadowing / capability-expansion drift. |
+| `sampling-scan.mjs`        | Server → client `sampling/createMessage` / `elicitation/create` requests (both MCP shapes): the scan text, the `includeContext` signal, the decision, the alerts and the refusal. Shared with the HTTP gateway. |
 | `tool-drift.mjs`           | `mcpToolDrift: "block"`: approved-baseline precedence, quarantine verdicts, the version mark, the fingerprint report, per-server listing freshness. Shared with the HTTP gateway. |
 | `tool-recheck.mjs`         | `mcpToolRecheckSeconds`: the re-list before a block-mode call when the last judged listing is stale (every page, 2 s budget, one in flight per server). Shared with the HTTP gateway. |
 | `sandbox-spawn.mjs`        | `mcpServerSandbox`: plans the server's spawn (off / under `sandbox-exec` / unavailable / refused), the stderr notes, the alerts and the heartbeat field. |
 | `install.mjs`              | Wrap / uninstall / status a host's MCP config, per the `HOSTS` table (pure transforms exported for tests). |
 | `test-proxy.mjs`           | Self-verification (proxy behavior + install rewrite). |
 | `test-fake-mcp-server.mjs` | Tiny fake MCP server used by the test. |
+| `test/fake-sampling-mcp-server.mjs` | Fake server that sends the client a sampling or elicitation request (either shape), for `test/mcp-sampling-scan.test.mjs`. |
 | `test/live/tee-server.mjs` | Tap in front of the fake server that records what the guard forwarded, for the real-client runs. |
 | `measure-mcp-coverage.mjs` | Drives malicious/benign actions through the proxy to produce the coverage table above. |

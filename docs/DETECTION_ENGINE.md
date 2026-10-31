@@ -2777,7 +2777,7 @@ stdio proxy's checks the gateway:
   default loopback bind every local client shares 127.0.0.1, so one agent would cool down all of them.
 - evaluates declared workload profiles on every `tools/call` (above, `PROFILE_DRIFT`).
 
-Added p50 is about 4.7–5 ms against an in-process fake upstream, unchanged by these checks. 98 tests run it
+Added p50 is about 4.7–5 ms against an in-process fake upstream, unchanged by these checks. 115 tests run it
 against a fake upstream and a fake console, server-mode identity and profile blocks included. It has
 been run against a real remote MCP server (an AppCrane endpoint, with a scripted client) and, on
 2026-10-06 on macOS, with four real MCP clients against the fake upstream (Claude Code 2.1.284,
@@ -2935,7 +2935,7 @@ Recorded because a confidently wrong document is what created the task to rewrit
 | Latency budget: Tier-1 < 20 ms, Tier-2 ≈ 800 ms | Measured Tier-1 is 0.26–2.47 ms per scan (§11). The semantic guard is 3500 ms by default, not 800. |
 | `detectors.json` and `threats.json` are versioned and the engine pins a schema version | `data/threats.json` has a `meta` block; the engine pins no schema version and validates none. |
 | "Every detector ships positive/negative test cases" | There is no per-detector fixture requirement. Evidence is corpus-level (`test/redteam/`) and the promotion bar in §5 is stated in terms of corpora, not fixtures. |
-| Detectability map over ~40 threats | The matrix is 86 threats. The map is stale and has been dropped rather than half-updated; [BENCHMARK.md](BENCHMARK.md) carries measured coverage instead. |
+| Detectability map over ~40 threats | The matrix is 89 threats. The map is stale and has been dropped rather than half-updated; [BENCHMARK.md](BENCHMARK.md) carries measured coverage instead. |
 
 ---
 
@@ -3452,34 +3452,53 @@ alignment earns ASI01 and MCP06).
 
 | Framework | Covered (a full credit) | Partial (bounded credits only) | Uncovered |
 |---|---|---|---|
-| Agentic | ASI01 | ASI02, ASI03, ASI04, ASI05, ASI06, ASI07, ASI09, ASI10 | ASI08 |
-| MCP | MCP06 | MCP01, MCP02, MCP03, MCP05, MCP08, MCP09 | MCP04, MCP07, MCP10 |
+| Agentic | ASI01 | ASI02, ASI03, ASI04, ASI05, ASI06, ASI07, ASI08, ASI09, ASI10 | none |
+| MCP | MCP06 | MCP01, MCP02, MCP03, MCP04, MCP05, MCP08, MCP09, MCP10 | MCP07 |
 
-That table counts rules. [BENCHMARK.md](BENCHMARK.md) counts detectors in `data/detectors.js`, so ASI07
-(#66), ASI10 (#64) and MCP09 (#25) read as uncovered there: the mechanism that earns each credit is in the
-hook, not a detector.
+That table counts rules. [BENCHMARK.md](BENCHMARK.md) counts a credit only when something on the device
+backs it: a detector in `data/detectors.js`, or an enforcing mechanism declared in
+`data/mechanism-evidence.json`. A declaration names the rule, the OWASP items, the source file and a symbol
+in it, and one or more tests; `scripts/mechanism-evidence.mjs` counts it only while the file holds the symbol
+and each test exists in `test/*.test.mjs` with exactly that title (a skipped or `todo` test does not count).
+A declaration backs only a credit the rule already carries, at the level it carries it, and naming any other
+item is an error. ASI07 (#66, the delegation check), ASI08 (#93, cascade limits), MCP09 (#25, the MCP server
+allow-list) and MCP10 (#91, the sampling context check; #92, the over-sharing signal) have no detector and are
+backed this way; ASI10 is backed by #88's detectors and by #64's entitlement envelope and learned baseline and
+#84's oversight check.
+`test/mechanism-evidence.test.mjs` pins the rules; the title check proves a test exists, not what it
+asserts, so each declaration's tests are reviewed when it is added.
 
 Only #3 and #40 earn full credits: indirect and second-order injection in fetched content, files and tool
 results is the core of both ASI01 and MCP06. Everything else is bounded.
 
 ### What is not credited, and why
 
-* **ASI08 Cascading Failures.** OWASP files the initial defect under its own entry and ASI08 only for
-  measured fan-out across agents or sessions. The circuit breaker (#38) watches one session's loop and call
-  rate, and #74 catches a self-replication directive at ingestion; neither measures propagation.
-* **MCP04 Supply Chain.** The MCP-server reputation layer (`data/mcp-reputation.js`: typosquat of a popular
-  MCP server name, integrity mismatch, repository mismatch) addresses it, but posts with `threatId: 0` under
-  no rule, so a per-rule crosswalk cannot credit it. #57 and #62 judge the project dependencies the agent
-  installs, credited as LLM03 and ASI05.
-* **MCP03 rug pulls.** Tool-drift blocking against approved baselines (`mcp-proxy/tool-drift.mjs`) also
-  posts with `threatId: 0`; MCP03 is credited only for #50 and #60's description and schema scans.
-* **MCP07 Authentication & Authorization** is a property of the MCP server's own auth; MoorAI does not see it.
+* **ASI08 Cascading Failures** is credited to #93 only, bounded: OWASP files the initial defect under its own
+  entry and ASI08 only for measured fan-out ("rapid fan-out where one faulty decision triggers many downstream
+  agents", "oscillating retries"), which the cascade limits count per session. The circuit breaker (#38)
+  watches one session's loop and call rate, and #74 catches a self-replication directive at ingestion;
+  neither measures propagation, so neither is credited.
+* **MCP04 Supply Chain** is credited to #57, bounded: the MCP server package policy (`mcpPackagePolicy`:
+  unpinned, off the org's pin, a failed critical check) and the known-compromised release list, at MCP launch
+  in the hook and the stdio guard. The reputation layer's score (`data/mcp-reputation.js`) posts with
+  `threatId: 0` under no rule. #62 judges the project dependencies the agent installs, credited as ASI05.
+* **MCP03 rug pulls.** Tool-drift blocking against approved baselines (`mcp-proxy/tool-drift.mjs`) posts
+  under #25, which credits ASI04 and MCP09; MCP03 is credited only for #50 and #60's description and schema
+  scans.
+* **MCP07 Authentication & Authorization.** The MCP gateway authenticates the calling agent session
+  (`agentIdentity`) and checks a bearer token's audience, issuer and scope (`mcpOAuth`), but these are
+  controls with no rule in `data/threats.json`, so a per-rule crosswalk does not credit them; the MCP
+  server's own authorization is not seen.
 * **MCP08 Audit.** The hash-chained ledger is a direct control but not a rule; only #73 (an agent rewriting
   its own transcripts) is credited, bounded.
 * **MCP09 Shadow MCP Servers.** The AIBOM inventories configured and listening MCP servers, but raises no
   finding under #7, so #7 is not credited; #25's allow-list refusal is.
-* **MCP10 Over-Sharing.** DLP keeps sensitive data out of a context; sharing between users or sessions is
-  not observed, and #36 is coaching only.
+* **MCP10 Over-Sharing** is credited to #91 and #92, bounded. What an agent sends to an MCP tool is checked:
+  the data-loss detectors on the arguments (values with their line breaks, base64 / `data:` content
+  decoded), a labelled file sent encoded, and an over-sharing signal (#92: size, encoded blob, pasted file or
+  conversation; `mcpOversharing`, report by default); a server's sampling request asking for the client's
+  context is #91. Sharing between users, sessions or agents is not observed, #1's DLP is not credited for
+  it, and #36 is coaching only.
 
 ## 17. The ATT&CK v20 mapping
 

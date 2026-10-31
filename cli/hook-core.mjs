@@ -31,6 +31,7 @@ import { compilePacks } from "../data/detector-packs.js";
 import { fileMetadataText } from "../data/file-metadata.js";
 import { credAlternative } from "../data/cred-alternatives.js";
 import { mcpArgCommandInjection } from "../data/detectors-mcp-arg-injection.js";
+import { mergeOutbound } from "./mcp-outbound.mjs";
 // Declared workload profiles (cli/workload-profile.mjs), re-exported so every surface that composes this
 // core — the hook, @moorai/agent-sdk, its vendored copy — reaches the same evaluation.
 export { evaluateProfile, profilesFrom, rejectedAlert, normalizeRepo, PROFILE_DRIFT } from "./workload-profile.mjs";
@@ -573,13 +574,14 @@ export function decideMcpArgs(policy, tool, argsText) {
 // content-free alert, and the findings / kill signal from the content scan. The caller layers the
 // impure gates (entitlement envelope, endpoint allow-list, secret-egress) and records the audit line.
 // `mask` (optional): the caller can rewrite the arguments (see threatActionFor); maskIds come back for it.
-export function mcpGateway(engine, policy, { tool, server, args, mask = false }) {
+export function mcpGateway(engine, policy, { tool, server, args, mask = false, localWrite }) {
   const sd = decideMcpServer(policy, server);
   if (sd.decision === "deny") return { gate: "server", decision: "deny", reason: sd.reason, findings: [], kill: false, killIds: [], maskIds: [] };
   const ad = decideMcpArgs(policy, tool, args);
   if (ad.decision === "deny") return { gate: "args", decision: "deny", reason: ad.reason, findings: [], kill: false, killIds: [], maskIds: [] };
   const d = decideText(engine, policy, args, "prompt", { ctx: { egress: true }, mask });
   mergeArgInjection(d, policy, tool, args);
+  mergeOutbound(d, { engine, policy, tool, server, args, decide: decideText, localWrite });
   return { gate: d.decision === "allow" ? null : "content", decision: d.decision, reason: d.reasons.join(", "), findings: d.findings, kill: d.kill, killIds: d.killIds, alternatives: d.alternatives, maskIds: d.maskIds };
 }
 
