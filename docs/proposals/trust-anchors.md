@@ -198,7 +198,7 @@ and the MDM scripts have not run on a managed Mac or an Intune device.
 
 **1C. Hook command and environment (S).**
 - `hookEntry` writes the absolute `process.execPath` in place of `node`.
-- `isGuarded`, `refusedTrustEnv` and the agent-posture flags cover `NODE_OPTIONS`, `NODE_PATH`, `PATH` and `ProgramData` set by a settings file. Report them.
+- `isGuarded`, `refusedTrustEnv` and the agent-posture flags cover `NODE_OPTIONS`, `NODE_PATH`, `NODE_COMPILE_CACHE`, `OPENSSL_CONF` (both since v1.44.1), `PATH` and `ProgramData` set by a settings file. Report them.
 - `moorai-doctor` warns when the hook code is user-writable (consumer install in `~/.moorai`).
 
 **1D. Naive-deletion evidence on T1 (S).** Each alert carries a per-device `seq` from a user-scope counter, plus the record-chain head. The session summary adds `alertsEmitted`/`alertsDeferred`. This is labelled as catching only an agent that doesn't also rewind counters.

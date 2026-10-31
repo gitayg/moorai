@@ -503,9 +503,17 @@ the agent's to write. What it cannot write: root/admin-owned files (hook-core `r
   (ISO 8601) when the enforced policy is signed, and every hook alert carries `appVersion`.
 - **Hook command and environment.** Hook registrations name node by absolute path
   (`process.execPath`), and an older bare-`node` entry is rewritten on the next call. A user, project or
-  local settings file whose `env` sets `NODE_OPTIONS`, `NODE_PATH`, `PATH` or `ProgramData` is reported
-  (the refusal alert names them; PATH alone is High, the rest Critical), is the posture flag
-  `hookEnvOverride`, and its `NODE_OPTIONS` / `NODE_PATH` are kept out of the hook's detached workers.
+  local settings file whose `env` sets `NODE_OPTIONS`, `NODE_PATH`, `NODE_COMPILE_CACHE`, `OPENSSL_CONF`,
+  `PATH` or `ProgramData` is reported (the refusal alert names them; PATH alone is High, the rest
+  Critical), is the posture flag `hookEnvOverride`, and its `NODE_OPTIONS`, `NODE_PATH`,
+  `NODE_COMPILE_CACHE` and `OPENSSL_CONF` are kept out of the hook's detached workers
+  (`WORKER_STRIPPED_ENV`). `NODE_COMPILE_CACHE` names the directory node reads cached V8 code from, and
+  node accepts an entry whose header matches the source's length, hash and its own CRC32, whoever wrote
+  it, so a planted entry runs in place of the source (measured, node 22.23.4). `OPENSSL_CONF` is read at
+  startup with no flag (node `src/node.cc`, `SafeGetenv("OPENSSL_CONF", ...)`, only `--openssl-config`
+  overrides it) and a provider section loads a shared library (measured, node 22.23.4). The hook process
+  itself still starts with the file's values (Claude Code applies the `env` block before the hook runs),
+  which is why they are reported rather than ignored.
   PATH that the hook merely inherits is not a finding. `moorai-doctor` warns when the hook's code is
   writable by the user (a consumer install under `~/.moorai`).
 - **Evidence on unmanaged devices.** Each alert carries a per-device `seq` (+1 per alert, user scope)

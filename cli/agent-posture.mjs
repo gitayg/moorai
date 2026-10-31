@@ -80,7 +80,7 @@ export const POSTURE_FLAGS = [
   "autoEditDefault",        // Gemini general.defaultApprovalMode = "auto_edit"
   "sandboxFullAccess",      // Codex sandbox_mode = "danger-full-access"
   "sandboxOff",             // the host's sandbox is not on (Claude Code, Gemini, Cursor CLI)
-  "hookEnvOverride"         // a Claude Code user/project/local settings `env` block sets NODE_OPTIONS, NODE_PATH, PATH or ProgramData for the hook (cli/server-mode.mjs HOOK_PROCESS_ENV)
+  "hookEnvOverride"         // a Claude Code user/project/local settings `env` block sets NODE_OPTIONS, NODE_PATH, NODE_COMPILE_CACHE, OPENSSL_CONF, PATH or ProgramData for the hook (cli/server-mode.mjs HOOK_PROCESS_ENV)
 ];
 export const HOOK_STATES = ["ok", "missing", "stale", "broken", "untrusted", "unreadable", "absent"];
 
