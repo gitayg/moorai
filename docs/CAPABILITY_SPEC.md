@@ -239,7 +239,7 @@ Claude Code GitHub Action, an Agent SDK service in a container
   body over 1 MiB (413, after draining), with a 5 s header timeout and 256 connections. A stdlib-only
   Python client with LangGraph / CrewAI examples (not executed) is in
   [`clients/python`](../clients/python/README.md). p50 on 2 KB: SDK `PreToolUse` 1.99 ms, sidecar
-  `/v1/scan` 6.4–11 ms, shell hook process p50 152–159 ms / p95 170–178 ms (docs/BENCHMARK.md). **Limits.** Not evaluated in process (listed in
+  `/v1/scan` 6.4–11 ms, shell hook process p50 151 ms / p95 174 ms for a `Bash` call (docs/BENCHMARK.md). **Limits.** Not evaluated in process (listed in
   each result's `notEvaluated`): circuit breaker, session risk, deletion volume,
   learned drift, MCP reputation, escalation, honeytokens, the `mask` rewrite. The SDK's `PostToolUse`
   observes by default and resolves results under the same inbound rules as the hook

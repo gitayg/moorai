@@ -357,6 +357,68 @@ Installing from the marketplace makes Claude Code run `npm ci --ignore-scripts` 
 which pulls about 20 MB of desktop-app packages (`@xterm`, `@tauri-apps/cli`) the hooks do not use.
 `moorai-doctor` recognises a plugin install.
 
+### Or run the hook over HTTP (`moorai-hookd`)
+
+Claude Code can send each hook event to a local HTTP endpoint instead of starting a process
+(`"type": "http"` hooks). `moorai-hookd` is that endpoint for MoorAI: it keeps a few hook workers that
+have already loaded every module the hook imports and compiled the detector patterns, and runs the same
+`cli/moorai-hook.mjs` in one of them for each event. The decision, its reason, the alerts and the state
+files are the command hook's own (`test/hookd-parity.test.mjs` runs 225 events through both and compares
+every outcome and every alert record), without Node start-up and module loading on each tool call.
+
+```bash
+node cli/moorai-hook.mjs install --hook-transport http [--hookd-port 8793]   # http entries in ~/.claude/settings.json
+node cli/moorai-hookd.mjs unit --out ~/Library/LaunchAgents                 # macOS: writes dev.moorai.hookd.plist, prints the launchctl command
+node cli/moorai-hookd.mjs unit --out ~/.config/systemd/user                 # Linux: writes moorai-hookd.service, prints the systemctl commands
+node cli/moorai-hookd.mjs                                                    # or run it in the foreground
+node cli/moorai-hook.mjs install                                             # back to the command transport
+```
+
+- **Token.** Every request needs a bearer token from `~/.moorai/hookd.token` (32 random bytes, mode 0600,
+  created on first use). The installer writes it into each http entry's `Authorization` header, so it does
+  not depend on an exported variable, and writes `settings.json` with mode 0600. `moorai-hookd` listens on
+  127.0.0.1 only, refuses a `Host` header that is not a loopback name (421) and a body that is not JSON (415)
+  or is over `--max-body` (413; default 32 MiB).
+- **Fail mode.** Each `PreToolUse` entry carries `"onFailure"` from the hook's fail mode (admin binding,
+  then the signed policy, `failMode.hook`): `"block"` when it is closed, so a `moorai-hookd` that is not
+  running, does not answer or times out refuses the tool call; `"continue"` when it is open. Every other
+  event is `"continue"`, as the hook itself fails closed on `PreToolUse` only. A hook run that finds the
+  fail mode turned closed changes the entries to `"block"`; only `install` sets them back to `"continue"`.
+  `onFailure` needs Claude Code 2.1.295 or later.
+- **What the worker sees.** The event's `cwd` is the worker's working directory, as for a command hook.
+  Claude Code interpolates `AI_AGENT` and `CLAUDE_CONFIG_DIR` from its own environment into headers
+  (`allowedEnvVars`); `CLAUDE_PROJECT_DIR` is not in its environment (measured: empty), so `moorai-hookd`
+  derives it from the transcript path and the `cwd`. Everything else comes from `moorai-hookd`'s own
+  environment: `MOORAI_*` variables set in your shell or in a settings file's `env` block do not reach
+  it; set them in the service file. The parent-process check (AI CLI started by an unexpected parent)
+  starts from the process on the other end of the connection, which `moorai-hookd` reads from the socket
+  once per session (on macOS two of `netstat`, `lsof` and `nettop` must agree, about 100 ms on the first
+  call of a session).
+- **Freshness.** The hook's own configuration (enrollment, admin binding, policy, honeytokens) is read when
+  the request arrives, not when the worker started. The modules a worker preloaded read no file at import,
+  only environment values that are `moorai-hookd`'s for its whole life. A waiting worker is retired after
+  30 s (`--max-age-ms`) and when `cli/moorai-hook.mjs` or `package.json` changes on disk; restart
+  `moorai-hookd` itself after an upgrade (`moorai-doctor` reports a version that differs).
+- **Concurrency.** Two workers wait (`--workers`), at most eight worker processes exist at once
+  (`--max-workers`), one request per worker; past that, requests queue (64) and then get 503. A worker that has not answered in
+  30 s (`--timeout-ms`) is killed and the request gets 504, which `onFailure` then decides. The http
+  entries' own `timeout` is 60 s.
+- **Latency.** p50 39 ms and p95 50 ms per `PreToolUse` from POST to answer, against 172 ms and 207 ms for the
+  command hook over the same ten-call mix and a 43 ms Node startup floor (n = 200 each, interleaved, Apple M5 Max,
+  load average 7.6 to 9.5; [`docs/BENCHMARK.md`](docs/BENCHMARK.md)). A warm worker has already loaded the hook's
+  modules and compiled the detector patterns; what remains is the hook's own work for the call. The first call
+  of a session adds about 100 ms on macOS for the peer process lookup, which is then remembered for the session.
+- **Doctor.** `moorai-doctor` names the installed transport and, for http, whether `moorai-hookd` answers,
+  whether it runs this package's version, and whether `allowedHttpHookUrls` in your user or managed settings
+  excludes its URL.
+- **Limits.** Settings files can switch hooks off: a project `.claude/settings.json` with
+  `"allowedHttpHookUrls": []` makes Claude Code skip every http hook (measured with Claude Code 2.1.295:
+  with `onFailure: "block"` the tool call is refused, with `"continue"` it runs unchecked), the same class
+  of gap as `"disableAllHooks": true`, which also lets a call run unchecked under the command transport.
+  `moorai-doctor` cannot see project settings. Windows has no service file: keep the command transport
+  there. The plugin install (`--plugin`) stands down for events an http entry covers, as it does for a
+  command entry.
+
 **Which tools the hook actually sees.** `PRETOOL_MATCHERS` in
 [`cli/moorai-hook.mjs`](cli/moorai-hook.mjs) is the single source of truth, and it registers
 `Read` · `Bash` · `PowerShell` · `mcp__.*` · `Agent` · `Task` · `Write` · `Edit` · `MultiEdit` · `NotebookEdit` · `WebFetch`
@@ -389,7 +451,7 @@ Uploads include BITS in upload mode, `Send-MailMessage -Attachments` and a copy 
 `[Net.Sockets.TCPClient]::new(`; #57 matches `irm … | iex` and `iex (irm …)` /
 `iex (New-Object Net.WebClient).DownloadString(…)` with no `powershell` in front (0 hits on 10,030 benign
 strings across 14 corpora). `mask` rewrites apply to the PowerShell command as to a `Bash` one. Measured
-p50 is the same as `Bash` (about 150–160 ms at p50 on an Apple M5 Max, no reachable policy server; see [`docs/BENCHMARK.md`](docs/BENCHMARK.md)). Limits:
+cost is the same as `Bash` (p50 150 ms and p95 177 ms for a `PowerShell` call against 151 ms and 174 ms for `Bash`, n = 200 each, on an Apple M5 Max with no reachable policy server; see [`docs/BENCHMARK.md`](docs/BENCHMARK.md)). Limits:
 `powershell -Command "<script>"` payloads, `iex "$(gc .env)"`, `Join-Path $env:X …` and `[IO.FileStream]`
 are not followed; reads inside an encoded command over 8,000 characters are not followed (the decoded text
 is still scanned, up to 64 KB); a POSIX `~` in a `Bash` command is not expanded; and no live PowerShell run
@@ -482,7 +544,7 @@ Measured on a locked split scored once (64 inbound attacks; 144 benign web pages
 87.3%); benign web pages alerting 30 → 19 on the hook and 105 → 19 through the SDK; real files alerting
 46 → 32 on the hook and 300 → 21 through the gateway; benign advisories on real files 0 → 9. The tune
 split, which the rules were adjusted on, reads 93.2%. The benign-v2 gate is unchanged at 20/602. It costs
-one extra hook process per `Bash`, MCP or sub-agent call, 127 ms at p50 and 148 ms at p95 on an Apple M5 Max, and up to 1.5 ms of engine
+one extra hook process per `Bash`, MCP or sub-agent call, 136 ms at p50 and 159 ms at p95 for a `PostToolUse` on a three-line `Bash` output (n = 200, Apple M5 Max), and up to 1.5 ms of engine
 time per 64 KB for the new detectors. Limits: output beyond 64 KB is not scanned, the instruction detector
 is lexical and English, `cat .env` reports at both `PreToolUse` and `PostToolUse`, the other agents'
 adapters still forward only web results, and a `Read`'s file content keeps the approval categories.
@@ -863,7 +925,7 @@ anchors) and [`docs/proposals/trust-anchors.md`](docs/proposals/trust-anchors.md
 
 ### Server mode: Agent SDK and sidecar
 
-The shell hook costs one process per tool call (p50 152–159 ms, p95 170–178 ms across runs on an Apple M5 Max, of which 38–39 ms is Node startup; [`docs/BENCHMARK.md`](docs/BENCHMARK.md)). Two long-lived forms run the same
+The shell hook costs one process per tool call (p50 151 ms and p95 174 ms for a `Bash` `ls` call, n = 200, interleaved with a 42 ms Node startup floor, on an Apple M5 Max with no reachable policy server; 172 ms and 207 ms over the benchmark's ten-call mix in [`docs/BENCHMARK.md`](docs/BENCHMARK.md)). The process loads the modules only some calls need at the point of use (MCP reputation and file arguments, the quarantined reader, Windows MXC containment, the Stop disclosure check, the heartbeat and transcript workers' code), and it turns off V8's regexp peephole optimizer ([`cli/hook-boot.mjs`](cli/hook-boot.mjs)): the detectors' patterns are compiled on their first run in every process, and that compile measured 29 ms with the optimizer and 14 ms without on a 10-character command; what a pattern matches does not change (the same findings, redactions and content matches either way over 25,311 texts from the red-team and benign corpora and this README, at every stage). The hook does not enable Node's compile cache: Node checks a cache entry against the source with CRC32 and nothing checks who wrote it, so a writable cache directory would let its writer change the code the hook runs. Two long-lived forms run the same
 engine, policy and server-mode semantics (a headless ask is denied, the actor is the workload, reports are
 content-free) in one process:
 
@@ -3453,6 +3515,7 @@ npx moorai-scan --package github:owner/repo   # a whole source repository — an
 - **`moorai-scan`** is a **pre-install skill gate** — MoorAI's on-device, content-free answer to a cloud "skill scanner". Point it at a skill/agent artifact on disk (a directory, a `SKILL.md`, a `.mcp.json`, a `.claude/agents/*.md`, …) *before* you install it and it walks the path, classifies each file's skill-surface kind (`data/skill-surface.js`), and runs MoorAI's **own shipped detection engine** over each text file at stage `file` (and `tool` for JSON MCP configs). The **verdict is derived from the engine's own allow/ask/deny decisions — never an invented 0-100 score**: any `deny` → `DO-NOT-INSTALL`, any `ask` → `REVIEW`, low findings only → `CAUTION`, nothing → `CLEAN` (the worst across all files). No external scanner is bundled or invoked, and **no enrollment is required** (it runs before you install, possibly before you enroll). Output is JSON (or `--format md`) and is **content-free** — per finding only `{relativePath, surfaceKind, threatId, category, intentLabels, contentHash, tier}`, never the matched text or file contents — so it never becomes the exfiltration channel a cloud scanner is. Exit codes slot into CI: `0` for CLEAN/CAUTION, non-zero for REVIEW/DO-NOT-INSTALL, tunable with `--fail-on <tier>`. With `--package` / `--packages`, `--offline` (or `MOORAI_OFFLINE=1`) makes no request: each package is reported `not-checked (offline)` and stays REVIEW, at once. Registry mirrors: `MOORAI_NPM_REGISTRY`, `MOORAI_PYPI_URL` and `MOORAI_GITHUB_CODELOAD_URL` (https only; artifacts must then come from the mirror's own host). Each registry request and download gives up after 30 s without response headers or body progress.
 - **`moorai-mcp-check <package>`** runs ten pre-install checks on an MCP server from registry metadata and published manifests only; the package is never downloaded or run, and the reputation cache is not written. Each check is pass, warn, fail or not checked, with a one-line reason: (1) publisher identity and typosquat (the name lists and the repository link), (2) package age (`new-package`, under 30 days), (3) maintainers (npm `maintainers`, PyPI `ownership.roles`), (4) npm install scripts from the version manifest, (5) authentication and (7) credential names, both from the `server.json` the package publishes to the official MCP Registry (npm `mcpName`, PyPI `mcp-name:`), (6) a remote endpoint's HTTPS, hostname rather than bare IP, and fit with the policy's `egressRules`, (8) tool descriptions through the tool-stage engine when you pass `--tools <tools/list JSON>`, (9) whether the spec pins a version, and (10) whether this machine routes MCP through MoorAI (hook, stdio proxy or gateway). It also prints a metadata-only reputation score and band, and the SkillTriage verdict when `mcpReputation.feed` is on. Input: `npm:name@1.2.3`, `pypi:name==1.0`, a bare npm name, a launch command (`"npx -y name@1.2.3"`) or an `https://` URL (parsed, never contacted). Policy comes from `--policy file.json`, or the verified policy already on the device (read offline, as `moorai-doctor` does); `--no-policy`; `--json`. Exit 1 if any check fails. `--offline` (or `MOORAI_OFFLINE=1`) makes no request: the registry, repository and MCP Registry checks and the SkillTriage feed report `not-checked (offline)`, and the name, pinning, tools and runtime checks still run. Mirrors: `MOORAI_NPM_REGISTRY`, `MOORAI_PYPI_URL`, `MOORAI_MCP_REGISTRY` and `MOORAI_GITHUB_RAW_URL`; an invalid one (not https, or carrying credentials, a query or a fragment) is refused with exit 2 rather than replaced by the public host. **Limits.** PyPI install-time code (setup.py, build backends) is not visible in its JSON API, so that check is not checked for PyPI. Authentication, credentials and transport for a package need a published `server.json`; most packages have none. MCP OAuth is negotiated at connect time and is not probed. The tool list is only known from a running server unless you supply it. An npm semver range is not resolved: install scripts are read from the latest version, and the report says so.
 - **`moorai-outbox`** shows and sends the alert outbox (`status [--json]`, `flush`) and writes a device bundle for a console the device cannot reach (`export --out <file.zip> [--include-trail]`). See [Store-and-forward alerts](#store-and-forward-alerts).
+- **`moorai-hookd [unit --out <dir>]`** serves the Claude Code hook over HTTP from pre-warmed hook workers on loopback (`POST /v1/hook/claude-code`, bearer token from `~/.moorai/hookd.token`); `unit` writes a launchd plist or systemd user unit. Installed with `install --hook-transport http`. See [Or run the hook over HTTP](#or-run-the-hook-over-http-moorai-hookd).
 - **`moorai-helper status [--json]`** reports whether the privileged helper `moorai-guardd` is installed, running and answering with a valid device-key proof, as a content-free status (`healthy`, `not-ready`, `installed-not-running`, `untrusted`, …). See [Privileged helper (moorai-guardd)](#privileged-helper-moorai-guardd).
 - **`node cli/moorai-windows-validate.mjs [--out <file>] [--strict] [--require-windows] [--only <ids>] [--json]`** runs the agent's enforced surfaces on the machine it is started on (the hook on Bash and the `PowerShell` tool, the hook launched through `powershell.exe`, the MCP gateway by hook and over HTTP, egress rules in the hook and the egress proxy, MXC detection and enforcement) against a loopback console and throwaway home directories, and writes a content-free report: probe ids, outcomes from a fixed list, alert counts, the Windows build. It is built for Windows; on macOS and Linux the three Windows-only probes are skipped, and `--require-windows` turns a skip into the verdict `incomplete`. It is not a package bin: run it from the agent tree. It has run on macOS only so far, not yet on Windows. See [Windows runtime validation](docs/CAPABILITY_SPEC.md#windows-runtime-validation-moorai-windows-validate).
 - **`moorai-model-scan <path|dir>`** inspects model files without loading or executing them and gives each one a verdict (unsafe, suspicious, clean, allowed, unscanned), its format, findings and sha256. `--pin <sha256>` adds the not-approved verdict for files off the approved list. See [Model file scanning](#model-file-scanning) and [Model provenance pinning](#model-provenance-pinning).

@@ -1,7 +1,7 @@
 # MoorAI Agent Security Benchmark
 
 > Reproducible coverage of MoorAI's on-device detection engine. Regenerate with `npm run benchmark`.
-> Generated: 2026-10-28T11:12:28.761Z
+> Generated: 2026-10-31T02:36:05.669Z
 
 - **Detectors:** 128
 - **Threats:** 86
@@ -161,12 +161,13 @@ categories and threat ids, never prompt content.
 
 | Path | One sample | n | Warm-up | p50 | p95 | p99 | max |
 |------|------------|--:|--------:|----:|----:|----:|----:|
-| In process: `engine.scan` at `prompt` | one benign-corpus-v2 text | 610 | 50 | 3.23 ms | 5.20 ms | — | 22.2 ms |
-| In process: `engine.scan` at `file` | one benign-corpus-v2 text | 610 | 50 | 3.53 ms | 5.57 ms | — | 7.37 ms |
-| In process: `engine.scan` at `output` | one benign-corpus-v2 text | 610 | 50 | 0.57 ms | 1.06 ms | — | 1.70 ms |
-| In process: Agent SDK tool-call decision | one `PreToolUse` from the ten-call mix | 2000 | 200 | 2.28 ms | 7.82 ms | 8.11 ms | 9.42 ms |
-| Process: hook end-to-end (`PreToolUse`) | spawn → stdin JSON → exit | 200 | 5 | 206.8 ms | 243.5 ms | — | 266.9 ms |
-| Process: Node startup floor (`node -e ""`) | spawn → exit, interleaved with the hook | 200 | 5 | 42.4 ms | 44.8 ms | — | 50.6 ms |
+| In process: `engine.scan` at `prompt` | one benign-corpus-v2 text | 610 | 50 | 3.23 ms | 5.28 ms | — | 23.2 ms |
+| In process: `engine.scan` at `file` | one benign-corpus-v2 text | 610 | 50 | 3.55 ms | 5.61 ms | — | 7.15 ms |
+| In process: `engine.scan` at `output` | one benign-corpus-v2 text | 610 | 50 | 0.56 ms | 1.04 ms | — | 1.91 ms |
+| In process: Agent SDK tool-call decision | one `PreToolUse` from the ten-call mix | 2000 | 200 | 2.26 ms | 7.83 ms | 8.42 ms | 12.3 ms |
+| Process: hook end-to-end (`PreToolUse`) | spawn → stdin JSON → exit | 200 | 5 | 172.2 ms | 206.5 ms | — | 231.3 ms |
+| Process: Node startup floor (`node -e ""`) | spawn → exit, interleaved with the hook | 200 | 5 | 42.5 ms | 50.6 ms | — | 57.8 ms |
+| Process: hook over HTTP (`moorai-hookd`, `PreToolUse`) | POST → answer, warm worker, interleaved with the hook | 200 | 5 | 39.1 ms | 50.0 ms | — | 56.1 ms |
 
 The cost a Claude Code user pays per tool call is the **hook end-to-end** row: one `node
 cli/moorai-hook.mjs` process spawned per `PreToolUse`, timed from spawn to exit, in a throwaway home
@@ -176,6 +177,10 @@ module loading and decision. The **in-process** rows are what the Agent SDK and 
 call in a long-lived process: `engine.scan` per stage over every text in
 `test/redteam/benign-corpus-v2.json`, and `createMoorAI().toolCall` (the decision code the parity test
 holds to the hook's verdicts) over a fixed mix of ten `PreToolUse` calls, six benign and four attack-shaped.
+The **hook over HTTP** row is the same event POSTed to `moorai-hookd` (Claude Code's `http` hook
+transport), in the same loop as the hook, timed from request to answer over a kept-alive connection; its
+decision is checked against the hook's for every call. Its workers have loaded the hook's modules before the
+request, so the row is what remains: the hook's own module, its decision and its exit.
 All rows run sequentially, one call at a time; machine load is not controlled.
 
 Percentiles are nearest-rank over the raw per-call timings, never interpolated and never derived from a

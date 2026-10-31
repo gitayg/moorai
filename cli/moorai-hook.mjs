@@ -13,6 +13,7 @@
 //   node moorai-hook.mjs install    # register in ~/.claude/settings.json (idempotent)
 //   node moorai-hook.mjs uninstall  # remove only MoorAI's entries
 
+import "./hook-boot.mjs";
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync, statSync, renameSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname, basename, isAbsolute, resolve } from "node:path";
@@ -23,11 +24,8 @@ import { buildEngine, decideText, decideCredFileRead, decideTransit, transitEnvT
 import { oversightEditSignals, beforeAfter } from "./oversight-signals.mjs";
 import { oversightCommandSignals } from "./oversight-shell.mjs";
 import { oversightPolicy } from "./oversight-surfaces.mjs";
-import { oversightMcpSignals, mcpWriteCalls, mcpWriteTool } from "./oversight-mcp.mjs";
-import { assessOversightDisclosure } from "./oversight-disclosure.mjs";
 import { fetchExecFacts, unpackFacts } from "../data/net-exec.js";
 import { shellGateClasses, originStripFacts, extensionPath, mcpMessageTool } from "../data/origin-taint.js";
-import { mcpToolSends } from "./mcp-file-args.mjs";
 import { fetchedExecHit, recordFetched } from "./fetch-exec-state.mjs";
 import { otShellCheck, scriptReader, OT_PROTOCOL_CLIENT } from "./ot-protocol-client.mjs";
 import { boundaryWriteFields, boundaryCommandFields, boundaryAtStop, BOUNDARY_THREAT, BOUNDARY_CATEGORY, BOUNDARY_INVALID_CATEGORY, BOUNDARY_BLOCK_REASON } from "./boundary-stop.mjs";
@@ -45,15 +43,12 @@ import { shellMemoryWrites } from "../data/poisoning-tells.js";
 import { skillIntents } from "./skill-analysis.mjs";
 import { extractHosts } from "../data/model-endpoints.js";
 import { registerInstructionFingerprints } from "./instruction-fingerprints.mjs";
-import { hookReputation } from "./mcp-reputation.mjs";
-import { scanMcpFileArgs } from "./mcp-file-args.mjs";
 import { decideSensitivityLabel, labelAlertFields } from "./sensitivity-labels.mjs";
 import { OUTBOUND_UPLOAD } from "../data/outbound-upload.js";
 import { isNewDestination } from "../data/destination-map.js";
 import { signApproval, argsHash, deviceReceiptSigner } from "../data/agency-sign.mjs";
 import { contentTells, assessSession, assessTrifecta, assessCrossServerTrifecta, trifectaLegs, serverOf } from "../data/agent-behavior.js";
 import { trifectaStep, trifectaReason, mergeLegs, legsOf } from "./trifecta-gate.mjs";
-import { agentBaselineReport } from "../data/agent-baseline.js";
 import { escalate, escalateMiss, semanticVerdict } from "../src/semantic.js";
 import { takeEscalationOutcomes } from "../data/model-escalation.mjs";
 import { semanticEnabled } from "../data/semantic-escalation.js";
@@ -73,7 +68,6 @@ import { observeDrift, driftConfig, cloudProfiles, normalizeRemote } from "../da
 import { deletionTally, assessDeletionVolume, deletionConfig } from "../data/deletion-volume.js";
 import { readStateJson, writeStateJson, repoIdentity, LEARNED_DRIFT_FILE, DELETION_VOLUME_FILE } from "./drift-state.mjs";
 import { sessionRiskStep, circuitStep, circuitOutcome, originOf as fileOriginOf } from "./session-state.mjs";
-import { quarantineStep, mergeQuarantine } from "./quarantine-step.mjs";
 import { fileQuarantineConfig } from "../data/quarantine-summary.js";
 import { captureTask, judgeAction, CLASS_TEXT } from "./intent-alignment.mjs";
 import { taskBoundStep } from "./task-bound-hook.mjs";
@@ -100,19 +94,19 @@ import { enqueueAlerts, claimOutboxFlush, flushAlertOutbox, takeDropReport, impo
 import { originFor, askOutcomeOrigin } from "./origin.mjs";
 import { askTrackable, recordAsk, takeAsk, takeUnresolvedAsks } from "./ask-outcome.mjs";
 import { throwawayHost } from "../data/throwaway-hosts.js";
-import { noteCredentialCall, credentialExposure, fitPostureBody } from "./credential-exposure.mjs";
-import { scheduleTranscriptUsage } from "./transcript-usage.mjs";
 import { leafOf, appendLeaf, sessionHead, contextTreeMode, claimUpload, flushContextTree } from "./context-tree.mjs";
 import { bindingRefusedAlert } from "./config.mjs";
 import { actionTrailMode, buildActionRecord, enqueueActionRecord, claimFlush, flushActionTrail, callFingerprintText, readTrailState } from "./action-trail.mjs";
 import { normalizeToolInput, normalizeHookInput } from "./tool-input.mjs";
-import { resolveContainment, containmentDecision, wrapFallback, hostKind, capableForHook, containmentAlert, denyReason, planWrap, unwrapCommand, wrapConfig, writeWrap, wrappedInput, claudeCodeWrapState, launchesWxcExec, ENFORCED_HOSTS, WRAP_NOTE } from "./containment-enforce.mjs";
-import { guardHit, guardAlert, guardReason } from "./containment-guard.mjs";
-import { mxcCapable } from "./mxc-detect.mjs";
+// MXC containment runs on Windows only: elsewhere every use below is behind a win32 check, and the posture
+// worker loads it itself. Loaded at startup there, as before.
+const { resolveContainment, containmentDecision, wrapFallback, hostKind, capableForHook, containmentAlert, denyReason, planWrap, unwrapCommand, wrapConfig, writeWrap, wrappedInput, launchesWxcExec, ENFORCED_HOSTS, WRAP_NOTE } = process.platform === "win32" ? await import("./containment-enforce.mjs") : {};
 import { queueModelDownload, modelScanDue } from "./model-scan-queue.mjs";
 import { resolveModelPins, MODEL_NOT_APPROVED } from "./model-pins.mjs";
 import { approvalGate } from "./approval-routing.mjs";
 import { receiptIntake, receiptRequest, receiptAnswer } from "./receipt-step.mjs";
+import { hookPeerPid } from "./hook-peer.mjs";
+import { transportArg, httpHandler, installedTransport, httpTemplate, isHttpEntry, strengthenOnFailure, hookdToken, onFailureFor } from "./hook-transport.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -218,7 +212,8 @@ function writeSettings(s) {
   const p = settingsPath();
   mkdirSync(dirname(p), { recursive: true });
   const tmp = `${p}.moorai-${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(s, null, 2));
+  // An http install holds moorai-hookd's bearer token: owner-only, like the token file itself.
+  writeFileSync(tmp, JSON.stringify(s, null, 2), installedTransport(s, isCuraiq) === "http" ? { mode: 0o600 } : undefined);
   renameSync(tmp, p);
 }
 // node by ABSOLUTE path (process.execPath, the node running this install), never a bare `node` the host
@@ -227,23 +222,34 @@ function writeSettings(s) {
 // rewrites it to this form (convergeHooks). If that node binary is later removed (a version manager
 // uninstalling it), the host cannot start the hook: `moorai-doctor` reports the hook as broken.
 function hookCommand() { return `${JSON.stringify(process.execPath)} ${JSON.stringify(SELF)}`; }
-function hookEntry(matcher) { return { matcher, hooks: [{ type: "command", command: hookCommand() }] }; }
+function hookEntry(matcher, handler = { type: "command", command: hookCommand() }) { return { matcher, hooks: [handler] }; }
 // The events MoorAI registers, and the matcher set each one owns. Keyed by event name so install,
 // converge and uninstall all iterate ONE list — the way the PreToolUse-only versions of those three
 // functions drifted apart is exactly how a second event gets added to install and forgotten in
 // converge, leaving upgraded devices permanently on the old surface.
 const REGISTERED_EVENTS = { PreToolUse: PRETOOL_MATCHERS, PostToolUse: POSTTOOL_MATCHERS, UserPromptSubmit: PROMPT_MATCHERS, PostToolUseFailure: POSTFAIL_MATCHERS, Stop: STOP_MATCHERS, SubagentStop: SUBAGENT_STOP_MATCHERS, PreCompact: PRECOMPACT_MATCHERS };
-function withOurEntries(s, event) {
+function withOurEntries(s, event, handlerFor = null) {
   const cur = Array.isArray(s.hooks?.[event]) ? s.hooks[event] : [];
-  return [...cur.filter((e) => !isCuraiq(e)), ...REGISTERED_EVENTS[event].map(hookEntry)];
+  return [...cur.filter((e) => !isCuraiq(e)), ...REGISTERED_EVENTS[event].map((m) => (handlerFor ? hookEntry(m, handlerFor(event)) : hookEntry(m)))];
 }
 
-function installHooks() {
+// --hook-transport http (cli/hook-transport.mjs): http entries for moorai-hookd on --hookd-port, onFailure from
+// the fail mode this install resolves (admin binding, then the verified policy).
+async function installHooks() {
+  const { transport, port } = transportArg(process.argv);
+  let handlerFor = null;
+  if (transport === "http") {
+    let policy = null;
+    try { policy = (await verifiedPolicyLoad()).policy || null; } catch { /* the admin binding alone decides */ }
+    const failMode = hookFailMode({ policy, admin: ADMIN }).mode;
+    const token = hookdToken();
+    handlerFor = (event) => httpHandler({ event, port, token, failMode });
+  }
   const s = readSettings();
   s.hooks = s.hooks || {};
-  for (const event of Object.keys(REGISTERED_EVENTS)) s.hooks[event] = withOurEntries(s, event);
+  for (const event of Object.keys(REGISTERED_EVENTS)) s.hooks[event] = withOurEntries(s, event, handlerFor);
   writeSettings(s);
-  console.error(`MoorAI hooks installed in ${settingsPath()}`);
+  console.error(`MoorAI hooks installed in ${settingsPath()}${transport === "http" ? ` (http transport: moorai-hookd on 127.0.0.1:${port}; start it with \`moorai-hookd\` or install its service: \`moorai-hookd unit\`)` : ""}`);
   if (pluginEnabled(s)) console.error("MoorAI is also enabled as a Claude Code plugin; the plugin now stands down for these events. Run `claude plugin uninstall moorai` to keep one copy.");
 }
 
@@ -278,18 +284,21 @@ function convergeHooks() {
     // uninstalled and this never re-adds.
     const installed = events.some((e) => (Array.isArray(s.hooks?.[e]) ? s.hooks[e] : []).some(isCuraiq));
     if (!installed) return;
+    // An http install converges as http, from the handler already installed (url and token kept).
+    const tpl = installedTransport(s, isCuraiq) === "http" ? httpTemplate(s, isCuraiq) : null;
+    const handlerFor = tpl ? (event) => ({ ...tpl.handler, onFailure: event === "PreToolUse" && tpl.event === "PreToolUse" ? tpl.handler.onFailure : onFailureFor(event, "open") }) : null;
     const stale = events.filter((event) => {
       const ours = (Array.isArray(s.hooks?.[event]) ? s.hooks[event] : []).filter(isCuraiq);
       const want = REGISTERED_EVENTS[event];
       const have = new Set(ours.map((e) => e && e.matcher));
       // A bare `node` (pre-1.13 installs) or another node binary than this one is rewritten to the
       // absolute command too; once converged the entry names this process's node, so it holds steady.
-      const cmdStale = ours.some((e) => !(Array.isArray(e && e.hooks) && e.hooks.length === 1 && e.hooks[0] && e.hooks[0].command === hookCommand()));
+      const cmdStale = ours.some((e) => !(Array.isArray(e && e.hooks) && e.hooks.length === 1 && e.hooks[0] && (tpl ? isHttpEntry(e) && e.hooks[0].url === tpl.handler.url : e.hooks[0].command === hookCommand())));
       return ours.length !== want.length || !want.every((m) => have.has(m)) || cmdStale;
     });
     if (!stale.length) return; // steady state: one small readFileSync, no write
     s.hooks = s.hooks || {};
-    for (const event of stale) s.hooks[event] = withOurEntries(s, event);
+    for (const event of stale) s.hooks[event] = withOurEntries(s, event, handlerFor);
     writeSettings(s);
   } catch { /* registration hygiene; never affects enforcement */ }
 }
@@ -304,7 +313,7 @@ const AS_PLUGIN = process.argv.includes("--plugin");
 function settingsCovers(event) {
   try {
     const entries = readSettings().hooks?.[event];
-    return (Array.isArray(entries) ? entries : []).filter(isCuraiq).some((e) => (e.hooks || []).some((h) => {
+    return (Array.isArray(entries) ? entries : []).filter(isCuraiq).some((e) => isHttpEntry(e) || (e.hooks || []).some((h) => {
       const m = /^(?:node|"(?:[^"\\]|\\.)*")\s+("(?:[^"\\]|\\.)*")/.exec(h.command || "");
       return m && existsSync(JSON.parse(m[1]));
     }));
@@ -533,7 +542,7 @@ const IDENTITY = { user: WHO.user, device: WHO.device, platform: os.platform(), 
 // CONTRACT C1 — infrastructure identifiers (container id, k8s pod / namespace / node, and the pid of the agent
 // process the verdict is about: this hook's parent) on server-mode alerts only (cli/server-mode.mjs
 // workloadIdentity). A laptop never sends it. Added in post(), so it rides on alerts but not on local rows.
-const WORKLOAD = SERVER.active ? (() => { try { return workloadIdentity({ pid: process.ppid, refused: SERVER.refused || [] }); } catch { return null; } })() : null;
+const WORKLOAD = SERVER.active ? (() => { try { return workloadIdentity({ pid: hookPeerPid(), refused: SERVER.refused || [] }); } catch { return null; } })() : null;
 // Content-free lineage for the per-agent baseline / forensic detections (data/agent-detections.js).
 // SESSION is the current trace/session id (Claude Code's session_id, one-way hashed), set in main().
 // It groups an actor's events for trace-gap detection and is the source id for cross-agent handoffs.
@@ -1283,6 +1292,7 @@ async function runAgentScanWorker(tool) {
     const { policy } = await loadVerifiedPolicy(CONFIG, { network: false }); // local copies only: never a fetch, never a back-off write
     if (!agentDetectionsEnabled(policy)) return exitHook();
     if (contentHash("agentscan/probe") === NO_KEY) return exitHook();
+    const { agentBaselineReport } = await import("../data/agent-baseline.js");
     const report = agentBaselineReport(readAgentEvents());
     const seen = readAgentSeen();
     const findings = [];
@@ -1473,6 +1483,9 @@ async function runPostureBeatWorker(host, mode, cwd) {
   try {
     if (!BEAT_HOSTS.includes(host) || !isEnrolled(CONFIG)) return process.exit(0);
     const { agentPosture } = await import("./agent-posture.mjs");
+    const { resolveContainment, claudeCodeWrapState } = await import("./containment-enforce.mjs");
+    const { mxcCapable } = await import("./mxc-detect.mjs");
+    const { credentialExposure, fitPostureBody } = await import("./credential-exposure.mjs");
     const posture = agentPosture({ cwd: cwd || null, caller: host, permissionMode: host === "claude-code" ? mode : "" });
     // The effective fail mode per surface (cli/fail-mode.mjs), from the admin binding and the cached
     // verified policy (no network): what each surface does when it cannot decide. Content-free. For
@@ -1900,9 +1913,12 @@ function agentPath(p, cwd) {
 // binding and the verified policy only (data/quarantine-summary.js fileQuarantineConfig). Its alerts post here;
 // the caller merges the verdict (mergeQuarantine) and emits. The model call has until 12 s after the hook started,
 // inside HOOK_DECISION_BUDGET_MS. -> null | the step's verdict.
+let QSTEP = null; // cli/quarantine-step.mjs, loaded by the first quarantineFor that runs a step
+function mergeQuarantine(v, q) { return QSTEP.mergeQuarantine(v, q); }
 async function quarantineFor(surface, paths, engine) {
   const cfg = fileQuarantineConfig(VERIFIED_POLICY ?? null, { admin: ADMIN });
   if (cfg.mode === "off" || EVENT !== "PreToolUse") return null;
+  const { quarantineStep } = (QSTEP ??= await import("./quarantine-step.mjs"));
   const cwd = CALL.cwd || process.cwd();
   const abs = paths.filter((p) => typeof p === "string" && p).map((p) => resolve(cwd, p.replace(/^~(?=[\/\\]|$)/, os.homedir())));
   let q = null;
@@ -2511,6 +2527,7 @@ function wrapUnavailableVerdict(whyToken, v, { force = false } = {}) {
 async function wrapIntake(tool, ti, cwd) {
   WRAP_PLAN = null; WRAPPED_IN = false;
   if (process.platform !== "win32" || EVENT !== "PreToolUse") return null;
+  const { guardHit, guardAlert, guardReason } = await import("./containment-guard.mjs");
   const shell = SHELL_TOOLS.has(tool) && typeof ti.command === "string";
   let cfg = null;
   try {
@@ -2849,6 +2866,7 @@ async function handleStop(input) {
   // sub-agents' included, because the user hears about a delegated change only from the parent.
   let ovRows = scope;
   if (!sub) { let k = -1; for (let i = rows.length - 1; i >= 0; i--) if (rows[i].ev === "prompt" && !rows[i].a) { k = i; break; } ovRows = rows.slice(k + 1); }
+  const { assessOversightDisclosure } = await import("./oversight-disclosure.mjs");
   const ov = assessOversightDisclosure(ovRows, msg);
   const ovFresh = ov.flagged && !scope.some((r) => (r.ev === "stop" || r.ev === "substop") && r.ovFlag);
   const ovBlock = ovFresh && !COACH && oversightPolicy(POLICY, () => {}).stopDisclosure === "block" && input.stop_hook_active !== true && beatHost() === "claude-code";
@@ -3028,7 +3046,7 @@ async function main() {
   if (AS_PLUGIN && settingsCovers(input.hook_event_name)) return exitHook();
   maybePostureBeat(input);
   // Token usage from Claude Code's own transcripts (cli/transcript-usage.mjs): a detached worker, at most once an hour.
-  if (process.env.MOORAI_HOOK_HOST !== "shim" && isEnrolled(CONFIG)) scheduleTranscriptUsage({ stateDir: STATE_DIR, spawnWorker: () => spawn(process.execPath, [...process.execArgv, SELF, "tokenusage"], { detached: true, stdio: "ignore", env: workerEnv() }).unref() });
+  if (process.env.MOORAI_HOOK_HOST !== "shim" && isEnrolled(CONFIG)) (await import("./transcript-usage.mjs")).scheduleTranscriptUsage({ stateDir: STATE_DIR, spawnWorker: () => spawn(process.execPath, [...process.execArgv, SELF, "tokenusage"], { detached: true, stdio: "ignore", env: workerEnv() }).unref() });
   maybeModelScan();
   // MCP usage cross-check (cli/mcp-usage-beat.mjs): completed days go to a detached worker, at most once a day.
   scheduleMcpUsageFlush({ config: CONFIG, path: "hook", host: beatHost() || "unknown" });
@@ -3080,7 +3098,7 @@ async function main() {
   SESSION_TAG = SESSION_ID && SESSION !== NO_KEY ? SESSION : "";
   // Credential exposure map (cli/credential-exposure.mjs): a credential location this call names, and the destination
   // classes it reaches, logged by class for the daily heartbeat. Enrolled devices only; no network, never a verdict.
-  if (EVENT === "PreToolUse" && isEnrolled(CONFIG)) noteCredentialCall({ stateDir: STATE_DIR, tool, toolInput: ti, cwd: input.cwd, session: SESSION_TAG, host: beatHost() || "unknown" });
+  if (EVENT === "PreToolUse" && isEnrolled(CONFIG)) (await import("./credential-exposure.mjs")).noteCredentialCall({ stateDir: STATE_DIR, tool, toolInput: ti, cwd: input.cwd, session: SESSION_TAG, host: beatHost() || "unknown" });
   HEADLESS_CTX = { tool, permissionMode: typeof input.permission_mode === "string" ? input.permission_mode : "" };
   // Subagent lineage: a subagent's own tool-call payloads carry agent_id/agent_type (see ACTOR above).
   // Attribute those events to the subagent (a distinct actor) with the spawning session as its parent;
@@ -3095,6 +3113,9 @@ async function main() {
   let { policy, source, rejected, pin, trust, absence, lkgCopy, deferAlerts } = await verifiedPolicyLoad();
   DEFER_ALERTS = !!deferAlerts;
   VERIFIED_POLICY = policy || null;
+  // An http install (cli/hook-transport.mjs) follows a fail mode that turned closed: its PreToolUse entries block
+  // when moorai-hookd does not answer. Only ever strengthened here; registration hygiene, never the decision.
+  if (process.env.MOORAI_HOOK_HOST !== "shim" && !AS_PLUGIN) { try { if (hookFailMode({ policy: VERIFIED_POLICY, admin: ADMIN }).mode === "closed") { const st = readSettings(); if (strengthenOnFailure(st, isCuraiq, "closed")) writeSettings(st); } } catch { /* never affects enforcement */ } }
   // context.tree: the mode comes from the verified policy only; a prompt or a tool result is a leaf before
   // any alert of this call is posted.
   ctxBegin(input, VERIFIED_POLICY);
@@ -3212,7 +3233,7 @@ async function main() {
   maybeIndexScan(input.cwd);
   // AI CLI started by an unexpected parent (cli/ai-cli-parents.mjs): classified once per session, alerted once.
   // On Windows the walk runs in a background PowerShell; no call waits for it.
-  const acp = EVENT === "PreToolUse" || EVENT === "UserPromptSubmit" ? aiCliParentStep({ policy, sessionId: SESSION_ID, agent: beatHost(), event: EVENT, coach: COACH, serverMode: !!SERVER.active, shim: process.env.MOORAI_HOOK_HOST === "shim" }) : { alerts: [] };
+  const acp = EVENT === "PreToolUse" || EVENT === "UserPromptSubmit" ? aiCliParentStep({ policy, sessionId: SESSION_ID, agent: beatHost(), event: EVENT, coach: COACH, serverMode: !!SERVER.active, shim: process.env.MOORAI_HOOK_HOST === "shim", startPid: hookPeerPid() }) : { alerts: [] };
   for (const a of acp.alerts) post({ ...a, tool: `hook:${tool || EVENT}`, ts: new Date().toISOString(), ...IDENTITY });
   const transitDeny = EVENT === "PreToolUse" || EVENT === "UserPromptSubmit" ? transitEnvStep(policy, tool || EVENT) : null;
 
@@ -3626,6 +3647,7 @@ async function main() {
     // MCP server reputation: evidence about the server's package (registry age, repo link, SkillTriage
     // verdict). Reported on first sight or a version change; refused only below an org's blockBelow.
     let rep = null;
+    const { hookReputation } = await import("./mcp-reputation.mjs");
     try { rep = hookReputation(server, { policy: policy.mcpReputation, enforce: !COACH, identityHash: contentHash, catalogue: policy.mcpCatalogue }); } catch { /* reputation is evidence; fail open */ }
     if (rep && rep.report) post({ ...rep.alert, ...IDENTITY });
     if (rep && (rep.action === "block" || rep.action === "coach")) { why(REASON.MCP_REPUTATION); audit("deny"); return emit("deny", `${tool} — MCP server reputation ${rep.rep.score}/100 (${rep.rep.band}: ${rep.rep.reasons.join(", ")}) is below your organization's threshold`); }
@@ -3643,6 +3665,8 @@ async function main() {
     // what the Bash branch gives a path a command reads: content at "file", #72 metadata, #55 on its
     // location (cli/mcp-file-args.mjs). Merged by rank, never downgrading; reported at stage "file" like
     // the Bash branch, with the path only under a capture tier that allows filePath (as the Read branch).
+    const { scanMcpFileArgs, mcpToolSends } = await import("./mcp-file-args.mjs");
+    const { oversightMcpSignals, mcpWriteCalls, mcpWriteTool } = await import("./oversight-mcp.mjs");
     const fsr = scanMcpFileArgs(engine, policy, { tool, args: ti, bases: [typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd()], argIds: g.findings.map((f) => f.threatId) });
     if (RANK[fsr.decision] > RANK[g.decision]) { g.decision = fsr.decision; g.reason = fsr.reasons.join(", "); g.alternatives = fsr.alternatives; }
     else if (fsr.decision !== "allow" && fsr.decision === g.decision) g.reason = [g.reason, ...fsr.reasons].filter(Boolean).join(", ");

@@ -6,14 +6,17 @@ import { systemConfig } from "./server-mode.mjs";
 import { loadPolicyReadOnly, resolveEffective } from "./doctor-policy.mjs";
 import { checkServerMode } from "./doctor-server.mjs";
 import { checkInventory } from "./doctor-inventory.mjs";
+import { checkHookTransport } from "./doctor-hookd.mjs";
 
 export async function runDoctor({ offline = false, selftest = true } = {}) {
   const config = loadConfig();
   const checks = [checkNode(), checkHookCode()];
-  const managed = checkManaged(readManagedSettings());
+  const managedSources = readManagedSettings();
+  const managed = checkManaged(managedSources);
   const table = hostTable();
   const hosts = table.map((h) => checkHost(h, { managedHooks: managed.managedHooks, managedPlugins: managed.managedPlugins }));
   checks.push(managed, ...hosts);
+  checks.push(await checkHookTransport(hosts.find((h) => h.id === "host:claude-code"), { managed: managedSources, settingsFile: table[0].file, version: pkg().version || "" }));
   if (!hosts.some((h) => h.installed)) checks.push({ id: "hosts:any", group: "hosts", title: "Any host", status: "fail", summary: "MoorAI is not registered in any agent host on this machine: nothing calls the hook", fix: `${table[0].fix} (or: node ${JSON.stringify(table[1].install[0])} <codex|cursor|gemini|copilot|droid|antigravity|windsurf|kiro|cline> install; or the Claude Code plugin: ${PLUGIN_INSTALL})` });
   const loaded = loadPolicyReadOnly(config, { offline });
   const eff = loaded.error ? resolveEffective(null, config) : resolveEffective(loaded, config);

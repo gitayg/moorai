@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "1.44.0",
+  "version": "1.45.0",
   "license": "MIT",
   "description": "MoorAI agent — AI security at the point. Runtime guardrails for AI agents, apps and APIs (community edition, MIT)",
   "type": "module",
@@ -40,6 +40,7 @@
     "moorai-outbox": "cli/moorai-outbox.mjs",
     "moorai-helper": "cli/moorai-helper.mjs",
     "moorai-serve": "cli/moorai-serve.mjs",
+    "moorai-hookd": "cli/moorai-hookd.mjs",
     "moorai-native-settings": "cli/moorai-native-settings.mjs",
     "moorai-cloud-setup": "cli/moorai-cloud-setup.mjs",
     "moorai-mcp-gateway": "mcp-gateway/moorai-mcp-gateway.mjs",
