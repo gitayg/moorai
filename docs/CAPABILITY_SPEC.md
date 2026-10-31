@@ -3087,14 +3087,63 @@ serialized-JSON scan did not raise, and the decision is merged by rank (never lo
   escapes, the string values (depth ≤ 32, ≤ 10,000 values) are joined with real line breaks (≤ 2 MiB) and
   scanned at `prompt` with `{ egress: true }`, restricted to the data-loss threat ids of
   `data/data-tiers.js` (#15, #39, #9, #1, #44, #90).
-- **Encoded content.** A value that is a `data:…;base64,` URI, or 64+ characters of base64 / base64url (a
-  plain base64 value must be a multiple of 4 long and hold a digit, `+`, `/`, `_` or `-`), is decoded in
-  memory: at most 8 values per call, 1 MiB each (a larger one is not decoded), 4 MiB per call. Decoded text
-  (≤ 2% control or invalid UTF-8 characters) is scanned at `file` with the same threat ids. A decoded ZIP,
-  PDF or OLE file gets `labelPolicy`'s `send` verdict from `readSensitivityLabelsBytes` (the same reader over
-  the buffer; finding `match: "label-path:mcp-arg:<keyed hash of the value>"`). A label that cannot be read
-  on decoded bytes raises nothing (no fail-mode refusal, unlike a named file). The body of an Office or PDF
-  file is not decompressed or scanned. Hex is not decoded.
+- **Encoded content.** A value is taken for encoded when it is a `data:…;base64,` URI (whatever else it
+  holds), or 64+ characters of which at least 95% are base64 / base64url characters or `=`
+  (`OUTBOUND_CAPS.minAlphabet`; whitespace counts against it) and that hold a digit, `+`, `/`, `_` or `-`.
+  It is decoded in memory the way a lenient decoder reads it: Node's `Buffer.from(value, "base64")` skips
+  every character outside both alphabets and stops at the first `=`; Python's `base64.b64decode` (default
+  `validate=False`: "characters that are neither in the normal base-64 alphabet nor the alternative alphabet
+  are discarded") reads `-` and `_` as characters to skip, so a value holding either is decoded both ways
+  (measured, Node 22.23 and Python 3.9: `QU!JD*REVG` → `ABCDEF` in both; `-_-_` → `fbffbf` in Node and empty
+  in Python's `b64decode`). An `=` before the end of the value (anything but one or two closing `=`) makes
+  it lenient, and decoders differ past it, so two more readings are decoded: the runs between `=` joined
+  (Python 3.14's `b64decode` drops the `=` and reads on) and each run decoded on its own, the bytes one
+  after another (GNU coreutils `base64 -d`, with or without `-i`). Measured on `QQ==QUJD`: Node 22.23
+  `Buffer.from` and Python 3.9, 3.11 and 3.12 `b64decode` / `binascii.a2b_base64` give `A` (stop at the
+  first `=`); Python 3.14.8 gives `ABCDEF` for `QU==JDREVG` and an error for `QQ==QUJD`; GNU coreutils 9.1
+  gives `AABC`; BusyBox 1.36 gives `A` and an error (it reads on only when the `=` closes a 4-character
+  group: `QUJD=REVG` → `ABCDEF`); Go 1.26 `StdEncoding`, `URLEncoding`, `Strict()` and `NewDecoder` return
+  an error with only the bytes before the `=` (`RawStdEncoding` none); `atob`, Python's `validate=True`
+  (3.11+ `strict_mode=True`) and macOS `base64 -d` refuse the value; `openssl base64 -d -A` returns nothing.
+  Java's `Base64.getDecoder()` / `getMimeDecoder()` were not run (no JRE here); their source (OpenJDK
+  `java/util/Base64.java`, `decode0`) throws `IllegalArgumentException` on a base64 character after the
+  padding, the MIME decoder included. A value whose readings hold under half the bytes its characters give
+  (runs of one character between `=` carry none) is not evaluated (`why: "size"`). Each reading counts
+  toward the budget: 1 MiB per value (the largest reading), 4 MiB per call; there is no cap on the number of
+  values. Decoded text (≤ 2% control or invalid UTF-8 characters) is scanned at
+  `file` with the same threat ids, whatever file type its first bytes name. A decoded ZIP, PDF or OLE file
+  gets `labelPolicy`'s `send` verdict from `readSensitivityLabelsBytes` (the same reader over the buffer;
+  finding `match: "label-path:mcp-arg:<keyed hash of the value>"`), for at most 8 files per call
+  (`labelReads`). The body of an Office or PDF file is not decompressed. Hex is not decoded.
+- **Not decoded whole: unevaluated.** A value over 1 MiB, or one that does not fit what is left of the 4 MiB,
+  is not evaluated (`why: "size"`), whatever it is: an image, a video or an Office file as much as text. What
+  is left of the budget is still scanned from its start, so a finding there still decides. Under an active
+  `labelPolicy`, a ZIP, PDF or OLE file by its first bytes also has its label read in place by
+  `readSensitivityLabelsAt` (`cli/sensitivity-labels.mjs`), which decodes only the byte ranges the reader
+  requests (the ZIP's end record, central directory and one or two XML parts; the PDF's head and tail
+  windows; the OLE header, directory sectors and FAT entries), within `LABEL_CAPS` and `labelReads`; this
+  reader returns `unreadable`, not `none`, for a ZIP, OLE or PDF file by its magic, whatever its name, with
+  no end of central directory, an OLE directory that does not parse, or no `%%EOF` after a `trailer` or
+  `startxref` in the last 1,024 bytes. A label is unevaluated (`why: "label"`) when it was not read (past
+  `labelReads`), could not be read (`unreadable`, as for a named file), or was read from a ZIP, PDF or OLE
+  file in a value whose decoding skipped characters or mixed the two alphabets (a decoder unlike Node's and
+  Python's could read other bytes there). Returned as `mcpGateway(...).unevaluated = { why, values }`; it
+  never lowers a decision. When a `labelPolicy` rule (or `protected`) has `onSend: "block"`, an unevaluated
+  label is refused in every surface and mode: threat #1, category `Encoded file sent by an AI agent without
+  a readable sensitivity label`, `detectorId: "mcp-outbound-unevaluated"`, `match:
+  "unevaluated:label:<n>"`. Otherwise each surface applies its fail mode (`cli/mcp-outbound-fail.mjs`): the
+  hook marks the call capped, so `failMode.hook` closed denies a call it would otherwise allow
+  (`FAIL_CLOSED`, `failWhy` `size-cap` or `label`); the stdio guard and the HTTP gateway refuse a call no
+  check denied under `failMode.mcpGateway` closed (`Fail-closed: MCP call not evaluated`, `failWhy` `size`
+  or `label`). Open (and coach) forwards it with an alert: threat id 0, category `MCP: outbound arguments not
+  fully evaluated`, Medium, `decision: "notify"`, `basisCode: UNEVALUATED_SIZE_CAP`, `failMode: "open"`,
+  `failWhy`, `unevaluatedValues`, never a value; once per session and tool at the hook (the hook's
+  seen-once store, 24 hours), once per tool in each stdio guard process, once per server and tool in each
+  gateway process. `@moorai/agent-sdk` applies the label refusal but has no fail mode for the rest. Limits:
+  a decoded value with more than 2% control bytes is binary and not scanned as text; a value with more than
+  5% other characters and no `data:` prefix is not taken for encoded; a decoder that reads on past a `=`
+  inside the value, or that skips `=`, reads bytes neither reading holds; a benign value over 1 MiB that is
+  95% base64 characters (a newline-separated list of file paths, measured) is unevaluated.
 - **Over-sharing.** Policy `mcpOversharing: false | { action, maxArgBytes, maxEncodedBytes, maxLines,
   minTurns, minEntropyBits }`; defaults `notify`, 65,536, 16,384, 500, 4, 5.5; `action` one of `off`,
   `notify` (finding only), `justify` (ask), `block` (deny). Signals: `size` (serialized arguments over
@@ -3126,13 +3175,29 @@ serialized-JSON scan did not raise, and the decision is merged by rank (never lo
 - **Measured.** On the 1,625 benign samples of `test/redteam/benign-corpus-v2.json`, `benign-corpus.json`,
   `benign-web-content.json` and the Hebrew, Arabic and Russian sets, each sent as one MCP argument with the
   default policy: one sample gained a finding (a JWT at a line start in a web page, #39 `dlp-jwt`, notify) and
-  none raised over-sharing.
+  none raised over-sharing. Sent again with the lenient decoding (each sample as one value and as an
+  array of its lines, with the default policy and with `labelPolicy` and #90 / #39 block): no verdict,
+  finding or unevaluated result changed.
 - **Cost** (median of 7, a machine under load average ~20): 5.6 ms added to a call with a 2 KB multi-line
-  value (the JSON scan itself: 10.9 ms), 8.9 ms for 100 KB, 5.0 ms for a 1 MB base64 value (past the decode
-  cap). The extra scans run only the data-loss detectors (an engine view over those detectors).
-- **Tests**: `test/mcp-outbound.test.mjs` (pure, `mcpGateway`), `test/mcp-outbound-surfaces.test.mjs` (real
+  value (the JSON scan itself: 10.9 ms), 8.9 ms for 100 KB. The extra scans run only the data-loss detectors
+  (an engine view over those detectors). Values not decoded whole (`mergeOutbound` alone, median of 9, load
+  average ~3, before → after the change that made them unevaluated and reads lenient values): a real 4.97 MB
+  PNG 30.5 → 37.6 ms (its first 1 MiB is decoded and tested as text); a small call 0.01 → 0.01 ms, 40 file
+  paths 0.02 → 0.22 ms (each is now decoded leniently), a 2 KB note 0.79 → 0.80 ms; 10,000 encoded values of
+  88 characters 7.6 → 26.1 ms (all are now decoded and scanned). The whole `mcpGateway` on the 4.97 MB PNG:
+  1.5 to 1.7 s before and after, nearly all of it the JSON scan of the serialized arguments.
+- **Tests**: `test/mcp-outbound.test.mjs` (pure, `mcpGateway`; each decode cap, an image and each binary
+  magic over 1 MiB unevaluated, the in-place label read of a ZIP, PDF and OLE file, an unreadable label,
+  `labelReads`; a value with characters Node or Python skip (a card number found, a labelled PDF or .docx
+  refused under `onSend: "block"`, a label read from it unevaluated); past the caps, a labelled PDF with a
+  skipped character or both alphabets refused; the in-place reader's `unreadable` on a ZIP, OLE or PDF with
+  no structure under any name), `test/mcp-outbound-surfaces.test.mjs` (real
   hook, stdio guard with the fake server, HTTP gateway with the fake upstream; #65 at the guard from `.env`
-  and from a tool result).
+  and from a tool result; fail mode closed and open past the caps, one alert per tool under open, and a
+  labelled .docx over 1 MiB and one whose label cannot be read under `onSend: "block"` on each surface; at
+  the hook and the gateway, an image over 1 MiB refused under fail mode closed, and a card number and a
+  labelled PDF or .docx with characters a lenient decoder skips caught; at the gateway, a card number after a
+  mid-value `==` or split two bytes to a run, and a labelled PDF after a mid-value `=`, refused).
 
 ## OT protocol clients from an agent shell (F30, agent side)
 

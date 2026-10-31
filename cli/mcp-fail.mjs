@@ -4,7 +4,8 @@
 // reputation threshold is set and no score exists yet, or a block-mode tool-drift re-list before a
 // tools/call failed or ran out of time (mcp-proxy/tool-recheck.mjs), or the sensitivity label of a file
 // the arguments name could not be established under labelPolicy (cli/sensitivity-labels.mjs), or a server's
-// sampling / elicitation request holds text past the scan bounds (mcp-proxy/sampling-scan.mjs).
+// sampling / elicitation request holds text past the scan bounds (mcp-proxy/sampling-scan.mjs), or encoded
+// argument content was left past the decode caps or its label was not read (cli/mcp-outbound-fail.mjs).
 //
 //   open   (the default) forward it unchanged, as the guard always has.
 //   closed refuse it: a tools/call gets an isError tool result and never reaches the server; a result is

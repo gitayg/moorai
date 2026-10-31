@@ -42,7 +42,12 @@ MCP host  ⇄  moorai-mcp-guard  ⇄  real MCP server
   2. **per-tool argument rules** (#18) — deny/allow regexes for this tool's arguments.
   3. **argument content scan** (#2) — the shared MoorAI detectors over the serialized arguments, then
      over the argument values with their line breaks and over base64 / `data:` content an argument carries
-     (decoded in memory; a decoded Office or PDF file gets `labelPolicy`'s send verdict), plus the
+     (decoded in memory the way a lenient decoder reads it; a decoded Office or PDF file gets
+     `labelPolicy`'s send verdict; a value not decoded whole (over 1 MiB, or past 4 MiB per call), an image
+     too, or a label not read follows `failMode.mcpGateway`: closed refuses the call, open forwards it with
+     `MCP: outbound arguments not fully evaluated`, Medium, once per tool in this process; past the caps a
+     ZIP / PDF / OLE file's label is still read in place, and an unread label is refused when a
+     `labelPolicy` rule blocks sending), plus the
      over-sharing signal (`mcpOversharing`: size, encoded blob, a pasted file or conversation; reported by
      default). A write-shaped call is exempt from that signal only when the wrapped server is the reference
      filesystem server by its launch command, or its label is in `mcpOversharing.localWriteServers`

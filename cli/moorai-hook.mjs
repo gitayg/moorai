@@ -3754,6 +3754,12 @@ async function main() {
     else if (fsr.decision !== "allow" && fsr.decision === g.decision) g.reason = [g.reason, ...fsr.reasons].filter(Boolean).join(", ");
     if (fsr.kill) { g.kill = true; g.killIds = [...(g.killIds || []), ...fsr.killIds]; }
     if (fsr.unevaluated) labelUnevaluated(); // a file's sensitivity label could not be established (labelPolicy)
+    // Encoded argument content past the decode caps, or a label not read on it (cli/mcp-outbound-fail.mjs):
+    // capped, so failMode.hook closed denies an allow at emit; otherwise it is reported, once per session and tool.
+    if (g.unevaluated && g.decision !== "deny") {
+      if (g.unevaluated.why === "label") labelUnevaluated(); else VERDICT.capped = true;
+      if ((COACH || hookFailMode({ policy: VERIFIED_POLICY ?? null, admin: ADMIN }).mode !== "closed") && !seenOnce(`outbound-unevaluated:${localHash(SESSION_ID || "")}:${tool}`, 86400000)) { const { outboundUnevaluatedAlert } = await import("./mcp-outbound-fail.mjs"); post({ ...outboundUnevaluatedAlert(g.unevaluated, { tool, server, toolPrefix: "hook" }), ts: new Date().toISOString(), ...IDENTITY }); }
+    }
     // #84 — an MCP filesystem write (write_file, edit_file, move_file, create_directory …) gets the Write / Edit
     // oversight check on the paths it names (cli/oversight-mcp.mjs): memory files, protected paths, and the
     // before / after judgement of runtime code and tests. Merged by rank, never downgrading.

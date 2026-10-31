@@ -49,6 +49,7 @@ import { spanHash } from "../cli/span-hash.mjs";
 import { state, ensurePolicy, ADMIN } from "./policy.mjs";
 import { profileCheck } from "./profile.mjs";
 import { failClosed, failReason, alertFailClosed } from "./fail.mjs";
+import { outboundUnevaluatedAlert } from "../cli/mcp-outbound-fail.mjs";
 import { CONFIG, IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, alertProfile, alertDriftCall, alertRecheckFailed, alertToolClass, recordLedger } from "./report.mjs";
 
 const RANK = { allow: 1, ask: 2, deny: 3 };
@@ -235,6 +236,13 @@ export function createGuard(route) {
     if (fsr && fsr.unevaluated && g.decision !== "deny") {
       const fm = failClosed();
       if (fm) { alertFailClosed("mcp", "label", fm, tool, SERVER); auditCall(SERVER, tool, "deny", argsHash); return { block: failReason("label"), failClosed: true }; }
+    }
+    // Encoded argument content past the decode caps, or a label not read on it (cli/mcp-outbound-fail.mjs):
+    // closed refuses the call; open forwards it with a Medium alert, once per tool in this process.
+    if (!early && g.unevaluated && g.decision !== "deny") {
+      const fm = failClosed();
+      if (fm) { alertFailClosed("mcp", g.unevaluated.why, fm, tool, SERVER); auditCall(SERVER, tool, "deny", argsHash); return { block: failReason(g.unevaluated.why), failClosed: true }; }
+      if (seenOnce(`outbound-unevaluated|${SERVER}|${tool}`)) post({ ...outboundUnevaluatedAlert(g.unevaluated, { tool, server: SERVER, toolPrefix: "gateway" }), ts: new Date().toISOString(), ...IDENTITY });
     }
 
     // A vector-store write (cli/index-tools.mjs: policy.indexTools or the name / argument heuristic):

@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import http from "node:http";
 import { rmTree } from "./fs-cleanup.mjs";
 import { scenario, rpc, call as gwCall } from "../mcp-gateway/test/harness.mjs";
-import { docx, LABEL_ID } from "./fixtures/label-files.mjs";
+import { docx, pdf, LABEL_ID } from "./fixtures/label-files.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -34,6 +34,34 @@ const LABELS = { labelPolicy: { rules: [{ match: { id: LABEL_ID }, onSend: "bloc
 const DOC64 = () => docx({ custom: [{ id: LABEL_ID, name: "Highly Confidential" }] }).toString("base64");
 const overshareAlert = (alerts) => alerts.find((a) => a.oversharing);
 const contentFree = (alerts) => { const s = JSON.stringify(alerts); return !s.includes(MARK) && !s.includes("9fK2mQ7xLp3Vz8Rt") && !s.includes(SECRET) && !s.includes(LEARNED); };
+// Encoded values not decoded whole (cli/mcp-outbound.mjs OUTBOUND_CAPS, cli/mcp-outbound-fail.mjs): text over
+// 1 MiB (decodedBytes), a labelled .docx over 1 MiB, a .docx cut short.
+const NOTES = () => Array.from({ length: 12 }, (_, i) => Buffer.from(`note ${i} ${"x".repeat(80)}`).toString("base64"));
+const PAST_CAP = () => ({ content: Buffer.from(`${MARK} words past the decode cap\n`.repeat(40_000)).toString("base64") });
+const filler = (n) => { const b = Buffer.alloc(n); for (let i = 0; i < n; i++) b[i] = (i * 2654435761) >>> 24; return b; };
+const BIG_DOC64 = () => docx({ custom: [{ id: LABEL_ID, name: "Highly Confidential" }], extra: [{ name: "word/media/image1.bin", data: filler(1_200_000), store: true }] }).toString("base64");
+const BROKEN64 = () => docx({ custom: [{ id: LABEL_ID, name: "Highly Confidential" }] }).subarray(0, 150).toString("base64");
+// Review: an image over 1 MiB is unevaluated like any other value not decoded whole; a value with characters a
+// lenient decoder skips is decoded the way that decoder reads it, and a labelled file in it is a label unevaluated.
+const PNG_MAGIC = Buffer.from("89504e470d0a1a0a", "hex"), IEND = Buffer.from("0000000049454e44ae426082", "hex");
+const FAKE_PNG = () => Buffer.concat([PNG_MAGIC, Buffer.from(`${MARK} pasted after an image header\n`.repeat(40_000))]).toString("base64");
+const REAL_PNG = () => Buffer.concat([PNG_MAGIC, filler(1_500_000), IEND]).toString("base64");
+const HC = [{ id: LABEL_ID, name: "Highly Confidential" }];
+const JUNK_PDF = () => { const b = pdf({ info: HC, padding: 1_200_000 }).toString("base64"); const at = Math.floor(b.length / 8) * 4 + 1; return `data:application/pdf;base64,${b.slice(0, at)}.${b.slice(at)}`; };
+const junk = (s, n, ch) => s.replace(new RegExp(`(.{${n}})`, "g"), `$1${ch}`);
+const JUNK_SMALL = () => [junk(pdf({ info: HC }).toString("base64"), 40, "!"), junk(docx({ custom: HC }).toString("base64"), 40, "!")];
+const JUNK_CARD = () => junk(Buffer.from(`id,name,card\n1,Test Person,4111 1111 1111 1111\n${MARK}\n`).toString("base64"), 30, ".");
+const CARD_BLOCK = { threatPolicy: { 90: "block" } };
+const PAD_CARD = () => `QQ==${Buffer.from(`id,name,card\n1,Test Person,4111 1111 1111 1111\n${MARK}\n`).toString("base64")}`;
+const PAD_PDF = () => `QUI=${pdf({ info: HC }).toString("base64")}`;
+const RUNS_CARD = () => "card 4111 1111 1111 1111 exp 12/29\n".match(/.{1,2}/gs).map((p) => Buffer.from(p).toString("base64")).join("");
+const unevalFor = (alerts, tool) => alerts.filter((a) => a.category === UNEVAL && a.tool === tool);
+// The server answers briefly, so no 2 MB echo holds the event loop while an alert is in flight.
+const SHORT_RESULT = ({ home }) => { const f = join(home, "result.txt"); writeFileSync(f, "stored"); return { FAKE_RESULT_FILE: f }; };
+const UNEVAL = "MCP: outbound arguments not fully evaluated";
+const unevalAlert = (alerts) => alerts.find((a) => a.category === UNEVAL);
+const failAlert = (alerts) => alerts.find((a) => a.reasonCode === "FAIL_CLOSED");
+const cats = (alerts) => JSON.stringify(alerts.map((a) => a.category));
 
 async function sink() {
   const alerts = [];
@@ -147,6 +175,73 @@ test("HOOK: a labelled .docx sent base64-encoded is refused by labelPolicy onSen
   });
 });
 
+test("HOOK: encoded text past the decode caps follows failMode.hook: closed denies (FAIL_CLOSED), open allows and reports it", async () => {
+  await hookRun({ failMode: { hook: "closed" } }, async ({ alerts, run }) => {
+    const r = await run("mcp__drive__upload_file", PAST_CAP());
+    assert.equal(r.decision, "deny", r.stderr);
+    assert.match(r.reason, /not evaluated/);
+    assert.ok(await until(() => failAlert(alerts)), cats(alerts));
+    assert.equal(failAlert(alerts).failWhy, "size-cap");
+    assert.equal((await run("mcp__drive__upload_file", { parts: NOTES() })).decision, "allow", "within the caps");
+    assert.ok(contentFree(alerts));
+  });
+  await hookRun({}, async ({ alerts, run }) => {
+    assert.equal((await run("mcp__drive__upload_file", PAST_CAP())).decision, "allow");
+    assert.ok(await until(() => unevalAlert(alerts)), cats(alerts));
+    const a = unevalAlert(alerts);
+    assert.deepEqual([a.threatId, a.riskLevel, a.decision, a.failMode, a.failWhy, a.unevaluatedValues, a.tool], [0, "Medium", "notify", "open", "size", 1, "hook:mcp__drive__upload_file"]);
+    assert.ok(contentFree(alerts));
+  });
+});
+
+test("HOOK: under labelPolicy onSend block, a labelled .docx over 1 MiB is refused (label read in place), and so is one whose label cannot be read", async () => {
+  await hookRun(LABELS, async ({ alerts, run }) => {
+    const r = await run("mcp__drive__upload_file", { name: "board.docx", content: BIG_DOC64() });
+    assert.equal(r.decision, "deny", r.stderr);
+    assert.ok(await until(() => alerts.some((a) => a.sensitivityLabel && a.sensitivityLabel.verdict === "block")), cats(alerts));
+    const b = await run("mcp__drive__upload_file", { name: "board.docx", content: BROKEN64() });
+    assert.equal(b.decision, "deny", b.stderr);
+    assert.match(b.reason, /could not be label-checked/);
+  });
+});
+
+test("HOOK: an image over 1 MiB is unevaluated: failMode.hook closed denies it, open allows it with one alert per tool in the session", async () => {
+  await hookRun({ failMode: { hook: "closed" } }, async ({ alerts, run }) => {
+    for (const content of [REAL_PNG(), FAKE_PNG()]) {
+      const r = await run("mcp__drive__upload_file", { name: "photo.png", content });
+      assert.equal(r.decision, "deny", r.stderr);
+      assert.match(r.reason, /not evaluated/);
+    }
+    assert.ok(await until(() => failAlert(alerts)), cats(alerts));
+    assert.ok(contentFree(alerts));
+  });
+  await hookRun({}, async ({ alerts, run }) => {
+    assert.equal((await run("mcp__drive__upload_file", { content: REAL_PNG() })).decision, "allow");
+    assert.ok(await until(() => unevalFor(alerts, "hook:mcp__drive__upload_file").length === 1), cats(alerts));
+    for (let i = 0; i < 2; i++) assert.equal((await run("mcp__drive__upload_file", { content: REAL_PNG() })).decision, "allow");
+    await sleep(2000);
+    assert.equal((await run("mcp__photos__add", { content: REAL_PNG() })).decision, "allow");
+    assert.ok(await until(() => unevalFor(alerts, "hook:mcp__photos__add").length === 1), cats(alerts));
+    assert.equal(unevalFor(alerts, "hook:mcp__drive__upload_file").length, 1, cats(alerts));
+    const a = unevalFor(alerts, "hook:mcp__drive__upload_file")[0];
+    assert.deepEqual([a.threatId, a.riskLevel, a.decision, a.failMode, a.failWhy, a.unevaluatedValues], [0, "Medium", "notify", "open", "size", 1]);
+  });
+});
+
+test("HOOK: characters a lenient decoder skips: a card number is found; a labelled PDF or .docx is refused under onSend block", async () => {
+  await hookRun({ ...LABELS, ...CARD_BLOCK }, async ({ alerts, run }) => {
+    const c = await run("mcp__drive__upload_file", { name: "export.csv", content: JUNK_CARD() });
+    assert.equal(c.decision, "deny", c.stderr);
+    assert.match(c.reason, /#90/);
+    for (const content of [JUNK_PDF(), ...JUNK_SMALL()]) {
+      const r = await run("mcp__drive__upload_file", { content });
+      assert.equal(r.decision, "deny", r.stderr);
+      assert.match(r.reason, /could not be label-checked/);
+    }
+    assert.ok(contentFree(alerts));
+  });
+});
+
 // ---- the stdio guard ----
 function guard(home, cwd, url, env = {}, server = FAKE) {
   const recv = join(home, "recv.log");
@@ -227,6 +322,40 @@ test("GUARD: a labelled .docx sent base64-encoded is refused by labelPolicy onSe
   });
 });
 
+test("GUARD: encoded text or an image past the decode caps follows failMode.mcpGateway: closed never reaches the server, open forwards and reports it once per tool", async () => {
+  await guardRun({ failMode: { mcpGateway: "closed" } }, async ({ alerts, g }) => {
+    assert.ok(blocked(await g.call("upload_file", PAST_CAP())));
+    assert.ok(blocked(await g.call("upload_file", { content: REAL_PNG() })));
+    assert.ok(!blocked(await g.call("upload_file", { parts: NOTES() })), "within the caps");
+    assert.deepEqual(g.received(), ["upload_file"]);
+    assert.ok(await until(() => failAlert(alerts)), cats(alerts));
+    assert.deepEqual([failAlert(alerts).failWhy, failAlert(alerts).tool], ["size", "desktop:upload_file"]);
+    assert.ok(contentFree(alerts));
+  });
+  await guardRun({}, async ({ alerts, g }) => {
+    assert.ok(!blocked(await g.call("upload_file", PAST_CAP())));
+    assert.ok(await until(() => unevalFor(alerts, "desktop:upload_file").length === 1), cats(alerts));
+    for (let i = 0; i < 2; i++) assert.ok(!blocked(await g.call("upload_file", { content: REAL_PNG() })));
+    await sleep(2000);
+    assert.ok(!blocked(await g.call("add_photo", { content: REAL_PNG() })));
+    assert.deepEqual(g.received(), ["upload_file", "upload_file", "upload_file", "add_photo"]);
+    assert.ok(await until(() => unevalFor(alerts, "desktop:add_photo").length === 1), cats(alerts));
+    assert.equal(unevalFor(alerts, "desktop:upload_file").length, 1, cats(alerts));
+    const a = unevalAlert(alerts);
+    assert.deepEqual([a.riskLevel, a.decision, a.failMode, a.failWhy, a.tool, a.mcpServer], ["Medium", "notify", "open", "size", "desktop:upload_file", "share"]);
+    assert.ok(contentFree(alerts));
+  }, { env: SHORT_RESULT });
+});
+
+test("GUARD: under labelPolicy onSend block, a labelled .docx over 1 MiB and one whose label cannot be read never reach the server", async () => {
+  await guardRun(LABELS, async ({ alerts, g }) => {
+    assert.ok(blocked(await g.call("upload_file", { name: "board.docx", content: BIG_DOC64() })));
+    assert.ok(blocked(await g.call("upload_file", { name: "board.docx", content: BROKEN64() })));
+    assert.deepEqual(g.received(), []);
+    assert.ok(await until(() => alerts.some((a) => a.sensitivityLabel && a.sensitivityLabel.verdict === "block")), cats(alerts));
+  });
+});
+
 test("GUARD: #65 — a value from the project's .env in an argument is refused by default; only hash prefixes leave", async () => {
   await guardRun({}, async ({ alerts, g }) => {
     assert.ok(blocked(await g.call("post_message", { text: `the deploy token is ${SECRET}` })));
@@ -275,5 +404,72 @@ test("GATEWAY: a write-shaped tool name never exempts over-sharing, a route the 
     assert.deepEqual(upNames(up), []);
     assert.ok(await until(() => overshareAlert(con.alerts)));
     assert.equal(overshareAlert(con.alerts).tool, "gateway:write_file");
+  });
+});
+
+test("GATEWAY: encoded text past the decode caps follows failMode.mcpGateway; a labelled .docx over 1 MiB and an unreadable one are refused under onSend block", async () => {
+  await scenario({ policy: { captureTier: "content-free", failMode: { mcpGateway: "closed" } } }, async ({ con, up, base }) => {
+    assert.ok(refused(await rpc(base, gwCall(1, "upload_file", PAST_CAP()))));
+    assert.ok(!refused(await rpc(base, gwCall(2, "upload_file", { parts: NOTES() }))));
+    assert.deepEqual(upNames(up), ["upload_file"]);
+    assert.ok(await until(() => failAlert(con.alerts)), cats(con.alerts));
+    assert.deepEqual([failAlert(con.alerts).failWhy, failAlert(con.alerts).tool], ["size", "gateway:upload_file"]);
+    assert.ok(contentFree(con.alerts));
+  });
+  await scenario({ policy: { captureTier: "content-free", ...LABELS } }, async ({ con, up, base }) => {
+    assert.ok(!refused(await rpc(base, gwCall(1, "upload_file", PAST_CAP()))), "open: forwarded");
+    assert.ok(refused(await rpc(base, gwCall(2, "upload_file", { name: "board.docx", content: BIG_DOC64() }))));
+    assert.ok(refused(await rpc(base, gwCall(3, "upload_file", { name: "board.docx", content: BROKEN64() }))));
+    assert.deepEqual(upNames(up), ["upload_file"]);
+    assert.ok(await until(() => unevalAlert(con.alerts) && con.alerts.some((a) => a.sensitivityLabel)), cats(con.alerts));
+    assert.deepEqual([unevalAlert(con.alerts).riskLevel, unevalAlert(con.alerts).failMode, unevalAlert(con.alerts).tool], ["Medium", "open", "gateway:upload_file"]);
+    assert.ok(contentFree(con.alerts));
+  });
+});
+
+test("GATEWAY: an image over 1 MiB is unevaluated: failMode.mcpGateway closed refuses it, open forwards it with one alert per tool", async () => {
+  await scenario({ policy: { captureTier: "content-free", failMode: { mcpGateway: "closed" } }, upstream: { resultText: "stored" } }, async ({ con, up, base }) => {
+    assert.ok(refused(await rpc(base, gwCall(1, "upload_file", { content: FAKE_PNG() }))));
+    assert.ok(refused(await rpc(base, gwCall(2, "upload_file", { content: REAL_PNG() }))));
+    assert.ok(!refused(await rpc(base, gwCall(3, "upload_file", { parts: NOTES() }))));
+    assert.deepEqual(upNames(up), ["upload_file"]);
+    assert.ok(await until(() => failAlert(con.alerts)), cats(con.alerts));
+    assert.ok(contentFree(con.alerts));
+  });
+  await scenario({ policy: { captureTier: "content-free" }, upstream: { resultText: "stored" } }, async ({ con, up, base }) => {
+    assert.ok(!refused(await rpc(base, gwCall(1, "upload_file", { content: REAL_PNG() }))));
+    assert.ok(await until(() => unevalFor(con.alerts, "gateway:upload_file").length === 1), cats(con.alerts));
+    for (const id of [2, 3]) assert.ok(!refused(await rpc(base, gwCall(id, "upload_file", { content: REAL_PNG() }))));
+    await sleep(2000);
+    assert.ok(!refused(await rpc(base, gwCall(4, "add_photo", { content: REAL_PNG() }))));
+    assert.deepEqual(upNames(up), ["upload_file", "upload_file", "upload_file", "add_photo"]);
+    assert.ok(await until(() => unevalFor(con.alerts, "gateway:add_photo").length === 1), cats(con.alerts));
+    assert.equal(unevalFor(con.alerts, "gateway:upload_file").length, 1, cats(con.alerts));
+    const a = unevalFor(con.alerts, "gateway:upload_file")[0];
+    assert.deepEqual([a.riskLevel, a.decision, a.failMode, a.failWhy, a.unevaluatedValues], ["Medium", "notify", "open", "size", 1]);
+  });
+});
+
+test("GATEWAY: characters a lenient decoder skips: a card number is found; a labelled PDF or .docx is refused under onSend block", async () => {
+  await scenario({ policy: { captureTier: "content-free", ...LABELS, ...CARD_BLOCK } }, async ({ con, up, base }) => {
+    assert.ok(refused(await rpc(base, gwCall(1, "upload_file", { name: "export.csv", content: JUNK_CARD() }))));
+    let id = 2;
+    for (const content of [JUNK_PDF(), ...JUNK_SMALL()]) assert.ok(refused(await rpc(base, gwCall(id++, "upload_file", { content }))));
+    assert.ok(!refused(await rpc(base, gwCall(id++, "upload_file", { content: Buffer.from("plain words in a row ".repeat(10)).toString("base64") }))));
+    assert.deepEqual(upNames(up), ["upload_file"]);
+    assert.ok(await until(() => con.alerts.some((a) => a.threatId === 90)), cats(con.alerts));
+    assert.ok(contentFree(con.alerts));
+  });
+});
+
+test("GATEWAY: an \"=\" before the end of a value: a card number after it, or split two bytes to a run, is found; a labelled PDF after it is refused under onSend block", async () => {
+  await scenario({ policy: { captureTier: "content-free", ...LABELS, ...CARD_BLOCK } }, async ({ con, up, base }) => {
+    assert.ok(refused(await rpc(base, gwCall(1, "upload_file", { name: "export.csv", content: PAD_CARD() }))));
+    assert.ok(refused(await rpc(base, gwCall(2, "upload_file", { content: PAD_PDF() }))));
+    assert.ok(refused(await rpc(base, gwCall(3, "upload_file", { content: RUNS_CARD() }))));
+    assert.ok(!refused(await rpc(base, gwCall(4, "upload_file", { content: Buffer.from("plain words in a row!".repeat(10)).toString("base64") }))));
+    assert.deepEqual(upNames(up), ["upload_file"]);
+    assert.ok(await until(() => con.alerts.some((a) => a.threatId === 90)), cats(con.alerts));
+    assert.ok(contentFree(con.alerts));
   });
 });

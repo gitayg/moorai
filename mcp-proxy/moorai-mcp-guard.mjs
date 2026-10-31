@@ -99,6 +99,7 @@ import { agentNameOf, claudeCodeVersion } from "../cli/agent-names.mjs";
 import { gatewayFailMode, gatewayFailReason, gatewayFailAlert } from "../cli/mcp-fail.mjs";
 import { systemConfig, serverMode, settleNoApproverAsk } from "../cli/server-mode.mjs";
 import { oversharingAlertFields } from "../cli/mcp-outbound.mjs";
+import { outboundUnevaluatedAlert } from "../cli/mcp-outbound-fail.mjs";
 import { createOutboundSecrets, secretEgressAlert } from "../cli/mcp-secret-egress.mjs";
 import { localWriteCheck } from "../cli/mcp-local-write.mjs";
 import { evaluateEgress } from "../cli/workload-profile.mjs";
@@ -686,6 +687,13 @@ async function gateCall(rawLine, msg) {
     if (fsr && fsr.unevaluated && g.decision !== "deny") {
       const fm = failClosed();
       if (fm) { replied = true; alertFailClosed("mcp", "label", fm, tool); auditCall(tool, "deny", argsHash); writeBlock(msg.id, gatewayFailReason("label")); return; }
+    }
+    // Encoded argument content past the decode caps, or a label not read on it (cli/mcp-outbound-fail.mjs):
+    // closed refuses the call; open forwards it with a Medium alert, once per tool in this process.
+    if (g.unevaluated && g.decision !== "deny") {
+      const fm = failClosed();
+      if (fm) { replied = true; alertFailClosed("mcp", g.unevaluated.why, fm, tool); auditCall(tool, "deny", argsHash); writeBlock(msg.id, gatewayFailReason(g.unevaluated.why)); return; }
+      if (seenOnce(`outbound-unevaluated|${tool}`)) post({ ...outboundUnevaluatedAlert(g.unevaluated, { tool, server: SERVER, toolPrefix: "desktop" }), ts: new Date().toISOString(), ...IDENTITY });
     }
 
     // A vector-store write (cli/index-tools.mjs: policy.indexTools or the name / argument heuristic):

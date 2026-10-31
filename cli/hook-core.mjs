@@ -582,7 +582,7 @@ export function mcpGateway(engine, policy, { tool, server, args, mask = false, l
   const d = decideText(engine, policy, args, "prompt", { ctx: { egress: true }, mask });
   mergeArgInjection(d, policy, tool, args);
   mergeOutbound(d, { engine, policy, tool, server, args, decide: decideText, localWrite });
-  return { gate: d.decision === "allow" ? null : "content", decision: d.decision, reason: d.reasons.join(", "), findings: d.findings, kill: d.kill, killIds: d.killIds, alternatives: d.alternatives, maskIds: d.maskIds };
+  return { gate: d.decision === "allow" ? null : "content", decision: d.decision, reason: d.reasons.join(", "), findings: d.findings, kill: d.kill, killIds: d.killIds, alternatives: d.alternatives, maskIds: d.maskIds, unevaluated: d.unevaluated || null };
 }
 
 // #54 / OWASP MCP05 — a data argument (host, path, file name, id) with a shell command appended

@@ -9,11 +9,27 @@
 //      heading) or a word boundary at a line start does not fire there. The string values are joined with
 //      real line breaks and scanned with the data-loss detectors (DLP_IDS: the threat ids of
 //      data/data-tiers.js). Only when a value holds a character JSON escapes; otherwise the two views match.
-//   2. Content an argument carries ENCODED: a data: URI or a base64 / base64url value. It is decoded in
-//      memory (OUTBOUND_CAPS), and text is scanned with the same detectors at the "file" stage; a ZIP
+//   2. Content an argument carries ENCODED: a data: URI, or a value of at least minEncoded characters of which
+//      at least 95% (minAlphabet) are base64 / base64url characters. A value with other characters is
+//      decoded the way a lenient decoder reads it: Node's Buffer.from(value, "base64") skips every character
+//      outside both alphabets and stops at the first "=", and Python's base64.b64decode (validate=False)
+//      also skips "-" and "_"; when the two differ, both readings are decoded. An "=" before the end of the
+//      value is read the two ways other decoders read on past it: the runs between "=" joined (Python 3.14's
+//      b64decode) and each run decoded on its own, the bytes one after another (GNU base64 -d); a value whose
+//      readings hold under half the bytes its characters give is unevaluated (size). Decoded in memory within
+//      OUTBOUND_CAPS, text is scanned with the same detectors at the "file" stage, and a ZIP
 //      (.docx/.xlsx/.pptx), PDF or OLE file gets the labelPolicy "send" check (cli/sensitivity-labels.mjs
-//      readSensitivityLabelsBytes). Nothing decoded is written to disk. The body of an Office or PDF file is
-//      not decompressed or scanned; only its label is read.
+//      readSensitivityLabelsBytes; at most labelReads per call). Nothing decoded is written to disk. The body
+//      of an Office or PDF file is not decompressed; only its label is read, and its raw bytes are scanned
+//      only when they read as text, whatever file type its first bytes name. A value that is not decoded
+//      whole (over decodedBytes, or past decodedTotal for the call) is UNEVALUATED, whatever its type (an
+//      image too); the part of it the budget still allows is scanned as text, and under an active
+//      labelPolicy a ZIP / PDF / OLE file has its label read in place (readSensitivityLabelsAt decodes only
+//      the byte ranges the reader asks for, within LABEL_CAPS). A labelled file type in a value that needed
+//      characters skipped, a label not read (past labelReads), or one that could not be read, is a label
+//      unevaluated. Both are returned as d.unevaluated = { why: "size" | "label", values }: it never lowers
+//      the decision, each surface applies its fail mode (cli/mcp-outbound-fail.mjs), and an unevaluated
+//      label is refused when a labelPolicy rule blocks sending a labelled or rights-protected file.
 //   3. The over-sharing signal (policy mcpOversharing): the arguments past a size, an encoded or
 //      high-entropy blob, a whole file pasted into a value (a known binary file type, or a text value of
 //      many lines), or a conversation pasted into a value (chat turns by role). Reported as a content-free
@@ -28,7 +44,7 @@
 // each keeps its own session-read secret tracker (the stdio guard's is cli/mcp-secret-egress.mjs).
 import { contentHash } from "./content-hash.mjs";
 import { DATA_TIERS } from "../data/data-tiers.js";
-import { decideSensitivityLabel, readSensitivityLabelsBytes } from "./sensitivity-labels.mjs";
+import { decideSensitivityLabel, labelPolicy, readSensitivityLabelsAt, readSensitivityLabelsBytes, LABEL_THREAT } from "./sensitivity-labels.mjs";
 
 export const DLP_IDS = Object.freeze([...new Set(Object.values(DATA_TIERS).flat())]);
 export const OUTBOUND_CAPS = Object.freeze({
@@ -36,9 +52,10 @@ export const OUTBOUND_CAPS = Object.freeze({
   leaves: 10_000,           // string values walked
   leafText: 2_097_152,      // characters of joined values scanned (view 1)
   minEncoded: 64,           // shortest value tried as base64
-  decodeLeaves: 8,          // encoded values decoded per call
+  minAlphabet: 0.95,        // share of base64 / base64url characters (padding included) a value needs without a data: prefix
   decodedBytes: 1_048_576,  // one decoded value; a larger one is not decoded
-  decodedTotal: 4_194_304   // decoded bytes per call
+  decodedTotal: 4_194_304,  // decoded bytes per call (every reading of every value)
+  labelReads: 8             // ZIP / PDF / OLE files whose label is read per call
 });
 // #92 Over-sharing to an MCP tool.
 export const OVERSHARE_THREAT = 92;
@@ -79,22 +96,87 @@ function walk(value) {
 }
 
 const DATA_URI = /^data:([\w.+-]+\/[\w.+-]+)?((?:;[\w.+-]+=[^;,]*)*);base64,/i;
-const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
-const B64URL = /^[A-Za-z0-9_-]+={0,2}$/;
-// → { bytes, mime } for a value that is a data: URI or base64 / base64url, else null. Bounded before decoding.
-function decodeLeaf(s) {
+const ALPHA = new Uint8Array(128);
+for (const c of "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/_-=") ALPHA[c.charCodeAt(0)] = 1;
+const ALL_ALPHA = /^[A-Za-z0-9+/_=-]*$/;
+const toPad = (t) => { const p = t.indexOf("="); return p < 0 ? t : t.slice(0, p); };
+// → { readings, size, max, total, lenient, dataUri, mid, short } for a data: URI or a value that is (95% or
+// more) base64 / base64url, else null. Nothing is decoded here. readings: the characters each lenient decoder
+// decodes, the first Node's (both alphabets), then Python's b64decode when it differs (it skips "-" and "_");
+// size: the bytes of the first reading, max: of the largest, total: of all of them. lenient: the value is not
+// one clean alphabet with its padding at the end, so a decoder had to skip characters (whitespace aside:
+// every decoder skips it). mid: an "=" before the end. Node and Python up to 3.12 stop there; Python 3.14's
+// b64decode drops it and reads on (the runs joined), and GNU base64 -d decodes each run between "=" on its
+// own and writes the bytes one after another ({ runs }); both are readings too. short: those readings hold
+// under half the bytes the value's characters give (runs of one character carry none).
+function encodedLeaf(s) {
   if (s.length < OUTBOUND_CAPS.minEncoded) return null;
-  let body = s, mime = "";
   const m = DATA_URI.exec(s);
-  if (m) { body = s.slice(m[0].length); mime = (m[1] || "").toLowerCase(); }
-  body = body.replace(/\s+/g, "");
-  if (body.length < OUTBOUND_CAPS.minEncoded || Math.floor(body.length * 3 / 4) > OUTBOUND_CAPS.decodedBytes) return m ? { bytes: null, mime, size: Math.floor(body.length * 3 / 4) } : null;
-  const std = B64.test(body), url = !std && B64URL.test(body);
-  if (!std && !url) return null;
-  if (!m && std && body.length % 4 !== 0) return null;
+  const raw = m ? s.slice(m[0].length) : s;
+  let space = 0, other = 0;
+  if (!ALL_ALPHA.test(raw)) {
+    const limit = m ? Infinity : raw.length * (1 - OUTBOUND_CAPS.minAlphabet);
+    for (let i = 0; i < raw.length; i++) {
+      const c = raw.charCodeAt(i);
+      if (c < 128 && ALPHA[c]) continue;
+      if (c === 32 || (c >= 9 && c <= 13)) space++; else other++;
+      if (other + space > limit) return null;
+    }
+  }
+  const body = space ? raw.replace(/\s+/g, "") : raw;
+  if (body.length < OUTBOUND_CAPS.minEncoded) return null;
   // A value of letters only (an identifier, a word run) is not taken for base64 without a data: prefix.
   if (!m && !/[0-9+/_-]/.test(body)) return null;
-  return { bytes: Buffer.from(body, url ? "base64url" : "base64"), mime, size: 0 };
+  const pad = body.indexOf("="), url = /[-_]/.test(body);
+  const mid = pad >= 0 && !/^={1,2}$/.test(body.slice(pad));
+  const lenient = other > 0 || mid || (url && /[+/]/.test(body));
+  const node = other ? body.replace(/[^A-Za-z0-9+/_=-]/g, "") : body;
+  const readings = [toPad(node)];
+  if (url) { const py = toPad(body.replace(/[^A-Za-z0-9+/=]/g, "")); if (py.length >= 4) readings.push(py); }
+  let short = false;
+  if (mid) {
+    for (const t of url ? [node, body.replace(/[^A-Za-z0-9+/=]/g, "")] : [node]) {
+      const runs = t.split(/=+/).filter((x) => x.length >= 2), joined = runs.join("");
+      if (joined.length >= 2 && !readings.includes(joined)) readings.push(joined);
+      if (runs.length > 1) readings.push({ runs });
+      const chars = t.length - (t.match(/=/g) || []).length;
+      if (chars >= OUTBOUND_CAPS.minEncoded && readingBytes({ runs }) < Math.floor(chars * 3 / 4) / 2) short = true;
+    }
+  }
+  const sizes = readings.map(readingBytes);
+  return { readings, size: sizes[0], max: Math.max(...sizes), total: sizes.reduce((n, b) => n + b, 0), lenient, dataUri: Boolean(m), mid, short };
+}
+const readingBytes = (r) => (typeof r === "string" ? Math.floor(r.length * 3 / 4) : r.runs.reduce((n, x) => n + Math.floor(x.length * 3 / 4), 0));
+function decodeReading(r) {
+  if (typeof r === "string") return Buffer.from(r, "base64");
+  const b = Buffer.alloc(readingBytes(r));
+  let off = 0;
+  for (const x of r.runs) off += b.write(x, off, "base64");
+  return b.subarray(0, off);
+}
+// Bytes [pos, pos + len) of a reading of either kind; the file types that start a run within its first `limit` bytes.
+function readingAt(r, pos, len) {
+  if (typeof r === "string") return decodeAt(r, pos, len);
+  const parts = [];
+  for (let k = 0, off = 0; k < r.runs.length && off < pos + len; k++) {
+    const n = Math.floor(r.runs[k].length * 3 / 4);
+    if (off + n > pos) { const a = Math.max(0, pos - off); parts.push(decodeAt(r.runs[k], a, Math.min(n, pos + len - off) - a)); }
+    off += n;
+  }
+  return Buffer.concat(parts);
+}
+function runTypes(r, limit, buf) {
+  const at = (off, k) => (buf ? buf.subarray(off, off + 8) : decodeAt(r.runs[k], 0, 8));
+  const types = new Set([fileType(buf ? buf.subarray(0, 8) : readingAt(r, 0, 8))]);
+  if (typeof r !== "string") for (let k = 0, off = 0; k < r.runs.length && off < limit; off += Math.floor(r.runs[k].length * 3 / 4), k++) types.add(fileType(at(off, k)));
+  return types;
+}
+// Bytes [pos, pos + len) of a reading, decoding only the characters that hold them.
+function decodeAt(t, pos, len) {
+  const a = Math.floor(pos / 3) * 4, b = Math.ceil((pos + len) / 3) * 4;
+  const buf = Buffer.from(t.slice(a, b), "base64");
+  const off = pos - (a / 4) * 3;
+  return buf.subarray(off, off + len);
 }
 
 const MAGIC = [
@@ -115,9 +197,10 @@ const EXT = { zip: ".docx", pdf: ".pdf", ole: ".doc" };
 // Decoded bytes as text, or "" when they are not text (more than 2% control or invalid UTF-8 characters).
 function asText(b) {
   const s = b.toString("utf8");
+  const limit = s.length * 0.02;
   let bad = 0;
-  for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if (c === 0xfffd || c === 0 || (c < 9) || (c > 13 && c < 32)) bad++; }
-  return s.length && bad / s.length <= 0.02 ? s : "";
+  for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if ((c === 0xfffd || c === 0 || (c < 9) || (c > 13 && c < 32)) && ++bad > limit) return ""; }
+  return s.length ? s : "";
 }
 
 function entropyBits(s) {
@@ -182,28 +265,75 @@ export function mergeOutbound(d, { engine, policy, tool, server, args, decide, l
 
   // 2 — encoded content.
   const texts = [], blobs = [];
-  let decodedTotal = 0, tries = 0, largestEncoded = 0, binaryType = "";
-  for (const s of leaves) {
-    if (tries >= OUTBOUND_CAPS.decodeLeaves) break;
-    const e = decodeLeaf(s);
-    if (!e) continue;
-    tries++;
-    if (!e.bytes) { largestEncoded = Math.max(largestEncoded, e.size); continue; }
-    largestEncoded = Math.max(largestEncoded, e.bytes.length);
-    if (decodedTotal + e.bytes.length > OUTBOUND_CAPS.decodedTotal) continue;
-    decodedTotal += e.bytes.length;
-    const type = fileType(e.bytes);
-    if (type) { binaryType = binaryType || type; if (LABELLED.has(type)) blobs.push({ bytes: e.bytes, type }); continue; }
-    const t = asText(e.bytes);
-    if (t) texts.push(t);
-  }
+  const lp = labelPolicy(policy, () => {});
+  const unread = { size: 0, label: 0, values: new Set() };
+  const miss = (kind, i) => { unread[kind]++; unread.values.add(i); };
+  let decodedTotal = 0, labelReads = 0, largestEncoded = 0, binaryType = "";
+  const label = (i, type, hash, read) => {
+    if (labelReads >= OUTBOUND_CAPS.labelReads) return miss("label", i);
+    labelReads++;
+    blobs.push({ i, type, hash, read });
+  };
+  leaves.forEach((s, i) => {
+    const e = encodedLeaf(s);
+    if (!e) return;
+    if (!e.lenient || e.dataUri) largestEncoded = Math.max(largestEncoded, e.size);
+    if (e.short) miss("size", i);
+    if (e.max <= OUTBOUND_CAPS.decodedBytes && decodedTotal + e.total <= OUTBOUND_CAPS.decodedTotal) {
+      e.readings.forEach((r, k) => {
+        const bytes = decodeReading(r);
+        decodedTotal += bytes.length;
+        if (typeof r !== "string" && lp.active && [...runTypes(r, bytes.length, bytes)].some((x) => LABELLED.has(x))) miss("label", i);
+        const type = fileType(bytes);
+        if (k === 0) binaryType = binaryType || type;
+        if (LABELLED.has(type) && lp.active) {
+          if (e.lenient) miss("label", i);
+          label(i, type, () => contentHash(bytes.toString("base64")), (name) => readSensitivityLabelsBytes(bytes, name));
+        }
+        const t = asText(bytes);
+        if (t) texts.push(t);
+      });
+      return;
+    }
+    // Not decoded whole: unevaluated, whatever it is. The budget left is scanned; a label is read in place.
+    miss("size", i);
+    const r = e.readings[0];
+    const at = (pos, len) => decodeAt(r, pos, len);
+    const type = fileType(at(0, 8));
+    binaryType = binaryType || type;
+    if (LABELLED.has(type) && lp.active) {
+      if (e.lenient) miss("label", i);
+      label(i, type, () => contentHash(`${e.size}:${r.slice(0, 4096)}:${r.slice(-4096)}`), (name) => readSensitivityLabelsAt(at, e.size, name));
+    }
+    const scan = (o, room) => {
+      if (room <= 0) return;
+      const t = asText(readingAt(o, 0, room));
+      decodedTotal += room;
+      if (t) texts.push(t);
+    };
+    scan(r, Math.min(OUTBOUND_CAPS.decodedBytes, OUTBOUND_CAPS.decodedTotal - decodedTotal));
+    if (e.mid) for (const o of e.readings.slice(1)) {
+      const room = Math.min(OUTBOUND_CAPS.decodedBytes, OUTBOUND_CAPS.decodedTotal - decodedTotal, readingBytes(o));
+      if (lp.active && [...runTypes(o, room)].some((x) => LABELLED.has(x))) miss("label", i);
+      scan(o, room);
+    }
+  });
   if (texts.length) {
     const only = missing();
     if (only.length) merge(d, decide(dlpEngine(engine), policy, texts.join("\n"), "file", { only }));
   }
   for (const b of blobs) {
-    const h = contentHash(b.bytes.toString("base64"));
-    merge(d, decideSensitivityLabel(engine, policy, `mcp-arg:${h}`, "send", { read: () => readSensitivityLabelsBytes(b.bytes, `arg${EXT[b.type]}`) }));
+    const r = decideSensitivityLabel(engine, policy, `mcp-arg:${b.hash()}`, "send", { read: () => b.read(`arg${EXT[b.type]}`) });
+    if (r.unevaluated) miss("label", b.i);
+    merge(d, r);
+  }
+  if (unread.values.size) {
+    d.unevaluated = { why: unread.label ? "label" : "size", values: unread.values.size };
+    // A label that was not read may be one the policy blocks from being sent: refused, whatever the fail mode.
+    if (unread.label && (lp.rules.some((r) => r.send === "block") || lp.protected.send === "block")) {
+      merge(d, { decision: "deny", reasons: [`#${LABEL_THREAT} sensitivity label: an encoded file in the arguments could not be label-checked, and your organization blocks AI agents sending labelled files`], alternatives: [], kill: false, killIds: [],
+        findings: [{ threatId: LABEL_THREAT, category: "Encoded file sent by an AI agent without a readable sensitivity label", riskLevel: "High", detectorId: "mcp-outbound-unevaluated", match: `unevaluated:label:${unread.label}` }] });
+    }
   }
 
   // 3 — over-sharing.
