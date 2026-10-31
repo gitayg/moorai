@@ -14,13 +14,14 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 import { rmTree } from "./fs-cleanup.mjs";
-import { createHookd, parseArgs } from "../cli/moorai-hookd.mjs";
+import { createHookd, parseArgs, peerResolver } from "../cli/moorai-hookd.mjs";
 import { mapHookResult, workerHeader, projectDirFor, encodeProjectDir, envHeader } from "../cli/hook-http.mjs";
 import { createPool } from "../cli/hook-warm-pool.mjs";
 import { hookImports } from "../cli/hook-warm-worker.mjs";
 import { httpHandler, onFailureFor, strengthenOnFailure, installedTransport } from "../cli/hook-transport.mjs";
 import { unitFor } from "../cli/hookd-unit.mjs";
 import { allowlistProblem, checkHookTransport } from "../cli/doctor-hookd.mjs";
+import { judgeListener, listenerOwner, hookdReady, parseLsofListeners, parseNetstatListeners, parseProcTcpListeners } from "../cli/hookd-listener.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOOK = join(ROOT, "cli", "moorai-hook.mjs");
@@ -186,23 +187,44 @@ test("the parent-process walk starts at the agent on the other end of the connec
   } finally { d.kill(); c.close(); rmTree(h); }
 });
 
+test("peer pid: a pid remembered for a session is reused only while that process is alive", async () => {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  await new Promise((r) => child.once("spawn", r));
+  let calls = 0, next = child.pid;
+  const resolve = peerResolver({ lookup: () => { calls++; return { pid: next }; } });
+  const ev = { session_id: "s-peer" };
+  assert.equal(resolve({ socket: {} }, ev, 8793), child.pid);
+  assert.equal(resolve({ socket: {} }, ev, 8793), child.pid);
+  assert.equal(calls, 1, "a new connection in the same session reuses the live pid");
+  child.kill();
+  await new Promise((r) => child.once("exit", r));
+  next = process.pid;
+  assert.equal(resolve({ socket: {} }, ev, 8793), process.pid, "the remembered process has exited: read again from the socket");
+  assert.equal(calls, 2);
+  assert.equal(resolve({ socket: {} }, ev, 8793), process.pid);
+  assert.equal(calls, 2);
+});
+
 test("installer: --hook-transport http writes http entries (0600, token, onFailure from the fail mode), converge keeps them, uninstall removes them", async () => {
   const h = home(), h2 = home();
   const c = await consoleServer({ captureTier: "content-free", failMode: { hook: "closed" } });
+  // install --hook-transport http needs moorai-hookd run by this user on the port: this process is that user.
+  const d = await createHookd({ port: 0, token: BEARER, workers: 0, maxWorkers: 1, env: envOf(h) });
+  const port = String(new URL(d.url).port);
   try {
     // Not spawnSync: the hook fetches its policy from the console this process serves.
     const run = (args, env, input = "") => new Promise((res) => { const p = spawn(process.execPath, [HOOK, ...args], { env }); p.stdout.resume(); p.stderr.resume(); p.on("close", (status) => res({ status })); p.stdin.end(input); });
     const read = (x) => JSON.parse(readFileSync(join(x, ".claude", "settings.json"), "utf8"));
     const onFailures = (s, pick) => [...new Set(Object.entries(s.hooks).filter(([ev]) => pick(ev)).flatMap(([, l]) => l.map((e) => e.hooks[0].onFailure)))];
     // Unenrolled: fail mode open.
-    assert.equal((await run(["install", "--hook-transport", "http", "--hookd-port", "59999"], envOf(h))).status, 0);
+    assert.equal((await run(["install", "--hook-transport", "http", "--hookd-port", port], envOf(h))).status, 0);
     let s = read(h);
     assert.equal(statSync(join(h, ".claude", "settings.json")).mode & 0o777, 0o600);
     const token = readFileSync(join(h, ".moorai", "hookd.token"), "utf8").trim();
     assert.equal(statSync(join(h, ".moorai", "hookd.token")).mode & 0o777, 0o600);
     for (const [ev, list] of Object.entries(s.hooks)) for (const e of list) {
       assert.equal(e.hooks[0].type, "http", ev);
-      assert.equal(e.hooks[0].url, "http://127.0.0.1:59999/v1/hook/claude-code");
+      assert.equal(e.hooks[0].url, `http://127.0.0.1:${port}/v1/hook/claude-code`);
       assert.equal(e.hooks[0].headers.Authorization, `Bearer ${token}`);
       assert.equal(e.hooks[0].onFailure, "continue", `${ev}: unenrolled, fail mode open`);
     }
@@ -215,7 +237,7 @@ test("installer: --hook-transport http writes http entries (0600, token, onFailu
     assert.notEqual((await run(["install", "--hook-transport", "smoke"], envOf(h))).status, 0, "an unknown transport is refused");
     // A device whose policy sets failMode.hook closed (server mode: the test console's policy is unsigned).
     const server = envOf(h2, { MOORAI_MODE: "server", MOORAI_SERVER_URL: c.url, MOORAI_TENANT: "hookd-inst", MOORAI_INSTALL_TOKEN: "tok-hookd-inst", MOORAI_SERVICE_ID: "inst-bot" });
-    assert.equal((await run(["install", "--hook-transport", "http", "--hookd-port", "59999"], server)).status, 0);
+    assert.equal((await run(["install", "--hook-transport", "http", "--hookd-port", port], server)).status, 0);
     s = read(h2);
     assert.deepEqual(onFailures(s, (ev) => ev === "PreToolUse"), ["block"], "install resolves the closed fail mode");
     assert.deepEqual(onFailures(s, (ev) => ev !== "PreToolUse"), ["continue"]);
@@ -227,7 +249,62 @@ test("installer: --hook-transport http writes http entries (0600, token, onFailu
     assert.equal(installedTransport(s, (e) => JSON.stringify(e).includes("moorai-hook")), "http");
     assert.deepEqual(onFailures(s, (ev) => ev === "PreToolUse"), ["block"], "strengthened on the hook's own run");
     assert.deepEqual(onFailures(s, (ev) => ev !== "PreToolUse"), ["continue"]);
-  } finally { c.close(); rmTree(h); rmTree(h2); }
+  } finally { await d.close(); c.close(); rmTree(h); rmTree(h2); }
+});
+
+test("installer: --hook-transport http is refused (exit 2, settings untouched) unless moorai-hookd run by this user listens on the port", async () => {
+  const h = home();
+  const settings = join(h, ".claude", "settings.json");
+  mkdirSync(join(h, ".claude"), { recursive: true });
+  const before = JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo other" }] }] } });
+  writeFileSync(settings, before);
+  const run = (args) => new Promise((res) => { const p = spawn(process.execPath, [HOOK, ...args], { env: envOf(h) }); let err = ""; p.stdout.resume(); p.stderr.on("data", (x) => (err += x)); p.on("close", (status) => res({ status, err })); p.stdin.end(); });
+  const free = await new Promise((res) => { const s = http.createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => res(p)); }); });
+  const notHookd = http.createServer((q, s) => { s.writeHead(404); s.end(); });
+  await new Promise((r) => notHookd.listen(0, "127.0.0.1", r));
+  try {
+    let r = await run(["install", "--hook-transport", "http", "--hookd-port", String(free)]);
+    assert.equal(r.status, 2, r.err);
+    assert.match(r.err, /not installed: moorai-hookd does not answer on 127\.0\.0\.1:\d+/);
+    assert.equal(readFileSync(settings, "utf8"), before, "settings.json untouched");
+    r = await run(["install", "--hook-transport", "http", "--hookd-port", String(notHookd.address().port)]);
+    assert.equal(r.status, 2, "a listener of this user that is not moorai-hookd");
+    assert.equal(readFileSync(settings, "utf8"), before);
+  } finally { notHookd.close(); rmTree(h); }
+  // moorai-hookd answers, but the listener is not this user's: refused.
+  const healthy = async () => ({ ok: true, status: 200, json: async () => ({ status: "ok", transport: "http" }) });
+  assert.deepEqual(await hookdReady(8793, { fetchImpl: healthy, owner: () => ({ ok: false, why: "a socket owned by another account listens on 127.0.0.1:8793" }) }), { ok: false, why: "a socket owned by another account listens on 127.0.0.1:8793" });
+  assert.equal((await hookdReady(8793, { fetchImpl: healthy, owner: () => ({ ok: true, why: "" }) })).ok, true);
+});
+
+test("listener owner: this user's own listener passes; another account's, an extra listener, or an unreadable owner is refused", async () => {
+  // Pure judgement over the facts each platform yields.
+  assert.equal(judgeListener({ platform: "darwin", own: [{ pid: 10, uid: 501, uids: [501, 501] }], all: [{ pid: 10 }] }, 8793, 501).ok, true);
+  assert.equal(judgeListener({ platform: "darwin", own: [{ pid: 10, uid: 501, uids: [501, 501] }], all: [] }, 8793, 501).ok, true, "netstat that lists nothing does not refuse");
+  assert.match(judgeListener({ platform: "darwin", own: [], all: [{ pid: 77 }] }, 8793, 501).why, /no process of this user listens/);
+  assert.match(judgeListener({ platform: "darwin", own: [{ pid: 10, uid: 501, uids: [0, 0] }], all: [] }, 8793, 501).why, /does not run as this user/);
+  assert.match(judgeListener({ platform: "darwin", own: [{ pid: 10, uid: 501, uids: [501] }], all: [{ pid: 10 }, { pid: 77 }] }, 8793, 501).why, /another account's process also listens/);
+  assert.match(judgeListener({ platform: "darwin", own: [{ pid: 10, uid: 501, uids: [501] }], all: [{ ambiguous: true }] }, 8793, 501).why, /another account's process also listens/);
+  assert.equal(judgeListener({ platform: "linux", all: [{ uid: 1000 }] }, 8793, 1000).ok, true);
+  assert.match(judgeListener({ platform: "linux", all: [{ uid: 1000 }, { uid: 1001 }] }, 8793, 1000).why, /owned by another account/);
+  assert.match(judgeListener({ platform: "linux", all: [] }, 8793, 1000).why, /nothing listens/);
+  assert.match(judgeListener({ platform: "win32" }, 8793, null).why, /could not be read|cannot be verified/);
+  assert.match(judgeListener({ platform: "freebsd" }, 8793, 1000).why, /cannot be verified on this platform/);
+  // The parsers, on the tools' own output shapes.
+  assert.deepEqual(parseLsofListeners("p4242\nu501\nf12\nn127.0.0.1:8793\np99\nu501\nf3\nn*:8794\n", 8793), [{ pid: 4242, uid: 501, addr: "127.0.0.1" }]);
+  const ns = "tcp4       0      0  127.0.0.1.8793         *.*                    LISTEN                 0            0  131072  131072             node:4242  00100 00000106 000000000354fabe 00000001 00000800      1      0 000000\n" +
+    "tcp46      0      0  *.8793                 *.*                    LISTEN                 0            0  131072  131072  Some Helper:77  00100 00000006 00000000034fab6b 00000000 00080800      1      0 000000\n";
+  assert.deepEqual(parseNetstatListeners(ns, 8793), [{ pid: 4242 }, { pid: 77 }]);
+  const proc = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: 0100007F:2259 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1001        0 12345 1\n   1: 0100007F:2259 0100007F:C350 01 00000000:00000000 00:00000000 00000000  1000        0 12346 1\n";
+  assert.deepEqual(parseProcTcpListeners(proc, 8793), [{ uid: 1001 }], "LISTEN rows only");
+  // On this machine: a listener this process holds passes; a port nobody holds is refused.
+  if (process.platform === "darwin" || process.platform === "linux") {
+    const s = http.createServer();
+    await new Promise((r) => s.listen(0, "127.0.0.1", r));
+    try { assert.deepEqual(listenerOwner(s.address().port), { ok: true, why: "" }); } finally { s.close(); }
+    const free = await new Promise((res) => { const x = http.createServer().listen(0, "127.0.0.1", () => { const p = x.address().port; x.close(() => res(p)); }); });
+    assert.equal(listenerOwner(free).ok, false);
+  }
 });
 
 test("onFailure follows the fail mode on PreToolUse only, and converge only strengthens it", () => {
@@ -273,8 +350,22 @@ test("doctor: reports the transport, a moorai-hookd that does not answer, and an
   const dead = await checkHookTransport(host(["http://127.0.0.1:1/v1/hook/claude-code"]), { fetchImpl: async () => { throw new Error("ECONNREFUSED"); } });
   assert.equal(dead.status, "fail");
   assert.match(dead.summary, /does not answer/);
-  const live = await checkHookTransport(host(["http://127.0.0.1:8793/v1/hook/claude-code"]), { version: "1.0.0", fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ status: "ok", version: "1.0.0", workers: { waiting: 2 } }) }) });
+  const answers = async () => ({ ok: true, status: 200, json: async () => ({ status: "ok", version: "1.0.0", workers: { waiting: 2 } }) });
+  const live = await checkHookTransport(host(["http://127.0.0.1:8793/v1/hook/claude-code"]), { version: "1.0.0", fetchImpl: answers, owner: () => ({ ok: true, why: "" }) });
   assert.equal(live.status, "ok", live.summary);
+  // Something answers like moorai-hookd, but the port's listener is not this user's.
+  const squat = await checkHookTransport(host(["http://127.0.0.1:8793/v1/hook/claude-code"]), { version: "1.0.0", fetchImpl: answers, owner: (port) => ({ ok: false, why: `a socket owned by another account listens on 127.0.0.1:${port}` }) });
+  assert.equal(squat.status, "fail");
+  assert.match(squat.summary, /listener on http:\/\/127\.0\.0\.1:8793 is not moorai-hookd run by this user \(a socket owned by another account listens on 127\.0\.0\.1:8793\)/);
+  // A real moorai-hookd of this user, checked with the real owner lookup.
+  if (process.platform === "darwin" || process.platform === "linux") {
+    const h = home();
+    const d = await createHookd({ port: 0, token: BEARER, workers: 0, maxWorkers: 1, env: envOf(h) });
+    try {
+      const real = await checkHookTransport(host([`${d.url}/v1/hook/claude-code`]));
+      assert.equal(real.status, "ok", real.summary);
+    } finally { await d.close(); rmTree(h); }
+  }
   assert.match(allowlistProblem("http://127.0.0.1:8793/v1/hook/claude-code", [{ source: "managed", data: { allowedHttpHookUrls: [] } }]), /does not match/);
   assert.equal(allowlistProblem("http://127.0.0.1:8793/v1/hook/claude-code", [{ source: "user", data: { allowedHttpHookUrls: ["http://127.0.0.1:*"] } }]), "");
 });

@@ -367,10 +367,10 @@ files are the command hook's own (`test/hookd-parity.test.mjs` runs 225 events t
 every outcome and every alert record), without Node start-up and module loading on each tool call.
 
 ```bash
-node cli/moorai-hook.mjs install --hook-transport http [--hookd-port 8793]   # http entries in ~/.claude/settings.json
 node cli/moorai-hookd.mjs unit --out ~/Library/LaunchAgents                 # macOS: writes dev.moorai.hookd.plist, prints the launchctl command
 node cli/moorai-hookd.mjs unit --out ~/.config/systemd/user                 # Linux: writes moorai-hookd.service, prints the systemctl commands
 node cli/moorai-hookd.mjs                                                    # or run it in the foreground
+node cli/moorai-hook.mjs install --hook-transport http [--hookd-port 8793]   # then: http entries in ~/.claude/settings.json
 node cli/moorai-hook.mjs install                                             # back to the command transport
 ```
 
@@ -379,6 +379,11 @@ node cli/moorai-hook.mjs install                                             # b
   not depend on an exported variable, and writes `settings.json` with mode 0600. `moorai-hookd` listens on
   127.0.0.1 only, refuses a `Host` header that is not a loopback name (421) and a body that is not JSON (415)
   or is over `--max-body` (413; default 32 MiB).
+- **Who listens.** Claude Code cannot tell who answers on the port. `install --hook-transport http` refuses
+  (exit 2, `settings.json` unchanged) unless `moorai-hookd` already answers there and every listener on the
+  port is a process of this user (macOS: `lsof` run as this user names it and `ps` gives its uid, and no
+  other process `netstat` lists holds the port; Linux: the socket owner in `/proc/net/tcp`); on Windows it
+  always refuses.
 - **Fail mode.** Each `PreToolUse` entry carries `"onFailure"` from the hook's fail mode (admin binding,
   then the signed policy, `failMode.hook`): `"block"` when it is closed, so a `moorai-hookd` that is not
   running, does not answer or times out refuses the tool call; `"continue"` when it is open. Every other
@@ -392,8 +397,8 @@ node cli/moorai-hook.mjs install                                             # b
   environment: `MOORAI_*` variables set in your shell or in a settings file's `env` block do not reach
   it; set them in the service file. The parent-process check (AI CLI started by an unexpected parent)
   starts from the process on the other end of the connection, which `moorai-hookd` reads from the socket
-  once per session (on macOS two of `netstat`, `lsof` and `nettop` must agree, about 100 ms on the first
-  call of a session).
+  once per session and reads again once that process has exited (on macOS two of `netstat`, `lsof` and
+  `nettop` must agree, about 100 ms on the first call of a session).
 - **Freshness.** The hook's own configuration (enrollment, admin binding, policy, honeytokens) is read when
   the request arrives, not when the worker started. The modules a worker preloaded read no file at import,
   only environment values that are `moorai-hookd`'s for its whole life. A waiting worker is retired after
@@ -409,15 +414,20 @@ node cli/moorai-hook.mjs install                                             # b
   modules and compiled the detector patterns; what remains is the hook's own work for the call. The first call
   of a session adds about 100 ms on macOS for the peer process lookup, which is then remembered for the session.
 - **Doctor.** `moorai-doctor` names the installed transport and, for http, whether `moorai-hookd` answers,
-  whether it runs this package's version, and whether `allowedHttpHookUrls` in your user or managed settings
-  excludes its URL.
+  whether the port's listener is a process of this user (a FAIL when it is not), whether it runs this
+  package's version, and whether `allowedHttpHookUrls` in your user or managed settings excludes its URL.
 - **Limits.** Settings files can switch hooks off: a project `.claude/settings.json` with
   `"allowedHttpHookUrls": []` makes Claude Code skip every http hook (measured with Claude Code 2.1.295:
   with `onFailure: "block"` the tool call is refused, with `"continue"` it runs unchecked), the same class
   of gap as `"disableAllHooks": true`, which also lets a call run unchecked under the command transport.
-  `moorai-doctor` cannot see project settings. Windows has no service file: keep the command transport
-  there. The plugin install (`--plugin`) stands down for events an http entry covers, as it does for a
-  command entry.
+  `moorai-doctor` cannot see project settings. On a machine other accounts can log into, another account
+  can take the port while `moorai-hookd` is not running, and then receives every hook event and the token
+  and answers them, whatever `onFailure` says; keep the service unit loaded or use the command transport there. Windows has no service
+  file: keep the command transport there. The plugin install (`--plugin`) stands down for an event an http
+  entry covers only when that entry cannot fail open: its `onFailure` is `"block"`, or `moorai-hookd` is
+  running on its port (`~/.moorai/hookd-<port>.pid`, which `moorai-hookd` writes once it listens, names a
+  live process and the port accepts a connection; about 1 ms per plugin call, measured: p50 128.0 -> 129.2 ms
+  for a plugin run that stands down, n = 200).
 
 **Which tools the hook actually sees.** `PRETOOL_MATCHERS` in
 [`cli/moorai-hook.mjs`](cli/moorai-hook.mjs) is the single source of truth, and it registers

@@ -4,6 +4,7 @@
 // URL matches one of the patterns and blocks the rest without running them; an empty array blocks every HTTP
 // hook." "Arrays merge across settings files."
 import { readJson } from "./doctor-hosts.mjs";
+import { listenerOwner } from "./hookd-listener.mjs";
 
 const PROBE_MS = 1500;
 
@@ -21,7 +22,8 @@ export function allowlistProblem(url, sources) {
 }
 
 // host: the claude-code host check (checkHost); managed: readManagedSettings(); version: this package's.
-export async function checkHookTransport(host, { managed = [], settingsFile = "", version = "", fetchImpl = globalThis.fetch } = {}) {
+// owner: whether the port's listener is this user's (cli/hookd-listener.mjs); another account can take the port.
+export async function checkHookTransport(host, { managed = [], settingsFile = "", version = "", fetchImpl = globalThis.fetch, owner = listenerOwner } = {}) {
   const base = { id: "hook:transport", group: "hosts", title: "Claude Code hook transport" };
   if (!host || !host.installed) return { ...base, status: "skip", summary: "MoorAI is not registered in Claude Code" };
   const d = host.details || {};
@@ -37,6 +39,8 @@ export async function checkHookTransport(host, { managed = [], settingsFile = ""
     const r = await fetchImpl(new URL("/healthz", url), { signal: AbortSignal.timeout(PROBE_MS) });
     health = r.ok ? await r.json() : null;
     if (!health) problems.push(`moorai-hookd at ${new URL(url).origin} answered ${r.status}`);
+    const own = owner(Number(new URL(url).port || 80));
+    if (!own.ok) problems.push(`the listener on ${new URL(url).origin} is not moorai-hookd run by this user (${own.why}): it receives every hook event and the token, and its answers decide`);
   } catch { problems.push(`moorai-hookd does not answer at ${new URL(url).origin}: every hook call is a failed HTTP hook (onFailure decides: "block" refuses the tool call, "continue" lets it run unchecked)`); }
   if (health && version && health.version !== version) problems.push(`moorai-hookd runs ${health.version}, this package is ${version}: restart it`);
   const fix = "start it (moorai-hookd, or install its service: moorai-hookd unit --out <dir>), or go back to the command transport: moorai-hook install";

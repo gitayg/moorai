@@ -54,7 +54,9 @@ function run(bin, args, { cwd, env, sandbox = false, timeoutMs = 120000 }) {
   });
 }
 
-async function setup(con, port, { project = null, transport = "http" } = {}) {
+// install --hook-transport http needs moorai-hookd run by this user on the port, so it is started first; it keeps
+// running only when the case wants it up.
+async function setup(con, port, { project = null, transport = "http", keepHookd = false } = {}) {
   const home = mkdtempSync(join(tmpdir(), "moorai-hookd-live-"));
   const cfg = join(home, ".claude"), proj = join(home, "proj");
   for (const d of [cfg, proj, join(home, ".moorai")]) mkdirSync(d, { recursive: true });
@@ -62,10 +64,12 @@ async function setup(con, port, { project = null, transport = "http" } = {}) {
   writeFileSync(join(proj, ".env"), SECRET);
   if (project) { mkdirSync(join(proj, ".claude"), { recursive: true }); writeFileSync(join(proj, ".claude", "settings.json"), JSON.stringify(project)); }
   const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: cfg, XDG_CONFIG_HOME: join(home, ".config"), XDG_STATE_HOME: join(home, ".local", "state") };
+  const d = transport === "http" ? await startHookd({ home, env }, port) : null;
   const ins = await run(process.execPath, [HOOK, "install", "--hook-transport", transport, "--hookd-port", String(port)], { cwd: proj, env });
+  if (d && (!keepHookd || ins.code !== 0)) await d.stop();
   if (ins.code !== 0) throw new Error(`install exited ${ins.code}: ${ins.err}`);
   const settings = JSON.parse(readFileSync(join(cfg, "settings.json"), "utf8"));
-  return { home, cfg, proj, env, settings };
+  return { home, cfg, proj, env, settings, hookd: keepHookd ? d : null };
 }
 
 async function claudeTurn(sb, { tool, input, okMarker = null }) {
@@ -93,9 +97,9 @@ const pick = (a) => ({ category: a.category, reasonCode: a.reasonCode, agentVers
 async function caseHeaders(con) {
   const seen = [];
   const port = await freePort();
+  const sb = await setup(con, port);
   const rec = http.createServer((q, s) => { q.resume(); q.on("end", () => { seen.push({ event: "", headers: q.headers }); s.writeHead(200); s.end(); }); });
   await new Promise((r) => rec.listen(port, "127.0.0.1", r));
-  const sb = await setup(con, port);
   try {
     const t = await claudeTurn(sb, { tool: "Bash", input: { command: "echo moorai-live-ok", description: "probe" }, okMarker: "moorai-live-ok" });
     const h = seen[0] ? seen[0].headers : {};
@@ -106,9 +110,9 @@ async function caseHeaders(con) {
 
 async function caseRun(con, id, { tool, input, okMarker, hookdUp = true, project = null, transport = "http" }) {
   const port = await freePort();
-  const sb = await setup(con, port, { project, transport });
+  const sb = await setup(con, port, { project, transport, keepHookd: hookdUp });
   const n0 = con.alerts.length;
-  const d = hookdUp ? await startHookd(sb, port) : null;
+  const d = hookdUp ? sb.hookd || await startHookd(sb, port) : null;
   try {
     const t = await claudeTurn(sb, { tool, input: typeof input === "function" ? input(sb) : input, okMarker });
     for (let i = 0; i < 40 && !blocked(con.alerts.slice(n0)).length && hookdUp; i++) await sleep(250);

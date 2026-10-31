@@ -31,6 +31,7 @@ import { HOOK_PATH, workerHeader, mapHookResult } from "./hook-http.mjs";
 import { hookdToken, tokenPath, HOOKD_DEFAULT_PORT } from "./hook-transport.mjs";
 import { peerOf } from "./quarantine-owner.mjs";
 import { unitFor } from "./hookd-unit.mjs";
+import { writeHookdPid, removeHookdPid, pidAlive } from "./hookd-live.mjs";
 import { STATE_DIR } from "./state-dirs.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -83,12 +84,13 @@ function authorized(req, want) {
 // The agent process on the other end of a request's connection (cli/quarantine-owner.mjs peerOf: on macOS two of
 // netstat, lsof and nettop must agree, ~100 ms; Linux reads /proc). Asked once per session and per connection:
 // the hook starts its parent-process walk there (cli/ai-cli-parents.mjs) and, in server mode, names it on alerts.
-function peerResolver({ lookup = peerOf } = {}) {
+// A pid remembered for a session is reused only while that process is alive; otherwise it is read again.
+export function peerResolver({ lookup = peerOf, alive = pidAlive } = {}) {
   const bySession = new Map();
   const bySocket = new WeakMap();
   return (req, event, serverPort) => {
     const sid = typeof event.session_id === "string" ? event.session_id : "";
-    if (sid && bySession.has(sid)) return bySession.get(sid);
+    if (sid && bySession.has(sid) && alive(bySession.get(sid))) return bySession.get(sid);
     let pid = bySocket.get(req.socket);
     if (pid === undefined) {
       try { pid = lookup(req.socket.remotePort, serverPort).pid || 0; } catch { pid = 0; }
@@ -189,8 +191,10 @@ async function main() {
   let o, s;
   try { o = parseArgs(argv); s = await createHookd(o); } catch (e) { process.stderr.write(`moorai-hookd: ${e.message}\n`); process.exit(2); }
   await s.pool.ready();
+  const port = Number(new URL(s.url).port);
+  try { writeHookdPid(port); } catch { /* without it the plugin copy keeps enforcing */ }
   process.stdout.write(`${JSON.stringify({ listening: s.url, path: HOOK_PATH, workers: o.workers })}\n`);
-  const stop = async () => { await s.close(); process.exit(0); };
+  const stop = async () => { removeHookdPid(port); await s.close(); process.exit(0); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
 }

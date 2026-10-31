@@ -239,6 +239,13 @@ async function installHooks() {
   const { transport, port } = transportArg(process.argv);
   let handlerFor = null;
   if (transport === "http") {
+    // Claude Code cannot tell who answers on the port: refuse unless moorai-hookd run by this user listens there.
+    const ready = await (await import("./hookd-listener.mjs")).hookdReady(port);
+    if (!ready.ok) {
+      console.error(`MoorAI: not installed: ${ready.why}. Start moorai-hookd as this user first (moorai-hookd, or its service: moorai-hookd unit), then run install --hook-transport http again; or keep the command transport (moorai-hook install).`);
+      process.exitCode = 2;
+      return;
+    }
     let policy = null;
     try { policy = (await verifiedPolicyLoad()).policy || null; } catch { /* the admin binding alone decides */ }
     const failMode = hookFailMode({ policy, admin: ADMIN }).mode;
@@ -310,13 +317,21 @@ function convergeHooks() {
 // Claude Code deletes 14 days after the next plugin update. So a plugin invocation never converges, and
 // it stands down for an event a live settings.json install already covers.
 const AS_PLUGIN = process.argv.includes("--plugin");
-function settingsCovers(event) {
+// An http entry covers the event only when it cannot fail open (cli/hookd-live.mjs): onFailure "block", or
+// moorai-hookd live on its port.
+async function settingsCovers(event) {
   try {
     const entries = readSettings().hooks?.[event];
-    return (Array.isArray(entries) ? entries : []).filter(isCuraiq).some((e) => isHttpEntry(e) || (e.hooks || []).some((h) => {
+    const ours = (Array.isArray(entries) ? entries : []).filter(isCuraiq);
+    if (ours.some((e) => !isHttpEntry(e) && (e.hooks || []).some((h) => {
       const m = /^(?:node|"(?:[^"\\]|\\.)*")\s+("(?:[^"\\]|\\.)*")/.exec(h.command || "");
       return m && existsSync(JSON.parse(m[1]));
-    }));
+    }))) return true;
+    const http = ours.filter(isHttpEntry);
+    if (!http.length) return false;
+    const { httpEntryCovers } = await import("./hookd-live.mjs");
+    for (const e of http) if (await httpEntryCovers(e)) return true;
+    return false;
   } catch { return false; } // unreadable → run: a double scan beats an unprotected call
 }
 function pluginEnabled(s) { return Object.entries(s.enabledPlugins || {}).some(([id, on]) => on === true && id.startsWith("moorai@")); }
@@ -3043,7 +3058,7 @@ async function main() {
   // decision below.
   // A translated call from another agent (cli/moorai-agent-hook.mjs) must not touch Claude Code's settings.
   if (process.env.MOORAI_HOOK_HOST !== "shim" && !AS_PLUGIN) convergeHooks();
-  if (AS_PLUGIN && settingsCovers(input.hook_event_name)) return exitHook();
+  if (AS_PLUGIN && await settingsCovers(input.hook_event_name)) return exitHook();
   maybePostureBeat(input);
   // Token usage from Claude Code's own transcripts (cli/transcript-usage.mjs): a detached worker, at most once an hour.
   if (process.env.MOORAI_HOOK_HOST !== "shim" && isEnrolled(CONFIG)) (await import("./transcript-usage.mjs")).scheduleTranscriptUsage({ stateDir: STATE_DIR, spawnWorker: () => spawn(process.execPath, [...process.execArgv, SELF, "tokenusage"], { detached: true, stdio: "ignore", env: workerEnv() }).unref() });
