@@ -1099,8 +1099,9 @@ Since v1.18.3 the write guard compares paths the way the Win32 file APIs resolve
 `\\?\C:\`, `\\.\C:\` and `\??\C:\` are `C:\`, `\\?\UNC\server\share` is `\\server\share`, an admin share
 (`\\host\c$`) is `C:\` and a volume GUID path matches any drive; a trailing dot or space on a segment and an NTFS
 stream suffix (`.bashrc.`, `.bashrc::$DATA`) are dropped; `.` and `..` fold, and a `.` or `..` carrying a trailing
-space or a stream (`. `, `.. `, `..::$DATA`) still navigates rather than surviving as a literal segment (since
-v1.18.4), so a decoy segment followed by `.. ` no longer slips a write into the parent directory; `%HOMEDRIVE%%HOMEPATH%`, `%VAR%`,
+space or a stream still navigates rather than surviving as a literal segment (since v1.18.4), decided by the leading
+dot run so `. ` is current and `.. `, `.. .` and `..::$DATA` are the parent, so a decoy segment followed by `.. ` no
+longer slips a write into the parent directory; `%HOMEDRIVE%%HOMEPATH%`, `%VAR%`,
 `$env:VAR`, `${env:VAR}`, `$VAR` and a leading `~` expand from the environment, and a variable that is not set makes
 the path unknown, which is not denied. An 8.3 short name (`MOORAI~1`, `BASHRC~1`) cannot be resolved without the
 disk, so a segment shaped like one matches any protected name at its position. The cost is false positives: a write

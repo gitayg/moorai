@@ -1386,9 +1386,10 @@ wildcard root `*:\`, which matches every drive; any other device path is unknown
 `C:x` is relative to cwd only when cwd is on `C:`; trailing dots and spaces and an NTFS stream suffix (`:s`,
 `::$DATA`, `:$I30:$INDEX_ALLOCATION`) are dropped from every segment (Win32 trims only the last segment and skips
 normalisation under `\\?\`; trimming everywhere can only make more spellings meet); `.` and `..` fold and never climb
-past the root, and a segment of only dots and trailing spaces is navigation after that trim (v1.18.4), so `. `, `.. `,
-`..  ` and `..::$DATA` fold the same as `.` and `..` (a decoy segment plus `.. ` no longer walks into the parent); a
-run of three or more dots (`...`) is an empty/current component; `%VAR%` (so `%HOMEDRIVE%%HOMEPATH%`), `$env:VAR` and `${env:VAR}` in any case, `${VAR}`, `$VAR` and a
+past the root, and a segment of only dots and spaces is navigation after that trim (v1.18.4), decided by the leading
+dot run (the tail may mix dots and spaces): `. ` is current and `.. `, `..  `, `.. .` and `..::$DATA` fold the same as
+`..` (a decoy segment plus `.. ` no longer walks into the parent); a run of three or more dots (`...`, `... `) is an
+empty/current component; `%VAR%` (so `%HOMEDRIVE%%HOMEPATH%`), `$env:VAR` and `${env:VAR}` in any case, `${VAR}`, `$VAR` and a
 leading `~` expand from env, `$HOME` and `~` meaning `USERPROFILE`; a variable that is unset or empty makes the path
 unknown (`""`, not denied) unless folding drops it (inside a stream suffix, or a segment a `..` removes). A
 `Write`/`Edit` path and every shell word is also read literally, as a file API would take it, so

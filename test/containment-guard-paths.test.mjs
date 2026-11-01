@@ -69,6 +69,14 @@ test("a .. component with a trailing space or an NTFS stream still climbs: Win32
   // A pure run of three or more dots is Win32's empty/current component, never the parent (only two dots climb).
   assert.ok(!canonUnder(c("C:\\Users\\dev\\foo\\...\\.bashrc"), "C:\\Users\\dev\\.bashrc"), "... is current, not parent");
   assert.equal(c("C:\\Users\\dev\\foo\\...\\.bashrc"), "C:\\Users\\dev\\foo\\.bashrc");
+  // The leading dot run decides it, not just a trailing space: `.. .` / `.. . ` start with two dots, so the rest
+  // being dots-and-spaces still climbs, while a one-dot (`. .`) or three-dot (`... `) run stays current.
+  same("C:\\Users\\dev\\.bashrc", ["C:\\Users\\dev\\foo\\.. .\\.bashrc", "C:\\Users\\dev\\foo\\.. . \\.bashrc"]);
+  assert.equal(g("Write", { file_path: "C:\\Users\\dev\\foo\\.. .\\.bashrc" }), "shell-rc", "a two-dot run with a mixed dot/space tail climbs");
+  for (const p of ["C:\\Users\\dev\\foo\\. .\\.bashrc", "C:\\Users\\dev\\foo\\... \\.bashrc"]) {
+    assert.ok(!canonUnder(c(p), "C:\\Users\\dev\\.bashrc"), `${p} is current, not parent`);
+    assert.equal(g("Write", { file_path: p }), null, `${p} not flagged`);
+  }
 });
 
 test("environment forms expand from env: %HOMEDRIVE%%HOMEPATH%, $env:NAME and ${env:NAME} in any case, ~; unknown → \"\"", () => {

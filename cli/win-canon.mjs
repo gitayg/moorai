@@ -11,10 +11,11 @@
 //                the wildcard root *:\, which matches every drive. Any other device path is unresolvable.
 //   roots        C:\x absolute; \x rooted on cwd's drive; C:x relative to cwd when cwd is on C:, else
 //                unresolvable; anything else joins cwd. An MSYS /c/... (/cygdrive/c, /mnt/c) is C:\....
-//   segments     . and .. fold (.. never climbs past the root); a segment of only dots and trailing spaces is
-//                navigation after Win32 strips the trailing run, so `.` / `. ` are current, `..` / `.. ` /
-//                `..::$DATA` are the parent (classified before the trailing strip, never emptied away) and
-//                `...` is an empty/current component; an NTFS stream suffix (name::$DATA, name:s,
+//   segments     . and .. fold (.. never climbs past the root); a segment of only dots and spaces is navigation
+//                after Win32 strips the trailing run, decided by the leading dot run (the tail may mix dots and
+//                spaces), so `.` / `. ` are current, `..` / `.. ` / `.. .` / `..::$DATA` are the parent
+//                (classified before the trailing strip, never emptied away) and `...` / `... ` is an
+//                empty/current component; an NTFS stream suffix (name::$DATA, name:s,
 //                dir:$I30:$INDEX_ALLOCATION) is dropped from every segment; trailing dots and spaces are
 //                dropped from every segment (.bashrc. / .bashrc  / .bashrc. . are .bashrc). Win32 strips a
 //                trailing run only from the last segment and skips all of this under \\?\; doing it
@@ -63,10 +64,11 @@ function rootOf(s) {
 function fold(segs, rest) {
   for (const raw of rest.split("\\")) {
     const stream = raw.replace(/:.*$/s, "");
-    // A component of only dots and trailing spaces is navigation after Win32 strips the trailing run: one dot
-    // (`.` / `. `) is current, exactly two (`..` / `.. ` / `..::$DATA`) is the parent, three or more (`...`) is
-    // an empty/current component. Classify before the trailing-dot/space strip so `..` is never emptied away.
-    const dots = /^(\.+) *$/.exec(stream);
+    // A component of only dots and spaces is navigation after Win32 strips the trailing run, decided by the
+    // leading dot run (the tail may mix dots and spaces): one dot (`.` / `. `) is current, exactly two
+    // (`..` / `.. ` / `.. .` / `..::$DATA`) is the parent, three or more (`...` / `... `) is an empty/current
+    // component. Classify before the trailing-dot/space strip so `..` is never emptied away.
+    const dots = /^(\.+)[. ]*$/.exec(stream);
     if (dots) { if (dots[1].length === 2) segs.pop(); continue; }
     const name = stream.replace(/[. ]+$/, "");
     if (name) segs.push(name);
