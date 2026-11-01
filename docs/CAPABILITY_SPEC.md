@@ -1386,7 +1386,9 @@ wildcard root `*:\`, which matches every drive; any other device path is unknown
 `C:x` is relative to cwd only when cwd is on `C:`; trailing dots and spaces and an NTFS stream suffix (`:s`,
 `::$DATA`, `:$I30:$INDEX_ALLOCATION`) are dropped from every segment (Win32 trims only the last segment and skips
 normalisation under `\\?\`; trimming everywhere can only make more spellings meet); `.` and `..` fold and never climb
-past the root; `%VAR%` (so `%HOMEDRIVE%%HOMEPATH%`), `$env:VAR` and `${env:VAR}` in any case, `${VAR}`, `$VAR` and a
+past the root, and a segment of only dots and trailing spaces is navigation after that trim (v1.18.4), so `. `, `.. `,
+`..  ` and `..::$DATA` fold the same as `.` and `..` (a decoy segment plus `.. ` no longer walks into the parent); a
+run of three or more dots (`...`) is an empty/current component; `%VAR%` (so `%HOMEDRIVE%%HOMEPATH%`), `$env:VAR` and `${env:VAR}` in any case, `${VAR}`, `$VAR` and a
 leading `~` expand from env, `$HOME` and `~` meaning `USERPROFILE`; a variable that is unset or empty makes the path
 unknown (`""`, not denied) unless folding drops it (inside a stream suffix, or a segment a `..` removes). A
 `Write`/`Edit` path and every shell word is also read literally, as a file API would take it, so
@@ -1400,7 +1402,12 @@ guard's gate adds, locally (`GUARD_WRITE`, not `data/tool-tags.js`), the write f
 `cp`/`mv`/`tee`/`install`/`rsync`/`dd` path-qualified, `.exe`, quoted or `\`-escaped; the PowerShell aliases `sc`,
 `ac`, `ni`, `cpi`, `copy`, `mi`, `move` and `Tee-Object`; redirects after a digit or `&` and `>|`. Still not seen: a
 path assembled at run time, a glob, a junction, symlink or `subst` drive, and Git Bash's own `/etc/...` mount
-(resolved on cwd's drive, not the Git root). Tests: `test/containment-guard-paths.test.mjs`.
+(resolved on cwd's drive, not the Git root). Limits that need the filesystem and so stay string-level
+over-approximations: a `~user` tilde (only a bare leading `~` is `USERPROFILE`; Git Bash's `~dev` / `~otheruser`
+expansion to a home directory is not modelled), a drive-relative `D:x` when cwd is not on `D:` (the per-drive working
+directory is unknown, so the path is treated as unresolvable rather than denied), and NTFS's own upcase table (the
+comparison uppercases with JavaScript, which only matters for non-ASCII characters and so cannot reach the all-ASCII
+protected names). Tests: `test/containment-guard-paths.test.mjs`.
 
 Wrap impossible (`wrapWhy`): `powershell-tool`, `monitor-tool` (v1.18.2), `host-cannot-rewrite` (coach, shim or
 an aliased tool), `not-capable`, `no-wxc-exec`, `no-git-bash`, `no-workspace`, `workspace-overlaps-state` (v1.18.2:

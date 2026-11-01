@@ -1098,7 +1098,9 @@ Since v1.18.3 the write guard compares paths the way the Win32 file APIs resolve
 ([`cli/win-canon.mjs`](cli/win-canon.mjs), no filesystem access): case and `/` versus `\` do not matter;
 `\\?\C:\`, `\\.\C:\` and `\??\C:\` are `C:\`, `\\?\UNC\server\share` is `\\server\share`, an admin share
 (`\\host\c$`) is `C:\` and a volume GUID path matches any drive; a trailing dot or space on a segment and an NTFS
-stream suffix (`.bashrc.`, `.bashrc::$DATA`) are dropped; `.` and `..` fold; `%HOMEDRIVE%%HOMEPATH%`, `%VAR%`,
+stream suffix (`.bashrc.`, `.bashrc::$DATA`) are dropped; `.` and `..` fold, and a `.` or `..` carrying a trailing
+space or a stream (`. `, `.. `, `..::$DATA`) still navigates rather than surviving as a literal segment (since
+v1.18.4), so a decoy segment followed by `.. ` no longer slips a write into the parent directory; `%HOMEDRIVE%%HOMEPATH%`, `%VAR%`,
 `$env:VAR`, `${env:VAR}`, `$VAR` and a leading `~` expand from the environment, and a variable that is not set makes
 the path unknown, which is not denied. An 8.3 short name (`MOORAI~1`, `BASHRC~1`) cannot be resolved without the
 disk, so a segment shaped like one matches any protected name at its position. The cost is false positives: a write
@@ -1106,8 +1108,11 @@ to any short-named entry directly in the profile (`~\NOTES~1`) or in `%LOCALAPPD
 command whose argument is a `~digit` word (`git reset HEAD~1`) when it runs in the profile directory. The guard also
 recognises write forms `shellWrites` misses: `cp`, `mv`, `tee`, `install`, `rsync`, `dd` given with a path, `.exe`,
 quotes or a backslash; PowerShell's `sc`, `ac`, `ni`, `cpi`, `copy`, `mi`, `move` and `Tee-Object`; and `1>`, `2>>`,
-`&>`, `>|` redirects. The remaining limit is unchanged: a path assembled at run time (`$a/.bashrc` with `a` set in
-the same command, a glob, a junction or symlink) is not seen.
+`&>`, `>|` redirects. The remaining limits are unchanged, and all need the filesystem to resolve: a path assembled at
+run time (`$a/.bashrc` with `a` set in the same command, a glob, a junction or symlink), a `~user` tilde that Git Bash
+expands to a home directory (only a bare leading `~` is treated as `USERPROFILE`), and a drive-relative `D:x` whose
+drive is not the current one (its per-drive working directory is unknown, so it is treated as unresolvable) are not
+seen.
 
 Alerts are content-free: host, `containmentKind`, `containmentSource`, `mxcCapable`, the mode, and for the
 wrap a fixed `wrapWhy` token. Alerts that are not denies are posted once per session. Under `"block"`, a

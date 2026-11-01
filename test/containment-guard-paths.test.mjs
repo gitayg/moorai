@@ -58,6 +58,19 @@ test(". and .. fold, repeated separators collapse, .. never climbs past the root
   assert.equal(c("rel\\.\\x\\"), "C:\\src\\proj\\rel\\x");
 });
 
+test("a .. component with a trailing space or an NTFS stream still climbs: Win32 strips the trailing run, so .. / '.. ' / '..::$DATA' all name the parent", () => {
+  // The guard used to check `raw === \"..\"` before the stream and trailing-dot/space strip, so a decoy segment
+  // plus `.. ` dropped the decoy as if it were a literal name and walked straight into the parent.
+  same("C:\\Users\\dev\\.bashrc", ["C:\\Users\\dev\\foo\\.. \\.bashrc", "C:\\Users\\dev\\foo\\..  \\.bashrc", "C:\\Users\\dev\\foo\\..::$DATA\\.bashrc", "C:\\Users\\dev\\foo\\.. \\bar\\..\\.bashrc"]);
+  assert.ok(canonUnder(c("C:\\Users\\dev\\foo\\.. \\.bashrc"), "C:\\Users\\dev\\.bashrc"), "trailing-space .. climbs to a protected file");
+  assert.ok(canonUnder(c("C:\\Users\\dev\\AppData\\Local\\foo\\.. \\MoorAI Host\\x"), "C:\\Users\\dev\\AppData\\Local\\MoorAI Host"), "and into MoorAI Host");
+  assert.equal(g("Write", { file_path: "C:\\Users\\dev\\foo\\.. \\.bashrc" }), "shell-rc", "a Write past a decoy segment is flagged");
+  assert.equal(g("Bash", { command: "echo x >> \"C:\\Users\\dev\\foo\\.. \\.bashrc\"" }), "shell-rc", "a shell redirect past a decoy segment is flagged");
+  // A pure run of three or more dots is Win32's empty/current component, never the parent (only two dots climb).
+  assert.ok(!canonUnder(c("C:\\Users\\dev\\foo\\...\\.bashrc"), "C:\\Users\\dev\\.bashrc"), "... is current, not parent");
+  assert.equal(c("C:\\Users\\dev\\foo\\...\\.bashrc"), "C:\\Users\\dev\\foo\\.bashrc");
+});
+
 test("environment forms expand from env: %HOMEDRIVE%%HOMEPATH%, $env:NAME and ${env:NAME} in any case, ~; unknown → \"\"", () => {
   same("C:\\Users\\dev\\.bashrc", ["%HOMEDRIVE%%HOMEPATH%\\.bashrc", "%userprofile%\\.bashrc", "$env:USERPROFILE\\.bashrc", "$ENV:userprofile\\.bashrc", "${env:USERPROFILE}\\.bashrc", "${Env:UserProfile}/.bashrc", "~/.bashrc", "~\\.bashrc", "$HOME/.bashrc", "${HOME}/.bashrc"]);
   same("C:\\Users\\dev\\AppData\\Local\\MoorAI Host", ["%LOCALAPPDATA%\\MoorAI Host", "$env:LocalAppData\\MoorAI Host", "${env:LOCALAPPDATA}\\MoorAI Host"]);
