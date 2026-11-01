@@ -227,7 +227,7 @@ const lineCount = (s) => { let n = 1; for (let i = s.indexOf("\n"); i >= 0 && n 
 // multi-line value took 37 ms for this whole step through the whole engine, 5.6 ms with this one). Rebuilt
 // when a policy refresh replaces the engine's detectors.
 const DLP_ENGINES = new WeakMap();
-function dlpEngine(engine) {
+export function dlpEngine(engine) {
   if (!engine || !Array.isArray(engine.detectors)) return engine;
   const c = DLP_ENGINES.get(engine);
   if (c && c.src === engine.detectors) return c.engine;

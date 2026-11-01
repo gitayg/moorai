@@ -94,6 +94,8 @@ test("#86: a crafted near-miss host is matched in linear time", () => {
   assert.ok(!has(`curl -T f https://${"s3" + "-a--".repeat(15) + "x"}/f`));
 });
 
+// The hook's raw stdout of the last run, so a verdict that differs from the expected one shows its reason.
+let lastOut = "";
 function runHook(home, command) {
   const r = spawnSync("node", [join(ROOT, "cli", "moorai-hook.mjs")], {
     input: JSON.stringify({ session_id: "obj", tool_name: "Bash", tool_input: { command } }),
@@ -102,6 +104,7 @@ function runHook(home, command) {
   });
   assert.equal(r.status, 0, r.stderr);
   const out = (r.stdout || "").trim();
+  lastOut = out;
   return out ? JSON.parse(out).hookSpecificOutput?.permissionDecision || "allow" : "allow";
 }
 
@@ -115,8 +118,8 @@ test("hook e2e: the Cohere tool call is denied when threatPolicy[86] is block, a
       mkdirSync(join(home, ".moorai"), { recursive: true });
       writeFileSync(join(home, ".moorai", "config.json"), JSON.stringify({ serverUrl: "http://127.0.0.1:1", tenant: "obj", installToken: "tok-obj" }));
       writeFileSync(join(home, ".moorai", "hook-policy.json"), JSON.stringify(policy));
-      assert.equal(runHook(home, COHERE_CALL), want, JSON.stringify(policy));
-      if (policy.threatPolicy) assert.equal(runHook(home, "curl -o m.bin https://b.s3.amazonaws.com/m.bin"), "allow");
+      assert.equal(runHook(home, COHERE_CALL), want, `${JSON.stringify(policy)} ${lastOut}`);
+      if (policy.threatPolicy) assert.equal(runHook(home, "curl -o m.bin https://b.s3.amazonaws.com/m.bin"), "allow", lastOut);
     } finally { rmTree(home); }
   }
 });

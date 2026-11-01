@@ -191,8 +191,8 @@ For the two agentic lists, **Threats** counts the rules that credit the item (\`
 in \`data/threats.json\`) and **Partial** how many of those credits are bounded. A credit is backed when its
 rule has an on-device detector in \`data/detectors.js\`, or an enforcing mechanism declared in
 \`${EVIDENCE_FILE}\` (the MCP server allow-list, the entitlement envelope, the delegation, oversight,
-circuit-breaker and trifecta checks, the MCP sampling and over-sharing checks, cascade limits, and the MCP
-package policy and known-compromised package list) whose source holds the named symbol and whose named tests exist in the
+circuit-breaker and trifecta checks, the MCP sampling and over-sharing checks, cascade limits, the MCP
+package policy and known-compromised package list, and agent session identity at the MCP gateway and model proxy) whose source holds the named symbol and whose named tests exist in the
 unit suite with those exact titles; **Mechanisms** counts those. A declaration backs only a credit the rule
 already carries, at its level. An item is *covered* when a full credit is backed, *partial* when only bounded
 credits are, and *—* otherwise. ${mechanisms.proven.length} of ${mechanisms.proven.length + mechanisms.unproven.length} declared mechanisms are proven${mechanisms.unproven.length ? " (unproven: " + mechanisms.unproven.map((m) => m.id).join(", ") + ")" : ""}. Sources:

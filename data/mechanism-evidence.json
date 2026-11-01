@@ -198,6 +198,46 @@
         { "file": "test/package-supply-chain-hook.test.mjs", "title": "hook: pip install of the compromised LiteLLM release is denied with no knownBadPackages policy" },
         { "file": "test/package-supply-chain-hook.test.mjs", "title": "hook: the same install inside bash -c, and an npm release from the 2025-09-08 compromise, are denied; a safe release is not" }
       ]
+    },
+    {
+      "id": "gateway-agent-identity",
+      "name": "Agent session identity at the MCP gateway (agentIdentity, revokedAgentSessions): a revoked session is refused 403; under require an absent, expired, invalid or foreign identity is refused 401; posts #94",
+      "threatId": 94,
+      "owaspAgentic": ["ASI03"],
+      "owaspMcp": ["MCP07"],
+      "path": "mcp-gateway/identity.mjs",
+      "symbol": "export async function gateIdentity",
+      "tests": [
+        { "file": "test/agent-identity-gateway.test.mjs", "title": "GATEWAY IDENTITY: a verified identity rides on the request's alerts, is never forwarded, and a revocation served in the next policy refuses the session 403" },
+        { "file": "test/agent-identity-gateway.test.mjs", "title": "GATEWAY IDENTITY: require mode refuses no identity, an expired one and another device's 401; a verified one passes" },
+        { "file": "test/agent-session-identity.test.mjs", "title": "judgeIdentity: report mode records, refuses only a revoked session; require refuses anything unverified; off ignores" }
+      ]
+    },
+    {
+      "id": "model-proxy-agent-identity",
+      "name": "Agent session identity at the model proxy (--mode enforce): a revoked session is refused 403; under require a request without a verified identity is refused 401; posts #94",
+      "threatId": 94,
+      "owaspAgentic": ["ASI03"],
+      "path": "model-proxy/identity.mjs",
+      "symbol": "export function createIdentityGate",
+      "tests": [
+        { "file": "test/agent-identity-model-proxy.test.mjs", "title": "MODEL PROXY IDENTITY: verified identity on the request's alerts, header not forwarded; a revoked session is refused 403 in enforce mode" },
+        { "file": "test/agent-identity-model-proxy.test.mjs", "title": "MODEL PROXY IDENTITY: require mode refuses a request with no identity 401 and passes a verified one" }
+      ]
+    },
+    {
+      "id": "sampling-response",
+      "name": "MCP sampling / elicitation answer scan: the client's completion or input is checked for secrets, personal data, cards, labels and over-sharing before the server gets it; refused under samplingResponseAction block",
+      "threatId": 92,
+      "owaspMcp": ["MCP10"],
+      "path": "mcp-proxy/sampling-response.mjs",
+      "symbol": "export function gateClientAnswer",
+      "tests": [
+        { "file": "test/mcp-sampling-response.test.mjs", "title": "GUARD samplingResponseAction block: the server gets JSON-RPC error -1 in place of the completion; the client a notice" },
+        { "file": "test/mcp-sampling-response.test.mjs", "title": "GUARD 2026-07-28 retry: inputResponses carrying a token is refused as an isError result and never sent; report sends it" },
+        { "file": "test/mcp-sampling-response.test.mjs", "title": "GATEWAY samplingResponseAction block: the upstream gets JSON-RPC error -1 in place of the completion, on the client's session" },
+        { "file": "test/mcp-sampling-response.test.mjs", "title": "GATEWAY 2026-07-28 retry: inputResponses carrying a token is refused to the client and never sent upstream; report sends it" }
+      ]
     }
   ]
 }

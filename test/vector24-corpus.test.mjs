@@ -140,13 +140,14 @@ test("hookRegistered agrees with the matchers cli/moorai-hook.mjs installs", () 
   const m = /const PRETOOL_MATCHERS = (\[[^\]]*\])/.exec(hookSrc);
   assert.ok(m, "cli/moorai-hook.mjs no longer declares PRETOOL_MATCHERS as an array literal");
   assert.deepEqual(JSON.parse(m[1].replace(/'/g, '"')), INSTALLED_MATCHERS, "the scorer's matcher list has drifted from the hook's");
-  for (const t of ["Read", "Bash", "PowerShell", "Agent", "Task", "mcp__github__create_pull_request", "mcp__exfil__upload", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch"]) {
+  for (const t of ["Read", "Bash", "PowerShell", "Agent", "Task", "mcp__github__create_pull_request", "mcp__exfil__upload", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "Grep"]) {
     assert.equal(hookRegistered(t), true, `${t} should be covered by an installed matcher`);
   }
   // What REMAINS of the coverage hole: no installed matcher names these, so the hook never runs for
   // them. Write/Edit/MultiEdit/NotebookEdit/WebFetch used to be on this list and are now registered
   // AND dispatched (see test/hook-tool-coverage.test.mjs).
-  for (const t of ["Glob", "Grep", "WebSearch"]) {
+  // Grep is registered for credential access (cli/cred-grep.mjs).
+  for (const t of ["Glob", "WebSearch"]) {
     assert.equal(hookRegistered(t), false, `${t} is unexpectedly covered by an installed matcher`);
   }
 });

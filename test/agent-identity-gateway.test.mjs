@@ -87,7 +87,7 @@ test("GATEWAY IDENTITY: a verified identity rides on the request's alerts, is ne
     assert.ok(lastAllowed >= before);
     assert.ok(await waitFor(() => con.alerts.some((a) => a.category === "Agent identity: revoked")));
     const rv = con.alerts.find((a) => a.category === "Agent identity: revoked");
-    assert.deepEqual([rv.riskLevel, rv.decision, rv.reasonCode, rv.agentSession.id, rv.mcpServer], ["Blocked", "deny", "AGENT_IDENTITY", sid, "remote"]);
+    assert.deepEqual([rv.threatId, rv.riskLevel, rv.decision, rv.reasonCode, rv.agentSession.id, rv.mcpServer], [94, "Blocked", "deny", "AGENT_IDENTITY", sid, "remote"]);
     // Another session on the device is unaffected, and so is a call with no identity in report mode.
     const other = await rpc(base, call(5, "create_issue", { title: "w" }), { [HDR]: mintToken({ sid: newSessionId(), sat: now(), signer: DEVICE.signer }) });
     assert.equal(other.status, 200);
@@ -107,7 +107,7 @@ test("GATEWAY IDENTITY: require mode refuses no identity, an expired one and ano
     assert.equal(up.received.length, 0, "a refused call reached the upstream");
     const ok = await rpc(base, call(4, "create_issue", { title: "x" }), { [HDR]: mintToken({ sid, sat: now(), signer: DEVICE.signer }) });
     assert.equal(ok.status, 200);
-    assert.ok(await waitFor(() => ["absent", "expired", "foreign"].every((s) => con.alerts.some((a) => a.category === `Agent identity: ${s}` && a.decision === "deny"))));
+    assert.ok(await waitFor(() => ["absent", "expired", "foreign"].every((s) => con.alerts.some((a) => a.category === `Agent identity: ${s}` && a.decision === "deny" && a.threatId === 94))));
   });
 });
 

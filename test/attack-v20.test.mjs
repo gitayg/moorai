@@ -70,7 +70,7 @@ test("ATTACK-V20: every fixture id is well formed, and every sub-technique's par
 test("ATTACK-V20: every rule carries the tag, and the schema documents it", () => {
   assert.ok(meta.schema.attack, "meta.schema.attack is missing");
   assert.ok(meta.schema.attackNote, "meta.schema.attackNote is missing");
-  assert.equal(threats.length, 89);
+  assert.equal(threats.length, 93);
   for (const t of threats) assert.ok(Array.isArray(t.attack), `#${t.id} attack must be an array`);
 });
 
@@ -135,12 +135,12 @@ test("ATTACK-V20: the counts per coverage level", () => {
   const count = (l) => credits.filter((c) => c.coverage === l).length;
   assert.deepEqual(
     { credits: credits.length, full: count("full"), partial: count("partial"), none: count("none") },
-    { credits: 95, full: 3, partial: 79, none: 13 }
+    { credits: 97, full: 9, partial: 75, none: 13 }
   );
   const rules = (l) => threats.filter((t) => t.attack.length > 0 && attackCoverage(t) === l).length;
   assert.deepEqual(
     { full: rules("full"), partial: rules("partial"), none: rules("none"), unmapped: threats.filter((t) => t.attack.length === 0).length },
-    { full: 2, partial: 38, none: 9, unmapped: 40 }
+    { full: 2, partial: 40, none: 9, unmapped: 42 }
   );
 });
 
@@ -188,7 +188,7 @@ test("ATTACK-V20: a bound is only on a partial credit, and a design bound says w
 // The reviewed list of partial-by-design credits. Widening it must be a deliberate, reviewed edit.
 test("ATTACK-V20: the partial-by-design credits", () => {
   const design = threats.flatMap((t) => t.attack.filter((c) => c.bound === "design").map((c) => `${t.id}:${c.id}`));
-  assert.deepEqual(design, ["21:T1698", "32:T1204.004", "39:T1552.008", "39:T1697", "54:T1059.004", "54:T1059.001", "54:T1059.006", "57:T1105", "70:T1608.007", "79:T1016.001"]);
+  assert.deepEqual(design, ["21:T1698", "32:T1204.004", "39:T1552.008", "39:T1697", "46:T1546.004", "54:T1059.004", "54:T1059.001", "54:T1059.006", "55:T1552.003", "55:T1552.005", "57:T1105", "57:T1176.002", "70:T1608.007", "79:T1016.001"]);
 });
 
 // The benchmark splits partial into bounded-by-design and open-gap. The numbers are recomputed here from the
@@ -207,7 +207,8 @@ test("ATTACK-V20: the benchmark's partial split agrees with the data", () => {
   // A technique is bounded by design when any of its partial credits is: that credit's uncaught forms are out
   // of reach, and the technique's uncaught forms are a subset of them.
   assert.equal(sum.byItem["T1059.004"].partialBound, "design");
-  assert.equal(sum.byItem["T1552.004"].partialBound, "gap");
+  assert.equal(sum.byItem["T1567.003"].partialBound, "gap");
+  assert.deepEqual(sum.byItem["T1552.004"], { lane: "agent", status: "covered" });
   // T1697 stays in the identity lane: creating or using an app password at the provider is out of reach.
   assert.deepEqual(sum.byItem["T1697"], { lane: "identity", status: "partial", partialBound: "design" });
   assert.equal(sum.byItem["T1698"].partialBound, undefined);

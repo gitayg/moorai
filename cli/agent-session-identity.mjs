@@ -9,7 +9,9 @@
 //   sid  the session id: random, fixed for the session; every token minted for the session repeats it
 //   kid  the first 16 hex of sha256 over the device key's SPKI DER: a token signed by another device is "foreign"
 //   sat  session start, iat / exp issue and expiry (seconds since the epoch), jti 16 random hex
-// No user, hostname, path, prompt or tool name is in a token.
+//   own  optional: "own-" + 16 hex, the owner id of the person bound to this device key by `moorai-identity login`
+//        (cli/owner-assertion.mjs); verifiers check it against the console-signed owner assertion on the device
+// No user, email, hostname, path, prompt or tool name is in a token.
 //
 // WHAT IT PROVES. The token was minted by a process that could read this OS user's device key, for a session
 // that started at `sat`, and has not expired or been revoked. Any process of the same OS user can read that key
@@ -18,12 +20,15 @@
 import { createHash, createPrivateKey, createPublicKey, verify as edVerify, randomBytes } from "node:crypto";
 import { readState } from "./state-dirs.mjs";
 import { agentNameOf } from "./agent-names.mjs";
+import { OWNER_ID_RE, ownerStatus } from "./owner-assertion.mjs";
 
 export const IDENTITY_HEADER = "x-moorai-agent-identity";
 export const SESSION_ID_RE = /^asi-[0-9a-f]{16}$/;
 export const MODES = Object.freeze(["off", "report", "require"]);
 export const STATUSES = Object.freeze(["verified", "expired", "revoked", "invalid", "foreign", "absent"]);
 export const REASON_CODE = "AGENT_IDENTITY";
+// The rule the identity alert reports under: #94 Agent request without a valid session identity.
+export const IDENTITY_THREAT_ID = 94;
 // Token lifetime for a helper that can re-mint (an MCP headersHelper); the session's own end caps every token.
 export const TOKEN_TTL_SEC = 900;
 export const SESSION_MAX_SEC = 43200;
@@ -48,14 +53,14 @@ export const agentLabel = (v) => agentNameOf(v) || "unknown";
 
 // signer: { sign(bytes) → Buffer, publicKey: base64 SPKI DER } (data/agency-sign.mjs deviceReceiptSigner).
 // → the token string. exp is the earlier of iat + ttlSec and sat + sessionMaxSec.
-export function mintToken({ sid, agentName, sat, ttlSec = TOKEN_TTL_SEC, sessionMaxSec = SESSION_MAX_SEC, now = Date.now(), signer }) {
+export function mintToken({ sid, agentName, sat, ttlSec = TOKEN_TTL_SEC, sessionMaxSec = SESSION_MAX_SEC, now = Date.now(), signer, ownerId = null }) {
   if (!SESSION_ID_RE.test(String(sid || ""))) throw new Error("session id must be asi- followed by 16 hex characters");
   if (!signer || typeof signer.sign !== "function" || !signer.publicKey) throw new Error("no device key to sign with");
   const iat = Math.floor(now / 1000);
   const start = isInt(sat) ? Math.min(sat, iat) : iat;
   const exp = Math.min(iat + Math.max(1, Math.floor(ttlSec)), start + Math.max(1, Math.floor(sessionMaxSec)));
   if (exp <= iat) throw new Error("the session has ended");
-  const claims = { v: 1, sid, agent: agentLabel(agentName), kid: keyIdOf(signer.publicKey), sat: start, iat, exp, jti: randomBytes(8).toString("hex") };
+  const claims = { v: 1, sid, agent: agentLabel(agentName), kid: keyIdOf(signer.publicKey), sat: start, iat, exp, jti: randomBytes(8).toString("hex"), ...(OWNER_ID_RE.test(String(ownerId || "")) ? { own: ownerId } : {}) };
   const body = `${PREFIX}.${b64u(JSON.stringify(claims))}`;
   return `${body}.${b64u(signer.sign(Buffer.from(body)))}`;
 }
@@ -66,10 +71,11 @@ function claimsOf(part) {
   if (!c || typeof c !== "object" || Array.isArray(c) || c.v !== 1) return null;
   if (!SESSION_ID_RE.test(c.sid) || !HEX16.test(c.kid) || !HEX16.test(c.jti) || typeof c.agent !== "string") return null;
   if (!isInt(c.sat) || !isInt(c.iat) || !isInt(c.exp) || c.sat > c.iat || c.exp <= c.iat) return null;
+  if (c.own !== undefined && !OWNER_ID_RE.test(c.own)) return null;
   return c;
 }
 
-// → { status, sid?, agentName?, exp? }. sid and agentName only once the signature has verified.
+// → { status, sid?, agentName?, exp?, own? }. sid, agentName and own only once the signature has verified.
 export function verifyToken(token, { publicKey, now = Date.now(), maxTokenSec = POLICY_TOKEN_MAX.dflt, maxSessionSec = POLICY_SESSION_MAX.dflt } = {}) {
   const m = typeof token === "string" ? TOKEN_RE.exec(token) : null;
   if (!m) return { status: "invalid" };
@@ -82,14 +88,15 @@ export function verifyToken(token, { publicKey, now = Date.now(), maxTokenSec = 
   if (!ok) return { status: "invalid" };
   const nowSec = Math.floor(now / 1000);
   if (c.iat > nowSec + SKEW_SEC || c.exp - c.iat > maxTokenSec) return { status: "invalid" };
-  const who = { sid: c.sid, agentName: agentLabel(c.agent), exp: c.exp };
+  const who = { sid: c.sid, agentName: agentLabel(c.agent), exp: c.exp, ...(c.own ? { own: c.own } : {}) };
   if (nowSec >= c.exp || nowSec - c.sat > maxSessionSec) return { status: "expired", ...who };
   return { status: "verified", ...who };
 }
 
 const bounded = (v, b) => (Number.isSafeInteger(v) && v >= b.min && v <= b.max ? v : b.dflt);
-// The signed policy's settings: agentIdentity { mode, maxTokenSeconds, maxSessionSeconds } and the console's
-// revokedAgentSessions list. No policy, or no agentIdentity key: report mode. Anything malformed is ignored.
+// The signed policy's settings: agentIdentity { mode, maxTokenSeconds, maxSessionSeconds, requireOwner } and the
+// console's revokedAgentSessions list. No policy, or no agentIdentity key: report mode. Anything malformed is ignored.
+// requireOwner (true only) applies under mode "require": a verified identity whose owner is not verified is refused too.
 export function identityConfig(policy) {
   const ai = policy && typeof policy.agentIdentity === "object" && policy.agentIdentity && !Array.isArray(policy.agentIdentity) ? policy.agentIdentity : {};
   const list = policy && Array.isArray(policy.revokedAgentSessions) ? policy.revokedAgentSessions : [];
@@ -97,6 +104,7 @@ export function identityConfig(policy) {
     mode: MODES.includes(ai.mode) ? ai.mode : "report",
     maxTokenSec: bounded(ai.maxTokenSeconds, POLICY_TOKEN_MAX),
     maxSessionSec: bounded(ai.maxSessionSeconds, POLICY_SESSION_MAX),
+    requireOwner: ai.requireOwner === true,
     revoked: new Set(list.filter((s) => typeof s === "string" && SESSION_ID_RE.test(s)).slice(0, REVOKED_MAX))
   };
 }
@@ -106,16 +114,19 @@ const REFUSE_TEXT = {
   absent: "MoorAI: this endpoint requires an agent identity (X-MoorAI-Agent-Identity); start the agent with moorai-identity run",
   expired: "MoorAI: the agent identity has expired; mint a new one (moorai-identity headers)",
   invalid: "MoorAI: the agent identity did not verify",
-  foreign: "MoorAI: the agent identity was minted on another device"
+  foreign: "MoorAI: the agent identity was minted on another device",
+  owner: "MoorAI: this endpoint requires an agent session of a signed-in owner (moorai-identity login, then a new session)"
 };
 
-// One request's identity verdict. raw: the header value (a string, undefined, or an array when repeated).
+// One request's identity verdict. raw: the header value (a string, undefined, or an array when repeated). owner: this
+// device's owner as cli/owner-assertion.mjs deviceOwner reads it.
 // → { record, refuse, alert }:
-//   record  { id?, status, agentName? } for the request's alerts, or null (no header, or mode off)
+//   record  { id?, status, agentName?, owner?: { id, status } } for the request's alerts, or null (no header, or mode
+//           off). owner only when the token carries an `own` claim.
 //   refuse  { status: 401 | 403, message } or null. A revoked session is refused in report and require mode;
 //           in require mode anything but a verified identity is refused too.
 //   alert   true when the verdict is worth an alert (anything but verified)
-export function judgeIdentity(raw, { policy, publicKey, now = Date.now() } = {}) {
+export function judgeIdentity(raw, { policy, publicKey, owner = null, now = Date.now() } = {}) {
   const cfg = identityConfig(policy);
   if (cfg.mode === "off") return { record: null, refuse: null, alert: false };
   const require = cfg.mode === "require";
@@ -124,21 +135,29 @@ export function judgeIdentity(raw, { policy, publicKey, now = Date.now() } = {})
   }
   const v = Array.isArray(raw) ? { status: "invalid" } : verifyToken(String(raw).trim(), { publicKey, now, maxTokenSec: cfg.maxTokenSec, maxSessionSec: cfg.maxSessionSec });
   const status = v.sid && cfg.revoked.has(v.sid) ? "revoked" : v.status;
-  const record = { status, ...(v.sid ? { id: v.sid, agentName: v.agentName } : {}) };
-  if (status === "verified") return { record, refuse: null, alert: false };
+  const record = { status, ...(v.sid ? { id: v.sid, agentName: v.agentName } : {}), ...(v.own ? { owner: { id: v.own, status: ownerStatus(v.own, owner, policy) } } : {}) };
+  if (status === "verified") {
+    const os = record.owner ? record.owner.status : null;
+    if (require && cfg.requireOwner && os !== "verified") return { record: record.owner ? record : { ...record, owner: { status: "absent" } }, refuse: { status: 401, message: REFUSE_TEXT.owner }, alert: true };
+    return { record, refuse: null, alert: !!os && os !== "verified" };
+  }
   const refuse = status === "revoked" ? { status: 403, message: REFUSE_TEXT.revoked } : require ? { status: 401, message: REFUSE_TEXT[status] || REFUSE_TEXT.invalid } : null;
   return { record, refuse, alert: true };
 }
 
 // The content-free alert for a verdict that is not "verified". surfacePrefix: "gateway" or "model-proxy".
+// A verified identity whose owner claim did not verify is reported as "Agent owner: <status>".
 export function identityAlert(record, { refused, surfacePrefix }) {
   const status = STATUSES.includes(record && record.status) ? record.status : "invalid";
+  const os = status === "verified" && record.owner ? OWNER_ALERT_STATUSES.find((x) => x === record.owner.status) || "unverified" : null;
+  const what = os ? `owner: ${os}` : `identity: ${status}`;
   return {
-    threatId: 0, category: `Agent identity: ${status}`, riskLevel: refused ? "Blocked" : "Medium", stage: "identity",
+    threatId: IDENTITY_THREAT_ID, category: `Agent ${what}`, riskLevel: refused ? "Blocked" : "Medium", stage: "identity",
     tool: `${surfacePrefix}:identity`, decision: refused ? "deny" : "allow", reasonCode: REASON_CODE,
-    contentHash: `agent-identity:${status}`, agentSession: record
+    contentHash: `agent-${what.replace(": ", ":")}`, agentSession: record
   };
 }
+const OWNER_ALERT_STATUSES = ["unverified", "mismatch", "revoked", "absent"];
 
 // This device's public key (base64 SPKI DER) from the private key the hook created, or null when the device has
 // none yet. Never creates a key: a verifier with no key has nothing a token could have been signed with. A miss

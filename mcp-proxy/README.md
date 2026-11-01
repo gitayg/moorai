@@ -177,6 +177,15 @@ them can block.
   `moorai`; a refused `inputRequests` result becomes an `isError` tool result. Every `inputRequests` entry
   is read. Text past the tool-result bounds (64 KB, 512 objects, depth 8) leaves the request not judged:
   `failMode.mcpGateway` closed refuses it, open forwards it and reports it. Alerts at stage `sampling`.
+- **The client's answer** to such a request — its JSON-RPC response, or `params.inputResponses` on the
+  retried call (MCP 2026-07-28) — gets the outbound-argument data-loss check on its `content` before the
+  server sees it ([`sampling-response.mjs`](sampling-response.mjs)): secrets, personal data, cards,
+  decoded base64, sensitivity labels, #92 over-sharing. Report-first; refused when a finding resolves to
+  block, or on any finding under `policy.samplingResponseAction: "block"`: the server gets JSON-RPC error
+  `-1` on the request's id and the client a `notifications/message`; a refused retry is not sent and the
+  client gets an `isError` result. `policy.samplingBudget` (#97) counts the server's sampling requests and their
+  stated `maxTokens` for this process (default: report past 30 requests or 100,000 tokens in 60 minutes;
+  `block` refuses the requests past a limit). Alerts at stages `sampling-response` and `sampling`.
 - **Everything else** — `initialize`, notifications, and all other responses — passes through
   **verbatim and transparently**.
 
@@ -698,6 +707,7 @@ proxy sees nothing.
 | `trace-meta.mjs`           | Sets a forwarded `tools/call`'s `params._meta.traceparent` / `tracestate` by editing the line in place. |
 | `tool-scan.mjs`            | Caps, and the composition of the scan text for a `tools/list` entry and a `tools/call` result. |
 | `tool-baseline.mjs`        | Cross-call tool baseline — shadowing / capability-expansion drift. |
+| `sampling-response.mjs`    | The client's answer to a sampling / elicitation request (JSON-RPC response or `params.inputResponses` on a retry): the data-loss scan, the decision, the alerts and the refusal; the per-session `samplingBudget`. Shared with the HTTP gateway. |
 | `sampling-scan.mjs`        | Server → client `sampling/createMessage` / `elicitation/create` requests (both MCP shapes): the scan text, the `includeContext` signal, the decision, the alerts and the refusal. Shared with the HTTP gateway. |
 | `tool-drift.mjs`           | `mcpToolDrift: "block"`: approved-baseline precedence, quarantine verdicts, the version mark, the fingerprint report, per-server listing freshness. Shared with the HTTP gateway. |
 | `tool-recheck.mjs`         | `mcpToolRecheckSeconds`: the re-list before a block-mode call when the last judged listing is stale (every page, 2 s budget, one in flight per server). Shared with the HTTP gateway. |
@@ -705,6 +715,6 @@ proxy sees nothing.
 | `install.mjs`              | Wrap / uninstall / status a host's MCP config, per the `HOSTS` table (pure transforms exported for tests). |
 | `test-proxy.mjs`           | Self-verification (proxy behavior + install rewrite). |
 | `test-fake-mcp-server.mjs` | Tiny fake MCP server used by the test. |
-| `test/fake-sampling-mcp-server.mjs` | Fake server that sends the client a sampling or elicitation request (either shape), for `test/mcp-sampling-scan.test.mjs`. |
+| `test/fake-sampling-mcp-server.mjs` | Fake server that sends the client one or more sampling or elicitation requests (either shape) and logs the answers and retries it receives, for `test/mcp-sampling-scan.test.mjs` and `test/mcp-sampling-response.test.mjs`. |
 | `test/live/tee-server.mjs` | Tap in front of the fake server that records what the guard forwarded, for the real-client runs. |
 | `measure-mcp-coverage.mjs` | Drives malicious/benign actions through the proxy to produce the coverage table above. |

@@ -118,6 +118,15 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/cli/moorai-hook.mjs\" --plugin"
           }
         ]
+      },
+      {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/cli/moorai-hook.mjs\" --plugin"
+          }
+        ]
       }
     ],
     "PostToolUse": [

@@ -29,6 +29,7 @@ import { mcpGateway, decideText, threatActionFor } from "../cli/hook-core.mjs";
 import { CAPS, toolScanText, toolIdentity, resultOfResponse } from "../mcp-proxy/tool-scan.mjs";
 import { decideInbound, inboundText } from "../cli/inbound.mjs";
 import { serverRequestsOf, gateServerRequest } from "../mcp-proxy/sampling-scan.mjs";
+import { gateClientAnswer, gateSamplingBudget, createSamplingBudget } from "../mcp-proxy/sampling-response.mjs";
 import { maskResult, maskAlert, maskedMcpResult } from "../cli/result-mask.mjs";
 import { loadBaseline, saveBaseline, driftSignals, recordTool } from "../mcp-proxy/tool-baseline.mjs";
 import { createDriftTracker, toolDriftMode, reportFingerprints, policyMayBlock, TOOL_DRIFT_REASON, RUG_PULL_THREAT } from "../mcp-proxy/tool-drift.mjs";
@@ -50,7 +51,7 @@ import { state, ensurePolicy, ADMIN } from "./policy.mjs";
 import { profileCheck } from "./profile.mjs";
 import { failClosed, failReason, alertFailClosed } from "./fail.mjs";
 import { outboundUnevaluatedAlert } from "../cli/mcp-outbound-fail.mjs";
-import { CONFIG, IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, alertProfile, alertDriftCall, alertRecheckFailed, alertToolClass, recordLedger } from "./report.mjs";
+import { CONFIG, IDENTITY, SERVER_MODE, post, reportOnce, seenOnce, sessionOf, coachNote, auditCall, alertBlock, alertFindings, alertEgress, alertTool, alertResult, alertHeadless, alertProfile, alertDriftCall, alertRecheckFailed, alertToolClass, recordLedger } from "./report.mjs";
 
 const RANK = { allow: 1, ask: 2, deny: 3 };
 
@@ -107,6 +108,8 @@ export function createGuard(route) {
   let REP = null;
   let REP_READY = null;
   let listingsSeen = 0;
+  // Sampling requests per Mcp-Session-Id on this route, toward policy.samplingBudget.
+  const SAMPLING_BUDGET = createSamplingBudget();
 
   const repPolicy = () => { const p = state.POLICY && state.POLICY.mcpReputation; return p && typeof p === "object" ? p : {}; };
   function reportReputation(rep) {
@@ -422,10 +425,11 @@ export function createGuard(route) {
       if (sreq) {
         if (sreq.shape === "request") await withDeadline(ensurePolicy(), CAPS.resultDeadlineMs);
         const isToolCall = sreq.shape !== "request" && !!methodOf && methodOf(msg.id) === "tools/call";
-        const ref = gateServerRequest(msg, sreq, {
+        const deps = {
           engine: state.ENGINE, policy: state.POLICY, coach: state.COACH, server: SERVER, toolPrefix: "gateway", label: isToolCall ? toolName : null, isToolCall,
-          identity: IDENTITY, post, record: recordLedger, failClosed, coachNote
-        });
+          identity: IDENTITY, post, record: recordLedger, failClosed, coachNote, budget: SAMPLING_BUDGET, sessionKey: sessionOf()
+        };
+        const ref = gateSamplingBudget(msg, sreq, deps) || gateServerRequest(msg, sreq, deps);
         if (ref) { if (ref.toServer && replyUpstream) replyUpstream(ref.toServer); return ref.toClient; }
         if (sreq.shape === "request") return null;
       }
@@ -483,6 +487,13 @@ export function createGuard(route) {
     }
   }
 
+  // The client's answer to a sampling / elicitation request (../mcp-proxy/sampling-response.mjs): null
+  // (forward it) or { toServer, toClient } (refused).
+  async function gateAnswer(msg, found) {
+    await withDeadline(ensurePolicy(), CAPS.resultDeadlineMs);
+    return gateClientAnswer(msg, found, { engine: state.ENGINE, policy: state.POLICY, coach: state.COACH, server: SERVER, toolPrefix: "gateway", identity: IDENTITY, post, record: recordLedger, failClosed, coachNote, seenOnce });
+  }
+
   // A result the gateway could not judge: null (open, coach, or no id to answer) or its isError replacement.
   function failClosedResult(msg, why, label) {
     const fm = msg && msg.id != null ? failClosed() : null;
@@ -497,7 +508,7 @@ export function createGuard(route) {
   // listing until a listing is judged again (../mcp-proxy/tool-drift.mjs invalidate).
   function listingUnjudged() { try { DRIFT.invalidate(); } catch { /* governance, not a sandbox */ } }
 
-  return { server: SERVER, gateCall, gateResult, rememberRoots, startReputation, listingUnjudged };
+  return { server: SERVER, gateCall, gateResult, gateAnswer, rememberRoots, startReputation, listingUnjudged };
 }
 
 // A refused RESULT: an MCP tool result with isError and the response's id.

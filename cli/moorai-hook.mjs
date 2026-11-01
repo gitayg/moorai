@@ -20,13 +20,15 @@ import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import { loadConfig } from "./config.mjs";
-import { buildEngine, decideText, decideCredFileRead, decideTransit, transitEnvText, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideAuthorizedKeysWrite, decodedCommandPayloads, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, decideMcpToolClass, toolClassAlert, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, policyIatIso, policyAgeMs, policyFreshByIat, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision, evaluateProfile, rejectedAlert, PROFILE_DRIFT, decideThreat, decideOversight, OVERSIGHT_THREAT } from "./hook-core.mjs";
+import { buildEngine, decideText, decideCredFileRead, decideCredContent, decideTransit, transitEnvText, PS_OUTBOUND_UPLOAD, decideAgentStateWrite, decideAuthorizedKeysWrite, decidePersistenceWrite, decideShellCiWrite, decodedCommandPayloads, decideFileMetadata, fileScanText, isEnvTemplate, decideEndpoints, decideEnvelope, threatActionFor, extractReadPaths, embeddedScripts, mcpGateway, decideMcpToolClass, toolClassAlert, offlineMode, verifyBreakGlass, parseTrustedKeys, ratchetPosture, mcpFloor, literacyTouchpoint, saferAlternativesFor, withSafer, clipboardSignals, assessClipboardEgress, loadVerifiedPolicy, policyIatIso, policyAgeMs, policyFreshByIat, readRootOwned, readText, POSTURE_STATE, POSTURE_LATCH, POSTURE_LEGACY, systemPosturePath, isEnrolled, enforcementAllowed, coachMessage, maskFallbackDecision, evaluateProfile, rejectedAlert, PROFILE_DRIFT, decideThreat, decideOversight, OVERSIGHT_THREAT } from "./hook-core.mjs";
 import { oversightEditSignals, beforeAfter } from "./oversight-signals.mjs";
 import { oversightCommandSignals } from "./oversight-shell.mjs";
 import { oversightPolicy } from "./oversight-surfaces.mjs";
 import { fetchExecFacts, unpackFacts } from "../data/net-exec.js";
 import { shellGateClasses, originStripFacts, extensionPath, mcpMessageTool } from "../data/origin-taint.js";
 import { fetchedExecHit, recordFetched } from "./fetch-exec-state.mjs";
+import { repoPushStep } from "./repo-push-state.mjs";
+import { CODE_REPO_THREAT } from "../data/exfil-channels.js";
 import { otShellCheck, scriptReader, OT_PROTOCOL_CLIENT } from "./ot-protocol-client.mjs";
 import { knownBadShellCheck, KNOWN_BAD_REASON, KNOWN_BAD_ALTERNATIVE } from "./package-known-bad.mjs";
 import { boundaryWriteFields, boundaryCommandFields, boundaryAtStop, BOUNDARY_THREAT, BOUNDARY_CATEGORY, BOUNDARY_INVALID_CATEGORY, BOUNDARY_BLOCK_REASON } from "./boundary-stop.mjs";
@@ -127,9 +129,9 @@ const RANK = { allow: 1, ask: 2, deny: 3 };
 // Both are plain array literals so test/hook-tool-coverage.test.mjs can READ them out of this file and
 // assert every dispatched tool has a matcher covering it. It reads rather than imports because main()
 // runs at module scope and awaits stdin, so an `import()` of this module never resolves.
-const PRETOOL_MATCHERS = ["Read", "Bash", "PowerShell", "Monitor", "mcp__.*", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "ReadMcpResourceTool"];
+const PRETOOL_MATCHERS = ["Read", "Bash", "PowerShell", "Monitor", "mcp__.*", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "ReadMcpResourceTool", "Grep"];
 // One representative name per branch in main(); "mcp__github__create_issue" stands for the mcp__* family.
-const DISPATCHED_TOOLS = ["Read", "Bash", "PowerShell", "Monitor", "mcp__github__create_issue", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "ReadMcpResourceTool"];
+const DISPATCHED_TOOLS = ["Read", "Bash", "PowerShell", "Monitor", "mcp__github__create_issue", "Agent", "Task", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "ReadMcpResourceTool", "Grep"];
 // The Cursor CLI runs these same Claude Code hooks but renames the tools it hands them. Measured in
 // cursor-agent 2026.05.27: its Claude-compat map is {Bash:"Shell", Edit:"Write", ...} and the Shell
 // input is {command, cwd, timeout?}, so a "Shell" payload is a Bash payload under another name and was
@@ -1974,10 +1976,11 @@ function killSession(tool, ids, stage) {
 
 // Operator stop (cli/session-stop.mjs): a stop the verified policy carries for this session or device denies the
 // call. The first call of a session posts the acknowledgement, then SIGTERMs the agent (and, for a device stop,
-// drops the desktop host's kill-session sentinel). → true when it answered the call.
-async function operatorStop(tool) {
+// drops the desktop host's kill-session sentinel). → true when it answered the call. fast: the stops a newer signed
+// stop document adds (cli/stop-channel.mjs); they are added to the policy's, never in place of them.
+async function operatorStop(tool, fast = []) {
   const ss = await import("./session-stop.mjs");
-  const stop = ss.stopFor(VERIFIED_POLICY, SESSION_TAG);
+  const stop = ss.stopFor(fast.length ? (await import("./stop-channel.mjs")).withFastStops(VERIFIED_POLICY, fast) : VERIFIED_POLICY, SESSION_TAG);
   if (!stop) return false;
   why(REASON.SESSION_KILL);
   if (!seenOnce(`stop:${stop.id}:${SESSION_TAG || "-"}`)) {
@@ -3287,7 +3290,10 @@ async function main() {
   POLICY = policy; // read by logBehavior's agent-detection hand-off (maybeAgentScan)
   PROV = { policyId: policyIdOf(policy, { builtin: NO_POLICY_BASELINE, offline: OFFLINE_DEFAULT_POLICY }), policySource: policy === NO_POLICY_BASELINE ? "builtin" : policy === OFFLINE_DEFAULT_POLICY ? "offline-default" : source || "", offline: policy === OFFLINE_DEFAULT_POLICY, ...(policyIat && policy !== NO_POLICY_BASELINE && policy !== OFFLINE_DEFAULT_POLICY ? { policyIat } : {}) };
   TRAIL = actionTrailMode(policy); // the allow trail: from the signed policy only (cli/action-trail.mjs)
-  if (!COACH && (EVENT === "PreToolUse" || EVENT === "UserPromptSubmit") && Array.isArray(VERIFIED_POLICY?.agentStops) && VERIFIED_POLICY.agentStops.length && await operatorStop(tool || EVENT)) return;
+  // The stop channel (cli/stop-channel.mjs): only while the verified policy names it; keeps the stop watcher running,
+  // records this session's agent process once, and reads the stops a newer signed stop document adds.
+  const fastStops = !COACH && !SERVER.active && (EVENT === "PreToolUse" || EVENT === "UserPromptSubmit") && VERIFIED_POLICY?.stopChannel ? (await import("./stop-channel.mjs")).stopChannelStep({ policy: VERIFIED_POLICY, keys: trust?.keys || [], config: CONFIG, actor: IDENTITY.actor, sessionTag: SESSION_TAG, startPid: hookPeerPid(), shim: process.env.MOORAI_HOOK_HOST === "shim" }) : [];
+  if (!COACH && (EVENT === "PreToolUse" || EVENT === "UserPromptSubmit") && ((Array.isArray(VERIFIED_POLICY?.agentStops) && VERIFIED_POLICY.agentStops.length) || fastStops.length) && await operatorStop(tool || EVENT, fastStops)) return;
   const engine = buildEngine(policy);
   // Instruction-leak fingerprints of the rules files this agent runs under (lazy: nothing is read until a
   // scan reaches a fingerprint detector with enough text). data/detectors-instruction-leak.js.
@@ -3371,6 +3377,9 @@ async function main() {
     d.findings.push(...pd.findings);
     if (pd.kill) { d.kill = true; d.killIds.push(...pd.killIds); }
     if (RANK[pd.decision] > RANK[d.decision]) { d.decision = pd.decision; d.reasons = pd.reasons; d.alternatives = pd.alternatives; }
+    // #55 on the CONTENT when the path did not say it: the file is a private key, whatever it is named.
+    const kd = pd.findings.length ? null : decideCredContent(policy, text);
+    if (kd) { d.findings.push(...kd.findings); if (kd.kill) { d.kill = true; d.killIds.push(...kd.killIds); } if (RANK[kd.decision] > RANK[d.decision]) { d.decision = kd.decision; d.reasons = kd.reasons; d.alternatives = kd.alternatives; } }
     // #72 / AML.T0129 on the FILE'S METADATA. `text` above is empty for every binary file, so this is
     // the only branch that sees a directive planted in EXIF, XMP, an ID3 comment or a PDF Info entry.
     // Merged the same way, never downgrading.
@@ -3458,6 +3467,8 @@ async function main() {
         if (pd.kill) killIds.push(...pd.killIds);
         if (RANK[pd.decision] > RANK[dec]) { dec = pd.decision; reasons = pd.reasons; alts = pd.alternatives; }
       }
+      // #55 on the CONTENT, under either shell: a file the command reads that is a private key by its first line.
+      { const kd = decideCredContent(policy, t, p); finds.push(...kd.findings); if (kd.kill) killIds.push(...kd.killIds); if (RANK[kd.decision] > RANK[dec]) { dec = kd.decision; reasons = kd.reasons; alts = kd.alternatives; } }
     }
     // T1-2/T1-1 — scan the COMMAND itself (not just files it reads) so command-level detectors enforce:
     // typosquat/hallucinated install (#62), destructive (#43), reverse shell (#54), untrusted install (#57).
@@ -3505,6 +3516,8 @@ async function main() {
       if (md.kill) killIds.push(...md.killIds);
       if (RANK[md.decision] > RANK[dec]) { dec = md.decision; reasons = md.reasons; alts = md.alternatives; }
     }
+    // #32 / T1677 — a shell write INTO a pipeline definition: the written text gets the Write branch's check.
+    { const cw = decideShellCiWrite(policy, shellText); finds.push(...cw.findings); if (cw.kill) killIds.push(...cw.killIds); if (RANK[cw.decision] > RANK[dec]) { dec = cw.decision; reasons = cw.reasons; alts = cw.alternatives; } }
     // The decoded scripts get the same command scan. Not maskable: the text is not in the input as written.
     for (const script of scripts) {
       const sd = decideText(engine, policy, script, "prompt", { ctx: { egress: cmdEgress, shell: ps ? "ps" : "sh", scope: "command" } });
@@ -3518,6 +3531,13 @@ async function main() {
     const fx = fetchExecFacts(ti.command, { ps, cwd: typeof input.cwd === "string" ? input.cwd : process.cwd(), home: os.homedir(), insensitive: process.platform === "win32" });
     if (!finds.some((f) => f.threatId === 57) && fetchedExecHit({ sessionId: SESSION_ID, executed: fx.executed })) {
       const xd = decideThreat(policy, 57, "fetch-then-exec-session");
+      finds.push(...xd.findings);
+      if (xd.kill) killIds.push(...xd.killIds);
+      if (RANK[xd.decision] > RANK[dec]) { dec = xd.decision; reasons = xd.reasons; alts = xd.alternatives; }
+    }
+    // T1567.001 — a push to a repository the project does not use (cli/repo-push.mjs), across calls of the session.
+    if (repoPushStep({ policy, sessionId: SESSION_ID, command: ti.command, ps, cwd: typeof input.cwd === "string" ? input.cwd : "" }).hits.length) {
+      const xd = decideThreat(policy, CODE_REPO_THREAT, "code-repo-push");
       finds.push(...xd.findings);
       if (xd.kill) killIds.push(...xd.killIds);
       if (RANK[xd.decision] > RANK[dec]) { dec = xd.decision; reasons = xd.reasons; alts = xd.alternatives; }
@@ -3615,6 +3635,12 @@ async function main() {
     d.findings.push(...kd.findings);
     if (RANK[kd.decision] > RANK[dec]) { dec = kd.decision; reasons = kd.reasons; alts = kd.alternatives; }
     if (kd.kill) { d.kill = true; d.killIds.push(...kd.killIds); }
+    // #46 / #57 — the target is a cron table, a launchd plist, an editor extension directory, or a shell startup
+    // file the write adds a fetch/exec to (ATT&CK T1053.003, T1543.001, T1176.002, T1546.004).
+    const pw = decidePersistenceWrite(policy, { tool, path, input: ti }, { cwd: input.cwd });
+    d.findings.push(...pw.findings);
+    if (RANK[pw.decision] > RANK[dec]) { dec = pw.decision; reasons = pw.reasons; alts = pw.alternatives; }
+    if (pw.kill) { d.kill = true; d.killIds.push(...pw.killIds); }
     // #84 — the write weakens the project's own monitoring, alerting, audit logging or safety tests, judged on
     // the file before and after (cli/oversight-signals.mjs), or touches a policy-protected surface.
     const ovs = oversightWriteSignals(tool, ti, path, input.cwd, policy);
@@ -3776,6 +3802,18 @@ async function main() {
         if (od.kill) { g.kill = true; g.killIds = [...(g.killIds || []), ...od.killIds]; }
       }
     }
+    // #46 / #57 / #32 — an MCP filesystem write into a persistence location, an editor extension directory or a
+    // pipeline definition gets the Write branch's check (decidePersistenceWrite). Merged by rank, reported at "output".
+    {
+      let calls = [];
+      try { calls = mcpWriteCalls(tool, ti); } catch { calls = []; }
+      for (const c of calls) {
+        const pw = decidePersistenceWrite(policy, c, { cwd: typeof input.cwd === "string" ? input.cwd : "", ci: true });
+        ovFindings.push(...pw.findings);
+        if (RANK[pw.decision] > RANK[g.decision]) { g.decision = pw.decision; g.reason = pw.reasons.join(", "); g.alternatives = pw.alternatives; }
+        if (pw.kill) { g.kill = true; g.killIds = [...(g.killIds || []), ...pw.killIds]; }
+      }
+    }
     if (g.decision !== "allow") why(detectorReason([...g.findings, ...fsr.findings, ...ovFindings]));
     // #33 — fail-closed MCP floor: raise an otherwise-allowed MCP call to "ask" (justify). Inert unless
     // policy.mcpFloor is set (only the offline fail-closed default sets it), so normal policies are unaffected.
@@ -3891,6 +3929,24 @@ async function main() {
     logBehavior("NotebookRead", ti.notebook_path, "", { decision: "allow", findings: [] }, "file");
     const nq = await quarantineFor("notebook", [ti.notebook_path], engine);
     if (nq) { const m = mergeQuarantine({ dec: "allow" }, nq); QUAR_CONTEXT = m.context; return emit(m.dec, m.reason, m.alts, m.rewrite); }
+  }
+  // Grep reads the files it searches and hands the matching lines to the model: #55 when it searches a
+  // credential store, a history file for a secret word, or a home / root directory for secrets or key files
+  // (cli/cred-grep.mjs). Structural, so the finding carries no pattern or path. Anything else is allowed
+  // unread below, as before.
+  if (tool === "Grep") {
+    const { grepCredHit } = await import("./cred-grep.mjs");
+    const det = grepCredHit(ti, { cwd: typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd(), home: os.homedir() });
+    if (det) {
+      const d = decideThreat(policy, 55, det, "prompt");
+      if (d.findings.length) {
+        if (d.decision !== "allow") why(detectorReason(d.findings));
+        report(d.findings, "prompt", "hook:Grep", d.decision === "deny", policy.captureTier, { toolName: "Grep" });
+        logBehavior("Grep", "Grep", "", d, "prompt");
+        if (d.kill) killSession("Grep", d.killIds, "prompt");
+        return emit(d.decision, `${d.kill ? "killed session" : d.decision === "ask" ? "needs justification" : "blocked"} Grep — ${d.reasons.join(", ")}`, d.alternatives);
+      }
+    }
   }
   // A tool no branch reads (Glob, Grep, LS, …) still carries tags: a tag action or rule that applies to
   // it decides through emit(); otherwise it is allowed unread, as before, and its tags join the session.
