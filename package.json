@@ -1,6 +1,6 @@
 {
   "name": "moorai",
-  "version": "1.47.1",
+  "version": "1.47.2",
   "license": "MIT",
   "description": "MoorAI agent — AI security at the point. Runtime guardrails for AI agents, apps and APIs (community edition, MIT)",
   "type": "module",
@@ -80,6 +80,7 @@
     "tauri": "tauri",
     "redteam": "node scripts/redteam.mjs",
     "benchmark": "node scripts/benchmark.mjs",
+    "accuracy-latency": "node scripts/accuracy-latency.mjs",
     "redteam-policy": "node cli/moorai-redteam.mjs",
     "agentwatch": "node cli/moorai-agentwatch.mjs",
     "hooktest": "node scripts/hooktest.mjs",

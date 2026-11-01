@@ -1,5 +1,5 @@
 {
- "_comment": "Raw counts copied from each scorer's --json output, run on a clean `git archive` of source.commit; every rate is derived by the reader. The moorai.dev accuracy page vendors this file as src/_data/accuracy-measurements.json. Model verdicts in refusal come from the committed caches (no model call; the run reported actualSpendUsd 0). latency was NOT re-measured at source.version: its harness is not in this repository, so that block is the v0.96.0 measurement, as latency.measuredAt says.",
+ "_comment": "Raw counts copied from each scorer's --json output, run on a clean `git archive` of source.commit; every rate is derived by the reader. The moorai.dev accuracy page vendors this file as src/_data/accuracy-measurements.json. Model verdicts in refusal come from the committed caches (no model call; the run reported actualSpendUsd 0). latency was measured at source.version on the same clean archive with scripts/accuracy-latency.mjs (npm run accuracy-latency); latency.load records the machine load during the runs.",
  "source": {
   "repo": "https://github.com/gitayg/moorai",
   "commit": "5a0e31f73454172ef175d0e5ecfa4185ebcd1ce7",
@@ -386,57 +386,57 @@
  },
  "latency": {
   "corpus": "test/redteam/benign-corpus-v2.json",
-  "machine": "Apple M5 Max, 18 cores, 48 GB, macOS 27.0, Node v22.22.0",
-  "load": "load average 13 to 15 during both runs: the machine was running other work",
-  "method": "engine: decideText at stage prompt, in process, warm, 5 passes over the 610 benign samples. hook: one `node cli/moorai-hook.mjs` process per event, unenrolled, sandboxed HOME: a UserPromptSubmit per benign sample, and 200 PreToolUse Bash calls with ordinary commands. Harness not in the agent repo; described here.",
-  "nodeStartP50": 70.9,
-  "nodeStartP95": 77.2,
+  "machine": "Apple M5 Max, 18 cores, 48 GB, macOS 27.0, Node v22.23.4",
+  "load": "1-minute load average 19.7 to 39.2, sampled every 30 s across the 2 runs",
+  "method": "engine: decideText at stage prompt, in process, warm (one unrecorded pass), 5 passes over the 610 benign samples. hook: one `node cli/moorai-hook.mjs` process per event, the command transport a real agent invokes (moorai-hookd is the optional HTTP transport, not measured here), unenrolled, sandboxed HOME: a UserPromptSubmit per benign sample, and 200 PreToolUse Bash calls with ordinary commands, after 5 unrecorded warm-up events. Node start floor: a bare `node -e \"\"` timed between hook events, pooled over the runs. Each run is its own process on a fresh HOME; percentiles are nearest-rank. Harness: scripts/accuracy-latency.mjs (npm run accuracy-latency).",
+  "nodeStartP50": 72.6,
+  "nodeStartP95": 98.2,
   "runs": [
    {
     "engine": {
      "n": 3050,
-     "p50": 5.14,
-     "p95": 9.23,
-     "p99": 11.42
+     "p50": 5.85,
+     "p95": 10.51,
+     "p99": 14.6
     },
     "hookPrompt": {
      "n": 610,
-     "p50": 221.58,
-     "p95": 273.95,
-     "p99": 336.91
+     "p50": 226.31,
+     "p95": 324.75,
+     "p99": 386.51
     },
     "hookBash": {
      "n": 200,
-     "p50": 234.05,
-     "p95": 248.31,
-     "p99": 259.43
+     "p50": 320.24,
+     "p95": 507.95,
+     "p99": 620.15
     }
    },
    {
     "engine": {
      "n": 3050,
-     "p50": 4.88,
-     "p95": 8.46,
-     "p99": 9.94
+     "p50": 5.51,
+     "p95": 8.83,
+     "p99": 10.43
     },
     "hookPrompt": {
      "n": 610,
-     "p50": 185.41,
-     "p95": 214.38,
-     "p99": 231.7
+     "p50": 223.76,
+     "p95": 284.65,
+     "p99": 344.74
     },
     "hookBash": {
      "n": 200,
-     "p50": 229.41,
-     "p95": 259.25,
-     "p99": 270.22
+     "p50": 286.53,
+     "p95": 329,
+     "p99": 364.92
     }
    }
   ],
   "measuredAt": {
-   "version": "0.96.0",
-   "commit": "4f76f186d38f26b000bfbbb5972658b62148461b",
-   "measured": "2026-09-27"
+   "version": "1.47.0",
+   "commit": "5a0e31f73454172ef175d0e5ecfa4185ebcd1ce7",
+   "measured": "2026-11-01"
   }
  }
 }
