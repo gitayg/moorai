@@ -257,7 +257,7 @@ point of view; position and document *that* as the durable evidence store.
     negatives** and the FP rate is **3.32% (20/602)**. It went up because 101 deliberately-obfuscated
     benign samples were added — and before they existed the FP gate could not distinguish a safe detector
     from one scoring 48 false positives, so the harder corpus with the worse number is the better
-    measurement. **3.32% (20/602) is the current figure everywhere; the v0.74.0-era rate is retired.**
+    measurement. **3.32% (20/602) is the current figure everywhere; the v0.74.0-era rate is retired.** Re-measured at v1.47.0: **2.66% (16/602)** (docs/accuracy-measurements.json).
   - **`scripts/closed-loop-mutate.mjs` + `heldout-v3.json` (160 attacks/97 benign).** An adaptive adversary
     that mutates SURVIVORS each round. Found **20 compounding chains at 100% evasion whose every one-step
     reduction is caught** — invisible to a one-shot generator. Worst: **`dot-punct→letter-spacing`, which
@@ -295,7 +295,7 @@ point of view; position and document *that* as the durable evidence store.
   | ≥5 | 88.6% | 0/10 | unchanged from baseline |
 
   The FP-rate column was measured against the then-509-sample benign corpus; those absolute rates are
-  retired (the corpus is now 610 samples and the current rate is **3.32%, 20/602**) and the sweep has
+  retired (the corpus is now 610 samples and the current rate is **2.66%, 16/602**, measured at v1.47.0) and the sweep has
   **not** been re-run against it, so only the shape survives: no added false positives at the knee, a
   materially worse rate at threshold 1.
 
