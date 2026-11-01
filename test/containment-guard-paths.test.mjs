@@ -79,18 +79,34 @@ test("a .. component with a trailing space or an NTFS stream still climbs: Win32
   }
 });
 
-test("a decorated .. run is ambiguous on the host, so the guard flags either reading: the parent (climb) and the dropped/current segment", () => {
-  // `dotsLiteral` resolves `.. ` as a dropped segment instead of the parent; the guard tries both so neither
-  // Win32 reading of a non-final decorated `..` slips a write past.
+test("a decorated .. run is ambiguous on the host, so the guard flags all three readings: parent (climb), dropped/current, and opaque name", () => {
+  // The guard resolves a decorated `..` three ways and flags if ANY lands under a protected path, so no Win32
+  // reading of a non-final decorated `..` slips a write past.
   assert.equal(winCanon("C:\\Users\\dev\\.claude\\shell-snapshots\\.. \\s.sh", { env: ENV, cwd: CWD }), "C:\\Users\\dev\\.claude\\s.sh", "the climb reading leaves the protected dir");
-  assert.equal(winCanon("C:\\Users\\dev\\.claude\\shell-snapshots\\.. \\s.sh", { env: ENV, cwd: CWD, dotsLiteral: true }), "C:\\Users\\dev\\.claude\\shell-snapshots\\s.sh", "the dropped reading stays inside it");
+  assert.equal(winCanon("C:\\Users\\dev\\.claude\\shell-snapshots\\.. \\s.sh", { env: ENV, cwd: CWD, dots: "drop" }), "C:\\Users\\dev\\.claude\\shell-snapshots\\s.sh", "the dropped reading stays inside it");
   // Only the dropped reading is under a protected path, and the guard still flags it.
   assert.equal(g("Write", { file_path: "C:\\Users\\dev\\.claude\\shell-snapshots\\.. \\s.sh" }), "shell-snapshots", "drop reading into shell-snapshots is flagged");
-  // A stream-decorated `..` must get the same two readings as the space form, not be mistaken for a bare `..`.
+  // A stream-decorated `..` must get the same readings as the space form, not be mistaken for a bare `..`.
   assert.equal(g("Write", { file_path: "C:\\Users\\dev\\.claude\\shell-snapshots\\..::$DATA\\s.sh" }), "shell-snapshots", "drop reading of a stream-decorated .. is flagged");
   assert.equal(g("Write", { file_path: "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\.. \\MoorAI Host\\x.json" }), "moorai-host", "drop reading back into MoorAI Host is flagged");
   // The climb reading alone is still caught too (decoy segment plus `.. `).
   assert.equal(g("Write", { file_path: "C:\\Users\\dev\\foo\\.. \\.bashrc" }), "shell-rc", "climb reading into a protected file is flagged");
+
+  // The OPAQUE-NAME reading: a decorated run FOLLOWED by a `..` that pops it. Parent and drop both climb out of
+  // the protected dir, but Win32 can keep the decorated run as a literal name (under \\?\, or a crafted name),
+  // so the following `..` pops the decoy and the write lands back inside. Only the name reading catches this.
+  const climbOut = "C:\\Users\\dev\\.claude\\shell-snapshots\\.. \\..\\evil.sh";
+  assert.equal(winCanon(climbOut, { env: ENV, cwd: CWD }), "C:\\Users\\dev\\evil.sh", "parent reading climbs two levels out");
+  assert.equal(winCanon(climbOut, { env: ENV, cwd: CWD, dots: "drop" }), "C:\\Users\\dev\\.claude\\evil.sh", "drop reading climbs one level out");
+  assert.equal(winCanon(climbOut, { env: ENV, cwd: CWD, dots: "name" }), "C:\\Users\\dev\\.claude\\shell-snapshots\\evil.sh", "name reading pops the decoy and stays inside");
+  assert.equal(g("Write", { file_path: climbOut }), "shell-snapshots", "opaque-name reading keeps the write under shell-snapshots and is flagged");
+  // The same construction for the other decorated forms and for MoorAI Host.
+  assert.equal(g("Write", { file_path: "C:\\Users\\dev\\.claude\\shell-snapshots\\... \\..\\evil.sh" }), "shell-snapshots", "'... ' decoy then .. is flagged");
+  assert.equal(g("Write", { file_path: "C:\\Users\\dev\\.claude\\shell-snapshots\\.. .\\..\\evil.sh" }), "shell-snapshots", "'.. .' decoy then .. is flagged");
+  assert.equal(g("Write", { file_path: "C:\\Users\\dev\\.claude\\shell-snapshots\\..::$DATA\\..\\evil.sh" }), "shell-snapshots", "stream-decorated decoy then .. is flagged");
+  assert.equal(g("Write", { file_path: "C:\\Users\\dev\\AppData\\Local\\MoorAI Host\\.. \\..\\evil.cfg" }), "moorai-host", "the same construction back into MoorAI Host is flagged");
+  // A benign path with a real sibling dir named like a decoy is still not under the protected dir once popped.
+  assert.equal(g("Write", { file_path: "C:\\Users\\dev\\Documents\\notes\\.. \\..\\todo.txt" }), null, "the name reading does not over-flag an unprotected tree");
 });
 
 test("environment forms expand from env: %HOMEDRIVE%%HOMEPATH%, $env:NAME and ${env:NAME} in any case, ~; unknown → \"\"", () => {

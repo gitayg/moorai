@@ -60,18 +60,20 @@ export function guardTargets(env) {
 // A path as the agent wrote it, made absolute and Win32-canonical (cli/win-canon.mjs winCanon): quotes dropped,
 // variables and ~ expanded from env, an MSYS /c/... path mapped to C:\..., a relative path joined to cwd.
 // "" when it cannot be made absolute. literal: no variable or ~ expansion.
-export function resolveTarget(p, { env = {}, cwd = "", literal = false, dotsLiteral = false } = {}) {
-  return winCanon(p, { env, cwd, literal, dotsLiteral });
+export function resolveTarget(p, { env = {}, cwd = "", literal = false, dots = "parent" } = {}) {
+  return winCanon(p, { env, cwd, literal, dots });
 }
 
 const classOf = (path, targets) => (path ? (targets.find((t) => canonUnder(path, t.path)) || {}).cls || null : null);
 // A string as the guard reads it, flagged if ANY reading lands under a protected path: expanded vs literal (a file
-// API takes %X%\..\ as text, and .. folds it away), and a decorated `..` run (`.. ` / `.. .`) resolved as the
-// parent vs as a dropped segment, since which one Win32 picks in a non-final segment is on the filesystem.
+// API takes %X%\..\ as text, and .. folds it away), and a decorated `..` run (`.. ` / `.. .` / `..::$DATA`)
+// resolved three ways — as the parent, as a dropped segment, or (non-final) as an opaque name a following `..`
+// pops — since which one Win32 picks in a non-final segment is on the filesystem. The "name" reading is what
+// stops `shell-snapshots\.. \..\x` from climbing out of the protected dir the way parent/drop do.
 const classOfWord = (w, env, cwd, targets) => {
   for (const literal of [false, true])
-    for (const dotsLiteral of [false, true]) {
-      const hit = classOf(resolveTarget(w, { env, cwd, literal, dotsLiteral }), targets);
+    for (const dots of ["parent", "drop", "name"]) {
+      const hit = classOf(resolveTarget(w, { env, cwd, literal, dots }), targets);
       if (hit) return hit;
     }
   return null;

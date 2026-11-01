@@ -2051,8 +2051,10 @@ stream suffix (`.bashrc.`, `.bashrc::$DATA`) are dropped; `.` and `..` fold, and
 space or a stream still navigates rather than surviving as a literal segment (since v1.46.3), decided by the leading
 dot run so `. ` is current and `.. `, `.. .` and `..::$DATA` are the parent, so a decoy segment followed by `.. ` no
 longer slips a write into the parent directory; because whether Win32 reduces such a decorated `..` to the parent in
-a non-final segment is on the filesystem, the guard reads it both ways — as the parent and as a dropped segment — and
-flags the write if either lands under a protected path; `%HOMEDRIVE%%HOMEPATH%`, `%VAR%`,
+a non-final segment is on the filesystem, the guard reads it three ways — as the parent, as a dropped segment, and as
+an opaque literal name that a following `..` pops (the reading Win32 takes under `\\?\`, or for a name crafted to
+survive the trim, where `shell-snapshots\.. \..\x` stays inside `shell-snapshots` instead of climbing out) — and
+flags the write if any lands under a protected path (the name reading since v1.47.4); `%HOMEDRIVE%%HOMEPATH%`, `%VAR%`,
 `$env:VAR`, `${env:VAR}`, `$VAR` and a leading `~` expand from the environment, and a variable that is not set makes
 the path unknown, which is not denied. An 8.3 short name (`MOORAI~1`, `BASHRC~1`) cannot be resolved without the
 disk, so a segment shaped like one matches any protected name at its position. The cost is false positives: a write

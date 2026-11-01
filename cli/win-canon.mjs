@@ -15,7 +15,10 @@
 //                after Win32 strips the trailing run, decided by the leading dot run (the tail may mix dots and
 //                spaces), so `.` / `. ` are current, `..` / `.. ` / `.. .` / `..::$DATA` are the parent
 //                (classified before the trailing strip, never emptied away) and `...` / `... ` is an
-//                empty/current component; an NTFS stream suffix (name::$DATA, name:s,
+//                empty/current component. A DECORATED run (one carrying a trailing space, dot or stream) is
+//                ambiguous on the host, so the `dots` option offers three readings — parent, dropped, and a
+//                non-final one kept as an opaque name a following `..` pops — and the guard tries all three; a
+//                bare `..` is always the parent. An NTFS stream suffix (name::$DATA, name:s,
 //                dir:$I30:$INDEX_ALLOCATION) is dropped from every segment; trailing dots and spaces are
 //                dropped from every segment (.bashrc. / .bashrc  / .bashrc. . are .bashrc). Win32 strips a
 //                trailing run only from the last segment and skips all of this under \\?\; doing it
@@ -61,33 +64,46 @@ function rootOf(s) {
   return null;
 }
 
-function fold(segs, rest, dotsLiteral) {
-  for (const raw of rest.split("\\")) {
+function fold(segs, rest, dots) {
+  const parts = rest.split("\\");
+  parts.forEach((raw, idx) => {
     // A bare dot run (raw is only dots: no stream, no trailing space) is unambiguous on every host: `..` the
     // parent, `.` / `...` current. Decide this from raw, not the stream-stripped form, so `..::$DATA` is NOT
-    // mistaken for a bare `..` and still reaches the decorated branch below (both readings).
-    if (/^\.+$/.test(raw)) { if (raw === "..") segs.pop(); continue; }
+    // mistaken for a bare `..` and still reaches the decorated branch below (all three readings).
+    if (/^\.+$/.test(raw)) { if (raw === "..") segs.pop(); return; }
+    const final = idx === parts.length - 1;
     const stream = raw.replace(/:.*$/s, "");
     // A DECORATED dot run — two leading dots then a trailing space, dot or stream (`.. ` / `.. .` / `..::$DATA`)
     // — is where Win32's per-segment trailing-run strip can turn it into the parent, but whether a non-final
-    // segment does so is on the filesystem, not in the string. So winCanon resolves it as the parent by default
-    // and, under dotsLiteral, as a dropped/current segment; the guard tests both readings so neither one slips a
-    // write past (cli/containment-guard.mjs classOfWord). A one-dot or three-plus-dot decorated run is current.
-    const dots = /^(\.+)[. ]*$/.exec(stream);
-    if (dots) { if (!dotsLiteral && dots[1].length === 2) segs.pop(); continue; }
+    // segment does so is on the filesystem, not in the string. So winCanon resolves it three ways and the guard
+    // tries each (cli/containment-guard.mjs classOfWord): "parent" (the default) folds a two-dot run to the
+    // parent; "drop" keeps it as a dropped/current segment; "name" keeps a non-final decorated run as an opaque
+    // literal name, so a FOLLOWING `..` pops the decoy and lands back where Win32 can — under \\?\ no stripping
+    // or `.`/`..` navigation happens, and a crafted name can survive the strip — rather than climbing out. A
+    // one-dot or three-plus-dot decorated run is current under parent/drop.
+    const dotrun = /^(\.+)[. ]*$/.exec(stream);
+    if (dotrun) {
+      if (dots === "name" && !final) segs.push(raw);
+      else if (dots !== "drop" && dotrun[1].length === 2) segs.pop();
+      return;
+    }
     const name = stream.replace(/[. ]+$/, "");
     if (name) segs.push(name);
-  }
+    // A non-dot segment that trims to empty (a lone space, `. `) is navigation-neutral under parent/drop, but
+    // under "name" it is a decoy a following `..` can pop, so a non-final one is kept as an opaque name too.
+    else if (dots === "name" && !final && raw) segs.push(raw);
+  });
   return segs;
 }
 
 const join = (root, segs) => (/:$/.test(root) ? `${root}\\${segs.join("\\")}` : [root, ...segs].join("\\"));
 
 // The canonical absolute form of p, or "" when it cannot be made absolute without the filesystem.
-// literal: no variable or ~ expansion (the string as a file API would take it). dotsLiteral: resolve a decorated
-// `..` run (`.. ` / `.. .` / `..::$DATA`) as a dropped/current segment instead of the parent, so the guard can
-// test both readings (see fold).
-export function winCanon(p, { env = {}, cwd = "", literal = false, dotsLiteral = false } = {}) {
+// literal: no variable or ~ expansion (the string as a file API would take it). dots selects how a decorated
+// `..` run (`.. ` / `.. .` / `..::$DATA`) or an empty-trimming segment resolves: "parent" (default) folds it to
+// the parent, "drop" keeps it as a dropped/current segment, "name" keeps a non-final one as an opaque literal
+// name a following `..` can pop. The guard tests all three readings so none slips a write past (see fold).
+export function winCanon(p, { env = {}, cwd = "", literal = false, dots = "parent" } = {}) {
   let s = String(p ?? "").trim().replace(/["']/g, "");
   if (!s || s.length > 4096) return "";
   if (!literal) { s = expandVars(s, env); if (!s) return ""; }
@@ -109,7 +125,7 @@ export function winCanon(p, { env = {}, cwd = "", literal = false, dotsLiteral =
     } else if (s.startsWith("\\")) r = { root: base.root, rest: s };
     else r = { root: base.root, rest: `${base.rest}\\${s}` };
   }
-  const out = join(r.root, fold([], r.rest, dotsLiteral));
+  const out = join(r.root, fold([], r.rest, dots));
   return out.includes(UNKNOWN) ? "" : out;
 }
 

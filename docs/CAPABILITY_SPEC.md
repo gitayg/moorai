@@ -2020,12 +2020,17 @@ empty/current component; `%VAR%` (so `%HOMEDRIVE%%HOMEPATH%`), `$env:VAR` and `$
 leading `~` expand from env, `$HOME` and `~` meaning `USERPROFILE`; a variable that is unset or empty makes the path
 unknown (`""`, not denied) unless folding drops it (inside a stream suffix, or a segment a `..` removes). A
 `Write`/`Edit` path and every shell word is also read literally, as a file API would take it, so
-`C:\Users\me\%USERPROFILE%\..\.bashrc` is seen, and a decorated `..` run (`.. ` / `.. .`) is read both as the
-parent and as a dropped/current segment and flagged if either reading lands under a protected path (v1.46.3), since
-whether Win32 reduces such a non-final segment to `..` is on the filesystem. Win32 strips a component's trailing run
-uniformly, so both readings apply to every decorated `..` in a path at once (all parent, or all dropped) — the two
-the guard tests; a single path that resolved different decorated `..` runs differently is not a Win32 outcome and is
-not modelled. The protected paths themselves are canonicalized from env.
+`C:\Users\me\%USERPROFILE%\..\.bashrc` is seen, and a decorated `..` run (`.. ` / `.. .` / `..::$DATA`) is read
+three ways — as the parent, as a dropped/current segment, and (non-final) as an opaque literal name that a
+following `..` pops — and flagged if any reading lands under a protected path (parent/drop since v1.46.3, the name
+reading since v1.47.4), since whether Win32 reduces such a non-final segment to `..` is on the filesystem. The name
+reading is what keeps `shell-snapshots\.. \..\x` inside the protected dir: parent and drop both climb out (to
+`.claude\..\x`'s parent and `.claude\x`), but Win32 can keep the decorated run as a literal name — it does under
+`\\?\`, where no trimming or `.`/`..` navigation happens, and a crafted name can survive the trim — so the following
+`..` pops the decoy and the write lands back under `shell-snapshots`. Win32 strips a component's trailing run
+uniformly, so each reading applies to every decorated `..` in a path at once; the guard takes the union over all
+three, so a path some filesystem would resolve by a different mix of per-segment readings is still caught whenever
+any uniform reading of it is protected. The protected paths themselves are canonicalized from env.
 Shell words add each quoted string whole and a PowerShell `-Path:value`'s value. **8.3 short names:** a segment of
 8.3 shape whose base ends in `~digits` (`MOORAI~1`, `BASHRC~1`, `BASH~1.BAS`) matches any segment at the same
 position, on either side, since which long name it stands for is on disk. False-positive cost: a write to any
