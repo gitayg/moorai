@@ -60,14 +60,24 @@ export function guardTargets(env) {
 // A path as the agent wrote it, made absolute and Win32-canonical (cli/win-canon.mjs winCanon): quotes dropped,
 // variables and ~ expanded from env, an MSYS /c/... path mapped to C:\..., a relative path joined to cwd.
 // "" when it cannot be made absolute. literal: no variable or ~ expansion.
-export function resolveTarget(p, { env = {}, cwd = "", literal = false } = {}) {
-  return winCanon(p, { env, cwd, literal });
+export function resolveTarget(p, { env = {}, cwd = "", literal = false, dots = "parent" } = {}) {
+  return winCanon(p, { env, cwd, literal, dots });
 }
 
 const classOf = (path, targets) => (path ? (targets.find((t) => canonUnder(path, t.path)) || {}).cls || null : null);
-// A string as the guard reads it: expanded, and literally (a file API takes %X%\..\ as text, and .. folds it away).
-const classOfWord = (w, env, cwd, targets) =>
-  classOf(resolveTarget(w, { env, cwd }), targets) || classOf(resolveTarget(w, { env, cwd, literal: true }), targets);
+// A string as the guard reads it, flagged if ANY reading lands under a protected path: expanded vs literal (a file
+// API takes %X%\..\ as text, and .. folds it away), and a decorated `..` run (`.. ` / `.. .` / `..::$DATA`)
+// resolved three ways — as the parent, as a dropped segment, or (non-final) as an opaque name a following `..`
+// pops — since which one Win32 picks in a non-final segment is on the filesystem. The "name" reading is what
+// stops `shell-snapshots\.. \..\x` from climbing out of the protected dir the way parent/drop do.
+const classOfWord = (w, env, cwd, targets) => {
+  for (const literal of [false, true])
+    for (const dots of ["parent", "drop", "name"]) {
+      const hit = classOf(resolveTarget(w, { env, cwd, literal, dots }), targets);
+      if (hit) return hit;
+    }
+  return null;
+};
 
 // The words of a command that could be paths (split on whitespace and shell punctuation, `=` included so
 // `of=~/.bashrc` and `--file=x` give their value), each quoted string whole (a path with a space), and the value
