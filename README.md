@@ -369,7 +369,9 @@ Claude Code can send each hook event to a local HTTP endpoint instead of startin
 have already loaded every module the hook imports and compiled the detector patterns, and runs the same
 `cli/moorai-hook.mjs` in one of them for each event. The decision, its reason, the alerts and the state
 files are the command hook's own (`test/hookd-parity.test.mjs` runs 225 events through both and compares
-every outcome and every alert record), without Node start-up and module loading on each tool call.
+every outcome and every alert record; a policy served fresh and one served from the one-minute cache count as
+the same `policySource`, since which events fall inside that minute depends on timing), without Node start-up
+and module loading on each tool call.
 
 ```bash
 node cli/moorai-hookd.mjs unit --out ~/Library/LaunchAgents                 # macOS: writes dev.moorai.hookd.plist, prints the launchctl command

@@ -130,10 +130,14 @@ async function runHttp(url, sb, ev, { projectHeader = true } = {}) {
 // (pub, sig, chainHead: the record chain; contextRoot: the keyed context tree), and the session risk score, which
 // decays with wall-clock time (data/session-risk.js halfLifeMin), so a faster run keeps a little more of it.
 const VOLATILE = /^(ts|time|timestamp|receivedAt|traceId|spanId|parentSpanId|traceparent|nonce|sig|signature|runId|pub|chainHead|contextRoot|score)$/;
+// policySource "fresh" or "cache" is wall-clock too: the cached policy is served without a fetch only while the
+// file is under a minute old (cli/hook-core.mjs withinWindow), and a process per event (command) and a warm
+// worker (http) cross that minute at different events. Any other source (builtin, offline-default) still counts.
+const FETCHED = new Set(["fresh", "cache"]);
 function normAlert(a, home) {
   const walk = (v) => {
     if (Array.isArray(v)) return v.map(walk);
-    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).filter(([k]) => !VOLATILE.test(k)).sort(([x], [y]) => (x < y ? -1 : 1)).map(([k, x]) => [k, walk(x)]));
+    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).filter(([k]) => !VOLATILE.test(k)).map(([k, x]) => [k, k === "policySource" && FETCHED.has(x) ? "fresh|cache" : x]).sort(([x], [y]) => (x < y ? -1 : 1)).map(([k, x]) => [k, walk(x)]));
     return typeof v === "string" ? v.split(home).join("<HOME>") : v;
   };
   return JSON.stringify(walk(a));
